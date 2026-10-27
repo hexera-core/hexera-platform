@@ -185,6 +185,70 @@ def test_the_pairs_measured_in_parallel_give_the_same_answer(monkeypatch):
     assert forked.skins == serial.skins and forked.near == serial.near
 
 
+@pytest.fixture(scope="module")
+def one_by_one():
+    parts = A.solids(fx.anchorage(skin=True))
+    keep = J.MAX_WORKERS
+    J.MAX_WORKERS = 1
+    try:
+        return J.measure(parts, tol=3e-4, mm_per_unit=1.0)
+    finally:
+        J.MAX_WORKERS = keep
+
+
+@pytest.mark.parametrize("memory", ["none free", "used up while running"])
+def test_the_workers_read_only_their_own_parts_and_fit_the_memory(monkeypatch, one_by_one, memory):
+    """Each worker reads the parts of its own pairs only (never the whole assembly); no more start at once
+    than the job's free memory holds (none free: one at a time), and when the running ones use it up the
+    newest is stopped and run again later - the same answer as one by one either way."""
+    import subprocess
+
+    parts = A.solids(fx.anchorage(skin=True))
+    real_popen, specs, live, most = subprocess.Popen, [], [], [0]
+
+    def popen(cmd, *a, **k):
+        specs.append(json.loads(open(cmd[-2]).read()))
+        live[:] = [p for p in live if p.poll() is None]
+        proc = real_popen(cmd, *a, **k)
+        live.append(proc)
+        most[0] = max(most[0], len(live))
+        return proc
+
+    reads = []
+
+    def free():
+        reads.append(1)
+        return 64.0 * 2**30 if len(reads) == 1 else 0.0
+
+    monkeypatch.setattr(J, "WORKER_PAIRS", 1)
+    monkeypatch.setattr(J, "_memory_free", (lambda: 0.0) if memory == "none free" else free)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    spawned = J.measure(parts, tol=3e-4, mm_per_unit=1.0)
+    monkeypatch.setattr(subprocess, "Popen", real_popen)
+    jobs = {s["brep"] for s in specs}
+    assert len(jobs) > 1, "the workers did not run"
+    if memory == "none free":
+        assert most[0] == 1 and len(specs) == len(jobs), "more workers ran at once than the memory holds"
+    else:
+        assert most[0] > 1 and len(specs) > len(jobs), "no worker was stopped and run again"
+    for spec in specs:
+        assert len(spec["index"]) < len(parts), "a worker read the whole assembly"
+        assert {p for pair in spec["pairs"] for p in pair} == set(spec["index"])
+    assert list(spawned.joints) == list(one_by_one.joints)
+    for k in one_by_one.joints:
+        a, b = spawned.joints[k], one_by_one.joints[k]
+        assert (a.a, a.b, a.kind, a.faces_a, a.faces_b) == (b.a, b.b, b.kind, b.faces_a, b.faces_b)
+        assert a.area == pytest.approx(b.area) and (a.gap or 0.0) == pytest.approx(b.gap or 0.0)
+    assert spawned.skins == one_by_one.skins and spawned.near == one_by_one.near
+
+
+def test_the_pairs_are_cut_into_runs_of_neighbours():
+    pairs = [(0, 1), (0, 2), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6)]
+    runs = J._chunks(pairs, 3)
+    assert [len(r) for r in runs] == [3, 2, 2] and sum(runs, []) == pairs
+    assert J._chunks(pairs[:2], 8) == [[(0, 1)], [(0, 2)]]
+
+
 def test_the_gap_switch_off_joins_no_gap(clean):
     parts = A.solids(fx.anchorage(skin=False))
     vols = [A._props(s, True)[0] for s in parts]

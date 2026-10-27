@@ -605,7 +605,7 @@ def measure(parts: list, *, tol: float, mm_per_unit: float, budget_s: float = BU
             pairs = _near_pairs(parts, tol=tol, mm=mm)
             workers = _workers(len(pairs))
             if workers > 1 and brep.exists():
-                got = _spawned(brep, len(parts), pairs, workers, tol=tol, mm=mm, budget_s=budget_s, t0=t0)
+                got = _spawned(parts, pairs, workers, tol=tol, mm=mm, budget_s=budget_s, t0=t0)
                 if got is not None:
                     out.joints, out.near, out.skins, out.complete, out.unmeasured = got
                     out.seconds = round(time.time() - t0, 2)
@@ -644,6 +644,13 @@ def _round_trip(parts: list, brep) -> list:
 #: only when there are at least WORKER_PAIRS pairs a worker (a worker takes a second or two to start).
 MAX_WORKERS = 8
 WORKER_PAIRS = 4
+#: WHAT A WORKER TAKES: about WORKER_BASE_BYTES to start (Python, OpenCASCADE, numpy, scipy), plus
+#: WORKER_BREP_FACTOR times the size of the B-rep file of the parts it measures (their shapes, faces,
+#: tessellated surfaces and search trees). The workers running at once take at most WORKER_MEMORY_SHARE
+#: of the memory the job has free when they start; one always runs.
+WORKER_BASE_BYTES = 400 * 2**20
+WORKER_BREP_FACTOR = 500.0
+WORKER_MEMORY_SHARE = 0.6
 
 
 def _near_pairs(parts: list, *, tol: float, mm: float) -> list[tuple[int, int]]:
@@ -659,6 +666,8 @@ def _near_pairs(parts: list, *, tol: float, mm: float) -> list[tuple[int, int]]:
 
 
 def _workers(n_pairs: int) -> int:
+    """How many runs the pairs are cut into: by cores and pairs (memory decides how many of them run at
+    once, see _spawned)."""
     import os
 
     if n_pairs < 2 * WORKER_PAIRS:
@@ -670,52 +679,130 @@ def _workers(n_pairs: int) -> int:
     return max(1, min(MAX_WORKERS, cores, n_pairs // WORKER_PAIRS))
 
 
-def _spawned(brep, n_parts: int, pairs: list, workers: int, *, tol: float, mm: float, budget_s: float, t0: float):
-    """The pairs measured in `workers` fresh Python processes (`python -m meshpipeline.cad.fea_joins`),
-    each reading the parts from the B-rep file `brep` (measure() wrote it), merged in pair order: (joints,
-    near, skins, complete), or None when a worker could not start, ran out of time or failed (then the
-    caller measures every pair here, one by one). Fresh processes, never forked copies: a fork of a
-    process with threads can stall on a lock another thread held (26 Oct, a test run that never ended)."""
+def _memory_free() -> float | None:
+    """The bytes the job has free (its container's limit less what it uses, else the machine's); None
+    when it cannot be read (then cores alone decide)."""
+    from meshpipeline.sandbox.liveness import memory_in_use
+
+    got = memory_in_use()
+    if got is None:
+        return None
+    used, limit = got
+    return float(max(limit - used, 0))
+
+
+def _chunks(pairs: list, n: int) -> list[list]:
+    """The pairs in `n` runs of neighbours (in pair order, near-equal counts): a part's pairs mostly in
+    one run, so each worker reads few parts, never the whole assembly."""
+    n = max(1, min(n, len(pairs)))
+    size, extra = divmod(len(pairs), n)
+    out, k = [], 0
+    for c in range(n):
+        m = size + (1 if c < extra else 0)
+        out.append(pairs[k:k + m])
+        k += m
+    return [c for c in out if c]
+
+
+def _worker_need(brep_bytes: int) -> float:
+    """The memory a worker reading a B-rep file of `brep_bytes` is counted at."""
+    return WORKER_BASE_BYTES + WORKER_BREP_FACTOR * float(brep_bytes)
+
+
+def _spawned(parts: list, pairs: list, workers: int, *, tol: float, mm: float, budget_s: float, t0: float):
+    """The pairs measured in fresh Python processes (`python -m meshpipeline.cad.fea_joins`), merged in
+    pair order: (joints, near, skins, complete, unmeasured), or None when a worker could not start, ran
+    out of time or failed (then the caller measures every pair here, one by one).
+
+    The pairs are cut into `workers` runs of neighbours. Each run's worker reads a B-rep file of ITS OWN
+    parts only (written here from the parts as measure() read them back: the same numbers), and only as
+    many run at once as the job's free memory holds (WORKER_MEMORY_SHARE of it, at _worker_need each; one
+    always runs). When they grow past that share anyway, the newest is stopped and run again later, with
+    fewer at once (so too a worker the kernel kills for memory beside others). Never `workers` copies of the whole assembly: 27 Oct, 8 workers of 3.5 GB each, every
+    one reading all 406 parts of a laser cutter, got a 32 GiB job killed.
+    Fresh processes, never forked copies: a fork of a process with threads can stall on a lock another
+    thread held (26 Oct, a test run that never ended)."""
     import pickle
     import subprocess
     import sys
     import tempfile
     from pathlib import Path
 
+    from OCP.BRepTools import BRepTools
+
+    from meshpipeline.cad.fea_assembly import compound
+
     left = budget_s - (time.time() - t0)
     if left <= 30.0:
         return None
+    deadline = time.time() + left + 120.0
     with tempfile.TemporaryDirectory(prefix="fea_joins_") as tmp:
-        procs = []
+        jobs: list[tuple[list[str], Path, float]] = []
+        running: list[tuple[subprocess.Popen, Path, float, list[str]]] = []
+        joints: dict = {}
+        near: dict = {}
+        unmeasured: dict = {}
+        skins: dict[int, set[int]] = {}
+        complete = True
         try:
-            for k in range(workers):
-                spec = Path(tmp) / f"job{k}.json"
-                spec.write_text(json.dumps({"brep": str(brep), "pairs": [list(x) for x in pairs[k::workers]],
-                                            "parts": n_parts, "tol": tol, "mm": mm, "budget_s": left}))
-                out = Path(tmp) / f"out{k}.pkl"
-                procs.append((subprocess.Popen([sys.executable, "-m", "meshpipeline.cad.fea_joins", str(spec), str(out)],
-                                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                               stderr=subprocess.DEVNULL), out))
-            joints: dict = {}
-            near: dict = {}
-            unmeasured: dict = {}
-            skins: dict[int, set[int]] = {}
-            complete = True
-            for proc, out in procs:
-                rc = proc.wait(timeout=max(left, 0.0) + 120.0)
-                if rc != 0 or not out.exists():
+            for k, chunk in enumerate(_chunks(pairs, workers)):
+                index = sorted({p for pair in chunk for p in pair})
+                brep = Path(tmp) / f"parts{k}.brep"
+                if not BRepTools.Write_s(compound([parts[p] for p in index]), str(brep)):
                     return None
-                j, n, sk, c, um = pickle.loads(out.read_bytes())  # noqa: S301 - our own worker's answer, in our own temp dir
-                joints.update(j)
-                near.update(n)
-                unmeasured.update(um)
-                for part, fs in sk.items():
-                    skins.setdefault(part, set()).update(fs)
-                complete = complete and c
+                spec = Path(tmp) / f"job{k}.json"
+                spec.write_text(json.dumps({"brep": str(brep), "index": index, "pairs": [list(x) for x in chunk],
+                                            "tol": tol, "mm": mm, "budget_s": left}))
+                out = Path(tmp) / f"out{k}.pkl"
+                jobs.append(([sys.executable, "-m", "meshpipeline.cad.fea_joins", str(spec), str(out)], out,
+                             _worker_need(brep.stat().st_size)))
+            free = _memory_free()
+            room = math.inf if free is None else WORKER_MEMORY_SHARE * free
+            floor = 0.0 if free is None else (1.0 - WORKER_MEMORY_SHARE) * free
+            most = len(jobs)
+            while jobs or running:
+                # START what the memory holds, in order; one always runs
+                while jobs and (not running or (len(running) < most
+                                                and sum(r[2] for r in running) + jobs[0][2] <= room)):
+                    cmd, out, need = jobs.pop(0)
+                    running.append((subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                                     stderr=subprocess.DEVNULL), out, need, cmd))
+                done = [r for r in running if r[0].poll() is not None]
+                if not done:
+                    if time.time() > deadline:
+                        return None
+                    # THE GUARD: the workers grew past what was counted for them - the newest one stopped and
+                    # put back to run later, and never again this many at once (it never stops the last one)
+                    now = _memory_free() if free is not None else None
+                    if now is not None and now < floor and len(running) > 1:
+                        proc, out, need, cmd = running.pop()
+                        proc.kill()
+                        proc.wait()
+                        jobs.insert(0, (cmd, out, need))
+                        most = len(running)
+                    time.sleep(0.2)
+                    continue
+                for r in done:
+                    running.remove(r)
+                    proc, out, need, cmd = r
+                    if proc.returncode < 0 and running:
+                        # killed (the kernel's out-of-memory killer) beside others: again later, fewer at once
+                        jobs.insert(0, (cmd, out, need))
+                        most = max(1, len(running))
+                        continue
+                    if proc.returncode != 0 or not out.exists():
+                        return None
+                    j, n, sk, c, um = pickle.loads(out.read_bytes())  # noqa: S301 - our own worker's answer, in our own temp dir
+                    joints.update(j)
+                    near.update(n)
+                    unmeasured.update(um)
+                    for part, fs in sk.items():
+                        skins.setdefault(part, set()).update(fs)
+                    complete = complete and c
         except (OSError, subprocess.SubprocessError, ValueError, EOFError, pickle.UnpicklingError):
             return None
         finally:
-            for proc, _out in procs:
+            for proc, *_rest in running:
                 if proc.poll() is None:
                     proc.kill()
                     proc.wait()
@@ -725,8 +812,9 @@ def _spawned(brep, n_parts: int, pairs: list, workers: int, *, tol: float, mm: f
 
 
 def _worker(spec_path: str, out_path: str) -> int:
-    """One worker of _spawned: the parts read back from the B-rep file, its pairs measured, the answer
-    written."""
+    """One worker of _spawned: its own parts read back from its B-rep file, its pairs measured on them,
+    the answer written in the assembly's numbering (pairs 0-based, parts 1-based)."""
+    import dataclasses
     import pickle
 
     from OCP.BRep import BRep_Builder
@@ -740,13 +828,24 @@ def _worker(spec_path: str, out_path: str) -> int:
     if not BRepTools.Read_s(shape, spec["brep"], BRep_Builder()):
         return 2
     parts = solids(shape)
-    if len(parts) != int(spec["parts"]):
+    index = [int(p) for p in spec["index"]]
+    if len(parts) != len(index):
         return 3
+    local = {g: k for k, g in enumerate(index)}
     t0 = time.time()
     res = _measure(parts, tol=float(spec["tol"]), mm=float(spec["mm"]), budget_s=float(spec["budget_s"]), t0=t0,
-                   out=Measured(tol=float(spec["tol"])), only={(int(i), int(j)) for i, j in spec["pairs"]})
+                   out=Measured(tol=float(spec["tol"])),
+                   only={(local[int(i)], local[int(j)]) for i, j in spec["pairs"]})
+
+    def pair(k: tuple[int, int]) -> tuple[int, int]:
+        return index[k[0]], index[k[1]]
+
+    joints = {pair(k): dataclasses.replace(v, a=index[v.a - 1] + 1, b=index[v.b - 1] + 1)
+              for k, v in res.joints.items()}
     with open(out_path, "wb") as fh:
-        pickle.dump((res.joints, res.near, res.skins, res.complete, res.unmeasured), fh)
+        pickle.dump((joints, {pair(k): v for k, v in res.near.items()},
+                     {index[p - 1] + 1: v for p, v in res.skins.items()}, res.complete,
+                     {pair(k): v for k, v in res.unmeasured.items()}), fh)
     return 0
 
 
@@ -771,10 +870,25 @@ def _measure(parts: list, *, tol: float, mm: float, budget_s: float, t0: float, 
             surfaces[i] = _surface(parts[i], faces[i], diags[i])
         return surfaces[i]
 
+    # A PART LET GO after its last pair: its surface and face tools freed, so what is held is the
+    # surfaces of the parts still to be paired, never every part's at once
+    todo = [(i, j) for i, j in combinations(range(len(parts)), 2) if only is None or (i, j) in only]
+    done_with: dict[int, list[int]] = {}
+    for part, n in {p: n for n, pair in enumerate(todo) for p in pair}.items():
+        done_with.setdefault(n, []).append(part)
+
+    def let_go(n: int) -> None:
+        for part in done_with.get(n, ()):
+            surfaces.pop(part, None)
+            for f in faces[part]:
+                tools = _FACE_TOOLS.get(f.__hash__())
+                if tools is not None and tools[0].IsSame(f):
+                    del _FACE_TOOLS[f.__hash__()]
+
     pairs_tried = 0
-    for i, j in combinations(range(len(parts)), 2):
-        if only is not None and (i, j) not in only:
-            continue
+    for n, (i, j) in enumerate(todo):
+        if n:
+            let_go(n - 1)
         if time.time() - t0 > budget_s:
             out.complete = False
             break
