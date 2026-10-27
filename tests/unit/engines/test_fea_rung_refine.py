@@ -2,12 +2,10 @@
 # Boundaries: the grid and the targets on numbers; the ladder through the real driver and adapter with a stand-in fTetWild on PATH (the real cases, the STEP hunt's five assemblies, are the lab's: ~/fea_hunt).
 from __future__ import annotations
 
-import asyncio
 import json
 import stat
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -159,7 +157,7 @@ def test_a_rung_mesh_short_of_its_walls_gets_one_refinement_pass_and_the_better_
     from meshpipeline.contracts import decision_record as dr
 
     _grid_only_when_held(monkeypatch, held=True)
-    ws = _stage(fx.plate_with_hole(), tmp_path / "plate")
+    ws = _stage(fx.plate_with_hole(), tmp_path / "refine_better")
     ok, marker, _o = _ladder(ws, monkeypatch)
     assert ok, marker
     passes = json.loads((ws / "fea_passes.json").read_text())
@@ -184,7 +182,7 @@ def test_a_refinement_no_better_leaves_the_rungs_pass_delivered_with_its_short_w
     from meshpipeline.engines.verdict_limits import fea_limits
 
     _grid_only_when_held(monkeypatch, held=False)      # the refinement's grid falls through as well
-    ws = _stage(fx.plate_with_hole(), tmp_path / "plate")
+    ws = _stage(fx.plate_with_hole(), tmp_path / "refine_no_better")
     ok, marker, _o = _ladder(ws, monkeypatch)
     assert ok, marker
     passes = json.loads((ws / "fea_passes.json").read_text())
