@@ -86,6 +86,24 @@ def test_an_open_pair_is_said_with_its_faces_and_the_way_on():
     assert "Contact or Off" in said and "at least 0.21 mm" in said
 
 
+def test_the_verdict_reads_an_open_pair_as_a_concern_and_an_unrun_check_as_unmeasured():
+    from meshpipeline.contracts.decision_record import limit_met
+    from meshpipeline.engines.verdict_limits import fea_limits
+
+    def row(asm):
+        q = {"fea": {"plan": True, "assembly": asm}, "element_order": 2}
+        return next((r for r in fea_limits(q) if r["key"] == "fea_open_bonded_pairs"), None)
+
+    opened = {"name": "Tie1", "parts": ["Part_1", "Part_2"], "reach_m": 1e-4, "needed_m": 3e-4, "faces": []}
+    r = row({"bonded_check": {"checked": 2, "closed": 1}, "open_bonded": [opened]})
+    assert limit_met(r["measured"], r["op"], r["limit"]) is False and "Tie1 (Part_1 and Part_2)" in r["measured"][0]
+    r = row({"bonded_check": {"checked": 2, "closed": 2}, "open_bonded": []})
+    assert limit_met(r["measured"], r["op"], r["limit"]) is True
+    r = row({"bonded_check": {"checked": None, "closed": None, "error": "x"}, "open_bonded": []})
+    assert limit_met(r["measured"], r["op"], r["limit"]) is None          # not measured, never taken as closed
+    assert row({"bonded_check": {"checked": 0, "closed": 0}, "open_bonded": []}) is None   # no tie: no row
+
+
 # #
 # staging (geometry, no mesh)
 # #
