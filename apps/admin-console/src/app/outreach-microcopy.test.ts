@@ -28,4 +28,12 @@ test("outreach UI omits implementation narration and obvious interaction mechani
   }
 
   assert.match(copy, /Solid shows contacted; outlined shows remaining\./);
+  assert.match(
+    sources[3],
+    /Daily caps, one person per company per day, and both safety switches still apply\./,
+  );
+  assert.match(
+    sources[2],
+    /YC companies must be selected manually; enrollment requires a verified email\./,
+  );
 });
