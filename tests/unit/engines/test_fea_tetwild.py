@@ -656,6 +656,7 @@ def test_a_sliver_the_peel_cannot_take_off_is_set_aside_and_named_and_the_rung_s
     pytest.importorskip("meshio")
     from tests import fea_fixtures as fx
 
+    from meshpipeline.contracts import decision_record as dr
     from meshpipeline.engines.verdict_limits import fea_limits
 
     exe = tmp_path / "bin" / "fTetWild"
@@ -670,9 +671,31 @@ def test_a_sliver_the_peel_cannot_take_off_is_set_aside_and_named_and_the_rung_s
     q = json.loads((ws / "quality.json").read_text())
     assert q["engine_rung"] == "ftetwild" and not q["fatal"] and q["fea_inverted"] == 0
     slivers = q["fea_set_aside"]["ftetwild_slivers"]
-    assert slivers["elements"] == 1 and slivers["rule"] == "LAD-fea-12" and len(slivers["places_mm"]) == 1
+    assert slivers["elements"] == 1 and slivers["rule"] == "LAD-fea-12" and len(slivers["slivers"]) == 1
+    one = slivers["slivers"][0]
+    assert one["part"] == "whole" and one["face"].startswith("Face_") and 0 < one["sicn"] < TW.SLIVER_SICN
     assert "tags" not in slivers and "set_aside" not in q["fea"]["ftetwild"]
     assert q["fea_set_aside"]["elements"] >= 1 and q["fea_set_aside"]["min_sicn"] < TW.SLIVER_SICN
     assert q["min_sicn"] > 0                      # the floor, held without it
     rows = [r for r in fea_limits(q) if r["key"] == "fea_ftetwild_slivers"]
-    assert len(rows) == 1 and rows[0]["measured"] and "not resolved" in rows[0]["label"]
+    assert len(rows) == 1 and "not resolved" in rows[0]["label"]
+    assert rows[0]["measured"] == [f"whole {one['face']}, SICN {one['sicn']:.2g}, at "
+                                   f"({', '.join(f'{float(v):g}' for v in one['at_mm'])}) mm"]
+    # never a clean pass: the verdict over these limits is "with concerns" (VER-2)
+    assert dr.verdict({"valid": True, "gating": [], "limits": rows}) == (dr.OUTCOME_CONCERNS, dr.VER_CONCERNS)
+    assert dr.verdict({"valid": True, "gating": [], "limits": fea_limits(q)})[0] == dr.OUTCOME_CONCERNS
+
+
+def test_slivers_set_aside_are_never_a_clean_pass_even_when_unnamed():
+    """LAD-fea-12: whatever the record holds, set-aside slivers always miss their row - "with concerns", never
+    "clean" - and a record without the names still says how many."""
+    from meshpipeline.contracts import decision_record as dr
+    from meshpipeline.engines.verdict_limits import fea_limits
+
+    q = {"fea": {"plan": True}, "element_order": 2,
+         "fea_set_aside": {"elements": 2, "ftetwild_slivers": {"rule": "LAD-fea-12", "elements": 2, "slivers": []}}}
+    rows = [r for r in fea_limits(q) if r["key"] == "fea_ftetwild_slivers"]
+    assert len(rows) == 1 and rows[0]["measured"] == ["(unnamed)", "(unnamed)"]
+    assert dr.verdict({"valid": True, "gating": [], "limits": rows})[0] == dr.OUTCOME_CONCERNS
+    assert not [r for r in fea_limits({"fea": {"plan": True}, "fea_set_aside": {"elements": 0}})
+                if r["key"] == "fea_ftetwild_slivers"]

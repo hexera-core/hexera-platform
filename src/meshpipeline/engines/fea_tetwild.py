@@ -854,7 +854,7 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
     worst_dev = 0.0
     eps_max = 0.0
     aside_tags: list[int] = []
-    aside_places: list[list[float]] = []
+    aside_slivers: list[dict] = []
     moved_all: list[str] = []
     lost_all: list[str] = []
     for m, r in zip(meta, results, strict=True):
@@ -905,14 +905,17 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
         q = np.asarray(gmsh.model.mesh.getElementQualities(etags.tolist(), "minSICN"), dtype=float)
         thin = np.where(q < SLIVER_SICN)[0]
         if len(thin):
-            outside = {tuple(sorted(f)) for f in tris.tolist()}
-            onface = [int(i) for i in thin
-                      if any(tuple(sorted(tets[i, list(c)].tolist())) in outside for c in TET_FACES)]
+            outside = {tuple(sorted(f)): j for j, f in enumerate(tris.tolist())}
+            onface = []
+            for i in thin.tolist():
+                out_faces = [outside[k] for c in TET_FACES if (k := tuple(sorted(tets[i, list(c)].tolist()))) in outside]
+                if out_faces:
+                    onface.append(i)
+                    # each one named: its part, the CAD face its outside face lies on, its SICN and where
+                    aside_slivers.append({"part": m["key"], "face": names[int(tri_face[out_faces[0]])],
+                                          "sicn": float(f"{q[i]:.3g}"),
+                                          "at_mm": np.round(r["xyz"][tets[i]].mean(axis=0) * 1000.0, 3).tolist()})
             aside_tags += [int(etags[i]) for i in onface]
-            for i in onface:
-                at = np.round(r["xyz"][tets[i]].mean(axis=0) * 1000.0, 2).tolist()
-                if not any(max(abs(a - b) for a, b in zip(at, o, strict=True)) < 1.0 for o in aside_places):
-                    aside_places.append(at)
             if onface:
                 print(f"[FTETWILD] {m['key']}: {len(onface)} sliver(s) on the surface under SICN {SLIVER_SICN:g} set aside "
                       f"({FLAT_RULE})", file=sys.stderr)
@@ -943,7 +946,7 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
             "moved_faces": moved_all, "lost_faces": lost_all,
             "tied": bool(settings.get("tied")),
             # LAD-fea-12: the slivers set aside (the adapter holds the floor without them, the delivery names them)
-            **({"set_aside": {"rule": FLAT_RULE, "elements": len(aside_tags), "places_mm": aside_places,
+            **({"set_aside": {"rule": FLAT_RULE, "elements": len(aside_tags), "slivers": aside_slivers,
                               "tags": aside_tags}} if aside_tags else {})}
     info["words"] = words(info)
     print(f"{RUNG_LINE} meshed {', '.join(str(p['part']) for p in out_parts)}: "

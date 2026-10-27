@@ -270,12 +270,19 @@ def fea_limits(quality: Mapping) -> list[dict]:
                      "source": "docs/RULES.md PLAN-fea-12 (cad/fea_measure.cad_micro)"})
     slivers = aside.get("ftetwild_slivers")
     if isinstance(slivers, Mapping) and slivers.get("elements"):
-        # LAD-fea-12: the last rung's slivers on the surface, named the way a micro detail is (PLAN-fea-12)
-        places = [f"({', '.join(f'{float(v):g}' for v in p)}) mm" for p in slivers.get("places_mm") or []]
-        rows.append({"key": "fea_ftetwild_slivers", "op": "empty", "limit": [], "measured": places,
-                     "label": (f"{int(slivers['elements'])} near-flat element(s) of the last-resort mesher on the surface, "
-                               "at CAD details far smaller than the mesh, set aside from the quality floor - stress right "
-                               "at them is not resolved; remove or enlarge those details in CAD for a clean mesh"),
+        # LAD-fea-12: the last rung's slivers on the surface, each named - part, face, SICN, place - and NEVER a
+        # clean pass: the row is always missed (one entry per sliver, never empty), so the verdict is "with
+        # concerns" (VER-2). A bad element hidden from the user is worse than a failure (coordinator, 27 Oct)
+        named = [f"{x.get('part')} {x.get('face')}, SICN {float(x.get('sicn') or 0.0):.2g}, at "
+                 f"({', '.join(f'{float(v):g}' for v in x.get('at_mm') or [])}) mm"
+                 for x in slivers.get("slivers") or [] if isinstance(x, Mapping)]
+        named += ["(unnamed)"] * max(0, int(slivers["elements"]) - len(named))
+        rows.append({"key": "fea_ftetwild_slivers", "op": "empty", "limit": [], "measured": named,
+                     "label": (f"{int(slivers['elements'])} near-flat element(s) left by the last-resort mesher "
+                               f"(fTetWild) on the surface, SICN under {5e-5:g}, set aside from the quality floor - "
+                               "a solver accepts them (none is inverted), but stress right at them is not resolved; "
+                               "they sit at CAD details far smaller than the mesh - remove or enlarge those details "
+                               "in CAD for a clean mesh"),
                      "source": "docs/RULES.md LAD-fea-12 (engines/fea_tetwild.mesh_into)"})
     return rows
 
