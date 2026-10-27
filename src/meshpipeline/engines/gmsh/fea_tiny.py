@@ -21,7 +21,7 @@ Here, at mesh time and on the model only (the CAD file is never changed):
   edge with the neighbour across the crease it shares most with (the corner moves by less than its
   width; the crease the sliver drew as two edges is one). Never into another part (both faces bound the
   same solids), never into or out of a face of a joint between parts (bonded, tied or contact), never a
-  face a stress hot spot names (a hole, fillet, notch or capped corner), and on the CFD path a face that
+  face a stress hot spot names (a hole, fillet or notch; a capped corner is not one), and on the CFD path a face that
   is its group's only face never goes into another group (a neighbour of its own group comes first).
 * The curves left between the same two (merged) faces either side of a vertex that now joins only
   them are meshed as one compound curve when the vertex was a corner of a merged face (and the curves
@@ -50,8 +50,10 @@ TINY_SHARE = 0.005
 CREASE_DEG = 30.0
 #: the rule
 RULE = "MESH-9"
-#: zone kinds that name a stress feature: their faces are never merged away
-_HOT = ("hole", "fillet", "notch", "corner")
+#: zone kinds that name a stress hot spot (PLAN-fea-4: a hole, fillet or notch, where the peak stress is
+#: resolved): their faces are never merged away. A capped corner (PLAN-fea-5) is not one - its stress never
+#: settles under refinement, it is capped at a quarter of its wall, and a sliver drawn at it is the corner
+_HOT = ("hole", "fillet", "notch")
 
 
 def _length(gmsh, c: int) -> float:

@@ -190,9 +190,9 @@ def test_a_sliver_between_two_creases_collapses_onto_its_edge_as_ansys_defeature
     assert abs(mesh[n] - (cad[n] + cad[f])) <= cad[f]
 
 
-def test_a_sliver_a_capped_corner_names_stays_as_drawn(tmp_path):
-    """micro_step's 0.003 mm ledge makes a sharp INSIDE corner with the wall above it - a hot spot the plan
-    caps (PLAN-fea-5) - so it is never collapsed: meshed exactly as before."""
+def test_a_sliver_at_a_capped_corner_collapses_too(tmp_path):
+    """micro_step's 0.003 mm ledge makes a sharp INSIDE corner with the wall above it, a corner the plan caps
+    (PLAN-fea-5) - not a stress hot spot (its stress never settles): it collapses like any sliver."""
     ws = _stage(fx.micro_step(), tmp_path / "step")
     off = _copy(ws, tmp_path / "off")
     assert A.mesh(ws) == 0
@@ -202,7 +202,9 @@ def test_a_sliver_a_capped_corner_names_stays_as_drawn(tmp_path):
         assert A.mesh(off) == 0
     finally:
         T.TINY_SHARE = keep
-    assert "fea_tiny" not in _q(ws) and _sha(ws / "mesh.inp") == _sha(off / "mesh.inp")
+    q, q_off = _q(ws), _q(off)
+    assert [m["collapsed"] for m in q["fea_tiny"]["merged"]] == [True]
+    assert q["fea_set_aside"]["elements"] == 0 < q_off["fea_set_aside"]["elements"] and q["min_sicn"] > q_off["min_sicn"]
 
 
 def test_a_curved_strip_is_merged_and_the_quadratic_mesh_still_lies_on_the_cylinder(tmp_path):
@@ -265,7 +267,7 @@ def test_never_into_a_joint_a_hot_spot_or_another_cfd_group(tmp_path):
         others = [x for c in T._curves(gmsh, s) for x in T._faces_of(gmsh, c) if x != s]
         assert s not in T.plan_merges(gmsh, _plan(), protected={s})["faces"]
         assert s not in T.plan_merges(gmsh, _plan(), protected=set(others))["faces"]
-        # a face a stress hot spot names stays as drawn
+        # a face a stress hot spot names stays as drawn (a hole here)
         hot = _plan(zones=[{"id": "H1", "kind": "hole", "faces": [f"Face_{s}"], "size_m": 3e-3, "reach_m": 0.0}])
         assert s not in T.plan_merges(gmsh, hot)["faces"]
         # the CFD path's groups: never into a face of another group (an inlet into the wall)
