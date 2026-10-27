@@ -159,7 +159,11 @@ WAIT_STALL_S = 900 + 300
 
 
 def _poll_gcs_json(bucket, key: str, deadline_s: float, progress_key: str | None = None,
-                   stall_s: float = WAIT_STALL_S) -> dict | None:
+                   stall_s: float = WAIT_STALL_S, start_s: float | None = None,
+                   heard: dict | None = None) -> dict | None:
+    """The result document, or None once the wait is over (see WAIT_STALL_S). `start_s`: a remote
+    NEVER HEARD FROM this long after it was started never started meshing (its machine did not boot,
+    or could not pull its image): the wait ends there, and `heard["never"]` says why (NEVER_HEARD)."""
     blob = bucket.blob(key)
     start = time.time()
     seen: dict = {}
@@ -169,6 +173,10 @@ def _poll_gcs_json(bucket, key: str, deadline_s: float, progress_key: str | None
             return json.loads(blob.download_as_bytes())
         if progress_key and _relay_progress(bucket, progress_key, seen):
             heard_at = time.time()
+        if start_s is not None and heard_at is None and time.time() - start >= start_s:
+            if heard is not None:
+                heard["never"] = True
+            return None
         # Asked between polls, AFTER the result check: a result that has already landed is
         # collected, never thrown away over a cancel that came a moment too late.
         reason = abandonment_reason()
@@ -176,7 +184,12 @@ def _poll_gcs_json(bucket, key: str, deadline_s: float, progress_key: str | None
             raise _Abandoned(reason)
         now = time.time()
         silent = heard_at is None or now - heard_at >= stall_s
-        if silent and (now - start >= deadline_s or (heard_at is not None and seen.get("pulses"))):
+        if silent and heard_at is not None and seen.get("pulses"):
+            # heard, pulsing, then nothing for stall_s: the remote is GONE (its machine went away)
+            if heard is not None:
+                heard["gone"] = True
+            return None
+        if silent and now - start >= deadline_s:
             return None
         time.sleep(10)
 
@@ -324,6 +337,10 @@ def _fail(engine: str, detail: str) -> dict:
 
 
 RESULT_TIMEOUT_MARKER = "[CLOUD_RUN_TIMEOUT]"
+#: What a run started but never heard from says, inside its RUN_NOT_STARTED_TAG line (NEVER_HEARD_*_S).
+NEVER_HEARD_MARKER = "never-heard:"
+#: ...and a run heard from, then silent past WAIT_STALL_S (its machine went away).
+GONE_MARKER = "gone:"
 
 
 def _timed_out(engine: str, deadline_s: float, operation) -> dict:
@@ -498,6 +515,14 @@ def worker_room(bucket, out_key: str, result: dict | None, where) -> dict | None
 
 #: A VM boots and pulls the mesh image before it meshes: the wait for its result is this much longer.
 VM_START_S = 1800
+#: NEVER HEARD FROM (RUN-4): a run this worker started whose runner has not written its beacon this long
+#: after it was started never started meshing - the VM did not boot, the image could not be pulled, the
+#: job's execution never ran. Ours, never the mesh's size: the run is stopped and told as not started
+#: (contracts/mesh_execution.RUN_NOT_STARTED_TAG), not waited on to its deadline - a VM's is past 20
+#: hours - and then told as a mesh too big for its time. The runner writes its beacon once the workspace
+#: is down (runtime/mesh_runner), minutes after it starts.
+NEVER_HEARD_VM_S = VM_START_S
+NEVER_HEARD_JOB_S = 1800
 
 #: THE PLATFORM IS MID-UPDATE (the mesh job speaks another exchange contract than this worker, 25 Oct):
 #: the run is submitted again after this wait, for up to UPDATING_TOTAL_S - then it is given up as
@@ -608,8 +633,12 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
             progress_clock.touch()
 
         from meshpipeline.artifact_keys import progress_key_beside
+        # a run THIS worker started is held to the never-heard window; one a previous worker started
+        # (collected here) may have been heard by it, and is waited for as before
+        start_s = (NEVER_HEARD_VM_S if on_vm else NEVER_HEARD_JOB_S) if submit else None
+        heard: dict = {}
         result = _poll_gcs_json(bucket, res_key, deadline_s=wait_s,
-                                progress_key=progress_key_beside(out_key))
+                                progress_key=progress_key_beside(out_key), start_s=start_s, heard=heard)
         # THE MESH JOB IS ON ANOTHER EXCHANGE CONTRACT (the platform is mid-update): nothing was
         # meshed. Its answer is cleared and the same input submitted again until the two agree.
         waited = 0
@@ -634,10 +663,23 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
             operation = _start(on_vm, bucket_name, in_key, out_key, engine=engine, timeout=timeout,
                                operation_key=operation_key, machine=machine)
             result = _poll_gcs_json(bucket, res_key, deadline_s=wait_s,
-                                    progress_key=progress_key_beside(out_key))
+                                    progress_key=progress_key_beside(out_key), start_s=start_s, heard=heard)
         if _platform_updating(result):
             # collecting a previous worker's run that the mesh job refused: nothing to collect
             return _still_updating(engine, result or {})
+        if result is None and heard.get("never"):
+            # NEVER HEARD FROM: the run was accepted but its runner never started (NEVER_HEARD_*_S) - ours
+            where = f"a {machine.get('machine')} VM" if on_vm and machine else "the mesh job"
+            _stop(operation, engine=engine, why="its runner never reported")
+            return _fail(engine, f"{NEVER_HEARD_MARKER} {where} was started but its mesher never reported in "
+                                 f"{int(start_s or 0) // 60} minutes (it did not boot, or could not pull its image)")
+        if result is None and heard.get("gone"):
+            # GONE: it was meshing, pulsing every minute, then fell silent - its machine went away under
+            # it (a VM preempted or deleted, a task killed). Ours, never the mesh's size
+            where = f"a {machine.get('machine')} VM" if on_vm and machine else "the mesh job"
+            _stop(operation, engine=engine, why="it stopped answering")
+            return _fail(engine, f"{GONE_MARKER} {where} stopped answering part way through the mesh "
+                                 f"(no word for {WAIT_STALL_S // 60} minutes)")
         if result is None:
             # Reached only once the run is dispatched (a refused or ambiguous submission raised
             # above), so this is a run out of time, never one that did not start.

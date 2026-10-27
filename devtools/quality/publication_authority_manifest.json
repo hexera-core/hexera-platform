@@ -286,6 +286,32 @@
   "roots": []
  },
  {
+  "context": "adapters/mesh_execution/access_check.py::run_at_start::error#1|NotAPublisher|not-a-publisher|",
+  "path": "adapters/mesh_execution/access_check.py",
+  "qualname": "run_at_start",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "adapters/mesh_execution/access_check.py::run_at_start::error#2|NotAPublisher|not-a-publisher|",
+  "path": "adapters/mesh_execution/access_check.py",
+  "qualname": "run_at_start",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "adapters/mesh_execution/cloud_run_client.py::_fail::error#1|NotAPublisher|not-a-publisher|",
   "path": "adapters/mesh_execution/cloud_run_client.py",
   "qualname": "_fail",
@@ -3633,6 +3659,19 @@
   "method": "search",
   "ordinal": 2,
   "receiver": "_PHRASE_RE[key]",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/fea_driver.py::drive::error#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/fea_driver.py",
+  "qualname": "drive",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
