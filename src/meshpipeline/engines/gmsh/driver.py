@@ -933,12 +933,19 @@ def _bound_groups(gmsh, surfaces, ports, *, cad: bool = False) -> list[dict]:
     return groups
 
 
-def _mesh_cad_at_mm(gmsh, geom: Path, h: float, cb, k: float | None = None) -> float:
+#: MESH-9's retry: the options a CFD CAD solid's first try set, set again in the fresh session
+FRESH_OPTIONS = ("General.Terminal", "General.NumThreads", "Mesh.RandomSeed", "Geometry.OCCBoundsUseStl",
+                 "Mesh.MeshSizeFromCurvature", "Mesh.Algorithm", "Mesh.Algorithm3D", "Mesh.Optimize")
+
+
+def _mesh_cad_at_mm(gmsh, geom: Path, h: float, cb, k: float | None = None, fresh: bool | None = None) -> float:
     """MESH-4 for a CAD solid the CFD path could not mesh in metres: the same file read again at the
     CAD's own millimetre scale (the same entities, so the same tags and physical groups), sized the
     same (the clamp size and the passage field, both times the scale) and meshed. Returns the scale;
     the caller brings the mesh back to metres after curving it. `k` = 1 (MESH-9's retry): read again
-    and meshed in metres as any solid is, with no compound."""
+    and meshed in metres as any solid is, with no compound - in a fresh gmsh session (a fill that failed
+    leaves gmsh's meshing state behind it: the aerosol suction device's same solid, which meshes in a fresh
+    session, came back with its volume empty), the options the first try set set again."""
     from meshpipeline.engines.gmsh.fea_adapter import MM_PER_M, drop_repeated_triangles, micro_curves_one_segment
 
     k = MM_PER_M if k is None else float(k)
@@ -946,6 +953,12 @@ def _mesh_cad_at_mm(gmsh, geom: Path, h: float, cb, k: float | None = None) -> f
                gmsh.model.getPhysicalName(dim, tag)) for dim, tag in gmsh.model.getPhysicalGroups()]
     if cb is not None:
         gmsh.model.mesh.removeSizeCallback()
+    if (k == 1.0) if fresh is None else fresh:
+        keep = {name: gmsh.option.getNumber(name) for name in FRESH_OPTIONS}
+        gmsh.finalize()
+        gmsh.initialize(interruptible=False)
+        for name, value in keep.items():
+            gmsh.option.setNumber(name, value)
     gmsh.model.remove()
     gmsh.model.add("fea")
     gmsh.option.setNumber("Geometry.OCCScaling", k)
@@ -1256,7 +1269,7 @@ def main(workspace: str) -> int:
                 except Exception as again:  # noqa: BLE001 - MESH-4 below
                     print(f"[GMSH] the solid could not be meshed at the metre scale ({str(again)[:200]}); "
                           "meshing it again at the CAD's own millimetre scale (MESH-4)", file=sys.stderr)
-                    _scale = _mesh_cad_at_mm(gmsh, geom, h, _cb)
+                    _scale = _mesh_cad_at_mm(gmsh, geom, h, _cb, fresh=True)
             elif _cad:
                 # MESH-4 (as the FEA path): a CAD solid gmsh could not mesh in metres - OpenCASCADE's
                 # fixed tolerances swallow nanometre edges where one feature grazes another - is

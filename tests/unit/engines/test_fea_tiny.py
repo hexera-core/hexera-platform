@@ -389,3 +389,32 @@ def test_the_result_screen_says_which_face_went_into_which(strip_meshed):
     gone = {m['face'][0] for m in r["merged_faces"]}
     listed = {f['name'] for f in r['faces']}
     assert not gone & listed and listed | gone == {f['name'] for f in r_off['faces']}
+
+
+def test_a_cfd_fill_the_merges_break_is_meshed_again_as_drawn_in_a_fresh_session(strip, tmp_path, monkeypatch, capsys):
+    """The CFD gmsh path: a fill that fails with the merges set is meshed again with every face as drawn, in
+    a fresh gmsh session (a failed fill leaves gmsh's state behind it) - the mesh the solid has without MESH-9."""
+    from meshpipeline.engines.gmsh import driver as D
+
+    off = _cfd_ws(strip, tmp_path / "off")
+    keep = T.TINY_SHARE
+    T.TINY_SHARE = 0.0
+    try:
+        assert D.main(str(off)) == 0
+    finally:
+        T.TINY_SHARE = keep
+    ws = _cfd_ws(strip, tmp_path / "ws")
+    real = gmsh.model.mesh.generate
+    calls: list[int] = []
+
+    def generate(dim=3):
+        calls.append(dim)
+        if dim == 3 and calls.count(3) == 1:
+            raise Exception("PLC Error:  Two facets intersect at point")
+        return real(dim)
+
+    monkeypatch.setattr(gmsh.model.mesh, "generate", staticmethod(generate))
+    assert D.main(str(ws)) == 0
+    assert "meshing it again with every face as drawn" in capsys.readouterr().err
+    q, q_off = _q(ws), _q(off)
+    assert "tiny_faces" not in q and q["cells"] == q_off["cells"] and q["min_sicn"] == q_off["min_sicn"]
