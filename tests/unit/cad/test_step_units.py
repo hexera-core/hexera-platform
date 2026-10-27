@@ -80,12 +80,16 @@ def test_an_entity_that_does_not_parse_is_reported_never_read_as_metres(tmp_path
     assert not ev.resolved and "malformed" in ev.detail
 
 
-def test_a_unit_we_do_not_carry_is_asked_not_rounded(tmp_path):
+def test_a_well_formed_unit_we_do_not_carry_is_the_files_own_never_rounded_or_no_unit(tmp_path):
+    """A FOOT is not rounded to a unit we carry: OpenCASCADE converts it by the file's own exact factor as it
+    reads, so the file is read as the millimetres that conversion gives - declared, not "no unit" (FEA hunt,
+    27 Oct: an AutoCAD export in feet was told it stated no unit and staged at 1/305 of its size)."""
     feet = ("#41=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT($,.METRE.));\n"
             "#44=LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(0.3048),#41);\n"
             "#6=(CONVERSION_BASED_UNIT('FOOT',#44)LENGTH_UNIT()NAMED_UNIT(#45));\n")
     ev = read_declared_unit(_step(tmp_path, feet + _context("#6")))
-    assert not ev.resolved and "unsupported length unit 'foot'" in ev.detail
+    assert ev.resolved and ev.unit is LengthUnit.millimetre
+    assert "declared in the file as foot (0.3048 m)" in ev.detail
     assert unit_of_scale(0.3048) is None and unit_of_scale(0.0254) is LengthUnit.inch
 
 
