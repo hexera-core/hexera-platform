@@ -469,6 +469,8 @@ STATE_FIELDS: dict[str, str] = {
                              "joined there (PLAN-fea-18), as confirmed on the stage; True unless switched off",
     "flow_topology":         "internal/external flow regime DERIVED from the purpose - a neutral "
                              "fact read by the executor/runners, NOT an engine-native param",
+    "leak_closing":          "the leak size the user confirmed on the stage (INS-8): every leak of the "
+                             "surface up to it is closed for the mesh by each route's staging; None = as drawn",
     "requested_extents":     "typed per-direction far-field multiples the user stated (contract)",
     "reference_length_m":    "the metre ruler the extents multiply, pinned at approval (contract)",
     "requirements_strict":   "whether near-misses block (true) or deliver with the miss stated",

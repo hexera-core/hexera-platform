@@ -136,6 +136,18 @@ def scout_mesh(path: Path, *, scale_to_m: float, mapped: bool = True) -> ScoutRe
     # and proposed as not an opening.
     holes = find_holes(mesh=mesh, mapped=mapped)
     imap = inside_map(mesh) if mapped else None
+    # THE LEAKS (INS-8): a surface the map as drawn finds no way through, and that is open (an
+    # edge on one face, a second piece), is read again with its leaks closed - the first closing
+    # that finds a passage with two mouths is the reading the openings come from, and every leak
+    # it closed is listed for the stage to propose closing; the map as drawn stands otherwise
+    leaky = None
+    if imap is not None:
+        from meshpipeline.cad.inside_space import read_leaks
+        from meshpipeline.cad.open_ends import map_holes, shape_holes
+        leaky = read_leaks(mesh, plain=imap)
+        if leaky is not None:
+            holes = map_holes(mesh, leaky, shape_holes(mesh))
+            imap = leaky
     for h in holes:
         candidates.append(_opening(-1, "rim" if h.kind == "rim" else "ring", h.centroid, h.normal, h.area, h.wh,
                                    bbox_min, bbox_max, diag))
@@ -342,6 +354,12 @@ def scout_mesh(path: Path, *, scale_to_m: float, mapped: bool = True) -> ScoutRe
         # and said, never healed (the CAD repair stage's work)
         "surface": surface_health(mesh, holes, edges=edges, counts=counts, pieces=n_components),
     }
+    if leaky is not None:
+        # THE LEAKS THE OPENINGS ASSUME CLOSED (INS-8): each with its width and place, and the size
+        # the stage proposes closing them up to - the user's to switch off or change
+        from meshpipeline.cad.inside_space import leak_facts
+        result.extra["leaks"] = leak_facts(leaky)  # type: ignore[attr-defined]
+        result.extra["inside"]["leaks_closed"] = True  # type: ignore[attr-defined]
     return result
 
 

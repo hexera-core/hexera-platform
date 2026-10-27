@@ -309,13 +309,14 @@ VET_MAX_TRIANGLES = 400_000
 VET_MAX_OPENINGS = 32
 
 
-def stranded_openings(surface_path: Path, patches: list[dict]) -> dict[str, str]:
+def stranded_openings(surface_path: Path, patches: list[dict], *, close_leaks: float | None = None) -> dict[str, str]:
     """THE CHECK'S PROPOSAL HELD TO THE MESHER'S STAGING: the declared openings (intake patches,
     the shape geometry_confirmation.patches_from makes) that would open into nothing a mesher can
     fill - a bolt hole through a flange, whose lid stands on the outer skin joined to no wall of
     the passage; a dimple closed into a pocket. {name: why}; {} when the skin is too large to stage
     quickly, when the staging refuses (its own words reach the user at meshing), or on any error:
-    the vetting can only take a wrong opening away, never add a failure."""
+    the vetting can only take a wrong opening away, never add a failure. `close_leaks` (metres): the
+    leak size the check proposes closing (INS-8), staged as the run would stage it."""
     import tempfile
 
     from meshpipeline.cad.internal_surface import InternalSurfaceError, stage_triangles, write_staged
@@ -328,7 +329,8 @@ def stranded_openings(surface_path: Path, patches: list[dict]) -> dict[str, str]
         p = Path(surface_path)
         if (p.stat().st_size - 84) // 50 > VET_MAX_TRIANGLES:
             return {}
-        staged = stage_triangles(read_triangles(p), intake_patches=patches, surface_path=p, leak_check=False)
+        staged = stage_triangles(read_triangles(p), intake_patches=patches, surface_path=p, leak_check=False,
+                                 close_leaks=close_leaks)
         with tempfile.TemporaryDirectory(prefix="vet_") as tmp:
             rec = write_staged(staged, Path(tmp))
             plan = plan_passages(read_passages(rec["stls"], rec.get("wall_name") or "wall"))
