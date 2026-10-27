@@ -1,4 +1,4 @@
-# Responsibility: Verify that every zone of an FEA assembly plan has its own id, so a lever, a check row or an AI choice that names a zone names one part's zone (PLAN-fea-17, rulebook 32).
+# Responsibility: Verify that every zone of an FEA assembly plan has its own id, so a lever, a check row or an AI choice that names a zone names one part's zone (PLAN-fea-17, rulebook NEXT).
 # Boundaries: pure over hand-written measurement records; no geometry, no engine.
 """ONE ID, ONE ZONE (FEA hunt, 27 Oct).
 
