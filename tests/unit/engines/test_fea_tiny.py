@@ -1,4 +1,4 @@
-# Responsibility: Verify MESH-8: a CAD face far narrower (or an edge far shorter) than the planned element size there is meshed as part of its smooth neighbour - the mesh is better for it, the neighbour's named face covers both areas, the record says which face went into which - and never across a crease, a joint, a part, a hot spot or a CFD group; a part with nothing tiny meshes to the same bytes; a build the merges break is built again as drawn; the CFD gmsh path does the same.
+# Responsibility: Verify MESH-9: a CAD face far narrower (or an edge far shorter) than the planned element size there is meshed as part of its smooth neighbour - the mesh is better for it, the neighbour's named face covers both areas, the record says which face went into which - and never across a crease, a joint, a part, a hot spot or a CFD group; a part with nothing tiny meshes to the same bytes; a build the merges break is built again as drawn; the CFD gmsh path does the same.
 # Boundaries: small parts built in the test (tests/fea_fixtures.py), planned and meshed in-process; the corpus counts are the lab's (~/tinyfaces_lab).
 from __future__ import annotations
 
@@ -100,7 +100,7 @@ def strip(tmp_path_factory) -> Path:
 
 @pytest.fixture(scope="module")
 def strip_meshed(strip, tmp_path_factory) -> tuple[Path, Path]:
-    """The strip block meshed with MESH-8 and, for comparison, with every face as drawn."""
+    """The strip block meshed with MESH-9 and, for comparison, with every face as drawn."""
     on = _copy(strip, tmp_path_factory.mktemp("tiny_on") / "ws")
     assert A.mesh(on) == 0
     off = _copy(strip, tmp_path_factory.mktemp("tiny_off") / "ws")
@@ -116,7 +116,7 @@ def strip_meshed(strip, tmp_path_factory) -> tuple[Path, Path]:
 def test_each_strip_is_meshed_as_part_of_the_face_beside_it_and_said(strip_meshed):
     on, off = strip_meshed
     tiny = _q(on)["fea_tiny"]
-    assert tiny["rule"] == "MESH-8" and tiny["share"] == T.TINY_SHARE == 0.005
+    assert tiny["rule"] == "MESH-9" and tiny["share"] == T.TINY_SHARE == 0.005
     assert len(tiny["merged"]) == 4                  # the strip on the top, the bottom and both ends
     for m in tiny["merged"]:
         assert m["width_mm"] == pytest.approx(0.005, rel=1e-2) and m["share"] < T.TINY_SHARE
@@ -165,9 +165,34 @@ def test_a_part_with_nothing_tiny_meshes_to_the_same_bytes(tmp_path):
         assert _sha(ws / name) == _sha(off / name)
 
 
-def test_a_sliver_between_two_creases_is_left_as_drawn(tmp_path):
-    """micro_step's 0.003 mm ledge meets both faces beside it at a right angle: no smooth neighbour, so it
-    stays a micro detail (PLAN-fea-12), meshed exactly as before."""
+def test_a_sliver_between_two_creases_collapses_onto_its_edge_as_ansys_defeatures(tmp_path):
+    """A 0.003 mm chamfer meets both faces beside it at 45 degrees: no smooth neighbour, so - as Ansys's mesh
+    defeaturing does - it collapses onto its edge with one of them. Its elements are no longer set aside,
+    its area is in that neighbour's named face, and the record says it collapsed, and across what crease."""
+    ws = _stage(fx.micro_chamfer(), tmp_path / "chamfer")
+    off = _copy(ws, tmp_path / "off")
+    assert A.mesh(ws) == 0
+    keep = T.TINY_SHARE
+    T.TINY_SHARE = 0.0
+    try:
+        assert A.mesh(off) == 0
+    finally:
+        T.TINY_SHARE = keep
+    q, q_off = _q(ws), _q(off)
+    merged = q["fea_tiny"]["merged"]
+    assert len(merged) == 1 and merged[0]["collapsed"] and merged[0]["crease_deg"] == pytest.approx(45.0, abs=1.0)
+    assert q_off["fea_set_aside"]["micro_elements"] > 0 and q["fea_set_aside"]["elements"] == 0
+    assert q["min_sicn"] > q_off["min_sicn"] and not q["fatal"]
+    cad, mesh, use = _areas(ws)
+    f, n = (int(merged[0][k][0].rsplit("_", 1)[-1]) for k in ("face", "into"))
+    assert set(use) == {2} and mesh[f] == pytest.approx(0.0, abs=1e-9)
+    # folded onto the edge: the neighbour covers both areas, to within the sliver's own (the corner is cut)
+    assert abs(mesh[n] - (cad[n] + cad[f])) <= cad[f]
+
+
+def test_a_sliver_a_capped_corner_names_stays_as_drawn(tmp_path):
+    """micro_step's 0.003 mm ledge makes a sharp INSIDE corner with the wall above it - a hot spot the plan
+    caps (PLAN-fea-5) - so it is never collapsed: meshed exactly as before."""
     ws = _stage(fx.micro_step(), tmp_path / "step")
     off = _copy(ws, tmp_path / "off")
     assert A.mesh(ws) == 0
@@ -247,6 +272,11 @@ def test_never_into_a_joint_a_hot_spot_or_another_cfd_group(tmp_path):
         groups = {int(t): "wall" for _d, t in gmsh.model.getEntities(2)}
         groups[s] = "inlet"
         assert s not in T.plan_merges(gmsh, _plan(), groups=groups)["faces"]
+        # ...but a face whose group has others may fold into the wall beside it (its area joins the wall)
+        far = next(int(t) for _d, t in gmsh.model.getEntities(2)
+                   if int(t) != s and int(t) not in T._faces_near(gmsh, s))
+        groups[far] = "inlet"
+        assert s in T.plan_merges(gmsh, _plan(), groups=groups)["faces"]
         assert n in free["faces"].values()
     finally:
         gmsh.finalize()
@@ -254,7 +284,7 @@ def test_never_into_a_joint_a_hot_spot_or_another_cfd_group(tmp_path):
 
 def test_never_into_another_part(tmp_path):
     """Two blocks side by side (a bonded pair), a strip on the second's top beside the first: it may only
-    go into its own block's top - with that protected, it stays as drawn."""
+    go into a face of its own block, never into the block beside it."""
     gmsh.initialize()
     try:
         gmsh.option.setNumber("General.Terminal", 0)
@@ -270,7 +300,9 @@ def test_never_into_another_part(tmp_path):
         vols = T._volumes_of(gmsh, s)
         m = T.plan_merges(gmsh, _plan())
         assert T._volumes_of(gmsh, m["faces"][s]) == vols
-        assert s not in T.plan_merges(gmsh, _plan(), protected={m["faces"][s]})["faces"]
+        # with its own block's top a joint face, it may only fold onto another face of its own block
+        other = T.plan_merges(gmsh, _plan(), protected={m["faces"][s]})["faces"]
+        assert s not in other or T._volumes_of(gmsh, other[s]) == vols
     finally:
         gmsh.finalize()
 
@@ -294,7 +326,7 @@ def test_the_share_is_of_the_local_size_never_a_fixed_length(tmp_path):
 def test_a_build_the_merges_break_is_built_again_as_drawn(strip, strip_meshed, tmp_path, monkeypatch, capsys):
     _on, off = strip_meshed
     """A surface stage that fails on a face a merge meshes: the same pass builds again with every face as
-    drawn - the mesh the part had before MESH-8, to the byte."""
+    drawn - the mesh the part had before MESH-9, to the byte."""
     ws = _copy(strip, tmp_path / "ws")
     real_surface, real_apply = A.surface_mesh, T.apply
     merged: list[dict] = []

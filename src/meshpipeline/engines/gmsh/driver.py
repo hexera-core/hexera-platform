@@ -937,7 +937,7 @@ def _mesh_cad_at_mm(gmsh, geom: Path, h: float, cb, k: float | None = None) -> f
     """MESH-4 for a CAD solid the CFD path could not mesh in metres: the same file read again at the
     CAD's own millimetre scale (the same entities, so the same tags and physical groups), sized the
     same (the clamp size and the passage field, both times the scale) and meshed. Returns the scale;
-    the caller brings the mesh back to metres after curving it. `k` = 1 (MESH-8's retry): read again
+    the caller brings the mesh back to metres after curving it. `k` = 1 (MESH-9's retry): read again
     and meshed in metres as any solid is, with no compound."""
     from meshpipeline.engines.gmsh.fea_adapter import MM_PER_M, drop_repeated_triangles, micro_curves_one_segment
 
@@ -1211,7 +1211,7 @@ def main(workspace: str) -> int:
             gmsh.model.mesh.setSizeCallback(_cb)
         else:
             print(f"[GMSH] passage sizing not applied: {_why}", file=sys.stderr)
-        # MESH-8 (as the FEA path): a CAD face or edge far below the element size this mesh places there
+        # MESH-9 (as the FEA path): a CAD face or edge far below the element size this mesh places there
         # (the clamp, the curvature sizing, the passage field) is meshed as part of its smooth neighbour
         # in the same group; nothing tiny, nothing set
         from meshpipeline.engines.gmsh import fea_tiny as TINY
@@ -1226,7 +1226,7 @@ def main(workspace: str) -> int:
         _cad = not (staged or classified or external)
         try:
             if TINY.active(_tiny):
-                # MESH-8: the compounds' nodes back on their CAD faces and curves before the fill
+                # MESH-9: the compounds' nodes back on their CAD faces and curves before the fill
                 gmsh.model.mesh.generate(2)
                 TINY.settle_nodes(gmsh, _tiny)
             gmsh.model.mesh.generate(3)
@@ -1241,7 +1241,7 @@ def main(workspace: str) -> int:
                     raise RuntimeError(f"{EMPTY_VOLUMES} the 3D fill left volume(s) {_hollow} with no elements")
         except Exception as exc:  # noqa: BLE001 - a staged surface gets one other remesh, below
             if _cad and TINY.active(_tiny):
-                # MESH-8: a merge never costs the solid the mesh it had - meshed again with every face as
+                # MESH-9: a merge never costs the solid the mesh it had - meshed again with every face as
                 # drawn, then (should that fail too) at the CAD's own scale as before
                 print(f"[GMSH] the solid with tiny faces merged could not be meshed ({str(exc)[:200]}); "
                       f"meshing it again with every face as drawn ({TINY.RULE})", file=sys.stderr)
@@ -1311,13 +1311,13 @@ def main(workspace: str) -> int:
             # after it (as it was) it optimised nothing and curved elements shipped as snapped
             gmsh.option.setNumber("Mesh.HighOrderOptimize", 2)  # elastic+optim
             gmsh.model.mesh.setOrder(order)
-            # MESH-8: the midside nodes on a compound's faces and curves onto the CAD by their edges' middles
+            # MESH-9: the midside nodes on a compound's faces and curves onto the CAD by their edges' middles
             TINY.curve_midsides(gmsh, _tiny)
         if _scale != 1.0:
             # MESH-4: curved on the CAD at the scale it was meshed at, then back to metres
             from meshpipeline.engines.gmsh.fea_adapter import to_m
             to_m(gmsh, _scale)
-        # MESH-8: each merged face's elements into its neighbour (the same named group), and the record
+        # MESH-9: each merged face's elements into its neighbour (the same named group), and the record
         _tiny_out: dict = {}
         if TINY.active(_tiny):
             _moved = TINY.fold_in(gmsh, _tiny)
@@ -1406,7 +1406,7 @@ def main(workspace: str) -> int:
             "default_group_used": bool(leftover),
             # what the delivered deck names: Face_k -> CAD face tag, and each group's faces
             "deck": _deck,
-            # MESH-8: the tiny CAD faces meshed as part of a neighbour, and into which face each went
+            # MESH-9: the tiny CAD faces meshed as part of a neighbour, and into which face each went
             **({"tiny_faces": _tiny_out} if _tiny_out else {}),
             **({"surface_source": "input.stl, classified"} if classified else {}),
             **({"surface_source": "fluid_boundary.stl, staged"} if staged else {}),
@@ -1424,7 +1424,7 @@ def _write_deck(gmsh, ws: Path, *, discrete: bool, source: str = "Hexera gmsh en
     them as Face_k, each named surface group (the plan's, and the default group) as an alias,
     and the CAD's own face names where it has them - read from the staging record for a B-rep,
     and the surface's own names (an STL solid per patch) for a discrete surface. `by_tag`: a CAD solid's
-    faces named by their own tags (MESH-8 leaves a merged face with no triangle)."""
+    faces named by their own tags (MESH-9 leaves a merged face with no triangle)."""
     from meshpipeline.engines.gmsh.abaqus_deck import from_gmsh, write_inp
     solid = [int(t) for _d, p in gmsh.model.getPhysicalGroups(3)
              for t in gmsh.model.getEntitiesForPhysicalGroup(3, p)]

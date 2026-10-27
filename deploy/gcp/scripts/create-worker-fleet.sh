@@ -446,6 +446,66 @@ else
   warn "CLOUDRUN_MESH_JOB or GCP_MESH_BUCKET is unset - no mesh executor to let the fleet call"
 fi
 
+# 2c) THE BIG-MACHINE ROUTE (RUN-4). A plan too big for the mesh job runs on a Compute Engine VM that
+#    runs the job's own image AS the job's own service account (adapters/mesh_execution/gce_vm.py). That
+#    route needs three more grants, and no deploy made them: shared dev and dev-pranav refused every
+#    such pass with "403 Forbidden ... jobs/dev-mesh", the fTetWild rung too (job bf863215, 26 Oct, 39
+#    minutes); dev-areen's had been made by hand.
+#      - the fleet READS the job for its image and identity: roles/run.viewer on the job (run.jobs.get;
+#        jobsExecutorWithOverrides above runs it but cannot read it);
+#      - the fleet starts the VM AS the job's identity: roles/iam.serviceAccountUser on that account;
+#      - the job's identity PULLS the image onto the VM (Cloud Run pulls with its own service agent, a
+#        VM with the account it runs as): roles/artifactregistry.reader on the image's repository.
+#    Creating the VM (compute.instances.create, its disk and network) is a PROJECT grant a deploy
+#    identity is not given; the worker checks every one of these at start, as itself, and logs the
+#    command for any it lacks (adapters/mesh_execution/access_check.py). Each grant here is attempted;
+#    a refusal prints the command that makes it.
+if [ -n "${CLOUDRUN_MESH_JOB:-}" ]; then
+  MESH_JOB_SA="$(gc run jobs describe "${CLOUDRUN_MESH_JOB}" --region "${GCP_REGION}" \
+    --format='value(spec.template.spec.template.spec.serviceAccountName)' 2>/dev/null || true)"
+  MESH_JOB_SA="${MESH_JOB_SA:-${MESH_SA_EMAIL:-}}"
+  MESH_JOB_IMAGE="$(gc run jobs describe "${CLOUDRUN_MESH_JOB}" --region "${GCP_REGION}" \
+    --format='value(spec.template.spec.template.spec.containers[0].image)' 2>/dev/null || true)"
+  if gc run jobs add-iam-policy-binding "${CLOUDRUN_MESH_JOB}" --region "${GCP_REGION}" \
+       --member "serviceAccount:${WORKER_SA_EMAIL}" --role roles/run.viewer >/dev/null; then
+    log "job/${CLOUDRUN_MESH_JOB} += roles/run.viewer -> ${WORKER_SA_EMAIL}"
+  else
+    warn "could not let ${WORKER_SA_EMAIL} read ${CLOUDRUN_MESH_JOB}. Every mesh too big for the job
+       fails at its VM until it can; this is the command:
+         gcloud run jobs add-iam-policy-binding ${CLOUDRUN_MESH_JOB} --project ${GCP_PROJECT_ID} \\
+           --region ${GCP_REGION} --member serviceAccount:${WORKER_SA_EMAIL} --role roles/run.viewer"
+  fi
+  if [ -n "${MESH_JOB_SA}" ]; then
+    if gc iam service-accounts add-iam-policy-binding "${MESH_JOB_SA}" \
+         --member "serviceAccount:${WORKER_SA_EMAIL}" --role roles/iam.serviceAccountUser >/dev/null; then
+      log "serviceAccount/${MESH_JOB_SA} += roles/iam.serviceAccountUser -> ${WORKER_SA_EMAIL}"
+    else
+      warn "could not let ${WORKER_SA_EMAIL} start a VM as ${MESH_JOB_SA}; this is the command:
+         gcloud iam service-accounts add-iam-policy-binding ${MESH_JOB_SA} --project ${GCP_PROJECT_ID} \\
+           --member serviceAccount:${WORKER_SA_EMAIL} --role roles/iam.serviceAccountUser"
+    fi
+    # the repository the image lives in: <location>-docker.pkg.dev/<project>/<repository>/<image>
+    if [[ "${MESH_JOB_IMAGE}" =~ ^([a-z0-9-]+)-docker\.pkg\.dev/([^/]+)/([^/]+)/ ]]; then
+      MESH_REPO="projects/${BASH_REMATCH[2]}/locations/${BASH_REMATCH[1]}/repositories/${BASH_REMATCH[3]}"
+      if gc artifacts repositories add-iam-policy-binding "${MESH_REPO}" \
+           --member "serviceAccount:${MESH_JOB_SA}" --role roles/artifactregistry.reader >/dev/null; then
+        log "${MESH_REPO} += roles/artifactregistry.reader -> ${MESH_JOB_SA}"
+      else
+        warn "could not let ${MESH_JOB_SA} pull the mesh image onto its VM (a repository's IAM needs
+       artifactregistry.repositories.setIamPolicy). Until it can, a big mesh's VM boots and never
+       starts the mesher; this is the command:
+         gcloud artifacts repositories add-iam-policy-binding ${BASH_REMATCH[3]} --project ${BASH_REMATCH[2]} \\
+           --location ${BASH_REMATCH[1]} --member serviceAccount:${MESH_JOB_SA} --role roles/artifactregistry.reader"
+      fi
+    else
+      warn "the mesh job's image (${MESH_JOB_IMAGE:-unknown}) is not in Artifact Registry: make sure
+       ${MESH_JOB_SA} may pull it, or a big mesh's VM boots and never starts the mesher"
+    fi
+  else
+    warn "the mesh job's identity is unknown, so the big-machine route's actAs and image grants were not made"
+  fi
+fi
+
 # 3) the metadata the instance reads. Names in the clear, credentials never - the values were
 #    checked above, before anything was created.
 WORKER_METADATA=(

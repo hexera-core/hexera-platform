@@ -316,16 +316,30 @@ def strip_block(w: float = 0.005):
     """A 20 x 20 x 10 mm block drawn as three slices fused without merging their faces (y 0..10, a
     w mm strip, the rest): its top, bottom and two ends each carry a strip face w wide, coplanar with
     the faces beside it, and the strip's ends are edges w long - TINY faces and SHORT edges a mesh of
-    a part this size cannot follow, every one on a smooth join (MESH-8)."""
+    a part this size cannot follow, every one on a smooth join (MESH-9)."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
 
     a, b, c = _box(0, 0, 0, 20, 10, 10), _box(0, 10, 0, 20, w, 10), _box(0, 10 + w, 0, 20, 10 - w, 10)
     return BRepAlgoAPI_Fuse(BRepAlgoAPI_Fuse(a, b).Shape(), c).Shape()
 
 
+def micro_chamfer(d: float = 0.003):
+    """A 20 x 10 x 10 mm block whose top long edge at y = 10 is chamfered d mm: a sliver face about 1.4 d
+    wide along it, meeting the top and the side at 45 degrees - two creases, an outside edge (no inside
+    corner), the sliver Ansys's mesh defeaturing folds back onto one edge (MESH-9)."""
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeChamfer
+
+    shape = _box(0, 0, 0, 20, 10, 10)
+    edge = _edges_where(shape, lambda b: abs(b[1] - 10) < 1e-3 and abs(b[4] - 10) < 1e-3
+                        and abs(b[2] - 10) < 1e-3 and abs(b[5] - 10) < 1e-3)[0]
+    mk = BRepFilletAPI_MakeChamfer(shape)
+    mk.Add(d, edge)
+    return mk.Shape()
+
+
 def split_cylinder(dth: float = 0.0004):
     """A 10 mm high cylinder of radius 5 drawn as two sectors fused without merging their faces, one of
-    them dth radians: a curved strip 5*dth mm wide on its side, two wedges as thin on its ends (MESH-8)."""
+    them dth radians: a curved strip 5*dth mm wide on its side, two wedges as thin on its ends (MESH-9)."""
     import math
 
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse

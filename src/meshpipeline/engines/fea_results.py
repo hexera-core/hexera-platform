@@ -218,7 +218,7 @@ def results(workspace) -> dict | None:
     net = safety_net_block(fea.get("ftetwild") or {})
     if net:
         extra["safety_net"] = net
-    # MESH-8: the tiny faces meshed as part of a neighbour - each one's area is in that neighbour's named face
+    # MESH-9: the tiny faces meshed as part of a neighbour - each one's area is in that neighbour's named face
     from meshpipeline.engines.gmsh.fea_tiny import words as tiny_words
     tiny = q.get("fea_tiny") or {}
     if tiny.get("merged"):

@@ -79,6 +79,10 @@ def _job_container() -> tuple[str, str]:
     name = f"projects/{provcfg.GCP_PROJECT_ID}/locations/{provcfg.GCP_REGION}/jobs/{provcfg.CLOUDRUN_JOB}"
     resp = _rq.get(f"https://run.googleapis.com/v2/{name}", headers={"Authorization": f"Bearer {_access_token()}"},
                    timeout=60)
+    if resp.status_code == 403:
+        # said as what it is, with the grant (deploy/gcp create-worker-fleet.sh 2c; access_check at start)
+        raise PermissionError(f"HTTP 403: this worker may not read the mesh job {provcfg.CLOUDRUN_JOB} (run.jobs.get), "
+                              "which the big-machine route needs - grant it roles/run.viewer on the job")
     resp.raise_for_status()
     tpl = (resp.json().get("template") or {}).get("template") or {}
     image = str(((tpl.get("containers") or [{}])[0]).get("image") or "")

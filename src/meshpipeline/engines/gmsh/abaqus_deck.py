@@ -61,7 +61,7 @@ class SolidMesh:
     #: (E,) the mesher's own element numbers, in `elements` order (empty when not known)
     element_tags: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     #: a CAD solid's faces are named by their own tag (Face_k = CAD face k), so a face that holds no
-    #: triangle (MESH-8: merged into its neighbour) never renames the faces after it; off, the k-th face
+    #: triangle (MESH-9: merged into its neighbour) never renames the faces after it; off, the k-th face
     by_tag: bool = False
 
 

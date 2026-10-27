@@ -1,7 +1,7 @@
-# Responsibility: MESH-8 - at mesh time, mesh a CAD face far narrower (or a CAD edge far shorter) than the planned element size there as part of its smooth neighbour (gmsh compound surfaces and curves), never changing the CAD; then put the merged face's elements in its neighbour's named group and record which face went into which.
-# Boundaries: gmsh model in, compound constraints and a record out; it never edits the staged file, never merges across a crease, across parts, or into or out of a joint or a stress hot spot. Sizes come from the plan as sized for the model (engines/fea_plan.py zones), never from a fixed length.
+# Responsibility: MESH-9 - at mesh time, mesh a CAD face far narrower (or a CAD edge far shorter) than the planned element size there as part of a neighbour (gmsh compound surfaces and curves: a smooth neighbour first, else - as Ansys defeatures - collapsed onto its edge across the crease), never changing the CAD; then put the merged face's elements in its neighbour's named group and record which face went into which.
+# Boundaries: gmsh model in, compound constraints and a record out; it never edits the staged file, never merges across parts, into or out of a joint or out of a stress hot spot, and on the CFD path never takes a group's only face into another group. Sizes come from the plan as sized for the model (engines/fea_plan.py zones), never from a fixed length.
 # Collaborates with: engines/gmsh/fea_adapter.py (calls plan_merges/apply before sizing, settle_nodes after the surface stage, fold_in before the files are written), engines/gmsh/driver.py (the CFD gmsh path's CAD solids, the same rule at its one size), engines/fea_size_field.group_zones.
-"""MESH-8: TINY FACES AND SHORT EDGES ARE MESHED AS PART OF THEIR NEIGHBOURS.
+"""MESH-9: TINY FACES AND SHORT EDGES ARE MESHED AS PART OF THEIR NEIGHBOURS.
 
 Ansys meshes through features smaller than its Defeature Size, which by default is 0.005 x the element
 size (Meshing Options: "Mechanical Defeature Size Factor (Default: 0.005)", "CFD Defeature Size
@@ -15,12 +15,14 @@ Here, at mesh time and on the model only (the CAD file is never changed):
 * A face is TINY when its width (twice its area over its perimeter) is under TINY_SHARE of the
   smallest element size the plan can put anywhere on it or its neighbours - read off the plan's zones
   the way MESH-6 bounds them, so the share is of the local size, never of a fixed length.
-* A tiny face is meshed as ONE gmsh compound surface with ONE neighbour: the one it shares the most
-  boundary with across an edge where the two faces meet within CREASE_DEG (a smooth join). Never across
-  a crease, never into another part (both faces bound the same solids), never a face of a joint between
-  parts (bonded, tied or contact) and never a face a stress hot spot names (a hole, fillet, notch or
-  capped corner). A tiny face with no such neighbour is meshed as before (PLAN-fea-12 sets its elements
-  aside).
+* A tiny face is meshed as ONE gmsh compound surface with ONE neighbour: a SMOOTH one first (the two
+  faces meet within CREASE_DEG), the one it shares the most boundary with; with none, as Ansys's mesh
+  defeaturing drops a feature at or under its Defeature Size whatever the angle, it COLLAPSES onto its
+  edge with the neighbour across the crease it shares most with (the corner moves by less than its
+  width; the crease the sliver drew as two edges is one). Never into another part (both faces bound the
+  same solids), never into or out of a face of a joint between parts (bonded, tied or contact), never a
+  face a stress hot spot names (a hole, fillet, notch or capped corner), and on the CFD path a face that
+  is its group's only face never goes into another group (a neighbour of its own group comes first).
 * The curves left between the same two (merged) faces either side of a vertex that now joins only
   them are meshed as one compound curve when the vertex was a corner of a merged face (and the curves
   run on within CREASE_DEG), or when one of them is a SHORT edge (under TINY_SHARE of the local size):
@@ -40,14 +42,14 @@ from __future__ import annotations
 import math
 import sys
 
-#: MESH-8: a face narrower, or an edge shorter, than this share of the local planned element size is
+#: MESH-9: a face narrower, or an edge shorter, than this share of the local planned element size is
 #: meshed through - Ansys's default Defeature Size Factor (Mechanical and CFD alike).
 TINY_SHARE = 0.005
-#: MESH-8: two faces meeting at more than this angle (between their outward normals) meet at a crease,
+#: MESH-9: two faces meeting at more than this angle (between their outward normals) meet at a crease,
 #: and a crease is never meshed across - the feature angle the snappy path extracts edges at (30).
 CREASE_DEG = 30.0
 #: the rule
-RULE = "MESH-8"
+RULE = "MESH-9"
 #: zone kinds that name a stress feature: their faces are never merged away
 _HOT = ("hole", "fillet", "notch", "corner")
 
@@ -80,6 +82,11 @@ def _faces_of(gmsh, c: int) -> list[int]:
 
 def _volumes_of(gmsh, s: int) -> tuple[int, ...]:
     return tuple(sorted(int(v) for v in gmsh.model.getAdjacencies(2, int(s))[0]))
+
+
+def _faces_near(gmsh, s: int) -> set[int]:
+    """The faces sharing a curve with face s."""
+    return {n for c in _curves(gmsh, s) for n in _faces_of(gmsh, c) if n != s}
 
 
 def outward_signs(gmsh) -> dict[int, int]:
@@ -150,7 +157,7 @@ def runs_on(gmsh, a: int, b: int, p: int) -> bool:
 
 def local_floor(gmsh, plan: dict, entities: list[tuple[int, int]], tags_of) -> dict[tuple[int, int], float]:
     """The smallest element size the plan can put anywhere on each entity (MESH-6's box bound of every
-    zone's law there; a part's own base on and in the part): the local size MESH-8's share is of. Lower
+    zone's law there; a part's own base on and in the part): the local size MESH-9's share is of. Lower
     than the size gmsh will use, never higher - so a feature is only ever called tiny against an element
     at least that small."""
     import numpy as np
@@ -189,7 +196,7 @@ def local_floor(gmsh, plan: dict, entities: list[tuple[int, int]], tags_of) -> d
 def plan_merges(gmsh, plan: dict, *, face_tags: dict[str, list[int]] | None = None,
                 protected: set[int] | None = None, groups: dict[int, str] | None = None,
                 floor_of=None) -> dict:
-    """MESH-8's decisions on the current (synchronised, not yet meshed) model, at the plan's sizes as the
+    """MESH-9's decisions on the current (synchronised, not yet meshed) model, at the plan's sizes as the
     model reads them: {"faces": {tiny surface: neighbour}, "chains": [[curves]...], "alone": [surfaces],
     "rows": [...] (the record)}. Empty lists everywhere when nothing is tiny. `groups` (the CFD path): each
     surface's named group (inlet, outlet, wall...) - a face only ever merges into a face of its own group;
@@ -237,13 +244,17 @@ def plan_merges(gmsh, plan: dict, *, face_tags: dict[str, list[int]] | None = No
     signs = outward_signs(gmsh)
     target: dict[int, int] = {}
     rows: list[dict] = []
+    group_size: dict[str, int] = {}
+    for g in (groups or {}).values():
+        group_size[g] = group_size.get(g, 0) + 1
     for s in sorted(tiny):
         if s in protected or s in hot:
             continue
         vols = _volumes_of(gmsh, s)
         if len(vols) != 1:
             continue
-        shared: dict[int, float] = {}
+        # each neighbour: (a smooth join, the same named group, the boundary shared, the largest crease)
+        shared: dict[int, list] = {}
         for c in bound[s]:
             others = [n for n in _faces_of(gmsh, c) if n != s]
             if len(others) != 1:
@@ -251,17 +262,25 @@ def plan_merges(gmsh, plan: dict, *, face_tags: dict[str, list[int]] | None = No
             n = others[0]
             if n in tiny or n in protected or _volumes_of(gmsh, n) != vols:
                 continue
-            if groups is not None and groups.get(n) != groups.get(s):
+            same = groups is None or groups.get(n) == groups.get(s)
+            # the CFD path: a face that is its group's only face never goes into another group
+            if not same and group_size.get(str(groups.get(s)), 0) <= 1:
                 continue
             ang = crease_deg(gmsh, c, s, n, signs)
-            if ang is None or ang >= CREASE_DEG:
+            if ang is None:
                 continue
-            shared[n] = shared.get(n, 0.0) + length.get(c, 0.0)
+            row = shared.setdefault(n, [True, same, 0.0, 0.0])
+            row[0] = row[0] and ang < CREASE_DEG
+            row[2] += length.get(c, 0.0)
+            row[3] = max(row[3], ang)
         if shared:
-            n = sorted(shared, key=lambda k: (-shared[k], k))[0]
+            # A SMOOTH NEIGHBOUR FIRST (the face is meshed as part of it); else, as Ansys defeatures, the
+            # sliver collapses onto its edge with the neighbour across the crease it shares most with
+            n = sorted(shared, key=lambda k: (not shared[k][0], not shared[k][1], -shared[k][2], k))[0]
             target[s] = n
             rows.append({"face": int(s), "into": int(n), "width_m": width[s], "local_size_m": h_face(s),
-                         "share": width[s] / h_face(s)})
+                         "share": width[s] / h_face(s), "crease_deg": round(float(shared[n][3]), 2),
+                         "collapsed": not shared[n][0]})
     # the regions: a target and the tiny faces in it
     region = {s: target.get(s, s) for s in surfaces}
     erased = {c for c in curves if len({region[f] for f in _faces_of(gmsh, c)}) == 1 and len(_faces_of(gmsh, c)) == 2
@@ -589,7 +608,10 @@ def record(merges: dict, names, scale: float = 1.0) -> dict:
     k = 1000.0 / float(scale)
     faces = [{"face": names([r["face"]]), "into": names([r["into"]]),
               "width_mm": round(float(r["width_m"]) * k, 6), "local_size_mm": round(float(r["local_size_m"]) * k, 6),
-              "share": round(float(r["share"]), 6)} for r in merges.get("rows") or []]
+              "share": round(float(r["share"]), 6),
+              # a sliver collapsed onto its edge across a crease (Ansys's defeaturing), and that crease
+              "collapsed": bool(r.get("collapsed")), "crease_deg": r.get("crease_deg")}
+             for r in merges.get("rows") or []]
     return {"rule": RULE, "share": TINY_SHARE, "crease_deg": CREASE_DEG, "merged": faces,
             "curves_meshed_through": len({c for ch in merges.get("chains") or [] for c in ch}),
             "chains": len(merges.get("chains") or []),
@@ -611,6 +633,10 @@ def words(rec: dict | None) -> str:
         out.append(f"Tiny faces: {len(merged)} CAD face(s) far narrower than the elements there were meshed as part "
                    f"of the face beside them ({shown}{more}). Each one's area is in that face's named group; the "
                    "CAD file is unchanged.")
+        folded = sum(1 for m in merged if m.get("collapsed"))
+        if folded:
+            out.append(f"{folded} of them met that face at a sharp edge: as Ansys defeatures, each was folded onto the "
+                       "edge (the shape there moves by less than its width).")
     if short:
         out.append(f"{short} short CAD edge(s) were meshed through, as part of the edge beside them.")
     return " ".join(out)

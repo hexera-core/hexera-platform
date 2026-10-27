@@ -229,7 +229,7 @@ def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[
     """The plan's zones as gmsh fields; returns the background field (None when no zone binds).
     face_tags: an assembly's face names (Part_k_Face_j) -> the surface tags carrying each; a single
     part's Face_k is surface k. part_volumes: an assembly's Part_k -> the volume tags carrying it
-    (the part's base size holds through those volumes, PLAN-fea-17). whole: the CAD entities a MESH-8
+    (the part's base size holds through those volumes, PLAN-fea-17). whole: the CAD entities a MESH-9
     compound meshes (a field that can size one of them is never restricted)."""
     from meshpipeline.engines.fea_size_field import group_zones
 
@@ -453,7 +453,7 @@ def reach_restricted(gmsh, ids: list[int], bounds: list[dict], base: float, repo
     size gmsh reads is the same number as before, to the bit: the same mesh, sooner. Returns the fields
     for the Min, each wrapped where it can be skipped somewhere.
 
-    `whole` (MESH-8): the CAD entities a compound meshes. gmsh meshes a compound as a new entity no
+    `whole` (MESH-9): the CAD entities a compound meshes. gmsh meshes a compound as a new entity no
     Restrict field lists, so a field that can size any of them is left whole (unwrapped: the same sizes)."""
     import numpy as np
 
@@ -1072,7 +1072,7 @@ def micro_curves_one_segment(gmsh, skip: set[int] | None = None) -> list[int]:
     24 nm edges where a half-hole grazes the bore). THE PART'S diagonal: in an assembly, the smallest solid
     the curve bounds - the whole model's would make every curve under a millimetre one segment in a 945 mm
     assembly (ox_mc_lid: 7,533 curves, on screws planned at 0.05 mm), against the plan. A single solid's is
-    the model's, as before. `skip`: curves a MESH-8 compound meshes through (no segment of their own).
+    the model's, as before. `skip`: curves a MESH-9 compound meshes through (no segment of their own).
     Returns the curves."""
     from meshpipeline.cad.fea_measure import MICRO_FRACTION
 
@@ -1161,7 +1161,7 @@ def rung_build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar
 
 def joint_surfaces(gmsh, sidecar: dict, surface_tag: dict[int, int], volume_tag: dict[int, int],
                    face_tags: dict[str, list[int]] | None) -> set[int]:
-    """MESH-8's protected surfaces: every surface of a joint between parts - the fused interfaces of a
+    """MESH-9's protected surfaces: every surface of a joint between parts - the fused interfaces of a
     bonded assembly, a bonded pair's shared surfaces, and the faces of a tie or contact pair."""
     if not sidecar:
         return set()
@@ -1175,7 +1175,7 @@ def joint_surfaces(gmsh, sidecar: dict, surface_tag: dict[int, int], volume_tag:
 
 def build_volume(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: dict, *,
                  scale: float = 1.0, tags: dict | None = None, rung: str | None = None) -> dict:
-    """_build, with MESH-8's tiny-face merges; should a build with merges fail on a surface a merge
+    """_build, with MESH-9's tiny-face merges; should a build with merges fail on a surface a merge
     meshes, the same build again without them (a merge never costs a part the mesh it had)."""
     try:
         return _build(gmsh, ws, plan, geom, asm, sidecar, scale=scale, tags=tags, rung=rung, tiny=rung is None)
@@ -1237,7 +1237,7 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
                 if k in volume_tag:
                     part_volumes.setdefault(f"Part_{int(p)}", []).append(volume_tag[k])
     tied = {"surface_tag": surface_tag, "volume_tag": volume_tag}
-    # MESH-8: A FACE OR EDGE FAR BELOW THE ELEMENT SIZE THERE is meshed as part of its smooth neighbour
+    # MESH-9: A FACE OR EDGE FAR BELOW THE ELEMENT SIZE THERE is meshed as part of its smooth neighbour
     # (gmsh compounds on the model; the CAD file is never changed). Nothing tiny: nothing set, the same mesh
     merges: dict = {}
     if tiny:
@@ -1277,7 +1277,7 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
     # dropped below, MESH-5) rather than thrown away for a MeshAdapt run that never ends
     gmsh.option.setNumber("Mesh.AlgorithmSwitchOnFailure", 0 if run.get("surface_switch") is False else 1)
     note_stage(ws, "surface", "meshing the surfaces")
-    # MESH-8: a tiny face merged into its neighbour may rightly hold no triangle of its own
+    # MESH-9: a tiny face merged into its neighbour may rightly hold no triangle of its own
     drawn = surfaces - {int(s) for s in (merges.get("faces") or {})}
     try:
         empty = surface_mesh(gmsh, drawn, remesh)
@@ -1287,7 +1287,7 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
         named = sorted({s for s in surfaces_named(str(exc)) if s in surfaces}
                        | set(_empty_surfaces(gmsh, drawn) if not surfaces_named(str(exc)) else []))
         raise _tiny_failed(FillFailed(exc, named, face_tags, tied), whole) from exc
-    # MESH-8: a compound's nodes back exactly on their CAD face or curve, with their parameters there
+    # MESH-9: a compound's nodes back exactly on their CAD face or curve, with their parameters there
     TINY.settle_nodes(gmsh, merges)
     repeated = drop_repeated_triangles(gmsh, surfaces)
     try:
@@ -1325,7 +1325,7 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
 
 
 def _tiny_failed(exc: FillFailed, whole: set[tuple[int, int]] | None) -> FillFailed:
-    """A failed build's error, with the entities its MESH-8 compounds meshed (build_volume's retry reads them)."""
+    """A failed build's error, with the entities its MESH-9 compounds meshed (build_volume's retry reads them)."""
     exc.tiny_members = sorted(whole or ())  # type: ignore[attr-defined]
     return exc
 
@@ -1437,7 +1437,7 @@ def mesh(workspace) -> int:
             note_stage(ws, "curving", "curving the elements to the surface")
             # curved on the CAD at the scale it was meshed at (its midside nodes go onto the surface)
             gmsh.model.mesh.setOrder(order)
-            # MESH-8: the midside nodes on a compound's faces and curves onto the CAD by their edges' middles
+            # MESH-9: the midside nodes on a compound's faces and curves onto the CAD by their edges' middles
             TINY.curve_midsides(gmsh, built.get("tiny") or {})
         if scale != 1.0:
             # MESH-4: the mesh back to metres, the unit every file and figure below is in (a similarity:
@@ -1452,7 +1452,7 @@ def mesh(workspace) -> int:
             # LAD-fea-9: fTetWild's parts into the same model, after gmsh's own (straight 10-node tets)
             ftw = last_rung(gmsh, ws, plan, geom, built, asm, sidecar, order=order, tick=tick,
                             fell_back=str(built.get("fell_back") or ""))
-        # MESH-8: every merged tiny face's elements into its neighbour's named face, and the record
+        # MESH-9: every merged tiny face's elements into its neighbour's named face, and the record
         tiny_out: dict = {}
         if built.get("tiny"):
             moved = TINY.fold_in(gmsh, built["tiny"])
@@ -1518,7 +1518,7 @@ def mesh(workspace) -> int:
         try:
             from meshpipeline.engines import fea_quality
             from meshpipeline.engines.gmsh.abaqus_deck import from_gmsh
-            # a single part's faces by their own tags (MESH-8: a merged face holds no triangle)
+            # a single part's faces by their own tags (MESH-9: a merged face holds no triangle)
             solid = from_gmsh(gmsh, sorted(vols), by_tag=not asm)
             rules = checks.measure(solid, plan, tags_by_name=face_tags)
             # THE ELEMENTS AS THE SOLVERS JUDGE THEM (engines/fea_quality.py): the gate refuses an
@@ -1571,7 +1571,7 @@ def mesh(workspace) -> int:
             **({"fea_mesh_scale": "mm", "fea_mesh_scale_rule": MM_SCALE_RULE,
                 "fea_micro_curves_one_segment": len(built.get("micro_curves") or [])}
                if scale != 1.0 else {}),
-            # MESH-8: the tiny faces meshed as part of a neighbour, and into which named face each went
+            # MESH-9: the tiny faces meshed as part of a neighbour, and into which named face each went
             **({"fea_tiny": tiny_out} if tiny_out else {}),
             "fea_bad_surfaces": traced,
             "fea_bad_faces": face_names_of(traced, face_tags),
