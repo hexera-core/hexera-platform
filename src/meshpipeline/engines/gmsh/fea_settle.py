@@ -33,6 +33,9 @@ import numpy as np
 CUSP_REACH = 2.0
 #: ...and a micro detail (PLAN-fea-12) when one of its corners lies this close to a point along it.
 MICRO_REACH = 2.0
+#: PLAN-fea-11: at most this many more rounds of straightening the elements a straightened neighbour turned
+#: inside out (each round straightens at least one curved edge; ox_mc_lid's plates needed 2).
+SETTLE_ROUNDS = 50
 #: gmsh's 10-node tetrahedron: midside node 4+k sits on the edge between these corners (gmsh's own
 #: numbering; engines/gmsh/abaqus_deck.GMSH_TET10_TO_SOLVER reads the same). Matching a midside node
 #: to the nearest edge middle instead goes wrong on exactly the elements curving bent the most.
@@ -79,6 +82,22 @@ def settle(gmsh, straight: Mapping[int, float], cusps_m: Iterable, floor: float,
         if qq < floor and qq < float(straight.get(t, 1.0)):
             straighten(gmsh, t)
             straightened += 1
+    # PLAN-fea-11 TO THE END: a straightened element's midside nodes are its neighbours' too, and a neighbour
+    # that curving had left valid can be turned inside out by them (ox_mc_lid's 2 mm plates, lab 27 Oct: 335
+    # straightened, 41 neighbours left below zero). Each element still inside out and worse than straight is
+    # straightened in turn until a round moves no node: every round straightens at least one curved edge, and
+    # an element with every edge straight has its straight shape, so it ends. A mesh the first look left with
+    # no element inside out is not touched again.
+    for _ in range(SETTLE_ROUNDS):
+        tags, q = qualities(gmsh)
+        moved = 0
+        for t, qq in zip(tags.tolist(), q.tolist(), strict=True):
+            if qq <= 0.0 and qq < float(straight.get(t, 1.0)):
+                n = straighten(gmsh, t)
+                moved += n
+                straightened += 1 if n else 0
+        if not moved:
+            break
     pts = np.asarray([list(c) for c in cusps_m], dtype=float).reshape(-1, 3)
     details = list(micro or ())
     mpts, mown = [], []
@@ -122,4 +141,5 @@ def settle(gmsh, straight: Mapping[int, float], cusps_m: Iterable, floor: float,
             "micro_used": sorted(used), "micro_elements": n_micro}
 
 
-__all__ = ["CUSP_REACH", "GMSH_TET10_EDGES", "MICRO_REACH", "qualities", "settle", "straighten"]
+__all__ = ["CUSP_REACH", "GMSH_TET10_EDGES", "MICRO_REACH", "SETTLE_ROUNDS", "qualities", "settle",
+           "straighten"]

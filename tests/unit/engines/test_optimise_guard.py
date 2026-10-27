@@ -1,5 +1,5 @@
 # Responsibility: Verify MESH-10: a volume gmsh's optimiser leaves with more invalid elements than it went in with gets its input mesh back, every other volume keeps the optimiser's work, and a run where nothing was made invalid is exactly the optimiser's own.
-# Boundaries: small built boxes meshed in-process with real gmsh; the damaging optimiser is a stand-in that turns elements of one volume inside out (the real case, Netgen on ox_mc_lid's 2 mm plates, is the lab's: ~/oxlid_lab).
+# Boundaries: small built boxes meshed in-process with real gmsh; the damaging optimiser is a stand-in that turns elements of one volume inside out (no real optimiser run is known to do so yet: MESH-10 is a guard).
 from __future__ import annotations
 
 import numpy as np

@@ -378,6 +378,58 @@ def orient(xyz: np.ndarray, tets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return t, np.abs(vol)
 
 
+#: LAD-fea-12: a tetrahedron whose volume is under this share of its longest edge cubed has no volume in double
+#: precision (a regular one has 0.118; ox_mc_lid's Part_239 sliver, 3e-16, measured inside out by gmsh)
+FLAT_SHARE = 1e-10
+FLAT_RULE = "LAD-fea-12"
+
+
+def _odd_edges(tris: np.ndarray) -> int:
+    """How many edges of the boundary triangles are not the edge of exactly two of them."""
+    e = np.sort(np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]]), axis=1)
+    _u, count = np.unique(e, axis=0, return_counts=True)
+    return int((count != 2).sum())
+
+
+def peel_flat(xyz: np.ndarray, tets: np.ndarray) -> tuple[np.ndarray, int, int]:
+    """LAD-fea-12: fTetWild's flat slivers ON THE SURFACE taken off. fTetWild can leave a tetrahedron with no
+    volume lying on the part's surface, two or three of its faces outside (Part_239 of ox_mc_lid: ten of them in
+    one 50-micron spot, the flattest measured inside out). Such a sliver holds no material: it is dropped, one at a
+    time, flattest first, whenever the surface without it has no more edges off two triangles than it had (fTetWild's
+    own surface can have a few already), and again while dropping one lays bare another. A flat one inside the part
+    is left for the gate.
+    `tets` oriented (orient). Returns (the tets kept, how many were dropped, how many flat ones are left)."""
+    t = np.asarray(tets, dtype=np.int64)
+    edges = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
+
+    def flat(tt):
+        a, b, c, d = (xyz[tt[:, i]] for i in range(4))
+        vol = np.abs(np.einsum("ij,ij->i", np.cross(b - a, c - a), d - a)) / 6.0
+        lmax = np.max([np.linalg.norm(xyz[tt[:, i]] - xyz[tt[:, j]], axis=1) for i, j in edges], axis=0)
+        rel = vol / np.maximum(lmax, 1e-300) ** 3
+        idx = np.where(rel < FLAT_SHARE)[0]
+        return idx[np.argsort(rel[idx], kind="stable")]
+
+    dropped = 0
+    while True:
+        cand = flat(t)
+        if not len(cand):
+            return t, dropped, 0
+        surface = boundary(t)
+        outside = {tuple(sorted(f)) for f in surface.tolist()}
+        odd = _odd_edges(surface)
+        took = False
+        for i in cand.tolist():
+            if sum(tuple(sorted(t[i, list(c)].tolist())) in outside for c in TET_FACES) < 2:
+                continue
+            rest = np.delete(t, i, axis=0)
+            if _odd_edges(boundary(rest)) <= odd:
+                t, dropped, took = rest, dropped + 1, True
+                break
+        if not took:
+            return t, dropped, int(len(cand))
+
+
 def boundary(tets: np.ndarray) -> np.ndarray:
     """The triangles that are the face of one tetrahedron only, oriented outward, in a fixed order."""
     f = np.concatenate([tets[:, list(c)] for c in TET_FACES])
@@ -801,6 +853,10 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
     lost_all: list[str] = []
     for m, r in zip(meta, results, strict=True):
         tets, _vol = orient(r["xyz"], r["tets"])
+        tets, peeled, flat_left = peel_flat(r["xyz"], tets)
+        if peeled:
+            print(f"[FTETWILD] {m['key']}: {peeled} flat sliver(s) on the surface taken off ({FLAT_RULE})",
+                  file=sys.stderr)
         tris = boundary(tets)
         if order > 1:
             xyz10, tet10, tri6 = quadratic(r["xyz"], tets, tris)
@@ -851,6 +907,8 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
                           "cad_to_mesh_mm": _sig(float(cdist.max(initial=0.0)) * 1e3),
                           "sizing_field": m["sized"],
                           "faces": len(m["faces"]), "moved_faces": moved, "lost_faces": lost,
+                          **({"flat_slivers_dropped": peeled, "flat_rule": FLAT_RULE} if peeled else {}),
+                          **({"flat_inside": flat_left} if flat_left else {}),
                           "command": r.get("command")})
         worst_dev = max(worst_dev, dev)
         eps_max = max(eps_max, m["eps"] + m["deflection"])
@@ -869,5 +927,6 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
 
 
 __all__ = ["BIN_PATH", "COMMIT", "ENGINE", "MAX_RUNG_PASSES", "Nearest", "VERSION", "binary", "boundary",
-           "closest_on_triangles", "envelope_m", "failed_parts", "mesh_into", "orient", "params", "quadratic",
-           "rung_parts", "run_part", "sizing_grid", "split_long", "tessellate", "words"]
+           "closest_on_triangles", "envelope_m", "failed_parts", "FLAT_RULE", "FLAT_SHARE", "mesh_into", "orient",
+           "params", "peel_flat", "quadratic", "rung_parts", "run_part", "sizing_grid", "split_long", "tessellate",
+           "words"]

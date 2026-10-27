@@ -592,3 +592,33 @@ def test_a_part_a_later_gmsh_pass_did_fill_is_never_given_to_ftetwild_too(tmp_pa
     parts = {p["id"]: p["elements"] for p in q["fea"]["assembly"]["parts"]}
     assert set(parts) == {"Part_1", "Part_2", "Part_3"} and all(n > 0 for n in parts.values())
     assert q["cells"] == sum(parts.values())                     # no part meshed twice
+
+
+def _cube_tets():
+    """The unit cube in six tetrahedra about its 0-7 diagonal (corner k at the bits of k)."""
+    import itertools
+
+    xyz = np.array([[(k >> 0) & 1, (k >> 1) & 1, (k >> 2) & 1] for k in range(8)], dtype=float)
+    tets = []
+    for i, j, _k in itertools.permutations((1, 2, 4)):
+        tets.append([0, i, i + j, 7])
+    return xyz, np.array(tets, dtype=np.int64)
+
+
+def test_a_flat_sliver_on_the_surface_is_taken_off_and_nothing_else_is():
+    """LAD-fea-12 (ox_mc_lid's Part_239): a no-volume tetrahedron lying on the surface, three faces outside, is
+    dropped; the cube's own six are kept as they were, and a mesh without one is returned unchanged."""
+    xyz, cube = _cube_tets()
+    cube, _vol = TW.orient(xyz, cube)
+    kept, dropped, left = TW.peel_flat(xyz, cube)
+    assert (dropped, left) == (0, 0) and np.array_equal(kept, cube)
+    # an ear on the z = 0 face: one of the cube's outside triangles there, and a point in it
+    face = next(f for f in TW.boundary(cube).tolist() if all(xyz[n][2] == 0.0 for n in f))
+    xyz2 = np.vstack([xyz, xyz[face].mean(axis=0)])
+    ear = np.array([[*face, 8]], dtype=np.int64)
+    mesh, _vol = TW.orient(xyz2, np.vstack([cube, ear]))
+    assert len(TW.boundary(mesh)) == len(TW.boundary(cube)) + 2      # the ear's three faces in place of one
+    kept, dropped, left = TW.peel_flat(xyz2, mesh)
+    assert (dropped, left) == (1, 0)
+    assert np.array_equal(kept, mesh[:6])
+    assert TW._odd_edges(TW.boundary(kept)) == 0

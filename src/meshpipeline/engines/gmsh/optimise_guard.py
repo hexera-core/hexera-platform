@@ -4,17 +4,14 @@
 """NO OPTIMISER LEAVES A VOLUME WORSE THAN IT GOT IT (MESH-10).
 
 gmsh's Netgen optimiser treats an element whose four corners all sit on the boundary as illegal and
-splits it. On a thin plate one or two elements thick that is a large share of the elements, and the
-splits can leave elements turned inside out where the input had none: on ox_mc_lid (lab, 27 Oct) two
-2 mm plates came in valid (SICN 0.064 at worst) and came out with 15 and 26 inverted elements, and the
-whole 13.7M-element mesh failed the gate on those 41 alone.
-
-So every volume's mesh is read before the optimiser runs. Afterwards, a volume with more invalid
-elements (SICN at or below zero, straight sides) than it came in with gets its input mesh back - its
-own nodes and elements, the boundary untouched, since the optimiser never moves a boundary node - and
-is named. Every other volume keeps what the optimiser made of it, trades included (a valid volume's
-worst element may be a little lower after it; the optimiser's work on the whole volume stands).
-A run where the optimiser made nothing invalid is left exactly as the optimiser left it.
+splits it - on a plate one or two elements thick, a large share of the elements (a quarter of ox_mc_lid's
+2 mm plates', lab 27 Oct) - and nothing checked what it handed back. A guard, whatever the optimiser does:
+every volume's mesh is read before the optimiser runs. Afterwards, a volume with more invalid elements
+(SICN at or below zero, straight sides) than it came in with gets its input mesh back - its own nodes
+and elements, the boundary untouched, since the optimiser never moves a boundary node - and is named.
+Every other volume keeps what the optimiser made of it, trades included (a valid volume's worst element
+may be a little lower after it; the optimiser's work on the whole volume stands). A run where the
+optimiser made nothing invalid is left exactly as the optimiser left it.
 """
 from __future__ import annotations
 
