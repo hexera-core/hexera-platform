@@ -193,6 +193,25 @@ class _Surface:
     face: np.ndarray
     tris: np.ndarray            # (T, 3, 3), the split triangles the centres are of
     tree: Any = None
+    #: each face's own tessellation in its (u, v) parameters, and a tree of its triangles' centres:
+    #: where a point projected onto the face's surface lies inside the trimmed face
+    uv: dict = field(default_factory=dict)
+    by_face: dict = field(default_factory=dict)
+
+
+def _area_of(t: np.ndarray) -> float:
+    return float(0.5 * np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1).sum())
+
+
+def _cells(tris: np.ndarray, size: float) -> list[np.ndarray]:
+    """The triangles grouped by the cube of side `size` their centre lies in (each group's first is its
+    sample), in a fixed order."""
+    key = np.floor(tris.mean(axis=1) / max(size, 1e-300)).astype(np.int64)
+    _u, inv = np.unique(key, axis=0, return_inverse=True)
+    inv = np.asarray(inv).ravel()
+    order = np.argsort(inv, kind="stable")
+    bounds = np.flatnonzero(np.diff(inv[order])) + 1
+    return np.split(order, bounds)
 
 
 def _split(tris: np.ndarray, longest: float, cap: int) -> np.ndarray:
@@ -229,6 +248,7 @@ def _surface(solid, faces: list, diag: float) -> _Surface:
     cfaces = _faces(copy)
     longest = max(SAMPLE_SHARE * diag, 1e-12)
     blocks, fids = [], []
+    uvs: dict[int, tuple[np.ndarray, Any]] = {}
     for k, f in enumerate(cfaces):
         loc = TopLoc_Location()
         tri = BRep_Tool.Triangulation_s(TopoDS.Face_s(f), loc)
@@ -238,6 +258,10 @@ def _surface(solid, faces: list, diag: float) -> _Surface:
         pts = np.array([[q.X(), q.Y(), q.Z()] for q in (tri.Node(n).Transformed(trsf)
                                                         for n in range(1, tri.NbNodes() + 1))])
         t = np.array([[tri.Triangle(n).Value(i) for i in (1, 2, 3)] for n in range(1, tri.NbTriangles() + 1)]) - 1
+        if tri.HasUVNodes():
+            uvn = np.array([[q.X(), q.Y()] for q in (tri.UVNode(n) for n in range(1, tri.NbNodes() + 1))])
+            ut = uvn[t]
+            uvs[k] = (ut, cKDTree(ut.mean(axis=1)))
         if f.Orientation() == TopAbs_REVERSED:
             t = t[:, [0, 2, 1]]
         tp = _split(pts[t], longest, 200000)
@@ -252,12 +276,48 @@ def _surface(solid, faces: list, diag: float) -> _Surface:
     tp, cr, area, fid = tp[ok], cr[ok], area[ok], np.concatenate(fids)[ok]
     centres = tp.mean(axis=1)
     return _Surface(centres=centres, areas=area, normals=cr / (2.0 * area[:, None]), face=fid, tris=tp,
-                    tree=cKDTree(centres))
+                    tree=cKDTree(centres), uv=uvs)
 
 
-def _on_face(points: np.ndarray, face) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _inside_uv(uv: np.ndarray, mesh) -> np.ndarray:
+    """Whether each (u, v) lies inside the face, read off the face's own tessellation in its
+    parameters (the trimmed face, as its triangles cover it)."""
+    tris, tree = mesh
+    k = min(8, len(tris))
+    _d, idx = tree.query(uv, k=k)
+    idx = np.asarray(idx).reshape(len(uv), k)
+    inside = np.zeros(len(uv), dtype=bool)
+    for j in range(k):
+        t = tris[idx[:, j]]
+        a, b, c = t[:, 0], t[:, 1], t[:, 2]
+        v0, v1, v2 = c - a, b - a, uv - a
+        d00, d01, d11 = (v0 * v0).sum(1), (v0 * v1).sum(1), (v1 * v1).sum(1)
+        d02, d12 = (v0 * v2).sum(1), (v1 * v2).sum(1)
+        den = d00 * d11 - d01 * d01
+        ok = np.abs(den) > 1e-300
+        den = np.where(ok, den, 1.0)
+        bu = (d11 * d02 - d01 * d12) / den
+        bv = (d00 * d12 - d01 * d02) / den
+        eps = 1e-6
+        inside |= ok & (bu >= -eps) & (bv >= -eps) & (bu + bv <= 1 + eps)
+    return inside
+
+
+def _face_points(surf: _Surface, face: int):
+    """One face's surface points and their tree, built once a part."""
+    from scipy.spatial import cKDTree
+
+    if face not in surf.by_face:
+        pts = surf.centres[surf.face == face]
+        surf.by_face[face] = (pts, cKDTree(pts) if len(pts) else None)
+    return surf.by_face[face]
+
+
+def _on_face(points: np.ndarray, face, uv_mesh=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Each point put exactly on `face` (projected onto its surface): (ok, the point, the face's
-    outward unit normal there); not ok where the projection misses the trimmed face."""
+    outward unit normal there); not ok where the projection misses the trimmed face (read off the
+    face's tessellation in its parameters when given - OpenCASCADE's own classifier takes a quarter of
+    a millisecond a point on a face of many holes - else by that classifier)."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepGProp import BRepGProp_Face
     from OCP.BRepTools import BRepTools
@@ -276,13 +336,20 @@ def _on_face(points: np.ndarray, face) -> tuple[np.ndarray, np.ndarray, np.ndarr
     proj = GeomAPI_ProjectPointOnSurf()
     proj.Init(surf, u0, u1, v0, v1, 1e-9)
     p, n = gp_Pnt(), gp_Vec()
+    uv = np.full((len(points), 2), np.nan)
     for k, (x, y, z) in enumerate(points.tolist()):
         proj.Perform(gp_Pnt(x, y, z))
-        if not proj.IsDone() or proj.NbPoints() == 0:
-            continue
-        u, v = proj.LowerDistanceParameters()
-        if cls.Perform(gp_Pnt2d(u, v)) not in (TopAbs_IN, TopAbs_ON):
-            continue
+        if proj.IsDone() and proj.NbPoints() > 0:
+            uv[k] = proj.LowerDistanceParameters()
+    found = np.isfinite(uv[:, 0])
+    if uv_mesh is not None and found.any():
+        inside = np.zeros(len(points), dtype=bool)
+        inside[found] = _inside_uv(uv[found], uv_mesh)
+    else:
+        inside = np.array([bool(found[k]) and cls.Perform(gp_Pnt2d(float(uv[k, 0]), float(uv[k, 1])))
+                           in (TopAbs_IN, TopAbs_ON) for k in range(len(points))], dtype=bool)
+    for k in np.flatnonzero(inside).tolist():
+        u, v = float(uv[k, 0]), float(uv[k, 1])
         props.Normal(u, v, p, n)
         mag = n.Magnitude()
         if mag <= 0:
@@ -299,47 +366,42 @@ def _facing(sa: _Surface, a: int, fa, sb: _Surface, b: int, fb, limit: float, re
     a's triangles within `reach` of face b's points are split to `spacing`, each sample is put exactly
     on face a and measured exactly to face b: it faces b when that is within the limit, their outward
     normals are within FACING_DEG of opposite, and - across a gap - b lies in front of it, not behind."""
-    from scipy.spatial import cKDTree
 
     mine = np.flatnonzero(sa.face == a)
-    theirs = sb.centres[sb.face == b]
+    theirs, their_tree = _face_points(sb, b)
     empty = (np.zeros((0, 3)), np.zeros(0), np.zeros(0))
     if not len(mine) or not len(theirs):
         return empty
-    d, _k = cKDTree(theirs).query(sa.centres[mine], k=1, distance_upper_bound=reach)
+    if their_tree is None:
+        return (np.zeros((0, 3)), np.zeros(0), np.zeros(0))
+    d, _k = their_tree.query(sa.centres[mine], k=1, distance_upper_bound=reach)
     tris = sa.tris[mine[np.isfinite(d)]]
     if not len(tris):
         return empty
-    # COARSE THEN FINE: triangles of a side `step` measured to face b first (one projection each), and
-    # only those within the limit and a triangle of it split down to `spacing` - never finer than
-    # SAMPLES_PER_PAIR samples over the region that is near (a wide contact needs no finer reading)
-    def area_of(t):
-        return float(0.5 * np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1).sum())
-
-    # the first pass reads the whole band near face b in at most SAMPLES_PER_PAIR triangles
-    step = max(spacing, limit, math.sqrt(area_of(tris) / SAMPLES_PER_PAIR))
-    first = True
-    while True:
-        tris = _split(tris, step, MAX_SAMPLES)
-        pts = tris.mean(axis=1)
-        ok_b, on_b, _n = _on_face(pts, fb)
-        size = np.max(np.linalg.norm(tris[:, [1, 2, 0]] - tris, axis=2), axis=1)
-        # where the centre's projection misses face b (beyond its edge), its nearest point of face b
-        kd, _kk = cKDTree(theirs).query(pts, k=1)
-        dist = np.where(ok_b, np.linalg.norm(on_b - pts, axis=1), kd - (reach - limit))
-        tris = tris[dist <= limit + size + tol]
-        if first and len(tris):
-            first = False
-            spacing = max(spacing, math.sqrt(area_of(tris) / SAMPLES_PER_PAIR))
-        if not len(tris) or step <= spacing:
-            break
-        step = max(spacing, step / 4.0)
-    if not len(tris):
+    # COARSE THEN FINE, never more than about SAMPLES_PER_PAIR projections a pass: the band near face b
+    # read in cells of `step` (one sample a cell, standing for every triangle in it), only the cells
+    # within the limit kept, and those read again in cells of the final spacing
+    step = max(spacing, limit, math.sqrt(_area_of(tris) / SAMPLES_PER_PAIR))
+    cells = _cells(tris, step)
+    reps = np.array([c[0] for c in cells])
+    pts = tris[reps].mean(axis=1)
+    ok_b, on_b, _n = _on_face(pts, fb)
+    kd, _kk = their_tree.query(pts, k=1)
+    # where the centre's projection misses face b (beyond its edge), its nearest point of face b
+    dist = np.where(ok_b, np.linalg.norm(on_b - pts, axis=1), kd - (reach - limit))
+    near_cells = [c for c, dd in zip(cells, dist.tolist(), strict=True) if dd <= limit + 2.0 * step + tol]
+    if not near_cells:
         return empty
+    tris = tris[np.concatenate(near_cells)]
+    spacing = max(spacing, math.sqrt(_area_of(tris) / SAMPLES_PER_PAIR))
+    tris = _split(tris, spacing, MAX_SAMPLES)
+    cells = _cells(tris, spacing)
     cr = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
-    area = 0.5 * np.linalg.norm(cr, axis=1)
+    tri_area = 0.5 * np.linalg.norm(cr, axis=1)
+    reps = np.array([c[0] for c in cells])
+    area = np.array([float(tri_area[c].sum()) for c in cells])
     keep = area > 0
-    pts, area = tris[keep].mean(axis=1), area[keep]
+    pts, area = tris[reps[keep]].mean(axis=1), area[keep]
     ok_a, on_a, n_a = _on_face(pts, fa)
     on_a, n_a, area = on_a[ok_a], n_a[ok_a], area[ok_a]
     ok_b, on_b, n_b = _on_face(on_a, fb)
