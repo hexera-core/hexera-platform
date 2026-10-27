@@ -243,7 +243,15 @@ def connection_of(state) -> str:
     return CONTACT if said == CONTACT else BONDED
 
 
-def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source_path: str = "") -> dict:
+def gap_joins_of(state) -> bool:
+    """PLAN-fea-18: whether parts across a small gap are joined (state fea_gap_joins), on unless the
+    user switched it off on the stage."""
+    said = (state or {}).get("fea_gap_joins")
+    return True if said is None else bool(said)
+
+
+def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source_path: str = "",
+                     gap_joins: bool = True) -> dict:
     """PLAN-fea-17: an assembly's record for the plan, and its staged file for the mesher. Every
     face is renamed Part_k_Face_j (on the record and on the surface the size field reads), each part
     gets its own base size, and the parts are staged as the connection asks (cad/fea_assembly.stage).
@@ -269,7 +277,7 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
     record.update(renamed)
     if len(surface.names) == len(global_names):
         surface.names = list(global_names)
-    sidecar = A.stage(shape, connection, ws, names=names)
+    sidecar = A.stage(shape, connection, ws, names=names, gap_joins=gap_joins)
     # each part's own size, read off the measured surface (millimetres): its faces' triangles
     bases = []
     for p in range(1, len(parts) + 1):
@@ -292,6 +300,10 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
                                "pair_list": [{"pair": i.get("id"), "kind": i.get("kind"), "parts": i.get("parts"),
                                               "area_mm2": i.get("area_mm2"), "at_mm": i.get("at_mm")}
                                              for i in sidecar["interfaces"]]}
+    if sidecar.get("joins"):
+        # PLAN-fea-18: how the joints were found, the small-gap joints, and the faces no gap sizing
+        # should read (the gap a joint joins, a skin of no thickness)
+        record["assembly_plan"]["joins"] = sidecar["joins"]
     return record
 
 
@@ -306,7 +318,11 @@ def restage_tied(ws: Path, record: dict) -> dict:
         names = [str(p.get("name") or "") for p in json.loads((ws / A.SIDECAR).read_text()).get("parts") or []]
     except (OSError, ValueError):
         names = []
-    sidecar = A.stage(shape, A.BONDED, ws, names=names, tie=True)
+    try:
+        before = json.loads((ws / A.SIDECAR).read_text())
+    except (OSError, ValueError):
+        before = {}
+    sidecar = A.stage(shape, A.BONDED, ws, names=names, tie=True, gap_joins=before.get("gap_joins", True) is not False)
     plan = dict(record.get("assembly_plan") or {})
     plan.update(mode=sidecar["mode"], pairs=len(sidecar["pairs"]), notes=list(sidecar["notes"]))
     record["assembly_plan"] = plan
@@ -1002,7 +1018,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         connection = connection_of(state)
         try:
             record = await asyncio.to_thread(prepare_assembly, ws, record, surface, connection=connection,
-                                             source_path=source_path)
+                                             source_path=source_path, gap_joins=gap_joins_of(state))
         except Exception as exc:  # noqa: BLE001 - recorded as the attempt's reason
             logger.exception("fea driver: the assembly could not be staged - job_id=%s", job_id)
             _refuse(ws, cause=FailureCause.NOT_BUILT.value, text=f"the assembly could not be staged ({exc})",
@@ -1011,6 +1027,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             outcome = run.outcome(produced_deliverable=False, failure_marker=BUILD_FAILED)
             return False, BUILD_FAILED, outcome
         asm = record.get("assembly_plan") or {}
+        joins = asm.get("joins") or {}
+        if joins:
+            _cite(job_id, [{"stage": "fea_plan", "decided": "joints", "value": joins.get("found_by"),
+                            "rule": "PLAN-fea-18",
+                            "inputs": {"findings": len(joins.get("findings") or []), "gaps": joins.get("gaps"),
+                                       "skins": joins.get("skins"), "gap_joins": gap_joins_of(state)},
+                            "words": " ".join(str(n) for n in joins.get("notes") or [])
+                            or "Where the parts meet was measured on their surfaces."}])
         _cite(job_id, [{"stage": "fea_plan", "decided": "assembly", "value": asm.get("mode"),
                         "rule": "PLAN-fea-17",
                         "inputs": {"bodies": record.get("bodies"), "connection": connection,

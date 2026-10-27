@@ -44,7 +44,8 @@ function bodiesHtml(f) {
 export function interfaceMarks(a) {
   return ((a && a.interfaces) || []).filter((i) => i.at_mm && i.at_mm.length === 3).map((i) => ({
     id: String(i.id || "").replace("Interface_", "I"), type: "interface_" + (i.kind || "touching"),
-    shape: i.kind === "overlap" ? "parts overlap" : "parts touch", at_mm: i.at_mm }));
+    shape: i.kind === "overlap" ? "parts overlap" : i.kind === "gap" ? "parts across a small gap" : "parts touch",
+    at_mm: i.at_mm }));
 }
 
 function partLabel(p) {
@@ -52,7 +53,10 @@ function partLabel(p) {
 }
 
 /** What an assembly view shows, in one string: a later view that says more is drawn again. */
-const assemblySig = (a) => `${(a.parts || []).length}/${(a.interfaces || []).length}/${(a.notes || []).length}`;
+const assemblySig = (a) => `${(a.parts || []).length}/${(a.interfaces || []).length}/${(a.notes || []).length}/${a.measured === false ? 0 : 1}`;
+
+/** A length in millimetres as the stage says it: "0.19 mm". */
+const mmWords = (v) => (v == null || isNaN(v) ? "a small gap" : `${Number(Number(v).toPrecision(2))} mm`);
 
 /** AN ASSEMBLY MEASURED AFTER THE PANEL WAS DRAWN (the stage opened while the check was still
  *  measuring): its parts and interfaces are drawn in place, the answer already picked kept. True
@@ -62,6 +66,8 @@ export function followAssembly(root, a) {
   const box = root.querySelector(".fea-assembly");
   if (box && box.dataset.sig === assemblySig(a)) return false;
   const picked = root.querySelector('input[name="fea-connection"]:checked');
+  const gapBox = root.querySelector('input[name="fea-gap-joins"]');
+  const gapOn = gapBox ? gapBox.checked : null;
   const html = assemblyHtml(a);
   if (box) box.outerHTML = html;
   else {
@@ -73,6 +79,8 @@ export function followAssembly(root, a) {
     const again = root.querySelector(`input[name="fea-connection"][value="${picked.value}"]`);
     if (again) again.checked = true;
   }
+  const gapAgain = root.querySelector('input[name="fea-gap-joins"]');
+  if (gapAgain && gapOn !== null) gapAgain.checked = gapOn;
   return true;
 }
 
@@ -84,18 +92,30 @@ export function assemblyHtml(a) {
   const rows = (a.interfaces || []).map((i) => {
     const tag = String(i.id || "").replace("Interface_", "I");
     const what = i.kind === "overlap"
-      ? `pass into each other (${esc(String(Math.round(100 * (i.overlap_share || 0))))}% of the smaller part)`
-      : "touch";
+      ? (i.overlap_share == null ? "pass into each other"
+        : `pass into each other (${esc(String(Math.round(100 * i.overlap_share)))}% of the smaller part)`)
+      : i.kind === "gap" ? `sit ${esc(mmWords(i.gap_mm))} apart: joined across the gap` : "touch";
     return `<li class="fea-spot-row fea-itf-row ${esc(i.kind || "touching")}" data-spot="${esc(tag)}"><span class="fea-spot-id">${esc(tag)}</span><span>${esc((i.parts || []).join(" and "))} ${what}</span></li>`;
   }).join("");
   const free = (a.free_parts || []).length
     ? `<div class="gc-note">${esc(a.free_parts.join(", "))}: touches no other part.</div>` : "";
+  // NOT MEASURED YET is not "nothing touches" (the stage can open before the measurement lands)
+  const none = a.measured === false
+    ? `<div class="gc-note">Where the parts touch is still being measured…</div>`
+    : `<div class="gc-note">No place where two parts touch was found.</div>`;
+  // PLAN-fea-18: THE SMALL-GAP JOINS, a proposal with one switch (on by default)
+  const gaps = a.gap_joins || [];
+  const gapHtml = gaps.length ? `<div class="fea-gaps">
+      <label class="fea-gap-opt"><input type="checkbox" name="fea-gap-joins"${a.gap_default === false ? "" : " checked"}> ${esc(a.gap_question || "Join parts across small gaps")}</label>
+      <ul class="fea-gap-list">${gaps.map((g) => `<li>${esc(g.words)}</li>`).join("")}</ul>
+    </div>` : "";
+  const joinNotes = (a.join_notes || []).map((n) => `<div class="gc-note">${esc(n)}</div>`).join("");
   const opts = (a.options || []).map((o) => `<label class="fea-conn-opt"><input type="radio" name="fea-connection" value="${esc(o.key)}"${o.key === (a.default || "bonded") ? " checked" : ""}> <b>${esc(o.label)}</b> <span class="fea-conn-words">${esc(o.words)}</span></label>`).join("");
   return `<div class="fea-assembly" data-sig="${esc(assemblySig(a))}">
       <div class="rc-row"><div class="rc-k">Parts</div><div class="rc-v fea-parts-sum">${esc(a.summary || "")}</div></div>
       <ul class="fea-parts" aria-label="The parts of the assembly">${parts}</ul>
-      ${rows ? `<ul class="fea-spots fea-itfs" aria-label="Where the parts touch">${rows}</ul>` : `<div class="gc-note">No place where two parts touch was found.</div>`}
-      ${free}${a.overlap_note ? `<div class="gc-note">${esc(a.overlap_note)}</div>` : ""}
+      ${rows ? `<ul class="fea-spots fea-itfs" aria-label="Where the parts touch">${rows}</ul>` : none}
+      ${gapHtml}${joinNotes}${free}${a.overlap_note ? `<div class="gc-note">${esc(a.overlap_note)}</div>` : ""}
       <p class="fea-q fea-conn-q">${esc(a.question || "How are the parts connected?")}</p>
       <div class="fea-conn" role="radiogroup" aria-label="${esc(a.question || "How are the parts connected?")}">${opts}</div>
       <div class="gc-note">One answer for every joint for now; each face is still named, so you can change any joint in your solver.</div>
@@ -270,6 +290,8 @@ export function readFeaForm(root, p) {
                  scale_to_m: p.scale_to_m == null ? null : Number(p.scale_to_m) };
   const conn = root.querySelector ? root.querySelector('input[name="fea-connection"]:checked') : null;
   if (conn) body.fea_connection = conn.value;
+  const gapBox = root.querySelector ? root.querySelector('input[name="fea-gap-joins"]') : null;
+  if (gapBox) body.fea_gap_joins = !!gapBox.checked;
   const upSel = root.closest ? root.closest(".gc-stage")?.querySelector(".v-up select") : null;
   const up = (upSel && upSel.value) || p.up_axis;
   if (up) body.up_axis = up;

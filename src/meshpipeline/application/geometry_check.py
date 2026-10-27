@@ -171,7 +171,10 @@ def store_status(session_id: str, status: str, task_step: str, **fields) -> dict
     the minimal record cannot be stored, the read-side time box is what tells the user."""
     try:
         write_status(session_id, status, **fields)
-        return {"status": status, **fields}
+        # THE TASK'S RESULT IS PLAIN JSON TOO: the worker hands it to Celery's JSON encoder, and one numpy
+        # integer in a fact (the clean check's body numbers, 26 Oct) ended the scout task "raised
+        # unexpected: EncodeError" although its record was stored (the CFD and FEA scouts alike)
+        return jsonable({"status": status, **fields})
     except Exception as exc:  # noqa: BLE001 - said and stored, never raised out of the task
         logger.exception("geometry check: could not store the %s result - session=%s", status, session_id)
         reason = f"{type(exc).__name__}: the {task_step} result could not be stored"

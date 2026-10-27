@@ -330,6 +330,103 @@ def pairwise_interfaces(parts: list, volumes: list[float], *, fuzzy: float, scal
     return out
 
 
+#: A GAP JOINT'S REACH in the solver (*TIE POSITION TOLERANCE, CONTA174 pinball, BCTABLE ERROR): the
+#: widest gap measured on its faces, and this share more, so every node across it is tied.
+GAP_REACH_MARGIN = 0.25
+#: The stage's reading of the joints (record(), in the naming step the user waits on) measures for at
+#: most this long; the run's staging (stage()) has cad/fea_joins.BUDGET_S.
+RECORD_MEASURE_S = 150.0
+
+
+def joined_interfaces(parts: list, fused: Fused, volumes: list[float], *, diag: float, mm_per_unit: float,
+                      scale: float, gap_joins: bool = True, budget_s: float | None = None) -> tuple[list[dict], dict]:
+    """PLAN-fea-18: the interfaces the stage shows and the mesh joins, and how they were found.
+
+    The fuse's interfaces (cad/fea_assembly.interfaces_of, or pair by pair when the fuse failed) are
+    checked against the parts' surfaces (cad/fea_joins.check). When the surfaces agree, the fuse's
+    interfaces stand exactly as they were, and every pair of parts that faces each other across a
+    small gap (cad/fea_joins.gap_limit_mm) is added after them, joined there - unless `gap_joins` is
+    off. When the surfaces contradict the fuse (a part "inside" another it does not reach, a touch
+    it missed, a joint only through a face that crosses its own part), the measured joints replace
+    the fuse's: `info["trusted"]` is False, and a bonded mesh is meshed apart and tied.
+
+    `info`: {"trusted", "findings", "skins" (Part_k -> its faces that cross their own part), "gaps"
+    (the gap interfaces' ids), "complete", "seconds"}."""
+    from meshpipeline.cad import fea_joins as J
+
+    tol = FUZZY_SHARE * diag
+    if fused.error:
+        fuse_itf = pairwise_interfaces(parts, volumes, fuzzy=tol, scale=scale)
+    else:
+        fuse_itf = interfaces_of(fused, volumes, scale=scale)
+    measured = J.measure(parts, tol=tol, mm_per_unit=mm_per_unit,
+                         budget_s=J.BUDGET_S if budget_s is None else float(budget_s))
+    findings = J.check(fuse_itf, parts, measured, tol=tol, mm_per_unit=mm_per_unit)
+    kinds = (J.TOUCHING, J.GAP, J.OVERLAP) if gap_joins else (J.TOUCHING, J.OVERLAP)
+    if findings:
+        interfaces = J.interfaces(measured, parts, volumes, scale=scale, kinds=kinds)
+    else:
+        said = {tuple(sorted(i["parts"], key=lambda x: int(x.split("_")[1]))) for i in fuse_itf}
+        extra = [i for i in J.interfaces(measured, parts, volumes, scale=scale, kinds=(J.GAP,))
+                 if tuple(i["parts"]) not in said] if gap_joins else []
+        interfaces = list(fuse_itf)
+        for k, itf in enumerate(extra, start=len(interfaces) + 1):
+            itf["id"] = f"Interface_{k}"
+            interfaces.append(itf)
+    for itf in interfaces:
+        if itf.get("kind") == J.GAP:
+            itf["reach_mm"] = _r(float(itf.get("gap_max_mm") or itf.get("gap_mm") or 0.0) * (1.0 + GAP_REACH_MARGIN)
+                                 + tol * scale)
+    info = {"trusted": not findings, "findings": findings,
+            "skins": {part_id(p): [face_name(p, j) for j in js] for p, js in sorted(measured.skins.items())},
+            "gaps": [i["id"] for i in interfaces if i.get("kind") == J.GAP],
+            "complete": measured.complete, "seconds": measured.seconds}
+    return interfaces, info
+
+
+def joins_record(info: dict, interfaces: list[dict]) -> dict | None:
+    """What the record and the sidecar say of how the joints were found - None when there is nothing
+    to say (the fuse stood, no gap was joined, no skin found, the measurement finished), so an
+    assembly the new measurement changes nothing on is recorded exactly as before."""
+    if info["trusted"] and not info["gaps"] and not info["skins"] and info["complete"]:
+        return None
+    gap_faces = sorted({f for i in interfaces if i.get("kind") == "gap" for v in (i.get("faces") or {}).values()
+                        for f in v}, key=_face_sort)
+    return {"found_by": "fuse" if info["trusted"] else "surfaces", "findings": info["findings"],
+            "skins": info["skins"], "skin_faces": sorted({f for v in info["skins"].values() for f in v}, key=_face_sort),
+            "gaps": info["gaps"], "gap_faces": gap_faces, "complete": info["complete"],
+            "seconds": info["seconds"]}
+
+
+def joins_notes(info: dict, interfaces: list[dict], *, unit: str = "mm", scale_to_mm: float = 1.0) -> list[str]:
+    """The joints' finding in plain words, for the record and the sidecar."""
+    notes = []
+    if not info["trusted"]:
+        first = info["findings"][0]["words"]
+        more = f" ({len(info['findings'])} such answers)" if len(info["findings"]) > 1 else ""
+        notes.append("Where the parts meet was measured on their surfaces, pair by pair: the fuse of all the parts "
+                     f"at once gave answers their surfaces contradict - {first}{more}.")
+    for pid, faces in info["skins"].items():
+        notes.append(f"{pid} has faces that cross or lie on its own other faces ({_list(faces[:6])}"
+                     f"{' and more' if len(faces) > 6 else ''}): a surface of no thickness there, so they join "
+                     "no part and size no gap.")
+    gaps = [i for i in interfaces if i.get("kind") == "gap"]
+    if gaps:
+        words = "; ".join(f"{i['parts'][0]} and {i['parts'][1]} {_mm(float(i['gap_mm']) * scale_to_mm)} apart"
+                          for i in gaps[:6])
+        notes.append(f"{len(gaps)} pair(s) of parts face each other across a small gap and are joined there, as a "
+                     f"weld or a thread the CAD does not draw (up to 0.5 mm, less on small parts): {words}"
+                     f"{' and more' if len(gaps) > 6 else ''}.")
+    if not info["complete"]:
+        notes.append("The parts' surfaces were not all measured in the time set for it: where they meet is as the "
+                     "fuse found it.")
+    return notes
+
+
+def _mm(v: float) -> str:
+    return f"{v:.2g} mm" if v < 1 else f"{v:.3g} mm"
+
+
 def record(shape, *, mm_per_unit: float, names: list[str] | None = None) -> dict:
     """What the assembly is (see the module text), in millimetres."""
     t0 = time.time()
@@ -354,10 +451,15 @@ def record(shape, *, mm_per_unit: float, names: list[str] | None = None) -> dict
         # THE PARTS PAIR BY PAIR: what touches is still found; a bonded mesh then ties them
         notes.append(f"{fused.error} all at once: where they touch was found pair by pair, and a bonded mesh "
                      "ties the parts there instead of sharing nodes.")
-        interfaces = pairwise_interfaces(parts, [v for v, _c in vols], fuzzy=FUZZY_SHARE * diag, scale=mm)
-    else:
-        interfaces = interfaces_of(fused, [v for v, _c in vols], scale=mm)
+    # PLAN-fea-18: the fuse's answer, checked on the parts' surfaces, and the small-gap joins
+    interfaces, info = joined_interfaces(parts, fused, [v for v, _c in vols], diag=diag, mm_per_unit=mm, scale=mm,
+                                         budget_s=RECORD_MEASURE_S)
     rec["interfaces"] = interfaces
+    said = joins_record(info, interfaces)
+    if said is not None:
+        said["notes"] = joins_notes(info, interfaces)
+        rec["joins"] = said
+        notes.extend(said["notes"])
     joined = {p for itf in interfaces for p in itf["parts"]}
     rec["free_parts"] = [p["id"] for p in out_parts if p["id"] not in joined]
     if rec["free_parts"]:
@@ -370,6 +472,13 @@ def record(shape, *, mm_per_unit: float, names: list[str] | None = None) -> dict
         notes.append(f"{n_over} pair(s) of parts pass into each other (interference).")
     rec["seconds"] = round(time.time() - t0, 2)
     return rec
+
+
+def _gap_fields(itf: dict) -> dict:
+    """A small-gap pair's measured gap and its reach in the solver, in the staged unit (metres)."""
+    # the staged interfaces are read at scale 1: their *_mm lengths are in the staged unit
+    return {"gap": _r(float(itf.get("gap_mm") or 0.0)), "gap_max": _r(float(itf.get("gap_max_mm") or 0.0)),
+            "reach": _r(float(itf.get("reach_mm") or 0.0))}
 
 
 def _index_of(faces: list, f) -> int | None:
@@ -408,7 +517,7 @@ SIDECAR = "assembly.json"
 
 
 def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | None = None,
-          tie: bool = False) -> dict:
+          tie: bool = False, gap_joins: bool = True, mm_per_unit: float = 1000.0) -> dict:
     """Write STAGED and SIDECAR for `connection` into `out_dir`, and return the sidecar.
 
     BONDED: the general fuse itself - the parts share every face where they touch, so the mesh is
@@ -418,6 +527,11 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
     `tie` asks for that directly (a fused assembly the mesher could not build as one).
     CONTACT: the parts side by side, each meshed on its own; every pair the fuse found touching
     (or overlapping) is a contact pair.
+    PLAN-fea-18: the fuse is checked on the parts' surfaces first (joined_interfaces). Parts that face
+    each other across a small gap are joined there - tied when bonded, a contact pair with contact -
+    each pair with its measured gap and its reach (`gap_joins` off: not joined); a fuse the surfaces
+    contradict is set aside, and the measured joints are tied (bonded) or paired (contact).
+    `mm_per_unit`: the staged shape's unit (the staging writes metres).
 
     The sidecar says, for every face and solid of STAGED in MapShapes order (gmsh's tag order for
     the file it reads), its names (Part_p_Face_j; a shared face has one per part) and its parts,
@@ -441,10 +555,15 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
         mode = PAIR_TIE
         notes.append("The parts could not be meshed as one where they meet, so each part is meshed on its own and "
                      "tied there (bonded, but their nodes are not shared).")
-    interfaces = (pairwise_interfaces(parts, vols, fuzzy=FUZZY_SHARE * diag) if fused.error
-                  else interfaces_of(fused, vols, scale=1.0))
+    interfaces, info = joined_interfaces(parts, fused, vols, diag=diag, mm_per_unit=mm_per_unit, scale=1.0,
+                                         gap_joins=gap_joins)
+    if not info["trusted"] and mode == PAIR_BONDED:
+        # THE FUSE IS WRONG HERE (PLAN-fea-18): its one piece cannot be meshed as the parts are, so each
+        # part is meshed on its own and tied where its surfaces meet the others
+        mode = PAIR_TIE
+    notes.extend(joins_notes(info, interfaces, scale_to_mm=mm_per_unit))
     n_over = sum(1 for i in interfaces if i["kind"] == "overlap")
-    n_pieces = 0 if fused.error else sum(1 for o in fused.solid_parts if len(o) > 1)
+    n_pieces = 0 if fused.error or not info["trusted"] else sum(1 for o in fused.solid_parts if len(o) > 1)
     tie_first = mode == PAIR_BONDED and n_pieces >= TIE_FIRST_PIECES
     if tie_first:
         mode = PAIR_TIE
@@ -479,6 +598,13 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
     unpaired: list[tuple[str, str]] = []
     for itf in interfaces:
         p, q = (int(x.split("_")[1]) for x in itf["parts"])
+        gap = _gap_fields(itf) if itf.get("kind") == "gap" else {}
+        if mode == PAIR_BONDED and gap:
+            # A SMALL-GAP JOINT in a fused mesh: the two sides are not one surface, so they are tied
+            pairs.append({"id": itf["id"], "kind": PAIR_TIE, "parts": [p, q], "overlap": False,
+                          "faces": {str(p): itf["faces"].get(part_id(p)) or [],
+                                    str(q): itf["faces"].get(part_id(q)) or []}, **gap})
+            continue
         if mode == PAIR_BONDED:
             # the faces both parts share: one surface per side, where the bond's stress is read
             shared = [k for k, o in enumerate(fused.face_origins) if {p, q} <= {a for a, _j in o}]
@@ -495,7 +621,7 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
                 continue
             pairs.append({"id": itf["id"], "kind": PAIR_TIE if mode == PAIR_TIE else PAIR_CONTACT,
                           "parts": [p, q], "overlap": itf["kind"] == "overlap",
-                          "faces": {str(p): fp, str(q): fq}})
+                          "faces": {str(p): fp, str(q): fq}, **gap})
     joined = {p for i in interfaces for p in i["parts"]}
     free = [part_id(p) for p in range(1, len(parts) + 1) if part_id(p) not in joined]
     if free:
@@ -543,6 +669,15 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
                "notes": notes, "fuse_seconds": fused.seconds,
                "tie_first": ({"overlap_pieces": n_pieces, "overlap_pairs": n_over, "at": TIE_FIRST_PIECES}
                              if tie_first else None)}
+    said = joins_record(info, interfaces)
+    if said is not None:
+        said["notes"] = joins_notes(info, interfaces, scale_to_mm=mm_per_unit)
+    if not gap_joins:
+        sidecar["gap_joins"] = False
+    if said is not None:
+        # HOW THE JOINTS WERE FOUND, and the faces no gap sizing should read: the faces a small-gap
+        # joint joins (the gap is joined, not meshed across) and the skins (no thickness)
+        sidecar["joins"] = said
     (out / SIDECAR).write_text(json.dumps(sidecar, indent=1))
     return sidecar
 
