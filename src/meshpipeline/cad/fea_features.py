@@ -732,13 +732,15 @@ def merge_coaxial(arcs: list[Arc]) -> list[Arc]:
 
 
 #: A BORE, NOT A HOLE (PLAN-fea-4, 27 Oct): a concave cylinder that shares its axis with a convex cylinder of
-#: the same part, wider than it, round at least BORE_OUTER_SPAN_DEG, over at least BORE_OVERLAP of the hole's
-#: own length, is the inside of a tube, a sleeve, a ring or a hollow shaft - the part's main wall, not a hole
-#: cut through a wall. The wall rule sizes it (PLAN-fea-3); a stress raiser where something meets or crosses it
+#: the same part, wider than it, ALL THE WAY ROUND (BORE_OUTER_SPAN_DEG), over at least BORE_OVERLAP of the
+#: hole's own length, and at least BORE_LENGTH_WALLS times as long as the wall between them, is the inside of a
+#: tube, a sleeve or a hollow shaft - the part's main wall, not a hole cut through a wall. A lug's hole beside
+#: its half-round end, an eye, a washer's or a ring's hole - short against their wall - stay holes. The wall rule sizes it (PLAN-fea-3); a stress raiser where something meets or crosses it
 #: is that feature's own zone. A tube's 533 mm bore sized as a hole (3 elements through its 1.2 mm wall along
 #: its whole length) was 2.6M of job bf863215's 3.9M elements; a 0.5 mm-walled cryostat liner's, 158M.
-BORE_OUTER_SPAN_DEG = 180.0
+BORE_OUTER_SPAN_DEG = HOLE_SPAN_DEG
 BORE_OVERLAP = 0.5
+BORE_LENGTH_WALLS = 5.0
 #: the two axes are one within this share of the bore's radius (and to within about 1.5 degrees)
 BORE_AXIS_SHARE = 0.01
 BORE_AXIS_COS = 0.9997
@@ -759,7 +761,7 @@ def is_bore(hole: Arc, arcs: list[Arc]) -> Arc | None:
         t = float(d @ hole.axis)
         lo = max(-0.5 * hole.length, t - 0.5 * o.length)
         hi = min(0.5 * hole.length, t + 0.5 * o.length)
-        if hi - lo >= BORE_OVERLAP * hole.length:
+        if hi - lo >= BORE_OVERLAP * hole.length and hole.length >= BORE_LENGTH_WALLS * (o.radius - hole.radius):
             return o
     return None
 
@@ -888,7 +890,7 @@ def bodies_of(tris: np.ndarray, pairs: EdgePairs) -> int:
     return int(components(len(tris), pairs.tri_a, pairs.tri_b).max() + 1)
 
 
-__all__ = ["BORE_AXIS_COS", "BORE_AXIS_SHARE", "BORE_OUTER_SPAN_DEG", "BORE_OVERLAP", "is_bore",
+__all__ = ["BORE_AXIS_COS", "BORE_AXIS_SHARE", "BORE_LENGTH_WALLS", "BORE_OUTER_SPAN_DEG", "BORE_OVERLAP", "is_bore",
            "FILLET", "HOLE", "HOLE_SPAN_DEG", "MAX_HOT_SPOTS", "NOTCH", "NOTCH_SPAN_DEG", "SHARP_CORNER",
            "SHARP_TURN_DEG", "SMOOTH_TURN_DEG", "THICKNESS_RAYS", "VARY_SHARE", "thin_spots", "Arc", "EdgePairs", "Surface",
            "agreed_wall", "bodies_of", "components", "wall_reach", "curved_patches", "edge_pairs", "face_samples", "fit_round", "kind_of", "merge_coaxial", "nesting_depth", "patch_samples",

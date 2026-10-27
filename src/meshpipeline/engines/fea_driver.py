@@ -325,10 +325,11 @@ def restage_tied(ws: Path, record: dict) -> dict:
 
 
 #: PLAN-fea-8: A COUNT THAT RAN OUT OF CUBES while still under the limit is counted again with four times the
-#: cubes, up to this many - an unfinished count can never say the plan fits, and a plan that fits is never
-#: coarsened for a count that merely stopped short (the corpus sweep of 27 Oct: 18 plans coarsened so; job
+#: cubes, up to this many; still short there, its floor under the limit is taken as fitting (engines/fea_plan.
+#: finish: a plan short of its machine steps up when it runs, RUN-3). A plan that fits is never coarsened for a
+#: count that merely stopped short (the corpus sweep of 27 Oct: 18 plans coarsened so; job
 #: bf863215's 6.19M-element plan cut to 3.83M with its bolt fillets at 3 elements per quarter-turn, not 6).
-MAX_CUBES_CEILING = 48_000_000
+MAX_CUBES_CEILING = 12_000_000
 
 
 def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float, *, limit: float | None = None):

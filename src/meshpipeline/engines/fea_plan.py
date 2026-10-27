@@ -172,6 +172,11 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
                         "why": (f"a {_mm(ts)} thin spot of the wall under {name}, {_mm(rad)} across: "
                                 f"{WALL_ELEMENTS} elements through it there")})
         r = _f(row.get("radius_mm"))
+        if r is not None and name not in spot_faces and r < ROUND_MICRO * _part_diag(record, name):
+            # PLAN-fea-12: A ROUND KEPT ONLY FOR ITS SHAPE that is smaller than ROUND_MICRO of its part is an edge
+            # break the elements' curved sides follow, not a shape that needs elements of its own (a 127 mm
+            # coil's 0.06 mm rounds asked for 0.024 mm elements, 31.6M of them); named among the micro details
+            continue
         if r is not None and name not in spot_faces:
             out.append({"id": f"R{_face_order(name)}", "kind": "round", "faces": [name],
                         "size_m": QUARTER * r / ROUND_PER_QUARTER * _MM, "reach_m": 0.0,
@@ -197,6 +202,20 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
         z["size_m"] = _r(z["size_m"])
         z["reach_m"] = _r(z["reach_m"])
     return out
+
+
+#: PLAN-fea-12: a round kept only for its shape (PLAN-fea-7) under this share of its part's diagonal is an
+#: edge break, not a shape (cad/fea_measure.MICRO_FRACTION: the CAD details recorded as micro)
+ROUND_MICRO = 1e-3
+
+
+def _part_diag(record: Mapping, face: str) -> float:
+    """The diagonal (mm) of the part `face` belongs to: its assembly part's, else the part's own."""
+    key = _part_key(face)
+    for b in record.get("part_bases") or []:
+        if b.get("id") == key and _f(b.get("diag_mm")):
+            return float(b["diag_mm"])
+    return float(_f(record.get("diag_mm")) or 0.0)
 
 
 def _part_key(face: str) -> str:
@@ -299,13 +318,15 @@ def finish(record: Mapping, zone_list: list[dict], hist: Histogram, *, diag_m: f
     LIMIT_AIM of `limit` (PLAN-fea-8)."""
     base = diag_m / MIN_DIVISIONS
     est = elements(hist, base, PER_H3)
-    fits = hist.complete and est <= LIMIT_AIM * float(limit)
+    # PLAN-fea-8: a count that ran out of cubes after counting further (engines/fea_driver._histogram) is a
+    # floor; under the limit it fits - a plan short of its machine steps up when it runs (RUN-3)
+    fits = (hist.complete or getattr(hist, "stopped", "") == "cubes") and est <= LIMIT_AIM * float(limit)
     plan: dict = {
         "version": VERSION,
         "element": {"family": "tetrahedra", "order": 2, "solid_only": True},
         "base_size_m": _r(base), "growth": float(growth), "per_h3": PER_H3,
         "zones": zone_list, "histogram": hist.as_list(), "histogram_complete": hist.complete,
-        "estimate": {"elements": int(round(est))},
+        "estimate": {"elements": int(round(est)), **({} if hist.complete else {"at_least": True})},
         "limit": {"elements": int(limit)},
         "fits": bool(fits), "levers": list(levers or []),
         # PLAN-fea-10: the cusps the adapter sets aside (metres, the mesh's unit)
@@ -321,9 +342,24 @@ def finish(record: Mapping, zone_list: list[dict], hist: Histogram, *, diag_m: f
                       "points_m": [[_r(float(v) * _MM) for v in p] for p in m.get("points_mm") or []]}
                      for m in record.get("micro") or []
                      if float(m.get("size_mm") or 0.0) < MICRO_KEEP * finest_mm]
+    rounds = micro_rounds(record)
+    if rounds:
+        plan["micro_rounds"] = rounds          # PLAN-fea-12 (absent when there is none: the plan is as before)
     plan["words"] = words(record, plan)
     plan["decisions"] = decisions(record, plan)
     return plan
+
+
+def micro_rounds(record: Mapping) -> list[dict]:
+    """PLAN-fea-12: the rounds kept only for their shape that are under ROUND_MICRO of their part - no zone of
+    their own (zones() leaves them out), named."""
+    spot = {str(f) for h in record.get("hot_spots") or [] for f in h.get("faces") or []}
+    out = []
+    for name, row in sorted((record.get("faces") or {}).items(), key=lambda kv: _face_order(kv[0])):
+        r = _f((row or {}).get("radius_mm"))
+        if r is not None and name not in spot and r < ROUND_MICRO * _part_diag(record, name):
+            out.append({"face": name, "radius_mm": r})
+    return out
 
 
 def words(record: Mapping, plan: Mapping) -> list[str]:
@@ -386,6 +422,11 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
         out.append(f"Faces lying on each other: {len(lying)} pair(s) of faces of one part lie on top of each other "
                    f"with no material between them ({named}) - a skin of no thickness in the CAD. They set no wall "
                    "size: the wall there is read past them.")
+    small = plan.get("micro_rounds") or []
+    if small:
+        out.append(f"{len(small)} round face(s) far smaller than their part (the smallest of radius "
+                   f"{min(float(m['radius_mm']) for m in small):.3g} mm) are edge breaks the elements' curved sides "
+                   "follow; they get no elements of their own.")
     cusps = plan.get("cusps") or []
     if cusps:
         out.append(f"Cusps: {len(cusps)} place(s) where two CAD edges of a face meet at almost no angle, so the "

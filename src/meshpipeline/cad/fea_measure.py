@@ -686,7 +686,7 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
     if bores:
         notes.append(f"{len(bores)} bore(s) - the inside of a tube, sleeve or ring, sharing its axis with the "
                      "outside - are the part's own wall, sized by the wall rule, not stress-raising holes.")
-    out = {"version": VERSION, "basis": basis, "unit": "mm", "bodies": int(bodies),
+    out = {"version": VERSION, "basis": basis, "unit": "mm", "bodies": int(bodies), "diag_mm": _r(s.diag),
            "face_names": "Face_k" if basis == "cad" else "Region_k", "faces": faces,
            "thickness": thickness, "hot_spots": spots, "counts": counts, "complete": complete,
            "notes": notes, "seconds": round(time.time() - started, 2)}

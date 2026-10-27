@@ -700,7 +700,9 @@ def rename_record(rec: dict, names: list[str]) -> dict:
         out["thickness"] = {**rec["thickness"], "face": nm(rec["thickness"]["face"])}
     for key in ("cusps", "micro", "fold_back", "suspects", "coincident", "bores"):
         if rec.get(key):
-            out[key] = [{**c, "faces": [nm(f) for f in c.get("faces") or []]} for c in rec[key]]
+            out[key] = [{**c, "faces": [nm(f) for f in c.get("faces") or []],
+                         **({"outer_faces": [nm(f) for f in c["outer_faces"]]} if c.get("outer_faces") else {})}
+                        for c in rec[key]]
     out["face_names"] = "Part_k_Face_j"
     return out
 

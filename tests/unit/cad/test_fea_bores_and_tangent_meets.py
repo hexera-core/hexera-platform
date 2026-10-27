@@ -52,6 +52,21 @@ def test_a_hole_through_a_plate_is_still_a_hole():
     assert len(_holes(rec)) == 1 and not rec.get("bores")
 
 
+def test_a_lugs_hole_by_its_round_end_is_still_a_hole():
+    """A lug's hole shares its axis with the lug's half-round end - the classic stress raiser, never a bore."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+
+    lug = A.solids(BRepAlgoAPI_Fuse(_box(40.0, 20.0, 6.0, at=(0, -10, 0)), _cyl(10.0, 6.0, at=(40, 0, 0))).Shape())[0]
+    rec = measure_cad(_cut(lug, _cyl(4.0, 8.0, at=(40, 0, -1))), mm_per_unit=1.0)
+    assert len(_holes(rec)) == 1 and not rec.get("bores")
+
+
+def test_a_washers_and_a_rings_hole_short_against_its_wall_is_still_a_hole():
+    washer = _cut(_cyl(12.5, 1.0), _cyl(4.2, 3.0, at=(0, 0, -1)))
+    rec = measure_cad(washer, mm_per_unit=1.0)
+    assert len(_holes(rec)) == 1 and not rec.get("bores")
+
+
 def test_a_cross_hole_through_a_tube_is_still_a_hole():
     tube = _cut(_cyl(10.0, 200.0), _cyl(8.5, 202.0, at=(0, 0, -1)))
     crossed = _cut(tube, _cyl(2.0, 30.0, at=(-15, 0, 100), axis=(1, 0, 0)))
