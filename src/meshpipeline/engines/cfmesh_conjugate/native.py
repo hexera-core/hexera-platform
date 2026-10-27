@@ -14,9 +14,38 @@ from meshpipeline.engines.cfmesh_conjugate.foam_exec import _DEFAULT_BASHRC
 logger = logging.getLogger(__name__)
 
 #: What dispatch reads off a native result. rc 0 is a mesh; anything else is not.
+#:
+#: POSITIVE, ALL OF THEM. The shared seam reads a NEGATIVE return code as "killed by a signal" and
+#: names the signal from it, so RC_NO_PLAN = -2 would have reported a workspace with no plan as a
+#: mesher killed by SIGINT. A refusal and a kernel kill are the two things a reader of this most
+#: needs to tell apart.
 RC_OK = 0
 RC_REFUSED = 1
-RC_NO_PLAN = -2
+RC_NO_PLAN = 2
+
+#: The stage name a refusal carries when the mesher itself refused rather than a named OpenFOAM
+#: run failing. `describe_native_result` prints it beside the command.
+_STAGE = "conjugate"
+
+
+def _result(rc: int, *, stage: str = "", output: str = "", **extra) -> dict:
+    """The process result in the ONE shape every engine returns.
+
+    THE SEAM IS CALLED, NOT COPIED (sandbox/safe_exec.describe_native_result). This runner used to
+    hand-build {"rc", "timed_out", "log_tail"} and so returned five fewer keys than every other
+    engine - no `signalled`, no `signal`, no `outcome`, no `command`, no `stage` - which is the
+    exact divergence tests/unit/engines/test_native_signal_policy exists to refuse. The arguments
+    are this bundle's own commands, so the command identity names the mesher rather than a shell.
+    """
+    from meshpipeline.sandbox.safe_exec import describe_native_result
+
+    # THE COMMAND IS THE STAGE THAT FAILED, where one did: a build runs cartesianMesh, topoSet,
+    # splitMeshRegions, checkMesh and foamToVTK in turn, so naming the first of them on a topoSet
+    # failure would put the wrong utility in the report the reader acts on.
+    out = describe_native_result(returncode=int(rc), args=[stage or "cartesianMesh"], stage=stage,
+                                 output=output)
+    out.update(extra)
+    return out
 
 
 def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
@@ -37,7 +66,7 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     except (OSError, ValueError) as exc:
         logger.warning("conjugate: no usable plan in %s (%s)", ws, exc)
         _write_report(ws, {"ok": False, "refused": str(exc)})
-        return {"rc": RC_NO_PLAN, "timed_out": False, "log_tail": f"REJECTED: {exc}"}
+        return _result(RC_NO_PLAN, stage=_STAGE, output=f"REJECTED: {exc}")
 
     try:
         report = build(
@@ -55,12 +84,15 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         # reason is the most useful thing the run produces.
         logger.info("conjugate: refused - %s", exc)
         _write_report(ws, {"ok": False, "refused": str(exc)})
-        return {"rc": RC_REFUSED, "timed_out": False, "log_tail": f"REFUSED: {exc}"}
+        # A STAGE'S OWN EXIT CODE when one of the OpenFOAM runs is what failed, so a mesher the
+        # kernel killed arrives as signalled rather than as this engine declining to trust a mesh.
+        return _result(getattr(exc, "rc", None) or RC_REFUSED,
+                       stage=getattr(exc, "stage", "") or _STAGE, output=f"REFUSED: {exc}")
     except Exception as exc:              # noqa: BLE001 - dispatch wants a dict, never a raise
         logger.exception("conjugate: the run failed")
         _write_report(ws, {"ok": False, "refused": f"{type(exc).__name__}: {exc}"})
-        return {"rc": RC_REFUSED, "timed_out": False,
-                "log_tail": f"FAILED: {type(exc).__name__}: {exc}"}
+        return _result(RC_REFUSED, stage=_STAGE,
+                       output=f"FAILED: {type(exc).__name__}: {exc}")
 
     body = _as_dict(report, plan)
     # WRITTEN BEFORE THE AIDS AND AGAIN AFTER. The aids are the expensive part of the run - a
@@ -76,8 +108,7 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             f"{report.interface_faces_fluid:,} faces both sides")
     if report.problems:
         tail += "; problems: " + "; ".join(report.problems)
-    return {"rc": RC_OK, "timed_out": False, "log_tail": tail,
-            "cells": int(report.fluid.cells + report.solid.cells)}
+    return _result(RC_OK, output=tail, cells=int(report.fluid.cells + report.solid.cells))
 
 
 def _review_aids(ws: Path, *, bashrc: str) -> dict:

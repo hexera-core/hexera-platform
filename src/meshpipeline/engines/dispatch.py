@@ -8,11 +8,13 @@ from typing import Any
 # OpenFOAM engines carry LLM-authored dicts that must be scanned before executing; the
 # scan is engine-owned (each bundle carries its own foam_exec clone). gmsh/vmtk author no
 # such dicts.
-_OPENFOAM_ENGINES = frozenset({"cfmesh", "snappy", "snappy_multiregion"})
+_OPENFOAM_ENGINES = frozenset({"cfmesh", "cfmesh_conjugate", "snappy",
+                               "snappy_multiregion"})
 
 
 def engine_runners() -> dict:
     from meshpipeline.engines.cfmesh.native import _run_cartesian_mesh_local
+    from meshpipeline.engines.cfmesh_conjugate.native import _run_conjugate_local
     from meshpipeline.engines.gmsh.gmsh_runner import _run_gmsh_local
     from meshpipeline.engines.snapgrid.runner import _run_snapgrid_local
     from meshpipeline.engines.snappy.snappy_runner import _run_snappy_local
@@ -20,6 +22,7 @@ def engine_runners() -> dict:
     from meshpipeline.engines.vmtk.vmtk_runner import _run_vmtk_local
     return {
         "cfmesh":             _run_cartesian_mesh_local,
+        "cfmesh_conjugate":   _run_conjugate_local,
         "snappy":             _run_snappy_local,
         "snappy_multiregion": _run_snappy_multiregion_local,
         "snapgrid":           _run_snapgrid_local,

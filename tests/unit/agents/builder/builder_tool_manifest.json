@@ -101,6 +101,12 @@
    "run_mesh",
    "run_python",
    "configure_mesh"
+  ],
+  "cfmesh_conjugate": [
+   "read_file",
+   "list_directory",
+   "submit_mesh",
+   "run_mesh"
   ]
  },
  "registry": [

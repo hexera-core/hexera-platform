@@ -86,6 +86,13 @@ ROUTE_CONSUMERS: dict[str, tuple[str, ...]] = {
 #: Each implemented engine (engines/registry.engine_names), and the build step that reads them.
 ENGINE_CONSUMERS: dict[str, tuple[str, ...]] = {
     "cfmesh": ("builder_model",),
+    # NOTHING BEYOND THE COMMON FOUR, for the same reason as the snap grid below: this engine's
+    # build is deterministic (engines/cfmesh_conjugate/driver.py drives it with no model in the
+    # loop), so there is no builder model to add. The notes still reach the run everywhere they
+    # reach any other engine - COMMON_CONSUMERS - including user_notes.txt in the workspace the
+    # driver reads and the reviewer's context; what the user says also shapes the run through the
+    # intake's declaration, the port names and the fidelity.
+    "cfmesh_conjugate": ("intake",),
     "gmsh": ("builder_model", "fea_ai"),
     "snapgrid": ("intake",),
     "snappy": ("snappy_planner",),

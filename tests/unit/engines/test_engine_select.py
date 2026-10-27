@@ -24,7 +24,8 @@ def _no_llm(monkeypatch):
 
 def test_catalog_basics_unchanged():
     import pytest
-    assert set(cat.engine_names()) == {"cfmesh", "snappy", "gmsh", "snappy_multiregion", "vmtk",
+    assert set(cat.engine_names()) == {"cfmesh", "cfmesh_conjugate", "snappy", "gmsh",
+                                       "snappy_multiregion", "vmtk",
                                        "snapgrid"}
     assert cat.default_engine() == "cfmesh"
     assert cat.get_spec("").name == "cfmesh"             # UNSET → default

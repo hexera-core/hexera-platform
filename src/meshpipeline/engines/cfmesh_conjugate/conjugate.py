@@ -86,7 +86,19 @@ _LEVEL_DIVISOR = 2
 
 
 class ConjugateError(RuntimeError):
-    """A conjugate build that cannot be trusted. Raised instead of returning a bad mesh."""
+    """A conjugate build that cannot be trusted. Raised instead of returning a bad mesh.
+
+    CARRIES THE STAGE'S OWN EXIT CODE when one of the five OpenFOAM runs is what failed, because
+    the shared native-result seam reads a NEGATIVE return code as "killed by a signal" and names
+    the signal from it. A mesher the kernel kills for memory - measured peak 1.67 GB on a small
+    plate, so not hypothetical - has to arrive as signalled and not as a plain refusal, or nothing
+    downstream can tell an out-of-memory run from a mesh this engine declined to trust.
+    """
+
+    def __init__(self, message: str, *, rc: int | None = None, stage: str = "") -> None:
+        super().__init__(message)
+        self.rc = rc
+        self.stage = stage
 
 
 # #
@@ -865,7 +877,8 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         rc, took = _foam(ws, script, ws / f"{stage}.log", bashrc=bashrc, timeout=timeout)
         seconds[stage] = round(took, 1)
         if rc != 0:
-            raise ConjugateError(f"{stage} exited {rc} after {took:.0f}s; see {stage}.log")
+            raise ConjugateError(f"{stage} exited {rc} after {took:.0f}s; see {stage}.log",
+                                 rc=rc, stage=stage)
 
     # Out of constant/ before anything scans it again. See CELL_TO_REGION.
     leftover = ws / "constant" / CELL_TO_REGION

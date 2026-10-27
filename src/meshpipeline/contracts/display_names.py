@@ -12,6 +12,7 @@ MESH_ENGINES: Final[dict[str, str]] = {
     "snappy":             "snappyHexMesh",
     "snappy_multiregion": "snappyHexMesh multi-region",
     "snapgrid":           "Snap-grid multi-region (ECXML)",
+    "cfmesh_conjugate":   "Conjugate (coolant + metal)",
     "vmtk":               "VMTK",
 }
 

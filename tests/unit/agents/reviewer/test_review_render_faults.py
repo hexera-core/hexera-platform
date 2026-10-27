@@ -10,6 +10,7 @@ import pytest
 from _render_fakes import FakeBackend
 from tests.execution_publisher_double import RecordingExecutionPublisher
 
+import meshpipeline.agents.reviewer.settings as rcfg
 import meshpipeline.agents.reviewer.visual as visual
 from meshpipeline.contracts import model_inference as llm_router
 from meshpipeline.contracts.execution_guard import StaleWorkerFenced
@@ -124,6 +125,14 @@ def state(monkeypatch, tmp_path):
 def _review(monkeypatch, state, turns):
     model = _ScriptedModel(turns)
     monkeypatch.setattr(llm_router, "call_reviewer_with_tools", model)
+    # ENOUGH ROUNDS FOR THE SCRIPT, whatever this deployment's round cap is. These tests are about
+    # the IMAGE cap: the longest of them scripts MAX_IMAGES_PER_SESSION views two to a turn, which
+    # is 33 rounds including the submit, and a machine whose .env lowers REVIEWER_MAX_ROUNDS to 30
+    # exhausts the review before the submit and fails on "reviewer_exhausted" - a round cap the
+    # test never meant to exercise deciding its outcome. Raised rather than pinned to 60, so the
+    # script's own length sets it and a longer script cannot quietly reintroduce this.
+    monkeypatch.setattr(rcfg, "REVIEWER_MAX_ROUNDS",
+                        max(rcfg.REVIEWER_MAX_ROUNDS, len(turns) + 2))
     return asyncio.run(visual.node_reviewer(state)), model
 
 

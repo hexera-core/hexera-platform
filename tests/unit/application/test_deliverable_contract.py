@@ -21,9 +21,12 @@ def test_the_marker_collision_is_real_so_guessing_could_not_have_worked():
         if spec.implemented and spec.deliverable:
             by_marker.setdefault(spec.deliverable.marker, []).append(name)
     shared = {m: e for m, e in by_marker.items() if len(e) > 1}
-    # the two multi-region engines both deliver a case marked by its regionProperties
+    # three engines deliver a case marked by its regionProperties
     assert shared == {"constant/polyMesh/owner": ["cfmesh", "snappy"],
-                      "constant/regionProperties": ["snapgrid", "snappy_multiregion"]}, shared
+                      # three engines now, for the same reason two did: the marker says
+                      # "a coupled case", never which engine wrote it
+                      "constant/regionProperties": ["cfmesh_conjugate", "snapgrid",
+                                                   "snappy_multiregion"]}, shared
 
 
 def test_a_snappy_workspace_is_never_classified_as_cfmesh(tmp_path):

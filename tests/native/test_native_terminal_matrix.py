@@ -22,7 +22,7 @@ from meshpipeline.persistence.repositories.job_repository import JobRepository
 
 pytestmark = pytest.mark.native_terminal
 
-ENGINES = ["cfmesh", "snappy", "gmsh", "snappy_multiregion", "vmtk"]
+ENGINES = ["cfmesh", "snappy", "gmsh", "snappy_multiregion", "cfmesh_conjugate", "vmtk"]
 OWNER = "owner-terminal"
 repo = JobRepository()
 arepo = ArtifactRepository()

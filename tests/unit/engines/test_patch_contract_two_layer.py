@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from meshpipeline.engines.registry import all_engine_names, get_spec
 
-FIVE_ENGINES = {"cfmesh", "snappy", "gmsh", "snappy_multiregion", "vmtk", "snapgrid"}
+# Named for the five it began with; it is the WHOLE roster and the assertion below says so.
+FIVE_ENGINES = {"cfmesh", "cfmesh_conjugate", "snappy", "gmsh", "snappy_multiregion", "vmtk",
+                "snapgrid"}
 
 
 def test_all_five_engines_still_declare_a_patch_contract_gate():

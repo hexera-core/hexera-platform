@@ -29,7 +29,8 @@ _ONE_REGION = ("snappy", "cfmesh", "gmsh", "vmtk")
 #: the engines whose internal meshes the resolution floor measures (engines/passage_flow)
 _PASSAGE_MEASURED = ("snappy", "cfmesh", "gmsh", "vmtk")
 #: every flow engine
-_ALL = ("snappy", "cfmesh", "snappy_multiregion", "snapgrid", "gmsh", "vmtk")
+_ALL = ("snappy", "cfmesh", "cfmesh_conjugate", "snappy_multiregion", "snapgrid",
+        "gmsh", "vmtk")
 _CFD = ("external", "internal")
 
 _CHECKMESH = "https://doc.cfd.direct/openfoam/user-guide-v12/mesh-description (checkMesh warns above 70 degrees)"

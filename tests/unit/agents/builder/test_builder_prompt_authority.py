@@ -10,6 +10,7 @@ from meshpipeline.engines.registry import engine_names, get_spec
 
 PACKS = {
     "cfmesh": "CFMESH_SYSTEM",
+    "cfmesh_conjugate": "CONJUGATE_SYSTEM",
     "snappy": "SNAPPY_SYSTEM",
     "gmsh": "GMSH_SYSTEM",
     "vmtk": "VMTK_SYSTEM",
@@ -98,6 +99,7 @@ def test_engine_specific_instructions_were_not_centralized(engine):
     general = polcfg.prompts.builder_system
     engine_only = {
         "cfmesh": ["meshDict", "cartesianMesh", "max_cell_factor"],
+        "cfmesh_conjugate": ["splitMeshRegions", "coolant", "cooled solid"],
         "snappy": ["snappyHexMesh", "surface_level"],
         "gmsh": ["gmsh_spec.json", "element_order"],
         "vmtk": ["centerline", "vmtk"],

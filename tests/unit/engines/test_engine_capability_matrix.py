@@ -44,6 +44,9 @@ EXPECTED: dict[tuple[str, str], set[str]] = {
     ("vmtk", "internal"): {"cad", "surface"},
     ("snappy_multiregion", "multi-region"): {"cad", "surface"},
     ("snapgrid", "multi-region"): {"cad"},
+    # the cooled solid: one part with coolant passages, and the coolant is cut out of the
+    # solid's own faces, so a triangle file has nothing to cut
+    ("cfmesh_conjugate", "multi-region"): {"cad"},
 }
 
 FILE_OF = {"cad": "part.step", "surface": "part.stl"}

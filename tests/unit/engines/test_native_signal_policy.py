@@ -109,7 +109,8 @@ def test_every_engine_runner_returns_the_shared_contract():
     from meshpipeline.engines.dispatch import engine_runners
 
     runners = engine_runners()
-    assert set(runners) == {"cfmesh", "snappy", "gmsh", "snappy_multiregion", "vmtk",
+    assert set(runners) == {"cfmesh", "cfmesh_conjugate", "snappy", "gmsh",
+                            "snappy_multiregion", "vmtk",
                             "snapgrid"}, runners
     shared = {"rc", "timed_out", "signalled", "outcome", "signal", "command", "stage", "log_tail"}
     for engine in sorted(runners):
@@ -135,6 +136,7 @@ _NATIVE_MODULE = {
     "vmtk": "meshpipeline.engines.vmtk.vmtk_runner",
     "snappy_multiregion": "meshpipeline.engines.snappy_multiregion.native",
     "snapgrid": "meshpipeline.engines.snapgrid.runner",
+    "cfmesh_conjugate": "meshpipeline.engines.cfmesh_conjugate.native",
 }
 
 

@@ -16,7 +16,8 @@ from meshpipeline.engines.registry import (
 )
 
 ENGINES = sorted(engine_names())
-EXPECTED_ENGINES = ["cfmesh", "gmsh", "snapgrid", "snappy", "snappy_multiregion", "vmtk"]
+EXPECTED_ENGINES = ["cfmesh", "cfmesh_conjugate", "gmsh", "snapgrid", "snappy",
+                    "snappy_multiregion", "vmtk"]
 
 
 def test_the_registry_matches_the_declared_engine_ledger():
