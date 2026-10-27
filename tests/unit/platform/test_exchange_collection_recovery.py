@@ -164,6 +164,7 @@ def test_a_poll_timeout_preserves_every_exchange_object(bucket, tmp_path):
     b = bucket(_seeded(coords, output=_tar_gz({"mesh.msh": b"m"})))   # NO result object
     out = _collect(tmp_path, timeout=_IMMEDIATE_DEADLINE)
     assert out["rc"] != 0 and "no result" in out["log_tail"]
+    assert out["ran_on"]["where"] == "cloud_run"
     assert b.deleted == []
     assert _exchange_keys(coords) - set(b.objects) == {coords.result_object_key}
 
@@ -209,6 +210,7 @@ def test_an_output_download_failure_preserves_every_exchange_object(bucket, tmp_
     b.download_faults[coords.output_object_key] = _Fault("connection reset")
     out = _collect(tmp_path)
     assert out["rc"] != 0
+    assert out["ran_on"]["where"] == "cloud_run"
     assert b.deleted == []
     assert _exchange_keys(coords) <= set(b.objects)
 
