@@ -332,7 +332,8 @@ def restage_tied(ws: Path, record: dict) -> dict:
 MAX_CUBES_CEILING = 12_000_000
 
 
-def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float, *, limit: float | None = None):
+def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float, *, limit: float | None = None,
+               recount: bool = True):
     """The zones' volume histogram (engines/fea_size_field). With `limit`, it is counted to 1.5 times it
     (never less than STOP_ELEMENTS), and a count that ran out of cubes under the limit is counted again
     with more (MAX_CUBES_CEILING)."""
@@ -344,7 +345,7 @@ def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float
     cubes = SF.MAX_CUBES
     while True:
         hist = field.histogram(coarsest=coarsest, per_h3=P.PER_H3, stop_elements=stop, max_cubes=cubes)
-        if hist.complete or hist.stopped != "cubes" or limit is None or cubes >= MAX_CUBES_CEILING:
+        if hist.complete or hist.stopped != "cubes" or limit is None or not recount or cubes >= MAX_CUBES_CEILING:
             return hist
         if P.elements(hist, coarsest, P.PER_H3) > P.LIMIT_AIM * float(limit):
             return hist                     # past the limit already: counting further changes nothing
@@ -354,7 +355,7 @@ def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float
 def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
               limit: int = P.ELEMENT_LIMIT, zone_floor_m: float | None = None, hist=None,
               through: float | None = None, ai: dict | None = None,
-              zone_floors: dict[str, float] | None = None) -> dict:
+              zone_floors: dict[str, float] | None = None, recount: bool = True) -> dict:
     """The plan for this part, with the ladder's levers applied: the zones the rules ask for, the
     coarsest base the part allows, the estimate against `limit`. `zone_floor_m`: PLAN-fea-8's
     coarsening (the finest zones floored, never past their validity minimums); `hist`: the zones'
@@ -369,7 +370,7 @@ def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None
     if zone_floor_m:
         zone_list = P.floored(zone_list, float(zone_floor_m), through or P.KEEP_THROUGH)
     if hist is None:
-        hist = _histogram(surface, zone_list, levers, diag_m, limit=limit)
+        hist = _histogram(surface, zone_list, levers, diag_m, limit=limit, recount=recount)
     plan = P.finish(record, zone_list, hist, diag_m=diag_m, limit=limit, levers=levers, growth=L.growth(levers))
     if zone_floors:
         plan["zone_floors_m"] = {k: float(v) for k, v in sorted(zone_floors.items())}
@@ -435,7 +436,7 @@ def _coarsen_group(record: dict, surface, diag_m: float, *, levers: list[dict], 
 
     def at(k: int) -> dict:
         if k not in tried:
-            tried[k] = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai,
+            tried[k] = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, recount=False,
                                  zone_floors=floors_with(floors[k]))
         return tried[k]
 
@@ -450,7 +451,8 @@ def _coarsen_group(record: dict, surface, diag_m: float, *, levers: list[dict], 
         else:
             lo = mid + 1
     best, f = at(hi), floors[hi]
-    finer = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, zone_floors=floors_with(0.75 * f))
+    finer = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, zone_floors=floors_with(0.75 * f),
+                      recount=False)
     if finer["fits"]:
         best, f = finer, 0.75 * f
     return best, floors_with(f), True
@@ -587,7 +589,8 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
                 if not any(k in floors_done for k in back):
                     continue
                 others = {k: v for k, v in floors_done.items() if k not in back}
-                whole = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, zone_floors=others)
+                whole = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, zone_floors=others,
+                                  recount=False)
                 if whole["fits"]:
                     best, floors_done = whole, others          # this kind needs no coarsening at all
                     continue
@@ -602,6 +605,11 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
         # least resolution that keeps every element valid - and said
         best["fits"] = True
     floor = max(floors_done.values()) if floors_done else 0.0
+    if floors_done and not best.get("histogram_complete", True):
+        # THE CHOSEN PLAN, COUNTED IN FULL ONCE (the search compared the candidates on the plain count)
+        fits = best["fits"]
+        best = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, zone_floors=floors_done)
+        best["fits"] = best["fits"] or fits or at_minimums
     best["limit"].update(why=why, memory=limit_facts())
     best["coarsened"] = {"needed": needed, "needed_words": said, "zone_floor_m": floor, "at_minimums": at_minimums,
                          # what was coarsened, kind by kind, and what kept the sizes its rules ask for
