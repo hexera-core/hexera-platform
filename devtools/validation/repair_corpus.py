@@ -24,6 +24,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import statistics
 import sys
 import tempfile
 import time
@@ -352,6 +353,63 @@ def summarise_catalogue(rows: list[dict], catalogue: list[str] | None = None) ->
     return {"tally": tally, "never_exercised": never, "only_declined": only_declined}
 
 
+def _distribution(values: list[float]) -> dict:
+    return {"count": len(values), "min": min(values), "max": max(values),
+            "mean": statistics.fmean(values), "median": statistics.median(values)}
+
+
+def _count_value(counts: dict, key: str) -> float | None:
+    value = counts.get(key)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def cad_simplicity(rows: list[dict]) -> dict:
+    """Before/after topology deltas that say whether a kept repair simplified the CAD.
+
+    Defect yield says *what got fixed*. Simplicity says whether the written STEP became easier or
+    harder downstream: fewer faces/edges is usually good; a face explosion or solid-count change is
+    evidence a repair may be valid but costly.
+    """
+    deltas = {"face_delta": [], "edge_delta": [], "vertex_delta": [], "operations_kept": []}
+    measured = 0
+    more_faces = fewer_faces = solid_changed = 0
+    for row in rows:
+        before, after = row.get("counts_before") or {}, row.get("counts_after") or {}
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            continue
+        face_before, face_after = _count_value(before, "faces"), _count_value(after, "faces")
+        edge_before, edge_after = _count_value(before, "edges"), _count_value(after, "edges")
+        vertex_before = _count_value(before, "vertices")
+        vertex_after = _count_value(after, "vertices")
+        if face_before is None or face_after is None:
+            continue
+        measured += 1
+        face_delta = face_after - face_before
+        deltas["face_delta"].append(face_delta)
+        more_faces += int(face_delta > 0)
+        fewer_faces += int(face_delta < 0)
+        if edge_before is not None and edge_after is not None:
+            deltas["edge_delta"].append(edge_after - edge_before)
+        if vertex_before is not None and vertex_after is not None:
+            deltas["vertex_delta"].append(vertex_after - vertex_before)
+        solids_before = _count_value(before, "solids")
+        solids_after = _count_value(after, "solids")
+        if solids_before is not None and solids_after is not None:
+            solid_changed += int(solids_after != solids_before)
+        kept = _count_value(row, "operations_kept")
+        if kept is not None:
+            deltas["operations_kept"].append(kept)
+    return {
+        "files_measured": measured,
+        "files_with_more_faces": more_faces,
+        "files_with_fewer_faces": fewer_faces,
+        "solid_count_changed": solid_changed,
+        **{key: _distribution(values) for key, values in deltas.items() if values},
+    }
+
+
 def settings_operation_catalogue(bundle_dir: Path, stored_summary: dict | None = None
                                  ) -> list[str] | None:
     """The operation catalogue a sealed bundle RAN WITH, so verification recomputes against the
@@ -438,7 +496,8 @@ def corpus_summary(rows: list[dict], planner_mode: str = "off",
     }
     out = {"outcomes": outcomes, "repaired_by_code": repaired_by_code, "routes": routes,
            "stopped_because": stops, "catalogue": summarise_catalogue(rows, catalogue),
-           "refusals_by_reason": refusals_by_reason, "heals": heals}
+           "refusals_by_reason": refusals_by_reason, "heals": heals,
+           "cad_simplicity": cad_simplicity(rows)}
     if planner_mode != "off":
         out["planner"] = planner_summary(rows, planner_mode)
     return out

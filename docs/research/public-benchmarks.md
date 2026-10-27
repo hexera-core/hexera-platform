@@ -86,6 +86,8 @@ These are the primary metrics for CAD repair.
 - Safety refusals: correct refusal rate on intentional openings and unsafe/generated traps.
 - Damage rate: any new warning-or-worse defect, solid loss, face loss, cap violation, or unaccounted
   area/volume change.
+- CAD simplicity: before/after face, edge, vertex, solid and kept-operation deltas, reported as
+  distributions so a valid repair that makes the model harder to mesh is visible.
 - Operation coverage: kept, rolled back, declined, and failed per operation.
 - Triage reachability: files routed to repair, review, manual cleanup, ask-customer, or no-op.
 - Planner value: live/shadow agreement, live repaired-defect delta versus rules-only, and decline
@@ -123,7 +125,7 @@ These are the primary metrics for mesh generation.
 - Mesh quality: max non-orthogonality, skewness, negative volume count, layer completion, boundary
   patch integrity, region labels, and solver-readiness checks.
 - Fidelity: surface deviation from source CAD/STL, feature preservation, declared openings kept,
-  and no unintended sealed passages.
+  and no unintended sealed passages, reported as distributions separate from generic mesh quality.
 - Cost: wall time, container/runtime cost where available, CPU/GPU/memory peak, cells per second,
   and retry count.
 - Robustness: success under restart, checkpoint resume, worker takeover, and artifact delivery
@@ -136,6 +138,19 @@ Each run should produce a manifest containing source hash, selected engine, engi
 mesh statistics, quality criteria, solver-readiness verdict, timings, and links to VTK/OpenFOAM or
 other deliverables. Public figures should report both pass rate and quality distribution; a single
 pass/fail score hides too much.
+
+### Current native engine evidence
+
+Run `make benchmark-engines` against a current mesh image. The opt-in native benchmark exercises
+the production dispatch path for cfMesh, snappyHexMesh, Gmsh, snappy multi-region and VMTK. It also
+runs a curated CAD-to-Gmsh downstream matrix over a repairable loose-face export, a clean control,
+and an intentional through-passage: repair runs once per CAD input, the original is always meshed,
+and only an artifact actually delivered by repair is meshed as the repaired variant.
+
+This is engine evidence, not yet a publication table. The first downstream slice proves that a
+real repair can change a real native mesh outcome and that clean/unsafe inputs do not acquire a
+fabricated repaired variant. Broader original-versus-repaired comparisons for the CFD and
+specialized engines require domain-correct case authoring for those same CAD inputs.
 
 ## First Implementation Slice
 

@@ -259,11 +259,92 @@ def test_summary_aggregates_success_quality_cost_and_engines():
                                            "unscored_because": {"unknown": 1}}
 
 
+def test_summary_lifts_nested_fidelity_metrics_into_their_own_distribution():
+    """Catches dropping surface-deviation details because they are nested in manifest quality.
+
+    The mesh manifest records surface deviation as a nested object; a benchmark that only
+    aggregates top-level numeric mesh_statistics cannot support a fidelity table.
+    """
+    rows = [
+        {"scenario": "a", "status": "success", "selected_engine": "snappy",
+         "engine_match": None, "solver_ready": True,
+         "mesh_statistics": {"cells": 1000,
+                             "surface_deviation": {"mean_ratio": 0.001, "p95_ratio": 0.004},
+                             "declared_openings_kept": 3,
+                             "unintended_sealed_passages": 0},
+         "timings": {"wall_seconds": 2.0}},
+        {"scenario": "b", "status": "success", "selected_engine": "snappy",
+         "engine_match": None, "solver_ready": True,
+         "mesh_statistics": {"cells": 1200,
+                             "surface_deviation": {"mean_ratio": 0.003, "p95_ratio": 0.006},
+                             "declared_openings_kept": 2,
+                             "unintended_sealed_passages": 1},
+         "timings": {"wall_seconds": 3.0}},
+        {"scenario": "c", "status": "failed: rc=1", "selected_engine": "snappy",
+         "engine_match": None, "solver_ready": None,
+         "mesh_statistics": {"surface_deviation": {"p95_ratio": 0.5}},
+         "timings": {"wall_seconds": 1.0}},
+    ]
+
+    fidelity = mb.summarise(rows)["fidelity"]
+
+    assert fidelity["surface_deviation_mean_ratio"] == {
+        "count": 2, "min": 0.001, "max": 0.003, "mean": 0.002, "median": 0.002}
+    assert fidelity["surface_deviation_p95_ratio"] == {
+        "count": 2, "min": 0.004, "max": 0.006, "mean": 0.005, "median": 0.005}
+    assert fidelity["declared_openings_kept"] == {
+        "count": 2, "min": 2.0, "max": 3.0, "mean": 2.5, "median": 2.5}
+    assert fidelity["unintended_sealed_passages"] == {
+        "count": 2, "min": 0.0, "max": 1.0, "mean": 0.5, "median": 0.5}
+
+
 def test_summary_of_no_rows_divides_nothing():
     summary = mb.summarise([])
     assert summary["scenarios"] == 0
     assert summary["mesh_success_rate"] is None
     assert summary["engine_selection"]["accuracy"] is None
+    assert summary["fidelity"] == {}
+
+
+def test_engine_matrix_meshes_original_and_real_repaired_artifacts(tmp_path):
+    repairable = tmp_path / "repairable.step"
+    repairable.write_text("original repairable")
+    refused = tmp_path / "refused.step"
+    refused.write_text("original refused")
+    seen = []
+    delivered = []
+
+    def repair(source, destination):
+        if source == repairable:
+            destination.write_text("real repaired output")
+            delivered.append(destination)
+            return {"status": "repaired", "artifact": destination,
+                    "counts_before": {"faces": 12}, "counts_after": {"faces": 6}}
+        return {"status": "refused", "artifact": None, "reason": "unsafe opening"}
+
+    def mesh(source, engine, workspace):
+        seen.append((source, engine, workspace.name))
+        return {"status": "success", "selected_engine": engine,
+                "mesh_statistics": {"cells": 10}}
+
+    cases = [
+        mb.EngineBenchmarkCase("repairable", repairable, ("snappy", "cfmesh")),
+        mb.EngineBenchmarkCase("refused", refused, ("gmsh",)),
+    ]
+
+    rows = mb.run_engine_matrix(cases, tmp_path / "runs", repair=repair, mesh=mesh)
+
+    assert [(row["case"], row["variant"], row["engine"]) for row in rows] == [
+        ("repairable", "original", "snappy"),
+        ("repairable", "original", "cfmesh"),
+        ("repairable", "repaired", "snappy"),
+        ("repairable", "repaired", "cfmesh"),
+        ("refused", "original", "gmsh"),
+    ]
+    assert seen[2][0] == delivered[0] and seen[3][0] == delivered[0]
+    assert delivered[0].read_text() == "real repaired output"
+    assert all(row["cad_repair"]["status"] == "repaired" for row in rows[:4])
+    assert rows[-1]["cad_repair"] == {"status": "refused", "reason": "unsafe opening"}
 
 
 def test_execute_refuses_a_workspace_outside_the_scratch_tree(tmp_path):
