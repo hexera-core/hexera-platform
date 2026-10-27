@@ -750,6 +750,10 @@ async def _run_async(req: JobRequest) -> dict:
         from meshpipeline.engines.registry import resolve_engine_params
         initial_state["engine_params"] = resolve_engine_params(_pinned_engine, req.engine_params)
         initial_state["flow_topology"] = topology_of(getattr(req, "purpose", "") or "")
+        # THE LEAK SIZE the user confirmed on the stage (INS-8): every leak of the surface up to it
+        # is closed for the mesh by each route's staging; read off the stored confirmation
+        from meshpipeline.application.geometry_confirmation import confirmed_leak_closing
+        initial_state["leak_closing"] = await asyncio.to_thread(confirmed_leak_closing, str(session_id or ""))
         # AN FEA ASSEMBLY'S JOINTS, as the user confirmed them on the stage (bonded unless they said
         # contact); read off the stored confirmation, never the event loop's to wait on
         from meshpipeline.application.fea_check import confirmed_connection

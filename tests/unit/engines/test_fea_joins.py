@@ -293,3 +293,51 @@ def test_the_stored_result_comes_back_as_plain_json(monkeypatch):
     got = G.store_status("s", "scouted", "scout", facts={"validity": {"places": [{"bodies": [np.int64(1), np.int64(7)]}]}})
     json.dumps(got)
     assert type(got["facts"]["validity"]["places"][0]["bodies"][0]) is int
+
+
+# #
+# nothing OpenCASCADE throws fails the staging (an industrial STEP: BRepExtrema's StdFail_NotDone, 27 Oct)
+# #
+
+def test_a_distance_opencascade_cannot_give_is_unknown_never_a_crash():
+    from OCP.TopoDS import TopoDS_Shape
+
+    assert np.isnan(J._dist(TopoDS_Shape(), fx._box(0, 0, 0, 1, 1, 1)))
+
+
+def _three_blocks():
+    return fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(10, 0, 0, 10, 10, 10), fx._box(0, 10, 0, 10, 10, 10))
+
+
+def test_a_pair_opencascade_throws_on_is_unmeasured_and_the_fuse_stands_there(monkeypatch, tmp_path):
+    real, calls = J._facing, []
+
+    def throws_first(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("StdFail_NotDone: BRepExtrema_DistShapeShape::Value")
+        return real(*a, **k)
+
+    monkeypatch.setattr(J, "_facing", throws_first)
+    rec = A.record(_three_blocks(), mm_per_unit=1.0)
+    # every touch is still there: the first pair's from the fuse, the second measured
+    assert sorted(tuple(i["parts"]) for i in rec["interfaces"]) == [("Part_1", "Part_2"), ("Part_1", "Part_3")]
+    (u,) = rec["joins"]["unmeasured"]
+    assert u["parts"] == ["Part_1", "Part_2"] and "StdFail_NotDone" in u["why"]
+    assert any("could not be measured on their surfaces" in n and "the fuse's answer stands" in n for n in rec["notes"])
+    calls.clear()
+    side = A.stage(_three_blocks(), A.BONDED, tmp_path, mm_per_unit=1.0)
+    assert side["mode"] == A.PAIR_BONDED and len(side["pairs"]) == 2
+
+
+def test_a_measurement_that_fails_outright_leaves_the_fuse_whole(monkeypatch, tmp_path):
+    def boom(*a, **k):
+        raise RuntimeError("StdFail_NotDone")
+
+    monkeypatch.setattr(J, "measure", boom)
+    rec = A.record(_three_blocks(), mm_per_unit=1.0)
+    assert [i["kind"] for i in rec["interfaces"]] == ["touching", "touching"]
+    assert rec["joins"]["found_by"] == "fuse"
+    assert any("could not be measured" in n for n in rec["notes"])
+    side = A.stage(_three_blocks(), A.BONDED, tmp_path, mm_per_unit=1.0)
+    assert len(side["pairs"]) == 2

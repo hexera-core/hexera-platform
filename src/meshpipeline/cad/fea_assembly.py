@@ -362,14 +362,28 @@ def joined_interfaces(parts: list, fused: Fused, volumes: list[float], *, diag: 
         fuse_itf = pairwise_interfaces(parts, volumes, fuzzy=tol, scale=scale)
     else:
         fuse_itf = interfaces_of(fused, volumes, scale=scale)
-    measured = J.measure(parts, tol=tol, mm_per_unit=mm_per_unit,
-                         budget_s=J.BUDGET_S if budget_s is None else float(budget_s))
-    findings = J.check(fuse_itf, parts, measured, tol=tol, mm_per_unit=mm_per_unit)
+    # NOTHING OPENCASCADE THROWS HERE FAILS THE STAGING: a pair it cannot measure is that pair unmeasured
+    # (the fuse's answer stands there, said); a measurement that fails outright leaves the fuse's answer whole
+    try:
+        measured = J.measure(parts, tol=tol, mm_per_unit=mm_per_unit,
+                             budget_s=J.BUDGET_S if budget_s is None else float(budget_s))
+        findings = J.check(fuse_itf, parts, measured, tol=tol, mm_per_unit=mm_per_unit)
+    except Exception as exc:  # noqa: BLE001 - said as a note; the fuse's answer stands
+        logger.warning("fea assembly: the parts' surfaces could not be measured (%s: %s)", type(exc).__name__, exc)
+        measured = J.Measured(tol=tol, complete=False)
+        measured.unmeasured[(-1, -1)] = f"{type(exc).__name__}: {exc}"[:200]
+        findings = []
     kinds = (J.TOUCHING, J.GAP, J.OVERLAP) if gap_joins else (J.TOUCHING, J.OVERLAP)
     # a touch the fuse missed is an omission, not a wrong answer: the fuse stands, the touch is added
     wrong = [f for f in findings if f["kind"] != "missed"]
     if wrong:
         interfaces = J.interfaces(measured, parts, volumes, scale=scale, kinds=kinds)
+        # a pair the surfaces could not be measured on keeps the fuse's answer
+        keep = [dict(i) for i in fuse_itf
+                if tuple(sorted(int(x.split("_")[1]) - 1 for x in i["parts"])) in measured.unmeasured]
+        for k, itf in enumerate(keep, start=len(interfaces) + 1):
+            itf["id"] = f"Interface_{k}"
+            interfaces.append(itf)
     else:
         said = {tuple(sorted(i["parts"], key=lambda x: int(x.split("_")[1]))) for i in fuse_itf}
         extra = [i for i in J.interfaces(measured, parts, volumes, scale=scale,
@@ -389,7 +403,9 @@ def joined_interfaces(parts: list, fused: Fused, volumes: list[float], *, diag: 
             "added": [i["id"] for i in interfaces if i.get("added")],
             "skins": {part_id(p): [face_name(p, j) for j in js] for p, js in sorted(measured.skins.items())},
             "gaps": [i["id"] for i in interfaces if i.get("kind") == J.GAP],
-            "complete": measured.complete, "seconds": measured.seconds}
+            "complete": measured.complete, "seconds": measured.seconds,
+            "unmeasured": [{"parts": ([part_id(i + 1), part_id(j + 1)] if i >= 0 else []), "why": why}
+                           for (i, j), why in sorted(measured.unmeasured.items())]}
     return interfaces, info
 
 
@@ -397,13 +413,15 @@ def joins_record(info: dict, interfaces: list[dict]) -> dict | None:
     """What the record and the sidecar say of how the joints were found - None when there is nothing
     to say (the fuse stood, no gap was joined, no skin found, the measurement finished), so an
     assembly the new measurement changes nothing on is recorded exactly as before."""
-    if info["trusted"] and not info["gaps"] and not info["skins"] and info["complete"] and not info["findings"]:
+    if info["trusted"] and not info["gaps"] and not info["skins"] and info["complete"] and not info["findings"] \
+            and not info.get("unmeasured"):
         return None
     gap_faces = sorted({f for i in interfaces if i.get("kind") == "gap" for v in (i.get("faces") or {}).values()
                         for f in v}, key=_face_sort)
     return {"found_by": "fuse" if info["trusted"] else "surfaces", "findings": info["findings"],
             "skins": info["skins"], "skin_faces": sorted({f for v in info["skins"].values() for f in v}, key=_face_sort),
             "gaps": info["gaps"], "gap_faces": gap_faces, "added": info.get("added") or [],
+            "unmeasured": info.get("unmeasured") or [],
             "complete": info["complete"],
             "seconds": info["seconds"]}
 
@@ -411,6 +429,14 @@ def joins_record(info: dict, interfaces: list[dict]) -> dict | None:
 def joins_notes(info: dict, interfaces: list[dict], *, unit: str = "mm", scale_to_mm: float = 1.0) -> list[str]:
     """The joints' finding in plain words, for the record and the sidecar."""
     notes = []
+    for u in info.get("unmeasured") or []:
+        why = str(u.get("why") or "").split(":", 1)[0]
+        if u.get("parts"):
+            notes.append(f"Where {u['parts'][0]} and {u['parts'][1]} meet could not be measured on their surfaces "
+                         f"(OpenCASCADE: {why}): the fuse's answer stands for that pair.")
+        else:
+            notes.append(f"The parts' surfaces could not be measured (OpenCASCADE: {why}): where they meet is as "
+                         "the fuse found it.")
     if not info["trusted"]:
         first = info["findings"][0]["words"]
         more = f" ({len(info['findings'])} such answers)" if len(info["findings"]) > 1 else ""
@@ -433,7 +459,7 @@ def joins_notes(info: dict, interfaces: list[dict], *, unit: str = "mm", scale_t
         notes.append(f"{len(gaps)} pair(s) of parts face each other across a small gap and are joined there, as a "
                      f"weld or a thread the CAD does not draw (up to 0.5 mm, less on small parts): {words}"
                      f"{' and more' if len(gaps) > 6 else ''}.")
-    if not info["complete"]:
+    if not info["complete"] and all(u.get("parts") for u in info.get("unmeasured") or []):
         notes.append("The parts' surfaces were not all measured in the time set for it: where they meet is as the "
                      "fuse found it.")
     return notes

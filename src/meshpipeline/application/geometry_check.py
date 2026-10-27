@@ -1182,6 +1182,18 @@ def read_whole_shape(facts: dict, skin: Path) -> None:
         facts["reading"] = {"read": False, "reason": f"the shape could not be read ({type(exc).__name__})"}
 
 
+def proposed_leak_closing(facts: dict) -> float | None:
+    """The leak size the check proposes closing (INS-8), in metres of the skin, or None."""
+    leaks = facts.get("leaks") if isinstance(facts, dict) else None
+    if not isinstance(leaks, dict) or not leaks.get("found"):
+        return None
+    try:
+        v = float(leaks.get("close_up_to_mm") or 0.0) / 1000.0
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
 def vet_openings(facts: dict, skin: Path) -> None:
     """THE PROPOSAL HELD TO THE STAGING THE MESHER WILL USE (cad/fluid_passages.stranded_openings):
     an opening the scout found that opens into no passage - a bolt hole through a flange, a slot
@@ -1201,7 +1213,8 @@ def vet_openings(facts: dict, skin: Path) -> None:
                                         "openings": [dict(o) for o in ops]}))
     except Exception:  # noqa: BLE001 - openings the declaration cannot be made from are not vetted
         return
-    stranded = stranded_openings(skin, patches)
+    close = proposed_leak_closing(facts)
+    stranded = stranded_openings(skin, patches, close_leaks=close) if close else stranded_openings(skin, patches)
     if not stranded or len(stranded) >= len(ops) - 1:
         return                   # at least two openings must stay: a vetting cannot empty a part
     for o in ops:
@@ -1384,7 +1397,8 @@ def _stages(skin: Path, facts: dict) -> bool | None:
         patches = patches_from(body_of({"flow": "internal", "input_kind": facts.get("input_kind") or "",
                                         "openings": [dict(o) for o in ports]}))
         stage_triangles(read_triangles(Path(skin)), intake_patches=patches, surface_path=Path(skin),
-                        input_kind=str(facts.get("input_kind") or ""), leak_check=False)
+                        input_kind=str(facts.get("input_kind") or ""), leak_check=False,
+                        close_leaks=proposed_leak_closing(facts))
         return True
     except (InternalSurfaceError, BindError):
         return False
@@ -2251,6 +2265,10 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         if isinstance(facts.get("surface"), dict):
             proposal["surface"] = dict(facts["surface"])
         proposal["flow_question"] = flow_question(facts["inside"], proposal["openings"], facts.get("surface"))
+    # THE LEAKS (INS-8): the openings above assume them closed; the stage proposes closing every one
+    # up to the size proposed here, a switch the user can turn off or a size they can change
+    if isinstance(facts.get("leaks"), dict) and facts["leaks"].get("found"):
+        proposal["leaks"] = dict(facts["leaks"])
     if vision is None:
         return _upright(proposal, facts, None, None)
     if "error" in vision:
