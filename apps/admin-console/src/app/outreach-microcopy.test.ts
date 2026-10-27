@@ -27,7 +27,7 @@ test("outreach UI omits implementation narration and obvious interaction mechani
     assert.equal(copy.includes(phrase), false, `remove or rewrite low-value copy: ${phrase}`);
   }
 
-  assert.match(copy, /Solid shows contacted; outlined shows remaining\./);
+  assert.match(sources[0], /Solid shows contacted; outlined shows remaining\./);
   assert.match(
     sources[3],
     /Daily caps, one person per company per day, and both safety switches still apply\./,
