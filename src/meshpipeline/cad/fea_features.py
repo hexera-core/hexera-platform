@@ -77,6 +77,9 @@ class Surface:
     #: Each label's tessellation error in mm (its triangulation's measured deflection from the CAD
     #: surface), or None when unknown (a triangle file).
     defl_mm: np.ndarray | None = None
+    #: The label pairs (a, b), a < b, whose CAD faces share an edge at an acute convex angle (a TAPER, read
+    #: on the exact B-rep), or None when unknown (a triangle file: the triangles' own edges are read).
+    tapers: list[tuple[int, int]] | None = None
 
     def __post_init__(self) -> None:
         a, b, c = (self.xyz[self.tris[:, k]] for k in range(3))
@@ -270,6 +273,12 @@ def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.nda
     # an acute convex edge: the faces' normals turn by more than 180 - TAPER_DEG across it
     acute = (la != lb) & ~pairs.concave & (pairs.turn_deg > 180.0 - TAPER_DEG)
     wedges = np.unique(np.concatenate([la[acute] * m + lb[acute], lb[acute] * m + la[acute]]))
+    if s.tapers:
+        # THE CAD'S OWN TAPERS too (27 Oct): two faces meeting at an acute edge whose triangles the welding did
+        # not join (a coarser tessellation of a whole assembly) are still a taper - a cryostat's cylinder and
+        # the shallow cone it runs into read a 0.0068 mm "wall" that way, 1.3 billion elements
+        t = np.asarray(s.tapers, dtype=np.int64).reshape(-1, 2)
+        wedges = np.unique(np.concatenate([wedges, t[:, 0] * m + t[:, 1], t[:, 1] * m + t[:, 0]]))
     out, lying = _walk(s, rays, origins, dirs, labels, eps=eps, wedges=wedges, m=m)
     if s.defl_mm is None or not len(lying):
         return out
