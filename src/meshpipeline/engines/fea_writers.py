@@ -65,7 +65,7 @@ def prepare(mesh: SolidMesh) -> Prepared:
     order = np.argsort(np.asarray(mesh.element_volume), kind="stable")
     elements = elements[order]
     vol = np.asarray(mesh.element_volume)[order]
-    fsets = face_sets(SolidMesh(mesh.node_ids, mesh.xyz, elements, vol, mesh.faces))
+    fsets = face_sets(SolidMesh(mesh.node_ids, mesh.xyz, elements, vol, mesh.faces, by_tag=mesh.by_tag))
     ids = np.asarray(mesh.node_ids, dtype=np.int64)
     used = np.zeros(int(ids.max()) + 1, dtype=bool)
     used[elements.ravel()] = True
