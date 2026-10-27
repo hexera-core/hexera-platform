@@ -305,10 +305,13 @@ def job_cpus() -> int:
     except ValueError:
         pass
     import os
-    try:
-        return max(1, len(os.sched_getaffinity(0)))
-    except (AttributeError, OSError):
-        return max(1, os.cpu_count() or 1)
+    affinity = getattr(os, "sched_getaffinity", None)
+    if affinity is not None:
+        try:
+            return max(1, len(affinity(0)))
+        except OSError:
+            pass
+    return max(1, os.cpu_count() or 1)
 
 
 def _cpu_model() -> str | None:
