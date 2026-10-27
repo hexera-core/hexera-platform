@@ -119,7 +119,8 @@ def facts(workspace) -> dict:
         "resolution_short": list(fea.get("resolution_short") or []),
         "limit": fea.get("limit"),
         "set_aside": {"elements": aside.get("elements"), "cusp": aside.get("cusp_elements"),
-                      "micro": aside.get("micro_elements")},
+                      "micro": aside.get("micro_elements"),
+                      "ftetwild_slivers": _m(aside.get("ftetwild_slivers")).get("elements")},
         "straightened": q.get("fea_straightened"),
         **({"assembly": assembly_checklist(fea.get("assembly"), plan, inp_faces)} if fea.get("assembly") else {}),
     }

@@ -268,6 +268,15 @@ def fea_limits(quality: Mapping) -> list[dict]:
                                "them is not resolved (on a gear, the contact stress at the tooth tips is not resolved); "
                                "remove or enlarge them in CAD for a clean mesh"),
                      "source": "docs/RULES.md PLAN-fea-12 (cad/fea_measure.cad_micro)"})
+    slivers = aside.get("ftetwild_slivers")
+    if isinstance(slivers, Mapping) and slivers.get("elements"):
+        # LAD-fea-12: the last rung's slivers on the surface, named the way a micro detail is (PLAN-fea-12)
+        places = [f"({', '.join(f'{float(v):g}' for v in p)}) mm" for p in slivers.get("places_mm") or []]
+        rows.append({"key": "fea_ftetwild_slivers", "op": "empty", "limit": [], "measured": places,
+                     "label": (f"{int(slivers['elements'])} near-flat element(s) of the last-resort mesher on the surface, "
+                               "at CAD details far smaller than the mesh, set aside from the quality floor - stress right "
+                               "at them is not resolved; remove or enlarge those details in CAD for a clean mesh"),
+                     "source": "docs/RULES.md LAD-fea-12 (engines/fea_tetwild.mesh_into)"})
     return rows
 
 

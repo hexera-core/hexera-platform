@@ -378,10 +378,14 @@ def orient(xyz: np.ndarray, tets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return t, np.abs(vol)
 
 
-#: LAD-fea-12: a tetrahedron whose volume is under this share of its longest edge cubed has no volume in double
-#: precision (a regular one has 0.118; ox_mc_lid's Part_239 sliver, 3e-16, measured inside out by gmsh)
-FLAT_SHARE = 1e-10
+#: LAD-fea-12: a tetrahedron whose volume is under this share of its longest edge cubed is all but flat (a regular
+#: one has 0.118). On ox_mc_lid's Part_239 that is SICN about 5e-5 and under, the worst element the quality record
+#: (four decimals) still reads as above 0; the flattest, 3e-16, gmsh measured inside out.
+FLAT_SHARE = 1e-6
 FLAT_RULE = "LAD-fea-12"
+#: ...and a sliver still under this SICN after the peel, with a face on the surface, is set aside from the floor and
+#: named (the gmsh adapter's DEGENERATE_SICN: the record would read it as 0.0)
+SLIVER_SICN = 5e-5
 
 
 def _odd_edges(tris: np.ndarray) -> int:
@@ -849,6 +853,8 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
     out_parts = []
     worst_dev = 0.0
     eps_max = 0.0
+    aside_tags: list[int] = []
+    aside_places: list[list[float]] = []
     moved_all: list[str] = []
     lost_all: list[str] = []
     for m, r in zip(meta, results, strict=True):
@@ -893,6 +899,23 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
         etags = elem_next + np.arange(len(tet10), dtype=np.int64)
         elem_next += len(tet10)
         gmsh.model.mesh.addElementsByType(m["volume"], tet_type, etags.tolist(), tags[tet10].ravel().tolist())
+        # LAD-fea-12: the slivers the peel could not take off (a face on the surface, the rest inside) - set aside
+        # from the floor and named, as a detail too small for the mesh (PLAN-fea-12); a flat one wholly inside is
+        # left for the gate
+        q = np.asarray(gmsh.model.mesh.getElementQualities(etags.tolist(), "minSICN"), dtype=float)
+        thin = np.where(q < SLIVER_SICN)[0]
+        if len(thin):
+            outside = {tuple(sorted(f)) for f in tris.tolist()}
+            onface = [int(i) for i in thin
+                      if any(tuple(sorted(tets[i, list(c)].tolist())) in outside for c in TET_FACES)]
+            aside_tags += [int(etags[i]) for i in onface]
+            for i in onface:
+                at = np.round(r["xyz"][tets[i]].mean(axis=0) * 1000.0, 2).tolist()
+                if not any(max(abs(a - b) for a, b in zip(at, o, strict=True)) < 1.0 for o in aside_places):
+                    aside_places.append(at)
+            if onface:
+                print(f"[FTETWILD] {m['key']}: {len(onface)} sliver(s) on the surface under SICN {SLIVER_SICN:g} set aside "
+                      f"({FLAT_RULE})", file=sys.stderr)
         for k in m["faces"]:
             sel = tri_face == k
             if not sel.any():
@@ -918,7 +941,10 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
             "parts": [p["part"] for p in out_parts], "per_part": out_parts,
             "epsilon_mm": _sig(eps_max * 1e3), "deviation_mm": _sig(worst_dev * 1e3),
             "moved_faces": moved_all, "lost_faces": lost_all,
-            "tied": bool(settings.get("tied"))}
+            "tied": bool(settings.get("tied")),
+            # LAD-fea-12: the slivers set aside (the adapter holds the floor without them, the delivery names them)
+            **({"set_aside": {"rule": FLAT_RULE, "elements": len(aside_tags), "places_mm": aside_places,
+                              "tags": aside_tags}} if aside_tags else {})}
     info["words"] = words(info)
     print(f"{RUNG_LINE} meshed {', '.join(str(p['part']) for p in out_parts)}: "
           + ", ".join(f"{p['part']} {p['elements']} elements in {p['fTetWild_s']} s, within {p['deviation_mm']} mm"
@@ -928,5 +954,5 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
 
 __all__ = ["BIN_PATH", "COMMIT", "ENGINE", "MAX_RUNG_PASSES", "Nearest", "VERSION", "binary", "boundary",
            "closest_on_triangles", "envelope_m", "failed_parts", "FLAT_RULE", "FLAT_SHARE", "mesh_into", "orient",
-           "params", "peel_flat", "quadratic", "rung_parts", "run_part", "sizing_grid", "split_long", "tessellate",
+           "params", "peel_flat", "quadratic", "SLIVER_SICN", "rung_parts", "run_part", "sizing_grid", "split_long", "tessellate",
            "words"]

@@ -1607,6 +1607,10 @@ def mesh(workspace) -> int:
         n_elem = len(all_tags)
         n_nodes = len(gmsh.model.mesh.getNodes()[0])
         aside = set(settled["set_aside"])
+        # LAD-fea-12: the last rung's slivers on the surface, set aside the same way (their tags stay out of the record)
+        ftw_aside = ftw.pop("set_aside", None) if ftw else None
+        if ftw_aside:
+            aside |= {int(t) for t in ftw_aside.pop("tags")}
         held = [q for t, q in zip(all_tags, qualities, strict=True) if int(t) not in aside]
         # THE FLOOR holds every element but the ones set aside at a cusp (PLAN-fea-10); validity
         # (no degenerate element) holds every element without exception
@@ -1692,7 +1696,8 @@ def mesh(workspace) -> int:
                               "micro_elements": int(settled["micro_elements"]),
                               "min_sicn": round(float(min(aside_q)), 4) if aside_q else None,
                               "places_mm": [[round(v * 1000.0, 2) for v in p] for p in settled["cusp_places_m"]],
-                              "micro": [_micro_place(plan["micro"][i]) for i in settled["micro_used"]]},
+                              "micro": [_micro_place(plan["micro"][i]) for i in settled["micro_used"]],
+                              **({"ftetwild_slivers": ftw_aside} if ftw_aside else {})},
             "sicn_low_fraction": round(low / n_elem, 6) if n_elem else 1.0,
             "fatal": fatal, "size_h": base, "quality_bar": "fea", "sicn_floor": note_floor,
             "elements_under_floor": low,

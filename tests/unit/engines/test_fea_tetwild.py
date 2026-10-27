@@ -622,3 +622,57 @@ def test_a_flat_sliver_on_the_surface_is_taken_off_and_nothing_else_is():
     assert (dropped, left) == (1, 0)
     assert np.array_equal(kept, mesh[:6])
     assert TW._odd_edges(TW.boundary(kept)) == 0
+
+
+#: the stand-in fTetWild, but one tetrahedron on the surface split so that a sliver lies on its outside face (one
+#: face out, three in: the peel cannot take it off), a millionth of the tetrahedron's height thick
+FAKE_SLIVER = FAKE.replace("""gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
+gmsh.write(out)
+gmsh.finalize()""", """ntags, nxyz, _ = gmsh.model.mesh.getNodes()
+_t, _e, en = gmsh.model.mesh.getElements(3)
+gmsh.finalize()
+import meshio
+pts = np.asarray(nxyz).reshape(-1, 3)
+where = {int(t): i for i, t in enumerate(ntags)}
+tets = np.vectorize(where.get)(np.asarray(en[0], dtype=np.int64).reshape(-1, 4))
+faces = {}
+for k, t in enumerate(tets):
+    for f in ((1, 2, 3), (0, 3, 2), (0, 1, 3), (0, 2, 1)):
+        faces.setdefault(tuple(sorted(t[list(f)])), []).append((k, f))
+k, f = next(v[0] for v in faces.values() if len(v) == 1)
+a, b, c = (int(tets[k][i]) for i in f)
+d = int(next(n for n in tets[k] if n not in (a, b, c)))
+mid = pts[[a, b, c]].mean(axis=0)
+pts = np.vstack([pts, mid + 1e-6 * (pts[d] - mid)])
+p = len(pts) - 1
+tets = np.vstack([np.delete(tets, k, axis=0), [[a, b, c, p], [a, b, p, d], [b, c, p, d], [c, a, p, d]]])
+meshio.write(out, meshio.Mesh(pts, [("tetra", tets)]), file_format="gmsh22", binary=False)""")
+
+
+def test_a_sliver_the_peel_cannot_take_off_is_set_aside_and_named_and_the_rung_still_delivers(tmp_path, monkeypatch):
+    """LAD-fea-12 (ox_mc_lid's Part_239: two slivers under SICN 5e-5 with one face on the surface): the floor is held
+    without it, the delivery names where it is, and nothing is inverted."""
+    pytest.importorskip("OCP.BRepPrimAPI")
+    pytest.importorskip("meshio")
+    from tests import fea_fixtures as fx
+
+    from meshpipeline.engines.verdict_limits import fea_limits
+
+    exe = tmp_path / "bin" / "fTetWild"
+    exe.parent.mkdir()
+    exe.write_text(f"#!{sys.executable}\n{FAKE_SLIVER}")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setattr(TW, "binary", lambda: str(exe))
+    ws = _stage(fx.plate_with_hole(), tmp_path / "plate")
+    _gmsh_fails_on(monkeypatch, None, ["Face_5"])
+    ok, marker, _o = _drive(ws, monkeypatch)
+    assert ok, marker
+    q = json.loads((ws / "quality.json").read_text())
+    assert q["engine_rung"] == "ftetwild" and not q["fatal"] and q["fea_inverted"] == 0
+    slivers = q["fea_set_aside"]["ftetwild_slivers"]
+    assert slivers["elements"] == 1 and slivers["rule"] == "LAD-fea-12" and len(slivers["places_mm"]) == 1
+    assert "tags" not in slivers and "set_aside" not in q["fea"]["ftetwild"]
+    assert q["fea_set_aside"]["elements"] >= 1 and q["fea_set_aside"]["min_sicn"] < TW.SLIVER_SICN
+    assert q["min_sicn"] > 0                      # the floor, held without it
+    rows = [r for r in fea_limits(q) if r["key"] == "fea_ftetwild_slivers"]
+    assert len(rows) == 1 and rows[0]["measured"] and "not resolved" in rows[0]["label"]
