@@ -50,8 +50,11 @@ def env(monkeypatch):
 
     forgiven: list[str] = []
     monkeypatch.setattr(delivery_guard, "forgive_attempt", lambda job_id: forgiven.append(job_id))
-    monkeypatch.setattr("meshpipeline.application.maintenance.cleanup.publish_job_note",
-                        lambda *a, **k: None)
+    # THE MODULE ITSELF, as sys.modules holds it (what the code under test imports from), never a dotted path:
+    # a test that restores sys.modules wholesale (patch.dict) can leave the package's attribute a stale module
+    import importlib
+    cleanup = importlib.import_module("meshpipeline.application.maintenance.cleanup")
+    monkeypatch.setattr(cleanup, "publish_job_note", lambda *a, **k: None)
     launcher = _Launcher()
     previous = pipeline_execution._launcher
     pipeline_execution.set_pipeline_launcher(launcher)
