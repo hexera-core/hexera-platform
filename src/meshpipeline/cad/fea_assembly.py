@@ -66,6 +66,8 @@ WHOLLY_INSIDE = 0.999
 #: The general fuse treats surfaces this close (a share of the assembly's size) as touching: CAD
 #: assemblies are often drawn with faces a few nanometres apart.
 FUZZY_SHARE = 1e-6
+#: The general fuse runs in millimetres (fuse(), docs/RULES.md)
+FUSE_IN_MM = "PLAN-fea-90"
 #: Names a CAD exporter gives a body when nobody named it: no better than Part_k.
 _GENERIC_BODY = re.compile(
     r"^\s*(\d+|solid|body|part|compound|component|shape|assembly|product|unnamed|noname|default|"
@@ -196,9 +198,32 @@ class Fused:
     seconds: float = 0.0
 
 
-def fuse(parts: list, *, fuzzy: float = 0.0) -> Fused:
+def _scaled(shape, k: float):
+    """`shape` scaled by `k` about the origin: a new shape, its sub-shapes in the same order."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Pnt, gp_Trsf
+
+    tr = gp_Trsf()
+    tr.SetScale(gp_Pnt(0.0, 0.0, 0.0), float(k))
+    return BRepBuilderAPI_Transform(shape, tr, True).Shape()
+
+
+def fuse(parts: list, *, fuzzy: float = 0.0, mm_per_unit: float = 1.0) -> Fused:
     """OpenCASCADE's General Fuse of the solids (non-destructive, one thread: the same parts give
-    the same result), with each result face's and solid's origins."""
+    the same result), with each result face's and solid's origins.
+
+    PLAN-fea-90: THE FUSE RUNS IN MILLIMETRES. `mm_per_unit` is the parts' unit (the staging
+    writes metres: 1000); parts in another unit are scaled to millimetres for the fuse and the
+    result scaled back, its faces and solids in the same order. OpenCASCADE's own tolerances are
+    absolute (1e-7), fitted to CAD drawn in millimetres: the same 406 laser-cutter parts fused in
+    metres grew past 26 GB over 33 minutes - the lab's 32 GiB job was killed there twice - and in
+    millimetres took 3.2 GB and 2 minutes (o_ox_mc_laser, lab 27 Oct)."""
+    k = float(mm_per_unit or 1.0)
+    if abs(k - 1.0) > 1e-12:
+        done = fuse([_scaled(s, k) for s in parts], fuzzy=float(fuzzy) * k)
+        if done.shape is not None and not done.error:
+            done.shape = _scaled(done.shape, 1.0 / k)
+        return done
     from OCP.BOPAlgo import BOPAlgo_Builder
     from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
 
@@ -316,7 +341,7 @@ def pairwise_interfaces(parts: list, volumes: list[float], *, fuzzy: float, scal
             (a0, a1), (b0, b1) = boxes[i], boxes[j]
             if np.any(a1 + pad < b0) or np.any(b1 + pad < a0):
                 continue
-            pair = fuse([parts[i], parts[j]], fuzzy=fuzzy)
+            pair = fuse([parts[i], parts[j]], fuzzy=fuzzy, mm_per_unit=scale)
             if pair.error:
                 continue
             for itf in interfaces_of(pair, [volumes[i], volumes[j]], scale=scale):
@@ -486,7 +511,7 @@ def record(shape, *, mm_per_unit: float, names: list[str] | None = None) -> dict
                           "centroid_mm": _pt(c * mm), "box_mm": _pt((b - a) * mm),
                           "volume_share": round(v / total, 6)})
     notes: list[str] = []
-    fused = fuse(parts, fuzzy=FUZZY_SHARE * diag)
+    fused = fuse(parts, fuzzy=FUZZY_SHARE * diag, mm_per_unit=mm)
     rec: dict[str, Any] = {"version": VERSION, "parts": out_parts, "interfaces": [], "free_parts": [], "fused": not fused.error,
            "notes": notes}
     if fused.error:
@@ -592,7 +617,7 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
     mesh_parts = [o.solid for o in opened]
     skins = skin_record(opened)
     notes.extend(skin_notes(skins))
-    fused = fuse(mesh_parts, fuzzy=FUZZY_SHARE * diag)
+    fused = fuse(mesh_parts, fuzzy=FUZZY_SHARE * diag, mm_per_unit=mm_per_unit)
     fused.face_origins = [[(p, opened[p - 1].origin[j - 1]) for p, j in o] for o in fused.face_origins]
     mode = PAIR_BONDED if connection == BONDED else PAIR_CONTACT
     if fused.error and connection == BONDED:
@@ -728,6 +753,8 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
                "surfaces": surfaces, "volumes": volumes, "pairs": pairs, "interfaces": interfaces,
                "unpaired": [{"inner": a, "outer": b} for a, b in unpaired],
                "notes": notes, "fuse_seconds": fused.seconds,
+               # PLAN-fea-90: the unit the general fuse ran in (millimetres, whatever the staging's)
+               "fuse_unit": {"rule": FUSE_IN_MM, "unit": "mm", "scaled_by": float(mm_per_unit)},
                "tie_first": ({"overlap_pieces": n_pieces, "overlap_pairs": n_over, "at": TIE_FIRST_PIECES}
                              if tie_first else None)}
     if grazed:
