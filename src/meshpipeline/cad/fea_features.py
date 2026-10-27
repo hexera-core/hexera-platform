@@ -74,6 +74,12 @@ class Surface:
     body: np.ndarray | None = None
     #: Each label's own model tolerance in mm (the CAD face's), or None when unknown.
     tol_mm: np.ndarray | None = None
+    #: Each label's tessellation error in mm (its triangulation's measured deflection from the CAD
+    #: surface), or None when unknown (a triangle file).
+    defl_mm: np.ndarray | None = None
+    #: The label pairs (a, b), a < b, whose CAD faces share an edge at an acute convex angle (a TAPER, read
+    #: on the exact B-rep), or None when unknown (a triangle file: the triangles' own edges are read).
+    tapers: list[tuple[int, int]] | None = None
 
     def __post_init__(self) -> None:
         a, b, c = (self.xyz[self.tris[:, k]] for k in range(3))
@@ -181,6 +187,17 @@ FLOOR_FRACTION = 1e-5
 #: A ray goes on through at most this many surfaces that are not its wall (another body's face, or
 #: one under the floor) before it gives up and reads nothing.
 MAX_HOPS = 4
+#: TWO FACES LYING ON EACH OTHER (a self-overlapping solid: a zero-thickness membrane on a wall, a
+#: patch of a bore written twice with opposite sides). A ray from one meeting the other UNDER the floor,
+#: where the two faces share no edge, proves they lie on each other there - no wall of one body ever
+#: reads less than the floor between faces that do not meet. Every other reading of that same pair
+#: closer than the two faces' own TESSELLATION ERROR (each triangulation's measured deflection, added)
+#: is the same coincidence seen through two different sets of chords, not material; it is passed
+#: through like the floor. A 536 mm 11-part bolted assembly's tube read 0.0055 mm "walls" that way, just
+#: past its 0.0054 mm floor, where its membranes lie on its 1.2 mm wall: 2.8 um elements, 138M of them,
+#: and a 961 GiB machine (job bf863215, 26 Oct). Faces with no measured deflection (a triangle file)
+#: keep the floor alone. The band is THIS PAIR's, so a thin wall anywhere else is read as before.
+COINCIDENT_BAND = 1.0
 #: A ray that ends on a face meeting its own at an ACUTE CONVEX EDGE (the material between them
 #: narrower than TAPER_DEG) is reading a TAPER: the wedge's thickness runs to nothing at that edge
 #: however fine the mesh, so it is a sharp edge, not a wall. A flat strip beside a round read 0.08
@@ -232,7 +249,8 @@ def _numpy_hits(s: Surface, origins: np.ndarray, dirs: np.ndarray, reach: float)
     return out, cell
 
 
-def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.ndarray, *, eps: float) -> np.ndarray:
+def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.ndarray, *, eps: float,
+               lying_on: list | None = None) -> np.ndarray:
     """How far each ray (from `eps` inside a face, along its inward normal) runs through the
     material before it LEAVES it - the wall under its start - or nan where that cannot be read.
 
@@ -244,15 +262,49 @@ def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.nda
     * the ray meets it head on enough (GRAZE_COS) and from inside the material, its outward normal
       along the ray. A ray that grazes a face, or meets one from outside (it slipped out of the
       solid through a crack in the tessellation), reads nothing;
-    * it is not a TAPER: a face meeting the ray's own at an acute convex edge (TAPER_DEG)."""
+    * it is not a TAPER: a face meeting the ray's own at an acute convex edge (TAPER_DEG);
+    * it is not a face LYING ON the ray's own (COINCIDENT_BAND): a pair of faces of one body that share
+      no edge and were read under the floor somewhere is read through out to their tessellation error
+      (each such pair, as label pairs a < b, is appended to `lying_on` when it is given)."""
     rays = _Rays(s)
-    n = len(origins)
     m = len(s.names)
     pairs = edge_pairs(s)
     la, lb = s.label[pairs.tri_a], s.label[pairs.tri_b]
     # an acute convex edge: the faces' normals turn by more than 180 - TAPER_DEG across it
     acute = (la != lb) & ~pairs.concave & (pairs.turn_deg > 180.0 - TAPER_DEG)
     wedges = np.unique(np.concatenate([la[acute] * m + lb[acute], lb[acute] * m + la[acute]]))
+    if s.tapers:
+        # THE CAD'S OWN TAPERS too (27 Oct): two faces meeting at an acute edge whose triangles the welding did
+        # not join (a coarser tessellation of a whole assembly) are still a taper - a cryostat's cylinder and
+        # the shallow cone it runs into read a 0.0068 mm "wall" that way, 1.3 billion elements
+        t = np.asarray(s.tapers, dtype=np.int64).reshape(-1, 2)
+        wedges = np.unique(np.concatenate([wedges, t[:, 0] * m + t[:, 1], t[:, 1] * m + t[:, 0]]))
+    out, lying = _walk(s, rays, origins, dirs, labels, eps=eps, wedges=wedges, m=m)
+    if s.defl_mm is None or not len(lying):
+        return out
+    # FACES LYING ON EACH OTHER (COINCIDENT_BAND): only pairs that share no edge - two faces that meet
+    # are read under the floor beside their edge by every ray started there, and that is no overlap
+    met = np.unique(np.concatenate([la[la != lb] * m + lb[la != lb], lb[la != lb] * m + la[la != lb]]))
+    lying = np.setdiff1d(lying, met)
+    if not len(lying):
+        return out
+    if lying_on is not None:
+        lying_on.extend(sorted({(int(min(k // m, k % m)), int(max(k // m, k % m))) for k in lying}))
+    a, b = lying // m, lying % m
+    band = COINCIDENT_BAND * (np.asarray(s.defl_mm, dtype=float)[a] + np.asarray(s.defl_mm, dtype=float)[b])
+    keys = np.concatenate([lying, b * m + a])
+    vals = np.concatenate([band, band])
+    order = np.argsort(keys, kind="stable")
+    out, _ = _walk(s, rays, origins, dirs, labels, eps=eps, wedges=wedges, m=m, band=(keys[order], vals[order]))
+    return out
+
+
+def _walk(s: Surface, rays: _Rays, origins: np.ndarray, dirs: np.ndarray, labels: np.ndarray, *, eps: float,
+          wedges: np.ndarray, m: int, band: tuple[np.ndarray, np.ndarray] | None = None
+          ) -> tuple[np.ndarray, np.ndarray]:
+    """wall_reach's rays, hop by hop: (each ray's wall or nan, the face pairs - start * m + hit - of one
+    body met under the floor). `band`: (sorted pair keys, the floor each of those pairs is read past)."""
+    n = len(origins)
     floor0 = FLOOR_FRACTION * s.diag
     no_tol = np.zeros(len(s.names))
     tol = s.tol_mm if s.tol_mm is not None else no_tol
@@ -261,6 +313,7 @@ def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.nda
     live = np.arange(n)
     pos = origins.copy()
     reach = 1.01 * s.diag
+    under: list[np.ndarray] = []
     for _hop in range(MAX_HOPS + 1):
         if not len(live):
             break
@@ -271,16 +324,21 @@ def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.nda
         hit = s.label[cell]
         floor = np.maximum(floor0, 2.0 * np.maximum(tol[labels[live]], tol[hit]))
         foreign = (s.body[hit] != s.body[labels[live]]) if s.body is not None else np.zeros(len(live), dtype=bool)
+        key = labels[live] * m + hit
+        under.append(key[~foreign & (total < floor) & (hit != labels[live])])
+        if band is not None and len(band[0]):
+            at = np.clip(np.searchsorted(band[0], key), 0, len(band[0]) - 1)
+            floor = np.where(band[0][at] == key, np.maximum(floor, band[1][at]), floor)
         through = foreign | (total < floor)
         cos = np.einsum("ij,ij->i", dirs[live], s.normals[cell])
-        taper = np.isin(labels[live] * m + hit, wedges)
+        taper = np.isin(key, wedges)
         good = ~through & (cos >= GRAZE_COS) & ~taper
         out[live[good]] = total[good]
         # on through the face that is not this ray's wall, from just past it
         live = live[through]
         travelled[live] = total[through]
         pos[live] = origins[live] + dirs[live] * travelled[live, None]
-    return out
+    return out, (np.unique(np.concatenate(under)) if under else np.zeros(0, dtype=np.int64))
 
 
 def agreed_wall(readings) -> int | None:
@@ -321,7 +379,8 @@ def wall_thickness(s: Surface, *, rays: int = THICKNESS_RAYS, seed: int = 0) -> 
     if not origins:
         return {"per_label": {}, "min": None, "rays": 0}
     P, O, D, L = (np.concatenate(x) for x in (points, origins, dirs, labels))
-    dist = wall_reach(s, O, D, L, eps=eps)
+    lying: list[tuple[int, int]] = []
+    dist = wall_reach(s, O, D, L, eps=eps, lying_on=lying)
     per: dict[int, tuple[float, float, np.ndarray]] = {}
     spots: dict[int, dict] = {}
     best = None
@@ -341,7 +400,7 @@ def wall_thickness(s: Surface, *, rays: int = THICKNESS_RAYS, seed: int = 0) -> 
             found = thin_spots(P[k], dist[k], median, spacing=math.sqrt(area / max(len(k), 1)))
             if found is not None:
                 spots[int(lab)] = found
-    return {"per_label": per, "min": best, "rays": int(len(O)), "thin": spots}
+    return {"per_label": per, "min": best, "rays": int(len(O)), "thin": spots, "lying": sorted(set(lying))}
 
 
 def thin_spots(points: np.ndarray, readings: np.ndarray, median: float, *, spacing: float) -> dict | None:
@@ -672,6 +731,41 @@ def merge_coaxial(arcs: list[Arc]) -> list[Arc]:
     return out
 
 
+#: A BORE, NOT A HOLE (PLAN-fea-4, 27 Oct): a concave cylinder that shares its axis with a convex cylinder of
+#: the same part, wider than it, ALL THE WAY ROUND (BORE_OUTER_SPAN_DEG), over at least BORE_OVERLAP of the
+#: hole's own length, and at least BORE_LENGTH_WALLS times as long as the wall between them, is the inside of a
+#: tube, a sleeve or a hollow shaft - the part's main wall, not a hole cut through a wall. A lug's hole beside
+#: its half-round end, an eye, a washer's or a ring's hole - short against their wall - stay holes. The wall rule sizes it (PLAN-fea-3); a stress raiser where something meets or crosses it
+#: is that feature's own zone. A tube's 533 mm bore sized as a hole (3 elements through its 1.2 mm wall along
+#: its whole length) was 2.6M of job bf863215's 3.9M elements; a 0.5 mm-walled cryostat liner's, 158M.
+BORE_OUTER_SPAN_DEG = HOLE_SPAN_DEG
+BORE_OVERLAP = 0.5
+BORE_LENGTH_WALLS = 5.0
+#: the two axes are one within this share of the bore's radius (and to within about 1.5 degrees)
+BORE_AXIS_SHARE = 0.01
+BORE_AXIS_COS = 0.9997
+
+
+def is_bore(hole: Arc, arcs: list[Arc]) -> Arc | None:
+    """The convex cylinder `hole` is the bore of (see BORE_*), or None: it is a hole."""
+    if hole.kind != "cylinder" or not hole.concave or hole.length <= 0:
+        return None
+    for o in arcs:
+        if o is hole or o.kind != "cylinder" or o.concave or o.radius <= hole.radius:
+            continue
+        if o.span_deg < BORE_OUTER_SPAN_DEG or abs(float(o.axis @ hole.axis)) < BORE_AXIS_COS:
+            continue
+        d = o.centre - hole.centre
+        if np.linalg.norm(d - (d @ hole.axis) * hole.axis) > BORE_AXIS_SHARE * hole.radius + 1e-9:
+            continue
+        t = float(d @ hole.axis)
+        lo = max(-0.5 * hole.length, t - 0.5 * o.length)
+        hi = min(0.5 * hole.length, t + 0.5 * o.length)
+        if hi - lo >= BORE_OVERLAP * hole.length and hole.length >= BORE_LENGTH_WALLS * (o.radius - hole.radius):
+            return o
+    return None
+
+
 def kind_of(arc: Arc, diag: float | None = None) -> tuple[str, str] | None:
     """(hot-spot type, shape word) for a concave round, None for a convex one - and None for a
     gently curved face that is no blend: a "fillet" whose radius is more than FILLET_MAX_SHARE of
@@ -796,7 +890,8 @@ def bodies_of(tris: np.ndarray, pairs: EdgePairs) -> int:
     return int(components(len(tris), pairs.tri_a, pairs.tri_b).max() + 1)
 
 
-__all__ = ["FILLET", "HOLE", "HOLE_SPAN_DEG", "MAX_HOT_SPOTS", "NOTCH", "NOTCH_SPAN_DEG", "SHARP_CORNER",
+__all__ = ["BORE_AXIS_COS", "BORE_AXIS_SHARE", "BORE_LENGTH_WALLS", "BORE_OUTER_SPAN_DEG", "BORE_OVERLAP", "is_bore",
+           "FILLET", "HOLE", "HOLE_SPAN_DEG", "MAX_HOT_SPOTS", "NOTCH", "NOTCH_SPAN_DEG", "SHARP_CORNER",
            "SHARP_TURN_DEG", "SMOOTH_TURN_DEG", "THICKNESS_RAYS", "VARY_SHARE", "thin_spots", "Arc", "EdgePairs", "Surface",
            "agreed_wall", "bodies_of", "components", "wall_reach", "curved_patches", "edge_pairs", "face_samples", "fit_round", "kind_of", "merge_coaxial", "nesting_depth", "patch_samples",
            "sharp_corners", "smooth_regions", "wall_thickness"]

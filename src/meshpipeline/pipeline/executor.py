@@ -86,6 +86,8 @@ def _gate_statement(engine: str, gate_key: str) -> str:
             # engines/fea_driver.py: the FEA plan's checks before meshing (PLAN-fea-8)
             "fea_plan": "The FEA mesh plan fits the detail level, for one solid part",
             "fea_guard": "The FEA mesher finished within its guard clock",
+            # engines/fea_driver.NOT_RUN_GATE (RUN-4): our side started the mesher's machine
+            "fea_dispatch": "The FEA mesher's machine was started and its result came back",
             # agents/builder/attempt.carry_last_verdict: the run's time ran out before a mesher
             "builder_budget": "The run had time left to build the mesh"}.get(
         gate_key, "The mesh setup matches what you approved")

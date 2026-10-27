@@ -21,6 +21,10 @@ CONNECTION_OPTIONS = (
     {"key": "contact", "label": "Contact", "words": "they can slide or separate where they touch"},
 )
 DEFAULT_CONNECTION = "bonded"
+#: PLAN-fea-18: THE SMALL-GAP JOIN as the stage proposes it - parts that face each other across a small
+#: gap are joined there (a weld or a thread the CAD does not draw), unless the user switches it off.
+GAP_JOIN_QUESTION = "Join parts across small gaps (welds and threads the CAD does not draw)"
+DEFAULT_GAP_JOINS = True
 #: The check modes a stage opens in. "thermal" is the ECXML model's own (contracts/intake_formats).
 STAGE_FLOW, STAGE_FEA, STAGE_THERMAL = "flow", "fea", "thermal"
 
@@ -322,19 +326,77 @@ def assembly_view(facts: dict | None) -> dict | None:
     interfaces = [{"id": i.get("id"), "kind": i.get("kind"), "parts": list(i.get("parts") or []),
                    "at_mm": i.get("at_mm"), "area_mm2": i.get("area_mm2"), "overlap_share": i.get("overlap_share"),
                    "faces": i.get("faces") or {}} for i in rec.get("interfaces") or []]
+    for i, src in zip(interfaces, rec.get("interfaces") or [], strict=False):
+        if src.get("kind") == "gap" or src.get("line"):
+            i.update(gap_mm=src.get("gap_mm"), gap_max_mm=src.get("gap_max_mm"), gap_limit_mm=src.get("gap_limit_mm"),
+                     line=bool(src.get("line")))
     touching = sum(1 for i in interfaces if i["kind"] == "touching")
     over = sum(1 for i in interfaces if i["kind"] == "overlap")
+    gaps = [i for i in interfaces if i["kind"] == "gap" or i.get("line")]
     words = [f"{len(parts) or n} parts"]
     if touching:
         words.append(f"{touching} place{'s' if touching != 1 else ''} where parts touch")
+    if gaps:
+        words.append(f"{len(gaps)} across a small gap")
     if over:
         words.append(f"{over} where parts pass into each other")
+    label = {p["id"]: (p["name"] or p["id"]) for p in parts}
+    raw_joins = rec.get("joins")
+    joins: dict = raw_joins if isinstance(raw_joins, dict) else {}
     return {"parts": parts, "interfaces": interfaces, "free_parts": list(rec.get("free_parts") or []),
             "notes": list(rec.get("notes") or []), "summary": ", ".join(words),
+            # NOT MEASURED YET is not "nothing touches": the stage says which
+            "measured": bool(rec),
+            # PLAN-fea-18: each small-gap joint in words, and the one switch for them (on by default)
+            "gap_joins": [{"id": i["id"], "parts": i["parts"], "gap_mm": i.get("gap_mm"),
+                           "words": gap_words(label.get(i["parts"][0], i["parts"][0]),
+                                              label.get(i["parts"][1], i["parts"][1]), i.get("gap_mm"),
+                                              line=bool(i.get("line")))}
+                          for i in gaps],
+            "gap_question": GAP_JOIN_QUESTION if gaps else "", "gap_default": DEFAULT_GAP_JOINS,
+            "join_notes": list(joins.get("notes") or []),
             "question": CONNECTION_QUESTION, "options": [dict(o) for o in CONNECTION_OPTIONS],
             "default": DEFAULT_CONNECTION,
             "overlap_note": ("Where parts pass into each other, a bonded mesh makes them one piece of material "
                              "there; with contact, the solver starts with them overlapping." if over else "")}
+
+
+def gap_words(a: str, b: str, gap_mm, *, line: bool = False) -> str:
+    """One small-gap joint in plain words: "Bolt M8 sits 0.19 mm from Part_8 - joined across the gap"."""
+    try:
+        g = float(gap_mm)
+        said = f"{g:.2g} mm" if g < 1 else f"{g:.3g} mm"
+    except (TypeError, ValueError):
+        said = "a small gap"
+    if line:
+        return f"{a} meets {b} only along a line or an edge{'' if said == '0 mm' else ', ' + said + ' apart'} - joined there"
+    return f"{a} sits {said} from {b} - joined across the gap"
+
+
+def gap_joins_answer(value) -> bool:
+    """The small-gap switch the stage sent: on unless it was plainly switched off."""
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in ("false", "0", "no", "off")
+
+
+def confirmed_gap_joins(session_id: str) -> bool:
+    """Whether parts facing each other across a small gap are joined there (PLAN-fea-18), as confirmed
+    on the stage (the stored confirmation's fea_gap_joins); on when nothing says."""
+    import json
+
+    if not session_id:
+        return DEFAULT_GAP_JOINS
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.contracts.object_storage import get_object_store
+
+    try:
+        record = json.loads(get_object_store().get_bytes(object_key=check_object_key(session_id, "confirmed.json")))
+    except Exception:  # noqa: BLE001 - unknown is the default, never a refusal
+        return DEFAULT_GAP_JOINS
+    if not isinstance(record, dict) or record.get("fea_gap_joins") is None:
+        return DEFAULT_GAP_JOINS
+    return gap_joins_answer(record.get("fea_gap_joins"))
 
 
 def parts_words(asm: dict | None) -> str:
@@ -439,6 +501,7 @@ def in_unit(record: dict | None, scale_to_m: float | None) -> dict | None:
 
 
 __all__ = ["TRY_ANYWAY", "has_solid", "warnings", "FOLD_BACK", "fold_back_message", "SELF_OVERLAP", "WAY_OUT_REPAIR", "WAY_OUT_REPAIR_PART", "self_overlap_message", "CONNECTION_OPTIONS", "CONNECTION_QUESTION", "DEFAULT_CONNECTION", "NOT_SOLID", "NOT_SOLID_REASONS",
-           "QUESTION", "SHOWN_HOT_SPOTS", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL", "WAY_OUT_SOLID", "assembly_view",
+           "QUESTION", "SHOWN_HOT_SPOTS", "GAP_JOIN_QUESTION", "DEFAULT_GAP_JOINS", "gap_words",
+           "gap_joins_answer", "confirmed_gap_joins", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL", "WAY_OUT_SOLID", "assembly_view",
            "blocker", "body_count", "clean_words", "confirmed_connection", "connection_answer", "fea_view",
            "hot_spot_words", "in_unit", "measure_view", "not_solid_message", "parts_words", "stage_route"]

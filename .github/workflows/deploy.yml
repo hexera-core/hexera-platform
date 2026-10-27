@@ -718,12 +718,18 @@ jobs:
               # empty string it concludes no usable key exists and tries to mint one - which a
               # deploy identity is refused, because storage.hmacKeyAdmin is an owner's role.
               #
-              # THE KEY BELONGS TO 224734058693-compute@, not to dev-api@. An HMAC key is owned by
-              # one service account and whoever presents it authenticates AS that account, so the
-              # bucket grant that makes this work is the one that account already holds. Moving
-              # dev onto a key owned by its own API identity is an owner's one-off act (mint, seal,
-              # retype the id here) and is not what this line is for.
-              echo "minio_access_key=GOOG1EBINWPJ6TMT7VJETWHMRZLC6M2FNQWTMOYSRRDTP4NT7ZWGD5YRZJDHX"
+              # THE KEY BELONGS TO dev-api@, and it is the one minio-secret-key's latest version
+              # (v10) seals. create-object-storage.sh tests this id against the ACTIVE keys of the
+              # API identity (OBJECT_STORE_SA defaults to it), so pinning a key another account
+              # owns made every full deploy decide "no usable key", mint a fresh dev-api@ key and
+              # seal its secret as the new latest - and every merge deploy after it put the API
+              # back on the old id, paired with a secret that is not its own. Storage refused
+              # every call (readyz: object_store down: StorageError) until the next full deploy,
+              # and on the fifth mint GCS's per-account limit stopped the deploy outright.
+              # Pinning the id the latest secret belongs to makes the stage reuse it, so a merge
+              # and a full deploy now hand every runtime the same pair. dev-api@ holds
+              # roles/storage.objectAdmin on the bucket.
+              echo "minio_access_key=GOOG1EK3FARMRHP4LWXETCYFWB2BUX4RLN2NHTJ2VWREUO7ZHW7IVPFI7ET5D"
               echo "minio_bucket=hexera-dev-artifacts-224734058693"
               echo "minio_secret_key_secret=minio-secret-key"
               echo "minio_endpoint=storage.googleapis.com"

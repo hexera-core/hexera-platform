@@ -337,6 +337,9 @@ def fea_confirmation_message(body) -> str:
         parts.append(f"An assembly of {said_parts}, meshed together as solids." if said_parts
                      else "An assembly of several parts, meshed together as solids.")
         parts.append(FEA_CONNECTION_WORDS.get(connection, FEA_CONNECTION_WORDS["bonded"]))
+        gap_said = str(getattr(body, "gap_summary", "") or "").strip()
+        if gap_said:
+            parts.append(gap_said)
     clean = str(getattr(body, "clean_summary", "") or "").strip().rstrip(".")
     if clean:
         parts.append(f"Clean check: {clean}.")
@@ -416,6 +419,9 @@ def confirmation_message(body) -> str:
         parts.append("No openings were confirmed on the picture"
                      + (" (every sticker was marked not an opening)" if body.openings else "")
                      + "; ask the user where the fluid enters and leaves.")
+    leaks_said = str(getattr(body, "leaks_summary", "") or "").strip()
+    if leaks_said and body.flow == "internal":
+        parts.append(leaks_said)
     if body.seed_point_mm and len(body.seed_point_mm) == 3:
         p = body.seed_point_mm
         parts.append(f"A point inside the flow: ({p[0]:.0f}, {p[1]:.0f}, {p[2]:.0f}) mm.")
@@ -426,6 +432,66 @@ def confirmation_message(body) -> str:
     if said:
         parts.append(said)
     return " ".join(parts)
+
+
+# ---------------------------------------------------------------------- the leaks (INS-8) ----
+LEAK_RULE = "INS-8"
+
+
+def _mm(v: float) -> str:
+    return f"{v:.3g}"
+
+
+def leak_closing_answer(leaks: dict | None, asked_mm: float | None) -> tuple[float | None, str]:
+    """INS-8: the leak size the confirmation carries, in the reading's millimetres, and what it says,
+    from the check's leaks and what the stage sent: None (left out) takes the check's proposal, 0
+    switches it off, any other size is the user's. (None, "") when the check found no leaks."""
+    if not isinstance(leaks, dict) or not int(leaks.get("found") or 0):
+        return None, ""
+    proposed = float(leaks.get("close_up_to_mm") or 0.0)
+    size = proposed if asked_mm is None else max(float(asked_mm), 0.0)
+    found = int(leaks.get("found") or 0)
+    rows = [f"{_mm(float(x.get('width_mm') or 0))} mm at ({', '.join(f'{v:.0f}' for v in x.get('at_mm') or [])}) mm"
+            for x in (leaks.get("leaks") or [])[:5]]
+    listed = "; ".join(rows) + (f"; and {found - len(rows)} more" if found > len(rows) else "")
+    if size <= 0:
+        return 0.0, (f"Leaks: {found} found in the surface ({listed}), left open as the user chose - the run "
+                     "stops at a leak it cannot mesh across.")
+    widest = max([float(x.get("width_mm") or 0) for x in leaks.get("leaks") or []] or [0.0])
+    tail = "" if size >= widest else f" (the widest, {_mm(widest)} mm, is wider and stays open)"
+    return size, (f"Leaks: {found} found in the surface ({listed}); every leak up to {_mm(size)} mm is closed "
+                  f"for the mesh{tail}, never in the file.")
+
+
+def confirmed_leak_closing(session_id: str) -> dict | None:
+    """The leak closing the user confirmed on the stage (INS-8), as the run carries it:
+    {"close_up_to_m", "rule"} - None when the check found no leaks, the user switched it off, or
+    the confirmation cannot be read (the surface is then meshed as drawn)."""
+    import json
+
+    if not session_id:
+        return None
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.contracts.object_storage import get_object_store
+    try:
+        record = json.loads(get_object_store().get_bytes(object_key=check_object_key(session_id, "confirmed.json")))
+    except Exception:  # noqa: BLE001 - unknown is "as drawn", never a refusal
+        return None
+    return leak_closing_of(record)
+
+
+def leak_closing_of(record) -> dict | None:
+    """The run's leak closing from a stored confirmation (its size is in the confirmed unit's
+    millimetres, which are millimetres), in metres; None when there is none."""
+    if not isinstance(record, dict) or record.get("flow") != "internal":
+        return None
+    try:
+        size_mm = float(record.get("close_leaks_mm") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if not 0.0 < size_mm < float("inf"):
+        return None
+    return {"close_up_to_m": size_mm / 1000.0, "rule": LEAK_RULE}
 
 
 def _is_declaration(m: dict) -> bool:

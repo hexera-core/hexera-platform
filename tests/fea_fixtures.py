@@ -233,6 +233,12 @@ def touching_blocks(size: float = 10.0):
     return _compound(_box(0, 0, 0, size, size, size), _box(size, 0, 0, size, size, size))
 
 
+def gapped_blocks(size: float = 10.0, gap: float = 0.2):
+    """Two cubes of `size` mm along x with a `gap` mm slot between them (x = size .. size + gap): parts
+    that face each other across a small gap and never touch (a weld the CAD does not draw)."""
+    return _compound(_box(0, 0, 0, size, size, size), _box(size + gap, 0, 0, size, size, size))
+
+
 def doubled_block():
     """The same 10 mm cube twice in one file (a body drawn twice): the second wholly inside the first."""
     return _compound(_box(0, 0, 0, 10, 10, 10), _box(0, 0, 0, 10, 10, 10))
@@ -310,6 +316,49 @@ def micro_step():
     0.003 mm wide along z = 5 and two 0.003 mm edges at its ends - MICRO DETAILS, far below any element
     a part this size is meshed with."""
     return _fuse(_box(0, 0, 0, 20, 10, 10), _box(0, 0, 0, 20, 10.003, 5))
+
+
+def strip_block(w: float = 0.005):
+    """A 20 x 20 x 10 mm block drawn as three slices fused without merging their faces (y 0..10, a
+    w mm strip, the rest): its top, bottom and two ends each carry a strip face w wide, coplanar with
+    the faces beside it, and the strip's ends are edges w long - TINY faces and SHORT edges a mesh of
+    a part this size cannot follow, every one on a smooth join (MESH-9)."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+
+    a, b, c = _box(0, 0, 0, 20, 10, 10), _box(0, 10, 0, 20, w, 10), _box(0, 10 + w, 0, 20, 10 - w, 10)
+    return BRepAlgoAPI_Fuse(BRepAlgoAPI_Fuse(a, b).Shape(), c).Shape()
+
+
+def micro_chamfer(d: float = 0.003):
+    """A 20 x 10 x 10 mm block whose top long edge at y = 10 is chamfered d mm: a sliver face about 1.4 d
+    wide along it, meeting the top and the side at 45 degrees - two creases, an outside edge (no inside
+    corner), the sliver Ansys's mesh defeaturing folds back onto one edge (MESH-9)."""
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeChamfer
+
+    shape = _box(0, 0, 0, 20, 10, 10)
+    edge = _edges_where(shape, lambda b: abs(b[1] - 10) < 1e-3 and abs(b[4] - 10) < 1e-3
+                        and abs(b[2] - 10) < 1e-3 and abs(b[5] - 10) < 1e-3)[0]
+    mk = BRepFilletAPI_MakeChamfer(shape)
+    mk.Add(d, edge)
+    return mk.Shape()
+
+
+def split_cylinder(dth: float = 0.0004):
+    """A 10 mm high cylinder of radius 5 drawn as two sectors fused without merging their faces, one of
+    them dth radians: a curved strip 5*dth mm wide on its side, two wedges as thin on its ends (MESH-9)."""
+    import math
+
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf
+
+    ax = gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))
+    big = BRepPrimAPI_MakeCylinder(ax, 5, 10, 2 * math.pi - dth).Shape()
+    turn = gp_Trsf()
+    turn.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 2 * math.pi - dth)
+    thin = BRepBuilderAPI_Transform(BRepPrimAPI_MakeCylinder(ax, 5, 10, dth).Shape(), turn).Shape()
+    return BRepAlgoAPI_Fuse(big, thin).Shape()
 
 
 #: where the tangent boss's cusp is (mm)
@@ -413,3 +462,62 @@ def wedge(angle_deg: float, length: float = 100.0, depth: float = 20.0):
     poly = BRepBuilderAPI_MakePolygon(gp_Pnt(0, 0, 0), gp_Pnt(length, 0, 0), gp_Pnt(length, h, 0), True)
     face = BRepBuilderAPI_MakeFace(poly.Wire()).Face()
     return BRepPrimAPI_MakePrism(face, gp_Vec(0, 0, depth)).Shape()
+
+
+#: THE ANCHORAGE (PLAN-fea-18): a bar with two bosses sleeved into clearance holes, a bracket on each
+#: boss and a bolt through each bracket into its boss - mirrored about y = 0 - and its gaps (mm).
+ANCHORAGE = {"boss_gap": 0.2, "bore_gap": 0.1, "bracket_clearance": 1.0, "station": 50.0}
+
+
+def anchorage(skin: bool = True):
+    """The anchorage, every body a part (millimetres):
+
+    * Part_1 the bar: 40 x 200 x 10 mm (z -10..0), a 5.2 mm clearance hole through it at y = +-50;
+    * Part_2 / Part_3 the bosses: 5.0 mm cylinders in those holes (a 0.2 mm gap all round, the weld
+      not drawn), z -10..2, each with a 2.1 mm bore;
+    * Part_4 / Part_5 the brackets: 20 x 20 x 3 mm plates on the bosses' tops (z 2..5), each with a
+      3 mm hole - 2 mm above the bar, never touching it;
+    * Part_6 / Part_7 the bolts: a 2 mm shank down the bore (0.1 mm from it, the thread not drawn,
+      1 mm from the bracket's hole) under a 4 mm head on the bracket.
+
+    `skin`: the bar's surface also carries a SKIN on the +y side - a disc of no thickness across that
+    hole at z = -5, its edge on the hole's wall (a hole cut that left a face behind, as a CAD export
+    can) - so the bar's surface crosses itself and crosses that boss and that bolt."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pln, gp_Pnt
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SHELL
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS, TopoDS_Shell, TopoDS_Solid
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    g = ANCHORAGE
+    ys = (g["station"], -g["station"])
+    r_boss, r_bore = 5.0, 2.1
+    r_hole = r_boss + g["boss_gap"]
+    r_shank = r_bore - g["bore_gap"]
+    r_bracket_hole = r_shank + g["bracket_clearance"]
+    bar = _box(-20, -100, -10, 40, 200, 10)
+    for y in ys:
+        bar = _cut(bar, _cyl(0, y, -11, r_hole, 12))
+    if skin:
+        # the bar's own faces, and a disc across the +y hole, in one shell
+        fm = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(bar, TopAbs_FACE, fm)
+        sh = TopoDS_Shell()
+        b = BRep_Builder()
+        b.MakeShell(sh)
+        for i in range(1, fm.Extent() + 1):
+            b.Add(sh, fm.FindKey(i))
+        circ = gp_Circ(gp_Ax2(gp_Pnt(0, ys[0], -5), gp_Dir(0, 0, 1)), r_hole)
+        wire = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circ).Edge()).Wire()
+        b.Add(sh, BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(0, ys[0], -5), gp_Dir(0, 0, 1)), wire).Face())
+        sol = TopoDS_Solid()
+        b.MakeSolid(sol)
+        b.Add(sol, sh)
+        bar = sol
+    bosses = [_cut(_cyl(0, y, -10, r_boss, 12), _cyl(0, y, -11, r_bore, 14)) for y in ys]
+    brackets = [_cut(_box(-10, y - 10, 2, 20, 20, 3), _cyl(0, y, 1, r_bracket_hole, 5)) for y in ys]
+    bolts = [_fuse(_cyl(0, y, -8, r_shank, 13), _cyl(0, y, 5, 4.0, 2.5)) for y in ys]
+    del TopAbs_SHELL, TopoDS
+    return _compound(bar, *bosses, *brackets, *bolts)

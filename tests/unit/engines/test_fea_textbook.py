@@ -99,9 +99,9 @@ LAME = {"a": 50.0, "b": 100.0, "h": 20.0, "p": 10e6}
 GROOVE = {"D": 50.0, "r": 5.0, "L": 200.0, "kt": 2.193}
 SLENDER = {"L": 500.0, "h": 10.0}
 #: THE ASSEMBLY CASES (PLAN-fea-17): two cubes of this side (mm) along x, and the end pressure (Pa)
-BLOCKS = {"a": 100.0, "p": 1.0e6}
+BLOCKS = {"a": 100.0, "p": 1.0e6, "gap": 0.2}
 #: how each assembly case's parts are joined (the stage's one answer)
-CONNECTION = {"bonded_tension": "bonded", "contact_compression": "contact"}
+CONNECTION = {"bonded_tension": "bonded", "contact_compression": "contact", "bonded_gap_tension": "bonded"}
 
 
 def _shape(case: str):
@@ -123,6 +123,9 @@ def _shape(case: str):
         return fx.coil_spring()
     if case in ("modal", "buckling"):
         return _box(0, 0, 0, SLENDER["h"], SLENDER["h"], SLENDER["L"])
+    if case == "bonded_gap_tension":
+        from tests import fea_fixtures as fx
+        return fx.gapped_blocks(BLOCKS["a"], BLOCKS["gap"])
     if case in CONNECTION:
         from tests import fea_fixtures as fx
         return fx.touching_blocks(BLOCKS["a"])
@@ -487,13 +490,14 @@ def _faces(nodes, nsets, test) -> list[str]:
     return [n for n, ids in nsets.items() if all(test(nodes[i]) for i in ids)]
 
 
-def _blocks(ws, sign: float, contact: bool):
+def _blocks(ws, sign: float, contact: bool, gap: float = 0.0):
     """The two blocks held on x = 0 (rollers on y = 0 and z = 0, so Poisson's ratio adds no
-    constraint) and loaded by BLOCKS["p"] on x = 2a: sign -1 pulls (tension), +1 pushes."""
+    constraint) and loaded by BLOCKS["p"] on x = 2a (+ the gap between them, mm): sign -1 pulls
+    (tension), +1 pushes."""
     deck, nodes, nsets = _deck(ws)
     a = BLOCKS["a"] * 1e-3
     fixed = _face(nodes, nsets, lambda q: abs(q[0]) < 1e-9)
-    load = _face(nodes, nsets, lambda q: abs(q[0] - 2 * a) < 1e-9)
+    load = _face(nodes, nsets, lambda q: abs(q[0] - 2 * a - gap * 1e-3) < 1e-9)
     y0 = _faces(nodes, nsets, lambda q: abs(q[1]) < 1e-9)
     z0 = _faces(nodes, nsets, lambda q: abs(q[2]) < 1e-9)
     assert len(y0) == 2 and len(z0) == 2, (y0, z0)
@@ -521,6 +525,20 @@ def _bonded_tension(ws, q):
     return end, BLOCKS["p"] * 2 * BLOCKS["a"] * 1e-3 / E, "end displacement (m), as one bar"
 
 
+def _bonded_gap_tension(ws, q):
+    """PLAN-fea-18: two blocks 0.2 mm apart, bonded - the small-gap joint is a *TIE whose reach spans
+    the gap, so every node of the joint is tied and the pull crosses it whole: sigma_xx is p on both
+    sides, and the far end moves as one bar's would (the air in the gap carries no strain). A tie that
+    missed nodes would leave the second block loose (CalculiX stops: no solution) or the stress uneven."""
+    deck = (ws / "mesh.inp").read_text()
+    assert "POSITION TOLERANCE=" in deck and "ADJUST=NO" in deck, "the gap joint's reach is not in the deck"
+    nodes, nsets, load, u, st = _blocks(ws, -1.0, contact=False, gap=BLOCKS["gap"])
+    sxx = np.array([v[0] for v in st.values()])
+    assert np.max(np.abs(sxx / BLOCKS["p"] - 1.0)) < 0.02, f"sigma_xx {sxx.min():.4g}..{sxx.max():.4g}"
+    end = float(np.mean([u[i][0] for i in nsets[load]]))
+    return end, BLOCKS["p"] * 2 * BLOCKS["a"] * 1e-3 / E, "end displacement (m), as one bar across the gap"
+
+
 def _contact_compression(ws, q):
     _nodes, _nsets, _load, _u, st = _blocks(ws, 1.0, contact=True)
     sxx = np.array([v[0] for v in st.values()])
@@ -540,6 +558,7 @@ CASES = {
     "spring": ("static", _spring, 0.05),
     "bonded_tension": ("static", _bonded_tension, 0.01),
     "contact_compression": ("static", _contact_compression, 0.01),
+    "bonded_gap_tension": ("static", _bonded_gap_tension, 0.01),
 }
 
 

@@ -436,7 +436,7 @@ def _native_payload_members(workspace) -> list[str]:
     the one feature file the driver authors itself (a raised floor's contact line).
 
     Everything else in the attempt's workspace is either local-only (input.stl feeds the
-    planner here, plan memory and gate facts feed the judge here) or a PRIOR pass's collected
+    planner here, gate facts feed the judge here) or a PRIOR pass's collected
     output - the built polyMesh, extendedFeatureEdgeMesh, VTK exports, converted meshes and
     logs that a completed pass writes back into this same directory. Shipping those to the
     mesher is what ballooned a retry pass's submission from tens of MB to most of a GB and
@@ -459,6 +459,10 @@ def _native_payload_members(workspace) -> list[str]:
     # the narrow spots' refinement surfaces (_narrow_surfaces) - read by the mesher, never patches
     members += sorted(p.relative_to(ws).as_posix()
                       for p in (ws / "constant" / "triSurface" / "refine").glob("*.stl"))
+    # The shadow capacity observer reads only declared payload files and bounds this JSON read.
+    # The record carries the pass's cell budget and layer count; the remote mesher ignores it.
+    if (ws / ".last_plan.json").is_file():
+        members.append(".last_plan.json")
     # THE FACTS THE REMOTE READS. native.py measures the passage beside the mesh when the
     # workspace says the flow is internal - and it reads that from the `flow_topology` file.
     # Left out of this list, the file never reached the mesher: every Cloud Run execution logged

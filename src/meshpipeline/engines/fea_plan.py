@@ -92,6 +92,9 @@ KEEP_THROUGH = 1.0
 KEEP_PER_QUARTER = 3
 
 QUARTER = math.pi / 2.0
+#: zone kinds in plain words (PLAN-fea-8's coarsening says which it touched and which it kept)
+KIND_WORDS = {"round": "rounds", "corner": "capped corners", "wall": "walls", "wall_spot": "thin spots",
+              "part": "the parts' own sizes", "hole": "holes", "fillet": "fillets", "notch": "notches"}
 _MM = 1e-3
 
 
@@ -114,12 +117,15 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
     out: list[dict] = []
     spot_faces: set[str] = set()
     thinnest = _f((record.get("thickness") or {}).get("min_mm"))
+    own = _part_thinnest(record)
 
     for h in record.get("hot_spots") or []:
         faces = [str(f) for f in h.get("faces") or []]
         t = _f(h.get("local_thickness_mm"))
         if h.get("type") == "sharp_corner":
-            basis = _f(h.get("cap_basis_mm")) or t or thinnest
+            # a corner whose faces read no wall of their own: the thinnest wall of ITS OWN PART
+            # (PLAN-fea-17: every part sized by its own rules), the whole part's only for a single part
+            basis = _f(h.get("cap_basis_mm")) or t or own.get(_part_key(faces[0]) if faces else "", thinnest)
             if basis is None or len(faces) < 2:
                 continue
             size = basis / CORNER_DIVISIONS
@@ -166,6 +172,11 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
                         "why": (f"a {_mm(ts)} thin spot of the wall under {name}, {_mm(rad)} across: "
                                 f"{WALL_ELEMENTS} elements through it there")})
         r = _f(row.get("radius_mm"))
+        if r is not None and name not in spot_faces and r < ROUND_MICRO * _part_diag(record, name):
+            # PLAN-fea-12: A ROUND KEPT ONLY FOR ITS SHAPE that is smaller than ROUND_MICRO of its part is an edge
+            # break the elements' curved sides follow, not a shape that needs elements of its own (a 127 mm
+            # coil's 0.06 mm rounds asked for 0.024 mm elements, 31.6M of them); named among the micro details
+            continue
         if r is not None and name not in spot_faces:
             out.append({"id": f"R{_face_order(name)}", "kind": "round", "faces": [name],
                         "size_m": QUARTER * r / ROUND_PER_QUARTER * _MM, "reach_m": 0.0,
@@ -190,6 +201,39 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
             z["tightened"] = float(k)
         z["size_m"] = _r(z["size_m"])
         z["reach_m"] = _r(z["reach_m"])
+    return out
+
+
+#: PLAN-fea-12: a round kept only for its shape (PLAN-fea-7) under this share of its part's diagonal is an
+#: edge break, not a shape (cad/fea_measure.MICRO_FRACTION: the CAD details recorded as micro)
+ROUND_MICRO = 1e-3
+
+
+def _part_diag(record: Mapping, face: str) -> float:
+    """The diagonal (mm) of the part `face` belongs to: its assembly part's, else the part's own."""
+    key = _part_key(face)
+    for b in record.get("part_bases") or []:
+        if b.get("id") == key and _f(b.get("diag_mm")):
+            return float(b["diag_mm"])
+    return float(_f(record.get("diag_mm")) or 0.0)
+
+
+def _part_key(face: str) -> str:
+    """Part_k of an assembly's Part_k_Face_j; "" for a single part's Face_j."""
+    head, sep, _tail = str(face).rpartition("_Face_")
+    return head if sep else ""
+
+
+def _part_thinnest(record: Mapping) -> dict[str, float]:
+    """An assembly's thinnest measured wall, part by part (Part_k -> mm); empty for a single part."""
+    if not record.get("part_bases"):
+        return {}
+    out: dict[str, float] = {}
+    for name, row in (record.get("faces") or {}).items():
+        t = _f((row or {}).get("thickness_min_mm"))
+        key = _part_key(name)
+        if t is not None and key:
+            out[key] = min(out.get(key, t), t)
     return out
 
 
@@ -219,14 +263,15 @@ def keep_size(z: dict, through: float = KEEP_THROUGH) -> float | None:
     return min(sizes) if sizes else None
 
 
-def floored(zone_list: list[dict], floor_m: float, through: float = KEEP_THROUGH) -> list[dict]:
+def floored(zone_list: list[dict], floor_m: float, through: float = KEEP_THROUGH,
+            kinds: tuple[str, ...] | None = None) -> list[dict]:
     """PLAN-fea-8's coarsening: every zone finer than `floor_m` meshed at `floor_m` instead - but
     never coarser than its validity minimum (keep_size) - the size its rule asked for kept
-    (`rule_size_m`) so what it leaves short can be named."""
+    (`rule_size_m`) so what it leaves short can be named. `kinds`: only zones of these kinds."""
     out = []
     for z in zone_list:
         size = float(z["size_m"])
-        if size < floor_m:
+        if size < floor_m and (kinds is None or z["kind"] in kinds):
             keep = keep_size(z, through)
             new = float(floor_m) if keep is None else max(size, min(float(floor_m), keep))
             if new > size:
@@ -273,13 +318,15 @@ def finish(record: Mapping, zone_list: list[dict], hist: Histogram, *, diag_m: f
     LIMIT_AIM of `limit` (PLAN-fea-8)."""
     base = diag_m / MIN_DIVISIONS
     est = elements(hist, base, PER_H3)
-    fits = hist.complete and est <= LIMIT_AIM * float(limit)
+    # PLAN-fea-8: a count that ran out of cubes after counting further (engines/fea_driver._histogram) is a
+    # floor; under the limit it fits - a plan short of its machine steps up when it runs (RUN-3)
+    fits = (hist.complete or getattr(hist, "stopped", "") == "cubes") and est <= LIMIT_AIM * float(limit)
     plan: dict = {
         "version": VERSION,
         "element": {"family": "tetrahedra", "order": 2, "solid_only": True},
         "base_size_m": _r(base), "growth": float(growth), "per_h3": PER_H3,
         "zones": zone_list, "histogram": hist.as_list(), "histogram_complete": hist.complete,
-        "estimate": {"elements": int(round(est))},
+        "estimate": {"elements": int(round(est)), **({} if hist.complete else {"at_least": True})},
         "limit": {"elements": int(limit)},
         "fits": bool(fits), "levers": list(levers or []),
         # PLAN-fea-10: the cusps the adapter sets aside (metres, the mesh's unit)
@@ -295,9 +342,24 @@ def finish(record: Mapping, zone_list: list[dict], hist: Histogram, *, diag_m: f
                       "points_m": [[_r(float(v) * _MM) for v in p] for p in m.get("points_mm") or []]}
                      for m in record.get("micro") or []
                      if float(m.get("size_mm") or 0.0) < MICRO_KEEP * finest_mm]
+    rounds = micro_rounds(record)
+    if rounds:
+        plan["micro_rounds"] = rounds          # PLAN-fea-12 (absent when there is none: the plan is as before)
     plan["words"] = words(record, plan)
     plan["decisions"] = decisions(record, plan)
     return plan
+
+
+def micro_rounds(record: Mapping) -> list[dict]:
+    """PLAN-fea-12: the rounds kept only for their shape that are under ROUND_MICRO of their part - no zone of
+    their own (zones() leaves them out), named."""
+    spot = {str(f) for h in record.get("hot_spots") or [] for f in h.get("faces") or []}
+    out = []
+    for name, row in sorted((record.get("faces") or {}).items(), key=lambda kv: _face_order(kv[0])):
+        r = _f((row or {}).get("radius_mm"))
+        if r is not None and name not in spot and r < ROUND_MICRO * _part_diag(record, name):
+            out.append({"face": name, "radius_mm": r})
+    return out
 
 
 def words(record: Mapping, plan: Mapping) -> list[str]:
@@ -348,6 +410,23 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
     rounds = [z for z in zs if z["kind"] == "round" and z["size_m"] < plan["base_size_m"]]
     if rounds:
         out.append(f"{len(rounds)} other round face(s) keep their shape: {ROUND_PER_QUARTER} elements per quarter-turn.")
+    lying = [list(c.get("faces") or []) for c in record.get("coincident") or []]
+    if lying:
+        named = "; ".join(" and ".join(f) for f in lying[:6]) + (f" and {len(lying) - 6} more" if len(lying) > 6 else "")
+        out.append(f"Faces lying on each other: {len(lying)} pair(s) of faces of one part lie on top of each other "
+                   f"with no material between them ({named}) - a skin of no thickness in the CAD. They set no wall "
+                   "size: the wall there is read past them.")
+    lying = [list(c.get("faces") or []) for c in record.get("coincident") or []]
+    if lying:
+        named = "; ".join(" and ".join(f) for f in lying[:6]) + (f" and {len(lying) - 6} more" if len(lying) > 6 else "")
+        out.append(f"Faces lying on each other: {len(lying)} pair(s) of faces of one part lie on top of each other "
+                   f"with no material between them ({named}) - a skin of no thickness in the CAD. They set no wall "
+                   "size: the wall there is read past them.")
+    small = plan.get("micro_rounds") or []
+    if small:
+        out.append(f"{len(small)} round face(s) far smaller than their part (the smallest of radius "
+                   f"{min(float(m['radius_mm']) for m in small):.3g} mm) are edge breaks the elements' curved sides "
+                   "follow; they get no elements of their own.")
     cusps = plan.get("cusps") or []
     if cusps:
         out.append(f"Cusps: {len(cusps)} place(s) where two CAD edges of a face meet at almost no angle, so the "
@@ -366,10 +445,21 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
                "these spots.")
     coarse = plan.get("coarsened") or {}
     if coarse:
-        out.append(f"The rules need {coarse['needed_words']}, more than the {limit:,}-element limit allows: the "
-                   f"finest zones were made coarser - to {float(coarse['zone_floor_m']) * 1e3:.3g} mm - until it fits, "
-                   "never past 1 element through any wall or 3 per quarter-turn of any round. What that leaves "
-                   "short: " + "; ".join(plan.get("resolution_short") or []) + ".")
+        floors = coarse.get("floors_m") or {}
+        if floors:
+            done = "; ".join(f"{KIND_WORDS.get(k, k)} to {float(v) * 1e3:.3g} mm" for k, v in floors.items())
+            kept = [KIND_WORDS.get(k, k) for k in coarse.get("kept") or []]
+            out.append(f"The rules need {coarse['needed_words']}, more than the {limit:,}-element limit allows: the "
+                       f"low-stress zones were made coarser first, each only as far as it had to be ({done}), never "
+                       "past 1 element through any wall or 3 per quarter-turn of any round"
+                       + (f"; {', '.join(kept)} kept the sizes their rules ask for" if kept else "")
+                       + ". What that leaves short: " + ("; ".join(plan.get("resolution_short") or []) or "nothing")
+                       + ".")
+        else:
+            out.append(f"The rules need {coarse['needed_words']}, more than the {limit:,}-element limit allows: the "
+                       f"finest zones were made coarser - to {float(coarse['zone_floor_m']) * 1e3:.3g} mm - until it "
+                       "fits, never past 1 element through any wall or 3 per quarter-turn of any round. What that "
+                       "leaves short: " + "; ".join(plan.get("resolution_short") or []) + ".")
         if coarse.get("at_minimums"):
             out.append("Even with every zone at those minimums the part needs more than the limit: meshed so "
                        "anyway, as the least resolution that keeps every element valid.")
@@ -433,6 +523,16 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
                     "inputs": {"parts": len(asm.get("parts") or []), "connection": asm.get("connection"),
                                "pairs": asm.get("pairs")},
                     "words": " ".join(assembly_words(asm)[:2])})
+    lying = [list(c.get("faces") or []) for c in record.get("coincident") or []]
+    if lying:
+        out.append({"stage": "fea_plan", "decided": "faces lying on each other read through", "value": len(lying),
+                    "rule": "PLAN-fea-3", "inputs": {"pairs": lying},
+                    "words": f"{len(lying)} pair(s) of faces lying on each other set no wall size."})
+    lying = [list(c.get("faces") or []) for c in record.get("coincident") or []]
+    if lying:
+        out.append({"stage": "fea_plan", "decided": "faces lying on each other read through", "value": len(lying),
+                    "rule": "PLAN-fea-3", "inputs": {"pairs": lying},
+                    "words": f"{len(lying)} pair(s) of faces lying on each other set no wall size."})
     cusps = plan.get("cusps") or []
     if cusps:
         out.append({"stage": "fea_plan", "decided": "cusps set aside", "value": len(cusps), "rule": "PLAN-fea-10",
@@ -453,9 +553,15 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
                 "value": "coarsened to fit" if coarse else "fits",
                 "inputs": {"estimate": plan["estimate"]["elements"], "limit": limit, "aim": LIMIT_AIM,
                            "needed": coarse.get("needed"), "zone_floor_m": coarse.get("zone_floor_m"),
-                           "at_minimums": coarse.get("at_minimums")},
+                           "at_minimums": coarse.get("at_minimums"),
+                           **({"floors_m": coarse["floors_m"], "kept": coarse.get("kept")}
+                              if coarse.get("floors_m") else {})},
                 "words": (f"About {plan['estimate']['elements']:,} elements against the {limit:,} limit: "
-                          + ("the finest zones coarsened to fit, short where named." if coarse else "meshed as planned."))})
+                          + (("the low-stress zones coarsened first to fit, short where named"
+                              + (f"; {', '.join(KIND_WORDS.get(k, k) for k in coarse.get('kept') or [])} kept"
+                                 if coarse.get("kept") else "") + ".") if coarse.get("floors_m") else
+                             "the finest zones coarsened to fit, short where named." if coarse else
+                             "meshed as planned."))})
     memory = (plan.get("limit") or {}).get("memory")
     if memory:
         out.append({"stage": "fea_plan", "decided": "memory limit", "rule": "PLAN-fea-16",

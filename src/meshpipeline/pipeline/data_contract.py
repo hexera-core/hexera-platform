@@ -465,8 +465,12 @@ STATE_FIELDS: dict[str, str] = {
                                   "the executor short-circuit and the outcome turn",
     "fea_connection":        "how an FEA assembly's parts are joined - bonded or contact - as the user "
                              "confirmed it on the stage (stored confirmation); '' for anything else",
+    "fea_gap_joins":         "whether an FEA assembly's parts that face each other across a small gap are "
+                             "joined there (PLAN-fea-18), as confirmed on the stage; True unless switched off",
     "flow_topology":         "internal/external flow regime DERIVED from the purpose - a neutral "
                              "fact read by the executor/runners, NOT an engine-native param",
+    "leak_closing":          "the leak size the user confirmed on the stage (INS-8): every leak of the "
+                             "surface up to it is closed for the mesh by each route's staging; None = as drawn",
     "requested_extents":     "typed per-direction far-field multiples the user stated (contract)",
     "reference_length_m":    "the metre ruler the extents multiply, pinned at approval (contract)",
     "requirements_strict":   "whether near-misses block (true) or deliver with the miss stated",
