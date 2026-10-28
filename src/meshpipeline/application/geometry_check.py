@@ -13,6 +13,7 @@ import base64
 import json
 import logging
 import math
+import re
 import tempfile
 import time
 from dataclasses import dataclass
@@ -2018,12 +2019,40 @@ def _facts_text(facts: dict, shots, purpose_text: str) -> str:
 
 _AXES = ("+x", "-x", "+y", "-y", "+z", "-z")
 
+#: A signed axis written out: "+y", "-X", "x+", "positive z", "minus y". Not one followed by "up"
+#: ("+z up" says which way is up, not where the fluid goes).
+_SIGNED_AXIS = re.compile(
+    r"(?<![a-z0-9_])([+\-−])\s?([xyz])(?![a-z0-9_])(?!\s*(?:is\s+)?up\b)"
+    r"|(?<![a-z0-9_])([xyz])([+\-−])(?![a-z0-9_])(?!\s*(?:is\s+)?up\b)"
+    r"|\b(positive|plus|negative|minus)\s+([xyz])\b(?!\s*(?:is\s+)?up\b)")
+#: An axis named without a sign, as a direction: "along x", "in the y direction", "z-direction".
+_PLAIN_AXIS = re.compile(r"\balong\s+(?:the\s+)?([xyz])\b|\b([xyz])[\s\-]?direction\b")
 
-def _flow_from_nose(answer: dict, shots=()) -> dict:
+
+def user_stated_flow_axes(purpose_text: str) -> set[str]:
+    """The flow directions the user's own words state, read by rule: every signed axis written
+    out, and "+a" for an axis named as a direction without a sign. What the model says the user
+    said is only the user's words when it is one of these."""
+    text = str(purpose_text or "").lower()
+    found: set[str] = set()
+    for m in _SIGNED_AXIS.finditer(text):
+        sign, axis = (m.group(1), m.group(2)) if m.group(2) else (m.group(4), m.group(3)) if m.group(3) \
+            else ("+" if m.group(5) in ("positive", "plus") else "-", m.group(6))
+        found.add(("+" if sign == "+" else "-") + axis)
+    for m in _PLAIN_AXIS.finditer(text):
+        found.add("+" + (m.group(1) or m.group(2)))
+    return found
+
+
+def _flow_from_nose(answer: dict, shots=(), purpose_text: str = "") -> dict:
     """The fluid travels away from the nose: a nose at the -X end means flow along +x. The model
     finds a nose far more reliably than it reads an axis marker, so the surest answer is "in the top
     picture the nose is on the left": the camera of that picture says what "left" is in the part's
-    axes. That settles nose_axis and flow_axis; the model's own nose_axis is the fallback."""
+    axes. That settles nose_axis and flow_axis; the model's own nose_axis is the fallback.
+
+    The model's flow_axis is the user's words only when the user's words state it
+    (user_stated_flow_axes); else it is the model's own guess, which the nose replaces and the
+    shape's reading weighs (weigh_flow_axis) like a nose."""
     from meshpipeline.render.scout_snapshots import screen_axes, signed_axis
 
     view = str(answer.get("nose_view") or "").lower()
@@ -2036,11 +2065,13 @@ def _flow_from_nose(answer: dict, shots=()) -> dict:
         answer["nose_from"] = f"{side} of the {view} picture"
     nose = str(answer.get("nose_axis") or "").lower()
     said = str(answer.get("flow_axis") or "").lower()
-    if said in _AXES:
+    if said in _AXES and said in user_stated_flow_axes(purpose_text):
         answer["flow_from"] = "the user's words"       # the user's word decides; the nose only fills a silence
     elif nose in _AXES:
         answer["flow_axis"] = ("-" if nose[0] == "+" else "+") + nose[1]
         answer["flow_from"] = "the nose"
+    elif said in _AXES:
+        answer["flow_from"] = "the pictures"           # the model's own guess: weighed like a nose
     return answer
 
 
@@ -2099,16 +2130,17 @@ def _upright_answer(answer: dict, order) -> dict:
     """The model's panel as an up axis - {up_axis, up_confidence, up_from} - or {} for none."""
     from meshpipeline.contracts.geometry_fields import UP_AXES
 
-    panel = str(answer.get("panel") or "").strip().upper()
+    if not isinstance(answer, dict):
+        return {"error": "malformed answer"}
+    panel = answer.get("panel")
+    panel = panel.strip().upper() if isinstance(panel, str) else ""
+    order = list(order) if isinstance(order, (list, tuple)) else []
     if panel not in UP_PANELS or UP_PANELS.index(panel) >= len(order):
         return {}
     axis = str(order[UP_PANELS.index(panel)])
     if axis not in UP_AXES:
         return {}
-    try:
-        conf = max(0.0, min(1.0, float(answer.get("confidence") or 0.0)))
-    except (TypeError, ValueError):
-        conf = 0.0
+    conf = _unit_number(answer.get("confidence")) or 0.0
     return {"up_axis": axis, "up_confidence": round(conf, 2), "up_panel": panel,
             "up_from": f"in the pictures it looks the right way up with {axis} up"}
 
@@ -2129,7 +2161,10 @@ def _up_with_vision(sheet: Path, order, *, part: str, purpose_text: str, session
                                                            user_id=owner_id)
         for call in result.tool_calls:
             if call.name == "pick_upright":
-                return _upright_answer(json.loads(call.arguments), order)
+                try:
+                    return _upright_answer(json.loads(call.arguments), order)
+                except Exception:  # noqa: BLE001 - a bad answer is no answer; the shape still says what it can
+                    return {"error": "malformed answer"}
         return {"error": "the model answered without picking a panel"}
 
     try:
@@ -2180,14 +2215,14 @@ def decide_up(flow: str, code: dict | None, vision: dict | None) -> dict:
 
     if flow != "external":
         return said(DEFAULT_UP, 0.0, "as drawn: the fluid flows through the part")
-    code, vision = code or {}, vision or {}
+    code = code if isinstance(code, dict) else {}
+    vision = vision if isinstance(vision, dict) else {}
     c_axis = code.get("axis") if code.get("axis") in UP_AXES else None
     v_axis = vision.get("up_axis") if vision.get("up_axis") in UP_AXES else None
-    try:
-        c_conf = float(code.get("confidence") or 0.0)
-        v_conf = float(vision.get("up_confidence") or 0.0)
-    except (TypeError, ValueError):
-        c_conf = v_conf = 0.0
+    # each reading's sureness on its own: a bad number from the model costs the model's reading,
+    # never the shape's
+    c_conf = _unit_number(code.get("confidence")) or 0.0
+    v_conf = _unit_number(vision.get("up_confidence")) or 0.0
     shape = str(code.get("reason") or "")
     if c_axis and v_axis == c_axis:
         return said(c_axis, 1.0 - (1.0 - c_conf) * (1.0 - v_conf), f"{shape}, and the pictures agree")
@@ -2216,7 +2251,14 @@ def _name_with_vision(facts: dict, shots, *, purpose_text: str, session_id: str,
                                                            user_id=owner_id)
         for call in result.tool_calls:
             if call.name == "name_geometry":
-                return _flow_from_nose(json.loads(call.arguments), shots)
+                # THE ANSWER IS CHECKED BEFORE ANYTHING READS IT: a field the schema does not allow is
+                # dropped, and an answer that cannot be read at all is no answer - the code's own
+                # names ship. A replayed answer (the decision cache) passes the same check.
+                try:
+                    answer = _sanitize_vision(json.loads(call.arguments), facts)
+                except Exception:  # noqa: BLE001 - not even JSON: no answer
+                    answer = {"error": "malformed answer"}
+                return answer if "error" in answer else _flow_from_nose(answer, shots, purpose_text)
         return {"error": "the model answered without naming the stickers"}
 
     try:
@@ -2236,12 +2278,207 @@ def _note_vision_timeout(exc: BaseException, what: str) -> None:
                         budget_s=float(GEOMETRY_CHECK_VISION_TIMEOUT_S))
 
 
+# ------------------------------------------------------- the model's answer, guarded ----
+#: How much surer than the measuring step the model must say it is before its kind and flow
+#: replace the measured ones: a model names a kind with confidence where the shape hesitates.
+MODEL_KIND_MARGIN = 0.15
+_KINDS = ("body-surface", "fluid-domain", "solid-body")
+_FLOW_OF_KIND = {"body-surface": "internal", "fluid-domain": "internal", "solid-body": "external"}
+_ROLES = ("inlet", "outlet", "not_an_opening")
+_NOSE_VIEWS = ("overview", "iso", "top", "front", "side", "end", "unknown")
+_NOSE_SIDES = ("left", "right", "top", "bottom", "unknown")
+_FLOW_FROM = ("the user's words", "the nose", "the pictures")
+MALFORMED = "malformed answer"
+
+
+def _unit_number(v) -> float | None:
+    """A sureness from outside the code: a finite number in [0, 1], else None."""
+    if isinstance(v, bool):
+        return None
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(1.0, x)) if math.isfinite(x) else None
+
+
+def _opening_id(v) -> int | None:
+    """A sticker number as a whole number, else None ("3" and 3.0 are 3; "three", 2.5 are not)."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(v) if math.isfinite(v) and v.is_integer() else None
+    if isinstance(v, str) and v.strip().lstrip("-").isdigit():
+        return int(v.strip())
+    return None
+
+
+def _word(v, allowed) -> str | None:
+    w = v.strip().lower() if isinstance(v, str) else None
+    return w if w in allowed else None
+
+
+def _sanitize_vision(vision, facts: dict | None = None, *, derived: bool = False) -> dict:
+    """The naming model's answer with only what its schema allows: every word checked against its
+    list, every sureness a number in [0, 1], openings only as dicts naming a measured sticker. A
+    field that fails is dropped; an answer that cannot be read at all is `{"error": MALFORMED}`, so
+    the code's own names ship. `derived` keeps the fields the code itself adds after the model
+    answers (where the flow direction came from, which way is up). Never raises."""
+    try:
+        return _sanitized(vision, facts if isinstance(facts, dict) else {}, derived)
+    except Exception as exc:  # noqa: BLE001 - whatever the model sent, the rules stand
+        logger.warning("geometry check: the naming answer could not be read (%s)", type(exc).__name__)
+        return {"error": MALFORMED}
+
+
+def _sanitized(vision, facts: dict, derived: bool) -> dict:
+    from meshpipeline.contracts.geometry_fields import UP_AXES
+
+    if not isinstance(vision, dict):
+        return {"error": MALFORMED}
+    if not vision:
+        return {}
+    if "error" in vision:
+        return {"error": str(vision["error"])[:200]}
+    out: dict = {}
+    if isinstance(vision.get("part"), str) and vision["part"].strip():
+        out["part"] = vision["part"].strip()[:120]
+    for key, allowed in (("flow", ("internal", "external")), ("input_kind", _KINDS),
+                         ("nose_view", _NOSE_VIEWS), ("nose_side", _NOSE_SIDES),
+                         ("nose_axis", (*_AXES, "unknown")), ("flow_axis", (*_AXES, "unknown"))):
+        if (w := _word(vision.get(key), allowed)) is not None:
+            out[key] = w
+    if (conf := _unit_number(vision.get("confidence"))) is not None:
+        out["confidence"] = conf
+    real = vision.get("real_length_m")
+    if isinstance(real, (int, float)) and not isinstance(real, bool) and math.isfinite(real) and 0 < real < 1e6:
+        out["real_length_m"] = float(real)
+    if isinstance(vision.get("notes"), str) and vision["notes"].strip():
+        out["notes"] = vision["notes"].strip()[:300]
+    measured = {_opening_id(o.get("id")) for o in facts.get("openings") or [] if isinstance(o, dict)}
+    named: list[dict] = []
+    raw = vision.get("openings")
+    for item in raw if isinstance(raw, list) else []:
+        oid = _opening_id(item.get("id")) if isinstance(item, dict) else None
+        if oid is None or oid not in measured or any(n["id"] == oid for n in named):
+            continue
+        entry: dict = {"id": oid}
+        if isinstance(item.get("name"), str) and item["name"].strip():
+            entry["name"] = item["name"].strip()[:40]
+        if (role := _word(item.get("role"), _ROLES)) is not None:
+            entry["role"] = role
+        if (c := _unit_number(item.get("confidence"))) is not None:
+            entry["confidence"] = c
+        named.append(entry)
+    if named or isinstance(raw, list):
+        out["openings"] = named
+    if derived:
+        if (w := _word(vision.get("flow_from"), _FLOW_FROM)) is not None:
+            out["flow_from"] = w
+        if (w := _word(vision.get("up_axis"), UP_AXES)) is not None:
+            out["up_axis"] = w
+        if (c := _unit_number(vision.get("up_confidence"))) is not None:
+            out["up_confidence"] = c
+        if isinstance(vision.get("up_panel"), str) and vision["up_panel"] in UP_PANELS:
+            out["up_panel"] = vision["up_panel"]
+        for key in ("nose_from", "up_from", "up_error"):
+            if isinstance(vision.get(key), str):
+                out[key] = vision[key][:200]
+    return out or {"error": MALFORMED}
+
+
+def _inside_contradicts(facts: dict, kind: str, flow: str) -> str:
+    """Why a kind and flow go against what was measured - the openings and the part's inside-space
+    map (INS-1) - in plain words, else "". Fluid flowing through needs two openings at least, and a
+    wall around a way through (or a closed volume, for the fluid itself); fluid flowing around never
+    fits a part the map shows a passage through."""
+    inside: dict = facts["inside"] if isinstance(facts.get("inside"), dict) else {}
+    mapped = bool(inside) and inside.get("mapped") is not False
+    if flow == "internal":
+        if len([o for o in facts.get("openings") or [] if isinstance(o, dict)]) < 2:
+            return "the measuring step found fewer than two openings for the fluid to pass"
+        if mapped and not inside.get("has_inside"):
+            if kind == "body-surface":
+                return "the part's inside-space map shows no way through it"
+            if "enclosed_mm3" in inside and float(inside.get("enclosed_mm3") or 0.0) <= 0.0:
+                return "the part's inside-space map shows no volume for the fluid"
+    if flow == "external" and mapped and inside.get("has_inside"):
+        return "the part's inside-space map shows a passage through it"
+    return ""
+
+
+def _model_kind_flow(facts: dict, vision: dict) -> tuple[tuple[str, str] | None, str]:
+    """The model's kind and flow, when they may replace the measured ones: they agree with each
+    other, the model is surer than the code by MODEL_KIND_MARGIN, and they contradict nothing
+    measured. Returns ((kind, flow) or None, a note for the user when a reading was set aside)."""
+    said_kind, said_flow = vision.get("input_kind"), vision.get("flow")
+    code_kind, code_flow = str(facts.get("input_kind") or ""), str(facts.get("flow") or "")
+    flow = str(said_flow or _FLOW_OF_KIND.get(str(said_kind), ""))
+    kind = str(said_kind or (code_kind if _FLOW_OF_KIND.get(code_kind) == flow else ""))
+    if not flow or _FLOW_OF_KIND.get(kind) != flow or (kind, flow) == (code_kind, code_flow):
+        return None, ""
+    code_conf = _unit_number((facts.get("confidence") or {}).get("input_kind")) or 0.0
+    if (vision.get("confidence") or 0.0) < code_conf + MODEL_KIND_MARGIN:
+        return None, ""
+    why = _inside_contradicts(facts, kind, flow)
+    if why:
+        words = "through it" if flow == "internal" else "around it"
+        return None, (f"The pictures suggested the fluid flows {words}, but {why}, "
+                      "so the measured reading stands.")
+    return (kind, flow), ""
+
+
+def _has_port_pair(openings) -> bool:
+    roles = {o.get("role") for o in openings}
+    return "inlet" in roles and "outlet" in roles
+
+
+def _apply_vision(proposal: dict, facts: dict, vision: dict, declared_kind: bool) -> None:
+    """The model's answer laid over the measured proposal, each change only where it is allowed:
+    the kind and flow (_model_kind_flow), and each opening's role and name where the model is surer
+    than the code about that opening - and never so that a part the fluid flows through is left
+    without an inlet and an outlet."""
+    if not declared_kind:
+        kind_flow, note = _model_kind_flow(facts, vision)
+        if kind_flow is not None:
+            proposal["input_kind"], proposal["flow"] = kind_flow
+        if note:
+            proposal["notes"].append(note)
+    before = [dict(o) for o in proposal["openings"]]
+    by_id = {o["id"]: o for o in proposal["openings"]}
+    for named in vision.get("openings") or []:
+        o = by_id.get(named["id"])
+        if o is None or o.get("declared_by"):
+            continue
+        role, conf = named.get("role"), named.get("confidence")
+        code_conf = _unit_number(o.get("confidence"))
+        code_conf = 0.5 if code_conf is None else code_conf
+        if role is not None and role != o.get("role"):
+            if conf is None or conf <= code_conf:
+                continue          # the code was as sure: its role, and the name that goes with it, stand
+            o["role"], o["confidence"] = role, round(conf, 2)
+        elif conf is not None:
+            o["confidence"] = round(max(conf, code_conf), 2)
+        if named.get("name"):
+            o["name"] = named["name"]
+    if proposal["flow"] == "internal" and not _has_port_pair(proposal["openings"]) and _has_port_pair(before):
+        proposal["openings"] = before
+        proposal["notes"].append("The pictures' roles for the openings would leave no inlet and outlet, "
+                                 "so the measured roles stand.")
+
+
 def _proposal(facts: dict, vision: dict | None) -> dict:
     """What the user is shown: the code's positions and sizes, the model's names and roles where
-    it gave them for a sticker that exists, and the kind and flow from whichever is surer. With
-    no vision answer yet (the scout alone) the names are the code's and nothing says otherwise."""
+    it gave them for a sticker that exists and is surer of, and the kind and flow from the model
+    only where it is clearly surer and contradicts nothing measured. With no vision answer yet (the
+    scout alone) the names are the code's and nothing says otherwise. Nothing the model sent can
+    make this raise: an answer it cannot read leaves the code's own proposal."""
     if _is_thermal(facts):
         return _thermal_proposal(facts, vision)
+    if vision is not None:
+        vision = _sanitize_vision(vision, facts, derived=True)
     proposal = {
         "part": (vision or {}).get("part") or str(facts.get("part_name") or ""),
         "input_kind": facts["input_kind"], "flow": facts["flow"],
@@ -2281,33 +2518,22 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
     # sides "not an opening", and the chat then refused the multi-region mesher the file is for.
     # The model still names the part; the kind, the flow and the declared openings stay the file's.
     declared_kind = facts.get("input_kind") == "solid-assembly"
-    by_id = {o["id"]: o for o in proposal["openings"]}
-    for named in vision.get("openings") or []:
-        o = by_id.get(int(named.get("id", -1)))
-        if o is None or o.get("declared_by"):
-            continue
-        if named.get("name"):
-            o["name"] = str(named["name"]).strip()[:40]
-        if named.get("role") in ("inlet", "outlet", "not_an_opening"):
-            o["role"] = named["role"]
-        o["confidence"] = round(float(named.get("confidence", o.get("confidence", 0.5))), 2)
     try:
+        _apply_vision(proposal, facts, vision, declared_kind)
         # how long a real one is, by the model's knowledge of what it is: what the stage checks
         # the unit against (unit_suggestion), never a size applied to anything
-        real = float(vision.get("real_length_m") or 0.0)
-        if real > 0:
-            proposal["real_length_m"] = round(real, 6)
-    except (TypeError, ValueError):
-        pass
-    model_conf = float(vision.get("confidence", 0.0) or 0.0)
-    if not declared_kind and model_conf >= float(facts.get("confidence", {}).get("input_kind", 0.0)):
-        if vision.get("input_kind") in ("body-surface", "fluid-domain", "solid-body"):
-            proposal["input_kind"] = vision["input_kind"]
-        if vision.get("flow") in ("internal", "external"):
-            proposal["flow"] = vision["flow"]
-    if vision.get("notes") and not declared_kind:
-        proposal["notes"].append(str(vision["notes"])[:300])
-    return _upright(proposal, facts, vision, vision.get("flow_axis"))
+        if vision.get("real_length_m"):
+            proposal["real_length_m"] = round(float(vision["real_length_m"]), 6)
+        if vision.get("notes") and not declared_kind:
+            proposal["notes"].append(vision["notes"])
+        # the stage's flow question reads the roles and the flow as now proposed
+        if isinstance(facts.get("inside"), dict):
+            from meshpipeline.application.geometry_confirmation import flow_question
+            proposal["flow_question"] = flow_question(facts["inside"], proposal["openings"], facts.get("surface"))
+        return _upright(proposal, facts, vision, vision.get("flow_axis"))
+    except Exception as exc:  # noqa: BLE001 - the model's answer never fails the check: the rules stand
+        logger.warning("geometry check: the naming answer was set aside (%s: %s)", type(exc).__name__, str(exc)[:200])
+        return _proposal(facts, {"error": MALFORMED})
 
 
 def _upright(proposal: dict, facts: dict, vision: dict | None, flow_axis) -> dict:
@@ -2325,6 +2551,10 @@ def _upright(proposal: dict, facts: dict, vision: dict | None, flow_axis) -> dic
     from_nose = proposal.get("flow_axis_guessed") is False and (vision or {}).get("flow_from") != "the user's words"
     if from_nose:
         proposal.update(nose_sureness(facts, proposal["flow_axis"], up["up_axis"]))
+        if (vision or {}).get("flow_from") == "the pictures":
+            # the model named a direction the user never stated: as sure as a nose, and said so
+            proposal["flow_axis_from"] = str(proposal["flow_axis_from"]).replace(
+                "the nose in the pictures", "the picture-naming step's guess")
     if overruled:
         proposal["flow_axis_guessed"] = True
     if up["up_axis"] != DEFAULT_UP:
