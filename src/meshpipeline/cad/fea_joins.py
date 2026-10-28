@@ -651,6 +651,11 @@ WORKER_PAIRS = 4
 WORKER_BASE_BYTES = 400 * 2**20
 WORKER_BREP_FACTOR = 500.0
 WORKER_MEMORY_SHARE = 0.6
+#: RUNS A WORKER: the pairs are cut into this many runs of neighbours per worker, handed out as workers
+#: come free. One run a worker left one worker with every pair of a heavy part (lab, 28 Oct: a 42-part
+#: launch-pad support 161 -> 247 s, a 114-part boiler 68 -> 101 s); three per worker spread them
+#: (208 s and 87 s), each run still reading only its own parts.
+WORKER_RUNS = 3
 
 
 def _near_pairs(parts: list, *, tol: float, mm: float) -> list[tuple[int, int]]:
@@ -714,7 +719,7 @@ def _spawned(parts: list, pairs: list, workers: int, *, tol: float, mm: float, b
     pair order: (joints, near, skins, complete, unmeasured), or None when a worker could not start, ran
     out of time or failed (then the caller measures every pair here, one by one).
 
-    The pairs are cut into `workers` runs of neighbours. Each run's worker reads a B-rep file of ITS OWN
+    The pairs are cut into WORKER_RUNS runs of neighbours a worker, at most `workers` running. Each run's worker reads a B-rep file of ITS OWN
     parts only (written here from the parts as measure() read them back: the same numbers), and only as
     many run at once as the job's free memory holds (WORKER_MEMORY_SHARE of it, at _worker_need each; one
     always runs). When they grow past that share anyway, the newest is stopped and run again later, with
@@ -748,7 +753,7 @@ def _spawned(parts: list, pairs: list, workers: int, *, tol: float, mm: float, b
         skins: dict[int, set[int]] = {}
         complete = True
         try:
-            for k, chunk in enumerate(_chunks(pairs, workers)):
+            for k, chunk in enumerate(_chunks(pairs, workers * WORKER_RUNS)):
                 index = sorted({p for pair in chunk for p in pair})
                 brep = Path(tmp) / f"parts{k}.brep"
                 if not BRepTools.Write_s(compound([parts[p] for p in index]), str(brep)):
@@ -762,7 +767,7 @@ def _spawned(parts: list, pairs: list, workers: int, *, tol: float, mm: float, b
             free = _memory_free()
             room = math.inf if free is None else WORKER_MEMORY_SHARE * free
             floor = 0.0 if free is None else (1.0 - WORKER_MEMORY_SHARE) * free
-            most = len(jobs)
+            most = min(workers, len(jobs))
             while jobs or running:
                 # START what the memory holds, in order; one always runs
                 while jobs and (not running or (len(running) < most
