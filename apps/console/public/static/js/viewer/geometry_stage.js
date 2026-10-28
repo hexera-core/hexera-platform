@@ -134,9 +134,9 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   const form = panel.querySelector(".gc-form");
   applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form);
   const banner = panel.querySelector(".gc-banner");
-  /* THE FORM IS NEVER LOCKED. The user can fix the measuring step's labels and proceed at any
-     point; the banner says what is happening around them - whether the file said its unit (a
-     triangle file carries none; the unit box beside the sizes is where to say, or the chat),
+  /* THE FORM IS NEVER LOCKED. The user can fix the measuring step's labels at any point; Proceed
+     itself waits for the check to finish (render/check_progress.js gateProceed). The banner says
+     what is happening around them - whether the file said its unit (a triangle file carries none; the unit box beside the sizes is where to say, or the chat),
      whether the model was asked to name the openings, whether it answered, or gave up - and
      what to do about it. */
   let naming = false, stalled = false, unitNeeded = !!d.unit_needed, shown = "";
@@ -162,8 +162,8 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   }
   function stateBanner() {
     if (unitNeeded) return ["The file does not say its unit: check the size beside the unit box below and pick the unit that makes it right, or answer in the chat. The names are the measuring step's own - fix them and proceed.", ""];
-    if (naming) return ["Naming the openings… turn the part meanwhile, or fix the names and proceed now.", "busy"];
-    if (stalled) return ["The naming is taking longer than usual. These names are the measuring step's own: fix them and proceed, or wait.", "warn"];
+    if (naming) return ["Naming the openings… turn the part and fix the names meanwhile - Proceed opens when it is done.", "busy"];
+    if (stalled) return ["The naming is taking longer than usual. These names are the measuring step's own: fix them meanwhile - Proceed opens when it ends.", "warn"];
     return ["These names are the measuring step's own. Answer the question in the chat and I'll name the openings - or fix them here and proceed.", ""];
   }
   function showState() {

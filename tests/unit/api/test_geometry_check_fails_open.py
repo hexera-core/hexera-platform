@@ -440,21 +440,30 @@ async def test_a_copy_another_confirmation_wrote_since_is_left_alone(served, mon
 
 async def test_the_hold_read_from_the_store_lets_go_of_a_failed_check_and_a_scouted_one_confirmed(served, monkeypatch):
     """The chat is held only while the check is working. A scout whose worker died reads as
-    failed and never holds; a naming still running holds the chat until the user confirms the
-    scout's part by hand, and from then the intake answers."""
+    failed and never holds; a naming still running holds the chat - and Proceed, which waits for
+    the check - until it ends; a naming that never answers is failed by its time box, the user
+    confirms the scout's part by hand, and from then the intake answers."""
+    from fastapi import HTTPException
+
     served({"scout.json": {"status": "pending", "written_at": time.time()}})
     assert gh.hold_applies(str(SID)) == "queue"
     served({"scout.json": {"status": "pending", "written_at": time.time() - gc.SCOUT_HARD_LIMIT_S - gc.STALE_MARGIN_S - 5}})
     assert gh.hold_applies(str(SID)) is None
-    served({"scout.json": _scouted(), "naming.json": {"requested_at": time.time(), "purpose_text": "a pipe"}},
-           geometry_interpretation_id=uuid.uuid4(), messages=[])
+    store = served({"scout.json": _scouted(), "naming.json": {"requested_at": time.time(), "purpose_text": "a pipe"}},
+                   geometry_interpretation_id=uuid.uuid4(), messages=[])
     assert gh.hold_applies(str(SID)) == "wait"
     session = await route._owned_session(SID, "alice", "org-1")
     declared_mm = {"interpretation_id": "i1", "geometry_source_id": "s1", "unit": "mm", "scale_to_metres": 0.001,
                    "basis": "file_declared", "evidence": "SI_UNIT"}
     _confirming(monkeypatch, session, declared_mm, [])
-    await route.confirm_check(SID, route.ConfirmIn(input_kind="body-surface", flow="internal", openings=[],
-                                                   scale_to_m=0.001), "alice", "org-1")
+    body = route.ConfirmIn(input_kind="body-surface", flow="internal", openings=[], scale_to_m=0.001)
+    with pytest.raises(HTTPException) as refused:
+        await route.confirm_check(SID, body, "alice", "org-1")
+    assert refused.value.status_code == 409 and "still running" in refused.value.detail
+    # the naming never answered: past its own limit it is failed, and Proceed is the way on
+    store.objects[_key("naming.json")] = json.dumps(
+        {"requested_at": time.time() - gc.NAMING_HARD_LIMIT_S - gc.STALE_MARGIN_S - 5, "purpose_text": "a pipe"}).encode()
+    await route.confirm_check(SID, body, "alice", "org-1")
     assert gh.hold_applies(str(SID)) is None
 
 

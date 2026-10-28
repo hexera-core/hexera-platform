@@ -283,7 +283,8 @@ def test_the_progress_line_says_the_part_is_shown_while_it_is_measured():
     view = gp.progress_view(stored, None, _scout_record(beat_at=T0 + 40), now=T0 + 60,
                             scout_limit_s=900, naming_limit_s=600)
     assert view["state"] == "running" and view["live"] and view["preview"]
-    assert "press Proceed now" in view["note"]
+    assert "Proceed opens once they are ready" in view["note"]
+    assert gp.still_checking(view)                  # Proceed waits for the full reading
 
 
 # ---------------------------------------------------------------------- the chat's hold ----
