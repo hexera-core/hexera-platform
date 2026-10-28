@@ -38,7 +38,7 @@ export default async function JobWhyPage({ params }: { params: Promise<{ jobId: 
             ]}
           />
 
-          <Panel title="In plain words" heading="one sentence per decision">
+          <Panel title="In plain words">
             {why.data?.sentences.length ? (
               <ol>
                 {why.data.sentences.map((sentence, index) => (

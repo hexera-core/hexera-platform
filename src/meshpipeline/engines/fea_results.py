@@ -224,6 +224,14 @@ def results(workspace) -> dict | None:
     if tiny.get("merged"):
         extra["merged_faces"] = [{"face": m.get("face"), "into": m.get("into"), "width_mm": m.get("width_mm")}
                                  for m in tiny["merged"]]
+    # MESH-8: the CAD faces left out as skins of no thickness, each with the face it lies on - accounted for, as
+    # the merged faces are (engines/fea_review.face_accounting)
+    from meshpipeline.engines.fea_review import face_accounting, faces_words
+    acc = q.get("fea_faces") or face_accounting(q, plan)
+    if acc.get("skins"):
+        extra["skins_left_out"] = [{"face": s.get("face"), "on": s.get("on"), "words": s.get("words")}
+                                   for s in acc["skins"]]
+    faces_said = faces_words(acc) if (acc.get("skins") or acc.get("merged") or acc.get("missing")) else ""
     return {**extra,
         "title": "FEA mesh",
         "summary": (f"{cells:,} quadratic tetrahedra (10-node), a solid mesh"
@@ -239,7 +247,7 @@ def results(workspace) -> dict | None:
         "elements": cells,
         "through_wall": through,
         "plan_words": (list(plan.get("words") or []) + ([net["words"]] if net and net.get("words") else [])
-                       + [w for w in [tiny_words(tiny)] if w]),
+                       + [w for w in [tiny_words(tiny), faces_said] if w]),
         "hot_spots": spots,
         "faces": faces,
         "download": {"words": "The full download holds:",

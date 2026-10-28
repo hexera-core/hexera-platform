@@ -65,7 +65,7 @@ def test_the_vm_runs_the_jobs_own_container_and_deletes_itself():
     meta = {i["key"]: i["value"] for i in body["metadata"]["items"]}
     assert meta["mesh-image"] == "reg/mesh@sha256:abc" and meta["engine"] == "gmsh" and meta["timeout"] == "13800"
     assert "meshpipeline.runtime.mesh_runner" in meta["startup-script"]
-    assert "instances/$(get instance/name)" in meta["startup-script"]          # deletes itself
+    assert '-X DELETE' in meta["startup-script"] and "shutdown -h now" in meta["startup-script"]  # ends itself
     sched = body["scheduling"]
     assert sched["instanceTerminationAction"] == "DELETE"
     assert int(sched["maxRunDuration"]["seconds"]) == 13800 + G.LIFETIME_MARGIN_S

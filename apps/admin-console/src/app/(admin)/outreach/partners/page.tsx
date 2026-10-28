@@ -433,7 +433,7 @@ async function PeopleView({
 
       <Panel
         title="Enroll"
-        subtitle="Tick the ones you want. Set a total and the system fills the rest from whatever your filters above are showing, without displacing anything you picked. YC companies enroll only when you tick them yourself — auto-fill never touches them. Nobody without a verified email can be enrolled at all."
+        subtitle="Set a total to auto-fill from the filtered list without replacing selections. YC companies must be selected manually; enrollment requires a verified email."
       >
         <EnrollPicker
           rows={enrollRows}

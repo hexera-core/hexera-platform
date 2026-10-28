@@ -36,11 +36,13 @@ _STRUCTURAL_AXES: tuple[ReviewAxis, ...] = (
         name="fea_faces_named", validation_axis="conformance",
         guidance=("Check every CAD face is its own named group (Face_k) in all three solver files, "
                   "using the named-face counts per file in the measured FEA facts against the "
-                  "CAD's own face count; and that any face the user named with a role landed on the "
-                  "faces they meant. The 3D preview shows the outer surface as one group by design - "
-                  "that is never a missing decomposition."),
+                  "CAD's own face count - counting as accounted for, never as missing, the faces the "
+                  "facts list as left out for a measured reason (a skin of no thickness lying on another "
+                  "face, MESH-8; a tiny face meshed as part of its neighbour, MESH-9); and that any face "
+                  "the user named with a role landed on the faces they meant. The 3D preview shows the "
+                  "outer surface as one group by design - that is never a missing decomposition."),
         concern="Not every face of your part is a named group in every solver file",
-        failure_signals=("a solver file names fewer faces than the CAD has",
+        failure_signals=("a solver file names fewer faces than the CAD has, beyond those the facts account for",
                          "a face the user named with a role placed on the wrong faces"),
         evidence=("fea_facts", "brief"),
     ),
