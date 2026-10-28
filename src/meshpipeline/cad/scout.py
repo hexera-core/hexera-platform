@@ -280,7 +280,7 @@ def read_cad(path):
 def _read_shape(path: Path):
     from OCP.IFSelect import IFSelect_RetDone
 
-    if path.suffix.lower() == ".brep":
+    if path.suffix.lower() in (".brep", ".brp"):
         # gmsh's own B-rep file (the staging writes it beside geometry.step)
         from OCP.BRep import BRep_Builder
         from OCP.BRepTools import BRepTools

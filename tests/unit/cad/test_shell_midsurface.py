@@ -209,3 +209,12 @@ def test_the_exit_face_reading_changes_no_wall():
     assert np.array_equal(np.isnan(plain), np.isnan(marked))
     assert np.allclose(plain[~np.isnan(plain)], marked[~np.isnan(marked)], rtol=0, atol=0)
     assert np.array_equal(hit >= 0, ~np.isnan(marked))
+
+
+def test_a_brp_file_is_read_as_brep(tmp_path):
+    from OCP.BRepTools import BRepTools
+
+    path = tmp_path / "plate.brp"
+    BRepTools.Write_s(sf.flat_plate(5.0), str(path))
+    rec = ms.extract_file(path, mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
