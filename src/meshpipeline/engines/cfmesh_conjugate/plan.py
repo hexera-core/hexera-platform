@@ -142,35 +142,35 @@ def read_plan(workspace) -> ConjugatePlan:
             out[k] = (float(got[0]), float(got[1]), float(got[2]))
     if out.get("fine_zones") is not None:
         zones = []
-        for k, z in enumerate(out["fine_zones"]):
+        for n, z in enumerate(out["fine_zones"]):
             if not isinstance(z, dict):
-                raise ValueError(f"{PLAN_NAME}: refinement zone {k} is not an object")
+                raise ValueError(f"{PLAN_NAME}: refinement zone {n} is not an object")
             lo, hi, cell = z.get("lo"), z.get("hi"), z.get("cell_m")
             if lo is None or hi is None or cell is None:
-                raise ValueError(f"{PLAN_NAME}: refinement zone {k} needs lo, hi and cell_m")
+                raise ValueError(f"{PLAN_NAME}: refinement zone {n} needs lo, hi and cell_m")
             if len(lo) != 3 or len(hi) != 3:
-                raise ValueError(f"{PLAN_NAME}: refinement zone {k} is not a box in three axes")
+                raise ValueError(f"{PLAN_NAME}: refinement zone {n} is not a box in three axes")
             if float(cell) <= 0.0:
-                raise ValueError(f"{PLAN_NAME}: refinement zone {k} has cell_m {cell}, which is "
+                raise ValueError(f"{PLAN_NAME}: refinement zone {n} has cell_m {cell}, which is "
                                  "not a cell size")
             if any(float(hi[j]) <= float(lo[j]) for j in range(3)):
-                raise ValueError(f"{PLAN_NAME}: refinement zone {k} has no extent: {lo} .. {hi}")
-            zones.append({"name": str(z.get("name") or f"fine{k}"),
+                raise ValueError(f"{PLAN_NAME}: refinement zone {n} has no extent: {lo} .. {hi}")
+            zones.append({"name": str(z.get("name") or f"fine{n}"),
                           "lo": (float(lo[0]), float(lo[1]), float(lo[2])),
                           "hi": (float(hi[0]), float(hi[1]), float(hi[2])),
                           "cell_m": float(cell)})
         out["fine_zones"] = tuple(zones)
     if out.get("fine_surfaces") is not None:
         fines = []
-        for k, s in enumerate(out["fine_surfaces"]):
+        for n, s in enumerate(out["fine_surfaces"]):
             if not isinstance(s, dict):
-                raise ValueError(f"{PLAN_NAME}: fine surface {k} is not an object")
+                raise ValueError(f"{PLAN_NAME}: fine surface {n} is not an object")
             f_file, f_levels = s.get("file"), s.get("levels")
             if not f_file or f_levels is None:
-                raise ValueError(f"{PLAN_NAME}: fine surface {k} needs file and levels")
+                raise ValueError(f"{PLAN_NAME}: fine surface {n} needs file and levels")
             if int(f_levels) <= 0:
-                raise ValueError(f"{PLAN_NAME}: fine surface {k} asks for {f_levels} levels")
-            fines.append({"name": str(s.get("name") or f"fine{k}"), "file": str(f_file),
+                raise ValueError(f"{PLAN_NAME}: fine surface {n} asks for {f_levels} levels")
+            fines.append({"name": str(s.get("name") or f"fine{n}"), "file": str(f_file),
                           "levels": int(f_levels),
                           "thickness_m": (None if s.get("thickness_m") is None
                                           else float(s["thickness_m"]))})

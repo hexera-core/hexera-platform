@@ -146,21 +146,26 @@ def scales_of_field(points, faces, radius, *, block_lo=None, block_hi=None) -> d
                      "feature", 100.0 * fine_share)
         return None
 
+    # the two widths in their own names, so the record is built from them rather than read back
+    # out of itself: each scale's OWN narrowest, not its middle, because a cell size has to suit
+    # the smallest thing it must hold together
+    fine_width = round(float(np.percentile(fw, 1)), 12)
+    broad_width = round(float(np.percentile(bw, 5)), 12)
     out = {
         "split_m": round(split, 12),
         "trough_share": round(share, 6),
-        "fine": {"width_m": round(float(np.percentile(fw, 1)), 12),
+        "fine": {"width_m": fine_width,
                  "area_m2": round(fine_area, 15),
                  "lo": [round(float(v), 12) for v in zlo],
                  "hi": [round(float(v), 12) for v in zhi],
                  "share_of_block": round(fine_share, 9)},
-        "broad": {"width_m": round(float(np.percentile(bw, 5)), 12),
+        "broad": {"width_m": broad_width,
                   "area_m2": round(broad_area, 15)},
     }
     logger.info("scales: two scales, split at %.4f mm (the gap holds %.1f%% of the smaller mode); "
                 "fine %.4f mm over %.1f mm2 in %.1f%% of the part, broad %.4f mm over %.1f mm2",
-                split * 1000.0, 100.0 * share, out["fine"]["width_m"] * 1000.0,
-                fine_area * 1e6, 100.0 * fine_share, out["broad"]["width_m"] * 1000.0,
+                split * 1000.0, 100.0 * share, fine_width * 1000.0,
+                fine_area * 1e6, 100.0 * fine_share, broad_width * 1000.0,
                 broad_area * 1e6)
     return out
 

@@ -5431,6 +5431,45 @@
   "roots": []
  },
  {
+  "context": "sandbox/foam_case_guard.py::_is_field_data::search#1|NotAPublisher|not-a-publisher|",
+  "path": "sandbox/foam_case_guard.py",
+  "qualname": "_is_field_data",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_FIELD_CLASS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "sandbox/foam_case_guard.py::_scan_big::search#1|NotAPublisher|not-a-publisher|",
+  "path": "sandbox/foam_case_guard.py",
+  "qualname": "_scan_big",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_HASH_DIRECTIVE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "sandbox/foam_case_guard.py::_scan_big::search#2|NotAPublisher|not-a-publisher|",
+  "path": "sandbox/foam_case_guard.py",
+  "qualname": "_scan_big",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_LIB_DIRECTIVE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "sandbox/foam_case_guard.py::_scan_one::search#1|NotAPublisher|not-a-publisher|",
   "path": "sandbox/foam_case_guard.py",
   "qualname": "_scan_one",

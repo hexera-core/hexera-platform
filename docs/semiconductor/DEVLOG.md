@@ -354,11 +354,33 @@ processes in 1397 s. The binding constraint after that is not the mesher. See be
 | | |
 |---|---|
 | part | Corintis `ColdPlateAssembly_CLEAN.step`, the first real customer CAD |
-| biggest mesh built | 102,152,624 octree boxes, 2.23 cells across the 0.098 mm slots |
+| biggest mesh built | 102,630,992 cells, end to end, 2.23 cells across the 0.098 mm slots |
 | previous best | 99,172,391 cells, 1.03 cells across the same slots, coolant in 367 pieces |
 | ceiling found | cartesianMesh aborts above about 179M octree boxes per process, on any machine |
 | ceiling lifted | cfMesh MPI. 202,709,195 cells built across 8 processes, the same case that aborts serially |
-| commits | `18d64faa`, and the one after it |
+| commits | `18d64faa`, `a82c86c4` |
+
+### What the 102,630,992-cell run delivered
+
+| | |
+|---|---|
+| fluid | 22,062,782 cells in 19 pieces |
+| solid | 80,568,210 cells in 1 piece |
+| interface | 13,022,400 faces on both sides, conformal |
+| coolant volume | 0.41% from the CAD, against a 5.0% tolerance |
+| checkMesh | no fatal class in either region |
+| mesher | 6286.1 s (1.75 h), peak 80.46 GB, 784 B/cell |
+| finalize | ok |
+
+19 pieces against 367 on the previous best, which is the reading that decides whether the mesh is
+usable, and it is still not the 2 the part has. Memory came out at 784 B/cell against the 748.1 the
+budget predicts, a 5% miss.
+
+GETTING TO 2 PIECES NEEDS THE PARALLEL PATH, and the arithmetic says so rather than a guess. The
+slots want about 4 cells across, which is one more octree level: a span of 4, a band depth of 16.81,
+and 21,712.67 mm2 at a 0.0220 mm cell is about 754 million cells. That is past the 178,956,970 a
+single process can address, and it is not close. One process cannot do it at any resolution that
+holds those channels together.
 
 ### The part has two sizes of passage and the mesher was told about one
 

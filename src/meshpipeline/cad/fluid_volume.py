@@ -1521,6 +1521,11 @@ def _scales_and_fine_surface(out_path, field) -> tuple[dict | None, dict | None]
     if field is None:
         return None, None
     try:
+        # pathlib is imported per function in this module, and this one needs it: without the
+        # import the line below raises NameError, which no test caught because every test part
+        # reads as ONE scale and returns above this point.
+        from pathlib import Path
+
         from meshpipeline.cad import scales as SC
 
         got = SC.scales_of_field(field[0], field[1], field[2])
