@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hexera console revamp - 4. Viewer overlays</title>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mock.css">
+<style>
+  /* this screen: side pane hidden, conversation folded away, the viewer takes the page */
+  .app{grid-template-columns:1fr}
+  .show-convo{position:absolute;left:14px;top:12px;z-index:var(--z-toolbar)}
+  .ov.parts{left:calc(50% - 64px)}
+  .ov.section{left:calc(50% - 300px);top:auto;bottom:56px;width:300px;animation:none}
+  .ov .tag{font-size:var(--fs-xs);color:var(--text-faint);padding:10px 12px 0}
+  .v-stage{justify-items:start;padding-left:12%}
+  .v-stage svg.part{width:min(46%,520px)}
+  .picked{position:absolute;left:50%;bottom:56px;transform:translateX(-50%);display:flex;gap:10px;align-items:center;
+    padding:8px 12px;border-radius:10px;background:rgba(22,22,21,.92);border:1px solid var(--border);font-size:var(--fs-md)}
+  .picked .n{font-family:var(--mono);font-size:12px;color:var(--accent-hover)}
+  .picked .k{color:var(--text-faint);font-size:var(--fs-sm)}
+</style></head>
+<body>
+<div class="app">
+  <section class="viewer" aria-label="Mesh view">
+    <button class="ghost show-convo"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M6 3v10"/></svg>Show conversation</button>
+    <div class="vt" data-vt="parts"></div>
+    <div class="v-stage" data-part="hi" data-mesh></div>
+
+    <div class="ov parts" role="dialog" aria-label="Parts and patches">
+      <div class="ov-search"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2L13.5 13.5"/></svg>Find a patch</div>
+      <div class="ov-h"><span>Patches · 6</span><a href="#">Show all</a></div>
+      <div class="ov-row"><span class="sw" style="background:#5f8f7d"></span><span class="n">inlet</span><span class="c">1 face</span><span class="eye" data-eye="on"></span></div>
+      <div class="ov-row"><span class="sw" style="background:#8a7a9c"></span><span class="n">outlet</span><span class="c">1 face</span><span class="eye" data-eye="on"></span></div>
+      <div class="ov-row" style="background:var(--accent-soft)"><span class="sw" style="background:var(--accent)"></span><span class="n">bore</span><span class="c">4 faces</span><span class="eye" data-eye="on"></span></div>
+      <div class="ov-row"><span class="sw" style="background:#7c828a"></span><span class="n">wall_housing</span><span class="c">371 faces</span><span class="eye" data-eye="on"></span></div>
+      <div class="ov-row off"><span class="sw" style="background:#56606b"></span><span class="n">wall_boss</span><span class="c">38 faces</span><span class="eye" data-eye="off"></span></div>
+      <div class="ov-row off"><span class="sw" style="background:#4b5058"></span><span class="n">wall_ports</span><span class="c">3 faces</span><span class="eye" data-eye="off"></span></div>
+      <div class="ov-h" style="padding-top:12px"><span>Show</span></div>
+      <div class="ov-opt"><span class="k">Surface</span><div class="seg-sm"><button aria-pressed="false">Solid</button><button aria-pressed="true">Solid + edges</button><button aria-pressed="false">Wire</button></div></div>
+      <div class="ov-opt"><span class="k">Colour by</span><div class="seg-sm"><button aria-pressed="true">Patch</button><button aria-pressed="false">Quality</button></div></div>
+      <div class="ov-foot"><span style="flex:1;font-size:12px;color:var(--text-faint)">Click a patch to find it. Esc closes.</span></div>
+    </div>
+
+    <div class="picked"><span class="n">bore</span><span>4 faces · 38,412 cells</span><span class="k">Ø 24.0 mm</span></div>
+    <div class="v-left">Drag to turn · scroll to zoom · F to fit</div>
+    <div class="v-corner"><span>1.87M cells</span></div>
+  </section>
+</div>
+<script defer src="shell.js"></script><script defer src="icons.js"></script><script defer src="part.js"></script>
+<script defer>
+  const on = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>';
+  const off = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z" opacity=".45"/><path d="M3 13L13 3"/></svg>';
+  document.querySelectorAll("[data-eye]").forEach((e) => { e.innerHTML = e.dataset.eye === "on" ? on : off; });
+</script>
+</body></html>
