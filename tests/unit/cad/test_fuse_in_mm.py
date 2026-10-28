@@ -86,3 +86,28 @@ def test_the_stage_fuses_in_millimetres(tmp_path, monkeypatch):
     side = A.stage(comp, A.BONDED, tmp_path)
     assert seen and seen[0] == 1000.0
     assert (tmp_path / A.STAGED).exists() and side["parts"]
+
+
+
+def test_the_fuse_in_millimetres_is_never_finer_than_the_fuse_in_metres(monkeypatch):
+    # OpenCASCADE takes points closer than 1e-7 as one point, in whatever unit the shape is in. Fused in
+    # metres, edges 1e-7 m (1e-4 mm) apart were one; scaled to millimetres with the run's own fuzzy value
+    # (here 5e-8 m) they were not, and the fused shape kept near-coincident edges that cross in the 1D mesh
+    # (fc_zcoupling: the bonded fill failed twice and the parts were tied - lab, 28 Oct). So the scaled fuse
+    # gets at least that floor, scaled with the parts.
+    seen = []
+    real = A.fuse
+
+    def spy(parts, **kw):
+        seen.append((kw.get("fuzzy"), kw.get("mm_per_unit", 1.0)))
+        return real(parts, **kw)
+
+    monkeypatch.setattr(A, "fuse", spy)
+    parts = _parts_in_metres()
+    out = real(parts, fuzzy=5e-8, mm_per_unit=1000.0)
+    assert not out.error
+    inner = [f for f, k in seen if k == 1.0]
+    assert inner and abs(inner[0] - 1e-7 * 1000.0) < 1e-15        # max(5e-8, 1e-7) m, in millimetres
+    seen.clear()
+    real(parts, fuzzy=3e-6, mm_per_unit=1000.0)                   # a coarser fuzzy value is kept as it is
+    assert abs([f for f, k in seen if k == 1.0][0] - 3e-3) < 1e-15

@@ -68,6 +68,8 @@ WHOLLY_INSIDE = 0.999
 FUZZY_SHARE = 1e-6
 #: The general fuse runs in millimetres (fuse(), docs/RULES.md)
 FUSE_IN_MM = "PLAN-fea-90"
+#: OpenCASCADE's Precision::Confusion: points closer than this, in the shape's own unit, are one point
+_OCC_CONFUSION = 1e-7
 #: Names a CAD exporter gives a body when nobody named it: no better than Part_k.
 _GENERIC_BODY = re.compile(
     r"^\s*(\d+|solid|body|part|compound|component|shape|assembly|product|unnamed|noname|default|"
@@ -220,7 +222,9 @@ def fuse(parts: list, *, fuzzy: float = 0.0, mm_per_unit: float = 1.0) -> Fused:
     millimetres took 3.2 GB and 2 minutes (o_ox_mc_laser, lab 27 Oct)."""
     k = float(mm_per_unit or 1.0)
     if abs(k - 1.0) > 1e-12:
-        done = fuse([_scaled(s, k) for s in parts], fuzzy=float(fuzzy) * k)
+        # never finer than the fuse in the parts' own unit: OpenCASCADE confuses points closer than 1e-7 in
+        # any unit, so the metre fuse merged edges 1e-7 m (1e-4 mm) apart; scaled, that floor goes with it
+        done = fuse([_scaled(s, k) for s in parts], fuzzy=max(float(fuzzy), _OCC_CONFUSION) * k)
         if done.shape is not None and not done.error:
             done.shape = _scaled(done.shape, 1.0 / k)
         return done
