@@ -78,6 +78,7 @@
 .card--accent{border-left:2px solid var(--accent)}
 
 .summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));gap:1rem}
+.summary-grid--compact{grid-template-columns:minmax(14rem,22rem)}
 .metric-card{background:var(--surface-1);border:1px solid var(--border);
   border-radius:var(--radius);padding:1rem 1.1rem;display:grid;gap:.45rem}
 .metric-card b{font-family:var(--mono);font-weight:500;font-size:1.45rem;color:var(--text-bright);

@@ -109,10 +109,7 @@ export default async function RepairQueuePage({
       {queue.error ? <Alert>{queue.error}</Alert> : null}
 
       {throughput.data ? (
-        <Panel
-          title="What the service is delivering"
-          heading="counted from the same rows this queue is worked from"
-        >
+        <Panel title="What the service is delivering">
           <StatRow
             stats={[
               { label: "Jobs", value: String(throughput.data.throughput.jobs_total) },

@@ -25,9 +25,7 @@ export default async function OrganizationPage() {
         <div>
           <p className="page__eyebrow">Workspace</p>
           <h1 className="page__title">Organisation</h1>
-          <p className="page__intro">
-            The tenant boundary for members, billing, credits and submitted mesh studies.
-          </p>
+          <p className="page__intro">Members, billing, credits and runs belong to this workspace.</p>
         </div>
       </div>
 

@@ -205,8 +205,8 @@ jobs:
     runs-on: ubuntu-24.04
     # A sixth of the work, and the old 40 was already generous for the whole of it. Six, not four: the
     # partition is by file size, so any change to a test file reshuffles it, and at four the heaviest
-    # shard ran 17.9 min on main - one reshuffle from the 20-minute limit (#320 crossed it twice).
-    timeout-minutes: 20
+    # shard runs near 20 min, so leave cleanup and runner-variance headroom (#320 crossed it twice).
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
