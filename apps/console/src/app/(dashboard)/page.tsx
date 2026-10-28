@@ -45,21 +45,11 @@ export default async function OverviewPage() {
         </Link>
       </div>
 
-      <div className="summary-grid">
+      <div className="summary-grid summary-grid--compact">
         <div className="metric-card">
           <p className="label">Credits</p>
           <b>{credits ? credits.balance.toLocaleString() : "--"}</b>
           <span>{credits ? credits.unit : "unavailable"} available for meshing</span>
-        </div>
-        <div className="metric-card">
-          <p className="label">Recent runs</p>
-          <b>{runs ? runs.items.length.toLocaleString() : "--"}</b>
-          <span>shown below, newest first</span>
-        </div>
-        <div className="metric-card">
-          <p className="label">How it works</p>
-          <b>CAD → Mesh</b>
-          <span>Hexera plans the mesh, builds it in the cloud and checks it before you get it</span>
         </div>
       </div>
 
@@ -67,7 +57,6 @@ export default async function OverviewPage() {
         <div className="panel__head">
           <div>
             <p className="label">Recent runs</p>
-            <p className="page__sub">Your latest runs and how they ended.</p>
           </div>
           <Link className="nav__link" href="/usage">
             Credit ledger

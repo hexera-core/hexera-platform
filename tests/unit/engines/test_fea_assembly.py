@@ -266,9 +266,14 @@ def test_a_fuse_that_fails_ties_the_parts_found_pair_by_pair_never_a_stop(tmp_pa
     assert any("tied where they touch" in n for n in asm["notes"])
     cdb = (ws / "mesh.cdb").read_text()
     assert "KEYOPT,5,12,5" in cdb
-    # Nastran: every pair in the contact table is glued (IGLUE, the 7th field of its SLAVE row, is 1)
-    rows = re.findall(r"^\s+SLAVE\s+\d+(?:\s+0\.){4}\s+(\d)\s+0\s*$", (ws / "mesh.bdf").read_text(), re.M)
-    assert rows == ["1", "1"]
+    # Nastran: every pair in the contact table is glued (IGLUE, the 7th field of its SLAVE row, is 1), and
+    # reaches (ERROR, the 3rd) as far as CalculiX's *TIE does
+    rows = re.findall(r"^\s+SLAVE\s+\d+\s+(\S+)(?:\s+0\.){3}\s+(\d)\s+0\s*$", (ws / "mesh.bdf").read_text(), re.M)
+    assert [glue for _err, glue in rows] == ["1", "1"]
+    tol = [float(v) for v in re.findall(r"^\*TIE, NAME=\S+, POSITION TOLERANCE=([^,\s]+), ADJUST=NO$", text, re.M)]
+    assert len(tol) == 2
+    for (err, _glue), want in zip(rows, tol, strict=True):
+        assert float(re.sub(r"(?<=\d)([+-])", r"E\1", err)) == pytest.approx(want, rel=1e-3)
 
 
 def test_the_viewer_names_an_assemblys_faces_as_the_files_do(tmp_path, monkeypatch):

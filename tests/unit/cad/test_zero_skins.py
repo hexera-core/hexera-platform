@@ -126,7 +126,11 @@ def test_an_assembly_part_is_staged_without_its_skin_and_every_face_keeps_its_ca
     shape = A.compound([plate, block])
     side = A.stage(shape, A.BONDED, tmp_path, tie=True)
     skin = Z.find(A.solids(shape)[0])[0]
-    assert side["skins"] == [{"part": "Part_1", "faces": [f"Part_1_Face_{skin.skin}"], "on": [f"Part_1_Face_{skin.on}"]}]
+    face, on = f"Part_1_Face_{skin.skin}", f"Part_1_Face_{skin.on}"
+    # MESH-8: each skin face with the face it lies on, so every CAD face is accounted for
+    assert side["skins"] == [{"part": "Part_1", "faces": [face], "on": [on],
+                              "pairs": [{"face": face, "on": on, "words": f"{face} lies on {on}: zero thickness, "
+                                                                          "no volume - left out of the mesh"}]}]
     named = {n for row in side["surfaces"] for n in row["names"]}
     assert f"Part_1_Face_{skin.skin}" not in named
     assert {f"Part_1_Face_{k}" for k in range(1, len(Z._faces(plate)) + 1) if k != skin.skin} <= named

@@ -239,6 +239,16 @@ def gapped_blocks(size: float = 10.0, gap: float = 0.2):
     return _compound(_box(0, 0, 0, size, size, size), _box(size + gap, 0, 0, size, size, size))
 
 
+def corner_blocks(size: float = 50.0):
+    """Three blocks of `size` mm section: a bar Part_1 (x 0..4 size), Part_2 continuing it (x 4..6 size)
+    and Part_3 on top of the bar's second half (x 2..4 size, y size..2 size). Part_1 shares a face with
+    each; Part_2 and Part_3 meet only along the line x = 4 size, y = size. Bonded, all three are one mesh,
+    and the measurement also finds that line contact and ties it (PLAN-fea-18) - across nodes the two
+    parts already share."""
+    a = size
+    return _compound(_box(0, 0, 0, 4 * a, a, a), _box(4 * a, 0, 0, 2 * a, a, a), _box(2 * a, a, 0, 2 * a, a, a))
+
+
 def doubled_block():
     """The same 10 mm cube twice in one file (a body drawn twice): the second wholly inside the first."""
     return _compound(_box(0, 0, 0, 10, 10, 10), _box(0, 0, 0, 10, 10, 10))

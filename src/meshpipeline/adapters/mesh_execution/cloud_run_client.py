@@ -754,10 +754,17 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
             return {**_uncollected(engine, result, exc), "ran_on": ran_on}
         return _fail(engine, f"{type(exc).__name__}: {exc}")
     finally:
-        if on_vm and collection_complete:
-            # THE VM IS DONE once its result is collected: deleted now, not left to its own self-delete
-            # or its lifetime limit (an idle big VM is billed by the hour)
-            _stop(operation, engine=engine, why="its result was collected")
+        if on_vm and (collection_complete or isinstance(result, dict)):
+            # THE VM IS DONE once its result document is written - collected here or not (job 6cb2d606, 28 Oct:
+            # a 107M-cell result too big to bring back was "not collected", and its 16-core VM was left billing
+            # for hours): the result and its output stay in the exchange, the machine has nothing left to do.
+            # A run another worker started is found by the name both derive (gce_vm.instance_name).
+            done = operation
+            if done is None and machine and machine.get("machine"):
+                from meshpipeline.adapters.mesh_execution.gce_vm import find_vm, instance_name
+                done = find_vm(instance_name(operation_key, str(machine["machine"])))
+            _stop(done, engine=engine,
+                  why="its result was collected" if collection_complete else "its result was written")
         if bucket is not None and collection_complete:
             # EXACTLY the three keys this operation owns, each deleted by name. Never a prefix
             # delete: the coordinates are derived per operation key, and a prefix sweep here could
