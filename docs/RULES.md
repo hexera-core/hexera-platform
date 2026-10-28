@@ -330,3 +330,4 @@ may cite them before then.
 | `PLAN-<engine>-n` | the numbers of each engine's computed plan (`PLAN-fea` above is the FEA path's) | D4 to D8 |
 | `LAD-<engine>-n` | each engine's fixed ladder of approved levers | D4 to D8 |
 | `TIME-n` | planned-work limits and the guard clocks | D3 |
+| `SHELL-n`, `SHMESH-n` | shell meshing: wall pairs, shell or solid, mid-surfaces and their sizing (`docs/design/shell/README.md`); the numbers in the note are placeholders until the rulebook numbers them | the shell PRs 1 to 5 |
