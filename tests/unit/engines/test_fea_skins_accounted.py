@@ -31,7 +31,7 @@ def _wires(face):
     return out
 
 
-def _tube_with_a_pocket_to_its_bore(r_in=8.0, r_out=10.0, length=60.0, r_hole=3.0):
+def _tube_with_a_pocket_to_its_bore(r_in=8.0, r_out=10.0, length=60.0, r_hole=3.0, skin_first=False):
     """A tube with a radial pocket cut to its inner wall, its floor left as a disk of the bore's own surface lying
     on the uncut bore - the CAD defect of job fb44fed7's tube (pocket floors lying on the inner wall)."""
     from OCP.BRep import BRep_Tool
@@ -61,9 +61,18 @@ def _tube_with_a_pocket_to_its_bore(r_in=8.0, r_out=10.0, length=60.0, r_hole=3.
         sew.Add(f)
     assert bore is not None
     surf, outer = BRep_Tool.Surface_s(bore), BRepTools.OuterWire_s(bore)
-    sew.Add(BRepBuilderAPI_MakeFace(surf, outer, True).Face())                         # the bore, uncut
     inner = [w for w in _wires(bore) if not w.IsSame(outer)][0]
-    sew.Add(BRepBuilderAPI_MakeFace(surf, inner, True).Face())                         # the pocket's floor on it
+    floor = BRepBuilderAPI_MakeFace(surf, inner, True).Face()                         # the pocket's floor on it
+    if skin_first:
+        # the skin FIRST in the solid's face order, so every face after it is numbered one on once it is left out
+        sew = BRepBuilderAPI_Sewing(1e-6)
+        sew.Add(floor)
+        for f in Z._faces(holed):
+            if not f.IsSame(bore):
+                sew.Add(f)
+    sew.Add(BRepBuilderAPI_MakeFace(surf, outer, True).Face())                         # the bore, uncut
+    if not skin_first:
+        sew.Add(floor)
     sew.Perform()
     ex = TopExp_Explorer(sew.SewedShape(), TopAbs_SHELL)
     solid = TopoDS.Solid_s(BRepBuilderAPI_MakeSolid(TopoDS.Shell_s(ex.Current())).Solid())
@@ -162,3 +171,57 @@ def test_the_face_check_settles_a_face_count_finding_and_a_valid_fea_review_pass
     assert RP.review_passes(settled[:1], {**measured, "fea_valid": False}) is True
     # an incomplete accounting settles nothing
     assert RP.settle((claim,), {**measured, "fea_faces_complete": False})[0].passed is False
+
+
+# ---------------------------------------------------------------- MESH-8 for a single part ----
+
+def test_a_single_parts_skin_is_left_out_and_every_face_keeps_its_cad_name(tmp_path):
+    """The tube alone, its skin sewn in so it is not the last face: the part is staged opened, and every face of
+    the opened solid is named for the CAD face it came from - the faces after the skin are not renumbered."""
+    from OCP.BRepTools import BRepTools
+
+    from meshpipeline.engines import fea_driver as FD
+    from meshpipeline.engines.gmsh.abaqus_deck import SolidMesh, retagged
+
+    tube = _tube_with_a_pocket_to_its_bore(skin_first=True)
+    (skin,) = Z.find(tube)
+    n = len(Z._faces(tube))
+    BRepTools.Write_s(tube, str(tmp_path / "geometry.brep"))
+    info = FD.open_single_skins(tmp_path)
+    assert info and len(info["origin"]) == n - 1 and skin.skin not in info["origin"]
+    assert info["skins"][0]["pairs"][0]["face"] == f"Face_{skin.skin}"
+    assert (tmp_path / FD.CAD_SOLID).exists() and (tmp_path / FD.SKINS_FILE).exists()
+    # driven again, the workspace's record stands (the staged solid is the opened one now)
+    assert FD.open_single_skins(tmp_path) == info
+    record, surface, _diag = FD.measure_staged(tmp_path)
+    named = FD.named_as_cad(record, surface, info)
+    assert set(named["faces"]) == {f"Face_{k}" for k in range(1, n + 1)}
+    assert named["faces"][f"Face_{skin.skin}"]["kind"] == "skin"
+    assert sorted(surface.names) == sorted(f"Face_{o}" for o in info["origin"])
+    assert any("left out of the mesh" in t for t in named["notes"])
+    # the mesh's faces keyed by the CAD's tags: Face_k is the CAD's face k
+    import numpy as np
+    m = SolidMesh(np.zeros(0, dtype=np.int64), np.zeros((0, 3)), np.zeros((0, 4), dtype=np.int64),
+                  np.zeros(0, dtype=np.int64), {k: np.zeros((0, 3)) for k in range(1, n)}, by_tag=True)
+    assert sorted(retagged(m, dict(enumerate(info["origin"], start=1))).faces) == sorted(info["origin"])
+
+
+def test_a_single_part_without_a_skin_is_staged_as_it_was(tmp_path):
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.BRepTools import BRepTools
+
+    from meshpipeline.engines import fea_driver as FD
+
+    BRepTools.Write_s(BRepPrimAPI_MakeCylinder(5.0, 20.0).Shape(), str(tmp_path / "geometry.brep"))
+    before = (tmp_path / "geometry.brep").read_bytes()
+    assert FD.open_single_skins(tmp_path) is None
+    assert (tmp_path / "geometry.brep").read_bytes() == before and not (tmp_path / FD.SKINS_FILE).exists()
+
+
+def test_a_single_parts_skins_are_accounted_for_from_its_plan():
+    plan = {"faces": [{"name": f"Face_{k}"} for k in range(1, 7)],
+            "skins": [{"part": "The part", "faces": ["Face_5"], "on": ["Face_6"],
+                       "pairs": [{"face": "Face_5", "on": "Face_6", "words": "Face_5 lies on Face_6"}]}]}
+    q = {"deck": {"face_sets": {f"Face_{k}": k for k in (1, 2, 3, 4, 6)}}}
+    acc = fea_review.face_accounting(q, plan)
+    assert acc["complete"] is True and acc["accounted"] == 1 and acc["missing"] == []
