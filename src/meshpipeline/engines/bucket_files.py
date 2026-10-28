@@ -15,8 +15,9 @@ And the worker used to compress the delivery bundle itself: a 107 M-cell polyMes
 93 minutes at gzip level 9 on its 4 CPUs.
 
 So on the mesher, before the workspace is archived, every file of PACK_FROM_BYTES or more goes to
-the exchange bucket on its own, already packed as the bundle needs it - gzip members of its tar
-data (its bytes and the tar padding), level 1, compressed on all the mesher's CPUs:
+the exchange bucket on its own, already packed as the bundle needs it - raw DEFLATE of its tar
+data (its bytes and the tar padding), level 1, compressed on all the mesher's CPUs, with its CRC-32
+so the bundle's single gzip member gets its trailer without the worker reading it:
   * a file no worker step reads past its presence (the decks; an FEA plan's gmsh mesh), when it is
     KEEP_FROM_BYTES or more, is KEPT there; when gmsh's mesh is one, the mesher - which has the
     memory - first writes the light stand-ins the worker reads instead: the viewer's surface
@@ -76,10 +77,10 @@ FETCHED_FILE = "fetched_from_bucket.json"
 #: or a stand-in never outlives the result it describes.
 STAND_INS = (KEPT_FILE, VIEWER_MESH_FILE, REVIEW_SURFACE_FILE, FETCHED_FILE)
 
-#: How each file is packed: gzip at level 1 (the delivery's bundle at level 9 took 93 minutes on
+#: How each file is packed: DEFLATE at level 1 (the delivery's bundle at level 9 took 93 minutes on
 #: the worker for a 22 GB polyMesh; the mesher packs it once, fast, on all its CPUs), in pieces of
-#: PACK_PIECE_BYTES, each its own gzip member (no name, no time - the same bytes for the same
-#: file, so a retried delivery stores the same bundle), compressed in parallel and written in order.
+#: PACK_PIECE_BYTES, each ending on a sync flush so the pieces join as one stream (the same bytes for
+#: the same file, so a retried delivery stores the same bundle), compressed in parallel, in order.
 GZIP_LEVEL = 1
 PACK_PIECE_BYTES = 64 * 1024 * 1024
 PACK_THREADS = 8
@@ -102,6 +103,7 @@ class Kept:
     gz_md5: str         # the object's md5, hex
     mode: int           # the file's permission bits
     fetch: bool = False  # the worker unpacks it to its place at collection (it reads it)
+    crc32: int = 0      # CRC-32 of its tar data (the bytes and the padding)
 
 
 # ------------------------------------------------------------------------------------------ mesher
@@ -149,20 +151,25 @@ def _padding(n: int) -> bytes:
     return b"\0" * (_BLOCK - rem) if rem else b""
 
 
-def _gzip_piece(data: bytes) -> bytes:
-    z = zlib.compressobj(GZIP_LEVEL, zlib.DEFLATED, 31)     # 31: a gzip wrapper, mtime 0, no name
-    return z.compress(data) + z.flush()
+def _deflate_piece(data: bytes) -> bytes:
+    """`data` as raw DEFLATE ending on a sync flush: byte-aligned, not final, so pieces made apart -
+    in parallel, on another machine - joined end to end are ONE deflate stream (pigz's method). The
+    bundle wraps them in a single gzip member: every reader reads it, a stream reader included
+    (Python's tarfile "r|gz" refuses a file of many gzip members)."""
+    z = zlib.compressobj(GZIP_LEVEL, zlib.DEFLATED, -15)
+    return z.compress(data) + z.flush(zlib.Z_SYNC_FLUSH)
 
 
-def pack(src: Path, sink: BinaryIO, *, threads: int | None = None) -> tuple[int, int, str]:
-    """Write `src` to `sink` as gzip members of its tar data (the bytes, then the padding to the
-    next 512-byte block): one member per PACK_PIECE_BYTES, compressed `threads` at a time and
-    written in order. Returns (the file's bytes, the object's bytes, the object's md5)."""
+def pack(src: Path, sink: BinaryIO, *, threads: int | None = None) -> tuple[int, int, str, int]:
+    """Write `src` to `sink` as raw DEFLATE pieces of its tar data (the bytes, then the padding to
+    the next 512-byte block): one piece per PACK_PIECE_BYTES, compressed `threads` at a time and
+    written in order. Returns (the file's bytes, the object's bytes, the object's md5, the CRC-32
+    of the tar data - what the bundle's gzip trailer is made from)."""
     from collections import deque
     from concurrent.futures import ThreadPoolExecutor
 
     md5 = hashlib.md5()  # noqa: S324 - an integrity check against the store's own md5, not a secret
-    raw = out = 0
+    raw = out = crc = 0
     size = src.stat().st_size
     workers = max(1, int(threads or PACK_THREADS))
 
@@ -179,7 +186,8 @@ def pack(src: Path, sink: BinaryIO, *, threads: int | None = None) -> tuple[int,
             raw += len(chunk)
             if raw >= size:
                 chunk += _padding(raw)          # the last piece carries tar's padding
-            pending.append(pool.submit(_gzip_piece, chunk))
+            crc = zlib.crc32(chunk, crc)
+            pending.append(pool.submit(_deflate_piece, chunk))
             while len(pending) >= 2 * workers:  # bounded: only so many pieces in memory
                 put(pending.popleft().result())
         while pending:
@@ -187,13 +195,14 @@ def pack(src: Path, sink: BinaryIO, *, threads: int | None = None) -> tuple[int,
     if raw != size:
         raise KeptFileError(f"{src.name} changed while it was packed")
     if raw == 0:
-        put(_gzip_piece(b""))
-    return raw, out, md5.hexdigest()
+        put(_deflate_piece(b""))
+    return raw, out, md5.hexdigest(), crc
 
 
 def write_record(workspace, kept: Iterable[Kept]) -> None:
     rows = {k.rel: {"bucket": k.bucket, "key": k.key, "bytes": k.bytes, "gz_bytes": k.gz_bytes,
-                    "gz_md5": k.gz_md5, "mode": k.mode, "fetch": bool(k.fetch)} for k in kept}
+                    "gz_md5": k.gz_md5, "mode": k.mode, "fetch": bool(k.fetch), "crc32": k.crc32}
+            for k in kept}
     (Path(workspace) / KEPT_FILE).write_text(json.dumps({"version": 1, "rule": RULE, "files": rows}, indent=1,
                                                         sort_keys=True))
 
@@ -247,9 +256,9 @@ def keep(workspace, *, bucket: str, output_key: str,
         key = object_key(output_key, rel, run)
         mode = p.stat().st_mode & 0o7777
         with writer(bucket, key) as sink:
-            raw, gz, md5 = pack(p, sink)
+            raw, gz, md5, crc = pack(p, sink)
         return Kept(rel=rel, bucket=bucket, key=key, bytes=raw, gz_bytes=gz, gz_md5=md5, mode=mode,
-                    fetch=p not in stays)
+                    fetch=p not in stays, crc32=crc)
 
     with ThreadPoolExecutor(max_workers=max(1, min(parallel, len(files)))) as pool:
         kept = list(pool.map(one, files))      # zlib and the upload release the GIL
@@ -292,7 +301,8 @@ def read_record(workspace, *, bucket: str | None = None, prefix: str | None = No
                 raise KeptFileError(f"kept file {rel!r} is not a workspace path")
             k = Kept(rel=pure.as_posix(), bucket=str(r["bucket"]), key=str(r["key"]),
                      bytes=int(r["bytes"]), gz_bytes=int(r["gz_bytes"]), gz_md5=str(r["gz_md5"]),
-                     mode=int(r["mode"]) & 0o7777, fetch=bool(r.get("fetch", False)))
+                     mode=int(r["mode"]) & 0o7777, fetch=bool(r.get("fetch", False)),
+                     crc32=int(r["crc32"]) & 0xFFFFFFFF)
             if k.bytes <= 0 or k.gz_bytes <= 0:
                 raise KeptFileError(f"kept file {rel!r} is empty")
             if bucket is not None and k.bucket != bucket:
@@ -337,19 +347,13 @@ def size(workspace, rel: str) -> int:
 Opener = Callable[[str, str], BinaryIO]
 
 
-def _members(raw: BinaryIO) -> Iterator[bytes]:
-    """The decompressed bytes of a stream of gzip members (any number of them, end to end)."""
-    d = zlib.decompressobj(31)
+def _inflate(raw: BinaryIO) -> Iterator[bytes]:
+    """The decompressed bytes of a kept object: raw DEFLATE pieces end to end (see _deflate_piece)."""
+    d = zlib.decompressobj(-15)
     while chunk := raw.read(_CHUNK):
-        while chunk:
-            out = d.decompress(chunk)
-            if out:
-                yield out
-            if d.eof:
-                chunk = d.unused_data
-                d = zlib.decompressobj(31)
-            else:
-                chunk = b""
+        out = d.decompress(chunk)
+        if out:
+            yield out
     tail = d.flush()
     if tail:
         yield tail
@@ -360,7 +364,7 @@ def raw_chunks(k: Kept, opener: Opener) -> Iterator[bytes]:
     and its size checked - a short or long object is refused, never delivered as the file."""
     left = k.bytes
     with opener(k.bucket, k.key) as fh:
-        for out in _members(fh):
+        for out in _inflate(fh):
             if left <= 0:
                 if out.strip(b"\0"):
                     raise KeptFileError(f"{k.rel}: the stored object is longer than the file")
@@ -431,9 +435,46 @@ def packed_chunks(k: Kept, opener: Opener) -> Iterator[bytes]:
 
 # ------------------------------------------------------------------------------------------ bundle
 
-def _gz(data: bytes) -> bytes:
-    z = zlib.compressobj(GZIP_LEVEL, zlib.DEFLATED, 31)
-    return z.compress(data) + z.flush()
+#: The bundle's one gzip header: deflate, no flags, no time, no extra flags, OS unknown.
+_GZIP_HEADER = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff"
+
+
+def _gf2_times(mat: list[int], vec: int) -> int:
+    out, i = 0, 0
+    while vec:
+        if vec & 1:
+            out ^= mat[i]
+        vec >>= 1
+        i += 1
+    return out
+
+
+def _gf2_square(mat: list[int]) -> list[int]:
+    return [_gf2_times(mat, mat[n]) for n in range(32)]
+
+
+def crc32_combine(crc1: int, crc2: int, len2: int) -> int:
+    """The CRC-32 of A followed by B, from A's CRC, B's CRC and B's length (zlib's crc32_combine) -
+    the bundle's gzip trailer covers members packed on another machine without reading them."""
+    if len2 <= 0:
+        return crc1
+    odd = [0xEDB88320] + [1 << (n - 1) for n in range(1, 32)]
+    even = _gf2_square(odd)
+    odd = _gf2_square(even)
+    while True:
+        even = _gf2_square(odd)
+        if len2 & 1:
+            crc1 = _gf2_times(even, crc1)
+        len2 >>= 1
+        if not len2:
+            break
+        odd = _gf2_square(even)
+        if len2 & 1:
+            crc1 = _gf2_times(odd, crc1)
+        len2 >>= 1
+        if not len2:
+            break
+    return (crc1 ^ crc2) & 0xFFFFFFFF
 
 
 def _norm(ti: tarfile.TarInfo) -> tarfile.TarInfo:
@@ -484,41 +525,58 @@ def bundle_entries(workspace, members: Iterable[str], prefix: str) -> list[tuple
 
 
 def bundle_chunks(entries: list[tuple[str, Path | None, Kept | None]], opener: Opener) -> Iterator[bytes]:
-    """The deterministic .tar.gz of `entries` as a stream of gzip members: each header and each
-    local file packed here, each kept file's object passed through as it is stored, and tar's end.
-    Any gzip reader reads it as one archive; nothing is written to disk."""
+    """The deterministic .tar.gz of `entries`, streamed: ONE gzip member whose deflate stream is
+    each header and each local file compressed here, each kept file's object passed through as it
+    is stored (raw DEFLATE pieces on sync flushes join as one stream), and tar's end; its trailer's
+    CRC-32 is combined from each part's own. Every gzip reader reads it - a stream reader too -
+    and nothing is written to disk."""
     import io
+    import struct
     probe = tarfile.open(fileobj=io.BytesIO(), mode="w")      # builds headers only; writes nothing
-    written = 0
+    written = crc = 0
+
+    def local(data: bytes) -> bytes:
+        nonlocal written, crc
+        written += len(data)
+        crc = zlib.crc32(data, crc)
+        return _deflate_piece(data)
+
+    yield _GZIP_HEADER
     for name, path, k in entries:
         if k is not None:
             ti = tarfile.TarInfo(name)
             ti.size, ti.mode, ti.type = int(k.bytes), int(k.mode), tarfile.REGTYPE
-            head = _header(_norm(ti))
-            yield _gz(head)
+            yield local(_header(_norm(ti)))
             yield from packed_chunks(k, opener)
-            written += len(head) + k.bytes + len(_padding(k.bytes))
+            span = k.bytes + len(_padding(k.bytes))
+            crc = crc32_combine(crc, k.crc32, span)
+            written += span
             continue
         assert path is not None
         ti = _norm(probe.gettarinfo(str(path), arcname=name))
-        head = _header(ti)
-        yield _gz(head)
-        written += len(head)
+        yield local(_header(ti))
         if ti.isreg():
-            z = zlib.compressobj(GZIP_LEVEL, zlib.DEFLATED, 31)
+            z = zlib.compressobj(GZIP_LEVEL, zlib.DEFLATED, -15)
             n = 0
             with path.open("rb") as fh:
                 while chunk := fh.read(_CHUNK):
                     n += len(chunk)
+                    crc = zlib.crc32(chunk, crc)
                     out = z.compress(chunk)
                     if out:
                         yield out
-            yield z.compress(_padding(n)) + z.flush()
-            written += n + len(_padding(n))
+            pad = _padding(n)
+            crc = zlib.crc32(pad, crc)
+            yield z.compress(pad) + z.flush(zlib.Z_SYNC_FLUSH)
+            written += n + len(pad)
     end = b"\0" * (2 * _BLOCK)
+    rem = (written + len(end)) % _RECORD
+    end += b"\0" * (_RECORD - rem) if rem else b""
     written += len(end)
-    rem = written % _RECORD
-    yield _gz(end + (b"\0" * (_RECORD - rem) if rem else b""))
+    crc = zlib.crc32(end, crc)
+    last = zlib.compressobj(GZIP_LEVEL, zlib.DEFLATED, -15)
+    yield last.compress(end) + last.flush(zlib.Z_FINISH)           # the stream's final block
+    yield struct.pack("<II", crc & 0xFFFFFFFF, written & 0xFFFFFFFF)
 
 
 def release(workspace, deleter: Callable[[str, str], None]) -> int:
