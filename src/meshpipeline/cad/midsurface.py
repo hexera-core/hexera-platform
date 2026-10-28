@@ -291,6 +291,8 @@ class _Mid:
         self.plane = _plane(face)
         self.extended: list[dict] = []
         self.original = face
+        self.true_face = face            # where the mid-face really lies (the checks read this one)
+        self.offset = 0.0                # how far it was moved onto a thicker neighbour's mid-plane (SHELL-7)
         self.box = _box(face)            # the original face's box, its own units
         self.face_box = self.box         # the (extended) face's
 
@@ -1138,6 +1140,58 @@ def _regions(faces: list[int], neighbours: list[set[int]]) -> list[list[int]]:
 FALLBACK_WALLS = 3.0
 
 
+#: SHELL-7, PLATES OF TWO THICKNESSES MEETING IN LINE (a butt step, flush on one side): their mid-planes are
+#: parallel and apart by half the difference, so nothing meets. The thinner plate's mid-face is moved onto the
+#: thicker one's mid-plane - when the two are parallel within STEP_PARALLEL_DEG, apart by no more than half the
+#: thicker wall, and touch edge to edge (the faces come within the offset plus STEP_TOUCH of the thinner wall) -
+#: and the offset is kept for the solver (Nastran ZOFFS, Abaqus / CalculiX OFFSET): the same stiffness and mass,
+#: one flat shell. The checks still read where the mid-face really lies.
+STEP_PARALLEL_DEG = 1.0
+STEP_TOUCH = 0.5
+
+
+def snap_steps(mine: list[_Mid], solid: _Solid) -> None:
+    """SHELL-7 on one body's mid-faces, thickest first (a plate snaps to a neighbour already settled)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Trsf, gp_Vec
+
+    cos_lim = math.cos(math.radians(STEP_PARALLEL_DEG))
+    order = sorted(mine, key=lambda m: (-m.t, m.k))
+    for m in order:
+        if m.plane is None:
+            continue
+        best = None
+        for o in order:
+            if o is m or o.plane is None or o.t <= m.t * (1 + 1e-6):
+                continue
+            no = o.plane[1]
+            if abs(float(np.dot(m.plane[1], no))) < cos_lim:
+                continue
+            d = float(np.dot(o.plane[0] - m.plane[0], no))      # m's plane to o's plane, along o's normal
+            if abs(d) <= 1e-9 * o.t or abs(d) > 0.5 * o.t * (1 + 1e-6):
+                continue
+            if not _near_box(m.box[0], (o.box[0], o.box[1]), abs(d) + o.t + max(m.box[1] - m.box[0])):
+                continue
+            if _dist(m.original, o.original) > abs(d) + STEP_TOUCH * m.t:
+                continue
+            if best is None or o.t > best[0].t:
+                best = (o, d)
+        if best is None:
+            continue
+        o, d = best
+        tr = gp_Trsf()
+        tr.SetTranslation(gp_Vec(*map(float, o.plane[1] * d)))
+        moved = BRepBuilderAPI_Transform(m.original, tr, True).Shape()
+        moved_face = _faces(moved)[0]
+        q = _inner_point(moved_face)
+        if q is None or not solid.inside(q):
+            continue
+        m.original, m.face = moved_face, moved_face
+        m.plane = _plane(moved_face)
+        m.box = m.face_box = _box(moved_face)
+        m.offset = -d                         # the true mid-face lies this far from the shell's reference plane
+
+
 def fallback_regions(sewn_rows: list[dict], faces: list, names: list[str], body_of: list[int],
                      body_names: list[str], pairs: list, mm: float) -> list[dict]:
     """SHELL-6: one region per group of open edges of a body (open points within FALLBACK_WALLS walls of each
@@ -1286,6 +1340,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
         body_faces = [faces[k] for k in range(len(faces)) if body_of[k] == b]
         t_max = max(pairs[i].thickness for i in range(len(pairs))
                     if pairs[i].even and body_of[pairs[i].a] == b and pairs[i].shell) / mm
+        snap_steps(mine, solid)
         try:
             # SHELL-3 v2: grow, cut, keep
             fused, kept, owner_i, reached = join_body(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy)
@@ -1334,11 +1389,12 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
     worst_rel = 0.0
     for m in mids:
         p = pairs[m.pair]
-        err, npts = fidelity(m.original, faces[p.a], faces[p.b], m.t)
+        err, npts = fidelity(m.true_face, faces[p.a], faces[p.b], m.t)
         worst_rel = max(worst_rel, err / m.t if m.t > 0 else 0.0)
         mid_rows.append({"id": f"Mid_{m.k + 1}", "pair": f"P{m.pair + 1}", "body": body_names[m.body],
                          "faces": [names[p.a], names[p.b]], "thickness_mm": _r(p.thickness),
-                         "shell": bool(p.shell), "area_mm2": _r(_area(m.original) * mm * mm),
+                         "shell": bool(p.shell), "area_mm2": _r(_area(m.true_face) * mm * mm),
+                         **({"offset_mm": _r(m.offset * mm)} if m.offset else {}),
                          "kind": fm._kind_word(BRepAdaptor_Surface(m.original, True).GetType()),
                          "extended": [{"to": None if e["to"] is None else f"Mid_{e['to'] + 1}",
                                        **({"by_mm": _r(e["by"] * mm)} if "by" in e else {}),
@@ -1348,7 +1404,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
     for row, b in zip(bodies, range(len(solids)), strict=True):
         mine = [m for m in mids if m.body == b and pairs[m.pair].shell]
         if mine and row["volume_mm3"]:
-            row["mid_volume_ratio"] = _r(sum(_area(m.original) * m.t for m in mine) * mm ** 3 / row["volume_mm3"])
+            row["mid_volume_ratio"] = _r(sum(_area(m.true_face) * m.t for m in mine) * mm ** 3 / row["volume_mm3"])
     open_edges = sum(c["open_edges"] for c in sewn_rows)
     accounted = all(roles[k]["role"] in (sp.PAIRED, sp.RIM, sp.BLEND)
                     for k in range(len(faces)) if body_of[k] in shell_bodies)

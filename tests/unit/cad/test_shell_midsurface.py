@@ -294,7 +294,18 @@ def test_a_duct_elbow_closes_across_its_seam():
     _all_checks(rec)
 
 
-def test_where_mid_faces_do_not_meet_the_region_is_meshed_solid_and_said_so():
+def test_plates_of_two_thicknesses_butted_in_line_become_one_flat_shell_with_an_offset():
+    rec, surface = ms.extract(sf.butt_step(6.0, 3.0), mm_per_unit=1.0)
+    assert _sewn_area(surface) == pytest.approx(200 * 50, rel=REL)
+    offsets = {m["thickness_mm"]: m.get("offset_mm", 0.0) for m in _shell_mids(rec)}
+    # the 3 mm plate lies on the 6 mm plate's mid-plane (z = 3); its own mid-plane is 1.5 mm below it
+    assert offsets == pytest.approx({3.0: -1.5, 6.0: 0.0})
+    assert _sewn(rec)["open_edges"] == 0 and not rec["fallback_regions"]
+    _all_checks(rec)
+
+
+def test_where_mid_faces_do_not_meet_the_region_is_meshed_solid_and_said_so(monkeypatch):
+    monkeypatch.setattr(ms, "snap_steps", lambda *_a, **_k: None)   # leave the butt step open
     rec, _ = ms.extract(sf.butt_step(6.0, 3.0), mm_per_unit=1.0)
     regions = rec["fallback_regions"]
     assert regions and all(r["faces"] and r["at_mm"] and r["why"] for r in regions)
