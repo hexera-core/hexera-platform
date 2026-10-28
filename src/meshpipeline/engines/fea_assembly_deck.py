@@ -308,9 +308,28 @@ def _point_triangle(p: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray) 
     return w
 
 
-def _nearest_master(points: np.ndarray, tri_xyz: np.ndarray, limit: float) -> tuple[np.ndarray, np.ndarray]:
+def _nearest_edge(p: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The nearest point of each triangle's edges to each point, and its distance (all (N, 3))."""
+    best = np.full(len(p), np.inf)
+    at = np.zeros_like(p)
+    for x, y in ((a, b), (b, c), (c, a)):
+        d = y - x
+        dd = np.einsum("ij,ij->i", d, d)
+        t = np.clip(np.einsum("ij,ij->i", p - x, d) / np.where(dd > 0, dd, 1.0), 0.0, 1.0)
+        q = x + t[:, None] * d
+        r = np.linalg.norm(p - q, axis=1)
+        closer = r < best
+        best[closer] = r[closer]
+        at[closer] = q[closer]
+    return at, best
+
+
+def _nearest_master(points: np.ndarray, tri_xyz: np.ndarray, limit: float,
+                    tri_ids: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
     """For each point: its distance to the nearest master triangle it lies over, within `limit` (inf if
-    none), and that triangle's row (-1 if none)."""
+    none), and that triangle's row (-1 if none). `tri_ids` (the triangles' node numbers): a point over a
+    convex crease of the master - in the wedge no flat facet's perpendicular reaches, as a curved face's
+    would - counts too, at its distance to the crease; never a point beside the master's own edge."""
     from scipy.spatial import cKDTree
 
     dist = np.full(len(points), np.inf)
@@ -322,6 +341,10 @@ def _nearest_master(points: np.ndarray, tri_xyz: np.ndarray, limit: float) -> tu
     # TRIANGLES OF A SIZE TOGETHER (radius classes a factor 2 apart): each class searched only as far as its
     # own largest triangle reaches, so one coarse facet never widens the search for every node
     cls = np.floor(np.log2(np.maximum(radius, 1e-300) / max(float(radius.max()), 1e-300))).astype(np.int64)
+    # the nearest point of the master's EDGES, for the points over no facet (the crease wedges)
+    edge_d = np.full(len(points), np.inf)
+    edge_at = np.zeros_like(points)
+    edge_tri = np.full(len(points), -1, dtype=np.int64)
     for c in np.unique(cls):
         rows = np.flatnonzero(cls == c)
         tree = cKDTree(centre[rows])
@@ -334,6 +357,14 @@ def _nearest_master(points: np.ndarray, tri_xyz: np.ndarray, limit: float) -> tu
             pp = s + np.repeat(np.arange(len(near)), counts)
             tt = rows[np.fromiter((t for x in near for t in x), dtype=np.int64, count=int(counts.sum()))]
             d = _point_triangle(points[pp], tri_xyz[tt, 0], tri_xyz[tt, 1], tri_xyz[tt, 2])
+            if tri_ids is not None:
+                q, e = _nearest_edge(points[pp], tri_xyz[tt, 0], tri_xyz[tt, 1], tri_xyz[tt, 2])
+                order = np.lexsort((e, pp))
+                f = order[np.r_[True, pp[order][1:] != pp[order][:-1]]]
+                closer = e[f] < edge_d[pp[f]]
+                edge_d[pp[f][closer]] = e[f][closer]
+                edge_at[pp[f][closer]] = q[f][closer]
+                edge_tri[pp[f][closer]] = tt[f][closer]
             order = np.lexsort((d, pp))
             pp, tt, d = pp[order], tt[order], d[order]
             first = np.r_[True, pp[1:] != pp[:-1]]
@@ -341,6 +372,29 @@ def _nearest_master(points: np.ndarray, tri_xyz: np.ndarray, limit: float) -> tu
             better = d < dist[pp]
             dist[pp[better]] = d[better]
             best[pp[better]] = tt[better]
+    if tri_ids is not None:
+        wedge = np.flatnonzero(~np.isfinite(dist) & (edge_d <= limit))
+        if len(wedge):
+            # a crease inside the master, not its rim: the nearest point lies on no edge of one triangle only
+            e = np.sort(np.concatenate([tri_ids[:, [0, 1]], tri_ids[:, [1, 2]], tri_ids[:, [2, 0]]]), axis=1)
+            key, count = np.unique(e, axis=0, return_counts=True)
+            rim = key[count == 1]
+            if len(rim):
+                ids = np.unique(tri_ids)
+                where = np.zeros((int(ids.max()) + 1, 3))
+                where[tri_ids.ravel()] = tri_xyz.reshape(-1, 3)
+                a, b = where[rim[:, 0]], where[rim[:, 1]]
+                mid = 0.5 * (a + b)
+                half = 0.5 * float(np.linalg.norm(b - a, axis=1).max())
+                near = cKDTree(mid).query_ball_point(edge_at[wedge], r=half + 1e-12)
+                on_rim = np.zeros(len(wedge), dtype=bool)
+                for k, cand in enumerate(near):
+                    if cand:
+                        _q, r = _nearest_edge(np.repeat(edge_at[wedge][k:k + 1], len(cand), axis=0), a[cand], b[cand], b[cand])
+                        on_rim[k] = bool((r <= 1e-9 * max(half, 1e-300)).any())
+                wedge = wedge[~on_rim]
+            dist[wedge] = edge_d[wedge]
+            best[wedge] = edge_tri[wedge]
     return dist, best
 
 
@@ -390,7 +444,7 @@ def settle_ties(joints: list[Joint], elements: np.ndarray, xyz: np.ndarray, inde
         # parts that pass into each other: the slave's nodes inside the master, down to OVERLAP_DEPTH_SHARE
         deep = max(limit, OVERLAP_DEPTH_SHARE * typical) if overlap else limit
         cand = slave.nodes[~nodes_on(master_part)[slave.nodes]]
-        dist, tri = _nearest_master(xyz[index[cand]], xyz[index[tris]], deep)
+        dist, tri = _nearest_master(xyz[index[cand]], xyz[index[tris]], deep, tri_ids=tris)
         ok = dist <= limit
         if deep > limit:
             near = np.flatnonzero(~ok & (dist <= deep))

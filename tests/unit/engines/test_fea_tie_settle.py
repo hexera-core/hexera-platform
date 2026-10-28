@@ -229,3 +229,17 @@ def test_the_slave_is_the_side_with_more_nodes_on_the_joint(staged_slave):
     xyz = np.asarray(m.xyz)
     on_joint = [n for n in a.nodes if xyz[n - 1][1] <= 1.0 + 1e-9]
     assert set(j.tied.tolist()) == set(on_joint) and j.left_out["beyond"] == len(a.nodes) - len(on_joint)
+
+
+def test_a_node_over_a_convex_crease_is_on_the_master_and_one_beside_its_rim_is_not():
+    # a roof of four facets, its ridge along y at z = 0.1: right over the ridge no flat facet perpendicular
+    # reaches (a curved master would), yet the node is on the joint; a node off the roof eave is not
+    pts = {1: (-1, 0, 0), 2: (0, 0, 0.1), 3: (0, 1, 0.1), 4: (-1, 1, 0), 5: (1, 0, 0), 6: (1, 1, 0)}
+    tri_ids = np.array([[1, 2, 3], [1, 3, 4], [2, 5, 6], [2, 6, 3]])
+    tri_xyz = np.array([[pts[n] for n in t] for t in tri_ids], dtype=float)
+    over_ridge, beside_eave = (0.0, 0.5, 0.15), (1.05, 0.5, 0.0)
+    dist, tri = AD._nearest_master(np.array([over_ridge, beside_eave]), tri_xyz, 0.1, tri_ids=tri_ids)
+    assert dist[0] == pytest.approx(0.05) and tri[0] >= 0
+    assert not np.isfinite(dist[1]) and tri[1] == -1
+    # without the facets' node numbers nothing is known of the rim: the ridge node is not taken
+    assert not np.isfinite(AD._nearest_master(np.array([over_ridge]), tri_xyz, 0.1)[0][0])
