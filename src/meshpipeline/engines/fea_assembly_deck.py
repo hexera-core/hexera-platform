@@ -1025,7 +1025,10 @@ def open_joints(prep: Prepared) -> dict:
             out["open"].append({"name": j.name, "pair": j.pair, "parts": [f"Part_{j.parts[0]}", f"Part_{j.parts[1]}"],
                                 "reach_m": reach, "reach_from": said,
                                 "needed_m": max([f["nearest_m"] for f in open_faces] or [float(slave.min())]),
-                                "faces": open_faces, "tied_share": round(tied, 4)})
+                                "faces": open_faces, "tied_share": round(tied, 4),
+                                # parts that pass into each other, tied apart: joined only where their surfaces
+                                # cross, so no reach is the way on (cad/fea_pairs.open_words)
+                                **({"overlap": True} if j.overlap else {})})
         else:
             out["closed"] += 1
     return out

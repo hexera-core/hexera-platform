@@ -794,6 +794,20 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
         notes.append(f"{len(over)} pair(s) of parts pass into each other: where they do, the mesh is one piece of "
                      "material, and the smaller body keeps its full shape there while the larger gives way "
                      "(SpaceClaim's interference rule) - " + "; ".join(said_pairs) + ".")
+        # A PART LEFT WITH NO ELEMENTS: every piece of it is kept by another part (a body drawn once whole and
+        # once in pieces; a larger body the user gave the shared piece). Said, never dropped quietly.
+        held = [list(o) for o in vol_parts if o]
+        own = {o[0] if len(o) == 1 else owner_of(o) for o in held}
+        for p in range(1, len(parts) + 1):
+            pid = part_id(p)
+            if p in own or any(n.startswith(f"{pid} lies wholly inside") or f"{pid} has no elements" in n
+                               for n in notes):
+                continue
+            keepers = [part_id(k) for k in sorted({owner_of(o) for o in held if p in o and len(o) > 1})]
+            notes.append(f"{pid} has no elements of its own: every piece of it is shared with "
+                         f"{_list(keepers) if keepers else 'other parts'}, which keep{'s' if len(keepers) == 1 else ''} "
+                         "it, so it is not in the mesh files - give it a shared piece on the stage, or remove the "
+                         "doubled material in the CAD.")
     elif over and mode == PAIR_TIE:
         notes.append(f"{len(over)} pair(s) of parts pass into each other: tied, each keeps its own elements "
                      "there, so the shared piece is counted in both parts (its stiffness and mass twice) - fix "

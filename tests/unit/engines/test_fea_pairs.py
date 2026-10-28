@@ -86,6 +86,24 @@ def test_an_open_pair_is_said_with_its_faces_and_the_way_on():
     assert "Contact or Off" in said and "at least 0.21 mm" in said
 
 
+def test_an_open_pair_that_overlaps_is_told_to_mend_the_overlap_never_to_widen_the_reach():
+    # lab, 28 Oct: a mixed setup meshes the assembly apart, and a bonded pair that passes into the other
+    # part is tied only where the surfaces cross (one needed a 17 mm "reach") - no reach mends that
+    said = P.open_words({"name": "Tie_5", "parts": ["Part_3", "Part_4"], "reach_m": 3.5e-5,
+                         "reach_from": "solver default", "needed_m": 0.017, "overlap": True,
+                         "faces": [{"face": "Part_4_Face_2", "nearest_m": 0.017}]})
+    assert said.startswith("Tie_5 (Part_3 and Part_4): Part_4_Face_2 (nearest 17 mm) has no mesh node")
+    assert "pass into each other" in said and "remove the overlap in the CAD" in said
+    assert "reach to at least" not in said
+
+
+def test_a_reach_set_for_a_pair_counts_as_set_on_the_stage():
+    rows = P.choose([{"id": "Interface_1", "kind": "gap", "parts": ["Part_1", "Part_2"], "gap_mm": 0.2}],
+                    connection="bonded", overrides={"Part_1|Part_2": {"type": "bonded", "reach_mm": 0.3}})
+    assert rows[0]["source"] == "rule" and rows[0]["reach_mm"] == 0.3
+    assert P.counts(rows)["edited"] == 1
+
+
 def test_the_verdict_reads_an_open_pair_as_a_concern_and_an_unrun_check_as_unmeasured():
     from meshpipeline.contracts.decision_record import limit_met
     from meshpipeline.engines.verdict_limits import fea_limits
@@ -172,6 +190,24 @@ def test_the_pin_keeps_its_full_shape_in_its_bracket_and_the_user_can_say_otherw
                    pairs={"Part_1|Part_2": {"keep": "Part_1"}})
     (ring,) = [v for v in mine["volumes"] if len(v["parts"]) > 1]
     assert ring["owner"] == 1 and any("(your choice)" in n for n in mine["notes"])
+
+
+def test_a_part_every_piece_of_which_another_keeps_is_said_never_dropped_quietly(tmp_path):
+    # lab, 28 Oct (g_c0282): a bar drawn whole AND as three pieces - each piece is the smaller body, keeps
+    # its share, and the bar is left with no elements; the files must say so
+    bar = fx._compound(fx._box(0, 0, 0, 30, 10, 10), fx._box(0, 0, 0, 10, 10, 10), fx._box(10, 0, 0, 10, 10, 10),
+                       fx._box(20, 0, 0, 10, 10, 10))
+    side = A.stage(bar, A.BONDED, tmp_path / "bar", mm_per_unit=1.0)
+    assert side["mode"] == "bonded"
+    owned = {v["parts"][0] if len(v["parts"]) == 1 else v["owner"] for v in side["volumes"]}
+    assert 1 not in owned
+    (said,) = [n for n in side["notes"] if n.startswith("Part_1 has no elements of its own")]
+    assert "Part_2, Part_3 and Part_4" in said and "remove the doubled material" in said
+    # the pieces given to the bar instead: the bar keeps every piece, and each piece is said as before
+    back = A.stage(bar, A.BONDED, tmp_path / "back", mm_per_unit=1.0,
+                   pairs={f"Part_1|Part_{k}": {"keep": "Part_1"} for k in (2, 3, 4)})
+    assert not any(n.startswith("Part_1 has no elements") for n in back["notes"])
+    assert sum("has no elements of its own" in n for n in back["notes"]) == 3
 
 
 def test_the_overlap_is_measured_for_the_card():

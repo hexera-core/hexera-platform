@@ -232,6 +232,11 @@ def decisions(choices: Sequence[Mapping], *, connection: str, gap_joins: bool) -
 #: PLAN-fea-21: the way on from an open bonded pair, said with it.
 OPEN_WAY_OUT = ("switch this pair to Contact or Off on the stage, or set its reach to at least {needed} so the "
                 "solver ties those nodes")
+#: PLAN-fea-21 for two parts that PASS INTO each other and are tied apart: a tie joins them only where their
+#: surfaces cross, and no reach mends that (the faces inside the other part lie deep in its material).
+OPEN_OVERLAP_WAY_OUT = ("they pass into each other, and meshed apart a tie joins them only where their surfaces "
+                        "cross - remove the overlap in the CAD, or switch this pair to Contact or Off on the stage; "
+                        "with every pair that touches left Bonded the two are meshed as one piece instead")
 
 
 def open_words(row: Mapping) -> str:
@@ -249,17 +254,20 @@ def open_words(row: Mapping) -> str:
     else:
         what = f"no node of it lies within the {_mm(reach_mm)} reach"
     src = {"solver default": " (the solvers' default)", "set": " (set on the stage)"}.get(str(row.get("reach_from")), "")
+    if row.get("overlap"):
+        return f"{row.get('name')} ({parts[0]} and {parts[1]}): {what}{src} - " + OPEN_OVERLAP_WAY_OUT
     # a little past the farthest node, so every one is inside it
     return (f"{row.get('name')} ({parts[0]} and {parts[1]}): {what}{src} - "
             + OPEN_WAY_OUT.format(needed=_mm(need_mm * 1.05 + 1e-6)))
 
 
 def counts(choices: Sequence[Mapping]) -> dict:
-    """How many pairs of each type, and how many the user set."""
+    """How many pairs of each type, and how many the user set (its type, its owner or its reach)."""
     return {**{t: sum(1 for c in choices if c.get("type") == t) for t in TYPES},
-            "edited": sum(1 for c in choices if c.get("source") == "user" or c.get("keep_source") == "user")}
+            "edited": sum(1 for c in choices if c.get("source") == "user" or c.get("keep_source") == "user"
+                          or c.get("reach_mm"))}
 
 
-__all__ = ["BONDED", "CITE_EACH", "CONTACT", "MAX_REACH_MM", "OFF", "OPEN_RULE", "OPEN_WAY_OUT", "OWNER_RULE", "SAME_SIZE",
+__all__ = ["BONDED", "CITE_EACH", "CONTACT", "MAX_REACH_MM", "OFF", "OPEN_OVERLAP_WAY_OUT", "OPEN_RULE", "OPEN_WAY_OUT", "OWNER_RULE", "SAME_SIZE",
            "TYPES", "TYPE_LABELS", "TYPE_RULE", "TYPE_WORDS", "changes_only", "choose", "clean_overrides", "counts",
            "decisions", "default_keep", "default_type", "open_words", "pair_key", "pair_words", "part_no"]
