@@ -1572,6 +1572,14 @@ def _mesh(workspace) -> int:
         if shape.get("fea_inverted"):
             fatal.append(f"{shape['fea_inverted']} inverted element(s) (Jacobian not above zero)")
         tw = (rules.get("through_wall") or {}).get("min")
+        # EVERY CAD FACE ACCOUNTED FOR (engines/fea_review.face_accounting): named in the files, or left out for a
+        # measured reason - a skin of no thickness (MESH-8) or a tiny face merged into its neighbour (MESH-9)
+        try:
+            from meshpipeline.engines.fea_review import face_accounting
+            faces_acc = face_accounting({"deck": deck, "fea_tiny": tiny_out or {}, "fea": {"exports": exports}}, plan)
+        except Exception as exc:  # noqa: BLE001 - the reviewer's facts work it out again from the records
+            print(f"[GMSH-FEA] the faces were not accounted for: {exc}", file=sys.stderr)
+            faces_acc = {}
         (ws / "quality.json").write_text(json.dumps({
             "cells": n_elem, "nodes": n_nodes, "element_order": order,
             "min_sicn": round(min_sicn, 4),
@@ -1589,6 +1597,7 @@ def _mesh(workspace) -> int:
             "bounds": D._final_node_bounds(gmsh),
             "groups": {"free": "free"}, "default_group": "free", "default_group_used": True,
             "deck": deck,
+            **({"fea_faces": faces_acc} if faces_acc else {}),
             # the worst figures, top level, where the production limits read them
             **{k: shape.get(k) for k in ("fea_min_scaled_jacobian", "fea_max_jacobian_ratio",
                                           "fea_max_aspect_ratio", "fea_min_dihedral_deg",

@@ -77,6 +77,21 @@ class Prepared:
     parts: list[dict] = field(default_factory=list)    # {"n", "id", "name", "first", "last"}
     faces: list[FaceSet] = field(default_factory=list)  # Part_k_Face_j, part by part
     joints: list[Joint] = field(default_factory=list)
+    #: MESH-8: each CAD face left out of the mesh as a skin of no thickness, and the face it lies on
+    #: ({"face", "on", "words"}): accounted for in every file's notes, never a missing named face
+    skins: list[dict] = field(default_factory=list)
+
+
+def skin_lines(prep: Prepared, mark: str) -> list[str]:
+    """MESH-8's skins in a file's comment lines (`mark` the format's comment): each face left out and the face it
+    lies on, so a reader counting the named faces against the CAD's knows where the rest went."""
+    if not prep.skins:
+        return []
+    n = len(prep.skins)
+    out = [f"{mark} MESH-8: {n} CAD face{'s' if n != 1 else ''} of no thickness (a skin lying on another face of its "
+           "part, no volume) left out of the mesh - no named set, accounted for:"]
+    out += [f"{mark}   {s.get('words') or (str(s.get('face')) + ' lies on ' + str(s.get('on')))}" for s in prep.skins]
+    return out
 
 
 def _face_set(name: str, elements: np.ndarray, tris: np.ndarray, allowed: np.ndarray,
@@ -208,8 +223,9 @@ def prepare(mesh: SolidMesh, sidecar: dict, *, surface_tag: dict[int, int], volu
         reach = float(pair.get("reach") or 0.0)
         joints.append(Joint(name=f"{word}{jid}", kind=kind, parts=(p, q), sides=(a, b),
                             overlap=bool(pair.get("overlap")), reach=reach if reach > 0 else None))
+    from meshpipeline.cad.fea_assembly import skin_pairs
     return Prepared(node_ids=node_ids, xyz=xyz, elements=elements, element_part=owner, parts=parts,
-                    faces=faces, joints=joints)
+                    faces=faces, joints=joints, skins=skin_pairs(sidecar.get("skins")))
 
 
 # #
@@ -270,6 +286,7 @@ def write_inp(path: Path | str, prep: Prepared, *, units: str = "m", source: str
     if any(j.overlap for j in contacts):
         head.append("** Some contact pairs start overlapping (the CAD parts pass into each other there).")
     head.append("** Every face of every part is a *SURFACE and *NSET named Part_k_Face_j.")
+    head += skin_lines(prep, "**")
     with open(path, "w", encoding="ascii", newline="\n") as fh:
         fh.write("\n".join(head) + "\n*NODE\n")
         fh.writelines(f"{int(i)}, {_coord(x)}, {_coord(y)}, {_coord(z)}\n"
@@ -309,7 +326,9 @@ def write_inp(path: Path | str, prep: Prepared, *, units: str = "m", source: str
             "face_sets": {f.name: i for i, f in enumerate(prep.faces, start=1)},
             "joints": [{"name": j.name, "kind": j.kind, "slave": j.sides[0].name, "master": j.sides[1].name,
                         "overlap": j.overlap, **({"reach": j.reach} if j.reach else {})} for j in prep.joints],
-            "cad_face_names": {}, "face_aliases": {}}
+            "cad_face_names": {}, "face_aliases": {},
+            # MESH-8: the CAD faces left out as skins of no thickness, each with the face it lies on
+            **({"skins_left_out": [dict(s) for s in prep.skins]} if prep.skins else {})}
 
 
 # #
@@ -333,6 +352,7 @@ def write_bdf(path: Path | str, prep: Prepared, *, units: str = "m", source: str
     ]
     for p in prep.parts:
         lines.append(f"$   PSOLID {p['n']} = {p['id']}" + (f" ({p['name']})" if p["name"] else ""))
+    lines += skin_lines(prep, "$")
     lines.append("$ Every face of every part is a SET3 of its grids and a BSURFS of its element faces, both numbered k:")
     for k, f in enumerate(prep.faces, start=1):
         lines.append(f"$   {k:>6} = {f.name}")
@@ -388,7 +408,8 @@ def write_bdf(path: Path | str, prep: Prepared, *, units: str = "m", source: str
             rows.append(f"{'':<8}{'MASTERS':<8}{j.parts[1]:>8d}")
         lines.extend(rows)
     Path(path).write_text("\n".join(lines) + "\n", encoding="ascii", newline="\n")
-    return {"file": Path(path).name, "faces": len(prep.faces), "elements": int(len(prep.elements)),
+    return {"file": Path(path).name, "faces": len(prep.faces), "skins_left_out": len(prep.skins),
+            "elements": int(len(prep.elements)),
             "parts": len(prep.parts), "pairs": len(contacts)}
 
 
@@ -433,6 +454,7 @@ def write_cdb(path: Path | str, prep: Prepared, *, units: str = "m", source: str
         f"! Mesh only: {len(prep.elements)} SOLID{et} elements; part k is material k and the element component",
         "!   PART_K - add MP,EX/PRXY/DENS for each material, the supports, loads and the solution.",
         "! Every face of every part is a node component PART_K_FACE_J.",
+        *skin_lines(prep, "!"),
     ]
     if contacts:
         lines += ["! CONTACT: each pair is TARGE170 (master) and CONTA174 (slave) elements sharing one real",
@@ -501,7 +523,8 @@ def write_cdb(path: Path | str, prep: Prepared, *, units: str = "m", source: str
                 lines.extend(_elem_cmblock(enm, np.arange(rng[0], rng[1] + 1)))
     lines.append("FINISH")
     Path(path).write_text("\n".join(lines) + "\n", encoding="ascii", newline="\n")
-    return {"file": Path(path).name, "faces": len(prep.faces), "elements": int(len(prep.elements)),
+    return {"file": Path(path).name, "faces": len(prep.faces), "skins_left_out": len(prep.skins),
+            "elements": int(len(prep.elements)),
             "parts": len(prep.parts), "pairs": len(contacts), "contact_elements": len(surf)}
 
 
