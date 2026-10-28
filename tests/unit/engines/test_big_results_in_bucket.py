@@ -276,6 +276,29 @@ def test_a_big_surface_is_thinned_face_by_face_keeping_every_outline(tmp_path, m
     assert sum(len(p) for _n, p in back["patches"]) == shown
 
 
+_FOAM_HEAD = ("FoamFile\n{\n    version     2.0;\n    format      ascii;\n    class       labelList;\n"
+              "    note        \"nCells:9\";\n    object      neighbour;\n}\n\n")
+
+
+def test_a_label_list_is_read_in_pieces_and_checked_against_its_count(tmp_path, monkeypatch):
+    import numpy as np
+
+    from meshpipeline.engines import foam_labels as FL
+    labels = list(range(1, 5000))
+    p = tmp_path / "neighbour"
+    p.write_text(_FOAM_HEAD + f"{len(labels)}\n(\n" + "\n".join(map(str, labels)) + "\n)\n")
+    monkeypatch.setattr(FL, "PIECE_BYTES", 97)       # many pieces, each cut at a line end
+    got = FL.read_foam_labels(p)
+    assert got is not None and np.array_equal(got, np.asarray(labels))
+    # a list that is not what it says it is is never used: short, or with a negative label
+    p.write_text(_FOAM_HEAD + "5\n(\n1\n2\n3\n)\n")
+    assert FL.read_foam_labels(p) is None
+    p.write_text(_FOAM_HEAD + "3\n(\n1\n-1\n3\n)\n")
+    assert FL.read_foam_labels(p) is None
+    p.write_text(_FOAM_HEAD.replace("ascii", "binary") + "3\n(\n1\n2\n3\n)\n")
+    assert FL.read_foam_labels(p) is None
+
+
 def test_the_kept_pass_shares_its_mesh_files_and_copies_its_records(tmp_path):
     from meshpipeline.engines import fea_driver as FD
     ws = tmp_path
