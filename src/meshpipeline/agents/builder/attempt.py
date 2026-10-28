@@ -27,6 +27,7 @@ CARRY_FILES = (
     "attempt_log.txt", "input.stl", "geom.stl", "geom.fms",
     "geom_box.json",
     "geometry.step",      # the staged CAD solid (engines that mesh the BRep directly)
+    "geometry.brep",      # the same solid in gmsh's own B-rep file (the FEA path reads it first)
     "cad_face_names.json",  # the names the CAD gave single faces (cad/face_names.py)
     # vmtk: the engine-opened lumen and its staging facts (engines/vmtk/lumen_staging.py)
     "lumen_open.vtp", "lumen.vtp", "vmtk_staging.json",
@@ -140,6 +141,11 @@ class BuilderAttempt:
 
 
 def _context_files(workspace: Path, state, source_path: str) -> tuple[str, str]:
+    # THE RESOLUTION LADDER'S RUNG for this attempt (engines/resolution_policy, LAD-cfd-1): a
+    # neutral workspace fact the engines' sizing reads, written (or cleared at rung 0) on every
+    # attempt so a carried-forward file never speaks for another attempt
+    from meshpipeline.engines.resolution_policy import write_fact
+    write_fact(workspace, state)
     return _write_workspace_context_files(
         workspace=workspace,
         source_path=source_path,
@@ -154,11 +160,13 @@ def _context_files(workspace: Path, state, source_path: str) -> tuple[str, str]:
                    "reference_length_m": state.get("reference_length_m"),
                    "flow_axis": state.get("flow_axis")},
         input_kind=str(state.get("input_kind") or ""),
+        user_notes=list(state.get("user_notes") or []),
+        leak_closing=state.get("leak_closing") or None,
     )
 
 
 def _opening(workspace: Path, state, *, engine: str, source_path: str) -> list:
-    return _build_initial_messages(
+    messages = _build_initial_messages(
         source_path=source_path,
         workspace=workspace,
         domain=state.get("domain", ""),
@@ -168,6 +176,22 @@ def _opening(workspace: Path, state, *, engine: str, source_path: str) -> list:
         engine_params=state.get("engine_params", {}) or {},
         purpose=state.get("purpose", "") or "",
     )
+    note = user_notes_note(workspace, state)
+    if note:
+        _append_to_opening(messages, note)
+    return messages
+
+
+def user_notes_note(workspace: Path, state) -> str:
+    """THE USER'S OWN NOTES for the model-led builder (contracts/user_notes, NOTE-2): where the full
+    text is, the notes themselves, and that submit_mesh answers each requirement. '' with none."""
+    from meshpipeline.contracts import user_notes as un
+    block = un.prompt_block(state.get("user_notes") or [], consumer="builder_model")
+    if not block:
+        return ""
+    return (f"\n\n## The user's own notes - in {workspace}/{un.NOTES_FILE}; READ THEM TOO\n"
+            + block + "\nWhen you call submit_mesh you may say in `notes_remark`, in one plain "
+            "line, what you did with them.")
 
 
 def _append_to_opening(messages: list, note: str) -> None:
@@ -293,6 +317,64 @@ def _record_staging_failure(workspace: Path, engine: str, exc: BaseException, *,
                "deterministic": not ours, "ours": ours, "before_meshing": True}).write(workspace)
 
 
+#: Why the builder stopped WITHOUT building, as the carried verdict's facts say it (`builder_stopped`).
+STOPPED_TIME_SPENT = "time_spent"
+STOPPED_NO_PROGRESS = "no_progress"
+
+
+def stop_without_building(workspace: Path, state, *, stopped: str) -> dict:
+    """The fields the builder's patch carries when it stops WITHOUT building (`stopped`). The run
+    ends on what the last attempt ended on - never on this attempt's empty workspace, which the
+    executor would report as "the mesher stopped before it finished writing the mesh" when no
+    mesher ran at all.
+
+    * the last attempt's mesh passed its checks: the run ends on that mesh and its review (its
+      attempt count and workspace), exactly as a review-repeat stop does;
+    * otherwise its verdict becomes this attempt's refusal (carry_last_verdict), and the attempt
+      counter is spent, so the run goes to the executor once more and ends there."""
+    if state.get("executor_success"):
+        return {"retry_count": int(state.get("retry_count", 0) or 0),
+                "workspace": str(state.get("openfoam_workspace") or ""),
+                "stop": f"builder_{stopped}"}
+    carry_last_verdict(workspace, state, stopped=stopped)
+    return {"retry_count": bcfg.MAX_BUILDER_RETRIES + 1}
+
+
+def carry_last_verdict(workspace: Path, state, *, stopped: str) -> bool:
+    """THE BUILDER STOPS WITHOUT BUILDING - the run's time is spent, or the last two attempts failed
+    the same way - and the run ends on what the LAST attempt actually ended on. That verdict is
+    written into this attempt's workspace as its refusal, so the executor reports it instead of an
+    empty workspace's "the mesher stopped before it finished writing the mesh" (dev-areen 25 Oct:
+    ox_cryo_ll's FEA guard stopped the mesher, the run's time ran out, and the user read
+    engine_crashed - no mesher had crashed). `stopped` is said beside it.
+
+    With no failed verdict to carry (the first attempt, or the last one built a mesh), the stop
+    itself is recorded: the run's time was spent before a mesher started - ours, not the file's.
+    Returns whether a previous attempt's verdict was carried."""
+    from meshpipeline.contracts.failure_cause import SEAM_CAUSES, FailureCause
+    from meshpipeline.engines.preflight import PreflightRefusal
+    gate = str(state.get("executor_failed_gate") or "")
+    cause = str(state.get("executor_failure_cause") or "")
+    if gate and not cause and gate in SEAM_CAUSES:
+        cause = SEAM_CAUSES[gate].value
+    if gate and cause and not state.get("executor_success"):
+        facts = {**dict(state.get("executor_failure_facts") or {}), "builder_stopped": stopped,
+                 "carried_from_attempt": int(state.get("retry_count", 0) or 0)}
+        PreflightRefusal(gate=gate, cause=cause,
+                         builder_text=str(state.get("executor_output") or f"[{gate}] {cause}"),
+                         facts=facts).write(workspace)
+        return True
+    from meshpipeline.engines.registry import engine_label
+    engine = str(state.get("engine") or "")
+    PreflightRefusal(
+        gate="builder_budget", cause=FailureCause.RUN_INFRASTRUCTURE.value,
+        builder_text="[BUILDER_STOPPED] the run's time was spent before a mesher started",
+        facts={"engine": engine_label(engine) if engine else "", "builder_stopped": stopped,
+               "time_spent_before_meshing": True, "ours": True,
+               "before_meshing": True}).write(workspace)
+    return False
+
+
 def staging_failure(workspace: Path):
     """The staging refusal this attempt recorded, or None."""
     from meshpipeline.engines.preflight import read_refusal
@@ -360,6 +442,9 @@ def prepare(state, *, job_id: str, mode: str) -> BuilderAttempt:
     if mode in ("initial", "rebuild"):
         if source_path and Path(source_path).exists():
             _stage_surface(geometry, workspace, engine)
+            # the leak size the user confirmed (INS-8), beside the surface before any staging reads it
+            from meshpipeline.agents.builder.workspace import write_leak_closing
+            write_leak_closing(workspace, state.get("leak_closing") or None)
             _stage_declared(workspace, geometry, state, engine)
         messages = _opening(workspace, state, engine=engine, source_path=source_path)
         if mode == "rebuild":
@@ -395,5 +480,6 @@ def prepare(state, *, job_id: str, mode: str) -> BuilderAttempt:
         system_snapshot=messages[0]["content"] if messages else "")
 
 
-__all__ = ["CARRY_FILES", "BuilderAttempt", "advisory_block", "flag_responses",
-           "human_rebuild_requirements", "prepare"]
+__all__ = ["CARRY_FILES", "STOPPED_NO_PROGRESS", "STOPPED_TIME_SPENT", "BuilderAttempt",
+           "advisory_block", "carry_last_verdict", "flag_responses", "human_rebuild_requirements",
+           "prepare", "stop_without_building"]

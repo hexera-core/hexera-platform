@@ -110,6 +110,10 @@ def resolve_engine_params(engine: str, given: dict | None) -> dict:
             # only a programmatic/direct dispatch reaches here with a bad value.
             logger.warning("resolve_engine_params: %s param %r=%r not in %s - using default %r",
                            spec.name, p.key, v, list(p.values), p.default)
+        if not p.required and not p.default and v not in p.values:
+            # an OPTIONAL choice with no default (gap_sizing's narrow_gaps) is there only when
+            # the user made it: nothing is filled in on their behalf
+            continue
         out[p.key] = v if v in p.values else p.default
     return out
 

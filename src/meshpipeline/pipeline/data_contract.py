@@ -72,6 +72,17 @@ CONTRACT: tuple[ContractVar, ...] = (
         corpus="training: the prompt side of every agent trajectory",
     ),
     ContractVar(
+        concept="user notes (verbatim)",
+        purpose="the user's OWN words for anything specific about the simulation - the answer to "
+                "the intake's one notes question, the messages it quoted as requirements and the "
+                "console's notes box - kept exactly as typed, never a model's rewrite "
+                "(contracts/user_notes, NOTE-1). Every route's AI steps read them and every "
+                "requirement in them ends applied, met, recorded or not applied on the result",
+        intake_field="user_notes", session_column="user_notes",
+        dispatch_kwarg="user_notes", state_field="user_notes",
+        corpus="training+qa: what the user actually asked for, and what became of each request",
+    ),
+    ContractVar(
         concept="acceptance criteria",
         purpose="intake's qualitative brief the reviewer judges against",
         intake_field="review_brief_txt", session_column="review_brief_txt",
@@ -452,8 +463,14 @@ STATE_FIELDS: dict[str, str] = {
     "geometry_unsuitable_reason": "node_geometry_admission's reject reason: the input surface is "
                                   "unmeshable for the engine (e.g. self-intersecting) - routes to "
                                   "the executor short-circuit and the outcome turn",
+    "fea_connection":        "how an FEA assembly's parts are joined - bonded or contact - as the user "
+                             "confirmed it on the stage (stored confirmation); '' for anything else",
+    "fea_gap_joins":         "whether an FEA assembly's parts that face each other across a small gap are "
+                             "joined there (PLAN-fea-18), as confirmed on the stage; True unless switched off",
     "flow_topology":         "internal/external flow regime DERIVED from the purpose - a neutral "
                              "fact read by the executor/runners, NOT an engine-native param",
+    "leak_closing":          "the leak size the user confirmed on the stage (INS-8): every leak of the "
+                             "surface up to it is closed for the mesh by each route's staging; None = as drawn",
     "requested_extents":     "typed per-direction far-field multiples the user stated (contract)",
     "reference_length_m":    "the metre ruler the extents multiply, pinned at approval (contract)",
     "requirements_strict":   "whether near-misses block (true) or deliver with the miss stated",
@@ -461,6 +478,10 @@ STATE_FIELDS: dict[str, str] = {
                              "measurement (contract)",
     "requirement_caveats":   "machine-measured requirement near-misses for the current attempt "
                              "(executor-owned; the delivery surfaces state them verbatim)",
+    "resolution_ladder":     "the resolution ladder's rung for the current attempt, its engine and the "
+                             "measured shortfall it answers (engines/resolution_policy, LAD-cfd-1/2)",
+    "sound_attempts":        "every sound mesh the run built (attempt, workspace, engine, parameters, "
+                             "notes); a later broken attempt never throws one away (LAD-cfd-3)",
     "executor_output":       "executor stdout/diagnostics for the classifier and reviewer",
     "executor_success":      "ground-truth mesh gate: did the executor validate a mesh",
     "mesh_manifest":         "the engine's manifest of the built mesh (reviewer navigation, quality)",
@@ -486,6 +507,7 @@ STATE_FIELDS: dict[str, str] = {
     "review_rerun_count":    "reviews of the same validated mesh started again after one ended without a verdict (node_review_retry); not a mesh attempt - reset to 0 by every builder attempt, because it counts reviews of ONE mesh",
     "request_txt":           "user requirements (see contract)",
     "review_brief_txt":      "acceptance criteria (see contract)",
+    "user_notes":            "the user's own notes, verbatim (see contract)",
     "intake_patches":        "patch contract (see contract)",
     "dimensionality":        "dimensionality (see contract)",
     "purpose":               "purpose / use case (see contract)",

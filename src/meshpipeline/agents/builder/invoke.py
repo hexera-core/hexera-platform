@@ -99,7 +99,7 @@ async def _run_shared_loop(attempt: BuilderAttempt, state, *, job_id: str,
                            timeout_s: int) -> tuple[str, list]:
     from meshpipeline.agents.builder.loop import _run_tool_loop
 
-    return await asyncio.wait_for(
+    return await _wait_on_model_time(
         _run_tool_loop(
             attempt.messages, attempt.workspace,
             job_id=job_id,
@@ -124,21 +124,55 @@ async def _run_shared_loop(attempt: BuilderAttempt, state, *, job_id: str,
             user_dispute=state.get("user_dispute") or None,
             # Where a BROKEN mesh moves this run, so run_mesh does not re-run this engine on it
             broken_mesh_moves_to=_broken_mesh_moves_to(state),
+            # The user's own notes (contracts/user_notes): submit_mesh may then carry one plain
+            # line on what the build did with them. Passed only when there are some.
+            **({"user_notes": list(state["user_notes"])} if state.get("user_notes") else {}),
         ),
         timeout=timeout_s,
     )
 
 
+async def _wait_on_model_time(work, *, timeout: float, poll_s: float = 5.0):
+    """The loop's outer guard on MODEL time (agents/loop/budget.wait_on_model_time)."""
+    from meshpipeline.agents.loop.budget import wait_on_model_time
+    return await wait_on_model_time(work, timeout=timeout, poll_s=poll_s)
+
+
+def _driver_for(spec, state):
+    """The engine's deterministic driver for this run (EngineSpec.build_driver_for), or None."""
+    if getattr(type(spec), "build_driver_for", None) is None:
+        return getattr(spec, "build_driver", None)       # a declaration without per-run drivers
+    return spec.build_driver_for(state)
+
+
+def takes_driver(attempt: BuilderAttempt, state) -> bool:
+    """Whether this attempt runs the engine's deterministic driver (and so is held to the pipeline's
+    time, not the model loop's budget). An engine that cannot be resolved answers False - the model
+    loop's rules, as before."""
+    try:
+        return _driver_for(get_spec(attempt.engine), state) is not None
+    except Exception:  # noqa: BLE001 - a question about the budget never stops an attempt
+        return False
+
+
 async def run_attempt(attempt: BuilderAttempt, state, *, job_id: str,
                       publish: ExecutionEventPublisher,
-                      timeout_s: int) -> TurnOutcome:
+                      timeout_s: int, driver_timeout_s: int | None = None) -> TurnOutcome:
     from meshpipeline.application import execution_fence as fence
 
     try:
-        driver = get_spec(attempt.engine).build_driver
+        # the engine's deterministic driver FOR THIS RUN (gmsh: the FEA driver for a 3D structural
+        # solid, and the model-led loop for everything else)
+        driver = _driver_for(get_spec(attempt.engine), state)
         if driver is not None:
+            logger.info("Builder: %s's deterministic driver (%s.%s) takes this attempt - no model loop "
+                        "- job_id=%s", attempt.engine, getattr(driver, "__module__", "?"),
+                        getattr(driver, "__name__", "?"), job_id)
+            # A DETERMINISTIC DRIVER plans its own work and guards each pass by it (the FEA driver,
+            # PLAN-fea-13): it may use what the builder has left, not the model loop's per-turn slice
             spec_authored, final_text, stop = await _run_engine_driver(
-                driver, attempt, state, job_id=job_id, publish=publish, timeout_s=timeout_s)
+                driver, attempt, state, job_id=job_id, publish=publish,
+                timeout_s=int(driver_timeout_s) if driver_timeout_s else timeout_s)
             return TurnOutcome(spec_authored=spec_authored, final_text=final_text,
                                driver_stop=stop)
         final_text, messages_out = await _run_shared_loop(

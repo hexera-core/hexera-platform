@@ -88,9 +88,48 @@ def test_a_misaligned_field_is_blanked_for_that_patch_not_shipped_wrong(tmp_path
     assert not np.isnan(np.asarray(mesh.cell_data["non_ortho"])).any()
 
 
-def test_a_surface_with_no_polymesh_patches_is_refused():
+def test_a_surface_with_no_mesh_patches_is_refused():
+    with pytest.raises(ValueError):          # one float is no triangle
+        VX.surface_to_vtk({"kind": "stl", "patches": [{"name": "wall", "positions_b64": "AAAAAA=="}]})
     with pytest.raises(ValueError):
-        VX.surface_to_vtk({"kind": "stl", "patches": [{"name": "wall", "positions_b64": "AA=="}]})
+        VX.surface_to_vtk({"kind": "stl", "patches": []})
+
+
+def _tet_surface() -> dict:
+    """A delivered tetrahedral surface as VMTK and Gmsh hand it to the viewer (kind=stl): two
+    triangles on the wall, one on the inlet, three corners each, little-endian floats."""
+    from meshpipeline.render.viewer_pack import stl_response
+
+    def tri(*v):
+        return [tuple(map(float, c)) for c in v]
+    patches = {"wall": [tri((0, 0, 0), (1, 0, 0), (0, 1, 0)), tri((1, 0, 0), (1, 1, 0), (0, 1, 0))],
+               "inlet": [tri((0, 0, 0), (0, 1, 0), (0, 0, 1))]}
+    surf = stl_response(patches, ROLES, "m")
+    surf["is_mesh"] = True
+
+    def b64(a):
+        return base64.b64encode(np.asarray(a, np.float32).tobytes()).decode("ascii")
+    surf["quality_fields"] = {"metrics": {"non_ortho": {"limit": 70.0}},
+                              "patches": {"wall": {"non_ortho_b64": b64([10.0, 20.0])},
+                                          "inlet": {"non_ortho_b64": b64([30.0])}}}
+    return surf
+
+
+def test_a_delivered_tetrahedral_surface_exports_one_triangle_per_drawn_triangle(tmp_path):
+    pv = pytest.importorskip("pyvista")
+    surf = _tet_surface()
+    data = VX.surface_to_vtk(surf)
+    assert b"POLYGONS 3 12\n" in data and b"SCALARS non_ortho float 1" in data
+    path = tmp_path / "tet.vtk"
+    path.write_bytes(data)
+    mesh = pv.read(str(path))
+    assert mesh.n_cells == 3 and mesh.n_points == 9
+    pid = np.asarray(mesh.cell_data["patch_id"])
+    no = np.asarray(mesh.cell_data["non_ortho"])
+    names = [p["name"] for p in surf["patches"]]
+    np.testing.assert_allclose(no[pid == names.index("wall")], [10.0, 20.0])
+    np.testing.assert_allclose(no[pid == names.index("inlet")], [30.0])
+    np.testing.assert_allclose(mesh.points[:3], [[0, 0, 0], [1, 0, 0], [0, 1, 0]])
 
 
 def test_export_stays_free_of_engine_knowledge():

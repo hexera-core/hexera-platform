@@ -13,12 +13,15 @@ from pathlib import Path
 import meshpipeline.settings.runtime as rtcfg
 from meshpipeline.contracts.intake_formats import is_cad
 from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
+from meshpipeline.contracts.native_time import STALL_WINDOW_S
 from meshpipeline.engines.base import RunPolicy
 from meshpipeline.engines.determinism import note_guard_trip
 from meshpipeline.sandbox.safe_exec import (
     NativeOutcome,
+    StoppedByWatch,
     describe_native_result,
     run_guarded,
+    why_it_stopped,
 )
 
 logger = logging.getLogger(__name__)
@@ -393,6 +396,10 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
 
 # configure (write the spec)
 
+#: The finest edge factor a ladder rung may ask for (pack.py's documented range starts here).
+EDGE_LENGTH_FACTOR_MIN = 0.05
+
+
 def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
                    geometry_file: str = "input.stl", **_ignored) -> dict:
     ws = Path(workspace)
@@ -430,8 +437,28 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
                           "geometry: give source_points+target_points (coordinates on the "
                           "inlet and outlet ends) or source_ids+target_ids (open-profile ids "
                           "from geometry_report). Interactive seeding cannot run headless.")}
-    s = size_to_budget(s)
+    # THE RESOLUTION LADDER'S RUNG (engines/resolution_policy, LAD-cfd-1): a retry after a sound
+    # fill short of the floor puts `factor` times the cells across every passage - the edge factor
+    # is the local radius' share, so the fill stays local to each passage's own width (PLAN-cfd-1)
+    from meshpipeline.engines.resolution_policy import factor_of
+    _f = factor_of(ws)
+    _rung_floor = None
+    if _f > 1.0:
+        s = {**s, "edge_length_factor": round(max(EDGE_LENGTH_FACTOR_MIN,
+                                                  float(s["edge_length_factor"]) / _f), 4)}
+        # the budget fit may coarsen the edge back only as far as the RUNG's cells across, never
+        # to the plain floor: that would undo the rung and mesh the case already run
+        _rung_floor = float(_floor_cells()) * _f
+    s = size_to_budget(s, min_cells_across=_rung_floor)
     plan = s.get("budget_plan") or {}
+    if plan.get("within") == "over" and _rung_floor is not None:
+        # THE RUNG DOES NOT FIT one job: not started. The run keeps the sound mesh it already has
+        # and delivers it with its note (LAD-cfd-3)
+        return {"code": "vmtk_rung_over_compute_limit", "predicted_cells": plan.get("predicted"),
+                "error": (f"the finer fill this retry asked for ({_rung_floor:.0f} cells across "
+                          f"the passages) would need about {int(plan.get('predicted') or 0):,} "
+                          f"cells, over the {int(plan.get('hard_limit') or 0):,}-cell limit of one "
+                          "job; the earlier sound mesh stands")}
     if plan.get("within") == "over":
         # NOT STARTED: even at the passage floor, with the interior as coarse as it may go and
         # no layers, the fill is predicted over the compute limit - a run would burn its hour
@@ -460,7 +487,8 @@ def _floor_cells() -> int:
     return int(PASSAGE_MIN_CELLS_ACROSS)
 
 
-def size_to_budget(s: dict, *, wall_triangles: float | None = None) -> dict:
+def size_to_budget(s: dict, *, wall_triangles: float | None = None,
+                   min_cells_across: float | None = None) -> dict:
     """The strategy fitted to its cell budget (budget.fit) when the staged lumen carries a cost
     model: the strategy's max_cells, never above the compute limit. Without a model the strategy
     stands (an unstaged .vtp, or a staging that could not measure it)."""
@@ -486,7 +514,7 @@ def size_to_budget(s: dict, *, wall_triangles: float | None = None) -> dict:
     except (TypeError, ValueError):
         requested = int(polcfg.CELL_HARD_LIMIT)
     fitted, plan = fit(base, model, requested=requested, hard_limit=int(polcfg.CELL_HARD_LIMIT),
-                       min_cells_across=float(PASSAGE_MIN_CELLS_ACROSS),
+                       min_cells_across=float(min_cells_across or PASSAGE_MIN_CELLS_ACROSS),
                        wall_triangles=wall_triangles,
                        allow_edge_change=wall_triangles is None)
     plan["asked"] = asked
@@ -562,10 +590,37 @@ def run_cartesian_mesh(workspace, *, timeout: int, context=None) -> dict:
     # tool handed a path that does not exist (the dispatch-contract test does) still dispatches
     # through the contract, which then reports the missing case itself.
     if ws.is_dir():
+        _note_way_on(ws, str(getattr(context, "broken_mesh_moves_to", "") or ""))
         members = _native_payload_members(ws)
         note_native_pass(ws, _pass_for_payload(ws, members, read_native_pass))
         note_native_payload(ws, members)
     return run_mesh(ws, engine="vmtk", timeout=timeout)
+
+
+#: THE SPEC KEY saying a layered fill whose layers will not untangle gives way to the NEXT ENGINE
+#: (the run moves on, pipeline/engine_fallback) rather than to this engine's layer-free fill: the
+#: plan asks for wall layers, and a later engine is left to build them. Absent: the layer-free fill.
+LAYERS_MOVE_ON = "layers_move_on_to"
+
+
+def _note_way_on(ws: Path, next_engine: str) -> None:
+    """Write into the spec the run ships which way a non-untangling layer goes: to `next_engine`
+    (the engine this run moves to, builder context broken_mesh_moves_to) when the plan asks for
+    wall layers and there is one; else nothing - the ladder's layer-free fill, as before. The spec is
+    rewritten only when that changes, so a run that never meets the brake ships what it always did."""
+    p = ws / "vmtk_spec.json"
+    try:
+        spec = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return
+    want = next_engine if (next_engine and int(spec.get("boundary_layers") or 0) > 0) else ""
+    if str(spec.get(LAYERS_MOVE_ON) or "") == want:
+        return
+    if want:
+        spec[LAYERS_MOVE_ON] = want
+    else:
+        spec.pop(LAYERS_MOVE_ON, None)
+    p.write_text(json.dumps(spec, indent=2))
 
 
 _RUN_IDENTITY_LEDGER = "vmtk_run_identity.json"   # {digest of the payload, its pass number}
@@ -852,6 +907,8 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
                             "not started"}
     strategy = json.loads(spec_path.read_text())
     ladder = repair_ladder(strategy)
+    # read before the budget's refit, which keeps only the generator's own keys
+    move_on = str(strategy.get(LAYERS_MOVE_ON) or "")
     notes: list[str] = []
     result: dict = {}
     staged = bool(resolve_strategy(strategy).get("sizing_array"))
@@ -895,14 +952,52 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
             argv = _winding_kept(ws, argv)
         if i:
             (ws / _MESH).unlink(missing_ok=True)
-        # EVERY STEP GETS WHAT IS LEFT OF THE RUN'S GUARD. A layered step used to get only a 60%
-        # share of the clock while a layer-free step waited behind it, so whether a run kept its
-        # layers depended on how fast the machine was (the Fluent aorta, 328k wall triangles, ran
-        # out its share). A step that does not finish inside the guard is now a guard trip; a
-        # wall too big to layer in one run is for the plan to see in its cells (D6), not a clock.
+        layered = staged and int(strat.get("boundary_layers") or 0) > 0
+        bare_after = next((j for j in range(i + 1, len(ladder))
+                           if int(ladder[j].get("boundary_layers") or 0) <= 0), None)
+        # NO SHARE OF THE CLOCK (contracts/native_time): a layered step runs for as long as it is
+        # working. It used to get 60% of a 3,000 s budget while a layer-free step waited, and on the
+        # Fluent aorta (322k wall triangles, 4 sublayers) both were cut and the run moved to snappy.
+        # Now only a step that is STUCK (no sign of life for the stall window) gives way, or the
+        # machine's wall, which sends the whole run to a VM (RUN-5).
         step_budget = left()
-        result = _run_pype(ws, argv, timeout=step_budget)
+        result = _run_pype(ws, argv, timeout=step_budget,
+                           at_untangle=bool(move_on and layered))
         nxt: int | None = i + 1 if i + 1 < len(ladder) else None
+        if result.get("out_of_memory"):
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): stopped before the machine "
+                         "ran out of memory")
+            break
+        if result.get("timed_out") and not result.get("stalled"):
+            # STILL WORKING AT THE MACHINE'S WALL: no other step is started here - the same case
+            # runs again on a machine with no such wall (run_off_the_wall), or, already on one, the
+            # run ends there
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): still working at the "
+                         f"machine's limit ({int(timeout)} s)")
+            break
+        if layered and result.get("untangle_stopped") and move_on:
+            # THE PLAN ASKS FOR WALL LAYERS and another engine is left to build them: a layer-free
+            # fill here would deliver a mesh without them, hours later (the Fluent aorta: 2.4 h,
+            # no layers, where snappy then built 99% layers in 1.2 h) - the run moves on instead
+            tripped = dict(result["untangle_stopped"] or {})
+            n = int(tripped.get("retangled") or 0)
+            words = (f"VMTK layer needed untangling - {UNTANGLE_RECORD} - next engine ({move_on})"
+                     if tripped.get("untangling") else
+                     f"VMTK layers kept re-tangling ({n} rounds) - next engine ({move_on})")
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): {words}")
+            logger.warning("vmtk: %s", words)
+            result["layers_not_converging"] = {"retangled": n, "next_engine": move_on, "words": words}
+            break
+        if layered and bare_after is not None and result.get("untangle_stopped"):
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): "
+                         f"{result['untangle_stopped'].get('reason')} - next: "
+                         f"{_step_label(ladder[bare_after])}")
+            i = bare_after
+            continue
+        # A STEP STOPPED AS STUCK (no sign of life for the stall window) is a guard trip
+        # (TIME-3): the run stops here and the attempt is replayed as it was - never the
+        # layer-free fill because a clock ran out (TIME-1). Size, not time, still moves the
+        # ladder: the untangle brake above.
         if _guard_tripped(result, f"ladder step {i + 1} ({_step_label(strat)})", step_budget,
                           notes):
             break
@@ -1072,9 +1167,70 @@ def _write_gmsh_volume(grid, names: dict[int, str], path: Path) -> dict:
             "patches": {int(k): v for k, v in names.items()}}
 
 
-def _run_pype(ws: Path, argv: list[str], *, timeout: int) -> dict:
+#: THE UNTANGLE BRAKE. vmtk's boundary layer generator (vtkvmtkBoundaryLayerGenerator, VMTK 1.5)
+#: untangles a tangled layer in rounds; when a round leaves it untangled it runs its final warp
+#: ("try last : ") and checks again - and if that warp tangles the layer AGAIN, the rounds go on, up
+#: to NumberOfSubsteps / 10 = 200 of them, each final warp the full 1,780 substeps. A layer that
+#: tangles again after its final warp is not converging: on the Fluent aorta (322k wall triangles,
+#: 4 sublayers) every final warp tangled it again - 4 in 2.5 hours, burning a core the whole time,
+#: so no stall watch could ever end it, and the run would reach even a VM's 20-hour wall. VMTK's own
+#: later versions stop such rounds when they stop improving (MaximumUntangleRoundsWithoutImprovement).
+#: So the layered fill is stopped when its own output shows the final warp tangled the layer again
+#: this many times, and the ladder moves on to the layer-free fill - deterministic, the mesher's own
+#: count, no clock. A layer that converges prints one "try last".
+UNTANGLE_RETANGLES = 1
+#: ...and when the run MOVES ON (the plan asks for layers and another engine is left, LAYERS_MOVE_ON)
+#: the layered fill is stopped as soon as the layer needs untangling at all ("untangle procedure.."):
+#: nothing waits for VMTK to recover, and by the record nothing would come of it - of 706 VMTK passes
+#: whose log shows the layer stage, none ever entered the untangle rounds, and every run that did
+#: failed (lab and e2e results, 26 Oct). The rounds start about 3,250 s into the aorta's fill and run
+#: about 18 minutes each, so the run moves on at about the time main's old 3,000 s clock did.
+UNTANGLE_RECORD = "no passing layered VMTK run ever did (0 of 706)"
+_UNTANGLE_STARTS = "untangle procedure"
+_UNTANGLE_FINAL_WARP = "try last"
+
+
+class UntangleBrake:
+    """The run's watch (sandbox/safe_exec.run_guarded `watch`): a reason to stop once the layer
+    generator's output shows its final warp tangled the layer again more than `limit` times - or,
+    `at_untangle` (the run moves on), as soon as the layer needs untangling at all; None until then."""
+
+    def __init__(self, limit: int = UNTANGLE_RETANGLES, *, at_untangle: bool = False) -> None:
+        self.limit, self.at_untangle = int(limit), bool(at_untangle)
+        self.path: Path | None = None
+        self.tripped: dict | None = None
+
+    def follow(self, path) -> None:
+        self.path = Path(path)
+
+    def __call__(self) -> str | None:
+        if self.path is None:
+            return None
+        try:
+            raw = self.path.read_bytes()
+        except OSError:
+            return None
+        final_warps = raw.count(_UNTANGLE_FINAL_WARP.encode())
+        if self.at_untangle and _UNTANGLE_STARTS.encode() in raw:
+            self.tripped = {"untangling": True, "final_warps": final_warps, "retangled": max(0, final_warps - 1)}
+            return f"the boundary layer needed untangling - {UNTANGLE_RECORD}"
+        retangled = final_warps - 1
+        if retangled <= self.limit:
+            return None
+        self.tripped = {"final_warps": final_warps, "retangled": retangled}
+        return (f"the boundary layer is not untangling: its final warp tangled it again "
+                f"{retangled} times")
+
+
+def _run_pype(ws: Path, argv: list[str], *, timeout: int, retangles: int = UNTANGLE_RETANGLES,
+              at_untangle: bool = False) -> dict:
+    """One pype, WATCHED (contracts/native_time): stopped only after STALL_WINDOW_S with no sign of
+    life - no output, no CPU, no memory change - (`stalled`), at `timeout`, the machine's wall, or by
+    the untangle brake (`untangle_stopped`: a layer that is not untangling, UntangleBrake)."""
+    brake = UntangleBrake(retangles, at_untangle=at_untangle)
     try:
-        proc = run_guarded(argv, cwd=str(ws), capture_output=True, text=True, timeout=timeout)
+        proc = run_guarded(argv, cwd=str(ws), capture_output=True, text=True, timeout=timeout,
+                           stall_s=STALL_WINDOW_S, watch=brake)
         tail = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-2000:]
         # Signal interpretation is the SHARED seam's, not this bundle's. It lived here first,
         # which meant vmtk explained a SIGSEGV while the other four engines returned a bare
@@ -1085,12 +1241,22 @@ def _run_pype(ws: Path, argv: list[str], *, timeout: int) -> dict:
         return {"rc": 127, "timed_out": False,
                 "log_tail": (f"vmtk binary {rtcfg.VMTK_BIN!r} not found - the container's vmtk "
                              "conda env is not installed or not on PATH")}
+    except StoppedByWatch as exc:
+        # THE UNTANGLE BRAKE: not converging - the ladder's layer-free fill answers it
+        out_text = getattr(exc, "output", None) or ""
+        err_text = getattr(exc, "stderr", None) or ""
+        tail = (str(out_text) + "\n" + str(err_text))[-2000:] + f"\n[vmtk] stopped: {exc.reason}"
+        out = describe_native_result(returncode=-1, args=argv, stage="vmtk pype", output=tail)
+        out["untangle_stopped"] = dict(brake.tripped or {}, reason=exc.reason)
+        return out
     except subprocess.TimeoutExpired as exc:
         def _d(x):
             return x.decode(errors="replace") if isinstance(x, bytes) else (x or "")
         tail = (_d(exc.stdout) + "\n" + _d(exc.stderr))[-2000:]
-        return describe_native_result(returncode=-1, args=argv, stage="vmtk pype",
-                                      output=tail, outcome=NativeOutcome.timed_out)
+        out = describe_native_result(returncode=-1, args=argv, stage="vmtk pype",
+                                     output=tail, outcome=NativeOutcome.timed_out)
+        # STUCK, not slow (the ladder's next step answers it), or OUT OF MEMORY (one machine up)
+        return why_it_stopped(exc, out)
 
 
 # quality read-back
@@ -1268,13 +1434,10 @@ def check_mesh(workspace) -> dict:
     # an under-resolved branch cannot hide behind a well-resolved main run.
     local = _local_cells_across(ws)
     gate = local["p05"] if local else passage_cells_across
-    if gate is not None and gate < PASSAGE_MIN_CELLS_ACROSS:
-        where = (f"{local['p05']:g} cells across at the narrowest wall (5th percentile; "
-                 f"median {local['median']:g})" if local
-                 else f"{passage_cells_across:g} cells across the passage")
-        fatal.append(f"undermeshed: {where} - a CFD mesh needs at least "
-                     f"{PASSAGE_MIN_CELLS_ACROSS} everywhere (industry practice is 20-40); "
-                     "lower edge_length_factor")
+    # an under-resolved fill is SOUND - it is a note for the resolution gate, never one of the
+    # mesh's fatal defects (that read a coarse fill as a broken mesh and moved the run to another
+    # engine at once). Recorded for the gate and the reviewer; gates/_gate_resolution_floor judges.
+    under_resolved = bool(gate is not None and gate < PASSAGE_MIN_CELLS_ACROSS)
     # LAYER COVERAGE is measured here, from the mesh: the share of wall triangles whose three
     # vertices belong to boundary-layer tets. The reviewer REQUIRES this metric for its
     # local_anatomical_fidelity axis (MetricRequirement("layer_coverage")) and nothing had
@@ -1297,6 +1460,7 @@ def check_mesh(workspace) -> dict:
             "layer_coverage_pct": layer_coverage,
             "passage_cells_across": passage_cells_across,
             "passage_cells_across_local": local,
+            "under_resolved": under_resolved,
             "reoriented_tets": n_reoriented,
             "layer_tets": int(layer_mask.sum()) if layer_mask is not None else 0,
             "layer_min_quality": layer_min_quality}

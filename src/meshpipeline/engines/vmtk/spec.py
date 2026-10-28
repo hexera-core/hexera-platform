@@ -248,6 +248,11 @@ SPEC = EngineSpec(
         # a tetrahedral lumen filler: after the hex meshers on the internal ladder
         ladder_rank=30,
         home_turf=HOME_TURF,
+        # THE HOME ENGINE for every tubular passage - long passages and branching ones about as
+        # wide as their openings (engines/fitness.py TUBE, BRANCHED, from the measured traits):
+        # recommended first there unless a turf row above marks the case weak or outside, or
+        # another engine's measured record clearly beats it (fitness ENG-2/ENG-3)
+        home_classes=("tube", "branched"),
         input_contract=InputContract(
             # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
             # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)
@@ -339,14 +344,18 @@ SPEC = EngineSpec(
         delivered_mesh=DeliveredMesh(cells="tetrahedral", walls="body-fitted", prism_layers=True),
         run_policy=RunPolicy(
             required_files=("vmtk_spec.json",),
-            # 50 MINUTES: at industry density (13 cells across, 5 layers) the sweep's largest case
-            # (transition_013, a 1 m flat duct) fills in over 30 min; the Cloud Run job allows 4 h,
-            # but the builder's attempt budget is BUILDER_LOOP_TIMEOUT (3600 s) less its feedback
-            # reserve (420 s), so a run may not ask for more than about 3180 s and still report.
+            # AN ESTIMATE of a long run now (the fallback ladder's "does another engine still fit"):
+            # at industry density (13 cells across, 5 layers) the sweep's largest case
+            # (transition_013, a 1 m flat duct) fills in over 30 min. The run itself is WATCHED
+            # (watched=True, contracts/native_time): every pype is stopped only after the stall
+            # window with no sign of life, or at the machine's wall - it was a fixed 50 minutes,
+            # and the Fluent aorta's fill was cut there and the run moved to snappy.
             run_timeout=lambda: min(3000, rtcfg.OPENFOAM_COMMAND_TIMEOUT * 3),
-            timeout_hint=("Raise edge_length_factor (coarser cells relative to the radius) - but "
-                          "not past 0.16, the 12-cells-across floor a CFD mesh must keep - then "
-                          "run_mesh again."),
+            watched=True,
+            timeout_hint=("A fill that makes no progress for the stall window is stuck, not slow: "
+                          "raise edge_length_factor (coarser cells relative to the radius) - but "
+                          "not past 0.16, the 12-cells-across floor a CFD mesh must keep - or use "
+                          "fewer boundary_layers, then run_mesh again."),
             ok_guidance="Valid tetrahedral mesh (no fatal defects) - call submit_mesh.",
             fail_label="vmtk pipeline failed",
             fail_hint=("Adjust the strategy via configure_mesh (coarser edge_length_factor, fewer "

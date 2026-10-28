@@ -94,15 +94,19 @@ async def node_geometry_admission(state: PipelineState) -> dict:
         # builder's run_mesh gate remains the backstop, so never block on a missing file.
         return {}
 
+    import asyncio
     with tempfile.TemporaryDirectory(prefix="admission-") as td:
         dest = Path(td) / "input.stl"
+        # OFF THE EVENT LOOP: staging tessellates the CAD (minutes on a big assembly) and the
+        # analysis measures the surface - native, CPU-bound work that, on the loop, held the run's
+        # lease beat with it (agents/builder/agent.py, application/lease_keeper)
         try:
-            _prepared = prepare_surface(_geometry, dest, engine=engine)
+            _prepared = await asyncio.to_thread(prepare_surface, _geometry, dest, engine=engine)
         except Exception as exc:  # a staging hiccup is a system issue - defer, never reject
             logger.warning("geometry_admission: could not stage surface for %s (%s) - "
                            "deferring to the builder - job_id=%s", engine, exc, job_id)
             return {}
-        analysis = surface_analysis_for(spec, _prepared)
+        analysis = await asyncio.to_thread(surface_analysis_for, spec, _prepared)
 
     if analysis is None:  # analysis unavailable/failed - defer to the builder, don't blame the user
         return {}

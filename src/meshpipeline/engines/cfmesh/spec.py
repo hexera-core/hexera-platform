@@ -30,6 +30,7 @@ from meshpipeline.engines.base import (
 )
 from meshpipeline.engines.cfmesh._shared import _INSPECTION_TARGETS, _RENDER_ARTIFACTS
 from meshpipeline.engines.cfmesh.builder_guidance import BRIEFING
+from meshpipeline.engines.gap_sizing import NARROW_GAPS_PARAM_SPEC
 
 
 def _prompt() -> str:
@@ -184,8 +185,10 @@ SPEC = EngineSpec(
         ),
         # NO `topology` param: it is redundant with the user's PURPOSE (external_cfd IS
         # external flow), and asking both admits a submission where the two disagree.
-        # Topology is DERIVED from the purpose (engines.purposes.flow_topology).
-        intake_params=(),
+        # Topology is DERIVED from the purpose (engines.purposes.flow_topology). The one optional
+        # choice: fewer cells across the narrowest gaps when the cell limit cannot hold the rule
+        # (engines/gap_sizing).
+        intake_params=(NARROW_GAPS_PARAM_SPEC,),
         # Consumes a body SURFACE and produces a FLUID volume → CFD only, in EITHER
         # region. Both are native to cartesianMesh: per the cfMesh user guide.4) the
         # workflows are "based on the inside-out meshing" and by default "keep only cells
@@ -311,6 +314,7 @@ SPEC = EngineSpec(
             # for draft meshes, where a too-fine dict was meant to fail fast so the builder
             # coarsens - coarsening is now bounded by the floor. Snappy's budget is 2400 s.
             run_timeout=lambda: min(1200, rtcfg.OPENFOAM_COMMAND_TIMEOUT),
+            watched=True,
             # A PLANNED CASE GETS THE TIME ITS PLAN NEEDS: configure_mesh times the external case
             # from the cells it will make (cfmesh_runner.estimate_cells at a cautious fill rate)
             # and records the cap - up to 50 minutes - or makes the wall coarser until it fits.

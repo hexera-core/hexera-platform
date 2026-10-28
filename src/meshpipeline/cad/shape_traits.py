@@ -109,6 +109,14 @@ class ShapeTraits:
     thin_wall_fraction: float | None = None
     thickness_ratio: float | None = None
     gap_share: float | None = None
+    #: THE GAP RULE'S COST (engines/gap_sizing): the cells the leanest mesh needs to put the rule's
+    #: count across every fluid chord at its own size - a dimensionless count, so it needs no unit
+    #: (internal: every passage; external: the gaps between the body's own walls). And the
+    #: narrowest gap measured (5th percentile of the fluid chords): in metres when the unit is
+    #: known, and over the part's size.
+    gap_cells: float | None = None
+    narrowest_gap: float | None = None
+    narrowest_gap_rel: float | None = None
     #: internal flow: how many SEPARATE fluid passages the confirmed openings lie on, by the very
     #: staging the internal meshers use (cad/fluid_passages.passage_count) - the count an engine's
     #: declared capability is held to (FlowSupport.max_passages). None when it was not counted.
@@ -228,10 +236,14 @@ def _components(faces: np.ndarray, n_points: int) -> tuple[int, np.ndarray]:
 # #
 
 def _chords(points: np.ndarray, faces: np.ndarray, normals: np.ndarray, areas: np.ndarray,
-            diag: float, *, seed: int = 7) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """From RAY_SAMPLES area-weighted surface points: the chord into the solid (along -n) and the
-    chord out of it (along +n) to the first wall facing back, NaN where no such wall is met. Also
-    the sample's face area weight (uniform: the samples are already area-weighted) and its point."""
+            diag: float, *, seed: int = 7, samples: int = RAY_SAMPLES, inward: bool = True,
+            body_of_face: np.ndarray | None = None
+            ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """From `samples` (RAY_SAMPLES) area-weighted surface points: the chord into the solid (along
+    -n; skipped unless `inward`) and the chord out of it (along +n) to the first wall facing back,
+    NaN where no such wall is met. With `body_of_face` (a body label per face) an outward chord
+    counts only when the wall it meets is ANOTHER body's - a gap between parts. Also the sample's
+    face area weight (uniform: the samples are already area-weighted) and its point."""
     import pyvista as pv
     import vtk
     rng = np.random.default_rng(seed)
@@ -239,7 +251,7 @@ def _chords(points: np.ndarray, faces: np.ndarray, normals: np.ndarray, areas: n
     if total <= 0:
         empty = np.full(0, np.nan)
         return empty, empty, empty, np.zeros((0, 3))
-    k = min(RAY_SAMPLES, max(64, len(faces)))
+    k = min(int(samples), max(64, len(faces)))
     pick = rng.choice(len(faces), size=k, replace=True, p=areas / total)
     r1, r2 = rng.random(k), rng.random(k)
     flip = r1 + r2 > 1.0
@@ -259,6 +271,8 @@ def _chords(points: np.ndarray, faces: np.ndarray, normals: np.ndarray, areas: n
     t_out = np.full(k, np.nan)
     for i in range(k):
         for sign, out in ((-1.0, t_in), (1.0, t_out)):
+            if sign < 0 and not inward:
+                continue
             d = sign * n[i]
             hits.Reset()
             ids.Reset()
@@ -279,9 +293,68 @@ def _chords(points: np.ndarray, faces: np.ndarray, normals: np.ndarray, areas: n
             facing = float(np.dot(normals[best_cell], d))
             # into the solid the far wall's outward normal runs WITH the ray; out of it the next
             # wall faces back AGAINST it
+            if (sign > 0 and body_of_face is not None
+                    and body_of_face[best_cell] == body_of_face[pick[i]]):
+                continue
             if (sign < 0 and facing >= CHORD_MIN_FACING) or (sign > 0 and facing <= -CHORD_MIN_FACING):
                 out[i] = best
     return t_in, t_out, np.ones(k), pts
+
+
+#: Points the gap field of an external body is read at: about a millisecond a chord, so a few
+#: seconds on any body (the passage measure's own sample, engines/passage_flow.SAMPLE_POINTS).
+GAP_FIELD_SAMPLES = 12_000
+
+
+def body_gap_field(tris, *, samples: int = GAP_FIELD_SAMPLES, seed: int = 7):
+    """(points, half-gap, wall area per point) of the gaps BETWEEN the separate bodies of an
+    external-flow surface (a wheel and its arch, a flap and the wing it trails, a slat), read by the
+    same fluid chords as the traits: out of each body along its normal to another body's wall
+    facing back. The half-gap is inf where no other body faces it - open flow, which the engine
+    sizes itself. A gap within one body (a panel seam, the inside of a bend) is not this rule's: it
+    is the body's own detail. None when the surface has one body or cannot be read."""
+    w = _weld(np.asarray(tris, dtype=float))
+    if w is None:
+        return None
+    _keys, counts, _pairs, _pe = _edges(w.faces, len(w.points))
+    closed = bool((counts == 2).all())
+    n_comp, labels = _components(w.faces, len(w.points))
+    if n_comp < 2:
+        return None
+    faces, normals, areas = _oriented(w, closed)
+    body = labels[faces[:, 0]]
+    _t_in, t_out, _wts, pts = _chords(w.points, faces, normals, areas, w.diag, seed=seed,
+                                      samples=samples, inward=False, body_of_face=body)
+    if not len(pts):
+        return None
+    k = len(pts)
+    half = np.where(np.isfinite(t_out), 0.5 * t_out, np.inf)
+    if not np.isfinite(half).any():
+        return None
+    return pts, half, np.full(k, float(areas.sum()) / k)
+
+
+#: Octree levels a narrow spot may be refined below the wall cell (engines/passage.
+#: narrow_passage_regions' max_level_bump): no engine refines a chord narrower than the typical
+#: one over 2^this, so the estimate does not cost it finer either - and a sliver where two faces
+#: lie on each other (a reading, not a gap) cannot blow the count up.
+GAP_MAX_LEVELS = 4
+
+
+def gap_rule_cells(chords, area_per_sample: float, *, target: float | None = None) -> float | None:
+    """The cells the gap rule costs on a set of fluid chords (each standing for
+    `area_per_sample` of wetted wall): per chord c, its fluid (area x c / 4, a round tube's exactly)
+    at the rule's cell c / target, so area x target^3 / (4 c^2). Chords narrower than the typical
+    one over 2^GAP_MAX_LEVELS are costed at that width. None with too few chords to say."""
+    if target is None:
+        from meshpipeline.engines.gap_sizing import GAP_CELLS_ACROSS
+        target = GAP_CELLS_ACROSS
+    c = np.asarray(chords, dtype=float)
+    c = c[np.isfinite(c) & (c > 0.0)]
+    if len(c) < 10 or area_per_sample <= 0.0:
+        return None
+    c = np.maximum(c, float(np.median(c)) / 2 ** GAP_MAX_LEVELS)
+    return float(area_per_sample * float(target) ** 3 / 4.0 * float(np.sum(1.0 / c ** 2)))
 
 
 def _axis_index(flow_axis: str) -> int:
@@ -397,7 +470,10 @@ def measure(tris, *, flow: str = "", input_kind: str = "", form: str = "",
                       scale_ratio=(w.diag / p05) if p05 > 0 else None, wet_share=wet,
                       slenderness=(area * wet) / (math.pi * p50 * p50) if p50 > 0 else None,
                       narrow_vs_volume=(p05 / fluid_volume ** (1.0 / 3.0)) if fluid_volume > 0 else None,
-                      passage=(p50 * scale_to_m) if scale_to_m else None)
+                      passage=(p50 * scale_to_m) if scale_to_m else None,
+                      gap_cells=gap_rule_cells(g, area / k),
+                      narrowest_gap=(p05 * scale_to_m) if scale_to_m else None,
+                      narrowest_gap_rel=p05 / w.diag)
         dh = [d for d in port_diameters if d and d > 0]
         if dh and p50 > 0:
             ratio = p50 / float(max(dh))
@@ -425,6 +501,23 @@ def measure(tris, *, flow: str = "", input_kind: str = "", form: str = "",
             fin = t_in[np.isfinite(t_in)]
             if len(fin):
                 traits["scale_ratio"] = w.diag / max(float(np.percentile(fin, 5)), 1e-300)
+        # THE GAPS BETWEEN THE BODY'S PARTS (a wheel and its arch, a flap and its slot): the
+        # chords out of one body that meet ANOTHER body's wall facing back (body_gap_field's
+        # reading). The open far field is the engine's own sizing, and a seam within one body is
+        # its own detail; only these are the gap rule's.
+        gaps = np.zeros(0)
+        if n_comp >= 2:
+            try:
+                _i, g_out, _w, _p = _chords(w.points, faces, normals, areas, w.diag, seed=seed,
+                                            inward=False, body_of_face=labels[faces[:, 0]])
+                gaps = g_out[np.isfinite(g_out)]
+            except Exception as exc:  # noqa: BLE001 - a chord we cannot cast is a fact we lack
+                notes.append(f"gap chords not cast ({type(exc).__name__})")
+        if len(gaps) >= 10:
+            g05 = float(np.percentile(gaps, 5))
+            traits.update(gap_cells=gap_rule_cells(gaps, area / k),
+                          narrowest_gap=(g05 * scale_to_m) if scale_to_m else None,
+                          narrowest_gap_rel=g05 / w.diag)
     return ShapeTraits(**traits, notes=tuple(notes))
 
 
@@ -532,5 +625,6 @@ def measure_file(path, *, flow: str = "", input_kind: str = "", patches: Sequenc
     return traits
 
 
-__all__ = ["FEATURE_DEG", "KNIFE_DEG", "RAY_SAMPLES", "TRAITS_VERSION", "ShapeTraits", "measure",
+__all__ = ["FEATURE_DEG", "GAP_MAX_LEVELS", "KNIFE_DEG", "RAY_SAMPLES", "TRAITS_VERSION", "ShapeTraits",
+           "gap_rule_cells", "measure",
            "measure_file", "port_hydraulic_diameters", "read_triangles"]

@@ -76,7 +76,11 @@ class ToolExecution:
                           status="blocked" if malformed else "started")
         t0 = time.monotonic()
         try:
-            outcome = await asyncio.wait_for(self.driver.execute(inv), timeout=remaining)
+            # MODEL TIME (agents/loop/budget.wait_on_model_time): a tool call that is a native
+            # mesh still making progress is never cut by the loop's clock - only by its own stall
+            # watch or its machine's wall (contracts/native_time)
+            from meshpipeline.agents.loop.budget import wait_on_model_time
+            outcome = await wait_on_model_time(self.driver.execute(inv), timeout=remaining)
         except asyncio.CancelledError:
             # CANCELLED. Never swallowed, never classified, never counted. The run is being torn
             # down, so this call did not happen - and a call that did not happen must not be

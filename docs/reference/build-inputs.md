@@ -32,6 +32,7 @@ implied away.
 | SearXNG | `searxng/searxng@sha256:3bc6ae0e…` | OCI digest | `docker-compose.yml` |
 | curl (CI) | `curlimages/curl:8.11.1@sha256:c1fe1679…` | OCI digest | `.github/workflows/ci.yml` |
 | CI actions | full 40-character commit SHAs | Git object identity | `.github/workflows/ci.yml` |
+| Python interpreter | python-build-standalone `3.11.17+20261013` release asset URL (replaced the deadsnakes PPA after its 2026-10-21 outage) | `ARG PYTHON_BUILD_SHA256` + post-install version check | `Dockerfile` |
 | micromamba | release `2.8.1-1` asset URL | `ARG MICROMAMBA_SHA256` + post-install version check | `Dockerfile` |
 | OpenFOAM repository installer | official endpoint | `ARG OPENFOAM_REPO_SCRIPT_SHA256` | `Dockerfile` |
 | OpenFOAM signing key | official endpoint | complete fingerprint `DC93C096…948D208F` | `Dockerfile` |
@@ -39,6 +40,7 @@ implied away.
 | Python runtime deps | exact `==` pins | pip resolution against those pins | `requirements/runtime.txt` |
 | Python build toolchain | pip/setuptools/wheel exact pins | same | `Dockerfile` |
 | Application wheel | built from the committed tree | Gate C provenance | `Dockerfile` |
+| fTetWild (FEA's last rung, mesh image only) | wildmeshing/fTetWild commit `8118f810…` fetched by full SHA; each dependency its CMake fetches (CLI11, Eigen, fmt, geogram, json, libigl, predicates, spdlog, oneTBB) checked against a reviewed full commit SHA after the configure step, and the set of them checked too | Git object identity (`ARG FTETWILD_COMMIT`, `ARG FTETWILD_DEPS`) | `Dockerfile` (`ftetwild-build`) |
 
 Ecosystems the repository does not use, Node/npm, git submodules, cloned dependencies, have no
 locks because they have no acquisitions. The reproducibility guard derives this from the tree, so
@@ -82,6 +84,7 @@ A build that fails on a mismatch is working.
 | Input | Preservation |
 |---|---|
 | Container images | third-party registry retention (Docker Hub) |
+| Python `3.11.17+20261013` | GitHub release asset retention |
 | micromamba `2.8.1-1` | GitHub release asset retention |
 | OpenFOAM packages | ESI repository retention; the version is pinned but the repository is not snapshotted |
 | Python distributions | PyPI retention |

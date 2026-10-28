@@ -77,12 +77,18 @@ async def node_classifier(state: PipelineState) -> dict:
         # retry on a caveated delivery candidate - the review's findings are what the builder
         # gets (the reviewer branch below): the review was told the near-miss is accepted.
         gate_key = "domain_extent"
+        source = "requirements_near_miss"
+        from meshpipeline.engines import resolution_policy as _rp
+        if _rp.resolution_caveat(state) is not None:
+            # a sound mesh short of the resolution floor: the next attempt is the ladder's next
+            # rung (LAD-cfd-1); the gate's own advice is the brief, the rung is in the workspace
+            gate_key, source = "resolution_floor", "resolution_short"
         classifier_result = {
             "section":      section_for_gate(engine, gate_key),
             "summary":      state.get("executor_output", "") or "",
             "failed_gate":  gate_key,
             "failed_axes":  [],
-            "error_source": "requirements_near_miss",
+            "error_source": source,
         }
         rebuild = False
         logger.info("Classifier: requirements NEAR-MISS (quality passed) - %d caveat(s) - "

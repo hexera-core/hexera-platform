@@ -22,15 +22,15 @@ export async function refreshHealth() {
   // Three distinct states, because "we cannot tell" must not look like "everything is fine".
   if (dot) dot.className = "dot" + (ready ? " online" : status === "unknown" ? "" : " error");
   if (label) {
-    label.textContent = ready ? "API ready"
-      : down.length ? `degraded: ${down.join(", ")}`
-        : status === "unknown" ? "API status unknown"
-          : "API unreachable";
+    label.textContent = ready ? "Online"
+      : down.length ? "Some services are down"
+        : status === "unknown" ? "Status unknown"
+          : "Can't reach Hexera";
   }
   if (chip) {
     chip.title = ready
       ? "The API and every dependency it needs are ready."
-      : down.length ? `These dependencies are not ready: ${down.join(", ")}`
+      : down.length ? `Not ready: ${down.join(", ")}`
         : status === "unknown" ? "The API is serving but reports no readiness probe."
           : "The API did not respond.";
   }

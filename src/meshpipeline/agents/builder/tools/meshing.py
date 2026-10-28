@@ -115,6 +115,11 @@ def submit_mesh(ctx: BuilderToolContext, args: dict | None = None) -> dict:
                              + "; ".join(problems[:8])}
         (workspace / "flag_responses.json").write_text(
             json.dumps(HF.as_dicts(responses), indent=2), encoding="utf-8")
+    # WHAT THE BUILD DID WITH THE USER'S NOTES, in one plain line for the result (contracts/
+    # user_notes). Best effort: kept as written, never checked, never a reason to refuse a mesh.
+    if ctx.user_notes and (args or {}).get("notes_remark"):
+        from meshpipeline.contracts.user_notes import record_remark
+        record_remark(workspace, (args or {}).get("notes_remark"), by="builder")
     return {"success": True, _pol.submit_ok_key: True}
 
 
@@ -345,6 +350,15 @@ def prepare_mesh_run(ctx: BuilderToolContext) -> PreparedMeshRun:
     # run budget could never fit a 3600s loop after preamble rounds.)
     _cap = _policy.run_timeout()
     _plan_cap = getattr(_policy, "planned_timeout", None)
+    if getattr(_policy, "watched", False):
+        # NO GUESSED TIME LIMIT (contracts/native_time): a watched engine's run is stopped only
+        # after the stall window with no progress, or at the wall of the machine it runs on - and
+        # its time is not the builder loop's (agents/loop/budget excludes native time), so the
+        # loop budget never cuts it either
+        from meshpipeline.contracts.native_time import wall_for
+        _cap = wall_for(workspace)
+        _plan_cap = None
+        loop_deadline = None
     if _plan_cap is not None:
         # the engine TIMED this case when it wrote it (the cells it will make): it gets the time
         # its plan needs, not the fixed cap - and still only what the loop budget leaves
@@ -358,7 +372,8 @@ def prepare_mesh_run(ctx: BuilderToolContext) -> PreparedMeshRun:
             _cap = int(_planned)
     _cite_run_guard(ctx, ename, workspace, int(_cap))
     if loop_deadline is not None:
-        _remaining = int(loop_deadline - _time.monotonic())
+        from meshpipeline.contracts.progress_clock import model_time
+        _remaining = int(loop_deadline - model_time())
         _usable = _remaining - _RUN_MESH_FEEDBACK_RESERVE
         if _usable < _RUN_MESH_MIN_ATTEMPT:
             # THE ATTEMPT'S OWN GUARD has run out (TIME-5): a guard trip, recorded beside the case,
@@ -475,15 +490,23 @@ def _attempt_tripped(workspace) -> bool:
 
 
 def _guard_verdict(ctx: BuilderToolContext, engine: str, cap: int, broken: list[str],
-                   log_tail) -> dict:
+                   log_tail, *, stalled: bool = False) -> dict:
     """A run its guard clock stopped (TIME-3): recorded beside the case as a guard trip, said to
     the builder as the end of its turn. Not a broken mesh and not "too fine": what the run was
-    doing when the clock stopped it depends on how busy the machine was."""
+    doing when the clock stopped it depends on how busy the machine was. A watched run (RUN-5)
+    stopped as stuck - no sign of life for the stall window - is a trip too, and says so."""
     from meshpipeline.engines.determinism import guard_trips, note_guard_trip
     if not guard_trips(ctx.workspace):
         note_guard_trip(engine, workspace=ctx.workspace, guard_s=float(cap),
+                        stalled=(True if stalled else None),
                         repairing=("; ".join(broken) or None))
-    return {**_GUARD_REFUSAL, "timed_out": True, "log_tail": log_tail}
+    out = {**_GUARD_REFUSAL, "timed_out": True, "log_tail": log_tail}
+    if stalled:
+        from meshpipeline.contracts.native_time import STALL_WINDOW_S
+        out["stalled"] = True
+        out["guidance"] = (f"The mesher made no progress for {STALL_WINDOW_S // 60} min and was "
+                           f"stopped as stuck. {_GUARD_REFUSAL['guidance']}")
+    return out
 
 
 def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
@@ -498,7 +521,17 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
     # THE handoff. The engine owns preparing its native input from here, and `context`
     # is how it learns what the coordinates mean - without it the bundle would have to
     # re-infer a unit from a file that does not state one.
-    res = R.run_cartesian_mesh(workspace, timeout=_cap, context=ctx)
+    _watched = bool(getattr(_policy, "watched", False))
+    if _watched:
+        # RUN-5 (contracts/native_time.run_off_the_wall): a watched run stopped at the Cloud Run
+        # job's wall STILL WORKING runs again, the same case, on a VM - never handed back as "too
+        # fine" for a limit it only met because of where it ran
+        from meshpipeline.contracts.native_time import run_off_the_wall
+        res = run_off_the_wall(
+            workspace, lambda cap: R.run_cartesian_mesh(workspace, timeout=cap, context=ctx),
+            engine=engine, job_id=str(getattr(ctx, "job_id", "") or ""))
+    else:
+        res = R.run_cartesian_mesh(workspace, timeout=_cap, context=ctx)
     _mesh_seconds = _time.monotonic() - _t_mesh_start
     # RECORD the real duration of a run that actually MESHED (rc==0). A timeout or an
     # infra failure is not a data point about how long this shape takes. Best-effort.
@@ -524,12 +557,65 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
                              "Nothing was meshed: the case rendered from the patch contract does "
                              "not build the approved patches (an internal error, not your "
                              "strategy). Do NOT reconfigure - STOP and end your turn.")}
+    if res.get("oversize"):
+        # THE SIZE BRAKE stopped the mesher (engines/size_brake): its own count read far past
+        # the case's plan. Deterministic: the same case comes out the same size every time, so it
+        # must be made coarser by about that much - never re-run as it is.
+        _o = res["oversize"]
+        if _o.get("by_rule"):
+            # THE ENGINE'S OWN SIZING RULE asks for that many cells (gmsh's passage field: 13 across
+            # every passage, whatever the wall size) - no setting of this case brings it inside one job,
+            # so the run moves on to the next engine (pipeline/engine_fallback), said as the size it is
+            from meshpipeline.contracts.failure_cause import FailureCause
+            from meshpipeline.engines.preflight import PreflightRefusal
+            _words = (f"the {_o.get('stage')} would make about {int(_o.get('cells') or 0):,} cells, "
+                      f"{float(_o.get('ratio') or 0):.1f} times the {int(_o.get('budget') or 0):,} one job is "
+                      "sized for")
+            PreflightRefusal(
+                gate="finalize", cause=FailureCause.CELL_BUDGET.value,
+                builder_text=f"[MESH_OVER_SIZE] {_words}",
+                facts={"over_size_by_rule": True, "estimated_cells": int(_o.get("cells") or 0),
+                       "cell_limit": int(_o.get("budget") or 0), "meshers_started": 1}).write(workspace)
+            return {"success": False, "oversize": dict(_o),
+                    "guidance": (f"Not meshed: {_words}. This engine's own passage sizing asks for "
+                                 "that, so a coarser size does not change it. Do NOT run_mesh again and "
+                                 "do NOT reconfigure - end your turn now; the run moves on to another "
+                                 "engine."),
+                    "log_tail": res.get("log_tail", "")}
+        return {"success": False, "oversize": dict(_o),
+                "guidance": (f"Stopped before finishing: the mesh {_o.get('stage')} already had "
+                             f"{int(_o.get('cells') or 0):,} cells, {float(_o.get('ratio') or 0):.1f} times "
+                             f"the {int(_o.get('budget') or 0):,} it was planned for. Make the wall cells "
+                             f"coarser by about {max(1.0, float(_o.get('ratio') or 1.0) / 0.9) ** 0.5:.2f}x "
+                             "(or drop refinements), then configure and run_mesh again."),
+                "log_tail": res.get("log_tail", "")}
+    if res.get("layers_not_converging"):
+        # VMTK's layers would not untangle and the plan asks for them: the run moves on to the next
+        # engine (engines/vmtk/vmtk_runner LAYERS_MOVE_ON) - never this engine's layer-free fill
+        from meshpipeline.contracts.failure_cause import FailureCause
+        from meshpipeline.engines.preflight import PreflightRefusal
+        _l = dict(res["layers_not_converging"])
+        _words = str(_l.get("words") or
+                     f"VMTK layers kept re-tangling ({int(_l.get('retangled') or 0)} rounds) - next engine")
+        logger.warning("run_mesh: %s (%s)", _words, _l.get("next_engine"))
+        PreflightRefusal(
+            gate="finalize", cause=FailureCause.ENGINE_CRASHED.value,
+            builder_text=f"[VMTK_LAYERS_NOT_CONVERGING] {_words}",
+            facts={"layers_not_converging": True, "retangled": int(_l.get("retangled") or 0),
+                   "meshers_started": 1}).write(workspace)
+        return {"success": False, "layers_not_converging": _l,
+                "guidance": (f"Not meshed: {_words}. Do NOT run_mesh again and do NOT reconfigure - "
+                             "end your turn now; the run moves on to the next engine, which builds the "
+                             "layers the plan asks for."),
+                "log_tail": res.get("log_tail", "")}
     if res["timed_out"] or _attempt_tripped(workspace):
         # THE RUN'S GUARD CLOCK TRIPPED - the run itself, or a step inside it (its stamp says
         # which). An infrastructure stop (TIME-3): the attempt ends and is replayed as it was.
-        return _guard_verdict(ctx, engine, int(_cap),
+        # a watched run's guard is the wall of the machine it ended on (RUN-5)
+        from meshpipeline.contracts.native_time import wall_for
+        return _guard_verdict(ctx, engine, int(wall_for(workspace)) if _watched else int(_cap),
                               _broken_at_time_out(_policy, res.get("log_tail")),
-                              res.get("log_tail"))
+                              res.get("log_tail"), stalled=bool(res.get("stalled")))
     # rc=-3 is the remote runner's INFRASTRUCTURE failure marker (adapters.mesh_execution.cloud_run_client._fail:
     # job trigger/poll/download broke) - a SYSTEM failure, not a mesh/strategy problem.
     # Without this branch it surfaced like a mesher failure and the model "fixed" a

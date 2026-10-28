@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
+import { DashboardNotice } from "@/app/_components/dashboard-notice";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
 
@@ -35,30 +36,39 @@ export default async function ConversationsPage({
     <div className="page">
       <div className="page__head">
         <div>
-          <p className="page__eyebrow">Study intake</p>
-          <h1 className="page__title">Conversations</h1>
+          <p className="page__eyebrow">Conversations</p>
+          <h1 className="page__title">Your conversations</h1>
           <p className="page__intro">
-            The request history behind each mesh run, from initial study framing to confirmation.
+            What you and Hexera said before each run: your answers and what you confirmed.
           </p>
         </div>
       </div>
 
       {page === null ? (
-        <p className="empty card">Could not reach the API just now. Reload to try again.</p>
+        <DashboardNotice
+          body="Refresh the page to try again. Your conversation history is not affected."
+          retryLabel="Try again"
+          title="We couldn't load your conversations"
+          tone="error"
+        />
       ) : page.items.length === 0 ? (
-        <p className="empty card">No conversations yet. Every run starts with one.</p>
+        <DashboardNotice
+          action={{ href: "/runs/new", label: "Start a run" }}
+          body="Every mesh run begins with a short conversation about your geometry and solver."
+          title="No conversations yet"
+        />
       ) : (
         <section className="panel">
           <div className="panel__head">
             <div>
-              <p className="label">Conversation ledger</p>
-              <p className="page__sub">Study requests, message counts and linked runs.</p>
+              <p className="label">All conversations</p>
+              <p className="page__sub">Each conversation, its length and the run it started.</p>
             </div>
           </div>
           <table className="table">
             <thead>
               <tr>
-                <th>Study</th>
+                <th>Conversation</th>
                 <th>Messages</th>
                 <th>Started</th>
                 <th>Run</th>
@@ -69,7 +79,7 @@ export default async function ConversationsPage({
                 <tr key={conversation.id}>
                   <td>
                     <Link href={`/conversations/${conversation.id}`}>
-                      {conversation.task_label ?? "Untitled study"}
+                      {conversation.task_label ?? "Untitled"}
                     </Link>
                   </td>
                   <td>{conversation.message_count}</td>

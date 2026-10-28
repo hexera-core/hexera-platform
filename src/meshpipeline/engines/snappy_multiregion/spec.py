@@ -262,10 +262,15 @@ SPEC = EngineSpec(
         delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="body-fitted", prism_layers=True),
         run_policy=RunPolicy(
             required_files=("system/blockMeshDict", "system/snappyHexMeshDict"),
-            # a multi-region build (background snappy + split of several regions)
-            # is costlier than a single-region snappy run; stays under the service timeout.
+            # a multi-region build (background snappy + split of several regions) is costlier than a
+            # single-region snappy run. AN ESTIMATE now (the fallback ladder's "does another engine
+            # still fit"): the run is WATCHED (watched=True, contracts/native_time) - every stage is
+            # stopped only after the stall window with no sign of life, or at the machine's wall.
             run_timeout=lambda: min(3000, rtcfg.OPENFOAM_COMMAND_TIMEOUT * 5),
-            timeout_hint="Lower max_cells and/or the per-region surface levels, then run_mesh again.",
+            watched=True,
+            timeout_hint=("A build that makes no progress for the stall window is stuck, not slow: "
+                          "lower max_cells and/or the per-region surface levels, then run_mesh "
+                          "again."),
             ok_guidance="Every declared region split cleanly (no fatal defects) - call submit_mesh.",
             fail_label="multi-region snappyHexMesh / splitMeshRegions failed",
             fail_hint=("Adjust the strategy via configure_mesh (coarser refinement, fewer "

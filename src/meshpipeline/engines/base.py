@@ -293,6 +293,12 @@ class RunPolicy:
     #: THE BROKEN CELLS A TIMED-OUT RUN WAS STILL FAILING TO REPAIR, read from its log tail ([]
     #: when the run was merely slow): such a run is a broken mesh, not one that needed more time.
     timed_out_defects: Callable[[str], list[str]] | None = None
+    #: THE ENGINE'S NATIVE RUN IS WATCHED FOR PROGRESS (contracts/native_time): it is stopped only
+    #: after the stall window with no progress, or at the machine's wall. Such an engine's run gets
+    #: the machine's wall as its cap - not run_timeout, which then only estimates how long a run
+    #: usually takes (the fallback ladder's "does another engine still fit") - and its run time
+    #: does not count against the builder loop's model budget.
+    watched: bool = False
 
 
 def _label(name: str) -> str:
@@ -514,6 +520,11 @@ class EngineSpec:
     #: take; these say how well it does there. Empty = nothing declared: every case it accepts is
     #: treated alike.
     home_turf: tuple[TurfRow, ...] = ()
+    #: THE SHAPE CLASSES THIS ENGINE IS THE HOME ENGINE FOR (engines/fitness.py class names, read
+    #: off the measured traits): on such a shape it is recommended first - unless its own turf
+    #: rows mark the case weak or outside, or the measured record of another engine clearly beats
+    #: it (fitness ENG-2/ENG-3). Empty = home nowhere: ranked on its record alone.
+    home_classes: tuple[str, ...] = ()
 
     def forms_for(self, flow: str) -> tuple[str, ...] | None:
         """The geometry forms this bundle consumes for `flow`, or None when it is not designed
@@ -556,6 +567,9 @@ class EngineSpec:
     # None → generic behavior.
     _load_run_enricher: Callable[[], Callable | None] = lambda: None
     _load_build_driver: Callable[[], Callable | None] = lambda: None
+    # A deterministic driver for SOME of this engine's runs only: (state) -> driver or None. gmsh
+    # declares the FEA driver here (a 3D structural solid); its other runs keep the model-led loop.
+    _load_run_driver: Callable[[], Callable | None] = lambda: None
     _load_viewer_surface: Callable[[], Callable | None] = lambda: None
     # REVIEW RENDERER - the engine's own answer to "how is this mesh shown to a reviewer".
     # Same lazy-load precedent as viewer_surface, and for the same reason: the module pulls a
@@ -621,6 +635,20 @@ class EngineSpec:
     @property
     def build_driver(self):
         return self._load_build_driver()
+
+    def build_driver_for(self, state):
+        """The deterministic driver THIS run takes: one the engine declares for the run's own
+        case (its run driver), else the engine's build_driver, else None (the model-led
+        loop). Reads the run's state only; it changes nothing about which engine is picked."""
+        chooser = self._load_run_driver()
+        if chooser is not None:
+            try:
+                chosen = chooser(state or {})
+            except Exception:  # noqa: BLE001 - a chooser that cannot read the state picks nothing
+                chosen = None
+            if chosen is not None:
+                return chosen
+        return self.build_driver
 
     # (Review modality is no longer an authored flag. Every engine enters ONE unified
     # hybrid-assurance review; whether rendered evidence is obliged is DERIVED -

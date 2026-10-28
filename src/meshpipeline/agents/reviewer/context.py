@@ -333,8 +333,9 @@ def build_review_prompt(
             f"the mesh (twice the median lumen radius over the median interior cell size). This is "
             f"the AUTHORITATIVE figure for whether the core flow is resolved: industry RANS "
             f"practice on internal flow is 20-40 across; 12-20 is coarse but usable for a first "
-            f"pass; below 12 is undermeshed for any CFD use and fails passage resolution whatever "
-            f"the render looks like.")
+            f"pass; below 12 is under our floor: a concern to state with this number, never a "
+            f"reason to call the mesh the wrong problem - the delivery already carries the note "
+            f"(docs/RULES.md LAD-cfd-3).")
     _lcov = _q.get("layer_coverage_pct")
     if _lcov is not None:
         _per = _q.get("per_patch_layers", {}) or {}

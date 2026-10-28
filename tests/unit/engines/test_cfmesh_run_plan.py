@@ -35,19 +35,22 @@ def test_the_estimate_counts_the_background_and_the_walls_shell_and_layers():
 
 def test_a_planned_run_gets_the_guard_its_planned_cells_give_between_the_base_cap_and_the_ceiling(
         monkeypatch):
+    # THE CEILING IS THE BIGGEST MACHINE'S WALL (a VM, contracts/native_time), not a guessed 50
+    # minutes: a long plan is never made coarser for time unless even a VM cannot hold it
+    from meshpipeline.contracts.native_time import VM_WALL_S
     from meshpipeline.contracts.work_limits import FILL_RATES, GUARD_FACTOR
     monkeypatch.setattr(rtcfg, "OPENFOAM_COMMAND_TIMEOUT", 1500)
-    assert R.base_run_cap_s() == 1200 and R.run_ceiling_s() == 3000
+    assert R.base_run_cap_s() == 1200 and R.run_ceiling_s() == VM_WALL_S
     assert R.run_cap_for(None) == 1200
     assert R.run_cap_for(20.0) == 1200                   # a quick run keeps the base cap
     # docs/RULES.md TIME-2: 3 x the planned cells at the slow rate, the rescue's runs counted
     cells = 100.0 * R.CELLS_PER_SECOND
     want = int(GUARD_FACTOR * cells / FILL_RATES["cfmesh"] * R.RESCUE_RUNS)
-    assert 1200 < want < 3000 and R.run_cap_for(100.0) == want
-    assert R.run_cap_for(9000.0) == 3000                 # never past the ceiling
+    assert 1200 < want < VM_WALL_S and R.run_cap_for(100.0) == want
+    assert R.run_cap_for(1e9) == VM_WALL_S               # never past the ceiling
     assert R.run_guard(cells).as_dict()["guard_s"] == want
     # whether a plan FITS one run is still a planning rule, decided before the run
-    assert R.fits_one_run(2400.0) and not R.fits_one_run(2401.0)
+    assert R.fits_one_run(VM_WALL_S / 1.25) and not R.fits_one_run(VM_WALL_S / 1.25 + 1)
 
 
 def test_the_render_records_the_plan_and_the_run_reads_its_cap(tmp_path):
@@ -67,17 +70,31 @@ def test_the_render_records_the_plan_and_the_run_reads_its_cap(tmp_path):
     assert not (tmp_path / R.RUN_PLAN_FILE).exists() and R.planned_run_cap(tmp_path) is None
 
 
-def test_a_plan_too_long_for_one_run_is_made_coarser_one_octree_level_at_a_time(tmp_path):
-    # 40 m2 of wall at 2 mm: ~60M cells, hours of cfMesh - the wall steps up until the run fits
+def test_a_plan_past_the_cloud_run_wall_goes_to_a_vm_before_anything_is_made_coarser(tmp_path):
+    # 40 m2 of wall at 2 mm: ~60M cells, hours of cfMesh. It used to be made coarser until it fit
+    # 50 minutes; now it is planned as asked and sent to a VM, which has no wall (RUN-5)
+    from meshpipeline.contracts import mesh_machine as MM
+    from meshpipeline.contracts.native_time import CLOUD_RUN_WALL_S
     out = _render(tmp_path, area=40.0, wall=0.002)
+    plan = out["run_plan"]
+    assert "coarsened_levels" not in plan and plan["fits"] is True
+    assert plan["estimated_seconds"] * MM.TIME_MARGIN > CLOUD_RUN_WALL_S
+    decision = MM.read(tmp_path)
+    assert decision["where"] == "gce" and decision["why"] == "time"
+    # a plan that fits the Cloud Run job stays there
+    _render(tmp_path, area=1.6, wall=0.004)
+    assert MM.read(tmp_path)["where"] == "cloud_run"
+
+
+def test_only_a_plan_past_even_a_vms_wall_is_made_coarser_one_octree_level_at_a_time(tmp_path):
+    # ~2,000 m2 of wall at 2 mm: past a VM's 20 hours - the wall steps up until the run fits it
+    out = _render(tmp_path, area=2000.0, wall=0.002)
     plan = out["run_plan"]
     assert plan["fits"] is True and plan["coarsened_levels"] >= 1
     assert plan["cells_before"] > plan["estimated_cells"]
     assert R.fits_one_run(plan["estimated_seconds"])
-    assert "levels coarser" in plan["note"] or "level coarser" in plan["note"]
-    assert out["wall_cell_size"] <= 1.0 / 20.0
     # a wall the BUILDER chose is never changed behind its back - only timed
-    kept = _render(tmp_path, area=40.0, wall=0.002, fit=False)
+    kept = _render(tmp_path, area=2000.0, wall=0.002, fit=False)
     assert "coarsened_levels" not in kept["run_plan"] and kept["run_plan"]["fits"] is False
 
 

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
+import { DashboardNotice } from "@/app/_components/dashboard-notice";
 import { formatDuration, runTitle, statusClass, statusLabel } from "@/app/_components/run-status";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
@@ -33,10 +34,10 @@ export default async function OverviewPage() {
     <div className="page">
       <div className="page__head">
         <div>
-          <p className="page__eyebrow">Mesh studio</p>
-          <h1 className="page__title">Simulation cockpit</h1>
+          <p className="page__eyebrow">Overview</p>
+          <h1 className="page__title">Your meshes</h1>
           <p className="page__intro">
-            Track credit capacity, launch new studies and review the latest solver-ready mesh runs.
+            Upload a part, answer a few questions, and get a mesh ready for your solver.
           </p>
         </div>
         <Link className="btn btn--gold" href="/runs/new">
@@ -53,12 +54,12 @@ export default async function OverviewPage() {
         <div className="metric-card">
           <p className="label">Recent runs</p>
           <b>{runs ? runs.items.length.toLocaleString() : "--"}</b>
-          <span>latest studies in this workspace</span>
+          <span>shown below, newest first</span>
         </div>
         <div className="metric-card">
-          <p className="label">Pipeline</p>
+          <p className="label">How it works</p>
           <b>CAD → Mesh</b>
-          <span>agent-planned, cloud-executed, quality-gated</span>
+          <span>Hexera plans the mesh, builds it in the cloud and checks it before you get it</span>
         </div>
       </div>
 
@@ -66,24 +67,31 @@ export default async function OverviewPage() {
         <div className="panel__head">
           <div>
             <p className="label">Recent runs</p>
-            <p className="page__sub">The latest mesh attempts and review outcomes.</p>
+            <p className="page__sub">Your latest runs and how they ended.</p>
           </div>
           <Link className="nav__link" href="/usage">
             Credit ledger
           </Link>
         </div>
         {runs === null ? (
-          <p className="empty panel__body">Could not reach the API just now.</p>
+          <DashboardNotice
+            body="Refresh the page to try again. Your existing runs are not affected."
+            retryLabel="Try again"
+            title="We couldn't load recent runs"
+            tone="error"
+          />
         ) : runs.items.length === 0 ? (
-          <p className="empty panel__body">
-            Nothing has run yet. Upload a geometry file to start your first study.
-          </p>
+          <DashboardNotice
+            action={{ href: "/runs/new", label: "Start a run" }}
+            body="Upload a geometry file and describe what the mesh is for."
+            title="No runs yet"
+          />
         ) : (
           <table className="table">
             <thead>
               <tr>
                 <th>Status</th>
-                <th>Study</th>
+                <th>Run</th>
                 <th>Duration</th>
               </tr>
             </thead>

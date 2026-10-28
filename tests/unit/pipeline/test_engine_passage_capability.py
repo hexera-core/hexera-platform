@@ -206,6 +206,30 @@ def test_a_snappy_run_on_a_case_of_two_still_moves_to_cfmesh():
     assert d.switch_to == "cfmesh"
 
 
+
+def test_a_deterministic_refusal_for_its_passage_limit_still_moves_to_an_engine_that_meshes_them(tmp_path):
+    # the start-of-run measurement could not count the passages (an open tube bundle); the
+    # attempt's own staging found 16 and snappyHexMesh refused before meshing. "Deterministic"
+    # means re-running snappy changes nothing - not that no engine can: cfMesh meshes them.
+    (tmp_path / PASSAGES_READ_FILE).write_text(json.dumps(
+        {"passages": [{"ports": [f"outlet_{i}"]} for i in range(16)], "read": True}))
+    st = _cfmesh_broke(engine="snappy", executor_failure_cause="not_built",
+                       executor_failure_facts={"meshers_started": 0, "deterministic": True},
+                       openfoam_workspace=str(tmp_path))
+    st["engine_ladder"]["approved"] = "snappy"
+    st["engine_ladder"]["order"] = ["snappy", "vmtk", "cfmesh", "gmsh"]
+    failure = lad.classify(st)
+    assert failure.kind == lad.ENGINE
+    assert lad.decide(st, record=lad.with_attempt(st, failure), now=0.0).switch_to == "cfmesh"
+    # the graph's router asks the ladder before it ends the run, so the switch is reached
+    from meshpipeline.pipeline.graph import route_after_executor
+    assert lad.another_engine_takes_over(st)
+    assert route_after_executor(st) == "node_classifier"
+    # a refusal no other engine changes (the declared openings) still ends the run there
+    never = {**st, "executor_failure_cause": "contract_mismatch", "executor_failure_facts": {}}
+    assert lad.classify(never).kind == lad.NEVER
+    assert not lad.another_engine_takes_over(never) and route_after_executor(never) == "__end__"
+
 # the offer a failed run ends with
 
 def test_the_offer_says_why_no_engine_was_switched_to_and_gives_both_outs():

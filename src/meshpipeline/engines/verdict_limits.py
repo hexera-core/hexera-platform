@@ -65,9 +65,10 @@ PRODUCTION_LIMITS: tuple[Limit, ...] = (
           ("gmsh",), topologies=_CFD,
           source="engines/gmsh/criteria.py (also gmsh's gating bar, so a mesh past it never "
                  "validates)"),
-    Limit("skew_fraction", "Share of skewed faces", "<=", 5e-4, ("cfmesh",),
-          source="the snappy-family gating bar (engines/snappy/criteria.py); advisory for cfMesh, "
-                 "which often does not report it"),
+    Limit("skew_fraction", "Share of skewed faces", "<=", 5e-4, ("snappy", "cfmesh"),
+          source="checkMesh's skewness bars (maxInternalSkewness 4, maxBoundarySkewness 20) as a "
+                 "share of all faces (engines/snappy/criteria.py): a production limit on a sound "
+                 "mesh, never a validity bar (LAD-cfd-3); cfMesh often does not report it"),
     Limit("layer_coverage_pct", "Wall covered by prism layers (percent)", ">=", 80.0,
           ("snappy", "cfmesh", "snappy_multiregion", "vmtk"), needs_layers=True,
           source="Hexera lab history: under 80% coverage, wall shear and y+ are unreliable on a "
@@ -156,9 +157,21 @@ def gating_rows(engine: str, manifest: Mapping) -> list[dict]:
         measured = measurements_from_manifest(dict(manifest))
     except Exception:  # noqa: BLE001 - an engine that cannot be read leaves validity to the gates
         return []
+    # AN FEA MESH is held to validity only (PLAN-fea-8): its quality floor is the NOTE floor, a row
+    # of fea_limits, never a gate - the gmsh floor row gating it refused a valid assembly whose 7
+    # curved slivers sat under SICN 0.01 (dev-areen, 24 Oct). "No degenerate elements" still gates.
+    raw = manifest.get("quality")
+    q: Mapping = raw if isinstance(raw, Mapping) else {}
+    fea = isinstance(q.get("fea"), Mapping) and bool(q["fea"].get("plan"))
+    skip = FEA_NOTE_ONLY if fea else ()
     return [{"key": c.key, "label": c.label, "op": c.op, "limit": c.threshold,
              "measured": measured.get(c.key)}
-            for c in crit if c.gating and c.key not in BUILD_TIME_KEYS]
+            for c in crit if c.gating and c.key not in BUILD_TIME_KEYS and c.key not in skip]
+
+
+#: Gating rows an FEA mesh does not gate on: the note floor (a fea_limits note row) and the CFD face
+#: non-orthogonality, a flow-solver measure that says nothing about an FE mesh.
+FEA_NOTE_ONLY = ("elements_under_floor", "max_non_ortho")
 
 
 def inputs_for(*, engine: str, topology: str, manifest: Mapping | None, valid: bool,
@@ -183,12 +196,79 @@ def inputs_for(*, engine: str, topology: str, manifest: Mapping | None, valid: b
                        "measured": _plain(measured), "source": lim.source})
     for row in _declared_advisory(engine):
         limits.append({**row, "measured": _plain(quality.get(row["key"]))})
+    limits.extend(fea_limits(quality))
     return {"engine": engine, "topology": topology, "valid": bool(valid),
             "failed_gate": str(failed_gate or ""), "layers_planned": bool(layers_planned),
             "gating": gating_rows(engine, mf) if valid else [],
             "limits": limits,
             # what the AI reviewer wrote, for the record only: never read by the verdict
             "review_notes": len(list(notes or ()))}
+
+
+#: The FEA plan's own rule row (VER-2): every hot spot met its count on the mesh (the walls are
+#: gating, engines/gmsh/gates.py).
+FEA_RULES_ROW = ("fea_rules_short", "Mesh zones short of the FEA plan's rules", "<=", 0,
+                 "engines/fea_checks.py (elements per quarter-turn and through the wall at each hot spot)")
+
+
+def fea_limits(quality: Mapping) -> list[dict]:
+    """THE FEA ROWS (VER-2), for a mesh built from an FEA plan only (quality.fea.plan): the element
+    quality limits - the strictest of the version-1 solvers (engines/fea_quality.LIMITS) - and the
+    plan's rules as met on the mesh. Engine-neutral: any engine's FEA adapter reports the same keys."""
+    fea = quality.get("fea") if isinstance(quality.get("fea"), Mapping) else {}
+    if not (fea or {}).get("plan"):
+        return []
+    from meshpipeline.engines.fea_quality import limits_for
+    order = quality.get("element_order")
+    fea_rows = limits_for(int(order) if isinstance(order, (int, float)) and not isinstance(order, bool) else 1)
+    fea_m: Mapping = fea if isinstance(fea, Mapping) else {}
+    # ONE LIST OF NOTES (22 Oct): the rows the result screen shows are exactly the rows the job's
+    # verdict reads - the quality note floor and the elements through the thinnest wall first, as
+    # the screen lists them (a job said "Review: passed" while its screen said "with notes")
+    from meshpipeline.engines.gmsh.gates import FEA_WALL_FLOOR
+    rows = [{"key": "elements_under_floor", "op": "==", "limit": 0,
+             "label": f"Elements under the quality note floor (SICN {float(quality.get('sicn_floor') or 0.1):g})",
+             "measured": _plain(quality.get("elements_under_floor")),
+             "source": "engines/gmsh/fea_adapter.py (the note floor: SICN 0.1 straight, 0.01 curved)"},
+            {"key": "through_wall_min", "op": ">=", "limit": FEA_WALL_FLOOR,
+             "label": "Elements through the thinnest wall (2 planned; read to within 10%)",
+             "measured": _plain(fea_m.get("through_wall_min")),
+             "source": "docs/RULES.md PLAN-fea-3 (engines/fea_checks.py)"}]
+    rows += [{"key": k, "label": lab, "op": op, "limit": lim, "measured": _plain(quality.get(k)),
+              "source": src} for k, lab, op, lim, src in (*fea_rows, FEA_RULES_ROW)]
+    coarse = fea_m.get("coarsened") if isinstance(fea_m.get("coarsened"), Mapping) else None
+    if coarse:
+        # PLAN-fea-8: the rules needed more than the element limit, so the finest zones were made
+        # coarser to fit; what that leaves short is named, as a note (Areen, 21 Oct)
+        rows.append({"key": "fea_resolution_short", "op": "empty", "limit": [],
+                     "measured": [str(x) for x in fea_m.get("resolution_short") or []],
+                     "label": (f"The rules need {coarse.get('needed_words') or 'more elements'}, more than the element "
+                               "limit allows - the finest zones were made coarser to fit; short of the rules where named"),
+                     "source": "docs/RULES.md PLAN-fea-8 (engines/fea_driver.choose_plan)"})
+    raw_aside = quality.get("fea_set_aside")
+    aside: Mapping = raw_aside if isinstance(raw_aside, Mapping) else {}
+    if aside.get("elements") and aside.get("places_mm") and aside.get("cusp_elements", 1):
+        # PLAN-fea-10: the elements set aside at a cusp are delivered with a CONCERN that names each
+        # place (Areen's decision, 21 Oct): never silently, never as a pass
+        places = [f"({', '.join(f'{float(v):g}' for v in p)}) mm" for p in aside.get("places_mm") or []]
+        rows.append({"key": "fea_cusps", "op": "empty", "limit": [], "measured": places,
+                     "label": (f"{int(aside.get('cusp_elements') or aside['elements'])} element(s) at a cusp in the CAD, set aside from the quality "
+                               "floor - the material runs to nothing here, so stress at this point is not meaningful; "
+                               "round it off in CAD for a clean mesh"),
+                     "source": "docs/RULES.md PLAN-fea-10 (cad/fea_measure.cad_cusps)"})
+    micro = [m for m in aside.get("micro") or [] if isinstance(m, Mapping)]
+    if aside.get("micro_elements") and micro:
+        # PLAN-fea-12: each micro detail named, and that stress right at it is not resolved (Areen,
+        # 21 Oct: on a gear that is the contact stress at the tooth tips, and the note says so)
+        places = [f"({', '.join(f'{float(v):g}' for v in m.get('at_mm') or [])}) mm, a {m.get('kind')} "
+                  f"{float(m.get('size_mm') or 0.0):.3g} mm across" for m in micro]
+        rows.append({"key": "fea_micro_details", "op": "empty", "limit": [], "measured": places,
+                     "label": (f"{int(aside['micro_elements'])} element(s) on CAD details far smaller than the mesh, set "
+                               "aside from the quality floor - the mesh cannot follow these details, so stress right at "
+                               "them is not resolved (on a gear, the contact stress at the tooth tips is not resolved); "
+                               "remove or enlarge them in CAD for a clean mesh"),
+                     "source": "docs/RULES.md PLAN-fea-12 (cad/fea_measure.cad_micro)"})
+    return rows
 
 
 def _plain(v: Any) -> Any:
@@ -215,4 +295,5 @@ def words(row: Mapping) -> str:
     return f"{row.get('label')}: measured {measured}, limit {op}{limit_text}"
 
 
-__all__ = ["PRODUCTION_LIMITS", "Limit", "gating_rows", "inputs_for", "limits_for", "words"]
+__all__ = ["FEA_RULES_ROW", "PRODUCTION_LIMITS", "Limit", "fea_limits", "gating_rows", "inputs_for",
+           "limits_for", "words"]

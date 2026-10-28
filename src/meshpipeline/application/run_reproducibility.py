@@ -73,6 +73,15 @@ def build(job_id: str, state: Mapping[str, Any]) -> dict[str, Any]:
         rec["ai"] = {"cache_mode": AI_DECISION_CACHE, "routes": ai_provenance(),
                      "decisions": decisions_for(job_id)}
         ws = str(state.get("openfoam_workspace") or "")
+        # THE USER'S OWN NOTES the run was given (contracts/user_notes): how many, a digest of
+        # the exact words, and what the steps said they did with them
+        notes = list(state.get("user_notes") or [])
+        if notes:
+            from meshpipeline.contracts.user_notes import read_remarks
+            rec["user_notes"] = {"count": len(notes),
+                                 "sha256": _digest([n.get("text") for n in notes
+                                                    if isinstance(n, Mapping)]),
+                                 "remarks": read_remarks(ws)}
         rec["mesh"] = det.read_stamp(ws) if ws else None
         # the clocks that still decide (TIME-6: the CAD repair steps), and every guard clock that
         # tripped outside a native run (TIME-3..5) - beside the case or in this process

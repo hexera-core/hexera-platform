@@ -28,9 +28,40 @@ logger = logging.getLogger(__name__)
 job_repo      = JobRepository()
 artifact_repo = ArtifactRepository()
 
+#: storage key -> (signed url, monotonic time until which it may be handed out again)
 _signed_url_cache: OrderedDict[str, tuple[str, float]] = OrderedDict()
-_SIGNED_URL_CACHE_TTL_MARGIN = 60
 _SIGNED_URL_CACHE_MAX = 2048 #: bound the per-process cache
+
+# HOW LONG A DOWNLOAD LINK LIVES. A signed URL is checked when a request STARTS, and again on every
+# resumed request: a browser that loses the connection half-way through a 900 MB FEA deck resumes
+# with a Range request on the SAME url. A flat 15 minutes was shorter than the download itself on a
+# slow line, so the resume came back 403. The life therefore scales with the file: long enough to
+# fetch it at a slow connection's speed, never shorter than the configured floor
+# (MINIO_SIGNED_URL_TTL) and never longer than the ceiling. A small file keeps the short life.
+#: the slow connection a link must survive: 1 Mbit/s, in bytes per second
+DOWNLOAD_LINK_SLOW_BYTES_PER_S = 125_000
+#: no link outlives this, however large the file
+DOWNLOAD_LINK_MAX_TTL_S = 12 * 3600
+
+
+def download_link_ttl(size_bytes: int | None) -> int:
+    """Seconds a download link for a file of `size_bytes` stays valid.
+
+    MINIO_SIGNED_URL_TTL for a small file and for an unknown size; for a large one, the time it
+    takes at DOWNLOAD_LINK_SLOW_BYTES_PER_S (a 900 MB deck: 2 h), capped at DOWNLOAD_LINK_MAX_TTL_S.
+    """
+    floor = max(1, int(provcfg.MINIO_SIGNED_URL_TTL))
+    try:
+        size = max(0, int(size_bytes or 0))
+    except (TypeError, ValueError):
+        size = 0
+    needed = -(-size // DOWNLOAD_LINK_SLOW_BYTES_PER_S)   # ceiling division
+    return int(min(max(floor, needed), max(floor, DOWNLOAD_LINK_MAX_TTL_S)))
+
+
+def download_name(storage_key: str) -> str:
+    """The file name a browser saves a download under: the stored object's own name."""
+    return str(storage_key or "").rstrip("/").rsplit("/", 1)[-1] or "download"
 
 
 def final_attempt_workspace(job_id: str):
@@ -139,24 +170,62 @@ class JobService:
                                                  limit=limit, before=before)
 
 
-    async def signed_url(self, storage_key: str) -> str:
+    async def signed_url(self, storage_key: str, size_bytes: int | None = None) -> str:
+        """A download link for one stored artifact, as the job read lists it.
+
+        Reused from the per-process cache only while at least HALF its life remains: a job read
+        is polled, and the link it hands out must still have most of its life ahead of it when
+        the user gets round to clicking (the old cache served a link with one minute left). A
+        click does not rely on this link: it asks `fresh_download_link` for a new one.
+        """
         now = time.monotonic()
-        cached_url, expiry = _signed_url_cache.get(storage_key, ("", 0.0))
-        if cached_url and now < expiry:
+        cached_url, reuse_until = _signed_url_cache.get(storage_key, ("", 0.0))
+        if cached_url and now < reuse_until:
             return cached_url
 
-        from meshpipeline.contracts.object_storage import get_object_store
-        ttl_s = provcfg.MINIO_SIGNED_URL_TTL
-        store = get_object_store()
-        url = await asyncio.to_thread(
-            lambda: store.create_download_url(object_key=storage_key,
-                                              expires_in=timedelta(seconds=ttl_s)))
-        effective_ttl = max(0, ttl_s - _SIGNED_URL_CACHE_TTL_MARGIN)
-        _signed_url_cache[storage_key] = (url, now + effective_ttl)
+        ttl_s = download_link_ttl(size_bytes)
+        url = await self._sign(storage_key, ttl_s)
+        _signed_url_cache[storage_key] = (url, now + ttl_s / 2)
         _signed_url_cache.move_to_end(storage_key)
         while len(_signed_url_cache) > _SIGNED_URL_CACHE_MAX:
             _signed_url_cache.popitem(last=False)  # evict oldest
         return url
+
+    async def fresh_download_link(self, storage_key: str, size_bytes: int | None = None
+                                  ) -> tuple[str, int]:
+        """A NEWLY signed link and its life in seconds: what a Download click is handed.
+
+        Never cached, so the link's whole life lies ahead of the download. The life scales with
+        the file (`download_link_ttl`); a row whose size was never recorded is measured in the
+        store, so a large file is not given a small file's life.
+        """
+        if not size_bytes:
+            size_bytes = await self._stored_size(storage_key)
+        ttl_s = download_link_ttl(size_bytes)
+        return await self._sign(storage_key, ttl_s), ttl_s
+
+    @staticmethod
+    async def _sign(storage_key: str, ttl_s: int) -> str:
+        from meshpipeline.contracts.object_storage import get_object_store
+        store = get_object_store()
+        # Signed as an ATTACHMENT under the object's own name, so the browser saves it rather than
+        # rendering it (a text report or a .vtk would otherwise open in the tab), and so the
+        # console can tell a refused link - which renders an error page - from a download.
+        return await asyncio.to_thread(
+            lambda: store.create_download_url(object_key=storage_key,
+                                              expires_in=timedelta(seconds=ttl_s),
+                                              download_name=download_name(storage_key)))
+
+    @staticmethod
+    async def _stored_size(storage_key: str) -> int:
+        from meshpipeline.contracts.object_storage import get_object_store
+        try:
+            stored = await asyncio.to_thread(
+                lambda: get_object_store().stat_object(object_key=storage_key))
+            return int(stored.size_bytes or 0)
+        except Exception as exc:  # noqa: BLE001 - an unmeasured file still gets a link
+            logger.warning("download link: could not measure %s (%s)", storage_key, exc)
+            return 0
 
 
 # #

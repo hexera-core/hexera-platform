@@ -710,7 +710,6 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
     from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.BRepGProp import BRepGProp
     from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.BRepTools import BRepTools, BRepTools_WireExplorer
     from OCP.GeomAbs import GeomAbs_Plane
     from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
@@ -728,6 +727,7 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
     from OCP.TopLoc import TopLoc_Location
     from OCP.TopoDS import TopoDS, TopoDS_Compound
 
+    from meshpipeline.cad.occ_box import incremental_mesh
     from meshpipeline.cad.stl_io import write_stl_binary
 
     geom_path = Path(geom_path)
@@ -927,7 +927,7 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             g = GProp_GProps(); BRepGProp.SurfaceProperties_s(cand, g)
             if g.Mass() <= 0:
                 continue
-            BRepMesh_IncrementalMesh(cand, lin, False, angular_deflection, True)
+            incremental_mesh(cand, lin, angular_deflection)
             if _triangles_of(cand):
                 return cand
         return None
@@ -998,7 +998,7 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             lf = TopoDS.Face_s(fe.Current())
             gl = GProp_GProps(); BRepGProp.SurfaceProperties_s(lf, gl)
             if gl.Mass() > 1e-9 * before:
-                BRepMesh_IncrementalMesh(lf, lin, False, angular_deflection, True)
+                incremental_mesh(lf, lin, angular_deflection)
                 if _triangles_of(lf):
                     left.append(lf)
             fe.Next()

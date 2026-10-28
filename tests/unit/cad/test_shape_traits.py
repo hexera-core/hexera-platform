@@ -202,3 +202,45 @@ def test_traits_round_trip_through_their_dict():
     assert ShapeTraits.from_dict(t.as_dict()) == t
     assert ShapeTraits.from_dict({"flow": "external", "unknown_key": 1}).flow == "external"
     assert ShapeTraits.from_dict(None) == ShapeTraits()
+
+
+# THE GAP RULE AT APPROVAL (engines/gap_sizing): the cells a mesh needs to put 13 across every
+# measured gap - a count, so the same in millimetres or metres - and the narrowest gap.
+
+def test_a_tube_costs_the_gap_rule_by_its_own_width_in_any_unit(tmp_path):
+    shape = _cyl((0, 0, 0), (1, 0, 0), 10.0, 200.0)
+    cad = measure_file(_step(shape, tmp_path / "tube.step"), flow="internal",
+                       input_kind="fluid-domain", patches=TUBE_PORTS)
+    # every chord about the 20 mm bore: wall area x 13^3 / (4 x 20^2), about 18 k cells
+    assert cad.gap_cells == pytest.approx(13195.0 * 13 ** 3 / (4 * 20.0 ** 2), rel=0.4), cad
+    assert 0.008 < cad.narrowest_gap < 0.022, cad
+    tris = read_triangles(_stl(shape, tmp_path / "tube.stl"))[0] / 1000.0
+    metres = measure(tris, flow="internal", input_kind="fluid-domain", scale_to_m=1.0)
+    assert metres.gap_cells == pytest.approx(cad.gap_cells, rel=0.15)
+    assert metres.narrowest_gap == pytest.approx(cad.narrowest_gap, rel=0.25)
+
+
+def test_a_narrower_passage_costs_the_square_more(tmp_path):
+    wide = measure_file(_step(_cyl((0, 0, 0), (1, 0, 0), 10.0, 200.0), tmp_path / "w.step"),
+                        flow="internal", input_kind="fluid-domain", patches=TUBE_PORTS)
+    thin = measure_file(_step(_cyl((0, 0, 0), (1, 0, 0), 5.0, 400.0), tmp_path / "n.step"),
+                        flow="internal", input_kind="fluid-domain",
+                        patches=_ports({"diameter_mm": 10.0}, {"diameter_mm": 10.0}))
+    # the same wall area, half the width: four times the cells
+    assert thin.gap_cells / wide.gap_cells == pytest.approx(4.0, rel=0.35)
+
+
+def test_the_gap_between_two_bodies_in_external_flow_is_measured(tmp_path):
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+    comp = TopoDS_Compound()
+    bld = BRep_Builder()
+    bld.MakeCompound(comp)
+    bld.Add(comp, _box(100.0, 100.0, 100.0))
+    bld.Add(comp, _box(100.0, 100.0, 100.0, origin=(102.0, 0.0, 0.0)))      # a 2 mm slot
+    t = measure_file(_step(comp, tmp_path / "pair.step"), flow="external", flow_axis="+y")
+    assert t.narrowest_gap == pytest.approx(0.002, rel=0.2), t
+    assert t.gap_cells and t.gap_cells > 0
+    alone = measure_file(_step(_box(100.0, 100.0, 100.0), tmp_path / "one.step"),
+                         flow="external", flow_axis="+y")
+    assert alone.gap_cells is None and alone.narrowest_gap is None, "no gap, no gap rule"

@@ -30,7 +30,7 @@ def test_the_stage_waits_for_the_purpose_then_opens_on_the_right_path():
 def test_the_view_says_the_bodies_and_the_clean_check_in_plain_words():
     clean = {"solids": 1, "validity": {"clean": True, "kind": "brep", "summary": "The geometry is clean."}}
     view = fea_check.fea_view(clean)
-    assert view["bodies"] == 1 and view["clean"] is True and view["can_proceed"]
+    assert view["bodies"] == 1 and view["clean"] is True and "assembly" not in view
     assert view["question"] == "Is this your part and are the units right?"
     dirty = {"solids": 1, "validity": {"clean": False, "kind": "brep",
                                        "summary": "The geometry is not clean: 2 faces overlap"}}
@@ -38,12 +38,25 @@ def test_the_view_says_the_bodies_and_the_clean_check_in_plain_words():
     assert fea_check.fea_view({"solids": 1})["clean"] is None
 
 
-def test_several_bodies_get_a_clear_message_and_no_proceed():
-    view = fea_check.fea_view({"solids": 3})
-    assert not view["can_proceed"]
-    assert view["single_part_only"].startswith("This file has 3 separate bodies. Version 1 meshes one part")
-    assert fea_check.multi_body_message({"solids": 1}) == ""
-    assert fea_check.multi_body_message({}) == ""
+def test_several_bodies_are_an_assembly_with_one_question():
+    # measured: the parts, where they touch, and the question with bonded the default
+    facts = {"solids": 2, "fea_measure": {"measured": True, "assembly": {
+        "parts": [{"id": "Part_1", "name": "Flange", "faces": 6}, {"id": "Part_2", "name": "", "faces": 6}],
+        "interfaces": [{"id": "Interface_1", "kind": "touching", "parts": ["Part_1", "Part_2"],
+                        "at_mm": [10.0, 5.0, 5.0], "area_mm2": 100.0,
+                        "faces": {"Part_1": ["Part_1_Face_2"], "Part_2": ["Part_2_Face_1"]}}],
+        "free_parts": [], "notes": []}}}
+    asm = fea_check.fea_view(facts)["assembly"]
+    assert asm["question"] == "How are the parts connected?" and asm["default"] == "bonded"
+    assert [o["key"] for o in asm["options"]] == ["bonded", "contact"]
+    assert asm["summary"] == "2 parts, 1 place where parts touch"
+    assert asm["interfaces"][0]["at_mm"] == [10.0, 5.0, 5.0]
+    assert fea_check.parts_words(asm) == "2 parts: Part_1 (Flange) and Part_2"
+    # not measured yet: still an assembly, still the question
+    bare = fea_check.fea_view({"solids": 3})["assembly"]
+    assert bare["parts"] == [] and bare["summary"] == "3 parts" and bare["question"]
+    assert "assembly" not in fea_check.fea_view({"solids": 1})
+    assert fea_check.connection_answer("Contact") == "contact" and fea_check.connection_answer("weld") == ""
 
 
 def test_the_declaration_is_a_structural_solid_with_no_fluid_words():
@@ -76,3 +89,27 @@ def test_the_naming_step_asks_no_model_for_an_fea_part(monkeypatch):
     assert gc._is_fea("simulation\n" + pm.DOMAIN_CHOICES[1][1])
     assert not gc._is_fea("simulation\n" + pm.DOMAIN_CHOICES[0][1])
     assert gc._is_fea("thermal\n" + pm.THERMAL_CHOICES[1][1])
+
+
+def test_one_solid_of_overlapping_pieces_is_said_the_same_on_both_lines():
+    """A turbine blade and its root drawn as two overlapping lumps of one solid: the stage counted
+    1 body while the clean check said 1 pair of bodies pass into each other (22 Oct)."""
+    facts = {"solids": 1, "validity": {"clean": False, "kind": "brep", "measured": {"bodies": 2},
+                                       "summary": "1 pair of separate bodies pass into each other"}}
+    view = fea_check.fea_view(facts)
+    assert view["bodies"] == 1 and view["pieces"] == 2
+    assert fea_check.piece_count({"solids": 1}) is None
+
+
+def test_a_gentle_curve_is_not_a_fillet_hot_spot():
+    import numpy as np
+
+    from meshpipeline.cad import fea_features as ff
+
+    blade = ff.Arc(kind="cylinder", radius=205.0, span_deg=30.0, concave=True, axis=np.array([0, 0, 1.0]),
+                   centre=np.zeros(3))
+    blend = ff.Arc(kind="cylinder", radius=4.0, span_deg=90.0, concave=True, axis=np.array([0, 0, 1.0]),
+                   centre=np.zeros(3))
+    assert ff.kind_of(blade, diag=320.0) is None                  # the blade's own camber
+    assert ff.kind_of(blend, diag=320.0) == (ff.FILLET, "fillet")  # a real blend
+    assert ff.kind_of(blade) == (ff.FILLET, "fillet")              # no size known: as before

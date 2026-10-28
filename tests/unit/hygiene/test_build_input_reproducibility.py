@@ -64,7 +64,8 @@ def image_references() -> list[tuple[str, str]]:
     renderings = ci_renderings()
     locally_built = {tag
                      for ci_text in renderings
-                     for tag in re.findall(r"docker\s+build\s+[^\n]*?-t\s+(\S+)", ci_text)}
+                     # `docker build`, or the layer-cached `docker buildx build` CI runs
+                     for tag in re.findall(r"docker\s+(?:buildx\s+)?build\s+[^\n]*?-t\s+(\S+)", ci_text)}
     seen: set[str] = set()
     for ci_text in renderings:
         for m in re.finditer(r"docker\s+run\s+(?:[-\w=.]+\s+)*([\w./-]+:[\w.@:-]+)", ci_text):

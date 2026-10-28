@@ -111,6 +111,43 @@ def _passages_meshed(workspace: Path) -> int:
         return 1
 
 
+def check_connected(workspace: Path) -> tuple[bool, str]:
+    """THE LEAN STAND-IN for the trial solve on a mesh over one job's cell limit (LAD-cfd-4): the
+    solve's matrix would outgrow the worker, but a disconnected pocket - the one thing the solve
+    catches that checkMesh's fatal list does not - is found from the cell graph alone. The mesh
+    has to be one connected region per passage it was meshed as. Unreadable connectivity (a
+    binary mesh) falls back to pass, as the full solve does."""
+    import scipy.sparse as sp
+    from scipy.sparse.csgraph import connected_components
+
+    pm = Path(workspace) / "constant" / "polyMesh"
+    neigh = _read_foam_labels(pm / "neighbour")
+    owner = _read_foam_labels(pm / "owner")
+    if owner is None or neigh is None or owner.size == 0:
+        logger.warning("connectivity(polyMesh): owner/neighbour unparseable - region count "
+                       "SKIPPED, passing on checkMesh's fatal list")
+        return True, ""
+    nf = int(neigh.size)
+    oi = owner[:nf].astype(np.int32, copy=False)
+    ni = neigh.astype(np.int32, copy=False)
+    del neigh
+    n_cells = int(owner.max()) + 1
+    if nf:
+        n_cells = max(n_cells, int(ni.max()) + 1)
+    del owner
+    graph = sp.coo_matrix((np.ones(nf, dtype=np.int8), (oi, ni)), shape=(n_cells, n_cells))
+    regions, _ = connected_components(graph, directed=False)
+    passages = _passages_meshed(workspace)
+    if int(regions) <= passages:
+        logger.info("connectivity(polyMesh): PASS - %d cells in %d region(s), %d passage(s)",
+                    n_cells, regions, passages)
+        return True, ""
+    return False, (
+        f"[UNSOLVABLE] the mesh falls apart into {int(regions)} disconnected regions where it was "
+        f"meshed as {passages} passage(s): a pocket of cells no flow can reach, so the pressure "
+        "equation has no single solution there. Rebuild with a single connected domain.")
+
+
 def _assemble_pinned_laplacian(owner, neigh, n_cells: int, pins=(0,)):
     """The FV graph Laplacian L = D - A (A[i,j] = A[j,i] = 1 per internal face, duplicates
     summed) with cell 0 pinned as the reference pressure: row 0 and column 0 cleared, L[0,0] = 1,

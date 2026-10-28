@@ -244,8 +244,12 @@ def test_the_prepared_values_are_the_engine_policy_not_a_restatement(monkeypatch
 
     assert prepared.refusal is None, prepared.refusal
     assert prepared.engine == ctx.engine, "the announcement would name a different engine"
-    assert prepared.cap == get_spec(engine).run_policy.run_timeout(), (
-        "the announced cap is not the engine-declared run budget")
+    # a WATCHED engine (contracts/native_time) is capped only by the machine's wall; any other
+    # keeps its declared run budget
+    policy = get_spec(engine).run_policy
+    from meshpipeline.contracts.native_time import wall_for
+    expected = wall_for(ctx.workspace) if policy.watched else policy.run_timeout()
+    assert prepared.cap == expected, "the announced cap is not the engine's run cap"
     assert prepared.purpose == read_purpose(ctx.workspace)
     from meshpipeline.engines.mesh_history import estimate
     assert prepared.history == estimate(prepared.engine, prepared.purpose), (

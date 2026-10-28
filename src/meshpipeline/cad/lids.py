@@ -222,6 +222,63 @@ def ring(P: np.ndarray, Q: np.ndarray) -> np.ndarray:
     return out
 
 
+def ring_bridged(P: np.ndarray, Q: np.ndarray) -> np.ndarray:
+    """Triangles between an outer loop P and an inner loop Q of ANY shape (INS-5): a centre body's
+    outline that does not turn once around the mouth's centre (spokes, a notched hub) is joined to
+    the outer loop by one bridge - from the inner loop's point nearest the outer loop to the
+    nearest outer point the bridge reaches without crossing either loop - and the one polygon that
+    makes is ear-clipped in P's plane. Same index order and winding as ring(); LidError when no
+    bridge or no clipping tiles the ring."""
+    P, Q = np.asarray(P, dtype=float), np.asarray(Q, dtype=float)
+    c, n, _area, _dev = frame(P)
+    u, v = _basis(n)
+    xp = np.c_[(P - c) @ u, (P - c) @ v]
+    xq = np.c_[(Q - c) @ u, (Q - c) @ v]
+    m, k = len(P), len(Q)
+    if _signed_area(xp) <= 0:
+        raise LidError("the outer loop is seen from behind in its own plane")
+    qi = np.arange(k) if _signed_area(xq) < 0 else np.arange(k)[::-1]   # the hole runs clockwise
+    xq = xq[qi]
+    edges = np.vstack([np.c_[xp, np.roll(xp, -1, axis=0)], np.c_[xq, np.roll(xq, -1, axis=0)]])
+
+    def clear(a: np.ndarray, b: np.ndarray) -> bool:
+        p0, p1 = edges[:, 0:2], edges[:, 2:4]
+        d1 = _cross(a, b, p0)
+        d2 = _cross(a, b, p1)
+        d3 = _cross(p0, p1, a[None, :].repeat(len(p0), 0))
+        d4 = _cross(p0, p1, b[None, :].repeat(len(p0), 0))
+        span = float(np.max(np.ptp(xp, axis=0))) or 1.0
+        eps = 1e-12 * span * span
+        proper = (((d1 > eps) & (d2 < -eps)) | ((d1 < -eps) & (d2 > eps))) & \
+                 (((d3 > eps) & (d4 < -eps)) | ((d3 < -eps) & (d4 > eps)))
+        return not bool(proper.any())
+
+    order_q = np.argsort(np.min(np.linalg.norm(xq[:, None, :] - xp[None, :, :], axis=2), axis=1), kind="stable")
+    bridge = None
+    for j in order_q[:64].tolist():
+        dist = np.linalg.norm(xp - xq[j], axis=1)
+        for i in np.argsort(dist, kind="stable")[:64].tolist():
+            if clear(xq[j], xp[i]):
+                bridge = (i, j)
+                break
+        if bridge is not None:
+            break
+    if bridge is None:
+        raise LidError("no bridge from the centre body's outline to the mouth's edge crosses neither")
+    i, j = bridge
+    seq = list(range(i + 1)) + [m + int(qi[(j + s) % k]) for s in range(k + 1)] + list(range(i, m))
+    allp = np.vstack([P, Q])
+    all_xy = np.vstack([xp, np.c_[(Q - c) @ u, (Q - c) @ v]])
+    tris = _earclip(all_xy[seq], allp[seq])
+    if tris is None:
+        raise LidError("the ring with its bridge could not be clipped into triangles")
+    out = np.asarray(seq, dtype=np.int64)[tris]
+    whole = _signed_area(xp) - abs(_signed_area(np.c_[(Q - c) @ u, (Q - c) @ v]))
+    if not _tiles(all_xy, out, area=whole):
+        raise LidError("the bridged ring's triangles do not tile the ring")
+    return out
+
+
 def _wrap(a):
     return (np.asarray(a) + math.pi) % (2 * math.pi) - math.pi
 
@@ -437,4 +494,4 @@ def _area_flips(xy: np.ndarray, P: np.ndarray, tris: np.ndarray) -> np.ndarray:
     return _flip_pass(xy, tris, better)
 
 
-__all__ = ["FLAT", "LidError", "frame", "lid"]
+__all__ = ["FLAT", "LidError", "frame", "lid", "ring", "ring_bridged"]

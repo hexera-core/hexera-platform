@@ -133,6 +133,9 @@ class PipelineState(TypedDict):
     executor_failure_facts: dict       # the plain facts the user's sentence is built from
     geometry_unsuitable_reason: str    # node_geometry_admission's reject reason (unmeshable input)
     flow_topology:      str            # "internal"/"external"/"" - DERIVED from purpose (neutral fact, NOT an engine_param)
+    leak_closing:       dict | None    # INS-8: {"close_up_to_m", "rule"} as confirmed on the stage; None = the surface as drawn
+    fea_connection:     str            # an FEA assembly: "bonded" | "contact", as confirmed on the stage ("" otherwise)
+    fea_gap_joins:      bool           # an FEA assembly: parts across a small gap joined there (PLAN-fea-18); True unless switched off
     mesh_manifest:      dict
     reviewer_result:         str
     reviewer_verdict:        str
@@ -200,6 +203,18 @@ class PipelineState(TypedDict):
     # machine-measured requirement near-misses for the CURRENT attempt (executor-owned;
     # empty means fully conforming). Deterministic code authors these; no agent may.
     requirement_caveats: list
+    # THE USER'S OWN NOTES (contracts/user_notes): their words exactly as typed, seeded by the
+    # application from the approval and never rewritten by a node. Every route's AI steps read
+    # them and answer per requirement; the result says what became of each.
+    user_notes: list
+    # THE RESOLUTION LADDER (engines/resolution_policy, LAD-cfd-1/2): the rung the current
+    # attempt was built at, the engine it belongs to, and the shortfall it answers. Set by the
+    # engine-fallback node between attempts; written into the attempt's workspace by the builder.
+    resolution_ladder: dict
+    # Every SOUND mesh this run built (executor-owned, append-only): attempt, workspace, engine,
+    # parameters and its notes. A later attempt that comes out broken never throws an earlier
+    # sound mesh away (LAD-cfd-3, node_deliver_sound).
+    sound_attempts: list
 
     builder_noop_count:     int
     # The Builder's declared STOP (agents/builder/driver_run.STOP_*), "" otherwise: it built

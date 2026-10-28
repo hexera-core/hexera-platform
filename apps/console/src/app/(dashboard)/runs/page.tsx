@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
+import { DashboardNotice } from "@/app/_components/dashboard-notice";
 import { formatDuration, runTitle, statusClass, statusLabel } from "@/app/_components/run-status";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
@@ -40,10 +41,10 @@ export default async function RunsPage({
     <div className="page">
       <div className="page__head">
         <div>
-          <p className="page__eyebrow">Pipeline history</p>
+          <p className="page__eyebrow">Runs</p>
           <h1 className="page__title">Mesh runs</h1>
           <p className="page__intro">
-            Every submitted study, from intake through native meshing and final quality review.
+            Every mesh you have asked for, newest first. Open one to see its steps and downloads.
           </p>
         </div>
         <Link className="btn btn--gold" href="/runs/new">
@@ -53,28 +54,34 @@ export default async function RunsPage({
 
       {page === null ? (
         // Fails soft, like every panel. A degraded API costs this table, never the page.
-        <p className="empty card">Could not reach the API just now. Reload to try again.</p>
+        <DashboardNotice
+          body="Refresh the page to try again. Your existing runs are not affected."
+          retryLabel="Try again"
+          title="We couldn't load your runs"
+          tone="error"
+        />
       ) : page.items.length === 0 ? (
-        <p className="empty card">
-          No runs yet. Upload a geometry file and describe the study you need — the first mesh
-          takes minutes, not days.
-        </p>
+        <DashboardNotice
+          action={{ href: "/runs/new", label: "Start a run" }}
+          body="Upload a geometry file and describe what the mesh is for."
+          title="No runs yet"
+        />
       ) : (
         <section className="panel">
           <div className="panel__head">
             <div>
-              <p className="label">Run ledger</p>
-              <p className="page__sub">Status, duration and attempts for each mesh pipeline.</p>
+              <p className="label">All runs</p>
+              <p className="page__sub">How each run ended, how long it took and how many tries it needed.</p>
             </div>
           </div>
           <table className="table">
             <thead>
               <tr>
                 <th>Status</th>
-                <th>Study</th>
+                <th>Run</th>
                 <th>Started</th>
                 <th>Duration</th>
-                <th>Attempts</th>
+                <th>Tries</th>
               </tr>
             </thead>
             <tbody>

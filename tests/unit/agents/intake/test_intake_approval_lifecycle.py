@@ -23,6 +23,7 @@ import meshpipeline.agents.intake.agent as intake
 import meshpipeline.agents.intake.approval as ap
 import meshpipeline.agents.intake.engine_selection as es
 import meshpipeline.api.v1.chat as chat_mod
+from meshpipeline.contracts import user_notes as un
 
 # ONE approved upload for this module: the session points at it, the dispatch snapshot
 # carries it, and the fingerprint binds it.
@@ -195,7 +196,8 @@ def test_a_supported_submit_persists_a_pending_snapshot_bound_to_everything():
         "gmsh", session_id="s", owner_id="u",
         revision=at.revision_of([{"role": "user", "content": "go on"}]))
     state = {"job_id": "j", "session_id": "s", "user_id": "u",
-             "messages": [{"role": "user", "content": "go on"}],
+             "messages": [{"role": "assistant", "content": un.QUESTION},
+                          {"role": "user", "content": "go on"}],
              "intake_gate": {"selection": sel, "admission": None}}
 
     def _submit_with_token():
@@ -226,7 +228,8 @@ def _submit_turn(gate_approval=None):
         "gmsh", session_id="s", owner_id="u",
         revision=at.revision_of([{"role": "user", "content": "go on"}]))
     state = {"job_id": "j", "session_id": "s", "user_id": "u",
-             "messages": [{"role": "user", "content": "go on"}],
+             "messages": [{"role": "assistant", "content": un.QUESTION},
+                          {"role": "user", "content": "go on"}],
              "intake_gate": {"selection": sel, "admission": None, "approval": gate_approval}}
 
     def _submit_with_token():

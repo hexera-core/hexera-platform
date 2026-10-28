@@ -177,9 +177,12 @@ class _Publish:
     async def areasoning(self, *_a, **_k): pass
 
 
-_TIMEOUT = {"rc": RC_TIMED_OUT, "timed_out": True, "provider_reference": OP,
-            "log_tail": "[CLOUD_RUN_TIMEOUT] snappy: the mesh run ran out of time - no result "
-                        "after 50 min."}
+# A STUCK run: since no time limit is guessed any more (contracts/native_time), a snappy run comes
+# back timed out only when it made no progress for the stall window (`stalled`) or met even a VM's
+# wall - and those alone pull the re-plan-smaller lever these tests pin. A run stopped at the Cloud
+# Run wall still working moves to a VM instead (test_snappy_progress_not_clock.py).
+_TIMEOUT = {"rc": RC_TIMED_OUT, "timed_out": True, "stalled": True, "provider_reference": OP,
+            "log_tail": "snappy: snappyHexMesh made no progress for 15 minutes."}
 _CLEAN = {"cells": 1_500_000, "fatal": [], "skew_fraction": 0.0, "skew_faces": 0}
 
 
@@ -298,8 +301,10 @@ def test_a_pass_its_guard_stops_ends_the_passes_as_a_guard_trip(external):
     assert outcome and outcome[0].startswith("Pass 1 stopped by its guard clock"), outcome
     assert "infrastructure stop" in outcome[0]
     assert not (ws / ".timed_out_plan.json").exists(), "a clock never makes a later pass coarser"
-    # the guard came from the pass's planned cells (TIME-2), and the trip is beside the case
-    assert external.guards == [_guard_of(6_000_000)]
+    # the pass ran watched to its machine's wall (RUN-5) - its guard - and stopped as stuck
+    # inside it; the trip is beside the case with the pass's planned cells (TIME-2)
+    from meshpipeline.contracts.native_time import wall_for
+    assert external.guards == [wall_for(ws)]
     trips = det.guard_trips(ws)
     assert [(t["where"], t["step"], t["amount"]) for t in trips] == [("snappy", "pass 1",
                                                                        6_000_000.0)]
@@ -312,6 +317,16 @@ def test_a_pass_guard_comes_from_its_planned_cells_alone():
     assert _guard_of(500_000) == 2400                                # never under the old cap
     work = drv.pass_guard(2_000_000, job_id="", attempt=1)
     assert work.as_dict()["planned_s"] == pytest.approx(2_000_000 / 1500.0, abs=0.1)
+
+
+def test_a_watched_pass_guard_is_its_machines_wall(tmp_path):
+    # RUN-5: a watched pass is never cut by a guessed limit - its guard is the machine's wall,
+    # whatever its planned cells; the planned work is still what the record carries (TIME-2)
+    from meshpipeline.contracts.native_time import wall_for
+    for cells in (500_000, 2_000_000, 60_000_000):
+        work = drv.pass_guard(cells, job_id="", attempt=1, workspace=tmp_path)
+        assert work.guard_seconds == wall_for(tmp_path)
+        assert work.as_dict()["amount"] == float(cells)
 
 
 def test_a_pass_broken_where_its_layers_were_not_the_cause_is_followed_by_a_coarser_one(
@@ -449,3 +464,22 @@ def test_the_thin_feature_note_never_promises_what_the_budget_cut(internal, monk
     assert thin and thin[0].startswith("Thin feature detected - 3.0 mm across"), thin
     assert says in thin[0]
     assert "so it is captured" not in thin[0]
+
+
+def test_a_pass_its_guard_stops_never_re_plans_the_gap_ceiling(internal, monkeypatch):
+    # a valve cage adapter on a loaded lab VM (2026-10-21): the gap plan raised the ceiling, the
+    # pass ran out of time, and the next pass raised it back to the very case that timed out.
+    # Since D3 a pass its guard stops is not re-planned at all (docs/RULES.md TIME-3): the passes
+    # stop and the attempt is replayed as it was, so the gap plan is made once, against the limit.
+    from meshpipeline.engines import gap_sizing as G
+    calls = []
+
+    def _plan(field, *, budget, limit=None, **_k):
+        calls.append((int(budget), limit))
+        return G.GapPlan(G.NO_NARROW, budget_in=int(budget), budget=int(budget),
+                         limit=int(limit or 8_000_000))
+
+    monkeypatch.setattr(drv, "_gap_plan", _plan)
+    _ws, (ok, _value, _outcome), _pub = internal.go()
+    assert ok is False and internal.runs == [1]
+    assert len(calls) == 1 and calls[0][1] is None, calls

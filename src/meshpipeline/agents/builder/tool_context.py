@@ -39,6 +39,9 @@ class BuilderToolContext:
     #: run_mesh reads it: a broken mesh is then not re-run here, the attempt ends and the run
     #: moves on.
     broken_mesh_moves_to: str = ""
+    #: The user's own notes, verbatim (contracts/user_notes): submit_mesh reads the builder's
+    #: answer per requirement against them. Empty on a run with none.
+    user_notes: tuple = ()
 
     # derived, never stored
     # Properties rather than fields on purpose. A stored `interpretation` could be set to one

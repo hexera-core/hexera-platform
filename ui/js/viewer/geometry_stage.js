@@ -23,7 +23,7 @@ import { esc } from "../core/format.js";
 import { applyFlow, bindAxis, bindUnit, changedAnswers, editsLine, extentAlong, followSuggestion, followUnit, formHtml,
   markConfirmed, noteDrawn, readExternal, readForm, rowHtml, servedProposal, shown, tableHead, unitChoiceHint,
   unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
-import { bindFeaPanel, feaPanelHtml } from "../render/fea_form.js";
+import { bindFeaPanel, bindMeasure, feaPanelHtml, followAssembly, followClean, followMeasure, interfaceMarks, lightSpotRow } from "../render/fea_form.js";
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
 import { bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
@@ -48,6 +48,10 @@ export function b64u32(b) { const bin = atob(b), n = bin.length, u = new Uint8Ar
 const BACKGROUND = [0.035, 0.055, 0.075];
 const BODY = [0.74, 0.78, 0.84], EDGE = [0.30, 0.34, 0.40];
 const STICKER = [1.0, 0.83, 0.0], SEL = [1.0, 0.31, 0.0];
+// an FEA part's hot spots: a quiet steel blue, apart from the stickers' yellow
+const SPOT = [0.42, 0.62, 0.86];
+// an assembly's interfaces: a muted green where parts touch, a muted red where they pass into each other
+const TOUCH = [0.40, 0.72, 0.52], OVERLAP = [0.86, 0.45, 0.40];
 
 function spherePd(cx, cy, cz, r) {
   const la = 12, lo = 16, pts = [], polys = [];
@@ -136,6 +140,8 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
      whether the model was asked to name the openings, whether it answered, or gave up - and
      what to do about it. */
   let naming = false, stalled = false, unitNeeded = !!d.unit_needed, shown = "";
+  // the stage opened on the quick preview of a big file: the full reading is still to land
+  let previewShown = d.preview === "running";
   const STALL_MS = opts.stallMs || 3 * 60 * 1000;
   let askedAt = null, stallTimer = null;
   function showBanner(text, cls, retryStep) {
@@ -238,6 +244,41 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     if (d2.proposal) served = servedProposal(served, d2.proposal);
     followUnit(panel, p, q.unit, q.unit_basis);      // a unit settled in the chat reaches an untouched box
     followSuggestion(panel, p, q.unit_suggestion);   // the other reading, as the server now sees it
+    if ((d2.status === "scouted" || d2.status === "ready") && previewShown && d2.preview !== "running"
+        && !d2.named_on_preview) {
+      // THE FULL READING LANDED on a stage opened on the quick preview of a big file: its openings,
+      // flat faces and holes come in - unless the user already set openings of their own, which
+      // stand; what they changed on the form stays either way
+      previewShown = false;
+      const p2 = d2.proposal || {};
+      if (!(p.openings || []).length) {
+        // the poll may meet the full reading already named (ready): it comes in the same way, and
+        // the ready re-draw below then takes the model's words onto these openings
+        const chosen = p.unit_touched ? { unit: p.unit, unit_basis: p.unit_basis, unit_touched: true } : {};
+        // the flow axis the user turned and the reference length they typed outlive it, as on the
+        // ready re-draw
+        const answered = {};
+        if (p.flow_axis_touched) Object.assign(answered, { flow_axis: p.flow_axis, flow_axis_guessed: false, flow_axis_touched: true });
+        if (p.reference_length_typed) Object.assign(answered, { reference_length_mm: p.reference_length_mm, reference_length_typed: true });
+        p.user_set = { ...(p.user_set || {}), ...changedAnswers(form) };
+        // THE SKIN WAS DRAWN AT THE PREVIEW'S SCALE: a naming that re-read the part in another unit
+        // serves lengths at the new one, so they are read back at the drawing's (the server re-reads
+        // the form from `scale_to_m` on confirm, as for every length on this stage)
+        const mine = p.scale_to_m || 0.001, theirs = p2.scale_to_m || mine;
+        const back = Math.abs(theirs - mine) > 1e-12 ? mine / theirs : 1;
+        const incoming = back === 1 ? p2 : Object.fromEntries(Object.entries(p2)
+          .filter(([k]) => !/^(scale_to_m|unit|unit_basis|unit_assumed)$/.test(k))
+          .map(([k, v]) => [k, atScale(k, v, back)]));
+        Object.assign(p, incoming, chosen, answered, p.user_set);
+        panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
+        form.innerHTML = formHtml(p);
+        applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); scene.rebind();
+        shown = "";
+      } else {
+        if (p2.faces) p.faces = p2.faces;
+        if (p2.holes) p.holes = p2.holes;
+      }
+    }
     if (d2.status === "scouted") {
       if (d2.naming_requested && !stalled) naming = true;
       noteAsked(d2);
@@ -458,6 +499,47 @@ function initScene(sessionId, box, surf, p) {
       if (on) { tr.scrollIntoView({ block: "nearest" }); const inp = tr.querySelector(".gc-name"); if (inp && !inp.disabled) inp.focus({ preventScroll: true }); } });
     rw.render();
   }
+  /* AN FEA PART'S HOT SPOTS (the server's fea.measure, FEA build step 3): a small ball on every
+     hole, fillet, notch and sharp inside corner the mesh will be refined at, and a tag with its
+     number that follows it every frame. Shown only - version 1 refines them all automatically, so
+     a tag lights its line in the panel and nothing more. */
+  let spots = [];
+  /* EVERY hot spot gets its mark: past SPOT_TAGS of them a numbered tag on each would bury the part,
+     so each is a small mark without a number (its number shows when it is pointed at or chosen) */
+  const SPOT_TAGS = 40;
+  let spotMarks = false;
+  function setSpots(list) {
+    spots.forEach((s) => { ren.removeActor(s.actor); s.el.remove(); });
+    spots = [];
+    spotMarks = (list || []).length > SPOT_TAGS;
+    (list || []).forEach(addSpot);
+    bindMeasure(panel, lightSpot);
+    rw.render();
+  }
+  function addSpot(h) {
+    if (!h.at_mm || h.at_mm.length !== 3) return;
+    const c = h.at_mm.map((v) => v / 1000);
+    const mp = vtk.Rendering.Core.vtkMapper.newInstance();
+    mp.setInputData(spherePd(c[0], c[1], c[2], 0.008 * diag));
+    const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
+    const col = h.type === "interface_overlap" ? OVERLAP : h.type === "interface_touching" ? TOUCH : SPOT;
+    const pp = ac.getProperty(); pp.setColor(col[0], col[1], col[2]);
+    pp.setAmbient(0.55); pp.setDiffuse(0.6); pp.setSpecular(0.2);
+    ren.addActor(ac);
+    const el = document.createElement("div");
+    el.className = "v-pin fea-spot" + (String(h.type || "").startsWith("interface_") ? " fea-itf" : "") + (spotMarks ? " mark" : "");
+    el.textContent = String(h.id); el.dataset.spot = String(h.id);
+    el.title = `${h.id}: ${h.shape || h.type}${h.capped ? " (refinement capped)" : ""}`;
+    el.onclick = (ev) => { ev.stopPropagation(); lightSpot(h.id); };
+    host.appendChild(el);
+    spots.push({ id: h.id, c, el, actor: ac });
+  }
+  function lightSpot(id) {
+    spots.forEach((s) => s.el.classList.toggle("sel", s.id === id));
+    lightSpotRow(panel, id);
+  }
+  if (p.hot_spots) setSpots(p.hot_spots);
+
   /* LOOK INTO A MOUTH - the close-up the pictures had, now a camera move: from outside, straight
      down the opening's normal, framed on it */
   function look(id) {
@@ -871,6 +953,14 @@ function initScene(sessionId, box, surf, p) {
       const n = pn.o.n, facing = (n[0] * (x - cp[0]) + n[1] * (y - cp[1]) + n[2] * (z - cp[2])) < 0;
       pn.el.classList.toggle("back", !facing);
     });
+    spots.forEach((s) => {
+      const nd = ren.worldToNormalizedDisplay(s.c[0], s.c[1], s.c[2], aspect);
+      const ok = nd[2] > 0 && nd[2] < 1 && nd[0] >= 0 && nd[0] <= 1 && nd[1] >= 0 && nd[1] <= 1;
+      s.el.style.display = ok ? "" : "none";
+      if (!ok) return;
+      s.el.style.left = (nd[0] * rect.width) + "px";
+      s.el.style.top = ((1 - nd[1]) * rect.height) + "px";
+    });
     placeMeasureLabel(aspect, rect);
     requestAnimationFrame(pinLoop);
   })();
@@ -880,7 +970,7 @@ function initScene(sessionId, box, surf, p) {
   /* support/debug hook - the browser tier drives the stage through it, without pixel picking */
   window._vdbg = window._vdbg || {};
   window._vdbg["gstage:" + sessionId] = {
-    pins: () => pins.length, selected: () => sel, select, look, diag, add, addAt, rayAt, remove, iso,
+    pins: () => pins.length, spots: () => spots.map((s) => s.id), selected: () => sel, select, look, diag, add, addAt, rayAt, remove, iso,
     tracing: () => (trace ? trace.length : null), adding: () => addMode,
     measuring: () => measuring, measured: () => measuredNow(), measureAt, screenOf,
     openings: () => (p.openings || []).map((o) => Number(o.id)),
@@ -893,7 +983,7 @@ function initScene(sessionId, box, surf, p) {
   };
   return {
     stop: () => { alive = false; ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
-    rebind, refresh: refreshExternal,
+    rebind, refresh: refreshExternal, setSpots,
   };
 }
 
@@ -903,12 +993,17 @@ function initScene(sessionId, box, surf, p) {
  * The part in 3D, drawn as the flow stage draws it but with no stickers, no flow arrow and no far
  * field; beside it its size in the file's unit, the unit box, how many bodies the file has and
  * what the clean check found, and the one question: "Is this your part and are the units right?"
- * A file of several bodies is told plainly that version 1 meshes one part at a time.
+ * A file of several bodies is an assembly: its parts are listed, the places they touch are marked,
+ * and it asks how the parts are connected (bonded or contact). Once the part
+ * is measured, its thinnest wall and its hot spots (holes, fillets, notches, sharp inside corners)
+ * are listed and tagged on the part - shown only, as version 1 refines them all automatically.
  * ====================================================================================== */
 async function openFeaStage(sessionId, d, confirm, opts) {
   const f = d.fea || {};
-  // the scene draws stickers from the proposal's openings: an FEA part has none
-  const p = { ...(d.proposal || {}), openings: [] };
+  // the scene draws stickers from the proposal's openings: an FEA part has none, but it has the
+  // hot spots its measurement found (shown, never edited)
+  const p = { ...(d.proposal || {}), openings: [],
+    hot_spots: [...((f.measure && f.measure.hot_spots) || []), ...interfaceMarks(f.assembly)] };
   const id = "gstage-" + sessionId;
   document.getElementById(id)?.remove();
   const box = document.createElement("div"); box.className = "viewer gc-stage fea-stage"; box.id = id;
@@ -943,7 +1038,27 @@ async function openFeaStage(sessionId, d, confirm, opts) {
   return {
     release: () => { if (scene) scene.stop(); release(); },
     // a unit settled in the chat reaches an untouched box; nothing else moves
-    update: (d2) => { const q = (d2 && d2.proposal) || {}; followUnit(panel, p, q.unit, q.unit_basis); },
+    update: (d2) => {
+      const q = (d2 && d2.proposal) || {};
+      followUnit(panel, p, q.unit, q.unit_basis);
+      // THE MEASUREMENT CAN LAND AFTER THE STAGE OPENED (the check was still naming): its lines and
+      // tags are drawn then
+      const m = d2 && d2.fea && d2.fea.measure;
+      const a = d2 && d2.fea && d2.fea.assembly;
+      // the bodies, the clean check and whether it can go on, when the full reading lands after a
+      // preview opened the stage: Proceed reads the same view (`f`), so a stop found late is shown
+      // with its way on rather than met as a refusal
+      // each line followed on its own: one that cannot be drawn never keeps the others stale (26 Oct: the
+      // clean check was redrawn and the parts' joints were not)
+      const follow = (fn) => { try { return !!fn(); } catch (e) { console.warn("FEA stage: not redrawn", e); return false; } };
+      if (d2 && d2.fea) { Object.assign(f, d2.fea); follow(() => followClean(panel, f)); }
+      const movedA = !!a && follow(() => followAssembly(panel, a));
+      const moved = (!!m && follow(() => followMeasure(panel, m, p, null))) || movedA;
+      if (moved) {
+        p.hot_spots = [...(((m || f.measure) || {}).hot_spots || []), ...interfaceMarks(a || f.assembly)];
+        if (scene) scene.setSpots(p.hot_spots);
+      }
+    },
     isNaming: () => false,
   };
 }
@@ -1299,4 +1414,17 @@ function initThermalScene(sessionId, box, surf, t, panel) {
     select, hover, frame, probe,
     stop: () => { alive = false; ro.disconnect(); delete window._vdbg["gstage:" + sessionId]; },
   };
+}
+
+
+/** A proposal's value with every length re-read by `f`, by the server's own rule
+ *  (application/geometry_check.rescaled_lengths): keys ending _mm or _m by f, areas (_mm2, _m2) by
+ *  f squared, at any depth; keys with no unit are left alone. */
+function atScale(key, v, f) {
+  const by = /_mm2$|_m2$/.test(key) ? f * f : /_mm$|_m$/.test(key) ? f : 0;
+  const scale = (x) => (Array.isArray(x) ? x.map(scale) : typeof x === "number" ? x * by : x);
+  if (by) return scale(v);
+  if (Array.isArray(v)) return v.map((x) => atScale("", x, f));
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, atScale(k, x, f)]));
+  return v;
 }

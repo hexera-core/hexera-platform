@@ -41,6 +41,8 @@ def _own_format(candidates: list[str], fmt: str) -> list[str]:
 
 
 _PICK_WORDS = {
+    "ENG-2": "it is the home engine for {shape}, so it goes first{reason}.",
+    "ENG-3": "its lab record for {shape} clearly beats the home engine's{reason}.",
     "ENG-4": "it ranked first on its lab record for {shape}{reason}.",
     "ENG-4-thin": "it ranked first for {shape}, on little lab evidence{reason}.",
     "ENG-6": "the user named it, so it is never switched on its own.",
@@ -64,6 +66,7 @@ def engine_pick_entry(state: Mapping) -> dr.Entry | None:
     fmt = _source_format(state)
     inputs = {"engine_source": engine_source(state), "approved": approved,
               "recommended": str(ladder.get("order_recommended") or ""),
+              "recommended_rule": str(ladder.get("order_rule") or ""),
               "measured": ladder.get("order_source") == "measured",
               "own_format": _own_format(order or [approved], fmt)}
     value, rule = dr.engine_pick(inputs)
@@ -137,9 +140,54 @@ def _int(v: Any) -> int | None:
         return None
 
 
+#: The internal-flow staging's own record (cad/internal_surface.write_staged), in the workspace.
+STAGING_RECORD = ("_internal_stls", "internal_surface.json")
+
+
+def fluid_region_entries(state: Mapping) -> list[dr.Entry]:
+    """The fluid region's decisions (INS rules): which mouths became openings, the seed, the
+    sealed check, the port patches - as the staging recorded them beside the surface it wrote."""
+    import json
+    from pathlib import Path
+    ws = str(state.get("openfoam_workspace") or "")
+    if not ws:
+        return []
+    path = Path(ws).joinpath(*STAGING_RECORD)
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    rows = ((record.get("facts") or {}).get("decisions") or []) if isinstance(record, dict) else []
+    out: list[dr.Entry] = []
+    for row in rows:
+        if not isinstance(row, Mapping) or not str(row.get("rule") or "").startswith("INS-"):
+            continue
+        out.append(dr.Entry(stage=str(row.get("stage") or "fluid_region"), decided=str(row.get("decided") or ""),
+                            value=row.get("value"), rule=str(row["rule"]), inputs=dict(row.get("inputs") or {}),
+                            words=str(row.get("words") or "")))
+    return out
+
+
+def user_notes_entry(state: Mapping) -> dr.Entry | None:
+    """The user's own notes (contracts/user_notes, NOTE-2): how many the run's AI steps were given
+    as guidance, and what they said they did with them. None for a run with no notes."""
+    from meshpipeline.contracts import user_notes as un
+    notes = un.clean(state.get("user_notes"))
+    if not notes:
+        return None
+    remarks = un.read_remarks(str(state.get("openfoam_workspace") or ""))
+    return dr.Entry(stage="user_notes", decided="guidance", value=len(notes),
+                    rule=un.RULE_EVERY_ROUTE, also=(un.RULE_VERBATIM, un.RULE_NEVER_FAILS),
+                    inputs={"sources": sorted({n["source"] for n in notes}), "remarks": remarks},
+                    source=dr.SOURCE_USER,
+                    words=(f"{len(notes)} note(s) in the user's own words were given to every AI "
+                           "step as guidance" + (f"; {'; '.join(remarks)}" if remarks else "")))
+
+
 def entries(state: Mapping) -> list[dr.Entry]:
     out: list[dr.Entry] = []
-    for part in (engine_pick_entry, switch_entries, delivered_entry):
+    for part in (fluid_region_entries, engine_pick_entry, switch_entries, delivered_entry,
+                 user_notes_entry):
         try:
             got = part(state)
         except Exception:  # noqa: BLE001 - a record never touches a verdict
@@ -158,4 +206,5 @@ def build(job_id: str, state: Mapping) -> dict:
     return dr.record(rows)
 
 
-__all__ = ["build", "delivered_entry", "engine_pick_entry", "entries", "switch_entries"]
+__all__ = ["build", "delivered_entry", "engine_pick_entry", "entries", "fluid_region_entries", "switch_entries",
+           "user_notes_entry"]

@@ -795,11 +795,12 @@ async def test_the_native_boundary_received_the_production_workspace_and_case(ac
     assert call["authored"], "the native mesher was called before the case was authored"
     assert call["symmetry_in_case"], \
         "the accepted symmetry plane never reached the authored case"
-    # the per-pass GUARD from the pass's planned cells (docs/RULES.md TIME-2): never under the old
-    # 2,400 s cap, never over snappy's ceiling
-    from meshpipeline.contracts.work_limits import CEILINGS_S, FLOORS_S
-    assert FLOORS_S["snappy"] <= call["timeout"] <= CEILINGS_S["snappy"], \
-        f"the driver's per-pass guard is out of its range: {call['timeout']}"
+    # NO GUESSED TIME LIMIT (contracts/native_time): the run's cap - its guard (docs/RULES.md
+    # TIME-2) - is the WALL of the machine it is on, the Cloud Run job's here, and the run is
+    # watched for progress inside
+    from meshpipeline.contracts.native_time import CLOUD_RUN_WALL_S
+    assert call["timeout"] == CLOUD_RUN_WALL_S, \
+        f"the driver's per-mesh cap is not the machine's wall: {call['timeout']}"
     assert Path(call["workspace"]).is_absolute()
 
 

@@ -638,6 +638,45 @@ def castellated_estimate(*, area: float | None, divisions, base_cell: float, sur
     return background + surface + CAST_BAND_GRADING * bands
 
 
+#: THE LAYER CELLS a budget must leave room for. maxGlobalCells bounds the CASTELLATED mesh only;
+#: the layer stage then adds about one cell per wall face per layer. On a bulky body that is a third
+#: on top (final/castellated 1.32 at the median of 70 lab runs); on a large thin plate, whose
+#: castellated mesh is mostly wall cells, it is many times over (propeller rig A2: 2.0M castellated,
+#: 2.2M wall faces, 5 layers -> 13.0M). So the final count is estimated as the castellated count
+#: times (1 + layers x the share of it that touches the wall), the share read from the plan's own
+#: numbers: wall faces about area / wall cell^2, against castellated_estimate.
+def final_estimate(*, castellated: float | None, budget: int, area: float | None, wall_cell: float,
+                   n_layers: int) -> float | None:
+    """The cells the finished mesh comes to: the castellated mesh (castellated_estimate, held to
+    the budget snappyHexMesh stops refining at) and its layers. None when it cannot be estimated."""
+    try:
+        a = float(area)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if castellated is None or castellated <= 0 or not (a > 0.0) or wall_cell <= 0.0:
+        return None
+    built = min(float(castellated), float(budget))
+    wall_share = min(1.0, (a / wall_cell ** 2) / float(castellated))
+    return built * (1.0 + max(0, int(n_layers)) * wall_share)
+
+
+#: The castellation budget is never cut under this share of the plan's: snappyHexMesh stops refining
+#: at maxGlobalCells, and a budget cut far enough stops it before the surface reaches the level that
+#: seals the body (lab, 25 Oct: A1/A2 cut to ~0.1M castellated cells came back with no body faces).
+CASTELLATION_FLOOR_SHARE = 0.25
+
+
+def castellation_budget(budget: int, final: float | None, *, margin: float,
+                        floor: int = 200_000) -> int:
+    """maxGlobalCells for a plan whose finished mesh is estimated at `final`: the plan's budget, or
+    - when the estimate passes `margin` times it - the budget cut so the castellated mesh AND its
+    layers land inside it, never under CASTELLATION_FLOOR_SHARE of the plan (nor `floor`)."""
+    if final is None or final <= margin * float(budget):
+        return int(budget)
+    least = max(int(floor), int(CASTELLATION_FLOOR_SHARE * float(budget)))
+    return max(least, int(float(budget) * float(budget) / float(final)))
+
+
 def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analysis: dict,
                        recommendation: dict, domain_min, domain_max,
                        strategy: dict | None = None, dimensionality: str = "3D",
@@ -650,7 +689,8 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                        class_regions: bool = True,
                        outside_points: list | None = None,
                        wake: WakeRequest | None = None,
-                       contact: GroundContact | None = None) -> dict:
+                       contact: GroundContact | None = None,
+                       gap_field: tuple | None = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     rec = recommendation
@@ -859,15 +899,59 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
         for k, t in enumerate(_wake_tiers))
     _wake_refine = "".join(f" {_WAKE_BOX}{k} {{ mode inside; levels ((1e15 {t.level})); }}"
                            for k, t in enumerate(_wake_tiers))
+    # THE GAPS BETWEEN THE BODY'S PARTS (engines/gap_sizing; cad/shape_traits.body_gap_field):
+    # a wheel and its arch, a flap and its slot get the rule's 13 cells across, boxed there only,
+    # with snappy's cell ceiling raised to what they cost - within the compute limit. External
+    # flow has no floor gate to refuse a mesh, so over the limit the gaps get as many as it holds,
+    # and the run says so. No field (one body, or none read) authors the historical dict.
+    _gap = None
+    _gap_geom = _gap_refine = ""
+    if gap_field is not None:
+        _gap, max_cells = _plan_body_gaps(
+            gap_field, wall_cell=base_actual / (2 ** smax), budget=max_cells,
+            base_cells=castellated_estimate(
+                area=analysis.get("surface_area"), divisions=div, base_cell=base_actual,
+                surface_level=smax, near=(b0d, near_band_level), far=(b1d, max(1, smin - 1))),
+            n_layers=max([n_layers, *layer_counts.values()]) if _any_layers else 0,
+            wall_area=analysis.get("surface_area"))
+        for k, b in enumerate(_gap.regions if _gap is not None else []):
+            _lvl = min(_HARD_MAX_LEVEL, smax + int(b.get("level_bump", 1)))
+            _gap_geom += (f" {_GAP_BOX}{k} {{ type searchableBox; min {vf(b['min'])}; "
+                          f"max {vf(b['max'])}; }}")
+            _gap_refine += f" {_GAP_BOX}{k} {{ mode inside; levels ((1e15 {_lvl})); }}"
+
+    # THE LAYERS COUNT TOO (final_estimate): a plan whose finished mesh, layers and all, would pass
+    # the size brake's margin gets a castellation budget that leaves room for them - decided here,
+    # before the mesher runs, instead of stopped by the brake after hours of it
+    from meshpipeline.engines.size_brake import SIZE_BRAKE_MARGIN
+    _final = final_estimate(
+        castellated=castellated_estimate(
+            area=analysis.get("surface_area"), divisions=div, base_cell=base_actual,
+            surface_level=smax, near=(b0d, near_band_level), far=(b1d, max(1, smin - 1))),
+        budget=max_cells, area=analysis.get("surface_area"), wall_cell=base_actual / (2 ** smax),
+        n_layers=max([n_layers, *layer_counts.values()]) if _any_layers else 0)
+    cast_cells = castellation_budget(max_cells, _final, margin=SIZE_BRAKE_MARGIN)
+    # the PLAN's budget, beside the case: what the size brake measures the run against
+    from meshpipeline.engines.size_brake import PLAN_CELLS_FILE
+    (ws / PLAN_CELLS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    # the PLAN's own budget - the planner's, kept through every re-plan of the pass (the driver
+    # carries it as _plan_cells): the brake measures every pass against what was asked for, never
+    # against a budget a previous trip already cut
+    (ws / PLAN_CELLS_FILE).write_text(json.dumps(
+        {"plan_cells": int(strategy.get("_plan_cells") or max_cells)}))
+    if cast_cells != max_cells and _final:
+        logger.info("render_snappy_case: the finished mesh is estimated at %.3g cells with its layers, "
+                    "%.1f times the %d budget - castellation budget %d", _final, _final / max_cells,
+                    max_cells, cast_cells)
 
     (ws / "system" / "snappyHexMeshDict").write_text(
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
 castellatedMesh true; snap true; addLayers {'true' if _any_layers else 'false'};
-geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom} }}
-castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}; minRefinementCells 10;
+geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom}{_gap_geom} }}
+castellatedMeshControls {{ maxLocalCells {cast_cells}; maxGlobalCells {cast_cells}; minRefinementCells 10;
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {{ file "{feature_file}"; level {flevel}; }}{_contact_feature} );
   refinementSurfaces {{ {surface_name} {{ level ({smin} {smax});{_ref_regions} }} }} resolveFeatureAngle {ang:.0f};
-  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine} }}
+  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine}{_gap_refine} }}
   locationInMesh {vf(loc)}; allowFreeStandingZoneFaces true;{_outside} }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
@@ -910,6 +994,11 @@ mergeTolerance 1e-6; debug 0;
            "location_in_mesh": [round(x, 4) for x in loc], "max_cells": max_cells,
            "n_layers": n_layers, "domain_min": [round(x, 3) for x in domain_min],
            "domain_max": [round(x, 3) for x in domain_max]}
+    if cast_cells != max_cells:
+        # recorded only when the layers changed the castellation budget: a plan within its budget
+        # keeps exactly the summary it always had
+        out["estimated_final_cells"] = int(_final) if _final else None
+        out["castellation_budget"] = cast_cells
     if layer_counts:
         out["layer_counts"] = dict(layer_counts)
     if _synthetic:
@@ -935,7 +1024,62 @@ mergeTolerance 1e-6; debug 0;
         _wr.write_text(json.dumps(out["wake"]))
     elif _wr.exists():
         _wr.unlink()
+    if _gap is not None and _gap.spots:
+        out["gap_plan"] = _gap.record()
+        out["gap_note"] = _gap.words(base_actual / (2 ** smax), auto=True)
+        _gap.write(ws)
     return out
+
+
+#: The searchable boxes round the gaps between a body's parts (render_snappy_case).
+_GAP_BOX = "gapZone"
+
+
+def _plan_body_gaps(field, *, wall_cell: float, budget: int, base_cells: float | None,
+                    n_layers: int = 0, wall_area: float | None = None):
+    """(gap plan, the cell ceiling to mesh with) for the gaps between an external body's parts
+    (engines/gap_sizing.plan_gaps on the body gap field): the boxes put 13 across every gap the
+    wall cell leaves short, the ceiling rises to what they cost within the compute limit, and over
+    it the gaps get as many as the limit holds. The wall layers snappy adds after refinement are
+    priced too - `n_layers` per wall face on the body's `wall_area`, and on each gap's finer wall -
+    so the ceiling leaves room for them under the limit, as the internal plan does.
+    (None, budget) when the plan cannot be made."""
+    import numpy as np
+
+    import meshpipeline.settings.policy as polcfg
+    from meshpipeline.engines import gap_sizing as GS
+    from meshpipeline.engines.passage import narrow_passage_regions
+    try:
+        pts, half, areas = field
+        layers = max(0, int(n_layers))
+        a = np.asarray(areas, dtype=float) if areas is not None else None
+        try:
+            wall = float(wall_area) if wall_area is not None else 0.0
+        except (TypeError, ValueError):
+            wall = 0.0
+        after = (layers * wall / wall_cell ** 2
+                 if layers and wall > 0.0 and wall_cell > 0.0 else 0.0)
+
+        def at(t: float) -> list:
+            boxes = list(narrow_passage_regions(pts, half, cell_m=wall_cell, areas=areas,
+                                                target=t, detect=GS.GAP_CELLS_ACROSS,
+                                                budget_cells=None) or [])
+            if layers and a is not None:
+                for b in boxes:
+                    ids = b.get("point_ids")
+                    if ids is not None and len(ids):
+                        c = float(wall_cell) / (2 ** int(b.get("level_bump", 1)))
+                        b["layer_cells"] = (layers * float(a[ids].sum())
+                                            * (1.0 / c ** 2 - 1.0 / wall_cell ** 2))
+            return boxes
+        plan = GS.plan_gaps(at, cell_m=wall_cell, budget=int(budget),
+                            limit=int(polcfg.CELL_HARD_LIMIT), base_cells=base_cells,
+                            accept_fewer=True, whole_box=True, base_after=after)
+    except Exception:  # noqa: BLE001 - a plan we cannot make leaves the case as planned
+        logger.warning("render_snappy_case: the body-gap plan failed - meshing as planned",
+                       exc_info=True)
+        return None, int(budget)
+    return plan, max(int(budget), int(plan.budget) if plan.regions else int(budget))
 
 
 def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch: str,
@@ -1108,10 +1252,12 @@ def plan_near_band(*, wall_cell: float, default_depth: float, budget_cells: floa
                 f"{allowance / 1e6:.2g} M it may spend")
 
 
-#: Minimum castellation cells across a port opening. Below ~4 the octree can seal the
-#: opening entirely (the corpus's biggest failure cluster - 21 episodes died at the
-#: manifest gate with a zero-face port); 6 leaves margin for snapping to eat one each side.
-PORT_MIN_CELLS_ACROSS = 6
+#: Minimum castellation cells across a port opening (PLAN-cfd-2, engines/resolution_policy).
+#: Below ~4 the octree can seal the opening entirely (the corpus's biggest failure cluster - 21
+#: episodes died at the manifest gate with a zero-face port); 6 left margin for snapping to eat
+#: one each side, and still lost vessel outlets of 4 of a branching model's 9 (census bucket 1b,
+#: 2026-10-23). 8 carries a velocity profile through the opening.
+from meshpipeline.engines.resolution_policy import PORT_CELLS_ACROSS as PORT_MIN_CELLS_ACROSS  # noqa: E402
 
 
 def _port_levels(*, base_cell: float, default_level: int, smin: int,
@@ -1155,7 +1301,8 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
                          wall_key: str = "wall", port_sizes: dict[str, float] | None = None,
                          sealed_before: frozenset[str] | set[str] = frozenset(),
                          thin_regions: list | None = None,
-                         near_band_depth: float | None = None) -> dict:
+                         near_band_depth: float | None = None,
+                         distance_regions: list | None = None) -> dict:
     ws = Path(workspace)
     ext = [float(bbox_max[i] - bbox_min[i]) for i in range(3)]
     maxext = max(ext)
@@ -1261,6 +1408,16 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
                  f"min ({_lo[0]:.6g} {_lo[1]:.6g} {_lo[2]:.6g}); "
                  f"max ({_hi[0]:.6g} {_hi[1]:.6g} {_hi[2]:.6g}); }} ")
         thin_refine += f"thinZone{_i} {{ mode inside; levels ((1e15 {_lvl})); }} "
+    # NARROW SPOTS BY DISTANCE (engines/gap_sizing): each level's narrow wall, as its own
+    # refinement surface, refines the cells within a passage width of it - the passage, on both
+    # sides of the wall, not a box round it. Never a refinementSurface, so never a patch.
+    _dist = list(distance_regions or [])
+    for _dr in _dist:
+        _lvl = min(_HARD_MAX_LEVEL, smin + int(_dr.get("level_bump", 1)))
+        geom += (f"{_dr['name']} {{ type triSurfaceMesh; file \"{_dr['file']}\"; "
+                 f"name {_dr['name']}; }} ")
+        thin_refine += (f"{_dr['name']} {{ mode distance; "
+                        f"levels (({float(_dr['distance_m']):.6g} {_lvl})); }} ")
     # a small port's rim must be feature-snapped at least as finely as its surface is
     # refined, or snapping re-opens the very cells the refinement just won
     feat_entries = "".join(
@@ -1293,7 +1450,8 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     # minVol from the finest wall cell this case refines to (layer_min_vol): a passage a few
     # millimetres across has layer cells far below the tutorials' absolute 1e-13 m^3
     _top = max([smax, flevel, near_level, *port_lvls.values(),
-                *(min(_HARD_MAX_LEVEL, smin + int(r.get("level_bump", 1))) for r in _thin)])
+                *(min(_HARD_MAX_LEVEL, smin + int(r.get("level_bump", 1)))
+                  for r in [*_thin, *_dist])])
     _min_vol = layer_min_vol(min(dext[i] / max(div[i], 1) for i in range(3)) / (2 ** _top),
                              n_layers=n_layers, min_thickness_rel=0.05)
     (ws / "system" / "snappyHexMeshDict").write_text(
@@ -1325,6 +1483,9 @@ mergeTolerance 1e-6; debug 0;
             "n_layers": n_layers, "domain_min": [round(x, 4) for x in dmin],
             "domain_max": [round(x, 4) for x in dmax], "patches": list(names.values()),
             "port_levels": {names[p]: port_lvls[p] for p in port_lvls if p in names},
+            "narrow_surfaces": [{"name": d["name"], "distance_m": round(float(d["distance_m"]), 7),
+                                 "level": min(_HARD_MAX_LEVEL, smin + int(d.get("level_bump", 1)))}
+                                for d in _dist],
             "thin_regions": [{"level": min(_HARD_MAX_LEVEL,
                                            smin + int(r.get("level_bump", 1))),
                               "thinnest_m": r.get("thinnest_m"),

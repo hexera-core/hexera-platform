@@ -15,6 +15,7 @@ from meshpipeline.agents.intake import recommendation as rec
 from meshpipeline.agents.intake import vocabulary as _vocab
 from meshpipeline.agents.intake.validation import preview_admission, validate_submission
 from meshpipeline.contracts import rationale as _R
+from meshpipeline.contracts import user_notes as un
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +56,37 @@ REFUSAL_GUIDANCE = (
 )
 
 
+#: Said under the summary when the user's own notes were captured with it: they are kept as typed.
+NOTES_KEPT = ("Your notes are kept word for word, and every step that builds the mesh reads them "
+              "as guidance.")
+
+
+def _same_submission(a, b) -> bool:
+    """The same submission: every value equal, and the same notes in the same words (when a note
+    was captured is not part of what was submitted)."""
+    def _plain(p):
+        p = dict(p or {})
+        p["user_notes"] = [n.get("text") for n in p.get("user_notes") or [] if isinstance(n, dict)]
+        return p
+    return _plain(a) == _plain(b)
+
+
 def category_of(tool: str) -> str:
     return INTAKE_CATEGORIES.get(tool, "unknown")
+
+
+def fea_path(st) -> bool:
+    """Whether the session is an FEA part: the declared case is the structural purpose (the FEA
+    route of the purpose mapping, confirmed on the FEA stage) on a solid body - or, before any
+    stage was confirmed, the user's own words take it to the FEA path (application/purpose_map).
+    The engine is never a question there, whatever the file's format or whether the stage held."""
+    case = tuple(getattr(st, "declared_case", None) or ())
+    if case:
+        return case[0] == "structural" and (len(case) < 2 or case[1] in ("solid-body", ""))
+    from meshpipeline.application import purpose_map as pm
+
+    said = [{"role": "user", "content": str(t)} for t in getattr(st, "user_texts", None) or ()]
+    return bool(said) and pm.reading_for(said).route == pm.ROUTE_FEA
 
 
 def _normalize_declared_patches(args: dict):
@@ -101,6 +131,9 @@ class IntakeExecutionState:
     #: (purpose, input kind) the user confirmed on the geometry stage, or None: what an engine the
     #: model proposes on its own must be able to mesh.
     declared_case: tuple | None = None
+    #: The conversation as the user and the assistant said it, oldest first (the application's
+    #: synthetic nudges excluded) - where the notes question and the user's own words are found.
+    conversation: tuple = ()
     #: Whether that confirmation is a whole thermal model's (an ECXML upload confirmed on its
     #: panel): its engine is the one that reads the file, selected without a question, and every
     #: reply is held to the thermal vocabulary (application/thermal_wording).
@@ -130,8 +163,13 @@ class IntakeExecutionState:
     admission_refusal: dict | None = None
     # Application-rendered terminals, resolved after the whole ordered batch.
     selection_prompt: str | None = None
+    #: THE NOTES QUESTION (contracts/user_notes, NOTE-1): asked once, by the application, in place
+    #: of the first summary when the user has not said anything specific yet.
+    notes_prompt: str | None = None
     submit_summary: str | None = None
     submit_args: dict | None = None
+    #: the user's own words captured with the submission - verbatim, never the model's rewrite
+    user_notes: list = field(default_factory=list)
 
     search_calls_used: int = 0
     search_events: list = field(default_factory=list)
@@ -436,6 +474,27 @@ class IntakeToolExecutor:
                          "The job sheet the user approves names it - do not ask about it or "
                          "mention it. Call preview_selected_admission and submit_requirements "
                          "now (engine_source suggested_confirmed)."))
+        if fea_path(st) and not chosen_by_user:
+            # AN FEA PART (the purpose the user's words mapped to, confirmed on the FEA stage) is
+            # meshed on the FEA path: version 1 has one solid mesher and quadratic tetrahedra, so
+            # neither the engine nor the element order is a question. The real-path test of
+            # 2026-10-22 asked both, with CFD words ("no reliable near-wall layers", "blade-row
+            # passages"). The job sheet the user approves names the engine; naming another one in
+            # the chat is still their choice, as always.
+            st.selection = {**st.selection, "state": es.CONFIRMED, "via": es.VIA_FEA_PATH,
+                            "confirmed_revision": st.revision,
+                            "expires_at": es.time.time() + es.CONFIRMED_TTL_S}
+            st.selection_prompt = None
+            logger.info("Intake: engine selection CONFIRMED for an FEA part - %s on the FEA path - "
+                        "job_id=%s", eng, self._job_id)
+            return IntakeToolResult(
+                tool="propose_engine_selection", accepted=True, advanced=True,
+                content=(f"{_vocab.to_display(_vocab.ENGINE, eng)} is SELECTED for this FEA part "
+                         "(the FEA path: a solid mesh of quadratic 10-node tetrahedra, element_order "
+                         "2, every face named). Do not ask about the engine, the element order, "
+                         "near-wall layers or a detail level, and do not mention them. Call "
+                         "preview_selected_admission and submit_requirements now (engine_source "
+                         "suggested_confirmed)."))
         if chosen_by_user:
             st.selection = {**st.selection, "state": es.CONFIRMED,
                             "confirmed_revision": st.revision,
@@ -624,11 +683,30 @@ class IntakeToolExecutor:
             return IntakeToolResult(tool="submit_requirements", accepted=False, content=(
                 f"Submission NOT authorized: {tok_reason}. Nothing was saved."))
 
+        # THE USER'S OWN WORDS (contracts/user_notes, NOTE-1): their answer to the notes question
+        # and every message the model quoted as saying something specific, kept whole and verbatim.
+        notes, unmatched = un.capture(st.conversation, args.get("user_note_quotes") or (),
+                                       consumer="intake")
+        if not notes and not un.asked(st.conversation):
+            # ASKED ONCE, before the first summary, and only when the user has said nothing
+            # specific yet. It holds nothing: the next answer - details or a plain no - goes
+            # straight on to the summary.
+            st.notes_prompt = un.QUESTION
+            logger.info("Intake: submission held one turn for the notes question - job_id=%s",
+                        self._job_id)
+            return IntakeToolResult(tool="submit_requirements", accepted=True, content=(
+                "Not submitted yet: the application now asks the user its one optional question "
+                "about anything specific for this simulation, in its own words - do not ask it or "
+                "paraphrase it. Nothing was saved. After their answer, re-run "
+                "preview_selected_admission and call submit_requirements again."))
         st.submit_args = args
-        logger.info("Intake: submit_requirements AUTHORIZED - domain=%r - job_id=%s",
-                    args.get("domain", "")[:60], self._job_id)
+        st.user_notes = notes
+        logger.info("Intake: submit_requirements AUTHORIZED - domain=%r notes=%d - job_id=%s",
+                    args.get("domain", "")[:60], len(notes), self._job_id)
         canon_stored = (st.pending or {}).get("canonical", {})
         payload = {k: v for k, v in args.items() if k != "preview_token"}
+        if notes:
+            payload["user_notes"] = notes
         intent_canon = at.approved_intent_canonical(
             engine=args.get("mesh_engine"), purpose=args.get("purpose"),
             input_kind=args.get("input_kind"), dimensionality=args.get("dimensionality"),
@@ -646,8 +724,9 @@ class IntakeToolExecutor:
         # only the run-determining intent: a changed brief is a change the user should see
         unchanged = (prior.get("status") == ap.INVALIDATED
                      and prior.get("intent_fingerprint") == at.fingerprint(intent_canon)
-                     and prior.get("payload") == payload)
+                     and _same_submission(prior.get("payload"), payload))
         st.submit_summary = (at.CONFIRM_REQUIREMENTS_ASK + "\n\n"
+                             + (f"{NOTES_KEPT}\n\n" if notes else "")
                              + (f"{ap.NOTHING_CHANGED} " if unchanged else "") + ap.PROCEED_ASK)
         st.approval = ap.create(
             owner_id=st.owner_id, session_id=st.session_id,
@@ -663,9 +742,12 @@ class IntakeToolExecutor:
             self._trace, patches=len(args.get("patches") or []),
             dimensionality=str(args.get("dimensionality") or ""))
         _R.intake_submission(self._trace, authorized=True)
+        _not_kept = (" These quotes matched nothing the user wrote, so they were not kept as "
+                     "notes: " + "; ".join(repr(q[:80]) for q in unmatched[:5]) + "."
+                     if unmatched else "")
         return IntakeToolResult(tool="submit_requirements", accepted=True, advanced=True, content=(
             "Authorized. The application will show the user the canonical confirmation summary; "
-            "do not paraphrase it. Await their explicit approval."))
+            "do not paraphrase it. Await their explicit approval." + _not_kept))
 
 
 __all__ = ["INTAKE_CATEGORIES", "MAX_SEARCH_CALLS", "MUTATING_TOOLS", "REFUSAL_GUIDANCE",

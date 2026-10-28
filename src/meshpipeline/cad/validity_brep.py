@@ -299,14 +299,14 @@ def _crossings(shape, diag: float, findings: list[Finding], measured: dict) -> b
     a fine tessellation of a copy, each candidate confirmed on the exact geometry: a face pair by
     its true distance, a body pair by the volume the two share. Returns whether it finished."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
 
     from meshpipeline.cad.crossings import find_crossings, nested_bodies
+    from meshpipeline.cad.occ_box import incremental_mesh
     from meshpipeline.cad.validity import MAX_VERIFIED_TRIANGLES
 
     try:
         work = BRepBuilderAPI_Copy(shape, True, False).Shape()
-        BRepMesh_IncrementalMesh(work, CROSS_DEFLECTION * diag, False, CROSS_ANGLE, True)
+        incremental_mesh(work, CROSS_DEFLECTION * diag, CROSS_ANGLE)
         faces, face_of, body_of_face, pts, tris = _tessellation(work)
     except Exception as exc:  # noqa: BLE001 - a shape that will not tessellate is not verified
         findings.append(Finding("not_verified", ERROR,
@@ -369,7 +369,10 @@ def _crossings(shape, diag: float, findings: list[Finding], measured: dict) -> b
                                 f"the surface passes through itself: {len(real)} pair(s) of faces cross"
                                 + ("+" if len(within) > MAX_FACE_PAIRS else ""),
                                 len(real), _places(np.asarray(at), diag),
-                                {"faces": [[int(a) + 1, int(b) + 1] for a, b in real[:20]]}))
+                                {"faces": [[int(a) + 1, int(b) + 1] for a, b in real[:20]],
+                                 # the body (1-based, OpenCASCADE's solid order: an assembly's Part_k)
+                                 "bodies": sorted({int(body_of_face[a]) + 1 for a, _b in real
+                                                   if body_of_face[a] >= 0})}))
     # between bodies: they must share volume, not just touch
     bodies = _bodies(work)
     overlap: list[tuple[int, int, float | None]] = []
@@ -392,7 +395,7 @@ def _crossings(shape, diag: float, findings: list[Finding], measured: dict) -> b
         findings.append(Finding("bodies_overlap", ERROR,
                                 f"{len(overlap)} pair(s) of separate bodies pass into each other",
                                 len(overlap),
-                                tuple({"at": c, "bodies": [a + 1, b + 1],
+                                tuple({"at": c, "bodies": [int(a) + 1, int(b) + 1],
                                        "shared_volume_share": None if s is None else _r1(s)}
                                       for a, b, s in overlap[:MAX_PLACES]
                                       if (c := _centre_common(bodies[a], bodies[b])) is not None)))

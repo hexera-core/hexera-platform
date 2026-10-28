@@ -62,24 +62,27 @@ def test_a_layer_stage_that_dies_goes_straight_to_a_layer_free_fill(tmp_path, mo
     assert json.loads((tmp_path / 'vmtk_spec.json').read_text())['boundary_layers'] == 0
 
 
-def test_a_layered_fill_its_guard_stops_is_a_guard_trip_not_a_layer_free_mesh(tmp_path, monkeypatch):
-    # docs/RULES.md TIME-1..3. Before D3 a layered fill got 60% of the clock and, when it ran out,
-    # the layer-free fill was delivered instead - so whether a mesh kept its layers depended on how
-    # busy the machine was. Now the layered step gets the whole guard, and a step the guard stops
-    # ends the run as a guard trip (the attempt is replayed); the ladder never moves on a clock.
-    from meshpipeline.engines import determinism as det
+def _ladder_run(tmp_path, monkeypatch, layered_end):
+    """A staged run whose layered fill ends as `layered_end` says ('stall' / 'wall'); the clock is
+    the run's own (R._now), every other step finishes."""
+    from meshpipeline.sandbox.safe_exec import StalledExpired
+
     clock = {'t': 0.0}
     calls: list[tuple[list[str], float]] = []
 
     def fake_run(argv, timeout=None, **kw):
         calls.append((list(argv), timeout))
+        assert kw.get('stall_s'), "a pype is not watched"
         joined = ' '.join(argv)
         if 'vmtksurfaceremeshing' in joined:
             clock['t'] += 10.0
             (tmp_path / 'lumen.vtp').write_text('remeshed')
             return sp.CompletedProcess(argv, 0, stdout='Done.', stderr='')
-        if '-boundarylayer 1' in joined:      # the layered fill runs past the run's guard
-            clock['t'] += timeout
+        if '-boundarylayer 1' in joined:
+            if layered_end == 'stall':          # no sign of life for the stall window
+                clock['t'] += 1200.0
+                raise StalledExpired(argv, timeout, silence_s=900.0, ran_s=1200.0)
+            clock['t'] += timeout               # still working when the machine's wall came
             raise sp.TimeoutExpired(argv, timeout)
         clock['t'] += 100.0
         (tmp_path / 'mesh.vtu').write_text('filled')
@@ -90,14 +93,34 @@ def test_a_layered_fill_its_guard_stops_is_a_guard_trip_not_a_layer_free_mesh(tm
     (tmp_path / 'vmtk_spec.json').write_text(json.dumps(R.resolve_strategy(
         {'sizing_array': 'LocalRadius', 'boundary_layers': 4})))
     (tmp_path / 'lumen_open.vtp').write_text('staged')
-    with det.recording() as rec:
-        res = R._run_vmtk_local(tmp_path, timeout=3000)
+    res = R._run_vmtk_local(tmp_path, timeout=13_800)
     gens = [(c, t) for c, t in calls if len(c) > 1 and c[1] == 'vmtkmeshgenerator']
+    return res, gens
+
+
+def test_a_stuck_layered_fill_is_a_guard_trip_not_a_layer_free_mesh(tmp_path, monkeypatch):
+    """NO SHARE OF THE CLOCK (contracts/native_time): the layered fill may run to the machine's wall -
+    it used to get 60% of 3,000 s. And a STUCK one (no sign of life for the stall window) is a guard
+    trip (docs/RULES.md TIME-1..3): the attempt is replayed as it was, never the layer-free fill
+    because a clock ran out - so whether a mesh keeps its layers never depends on a clock."""
+    from meshpipeline.engines import determinism as det
+    with det.recording() as rec:
+        res, gens = _ladder_run(tmp_path, monkeypatch, 'stall')
     assert len(gens) == 1                                   # no layer-free fill after the trip
-    assert gens[0][1] == 2990                               # the whole guard left, not a share
+    assert gens[0][1] >= 13_800 - 10 - 1                  # the whole wall, not a share of it
     assert res['timed_out'] is True and not (tmp_path / 'mesh.vtu').exists()
     assert [t['where'] for t in rec.guard_trips] == ['vmtk'] and rec.time_limited == []
     assert 'guard clock' in res['repair_note']
+
+
+def test_a_layered_fill_still_working_at_the_wall_starts_no_other_step(tmp_path, monkeypatch):
+    """At the machine's wall the run is handed back still working (timed out, not stalled), so the
+    same case runs again on a VM (RUN-5) - never a layer-free fill squeezed into what is left."""
+    res, gens = _ladder_run(tmp_path, monkeypatch, 'wall')
+    assert len(gens) == 1
+    assert res['timed_out'] and not res.get('stalled')
+    assert 'still working' in res['repair_note']
+    assert not (tmp_path / 'mesh.vtu').exists()
 
 
 @pytest.mark.parametrize('surface_s', [10.0, 2500.0])

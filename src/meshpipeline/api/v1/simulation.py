@@ -18,6 +18,7 @@ from meshpipeline.api.schemas.job import (
     CancelOut,
     DisputeIn,
     DisputeOut,
+    DownloadLinkOut,
     JobStatus_,
 )
 from meshpipeline.api.security import org_dep, owner_dep, plan_dep
@@ -143,8 +144,13 @@ def _is_cancelled(job) -> bool:
     return getattr(status, "value", status) == _JS.cancelled.value
 
 
-def _artifact_label(artifact_type, engine: str) -> str:
+def _artifact_label(artifact_type, engine: str, logical_key: str = "") -> str:
     _t = getattr(artifact_type, "value", str(artifact_type))
+    # an FEA mesh's solver files, one per solver, each saying whether that solver has really run it
+    from meshpipeline.engines.fea_writers import EXPORT_ARTIFACTS
+    for _key, _file, _label in EXPORT_ARTIFACTS:
+        if logical_key == _key:
+            return _label
     if _t == "mesh":
         return "Surface preview (.msh)"
     if _t == "repair_report":
@@ -270,6 +276,34 @@ def _review_concerns(final_result) -> list[str]:
         return []
 
 
+@router.get("/{job_id}/artifacts/{artifact_id}/download", response_model=DownloadLinkOut)
+async def download_link(job_id: uuid.UUID, artifact_id: uuid.UUID,
+                        owner_id: str = Depends(owner_dep),
+                        organization_id: str = Depends(org_dep)):
+    """A NEW download link for one deliverable, minted when the user clicks Download.
+
+    The links in the job read are minted when the page loads; a user who reads the result for
+    longer than a link lives, or whose large download drops and resumes later, met a 403. The
+    console asks here at click time instead, and again once if that download is refused, so the
+    link it uses always has its whole life ahead of it - a life that scales with the file's size.
+    Served for exactly the rows the job read lists: the caller's own job, never a cancelled one,
+    never the viewer's internal payload.
+    """
+    async with get_db() as db:
+        job = await svc.get_job(db, job_id, owner_id, organization_id=organization_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        artifact = next((a for a in ([] if _is_cancelled(job) else (job.artifacts or []))
+                         if str(a.id) == str(artifact_id)
+                         and a.artifact_type != ArtifactType.viewer_data), None)
+        if artifact is None:
+            raise HTTPException(404, "Download not found")
+        storage_key, size_bytes = artifact.storage_key, artifact.size_bytes
+    url, ttl_s = await svc.fresh_download_link(storage_key, size_bytes)
+    return DownloadLinkOut(artifact_id=artifact_id, download_url=url,
+                           expires_in_seconds=ttl_s, size_bytes=int(size_bytes or 0))
+
+
 @router.get("/{job_id}", response_model=JobStatus_)
 async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                   organization_id: str = Depends(org_dep)):
@@ -296,10 +330,11 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                 ArtifactOut(
                     id=a.id,
                     artifact_type=a.artifact_type,
-                    download_url=await svc.signed_url(a.storage_key),
+                    download_url=await svc.signed_url(a.storage_key, a.size_bytes),
                     size_bytes=a.size_bytes,
                     created_at=a.created_at,
-                    label=_artifact_label(a.artifact_type, _engine),
+                    label=_artifact_label(a.artifact_type, _engine,
+                                          str(getattr(a, "logical_key", "") or "")),
                 )
             )
 
@@ -422,14 +457,17 @@ async def get_surface_vtk(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                           organization_id: str = Depends(org_dep)):
     """The delivered boundary with its quality fields as a legacy VTK file, for ParaView. The
     arrays are the viewer's own, so what ParaView colours is what the heatmap coloured. Built from
-    the stored viewer payload - no workspace is read."""
+    the stored viewer payload - no workspace is read. A polyMesh surface and the triangle surface
+    of a tetrahedral engine's DELIVERED mesh (VMTK, Gmsh: kind=stl marked is_mesh) both export;
+    an input skin shown in place of a mesh never does."""
     from fastapi.responses import Response
 
     from meshpipeline.render.vtk_export import surface_to_vtk
     data = await _viewer_data(job_id, owner_id, organization_id=organization_id)
     surface = data.get("surface")
-    if not surface or surface.get("kind") != "polymesh":
-        raise HTTPException(404, "No polyMesh surface was delivered for this job")
+    if not surface or not (surface.get("kind") == "polymesh"
+                           or (surface.get("kind") == "stl" and surface.get("is_mesh") is True)):
+        raise HTTPException(404, "No delivered mesh surface was stored for this job")
     try:
         body = await asyncio.to_thread(surface_to_vtk, surface)
     except ValueError as exc:

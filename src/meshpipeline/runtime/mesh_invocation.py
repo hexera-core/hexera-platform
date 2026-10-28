@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from meshpipeline.contracts.mesh_execution import MESH_CONTRACT_ENV
 from meshpipeline.settings.env import ConfigurationError
 
 DEFAULT_ENGINE = "cfmesh"
@@ -18,6 +19,9 @@ class MeshJobInvocation:
     output_uri: str
     engine: str
     timeout_seconds: int
+    #: the worker<->mesh job exchange contract the worker speaks (contracts/mesh_execution
+    #: MESH_CONTRACT_ENV); "" from a worker that predates it
+    contract: str = ""
 
 
 def from_environment(env: dict[str, str] | None = None) -> MeshJobInvocation:
@@ -44,4 +48,5 @@ def from_environment(env: dict[str, str] | None = None) -> MeshJobInvocation:
         output_uri=src["OUTPUT_URI"].strip(),
         engine=(src.get("ENGINE") or "").strip() or DEFAULT_ENGINE,
         timeout_seconds=timeout,
+        contract=(src.get(MESH_CONTRACT_ENV) or "").strip(),
     )

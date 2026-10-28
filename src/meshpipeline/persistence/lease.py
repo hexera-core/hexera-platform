@@ -79,9 +79,17 @@ def _locked_job(job_id: uuid.UUID):
 
     It also overwrites any UNFLUSHED edit to this row in the same session. Lock first, then write -
     the only order in which the lock protects the write at all.
+
+    FOR NO KEY UPDATE, not FOR UPDATE: it still shuts out every other writer of the row (a second
+    claim, a heartbeat, a cancel), but no longer a row that only REFERENCES the job (a foreign key
+    takes FOR KEY SHARE). Under FOR UPDATE a heartbeat waiting on its commit blocked the worker's own
+    capture insert (capture_operations.job_id), and that insert, made synchronously on the event loop,
+    kept the heartbeat from ever committing: dev-areen 2026-10-23, two FEA jobs hung an hour after a
+    clean mesh, the heartbeat "idle in transaction" and the insert waiting on its transaction id.
+    No lease operation changes the job's key, so nothing here needs the stronger lock.
     """
     return (select(SimulationJob).where(SimulationJob.id == job_id)
-            .with_for_update().execution_options(populate_existing=True))
+            .with_for_update(key_share=True).execution_options(populate_existing=True))
 
 
 class LeaseRepository:
@@ -162,7 +170,8 @@ class LeaseRepository:
             fence_ttl_seconds=self.fence_ttl_seconds(row, now))
 
     async def heartbeat(self, db: AsyncSession, own: ExecutionOwnership, *,
-                        now: datetime | None = None, lease_seconds: int | None = None) -> bool:
+                        now: datetime | None = None, lease_seconds: int | None = None,
+                        extend_deadline_to: datetime | None = None) -> bool:
         now = now or _now()
         lease_seconds = int(lease_seconds if lease_seconds is not None else rtcfg.WORKER_LEASE_SECONDS)
         row = (await db.execute(_locked_job(own.job_id))).scalar_one_or_none()
@@ -172,10 +181,19 @@ class LeaseRepository:
                 or row.active_worker_token != own.worker_token):
             return False                                       # fenced: an old token/generation
         deadline = _aware(row.pipeline_deadline_at)
+        extend_to = _aware(extend_deadline_to)
+        if extend_to is not None and deadline is not None and extend_to > deadline:
+            # PROGRESS MOVES THE DEADLINE ON (application/pipeline_budget.progress_extension): the
+            # owner saw its job make progress recently, so the job is not out of time - its deadline
+            # becomes a stall window after that progress. Only the verified owner can do this (the
+            # generation and token were compared above), and only forward. A run with no recent
+            # progress passes no extension, and the refusal below ends it exactly as before.
+            deadline = extend_to
+            row.pipeline_deadline_at = extend_to
         if deadline is not None and now > deadline:
             # Past the whole-pipeline deadline nothing may extend ownership - neither the
-            # periodic beat nor the publish-seam recovery. A worker wedged past 6 hours is a
-            # zombie; letting it renew would let it hold the job forever.
+            # periodic beat nor the publish-seam recovery. A worker wedged past its deadline with
+            # no progress is a zombie; letting it renew would let it hold the job forever.
             return False
         row.lease_heartbeat_at = now
         row.lease_expires_at = now + timedelta(seconds=lease_seconds)

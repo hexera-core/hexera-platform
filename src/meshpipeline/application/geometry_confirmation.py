@@ -312,6 +312,15 @@ FEA_CHECK = "fea"
 _FEA_CASE = "input_kind solid-body: the part itself is meshed, with no fluid around it."
 
 
+#: How an assembly's parts are joined, said in its declaration (the stage's one question).
+FEA_CONNECTION_WORDS = {
+    "bonded": ("Parts connected: bonded (welded or glued) - one mesh, the parts share their nodes where they "
+               "touch."),
+    "contact": ("Parts connected: contact (they can slide or separate) - each part meshed on its own, with "
+                "named contact pairs where they touch."),
+}
+
+
 def fea_confirmation_message(body) -> str:
     """The declaration of a part confirmed on the FEA stage: the part, meshed as a solid for
     structural analysis, how many bodies the file has, what the clean check found, its size and
@@ -321,6 +330,16 @@ def fea_confirmation_message(body) -> str:
     bodies = getattr(body, "bodies", None)
     if isinstance(bodies, int) and bodies > 0:
         parts.append("One body." if bodies == 1 else f"{bodies} bodies.")
+    # AN ASSEMBLY: its parts, meshed together, joined as the user said on the stage
+    said_parts = str(getattr(body, "parts_summary", "") or "").strip().rstrip(".")
+    connection = str(getattr(body, "fea_connection", "") or "").strip()
+    if connection:
+        parts.append(f"An assembly of {said_parts}, meshed together as solids." if said_parts
+                     else "An assembly of several parts, meshed together as solids.")
+        parts.append(FEA_CONNECTION_WORDS.get(connection, FEA_CONNECTION_WORDS["bonded"]))
+        gap_said = str(getattr(body, "gap_summary", "") or "").strip()
+        if gap_said:
+            parts.append(gap_said)
     clean = str(getattr(body, "clean_summary", "") or "").strip().rstrip(".")
     if clean:
         parts.append(f"Clean check: {clean}.")
@@ -400,6 +419,9 @@ def confirmation_message(body) -> str:
         parts.append("No openings were confirmed on the picture"
                      + (" (every sticker was marked not an opening)" if body.openings else "")
                      + "; ask the user where the fluid enters and leaves.")
+    leaks_said = str(getattr(body, "leaks_summary", "") or "").strip()
+    if leaks_said and body.flow == "internal":
+        parts.append(leaks_said)
     if body.seed_point_mm and len(body.seed_point_mm) == 3:
         p = body.seed_point_mm
         parts.append(f"A point inside the flow: ({p[0]:.0f}, {p[1]:.0f}, {p[2]:.0f}) mm.")
@@ -410,6 +432,66 @@ def confirmation_message(body) -> str:
     if said:
         parts.append(said)
     return " ".join(parts)
+
+
+# ---------------------------------------------------------------------- the leaks (INS-8) ----
+LEAK_RULE = "INS-8"
+
+
+def _mm(v: float) -> str:
+    return f"{v:.3g}"
+
+
+def leak_closing_answer(leaks: dict | None, asked_mm: float | None) -> tuple[float | None, str]:
+    """INS-8: the leak size the confirmation carries, in the reading's millimetres, and what it says,
+    from the check's leaks and what the stage sent: None (left out) takes the check's proposal, 0
+    switches it off, any other size is the user's. (None, "") when the check found no leaks."""
+    if not isinstance(leaks, dict) or not int(leaks.get("found") or 0):
+        return None, ""
+    proposed = float(leaks.get("close_up_to_mm") or 0.0)
+    size = proposed if asked_mm is None else max(float(asked_mm), 0.0)
+    found = int(leaks.get("found") or 0)
+    rows = [f"{_mm(float(x.get('width_mm') or 0))} mm at ({', '.join(f'{v:.0f}' for v in x.get('at_mm') or [])}) mm"
+            for x in (leaks.get("leaks") or [])[:5]]
+    listed = "; ".join(rows) + (f"; and {found - len(rows)} more" if found > len(rows) else "")
+    if size <= 0:
+        return 0.0, (f"Leaks: {found} found in the surface ({listed}), left open as the user chose - the run "
+                     "stops at a leak it cannot mesh across.")
+    widest = max([float(x.get("width_mm") or 0) for x in leaks.get("leaks") or []] or [0.0])
+    tail = "" if size >= widest else f" (the widest, {_mm(widest)} mm, is wider and stays open)"
+    return size, (f"Leaks: {found} found in the surface ({listed}); every leak up to {_mm(size)} mm is closed "
+                  f"for the mesh{tail}, never in the file.")
+
+
+def confirmed_leak_closing(session_id: str) -> dict | None:
+    """The leak closing the user confirmed on the stage (INS-8), as the run carries it:
+    {"close_up_to_m", "rule"} - None when the check found no leaks, the user switched it off, or
+    the confirmation cannot be read (the surface is then meshed as drawn)."""
+    import json
+
+    if not session_id:
+        return None
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.contracts.object_storage import get_object_store
+    try:
+        record = json.loads(get_object_store().get_bytes(object_key=check_object_key(session_id, "confirmed.json")))
+    except Exception:  # noqa: BLE001 - unknown is "as drawn", never a refusal
+        return None
+    return leak_closing_of(record)
+
+
+def leak_closing_of(record) -> dict | None:
+    """The run's leak closing from a stored confirmation (its size is in the confirmed unit's
+    millimetres, which are millimetres), in metres; None when there is none."""
+    if not isinstance(record, dict) or record.get("flow") != "internal":
+        return None
+    try:
+        size_mm = float(record.get("close_leaks_mm") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if not 0.0 < size_mm < float("inf"):
+        return None
+    return {"close_up_to_m": size_mm / 1000.0, "rule": LEAK_RULE}
 
 
 def _is_declaration(m: dict) -> bool:
@@ -511,6 +593,54 @@ def confirmed_opening_names(session_id) -> tuple[str, ...]:
 
 #: The one wall an internal flow's confirmation declares for every surface that is not an opening.
 BUILT_IN_WALL = "wall"
+
+#: THE FLOW KIND BY RULE (INS-3, docs/RULES.md). A flow through the part needs an inside with a way
+#: in and a way out. When the user says the fluid flows through a part whose inside-space map
+#: (cad/inside_space) finds no passage with two mouths, and fewer than two openings are confirmed
+#: on it, the stage asks one plain question - with the one-click way out of flowing around it -
+#: instead of a job that can only fail.
+FLOW_KIND_RULE = "INS-3"
+NO_INSIDE_QUESTION = "This part has no openings or inside for fluid. Did you mean flow around it?"
+ONE_MOUTH_QUESTION = ("The space inside this part has only one opening, so the fluid has no way through it. "
+                      "Did you mean flow around it?")
+
+
+#: INS-7: an internal-flow part with no way through whose surface is open or in loose pieces is
+#: told it needs CAD repair, never offered flow around it (a broken surface is no part to flow
+#: round either). The repair stage closes it; this stage only says what it found.
+CAD_REPAIR_MESSAGE = ("This part's surface is not closed in one piece ({what}), so the space the fluid "
+                      "fills cannot be found. It needs CAD repair first.")
+
+
+def needs_cad_repair(surface: dict | None) -> str:
+    """INS-7's words for a surface with open edges that edge no opening, or loose pieces, else ""."""
+    if not isinstance(surface, dict):
+        return ""
+    what = []
+    stray, pieces = int(surface.get("open_edges_not_openings") or 0), int(surface.get("pieces") or 1)
+    if stray:
+        what.append(f"{stray} open edge{'s' if stray != 1 else ''} that edge no opening")
+    if pieces > 1:
+        what.append(f"{pieces} loose pieces")
+    return CAD_REPAIR_MESSAGE.format(what=" and ".join(what)) if what else ""
+
+
+def flow_question(inside: dict | None, openings, surface: dict | None = None) -> str:
+    """The stage's question when "the fluid flows through it" cannot be meshed as said, else "".
+    `inside` is the check's map facts (scout `inside`); `openings` the openings as confirmed (dicts
+    or rows with a `role`). A part the map could not read is never questioned: the intake asks."""
+    def role(o) -> str:
+        return str((o.get("role") if isinstance(o, dict) else getattr(o, "role", "")) or "")
+    ports = [o for o in openings or () if role(o) in ("inlet", "outlet")]
+    if len(ports) >= 2 or not isinstance(inside, dict) or inside.get("mapped") is False:
+        return ""
+    if inside.get("has_inside"):
+        return ""                 # there is a way through: the openings are the user's to place
+    broken = needs_cad_repair(surface)
+    if broken:
+        return broken             # INS-7: said, never healed; no "flow around it" for a broken surface
+    mouths = max([int(n) for n in inside.get("mouths_per_passage") or []] or [0])
+    return ONE_MOUTH_QUESTION if mouths == 1 else NO_INSIDE_QUESTION
 
 
 def patches_from(body) -> list[dict]:

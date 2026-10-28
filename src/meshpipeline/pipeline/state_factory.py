@@ -36,6 +36,7 @@ def make_pipeline_state(
     flow_axis: str | None = None,
     agent_model_configs: dict | None = None,
     user_dispute: dict | None = None,
+    user_notes: list | None = None,
 ) -> dict:
     # The chosen mesh engine is the canonical PipelineState field `engine` (intake's tool/session
     # interface calls it `mesh_engine`; there is no third spelling). Carrying it here - plus the
@@ -92,6 +93,8 @@ def make_pipeline_state(
         "requirements_strict":   bool(requirements_strict),
         "flow_axis":             flow_axis,
         "requirement_caveats":   [],
+        "resolution_ladder":     {},
+        "sound_attempts":        [],
         # mesh-detail preference: the user's own choice (None = never stated), the
         # deterministic operational tier, and which of the two produced it.
         "requested_mesh_fidelity": requested_mesh_fidelity,
@@ -100,6 +103,8 @@ def make_pipeline_state(
         "builder_noop_count":    0,
         "builder_stop":          "",
         "review_history":        [],
+        # the user's own notes, word for word (contracts/user_notes); [] when they left none
+        "user_notes":            list(user_notes or []),
         "agent_model_configs":   agent_model_configs if agent_model_configs is not None else {},
         "user_dispute":          user_dispute if user_dispute is not None else {},
         # Empty until the phase that owns each one runs; never seeded from a caller, so a

@@ -127,6 +127,14 @@ on:
         required: false
         default: false
         type: boolean
+      # The review rides the cad_repair tick by default. Unticking THIS while cad_repair is ticked
+      # leaves the review at its shipped default (off), so the loop repairs autonomously under its
+      # caps - the posture a demonstration of the autonomous pass needs, and nothing else changes.
+      cad_repair_review:
+        description: "cad_repair_review - keep the repair review on when cad_repair is ticked (untick for the autonomous posture: repairs run under caps without parking for a person)"
+        required: false
+        default: true
+        type: boolean
       # THE LLM PLANNER'S POSTURE, chosen here like cad_repair. "off" exports nothing, so the API and
       # fleet keep the shipped default (rules only). "shadow" asks the model and records beside the
       # rules without acting; "live" lets its plan act inside the repair caps. Declarative: a redeploy
@@ -710,12 +718,18 @@ jobs:
               # empty string it concludes no usable key exists and tries to mint one - which a
               # deploy identity is refused, because storage.hmacKeyAdmin is an owner's role.
               #
-              # THE KEY BELONGS TO 224734058693-compute@, not to dev-api@. An HMAC key is owned by
-              # one service account and whoever presents it authenticates AS that account, so the
-              # bucket grant that makes this work is the one that account already holds. Moving
-              # dev onto a key owned by its own API identity is an owner's one-off act (mint, seal,
-              # retype the id here) and is not what this line is for.
-              echo "minio_access_key=GOOG1EBINWPJ6TMT7VJETWHMRZLC6M2FNQWTMOYSRRDTP4NT7ZWGD5YRZJDHX"
+              # THE KEY BELONGS TO dev-api@, and it is the one minio-secret-key's latest version
+              # (v10) seals. create-object-storage.sh tests this id against the ACTIVE keys of the
+              # API identity (OBJECT_STORE_SA defaults to it), so pinning a key another account
+              # owns made every full deploy decide "no usable key", mint a fresh dev-api@ key and
+              # seal its secret as the new latest - and every merge deploy after it put the API
+              # back on the old id, paired with a secret that is not its own. Storage refused
+              # every call (readyz: object_store down: StorageError) until the next full deploy,
+              # and on the fifth mint GCS's per-account limit stopped the deploy outright.
+              # Pinning the id the latest secret belongs to makes the stage reuse it, so a merge
+              # and a full deploy now hand every runtime the same pair. dev-api@ holds
+              # roles/storage.objectAdmin on the bucket.
+              echo "minio_access_key=GOOG1EK3FARMRHP4LWXETCYFWB2BUX4RLN2NHTJ2VWREUO7ZHW7IVPFI7ET5D"
               echo "minio_bucket=hexera-dev-artifacts-224734058693"
               echo "minio_secret_key_secret=minio-secret-key"
               echo "minio_endpoint=storage.googleapis.com"
@@ -930,7 +944,7 @@ jobs:
   await-ci:
     name: Wait for CI on this commit
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     permissions:
       contents: read
       checks: read
@@ -979,7 +993,9 @@ jobs:
           # to main both workflows start together and this job can reach the API first. "Not there"
           # and "not finished" are therefore the same state - keep waiting - and only a concluded
           # check is a verdict.
-          deadline=$(( SECONDS + 40 * 60 ))
+          # as long as CI itself may take: its longest jobs are allowed 45 minutes, and a run waits
+          # for runners before they start (40 minutes gave up on CI runs still going)
+          deadline=$(( SECONDS + 70 * 60 ))
           while :; do
             # EVERY ci-gate run for this commit must have concluded, and all of them must have
             # passed. Reading only the latest was wrong: a manual workflow_dispatch of the same
@@ -1020,7 +1036,7 @@ jobs:
               exit 0
             fi
             if [ "${SECONDS}" -ge "${deadline}" ]; then
-              echo "::error::hexera/ci-gate did not conclude for ${SHA} within 40 minutes (${done_ok} passed, ${pending} still running, of ${total})."
+              echo "::error::hexera/ci-gate did not conclude for ${SHA} within 70 minutes (${done_ok} passed, ${pending} still running, of ${total})."
               echo "If this is a release tag, it names a commit CI never validated - tag a commit from main instead."
               exit 1
             fi
@@ -1408,7 +1424,13 @@ jobs:
       # expand to the empty string, which every consumer treats as "not stated" (`-z`), so the
       # shipped defaults stay in force.
       CAD_REPAIR_ENABLED: ${{ inputs.cad_repair && 'true' || '' }}
-      CAD_REPAIR_REVIEW_ENABLED: ${{ inputs.cad_repair && 'true' || '' }}
+      # THE REVIEW IS STATED EITHER WAY once repair is on, and this is the one flag here that
+      # cannot ride the "empty means not stated" convention. Unticking it is a POSITIVE choice -
+      # the autonomous posture - and an empty value does not express it: an environment whose
+      # saved worker.env already carries CAD_REPAIR_REVIEW_ENABLED=true would keep parking
+      # repairs for a person while the API dropped the flag, so the tick would appear to do
+      # nothing. Unticked `cad_repair` still leaves it empty, like its siblings.
+      CAD_REPAIR_REVIEW_ENABLED: ${{ inputs.cad_repair && (inputs.cad_repair_review && 'true' || 'false') || '' }}
       # Planar hole filling rides the same tick. What protects a through-hole is the paired-rim
       # guard (both ends of a missing passage, any cross-section, refuse filling for the run); the
       # session caps only bound the size and volume drift of a fill that is kept.
@@ -1468,6 +1490,22 @@ jobs:
       # changed what the deploy did. Thirteen seconds of `--help` ahead of a two-hour job.
       - name: The deploy's gcloud arguments still exist (devtools/quality/check_gcloud_flags.py)
         run: python3 devtools/quality/check_gcloud_flags.py
+
+      # A PARTIAL ROLL, SAID OUT LOUD. `images` without `workers` (every merge to main, and a manual
+      # app run without fleet) moves the API and the mesh job to this build and leaves the worker
+      # fleet where it is. Jobs never fail from that (application/platform_contract holds a job a
+      # worker cannot read until one that can takes it), but if this build changed the platform
+      # contract, new jobs wait until the fleet rolls - so the deployer is told, not refused: the
+      # merge deploy depends on this path.
+      - name: Warn when the fleet is left on an older build
+        env:
+          DEPLOY_COMPONENTS: ${{ needs.target.outputs.components }}
+        run: |
+          case ",${DEPLOY_COMPONENTS}," in
+            *,all,*|*,workers,*) exit 0 ;;
+            *,images,*)
+              echo "::warning title=Worker fleet not rolled::This deploy moves the API and the mesh job to this build; the worker fleet stays on its current one. If this build changed the platform contract (run entry arguments, dispatch/state/result schema, or MESH_EXCHANGE_VERSION), new jobs wait with 'the platform is updating' until a fleet deploy (fleet=true). Nothing fails - but run the fleet deploy to let them start." ;;
+          esac
 
       # THE ONLY CLOUD MUTATION IN THIS WORKFLOW. deploy.sh is interactive by default - it prints a
       # plan and makes the operator type the project id - and DEPLOY_NONINTERACTIVE=1 is its

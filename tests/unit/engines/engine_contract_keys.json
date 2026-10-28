@@ -38,8 +38,13 @@
     "MESH"
    ],
    [
+    "cell_limit",
+    false,
+    "MESH"
+   ],
+   [
     "resolution_floor",
-    true,
+    false,
     "MESH"
    ],
    [
@@ -97,10 +102,12 @@
    "timed_out"
   ],
   "deliverable": [
+   "fea_plan.json",
    "fluid_boundary.stl",
    "geometry.step",
    "gmsh_spec.json",
    "mesh.bdf",
+   "mesh.cdb",
    "mesh.inp",
    "mesh.unv"
   ],
@@ -123,8 +130,13 @@
     "MESH"
    ],
    [
+    "cell_limit",
+    false,
+    "MESH"
+   ],
+   [
     "resolution_floor",
-    true,
+    false,
     "MESH"
    ],
    [
@@ -275,8 +287,13 @@
     "MESH"
    ],
    [
+    "cell_limit",
+    false,
+    "MESH"
+   ],
+   [
     "resolution_floor",
-    true,
+    false,
     "MESH"
    ],
    [
@@ -442,6 +459,16 @@
    [
     "quality_floor",
     true,
+    "MESH"
+   ],
+   [
+    "cell_limit",
+    false,
+    "MESH"
+   ],
+   [
+    "resolution_floor",
+    false,
     "MESH"
    ],
    [

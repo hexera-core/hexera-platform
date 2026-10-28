@@ -95,3 +95,18 @@ def test_a_delivered_car_4_7_mm_long_carries_a_concern_naming_the_unit():
     assert scale_concern(0.0005, kind=INTERNAL_PASSAGE) is not None
     assert scale_concern(0.4, kind=INTERNAL_PASSAGE) is None
     assert scale_concern(0.001, kind=None) is None
+
+
+def test_the_unit_most_parts_state_leads_when_the_part_is_believable_in_it():
+    """An Inventor assembly stating inches for most parts and millimetres for one: 2 file units
+    across is a 5 cm hub in inches - proposed surely, with no convention overruling the file."""
+    got = infer_unit(2.0, stated=LengthUnit.inch)
+    assert got is not None
+    assert got.unit is LengthUnit.inch and got.confidence == "high"
+    assert "most of the file's parts state inches" in got.why
+
+
+def test_a_stated_unit_that_makes_the_part_absurd_does_not_lead():
+    # 2,000,000 file units in inches is 50 km: the stated unit is set aside, the size decides
+    got = infer_unit(2_000_000.0, stated=LengthUnit.inch)
+    assert got is not None and got.unit is not LengthUnit.inch

@@ -93,6 +93,29 @@ config_of(){
     'import json,sys; print(json.load(sys.stdin).get("config",{}).get("digest",""))' 2>/dev/null
 }
 
+# WHAT IMAGE A REFERENCE SERVES, as either of the two IDs Docker gives a local image. The classic
+# image store's ID is the image CONFIG digest; the containerd image store (Docker 29's default,
+# on the hosted runners since 2026-10) gives the MANIFEST digest instead - which is also exactly
+# the digest the registry assigns on push. A record written under either store names one of the
+# two, so a reference is "this image" when EITHER digest equals the recorded ID. Comparing the
+# config digest alone read every re-publish and every reuse of a commit published under the
+# containerd store as a conflicting image (the fleet roll of 65c63ab28b1b, 2026-10-24).
+manifest_digest_of(){
+  local raw
+  raw="$(docker buildx imagetools inspect --raw "$1" 2>/dev/null </dev/null)" || return 1
+  [ -n "${raw}" ] || return 1
+  printf 'sha256:%s' "$(printf '%s' "${raw}" | sha256sum | cut -d' ' -f1)"
+}
+# serves_image <reference> <config digest of it, or ""> <recorded image id>
+serves_image(){
+  local ref="$1" config="$2" want="$3" m
+  [ -n "${want}" ] || return 1
+  [ "${config}" = "${want}" ] && return 0
+  case "${ref}" in *@"${want}") return 0 ;; esac
+  m="$(manifest_digest_of "${ref}")" || return 1
+  [ "${m}" = "${want}" ]
+}
+
 # usable <record> - every check, in order; prints the first reason it fails and returns 1.
 usable(){
   local cand="$1" why bad comp image_id ref tagref got
@@ -124,11 +147,11 @@ PY
   # the tag publish.sh guards.
   while read -r comp image_id ref tagref; do
     got="$(config_of "${ref}")" || { note "${comp}: the registry does not serve ${ref}"; return 1; }
-    [ "${got}" = "${image_id}" ] || {
+    serves_image "${ref}" "${got}" "${image_id}" || {
       note "${comp}: ${ref} is image ${got:0:19}, the record validated ${image_id:0:19}"; return 1; }
     if [ "${tagref}" != "-" ]; then
       got="$(config_of "${tagref}")" || { note "${comp}: the registry does not serve ${tagref}"; return 1; }
-      [ "${got}" = "${image_id}" ] || {
+      serves_image "${tagref}" "${got}" "${image_id}" || {
         note "${comp}: ${tagref} now points at ${got:0:19}, not the published ${image_id:0:19}"
         return 1; }
     fi

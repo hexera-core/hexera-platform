@@ -26,7 +26,8 @@
 #             build:  make test-container-smoke  (supplies APP_VERSION from the product authority)
 #
 #   mesh-toolchain  the STABLE native floor for the mesh runner: OpenFOAM 2412 (apt, pinned to
-#             an exact package version), vmtk (conda, isolated), and the gmsh runtime libs.
+#             an exact package version), vmtk (conda, isolated), the gmsh runtime libs, and
+#             fTetWild (built from a pinned commit in `ftetwild-build`, FEA's last rung).
 #             Slow, ~2 GB, and the only layer that needs the ESI package repository - which is
 #             served by SourceForge mirrors and is the least reliable thing in this build.
 #             The `mesh` target builds it automatically - it is not a separate artefact and
@@ -50,9 +51,10 @@
 # accepted cost of a script-only build with no prebuilt base.
 
 # Base pinned by DIGEST (not the mutable :22.04 tag) so every org builds the SAME base regardless of
-# when the tag is repushed. To bump: `docker pull ubuntu:22.04` then paste its digest here. The apt
-# package sources below (deadsnakes PPA, ESI OpenFOAM repo) and the conda/pip installs remain
-# network-dependent and version-pinned where they support it - see docs/deployment/overview.md "Build sources".
+# when the tag is repushed. To bump: `docker pull ubuntu:22.04` then paste its digest here. The
+# sources below (the pinned Python release asset, the ESI OpenFOAM repo) and the conda/pip installs
+# remain network-dependent and version-pinned where they support it - see
+# docs/deployment/overview.md "Build sources".
 FROM ubuntu:22.04@sha256:0e0a0fc6d18feda9db1590da249ac93e8d5abfea8f4c3c0c849ce512b5ef8982 AS requirements
 # THE DOCUMENTATION/DEPENDENCY BOUNDARY, and nothing else.
 #
@@ -113,17 +115,7 @@ RUN sed -i -e "s|http://archive\.ubuntu\.com/ubuntu|${UBUNTU_MIRROR}|g" \
     && printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' \
          > /etc/apt/apt.conf.d/99-hexera-acquire
 
-# deadsnakes FIRST: 22.04's own python3.11 is 3.11.0rc1; the PPA provides current stable
-# 3.11.x (same cp311 ABI, so every pinned wheel is unchanged).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        software-properties-common gnupg ca-certificates curl \
-    && add-apt-repository -y ppa:deadsnakes/ppa \
-    && printf 'Package: python3.11*\nPin: release o=LP-PPA-deadsnakes\nPin-Priority: 1001\n' \
-        > /etc/apt/preferences.d/deadsnakes \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 python3.11-dev python3.11-venv python3-pip \
     build-essential curl gnupg ca-certificates software-properties-common \
     # libpq runtime - psycopg[binary] so AsyncPostgresSaver can connect (else silent MemorySaver).
     libpq5 \
@@ -132,6 +124,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-glx \
     && rm -rf /var/lib/apt/lists/*
 
+# PYTHON 3.11 COMES FROM A PINNED, CHECKSUMMED RELEASE ASSET - NOT FROM A PPA.
+# 22.04's own python3.11 is 3.11.0rc1, so this used to come from the deadsnakes PPA. That PPA is
+# served from ppa.launchpadcontent.net, which answered 503 for hours on 2026-10-21 and stopped
+# every image build, CI run and deploy. The interpreter is now a python-build-standalone build
+# (the same builds `uv python install` uses), fetched from an immutable GitHub release asset and
+# verified against a reviewed SHA-256 before it is unpacked - the same rule as micromamba below.
+# Same version the PPA was serving (3.11.17) and the same cp311 ABI, so every pinned wheel is
+# unchanged. A mismatch here is a signal to review, never a value to update.
+#
+# It is unpacked into /usr/local, so /usr/local/bin/python3.11 is first on PATH and every file
+# stays under /usr (which the sandbox already grants read-only). pip now installs into
+# /usr/local/lib/python3.11/site-packages; `dist-packages` beside it is a symlink so any path
+# written for the old Debian layout still resolves. ldconfig registers libpython3.11.so for
+# anything that looks it up by name. /usr/bin/python3 and /usr/bin/python point at it below,
+# exactly as they pointed at the PPA's interpreter.
+ARG PYTHON_VERSION=3.11.17
+ARG PYTHON_BUILD_RELEASE=20261013
+ARG PYTHON_BUILD_SHA256=3b8e5a248bcc351265ffe68f5e457668a2e09c99a47f81f658988c7d3d107522
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+      "https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_BUILD_RELEASE}/cpython-${PYTHON_VERSION}%2B${PYTHON_BUILD_RELEASE}-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" \
+      -o /tmp/python.tar.gz \
+    && echo "${PYTHON_BUILD_SHA256}  /tmp/python.tar.gz" | sha256sum -c - \
+    && tar -xz -C /usr/local --strip-components=1 --no-same-owner -f /tmp/python.tar.gz \
+    && rm -f /tmp/python.tar.gz \
+    && ln -s site-packages /usr/local/lib/python3.11/dist-packages \
+    && ldconfig \
+    && /usr/local/bin/python3.11 -c "import sys, ssl, sqlite3, ctypes; assert sys.version.split()[0] == '${PYTHON_VERSION}', sys.version"
+
 # The build toolchain is pinned like everything else. `--upgrade pip setuptools wheel` installed
 # whatever those projects had released that day, so two builds of the same commit could resolve
 # the application's dependencies with different resolvers and different wheel-building behaviour.
@@ -139,8 +159,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG PIP_VERSION=26.1.2
 ARG SETUPTOOLS_VERSION=83.0.0
 ARG WHEEL_VERSION=0.47.0
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
-    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/local/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python python /usr/local/bin/python3.11 1 \
     && python3 -m pip install --upgrade \
          "pip==${PIP_VERSION}" "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
 
@@ -174,6 +194,57 @@ COPY --from=requirements /pins/constraints.txt ./requirements/constraints.txt
 RUN pip install --no-cache-dir -c requirements/constraints.txt -r requirements/dev.txt \
     && python -m build --wheel --outdir /dist \
     && ls /dist/*.whl
+
+
+FROM base AS ftetwild-build
+# fTetWild, THE FEA LADDER'S LAST RUNG (LAD-fea-9, engines/fea_tetwild.py): it meshes a part only after
+# every gmsh option left it with no valid mesh. wildmeshing/fTetWild (Hu et al., SIGGRAPH 2020),
+# MPL-2.0 - see docs/reference/third-party.md. BUILT FROM SOURCE in this discarded stage; only the
+# binary and its licence reach the mesh image.
+#
+# PINNED BY COMMIT, AND SO IS EVERY DEPENDENCY IT FETCHES. fTetWild's CMake fetches its dependencies
+# itself (FetchContent, mostly by tag). A tag can be re-pointed, so after the configure step each
+# fetched dependency's checked-out commit is compared with the reviewed one below, and the set of
+# dependencies with the reviewed set - a moved tag or a new dependency fails the build here. (Its
+# unit tests are not configured: they would fetch Catch2 as an unverified archive.)
+#
+# REPEATABLE (the same input gives the same mesh, byte for byte - lab, 25 Oct): upstream seeds two
+# shuffles from std::random_device - fTetWild's triangle insertion order and geogram's
+# random_shuffle (the Delaunay's insertion order) - so two runs of one surface gave two meshes. Both
+# seeds are made constants here, each rewrite checked; with one thread (--max-threads 1, the
+# driver's own setting) the mesh is then the same every run.
+ARG FTETWILD_COMMIT=8118f810478e0e65a7bf2d8cecdc5e203a876e97
+ARG FTETWILD_DEPS="cli11-src=4160d259d961cd393fd8d67590a8c7d210207348 eigen-src=3147391d946bb4b6c68edd901f2add6ac1f31f8c fmt-src=40626af88bd7df9a5fb80be7b25ac85b122d6c21 geogram-src=fc3eb9bf44d2ee29686592e3ef5f5f4daeda27f8 json-src=0901d33bf6e7dfe6f70fd9d142c8f5c6695c6c5b libigl-src=40e7900ccbd767f1f360e0eb10f0f1a6432e0993 predicates-src=decb7bc1260e689cbe008109e3cc5d3a5a433aea spdlog-src=6fa36017cfd5731d617e1a934f0e5ea9c4445b13 tbb-src=06ce6212da6710f4bb2d20a1904b018aa44069bf"
+RUN apt-get update && apt-get install -y --no-install-recommends cmake git libgmp-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /src/ftetwild && cd /src/ftetwild \
+    && git init -q && git remote add origin https://github.com/wildmeshing/fTetWild.git \
+    && git fetch -q --depth 1 origin "${FTETWILD_COMMIT}" && git checkout -q FETCH_HEAD \
+    && test "$(git rev-parse HEAD)" = "${FTETWILD_COMMIT}" \
+    && grep -q '^    add_subdirectory(tests)$' CMakeLists.txt \
+    && sed -i 's/^    add_subdirectory(tests)$/    # (unit tests not built in the image)/' CMakeLists.txt \
+    && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DFLOAT_TETWILD_ENABLE_TBB=ON -DBUILD_SHARED_LIBS=OFF \
+    && for pin in ${FTETWILD_DEPS}; do \
+         d="build/_deps/${pin%%=*}"; want="${pin#*=}"; \
+         test "$(git -C "$d" rev-parse --show-toplevel)" = "$(cd "$d" && pwd -P)" \
+           || { echo "ERROR: fTetWild dependency $d is not a checked-out repository" >&2; exit 1; }; \
+         got="$(git -C "$d" rev-parse HEAD)"; \
+         test "$got" = "$want" || { echo "ERROR: fTetWild dependency $d is at $got, reviewed $want" >&2; exit 1; }; \
+       done \
+    && test "$(ls -d build/_deps/*-src | wc -l)" = "$(echo ${FTETWILD_DEPS} | wc -w)" \
+    && grep -q 'std::mt19937 g(rd());' src/TriangleInsertion.cpp \
+    && sed -i 's/std::mt19937 g(rd());/std::mt19937 g(1);/' src/TriangleInsertion.cpp \
+    && grep -q 'std::mt19937 g(1);' src/TriangleInsertion.cpp \
+    && grep -q 'std::mt19937 urng(rng());' build/_deps/geogram-src/src/lib/geogram/basic/algorithm.h \
+    && sed -i 's/std::mt19937 urng(rng());/std::mt19937 urng(1);/' build/_deps/geogram-src/src/lib/geogram/basic/algorithm.h \
+    && grep -q 'std::mt19937 urng(1);' build/_deps/geogram-src/src/lib/geogram/basic/algorithm.h \
+    && cmake --build build -j"$(nproc)" --target FloatTetwild_bin \
+    && install -D -m 0755 build/FloatTetwild_bin /opt/ftetwild/bin/fTetWild \
+    && install -D -m 0644 LICENSE.MPL2 /opt/ftetwild/LICENSE.MPL2 \
+    && printf '%s\n' "wildmeshing/fTetWild ${FTETWILD_COMMIT} (MPL-2.0); insertion and Delaunay shuffles seeded" \
+         > /opt/ftetwild/VERSION \
+    && /opt/ftetwild/bin/fTetWild --help >/dev/null \
+    && rm -rf /src/ftetwild
 
 
 FROM base AS mesh-toolchain
@@ -336,6 +407,15 @@ RUN curl -fsSL \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglu1-mesa libegl1 libxft2 libxcursor1 libxinerama1 libxrandr2 libxi6 \
     && rm -rf /var/lib/apt/lists/*
+
+# fTetWild (built in `ftetwild-build` above): its binary, its licence, and the two system libraries it
+# links (GMP for its exact rationals, libgomp for geogram). On PATH as `fTetWild`, where
+# engines/fea_tetwild.binary() finds it; the capability smoke runs it (tests/native).
+COPY --from=ftetwild-build /opt/ftetwild /opt/ftetwild
+RUN apt-get update && apt-get install -y --no-install-recommends libgmp10 libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /opt/ftetwild/bin/fTetWild /usr/local/bin/fTetWild \
+    && fTetWild --help >/dev/null
 
 
 FROM base AS runtime-base

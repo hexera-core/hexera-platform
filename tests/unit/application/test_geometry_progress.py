@@ -311,3 +311,61 @@ def test_a_check_the_user_confirmed_before_the_naming_landed_is_done_on_the_meas
     view = gp.progress_view(_scouted(), asked, rec, T0 + 230, confirmed=True, **LIMITS)
     assert view["state"] == "done" and view["live"] is False and view["current"] == "Checked in 18 s"
     assert _states(view)["naming"] == "skipped"
+
+
+# ------------------------------------------------------------------------------ FEA parts ----
+# An FEA part has no openings and nothing to name: its steps are said in its own words (Areen's F1
+# car showed "Found the openings" on its FEA check, 21 Oct) - no CFD words on the FEA path.
+CFD_WORDS = ("opening", "name what", "naming", "named", "flow", "sticker")
+
+
+def _no_cfd_words(view):
+    said = " ".join([view.get("current") or "", view.get("note") or "", view.get("advice") or ""]
+                    + [s["label"] + " " + s["doing"] for s in view["steps"]]).lower()
+    return [w for w in CFD_WORDS if w in said]
+
+
+def test_an_fea_part_done_reads_its_own_step_names():
+    asked = {"requested_at": T0 + 200, "purpose_text": "static stress analysis"}
+    rec = _scout_record("pictures", DONE_STEPS)
+    rec["naming"] = {"picked_at": T0 + 201, "current": "naming", "steps": {"naming": {"at": T0 + 202, "end": T0 + 208}}}
+    view = _view({"status": "ready", "written_at": T0 + 208, "seconds": 18.0}, asked, rec, now=T0 + 400)
+    labels = {s["key"]: s["label"] for s in view["steps"]}
+    assert labels["openings"] == "Read the surface" and labels["naming"] == "Found the walls and hot spots"
+    assert view["fea"] is True and _no_cfd_words(view) == []
+
+
+def test_the_route_the_api_settled_speaks_first_even_while_the_scout_runs():
+    rec = _scout_record("openings", {"reading": {"at": T0 + 2, "end": T0 + 6},
+                                     "measuring": {"at": T0 + 6, "end": T0 + 12}, "openings": {"at": T0 + 12}})
+    view = gp.progress_view(_pending(), None, rec, T0 + 14, fea=True, **LIMITS)
+    assert view["current"] == "Reading the surface…" and _no_cfd_words(view) == []
+    slow = gp.progress_view(_pending(), None, rec, T0 + 12 + gp.soft_limit_s("openings", rec["scout"]["work"]) + 1,
+                            fea=True, **LIMITS)
+    assert slow["note"] == "Still reading - a part with many faces takes longer"
+    # the same check on the flow path keeps the flow words
+    flow = gp.progress_view(_pending(), None, rec, T0 + 14, fea=False, **LIMITS)
+    assert flow["current"] == "Finding the openings…"
+
+
+def test_an_fea_measurement_running_long_and_failing_is_said_in_fea_words():
+    asked = {"requested_at": T0 + 200, "purpose_text": "I need FEA of this bracket"}
+    rec = _scout_record("pictures", DONE_STEPS)
+    rec["naming"] = {"picked_at": T0 + 201, "current": "naming", "steps": {"naming": {"at": T0 + 202}}}
+    running = _view(_scouted(), asked, rec, now=T0 + 210)
+    assert running["current"] == "Measuring the walls and hot spots…"
+    slow = _view(_scouted(), asked, rec, now=T0 + 202 + gp.soft_limit_s("naming", {}) + 1)
+    assert slow["note"] == "Still measuring - a part with many faces takes longer" and _no_cfd_words(slow) == []
+    stored = {"status": "failed", "written_at": T0 + 300, "step": "naming", "retry": "naming",
+              "reason": "the naming step did not answer", "timed_out": True, "seconds": 20.0}
+    failed = _view(stored, asked, rec, now=T0 + 400)
+    assert failed["current"] == "Measuring the walls and hot spots took too long."
+    assert failed["advice"].startswith("The part is drawn: check its size and unit") and _no_cfd_words(failed) == []
+
+
+def test_a_stored_fea_measurement_marks_the_check_as_fea_without_the_words():
+    from meshpipeline.cad.fea_measure import FACT_KEY
+
+    assert gp.is_fea({"facts": {FACT_KEY: {"measured": True}}}, None) is True
+    assert gp.is_fea({"facts": {}}, {"purpose_text": "external aerodynamics of a car"}) is False
+    assert gp.is_fea({}, None) is False
