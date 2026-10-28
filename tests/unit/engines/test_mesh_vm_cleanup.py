@@ -227,12 +227,65 @@ def ours(monkeypatch):
     monkeypatch.setattr(S.provcfg, "GCP_PROJECT_ID", "p", raising=False)
 
 
-def _sweep(vms, *, results=(), owners=None):
+def _sweep(vms, *, results=(), owners=None, beacons=None):
     deleted: list = []
     out = S.sweep(vms=vms, now=NOW, result_written=lambda b, k: k in results,
                   owner=lambda ref: (owners or {}).get(ref.rsplit("/", 1)[-1], True),
-                  delete=lambda ref, why: deleted.append((ref.instance_name.rsplit("/", 1)[-1], why)) or True)
+                  delete=lambda ref, why: deleted.append((ref.instance_name.rsplit("/", 1)[-1], why)) or True,
+                  beacon_age=lambda b, k: (beacons or {}).get(k))
     return out, dict(deleted)
+
+
+def test_a_vm_whose_beacon_is_fresh_is_never_swept(ours):
+    # 28 Oct: a claim records its VM only when the run is over, so mid-run "no claim names it" is true of every
+    # VM - and a job handed on still wants the result its VM is sending. A VM heard within WORKING_S is working.
+    vms = [_vm("meshing", key="jobs/m/output.tar.gz"), _vm("returning", key="jobs/r/output.tar.gz"),
+           _vm("finishing", key="jobs/f/output.tar.gz")]
+    _out, deleted = _sweep(vms, results={"jobs/f/result.json"},
+                           owners={"meshing": None, "returning": False, "finishing": None},
+                           beacons={"jobs/m/progress.json": 60.0, "jobs/r/progress.json": 30.0,
+                                    "jobs/f/progress.json": 10.0})
+    assert deleted == {}
+
+
+def test_a_long_vm_run_survives_the_sweep_under_the_real_claim_order(ours):
+    """A whole simulated 3-hour VM run, the sweep ticking every 15 minutes, with the REAL order of claim writes
+    (application/native_submission): the claim is written when the run is submitted, WITHOUT a provider
+    reference; the reference is recorded (mark_accepted) only when the run returns. So owner_live() answers
+    None - "no claim names it" - for the whole run. The beacon pulses every minute while it meshes and while it
+    sends its result back; the result document is written last; then the container exits and the beacon stops."""
+    minute = 60.0
+    start = NOW - 4 * 3600                       # the VM was created four hours before "now" at the end
+    meshing_until, returning_until = start + 170 * minute, start + 180 * minute
+    claim = {"reference": None}                  # native_submission_claims.provider_reference
+
+    def owner_live(ref):                         # persistence: the claim that names this reference, if any
+        return True if claim["reference"] == ref else None
+
+    deleted: list = []
+    vm = _vm("mesh-big-long", key="jobs/long/output.tar.gz", age_s=NOW - start)
+    t = start
+    while t <= start + 4 * 3600:
+        if t >= returning_until and claim["reference"] is None:
+            claim["reference"] = S.reference_of(vm)              # mark_accepted, once the run returned
+        last_pulse = min(t, returning_until) // minute * minute  # every minute while the runner lives
+        if (t - start) % (15 * minute) == 0 and not deleted:      # a worker's sweep tick
+            vm_now = dict(vm, creationTimestamp=vm["creationTimestamp"])
+            S.sweep(vms=[vm_now], now=t,
+                    result_written=lambda b, k, t=t: k == "jobs/long/result.json" and t >= returning_until,
+                    owner=owner_live, beacon_age=lambda b, k, t=t, p=last_pulse: t - p,
+                    delete=lambda ref, why, t=t: deleted.append((t, why)) or True)
+        t += minute
+    # never swept while it meshed or sent its result back - three hours under "no claim names it"
+    assert deleted and deleted[0][0] >= returning_until + S.WORKING_S
+    assert "result is written" in deleted[0][1]
+
+
+def test_a_vm_gone_silent_with_no_result_is_still_swept(ours):
+    # a VM whose runner died (no beacon for longer than WORKING_S) and wrote no result is not working
+    _out, deleted = _sweep([_vm("dead", key="jobs/d/output.tar.gz")], owners={"dead": None},
+                           beacons={"jobs/d/progress.json": S.WORKING_S + 60})
+    assert "no job's claim" in deleted["dead"]
 
 
 def test_the_sweep_deletes_the_stopped_the_finished_and_the_orphaned(ours):

@@ -14,7 +14,10 @@ worker also sweeps, at start and every SWEEP_EVERY_S, and deletes a VM of this d
   - the JOB that started it has ended, or no claim names it - its owner is gone - once it is older than
     OWNER_GRACE_S (a VM is started before its claim records it).
 
-A VM still meshing for a live job is never touched.
+A VM still WORKING is never touched (28 Oct): one whose beacon (runtime/mesh_runner, every minute while it
+meshes and while it sends its result back) was written within WORKING_S is left alone, whatever its claim says -
+a claim records its VM only once the run is over, so "no claim names it" is true of every VM mid-run, and a job
+handed on to another worker still wants the result its VM is sending (RUN-4).
 """
 from __future__ import annotations
 
@@ -33,6 +36,9 @@ SWEEP_EVERY_S = 900
 OWNER_GRACE_S = 1800
 #: The Compute Engine states of a VM that is not running its work any more.
 STOPPED = frozenset({"TERMINATED", "STOPPED", "STOPPING", "SUSPENDED"})
+#: A VM whose beacon was written this recently is working (the waiting worker's own stall window,
+#: cloud_run_client.WAIT_STALL_S: its beacon pulses every minute while it lives).
+WORKING_S = 900 + 300
 
 
 def _meta(vm: dict, key: str) -> str:
@@ -64,16 +70,23 @@ def age_s(vm: dict, now: float) -> float:
 
 
 def decide(vm: dict, *, now: float, bucket: str, result_written: Callable[[str, str], bool],
-           owner: Callable[[str], bool | None]) -> str:
-    """Why this VM is to be deleted, in plain words, or "" to leave it. Pure but for the two questions it asks
-    (whether a result object exists; whether the VM's job is still running), asked only when they matter."""
+           owner: Callable[[str], bool | None],
+           beacon_age: Callable[[str, str], float | None] | None = None) -> str:
+    """Why this VM is to be deleted, in plain words, or "" to leave it. Pure but for the questions it asks
+    (whether a result object exists; how long ago its beacon was written; whether the VM's job is still
+    running), asked only when they matter."""
     vm_bucket, out_key = exchange_of(vm)
     if not vm_bucket or vm_bucket != bucket:
         return ""                                   # another deployment's VM (or one we cannot place)
     if str(vm.get("status") or "") in STOPPED:
         return f"it has stopped ({vm.get('status')}): its container is done"
-    from meshpipeline.artifact_keys import result_key_beside
+    from meshpipeline.artifact_keys import progress_key_beside, result_key_beside
+    heard = (beacon_age or _beacon_age)(vm_bucket, progress_key_beside(out_key)) if out_key else None
+    if heard is not None and heard <= WORKING_S:
+        return ""          # working, sending its result back, or finishing after it: never swept
     if out_key and result_written(vm_bucket, result_key_beside(out_key)):
+        # written LAST, after its output and every file sent on its own: the result is whole in the
+        # exchange, which deleting the machine never touches - and its beacon has gone quiet
         return "its result is written in the exchange"
     if age_s(vm, now) >= OWNER_GRACE_S:
         live = owner(reference_of(vm))
@@ -89,6 +102,18 @@ def _result_written(bucket: str, key: str) -> bool:
     return bool(storage_client().bucket(bucket).blob(key).exists())
 
 
+def _beacon_age(bucket: str, key: str) -> float | None:
+    """Seconds since the run's beacon was last written, or None when it has none (or it cannot be read)."""
+    try:
+        from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
+        blob = storage_client().bucket(bucket).get_blob(key)
+        updated = getattr(blob, "updated", None) if blob is not None else None
+        return None if updated is None else max(0.0, time.time() - updated.timestamp())
+    except Exception as exc:  # noqa: BLE001 - unread is "not heard": the other rules decide
+        logger.warning("mesh VM sweep: a beacon could not be read (%s)", type(exc).__name__)
+        return None
+
+
 def _owner(reference: str) -> bool | None:
     from meshpipeline.persistence.repositories.native_submission_repository import owner_live
     return owner_live(reference)
@@ -97,7 +122,8 @@ def _owner(reference: str) -> bool | None:
 def sweep(*, vms: list[dict] | None = None, now: float | None = None,
           result_written: Callable[[str, str], bool] | None = None,
           owner: Callable[[str], bool | None] | None = None,
-          delete: Callable | None = None) -> dict:
+          delete: Callable | None = None,
+          beacon_age: Callable[[str, str], float | None] | None = None) -> dict:
     """One sweep: {"seen", "deleted": [(name, why)], "kept"}. Never raises: a question that cannot be answered
     keeps the VM (it is swept again next time, and Compute Engine's lifetime limit is the backstop)."""
     from meshpipeline.adapters.mesh_execution import gce_vm as G
@@ -114,7 +140,7 @@ def sweep(*, vms: list[dict] | None = None, now: float | None = None,
         out["seen"] += 1
         try:
             why = decide(vm, now=now, bucket=bucket, result_written=result_written or _result_written,
-                         owner=owner or _owner)
+                         owner=owner or _owner, beacon_age=beacon_age)
         except Exception as exc:  # noqa: BLE001 - not judged this time is kept this time
             logger.warning("mesh VM sweep: %s not judged (%s)", vm.get("name"), type(exc).__name__)
             why = ""
@@ -143,5 +169,5 @@ def run_forever(stop=None) -> None:
         stop.wait(SWEEP_EVERY_S)
 
 
-__all__ = ["OWNER_GRACE_S", "STOPPED", "SWEEP_EVERY_S", "age_s", "decide", "exchange_of", "reference_of",
+__all__ = ["OWNER_GRACE_S", "STOPPED", "SWEEP_EVERY_S", "WORKING_S", "age_s", "decide", "exchange_of", "reference_of",
            "run_forever", "sweep"]
