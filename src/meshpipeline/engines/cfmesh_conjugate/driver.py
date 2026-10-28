@@ -205,7 +205,40 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # same five cells across; the band estimate reaches eight, at a finer cell and FEWER cells.
     area = float(rec.get("wetted_area_m2") or 0.0)
     levels = B.LEVELS
-    if area > 0.0:
+    # TWO SIZES OF PASSAGE, TWO CELL SIZES. cad/scales measured whether this part has one scale or
+    # two off the radius field, and wrote its thin walls out separately if it has two. Sizing such
+    # a part from its narrowest passage everywhere prices the whole wetted area at the finer cell:
+    # on the first real customer cold plate, 60,526 mm2 at a slot-sized cell, about three billion
+    # cells, where the slots are 35.9% of that area inside 6.0% of the volume. So the broad
+    # passages are held at what they need and the rest of the budget goes to the thin ones.
+    #
+    # The single-scale path below is unchanged and is what every part in the corpus still takes:
+    # of ten read on 2026-10-28, every one came back single-scaled.
+    fine_surface = None
+    scales = rec.get("scales") or None
+    if scales and rec.get("fine_surface") and area > 0.0:
+        asked = B.CELLS_ACROSS_BY_FIDELITY.get((fidelity or "").strip().lower(),
+                                               B.CELLS_ACROSS_BY_FIDELITY[B.DEFAULT_FIDELITY])
+        two, two_said = B.plan_two_scales(block_lo=bounds[0], block_hi=bounds[1], scales=scales,
+                                          limit=limit, asked_across=asked)
+        if two is None:
+            # REFUSED, and the reason is the part's own two scales rather than a cell count. Said
+            # once, here, because the single-scale path would refuse the same part for a different
+            # and less useful reason - its narrowest passage - and the user would be told the wrong
+            # thing about their own geometry.
+            logger.info("conjugate: refusing to start - %s - job_id=%s", two_said, job_id)
+            await run.fence("deliver builder outcome")
+            return False, NO_COOLANT, run.outcome(produced_deliverable=False, exhausted=True,
+                                                  failure_marker=NO_COOLANT)
+        narrowest = float(scales["broad"]["width_m"])
+        cells_across, levels, estimate, said = (two["broad_across"], two["broad_levels"],
+                                                two["estimate"], two_said)
+        fine_surface = {"name": "microchannels", "file": PL.FLUID_FINE_STL,
+                        "levels": int(two["fine_levels"]),
+                        # four of its own cells, which is what the band needs to grade out of; the
+                        # depth itself comes from the span, not from this (budget.band_depth)
+                        "thickness_m": 4.0 * float(two["fine_cell_m"])}
+    elif area > 0.0:
         asked = B.CELLS_ACROSS_BY_FIDELITY.get((fidelity or "").strip().lower(),
                                                B.CELLS_ACROSS_BY_FIDELITY[B.DEFAULT_FIDELITY])
         cells_across, levels, estimate, said = B.plan_for_budget(
@@ -226,6 +259,28 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         cells_across, estimate, said = B.cells_across_for(
             fidelity=fidelity, block_lo=bounds[0], block_hi=bounds[1],
             narrowest_m=narrowest, limit=limit)
+    # THE MESHER'S OWN CEILING, WHICH IS A DIFFERENT QUESTION FROM THE DEPLOYMENT'S LIMIT.
+    #
+    # Everything above is priced against polcfg.CELL_HARD_LIMIT, which is a COMPUTE-feasibility cap
+    # - "the Cloud Run feasibility limit (8 vCPU / 32 GiB / ~50 min)", says policy.py - and it is
+    # env-settable, because a bench machine or a bigger VM is a different deployment. Raising it is
+    # the right move for a large part and it is exactly what a conjugate run on a 251 GB box does.
+    #
+    # But cartesianMesh has a ceiling that no limit and no machine moves: it allocates about twelve
+    # 32-bit labels per octree box, and this OpenFOAM is built with 32-bit labels, so it aborts
+    # partway through above roughly 179 million boxes per process. Measured on one part, same
+    # machine: 102,152,624 boxes built, 204,543,984 aborted after 302 s having used a third of the
+    # memory available. See budget.OCTREE_BOXES_PROVEN_OK.
+    #
+    # So the two are checked separately, and this one is checked LAST, because it is the one that
+    # does not care what machine was chosen. Without it a raised cell limit turns a refusal into a
+    # five-minute abort that reports as a mesher which stopped before writing anything.
+    octree_said = B.refuse_for_octree(estimate)
+    if octree_said:
+        logger.info("conjugate: refusing to start - %s - job_id=%s", octree_said, job_id)
+        await run.fence("deliver builder outcome")
+        return False, NO_COOLANT, run.outcome(produced_deliverable=False, exhausted=True,
+                                              failure_marker=NO_COOLANT)
     # A MESH IS WORTH HAVING EVEN WHEN THE PORTS CANNOT BE NAMED, and refusing to build one was
     # costing whole parts. The ports are the block faces the coolant reaches, which works while a
     # part's mouths lie ON those faces - eight of the nine in the package, because a channel milled
@@ -273,13 +328,21 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     names, named_said = declared_port_names(ws, plan)
     if names:
         plan = dataclasses.replace(plan, patch_names=PL._as_lists(names))
+    if fine_surface is not None:
+        plan = dataclasses.replace(plan, fine_surfaces=(fine_surface,))
 
     from meshpipeline.engines.cfmesh_conjugate import conjugate as C
     (ws / PL.BLOCK_STL).write_text(C.block_surface_stl(lo, hi))
     PL.write_plan(ws, plan)
     run.note_authoring()
     note_native_pass(ws, 1)
-    note_native_payload(ws, [PL.PLAN_NAME, PL.BLOCK_STL, PL.FLUID_STL])
+    # THE THIN SURFACE TRAVELS TOO, and a refinement whose surface the container cannot open is
+    # one that silently does not happen - which is exactly how a zoned run of this part once
+    # rebuilt the unzoned mesh and reported success.
+    payload = [PL.PLAN_NAME, PL.BLOCK_STL, PL.FLUID_STL]
+    if fine_surface is not None:
+        payload.append(PL.FLUID_FINE_STL)
+    note_native_payload(ws, payload)
     for line in (said, named_said, ports_refused and
                  f"the mesh has no named inlet or outlet: {ports_refused}"):
         if line:

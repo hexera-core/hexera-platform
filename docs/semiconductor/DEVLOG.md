@@ -343,3 +343,123 @@ cores at 2.5x and MPI buys nothing, and `mpi-4` changes the mesh.
 
 So: a big-memory VM, parallelising the post-processing, or meshing a periodic unit cell and
 multiplying. The third is the only one that does not need new hardware.
+
+**Corrected 2026-10-28.** "MPI buys nothing" is right about SPEED and wrong about the ceiling, which
+is a different question. cfMesh MPI makes each process's octree addressing smaller, and that is what
+lifts the 32-bit limit: the same case that aborts serially at 202,709,195 boxes built across 8
+processes in 1397 s. The binding constraint after that is not the mesher. See below.
+
+## 2026-10-28, the first customer part, and what the mesher will not build
+
+| | |
+|---|---|
+| part | Corintis `ColdPlateAssembly_CLEAN.step`, the first real customer CAD |
+| biggest mesh built | 102,152,624 octree boxes, 2.23 cells across the 0.098 mm slots |
+| previous best | 99,172,391 cells, 1.03 cells across the same slots, coolant in 367 pieces |
+| ceiling found | cartesianMesh aborts above about 179M octree boxes per process, on any machine |
+| ceiling lifted | cfMesh MPI. 202,709,195 cells built across 8 processes, the same case that aborts serially |
+| commits | `18d64faa`, and the one after it |
+
+### The part has two sizes of passage and the mesher was told about one
+
+| | width | wetted area | share of block |
+|---|---|---|---|
+| manifold channels | 2.11 mm | 38,813.50 mm2 | |
+| microchannel slots | 0.0982 mm | 21,712.67 mm2 | 6.0% |
+
+The width distribution has a trough in it. The two fullest octaves hold 12,041 and 1,802 points and
+the gap between them holds 54, so the split is the part's own and not a number I picked. Run over
+ten other parts in the corpus, every one reads as a single scale.
+
+Sizing from the narrowest passage everywhere prices the whole 60,526 mm2 at a slot-sized cell, which
+estimates about three billion cells. Holding the manifold at what it needs and spending the rest on
+the slots is what makes the part affordable. `cad/scales.py` measures it, writes the thin walls out
+as their own surface, and `budget.plan_two_scales` prices the two bands separately.
+
+### A band, not a box
+
+| | cells |
+|---|---|
+| `objectRefinements`, type box, over the thin layer | 456,206,329 predicted, 478,648,313 built |
+| a refinement band round the same triangles | 224,431,537 predicted |
+
+A box fills its own volume at the fine size. The thin layer is a third of the wetted area and about
+2% of the volume, so its bounding box is almost all metal and every one of those cells was paid for.
+The box run died on it.
+
+### The cost is the octree span, not the cell size
+
+| background | span | octree boxes | outcome |
+|---|---|---|---|
+| 1.40822 mm | 5 | 204,543,984 | aborted |
+| 0.35206 mm | 3 | 102,152,624 | built, 3060 s, peak 185 GB |
+
+Same part, same thin surface, same 0.044007 mm cell. Only the background moved. Two extra levels of
+grading cost 2.4x the cells at identical resolution, because the levels between a refined surface
+and the background are grading shells of real cells.
+
+The old depth fit read `depth = 6.90 * mm ** -0.341`, from two readings 2.6x apart in cell size that
+both sat at a span of 3. With the span fixed, a finer cell is a wider span, so it could not separate
+them. Extrapolated to the cell this part needs it predicted 20.0 cells of depth where the run
+measured 6.9. Three things followed and all three are fixed:
+
+| | was | now |
+|---|---|---|
+| the planner's preference | a coarse background, believing depth free | the shallowest octree that fits |
+| a refusal's price | the deepest octree, 4,601,986 cells on this plate | the cheapest, 2,049,690 against a 2,000,000 limit |
+| what it refused | configurations that build | |
+
+The new line anchors at 11.86, the largest of the three span-3 readings rather than their mean. The
+mean under-predicted the 17,447,384-cell calibration run by 3.8%, and under-predicting sizes a
+machine for less than the run needs.
+
+### The 32-bit ceiling, and that MPI lifts it
+
+| octree boxes | outcome |
+|---|---|
+| 99,218,211 | completed, 99,172,391 cells, 2530 s, peak 74.61 GB |
+| 102,152,624 | completed, 3060 s, peak 185 GB |
+| 204,543,984 | aborted after 302 s, peak 77.55 GB |
+| 479,119,929 | aborted after 277 s, peak 50.20 GB |
+
+Always the same abort, in `meshOctreeAddressing::createNodeLabels`:
+
+    --> FOAM FATAL ERROR: Negative size requested.
+        From Foam::Module::LongList<T, Offset>::allocateSize(Foam::label)
+                                   [with T = int; int Offset = 19; Foam::label = int]
+
+This OpenFOAM is `linux64GccDPInt32Opt`, the only platform directory in the image. About twelve
+32-bit labels per octree box, so the ceiling is 2^31 / 12 = 178,956,970 boxes. That figure fits
+every row above. Priced in memory the dead runs looked affordable on any 100 GiB machine, so
+`mesh_machine` would have sent them to a 961 GiB box to fail there identically and dearer.
+
+`budget.OCTREE_BOXES_PROVEN_OK` carries the largest count proven to build, and the driver refuses
+above it before a machine is chosen. The guard sits after the `CELL_HARD_LIMIT` check because they
+are different questions: that limit is about the machine, this ceiling is not.
+
+### Six things that were wrong and are not now
+
+| | what it was |
+|---|---|
+| the refinement zones | `render_meshdict` took them, `build()` never passed them. A 78-minute run on a 251 GB machine rebuilt an identical 99,172,391-cell mesh at an identical 74.61 GB peak and exited 0 |
+| a dry clamping bore | counted as coolant. 381.703 mm3 on `buried_mouths`, 6.1% of its coolant, and the Class 1500 spool fixture's sixteen bolt holes at 32.7% of its bore |
+| the gate row | never ran on a mesh `finalize` had rejected. On the customer mesh none of the eight gates executed, and the run reported as a mesher that stopped before writing one |
+| the refinement thickness | inert. Two runs at 6 and 4 of its own cells gave 202,660,138 and 202,709,195 boxes |
+| `refuse_for_octree` | reachable from nowhere |
+| my own watcher | reported a run finished while `splitMeshRegions` ran at 99.9% CPU. `pgrep -x A -x B` honours one pattern |
+
+The dry bore is separated by shape, not size. A duct is longer than it is wide and a bore is not,
+measured as volume over (mouth area x widest mouth diameter). Over 21 reads the two kinds are a
+factor of five apart at the nearest: 0.33 and 0.68 for the bores, 3.31 and up for every real
+passage. It applies only to a passage that is not the largest, because a flange is legitimately a
+short fat bore.
+
+### Open
+
+| item | state |
+|---|---|
+| the parallel chain | cfMesh MPI builds the mesh. `conjugate.py` then reads `ws/constant/<region>/polyMesh/boundary`, which a parallel split never writes, so a good mesh reads as having no interface and no ports |
+| the delivery | the workspace rides home as one archive capped at 512 MiB. A 300M-cell mesh is far past that even in binary |
+| the quota | 32 CPUs all-regions with about 20 on CI runners. Only an 8-core box is creatable, and mesh-bench already is one |
+| the depth model | one controlled pair, one part. The span term is 4.95 cells per level and the scatter at a fixed span is 6.9 to 11.86 |
+| the test corpus | all ten generated parts read as one scale. None of them reproduces the difficulty of the customer part |

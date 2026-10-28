@@ -102,6 +102,7 @@
    "interface_ok",
    "max_non_ortho",
    "max_skewness",
+   "peak_over_predicted",
    "rc",
    "regions_missing",
    "resolution_short",

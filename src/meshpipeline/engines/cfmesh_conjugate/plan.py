@@ -22,6 +22,11 @@ PLAN_NAME = "conjugate_plan.json"
 #: coolant is the surface the extractor wrote (cad/fluid_volume.write_surface).
 BLOCK_STL = "constant/triSurface/block.stl"
 FLUID_STL = "constant/triSurface/fluid.stl"
+#: The thin side of a two-scale part's wall, written beside the coolant surface by
+#: cad/fluid_volume.write_surface (FINE_SURFACE_NAME). Present only for a part that has two scales;
+#: it has to travel in the native payload, because a surface the container cannot open is a
+#: refinement that silently does not happen.
+FLUID_FINE_STL = "constant/triSurface/fluid_fine.stl"
 #: What the run leaves for finalize.
 REPORT_NAME = "conjugate_report.json"
 

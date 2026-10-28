@@ -108,6 +108,11 @@ MIN_PASSAGE_SHARE = 0.02
 #: 0.10, blunter than anything this rejects. "The largest passage is the fluid" is already what
 #: MIN_PASSAGE_SHARE assumes; this only asks whether a SECOND one is a duct as well.
 MIN_PASSAGE_SLENDERNESS = 1.0
+#: What the thin side of a TWO-SCALE part's wall is written as, beside the coolant surface itself.
+#: The mesher refines around it as a second surface, which is how a part whose passages come in two
+#: very different sizes gets its cells spent on the small ones - see cad/scales and
+#: cfmesh_conjugate.plan.fine_surfaces.
+FINE_SURFACE_NAME = "fluid_fine.stl"
 #: An opening of a passage is proposed as one when it is at least this share of the passage's
 #: widest opening (the scout's own MIN_OPENING_FRACTION): a drain tap or a gauge port stays a
 #: sealed wall unless the user makes it an opening.
@@ -1395,7 +1400,7 @@ def surface_volume(T) -> float:
     return float(np.einsum("ij,ij->i", A[:, 0], np.cross(A[:, 1], A[:, 2])).sum() / 6.0)
 
 
-def narrowest_passage_m(x: Extraction, stl_path) -> float:
+def narrowest_passage_m(x: Extraction, stl_path, _field_out: list | None = None) -> float:
     """The narrowest coolant passage in the part, in metres (0.0 when it cannot be read).
 
     THE CORPUS DECLARES THIS AND A CUSTOMER WILL NOT. devtools/semiconductor/parts.py says of it
@@ -1453,6 +1458,11 @@ def narrowest_passage_m(x: Extraction, stl_path) -> float:
         # mesh must hold together.
         field = passage_field_of_stls([Path(stl_path)], interior_point=seed,
                                       port_centroids=ports, read_sharp_edges=True)
+        # HANDED BACK, because the scale split needs the same field and this is the expensive read
+        # in the module. `_field_out` is a list the caller passes in to receive it; callers that do
+        # not care pass nothing and nothing changes for them.
+        if _field_out is not None and field is not None:
+            _field_out.append(field)
         stats = radius_stats(field[2]) if field is not None else {}
         across = 2.0 * float(stats.get("min") or 0.0)
     except Exception as exc:                 # noqa: BLE001 - the mouths still stand on their own
@@ -1494,6 +1504,37 @@ def first_passage_wound_in(triangles, spans, volumes) -> tuple[int, float, float
         if want > 0.0 and abs(got - want) > PASSAGE_AGREES * want:
             return k, got, want
     return None
+
+
+def _scales_and_fine_surface(out_path, field) -> tuple[dict | None, dict | None]:
+    """The part's scale split, and its thin side written beside the coolant surface.
+
+    (None, None) when the part has ONE scale, which is the ordinary case and not a failure: of ten
+    parts in this project's corpus read on 2026-10-28, every one came back single-scaled and only
+    the first real customer cold plate did not. A caller that gets None sizes the part the way it
+    always has - from its narrowest passage, everywhere.
+
+    Never raises. The split reads through pyvista and numpy and can genuinely fail on odd geometry,
+    and one scale is the safe answer: it over-resolves the broad passages, which is expensive,
+    where a wrong split would under-resolve the narrow ones, which is wrong.
+    """
+    if field is None:
+        return None, None
+    try:
+        from meshpipeline.cad import scales as SC
+
+        got = SC.scales_of_field(field[0], field[1], field[2])
+        if got is None:
+            return None, None
+        fine = SC.write_fine_surface(field[0], field[1], field[2], split_m=got["split_m"],
+                                     out_path=Path(out_path).with_name(FINE_SURFACE_NAME))
+        return got, (fine or None)
+    except Exception as exc:                 # noqa: BLE001 - one scale is the safe answer
+        logger.warning("fluid volume: the scale split did not read (%s: %s); the part will be "
+                       "sized from its narrowest passage everywhere, which is right for a part "
+                       "with one scale and expensive for one with two",
+                       type(exc).__name__, str(exc)[:160])
+        return None, None
 
 
 def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
@@ -1613,6 +1654,12 @@ def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
     out_path.parent.mkdir(parents=True, exist_ok=True)
     write_stl_binary(out_path, V[F])
     used = V[F].reshape(-1, 3)
+    # ONE READ OF THE RADIUS FIELD, two answers from it: how narrow the narrowest passage is, and
+    # whether the part has one scale of passage or two. Reading it twice would double the most
+    # expensive thing this function does.
+    _field: list = []
+    narrowest = narrowest_passage_m(x, out_path, _field)
+    scales, fine = _scales_and_fine_surface(out_path, _field[0] if _field else None)
     return {
         "path": str(out_path), "triangles": int(len(F)), "faces": faces,
         "passages": len(x.passages),
@@ -1679,7 +1726,23 @@ def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
         # passage count above, and the narrowest passage here. conjugate.build takes exactly these
         # as expect_fluid_volume_m3, expect_fluid_pieces and narrowest_m, and the cell size follows
         # from the last of them.
-        "narrowest_m": round(narrowest_passage_m(x, out_path), 12),
+        "narrowest_m": round(narrowest, 12),
+        # ONE SCALE OF PASSAGE, OR TWO - and where the small one is. None for the ordinary part,
+        # which has one.
+        #
+        # WHY IT IS WORTH RECORDING. The cell size follows from the narrowest passage, and the
+        # refinement band is priced over the WHOLE wetted area at that size. On a part with two
+        # scales that is the wrong bill by orders of magnitude: the first real customer cold plate
+        # is a manifold of 2-8 mm channels bonded to a layer of 0.098 mm slots, and banding all
+        # 60,526 mm2 of it at a slot-sized cell estimates about three billion cells. The slots are
+        # 35.9% of the area inside 6.0% of the volume, so banding the manifold at a manifold-sized
+        # cell and only the slots at a slot-sized one is what makes the part affordable at all.
+        "scales": scales,
+        # The thin side's own triangles, written beside this surface for the mesher to refine
+        # AROUND - a band, not a box containing them. Absent when the part has one scale. Measured:
+        # a box bounding that thin layer prices at 456,206,329 cells against 224,431,537 for a band
+        # round the same triangles, because the box is almost all metal.
+        "fine_surface": fine,
         "open_rims": open_rims,
     }
 

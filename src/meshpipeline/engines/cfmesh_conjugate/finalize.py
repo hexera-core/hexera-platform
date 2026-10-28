@@ -304,7 +304,46 @@ def finalize(workspace_dir, intake_patches: list, engine: str, domain: str = "",
                                          outlet=_port(q, "outlet")),
     )
     out = _said(q)
-    return {"success": bool(q["mesh_ok"]), "stdout": out, "stderr": "", "output": out}
+    # SUCCESS IS "A MESH CAME OUT", NOT "THE MESH IS GOOD", and the difference cost this engine its
+    # whole gate row.
+    #
+    # pipeline/executor.py wraps the declared gates in `if executor_success:`, and executor_success
+    # is this key. So returning mesh_ok here answered the gates' question before they were asked:
+    # on the first real customer cold plate - 99,172,391 cells, fluid 40,099,581 / solid 59,072,810,
+    # a conformal 7,224,348-face interface, checkMesh reporting Mesh OK for both regions - the
+    # coolant came out in 367 disconnected pieces, mesh_ok went False, and NOT ONE of the eight
+    # gates ran. They did not fail; they never executed. The run was then reported as a mesher that
+    # "stopped before it finished writing the mesh", which is the one thing that did not happen.
+    #
+    # EVERY CONJUNCT OF mesh_ok HAS ITS OWN GATE, which is why this loses no safety and gains
+    # precision. report["ok"]'s piece count is _gate_coolant_pieces, which says "the coolant came
+    # out as 367 separate piece(s) where the part's own geometry has 2"; regions_missing and
+    # regions_undeclared are _gate_regions; interface_ok is _gate_interface; empty_patches is
+    # _gate_named_patches; fatal is the quality floor. Each of those names the defect in the
+    # engineer's language and carries its own FailureCause, where this boolean carried none.
+    #
+    # WHAT IS KEPT: `fatal` - a checkMesh fatal class - and whether a mesh was delivered at all.
+    # That is exactly cfmesh/finalize.py's `success = not fatal` plus its guard for an incomplete
+    # run, and it keeps a workspace with no mesh out of the gate row, where _no_mesh_cause can
+    # still say which of the four things happened. mesh_ok itself stays in the quality block, where
+    # its readers are.
+    return {"success": a_mesh_came_out(q), "stdout": out, "stderr": "", "output": out}
+
+
+def a_mesh_came_out(q: dict) -> bool:
+    """Whether there is a mesh here for the gates to measure - NOT whether it is a good one.
+
+    This is what the executor reads as `success`, and therefore what decides whether the declared
+    gate row runs at all. Named rather than inlined so a test can call it: the first attempt at a
+    test for this restated the expression in its own body, which passes whatever the code does.
+
+    Two things only, both of which mean there is nothing further to measure:
+      no region with cells   nothing was delivered, and the executor's no-mesh path can say which
+                             of the four things happened instead of a gate crashing on an empty
+                             workspace
+      a fatal checkMesh class  the same line cfmesh/finalize.py draws with `success = not fatal`
+    """
+    return bool(q.get("regions")) and int(q.get("cells") or 0) > 0 and not q.get("fatal")
 
 
 def _port(quality: dict, which: str) -> str:
@@ -366,4 +405,4 @@ def _said(q: dict) -> str:
     return "[CFMESH_CONJUGATE] " + " ".join(bits)
 
 
-__all__ = ["delivered_boundary_types", "empty_patches", "finalize", "quality_of"]
+__all__ = ["a_mesh_came_out", "delivered_boundary_types", "empty_patches", "finalize", "quality_of"]
