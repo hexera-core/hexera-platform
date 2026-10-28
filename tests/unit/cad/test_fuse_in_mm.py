@@ -11,8 +11,8 @@ pytest.importorskip("OCP.BRepPrimAPI")
 
 from OCP.BRepGProp import BRepGProp  # noqa: E402
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox  # noqa: E402
-from OCP.GProp import GProp_GProps  # noqa: E402
 from OCP.gp import gp_Pnt  # noqa: E402
+from OCP.GProp import GProp_GProps  # noqa: E402
 
 from meshpipeline.cad import fea_assembly as A  # noqa: E402
 

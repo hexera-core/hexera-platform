@@ -421,7 +421,8 @@ def joined_interfaces(parts: list, fused: Fused, volumes: list[float], *, diag: 
                 itf["added"] = True
             interfaces.append(itf)
     for itf in interfaces:
-        if itf.get("kind") == J.GAP:
+        if itf.get("kind") == J.GAP or itf.get("line"):
+            # a line contact's reach is the gap limit's (gap_max), so the solver ties the band along the line
             itf["reach_mm"] = _r(float(itf.get("gap_max_mm") or itf.get("gap_mm") or 0.0) * (1.0 + GAP_REACH_MARGIN)
                                  + tol * scale)
     info = {"trusted": not wrong, "findings": findings,
@@ -441,8 +442,8 @@ def joins_record(info: dict, interfaces: list[dict]) -> dict | None:
     if info["trusted"] and not info["gaps"] and not info["skins"] and info["complete"] and not info["findings"] \
             and not info.get("unmeasured"):
         return None
-    gap_faces = sorted({f for i in interfaces if i.get("kind") == "gap" for v in (i.get("faces") or {}).values()
-                        for f in v}, key=_face_sort)
+    gap_faces = sorted({f for i in interfaces if i.get("kind") == "gap" or i.get("line")
+                        for v in (i.get("faces") or {}).values() for f in v}, key=_face_sort)
     return {"found_by": "fuse" if info["trusted"] else "surfaces", "findings": info["findings"],
             "skins": info["skins"], "skin_faces": sorted({f for v in info["skins"].values() for f in v}, key=_face_sort),
             "gaps": info["gaps"], "gap_faces": gap_faces, "added": info.get("added") or [],
@@ -477,7 +478,13 @@ def joins_notes(info: dict, interfaces: list[dict], *, unit: str = "mm", scale_t
         notes.append(f"{pid} has faces that cross or lie on its own other faces ({_list(faces[:6])}"
                      f"{' and more' if len(faces) > 6 else ''}): a surface of no thickness there, so they join "
                      "no part and size no gap.")
-    gaps = [i for i in interfaces if i.get("kind") == "gap"]
+    lines = [i for i in interfaces if i.get("line")]
+    if lines:
+        words = "; ".join(f"{i['parts'][0]} and {i['parts'][1]}" for i in lines[:6])
+        notes.append(f"{len(lines)} pair(s) of parts meet only along a line, an edge or at a point (no faces facing "
+                     f"each other): {words}{' and more' if len(lines) > 6 else ''} - joined there, the solver tying "
+                     "what lies within the gap limit of the contact.")
+    gaps = [i for i in interfaces if i.get("kind") == "gap" and not i.get("line")]
     if gaps:
         words = "; ".join(f"{i['parts'][0]} and {i['parts'][1]} {_mm(float(i['gap_mm']) * scale_to_mm)} apart"
                           for i in gaps[:6])
@@ -684,7 +691,7 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
     unpaired: list[tuple[str, str]] = []
     for itf in interfaces:
         p, q = (int(x.split("_")[1]) for x in itf["parts"])
-        gap = _gap_fields(itf) if itf.get("kind") == "gap" else {}
+        gap = _gap_fields(itf) if itf.get("kind") == "gap" or itf.get("line") else {}
         if mode == PAIR_BONDED and (gap or itf.get("added")):
             # A SMALL-GAP JOINT in a fused mesh: the two sides are not one surface, so they are tied
             pairs.append({"id": itf["id"], "kind": PAIR_TIE, "parts": [p, q], "overlap": False,

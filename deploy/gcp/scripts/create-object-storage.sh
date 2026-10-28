@@ -41,7 +41,20 @@ require_vars GCP_PROJECT_ID GCP_PROJECT_NUMBER GCP_REGION DEPLOYMENT_ID
 
 # The project number is in the name for the same reason the exchange bucket carries it: bucket names
 # are globally unique, so a name without it is a name some other organisation has already taken.
-ARTIFACTS_BUCKET="${GCP_ARTIFACTS_BUCKET:-${DEPLOYMENT_ID}-artifacts-${GCP_PROJECT_NUMBER}}"
+#
+# THE PINNED BUCKET WINS. A target that pins MINIO_BUCKET (shared dev pins
+# hexera-dev-artifacts-224734058693, which predates this naming rule) must get that bucket here too.
+# This line used to read only GCP_ARTIFACTS_BUCKET, which CI never sets, so it fell through to
+# dev-artifacts-<num> - and step 5 then wrote that name back as MINIO_BUCKET. Every full deploy
+# moved the API and the workers to an almost empty bucket, every merge deploy moved the API back,
+# and a run written to one bucket showed "surface 503" (ObjectNotFound) when read from the other.
+ARTIFACTS_BUCKET="${GCP_ARTIFACTS_BUCKET:-${MINIO_BUCKET:-${DEPLOYMENT_ID}-artifacts-${GCP_PROJECT_NUMBER}}}"
+if [ -n "${GCP_ARTIFACTS_BUCKET:-}" ] && [ -n "${MINIO_BUCKET:-}" ] \
+   && [ "${GCP_ARTIFACTS_BUCKET}" != "${MINIO_BUCKET}" ]; then
+  die "GCP_ARTIFACTS_BUCKET=${GCP_ARTIFACTS_BUCKET} but MINIO_BUCKET=${MINIO_BUCKET}. Both name the
+  artifacts bucket and must agree, or the API and the workers read and write different buckets.
+  Fix the deployment target so both name the bucket that holds this environment's runs."
+fi
 # THE IDENTITY THE KEY BELONGS TO. An HMAC key is owned by one service account, and every process
 # that presents that key authenticates AS that account - so this is not a list. It defaults to the
 # API identity (create-api-service.sh owns the same default) because the API is the deployment's

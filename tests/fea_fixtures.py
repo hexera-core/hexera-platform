@@ -318,6 +318,49 @@ def micro_step():
     return _fuse(_box(0, 0, 0, 20, 10, 10), _box(0, 0, 0, 20, 10.003, 5))
 
 
+def strip_block(w: float = 0.005):
+    """A 20 x 20 x 10 mm block drawn as three slices fused without merging their faces (y 0..10, a
+    w mm strip, the rest): its top, bottom and two ends each carry a strip face w wide, coplanar with
+    the faces beside it, and the strip's ends are edges w long - TINY faces and SHORT edges a mesh of
+    a part this size cannot follow, every one on a smooth join (MESH-9)."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+
+    a, b, c = _box(0, 0, 0, 20, 10, 10), _box(0, 10, 0, 20, w, 10), _box(0, 10 + w, 0, 20, 10 - w, 10)
+    return BRepAlgoAPI_Fuse(BRepAlgoAPI_Fuse(a, b).Shape(), c).Shape()
+
+
+def micro_chamfer(d: float = 0.003):
+    """A 20 x 10 x 10 mm block whose top long edge at y = 10 is chamfered d mm: a sliver face about 1.4 d
+    wide along it, meeting the top and the side at 45 degrees - two creases, an outside edge (no inside
+    corner), the sliver Ansys's mesh defeaturing folds back onto one edge (MESH-9)."""
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeChamfer
+
+    shape = _box(0, 0, 0, 20, 10, 10)
+    edge = _edges_where(shape, lambda b: abs(b[1] - 10) < 1e-3 and abs(b[4] - 10) < 1e-3
+                        and abs(b[2] - 10) < 1e-3 and abs(b[5] - 10) < 1e-3)[0]
+    mk = BRepFilletAPI_MakeChamfer(shape)
+    mk.Add(d, edge)
+    return mk.Shape()
+
+
+def split_cylinder(dth: float = 0.0004):
+    """A 10 mm high cylinder of radius 5 drawn as two sectors fused without merging their faces, one of
+    them dth radians: a curved strip 5*dth mm wide on its side, two wedges as thin on its ends (MESH-9)."""
+    import math
+
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf
+
+    ax = gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))
+    big = BRepPrimAPI_MakeCylinder(ax, 5, 10, 2 * math.pi - dth).Shape()
+    turn = gp_Trsf()
+    turn.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 2 * math.pi - dth)
+    thin = BRepBuilderAPI_Transform(BRepPrimAPI_MakeCylinder(ax, 5, 10, dth).Shape(), turn).Shape()
+    return BRepAlgoAPI_Fuse(big, thin).Shape()
+
+
 #: where the tangent boss's cusp is (mm)
 TANGENT_BOSS_CUSPS = [(10.0, 0.0, 10.0)]
 

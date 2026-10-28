@@ -17,6 +17,7 @@ from meshpipeline.cad.repair.contracts import (
     RepairStatus,
 )
 from meshpipeline.cad.repair.localize import EntityDefect
+from meshpipeline.cad.repair.operations import MAX_SMALL_FACE_REMOVALS as _MAX_SLIVER_SWEEP
 
 # SHADOW MODE, AND WHY IT IS DELIBERATELY NOT A MODEL YET.
 #
@@ -330,12 +331,38 @@ def recommend(*, repair_status: str = "", report: Mapping | None = None,
             evidence=evidence)
 
     judgement = [e for e in entities if e.get("code") in _NEEDS_JUDGEMENT]
-    if any(c in _NEEDS_JUDGEMENT for c in codes) and not review:
+    judgement_codes = {c for c in codes if c in _NEEDS_JUDGEMENT}
+    if judgement_codes and not review:
+        # A SLIVER-ONLY FILE IS NO LONGER A PERSON'S BY DEFAULT. `small_face` sat with the
+        # judgement codes because "a very small face is usually intentional - a chamfer, a logo".
+        # On a labelled defect corpus that reasoning sent every Boolean sliver to manual cleanup
+        # and the repair attempted nothing. The sweep (`operations.FixSmallFaces`) now answers the
+        # question the reasoning said no cap could: it re-measures every face before and after,
+        # removes only what is sliver-sized by the localiser's own criterion, and is rolled back
+        # for one undeclared removal - so a chamfer or a logo face is declined by measurement
+        # rather than protected by routing. The reroute is therefore exactly as wide as that
+        # defence: only when the sweep is switched on, only when small_face is the SOLE judgement
+        # code present (a self-intersection beside it still needs the person, and repairing the
+        # easy half would not settle the hard one), only when the slivers are located, and only
+        # when there are few enough that one sweep may remove them - more is a modelling style,
+        # which is the original caution, preserved.
+        small_faces = [e for e in entities if e.get("code") == DefectCode.small_face.value]
+        sweepable = (judgement_codes == {DefectCode.small_face.value}
+                     and rcfg.CAD_REPAIR_FIX_SMALL_FACES
+                     and 0 < len(small_faces) <= _MAX_SLIVER_SWEEP)
+        if not sweepable:
+            return Recommendation(
+                route=ROUTE_MANUAL_CLEANUP, confidence=0.6,
+                reasons=("the defects found are questions about intent that no cap can answer",),
+                evidence=evidence, profile=RepairProfile.manual_review.value,
+                targets=_targets(judgement or entities))
         return Recommendation(
-            route=ROUTE_MANUAL_CLEANUP, confidence=0.6,
-            reasons=("the defects found are questions about intent that no cap can answer",),
-            evidence=evidence, profile=RepairProfile.manual_review.value,
-            targets=_targets(judgement or entities))
+            route=ROUTE_CONSERVATIVE_REPAIR, confidence=0.7,
+            reasons=("every located defect is a measured sliver the bounded sweep can remove "
+                     "and account for, or is in how the file was written",),
+            evidence=evidence, profile=RepairProfile.conservative.value,
+            targets=_targets(small_faces + [e for e in entities
+                                            if e.get("code") in _REPAIRABLE]))
 
     # A LOCATED REPAIRABLE DEFECT OUTRANKS A BLANKET "INVALID". A part can be invalid BECAUSE of
     # the gap we just found, and in that case the invalidity is explained rather than mysterious -
