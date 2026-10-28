@@ -255,7 +255,7 @@ def test_the_workers_read_only_their_own_parts_and_fit_the_memory(monkeypatch, o
 def test_runs_started_late_get_what_is_left_and_finished_runs_are_kept(monkeypatch, one_by_one):
     """Memory lets one run at a time, and the budget runs out after the first: that run's answer is
     kept (complete False), the runs not started are not measured - never every finished run thrown
-    away for a measurement started again with no time left."""
+    away for a measurement started again with no time left (the code review, P1)."""
     import subprocess
     import time as real_time
     from types import SimpleNamespace
