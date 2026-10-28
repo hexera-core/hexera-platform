@@ -594,6 +594,41 @@ def test_a_part_a_later_gmsh_pass_did_fill_is_never_given_to_ftetwild_too(tmp_pa
     assert q["cells"] == sum(parts.values())                     # no part meshed twice
 
 
+
+def test_the_rung_takes_every_part_not_kept_never_gmsh_again_on_a_part_it_never_reached(tmp_path, monkeypatch,
+                                                                                       fake_ftetwild, capsys):
+    """LAD-fea-11 with the last rung (o_fc_folding_chair, lab 28 Oct): the last gmsh pass stops at its first failure,
+    so some parts are never reached. The rung gives fTetWild every part not kept - the one that failed and the ones
+    not reached, each on its own settings - and keeps the rest. Before, gmsh tried the parts not reached again inside
+    the rung, failed on one, and every part went to fTetWild on the whole assembly's settings ("whole")."""
+    pytest.importorskip("OCP.BRepPrimAPI")
+    import gmsh
+    from tests import fea_fixtures as fx
+
+    shape = fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(20, 0, 0, 8, 8, 8), fx._box(40, 0, 0, 6, 6, 6))
+    ws = _stage(shape, tmp_path / "not_reached")
+    real = gmsh.model.mesh.generate
+
+    def generate(dim=3):
+        # gmsh's fill fails on Part_2 and Part_3 whenever it tries them
+        if dim == 3 and gmsh.option.getNumber("Mesh.MeshOnlyVisible"):
+            for v in (2, 3):
+                if gmsh.model.getVisibility(3, v):
+                    raise Exception(f"Invalid boundary mesh (overlapping facets) on surface {v * 6} surface {v * 6 + 1}")
+        return real(dim)
+
+    monkeypatch.setattr(gmsh.model.mesh, "generate", staticmethod(generate))
+    ok, marker, _o = _drive(ws, monkeypatch, {"purpose": "structural", "fea_connection": "contact"})
+    assert ok, marker
+    said = capsys.readouterr().err
+    assert "every part goes to fTetWild" not in said
+    q = json.loads((ws / "quality.json").read_text())
+    ftw = q["fea"]["ftetwild"]
+    assert ftw["parts"] == ["Part_2", "Part_3"] and ftw["gmsh_parts"] == 1 and not q["fatal"]
+    assert "whole" not in [r["part"] for r in ftw["per_part"]]
+    parts = {p["id"]: p["elements"] for p in q["fea"]["assembly"]["parts"]}
+    assert set(parts) == {"Part_1", "Part_2", "Part_3"} and q["cells"] == sum(parts.values())
+
 def _cube_tets():
     """The unit cube in six tetrahedra about its 0-7 diagonal (corner k at the bits of k)."""
     import itertools

@@ -987,21 +987,23 @@ def _kept_after(ws: Path, n: int, job_id: str) -> dict | None:
     return {"rule": KEEP_RULE, "from_pass": int(n)}
 
 
-def _still_failed(ws: Path) -> set[int] | None:
-    """LAD-fea-11: the parts the latest kept file says still failed (Part_k -> k); None when there is none."""
+def _not_kept(ws: Path, bodies: int) -> list[int] | None:
+    """LAD-fea-11: the parts (k of Part_k, 1..bodies) the latest kept file does not keep - those that still
+    failed and those the last gmsh pass's fill never reached (it stops at its first failure); None when there
+    is no kept file."""
     from meshpipeline.engines.gmsh.fea_adapter import KEEP_JSON
 
     try:
         meta = json.loads((ws / KEEP_JSON).read_text())
     except (OSError, ValueError):
         return None
-    out: set[int] = set()
-    for p in meta.get("failed_parts") or []:
+    kept: set[int] = set()
+    for p in meta.get("kept_parts") or []:
         try:
-            out.add(int(str(p).rsplit("_", 1)[-1]))
+            kept.add(int(str(p).rsplit("_", 1)[-1]))
         except ValueError:
             continue
-    return out
+    return [k for k in range(1, int(bodies) + 1) if k not in kept]
 
 
 def _clear_outputs(ws: Path) -> None:
@@ -1082,10 +1084,13 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
     ran: list[dict] = []
     for rung in range(1, TW.MAX_RUNG_PASSES + 1):
         parts = TW.rung_parts(record, gm, rung)
-        if rung == 1 and kept is not None and parts is not None:
-            # LAD-fea-11: the parts that STILL failed - a part a later gmsh pass did fill is kept as gmsh filled it
-            still = _still_failed(ws)
-            parts = [p for p in parts if p in still] if still is not None else parts
+        if rung == 1 and kept is not None and int(record.get("bodies") or 1) > 1:
+            # LAD-fea-11: every part not kept goes to fTetWild, each with its own settings - the parts that STILL
+            # failed, and the parts the last gmsh pass never reached (gmsh has had its passes: tried again here, one
+            # that fails would send every part to fTetWild on the whole assembly's settings, the kept ones too). A
+            # part a later gmsh pass did fill is kept as gmsh filled it
+            rest = _not_kept(ws, int(record.get("bodies") or 1))
+            parts = rest if rest else parts
         n = len(passes) + len(ran) + 1
         plan = copy.deepcopy(first_plan)
         if record.get("assembly_plan"):
