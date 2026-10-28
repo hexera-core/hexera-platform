@@ -102,9 +102,42 @@ def test_a_users_dispute_still_rebuilds(limits):
     assert graph.route_after_reviewer(state) == "node_classifier"
 
 
-def test_a_review_that_could_not_finish_is_looked_at_again_or_ends(limits):
+@pytest.mark.parametrize("marker", ["<<API_FAILURE:reviewer_timeout>>", "reviewer_stalled",
+                                    "<<API_FAILURE:reviewer_non_transient>>", "reviewer_crashed"])
+def test_a_review_that_could_not_finish_ends_the_run_and_the_limits_decide(limits, marker):
+    # VER-5: no review rerun and no failure because the model was busy, down or gave no answer
+    state = _state(api_failure=marker, reviewer_verdict="", reviewer_axis_findings=[])
+    assert graph.route_after_reviewer(state) == graph._END
+    outcome = fr.RunOutcome.from_graph_state(state)
+    assert fr.review_blocking(outcome) == []
+
+
+def test_in_shadow_a_review_that_could_not_finish_is_looked_at_again_or_ends(shadow):
     state = _state(api_failure="<<API_FAILURE:reviewer_timeout>>", reviewer_verdict="")
     assert graph.route_after_reviewer(state) in ("node_review_retry", "node_failure_handler")
+
+
+def test_the_review_route_is_in_the_why_record(limits):
+    dr._CITED.pop("v5-why", None)
+    graph.route_after_reviewer(_state(job_id="v5-why", api_failure="reviewer_stalled",
+                                      reviewer_verdict=""))
+    rows = [e for e in dr.cited_for("v5-why") if e["stage"] == "review_route"]
+    assert rows and rows[0]["rule"] == "VER-5" and rows[0]["value"] == "end"
+    assert rows[0]["inputs"]["review_concluded"] is False
+
+
+def test_a_crash_after_a_failing_review_is_rescued_once_the_limits_decide(limits):
+    from meshpipeline.application import post_gate_rescue as pgr
+    state = _state(reviewer_rebuild_required=True)
+    rescued = pgr.rescue(state, RuntimeError("checkpoint write"))
+    assert rescued is not None and rescued["reviewer_verdict"] == "FAIL"
+    # a dispute still needs the engineer's own judgement
+    assert pgr.rescue(_state(user_dispute={"mode": "rebuild"}), RuntimeError("x")) is None
+
+
+def test_in_shadow_a_crash_after_a_failing_review_is_not_rescued(shadow):
+    from meshpipeline.application import post_gate_rescue as pgr
+    assert pgr.rescue(_state(), RuntimeError("checkpoint write")) is None
 
 
 # a review can no longer change a status
