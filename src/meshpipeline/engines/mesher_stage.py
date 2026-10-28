@@ -53,11 +53,16 @@ def _tail(path: Path) -> str:
         return fh.read().decode("utf-8", errors="replace")
 
 
-#: How many cells or elements the mesher says it has made so far, by the lines meshers print: snappyHexMesh's
-#: "cells:123456" mesh summaries, gmsh's "123456 tetrahedra created", cfMesh's "Number of cells: 123456".
-#: The LAST one in the log is the count now. A log with none gives no count, never a guess.
-_COUNTS = [re.compile(r"\bcells:(\d+)"), re.compile(r"\b(\d+) (?:tetrahedra|elements|cells) created\b"),
-           re.compile(r"[Nn]umber of cells\s*[:=]?\s*(\d+)")]
+#: How many cells or elements the mesher says it has made so far, by the lines the meshers really print
+#: (tests/unit/engines/fixtures/mesher_logs, taken from real runs): snappyHexMesh's mesh summaries
+#: ("Mesh with layers : cells:2679296  faces:..." - but never "Ideal layer addition : cells:3.08262e+06", an
+#: estimate written as a float), gmsh's "- 185067 tetrahedra created in 21.1 sec.", cfMesh's "101392 cells" under
+#: "Mesh has :" and its "New cells size 101386". The LAST one in the log is the count now. A log with none
+#: gives no count, never a guess.
+_COUNTS = [re.compile(r"\bcells:(\d+)(?![\d.eE+])"),
+           re.compile(r"\b(\d+) tetrahedra created\b"),
+           re.compile(r"^(\d+) cells\s*$", re.M),
+           re.compile(r"^New cells size (\d+)\s*$", re.M)]
 
 
 def _count_of(text: str) -> int | None:

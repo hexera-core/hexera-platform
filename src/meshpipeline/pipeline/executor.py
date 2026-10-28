@@ -400,6 +400,18 @@ async def node_executor(state: PipelineState) -> dict:
                 executor_output += "\n[MANIFEST_LOAD_ERROR] manifest validated but could not be loaded"
 
         if executor_success:
+            # WHAT THE MEASUREMENT SAYS, on the run's live line: the executor's own record of the
+            # mesh (the manifest's quality, or quality.json beside an FEA mesh), in plain words
+            from meshpipeline.contracts import narration as _N
+            _q = (mesh_manifest or {}).get("quality") if isinstance(mesh_manifest, dict) else None
+            if not _q and (Path(workspace) / "quality.json").exists():
+                try:
+                    _q = json.loads((Path(workspace) / "quality.json").read_text())
+                except Exception:  # noqa: BLE001 - a line not said, never a run failed
+                    _q = None
+            _line = _N.quality_line(_q)
+            if _line:
+                await _N.asay(_pub, _line, op_id=f"quality:{_manifest_stamp(workspace)}")
             _domain_check_failed = False
             from meshpipeline.engines.domain_extent_gate import far_field_exists
             # the far-field extent is judged only where a far field exists: never on an internal

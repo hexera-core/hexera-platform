@@ -187,6 +187,61 @@ def _criteria(keys) -> str:
     return ", ".join(words[:4]) + (f" and {len(words) - 4} more" if len(words) > 4 else "")
 
 
+#: OpenFOAM's own checkMesh limits: past these the solver needs care (more correctors, a smaller step).
+NON_ORTHO_LIMIT = 70.0
+SKEWNESS_LIMIT = 4.0
+
+
+def _num(v) -> float | None:
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def quality_line(q: dict | None) -> str | None:
+    """What the mesh's MEASURED quality says, in one plain line: the executor's own record
+    (quality.json / the manifest's quality), never anything the reviewer wrote. None when there is
+    nothing measured to say. FEA: inverted elements, the worst element (scaled Jacobian, 1 is
+    perfect), elements through the thinnest wall. CFD: cells, worst non-orthogonality and skewness."""
+    from math import floor
+
+    from meshpipeline.events import cells_words
+
+    q = q if isinstance(q, dict) else {}
+    fea: dict = q["fea"] if isinstance(q.get("fea"), dict) else {}
+    sicn, no, sk = _num(q.get("min_sicn")), _num(q.get("max_non_ortho")), _num(q.get("max_skewness"))
+    cells = int(_num(q.get("cells")) or 0)
+    if sicn is not None or fea:
+        inverted = int(_num(q.get("fea_inverted")) or 0)
+        if inverted > 0:
+            return plain(f"{inverted} elements are inside out, so no solver can use this mesh yet.")
+        bits = [f"{cells_words(cells)} elements"] if cells else []
+        if sicn is not None:
+            bits.append(f"worst element {sicn:.2g} (1 is perfect)")
+        tw = _num(fea.get("through_wall_min"))
+        if tw is not None:
+            bits.append(f"every wall at least {max(1, floor(tw))} elements thick" if tw >= 2
+                        else f"the thinnest wall {tw:.2g} elements thick")
+        if not bits:
+            return None
+        notes = int(_num(q.get("elements_under_floor")) or 0) > 0 or bool(q.get("fea_rules_short")) \
+            or (tw is not None and tw < 2)
+        head = "The mesh is valid; some figures are past a limit and listed in the report" if notes \
+            else "Quality looks good"
+        return plain(f"{head}: {', '.join(bits)}.")
+    if no is None and sk is None:
+        return None
+    bits = [f"{cells_words(cells)} cells"] if cells else []
+    if no is not None:
+        bits.append(f"worst non-orthogonality {no:.0f}°")
+    if sk is not None:
+        bits.append(f"worst skewness {sk:.2g}")
+    steep = (no is not None and no > NON_ORTHO_LIMIT) or (sk is not None and sk > SKEWNESS_LIMIT)
+    head = "The mesh is built, with a few steep cells the solver needs care with" if steep else "Quality looks good"
+    return plain(f"{head}: {', '.join(bits)}.")
+
+
 def review_line(*, passed: bool, failed_axes=(), rebuild_axes=(), blocking_axes=()) -> str:
     """The review's finding in one plain line, from the criteria it checked (never the reviewer's prose)."""
     if passed:
@@ -206,5 +261,5 @@ def pass_words(n: int, most: int) -> str:
 
 
 __all__ = ["KINDS", "MAX_CHARS", "STAGES", "UNKNOWN_STAGE", "asay", "astep", "leaks", "machine_words",
-           "pass_words", "plain", "plan_lines", "retry_line", "review_line", "cfd_plan_lines", "soften",
+           "pass_words", "plain", "plan_lines", "quality_line", "retry_line", "review_line", "cfd_plan_lines", "soften",
            "stage_words", "still_words"]
