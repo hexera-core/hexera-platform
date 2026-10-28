@@ -218,6 +218,12 @@ def results(workspace) -> dict | None:
     net = safety_net_block(fea.get("ftetwild") or {})
     if net:
         extra["safety_net"] = net
+    # MESH-9: the tiny faces meshed as part of a neighbour - each one's area is in that neighbour's named face
+    from meshpipeline.engines.gmsh.fea_tiny import words as tiny_words
+    tiny = q.get("fea_tiny") or {}
+    if tiny.get("merged"):
+        extra["merged_faces"] = [{"face": m.get("face"), "into": m.get("into"), "width_mm": m.get("width_mm")}
+                                 for m in tiny["merged"]]
     return {**extra,
         "title": "FEA mesh",
         "summary": (f"{cells:,} quadratic tetrahedra (10-node), a solid mesh"
@@ -232,7 +238,8 @@ def results(workspace) -> dict | None:
                   "solvers": "Limits: the strictest of Abaqus/CalculiX, Nastran and Ansys."},
         "elements": cells,
         "through_wall": through,
-        "plan_words": list(plan.get("words") or []) + ([net["words"]] if net and net.get("words") else []),
+        "plan_words": (list(plan.get("words") or []) + ([net["words"]] if net and net.get("words") else [])
+                       + [w for w in [tiny_words(tiny)] if w]),
         "hot_spots": spots,
         "faces": faces,
         "download": {"words": "The full download holds:",
