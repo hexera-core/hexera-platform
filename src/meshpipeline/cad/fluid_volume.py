@@ -82,6 +82,32 @@ CAP_SAME_AREA = 0.01
 #: volume; smaller closed spaces are the bore of a bolt hole capped at both ends, a pocket between
 #: a nut and its washer: left out.
 MIN_PASSAGE_SHARE = 0.02
+#: ...AND A SHARE OF THE VOLUME IS THE WRONG AXIS FOR A BORE, which is why that rule lets one
+#: through. A clamping bore's volume grows with the bracket it is drilled in, so on a big enough
+#: bracket it clears any share bar: measured, the 9.0 mm bore through the clamp bar of the
+#: buried_mouths test part is 381.703 mm3 against 6241.896 mm3 of real coolant - 6.1%, three times
+#: the bar above - and the sixteen bolt holes of the Class 1500 spool fixture come to 32.7% of its
+#: bore. Raising the share bar cannot separate them either way round: a real second passage in the
+#: customer assembly of solid_classifiers' own docstring is 2.9% of its coolant, and the spool's
+#: bolt holes are 2.045%.
+#:
+#: WHAT DOES NOT GROW IS THE SHAPE. A duct is longer than it is wide; a clamping bore is not.
+#: Measured as the volume over (the sum of its mouth areas x its widest mouth's diameter), which
+#: for a straight round hole is half its length-to-diameter ratio. Over 21 reads:
+#:
+#:     clamp bore 0.33   bolt hole 0.68  | 1.0 |   buried_mouths coolant 3.31
+#:     manifold_two_level 3.95   buried_ports 3.98   cold_plate_2ch 5.12   slab_2ch 10.85
+#:     lidded_4ch 11.33   hotspot_array 12.66   ported_plate 13.60   lee_garimella 27.18
+#:     murray_ported 27.56   two_scale_plate 40.04   tuckerman_pease 50.48
+#:     unit_cell / corintis 50.92   embedded_silicon 80.90
+#:
+#: The two kinds of hole are a factor of five apart at the nearest, which is why one bar fits.
+#:
+#: ONLY ON A PASSAGE THAT IS NOT THE LARGEST, because a flange IS a short fat bore and is
+#: legitimately the fluid: flange_bored_8bolts' own 100 mm bore through 20 mm of metal measures
+#: 0.10, blunter than anything this rejects. "The largest passage is the fluid" is already what
+#: MIN_PASSAGE_SHARE assumes; this only asks whether a SECOND one is a duct as well.
+MIN_PASSAGE_SLENDERNESS = 1.0
 #: An opening of a passage is proposed as one when it is at least this share of the passage's
 #: widest opening (the scout's own MIN_OPENING_FRACTION): a drain tap or a gauge port stays a
 #: sealed wall unless the user makes it an opening.
@@ -501,6 +527,102 @@ def metal_on_both_sides(solids: list, cap: _Cap, classifiers: list | None = None
     return True
 
 
+#: Faces nearer than this to a shared plane are treated as lying on it, as a fraction of the part's
+#: diagonal. The same figure the cap merge uses, for the same reason: a brazed joint's two sides are
+#: drawn coincident and a tessellator's rounding is what separates them.
+JOINT_PLANE = CAP_SAME
+#: Planes carrying more faces than this are not fused. A fuse is the expensive operation in this
+#: module and a plane with hundreds of faces on it is a lattice, not a joint; the per-face path
+#: above already covers anything that is really a hole.
+JOINT_MAX_FACES = 60
+
+
+def _joint_caps(solids: list, diag: float, add) -> None:
+    """Cap the holes enclosed by SEVERAL solids' coplanar faces together.
+
+    Only where at least two different solids meet on the plane: one solid's own coplanar faces
+    cannot enclose anything its own inner wires did not already enclose, so there would be nothing
+    to find and the fuse would be paid for nothing.
+    """
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_WIRE
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_ListOfShape
+
+    if len(solids) < 2:
+        return
+    tol = JOINT_PLANE * diag
+    planes: dict = {}
+    for k, solid in enumerate(solids):
+        for f in _faces(solid):
+            n = _plane_normal(f, diag)
+            if n is None:
+                continue
+            _area, c = _surface(f)
+            # the plane as (unit normal with a fixed sign, its distance from the origin), rounded
+            # so two faces of the same joint land in the same bucket
+            flip = -1.0 if (n[0], n[1], n[2]) < (0.0, 0.0, 0.0) else 1.0
+            nn = tuple(round(flip * v, 6) for v in n)
+            d = sum(nn[j] * c[j] for j in range(3))
+            key = (*nn, round(d / tol) if tol > 0 else 0)
+            planes.setdefault(key, []).append((k, f))
+    for group in planes.values():
+        hosts = {k for k, _f in group}
+        if len(hosts) < 2 or len(group) > JOINT_MAX_FACES:
+            continue
+        fused = group[0][1]
+        try:
+            for _k, f in group[1:]:
+                args, tools = TopTools_ListOfShape(), TopTools_ListOfShape()
+                args.Append(fused)
+                tools.Append(f)
+                op = BRepAlgoAPI_Fuse()
+                op.SetArguments(args)
+                op.SetTools(tools)
+                op.Build()
+                if not op.IsDone():
+                    raise RuntimeError("fuse failed")
+                fused = op.Shape()
+            # UNIFIED, OR THE HOLE NEVER APPEARS. A fuse of two coplanar faces keeps them as two
+            # faces split along the edge they now share, so the groove mouth stays a notch on each
+            # one's outer boundary and no inner wire exists to cap. Unifying merges them into one
+            # face whose outer wire runs round the joint and whose INNER wires are the mouths. This
+            # is the whole mechanism; without it the step above does nothing at all, which is how
+            # it first behaved.
+            from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+            uni = ShapeUpgrade_UnifySameDomain(fused, True, True, False)
+            uni.Build()
+            fused = uni.Shape()
+        except Exception:  # noqa: BLE001 - a joint we cannot fuse is one we say nothing about
+            continue
+        for face in _faces_of(fused):
+            wires = _explore(face, TopAbs_WIRE, TopoDS.Wire_s)
+            if len(wires) < 2:
+                continue
+            pln = _face_plane(face, diag)
+            if pln is None:
+                continue
+            outer = BRepTools.OuterWire_s(face)
+            for w in wires:
+                if w.IsSame(outer):
+                    continue
+                for cand in (w, TopoDS.Wire_s(w.Reversed())):
+                    mk = BRepBuilderAPI_MakeFace(pln, cand, True)
+                    if mk.IsDone() and _surface(mk.Face())[0] > 0:
+                        # host -2: this cap belongs to the joint, not to any one solid, which is
+                        # what the leak check reads to tell a joint from a bolted flange pair
+                        add(mk.Face(), -2)
+                        break
+
+
+def _faces_of(shape) -> list:
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS
+    return _explore(shape, TopAbs_FACE, TopoDS.Face_s)
+
+
 def candidate_caps(solids: list, loose: list, diag: float) -> list[_Cap]:
     """Every place the space inside the parts may meet the outside, as a flat face across it: each
     hole a flat face of a part rims (its inner wire: a flange's bore, a pipe's open end, a bolt hole),
@@ -577,6 +699,24 @@ def candidate_caps(solids: list, loose: list, diag: float) -> list[_Cap]:
         for w in wires:
             if not w.IsSame(outer):
                 from_wire(pln, w, k)
+    # A MOUTH THAT NO ONE FACE ENCLOSES. Above, a cap comes from an INNER wire of a single face -
+    # a hole bored through one solid. A cold plate made the ordinary way has no such hole: the
+    # channels are grooves milled into a base, so each mouth is a bite taken out of the base's end
+    # face, and its fourth side is the LID's underside, which belongs to a different solid. Neither
+    # face encloses anything, so nothing was capped and the part read as having no coolant at all.
+    #
+    # MEASURED, 2026-10-28, over six parts built for this: a base-and-lid plate is the only one of
+    # them with ZERO faces carrying a hole (the others have 2, 6, 7, 7 and 9), and it is the only
+    # one where the extraction found nothing - 0 mm3 against 2,100 declared. It is also the
+    # commonest way a cold plate is actually made.
+    #
+    # THIS IS NOT THE COPLANAR RULE THE DEVLOG REFUTED. That one capped wherever two faces shared a
+    # plane, which turned a finned heat sink into ten passages of room air. This fuses the coplanar
+    # faces first and caps only a hole in the RESULT: on a heat sink the fin ends and the base fuse
+    # into one region whose gaps are all on its outer boundary, so it yields nothing. The hole has
+    # to be enclosed by the metal of the joint, which is what a real mouth is and a gap between
+    # fins is not.
+    _joint_caps(solids, diag, add)
     if loose:
         from OCP.BRep import BRep_Builder
         from OCP.ShapeAnalysis import ShapeAnalysis_FreeBounds
@@ -810,7 +950,8 @@ def _split(solids, loose, caps, diag, lo, hi, fuzzy=FUZZY):
             leaks.extend(o.centroid for o in joint)
     biggest = passages[0].volume if passages else 0.0
     for p in passages:
-        if p.ports and p.volume >= MIN_PASSAGE_SHARE * biggest:
+        if p.ports and p.volume >= MIN_PASSAGE_SHARE * biggest and (
+                p.volume >= biggest or _is_duct(p)):
             keep.append(p)
         else:
             pockets.append((p.volume, len(p.ports)))
@@ -1014,6 +1155,22 @@ def _boundary(p: Passage, regions, owners, owner_ids) -> list:
                 continue
             out.append(TopoDS.Face_s(f))
     return out
+
+
+def _is_duct(p: Passage) -> bool:
+    """Whether a passage is longer than it is wide, measured on its own mouths.
+
+    A duct rather than a hole drilled through dry metal - see MIN_PASSAGE_SLENDERNESS for the
+    measurement and for why a share of the volume cannot make this distinction.
+
+    True when nothing could be measured, because saying nothing is the safe answer here: this rule
+    only ever DROPS a passage, so a bad reading would lose real coolant.
+    """
+    area = sum(o.hole for o in p.ports)
+    widest = max((o.diameter for o in p.ports), default=0.0)
+    if area <= 0.0 or widest <= 0.0:
+        return True
+    return p.volume >= MIN_PASSAGE_SLENDERNESS * area * widest
 
 
 def _box_of_faces(faces: list):

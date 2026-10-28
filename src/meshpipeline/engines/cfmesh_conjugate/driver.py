@@ -257,6 +257,19 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             fluid_lo=[float(v) for v in rec["bbox_min_m"]],
             fluid_hi=[float(v) for v in rec["bbox_max_m"]],
             cells_across=cells_across, levels=levels, no_ports=True)
+    # WHERE IT RUNS (RUN-1, contracts/mesh_machine). Six engines ask for a bigger machine when a
+    # mesh will not fit the Cloud Run job's 32 GiB; this one did not, so every conjugate mesh
+    # landed on Cloud Run whatever it needed and a part that wanted more was simply refused for
+    # being too big. The memory is now priced from the estimate with the per-cell figure measured
+    # on three builds, and the decision travels in the workspace for the executor to read.
+    from meshpipeline.contracts import mesh_machine as MM
+
+    machine = MM.choose(process_gib=B.peak_gib(estimate), workspace_gib=B.written_gib(estimate),
+                        why="conjugate cell estimate")
+    MM.write(ws, machine)
+    if machine.get("where") == "gce":
+        logger.info("conjugate: %s - job_id=%s", machine.get("words"), job_id)
+
     names, named_said = declared_port_names(ws, plan)
     if names:
         plan = dataclasses.replace(plan, patch_names=PL._as_lists(names))

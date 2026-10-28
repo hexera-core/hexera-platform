@@ -173,6 +173,29 @@ def quality_of(ws: Path, report: dict) -> dict:
         # the SAME number and the static bar is 1.0.
         if q["coolant_tol_pct"] > 0.0:
             q["coolant_error_over_tol"] = q["coolant_error_pct"] / q["coolant_tol_pct"]
+    # THE FIT IS CHECKED AGAINST THE RUN THAT WAS JUST PAID FOR. budget.PEAK_BYTES_PER_CELL is
+    # fitted by hand on three builds and it is what chooses the machine: driver.drive calls
+    # MM.choose(process_gib=B.peak_gib(estimate)). The mesher measures its own peak on every run -
+    # conjugate.children_peak_rss_bytes, written into the report as peak_rss_bytes - and nothing
+    # has ever compared the two, so the fit can drift arbitrarily far and the first sign of it is
+    # a kernel kill hours in. budget.py already records one 27% miss in exactly that direction.
+    #
+    # AGAINST THE DELIVERED CELL COUNT, not the pre-flight estimate. That estimate carries its own
+    # factor of three and folding it in would measure the cell model instead of the memory model.
+    #
+    # REPORTED, NOT GATED. There is no defensible bar for this ratio yet and the first thing needed
+    # is the numbers. The criterion declared beside it is non-gating for a second reason as well:
+    # peak_rss_bytes is legitimately 0 when the mark cannot be attributed to this build, and a
+    # gating key missing from the quality block fails closed.
+    peak = int(report.get("peak_rss_bytes") or 0)
+    if peak > 0 and q.get("cells"):
+        from meshpipeline.engines.cfmesh_conjugate import budget as B
+
+        q["peak_gib"] = peak / 1024.0 ** 3
+        q["peak_bytes_per_cell"] = peak / q["cells"]
+        # ABSENT rather than 0.0 when it cannot be measured: a zero ratio reads as a perfect fit
+        # to every reader that compares it against a bar.
+        q["peak_over_predicted"] = q["peak_gib"] / B.peak_gib(q["cells"])
     q["coolant_pieces_short"] = _pieces_short(q)
     q["resolution_short"] = _resolution_short(plan)
     # WHETHER THE INTERIOR CAN BE CUT AT ALL. The engine declares a REGION inspection target, so

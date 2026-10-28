@@ -123,6 +123,20 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
         evidence_url=_OF_MESH_VALIDITY,
     ),
     Criterion(
+        key="peak_over_predicted",
+        label="The mesher's memory came out as the budget predicted", op="<=", threshold=1.25,
+        gating=False,
+        rationale=("NOT A BAR ON THE MESH - a bar on the MODEL that chose the machine the mesh "
+                   "was built on. budget.PEAK_BYTES_PER_CELL is 748.1 bytes a cell plus 416 MiB "
+                   "fixed, fitted by hand on three builds, and contracts/mesh_machine picks Cloud "
+                   "Run or one of five VMs from it. 1.0 is the fit exactly right; above 1.0 it "
+                   "under-prices, which is the direction that gets a run killed rather than "
+                   "refused, and budget.py records one earlier fit that under-priced by 27%. "
+                   "Absent when the peak could not be attributed to this build, which never "
+                   "reads as a pass. Advisory."),
+        evidence_url=_OF_MESH_VALIDITY,
+    ),
+    Criterion(
         key="resolution_short",
         label="Every passage has the cells across it the fidelity asks for", op="empty",
         threshold=None, gating=False,

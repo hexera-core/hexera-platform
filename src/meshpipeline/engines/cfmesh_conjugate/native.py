@@ -77,6 +77,8 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             expect_fluid_pieces=plan.expect_fluid_pieces,
             volume_tol=plan.volume_tol, ports=PL.ports_from(plan),
             narrowest_m=plan.narrowest_m, patch_names=PL.as_patch_names(plan),
+            fine_zones=[dict(z) for z in (plan.fine_zones or ())],
+            fine_surfaces=[dict(s) for s in (plan.fine_surfaces or ())],
             bashrc=bashrc, timeout=int(timeout))
     except ConjugateError as exc:
         # A REFUSAL IS NOT A CRASH. The mesher refuses a case it can see is wrong - more than two

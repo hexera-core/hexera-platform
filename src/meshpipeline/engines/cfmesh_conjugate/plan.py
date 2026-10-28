@@ -64,6 +64,22 @@ class ConjugatePlan:
     #: STL or the delivered points - is a second answer to a question the host already settled.
     block_lo: tuple[float, float, float] | None = None
     block_hi: tuple[float, float, float] | None = None
+    #: Boxes that get their own, finer cell size, as render_meshdict's objectRefinements wants
+    #: them: [{"name", "lo", "hi", "cell_m"}] in METRES. Empty means one cell size everywhere.
+    #:
+    #: WHY A PART NEEDS TWO SIZES. A Corintis cold plate is a manifold of ~3.5 mm channels bonded
+    #: to a layer of ~98 um slots. One size that suits the slots prices the manifold's whole
+    #: wetted area at the slot's cell - 60,588 mm2 of it - and the estimate reaches three billion
+    #: cells. One that suits the manifold cannot see the slots at all: at 0.0947 mm the manifold
+    #: got 28 cells across and the slots got one, and the coolant came back in 367 disconnected
+    #: pieces. The budget goes where the part is thin, which is what these boxes are for.
+    fine_zones: tuple[dict, ...] = ()
+    #: Extra surfaces, each a SUBSET of the coolant's triangles, that get more refinement levels
+    #: than the coolant as a whole: [{"name", "file", "levels", "thickness_m"}]. This is the
+    #: mechanism to reach for, not fine_zones - a band round the thin walls costs half what
+    #: filling their bounding box costs, measured 224,431,537 cells against 456,206,329 on the
+    #: first customer part. cad/scales.py decides where the thin walls are and writes the file.
+    fine_surfaces: tuple[dict, ...] = ()
 
 
 def background_for(narrowest_m: float, cells_across: int, levels: int) -> float:
@@ -119,6 +135,41 @@ def read_plan(workspace) -> ConjugatePlan:
             if len(got) != 3:
                 raise ValueError(f"{PLAN_NAME}: {k} is not three numbers")
             out[k] = (float(got[0]), float(got[1]), float(got[2]))
+    if out.get("fine_zones") is not None:
+        zones = []
+        for k, z in enumerate(out["fine_zones"]):
+            if not isinstance(z, dict):
+                raise ValueError(f"{PLAN_NAME}: refinement zone {k} is not an object")
+            lo, hi, cell = z.get("lo"), z.get("hi"), z.get("cell_m")
+            if lo is None or hi is None or cell is None:
+                raise ValueError(f"{PLAN_NAME}: refinement zone {k} needs lo, hi and cell_m")
+            if len(lo) != 3 or len(hi) != 3:
+                raise ValueError(f"{PLAN_NAME}: refinement zone {k} is not a box in three axes")
+            if float(cell) <= 0.0:
+                raise ValueError(f"{PLAN_NAME}: refinement zone {k} has cell_m {cell}, which is "
+                                 "not a cell size")
+            if any(float(hi[j]) <= float(lo[j]) for j in range(3)):
+                raise ValueError(f"{PLAN_NAME}: refinement zone {k} has no extent: {lo} .. {hi}")
+            zones.append({"name": str(z.get("name") or f"fine{k}"),
+                          "lo": (float(lo[0]), float(lo[1]), float(lo[2])),
+                          "hi": (float(hi[0]), float(hi[1]), float(hi[2])),
+                          "cell_m": float(cell)})
+        out["fine_zones"] = tuple(zones)
+    if out.get("fine_surfaces") is not None:
+        fines = []
+        for k, s in enumerate(out["fine_surfaces"]):
+            if not isinstance(s, dict):
+                raise ValueError(f"{PLAN_NAME}: fine surface {k} is not an object")
+            f_file, f_levels = s.get("file"), s.get("levels")
+            if not f_file or f_levels is None:
+                raise ValueError(f"{PLAN_NAME}: fine surface {k} needs file and levels")
+            if int(f_levels) <= 0:
+                raise ValueError(f"{PLAN_NAME}: fine surface {k} asks for {f_levels} levels")
+            fines.append({"name": str(s.get("name") or f"fine{k}"), "file": str(f_file),
+                          "levels": int(f_levels),
+                          "thickness_m": (None if s.get("thickness_m") is None
+                                          else float(s["thickness_m"]))})
+        out["fine_surfaces"] = tuple(fines)
     return ConjugatePlan(**out)
 
 

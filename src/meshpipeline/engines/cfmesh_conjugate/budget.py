@@ -103,6 +103,101 @@ def band_depth(fine_m: float) -> float:
 LEVELS_LADDER: tuple[int, ...] = (3, 4, 5, 6)
 
 
+#: What one cell costs at the mesher's HIGH-WATER MARK, and what OpenFOAM costs before it has
+#: meshed anything. Fitted on three conjugate builds an order of magnitude apart, each one the
+#: engine's own peak_rss_bytes and not a reading taken off `free` afterwards:
+#:
+#:      1,852,814 cells   1,802,297,344 bytes   972.7 per cell
+#:     17,447,384 cells  13,377,228,800 bytes   766.7 per cell
+#:     99,172,391 cells  74,610,000,000 bytes   752.3 per cell
+#:
+#: A line through the outer two predicts the middle one to 0.7%, which is why this is two numbers
+#: rather than one: the per-cell figure alone over-prices a small mesh and under-prices a large
+#: one. devtools/semiconductor carries 1010 bytes per cell and 128 MiB fixed, fitted on two builds
+#: both under six million cells, which over-prices a hundred-million-cell run by about a third.
+#:
+#: MEASURED AT THE PEAK, NOT AFTER IT. An earlier fit here used 588 bytes per cell, taken from
+#: `free` DURING the 99M run - which is a spot reading, and the moment it was taken was not the
+#: high-water mark. It under-priced by 27%, in the direction that gets a run killed rather than
+#: refused. peak_rss_bytes is in every conjugate report; nothing else should be used for this.
+PEAK_BYTES_PER_CELL = 748.1
+PEAK_FIXED_BYTES = 416 * 1024 ** 2
+
+
+#: THE CEILING IS AN INTEGER, NOT A MACHINE, and it is MEASURED rather than derived.
+#:
+#: cartesianMesh builds an octree and then allocates a label per octree vertex in a LongList of
+#: `label`. This OpenFOAM is built linux64GccDPInt32Opt (WM_LABEL_SIZE=32, and it is the only
+#: platform directory in the image), so `label` is a signed 32-bit int and a large enough octree
+#: overflows that allocation. The abort is always the same, in meshOctreeAddressing:
+#:
+#:     --> FOAM FATAL ERROR: Negative size requested.
+#:         From void Foam::Module::LongList<T, Offset>::allocateSize(Foam::label)
+#:                                     [with T = int; int Offset = 19; Foam::label = int]
+#:
+#: Measured on one customer cold plate, 2026-10-28, same part and same machine each time:
+#:
+#:      99,218,211 octree boxes   COMPLETED, 99,172,391 cells, 2530 s, peak 74.61 GB
+#:     204,543,984 octree boxes   ABORTED after 302 s, peak 77.55 GB
+#:     479,119,929 octree boxes   ABORTED after 277 s, peak 50.20 GB
+#:
+#: THE MULTIPLIER IS NOT EIGHT. Eight vertices a box would put the ceiling at 2**31/8 =
+#: 268,435,455, which the 204,543,984-box run is well inside, and it aborted. 2**31 divided by the
+#: plausible multipliers brackets it: /12 gives 178,956,970 and /21 gives 102,261,126, both of
+#: which sit between the run that worked and the run that did not, while /8 is excluded by the
+#: abort and /24 is excluded by the run that completed. Narrowing it needs bisection runs, and
+#: each one is cheap - the abort lands about five minutes in, at "Creating octree vertices".
+#:
+#: SO THE CEILING IS THE LARGEST COUNT PROVEN TO WORK, not the smallest proven to fail. The
+#: failure is an abort partway through, after the whole octree is built, and its words say nothing
+#: about a size limit; priced in memory the dead run looked affordable on any 100 GiB machine, so
+#: mesh_machine would have sent it to a 961 GiB box to fail there identically and dearer. Refusing
+#: a mesh that might have built is the cheap mistake here. Raise this when a run proves a higher
+#: number, and lower it if one fails below.
+OCTREE_BOXES_PROVEN_OK = 99_218_211
+OCTREE_BOXES_PROVEN_ABORT = 204_543_984
+#: An octree box per delivered cell, near enough: the 99,218,211-box run delivered 99,172,391
+#: cells, 0.05% apart. The outside and data boxes are a rounding error on this part (113,058 and
+#: 131,216), so a cell estimate can be compared with a box ceiling directly.
+BOXES_PER_CELL = 1.0
+
+
+def octree_ceiling_cells() -> int:
+    """The most cells this mesher is known to be able to build, before any machine is considered."""
+    return int(OCTREE_BOXES_PROVEN_OK / BOXES_PER_CELL)
+
+
+def refuse_for_octree(cells: int) -> str:
+    """Why a mesh of `cells` cannot be built at all, or "" when it can.
+
+    Checked BEFORE the machine is chosen, because no machine changes the answer.
+    """
+    want = int(cells)
+    if want <= octree_ceiling_cells():
+        return ""
+    proven = "" if want < OCTREE_BOXES_PROVEN_ABORT else (
+        f" A run of {OCTREE_BOXES_PROVEN_ABORT:,} boxes on this mesher aborted partway through "
+        "with 'Negative size requested', having used a third of the machine it was on.")
+    return (f"this mesh cannot be built at any size of machine: about {want:,} cells is past the "
+            f"largest octree this mesher has been shown to build, {octree_ceiling_cells():,}. "
+            "The limit is the 32-bit label this OpenFOAM is compiled with, so a larger machine "
+            f"does not help; an Int64 build of OpenFOAM would.{proven}")
+
+
+def peak_gib(cells: int) -> float:
+    """What the mesher will need at its peak, in GiB, for a mesh of `cells`."""
+    return (PEAK_FIXED_BYTES + max(0, int(cells)) * PEAK_BYTES_PER_CELL) / (1024.0 ** 3)
+
+
+def written_gib(cells: int) -> float:
+    """What the finished mesh occupies on disk, which Cloud Run holds in memory as well.
+
+    909 bytes a cell, measured on a finished mesh (devtools/semiconductor), and doubled because a
+    conjugate build writes the whole block AND the two regions it is cut into.
+    """
+    return 2.0 * max(0, int(cells)) * 909.0 / (1024.0 ** 3)
+
+
 def _block_m3(block_lo, block_hi) -> float:
     v = 1.0
     for k in range(3):
@@ -229,6 +324,6 @@ def fits(estimate: int, limit: int) -> bool:
     return int(estimate) <= int(limit)
 
 
-__all__ = ["DEPTH_AT_1MM", "DEPTH_EXPONENT", "band_depth", "CELLS_ACROSS_BY_FIDELITY", "DEFAULT_FIDELITY", "ESTIMATE_MARGIN",
+__all__ = ["PEAK_BYTES_PER_CELL", "PEAK_FIXED_BYTES", "peak_gib", "written_gib", "DEPTH_AT_1MM", "DEPTH_EXPONENT", "band_depth", "CELLS_ACROSS_BY_FIDELITY", "DEFAULT_FIDELITY", "ESTIMATE_MARGIN",
            "LEVELS_LADDER", "band_estimate_cells", "plan_for_budget",
            "FLOOR_CELLS_ACROSS", "LEVELS", "cells_across_for", "estimate_cells", "fits"]

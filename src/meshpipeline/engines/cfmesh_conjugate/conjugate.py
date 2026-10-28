@@ -375,7 +375,9 @@ ROLE_TO_OF_TYPE = {"inlet": "patch", "outlet": "patch", "wall": "wall",
 def render_meshdict(*, block_file: str, fluid_file: str, background_cell_m: float,
                     levels: int = DEFAULT_REFINEMENT_LEVELS,
                     thickness_m: float | None = None,
-                    patch_names: dict[str, tuple[str, str]] | None = None) -> str:
+                    patch_names: dict[str, tuple[str, str]] | None = None,
+                    fine_zones: list | None = None,
+                    fine_surfaces: list | None = None) -> str:
     """The meshDict for the single-domain pass over the whole block.
 
     `surfaceMeshRefinement` is what makes this work. It refines around a surface that is NOT the
@@ -404,15 +406,84 @@ def render_meshdict(*, block_file: str, fluid_file: str, background_cell_m: floa
     thickness = background_cell_m if thickness_m is None else float(thickness_m)
     if thickness <= 0:
         raise ConjugateError(f"refinement thickness must be positive, got {thickness}")
+    # A SECOND SURFACE, FINER, OVER THE PART OF THE COOLANT THAT IS THINNER. This is the same
+    # mechanism as `coolant` above and not a new one: a surface that is not the meshed boundary,
+    # telling the octree where to put small cells. The surface is a SUBSET of the coolant's own
+    # triangles - the ones whose walls are thin, written out separately by cad/scales - so the
+    # extra levels reach only where the thin channels are.
+    #
+    # NOT A BOX, AND THE DIFFERENCE IS THE WHOLE RUN. `objectRefinements` below takes a box and
+    # fills its VOLUME at the given size. On this part the thin layer is 35.9% of the wetted area
+    # and about 2% of the volume, so its bounding box is almost all metal: a box zone priced out
+    # at 456,206,329 cells against 224,431,537 for a band round the same surface. Measured
+    # 2026-10-28 - the box run produced 478,648,313 octree boxes and cartesianMesh aborted,
+    # because 8 octree vertices per box is 3,829,186,504 and this OpenFOAM is built with 32-bit
+    # labels (linux64GccDPInt32Opt, WM_LABEL_SIZE=32). It had used 50 GB of 251 at the time; the
+    # ceiling is the integer, not the memory. See budget.OCTREE_BOX_CEILING.
+    rows = ["    coolant\n    {\n"
+            f'        surfaceFile "{fluid_file}";\n'
+            f"        additionalRefinementLevels {levels};\n"
+            f"        refinementThickness {thickness:.6g};\n"
+            "    }\n"]
+    for k, fine in enumerate(fine_surfaces or []):
+        name = str(fine.get("name") or f"fine{k}").strip() or f"fine{k}"
+        f_file = str(fine.get("file") or "").strip()
+        f_levels = int(fine.get("levels", 0))
+        if not f_file:
+            raise ConjugateError(f"the fine surface {name!r} has no surface file")
+        if f_levels <= levels:
+            # a fine surface no finer than the coolant itself buys nothing and would read as a
+            # deliberate choice to someone looking at the dictionary later
+            raise ConjugateError(
+                f"the fine surface {name!r} asks for {f_levels} levels against the coolant's "
+                f"{levels}; a finer surface has to be finer")
+        f_thick = fine.get("thickness_m")
+        f_thick = (background_cell_m / (2 ** f_levels) * 4.0 if f_thick is None
+                   else float(f_thick))
+        if f_thick <= 0:
+            raise ConjugateError(f"the fine surface {name!r} has thickness {f_thick}")
+        rows.append(f"    {name}\n    {{\n"
+                    f'        surfaceFile "{f_file}";\n'
+                    f"        additionalRefinementLevels {f_levels};\n"
+                    f"        refinementThickness {f_thick:.6g};\n"
+                    "    }\n")
     out = (
         "FoamFile { version 2.0; format ascii; class dictionary; object meshDict; }\n\n"
         f'surfaceFile "{block_file}";\n'
         f"maxCellSize {background_cell_m:.6g};\n\n"
-        "surfaceMeshRefinement\n{\n    coolant\n    {\n"
-        f'        surfaceFile "{fluid_file}";\n'
-        f"        additionalRefinementLevels {levels};\n"
-        f"        refinementThickness {thickness:.6g};\n"
-        "    }\n}\n")
+        "surfaceMeshRefinement\n{\n" + "".join(rows) + "}\n")
+    # CELLS SPENT WHERE THE SMALL THINGS ARE, not spread evenly over a surface that is not evenly
+    # sized. `surfaceMeshRefinement` above puts ONE cell size on the whole coolant, which is the
+    # right answer only while the coolant has one scale. The first real customer part has two: a
+    # manifold of ~3.5 mm channels and a stack of ~15 slots about 98 um across. A single size that
+    # suits the slots is unaffordable over the manifold, and one that suits the manifold cannot see
+    # the slots at all - at 0.0947 mm cells the manifold got 28 cells across it and the slots got
+    # one. The mean hides it completely: 4V/A over that whole coolant is 3.5 mm.
+    #
+    # Each zone is a box in METRES with its own cell size, which cfMesh's objectRefinements takes
+    # directly. The boxes come from the geometry (where the coolant is thin), not from a person,
+    # and `cellSize` is absolute rather than a level count so a zone cannot be quietly rounded to
+    # a power of two away from what it was asked for.
+    for zone in (fine_zones or []):
+        lo, hi, cell = zone["lo"], zone["hi"], float(zone["cell_m"])
+        if cell <= 0:
+            raise ConjugateError(f"a refinement zone needs a positive cell size, got {cell}")
+        if any(float(hi[k]) <= float(lo[k]) for k in range(3)):
+            raise ConjugateError(f"a refinement zone needs a positive extent, got {lo} .. {hi}")
+        centre = [0.5 * (float(lo[k]) + float(hi[k])) for k in range(3)]
+        span = [float(hi[k]) - float(lo[k]) for k in range(3)]
+        name = str(zone.get("name") or f"fine{len(out)}").strip() or "fine"
+        out += ("\nobjectRefinements\n{\n" if "objectRefinements" not in out else "")
+        out += (f"    {name}\n    {{\n"
+                "        type box;\n"
+                f"        cellSize {cell:.6g};\n"
+                f"        centre ({centre[0]:.9g} {centre[1]:.9g} {centre[2]:.9g});\n"
+                f"        lengthX {span[0]:.9g};\n"
+                f"        lengthY {span[1]:.9g};\n"
+                f"        lengthZ {span[2]:.9g};\n"
+                "    }\n")
+    if fine_zones:
+        out += "}\n"
     if patch_names:
         # NO defaultName and NO defaultType. Every block face is already a named solid of the
         # block STL, so there is nothing for a default to catch - and on the 2D cfMesh path a
@@ -846,17 +917,26 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
           expect_fluid_volume_m3: float | None = None,
           expect_fluid_pieces: int | None = None, volume_tol: float = DEFAULT_VOLUME_TOL,
           ports: PortPlan | None = None, narrowest_m: float | None = None,
-          patch_names: dict | None = None,
+          patch_names: dict | None = None, fine_zones: list | None = None,
+          fine_surfaces: list | None = None,
           bashrc: str = _DEFAULT_BASHRC, timeout: int = 3600) -> ConjugateReport:
     """Mesh the block, split it in two, and report what was actually produced."""
     ws = Path(workspace)
     # The mark BEFORE this build, so the one after it can be attributed. See peak_rss_bytes.
     rss_before = children_peak_rss_bytes()
     (ws / "system").mkdir(parents=True, exist_ok=True)
+    # THE ZONES ARE PASSED HERE, and for one run they were not. render_meshdict has taken
+    # `fine_zones` since the day it was written, the unit tests hand them to it directly, and this
+    # - the only place in the package that writes a meshDict - left the argument off. cfMesh read a
+    # dictionary with no objectRefinements block, built the uniform mesh, and reported success: the
+    # run came back with 99,172,391 cells and a 74.61 GB peak, matching the un-zoned run of the
+    # same part to the byte. Nothing failed. A renderer tested through its own front door cannot
+    # catch an argument the caller never supplies, which is what
+    # test_the_zones_reach_the_dictionary_the_mesher_reads now covers.
     (ws / "system" / "meshDict").write_text(render_meshdict(
         block_file=block_stl, fluid_file=fluid_stl,
         background_cell_m=background_cell_m, levels=levels, thickness_m=thickness_m,
-        patch_names=patch_names))
+        patch_names=patch_names, fine_zones=fine_zones, fine_surfaces=fine_surfaces))
     (ws / "system" / "topoSetDict").write_text(render_toposetdict(fluid_file=fluid_stl))
 
     # THE CASE IS SCANNED BEFORE ANYTHING RUNS, which is where every other OpenFOAM bundle scans
