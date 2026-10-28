@@ -92,8 +92,8 @@ def face_accounting(quality: Mapping | None, plan: Mapping | None) -> dict:
     deck = _m(q.get("deck"))
     cad = [str(_m(f).get("name")) for f in p.get("faces") or [] if _m(f).get("name")]
     named = {str(k) for k in (deck.get("face_sets") or {})}
-    skins = skin_pairs(_m(p.get("assembly")).get("skins")) or [dict(s) for s in deck.get("skins_left_out") or []
-                                                                if isinstance(s, Mapping)]
+    skins = (skin_pairs(_m(p.get("assembly")).get("skins")) or skin_pairs(p.get("skins"))
+             or [dict(s) for s in deck.get("skins_left_out") or [] if isinstance(s, Mapping)])
     merged = [{"face": f, "into": list(_m(m).get("into") or [])}
               for m in _m(q.get("fea_tiny")).get("merged") or [] for f in _m(m).get("face") or []]
     aside = {str(s.get("face")) for s in skins} | {str(m["face"]) for m in merged}
