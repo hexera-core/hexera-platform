@@ -43,6 +43,17 @@ def _output_mark(ws: str) -> tuple:
     return tuple(out)
 
 
+def _life_watch():
+    """A watch on this runner's whole process tree (the mesher is its child), or None."""
+    try:
+        import os
+
+        from meshpipeline.sandbox.liveness import LivenessWatch
+        return LivenessWatch(os.getpid(), ())
+    except Exception:  # noqa: BLE001 - without it the beacon says output alone, as before
+        return None
+
+
 def _beacon(ws: str, output_uri: str, stop, *, every_s: float | None = None,
             pulse_s: float | None = None, returning=None) -> None:
     """THE MESHER'S STAGE AND ITS PROGRESS, said while the runner lives: every few seconds the newest
@@ -58,6 +69,13 @@ def _beacon(ws: str, output_uri: str, stop, *, every_s: float | None = None,
     pulse_s = BEACON_PULSE_S if pulse_s is None else pulse_s
     said = None
     mark, moved_at, sent_at = _output_mark(ws), time.time(), 0.0
+    # WORKING, NOT ONLY WRITING (RUN-4, 28 Oct): a mesher can work for an hour without a line of log -
+    # gmsh's 3D fill of the 34 M-element cyclone did - and the waiting worker read that as no
+    # progress, let the job's deadline pass, lost its lease and threw away 7 hours of meshing. So the
+    # beacon also says when this runner's process tree last showed life (CPU, memory, output):
+    # `alive_at`. A tree with none is stuck, and both stand still.
+    watch = _life_watch()
+    alive_at = time.time()
     while not stop.wait(every_s):
         now = time.time()
         handing_back = returning is not None and returning.is_set()
@@ -69,7 +87,15 @@ def _beacon(ws: str, output_uri: str, stop, *, every_s: float | None = None,
         if not (new_stage or now - sent_at >= pulse_s):
             continue
         try:
-            upload_progress(output_uri, {**(stage or {}), "at": now, "progress_at": moved_at})
+            # looked at once per beacon written, not at every glance at the logs: the process tree is
+            # read from /proc, and a pulse a minute is all `alive_at` needs
+            if handing_back or (watch is not None and watch.poll() is not None):
+                alive_at = now
+        except Exception:  # noqa: BLE001 - a look that fails says nothing either way
+            pass
+        try:
+            upload_progress(output_uri, {**(stage or {}), "at": now, "progress_at": moved_at,
+                                         "alive_at": alive_at})
             said = (stage or {}).get("key", said)
             sent_at = now
         except Exception:  # noqa: BLE001 - the live line is a courtesy; the next pulse tries again
