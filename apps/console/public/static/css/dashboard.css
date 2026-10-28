@@ -208,3 +208,30 @@
   .sidebar__account small{display:none}
   .dashboard-notice{align-items:flex-start;flex-direction:column}
 }
+
+/* THE SIDEBAR SWITCH on a run page: one slot, two jobs - the runs, or the files of this run */
+.sidebar__switch{display:flex;margin:0 .4rem .5rem;padding:2px;border-radius:var(--r-md);
+  background:var(--surface-1);border:1px solid var(--divider)}
+.sidebar__switch button{flex:1;height:1.6rem;border:0;border-radius:4px;background:transparent;
+  color:var(--text-faint);font:500 var(--fs-sm)/1 var(--sans);cursor:pointer}
+.sidebar__switch button:hover{color:var(--text)}
+.sidebar__switch button[aria-pressed="true"]{background:var(--surface-raised);color:var(--text)}
+
+/* THE FILES PANEL: only what the user takes away, the whole bundle first, each a download */
+.files{flex:1 1 auto;min-height:0;overflow-y:auto;padding:0 .4rem}
+.files__list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:1px}
+.files__row{display:grid;grid-template-columns:16px minmax(0,1fr) auto;align-items:start;gap:.5rem;
+  width:100%;min-height:2rem;padding:.4rem .55rem;border:0;border-radius:var(--r-md);background:transparent;
+  color:var(--text-muted);font:400 var(--fs-md)/1 var(--sans);text-align:left;cursor:pointer;
+  animation:files-arrive .9s cubic-bezier(.16,1,.3,1)}
+.files__row:hover{background:var(--hover);color:var(--text)}
+.files__row:disabled{cursor:progress;opacity:.7}
+.files__row--main{color:var(--text)}
+.files__row--main .files__icon{color:var(--accent)}
+.files__icon{width:15px;height:15px;margin-top:1px;color:var(--text-faint)}
+.files__name{line-height:1.35;overflow-wrap:anywhere}
+.files__size{padding-top:2px;font-size:var(--fs-xs);color:var(--text-faint);font-variant-numeric:tabular-nums}
+.files__empty,.files__note{padding:.3rem .55rem;font-size:var(--fs-sm);line-height:1.5;color:var(--text-faint)}
+@keyframes files-arrive{from{background:var(--accent-soft)}to{background:transparent}}
+@media (prefers-reduced-motion:reduce){.files__row{animation:none}}
+@media (max-width:860px){.sidebar__switch,.files{display:none}}

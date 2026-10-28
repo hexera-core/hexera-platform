@@ -4,9 +4,19 @@ import { createContext, useCallback, useContext, useMemo, useState } from "react
 
 import { sidebarCookie } from "./sidebar-state";
 
-type SidebarControl = { hidden: boolean; setHidden: (hidden: boolean) => void };
+/** What the sidebar's one slot shows on a run page: the runs (the nav) or this run's files. */
+export type SidebarPane = "runs" | "files";
 
-const SidebarContext = createContext<SidebarControl>({ hidden: false, setHidden: () => {} });
+type SidebarControl = {
+  hidden: boolean;
+  setHidden: (hidden: boolean) => void;
+  pane: SidebarPane;
+  setPane: (pane: SidebarPane) => void;
+};
+
+const SidebarContext = createContext<SidebarControl>({
+  hidden: false, setHidden: () => {}, pane: "runs", setPane: () => {},
+});
 
 /** The sidebar's show/hide switch, for the sidebar's own hide button. */
 export function useSidebar(): SidebarControl {
@@ -27,16 +37,20 @@ export function useSidebar(): SidebarControl {
 export function Shell({
   children,
   initialHidden,
+  initialPane = "runs",
 }: {
   children: React.ReactNode;
   initialHidden: boolean;
+  initialPane?: SidebarPane;
 }) {
   const [hidden, setHiddenState] = useState(initialHidden);
   const setHidden = useCallback((next: boolean) => {
     setHiddenState(next);
     document.cookie = sidebarCookie(next);
   }, []);
-  const control = useMemo(() => ({ hidden, setHidden }), [hidden, setHidden]);
+  // the pane is chosen per visit, not remembered: a new page starts on the nav
+  const [pane, setPane] = useState<SidebarPane>(initialPane);
+  const control = useMemo(() => ({ hidden, setHidden, pane, setPane }), [hidden, setHidden, pane]);
   return (
     <SidebarContext.Provider value={control}>
       <div className={`shell${hidden ? " shell--hidden" : ""}`}>

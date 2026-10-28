@@ -4,8 +4,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { FilesPanel } from "@/app/_components/files-panel";
 import { RecentRunsList } from "@/app/_components/recent-runs-list";
 import type { RecentRun } from "@/app/_components/recent-runs";
+import type { RunRead } from "@/app/_components/run-files";
 import { CONSOLE_SECTIONS, currentSection, visibleSections } from "@/app/_components/sections";
 import { PanelIcon, useSidebar } from "@/app/_components/shell";
 
@@ -20,13 +22,19 @@ type SidebarProps = {
   /** Rendered, never imported: SignOutButton's inline "use server" action cannot be reached
    *  from a Client Component's import graph. The layout builds it and hands it over. */
   signOut: React.ReactNode;
+  /** A first read of this run for the Files panel, when the caller has one; the panel reads it after. */
+  files?: RunRead | null;
 };
 
 /** The slim sidebar: the brand and the hide switch, New run, the product sections, the recent
  *  runs, and the account tucked into one Settings fold at the foot. */
-export function Sidebar({ credits, email, recent, repairPoc, signOut }: SidebarProps) {
-  const current = currentSection(usePathname());
-  const { setHidden } = useSidebar();
+export function Sidebar({ credits, email, files = null, recent, repairPoc, signOut }: SidebarProps) {
+  const pathname = usePathname();
+  const current = currentSection(pathname);
+  const { pane, setHidden, setPane } = useSidebar();
+  // ON A RUN PAGE the slot has two jobs: the runs, or this run's files. Elsewhere it is the nav.
+  const onRun = /^\/runs\/.+/.test(pathname);
+  const showFiles = onRun && pane === "files";
   const sections = visibleSections(repairPoc);
   const product = sections.filter((section) => section.group === "product");
   const account = sections.filter((section) => section.group === "account");
@@ -50,6 +58,14 @@ export function Sidebar({ credits, email, recent, repairPoc, signOut }: SidebarP
         </button>
       </div>
 
+      {onRun ? (
+        <div aria-label="Side panel" className="sidebar__switch" role="group">
+          <button aria-pressed={!showFiles} onClick={() => setPane("runs")} type="button">Runs</button>
+          <button aria-pressed={showFiles} onClick={() => setPane("files")} type="button">Files</button>
+        </div>
+      ) : null}
+
+      {showFiles ? <FilesPanel initial={files} /> : (<>
       <Link className="sidebar__new" href="/runs/new">
         <svg aria-hidden="true" className="sidebar__icon" fill="none" focusable="false"
           stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" viewBox="0 0 16 16">
@@ -66,6 +82,7 @@ export function Sidebar({ credits, email, recent, repairPoc, signOut }: SidebarP
 
       <p className="sidebar__group label">Recent</p>
       <RecentRunsList initial={recent} />
+      </>)}
 
       <div className="sidebar__foot">
         {/* the account pages, folded: they are visited rarely, and open by themselves when the
