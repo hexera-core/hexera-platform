@@ -18,8 +18,10 @@ file:
   + *CONTACT PAIR; Nastran (MSC, SOL 101/400) BCPROP + BCBODY per part, BCTABLE per pair, BCPARA,
   with the surfaces also as BSURFS; Ansys TARGE170 / CONTA174 elements on the two surfaces (one
   real constant set per pair) and components naming them.
-* TIE (bonded, but the parts could not be fused, so meshed apart): as contact, but the pair is
-  tied: Abaqus/CalculiX *TIE; Nastran BCTABLE with IGLUE=1; Ansys CONTA174 KEYOPT(12)=5 (bonded).
+* TIE (bonded where the parts are not one mesh: meshed apart, or a small gap or a missed touch in a
+  fused mesh): as contact, but the pair is tied: Abaqus/CalculiX *TIE; Nastran BCTABLE with IGLUE=1;
+  Ansys CONTA174 KEYOPT(12)=5 (bonded). Every tie is settled first (settle_ties, PLAN-fea-18): the
+  same slave, nodes and tolerance in every file, and no node moved.
 """
 from __future__ import annotations
 
@@ -64,8 +66,17 @@ class Joint:
     overlap: bool = False
     #: A SMALL-GAP JOINT (PLAN-fea-18): how far the solver must reach across the measured gap to join
     #: every node of it (the widest gap and a margin, cad/fea_assembly.GAP_REACH_MARGIN); None for
-    #: parts that touch, which keep each solver's own default.
+    #: parts that touch.
     reach: float | None = None
+    #: A TIE AS SETTLED (settle_ties): the slave's nodes that are tied - each within `tolerance` of the
+    #: master surface, none the master's own, none tied twice - and the tolerance every solver is given.
+    #: None: not settled (written with every node of the slave surface).
+    tied: np.ndarray | None = None
+    tolerance: float | None = None
+    #: why the slave's other nodes are not tied: {"shared": already the master's own nodes (one conformal
+    #: mesh), "beyond": farther than the tolerance from the master, "twice": tied by a nearer tie, "loop": a
+    #: chain of ties that would come back to them}
+    left_out: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -217,15 +228,241 @@ def prepare(mesh: SolidMesh, sidecar: dict, *, surface_tag: dict[int, int], volu
         b = _union(f"{word}{jid}_Part_{q}", [named[n] for n in fa.get(str(q)) or [] if n in named])
         if not len(a.elements) or not len(b.elements):
             continue
-        # SLAVE = the smaller surface (the usual rule: the finer, smaller side follows the larger)
+        # SLAVE = the smaller surface (the usual rule: the smaller side follows the larger); a tie's own
+        # slave is then chosen on its nodes (settle_ties)
         if _area(xyz_of, a, elements) > _area(xyz_of, b, elements):
             a, b, p, q = b, a, q, p
         reach = float(pair.get("reach") or 0.0)
         joints.append(Joint(name=f"{word}{jid}", kind=kind, parts=(p, q), sides=(a, b),
                             overlap=bool(pair.get("overlap")), reach=reach if reach > 0 else None))
+    joints = settle_ties(joints, elements, xyz, index, side)
     from meshpipeline.cad.fea_assembly import skin_pairs
     return Prepared(node_ids=node_ids, xyz=xyz, elements=elements, element_part=owner, parts=parts,
                     faces=faces, joints=joints, skins=skin_pairs(sidecar.get("skins")))
+
+
+#: A TOUCHING TIE'S TOLERANCE, as a share of the master's typical element edge: parts that touch are
+#: tied where their meshes lie on each other, and a quadratic face's facets lie off the round CAD face
+#: they mesh by a sliver of an edge. A small-gap joint's own reach (PLAN-fea-18) is used instead.
+TOUCH_SHARE = 0.05
+#: PARTS THAT PASS INTO EACH OTHER (an overlap pair: a press fit, a pin drawn a hair too big): the slave's
+#: nodes inside the master part are the joint, tied where they stand down to this share of the master's
+#: typical element edge (asm_fw_case, 28 Oct: its five press-fit pins sit 0.23-0.3 of an edge deep, the
+#: deepest 1.0); a node deeper is not on the joint.
+OVERLAP_DEPTH_SHARE = 1.0
+#: a tet face's corners (TET_FACE_CORNERS) leave out this corner: the one inside, behind the face
+_OPPOSITE = np.array([3, 2, 0, 1])
+
+
+def _depth(points: np.ndarray, face: np.ndarray, fs: FaceSet, elements: np.ndarray, xyz_of) -> np.ndarray:
+    """How far each point lies behind the plane of its element face of `fs` (`face`: the face's row),
+    into that face's own element: > 0 inside the part."""
+    conn = elements[fs.elements[face] - 1]
+    corners = np.take_along_axis(conn, np.asarray(TET_FACE_CORNERS)[fs.labels[face] - 1], axis=1)
+    a, b, c = (xyz_of(corners[:, k]) for k in range(3))
+    inner = xyz_of(conn[np.arange(len(conn)), _OPPOSITE[fs.labels[face] - 1]])
+    n = np.cross(b - a, c - a)
+    n /= np.maximum(np.linalg.norm(n, axis=1), 1e-300)[:, None]
+    n[np.einsum("ij,ij->i", n, inner - a) < 0] *= -1                     # into the element
+    return np.einsum("ij,ij->i", points - a, n)
+
+
+def _master_triangles(fs: FaceSet, elements: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The master surface as flat triangles (a quadratic face as its four corner/midpoint triangles, as
+    CalculiX itself triangulates it): (T, 3) node numbers, (T,) the element face each came from, and
+    (F, 6|3) every node of each element face."""
+    conn = elements[fs.elements - 1]
+    if elements.shape[1] == 10:
+        table = np.asarray(TET10_FACE_NODES)[fs.labels - 1]
+        nodes = np.take_along_axis(conn, table, axis=1)                      # c1 c2 c3 m12 m23 m31
+        sub = np.array([[0, 3, 5], [3, 1, 4], [5, 4, 2], [3, 4, 5]])
+        tris = nodes[:, sub].reshape(-1, 3)
+        face = np.repeat(np.arange(len(nodes)), 4)
+    else:
+        nodes = np.take_along_axis(conn, np.asarray(TET_FACE_CORNERS)[fs.labels - 1], axis=1)
+        tris, face = nodes, np.arange(len(nodes))
+    return tris, face, nodes
+
+
+#: A slave node is tied only where it lies OVER the master: the foot of its perpendicular inside a master
+#: triangle, to this share of the triangle (barycentric). CalculiX ties no node whose foot falls off the
+#: master ("no opposite master face found"): a node beside the master's edge is not on the joint, however
+#: near (the customer anchorage, 28 Oct: 5,100 such nodes in its boss-to-tube ties, listed and never tied).
+IN_FACE = 1e-6
+
+
+def _point_triangle(p: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray) -> np.ndarray:
+    """The distance from each point to the plane of its triangle (all (N, 3)) where the foot of the
+    perpendicular falls inside the triangle (IN_FACE); inf where it falls outside."""
+    ab, ac = b - a, c - a
+    n = np.cross(ab, ac)
+    nn = np.einsum("ij,ij->i", n, n)
+    ap = p - a
+    w = np.full(len(p), np.inf)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        # barycentric coordinates of the foot of the perpendicular
+        u = np.einsum("ij,ij->i", np.cross(ap, ac), n) / nn
+        v = np.einsum("ij,ij->i", np.cross(ab, ap), n) / nn
+        inside = (nn > 0) & (u >= -IN_FACE) & (v >= -IN_FACE) & (u + v <= 1 + IN_FACE)
+        w[inside] = np.abs(np.einsum("ij,ij->i", ap[inside], n[inside])) / np.sqrt(nn[inside])
+    return w
+
+
+def _nearest_master(points: np.ndarray, tri_xyz: np.ndarray, limit: float) -> tuple[np.ndarray, np.ndarray]:
+    """For each point: its distance to the nearest master triangle it lies over, within `limit` (inf if
+    none), and that triangle's row (-1 if none)."""
+    from scipy.spatial import cKDTree
+
+    dist = np.full(len(points), np.inf)
+    best = np.full(len(points), -1, dtype=np.int64)
+    if not len(points) or not len(tri_xyz):
+        return dist, best
+    centre = tri_xyz.mean(axis=1)
+    radius = float(np.linalg.norm(tri_xyz - centre[:, None, :], axis=2).max())
+    near = cKDTree(centre).query_ball_point(points, r=limit + radius)
+    counts = np.fromiter((len(x) for x in near), dtype=np.int64, count=len(near))
+    if not counts.sum():
+        return dist, best
+    pi = np.repeat(np.arange(len(points)), counts)
+    ti = np.fromiter((t for x in near for t in x), dtype=np.int64, count=int(counts.sum()))
+    for s in range(0, len(pi), 2_000_000):
+        pp, tt = pi[s:s + 2_000_000], ti[s:s + 2_000_000]
+        d = _point_triangle(points[pp], tri_xyz[tt, 0], tri_xyz[tt, 1], tri_xyz[tt, 2])
+        order = np.lexsort((d, pp))
+        pp, tt, d = pp[order], tt[order], d[order]
+        first = np.r_[True, pp[1:] != pp[:-1]]
+        pp, tt, d = pp[first], tt[first], d[first]
+        better = d < dist[pp]
+        dist[pp[better]] = d[better]
+        best[pp[better]] = tt[better]
+    return dist, best
+
+
+def settle_ties(joints: list[Joint], elements: np.ndarray, xyz: np.ndarray, index: np.ndarray,
+                side: dict) -> list[Joint]:
+    """EVERY TIE AS EVERY SOLVER CAN TAKE IT (PLAN-fea-18): which side is the slave, which of its nodes
+    are tied, and how far the solver reaches. The slave is the side with more nodes within the tolerance
+    of the other (the finer mesh on the joint; the smaller surface when even). A slave node is tied when
+
+    * it is not the master's own node: where two parts already share nodes (a bonded mesh's fused
+      joint) they are one piece there, and a node tied to a face it lies on is an equation with nothing
+      on its dependent side (CalculiX: "zero coefficient on the dependent side");
+    * it lies within the tolerance of the master surface: a small-gap joint's reach, or a sliver of the
+      master's element edge where the parts touch (TOUCH_SHARE), or - parts that pass into each other -
+      inside the master part down to OVERLAP_DEPTH_SHARE of its edge; a node beyond is not on the joint;
+    * no nearer tie already holds it: a node follows one master only;
+    * it does not close a loop of ties back onto itself.
+
+    Every solver ties the nodes where they stand (CalculiX ADJUST=NO): moving them onto the master
+    would move a corner without its midpoints and turn elements inside out ("nonpositive jacobian").
+    A tie with no node left but shared ones is a bonded joint: written as one, its faces still named.
+    """
+    ties = [k for k, j in enumerate(joints) if j.kind == "tie"]
+    if not ties:
+        return joints
+    on_part: dict[int, np.ndarray] = {}
+
+    def nodes_on(part: int) -> np.ndarray:
+        if part not in on_part:
+            mask = np.zeros(int(index.shape[0]), dtype=bool)
+            mask[elements[side[part]].ravel()] = True
+            on_part[part] = mask
+        return on_part[part]
+
+    def reach(slave: FaceSet, master: FaceSet, master_part: int, gap: float | None, overlap: bool):
+        """(nodes within the tolerance, their distances, their master faces' nodes, shared, beyond, tolerance)"""
+        tris, face, face_nodes = _master_triangles(master, elements)
+        corners = xyz[index[face_nodes[:, :3]]]
+        edge = np.linalg.norm(corners - np.roll(corners, 1, axis=1), axis=2)
+        typical = float(np.median(edge)) if edge.size else 0.0
+        limit = float(gap) if gap else TOUCH_SHARE * typical
+        # parts that pass into each other: the slave's nodes inside the master, down to OVERLAP_DEPTH_SHARE
+        deep = max(limit, OVERLAP_DEPTH_SHARE * typical) if overlap else limit
+        cand = slave.nodes[~nodes_on(master_part)[slave.nodes]]
+        dist, tri = _nearest_master(xyz[index[cand]], xyz[index[tris]], deep)
+        ok = dist <= limit
+        if deep > limit:
+            near = np.flatnonzero(~ok & (dist <= deep))
+            inside = _depth(xyz[index[cand[near]]], face[tri[near]], master, elements, lambda n: xyz[index[n]]) > 0
+            ok[near[inside]] = True
+        return (cand[ok], dist[ok], face_nodes[face[tri[ok]]], int(len(slave.nodes) - len(cand)), int((~ok).sum()),
+                deep)
+
+    rows: list[tuple[np.ndarray, np.ndarray, np.ndarray, int]] = []        # (node, distance, master face nodes, tie)
+    shared: dict[int, int] = {}
+    beyond: dict[int, int] = {}
+    tolerance: dict[int, float] = {}
+    joints = list(joints)
+    for k in ties:
+        j = joints[k]
+        got = reach(j.sides[0], j.sides[1], j.parts[1], j.reach, j.overlap)
+        # SLAVE AND MASTER: the slave is the side with more nodes on the joint - the finer mesh there - so
+        # the joint is tied all over, not at the coarser side's few nodes (equal: the smaller surface, as staged)
+        other = reach(j.sides[1], j.sides[0], j.parts[0], j.reach, j.overlap)
+        if len(other[0]) > len(got[0]):
+            got = other
+            joints[k] = Joint(name=j.name, kind=j.kind, parts=(j.parts[1], j.parts[0]), sides=(j.sides[1], j.sides[0]),
+                              overlap=j.overlap, reach=j.reach)
+        rows.append((got[0], got[1], got[2], k))
+        shared[k], beyond[k], tolerance[k] = got[3], got[4], got[5]
+    node = np.concatenate([r[0] for r in rows])
+    dist = np.concatenate([r[1] for r in rows])
+    tie_of = np.concatenate([np.full(len(r[0]), r[3]) for r in rows])
+    deps = np.concatenate([r[2] for r in rows])
+    # A NODE FOLLOWS ONE MASTER: the nearest (then the first tie)
+    order = np.lexsort((tie_of, dist, node))
+    node, dist, tie_of, deps = node[order], dist[order], tie_of[order], deps[order]
+    first = np.r_[True, node[1:] != node[:-1]] if len(node) else np.zeros(0, dtype=bool)
+    twice = np.bincount(tie_of[~first], minlength=len(joints)) if len(node) else np.zeros(len(joints), dtype=np.int64)
+    node, dist, tie_of, deps = node[first], dist[first], tie_of[first], deps[first]
+    loop = _break_loops(node, dist, deps)
+    keep = ~loop
+    out = list(joints)
+    for k in ties:
+        j = joints[k]
+        mine = keep & (tie_of == k)
+        tied = np.sort(node[mine])
+        left = {"shared": shared[k], "beyond": beyond[k], "twice": int(twice[k]),
+                "loop": int((loop & (tie_of == k)).sum())}
+        if not len(tied) and shared[k]:
+            # THE TWO SIDES ARE ONE MESH THERE (a fused, bonded joint the measurement also found): bonded
+            name = j.name.replace("Tie", "Bond", 1)
+            a, b = (FaceSet(name=s.name.replace(j.name, name, 1), tag=s.tag, elements=s.elements, labels=s.labels,
+                            nodes=s.nodes) for s in j.sides)
+            out[k] = Joint(name=name, kind="bonded", parts=j.parts, sides=(a, b), overlap=j.overlap, left_out=left)
+            continue
+        out[k] = Joint(name=j.name, kind=j.kind, parts=j.parts, sides=j.sides, overlap=j.overlap, reach=j.reach,
+                       tied=tied, tolerance=tolerance[k], left_out=left)
+    return out
+
+
+def _break_loops(node: np.ndarray, dist: np.ndarray, deps: np.ndarray) -> np.ndarray:
+    """The tied nodes to leave out so no chain of ties comes back to where it started (a node tied to a
+    face whose nodes are tied, in the end, to it): in each loop, the node farthest from its master."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    out = np.zeros(len(node), dtype=bool)
+    if not len(node):
+        return out
+    for _round in range(20):
+        live = np.flatnonzero(~out)
+        pos = np.full(int(max(node.max(), deps.max(initial=0))) + 1, -1, dtype=np.int64)
+        pos[node[live]] = np.arange(len(live))
+        src = np.repeat(np.arange(len(live)), deps.shape[1])
+        dst = pos[deps[live].ravel()]
+        hit = dst >= 0
+        if not hit.any():
+            return out
+        g = coo_matrix((np.ones(int(hit.sum())), (src[hit], dst[hit])), shape=(len(live), len(live)))
+        n_comp, lab = connected_components(g, directed=True, connection="strong")
+        size = np.bincount(lab, minlength=n_comp)
+        if not (size > 1).any():
+            return out
+        for c in np.flatnonzero(size > 1):
+            members = live[lab == c]
+            out[members[np.argmax(dist[members])]] = True
+    return out
 
 
 # #
@@ -252,6 +489,28 @@ def _surface(fh, fs: FaceSet) -> None:
     fh.writelines(f"{fs.name}_S{lab}, S{lab}\n" for lab in range(1, 5) if (fs.labels == lab).any())
     fh.write(f"*NSET, NSET={fs.name}\n")
     _write_ids(fh, fs.nodes)
+
+
+def tied_nodes(j: Joint) -> np.ndarray:
+    """The slave nodes a tie ties (every node of its slave surface when it was not settled)."""
+    return j.tied if j.tied is not None else j.sides[0].nodes
+
+
+def tie_tolerance(j: Joint) -> float | None:
+    """How far every solver reaches for a tie's master: the settled tolerance, else a gap joint's reach."""
+    return j.tolerance if j.tolerance is not None else j.reach
+
+
+def _joined(joints: list[Joint]) -> list[Joint]:
+    """The contact pairs, and the ties that tie something: the pairs the Nastran and Ansys files write."""
+    return [j for j in joints if j.kind == "contact" or (j.kind == "tie" and len(tied_nodes(j)))]
+
+
+def _left_out_words(j: Joint) -> str:
+    said = {"shared": "already the master's own", "beyond": "beyond the tolerance", "twice": "held by a nearer tie",
+            "loop": "in a loop of ties"}
+    parts = [f"{n} {said[k]}" for k, n in j.left_out.items() if n]
+    return f" (left out: {', '.join(parts)})" if parts else ""
 
 
 def write_inp(path: Path | str, prep: Prepared, *, units: str = "m", source: str = "",
@@ -281,8 +540,10 @@ def write_inp(path: Path | str, prep: Prepared, *, units: str = "m", source: str
                  "**   change to your case (friction, stiffness). " + NOT_TESTED.capitalize() + " in Abaqus;",
                  "**   contact needs a nonlinear *STEP in CalculiX."]
     if ties:
-        head += ["** TIED: the parts could not be fused into one mesh, so each is meshed on its own and tied",
-                 "**   where they touch (*TIE: bonded, the slave's nodes follow the master surface)."]
+        head += ["** TIED: where parts are not one mesh they are tied (*TIE: bonded). Each tie names the slave",
+                 "**   nodes it ties (a node surface, <slave>_Tied): those within its POSITION TOLERANCE of the",
+                 "**   master, never the master's own nodes, never one node twice; ADJUST=NO ties them where they",
+                 "**   stand. A node a tie holds must not be held by a support too."]
     if any(j.overlap for j in contacts):
         head.append("** Some contact pairs start overlapping (the CAD parts pass into each other there).")
     head.append("** Every face of every part is a *SURFACE and *NSET named Part_k_Face_j.")
@@ -313,19 +574,31 @@ def write_inp(path: Path | str, prep: Prepared, *, units: str = "m", source: str
                 fh.write(f"*CONTACT PAIR, INTERACTION={INTERACTION}, TYPE=SURFACE TO SURFACE\n")
                 fh.write(f"{j.sides[0].name}, {j.sides[1].name}\n")
         for j in ties:
-            if j.reach:
-                # ACROSS A GAP: every slave node within the reach is tied where it stands (ADJUST=NO: the
-                # gap is a weld or a thread, not a misplaced node to move)
-                fh.write(f"** {j.name}: a small-gap joint - the parts are {_coord(j.reach)} or less apart there\n")
-                fh.write(f"*TIE, NAME={j.name}, POSITION TOLERANCE={_coord(j.reach)}, ADJUST=NO\n")
-            else:
-                fh.write(f"*TIE, NAME={j.name}\n")
-            fh.write(f"{j.sides[0].name}, {j.sides[1].name}\n")
+            tied = tied_nodes(j)
+            fh.write(f"** {j.name}: Part_{j.parts[0]} (slave) tied to Part_{j.parts[1]} (master)"
+                     + (f", a small-gap joint - the parts are {_coord(j.reach)} or less apart there" if j.reach else "")
+                     + f"; {len(tied)} of the slave's {len(j.sides[0].nodes)} nodes tied" + _left_out_words(j) + "\n")
+            if not len(tied):
+                fh.write(f"** {j.name}: no slave node lies within the tolerance of the master - nothing to tie\n")
+                continue
+            # THE NODES TIED, as a node surface (settle_ties): never the master's own, never one twice
+            fh.write(f"*NSET, NSET={j.sides[0].name}_Tied\n")
+            _write_ids(fh, tied)
+            fh.write(f"*SURFACE, NAME={j.sides[0].name}_Tied, TYPE=NODE\n{j.sides[0].name}_Tied\n")
+            tol = tie_tolerance(j)
+            # ADJUST=NO: each node is tied where it stands; moving a corner onto the master without its edge
+            # midpoints turns elements inside out
+            fh.write(f"*TIE, NAME={j.name}" + (f", POSITION TOLERANCE={_coord(tol)}" if tol else "") + ", ADJUST=NO\n")
+            fh.write(f"{j.sides[0].name}_Tied, {j.sides[1].name}\n")
     return {"element_type": etype, "elements": int(len(prep.elements)), "units": units,
             "parts": [{k: p[k] for k in ("id", "name", "first", "last")} for p in prep.parts],
             "face_sets": {f.name: i for i, f in enumerate(prep.faces, start=1)},
             "joints": [{"name": j.name, "kind": j.kind, "slave": j.sides[0].name, "master": j.sides[1].name,
-                        "overlap": j.overlap, **({"reach": j.reach} if j.reach else {})} for j in prep.joints],
+                        "overlap": j.overlap, **({"reach": j.reach} if j.reach else {}),
+                        **({"tolerance": tie_tolerance(j), "tied_nodes": int(len(tied_nodes(j))),
+                            "left_out": dict(j.left_out)} if j.kind == "tie" else {}),
+                        **({"from_tie": dict(j.left_out)} if j.kind == "bonded" and j.left_out else {})}
+                       for j in prep.joints],
             "cad_face_names": {}, "face_aliases": {},
             # MESH-8: the CAD faces left out as skins of no thickness, each with the face it lies on
             **({"skins_left_out": [dict(s) for s in prep.skins]} if prep.skins else {})}
@@ -339,7 +612,7 @@ def write_bdf(path: Path | str, prep: Prepared, *, units: str = "m", source: str
     from meshpipeline.engines.fea_writers import _cards, _f16
 
     per = prep.elements.shape[1]
-    contacts = [j for j in prep.joints if j.kind in ("contact", "tie")]
+    contacts = _joined(prep.joints)
     lines = [
         "$ Hexera FEA mesh - an ASSEMBLY - Nastran bulk data (MSC / NX).",
         "$ " + NOT_TESTED.capitalize() + ".",
@@ -401,8 +674,10 @@ def write_bdf(path: Path | str, prep: Prepared, *, units: str = "m", source: str
         # cinterf, iglue, isearch) and the master body
         rows = [f"{'BCTABLE':<8}{1:>8d}{'':>8}{'':>8}{len(contacts):>8d}"]
         for j in contacts:
-            # ERROR: the distance below which a node is taken as touching - a small-gap joint's reach
-            err = _f8(j.reach) if j.reach else "0."
+            # ERROR: the distance below which a node is taken as touching - a tie's own tolerance (settle_ties:
+            # the small-gap joint's reach, or the touching tie's), the same as the other solvers'
+            tol = tie_tolerance(j) if j.kind == "tie" else j.reach
+            err = _f8(tol) if tol else "0."
             rows.append(f"{'':<8}{'SLAVE':<8}{j.parts[0]:>8d}{err:>8}{'0.':>8}{'0.':>8}{'0.':>8}"
                         f"{1 if j.kind == 'tie' else 0:>8d}{0:>8d}")
             rows.append(f"{'':<8}{'MASTERS':<8}{j.parts[1]:>8d}")
@@ -439,7 +714,7 @@ def write_cdb(path: Path | str, prep: Prepared, *, units: str = "m", source: str
 
     per = prep.elements.shape[1]
     et = 187 if per == 10 else 285
-    contacts = [j for j in prep.joints if j.kind in ("contact", "tie")]
+    contacts = _joined(prep.joints)
     index = np.zeros(int(prep.node_ids.max()) + 1, dtype=np.int64)
     index[prep.node_ids] = np.arange(len(prep.node_ids))
 
@@ -464,10 +739,12 @@ def write_cdb(path: Path | str, prep: Prepared, *, units: str = "m", source: str
     if any(j.kind == "contact" for j in contacts):
         lines += ["ET,2,170", "ET,3,174", "KEYOPT,3,12,0"]
     if any(j.kind == "tie" for j in contacts):
-        lines += ["ET,4,170", "ET,5,174", "KEYOPT,5,12,5"]
+        # KEYOPT(9) = 1: bonded where the faces stand, the gap neither closed nor a node moved (ADJUST=NO)
+        lines += ["ET,4,170", "ET,5,174", "KEYOPT,5,12,5", "KEYOPT,5,9,1"]
     for i, j in enumerate(contacts, start=2):
-        # PINB (the 6th real constant): a small-gap joint's reach, so the bond takes every node across it
-        lines.append(f"R,{i},,,,,,{j.reach:.6E}" if j.reach else f"R,{i}")
+        # PINB (the 6th real constant): a tie's own tolerance (settle_ties), the same as CalculiX's and Nastran's
+        tol = tie_tolerance(j) if j.kind == "tie" else j.reach
+        lines.append(f"R,{i},,,,,,{tol:.6E}" if tol else f"R,{i}")
     lines += [f"NBLOCK,6,SOLID,{int(prep.node_ids.max()):>10d},{len(prep.node_ids):>10d}", "(3i9,6e21.13e3)"]
     for i, (x, y, z) in zip(prep.node_ids.tolist(), prep.xyz.tolist(), strict=True):
         lines.append(f"{int(i):>9d}{0:>9d}{0:>9d}{x:21.13E}{y:21.13E}{z:21.13E}")
@@ -481,6 +758,9 @@ def write_cdb(path: Path | str, prep: Prepared, *, units: str = "m", source: str
         for s, etype in ((1, t_target), (0, t_contact)):
             first = nxt
             fs = j.sides[s]
+            if s == 0 and j.kind == "tie":
+                # A TIE'S CONTACT ELEMENTS: only the slave faces that hold a node it ties (settle_ties)
+                fs = _faces_with(fs, tied_nodes(j), prep.elements)
             for el, lab in zip(fs.elements.tolist(), fs.labels.tolist(), strict=True):
                 nodes = _oriented(prep.elements[el - 1], lab, xyz_of)
                 if etype in (3, 5) and len(nodes) == 6:
@@ -526,6 +806,16 @@ def write_cdb(path: Path | str, prep: Prepared, *, units: str = "m", source: str
     return {"file": Path(path).name, "faces": len(prep.faces), "skins_left_out": len(prep.skins),
             "elements": int(len(prep.elements)),
             "parts": len(prep.parts), "pairs": len(contacts), "contact_elements": len(surf)}
+
+
+def _faces_with(fs: FaceSet, nodes: np.ndarray, elements: np.ndarray) -> FaceSet:
+    """The element faces of `fs` that hold at least one of `nodes`."""
+    if len(nodes) == len(fs.nodes):
+        return fs
+    table = np.asarray(TET10_FACE_NODES if elements.shape[1] == 10 else TET_FACE_CORNERS)
+    face = elements[fs.elements[:, None] - 1, table[fs.labels - 1]]
+    keep = np.isin(face, nodes).any(axis=1)
+    return FaceSet(name=fs.name, tag=fs.tag, elements=fs.elements[keep], labels=fs.labels[keep], nodes=fs.nodes)
 
 
 def _elem_cmblock(name: str, ids: np.ndarray) -> list[str]:
