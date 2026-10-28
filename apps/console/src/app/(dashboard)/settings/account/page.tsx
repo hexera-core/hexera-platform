@@ -17,10 +17,6 @@ export default async function AccountPage() {
         <div>
           <p className="page__eyebrow">Operator identity</p>
           <h1 className="page__title">Account</h1>
-          <p className="page__intro">
-            Keep the console identity current without changing the owner address that scopes runs,
-            geometry and conversations.
-          </p>
         </div>
       </div>
 

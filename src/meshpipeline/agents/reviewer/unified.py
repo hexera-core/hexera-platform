@@ -493,10 +493,17 @@ async def _outcome_from(result, policy: ReviewLoopPolicy, messages: list[dict], 
         # per-axis record is built from, so the two can never disagree.
         verdict = policy.accepted.verdict
         assert verdict is not None, "an accepted decision always carries a verdict"
+        from meshpipeline.agents.reviewer.review_policy import judge_all, review_passes, settle
+        # A FINDING A MEASUREMENT SETTLES (review_policy.settled_by_measurement) is recorded as passed
+        findings = settle(policy.accepted_findings, measured)
+        if verdict is ReviewVerdict.failed and review_passes(findings, measured):
+            # AN FEA MESH THE MEASUREMENTS CALL VALID PASSES ITS REVIEW: its points stand as concerns, the
+            # verdict is the measurements' (application/final_result.limits_decide_for) - and a review whose
+            # only failed points a measurement settled has nothing left that did not pass
+            verdict = ReviewVerdict.passed
         # WHICH of the findings that did not pass may ask for a rebuild, and which are concerns.
         # Judged by the application from the findings' own citations, never taken from the model.
-        from meshpipeline.agents.reviewer.review_policy import judge_all
-        judgements = judge_all(policy.accepted_findings, brief_text=brief_text, levers=levers,
+        judgements = judge_all(findings, brief_text=brief_text, levers=levers,
                                ledger=policy.ledger, measured=measured)
         logger.info("Reviewer: eligibility accepted - verdict=%s rounds=%d blocking=%s "
                     "improve=%s concerns=%s - job_id=%s", verdict.value, tally.rounds,
@@ -512,7 +519,7 @@ async def _outcome_from(result, policy: ReviewLoopPolicy, messages: list[dict], 
             # own `passed` is false. The rationale names them rather than saying
             # "it failed", because a list of criteria is what the user can act on.
                 failed_axes=tuple(
-                    f.axis_key for f in (policy.accepted_findings or ())
+                    f.axis_key for f in findings
                     if getattr(f, "passed", True) is False),
                 rebuild_axes=tuple(k for k, j in judgements.items() if j.improve),
                 blocking_axes=tuple(k for k, j in judgements.items() if j.blocking))
@@ -520,7 +527,7 @@ async def _outcome_from(result, policy: ReviewLoopPolicy, messages: list[dict], 
             verdict=("PASS" if verdict is ReviewVerdict.passed else "FAIL"),
             reasoning=policy.accepted_reasoning,
             rebuild_required=policy.accepted_rebuild_required and verdict is ReviewVerdict.failed,
-            findings=policy.accepted_findings,
+            findings=findings,
             flag_findings=policy.accepted_flag_findings, judgements=judgements, **common)
     marker = result.failure_marker or MARKER_EVIDENCE_MISSING
     if publish is not None:

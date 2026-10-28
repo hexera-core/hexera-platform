@@ -165,7 +165,6 @@ export default async function SettingsPage({
       {/* ── Dispatch: when, as opposed to whether ──────────────────── */}
       <Panel
         title="When mail goes out"
-        subtitle="The switches above decide whether sending is possible at all. This decides when it actually happens."
       >
         <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(300px, 100%), 1fr))" }}>
           <div className="panel p-3" style={{ background: "var(--color-bg-2)" }}>
@@ -189,8 +188,8 @@ export default async function SettingsPage({
             </div>
             <p className="text-[0.8125rem] leading-snug m-0">
               {dispatch === "manual"
-                ? "Nothing goes out on its own and nothing is on a timer. The worker keeps verifying addresses and reading replies, and that is all it does."
-                : `The worker sends by itself from ${releaseAt} each day, campaign time, whenever something is due.`}
+                ? "Nothing sends automatically. Send from the Queue."
+                : `Due messages send from ${releaseAt} each day, campaign time.`}
             </p>
           </div>
 
@@ -208,9 +207,8 @@ export default async function SettingsPage({
               </span>
             </div>
             <p className="text-[0.6875rem] text-[var(--color-faint)] leading-snug m-0">
-              You cannot send from this page, on purpose. Sending means choosing who,
-              and choosing who means seeing the list. It lives on the{" "}
-              <a href="/outreach/queue" className="underline">Queue</a> page.
+              Review and send ready messages from the{" "}
+              <a href="/outreach/queue" className="underline">Queue</a>.
             </p>
           </div>
         </div>

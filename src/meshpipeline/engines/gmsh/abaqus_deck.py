@@ -233,7 +233,7 @@ def _alias_names(fsets: list[FaceSet], vols: list[int], aliases: dict[str, list[
 
 def write_inp(path: Path | str, mesh: SolidMesh, aliases: dict[str, list[int]] | None = None,
               *, face_names: dict[int, str] | None = None, units: str = "m",
-              source: str = "") -> dict:
+              source: str = "", notes: list[str] | None = None) -> dict:
     """Write the deck; return what it holds for the run's record: {"face_sets": {Face_k: CAD
     tag}, "face_aliases": {name: [Face_k, ...]}, "cad_face_names": {Face_k: name}, "elements",
     "element_type", "units"}. ``face_names`` maps a CAD face tag to the name the CAD file gave it."""
@@ -262,6 +262,7 @@ def write_inp(path: Path | str, mesh: SolidMesh, aliases: dict[str, list[int]] |
     pairs = [f"{f.name} = CAD face {f.tag}"
              + (f" ({cad_names[f.name]})" if f.name in cad_names else "") for f in fsets]
     head.extend("**   " + ", ".join(pairs[i:i + 6]) for i in range(0, len(pairs), 6))
+    head.extend(f"** {n}" for n in notes or [])
     if alias_out:
         head.append("** Named groups (a *SURFACE and *NSET over the same faces):")
     for name, members in alias_out.items():
@@ -313,6 +314,15 @@ def write_inp(path: Path | str, mesh: SolidMesh, aliases: dict[str, list[int]] |
             "face_sets": {f.name: f.tag for f in fsets},
             "face_aliases": alias_out,
             "cad_face_names": cad_names}
+
+
+def retagged(mesh: SolidMesh, tags: dict[int, int] | None) -> SolidMesh:
+    """The mesh with its CAD faces keyed by other tags (MESH-8: an opened solid's face k is the CAD's face
+    tags[k]), so every name read off a tag is the CAD's. The mesh itself when there is no map."""
+    if not tags:
+        return mesh
+    mesh.faces = {int(tags.get(int(t), int(t))): v for t, v in mesh.faces.items()}
+    return mesh
 
 
 def from_gmsh(gmsh, volumes: list[int], *, by_tag: bool = False) -> SolidMesh:
