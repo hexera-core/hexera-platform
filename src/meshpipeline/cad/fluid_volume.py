@@ -430,8 +430,31 @@ class _Cap:
     hosts: set = field(default_factory=set)
 
 
-def metal_on_both_sides(solids: list, cap: _Cap) -> bool:
+def solid_classifiers(solids: list) -> list:
+    """One BRepClass3d_SolidClassifier per solid, built once and reused.
+
+    BUILDING ONE IS NOT FREE and the cost is per SOLID, not per question: the classifier indexes
+    the solid's faces when it is constructed. Measured on a customer's six-part cold plate, 9226
+    faces: all six classifiers together take 0.21 s to build, and `metal_on_both_sides` used to
+    build its own set per cap - 764 caps x 6 solids = 4584 constructions - which cost 291.0 s of a
+    347.5 s extraction. Hoisted, the whole extraction is 141.5 s and the answer is the same on
+    every number it reports: found, 6 parts, 58 caps kept of 764, 70 regions, 1 pocket left out,
+    no leaks, two passages at 52144.5599 and 1517.227 mm3 with the same seed points.
+
+    `_split` has always done it this way (`part_cls`, below); this is the same move at the other
+    call site.
+    """
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    return [BRepClass3d_SolidClassifier(s) for s in solids]
+
+
+def metal_on_both_sides(solids: list, cap: _Cap, classifiers: list | None = None) -> bool:
     """Whether the cap has the part's own metal on BOTH sides of it, so it caps nothing.
+
+    `classifiers`: the solids' classifiers when the caller already holds them (solid_classifiers).
+    They are only ever read here, so sharing one set across every cap is sound and is what makes
+    this affordable on an assembly; without it this is the single most expensive line in the whole
+    extraction.
 
     A PIN'S TOP, exactly. The chamber's ceiling has an inner wire where each pin meets it, so a disc
     gets laid across it: above that disc is the lid's metal and below it is the pin's. Nothing can
@@ -459,7 +482,6 @@ def metal_on_both_sides(solids: list, cap: _Cap) -> bool:
     """
     import math
 
-    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.gp import gp_Pnt
     from OCP.TopAbs import TopAbs_IN, TopAbs_ON
 
@@ -467,7 +489,7 @@ def metal_on_both_sides(solids: list, cap: _Cap) -> bool:
     step = CAP_SIDE_STEP * radius
     if step <= 0.0:
         return False
-    classifiers = [BRepClass3d_SolidClassifier(s) for s in solids]
+    classifiers = solid_classifiers(solids) if classifiers is None else classifiers
     for sign in (1.0, -1.0):
         point = gp_Pnt(*(cap.centroid[k] + sign * cap.normal[k] * step for k in range(3)))
         for cl in classifiers:
@@ -572,7 +594,8 @@ def candidate_caps(solids: list, loose: list, diag: float) -> list[_Cap]:
     # LAST, and on the caps rather than on the wires, because a cap is only known to be across
     # solid metal once it has a plane, a centroid and a size: the step taken to ask is a quarter of
     # the cap's own radius.
-    kept = [c for c in caps if not (solids and metal_on_both_sides(solids, c))]
+    cls = solid_classifiers(solids) if solids else []
+    kept = [c for c in caps if not (solids and metal_on_both_sides(solids, c, cls))]
     if len(kept) != len(caps):
         logger.info("fluid volume: %d of %d candidate caps have metal on both sides and cap "
                     "nothing (pin tops, ribs); %d kept", len(caps) - len(kept), len(caps),
@@ -1247,10 +1270,33 @@ def narrowest_passage_m(x: Extraction, stl_path) -> float:
     mouths = [min(p.wh) for passage in x.passages for p in passage.ports if min(p.wh) > 0.0]
     best = min(mouths) if mouths else 0.0
     try:
-        from meshpipeline.engines.passage import passage_of_stls
+        from meshpipeline.engines.passage import passage_field_of_stls, radius_stats
         seed = x.passages[0].seed if x.passages else None
         ports = [tuple(p.centroid) for passage in x.passages for p in passage.main_ports]
-        stats = passage_of_stls([Path(stl_path)], interior_point=seed, port_centroids=ports)
+        # THE SHARP EDGES ARE READ, and without them a third of a real plate is invisible.
+        #
+        # The field is read at the wall's own vertices, and a SHORT neck carries vertices on its
+        # two rims alone - each on a 90-degree edge, where the chord reads the neighbour it opens
+        # into rather than the neck. engines/passage already carries the answer for exactly this
+        # ("an orifice plate's bore ... venturi_orifice_007's 26 mm orifice read as its 53 mm pipe
+        # at every point and was sized for the pipe"), and this call was not asking for it.
+        #
+        # MEASURED on a Corintis cold plate, 2026-10-27. Without the sharp edges the narrowest
+        # passage read 2.6525 mm; with them, 0.0980 mm. The mesh built on the first number came
+        # out with its main passage cut in two and 223 one-cell specks beside it, because 33.0%
+        # of that coolant's wall area is thinner than the 0.53 mm cell the first number chose.
+        # Confirmed independently by ray-casting every one of its 52,334 triangles into the fluid
+        # and taking the far wall: area-weighted p1 0.0979 mm against the sharp-edge reading's
+        # 0.0983. Two methods that share no code, agreeing to three decimals.
+        #
+        # THE MEAN HIDES IT COMPLETELY, which is why this was not caught by eye. The part is a
+        # manifold of millimetre channels bonded to a microfluidic layer, so 4V/A over the whole
+        # coolant is 3.5 mm: the thin layer is 2% of the volume spread over a third of the area.
+        # A mean is the wrong statistic for a cell size, which has to suit the smallest thing the
+        # mesh must hold together.
+        field = passage_field_of_stls([Path(stl_path)], interior_point=seed,
+                                      port_centroids=ports, read_sharp_edges=True)
+        stats = radius_stats(field[2]) if field is not None else {}
         across = 2.0 * float(stats.get("min") or 0.0)
     except Exception as exc:                 # noqa: BLE001 - the mouths still stand on their own
         # AT WARNING, NOT INFO. The field reads through pyvista and scipy and can genuinely fail
@@ -1419,6 +1465,28 @@ def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
         # a question this function already holds the vertices for.
         "bbox_min_m": [round(float(used[:, k].min()), 12) for k in range(3)],
         "bbox_max_m": [round(float(used[:, k].max()), 12) for k in range(3)],
+        # WHERE THE MOUTHS ARE, which is a different question from where the coolant reaches.
+        #
+        # A conjugate case took its inlet and outlet from the BLOCK's six faces, which works only
+        # while the coolant's mouths lie ON those faces. Eight of the nine parts in the corpus do,
+        # because a channel milled across a plate ends flush with the side it was cut on. The first
+        # real customer assembly does not: a Corintis cold plate's mouths are fitting bores, and
+        # the plate's bounding box is set by the fittings' own bodies, so the coolant stopped 2 mm
+        # inside the block on every side and the mesher refused with "it is sealed inside the
+        # metal". The mouths were measured all along; nothing carried them out of here.
+        #
+        # Each row is one mouth of one passage, in metres: where it is, which way the fluid leaves
+        # through it, how much area the flow crosses, and how wide the hole is. That is everything
+        # needed to name a patch on it after the region split, whether or not it sits on a block
+        # face.
+        "ports": [{"passage": k,
+                   "centroid_m": [round(float(v), 12) for v in p.centroid],
+                   "normal": [round(float(v), 9) for v in p.normal],
+                   "area_m2": round(float(p.area), 15),
+                   "diameter_m": round(float(p.diameter), 12),
+                   "wh_m": [round(float(v), 12) for v in p.wh],
+                   "clear_ahead": bool(p.clear_ahead)}
+                  for k, passage in enumerate(x.passages) for p in passage.main_ports],
         "open_edges": int(checks["open_edges"]),
         "nonmanifold_edges": int(checks["nonmanifold_edges"]),
         # read by its real name. This said checks.get("inconsistent"), which _verify does not
@@ -1571,8 +1639,39 @@ def _file_safe(name: str) -> str:
 # ------------------------------------------------------------------- a bounded child run ----
 #: How long the geometry check waits for the split before it keeps its face-by-face reading, and
 #: how long the staging waits before it stages the parts' skins as before (seconds).
-CHECK_BUDGET_S = 120.0
+#:
+#: 120 s WAS NOT A LIMIT ANYTHING IMPOSED. It was added in one commit with no reasoning beside it,
+#: when the slowest part anyone had run was 62.6 s, and the first real customer assembly - six
+#: solids, 9226 faces - took 360.3 s and so was simply discarded. Nothing above this is anywhere
+#: near as tight: the scout's own Celery soft limit is sized from the file (900 s + 60 s per MB,
+#: which is 1853 s for that 15.9 MB upload), and a step that beats its progress is never stopped
+#: for taking long (application/geometry_progress: "Liveness, not a budget").
+#:
+#: 300 s, because the work is bounded and that bound can be priced. `extract` refuses anything over
+#: MAX_FACES = 20000 faces outright, and that customer assembly at 9226 faces now measures 141.5 s
+#: in `extract` and 162.9 s of child wall, down from 347.5 / 360.3 once the solid classifiers are
+#: built once. A file at the face limit is the worst case this will ever be handed. Against what
+#: actually runs: 4.8x the slowest part in the corpus (62.6 s) and 1.8x that assembly.
+#:
+#: A SPLIT THAT RUNS OUT OF TIME IS NOT "NO COOLANT". The two used to arrive downstream as the same
+#: thing (`found` false either way), which withheld the conjugate mesher from a part whose coolant
+#: the split would have found; cad/fluid_volume_check.fold now says which of the two it was.
+CHECK_BUDGET_S = 300.0
 STAGE_BUDGET_S = 600.0
+
+
+def _log_child(out, err, why: str) -> None:
+    """What the split child said, when the split did not come back. Only on the failing paths: a
+    run that answers has its answer, and this is the only account of one that does not."""
+    def _tail(b) -> str:
+        if not b:
+            return ""
+        text = b.decode("utf-8", "replace") if isinstance(b, bytes) else str(b)
+        return text.strip()[-1500:]
+
+    logger.warning("fluid volume: the split %s%s%s", why,
+                   f"; stderr: {_tail(err)}" if _tail(err) else "",
+                   f"; stdout: {_tail(out)}" if _tail(out) else "")
 
 
 def run_bounded(task: dict, work, timeout_s: float) -> dict:
@@ -1590,11 +1689,18 @@ def run_bounded(task: dict, work, timeout_s: float) -> dict:
     out.unlink(missing_ok=True)
     spec.write_text(json.dumps(task))
     try:
-        subprocess.run([sys.executable, "-m", "meshpipeline.cad.fluid_volume", str(spec), str(out)],  # noqa: S603
-                       timeout=timeout_s, capture_output=True, check=False)
-    except subprocess.TimeoutExpired:
+        done = subprocess.run(  # noqa: S603
+            [sys.executable, "-m", "meshpipeline.cad.fluid_volume", str(spec), str(out)],
+            timeout=timeout_s, capture_output=True, check=False)
+    except subprocess.TimeoutExpired as exc:
+        # THE CHILD'S OWN ACCOUNT, OR THERE IS NONE. Everything it logs - the candidate-cap count,
+        # the part/cap/region line, the stage timings - goes to a pipe that was being read and
+        # thrown away, so the one run anybody wanted to explain was also the one run that left no
+        # trace. A kill still has whatever it managed to write before it.
+        _log_child(exc.stdout, exc.stderr, f"ran past {timeout_s:.0f} s")
         return {"error": f"finding the fluid inside the parts took over {timeout_s:.0f} s"}
     if not out.exists():
+        _log_child(done.stdout, done.stderr, f"exited {done.returncode} with no answer")
         return {"error": "finding the fluid inside the parts stopped without an answer"}
     try:
         return json.loads(out.read_text())

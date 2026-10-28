@@ -93,23 +93,48 @@ def _target_obligations(manifest, engine_params, purpose):
     return tuple(obs)
 
 
-# WHERE THIS ENGINE IS AT HOME. ONE solid with coolant passages through it, where the coolant is
-# the space found inside the part rather than a body in the file. That is the whole distinction
-# from the other two multi-region engines, and it is the reason this one exists: cfMesh meshes a
-# single connected domain and cannot mesh two, so the part is meshed once as solid metal and the
-# one mesh is cut in two along faces that already existed.
+# WHERE THIS ENGINE IS AT HOME. A part whose coolant is the space found INSIDE it rather than a
+# body in the file. That is the whole distinction from the other two multi-region engines, and it
+# is the reason this one exists: cfMesh meshes a single connected domain and cannot mesh two, so
+# the part is meshed once as solid metal and the one mesh is cut in two along faces that already
+# existed.
+#
+# IT USED TO SAY "ONE SOLID", AND THAT COST IT THE FIRST REAL CUSTOMER PART IT WAS EVER SHOWN.
+# Measured on a Corintis cold plate, 2026-10-27: six solids - lid, cooling circuit, I/O splitter,
+# microfluidic core and two fittings - brazed into one piece with 52.14 ml of coolant that the
+# split cut out of it cleanly, no leaks. On `n_solids >= 2 -> outside` this engine declared itself
+# OUTSIDE ITS OWN TURF, and the snap grid, which is for electronics models, was recommended for a
+# STEP cold plate instead. The engine's own confirmation wording had been right all along ("The
+# part is N solids bonded into one piece, with coolant passages through it"); the row contradicted
+# it. A brazed or diffusion-bonded plate is a base and a lid, and that is the commonest way one is
+# made.
 HOME_TURF = (
+    TurfRow("coolant_inside", "is", True, "home",
+            "The coolant is the space inside the part, cut out of the part's own faces, and the "
+            "metal is what is left. One solid or several bonded into one piece: a brazed or "
+            "diffusion-bonded cold plate is a base and a lid and is this engine's case.",
+            flow="multi-region"),
     TurfRow("n_solids", "==", 1, "home",
             "One solid with coolant passages through it: the coolant is the space inside the "
             "part, found from the part's own faces, and the metal is what is left.",
             flow="multi-region"),
-    TurfRow("n_solids", ">=", 2, "outside",
-            "An assembly already has one body per region - mesh it with multi-region "
-            "snappyHexMesh, or with the snap grid for an electronics model.",
+    TurfRow("coolant_inside", "is", False, "outside",
+            "The fluid is a body in the file rather than the space inside the part, so the "
+            "assembly already has one body per region - mesh it with multi-region snappyHexMesh, "
+            "or with the snap grid for an electronics model.",
             flow="multi-region"),
-    TurfRow("closed", "is", False, "outside",
-            "The coolant is found from which of the solid's faces bound the space inside it, and "
-            "a solid that is not closed bounds no space: there is nothing to cut out."),
+    # THERE IS NO `closed` ROW, DELIBERATELY. There was one, outside: "a solid that is not closed
+    # bounds no space: there is nothing to cut out." `closed` is read off the WELDED TESSELLATION
+    # of the whole file, and `coolant_inside` is read off the faces themselves, so the two answer
+    # the same question and one of them answers it properly. The Corintis plate came back
+    # closed=False from two skipped null triangulations while the split cut 52.14 ml out of it with
+    # no leaks at all, and almost any real assembly with fittings reads the same way - a penalty on
+    # every honest part rather than a test that tells parts apart. Kept as `weak` it was no better:
+    # weak outranks home in home_turf.verdict, so the engine stayed below the snap grid on the very
+    # part it is for. What the row was guarding is covered: a split that ran and found nothing is
+    # `coolant_inside is False` above, and a split that has not run leaves BOTH rows silent, which
+    # is the neutral verdict it should be. The run-time refusals are the real guard either way
+    # (driver.coolant_sits_inside, and the eight gates).
     TurfRow("cells_across_at_budget", "<", 4.0, "weak",
             "The cell budget puts fewer than 4 cells across the narrowest passage. Measured on "
             "eleven cold plates, the coolant's volume error at 2 and 3 cells across runs to 27% "

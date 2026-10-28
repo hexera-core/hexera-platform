@@ -48,6 +48,10 @@ TURF_FACTS: dict[str, TurfFact] = {
     "n_solids": TurfFact("count", _CENSUS, "connected bodies in the file"),
     "region_count": TurfFact("count", "cad analysis surface_analysis.region_count", "named regions the file distinguishes"),
     "closed": TurfFact("bool", _CENSUS, "watertight after welding"),
+    "coolant_inside": TurfFact(
+        "bool", "cad/fluid_volume_check.fold -> facts['fluid_volume']['found'], as the confirm "
+        "carries it (api/v1/geometry ConfirmIn.coolant_inside)",
+        "the fluid is the space found INSIDE the parts, not a body in the file"),
     "genus": TurfFact("count", _CENSUS, "through-holes / obstacles crossing the fluid (a tube bank)"),
     "sharp_edges": TurfFact("number", _CENSUS, "feature-edge length (dihedral > 40 deg) per sqrt(wetted area)"),
     "knife_edges": TurfFact("number", _CENSUS, "knife-edge length (thin trailing edges, slat/flap lips) per sqrt(wetted area)"),

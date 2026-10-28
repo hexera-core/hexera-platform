@@ -93,7 +93,7 @@ def own_format_engines(engines: Iterable[str], source_format: str) -> list[str]:
 
 def rank(*, path: str, purpose: str, input_kind: str, form: str, engines: Sequence[str],
          patches: Sequence[Mapping] = (), said: str = "", region_count: int | None = None,
-         source_format: str = ""):
+         source_format: str = "", coolant_inside: bool | None = None):
     """The recommendation for this upload and case, or None when nothing can be ranked (no flow,
     no engine that takes the file). An unmeasurable file is still ranked, on its flow alone, and
     its reasons say how little that is. An engine that reads the upload's own format itself ranks
@@ -112,7 +112,8 @@ def rank(*, path: str, purpose: str, input_kind: str, form: str, engines: Sequen
         else ShapeTraits(flow=flow, input_kind=input_kind, notes=("no file to measure",))
     if not traits.form and form:
         traits = ShapeTraits.from_dict({**traits.as_dict(), "form": form})
-    brief = brief_facts(request_txt=said, patches=list(patches), region_count=region_count)
+    brief = brief_facts(request_txt=said, patches=list(patches), region_count=region_count,
+                        coolant_inside=coolant_inside)
     return recommend(traits, able, brief=brief,
                      source_format=source_format or source_format_of(path))
 

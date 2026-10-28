@@ -1193,7 +1193,31 @@ async def _measured_recommendation(state, state_messages):
     return await measured_choice.rank_in_time(
         path=staged, purpose=purpose, input_kind=kind, form=form, engines=_IMPLEMENTED_ENGINES,
         patches=list(state.get("intake_patches") or []),
+        coolant_inside=_coolant_inside(state),
         said="\n".join(turn.user_texts(state_messages)))
+
+
+def _coolant_inside(state) -> bool | None:
+    """Whether the extraction found the fluid INSIDE the parts, for the turf rows.
+
+    THE THREE MULTI-REGION ENGINES ARE NOT TOLD APART BY ANYTHING MEASURED OFF THE TRIANGLES. A
+    customer's brazed cold plate and an electronics air box are both solid-assembly with several
+    solids; the one thing that separates them is whether the fluid had to be cut out of the metal.
+    Without it a real six-part cold plate ruled the cooled-solid mesher OUTSIDE its own turf on a
+    solid count, and the snap grid - which is for electronics models - was recommended instead.
+
+    Read from the stored check rather than the state, because this is the check's measurement and
+    the confirm copies it from the same place (api/v1/geometry ConfirmIn.coolant_inside). None
+    before the check has run, which is a row that says nothing rather than a guess.
+    """
+    from meshpipeline.application.geometry_check import read_check
+
+    try:
+        facts = (read_check(str(state.get("session_id") or "")) or {}).get("facts") or {}
+    except Exception:  # noqa: BLE001 - a fact we cannot read is one the rows do not get
+        return None
+    found = (facts.get("fluid_volume") or {}).get("found")
+    return None if found is None else bool(found)
 
 
 def _declared_case(state_messages) -> tuple | None:

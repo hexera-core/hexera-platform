@@ -562,11 +562,21 @@ def facts_of(traits: ShapeTraits, brief: Mapping | None = None) -> dict:
 
 
 def brief_facts(*, request_txt: str = "", review_brief_txt: str = "", patches=None,
-                cell_budget=None, region_count=None) -> dict:
+                cell_budget=None, region_count=None, coolant_inside=None) -> dict:
     """The turf facts a brief carries: whether it asks for near-wall layers (the fallback ladder's
-    own reading), whether an external body stands on a declared ground wall, the cell budget and
-    the region count. Only what can be read is returned."""
+    own reading), whether an external body stands on a declared ground wall, the cell budget, the
+    region count, and whether the fluid is the space found INSIDE the parts. Only what can be read
+    is returned.
+
+    `coolant_inside` IS THE ONE FACT THAT SEPARATES THE THREE MULTI-REGION ENGINES, and it is not
+    measurable off the triangles the way the rest of these are: it is the extraction's own answer,
+    carried from the confirm. A cold plate and an air-box assembly are both "solid-assembly" with
+    several solids; what tells them apart is whether the fluid had to be cut out of the metal or
+    was a body in the file all along. None means unmeasured, and a row about it then says nothing.
+    """
     out: dict = {}
+    if coolant_inside is not None:
+        out["coolant_inside"] = bool(coolant_inside)
     if (request_txt or "").strip() or (review_brief_txt or "").strip():
         from meshpipeline.pipeline.engine_fallback import layer_request
         out["layers_requested"] = bool(layer_request(request_txt or "", review_brief_txt or "").requested)

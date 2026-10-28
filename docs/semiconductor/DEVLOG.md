@@ -133,6 +133,174 @@ Registering it found three defects that were not reachable while the bundle was 
 The roster surface is 17 files. Three of them are deliberate gates rather than lists that drifted,
 and the rest are rosters.
 
+### 2026-10-27, the first customer CAD
+
+Corintis sent a cold plate and a chip model. Everything before this I built myself from published
+papers, so this is the first part I did not author.
+
+| file | what it is |
+|---|---|
+| `ColdPlateAssembly_CLEAN.step` | 15.9 MB, AP214, millimetres, 6 solids: top lid, board cooling circuit, I/O splitter, microfluidic core, inlet fitting, outlet fitting. 177.5 x 41.8 x 101.0 mm, 8845 planar faces |
+| `chip.ecxml` | Icepak neutral XML, 57 objects, 33 materials, 70 x 78.6 x 3.57 mm. No solution domain, and every power is 0 W |
+
+I ran the production reader on it cold, with nothing tuned. It read the unit from the file, found
+52.14 ml of coolant over 2 passages with no leaks, proposed three circular ports where its first
+guess had been five, and put a seed inside the fluid. Shown six pictures of it, the naming step
+said "liquid-cooled cold plate with internal channels", flow internal, kind solid-assembly,
+confidence 0.98, real length 0.18 m against a true 0.1775.
+
+So the reading is right. Five things between that and a mesh were not.
+
+#### One line was 84% of the split
+
+`metal_on_both_sides` built its own solid classifiers per candidate cap: 764 caps x 6 solids =
+4584 constructions over 9226 faces, 291.0 s of a 347.5 s extraction. All six together take 0.21 s
+to build, they are only ever read, and `_split` has always hoisted them.
+
+| | before | after |
+|---|---|---|
+| extraction | 347.5 s | 141.5 s |
+| child wall | 360.3 s | 162.9 s |
+| the answer | 6 parts, 58 caps, 70 regions, 1 pocket, no leaks, two passages | identical on every number |
+
+The budget it was being measured against was 120 s, which nothing imposed: `git log -S` shows it
+added in one commit with no reasoning beside it, when the slowest part anyone had run was 62.6 s.
+Nothing above it is close. The scout's own Celery soft limit is sized from the file, 900 s + 60 s
+per MB, so 1853 s for this upload. Now 300 s, priced off the one bound the work actually has:
+`extract` refuses anything over MAX_FACES = 20000 outright, and this file at 9226 faces costs
+162.9 s.
+
+#### A timeout read as "this part has no coolant"
+
+That is how the slow function did its damage. `run_bounded` returns `{"error"}`, `_summary` copies
+`found` only when the key is there, and both readers downstream take one boolean, so a timeout and
+a measured absence arrived identically. `_kinds_on_offer` then withholds solid-assembly, the naming
+step's correct answer is rejected for not being on the list, and the conjugate mesher is never
+offered. `fold` now says which of the two it was. `run_bounded` also stops throwing the child's
+stderr away on the failing paths, which is why none of this was explicable from a production log.
+
+#### The engine ruled itself out of the part it exists for
+
+`cfmesh_conjugate` declared `n_solids >= 2 -> outside`. This plate is six solids, so the
+recommender placed it OUTSIDE by ENG-1 and recommended the snap grid, which is for electronics
+models, for a STEP cold plate.
+
+The solid count was never the question. A brazed or diffusion-bonded plate is a base and a lid, and
+the engine's own confirmation wording had been saying so all along. What separates the three
+multi-region engines is whether the fluid is a body in the file or the space cut out of the metal.
+That is now a declared turf fact, `coolant_inside`, carried from the extraction's own answer.
+
+| case | turf | recommended |
+|---|---|---|
+| cold plate, coolant cut out of the metal | home | cfmesh_conjugate |
+| cold plate, extraction found nothing | outside | snapgrid |
+| cold plate, the check has not run | neutral | snapgrid |
+| chip stack, 19 bodies, no fluid inside | outside | snapgrid |
+
+There is no `closed` row any more. It said "a solid that is not closed bounds no space", but
+`closed` is read off a welded tessellation while `coolant_inside` is read off the faces. This plate
+came back closed=False from two skipped null triangulations while the split cut 52.14 ml out of it
+with no leaks, and almost any real assembly with fittings reads the same way.
+
+#### The mesher ran, and then refused its own mesh
+
+rc=0 in 102.3 s, 1,852,814 cells, fluid 364,105 and solid 1,488,709, interface 172,356 faces both
+sides, `constant/regionProperties` written. Then: "fluid is in 226 disconnected piece(s), expected
+2". `checkMesh` on the fluid region says what those are:
+
+| | cells | what it is |
+|---|---|---|
+| region 1 | 255,144 | the main passage, part A |
+| region 2 | 98,044 | the main passage, part B |
+| region 0 | 9,966 | the second coolant space, matching its 1,497 mm3 |
+| regions 3-225 | 1 to 3 each, 951 in all | specks, 0.26% of the fluid |
+
+So 223 of the 226 are one-cell noise and the real fault is that the main passage came out in two.
+
+#### The sizing step could not see a third of the part
+
+The cell size follows from the narrowest passage, which is read as an inscribed-radius field at the
+wall's own vertices. A SHORT neck carries vertices on its two rims alone, each on a 90-degree edge,
+where the chord reads the neighbour it opens into rather than the neck. `engines/passage` already
+carried the answer for exactly this - an orifice plate's 26 mm bore read as its 53 mm pipe - behind
+a `read_sharp_edges` flag the cold-plate path was not setting.
+
+| reading | narrowest |
+|---|---|
+| as production read it | 2.6525 mm |
+| with the sharp edges | 0.0980 mm |
+
+Confirmed independently by ray-casting all 52,334 triangles into the fluid and taking the far wall:
+area-weighted p1 0.0979 mm against the sharp-edge reading's 0.0983. Two methods sharing no code,
+agreeing to three decimals. **33.0% of that coolant's wall area is thinner than the 0.53 mm cell
+the old number chose.**
+
+The mean hides it completely, which is why it was not caught by eye: 4V/A over the whole coolant is
+3.5 mm, because the thin layer is 2% of the volume spread over a third of the area. A mean is the
+wrong statistic for a cell size, which has to suit the smallest thing the mesh must hold together.
+
+#### What that part actually costs, which is the 300M question with a part attached
+
+| | |
+|---|---|
+| true narrowest | 0.098 mm |
+| block | 177.5 x 41.8 x 101.0 mm = 750,086 mm3 |
+| 5 cells across it | 0.0196 mm cells, background 0.157 mm |
+| cells | ~195M |
+| memory at 909 B/cell | 177 GB |
+| the platform's hard limit | 8M cells |
+| Cloud Run | 32 GiB |
+
+At the platform's own 13-cell rule it is 3.4 billion cells, which is not a target. At 5 cells
+across its microchannels a real microfluidic cold plate is a 200M-cell job, which is a big-memory
+VM and not Cloud Run. The scaling argument earlier in this log said the same thing; this is the
+first time a customer file has said it.
+
+#### The ports are inside the block
+
+The last one, and it is a missing capability rather than a defect. The case takes its inlet and
+outlet from the block's six named faces, which works while the coolant's mouths lie ON those faces.
+Eight of the nine parts here do, because a channel milled across a plate ends flush with the side
+it was cut on. This one does not: its mouths are fitting bores and the bounding box is set by the
+fittings' own bodies, so the coolant stops 2 mm inside the block on every side and the mesher
+refuses with "it is sealed inside the metal".
+
+The mouths were measured all along and nothing carried them out of the extraction; the surface
+record now does, and `engines/cfmesh_conjugate/mouths.py` turns them into stubs. A mouth with air
+ahead of it is extended along its own axis until it crosses a block face, which is what anyone
+setting up a case adds at an inlet anyway so the profile has length to form in. A mouth that opens
+into another part gets nothing, because the stub would be a passage bored through metal the
+customer did not draw.
+
+On the real part:
+
+| mouth | | |
+|---|---|---|
+| 1, 11.8 mm | refused | opens into the I/O splitter rather than into air |
+| 2, 8.0 mm | stub to `xmax`, 20.07 mm | adds 1009.02 mm3 |
+| 3, 8.0 mm | stub to `xmax`, 30.68 mm | adds 1542.22 mm3 |
+
+THE VOLUME CHECK EARNED ITS PLACE ON ITS FIRST RUN. I wrote `added_volume_agrees` because a stub is
+a cylinder whose volume is known in closed form, so the join can be checked rather than assumed,
+and the first run said the two stubs enclosed **-840.735 mm3** against the 2551.247 they claim. The
+tube's two triangles were wound inwards. A closed surface that encloses the wrong volume raises no
+open, non-manifold or inconsistent edge, so nothing else in the chain would ever have noticed. The
+winding is now derived in the docstring rather than guessed, and it measures 2522.204 mm3, the
+1.1% being a 24-sided tube falling short of its circle.
+
+### And the part still is not solvable, for a reason that is Corintis's to answer
+
+With mouth 1 sealed, passage 1 has one open end and passage 2 has one open end. Neither can flow,
+and no stub can invent the connection. The question is whether mouth 1 connects through the I/O
+splitter, and if it does, whether that part's bore can come as fluid. That belongs in the intake,
+and the extraction already says almost the right sentence: "opening 1 opens into another part whose
+inside reaches the outside some other way (a gap in it?): check it on the picture".
+
+So the honest state of this part is: Hexera reads it correctly, recommends the right engine, sizes
+it correctly, meshes it in 102 s, and tells the customer exactly what it needs from them before the
+mesh can be solved. That is further than any part of this package has gone on CAD nobody here
+authored.
+
 ## What I tried and dropped
 
 **Closing an open-top groove in software.** Nine proposals, none survived. Box caps close all four

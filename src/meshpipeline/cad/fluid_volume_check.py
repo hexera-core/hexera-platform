@@ -95,6 +95,24 @@ def fold(facts: dict, answer: dict) -> None:
         why = answer.get("error") or answer.get("reason") or "no space inside the parts"
         if "do not touch" in why:
             return
+        if answer.get("error"):
+            # A SPLIT THAT DID NOT FINISH SAYS NOTHING ABOUT THE PART, and it used to say nothing
+            # at all. why_no_coolant refuses an error on purpose ("a crash or a timeout is not the
+            # geometry's fault") and the note below needs internal flow and fewer than two
+            # openings, so a customer's six-solid cold plate whose split ran out of time was told
+            # nothing, and every reader downstream saw the same `found` false a measured "there is
+            # no coolant here" produces. One of those two is the geometry's answer and the other
+            # is ours; they are not the same sentence and must not read as one.
+            facts["fluid_volume"]["unfinished"] = True
+            # "COULD NOT BE FOUND" IS KEPT WORD FOR WORD from the note this replaces, which
+            # tests/unit/cad/test_fluid_volume pins. The sentence it is part of is new - a reader
+            # has to be able to tell "we gave up" from "there is nothing in there" - but the
+            # phrase a user and a test both look for is not mine to change on the way past.
+            notes.append(f"the fluid inside the parts could not be found ({why}); this is a limit "
+                         "of the check and not something measured about the part, so the openings "
+                         "shown are read from the parts' flat faces - add or move them on the "
+                         "picture")
+            return
         said = why_no_coolant(answer, facts)
         if said:
             notes.append(said)
