@@ -34,7 +34,24 @@ There are three columns. Each column has one job.
   - Engine names, tool names ("snappyHexMesh", "castellating"), rule ids, prompts, model names and paths never reach the page.
   - Today's mesher stage labels do leak some of these (`engines/mesher_stage.py`: "starting snappyHexMesh", "(castellating)"). The new events fix that.
 
+## Running commentary (screen 2, added after review)
+
+Between the step rows, Hexera says what it decided and why, in short plain sentences, as each decision happens. The step rows stay where they are. Examples:
+
+- "Chose a tetra mesh with quadratic elements: you asked for static stress."
+- "The 26 fillets and 3 holes carry the stress, so they get the finest cells."
+- "Two parts sit 0.2 mm apart, which reads as a weld. Joining them."
+- "First pass struggled at a thin rib. Trying again with smaller cells there."
+- "Quality looks good: worst element 0.25, every wall at least 2 cells thick."
+
+Where they come from: the real decision records. That means the plan's why record, FEA decisions, retry passes and what changed, joins, the reviewer's measured findings, and user notes that were used.
+
+How they are worded: a server-side phrase table filled in with measured values. There are no model names, prompts, rule ids, paths or mesher internals. A test checks every message for leaks.
+
 ## Status icons (screen 5)
+
+Areen picked this first set (the three alternatives on screen 6 are dropped).
+
 
 There are eight icons, all drawn new for Hexera on an 18 px grid:
 

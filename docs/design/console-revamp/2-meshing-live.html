@@ -21,13 +21,25 @@
 
       <div class="msg-user">CFD, water through the housing. Inlet 2 m/s.</div>
 
-      <p class="say">Planned the mesh. Cells are <b>2.1 mm</b> across the main flow and finer at <b>26 fillets</b> and the <b>3 holes</b>. I expect about <b>1.9M cells</b>.</p>
+      <p class="say">Water goes in one opening and out the other, so this is internal flow. I'm meshing the space inside the housing, not the air around it.</p>
 
-      <div class="steps" aria-live="polite">
+      <div class="steps">
+        <div class="step done"><span class="ic" data-ic="done"></span><span class="w">Found the space the water fills: 1 region</span><span class="live-n">6 s</span></div>
         <div class="step done"><span class="ic" data-ic="done"></span><span class="w">Planned the mesh</span><span class="live-n">48 s</span></div>
+      </div>
+
+      <p class="say">Cells are <b>2.1 mm</b> across the main flow. The <b>26 fillets</b> and <b>3 holes</b> bend the flow, so they get the finest cells. I expect about <b>1.9M cells</b>.</p>
+      <p class="say">The narrowest gap is <b>1.8 mm</b>. It gets at least 3 cells across, so the flow through it is resolved.</p>
+
+      <div class="steps">
         <div class="step done"><span class="ic" data-ic="done"></span><span class="w">Started a mesh machine</span><span class="live-n">31 s</span></div>
         <div class="step done"><span class="ic" data-ic="done"></span><span class="w">Refined around 26 fillets and 3 holes</span><span class="live-n">1 min 04 s</span></div>
-        <div class="step done"><span class="ic" data-ic="done"></span><span class="w">Built 5 boundary layers on 14 walls</span><span class="live-n">52 s</span></div>
+      </div>
+
+      <p class="say">The first try at the wall layers thinned out at a sharp lip by the outlet. Trying again with gentler layer growth there.</p>
+
+      <div class="steps" aria-live="polite">
+        <div class="step done"><span class="ic" data-ic="done"></span><span class="w">Built 5 boundary layers on 14 walls, second try</span><span class="live-n">52 s</span></div>
         <div class="step now"><span class="ic" data-ic="fill"></span><span class="w">Filling the volume</span>
           <span class="live-n"><span data-count-from="1180000" data-count-step="9000" data-count-fmt="m" data-count-of="1900000" data-count-max="1900000"></span> of about 1.9M cells</span>
           <span class="bar"><i style="--p:62%"></i></span></div>
