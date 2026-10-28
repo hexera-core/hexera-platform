@@ -32,8 +32,10 @@ JOB_READ = ("run.jobs.get",)
 #: What starting a VM as the job's account needs on that account.
 ACT_AS = ("iam.serviceAccounts.actAs",)
 #: What instances.insert with a boot disk, the default network and an external address needs, and
-#: what deleting the VM afterwards needs (gce_vm.trigger_vm / delete_vm).
-VM_CREATE = ("compute.instances.create", "compute.instances.delete", "compute.instances.setMetadata",
+#: what deleting the VM afterwards and sweeping the finished ones needs (gce_vm.trigger_vm / delete_vm /
+#: list_vms / find_vm, vm_sweep.py).
+VM_CREATE = ("compute.instances.create", "compute.instances.delete", "compute.instances.list",
+             "compute.instances.get", "compute.instances.setMetadata",
              "compute.instances.setLabels", "compute.instances.setServiceAccount", "compute.disks.create",
              "compute.subnetworks.use", "compute.subnetworks.useExternalIp")
 #: The marker every failure line opens with, so an operator finds it in the worker's log.
