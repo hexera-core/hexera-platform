@@ -1465,6 +1465,26 @@ def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
         # a question this function already holds the vertices for.
         "bbox_min_m": [round(float(used[:, k].min()), 12) for k in range(3)],
         "bbox_max_m": [round(float(used[:, k].max()), 12) for k in range(3)],
+        # THE WETTED AREA, which two separate things needed and neither could have.
+        #
+        # SIZING. A conjugate mesh is almost all refinement band: of 1,852,814 cells on a customer
+        # cold plate, 9,817 were background and the rest lay within a few cells of this surface. So
+        # what a resolution COSTS follows the area, not the block - and the pre-flight estimate,
+        # which prices the whole block at the finest cell, is blind to the one knob that helps.
+        # Raising the octree depth divides the background count by eight per level and multiplies
+        # its own refinement factor by eight, so that estimate cannot see a change in depth AT ALL,
+        # which is why nothing has ever varied it.
+        #
+        # ACCURACY. The delivered coolant VOLUME is checked against this surface, and volume is
+        # exactly the quantity a staircase cancels in: a mesh can lose a 98 um channel and gain
+        # the same volume along a wall and read correct. Area does not cancel that way, so the
+        # delivered interface area against this is a second reading of the same coolant that the
+        # first one cannot agree with by construction.
+        #
+        # Measured on the triangles that were just written, which is the same surface every number
+        # beside it describes.
+        "wetted_area_m2": round(float(np.linalg.norm(
+            np.cross(V[F][:, 1] - V[F][:, 0], V[F][:, 2] - V[F][:, 0]), axis=1).sum() * 0.5), 15),
         # WHERE THE MOUTHS ARE, which is a different question from where the coolant reaches.
         #
         # A conjugate case took its inlet and outlet from the BLOCK's six faces, which works only

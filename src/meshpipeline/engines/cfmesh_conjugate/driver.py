@@ -149,6 +149,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         review_caused_retry,
     )
     from meshpipeline.cad.fluid_volume import surface_bounded
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import ConjugateError
     from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
     from meshpipeline.engines.registry import get_spec
     from meshpipeline.engines.runtime import get_engine
@@ -195,15 +196,67 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 produced_deliverable=False, failure_marker=STOP_REVIEWED_CASE_REPEATS)
 
     narrowest = float(rec["narrowest_m"])
-    cells_across, estimate, said = B.cells_across_for(
-        fidelity=fidelity, block_lo=bounds[0], block_hi=bounds[1],
-        narrowest_m=narrowest, limit=int(polcfg.CELL_HARD_LIMIT))
-    plan, lo, hi = PL.plan_for(
-        narrowest_m=narrowest, fluid_volume_m3=float(rec["volume_m3"]),
-        passages=int(rec["passages"]), solid_lo=bounds[0], solid_hi=bounds[1],
-        fluid_lo=[float(v) for v in rec["bbox_min_m"]],
-        fluid_hi=[float(v) for v in rec["bbox_max_m"]],
-        cells_across=cells_across, levels=B.LEVELS)
+    limit = int(polcfg.CELL_HARD_LIMIT)
+    # THE OCTREE DEPTH IS CHOSEN, where it used to be a constant nothing varied. The old estimate
+    # prices the whole block at the finest cell, which divides the background count by eight per
+    # level and multiplies its own refinement factor by eight - so its answer is IDENTICAL at every
+    # depth and the one knob that buys a coarse background under a fine coolant surface was
+    # invisible to it. On a customer cold plate that collapsed draft, standard, fine and max to the
+    # same five cells across; the band estimate reaches eight, at a finer cell and FEWER cells.
+    area = float(rec.get("wetted_area_m2") or 0.0)
+    levels = B.LEVELS
+    if area > 0.0:
+        asked = B.CELLS_ACROSS_BY_FIDELITY.get((fidelity or "").strip().lower(),
+                                               B.CELLS_ACROSS_BY_FIDELITY[B.DEFAULT_FIDELITY])
+        cells_across, levels, estimate, said = B.plan_for_budget(
+            block_lo=bounds[0], block_hi=bounds[1], narrowest_m=narrowest,
+            wetted_area_m2=area, limit=limit, asked_across=asked)
+        if estimate > limit:
+            # REFUSED BEFORE IT IS PAID FOR. The older ladder meshes at its floor whatever the
+            # estimate says, because that estimate has come out high by three times and refusing
+            # would turn parts that mesh into parts never tried. This is a different question: a
+            # part whose narrowest feature wants three billion cells against a limit of eight
+            # million is not a three-times argument, and starting it spends hours and ends in a
+            # kernel kill. The sentence says the number rather than asking for "less detail".
+            logger.info("conjugate: refusing to start - %s - job_id=%s", said, job_id)
+            await run.fence("deliver builder outcome")
+            return False, NO_COOLANT, run.outcome(produced_deliverable=False, exhausted=True,
+                                                  failure_marker=NO_COOLANT)
+    else:
+        cells_across, estimate, said = B.cells_across_for(
+            fidelity=fidelity, block_lo=bounds[0], block_hi=bounds[1],
+            narrowest_m=narrowest, limit=limit)
+    # A MESH IS WORTH HAVING EVEN WHEN THE PORTS CANNOT BE NAMED, and refusing to build one was
+    # costing whole parts. The ports are the block faces the coolant reaches, which works while a
+    # part's mouths lie ON those faces - eight of the nine in the package, because a channel milled
+    # across a plate ends flush with the side it was cut on. A Corintis cold plate's mouths are
+    # fitting BORES and its bounding box is set by the fittings' own bodies, so the coolant stops
+    # 2 mm inside the block on every side, plan_ports says "it is sealed inside the metal", and the
+    # whole job died on a question that is about SOLVING rather than about meshing.
+    #
+    # So the port plan is attempted and its failure is not fatal. What comes out is a real
+    # two-region conjugate mesh with no named inlet or outlet, which is exactly what
+    # `--no-ports` has always produced on the command line ("the mesh is then not solvable and is
+    # still worth having"). The reason travels with the run rather than being swallowed, because a
+    # case that cannot be solved must not look like one that can.
+    ports_refused = ""
+    try:
+        plan, lo, hi = PL.plan_for(
+            narrowest_m=narrowest, fluid_volume_m3=float(rec["volume_m3"]),
+            passages=int(rec["passages"]), solid_lo=bounds[0], solid_hi=bounds[1],
+            fluid_lo=[float(v) for v in rec["bbox_min_m"]],
+            fluid_hi=[float(v) for v in rec["bbox_max_m"]],
+            cells_across=cells_across, levels=levels)
+    except ConjugateError as exc:
+        ports_refused = str(exc)
+        logger.info("conjugate: meshing without named ports - %s - job_id=%s",
+                    ports_refused[:200], job_id)
+        plan, lo, hi = PL.plan_for(
+            narrowest_m=narrowest, fluid_volume_m3=float(rec["volume_m3"]),
+            passages=int(rec["passages"]), solid_lo=bounds[0], solid_hi=bounds[1],
+            fluid_lo=[float(v) for v in rec["bbox_min_m"]],
+            fluid_hi=[float(v) for v in rec["bbox_max_m"]],
+            cells_across=cells_across, levels=levels, no_ports=True)
     names, named_said = declared_port_names(ws, plan)
     if names:
         plan = dataclasses.replace(plan, patch_names=PL._as_lists(names))
@@ -214,7 +267,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     run.note_authoring()
     note_native_pass(ws, 1)
     note_native_payload(ws, [PL.PLAN_NAME, PL.BLOCK_STL, PL.FLUID_STL])
-    for line in (said, named_said):
+    for line in (said, named_said, ports_refused and
+                 f"the mesh has no named inlet or outlet: {ports_refused}"):
         if line:
             logger.info("conjugate: %s - job_id=%s", line, job_id)
 

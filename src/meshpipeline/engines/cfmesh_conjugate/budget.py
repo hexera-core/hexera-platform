@@ -63,6 +63,115 @@ LEVELS = 3
 #: The pre-flight estimate's safety factor, from the one part where it came out LOW (0.88x).
 ESTIMATE_MARGIN = 1.25
 
+#: How many cells deep the finest refinement band runs at the coolant surface, measured by
+#: subtracting the background count from the delivered count on every conjugate mesh that exists
+#: and dividing by area/fine^2:
+#:
+#:     unit_cell_100um       4 across  0.0250 mm cells     661,776 cells    depth  7.04
+#:     manifold_two_level    5 across  0.0200 mm cells     581,155 cells    depth  3.13
+#:     corintis cold plate   5 across  0.5304 mm cells   1,852,814 cells    depth  8.56
+#:     corintis cold plate  13 across  0.2040 mm cells  17,447,384 cells    depth 11.86
+#:
+#: IT IS NOT A CONSTANT, AND THE WAY IT MOVES IS THE UNSAFE WAY. The last two rows are the same
+#: part at two resolutions, and the band gets DEEPER in cells as the cells get finer: 8.56 at
+#: 0.53 mm, 11.86 at 0.204 mm. A single depth therefore UNDER-predicts at fine resolutions, which
+#: is the direction that gets a run killed six hours in rather than refused up front. Fitted on
+#: those two points, which are the only pair that holds the geometry fixed:
+#:
+#:     depth = DEPTH_AT_1MM * (fine in mm) ** DEPTH_EXPONENT
+#:
+#: Two points is a line through two points, not a law; the 4.3x spread across the other parts says
+#: the geometry moves it as much as the resolution does. It is used only where being wrong by
+#: three times beats being wrong by a thousand - the old whole-block model is 3.5x high at a
+#: coarse resolution and ~26x high at a fine one, because the share of the block the band covers
+#: falls as the cells shrink (37% of the customer plate at 0.53 mm, 4.8% at 0.069 mm). A model
+#: whose error grows with the thing being sized cannot choose a resolution for a machine.
+DEPTH_AT_1MM = 6.90
+DEPTH_EXPONENT = -0.341
+
+
+def band_depth(fine_m: float) -> float:
+    """How many cells deep the finest band runs, at this cell size."""
+    mm = max(float(fine_m) * 1000.0, 1e-9)
+    return DEPTH_AT_1MM * (mm ** DEPTH_EXPONENT)
+
+#: Octree depths the ladder may use. THE ONE KNOB THAT REACHES A LARGE MESH, and the one nothing
+#: has ever varied - because `estimate_cells` cannot see it. That estimate divides the background
+#: count by eight per level and multiplies its own refinement factor by eight, so its answer is
+#: identical at every depth. Depth is what buys a coarse background under a fine coolant surface,
+#: which is the whole design of the refinement (conjugate.py: "the background is sized from it").
+LEVELS_LADDER: tuple[int, ...] = (3, 4, 5, 6)
+
+
+def _block_m3(block_lo, block_hi) -> float:
+    v = 1.0
+    for k in range(3):
+        v *= max(0.0, float(block_hi[k]) - float(block_lo[k]))
+    return v
+
+
+def band_estimate_cells(*, block_lo, block_hi, narrowest_m: float, cells_across: int,
+                        wetted_area_m2: float, levels: int = LEVELS) -> int:
+    """A pre-flight cell count that prices the refinement BAND, not the whole block.
+
+    The band at the coolant surface, plus background cells everywhere else. Needs the coolant's
+    wetted area, which cad/fluid_volume.write_surface measures off the triangles it writes; use
+    `estimate_cells` where that is not known.
+
+    Against the meshes that have been built (see DEPTH_AT_1MM) it is within a factor of two where
+    the whole-block model is within a factor of 3.5, and the two part company at fine resolutions,
+    which is exactly where a sizing decision is made: the whole-block model is ~26x high at
+    0.069 mm cells on the customer plate.
+    """
+    if cells_across < 1 or narrowest_m <= 0.0:
+        raise ValueError("a resolution needs a positive passage width and at least one cell")
+    if wetted_area_m2 <= 0.0:
+        raise ValueError("the band is sized from the coolant's wetted area")
+    fine = float(narrowest_m) / int(cells_across)
+    background = fine * (2 ** int(levels))
+    band = float(wetted_area_m2) * band_depth(fine) / (fine * fine)
+    bg = _block_m3(block_lo, block_hi) / (background ** 3)
+    return int((band + bg) * ESTIMATE_MARGIN)
+
+
+def plan_for_budget(*, block_lo, block_hi, narrowest_m: float, wetted_area_m2: float,
+                    limit: int, asked_across: int) -> tuple[int, int, int, str]:
+    """(cells across, octree depth, the estimate, what to say) - the FINEST pair that fits `limit`.
+
+    THE DEPTH IS CHOSEN, not assumed. Depth costs nothing at the coolant surface and divides the
+    background count by eight each time, so the pair to want is the asked-for resolution at
+    whatever depth makes its background affordable - and only when no depth does that is the
+    resolution itself stepped down. The old ladder stepped the resolution down while holding the
+    one free knob fixed, which on a customer cold plate collapsed draft, standard, fine and max to
+    the same four cells across.
+    """
+    best = ""
+    for across in range(int(asked_across), FLOOR_CELLS_ACROSS - 1, -1):
+        for levels in LEVELS_LADDER:
+            est = band_estimate_cells(block_lo=block_lo, block_hi=block_hi,
+                                      narrowest_m=narrowest_m, cells_across=across,
+                                      wetted_area_m2=wetted_area_m2, levels=levels)
+            if est <= limit:
+                said = "" if (across == asked_across and levels == LEVELS) else (
+                    f"meshed with {across} cells across the narrowest passage at {levels} octree "
+                    f"levels, about {est:,} cells against a limit of {limit:,}")
+                return across, levels, est, said
+    deepest = LEVELS_LADDER[-1]
+    est = band_estimate_cells(block_lo=block_lo, block_hi=block_hi, narrowest_m=narrowest_m,
+                              cells_across=FLOOR_CELLS_ACROSS, wetted_area_m2=wetted_area_m2,
+                              levels=deepest)
+    # NOTHING FITS, and that is said rather than meshed anyway. The floor branch of
+    # `cells_across_for` goes ahead because its estimate has come out high by three times and
+    # refusing would turn parts that mesh into parts never tried. This one is different: the band
+    # model's error is bounded by the same factor of three, and an estimate of 64,028,252,160
+    # against a limit of 8,000,000 is not a three-times question. Starting that run spends hours
+    # and ends in a kernel kill.
+    return FLOOR_CELLS_ACROSS, deepest, est, (
+        f"this part does not fit: {FLOOR_CELLS_ACROSS} cells across its narrowest passage at "
+        f"{deepest} octree levels is about {est:,} cells against a limit of {limit:,}. Its "
+        f"narrowest feature needs a mesh {est / max(limit, 1):.0f} times larger than this "
+        "deployment allows")
+
 
 def estimate_cells(*, block_lo, block_hi, narrowest_m: float, cells_across: int,
                    levels: int = LEVELS) -> int:
@@ -120,5 +229,6 @@ def fits(estimate: int, limit: int) -> bool:
     return int(estimate) <= int(limit)
 
 
-__all__ = ["CELLS_ACROSS_BY_FIDELITY", "DEFAULT_FIDELITY", "ESTIMATE_MARGIN",
+__all__ = ["DEPTH_AT_1MM", "DEPTH_EXPONENT", "band_depth", "CELLS_ACROSS_BY_FIDELITY", "DEFAULT_FIDELITY", "ESTIMATE_MARGIN",
+           "LEVELS_LADDER", "band_estimate_cells", "plan_for_budget",
            "FLOOR_CELLS_ACROSS", "LEVELS", "cells_across_for", "estimate_cells", "fits"]

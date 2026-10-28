@@ -67,6 +67,13 @@ OPENFOAM_BASHRC: str = optional_env("OPENFOAM_BASHRC", "/usr/lib/openfoam/openfo
 # vmtk is invoked as an isolated subprocess (its conda vtk cannot coexist with the app's vtk).
 VMTK_BIN: str = optional_env("VMTK_BIN", "vmtk")
 OPENFOAM_COMMAND_TIMEOUT: int = int(optional_env("OPENFOAM_COMMAND_TIMEOUT", "1500"))
+# How long one conjugate build may take, mesher plus the serial tail that follows it. An hour was
+# the figure while every part in the set meshed in under two minutes; a build sized to fill a
+# 125 GB machine is about an hour and a half of mesher before topoSet walks every cell centre and
+# splitMeshRegions writes two full meshes, and on a large build that tail is >85% of the wall
+# clock. Raised per deployment rather than per engine: what bounds it is how long a job may hold
+# the machine, which is an operational choice and not a property of the mesher.
+CONJUGATE_RUN_TIMEOUT_S: int = int(optional_env("CONJUGATE_RUN_TIMEOUT_S", "21600"))
 
 # the TOP-LEVEL logical pipeline budget - one finite wall-clock ceiling for an ENTIRE job across
 # every attempt, rebuild, provider retry, worker generation and restart. It is an ABSOLUTE deadline

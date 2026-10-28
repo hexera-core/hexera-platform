@@ -285,7 +285,15 @@ SPEC = EngineSpec(
             required_files=("conjugate_plan.json", "constant/triSurface/block.stl",
                             "constant/triSurface/fluid.stl"),
             # mesh, tag, split, check both regions, export: five OpenFOAM runs in a row
-            run_timeout=lambda: min(3600, rtcfg.OPENFOAM_COMMAND_TIMEOUT * 6),
+            # AN HOUR WAS THE SMALL-PART ANSWER. Every mesh this engine had built took under two
+            # minutes, so a ceiling of one hour was six times the worst case and never bound. The
+            # measured cost of a fill-the-box build on a 125 GB machine is about an hour and a half
+            # of mesher alone, before topoSet walks every cell centre and splitMeshRegions writes
+            # two full meshes - and >85% of a large build is that serial tail, not the mesher. A
+            # ceiling that cuts a run after it has paid for the expensive part is the worst place
+            # to put one.
+            run_timeout=lambda: min(int(rtcfg.CONJUGATE_RUN_TIMEOUT_S),
+                                    rtcfg.OPENFOAM_COMMAND_TIMEOUT * 6),
             timeout_hint="Ask for a coarser mesh fidelity (draft) and run again.",
             ok_guidance="Both regions are meshed and checked, and the coolant matches the CAD - "
                         "call submit_mesh.",

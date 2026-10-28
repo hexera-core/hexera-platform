@@ -57,7 +57,16 @@ _FATAL = (("negative volume", "negative-volume cells"),
           ("not 1d or 2d", "empty patches on a 3D mesh"))
 
 
-def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "") -> dict:
+#: How long checkMesh may take to MEASURE a mesh, as a multiple of what it took to build it.
+#: It is a measurement, not a build, so a fixed ceiling was fine while meshes were small - and at
+#: 900 s it is the thing that would throw away a finished mesh that took hours to make, after the
+#: mesher had already succeeded. checkMesh walks every cell and every face, so what it costs
+#: follows the cell count, not the clock.
+CHECK_TIMEOUT_S = 7200.0
+
+
+def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
+               timeout_s: float = CHECK_TIMEOUT_S) -> dict:
     ws = Path(workspace)
     # A measurement taken WHERE THE MESH WAS BUILT wins, because here it may be impossible:
     # on the Cloud Run path the mesh is built in a container that has checkMesh and read back
@@ -78,8 +87,18 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "") ->
                 "skew_faces": 0, "skew_fraction": 0.0}
     _reg = f" -region {region}" if region else ""
     cmd = f"source {bashrc} >/dev/null 2>&1 && checkMesh -constant{_reg}"
-    proc = run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
-                       capture_output=True, text=True, timeout=900)
+    # A MEASUREMENT THAT DID NOT FINISH IS NOT A BAD MESH. It used to raise out of here, which
+    # discarded a mesh the mesher had already built - hours of work thrown away at the last step by
+    # the step that was only ever supposed to describe it. Now it says so, and the manifest records
+    # a measurement that was not taken rather than a mesh that was not made.
+    try:
+        proc = run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
+                           capture_output=True, text=True, timeout=float(timeout_s))
+    except Exception as exc:  # noqa: BLE001 - subprocess timeout types vary by caller
+        logger.warning("checkMesh did not finish within %.0f s (%s): the mesh stands and its "
+                       "quality is unmeasured", float(timeout_s), type(exc).__name__)
+        return {"mesh_ok": False, "fatal": ["checkMesh did not finish"],
+                "skew_faces": 0, "skew_fraction": 0.0, "unmeasured": True}
     return parse_check_mesh(proc.stdout + proc.stderr)
 
 

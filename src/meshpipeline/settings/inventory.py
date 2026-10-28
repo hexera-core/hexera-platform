@@ -298,6 +298,7 @@ INVENTORY: list[Group] = [
         EnvVar("GOOGLE_ADC_FILE", "./secrets/gcp/application_default_credentials.json", required=True, kind="path", consumer="compose", help="THE canonical location, resolved from the repository root. Obtain your own file with 'gcloud auth application-default login' and move it there; Hexera never creates it. A path, never a credential: never paste the JSON here, and never use someone else's file"),
         EnvVar("OPENFOAM_BASHRC", "/usr/lib/openfoam/openfoam2412/etc/bashrc"),
         EnvVar("OPENFOAM_COMMAND_TIMEOUT", "1500"),
+        EnvVar("CONJUGATE_RUN_TIMEOUT_S", "21600", help="how long ONE conjugate build may take, the mesher plus the serial tail after it. An hour bound nothing while every part in the set meshed in under two minutes; a build sized to fill a 125 GB machine is about an hour and a half of mesher before topoSet walks every cell centre and splitMeshRegions writes two full meshes, and on a large build that tail is most of the wall clock"),
         EnvVar("BUILDER_LOOP_TIMEOUT", "3600", help="must be >= 2 * OPENFOAM_COMMAND_TIMEOUT (validated at startup)"),
     ]),
     Group("Agent round budgets", note="How many PROVIDER ROUNDS one agent invocation may take. Not tool-call budgets: an agent may issue several tool calls inside one round. The defaults are the shipped values; leave them unset unless you have measured a reason.", vars=[
