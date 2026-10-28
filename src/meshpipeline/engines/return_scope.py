@@ -57,11 +57,11 @@ def compressed_size(path: Path) -> int:
 
 
 def _archived(workspace) -> list[Path]:
-    """The files the archive will hold: all of them but those kept in the bucket on a remote run
-    (engines/bucket_files, RUN-7 - measured here as if kept: they never ride in the archive there,
+    """The files the archive will hold: all of them but those sent home on their own on a remote run
+    (engines/bucket_files, RUN-7 - measured here as if sent: they never ride in the archive there,
     and a local run never extracts an archive at all)."""
-    from meshpipeline.engines.bucket_files import keepable
-    kept = set(keepable(workspace))
+    from meshpipeline.engines.bucket_files import packable
+    kept = set(packable(workspace))
     return [p for p in Path(workspace).rglob("*") if p.is_file() and p not in kept]
 
 

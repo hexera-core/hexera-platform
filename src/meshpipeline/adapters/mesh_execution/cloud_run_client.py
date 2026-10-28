@@ -800,8 +800,12 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
             BF.clear(ws)
             raise
         if _kept:
-            logger.info("%s: %d big file(s) stay in the bucket (%.1f GB): %s", engine, len(_kept),
-                        sum(k.bytes for k in _kept.values()) / 1e9, ", ".join(sorted(_kept)))
+            from meshpipeline.adapters.mesh_execution.gcs_exchange import kept_reader
+            # the big files this worker's own checks read come home now, unpacked to their place
+            _got = BF.fetch(ws, kept_reader)
+            logger.info("%s: %d big file(s) sent on their own - %.1f GB fetched, %.1f GB kept in the "
+                        "bucket: %s", engine, len(_kept), _got / 1e9,
+                        sum(k.bytes for k in _kept.values() if not k.fetch) / 1e9, ", ".join(sorted(_kept)))
         # Built BEFORE the exchange is released: this is the last thing that can raise, so the
         # objects must still exist while it happens.
         # The reference travels back so the submission authority can record what was accepted.

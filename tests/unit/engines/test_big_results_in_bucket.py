@@ -45,6 +45,63 @@ class _Bucket:
 @pytest.fixture
 def small_files(monkeypatch):
     monkeypatch.setattr(BF, "KEEP_FROM_BYTES", 1000)
+    monkeypatch.setattr(BF, "PACK_FROM_BYTES", 600)
+    monkeypatch.setattr(BF, "PACK_PIECE_BYTES", 1024)      # many gzip members per file
+
+
+def _flow_ws(root: Path) -> Path:
+    ws = root / "flow"
+    pm = ws / "constant" / "polyMesh"
+    pm.mkdir(parents=True)
+    (pm / "faces").write_text("FoamFile{}\n" + "4(0 1 2 3)\n" * 300)        # 3,311 bytes: fetched
+    (pm / "owner").write_text("FoamFile{}\n" + "7\n" * 400)                  # 811: fetched
+    (pm / "boundary").write_text("FoamFile{}\n(\nwall{type wall;}\n)\n")      # small: in the archive
+    (pm / "faces").chmod(0o640)
+    (ws / "system").mkdir()
+    (ws / "system" / "meshDict").write_text("maxCellSize 1;\n")
+    return ws
+
+
+def test_a_flow_mesh_is_packed_on_the_mesher_and_fetched_by_the_worker(tmp_path, small_files):
+    ws = _flow_ws(tmp_path)
+    members = ["constant/polyMesh", "system/meshDict"]
+    originals = {p.relative_to(ws).as_posix(): p.read_bytes() for p in ws.rglob("*") if p.is_file()}
+    expected = _tarfile_bundle(ws, members, "openfoam_case")
+    bucket = _Bucket()
+    rows = {k.rel: k for k in BF.keep(ws, bucket="ex", output_key="o", writer=bucket.writer)}
+    # a flow mesh's polyMesh is read by the worker's checks: sent on its own, fetched - never kept
+    assert sorted(rows) == ["constant/polyMesh/faces", "constant/polyMesh/owner"]
+    assert all(k.fetch for k in rows.values())
+    assert not (ws / "constant/polyMesh/faces").exists()            # not in the archive
+    assert not (ws / BF.VIEWER_MESH_FILE).exists()                   # nothing kept: no stand-ins
+    # the worker: every fetched file back in its place, byte for byte, its mode kept
+    assert BF.fetch(ws, bucket.reader) == sum(k.bytes for k in rows.values())
+    for rel, data in originals.items():
+        assert (ws / rel).read_bytes() == data
+    assert (ws / "constant/polyMesh/faces").stat().st_mode & 0o777 == 0o640
+    # the bundle: the fetched members pass through as the mesher packed them - the same tar
+    entries = BF.bundle_entries(ws, members, "openfoam_case")
+    assert [n for n, _p, k in entries if k is not None] == ["openfoam_case/constant/polyMesh/faces",
+                                                            "openfoam_case/constant/polyMesh/owner"]
+    assert gzip.decompress(b"".join(BF.bundle_chunks(entries, bucket.reader))) == expected
+    # a fetched file the worker changed since is packed again here, never shipped stale
+    (ws / "constant/polyMesh/owner").write_text("FoamFile{}\n" + "8\n" * 400)
+    entries = BF.bundle_entries(ws, members, "openfoam_case")
+    assert [n for n, _p, k in entries if k is not None] == ["openfoam_case/constant/polyMesh/faces"]
+    assert gzip.decompress(b"".join(BF.bundle_chunks(entries, bucket.reader))) == \
+        _tarfile_bundle(ws, members, "openfoam_case")
+
+
+def test_a_short_fetch_is_refused_and_leaves_nothing_half_written(tmp_path, small_files):
+    ws = _flow_ws(tmp_path)
+    bucket = _Bucket()
+    k = {x.rel: x for x in BF.keep(ws, bucket="ex", output_key="o", writer=bucket.writer)}["constant/polyMesh/faces"]
+    whole = gzip.decompress(bucket.objects[("ex", k.key)])
+    bucket.objects[("ex", k.key)] = gzip.compress(whole[:100])
+    with pytest.raises(BF.KeptFileError):
+        BF.fetch(ws, bucket.reader)
+    assert not (ws / "constant/polyMesh/faces").exists()
+    assert not list((ws / "constant/polyMesh").glob(".*.fetching"))
 
 
 def _fea_ws(root: Path, *, with_msh: bool = False) -> Path:
