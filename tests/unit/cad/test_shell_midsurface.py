@@ -71,44 +71,100 @@ def test_a_hole_is_kept_and_its_bore_is_a_rim():
     _all_checks(rec)
 
 
+def _sewn_area(surface) -> float:
+    return ms._area(surface)
+
+
 def test_a_t_joint_is_sewn_on_one_line():
     tp, ts = 5.0, 4.0
-    rec, _ = ms.extract(sf.t_joint(tp, ts), mm_per_unit=1.0)
+    rec, surface = ms.extract(sf.t_joint(tp, ts), mm_per_unit=1.0)
     assert rec["bodies"][0]["verdict"] == "shell"
     assert sorted(p["thickness_mm"] for p in _shell_pairs(rec)) == pytest.approx([ts, tp, tp])
-    by = sorted(e["by_mm"] for m in _shell_mids(rec) for e in m["extended"])
-    # the two plate pieces each go half the stiffener across; the stiffener goes half the plate down
-    assert by == pytest.approx([ts / 2, ts / 2, tp / 2])
+    # the plate's two pieces each run half the stiffener across, the stiffener runs half the plate down: the
+    # sewn surface is the whole 200 x 100 mid-plane and the web from z = tp/2 to its top
+    assert _sewn_area(surface) == pytest.approx(200 * 100 + (60 + tp / 2) * 100, rel=REL)
+    ext = sorted(e["area_mm2"] for m in _shell_mids(rec) for e in m["extended"])
+    assert ext == pytest.approx([ts / 2 * 100, ts / 2 * 100, tp / 2 * 100], rel=REL)
     sewn = _sewn(rec)
-    assert sewn["junction_edges"] == 1 and sewn["open_edges"] == 0
+    assert sewn["junction_edges"] >= 1 and sewn["open_edges"] == 0
     _all_checks(rec)
 
 
 def test_an_l_corner_meets_at_the_crossing_of_the_mid_planes():
-    rec, _ = ms.extract(sf.l_angle(5.0, 5.0), mm_per_unit=1.0)
-    by = sorted(e["by_mm"] for m in _shell_mids(rec) for e in m["extended"])
-    assert by == pytest.approx([2.5, 2.5])
-    sewn = _sewn(rec)
-    assert sewn["shared_edges"] == 1 and sewn["open_edges"] == 0
+    rec, surface = ms.extract(sf.l_angle(5.0, 5.0), mm_per_unit=1.0)
+    # each leg runs on to the other leg's mid-plane: two legs of 97.5 mm, 80 deep
+    assert _sewn_area(surface) == pytest.approx(2 * 97.5 * 80, rel=REL)
+    assert _sewn(rec)["open_edges"] == 0
     _all_checks(rec)
 
 
 def test_an_l_corner_of_two_walls_meets_where_each_reaches_the_other():
-    rec, _ = ms.extract(sf.l_angle(4.0, 8.0), mm_per_unit=1.0)
-    ext = {m["thickness_mm"]: m["extended"][0]["by_mm"] for m in _shell_mids(rec)}
-    # the 4 mm leg runs half the 8 mm upright's wall, and the upright half the leg's
-    assert ext == pytest.approx({4.0: 4.0, 8.0: 2.0})
+    rec, surface = ms.extract(sf.l_angle(4.0, 8.0), mm_per_unit=1.0)
+    ext = {m["thickness_mm"]: sum(e["area_mm2"] for e in m["extended"]) for m in _shell_mids(rec)}
+    # the 4 mm leg runs half the 8 mm upright's wall (4 mm), the upright half the leg's (2 mm), 80 deep
+    assert ext == pytest.approx({4.0: 4.0 * 80, 8.0: 2.0 * 80}, rel=REL)
+    assert _sewn_area(surface) == pytest.approx((100 - 4) * 80 + (100 - 2) * 80, rel=REL)
     assert _sewn(rec)["open_edges"] == 0
 
 
 def test_a_closed_box_section_is_one_ring_of_four_walls():
-    rec, _ = ms.extract(sf.box_section(100, 60, 4, 300), mm_per_unit=1.0)
+    rec, surface = ms.extract(sf.box_section(100, 60, 4, 300), mm_per_unit=1.0)
     assert rec["bodies"][0]["verdict"] == "shell"
     assert len(_shell_mids(rec)) == 4
-    sewn = _sewn(rec)
-    assert sewn["shared_edges"] == 4 and sewn["open_edges"] == 0
-    # (100 - 4) x 2 + (60 - 4) x 2 mid-perimeter, 300 long, 4 thick: the section's whole volume
+    # the mid-perimeter (100 - 4) x 2 + (60 - 4) x 2, 300 long
+    assert _sewn_area(surface) == pytest.approx((96 * 2 + 56 * 2) * 300, rel=REL)
+    assert _sewn(rec)["open_edges"] == 0
     assert rec["bodies"][0]["mid_volume_ratio"] == pytest.approx(1.0, abs=0.06)
+    _all_checks(rec)
+
+
+# ------------------------------------------------------------------------ the junction classes ----
+def test_a_tube_welded_on_a_plate_meets_it_on_a_circle():
+    tp, r_out, t, h = 5.0, 20.0, 2.0, 100.0
+    rec, surface = ms.extract(sf.tube_on_plate(tp, r_out, t, h), mm_per_unit=1.0)
+    assert rec["bodies"][0]["verdict"] == "shell"
+    # the whole plate mid-plane (the ring under the tube wall closed) and the mid-cylinder down to it
+    want = 200 * 200 + 2 * math.pi * (r_out - t / 2) * (h + tp / 2)
+    assert _sewn_area(surface) == pytest.approx(want, rel=1e-4)
+    assert _sewn(rec)["open_edges"] == 0 and _sewn(rec)["junction_edges"] >= 1
+    _all_checks(rec)
+
+
+def test_a_cylinder_running_into_a_cone_is_one_closed_shell():
+    rec, _ = ms.extract(sf.cone_cylinder(), mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
+    assert {m["kind"] for m in _shell_mids(rec)} == {"cylinder", "cone"}
+    assert _sewn(rec)["open_edges"] == 0
+    _all_checks(rec)
+
+
+def test_a_flange_cut_short_by_a_relief_still_meets_its_sheet():
+    rec, _ = ms.extract(sf.relief_flange(2.0), mm_per_unit=1.0)
+    assert rec["bodies"][0]["verdict"] == "shell"
+    assert _sewn(rec)["open_edges"] == 0 and _sewn(rec)["junction_edges"] >= 1
+    _all_checks(rec)
+
+
+def test_a_mitred_tube_corner_closes_inside_and_out():
+    rec, surface = ms.extract(sf.mitred_tube_corner(40.0, 3.0, 200.0), mm_per_unit=1.0)
+    assert rec["bodies"][0]["verdict"] == "shell"
+    assert _sewn(rec)["open_edges"] == 0
+    _all_checks(rec)
+
+
+def test_crossing_girders_on_a_deck_are_sewn_at_every_cross():
+    rec, _ = ms.extract(sf.grillage(), mm_per_unit=1.0)
+    assert rec["bodies"][0]["verdict"] == "shell"
+    assert _sewn(rec)["open_edges"] == 0 and _sewn(rec)["junction_edges"] >= 8
+    _all_checks(rec)
+
+
+def test_a_filleted_t_is_bridged_over_its_fillets():
+    rec, surface = ms.extract(sf.filleted_t(5.0, 4.0, 4.0), mm_per_unit=1.0)
+    assert rec["bodies"][0]["verdict"] == "shell"
+    assert {f["role"] for f in rec["faces"]} <= {"paired", "rim", "blend"}
+    assert _sewn_area(surface) == pytest.approx(200 * 100 + (60 + 2.5) * 100, rel=1e-4)
+    assert _sewn(rec)["open_edges"] == 0
     _all_checks(rec)
 
 

@@ -116,3 +116,85 @@ def two_plates_assembly(t: float = 3.0):
     from tests.fea_fixtures import _compound
 
     return _compound(_box(0, 0, 0, 100, 100, t), _box(0, 0, 20, 100, 50, t))
+
+
+# --------------------------------------------------------------------- junction classes (one per class) ----
+def _shift(x, y, z):
+    from OCP.gp import gp_Trsf, gp_Vec
+    from OCP.TopLoc import TopLoc_Location
+
+    tr = gp_Trsf()
+    tr.SetTranslation(gp_Vec(x, y, z))
+    return TopLoc_Location(tr)
+
+
+def tube_on_plate(tp: float = 5.0, r_out: float = 20.0, t: float = 2.0, h: float = 100.0):
+    """A round tube (outside radius `r_out`, wall `t`) welded standing on a 200 x 200 x `tp` plate: the
+    tube-on-plate junction. Mid-surfaces: the plane z = tp/2 and the cylinder r_out - t/2, meeting on a circle."""
+    return _fuse(_box(-100, -100, 0, 200, 200, tp), tube(r_out, t, h).Moved(_shift(0, 0, tp)))
+
+
+def cone_cylinder(R: float = 100.0, r: float = 40.0, t: float = 3.0, H: float = 200.0, L: float = 150.0):
+    """A cyclone body: a cylinder of outside radius `R` and height `H` running into a cone down to outside radius
+    `r` over `L`, one wall `t` thick throughout (measured normal to each wall): the cylinder-cone junction."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeRevol
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt
+
+    # the outer outline A (R, H) -> B (R, 0) -> C (r, -L); the inner one is offset t towards the axis
+    ux, uz = (r - R), -L
+    n = math.hypot(ux, uz)
+    ux, uz = ux / n, uz / n
+    nx, nz = uz, -ux                       # normal to the cone wall, turned to the axis side
+    if nx > 0:
+        nx, nz = -nx, -nz
+    px, pz = R + nx * t, nz * t            # a point on the inner cone line
+    s = ((R - t) - px) / ux
+    bx, bz = R - t, pz + uz * s            # the inner corner, where the inner cylinder meets the inner cone
+    s2 = (-L - pz) / uz
+    cx = px + ux * s2
+    poly = BRepBuilderAPI_MakePolygon()
+    for x, z in ((R, H), (R, 0), (r, -L), (cx, -L), (bx, bz), (R - t, H)):
+        poly.Add(gp_Pnt(x, 0, z))
+    poly.Close()
+    face = BRepBuilderAPI_MakeFace(poly.Wire()).Face()
+    return _unify(BRepPrimAPI_MakeRevol(face, gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 2 * math.pi).Shape())
+
+
+def relief_flange(t: float = 2.0):
+    """A 100 x 60 x `t` sheet with an upstand flange 40 high along its y = 0 edge that stops 5 mm short of each
+    end (the relief cut): the plate's edge faces the flange over only part of its length."""
+    return _fuse(_box(0, 0, 0, 100, 60, t), _box(5, 0, 0, 90, t, 40))
+
+
+def mitred_tube_corner(w: float = 40.0, t: float = 3.0, length: float = 200.0):
+    """Two square tubes `w` x `w`, wall `t`, welded at a mitred 90 degree corner (open far ends): four L-shaped
+    walls turning the corner, no wall across the inside."""
+    outer = _fuse(_box(0, 0, 0, length, w, w), _box(0, 0, 0, w, length, w))
+    inner = _fuse(_box(t, t, t, length + 1 - t, w - 2 * t, w - 2 * t),
+                  _box(t, t, t, w - 2 * t, length + 1 - t, w - 2 * t))
+    return _cut(outer, inner)
+
+
+def grillage(tp: float = 6.0, ts: float = 8.0, h: float = 60.0):
+    """A 400 x 300 x `tp` deck plate with two girders along x and two along y, `ts` thick and `h` deep, crossing
+    each other: T junctions on the plate and cross junctions where the girders cross."""
+    s = _box(0, 0, 0, 400, 300, tp)
+    for y in (100.0, 200.0):
+        s = _fuse(s, _box(0, y - ts / 2, tp, 400, ts, h))
+    for x in (130.0, 270.0):
+        s = _fuse(s, _box(x - ts / 2, 0, tp, ts, 300, h))
+    return s
+
+
+def filleted_t(tp: float = 5.0, ts: float = 4.0, r: float = 4.0):
+    """The T joint with `r` mm fillets at the stiffener root on both sides."""
+    from tests.fea_fixtures import _edges_where, _fillet
+
+    s = t_joint(tp, ts)
+
+    def root(b):
+        return (abs(b[2] - tp) < 1e-6 and abs(b[5] - tp) < 1e-6 and abs(b[3] - b[0]) < 1e-6
+                and (abs(b[0] - 98) < 1e-6 or abs(b[0] - (98 + ts)) < 1e-6))
+
+    return _unify(_fillet(s, _edges_where(s, root), r))
