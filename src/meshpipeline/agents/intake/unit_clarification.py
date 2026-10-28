@@ -97,6 +97,30 @@ _ASSENT = frozenset({"ok", "okay", "yes", "yep", "yeah", "sure", "fine", "correc
 
 _length_words = length_words
 
+#: "I don't know the unit" in the words people use for it, beyond the general deferrals
+#: (turn.defers_to_default): "not sure", "best guess". Only ever read as an answer to the unit
+#: question, never as a deferral of anything else.
+_UNIT_UNKNOWN = re.compile(r"\b(?:not\s+sure|unsure|no\s+clue|not\s+known|unknown|(?:best|your|a)\s+guess|"
+                           r"guess\s+(?:it|from|the|one)|can'?t\s+(?:say|tell)|cannot\s+(?:say|tell))\b")
+
+#: Said when the user leaves the unit to us before the part is measured (`unit_to_stage`): the
+#: stage shows the part's length and proposes a unit from it, and its Proceed records the unit -
+#: the way an FEA part's unit is settled. Asked again in the chat instead, the user who did not
+#: know had no way on: the check waited for the unit, and the unit waited for the check.
+ON_STAGE = ("The file does not say its unit, so I'll propose one from the part's size: it is shown "
+            "beside the part with its length - check it there and change the unit if it is wrong.")
+
+
+def leaves_unit_to_us(message: str) -> bool:
+    """Whether a reply to the unit question leaves the unit to us ("I don't know", "not sure -
+    use your best guess", "you choose") and names no unit, rejects none and asks nothing."""
+    from meshpipeline.agents.intake import turn as _turn
+
+    text = str(message or "")
+    if "?" in text or mentions_unit(text):
+        return False
+    return _turn.defers_to_default(text) or bool(_UNIT_UNKNOWN.search(text.lower()))
+
 
 def size_hint(size_mm) -> str:
     """The part's longest side in each candidate unit, for the user to tell which one their file
