@@ -77,6 +77,9 @@ class Joint:
     #: mesh), "beyond": farther than the tolerance from the master, "twice": tied by a nearer tie, "chain": a
     #: node of another tie's master surface}
     left_out: dict = field(default_factory=dict)
+    #: the slave's nodes left out on the joint itself (shared, held by a nearer tie, on a master surface): the
+    #: Ansys contact elements keep off every face that holds one
+    held_out: np.ndarray | None = None
 
 
 @dataclass
@@ -329,7 +332,8 @@ def _nearest_master(points: np.ndarray, tri_xyz: np.ndarray, limit: float,
     """For each point: its distance to the nearest master triangle it lies over, within `limit` (inf if
     none), and that triangle's row (-1 if none). `tri_ids` (the triangles' node numbers): a point over a
     convex crease of the master - in the wedge no flat facet's perpendicular reaches, as a curved face's
-    would - counts too, at its distance to the crease; never a point beside the master's own edge."""
+    would - counts too, at its distance to the crease when that is the nearer; never a point beside the
+    master's own edge."""
     from scipy.spatial import cKDTree
 
     dist = np.full(len(points), np.inf)
@@ -373,7 +377,7 @@ def _nearest_master(points: np.ndarray, tri_xyz: np.ndarray, limit: float,
             dist[pp[better]] = d[better]
             best[pp[better]] = tt[better]
     if tri_ids is not None:
-        wedge = np.flatnonzero(~np.isfinite(dist) & (edge_d <= limit))
+        wedge = np.flatnonzero((edge_d <= limit) & (edge_d < dist))
         if len(wedge):
             # a crease inside the master, not its rim: the nearest point lies on no edge of one triangle only
             e = np.sort(np.concatenate([tri_ids[:, [0, 1]], tri_ids[:, [1, 2]], tri_ids[:, [2, 0]]]), axis=1)
@@ -450,12 +454,14 @@ def settle_ties(joints: list[Joint], elements: np.ndarray, xyz: np.ndarray, inde
             near = np.flatnonzero(~ok & (dist <= deep))
             inside = _depth(xyz[index[cand[near]]], face[tri[near]], master, elements, lambda n: xyz[index[n]]) > 0
             ok[near[inside]] = True
-        return cand[ok], dist[ok], int(len(slave.nodes) - len(cand)), int((~ok).sum()), deep
+        return (cand[ok], dist[ok], int(len(slave.nodes) - len(cand)), int((~ok).sum()), deep,
+                slave.nodes[nodes_on(master_part)[slave.nodes]])
 
     rows: list[tuple[np.ndarray, np.ndarray, int]] = []                     # (node, distance, tie)
     shared: dict[int, int] = {}
     beyond: dict[int, int] = {}
     tolerance: dict[int, float] = {}
+    own: dict[int, np.ndarray] = {}                                     # each slave's nodes the master shares
     joints = list(joints)
     # SLAVE AND MASTER: the slave is the side with more nodes on the joint - the finer mesh there - so the
     # joint is tied all over, not at the coarser side's few nodes (equal: the smaller surface, as staged) ...
@@ -491,19 +497,21 @@ def settle_ties(joints: list[Joint], elements: np.ndarray, xyz: np.ndarray, inde
                               overlap=j.overlap, reach=j.reach)
         rows.append((got[0], got[1], k))
         shared[k], beyond[k], tolerance[k] = got[2], got[3], got[4]
+        own[k] = got[5]
     node = np.concatenate([r[0] for r in rows])
     dist = np.concatenate([r[1] for r in rows])
     tie_of = np.concatenate([np.full(len(r[0]), r[2]) for r in rows])
-    # every node of a master surface that ties something: it is that tie's master, never a slave anywhere
-    masters = np.unique(np.concatenate([joints[r[2]].sides[1].nodes for r in rows if len(r[0])]
-                                       or [np.zeros(0, dtype=np.int64)]))
     # A NODE FOLLOWS ONE MASTER: the nearest (then the first tie)
     order = np.lexsort((tie_of, dist, node))
     node, dist, tie_of = node[order], dist[order], tie_of[order]
     first = np.r_[True, node[1:] != node[:-1]] if len(node) else np.zeros(0, dtype=bool)
     twice = np.bincount(tie_of[~first], minlength=len(joints)) if len(node) else np.zeros(len(joints), dtype=np.int64)
+    lost = {k: node[~first][tie_of[~first] == k] for k in ties}
     node, dist, tie_of = node[first], dist[first], tie_of[first]
-    # NO CHAINS: a node of a tie's master surface is never a slave as well
+    # NO CHAINS: every node of the master surface of a tie that still ties something is that tie's master,
+    # never a slave anywhere
+    live = sorted(set(tie_of.tolist()))
+    masters = np.unique(np.concatenate([joints[k].sides[1].nodes for k in live] or [np.zeros(0, dtype=np.int64)]))
     chain = np.isin(node, masters)
     keep = ~chain
     out = list(joints)
@@ -513,6 +521,7 @@ def settle_ties(joints: list[Joint], elements: np.ndarray, xyz: np.ndarray, inde
         tied = np.sort(node[mine])
         left = {"shared": shared[k], "beyond": beyond[k], "twice": int(twice[k]),
                 "chain": int((chain & (tie_of == k)).sum())}
+        held_out = np.unique(np.concatenate([own[k], lost[k], node[chain & (tie_of == k)]]))
         if not len(tied) and shared[k]:
             # THE TWO SIDES ARE ONE MESH THERE (a fused, bonded joint the measurement also found): bonded
             name = j.name.replace("Tie", "Bond", 1)
@@ -521,7 +530,7 @@ def settle_ties(joints: list[Joint], elements: np.ndarray, xyz: np.ndarray, inde
             out[k] = Joint(name=name, kind="bonded", parts=j.parts, sides=(a, b), overlap=j.overlap, left_out=left)
             continue
         out[k] = Joint(name=j.name, kind=j.kind, parts=j.parts, sides=j.sides, overlap=j.overlap, reach=j.reach,
-                       tied=tied, tolerance=tolerance[k], left_out=left)
+                       tied=tied, tolerance=tolerance[k], left_out=left, held_out=held_out)
     return out
 
 
@@ -815,8 +824,9 @@ def write_cdb(path: Path | str, prep: Prepared, *, units: str = "m", source: str
             first = nxt
             fs = j.sides[s]
             if s == 0 and j.kind == "tie":
-                # A TIE'S CONTACT ELEMENTS: only the slave faces that hold a node it ties (settle_ties)
-                fs = _faces_with(fs, tied_nodes(j), prep.elements)
+                # A TIE'S CONTACT ELEMENTS: only the slave faces that hold a node it ties and none it left out on
+                # the joint (settle_ties) - a bond there would join what the other files keep apart
+                fs = _faces_with(fs, tied_nodes(j), prep.elements, j.held_out)
             for el, lab in zip(fs.elements.tolist(), fs.labels.tolist(), strict=True):
                 nodes = _oriented(prep.elements[el - 1], lab, xyz_of)
                 if etype in (3, 5) and len(nodes) == 6:
@@ -864,13 +874,15 @@ def write_cdb(path: Path | str, prep: Prepared, *, units: str = "m", source: str
             "parts": len(prep.parts), "pairs": len(contacts), "contact_elements": len(surf)}
 
 
-def _faces_with(fs: FaceSet, nodes: np.ndarray, elements: np.ndarray) -> FaceSet:
-    """The element faces of `fs` that hold at least one of `nodes`."""
+def _faces_with(fs: FaceSet, nodes: np.ndarray, elements: np.ndarray, never: np.ndarray | None = None) -> FaceSet:
+    """The element faces of `fs` that hold at least one of `nodes` and none of `never`."""
     if len(nodes) == len(fs.nodes):
         return fs
     table = np.asarray(TET10_FACE_NODES if elements.shape[1] == 10 else TET_FACE_CORNERS)
     face = elements[fs.elements[:, None] - 1, table[fs.labels - 1]]
     keep = np.isin(face, nodes).any(axis=1)
+    if never is not None and len(never):
+        keep &= ~np.isin(face, never).any(axis=1)
     return FaceSet(name=fs.name, tag=fs.tag, elements=fs.elements[keep], labels=fs.labels[keep], nodes=fs.nodes)
 
 

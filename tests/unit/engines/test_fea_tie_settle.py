@@ -145,6 +145,11 @@ def test_a_partly_fused_tie_ties_only_the_nodes_the_master_does_not_own(tmp_path
     # every node but the four Part_3 owns is tied: the lower half's, and the two hanging at y = 0.75
     assert not (set(j.tied.tolist()) & own3) and len(j.tied) == 6
     assert sorted({round(xyz[n - 1][1], 3) for n in j.tied}) == [0.0, 0.25, 0.75]
+    # Ansys: no bonded contact element on a face that holds a node the tie left out (the shared ones)
+    AD.write_cdb(tmp_path / "m.cdb", prep)
+    rows = [ln for ln in (tmp_path / "m.cdb").read_text().split("EBLOCK", 1)[1].splitlines()[2:] if len(ln) >= 99]
+    conta = [[int(ln[k:k + 9]) for k in range(99, len(ln), 9)] for ln in rows if int(ln[9:18]) == 5]
+    assert conta and not any(set(c) & set(j.held_out.tolist()) for c in conta)
 
 
 def test_a_slave_node_beyond_the_tolerance_is_not_tied(tmp_path):
@@ -241,5 +246,29 @@ def test_a_node_over_a_convex_crease_is_on_the_master_and_one_beside_its_rim_is_
     dist, tri = AD._nearest_master(np.array([over_ridge, beside_eave]), tri_xyz, 0.1, tri_ids=tri_ids)
     assert dist[0] == pytest.approx(0.05) and tri[0] >= 0
     assert not np.isfinite(dist[1]) and tri[1] == -1
+    # a farther facet the node also lies over (0.5 below, beyond the tolerance) never hides the nearer crease
+    far = np.array([[-1, -1, -0.35], [1, -1, -0.35], [0, 2, -0.35]], dtype=float)
+    dist, tri = AD._nearest_master(np.array([over_ridge]), np.concatenate([tri_xyz, far[None]]), 0.1,
+                                   tri_ids=np.concatenate([tri_ids, [[7, 8, 9]]]))
+    assert dist[0] == pytest.approx(0.05) and tri[0] < 4
     # without the facets' node numbers nothing is known of the rim: the ridge node is not taken
     assert not np.isfinite(AD._nearest_master(np.array([over_ridge]), tri_xyz, 0.1)[0][0])
+
+
+def test_a_tie_that_ties_nothing_blocks_no_other():
+    # Part_1 is nearer Part_3 (0.05) than Part_2 (0.1), so the Part_1 -> Part_2 tie keeps no node; Part_2 is then
+    # no master, and its face stays free to be the slave of its own joint with Part_4 (whose corners lie off it)
+    m = _Mesh()
+    m.box(1, (0, 0, 0), (1, 1, 1), (2, 2, 2))
+    m.box(2, (1.1, 0, 0), (2, 2, 1), (2, 4, 2))
+    m.box(3, (1.05, 0, 0), (1.08, 1, 1), (1, 1, 1))
+    m.box(4, (0.5, 0.9, -0.1), (1.0, 2.1, 1.1), (1, 1, 1))
+    ab = _tie(m, m.face("Tie_1_Part_1", 1, 0, 1.0), m.face("Tie_1_Part_2", 2, 0, 1.1), (1, 2), reach=0.15e-3)
+    ac = _tie(m, m.face("Tie_2_Part_1", 1, 0, 1.0), m.face("Tie_2_Part_3", 3, 0, 1.05), (1, 3), reach=0.15e-3,
+              name="Tie_2")
+    bd = _tie(m, m.face("Tie_3_Part_2", 2, 0, 1.1), m.face("Tie_3_Part_4", 4, 0, 1.0), (2, 4), reach=0.15e-3,
+              name="Tie_3")
+    t1, t2, t3 = m.settle([ab, ac, bd]).joints
+    assert len(t1.tied) == 0 and t1.left_out["twice"] == len(ab.sides[0].nodes)
+    assert set(t2.tied.tolist()) == set(ac.sides[0].nodes.tolist())
+    assert t3.parts == (2, 4) and len(t3.tied) and t3.left_out["chain"] == 0
