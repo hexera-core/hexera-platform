@@ -55,10 +55,50 @@ def upload_progress(output_uri: str, stage: dict) -> None:
         json.dumps(stage), content_type="application/json", timeout=30)
 
 
+def kept_writer(bucket: str, key: str):
+    """A binary writer for one kept file's object (engines/bucket_files.keep): a resumable upload
+    in chunks, each with its own deadline, so a file of tens of GB is never one request."""
+    blob = storage_client().bucket(bucket).blob(key, chunk_size=RESULT_UPLOAD_CHUNK_BYTES)
+    return blob.open("wb", content_type="application/gzip", timeout=RESULT_UPLOAD_TIMEOUT_S,
+                     ignore_flush=True)
+
+
+def kept_reader(bucket: str, key: str):
+    """A binary reader for one kept file's object, read in chunks (never held whole)."""
+    return storage_client().bucket(bucket).blob(key, chunk_size=RESULT_UPLOAD_CHUNK_BYTES).open(
+        "rb", timeout=RESULT_UPLOAD_TIMEOUT_S)
+
+
+def kept_deleter(bucket: str, key: str) -> None:
+    storage_client().bucket(bucket).blob(key).delete(timeout=60)
+
+
+def keep_big_files(output_uri: str, workspace: str, result: dict) -> None:
+    """RUN-7: a big result's delivery-only files go to the bucket on their own and stay there
+    (engines/bucket_files); the rest is archived as before. What was sent home is measured again,
+    so the worker sizes its collection by what it will really hold."""
+    from meshpipeline.engines import bucket_files as BF
+    from meshpipeline.engines.dispatch import returned_bytes
+    out_bucket, out_key = split_gs(output_uri)
+    kept = BF.keep(workspace, bucket=out_bucket, output_key=out_key, writer=kept_writer)
+    if kept:
+        result["returned_bytes"] = {**returned_bytes(workspace),
+                                    "kept": int(sum(k.bytes for k in kept)),
+                                    "kept_files": len(kept)}
+
+
 def upload_result(output_uri: str, workspace: str, result: dict) -> None:
     gcs = storage_client()
     out_bucket, out_key = split_gs(output_uri)
     ws = pathlib.Path(workspace)
+    if result.get("rc") is not None:
+        # only a run that meshed has files to keep; a refusal's empty workspace has none
+        try:
+            keep_big_files(output_uri, workspace, result)
+        except Exception:  # noqa: BLE001 - keeping is an economy: the files then ride home whole
+            import logging
+            logging.getLogger(__name__).warning("keeping the big files in the bucket failed; the "
+                                                "workspace goes home whole", exc_info=True)
     with tempfile.TemporaryDirectory(prefix="mesh_out_", dir=str(ws.parent)) as tmp:
         archive = pathlib.Path(tmp) / "output.tar.gz"
         with tarfile.open(name=str(archive), mode="w:gz") as tf:

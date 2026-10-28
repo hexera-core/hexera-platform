@@ -23,11 +23,13 @@ import asyncio
 import json
 import logging
 import math
+import os
 import shutil
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from meshpipeline.engines import bucket_files as BF
 from meshpipeline.engines import fea_ai as FA
 from meshpipeline.engines import fea_ladder as L
 from meshpipeline.engines import fea_plan as P
@@ -1013,19 +1015,42 @@ def _read_quality(ws: Path) -> dict:
         return {}
 
 
+#: The pass files linked rather than copied: the mesh and its solver files, which no step writes into
+#: once made - a later pass clears them (unlinks) before it meshes, and its result lands by replacing
+#: names (sandbox/safe_extract moves over). The records beside them (the plan, the quality) are
+#: rewritten in place by the next pass, so those are always copied.
+LINKED = ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.msh")
+
+
+def _same_file(src: Path, dest: Path) -> None:
+    """`dest` becomes `src`'s content: a hard link for the mesh files (no bytes copied - a 34 M-element
+    pass is about 37 GB of them, and the worker's disk then holds a pass and its copy once), else a
+    copy."""
+    dest.unlink(missing_ok=True)
+    if src.name in LINKED:
+        try:
+            os.link(src, dest)
+            return
+        except OSError:
+            pass
+    shutil.copy2(src, dest)
+
+
 def _keep_pass(ws: Path, n: int) -> None:
     d = ws / PASS_FOLDER.format(n=n)
     d.mkdir(exist_ok=True)
-    for name in DELIVERABLES:
+    # with the record of what this pass kept in the bucket and its stand-ins (RUN-7): a pass
+    # restored later delivers its own kept files, never the last pass's
+    for name in DELIVERABLES + BF.STAND_INS:
         if (ws / name).exists():
-            shutil.copy2(ws / name, d / name)
+            _same_file(ws / name, d / name)
 
 
 def _restore_pass(ws: Path, n: int) -> None:
     d = ws / PASS_FOLDER.format(n=n)
-    for name in DELIVERABLES:
+    for name in DELIVERABLES + BF.STAND_INS:
         if (d / name).exists():
-            shutil.copy2(d / name, ws / name)
+            _same_file(d / name, ws / name)
         else:
             (ws / name).unlink(missing_ok=True)      # the delivered pass did not write it
 
@@ -1040,6 +1065,7 @@ def _read_failure(ws: Path) -> dict:
 def _clear_outputs(ws: Path) -> None:
     for name in ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.msh", "quality.json", "fea_failure.json"):
         (ws / name).unlink(missing_ok=True)
+    BF.clear(ws)            # the last pass's record of kept files and its stand-ins (RUN-7)
 
 
 async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run) -> tuple[dict, dict, dict]:
@@ -1143,7 +1169,7 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
         result, machine, work = await _native(ws, machine, work, job_id, n, run)
         await run.fence("accept native mesh output")
         q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
-        made = bool(q) and (ws / "mesh.inp").exists()
+        made = bool(q) and BF.present(ws, "mesh.inp")
         run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
         facts = {**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or ""),
                                 killed=_killed(result)),
@@ -1424,7 +1450,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 too_big = {**result["too_big_for_worker"], "pass": n}
                 break
             q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
-            made = bool(q) and (ws / "mesh.inp").exists()
+            made = bool(q) and BF.present(ws, "mesh.inp")
             run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
             # LAD-fea-7: killed by the job's memory limit (the kernel's SIGKILL on the mesher)
             killed = _killed(result)

@@ -59,6 +59,12 @@ def _by_name(name: str | None) -> Machine | None:
     return next((m for m in MACHINES if m.name == name), None)
 
 
+#: The files a flow mesh writes per cell, with room: a polyMesh is about 185-205 bytes a cell raw
+#: (6.7 M cells, 1,236 MB; 107 M cells, 22 GB on dev-areen, 28 Oct), and its logs, records and the
+#: archive it goes home in roughly double that.
+FLOW_FILE_BYTES_PER_CELL = 400
+
+
 def choose(*, process_gib: float, workspace_gib: float, why: str = "") -> dict:
     """WHERE A PLAN RUNS, decided before meshing. `process_gib`: the mesher's peak memory (with its
     margin); `workspace_gib`: the files it writes, which Cloud Run keeps in memory too."""
