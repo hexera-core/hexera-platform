@@ -97,7 +97,8 @@ def test_a_result_the_after_check_discards_carries_its_attempts_and_says_so(tmp_
     import meshpipeline.cad.repair.loop  # noqa: F401 - bound BEFORE the patch: the session's
     import meshpipeline.cad.repair.session  # noqa: F401 - own per-op check must stay real
     from meshpipeline.cad.repair.conservative import RepairRefused
-    monkeypatch.setattr(caps, "sanity_refusal", lambda original, final: "the part moved too far")
+    monkeypatch.setattr(caps, "sanity_refusal",
+                        lambda original, final, **declared: "the part moved too far")
     source = write_loose_faces_step(tmp_path / "loose.step")
     with pytest.raises(RepairRefused) as refused:
         repair_step_file(source, tmp_path / "out.step")

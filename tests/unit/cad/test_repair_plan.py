@@ -121,6 +121,41 @@ def test_the_same_operation_may_still_be_proposed_for_a_different_defect():
     assert candidate is not None and candidate.defect_fingerprint == "edge:b"
 
 
+def test_a_declined_aim_is_not_proposed_again_even_from_a_sibling_defect():
+    # THE DECLINE LEDGER IS KEYED BY THE AIM (operation + target set), NOT THE PROPOSING DEFECT.
+    # One tangle of crossing faces is reported once per member face, and every member proposes the
+    # IDENTICAL heal at the whole tangle. Keyed per (defect, op) - the ineffective ledger's key -
+    # the sibling findings re-proposed work the operation had already said no to, and on hero.stp
+    # two multi_body declines spent the stall budget before the sew was ever reached.
+    tangle = _Op("healish", {DefectCode.self_intersection}, 7)
+    tangle.targets_for = lambda defect: (
+        EntityRef(entity_type="face", fingerprint="face:x", entity_index=1),
+        EntityRef(entity_type="face", fingerprint="face:y", entity_index=2))
+    planner = RulesPlanner(ops=(tangle,))
+    history = RunHistory()
+    defects = (_defect(DefectCode.self_intersection, fingerprint="face:x", kind="face", index=1),
+               _defect(DefectCode.self_intersection, fingerprint="face:y", kind="face", index=2))
+
+    first = planner.propose(defects, history, shape=None)
+    assert first is not None and first.op.name == "healish"
+    history.mark_declined(first.op.name, (t.fingerprint for t in first.targets))
+
+    # The sibling finding must not re-propose the identical aim, and the defect still counts as
+    # CLAIMED: a decline is the operation's judgement, not "nothing claims it".
+    assert planner.propose(defects, history, shape=None) is None
+    assert not any(r["reason"] == "no_operation_claims_it" for r in history.refusals)
+
+
+def test_the_decline_ledger_ignores_target_order():
+    # The heal lists the proposing face first, so two sibling findings name the same tangle in a
+    # different order. The aim is the SET.
+    history = RunHistory()
+    history.mark_declined("healish", ("face:x", "face:y"))
+
+    assert history.was_declined("healish", ("face:y", "face:x"))
+    assert not history.was_declined("other", ("face:x", "face:y"))
+
+
 def test_when_every_pair_has_been_tried_there_is_no_candidate_left():
     planner = RulesPlanner(ops=(_NARROW,))
     history = RunHistory()

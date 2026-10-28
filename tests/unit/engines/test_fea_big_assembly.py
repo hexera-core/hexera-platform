@@ -465,3 +465,44 @@ def test_after_a_real_gmsh_error_the_fill_stops_and_keeps_only_what_it_filled():
         assert A.empty_volumes(gmsh, [1, 2, 3]) == [2, 3]
     finally:
         gmsh.finalize()
+
+
+def test_a_kept_part_with_tiny_faces_keeps_its_merges_on_the_pass_that_reads_it_back(tmp_path, monkeypatch, capsys):
+    """LAD-fea-11 x MESH-9: a kept part whose tiny faces pass 1 merged keeps them merged on the next pass - its
+    faces frozen out of that pass's merges, its merges read back with its mesh, folded in and recorded as a pass
+    that meshed it whole would (the same faces merged, the same named faces in the deck)."""
+    import re
+    import shutil
+
+    shape = fx._compound(fx.strip_block(), fx._box(40, 0, 0, 8, 8, 8))
+    planned = _planned(shape, tmp_path, monkeypatch, {"purpose": "structural", "fea_connection": "contact"})
+    whole = tmp_path / "whole"
+    shutil.copytree(planned, whole)
+    assert A.mesh(whole) == 0
+    first = tmp_path / "first"
+    shutil.copytree(planned, first)
+    with monkeypatch.context() as m:
+        _fail_volume(m, 2)
+        with pytest.raises(Exception, match="overlapping facets"):
+            A.mesh(first)
+    kept = json.loads((first / A.KEEP_JSON).read_text())
+    assert kept["kept_parts"] == ["Part_1"] and kept["failed_parts"] == ["Part_2"]
+    assert kept["tiny"]["faces"], "the kept part's merges travel with its mesh"
+    capsys.readouterr()
+    plan = json.loads((first / "fea_plan.json").read_text())
+    plan["mesh"] = {**(plan.get("mesh") or {}), "keep": {"rule": A.KEEP_RULE, "from_pass": 1}}
+    (first / "fea_plan.json").write_text(json.dumps(plan))
+    assert A.mesh(first) == 0
+    assert "1 part volume(s) kept from the pass before" in capsys.readouterr().err
+    q, q_whole = (json.loads((w / "quality.json").read_text()) for w in (first, whole))
+    assert not q["fatal"] and q["min_sicn"] > 0.0
+
+    def merged(rec):
+        return sorted((tuple(r["face"]), tuple(r["into"])) for r in (rec.get("fea_tiny") or {}).get("merged") or [])
+
+    assert merged(q) and merged(q) == merged(q_whole)
+
+    def faces(ws):
+        return sorted(set(re.findall(r"(Part_1_Face_\d+)\n", (ws / "mesh.inp").read_text())))
+
+    assert faces(first) == faces(whole)
