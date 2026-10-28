@@ -11,21 +11,26 @@ ever asks whether the decks are THERE; it reads none of them. It does read gmsh'
 3D view and the reviewer's pictures), and gmsh opening a 34 M-element file needs more memory than
 the worker has.
 
-So on the mesher, before the workspace is archived:
-  * the files no worker step reads past their presence (KEEPABLE), when they are big
-    (KEEP_FROM_BYTES), go to the exchange bucket on their own, each as one gzip member of its tar
-    data (its bytes and the tar padding) - the shape delivery can stream into the bundle as is;
-  * when gmsh's mesh is one of them, the mesher - which has the memory - writes the light
-    stand-ins the worker reads instead: the viewer's surface (VIEWER_MESH_FILE) and a surface-only
-    copy of the mesh for the reviewer (REVIEW_SURFACE_FILE);
-  * the record of what stayed (KEPT_FILE) rides home in the archive.
+And the worker used to compress the delivery bundle itself: a 107 M-cell polyMesh (22 GB) took
+93 minutes at gzip level 9 on its 4 CPUs.
 
-On the worker: a kept file counts as present (`present`), the delivery streams each download
-straight from the bucket into the artifact store (`raw_chunks`, `bundle_chunks`) - nothing touches
-the disk - and the kept objects are deleted once the delivery is stored (`release`).
+So on the mesher, before the workspace is archived, every file of PACK_FROM_BYTES or more goes to
+the exchange bucket on its own, already packed as the bundle needs it - gzip members of its tar
+data (its bytes and the tar padding), level 1, compressed on all the mesher's CPUs:
+  * a file no worker step reads past its presence (the decks; an FEA plan's gmsh mesh), when it is
+    KEEP_FROM_BYTES or more, is KEPT there; when gmsh's mesh is one, the mesher - which has the
+    memory - first writes the light stand-ins the worker reads instead: the viewer's surface
+    (VIEWER_MESH_FILE, thinned for a big mesh) and a surface-only mesh for the reviewer
+    (REVIEW_SURFACE_FILE);
+  * every other big file (a flow mesh's polyMesh, which the worker's checks read) is FETCHED: the
+    worker unpacks it to its place at collection;
+  * the record of both (KEPT_FILE) rides home in the archive, which carries only the small files.
 
-A flow mesh keeps nothing: the worker's own checks read its polyMesh (finalize, the region count,
-the viewer), so it comes home whole, under limits sized from what the mesher measured.
+On the worker: a kept file counts as present (`present`), and the delivery streams every download
+straight from the bucket into the artifact store (`raw_chunks`, `bundle_chunks`) - the bundle's big
+members, kept or fetched and unchanged, pass through as the mesher packed them, so nothing big is
+compressed on the worker or written to its disk - and the objects are deleted once the delivery is
+stored (`release`).
 """
 from __future__ import annotations
 
@@ -49,9 +54,6 @@ KEPT_FILE = "kept_in_bucket.json"
 VIEWER_MESH_FILE = "viewer_mesh.npz"
 #: A surface-only copy of a kept gmsh mesh, with its named groups, for the reviewer's pictures.
 REVIEW_SURFACE_FILE = "review_surface.msh"
-#: Everything this module writes into a workspace: cleared before a new result lands, so a record
-#: or a stand-in never outlives the result it describes.
-STAND_INS = (KEPT_FILE, VIEWER_MESH_FILE, REVIEW_SURFACE_FILE)
 
 #: A file this big stays in the bucket when no worker step reads it. Below it the file rides home
 #: as before: a few hundred MB is no burden, and the regression meshes all stay exactly as they are.
@@ -63,9 +65,24 @@ DECKS = ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.unv")
 FEA_MESH = "mesh.msh"
 FEA_PLAN = "fea_plan.json"
 
-#: How each kept file is packed: gzip at this level, one member per file (no name, no time - the
-#: same bytes for the same file, so a retried delivery stores the same bundle).
-GZIP_LEVEL = 6
+#: A file this big is PACKED on the mesher, whatever it is: sent home on its own, already in the
+#: bundle's own form, so the worker never compresses it. A file the worker reads (a flow mesh's
+#: polyMesh) is FETCHED - unpacked to its place at collection; one it never reads stays KEPT.
+PACK_FROM_BYTES = 64 * 1024 * 1024
+#: Kept here so the worker can tell a fetched file it changed since (then packed again) from one
+#: it did not (its packed bytes go into the bundle as they are).
+FETCHED_FILE = "fetched_from_bucket.json"
+#: Everything this module writes into a workspace: cleared before a new result lands, so a record
+#: or a stand-in never outlives the result it describes.
+STAND_INS = (KEPT_FILE, VIEWER_MESH_FILE, REVIEW_SURFACE_FILE, FETCHED_FILE)
+
+#: How each file is packed: gzip at level 1 (the delivery's bundle at level 9 took 93 minutes on
+#: the worker for a 22 GB polyMesh; the mesher packs it once, fast, on all its CPUs), in pieces of
+#: PACK_PIECE_BYTES, each its own gzip member (no name, no time - the same bytes for the same
+#: file, so a retried delivery stores the same bundle), compressed in parallel and written in order.
+GZIP_LEVEL = 1
+PACK_PIECE_BYTES = 64 * 1024 * 1024
+PACK_THREADS = 8
 _CHUNK = 8 * 1024 * 1024
 _BLOCK = tarfile.BLOCKSIZE          # 512
 _RECORD = tarfile.RECORDSIZE        # 20 blocks: tar pads its end to this
@@ -84,6 +101,7 @@ class Kept:
     gz_bytes: int       # the object's size
     gz_md5: str         # the object's md5, hex
     mode: int           # the file's permission bits
+    fetch: bool = False  # the worker unpacks it to its place at collection (it reads it)
 
 
 # ------------------------------------------------------------------------------------------ mesher
@@ -98,6 +116,16 @@ def keepable(workspace) -> list[Path]:
         p = ws / name
         if p.is_file() and not p.is_symlink() and p.stat().st_size >= KEEP_FROM_BYTES:
             out.append(p)
+    return sorted(out, key=lambda p: -p.stat().st_size)
+
+
+def packable(workspace) -> list[Path]:
+    """Every file of `workspace` sent home on its own: PACK_FROM_BYTES or more (the kept ones among
+    them). Largest first."""
+    ws = Path(workspace)
+    own = {ws / n for n in STAND_INS}
+    out = [p for p in ws.rglob("*") if p.is_file() and not p.is_symlink() and p not in own
+           and p.stat().st_size >= PACK_FROM_BYTES]
     return sorted(out, key=lambda p: -p.stat().st_size)
 
 
@@ -121,12 +149,22 @@ def _padding(n: int) -> bytes:
     return b"\0" * (_BLOCK - rem) if rem else b""
 
 
-def pack(src: Path, sink: BinaryIO) -> tuple[int, int, str]:
-    """Write `src` to `sink` as one gzip member of its tar data (the bytes and the padding to the
-    next 512-byte block). Returns (the file's bytes, the member's bytes, the member's md5)."""
+def _gzip_piece(data: bytes) -> bytes:
     z = zlib.compressobj(GZIP_LEVEL, zlib.DEFLATED, 31)     # 31: a gzip wrapper, mtime 0, no name
+    return z.compress(data) + z.flush()
+
+
+def pack(src: Path, sink: BinaryIO, *, threads: int | None = None) -> tuple[int, int, str]:
+    """Write `src` to `sink` as gzip members of its tar data (the bytes, then the padding to the
+    next 512-byte block): one member per PACK_PIECE_BYTES, compressed `threads` at a time and
+    written in order. Returns (the file's bytes, the object's bytes, the object's md5)."""
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+
     md5 = hashlib.md5()  # noqa: S324 - an integrity check against the store's own md5, not a secret
     raw = out = 0
+    size = src.stat().st_size
+    workers = max(1, int(threads or PACK_THREADS))
 
     def put(b: bytes) -> None:
         nonlocal out
@@ -135,18 +173,27 @@ def pack(src: Path, sink: BinaryIO) -> tuple[int, int, str]:
             md5.update(b)
             out += len(b)
 
-    with src.open("rb") as fh:
-        while chunk := fh.read(_CHUNK):
+    with src.open("rb") as fh, ThreadPoolExecutor(max_workers=workers) as pool:
+        pending: deque = deque()
+        while chunk := fh.read(PACK_PIECE_BYTES):
             raw += len(chunk)
-            put(z.compress(chunk))
-    put(z.compress(_padding(raw)))
-    put(z.flush())
+            if raw >= size:
+                chunk += _padding(raw)          # the last piece carries tar's padding
+            pending.append(pool.submit(_gzip_piece, chunk))
+            while len(pending) >= 2 * workers:  # bounded: only so many pieces in memory
+                put(pending.popleft().result())
+        while pending:
+            put(pending.popleft().result())
+    if raw != size:
+        raise KeptFileError(f"{src.name} changed while it was packed")
+    if raw == 0:
+        put(_gzip_piece(b""))
     return raw, out, md5.hexdigest()
 
 
 def write_record(workspace, kept: Iterable[Kept]) -> None:
     rows = {k.rel: {"bucket": k.bucket, "key": k.key, "bytes": k.bytes, "gz_bytes": k.gz_bytes,
-                    "gz_md5": k.gz_md5, "mode": k.mode} for k in kept}
+                    "gz_md5": k.gz_md5, "mode": k.mode, "fetch": bool(k.fetch)} for k in kept}
     (Path(workspace) / KEPT_FILE).write_text(json.dumps({"version": 1, "rule": RULE, "files": rows}, indent=1,
                                                         sort_keys=True))
 
@@ -179,17 +226,20 @@ def write_stand_ins(workspace) -> list[str]:
 
 def keep(workspace, *, bucket: str, output_key: str,
          writer: Callable[[str, str], Any], parallel: int = 4) -> list[Kept]:
-    """Keep the keepable files of `workspace` in the bucket (the module text): the stand-ins
-    first, then each file packed to `writer(bucket, key)` - a context manager giving a binary
-    writer - and removed here once stored; then the record. Returns what was kept."""
+    """Send the big files of `workspace` home on their own (the module text): the stand-ins first,
+    then each packable file packed to `writer(bucket, key)` - a context manager giving a binary
+    writer - and removed here once stored (the archive then carries the rest); then the record,
+    each row marked to be fetched home or kept in the bucket. Returns every row."""
     import uuid
     from concurrent.futures import ThreadPoolExecutor
 
     ws = Path(workspace)
-    files = keepable(ws)
+    files = packable(ws)
     if not files:
         return []
-    write_stand_ins(ws)
+    stays = set(keepable(ws))
+    if stays:
+        write_stand_ins(ws)
     run = uuid.uuid4().hex
 
     def one(p: Path) -> Kept:
@@ -198,7 +248,8 @@ def keep(workspace, *, bucket: str, output_key: str,
         mode = p.stat().st_mode & 0o7777
         with writer(bucket, key) as sink:
             raw, gz, md5 = pack(p, sink)
-        return Kept(rel=rel, bucket=bucket, key=key, bytes=raw, gz_bytes=gz, gz_md5=md5, mode=mode)
+        return Kept(rel=rel, bucket=bucket, key=key, bytes=raw, gz_bytes=gz, gz_md5=md5, mode=mode,
+                    fetch=p not in stays)
 
     with ThreadPoolExecutor(max_workers=max(1, min(parallel, len(files)))) as pool:
         kept = list(pool.map(one, files))      # zlib and the upload release the GIL
@@ -206,15 +257,9 @@ def keep(workspace, *, bucket: str, output_key: str,
     write_record(ws, kept)
     for k in kept:
         (ws / k.rel).unlink()
-    logger.info("kept in the bucket: %s", ", ".join(f"{k.rel} ({k.bytes / 1e9:.2f} GB)" for k in kept))
+    logger.info("sent on their own: %s", ", ".join(
+        f"{k.rel} ({k.bytes / 1e9:.2f} GB, {'fetched' if k.fetch else 'kept'})" for k in kept))
     return kept
-
-
-def kept_bytes(workspace) -> int:
-    try:
-        return sum(k.bytes for k in read_record(workspace).values())
-    except KeptFileError:
-        return 0
 
 
 # ------------------------------------------------------------------------------------------ worker
@@ -247,7 +292,7 @@ def read_record(workspace, *, bucket: str | None = None, prefix: str | None = No
                 raise KeptFileError(f"kept file {rel!r} is not a workspace path")
             k = Kept(rel=pure.as_posix(), bucket=str(r["bucket"]), key=str(r["key"]),
                      bytes=int(r["bytes"]), gz_bytes=int(r["gz_bytes"]), gz_md5=str(r["gz_md5"]),
-                     mode=int(r["mode"]) & 0o7777)
+                     mode=int(r["mode"]) & 0o7777, fetch=bool(r.get("fetch", False)))
             if k.bytes <= 0 or k.gz_bytes <= 0:
                 raise KeptFileError(f"kept file {rel!r} is empty")
             if bucket is not None and k.bucket != bucket:
@@ -327,6 +372,50 @@ def raw_chunks(k: Kept, opener: Opener) -> Iterator[bytes]:
         raise KeptFileError(f"{k.rel}: the stored object is {left} bytes short of the file")
 
 
+def _stamp(p: Path) -> list[int]:
+    st = p.stat()
+    return [int(st.st_size), int(st.st_mtime_ns)]
+
+
+def fetch(workspace, opener: Opener, *, threads: int = 4) -> int:
+    """At collection: unpack every row marked fetch to its place in `workspace` (a temporary name,
+    then renamed over), its size checked, its permission bits restored; then note each one's size
+    and time (FETCHED_FILE), so the bundle passes its packed bytes through only while the file is
+    as fetched. Returns the bytes written."""
+    from concurrent.futures import ThreadPoolExecutor
+    ws = Path(workspace)
+    rows = [k for k in read_record(ws).values() if k.fetch]
+    if not rows:
+        return 0
+
+    def one(k: Kept) -> int:
+        dest = ws / k.rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(f".{dest.name}.fetching")
+        try:
+            with tmp.open("wb") as fh:
+                for chunk in raw_chunks(k, opener):
+                    fh.write(chunk)
+            tmp.chmod(k.mode)
+            tmp.replace(dest)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return k.bytes
+
+    with ThreadPoolExecutor(max_workers=max(1, min(threads, len(rows)))) as pool:
+        total = sum(pool.map(one, rows))
+    (ws / FETCHED_FILE).write_text(json.dumps({k.rel: _stamp(ws / k.rel) for k in rows}, sort_keys=True))
+    return total
+
+
+def _as_fetched(workspace: Path) -> dict[str, list[int]]:
+    try:
+        d = json.loads((workspace / FETCHED_FILE).read_text())
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def packed_chunks(k: Kept, opener: Opener) -> Iterator[bytes]:
     """The kept object's own bytes (a gzip member of the file's tar data), its size and md5 checked."""
     md5 = hashlib.md5()  # noqa: S324
@@ -365,6 +454,7 @@ def bundle_entries(workspace, members: Iterable[str], prefix: str) -> list[tuple
     here nor kept is left out, as tarfile.add leaves out an optional member that is absent."""
     ws = Path(workspace)
     kept_files = kept(ws)
+    as_fetched = _as_fetched(ws)
     out: list[tuple[str, Path | None, Kept | None]] = []
 
     def walk(rel: str) -> None:
@@ -372,6 +462,11 @@ def bundle_entries(workspace, members: Iterable[str], prefix: str) -> list[tuple
         name = f"{prefix}/{rel}"
         if rel in kept_files and not p.exists():
             out.append((name, None, kept_files[rel]))
+            return
+        k = kept_files.get(rel)
+        if k is not None and k.fetch and p.is_file() and as_fetched.get(rel) == _stamp(p):
+            # fetched and not changed since: its packed bytes go in as they are (nothing compressed here)
+            out.append((name, None, k))
             return
         if p.is_dir() and not p.is_symlink():
             out.append((name, p, None))
@@ -440,7 +535,8 @@ def release(workspace, deleter: Callable[[str, str], None]) -> int:
     return gone
 
 
-__all__ = ["DECKS", "FEA_MESH", "KEEP_FROM_BYTES", "KEPT_FILE", "REVIEW_SURFACE_FILE", "STAND_INS",
-           "VIEWER_MESH_FILE", "Kept", "KeptFileError", "bundle_chunks", "bundle_entries", "clear",
-           "keep", "keepable", "kept", "kept_bytes", "object_key", "pack", "packed_chunks", "present",
-           "raw_chunks", "read_record", "release", "size", "write_record", "write_stand_ins"]
+__all__ = ["DECKS", "FEA_MESH", "FETCHED_FILE", "KEEP_FROM_BYTES", "KEPT_FILE", "PACK_FROM_BYTES",
+           "REVIEW_SURFACE_FILE", "STAND_INS", "VIEWER_MESH_FILE", "Kept", "KeptFileError", "bundle_chunks",
+           "bundle_entries", "clear", "fetch", "keep", "keepable", "kept", "object_key", "pack", "packable",
+           "packed_chunks", "present", "raw_chunks", "read_record", "release", "size", "write_record",
+           "write_stand_ins"]

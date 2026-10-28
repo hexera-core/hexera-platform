@@ -82,8 +82,15 @@ def keep_big_files(output_uri: str, workspace: str, result: dict) -> None:
     out_bucket, out_key = split_gs(output_uri)
     kept = BF.keep(workspace, bucket=out_bucket, output_key=out_key, writer=kept_writer)
     if kept:
-        result["returned_bytes"] = {**returned_bytes(workspace),
-                                    "kept": int(sum(k.bytes for k in kept)),
+        # what the worker will hold: the archive's files and the fetched ones (unpacked at
+        # collection); the kept ones never reach it
+        here = returned_bytes(workspace)
+        fetched = [k for k in kept if k.fetch]
+        result["returned_bytes"] = {**here,
+                                    "raw": int(here["raw"]) + int(sum(k.bytes for k in fetched)),
+                                    "largest": max([int(here["largest"])] + [k.bytes for k in fetched]),
+                                    "fetched": int(sum(k.bytes for k in fetched)),
+                                    "kept": int(sum(k.bytes for k in kept if not k.fetch)),
                                     "kept_files": len(kept)}
 
 
