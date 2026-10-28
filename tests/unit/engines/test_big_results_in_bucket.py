@@ -290,11 +290,18 @@ def test_a_label_list_is_read_in_pieces_and_checked_against_its_count(tmp_path, 
     monkeypatch.setattr(FL, "PIECE_BYTES", 97)       # many pieces, each cut at a line end
     got = FL.read_foam_labels(p)
     assert got is not None and np.array_equal(got, np.asarray(labels))
-    # a list that is not what it says it is is never used: short, or with a negative label
+    # a list that is not what it says it is is never used: short, or with a negative cell
     p.write_text(_FOAM_HEAD + "5\n(\n1\n2\n3\n)\n")
     assert FL.read_foam_labels(p) is None
     p.write_text(_FOAM_HEAD + "3\n(\n1\n-1\n3\n)\n")
     assert FL.read_foam_labels(p) is None
+    # cfMesh's neighbour list, the length of every face, -1 for each boundary face after the
+    # internal ones (job 6cb2d606's 107 M-cell mesh): the internal faces are the list
+    p.write_text(_FOAM_HEAD + "5\n(\n4\n7\n9\n-1\n-1\n)\n")
+    assert FL.read_foam_labels(p).tolist() == [4, 7, 9]
+    owner = tmp_path / "owner"
+    owner.write_text(_FOAM_HEAD + "5\n(\n4\n7\n9\n-1\n-1\n)\n")
+    assert FL.read_foam_labels(owner) is None          # an owner has no padding
     p.write_text(_FOAM_HEAD.replace("ascii", "binary") + "3\n(\n1\n2\n3\n)\n")
     assert FL.read_foam_labels(p) is None
 
