@@ -863,7 +863,11 @@ def load_kept(gmsh, ws: Path, kept: list[int]) -> list[int]:
                   if curves else [])
         clear.update(faces + curves + points)
     if clear:
-        gmsh.model.mesh.clear(sorted(clear))
+        # volumes first, then faces, curves, corners: gmsh leaves a face's mesh in place while elements of a
+        # volume not yet cleared still use its nodes. A part the file holds filled but not kept (a flat fill,
+        # never kept) kept its faces' old triangles under the new mesh, and the solver files stopped on them
+        # (o_fc_folding_chair, lab 28 Oct: 194 triangles on Part_1_Face_1 the face of no element)
+        gmsh.model.mesh.clear(sorted(clear, key=lambda dt: (-dt[0], dt[1])))
     return sorted(keep)
 
 

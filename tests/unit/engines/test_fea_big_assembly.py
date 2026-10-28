@@ -469,6 +469,44 @@ def test_a_part_filled_with_a_flat_element_is_meshed_again_never_kept(tmp_path, 
     assert kept["kept_volumes"] == [1] and kept["failed_volumes"] == [2, 3]
     assert kept["failed_parts"] == ["Part_2", "Part_3"]
 
+
+def test_a_filled_part_not_kept_is_read_back_with_no_mesh_on_its_faces(tmp_path):
+    """LAD-fea-11 (o_fc_folding_chair, lab 28 Oct): the kept file holds the whole model's mesh, a flat-filled part
+    not kept included. Read back, that part and every face of it hold no mesh - its old triangles left under the
+    new mesh made the solver files stop ("194 boundary triangle(s) are not the face of any element"). The kept
+    part keeps its mesh."""
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+
+        def model():
+            gmsh.model.add("keep")
+            gmsh.model.occ.addBox(0, 0, 0, 1, 1, 1)
+            gmsh.model.occ.addBox(2, 0, 0, 1, 1, 1)
+            gmsh.model.occ.synchronize()
+
+        def count(dim, tag):
+            _t, tags, _n = gmsh.model.mesh.getElements(dim, tag)
+            return sum(len(t) for t in tags)
+
+        model()
+        gmsh.option.setNumber("Mesh.MeshSizeMax", 0.3)
+        gmsh.model.mesh.generate(3)
+        tets_2 = count(3, 2)
+        for k, v in (("Mesh.SaveParametric", 1), ("Mesh.SaveAll", 1), ("Mesh.Binary", 1), ("Mesh.MshFileVersion", 4.1)):
+            gmsh.option.setNumber(k, v)
+        gmsh.write(str(tmp_path / A.KEEP_MSH))
+        gmsh.clear()
+        model()
+        assert A.load_kept(gmsh, tmp_path, [2]) == [2]
+        faces_1 = [abs(t) for _d, t in gmsh.model.getBoundary([(3, 1)], oriented=False)]
+        assert count(3, 1) == 0 and sum(count(2, f) for f in faces_1) == 0
+        faces_2 = [abs(t) for _d, t in gmsh.model.getBoundary([(3, 2)], oriented=False)]
+        assert count(3, 2) == tets_2 and all(count(2, f) for f in faces_2)
+    finally:
+        gmsh.finalize()
+
+
 def test_after_a_real_gmsh_error_the_fill_stops_and_keeps_only_what_it_filled():
     """gmsh refuses every mesh call after an error in the same process ("I'm busy! Ask me that later", ox_mc_lid,
     27 Oct: the 14 parts after Part_239 came back empty). The fill stops at the part that failed and says which it
