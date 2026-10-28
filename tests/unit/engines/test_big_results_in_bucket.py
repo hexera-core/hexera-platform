@@ -42,6 +42,18 @@ class _Bucket:
         self.objects.pop((bucket, key), None)
 
 
+def _inflate(obj: bytes) -> bytes:
+    import zlib
+    d = zlib.decompressobj(-15)
+    return d.decompress(obj) + d.flush()
+
+
+def _deflate(data: bytes) -> bytes:
+    import zlib
+    z = zlib.compressobj(1, zlib.DEFLATED, -15)
+    return z.compress(data) + z.flush(zlib.Z_SYNC_FLUSH)
+
+
 @pytest.fixture
 def small_files(monkeypatch):
     monkeypatch.setattr(BF, "KEEP_FROM_BYTES", 1000)
@@ -96,8 +108,8 @@ def test_a_short_fetch_is_refused_and_leaves_nothing_half_written(tmp_path, smal
     ws = _flow_ws(tmp_path)
     bucket = _Bucket()
     k = {x.rel: x for x in BF.keep(ws, bucket="ex", output_key="o", writer=bucket.writer)}["constant/polyMesh/faces"]
-    whole = gzip.decompress(bucket.objects[("ex", k.key)])
-    bucket.objects[("ex", k.key)] = gzip.compress(whole[:100])
+    whole = _inflate(bucket.objects[("ex", k.key)])
+    bucket.objects[("ex", k.key)] = _deflate(whole[:100])
     with pytest.raises(BF.KeptFileError):
         BF.fetch(ws, bucket.reader)
     assert not (ws / "constant/polyMesh/faces").exists()
@@ -148,7 +160,7 @@ def test_keep_moves_the_file_to_the_bucket_and_records_it(tmp_path, small_files,
     k = rec["mesh.inp"]
     assert k.bytes == len(original) and k.key.startswith("ops/abc/output.tar.gz.kept/")
     # stored as one gzip member of the file's tar data: the bytes, then zeros to the next block
-    packed = gzip.decompress(bucket.objects[("ex", k.key)])
+    packed = _inflate(bucket.objects[("ex", k.key)])
     assert packed[:len(original)] == original and len(packed) % 512 == 0
     assert set(packed[len(original):]) <= {0}
     assert b"".join(BF.raw_chunks(k, bucket.reader)) == original
@@ -161,8 +173,8 @@ def test_a_short_or_tampered_object_is_never_delivered_as_the_file(tmp_path, sma
     ws = _fea_ws(tmp_path)
     bucket = _Bucket()
     k = {x.rel: x for x in BF.keep(ws, bucket="ex", output_key="o", writer=bucket.writer)}["mesh.inp"]
-    whole = gzip.decompress(bucket.objects[("ex", k.key)])
-    bucket.objects[("ex", k.key)] = gzip.compress(whole[:100])
+    whole = _inflate(bucket.objects[("ex", k.key)])
+    bucket.objects[("ex", k.key)] = _deflate(whole[:100])
     with pytest.raises(BF.KeptFileError, match="short"):
         b"".join(BF.raw_chunks(k, bucket.reader))
     with pytest.raises(BF.KeptFileError, match="does not match"):
@@ -178,14 +190,14 @@ def test_a_short_or_tampered_object_is_never_delivered_as_the_file(tmp_path, sma
 def test_a_record_naming_anything_but_this_runs_objects_is_refused(tmp_path, row, why):
     ws = tmp_path
     good = {"bucket": "ex", "key": "o.kept/run1/mesh.inp.gz", "bytes": 5, "gz_bytes": 9,
-            "gz_md5": "0" * 32, "mode": 0o644}
+            "gz_md5": "0" * 32, "mode": 0o644, "crc32": 0}
     (ws / BF.KEPT_FILE).write_text(json.dumps({"files": {"mesh.inp": {**good, **row}}}))
     with pytest.raises(BF.KeptFileError, match=why):
         BF.read_record(ws, bucket="ex", prefix="o")
 
 
 def test_a_record_path_cannot_leave_the_workspace(tmp_path):
-    row = {"bucket": "ex", "key": "o.kept/r/../x.gz", "bytes": 5, "gz_bytes": 9, "gz_md5": "0" * 32, "mode": 0}
+    row = {"bucket": "ex", "key": "o.kept/r/../x.gz", "bytes": 5, "gz_bytes": 9, "gz_md5": "0" * 32, "mode": 0, "crc32": 0}
     (tmp_path / BF.KEPT_FILE).write_text(json.dumps({"files": {"../x": row}}))
     with pytest.raises(BF.KeptFileError, match="not a workspace path"):
         BF.read_record(tmp_path)
@@ -566,3 +578,31 @@ def test_a_failed_keep_sends_the_workspace_home_whole(tmp_path, small_files, mon
     with pytest.raises(OSError):
         gx.keep_big_files("gs://ex/o", str(ws), {"rc": 0})
     assert (ws / "mesh.inp").exists() and not (ws / BF.KEPT_FILE).exists()
+
+
+def test_the_bundle_is_one_gzip_member_every_reader_reads(tmp_path, small_files, monkeypatch):
+    # Python's stream reader ("r|gz") refuses a file of several gzip members; the bundle is one
+    monkeypatch.setattr(BF, "write_stand_ins", lambda ws: [])
+    ws = _fea_ws(tmp_path)
+    members = ["mesh.inp", "mesh.bdf", "mesh.cdb", "gmsh_spec.json"]
+    expected = _tarfile_bundle(ws, members, "gmsh_case")
+    bucket = _Bucket()
+    BF.keep(ws, bucket="ex", output_key="o", writer=bucket.writer)
+    streamed = b"".join(BF.bundle_chunks(BF.bundle_entries(ws, members, "gmsh_case"), bucket.reader))
+    assert streamed.count(b"\x1f\x8b\x08") >= 1 and streamed[:3] == b"\x1f\x8b\x08"
+    import zlib
+    d = zlib.decompressobj(31)
+    assert d.decompress(streamed) == expected and d.eof and d.unused_data == b""   # one member, trailer checked
+    with tarfile.open(fileobj=io.BytesIO(streamed), mode="r|gz") as tf:
+        names = [m.name for m in tf]
+    assert "gmsh_case/mesh.inp" in names
+
+
+def test_crc32_combine_is_zlibs():
+    import random
+    import zlib
+    rng = random.Random(7)
+    for _ in range(20):
+        a = bytes(rng.randrange(256) for _ in range(rng.randrange(0, 3000)))
+        b = bytes(rng.randrange(256) for _ in range(rng.randrange(0, 3000)))
+        assert BF.crc32_combine(zlib.crc32(a), zlib.crc32(b), len(b)) == zlib.crc32(a + b)
