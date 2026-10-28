@@ -431,11 +431,12 @@ def assembly_view(facts: dict | None) -> dict | None:
                    "at_mm": i.get("at_mm"), "area_mm2": i.get("area_mm2"), "overlap_share": i.get("overlap_share"),
                    "faces": i.get("faces") or {}} for i in rec.get("interfaces") or []]
     for i, src in zip(interfaces, rec.get("interfaces") or [], strict=False):
-        if src.get("kind") == "gap":
-            i.update(gap_mm=src.get("gap_mm"), gap_max_mm=src.get("gap_max_mm"), gap_limit_mm=src.get("gap_limit_mm"))
+        if src.get("kind") == "gap" or src.get("line"):
+            i.update(gap_mm=src.get("gap_mm"), gap_max_mm=src.get("gap_max_mm"), gap_limit_mm=src.get("gap_limit_mm"),
+                     line=bool(src.get("line")))
     touching = sum(1 for i in interfaces if i["kind"] == "touching")
     over = sum(1 for i in interfaces if i["kind"] == "overlap")
-    gaps = [i for i in interfaces if i["kind"] == "gap"]
+    gaps = [i for i in interfaces if i["kind"] == "gap" or i.get("line")]
     words = [f"{len(parts) or n} parts"]
     if touching:
         words.append(f"{touching} place{'s' if touching != 1 else ''} where parts touch")
@@ -453,7 +454,8 @@ def assembly_view(facts: dict | None) -> dict | None:
             # PLAN-fea-18: each small-gap joint in words, and the one switch for them (on by default)
             "gap_joins": [{"id": i["id"], "parts": i["parts"], "gap_mm": i.get("gap_mm"),
                            "words": gap_words(label.get(i["parts"][0], i["parts"][0]),
-                                              label.get(i["parts"][1], i["parts"][1]), i.get("gap_mm"))}
+                                              label.get(i["parts"][1], i["parts"][1]), i.get("gap_mm"),
+                                              line=bool(i.get("line")))}
                           for i in gaps],
             "gap_question": GAP_JOIN_QUESTION if gaps else "", "gap_default": DEFAULT_GAP_JOINS,
             "join_notes": list(joins.get("notes") or []),
@@ -463,13 +465,15 @@ def assembly_view(facts: dict | None) -> dict | None:
                              "there; with contact, the solver starts with them overlapping." if over else "")}
 
 
-def gap_words(a: str, b: str, gap_mm) -> str:
+def gap_words(a: str, b: str, gap_mm, *, line: bool = False) -> str:
     """One small-gap joint in plain words: "Bolt M8 sits 0.19 mm from Part_8 - joined across the gap"."""
     try:
         g = float(gap_mm)
         said = f"{g:.2g} mm" if g < 1 else f"{g:.3g} mm"
     except (TypeError, ValueError):
         said = "a small gap"
+    if line:
+        return f"{a} meets {b} only along a line or an edge{'' if said == '0 mm' else ', ' + said + ' apart'} - joined there"
     return f"{a} sits {said} from {b} - joined across the gap"
 
 

@@ -26,6 +26,11 @@ export const CONSOLE_SECTIONS: readonly ConsoleSection[] = [
     icon: "M4 5h16v10H9l-5 4z" },
   { href: "/usage", label: "Usage", group: "product", available: true,
     icon: "M12 3a9 9 0 1 0 9 9h-9z" },
+  // CAD repair is feature-flagged in the pipeline; this proof-of-concept page is gated the same
+  // way (CAD_REPAIR_POC) and filtered out of the sidebar by visibleSections below, so the entry
+  // can live in the registry -- currentSection needs it -- without reaching customers by default.
+  { href: "/repair", label: "CAD repair", group: "product", available: true,
+    icon: "M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 0 5.4-5.4l-2.4 2.4-2.3-2.3z" },
   { href: "/settings/account", label: "Account", group: "account", available: true,
     icon: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0" },
   { href: "/settings/api-keys", label: "API keys", group: "account", available: true,
@@ -35,6 +40,13 @@ export const CONSOLE_SECTIONS: readonly ConsoleSection[] = [
   { href: "/settings/billing", label: "Billing", group: "account", available: true,
     icon: "M3 7h18v10H3zM3 11h18M7 15h3" },
 ] as const;
+
+/** The sections the sidebar may show. The CAD repair proof of concept stays out of the nav
+ *  unless the deployment turned it on; the page itself 404s under the same switch, so hiding
+ *  the link here is presentation, not the security boundary. */
+export function visibleSections(repairPoc: boolean): readonly ConsoleSection[] {
+  return CONSOLE_SECTIONS.filter((section) => section.href !== "/repair" || repairPoc);
+}
 
 /** Which section's href owns this path, or "" if none does.
  *
