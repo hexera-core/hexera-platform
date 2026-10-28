@@ -1009,14 +1009,18 @@ def _clear_outputs(ws: Path) -> None:
         (ws / name).unlink(missing_ok=True)
 
 
-async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run) -> tuple[dict, dict, dict]:
+async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run, *,
+                  escalate: bool = True) -> tuple[dict, dict, dict]:
     """One native pass on `machine`: RUN-3 (out of memory: one machine up) and RUN-5 (still working at
-    the Cloud Run wall: a VM) as every pass. Returns (the result, the machine it ran on, its work)."""
+    the Cloud Run wall: a VM) as every pass - but a pass that need not escalate (`escalate` False: LAD-fea-13's
+    refinement, a mesh already in hand) ends where it stops. Returns (the result, the machine it ran on, its work)."""
     from meshpipeline.contracts import mesh_machine as MM
     from meshpipeline.engines.runtime import get_engine
 
     while True:
         result = await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws, timeout=work["ceiling_s"])
+        if not escalate:
+            return result, machine, work
         if _out_of_memory(result):
             moved, rule, decided = MM.step_up(machine, measured_gib=_peak_gib(result)), "RUN-3", "step up"
         elif result.get("timed_out") and not result.get("stalled"):
@@ -1163,6 +1167,12 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
     return record, ran
 
 
+#: LAD-fea-13: the refinement after the rung takes at most this many times the rung's own pass, never less than
+#: the floor - a mesh is already in hand (g_c0109: a 20-minute part ran past 2 hours refined, 10-micron walls)
+REFINE_TIME_SHARE = 2.0
+REFINE_TIME_FLOOR_S = 600.0
+
+
 async def _rung_refine(ws: Path, record: dict, diag_m: float, first_plan: dict, passes: list[dict],
                        ran: list[dict], last: dict, *, job_id: str, run, kept: dict | None = None) -> dict | None:
     """LAD-fea-13: one refinement pass after the rung's valid but short pass `last`. None when no short zone is on
@@ -1213,22 +1223,27 @@ async def _rung_refine(ws: Path, record: dict, diag_m: float, first_plan: dict, 
     process_gib, files_gib = memory_need(elements)
     machine = TW.rung_machine(elements, process_gib, files_gib, margin=MEMORY_MARGIN)
     MM.write(ws, machine)
-    work = planned_work(plan, ceiling_s=ceiling_for(run, machine))
+    # a mesh is in hand: the refinement may take at most REFINE_TIME_SHARE times the rung's own pass (never less
+    # than REFINE_TIME_FLOOR_S), on its machine, and ends there - never a bigger machine, never longer
+    budget = max(REFINE_TIME_FLOOR_S, REFINE_TIME_SHARE * float(last.get("native_s") or 0.0))
+    work = planned_work(plan, ceiling_s=min(ceiling_for(run, machine), budget))
     await run.fence("start native mesh")
     t0 = time.monotonic()
-    result, machine, work = await _native(ws, machine, work, job_id, n, run)
+    result, machine, work = await _native(ws, machine, work, job_id, n, run, escalate=False)
     await run.fence("accept native mesh output")
     q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
     made = bool(q) and (ws / "mesh.inp").exists()
     run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
     facts = {**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or ""), killed=_killed(result)),
+             "budget_s": round(budget, 1),
              "native_s": round(time.monotonic() - t0, 1), "engine": TW.ENGINE, "rung": last.get("rung"),
              "parts": parts, "refine": {"after_pass": last["pass"], "parts": targets},
              "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}}
     if result.get("timed_out"):
         facts["timed_out"] = True
     if not facts["valid"]:
-        facts["rung_error"] = _rung_error(result)
+        facts["rung_error"] = ("the refinement ran past its time budget" if result.get("timed_out")
+                               else _rung_error(result))
     better = L.refined_better(facts, last)
     # the better of the two is the one delivered (LAD-fea-5 alone would weigh the worst element first)
     if better:

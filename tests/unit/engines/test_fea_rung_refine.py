@@ -2,10 +2,12 @@
 # Boundaries: the grid and the targets on numbers; the ladder through the real driver and adapter with a stand-in fTetWild on PATH (the real cases, the STEP hunt's five assemblies, are the lab's: ~/fea_hunt).
 from __future__ import annotations
 
+import asyncio
 import json
 import stat
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -175,6 +177,8 @@ def test_a_rung_mesh_short_of_its_walls_gets_one_refinement_pass_and_the_better_
     assert refined["refine"]["after_pass"] == rung[0]["pass"] and refined["valid"]
     assert L.refined_better(refined, rung[0]) and refined.get("deliverable", True)
     assert passes["delivered"] == refined["pass"]
+    from meshpipeline.engines import fea_driver as FD
+    assert refined["budget_s"] == pytest.approx(max(FD.REFINE_TIME_FLOOR_S, FD.REFINE_TIME_SHARE * rung[0]["native_s"]), abs=0.1)
     cited = [e for e in dr.cited_for(f"t-{ws.name}") if e["rule"] == "LAD-fea-13"]
     assert [e["decided"] for e in cited] == ["rung refinement", "rung refinement kept"] and cited[1]["value"] is True
     q = json.loads((ws / "quality.json").read_text())
@@ -214,3 +218,35 @@ def test_a_part_run_with_the_same_inputs_is_taken_from_its_folder(tmp_path, fake
     other = TW.run_part({**job, "edge": 0.008})
     assert not other.get("reused")
     assert TW.run_part({**job, "edge": 0.008}).get("reused")
+
+
+def test_a_refinement_out_of_time_ends_there_and_the_rungs_pass_is_delivered(tmp_path, monkeypatch, fake):
+    """A mesh is in hand: the refinement gets its budget and no more - never a bigger machine or a longer wall."""
+    from tests import fea_fixtures as fx
+    from tests.unit.engines.test_fea_tetwild import _gmsh_fails_on, _Run, _safe, _stage
+
+    from meshpipeline.engines import fea_driver as FD
+    from meshpipeline.engines import runtime
+    from meshpipeline.engines.gmsh import fea_adapter
+
+    _grid_only_when_held(monkeypatch, held=True)
+    ws = _stage(fx.plate_with_hole(), tmp_path / "refine_out_of_time")
+    _gmsh_fails_on(monkeypatch, None, ["Face_5"])
+    ceilings = []
+
+    def mesher(w, timeout):
+        plan = json.loads((Path(w) / "fea_plan.json").read_text())
+        if ((plan.get("mesh") or {}).get("ftetwild") or {}).get("refine"):
+            ceilings.append(timeout)
+            return {"rc": -9, "timed_out": True}          # the refinement ran past its budget
+        return {"rc": _safe(fea_adapter.mesh, w)}
+
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=mesher))
+    ok, marker, _o = asyncio.run(FD.drive(ws, {}, job_id=f"t-{ws.name}", publish=None, run=_Run()))
+    assert ok, marker
+    passes = json.loads((ws / "fea_passes.json").read_text())
+    rung = [p for p in passes["passes"] if p.get("engine") == "ftetwild"]
+    assert len(ceilings) == 1                               # one try: no step up, no move off the wall
+    assert ceilings[0] == pytest.approx(rung[1]["budget_s"], abs=1.0)
+    assert rung[1]["deliverable"] is False and "time budget" in rung[1]["rung_error"]
+    assert passes["delivered"] == rung[0]["pass"]
