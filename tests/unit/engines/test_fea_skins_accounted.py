@@ -203,7 +203,7 @@ def test_a_single_parts_skin_is_left_out_and_every_face_keeps_its_cad_name(tmp_p
     import numpy as np
     m = SolidMesh(np.zeros(0, dtype=np.int64), np.zeros((0, 3)), np.zeros((0, 4), dtype=np.int64),
                   np.zeros(0, dtype=np.int64), {k: np.zeros((0, 3)) for k in range(1, n)}, by_tag=True)
-    assert sorted(retagged(m, {k: o for k, o in enumerate(info["origin"], start=1)}).faces) == sorted(info["origin"])
+    assert sorted(retagged(m, dict(enumerate(info["origin"], start=1))).faces) == sorted(info["origin"])
 
 
 def test_a_single_part_without_a_skin_is_staged_as_it_was(tmp_path):
