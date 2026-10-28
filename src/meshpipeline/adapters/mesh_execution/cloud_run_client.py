@@ -19,6 +19,7 @@ from meshpipeline.adapters.mesh_execution.exchange_coordinates import (
     coordinates_for,
 )
 from meshpipeline.contracts.mesh_execution import (
+    CANCELLED_BY_OWNER,
     MESH_CONTRACT_ENV,
     MESH_EXCHANGE_VERSION,
     PLATFORM_UPDATING_KEY,
@@ -47,6 +48,12 @@ class CloudRunMeshExecutor:
             workspace, engine,
             lambda: run_mesh_remote(workspace, engine=engine, timeout=timeout,
                                     operation_key=operation_key))
+
+    def remote_state(self, operation_key: str) -> str | None:
+        """What became of the run under `operation_key`, read from its exchange (RUN-4, for a new
+        owner deciding whether to adopt it): "result" - its result is written; "running" - its
+        beacon was written within the stall window (WAIT_STALL_S); None - neither."""
+        return remote_state(operation_key)
 
     def collect(self, workspace, *, engine: str, timeout: int, operation_key: str) -> dict:
         # A PREVIOUS worker's submission was durably accepted. Its exchange objects live under
@@ -137,14 +144,24 @@ def _relay_progress(bucket, progress_key: str, seen: dict) -> bool:
             return False
         seen["generation"] = blob.generation
         alive = True
+        from meshpipeline.contracts import progress_clock
+        # the remote was heard: the run is in flight on its machine, whatever this worker's own CPU
+        # says (application/lease_keeper reads this as the job's sign of life)
+        progress_clock.remote_heard()
         doc = json.loads(blob.download_as_bytes())
         doc = doc if isinstance(doc, dict) else {}
         moved = doc.get("progress_at")
-        if moved is None or moved != seen.get("progress_at"):
-            from meshpipeline.contracts import progress_clock
+        # PROGRESS: its output moved, or its processes are working (`alive_at`: CPU, memory - a
+        # mesher filling a volume for an hour writes nothing, and that is still progress)
+        working = doc.get("alive_at")
+        if (moved is None or moved != seen.get("progress_at")
+                or (working is not None and working != seen.get("alive_at"))):
             progress_clock.touch()
         if moved is not None:
             seen["pulses"], seen["progress_at"] = True, moved
+        if working is not None:
+            seen["alive_at"] = working
+        seen["stage"] = str(doc.get("key") or "")
         from meshpipeline.contracts.mesh_progress import report
         report(doc)
     except Exception as exc:  # noqa: BLE001 - the live line is a courtesy, never the run's
@@ -176,6 +193,8 @@ def _poll_gcs_json(bucket, key: str, deadline_s: float, progress_key: str | None
             return json.loads(blob.download_as_bytes())
         if progress_key and _relay_progress(bucket, progress_key, seen):
             heard_at = time.time()
+            if heard is not None:
+                heard["stage"] = seen.get("stage", "")    # the last stage it said (RETURNING: keep it)
         if start_s is not None and heard_at is None and time.time() - start >= start_s:
             if heard is not None:
                 heard["never"] = True
@@ -195,6 +214,47 @@ def _poll_gcs_json(bucket, key: str, deadline_s: float, progress_key: str | None
         if silent and now - start >= deadline_s:
             return None
         time.sleep(10)
+
+
+def remote_state(operation_key: str, *, bucket=None, now: float | None = None) -> str | None:
+    """See CloudRunMeshExecutor.remote_state. Never raises: an unreadable exchange is None."""
+    try:
+        from meshpipeline.adapters.mesh_execution.exchange_coordinates import coordinates_for
+        from meshpipeline.artifact_keys import progress_key_beside
+        coords = coordinates_for(operation_key)
+        if bucket is None:
+            from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
+            bucket = storage_client().bucket(provcfg.GCP_MESH_BUCKET)
+        if bucket.blob(coords.result_object_key).exists():
+            return "result"
+        beacon = bucket.get_blob(progress_key_beside(coords.output_object_key))
+        updated = getattr(beacon, "updated", None) if beacon is not None else None
+        if updated is not None:
+            age = (time.time() if now is None else now) - updated.timestamp()
+            if age <= WAIT_STALL_S:
+                return "running"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not read the exchange of operation %s (%s)", operation_key[:16],
+                       type(exc).__name__)
+    return None
+
+
+def remote_left_running(reason: str, heard: dict | None, bucket, out_key: str) -> tuple[bool, str]:
+    """Whether a remote run whose wait was given up is left to finish (RUN-4), and why: when it is
+    already sending its result back, when its result is written, and whenever its job was not
+    cancelled by its owner (taken over, its lease lapsed, the worker going away) - its result then
+    lands in the exchange for the job's next owner. Only an owner's cancel stops it."""
+    from meshpipeline.contracts.mesh_execution import CANCELLED_BY_OWNER
+    if (heard or {}).get("stage") == "returning":
+        return True, "it is sending its result back"
+    try:
+        if bucket is not None and bucket.blob(out_key).exists():
+            return True, "its result is already written"
+    except Exception:  # noqa: BLE001 - unknown: decided by the reason alone
+        pass
+    if CANCELLED_BY_OWNER in str(reason):
+        return False, ""
+    return True, "its job was handed on, not cancelled - whoever owns it next collects this run"
 
 
 def _access_token() -> str:
@@ -610,6 +670,7 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
     # same way a successful one does. rc is the mesh's verdict, not evidence about the exchange.
     collection_complete = False
     result = None                     # set once the remote's result document has been read
+    heard: dict = {}                  # what the wait heard from the remote (its last stage, ...)
     # WHERE IT RUNS (contracts/mesh_machine): the Cloud Run mesh job, or a VM sized to fit the plan -
     # decided by the driver before meshing and written in the workspace; none means Cloud Run
     from meshpipeline.contracts import mesh_machine
@@ -641,7 +702,6 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         # a run THIS worker started is held to the never-heard window; one a previous worker started
         # (collected here) may have been heard by it, and is waited for as before
         start_s = (NEVER_HEARD_VM_S if on_vm else NEVER_HEARD_JOB_S) if submit else None
-        heard: dict = {}
         result = _poll_gcs_json(bucket, res_key, deadline_s=wait_s,
                                 progress_key=progress_key_beside(out_key), start_s=start_s, heard=heard)
         # THE MESH JOB IS ON ANOTHER EXCHANGE CONTRACT (the platform is mid-update): nothing was
@@ -746,7 +806,15 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         # stopped, because nobody will collect it. The exchange objects stay, like any run that
         # was not collected; a submission given up before its trigger has no execution to stop.
         logger.warning("Cloud Run mesh for %s given up before it finished: %s", engine, stop)
-        _stop(operation, engine=engine, why=str(stop))
+        keep, why_kept = remote_left_running(str(stop), heard, bucket, out_key)
+        if keep:
+            # NEVER THROWN AWAY (RUN-4, 28 Oct): the cyclone's VM was deleted while it was sending
+            # back 7 hours of meshing. A remote whose job was handed on - another worker owns it now,
+            # or will - or that is already sending its result back, finishes: its result lands in the
+            # exchange, where the job's owner collects it (application/native_submission adopts it).
+            logger.warning("the remote mesh for %s is left to finish: %s", engine, why_kept)
+        else:
+            _stop(operation, engine=engine, why=str(stop))
         return {"rc": RC_INFRASTRUCTURE, "timed_out": False,
                 "log_tail": f"{ABANDONED_MARKER} {engine}: {stop}"}
     except Exception as exc:  # noqa: BLE001 - any failure is a LOUD mesh failure, not a local run
@@ -765,7 +833,21 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
                 done = find_vm(instance_name(operation_key, str(machine["machine"])))
             _stop(done, engine=engine,
                   why="its result was collected" if collection_complete else "its result was written")
+        handed_on = False
         if bucket is not None and collection_complete:
+            # A JOB HANDED ON while its result was being collected (RUN-4): the result may be the
+            # next owner's to collect (application/native_submission adopts it), so the exchange is
+            # left for it - the bucket's lifecycle tidies it - and this worker's own fence refuses
+            # its copy
+            try:
+                _why = abandonment_reason() or ""
+                handed_on = bool(_why) and CANCELLED_BY_OWNER not in _why
+            except Exception:  # noqa: BLE001
+                handed_on = False
+            if handed_on:
+                logger.warning("the job was handed on while its result was collected: its exchange "
+                               "is left for the job's next owner")
+        if bucket is not None and collection_complete and not handed_on:
             # EXACTLY the three keys this operation owns, each deleted by name. Never a prefix
             # delete: the coordinates are derived per operation key, and a prefix sweep here could
             # take another job's or another generation's exchange with it.

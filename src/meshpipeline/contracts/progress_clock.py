@@ -18,9 +18,40 @@ _NATIVE_DONE: list[float] = [0.0]
 _NATIVE_SINCE: list[float | None] = [None]
 
 
+#: A file the lease keeper (application/lease_keeper) reads: touched whenever the remote mesher this
+#: job waits on is heard from, so a worker that is rightly idle - its mesh runs on another machine -
+#: is never read as dead. Set by the keeper's start; None without a keeper.
+_REMOTE_MARK: list[str | None] = [None]
+#: ...and one touched on every progress, so the keeper can move the job's deadline on progress the
+#: way the in-process beat does (application/pipeline_budget.progress_extension).
+_PROGRESS_MARK: list[str | None] = [None]
+
+
+def _mark(path: str | None) -> None:
+    if not path:
+        return
+    try:
+        import os
+        with open(path, "a"):
+            os.utime(path, None)
+    except OSError:
+        pass
+
+
 def touch() -> None:
     """The job made progress just now."""
     _LAST[0] = time.monotonic()
+    _mark(_PROGRESS_MARK[0])
+
+
+def set_marks(*, remote: str | None, progress: str | None) -> None:
+    _REMOTE_MARK[0], _PROGRESS_MARK[0] = remote, progress
+
+
+def remote_heard() -> None:
+    """The remote mesher this job waits on was heard from just now (its beacon was written again):
+    the job is in flight on its machine. Never raises."""
+    _mark(_REMOTE_MARK[0])
 
 
 def seconds_since() -> float | None:
@@ -66,5 +97,5 @@ def model_time() -> float:
     return time.monotonic() - native_seconds()
 
 
-__all__ = ["model_time", "native_run", "native_running", "native_seconds", "reset", "seconds_since",
-           "touch"]
+__all__ = ["model_time", "native_run", "native_running", "native_seconds", "remote_heard", "reset",
+           "seconds_since", "set_marks", "touch"]

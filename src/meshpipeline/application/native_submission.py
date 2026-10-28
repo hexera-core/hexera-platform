@@ -12,7 +12,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from meshpipeline.contracts.mesh_execution import RC_INFRASTRUCTURE, abandonment_watch
+from meshpipeline.contracts.mesh_execution import (
+    CANCELLED_BY_OWNER,
+    HANDED_ON,
+    RC_INFRASTRUCTURE,
+    abandonment_watch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +98,16 @@ def abandonment_watch_for(own: Any, *, recheck_seconds: float = OWNERSHIP_RECHEC
             logger.warning("could not check whether job %s is still this worker's (%s) - still "
                            "waiting on its mesh", own.job_id, type(exc).__name__)
             return None
-        return None if owned else "the job was cancelled, or is no longer this worker's to run"
+        if owned:
+            return None
+        # WHY it is no longer ours decides what becomes of the remote run (RUN-4, 28 Oct): only an
+        # owner's cancel stops it; a job handed on - taken over, or its lease lapsed - leaves it to
+        # finish, so its result lands in the exchange for whoever owns the job next
+        try:
+            cancelled = claims.cancelled_by_owner(job_id=own.job_id)
+        except Exception:  # noqa: BLE001 - not known to be a cancel: the work is kept
+            cancelled = False
+        return CANCELLED_BY_OWNER if cancelled else HANDED_ON
 
     return reason
 
@@ -181,6 +195,44 @@ class ClaimingMeshExecutor:
     def __init__(self, inner: ProviderMeshExecutor) -> None:
         self._inner = inner
 
+    def _adopt(self, own: Any, workspace: Any, *, engine: str, timeout: int, digest: str,
+               operation: str) -> dict | None:
+        """THE NEW OWNER ADOPTS THE RUNNING MESH (RUN-4, 28 Oct). A job taken over - its lease lapsed,
+        its worker lost - may still have its mesh running, or finished, on the machine the earlier
+        generation started: the same operation, the same payload. The new owner collects that run
+        instead of meshing again (the cyclone's 7 hours would have been). None when there is none
+        to adopt - nothing running and no result: the run is submitted as usual."""
+        from meshpipeline.persistence.repositories import native_submission_repository as claims
+        probe = getattr(self._inner, "remote_state", None)
+        collect = getattr(self._inner, "collect", None)
+        if probe is None or collect is None:
+            return None
+        try:
+            keys = claims.earlier_runs(job_id=own.job_id, execution_generation=own.execution_generation,
+                                       semantic_operation=operation, payload_digest=digest, engine=engine)
+        except Exception as exc:  # noqa: BLE001 - not known: mesh as usual
+            logger.warning("could not look for an earlier run of job %s to adopt (%s)", own.job_id,
+                           type(exc).__name__)
+            return None
+        for key in keys:
+            try:
+                state = probe(key)
+            except Exception:  # noqa: BLE001 - an unanswerable probe is no run to adopt
+                state = None
+            if state not in ("result", "running"):
+                continue
+            logger.warning("job %s generation %s adopts the mesh an earlier generation started (%s, "
+                           "operation %s) instead of meshing again", own.job_id,
+                           own.execution_generation, state, key[:16])
+            with abandonment_watch(abandonment_watch_for(own)):
+                result = collect(workspace, engine=engine, timeout=timeout, operation_key=key)
+            claims.mark_accepted(job_id=own.job_id, execution_generation=own.execution_generation,
+                                 worker_token=own.worker_token,
+                                 provider_reference=str(result.get("provider_reference") or "")
+                                 or f"adopted:{key}", semantic_operation=operation)
+            return {**result, "adopted_from": key}
+        return None
+
     def run(self, workspace: Any, *, engine: str, timeout: int) -> dict:
         from meshpipeline.application import execution_fence as fence
         from meshpipeline.persistence.repositories import (
@@ -230,6 +282,11 @@ class ClaimingMeshExecutor:
             # them may submit, and none of them may report success: the honest answer is that the
             # outcome is not known here.
             return _infrastructure_failure(engine, outcome.detail or str(outcome.result))
+
+        adopted = self._adopt(own, workspace, engine=engine, timeout=timeout, digest=digest,
+                              operation=operation)
+        if adopted is not None:
+            return adopted
 
         try:
             # THE WATCH the provider waits under: a run whose job was cancelled, moved or ended
