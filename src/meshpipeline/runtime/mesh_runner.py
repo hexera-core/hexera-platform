@@ -82,15 +82,17 @@ def _beacon(ws: str, output_uri: str, stop, *, every_s: float | None = None,
         cur = _output_mark(ws)
         if cur != mark or handing_back:
             mark, moved_at = cur, now
-        try:
-            if handing_back or (watch is not None and watch.poll() is not None):
-                alive_at = now
-        except Exception:  # noqa: BLE001 - a look that fails says nothing either way
-            pass
         stage = dict(RETURNING) if handing_back else read_stage(ws)
         new_stage = stage is not None and bool(stage) and stage.get("key") != said
         if not (new_stage or now - sent_at >= pulse_s):
             continue
+        try:
+            # looked at once per beacon written, not at every glance at the logs: the process tree is
+            # read from /proc, and a pulse a minute is all `alive_at` needs
+            if handing_back or (watch is not None and watch.poll() is not None):
+                alive_at = now
+        except Exception:  # noqa: BLE001 - a look that fails says nothing either way
+            pass
         try:
             upload_progress(output_uri, {**(stage or {}), "at": now, "progress_at": moved_at,
                                          "alive_at": alive_at})
