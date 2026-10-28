@@ -466,7 +466,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
              internal_flow: bool = False, engine_params: dict | None = None,
              flow_topology: str = "") -> dict:
     ws = Path(workspace_dir)
-    if not (ws / "mesh.inp").exists():
+    # a big deck kept in the bucket is this result's deck all the same (engines/bucket_files, RUN-7)
+    from meshpipeline.engines.bucket_files import present
+    if not present(ws, "mesh.inp"):
         return {"success": False, "stdout": "", "stderr": "",
                 "output": _no_deck_reason(ws)}
     q = check_mesh(ws)

@@ -56,13 +56,22 @@ def compressed_size(path: Path) -> int:
     return out + len(z.flush()) + _MEMBER_BYTES
 
 
+def _archived(workspace) -> list[Path]:
+    """The files the archive will hold: all of them but those sent home on their own on a remote run
+    (engines/bucket_files, RUN-7 - measured here as if sent: they never ride in the archive there,
+    and a local run never extracts an archive at all)."""
+    from meshpipeline.engines.bucket_files import packable
+    kept = set(packable(workspace))
+    return [p for p in Path(workspace).rglob("*") if p.is_file() and p not in kept]
+
+
 def estimate_archive_bytes(workspace) -> int:
     """How large the gzip archive of `workspace` will be (compressed_size of every file)."""
-    return sum(compressed_size(p) for p in Path(workspace).rglob("*") if p.is_file())
+    return sum(compressed_size(p) for p in _archived(workspace))
 
 
 def raw_bytes(workspace) -> int:
-    return sum(p.stat().st_size for p in Path(workspace).rglob("*") if p.is_file())
+    return sum(p.stat().st_size for p in _archived(workspace))
 
 
 def archive_ceiling() -> int:
