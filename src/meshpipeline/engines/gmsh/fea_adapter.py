@@ -762,11 +762,30 @@ def keep_filled(gmsh, ws: Path, vols, failed, rung_vols, *, scale: float, tied: 
     skip = {int(v) for v in untried}
     candidates = sorted({int(v) for v in vols} - {int(v) for v in failed} - {int(v) for v in rung_vols} - skip)
     hollow = set(empty_volumes(gmsh, candidates))
+    # a volume filled with a flat or inverted element (SICN under DEGENERATE_SICN) is not a mesh to keep: it is
+    # meshed again, as it would be without LAD-fea-11 (kept, Netgen's optimiser crashed on such a sliver - the
+    # folding chair's Part_1, lab 28 Oct)
+    flat = set(flat_volumes(gmsh, [v for v in candidates if v not in hollow]))
+    if flat:
+        print(f"[GMSH-FEA] volume(s) {sorted(flat)} filled with a flat or inverted element - meshed again, never kept "
+              f"({KEEP_RULE})", file=sys.stderr)
+    hollow |= flat
     good = [v for v in candidates if v not in hollow]
     if good:
         save_kept(gmsh, ws, scale=scale, tied=tied, kept=good, failed=sorted({int(v) for v in failed} | hollow),
                   part_volumes=part_volumes, tiny=tiny)
     return good
+
+
+def flat_volumes(gmsh, vols) -> list[int]:
+    """LAD-fea-11: the volumes of `vols` with an element under DEGENERATE_SICN (flat or inverted, straight sides)."""
+    out = []
+    for v in vols:
+        _types, etags, _nodes = gmsh.model.mesh.getElements(3, int(v))
+        tags = [int(x) for arr in etags for x in arr]
+        if tags and min(gmsh.model.mesh.getElementQualities(tags, "minSICN")) < DEGENERATE_SICN:
+            out.append(int(v))
+    return out
 
 
 def kept_for(ws: Path, run: dict) -> dict | None:

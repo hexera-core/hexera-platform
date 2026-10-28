@@ -441,6 +441,34 @@ def test_a_part_gmsh_leaves_empty_without_an_error_is_never_kept(tmp_path, monke
     assert kept["kept_volumes"] == [1, 3] and kept["failed_volumes"] == [2]
 
 
+
+def test_a_part_filled_with_a_flat_element_is_meshed_again_never_kept(tmp_path, monkeypatch):
+    """LAD-fea-11 (o_fc_folding_chair, lab 28 Oct): a part whose fill left a flat element (SICN 0.0 - a part with
+    faces crossing its own) is no mesh to keep - kept, Netgen's optimiser crashed on it in the next pass. It is
+    meshed again, as it would be without the keep; the parts filled well are kept."""
+    import shutil
+
+    shape = fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(20, 0, 0, 8, 8, 8), fx._box(40, 0, 0, 6, 6, 6))
+    planned = _planned(shape, tmp_path, monkeypatch, {"purpose": "structural", "fea_connection": "contact"})
+    ws = tmp_path / "flat"
+    shutil.copytree(planned, ws)
+    real_q = gmsh.model.mesh.getElementQualities
+
+    def qualities(tags, kind="minSICN", *a, **k):
+        q = list(real_q(tags, kind, *a, **k))
+        _t, in2, _n = gmsh.model.mesh.getElements(3, 2)
+        flat = {int(x) for arr in in2 for x in arr}
+        return [1e-9 if int(e) in flat else v for e, v in zip(tags, q, strict=True)] if kind == "minSICN" else q
+
+    monkeypatch.setattr(gmsh.model.mesh, "getElementQualities", staticmethod(qualities))
+    with monkeypatch.context() as m:
+        _fail_volume(m, 3)
+        with pytest.raises(Exception, match="overlapping facets"):
+            A.mesh(ws)
+    kept = json.loads((ws / A.KEEP_JSON).read_text())
+    assert kept["kept_volumes"] == [1] and kept["failed_volumes"] == [2, 3]
+    assert kept["failed_parts"] == ["Part_2", "Part_3"]
+
 def test_after_a_real_gmsh_error_the_fill_stops_and_keeps_only_what_it_filled():
     """gmsh refuses every mesh call after an error in the same process ("I'm busy! Ask me that later", ox_mc_lid,
     27 Oct: the 14 parts after Part_239 came back empty). The fill stops at the part that failed and says which it
