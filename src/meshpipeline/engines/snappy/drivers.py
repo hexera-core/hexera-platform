@@ -1167,6 +1167,12 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                     wake=bool(summary.get("wake_note")),
                                     boxes=len(strategy.get("local_boxes") or [])),
                                 op_id=f"snappy:plan:{attempt}")
+            if attempt == 1:
+                from meshpipeline.contracts import narration as _N
+                for _i, _line in enumerate(_N.cfd_plan_lines(
+                        internal=False, cells=strategy.get("max_cells"), layers=summary.get("n_layers"),
+                        wake=bool(summary.get("wake_note")), boxes=len(strategy.get("local_boxes") or []))):
+                    await _N.asay(publish, _line, op_id=f"snappy:say:{attempt}:{_i}")
             # RUN (deterministic; Cloud Run Job / local) + user-facing instrumentation
             _t_mesh = _time.monotonic()
             result = await _run_snappy_on_its_machine(
@@ -2280,6 +2286,12 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                                     cells_across=cells_across, near_wall=bool(_band_note),
                                     boxes=len(strategy.get("local_boxes") or [])),
                                 op_id=f"internal:plan:{attempt}")
+            if attempt == 1:
+                from meshpipeline.contracts import narration as _N
+                for _i, _line in enumerate(_N.cfd_plan_lines(
+                        internal=True, cells=_budget, layers=n_layers, cells_across=cells_across,
+                        boxes=len(strategy.get("local_boxes") or []))):
+                    await _N.asay(publish, _line, op_id=f"internal:say:{attempt}:{_i}")
             run.note_authoring()
             _t_mesh = _time.monotonic()
             result = await _run_snappy_on_its_machine(

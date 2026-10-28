@@ -793,7 +793,7 @@ async def _narrate_pass(publish, *, n: int, first: bool, plan: dict, levers: lis
         await meshing(ENGINE, budget_s, None, op_id=f"meshing:fea:{n}")
 
 
-async def _relayed_mesh(publish, ws: Path, *, seq: int, timeout):
+async def _relayed_mesh(publish, ws: Path, *, seq: int, timeout, of: int | None = None):
     """One run of the mesher, with its stage reports (the remote beacon, read by the mesh client)
     relayed to the run's live line while it runs - in the words contracts/narration gives them."""
     from meshpipeline.contracts import mesh_progress
@@ -801,7 +801,8 @@ async def _relayed_mesh(publish, ws: Path, *, seq: int, timeout):
 
     sink = None if publish is None or getattr(publish, "amesh_stage", None) is None else \
         mesh_progress.publishing_sink(publish, asyncio.get_running_loop(),
-                                      op_prefix=mesh_progress.stage_op_prefix(ws, seq))
+                                      op_prefix=mesh_progress.stage_op_prefix(ws, seq),
+                                      of=of, unit="elements" if of else "")
     with mesh_progress.relaying(sink):
         return await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws, timeout=timeout)
 
@@ -992,14 +993,14 @@ def _clear_outputs(ws: Path) -> None:
         (ws / name).unlink(missing_ok=True)
 
 
-async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run) -> tuple[dict, dict, dict]:
+async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run,
+                  publish=None) -> tuple[dict, dict, dict]:
     """One native pass on `machine`: RUN-3 (out of memory: one machine up) and RUN-5 (still working at
     the Cloud Run wall: a VM) as every pass. Returns (the result, the machine it ran on, its work)."""
     from meshpipeline.contracts import mesh_machine as MM
-    from meshpipeline.engines.runtime import get_engine
 
     while True:
-        result = await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws, timeout=work["ceiling_s"])
+        result = await _relayed_mesh(publish, ws, seq=900 + n, timeout=work["ceiling_s"])
         if _out_of_memory(result):
             moved, rule, decided = MM.step_up(machine, measured_gib=_peak_gib(result)), "RUN-3", "step up"
         elif result.get("timed_out") and not result.get("stalled"):
@@ -1044,7 +1045,7 @@ def _rung_error(result: dict) -> str:
 
 
 async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, passes: list[dict], *,
-                     job_id: str, run) -> tuple[dict, list[dict]]:
+                     job_id: str, run, publish=None) -> tuple[dict, list[dict]]:
     """LAD-fea-9: at most fea_tetwild.MAX_RUNG_PASSES passes - an assembly's parts the failed passes
     named first, then every part - each on the plan the last round of gmsh passes started from (the other
     parts meshed as that pass meshed them), plus fTetWild's settings (engines/fea_tetwild.params).
@@ -1090,7 +1091,11 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
         work = planned_work(plan, ceiling_s=ceiling_for(run, machine))
         await run.fence("start native mesh")
         t0 = time.monotonic()
-        result, machine, work = await _native(ws, machine, work, job_id, n, run)
+        from meshpipeline.contracts import narration as _N
+        await _N.asay(publish, "The usual mesher could not meet every check, so a second mesher tries this part.",
+                      op_id=f"fea:rung:{n}")
+        await _N.astep(publish, "machine", _N.machine_words(machine), op_id=f"fea:rung:machine:{n}")
+        result, machine, work = await _native(ws, machine, work, job_id, n, run, publish=publish)
         await run.fence("accept native mesh output")
         q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
         made = bool(q) and (ws / "mesh.inp").exists()
@@ -1147,6 +1152,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                             "words": f"The file's {made} closed shell(s) were read as the solid(s) they bound."}])
     except Exception as exc:  # noqa: BLE001 - the part is meshed, or refused, as it stands
         logger.warning("fea driver: closed shells not read as solids (%s)", type(exc).__name__)
+    from meshpipeline.contracts import narration as _N
+    await _N.astep(publish, "measure", "Measuring your part", op_id="fea:measure")
     try:
         record, surface, diag_m = await asyncio.to_thread(measure_staged, ws)
     except Exception as exc:  # noqa: BLE001 - recorded as the attempt's reason
@@ -1227,6 +1234,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     n0 = 0
     while True:
         for n in range(n0 + 1, n0 + L.MAX_PASSES + 1):
+            await _N.astep(publish, "plan", f"Planning the mesh · {_N.pass_words(n - n0, L.MAX_PASSES)}"
+                           if n > n0 + 1 else "Planning the mesh", op_id=f"fea:planning:{n}")
             if n == n0 + 1:
                 # PLAN-fea-8: the rules' own plan, coarsened to fit under the limit when it must - never a
                 # stop before meshing
@@ -1301,7 +1310,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             runs_here = 0
             while True:
                 runs_here += 1
-                result = await _relayed_mesh(publish, ws, seq=n * 10 + runs_here, timeout=work["ceiling_s"])
+                result = await _relayed_mesh(publish, ws, seq=n * 10 + runs_here, timeout=work["ceiling_s"],
+                                             of=int((plan.get("estimate") or {}).get("elements") or 0) or None)
                 if _out_of_memory(result):
                     # RUN-3: OUT OF MEMORY -> THE SAME PLAN ONE MACHINE UP (no lever, no coarsening, no
                     # re-plan), sized from the peak seen when there is one, up to the largest machine
@@ -1442,7 +1452,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         # that failed, and for an assembly the tie) and no pass is valid - fTetWild meshes the part(s)
         # still without one, the other parts as the tie meshed them. Never for our infrastructure (a
         # guard trip, a worker too small) or a plan out of memory on the largest machine (LAD-fea-7)
-        record, ran = await _last_rung(ws, record, diag_m, first_plan, passes, job_id=job_id, run=run)
+        record, ran = await _last_rung(ws, record, diag_m, first_plan, passes, job_id=job_id, run=run,
+                                       publish=publish)
         passes.extend(ran)
         if ran and ran[-1].get("not_run") and not any(f["valid"] for f in ran):
             last = ran[-1]

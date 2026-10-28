@@ -63,3 +63,19 @@ def test_a_run_that_does_not_narrate_still_shows_the_mesher_stage(live):
     })()""", timeout=60)
     assert out["now"] == "Meshing on the cloud mesher - adding wall layers…"
     assert out["said"] == []
+
+
+def test_work_before_the_mesh_is_what_the_running_step_says(live):
+    out = live.evaluate("(async () => {" + SETUP + """
+      Stage.ensureProc();
+      ev({type:'stage', stage:'builder'});
+      ev({type:'narrate', stage:'builder', kind:'measure', text:'Measuring your part'});
+      const measuring = line();
+      ev({type:'narrate', stage:'builder', kind:'plan', text:'Planning the mesh · Pass 2 of up to 6'});
+      const planning = line();
+      ev({type:'meshing', stage:'builder', engine:'gmsh', budget_s:3600});
+      return {measuring, planning, meshing: line()};
+    })()""", timeout=60)
+    assert out["measuring"]["now"] == "Measuring your part…" and "wi-measure" in out["measuring"]["icon"]
+    assert out["planning"]["now"] == "Planning the mesh · Pass 2 of up to 6…"
+    assert out["meshing"]["now"] != out["planning"]["now"]

@@ -33,10 +33,10 @@ export function countWords(n) {
 const SAID_MAX = 6;
 
 export function createRunProgress(now = () => Date.now()) {
-  let steps, attempt, waitingText, ended, meshInfo, lastEventAt, said, told;
+  let steps, attempt, waitingText, ended, meshInfo, lastEventAt, said, told, pre;
   function reset() {
     steps = STEPS.map(([key, doing, label]) => ({ key, doing, label, state: "todo", seconds: null, t0: null }));
-    attempt = 1; waitingText = ""; ended = null; meshInfo = null; lastEventAt = 0; said = []; told = null;
+    attempt = 1; waitingText = ""; ended = null; meshInfo = null; lastEventAt = 0; said = []; told = null; pre = null;
   }
   reset();
   const step = (k) => steps.find((s) => s.key === k);
@@ -98,6 +98,9 @@ export function createRunProgress(now = () => Date.now()) {
       // a heartbeat re-says the stage already in view: it only adds its note, the stage and count stay
       const info = /^Still /.test(text) ? { narrated: true, beat: text }
         : { narrated: true, kind: String(ev.kind || ""), stage: text, n: ev.n, of: ev.of, unit: ev.unit || "", beat: "" };
+      // before the mesher runs: the machine waits for the mesh; any other work (measuring, planning)
+      // is what the step running now is doing
+      if (!meshInfo && ev.kind !== "machine" && !/^Still /.test(text)) { pre = { kind: info.kind, stage: text, at }; return; }
       if (!meshInfo) { told = { ...(told || {}), ...info }; return; }
       Object.assign(meshInfo, info);
     },
@@ -159,6 +162,9 @@ export function createRunProgress(now = () => Date.now()) {
       const elapsed = Math.max(0, (t - active.t0) / 1000);
       let current = prefix + active.doing, note = "";
       let kind = "";
+      if (active.key !== "mesh" && pre && pre.at >= active.t0) {
+        kind = pre.kind; current = `${prefix}${pre.stage}…`;
+      }
       if (active.key === "mesh" && meshInfo && meshInfo.narrated) {
         kind = meshInfo.kind || "fill";
         const count = meshInfo.n != null && meshInfo.of ? ` · ${countWords(meshInfo.n)} of about ${countWords(meshInfo.of)}${meshInfo.unit ? " " + meshInfo.unit : ""}`

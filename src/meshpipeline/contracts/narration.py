@@ -162,5 +162,49 @@ def retry_line(n: int, lever: dict | None) -> str:
     return f"Pass {n - 1} did not pass every check, so pass {n} changes the sizes where it fell short."
 
 
+def cfd_plan_lines(*, internal: bool, cells: int | None = None, layers: int | None = None,
+                   wake: bool = False, boxes: int = 0, cells_across: int | None = None) -> list[str]:
+    """What a CFD plan decided, in plain words, from its own numbers (engines/snappy/drivers)."""
+    from meshpipeline.events import cells_words
+
+    out = ["The fluid fills the inside of your part, so I'm meshing the space within it." if internal
+           else "The flow goes around your part, so I'm meshing the space around it."]
+    if internal and cells_across:
+        out.append(f"At least {int(cells_across)} cells go across the narrowest passage, so the flow there is resolved.")
+    if layers:
+        out.append(f"{int(layers)} thin wall layers follow every wall, where the flow changes fastest.")
+    if wake:
+        out.append("The wake behind the part gets finer cells.")
+    if boxes:
+        out.append(f"{int(boxes)} more {'area gets' if int(boxes) == 1 else 'areas get'} finer cells where the flow needs them.")
+    if cells:
+        out.append(f"I expect about {cells_words(cells)} cells.")
+    return [line for line in (plain(x) for x in out) if line]
+
+
+def _criteria(keys) -> str:
+    words = [str(k).replace("_", " ").strip() for k in keys if str(k).strip()]
+    return ", ".join(words[:4]) + (f" and {len(words) - 4} more" if len(words) > 4 else "")
+
+
+def review_line(*, passed: bool, failed_axes=(), rebuild_axes=(), blocking_axes=()) -> str:
+    """The review's finding in one plain line, from the criteria it checked (never the reviewer's prose)."""
+    if passed:
+        return "The review checked the mesh against your brief, and it passes."
+    if blocking_axes:
+        return f"The review found this mesh answers a different problem, on: {_criteria(blocking_axes)}."
+    if rebuild_axes:
+        return f"The review asked for one more pass, to fix: {_criteria(rebuild_axes)}."
+    if failed_axes:
+        return f"The review noted points the delivery will list: {_criteria(failed_axes)}."
+    return "The review noted points the delivery will list."
+
+
+def pass_words(n: int, most: int) -> str:
+    """A counted pass: "Pass 2 of up to 6"."""
+    return f"Pass {int(n)} of up to {int(most)}"
+
+
 __all__ = ["KINDS", "MAX_CHARS", "STAGES", "UNKNOWN_STAGE", "asay", "astep", "leaks", "machine_words",
-           "plain", "plan_lines", "retry_line", "soften", "stage_words", "still_words"]
+           "pass_words", "plain", "plan_lines", "retry_line", "review_line", "cfd_plan_lines", "soften",
+           "stage_words", "still_words"]

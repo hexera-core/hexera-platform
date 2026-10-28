@@ -53,19 +53,22 @@ def beat() -> None:
         logger.debug("mesh progress: a heartbeat was dropped (%s)", type(exc).__name__)
 
 
-def publishing_sink(publish: ExecutionEventPublisher, loop, *, op_prefix: str) -> StageSink:
+def publishing_sink(publish: ExecutionEventPublisher, loop, *, op_prefix: str,
+                    of: int | None = None, unit: str = "") -> StageSink:
     """A sink that publishes each NEW stage on the run's stream, from whatever thread reports it, on
     the event loop `loop` the publisher belongs to: as a `mesh_stage` event (the mesher's own
     label) AND as a narration step in the user's words (contracts/narration - never the label,
     which can name a tool). Repeats of the stage already said are dropped; a heartbeat (`beat`)
     re-says the current stage as "Still ... · N min". Each line gets its own identity, so a replay
-    dedupes."""
+    dedupes. A count (`n`) that moves while the stage stays is said again, so the number on the
+    row moves; `of` and `unit` are the plan's own estimate ("of about 1.9M elements") when the
+    mesher does not say one."""
     import asyncio
     import time
 
     from meshpipeline.contracts import narration as N
 
-    said: dict = {"key": None, "since": 0.0}
+    said: dict = {"key": None, "since": 0.0, "n": None}
     count = [0]
 
     async def _publish_stage(key: str, label: str, op_id: str) -> None:
@@ -96,16 +99,20 @@ def publishing_sink(publish: ExecutionEventPublisher, loop, *, op_prefix: str) -
                          f"{op_prefix}:beat:{count[0]}"), loop))
             return
         key = str(stage.get("key") or "")
-        if key == said["key"]:
+        n = _int(stage.get("n"))
+        moved = key == said["key"] and n is not None and n != said["n"]
+        if key == said["key"] and not moved:
             return
-        said["key"], said["since"] = key, time.monotonic()
         count[0] += 1
         op = f"{op_prefix}:{count[0]}"
-        _quiet(asyncio.run_coroutine_threadsafe(_publish_stage(key, str(stage.get("label") or ""), op), loop))
+        if not moved:
+            said["key"], said["since"] = key, time.monotonic()
+            _quiet(asyncio.run_coroutine_threadsafe(_publish_stage(key, str(stage.get("label") or ""), op), loop))
+        said["n"] = n
         kind, words = N.stage_words(key)
         _quiet(asyncio.run_coroutine_threadsafe(
-            _narrate(kind, words, f"{op}:say", n=_int(stage.get("n")), of=_int(stage.get("of")),
-                     unit=str(stage.get("unit") or "")), loop))
+            _narrate(kind, words, f"{op}:say", n=n, of=_int(stage.get("of")) or (of if n is not None else None),
+                     unit=str(stage.get("unit") or (unit if n is not None else ""))), loop))
 
     return _sink
 

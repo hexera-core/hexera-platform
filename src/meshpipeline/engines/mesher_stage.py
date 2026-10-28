@@ -53,6 +53,22 @@ def _tail(path: Path) -> str:
         return fh.read().decode("utf-8", errors="replace")
 
 
+#: How many cells or elements the mesher says it has made so far, by the lines meshers print: snappyHexMesh's
+#: "cells:123456" mesh summaries, gmsh's "123456 tetrahedra created", cfMesh's "Number of cells: 123456".
+#: The LAST one in the log is the count now. A log with none gives no count, never a guess.
+_COUNTS = [re.compile(r"\bcells:(\d+)"), re.compile(r"\b(\d+) (?:tetrahedra|elements|cells) created\b"),
+           re.compile(r"[Nn]umber of cells\s*[:=]?\s*(\d+)")]
+
+
+def _count_of(text: str) -> int | None:
+    best, at = None, -1
+    for rx in _COUNTS:
+        for m in rx.finditer(text):
+            if m.start() > at:
+                best, at = int(m.group(1)), m.start()
+    return best
+
+
 def _last_of(text: str, patterns) -> tuple[str, str] | None:
     best, at = None, -1
     for rx, key, label in patterns:
@@ -72,11 +88,12 @@ def read_stage(workspace) -> dict | None:
             return None
         newest = max(logs, key=lambda p: p.stat().st_mtime)
         tool = newest.stem.split("_")[0]
+        tail = _tail(newest)
         if tool == "snappyHexMesh":
-            found = _last_of(_tail(newest), _SNAPPY)
+            found = _last_of(tail, _SNAPPY)
             key, label = found or ("snappy", "starting snappyHexMesh")
         elif tool == "cartesianMesh":
-            found = _last_of(_tail(newest), _CFMESH)
+            found = _last_of(tail, _CFMESH)
             key, label = found or ("cfmesh", "starting cartesianMesh")
         elif tool == "gmshfea":
             # the FEA mesher notes its step itself (engines/gmsh/fea_adapter.STAGE_FILE)
@@ -87,7 +104,11 @@ def read_stage(workspace) -> dict | None:
             key, label = _TOOLS[tool]
         else:
             return None
-        return {"key": key, "label": label, "tool": tool}
+        out: dict = {"key": key, "label": label, "tool": tool}
+        n = _count_of(tail)
+        if n:
+            out["n"] = n
+        return out
     except Exception:  # noqa: BLE001 - a stage we cannot read is a line with only its clock
         return None
 
