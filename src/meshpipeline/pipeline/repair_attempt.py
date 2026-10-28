@@ -365,8 +365,8 @@ async def node_repair_attempt(state: PipelineState) -> dict:
             from meshpipeline.capture.logger import TrainingLogger
             # A DECLINE IS STILL A TRAINING ROW, and often the most useful one. A run that kept
             # nothing is refused before anything is written, so the success path below never runs
-            # - and an attempted-and-rolled-back sequence is exactly what slice 8 needs to learn
-            # from. The attempts travel in the refusal's own measurements for this reason.
+            # - and an attempted-and-rolled-back sequence is exactly what the model-directed
+            # portion needs to learn from. The attempts travel in the refusal's own measurements.
             TrainingLogger(job_id).log("repair_attempt", op_id="repair:attempt", payload={
                 "route": advice.route, "targets": [dict(t) for t in advice.targets],
                 "operations": [dict(op) for op in exc.measurements.get("operations", [])],

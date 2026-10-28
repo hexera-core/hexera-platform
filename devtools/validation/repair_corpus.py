@@ -101,9 +101,11 @@ def _inspect(path: Path) -> dict:
     }
 
 
-# THE LLM PLANNER INSTRUMENT. Everything from here to `_one` is the planner side of this tool:
-# a reply cache wrapped AROUND the model seam (llm_plan is untouched), and the per-file pre-pass.
-# This tool owns the async edge, so `asyncio.run` is called here, once per file.
+# THE MODEL-DIRECTED PORTION'S INSTRUMENT. Everything from here to `_one` drives the
+# model-directed portion of the repair surface - NOT a second engine: it chooses from the same
+# operation catalogue, runs the same session and is judged by the same caps as the deterministic
+# portion. A reply cache wrapped AROUND the model seam (llm_plan is untouched), plus the per-file
+# pre-pass. This tool owns the async edge, so `asyncio.run` is called here, once per file.
 def _supported_keys() -> tuple[str, ...]:
     """The credential names the routing layer actually reads - one table, so this tool cannot
     disagree with the router about which providers exist."""
@@ -226,8 +228,10 @@ def _plan_row(plan) -> dict:
 
 
 def agreement(proposals: list[dict], operations: list[dict]) -> bool | None:
-    """Model's FIRST proposal == the rules planner's first attempted op and target; None if no
-    proposal or no attempt exists to compare."""
+    """The model-directed portion's FIRST proposal == the deterministic portion's first attempted
+    op and target; None if no proposal or no attempt exists to compare.
+
+    Only the first, because the model-directed portion plans once ahead of the loop."""
     if not proposals or not operations:
         return None
     a, b = proposals[0], operations[0]
@@ -235,7 +239,13 @@ def agreement(proposals: list[dict], operations: list[dict]) -> bool | None:
 
 
 def planner_summary(rows: list[dict], mode: str) -> dict:
-    """Aggregate planner evidence from the rows (pure; the printer and the tests share it)."""
+    """Aggregate the model-directed portion's evidence from the rows (pure; printer and tests
+    share it).
+
+    The `rules_only_*` / `live_*` key names are HISTORICAL and describe two passes of one repair
+    surface - deterministic-only, then deterministic plus model-directed - not two engines. They
+    are left as they are because sealed evidence bundles already carry them and renaming a key
+    would make an old bundle and a new one incomparable."""
     out: dict = {"mode": mode}
     planned = [r for r in rows if r.get("plan") is not None]
     if mode == "shadow":
@@ -767,7 +777,9 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
     rows: list[dict] = []
     for path in files:
         if mode == "live":
-            # rules-only FIRST, into its own directory, so the live pass cannot overwrite it
+            # The SAME surface run twice, deterministic-only first and into its own directory so
+            # the second pass cannot overwrite it. Two passes to attribute a difference to the
+            # model direction, not two engines competing.
             rules_dir = scratch / "rules_only"
             rules_dir.mkdir(parents=True, exist_ok=True)
             rules_row = _one(path, rules_dir)
@@ -799,27 +811,27 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
 
 
 def _print_planner(summary: dict, cache: CachingRouter | None) -> None:
-    print(f"\n== llm planner ({summary['mode']}) ==")
+    print(f"\n== repair: model-directed portion ({summary['mode']}) ==")
     if cache is None:
-        print("  no model was available: the planner proposed nothing (declared off)")
+        print("  no model was available: nothing was directed (declared off)")
     else:
         print(f"  reply cache: {cache.hits} hit(s), {cache.misses} miss(es)")
     if summary["mode"] == "shadow":
         print(f"  coverage: {summary['coverage']}/{summary['files_planned']} file(s) with a proposal")
-        print(f"  agreement with the rules planner (first op+target): "
+        print(f"  agreement with the deterministic portion (first op+target): "
               f"{summary['agreed']}/{summary['compared']}")
         print(f"  declines={summary['declines']}  call_failures={summary['call_failures']}")
     else:
-        print(f"  defects repaired, rules-only: {summary['rules_only_total']} "
+        print(f"  defects repaired, deterministic only:      {summary['rules_only_total']} "
               f"{summary['rules_only_repaired']}")
-        print(f"  defects repaired, live:       {summary['live_total']} "
+        print(f"  defects repaired, with model direction:    {summary['live_total']} "
               f"{summary['live_repaired']}")
         for name, c in sorted(summary["llm_ops"].items()):
             print(f"  llm-planner {name:<20} kept={c['kept']:<4} "
                   f"rolled_back={c['rolled_back']:<4} declined={c['declined']:<4} "
                   f"failed={c['failed']}")
         if not summary["llm_ops"]:
-            print("  no llm-planner directive was attempted")
+            print("  no model-directed operation was attempted")
 
 
 def main() -> int:
