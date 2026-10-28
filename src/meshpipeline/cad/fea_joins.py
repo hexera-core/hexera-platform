@@ -735,9 +735,12 @@ def _spawned(parts: list, pairs: list, workers: int, *, tol: float, mm: float, b
     left = budget_s - (time.time() - t0)
     if left <= 30.0:
         return None
-    deadline = time.time() + left + 120.0
+    # every run answers within the measure's own budget (each is started with what is left of it), so
+    # the deadline is that budget and a grace; what finished runs measured is kept when it passes
+    deadline = t0 + budget_s + 120.0
     with tempfile.TemporaryDirectory(prefix="fea_joins_") as tmp:
         jobs: list[tuple[list[str], Path, float]] = []
+        specs: dict[str, dict] = {}
         running: list[tuple[subprocess.Popen, Path, float, list[str]]] = []
         joints: dict = {}
         near: dict = {}
@@ -751,8 +754,8 @@ def _spawned(parts: list, pairs: list, workers: int, *, tol: float, mm: float, b
                 if not BRepTools.Write_s(compound([parts[p] for p in index]), str(brep)):
                     return None
                 spec = Path(tmp) / f"job{k}.json"
-                spec.write_text(json.dumps({"brep": str(brep), "index": index, "pairs": [list(x) for x in chunk],
-                                            "tol": tol, "mm": mm, "budget_s": left}))
+                specs[str(spec)] = {"brep": str(brep), "index": index, "pairs": [list(x) for x in chunk],
+                                    "tol": tol, "mm": mm}
                 out = Path(tmp) / f"out{k}.pkl"
                 jobs.append(([sys.executable, "-m", "meshpipeline.cad.fea_joins", str(spec), str(out)], out,
                              _worker_need(brep.stat().st_size)))
@@ -764,13 +767,24 @@ def _spawned(parts: list, pairs: list, workers: int, *, tol: float, mm: float, b
                 # START what the memory holds, in order; one always runs
                 while jobs and (not running or (len(running) < most
                                                 and sum(r[2] for r in running) + jobs[0][2] <= room)):
+                    # a run started late (memory let only a few run at once) gets what is left of the
+                    # budget; with nothing left, the runs not started are not measured (the fuse's answer
+                    # stands for their pairs, as when one process runs out of time)
+                    left = budget_s - (time.time() - t0)
+                    if left <= 5.0:
+                        jobs.clear()
+                        complete = False
+                        break
                     cmd, out, need = jobs.pop(0)
+                    Path(cmd[-2]).write_text(json.dumps({**specs[cmd[-2]], "budget_s": left}))
                     running.append((subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                                      stderr=subprocess.DEVNULL), out, need, cmd))
                 done = [r for r in running if r[0].poll() is not None]
                 if not done:
                     if time.time() > deadline:
-                        return None
+                        # past the budget: what the finished runs measured is kept, the rest not measured
+                        complete = False
+                        break
                     # THE GUARD: the workers grew past what was counted for them - the newest one stopped and
                     # put back to run later, and never again this many at once (it never stops the last one)
                     now = _memory_free() if free is not None else None

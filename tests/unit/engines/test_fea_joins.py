@@ -220,11 +220,21 @@ def test_the_workers_read_only_their_own_parts_and_fit_the_memory(monkeypatch, o
         reads.append(1)
         return 64.0 * 2**30 if len(reads) == 1 else 0.0
 
+    real_spawned, answered = J._spawned, []
+
+    def spy(*a, **k):
+        got = real_spawned(*a, **k)
+        answered.append(got is not None and got[3])
+        return got
+
     monkeypatch.setattr(J, "WORKER_PAIRS", 1)
     monkeypatch.setattr(J, "_memory_free", (lambda: 0.0) if memory == "none free" else free)
+    monkeypatch.setattr(J, "_spawned", spy)
     monkeypatch.setattr(subprocess, "Popen", popen)
     spawned = J.measure(parts, tol=3e-4, mm_per_unit=1.0)
     monkeypatch.setattr(subprocess, "Popen", real_popen)
+    # the workers' own answer, whole - never the one-by-one fallback in the caller hiding a failure
+    assert answered == [True], "the workers did not answer"
     jobs = {s["brep"] for s in specs}
     assert len(jobs) > 1, "the workers did not run"
     if memory == "none free":
@@ -240,6 +250,39 @@ def test_the_workers_read_only_their_own_parts_and_fit_the_memory(monkeypatch, o
         assert (a.a, a.b, a.kind, a.faces_a, a.faces_b) == (b.a, b.b, b.kind, b.faces_a, b.faces_b)
         assert a.area == pytest.approx(b.area) and (a.gap or 0.0) == pytest.approx(b.gap or 0.0)
     assert spawned.skins == one_by_one.skins and spawned.near == one_by_one.near
+
+
+def test_runs_started_late_get_what_is_left_and_finished_runs_are_kept(monkeypatch, one_by_one):
+    """Memory lets one run at a time, and the budget runs out after the first: that run's answer is
+    kept (complete False), the runs not started are not measured - never every finished run thrown
+    away for a measurement started again with no time left."""
+    import subprocess
+    import time as real_time
+    from types import SimpleNamespace
+
+    parts = A.solids(fx.anchorage(skin=True))
+    pairs = J._near_pairs(parts, tol=3e-4, mm=1.0)
+    budget, clock, specs = 600.0, [0.0], []
+    real_popen = subprocess.Popen
+
+    def popen(cmd, *a, **k):
+        specs.append(json.loads(open(cmd[-2]).read()))
+        proc = real_popen(cmd, *a, **k)
+        clock[0] = budget          # the first run uses up the budget (within the grace)
+        return proc
+
+    monkeypatch.setattr(J, "time", SimpleNamespace(time=lambda: real_time.time() + clock[0], sleep=real_time.sleep))
+    monkeypatch.setattr(J, "_memory_free", lambda: 0.0)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    t0 = real_time.time()
+    got = J._spawned(parts, pairs, 3, tol=3e-4, mm=1.0, budget_s=budget, t0=t0)
+    monkeypatch.setattr(subprocess, "Popen", real_popen)
+    assert got is not None, "the finished run was thrown away"
+    joints, near, skins, complete, unmeasured = got
+    assert complete is False and len(specs) == 1 and specs[0]["budget_s"] <= budget
+    first = {tuple(x) for x in specs[0]["pairs"]}
+    assert set(joints) <= first
+    assert set(joints) == {k for k in one_by_one.joints if k in first}
 
 
 def test_the_pairs_are_cut_into_runs_of_neighbours():
