@@ -141,7 +141,7 @@ def test_a_partly_fused_tie_ties_only_the_nodes_the_master_does_not_own(tmp_path
     (j,) = prep.joints
     xyz = np.asarray(m.xyz)
     own3 = set(np.unique(np.asarray(m.elements)[np.asarray(m.part) == 3]).tolist())
-    assert j.kind == "tie" and j.parts == (1, 3) and j.left_out == {"shared": 4, "beyond": 0, "twice": 0, "loop": 0}
+    assert j.kind == "tie" and j.parts == (1, 3) and j.left_out == {"shared": 4, "beyond": 0, "twice": 0, "chain": 0}
     # every node but the four Part_3 owns is tied: the lower half's, and the two hanging at y = 0.75
     assert not (set(j.tied.tolist()) & own3) and len(j.tied) == 6
     assert sorted({round(xyz[n - 1][1], 3) for n in j.tied}) == [0.0, 0.25, 0.75]
@@ -195,14 +195,24 @@ def test_a_node_follows_one_master_only():
     assert len(far.tied) == 0 and far.left_out["twice"] == len(s1.nodes) and set(near.tied) == set(s2.nodes)
 
 
-def test_ties_never_close_a_loop():
-    from meshpipeline.engines.fea_assembly_deck import _break_loops
-
-    # node 1 hangs on a face holding node 2, node 2 on one holding node 1: one of them (the farther) goes
-    node = np.array([1, 2, 3])
-    dist = np.array([0.1, 0.2, 0.1])
-    deps = np.array([[2, 7, 8], [1, 9, 10], [11, 12, 13]])
-    assert _break_loops(node, dist, deps).tolist() == [False, True, False]
+@pytest.mark.parametrize("coarse", [True, False])
+def test_a_master_is_never_a_slave_too(coarse):
+    # Part_2's face x = 1.1 (y 0..2) is the master Part_1 (y 0..1) is tied to, and faces Part_3 (y 1..2)
+    # across the same 0.1 gap. A chain of ties comes back round where parts are also fused (h_g_c0003), so
+    # Part_2's face stays a master: Part_3 is the slave there, fine or coarse
+    m = _Mesh()
+    m.box(1, (0, 0, 0), (1, 1, 1), (4, 4, 4))
+    m.box(2, (1.1, 0, 0), (2, 2, 1), (2, 4, 2))
+    m.box(3, (0, 1, 0), (1, 2, 1), (1, 1, 1) if coarse else (2, 4, 4))
+    a = _tie(m, m.face("Tie_1_Part_1", 1, 0, 1.0), m.face("Tie_1_Part_2", 2, 0, 1.1), (1, 2), reach=0.15e-3)
+    b = _tie(m, m.face("Tie_2_Part_2", 2, 0, 1.1), m.face("Tie_2_Part_3", 3, 0, 1.0), (2, 3), reach=0.15e-3,
+             name="Tie_2")
+    t1, t2 = m.settle([a, b]).joints
+    assert t1.parts == (1, 2) and set(t1.tied.tolist()) == set(a.sides[0].nodes.tolist())
+    assert t2.parts == (3, 2) and len(t2.tied) == len(b.sides[1].nodes) and t2.left_out["chain"] == 0
+    # no node is both a slave and on a master surface
+    masters = set(t1.sides[1].nodes.tolist()) | set(t2.sides[1].nodes.tolist())
+    assert not ((set(t1.tied.tolist()) | set(t2.tied.tolist())) & masters)
 
 
 @pytest.mark.parametrize("staged_slave", [1, 2])

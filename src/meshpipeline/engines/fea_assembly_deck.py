@@ -74,8 +74,8 @@ class Joint:
     tied: np.ndarray | None = None
     tolerance: float | None = None
     #: why the slave's other nodes are not tied: {"shared": already the master's own nodes (one conformal
-    #: mesh), "beyond": farther than the tolerance from the master, "twice": tied by a nearer tie, "loop": a
-    #: chain of ties that would come back to them}
+    #: mesh), "beyond": farther than the tolerance from the master, "twice": tied by a nearer tie, "chain": a
+    #: node of another tie's master surface}
     left_out: dict = field(default_factory=dict)
 
 
@@ -318,23 +318,29 @@ def _nearest_master(points: np.ndarray, tri_xyz: np.ndarray, limit: float) -> tu
     if not len(points) or not len(tri_xyz):
         return dist, best
     centre = tri_xyz.mean(axis=1)
-    radius = float(np.linalg.norm(tri_xyz - centre[:, None, :], axis=2).max())
-    near = cKDTree(centre).query_ball_point(points, r=limit + radius)
-    counts = np.fromiter((len(x) for x in near), dtype=np.int64, count=len(near))
-    if not counts.sum():
-        return dist, best
-    pi = np.repeat(np.arange(len(points)), counts)
-    ti = np.fromiter((t for x in near for t in x), dtype=np.int64, count=int(counts.sum()))
-    for s in range(0, len(pi), 2_000_000):
-        pp, tt = pi[s:s + 2_000_000], ti[s:s + 2_000_000]
-        d = _point_triangle(points[pp], tri_xyz[tt, 0], tri_xyz[tt, 1], tri_xyz[tt, 2])
-        order = np.lexsort((d, pp))
-        pp, tt, d = pp[order], tt[order], d[order]
-        first = np.r_[True, pp[1:] != pp[:-1]]
-        pp, tt, d = pp[first], tt[first], d[first]
-        better = d < dist[pp]
-        dist[pp[better]] = d[better]
-        best[pp[better]] = tt[better]
+    radius = np.linalg.norm(tri_xyz - centre[:, None, :], axis=2).max(axis=1)
+    # TRIANGLES OF A SIZE TOGETHER (radius classes a factor 2 apart): each class searched only as far as its
+    # own largest triangle reaches, so one coarse facet never widens the search for every node
+    cls = np.floor(np.log2(np.maximum(radius, 1e-300) / max(float(radius.max()), 1e-300))).astype(np.int64)
+    for c in np.unique(cls):
+        rows = np.flatnonzero(cls == c)
+        tree = cKDTree(centre[rows])
+        reach = limit + float(radius[rows].max())
+        for s in range(0, len(points), 100_000):
+            near = tree.query_ball_point(points[s:s + 100_000], r=reach)
+            counts = np.fromiter((len(x) for x in near), dtype=np.int64, count=len(near))
+            if not counts.sum():
+                continue
+            pp = s + np.repeat(np.arange(len(near)), counts)
+            tt = rows[np.fromiter((t for x in near for t in x), dtype=np.int64, count=int(counts.sum()))]
+            d = _point_triangle(points[pp], tri_xyz[tt, 0], tri_xyz[tt, 1], tri_xyz[tt, 2])
+            order = np.lexsort((d, pp))
+            pp, tt, d = pp[order], tt[order], d[order]
+            first = np.r_[True, pp[1:] != pp[:-1]]
+            pp, tt, d = pp[first], tt[first], d[first]
+            better = d < dist[pp]
+            dist[pp[better]] = d[better]
+            best[pp[better]] = tt[better]
     return dist, best
 
 
@@ -351,7 +357,12 @@ def settle_ties(joints: list[Joint], elements: np.ndarray, xyz: np.ndarray, inde
       master's element edge where the parts touch (TOUCH_SHARE), or - parts that pass into each other -
       inside the master part down to OVERLAP_DEPTH_SHARE of its edge; a node beyond is not on the joint;
     * no nearer tie already holds it: a node follows one master only;
-    * it does not close a loop of ties back onto itself.
+    * it is no node of another tie's master surface: a master is never a slave too. A chain of ties (a
+      slave whose master's nodes are themselves tied on) comes back round wherever the parts are also
+      fused, and CalculiX then loops on "zero coefficient" without end (h_g_c0003, 28 Oct: Part_1 tied to
+      Part_2 and Part_6, Part_2 to Part_3, Part_3 fused to Part_1 and Part_6, Part_2 and Part_6 one piece
+      where they overlap). Leaving out only the nodes a tied node lies over did not stop it there: the
+      whole master surface is kept out.
 
     Every solver ties the nodes where they stand (CalculiX ADJUST=NO): moving them onto the master
     would move a corner without its midpoints and turn elements inside out ("nonpositive jacobian").
@@ -385,45 +396,69 @@ def settle_ties(joints: list[Joint], elements: np.ndarray, xyz: np.ndarray, inde
             near = np.flatnonzero(~ok & (dist <= deep))
             inside = _depth(xyz[index[cand[near]]], face[tri[near]], master, elements, lambda n: xyz[index[n]]) > 0
             ok[near[inside]] = True
-        return (cand[ok], dist[ok], face_nodes[face[tri[ok]]], int(len(slave.nodes) - len(cand)), int((~ok).sum()),
-                deep)
+        return cand[ok], dist[ok], int(len(slave.nodes) - len(cand)), int((~ok).sum()), deep
 
-    rows: list[tuple[np.ndarray, np.ndarray, np.ndarray, int]] = []        # (node, distance, master face nodes, tie)
+    rows: list[tuple[np.ndarray, np.ndarray, int]] = []                     # (node, distance, tie)
     shared: dict[int, int] = {}
     beyond: dict[int, int] = {}
     tolerance: dict[int, float] = {}
     joints = list(joints)
+    # SLAVE AND MASTER: the slave is the side with more nodes on the joint - the finer mesh there - so the
+    # joint is tied all over, not at the coarser side's few nodes (equal: the smaller surface, as staged) ...
+    both = {k: (reach(joints[k].sides[0], joints[k].sides[1], joints[k].parts[1], joints[k].reach, joints[k].overlap),
+                reach(joints[k].sides[1], joints[k].sides[0], joints[k].parts[0], joints[k].reach, joints[k].overlap))
+            for k in ties}
+    flip = {k: len(both[k][1][0]) > len(both[k][0][0]) for k in ties}
+
+    def sides_of(k: int) -> tuple[FaceSet, FaceSet]:
+        s = joints[k].sides
+        return (s[1], s[0]) if flip[k] else (s[0], s[1])
+
+    # ... unless that makes it a master elsewhere: a surface that is one tie's master is every tie's master
+    # where it can be (a master is never a slave too - NO CHAINS below)
+    for _round in range(4):
+        changed = False
+        for k in ties:
+            others = [sides_of(m)[1].nodes for m in ties if m != k and len(both[m][int(flip[m])][0])]
+            if not others:
+                continue
+            taken = np.unique(np.concatenate(others))
+            slave, master = sides_of(k)
+            if np.isin(slave.nodes, taken).sum() > np.isin(master.nodes, taken).sum() and len(both[k][int(not flip[k])][0]):
+                flip[k] = not flip[k]
+                changed = True
+        if not changed:
+            break
     for k in ties:
         j = joints[k]
-        got = reach(j.sides[0], j.sides[1], j.parts[1], j.reach, j.overlap)
-        # SLAVE AND MASTER: the slave is the side with more nodes on the joint - the finer mesh there - so
-        # the joint is tied all over, not at the coarser side's few nodes (equal: the smaller surface, as staged)
-        other = reach(j.sides[1], j.sides[0], j.parts[0], j.reach, j.overlap)
-        if len(other[0]) > len(got[0]):
-            got = other
+        got = both[k][int(flip[k])]
+        if flip[k]:
             joints[k] = Joint(name=j.name, kind=j.kind, parts=(j.parts[1], j.parts[0]), sides=(j.sides[1], j.sides[0]),
                               overlap=j.overlap, reach=j.reach)
-        rows.append((got[0], got[1], got[2], k))
-        shared[k], beyond[k], tolerance[k] = got[3], got[4], got[5]
+        rows.append((got[0], got[1], k))
+        shared[k], beyond[k], tolerance[k] = got[2], got[3], got[4]
     node = np.concatenate([r[0] for r in rows])
     dist = np.concatenate([r[1] for r in rows])
-    tie_of = np.concatenate([np.full(len(r[0]), r[3]) for r in rows])
-    deps = np.concatenate([r[2] for r in rows])
+    tie_of = np.concatenate([np.full(len(r[0]), r[2]) for r in rows])
+    # every node of a master surface that ties something: it is that tie's master, never a slave anywhere
+    masters = np.unique(np.concatenate([joints[r[2]].sides[1].nodes for r in rows if len(r[0])]
+                                       or [np.zeros(0, dtype=np.int64)]))
     # A NODE FOLLOWS ONE MASTER: the nearest (then the first tie)
     order = np.lexsort((tie_of, dist, node))
-    node, dist, tie_of, deps = node[order], dist[order], tie_of[order], deps[order]
+    node, dist, tie_of = node[order], dist[order], tie_of[order]
     first = np.r_[True, node[1:] != node[:-1]] if len(node) else np.zeros(0, dtype=bool)
     twice = np.bincount(tie_of[~first], minlength=len(joints)) if len(node) else np.zeros(len(joints), dtype=np.int64)
-    node, dist, tie_of, deps = node[first], dist[first], tie_of[first], deps[first]
-    loop = _break_loops(node, dist, deps)
-    keep = ~loop
+    node, dist, tie_of = node[first], dist[first], tie_of[first]
+    # NO CHAINS: a node of a tie's master surface is never a slave as well
+    chain = np.isin(node, masters)
+    keep = ~chain
     out = list(joints)
     for k in ties:
         j = joints[k]
         mine = keep & (tie_of == k)
         tied = np.sort(node[mine])
         left = {"shared": shared[k], "beyond": beyond[k], "twice": int(twice[k]),
-                "loop": int((loop & (tie_of == k)).sum())}
+                "chain": int((chain & (tie_of == k)).sum())}
         if not len(tied) and shared[k]:
             # THE TWO SIDES ARE ONE MESH THERE (a fused, bonded joint the measurement also found): bonded
             name = j.name.replace("Tie", "Bond", 1)
@@ -435,39 +470,6 @@ def settle_ties(joints: list[Joint], elements: np.ndarray, xyz: np.ndarray, inde
                        tied=tied, tolerance=tolerance[k], left_out=left)
     return out
 
-
-def _break_loops(node: np.ndarray, dist: np.ndarray, deps: np.ndarray) -> np.ndarray:
-    """The tied nodes to leave out so no chain of ties comes back to where it started (a node tied to a
-    face whose nodes are tied, in the end, to it): in each loop, the node farthest from its master."""
-    from scipy.sparse import coo_matrix
-    from scipy.sparse.csgraph import connected_components
-
-    out = np.zeros(len(node), dtype=bool)
-    if not len(node):
-        return out
-    for _round in range(20):
-        live = np.flatnonzero(~out)
-        pos = np.full(int(max(node.max(), deps.max(initial=0))) + 1, -1, dtype=np.int64)
-        pos[node[live]] = np.arange(len(live))
-        src = np.repeat(np.arange(len(live)), deps.shape[1])
-        dst = pos[deps[live].ravel()]
-        hit = dst >= 0
-        if not hit.any():
-            return out
-        g = coo_matrix((np.ones(int(hit.sum())), (src[hit], dst[hit])), shape=(len(live), len(live)))
-        n_comp, lab = connected_components(g, directed=True, connection="strong")
-        size = np.bincount(lab, minlength=n_comp)
-        if not (size > 1).any():
-            return out
-        for c in np.flatnonzero(size > 1):
-            members = live[lab == c]
-            out[members[np.argmax(dist[members])]] = True
-    return out
-
-
-# #
-# Abaqus / CalculiX
-# #
 
 def _f8(v: float) -> str:
     """A positive real for an 8-column Nastran field, at most 7 characters so a space always parts it
@@ -508,7 +510,7 @@ def _joined(joints: list[Joint]) -> list[Joint]:
 
 def _left_out_words(j: Joint) -> str:
     said = {"shared": "already the master's own", "beyond": "beyond the tolerance", "twice": "held by a nearer tie",
-            "loop": "in a loop of ties"}
+            "chain": "on another tie's master surface"}
     parts = [f"{n} {said[k]}" for k, n in j.left_out.items() if n]
     return f" (left out: {', '.join(parts)})" if parts else ""
 
