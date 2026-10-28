@@ -223,6 +223,33 @@ def _micro_place(m: dict) -> dict:
             "size_mm": m.get("size_mm"), "faces": list(m.get("faces") or [])}
 
 
+def single_skin_origin(ws: Path) -> list[int]:
+    """MESH-8 for a single part (engines/fea_driver.open_single_skins): the CAD face each face of the opened staged
+    solid came from, [] when the part was not opened."""
+    try:
+        info = json.loads((Path(ws) / "skins.json").read_text())
+    except (OSError, ValueError):
+        return []
+    return [int(o) for o in info.get("origin") or []]
+
+
+def single_skin_notes(ws: Path) -> tuple[dict[int, int], list[str], list[dict]]:
+    """(the opened solid's tag -> the CAD's, the deck's note lines, the skin pairs) for a single part MESH-8
+    opened; empty when it was not."""
+    try:
+        info = json.loads((Path(ws) / "skins.json").read_text())
+    except (OSError, ValueError):
+        return {}, [], []
+    from meshpipeline.cad.fea_assembly import skin_pairs
+    pairs = skin_pairs(info.get("skins"))
+    retag = {k: int(o) for k, o in enumerate(info.get("origin") or [], start=1)}
+    n = len(pairs)
+    notes = ([f"MESH-8: {n} CAD face{'s' if n != 1 else ''} of no thickness (a skin lying on another face of the "
+              "part, no volume) left out of the mesh - no named set, accounted for:"]
+             + [f"  {p.get('words')}" for p in pairs]) if pairs else []
+    return retag, notes, pairs
+
+
 def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[int]] | None = None,
                 part_volumes: dict[str, list[int]] | None = None,
                 whole: set[tuple[int, int]] | None = None) -> int | None:
@@ -1220,6 +1247,11 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
     face_tags: dict[str, list[int]] | None = None
     surface_tag: dict[int, int] = {}
     volume_tag: dict[int, int] = {}
+    if not asm:
+        # MESH-8 FOR A SINGLE PART: the opened solid's faces sized and named for the CAD faces they came from
+        origin = single_skin_origin(ws)
+        if origin:
+            face_tags = {f"Face_{o}": [k] for k, o in enumerate(origin, start=1) if k in surfaces}
     if asm:
         # tied by area and centre against the sidecar's metres: read once, at the metre scale
         if tags is None:
@@ -1540,7 +1572,11 @@ def _mesh(workspace) -> int:
             # the viewer's clickable faces: each name and the mesh surfaces that carry it
             assembly_out["face_tags"] = {k: sorted(set(v)) for k, v in (face_tags or {}).items()}
         else:
-            deck = D._write_deck(gmsh, ws, discrete=False, source=_source(ftw), by_tag=True)
+            retag, skin_note, skin_rows = single_skin_notes(ws)
+            deck = D._write_deck(gmsh, ws, discrete=False, source=_source(ftw), by_tag=True, retag=retag or None,
+                                 notes=skin_note or None)
+            if skin_rows:
+                deck["skins_left_out"] = skin_rows          # MESH-8: each face left out, the face it lies on
         gmsh.write(str(ws / "mesh.msh"))
         rules: dict = {}
         shape: dict = {}
@@ -1550,7 +1586,11 @@ def _mesh(workspace) -> int:
             from meshpipeline.engines.gmsh.abaqus_deck import from_gmsh
             # a single part's faces by their own tags (MESH-9: a merged face holds no triangle)
             solid = from_gmsh(gmsh, sorted(vols), by_tag=not asm)
-            rules = checks.measure(solid, plan, tags_by_name=face_tags)
+            if not asm:
+                # MESH-8: an opened single part's faces keyed by the CAD's tags, so Face_k is the CAD's face k
+                from meshpipeline.engines.gmsh.abaqus_deck import retagged
+                solid = retagged(solid, single_skin_notes(ws)[0] or None)
+            rules = checks.measure(solid, plan, tags_by_name=face_tags if asm else None)
             # THE ELEMENTS AS THE SOLVERS JUDGE THEM (engines/fea_quality.py): the gate refuses an
             # inverted element (VER-1); the verdict holds the rest to the production limits (VER-2),
             # the elements set aside at a cusp apart (PLAN-fea-10: reported on their own)
