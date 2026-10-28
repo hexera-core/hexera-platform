@@ -57,10 +57,25 @@ def workspace_digest(workspace: Any) -> str:
     files = payload if payload is not None else sorted(
         p for p in root.rglob("*") if p.is_file() and NATIVE_LOGS_DIR not in p.relative_to(root).parts)
     parts = [
-        f"{path.relative_to(root)}:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+        f"{path.relative_to(root)}:{hashlib.sha256(_content(path)).hexdigest()}"
         for path in files
     ]
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+
+#: A STEP file's header names the moment it was WRITTEN (FILE_NAME's time stamp): the same shape
+#: staged again an hour later is the same payload. Found on the lab (RUN-4, 28 Oct): a new owner
+#: re-staging the job's CAD saw a "different" payload, by its time stamp alone, and could not adopt
+#: the run the lost worker had started.
+_STEP_STAMP = re.compile(rb"(FILE_NAME\s*\(\s*'(?:[^']|'')*'\s*,\s*)'[^']*'")
+
+
+def _content(path: Path) -> bytes:
+    data = path.read_bytes()
+    if path.suffix.lower() not in (".step", ".stp"):
+        return data
+    head, sep, rest = data.partition(b"ENDSEC;")
+    return _STEP_STAMP.sub(rb"\1''", head, count=1) + sep + rest
 
 
 def abandonment_watch_for(own: Any, *, recheck_seconds: float = OWNERSHIP_RECHECK_SECONDS,

@@ -272,6 +272,22 @@ def test_a_new_owner_collects_the_mesh_still_running_instead_of_meshing_again(ne
     assert seen["asked"]["execution_generation"] == 2 and seen["asked"]["engine"] == "gmsh"
 
 
+def test_the_same_shape_staged_again_is_the_same_payload(tmp_path):
+    # found on the lab: the new owner re-stages the job's CAD and gmsh's STEP header carries the
+    # moment it was written - by that stamp alone the payload looked different, and nothing was adopted
+    from meshpipeline.application.native_submission import workspace_digest
+    head = ("ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('Open CASCADE Model'),'2;1');\n"
+            "FILE_NAME('Open CASCADE Shape Model','{t}',('Author'),(''),'Open CASCADE','',' ');\n"
+            "ENDSEC;\nDATA;\n#1 = CARTESIAN_POINT('',(0.,0.,{x}));\nENDSEC;\nEND-ISO-10303-21;\n")
+    a, b, c = (tmp_path / n for n in "abc")
+    for d, t, x in ((a, "2026-10-28T21:09:05", "1."), (b, "2026-10-28T21:23:07", "1."), (c, "2026-10-28T21:23:07", "2.")):
+        d.mkdir()
+        (d / "geometry.step").write_text(head.format(t=t, x=x))
+        (d / "fea_plan.json").write_text("{}")
+    assert workspace_digest(a) == workspace_digest(b)
+    assert workspace_digest(a) != workspace_digest(c)          # a different shape is still different
+
+
 def test_a_new_owner_meshes_again_only_when_nothing_is_left_to_adopt(new_owner):
     from meshpipeline.application.native_submission import ClaimingMeshExecutor
     ws, _seen = new_owner
