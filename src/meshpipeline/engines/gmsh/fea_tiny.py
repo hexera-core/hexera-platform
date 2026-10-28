@@ -462,7 +462,7 @@ def restricted(gmsh, merges: dict | None, surfaces) -> dict:
 def united(a: dict | None, b: dict | None) -> dict:
     """Two passes' merges as one, for what is done to the finished mesh (curving, fold-in, the record): this
     pass's own and the kept parts' (LAD-fea-11). A face key read back from json is an int again."""
-    if not active(b):
+    if not active(b) or b is None:
         return dict(a or {})
     a = a or {}
     return {"faces": {**{int(k): int(v) for k, v in (b.get("faces") or {}).items()},
