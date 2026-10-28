@@ -40,9 +40,6 @@ export default async function ConversationPage({
         <div>
           <p className="page__eyebrow">Conversation</p>
           <h1 className="page__title">What was said</h1>
-          <p className="page__intro">
-            Your messages and the replies from Hexera, in order, up to the run they started.
-          </p>
         </div>
         {history?.job_id ? (
           <Link className="btn" href={`/runs/${history.job_id}`}>

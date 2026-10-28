@@ -40,7 +40,7 @@ export default async function QueuePage() {
     <>
       <PageHeader
         title="Send queue"
-        description="What can go out, and exactly what it will say. Previews come from the live templates and the real contact record, so this is the message itself rather than a sample of it."
+        description="Review queued messages rendered from live templates and contact data."
       />
 
       <div className="grid gap-3 mb-6" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(180px, 100%), 1fr))" }}>
@@ -66,7 +66,7 @@ export default async function QueuePage() {
       {manual ? (
         <Panel
           title="Ready to send"
-          subtitle="Tick the ones you want, then send them or take them back out of the campaign. A sent contact leaves this list and returns when their follow-up is actually due. The daily caps, one person per company per day, and both safety switches still apply to a send."
+          subtitle="Sent contacts return when follow-up is due. Daily caps, one person per company per day, and both safety switches still apply."
           flush
         >
           {picker.length ? (

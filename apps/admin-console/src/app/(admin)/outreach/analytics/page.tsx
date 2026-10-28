@@ -212,7 +212,7 @@ export default async function AnalyticsPage() {
             ) : null}
           </Panel>
 
-          <Panel title="Coverage by industry" subtitle="Filled is contacted. The rest is still to do.">
+          <Panel title="Coverage by industry" subtitle="Solid shows contacted; outlined shows remaining.">
             <CoverageBars rows={coverage} />
           </Panel>
         </div>
@@ -224,7 +224,7 @@ export default async function AnalyticsPage() {
       >
         <Panel
           title="Explore"
-          subtitle="Pick a breakdown and a measure. Percentages carry their raw counts, and thinly sampled segments are drawn hollow so a flattering number off two people cannot lead the chart."
+          subtitle="Rates include counts; hollow bars mark small samples."
         >
           <SegmentExplorer
             data={{

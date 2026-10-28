@@ -250,13 +250,17 @@ def test_each_deck_carries_a_gap_joints_reach(tmp_path):
     assert float(real.split(",")[7]) == pytest.approx(reach)          # PINB, the 6th real constant
 
 
-def test_a_touching_tie_keeps_each_solvers_default(tmp_path):
+def test_a_tie_never_moves_a_node(tmp_path):
+    # ADJUST=NO on every tie, touching or across a gap: CalculiX's default moves slave corners onto the
+    # master without their edge midpoints, and elements turn inside out (asm_fw_case: 8,804 "nonpositive
+    # jacobian"); unsettled (no tolerance of its own), a touching tie leaves the reach to the solver
     from meshpipeline.engines import fea_assembly_deck as AD
 
     AD.write_inp(tmp_path / "m.inp", _prep("tie", None))
-    assert "*TIE, NAME=Tie1\n" in (tmp_path / "m.inp").read_text()
+    assert "*TIE, NAME=Tie1, ADJUST=NO\nTie1_Part_1_Tied, Tie1_Part_2\n" in (tmp_path / "m.inp").read_text()
     AD.write_cdb(tmp_path / "m.cdb", _prep("tie", None))
-    assert "R,2\n" in (tmp_path / "m.cdb").read_text()
+    cdb = (tmp_path / "m.cdb").read_text()
+    assert "R,2\n" in cdb and "KEYOPT,5,9,1" in cdb
 
 
 # #

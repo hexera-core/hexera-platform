@@ -71,11 +71,6 @@ export default async function BillingPage({
           <b>{credits ? credits.balance.toLocaleString() : "--"}</b>
           <span>{credits ? credits.unit : "unavailable"} available</span>
         </div>
-        <div className="metric-card">
-          <p className="label">Payment system</p>
-          <b>Stripe</b>
-          <span>Checkout, payment methods, invoices and cancellation are provider-hosted.</span>
-        </div>
       </div>
 
       <div className="billing-layout">

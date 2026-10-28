@@ -191,6 +191,25 @@ def still_owned(*, job_id, execution_generation: int, worker_token) -> bool:
         return cur.fetchone() is not None
 
 
+_OWNER_OF = """
+select j.status::text from native_submission_claims c join simulation_jobs j on j.id = c.job_id
+ where c.provider_reference = %(reference)s
+"""
+
+
+def owner_live(provider_reference: str) -> bool | None:
+    """Whether the job that started the remote run `provider_reference` (a claim's reference: "gce:<instance>")
+    is still running: True while its job has not ended, False once it has, None when no claim names it.
+    Read-only and synchronous (the VM sweep, adapters/mesh_execution/vm_sweep.py)."""
+    from meshpipeline.persistence.job_state import TERMINAL_STATES
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(_OWNER_OF, {"reference": str(provider_reference)})
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return str(row[0]) not in {s.name for s in TERMINAL_STATES}
+
+
 def token_fingerprint(worker_token) -> str:
     # The project's safe representation: a raw worker token is never stored, logged or published.
     return hashlib.sha256(str(worker_token).encode()).hexdigest()[:32]

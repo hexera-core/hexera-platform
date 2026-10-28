@@ -61,9 +61,6 @@ export default async function CustomerPage({
   return (
     <>
       <h1>{org.name}</h1>
-      <p className="admin-lede">
-        Organisation detail, recent runs, invoices and append-only credit controls.
-      </p>
 
       <Panel title="Summary" heading={org.id}>
         <StatRow

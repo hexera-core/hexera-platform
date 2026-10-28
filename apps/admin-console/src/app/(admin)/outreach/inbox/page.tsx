@@ -47,7 +47,7 @@ export default async function InboxPage({
     <>
       <PageHeader
         title="Replies"
-        description="Every reply matched to a sequence, with the reasoning behind its label. Anything uncertain sits at the top. A sequence stays stopped until you decide."
+        description="Uncertain replies appear first; their sequences stay stopped until reviewed."
       />
 
       {/* One row of filters. Each is a plain link, so any view is a URL you
@@ -178,7 +178,7 @@ export default async function InboxPage({
               <Empty>
                 {view === "review"
                   ? "Nothing waiting on you. Replies the system resolved by itself are under the other filters."
-                  : `No replies filed as ${VIEWS.find((v) => v.key === view)?.label.toLowerCase()}. The worker reads the connected mailbox each tick and files anything that matches a sequence here.`}
+                  : `No replies filed as ${VIEWS.find((v) => v.key === view)?.label.toLowerCase()}.`}
               </Empty>
             </Panel>
           )}

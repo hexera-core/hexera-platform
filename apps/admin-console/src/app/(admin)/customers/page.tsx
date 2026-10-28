@@ -62,12 +62,8 @@ export default async function CustomersPage({
   return (
     <>
       <h1>Customers</h1>
-      <p className="admin-lede">
-        Every organisation, its plan, balance and current run load. Open a row for members, ledger,
-        recent runs and operator controls.
-      </p>
 
-      <Panel title="Overview" heading="derived from organisations, jobs and credit_ledger">
+      <Panel title="Overview">
         <StatRow
           stats={[
             { label: "Organisations", value: rows.length.toLocaleString("en-US") },
@@ -77,7 +73,7 @@ export default async function CustomersPage({
         />
       </Panel>
 
-      <Panel title="Organisations" heading="click a heading to sort">
+      <Panel title="Organisations">
         <form action="/customers" className="admin-search" role="search">
           <label className="admin-field-input">
             <span>Search customers</span>
