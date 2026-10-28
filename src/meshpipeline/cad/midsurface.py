@@ -1132,6 +1132,41 @@ def _regions(faces: list[int], neighbours: list[set[int]]) -> list[list[int]]:
     return out
 
 
+#: SHELL-6, NEVER FAIL: a region the mid-faces do not close - the part's faces within FALLBACK_WALLS times the
+#: thicker wall there of an open edge - is meshed SOLID and tied to the shell round it, and said so. A body the
+#: extraction cannot read at all is meshed solid whole. The record never stops a run.
+FALLBACK_WALLS = 3.0
+
+
+def fallback_regions(sewn_rows: list[dict], faces: list, names: list[str], body_of: list[int],
+                     body_names: list[str], pairs: list, mm: float) -> list[dict]:
+    """SHELL-6: one region per group of open edges of a body (open points within FALLBACK_WALLS walls of each
+    other share a region): the CAD faces round them, where they are, and why."""
+    out: list[dict] = []
+    for row in sewn_rows:
+        pts = [np.asarray(q, dtype=float) / mm for q in row.get("open_at_mm", [])]
+        if not pts:
+            continue
+        b = body_names.index(row["body"])
+        walls = [pr.thickness for pr in pairs if pr.shell and body_of[pr.a] == b]
+        reach = FALLBACK_WALLS * (max(walls) if walls else 0.0) / mm
+        mine = [(k, _box(faces[k])) for k in range(len(faces)) if body_of[k] == b]
+        groups: list[list[np.ndarray]] = []
+        for q in pts:
+            for g in groups:
+                if any(np.linalg.norm(q - r) <= reach for r in g):
+                    g.append(q)
+                    break
+            else:
+                groups.append([q])
+        for g in groups:
+            near = sorted({k for q in g for k, box in mine
+                           if _near_box(q, box, reach) and _dist(_vertex(q), faces[k]) <= reach})
+            out.append({"body": row["body"], "faces": [names[k] for k in near], "at_mm": [_pt(q * mm) for q in g],
+                        "why": "the mid-faces do not meet here; this region is meshed solid and tied to the shell"})
+    return out
+
+
 def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tuple[dict, object]:
     """The shell record and the sewn mid-surface (a compound, the shape's own units) of an OpenCASCADE shape
     whose coordinates are `mm_per_unit` millimetres each. Never raises for a part it cannot shell: the record
@@ -1321,6 +1356,10 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                  for r in bodies if r["verdict"] == "shell")
     checks = {"fidelity": worst_rel <= FIDELITY_SHARE, "connected": open_edges == 0,
               "faces_accounted": accounted, "volume": vol_ok}
+    fallback = fallback_regions(sewn_rows, faces, names, body_of, body_names, pairs, mm)
+    if fallback:
+        notes.append(f"{len(fallback)} region(s) where the mid-faces do not meet are meshed solid and tied to the "
+                     "shell there (SHELL-6).")
     loose = sum(1 for k in range(len(faces)) if body_of[k] < 0)
     if loose:
         notes.append(f"{loose} face(s) belong to no solid body (a sheet beside the bodies); they are not shelled.")
@@ -1335,8 +1374,22 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                          "mids": [f"Mid_{k + 1}" for k in p.mids]} for i, p in enumerate(pairs)],
               "faces": roles, "mids": mid_rows, "sewn": sewn_rows,
               "surface_faces": [f"Mid_{k + 1}" for k in surface_owner],
-              "checks": checks, "complete": True, "notes": notes, "seconds": round(time.time() - started, 2)}
+              "checks": checks, "fallback_regions": fallback, "complete": True, "notes": notes,
+              "seconds": round(time.time() - started, 2)}
     return record, _compound(surface_faces)
+
+
+def solid_record(shape, why: str) -> dict:
+    """SHELL-6: the record of a part that is meshed solid whole - every body solid, with the reason."""
+    from OCP.TopAbs import TopAbs_SOLID
+
+    n = _map(shape, TopAbs_SOLID).Extent()
+    return {"version": VERSION, "unit": "mm", "ratio": sp.SHELL_RATIO,
+            "bodies": [{"body": f"Part_{b + 1}", "verdict": "solid", "why": why} for b in range(max(n, 1))],
+            "pairs": [], "faces": [], "mids": [], "sewn": [], "surface_faces": [],
+            "checks": {"fidelity": True, "connected": True, "faces_accounted": True, "volume": True},
+            "fallback_regions": [], "complete": False, "notes": [f"The whole part is meshed solid: {why}."],
+            "seconds": 0.0}
 
 
 def extract_file(path: Path | str, out_dir: Path | str | None = None, *, mm_per_unit: float) -> dict:
@@ -1344,7 +1397,13 @@ def extract_file(path: Path | str, out_dir: Path | str | None = None, *, mm_per_
     shell.json and midsurface.brep there."""
     from meshpipeline.cad.scout import read_cad
 
-    record, surface = extract(read_cad(Path(path)), mm_per_unit=mm_per_unit)
+    shape = read_cad(Path(path))
+    try:
+        record, surface = extract(shape, mm_per_unit=mm_per_unit)
+    except Exception as exc:  # noqa: BLE001 - SHELL-6: never fail; the whole part is meshed solid and told so
+        logger.warning("shell: the extraction failed (%s); the part is meshed solid", exc)
+        record, surface = solid_record(shape, f"the mid-surface could not be extracted ({type(exc).__name__})"), \
+            _compound([])
     if out_dir is not None:
         from OCP.BRepTools import BRepTools
 

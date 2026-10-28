@@ -236,3 +236,9 @@ def duct_elbow(R: float = 300.0, r_out: float = 100.0, t: float = 2.0, angle_deg
     outer = BRepPrimAPI_MakeTorus(R, r_out, ang).Shape()
     inner = BRepPrimAPI_MakeTorus(R, r_out - t, ang).Shape()
     return _cut(outer, inner)
+
+
+def butt_step(t1: float = 6.0, t2: float = 3.0):
+    """Two plates of different thickness butted in line, flush underneath: 100 x 50 x `t1` then 100 x 50 x `t2`
+    along x. Their mid-planes are parallel and offset, so nothing the extension does joins them yet."""
+    return _fuse(_box(0, 0, 0, 100, 50, t1), _box(100, 0, 0, 100, 50, t2))

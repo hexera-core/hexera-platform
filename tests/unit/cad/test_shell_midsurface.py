@@ -292,3 +292,21 @@ def test_a_duct_elbow_closes_across_its_seam():
     assert _sewn_area(surface) == pytest.approx(math.pi ** 2 * R * (r_out - t / 2), rel=1e-4)
     assert _sewn(rec)["open_edges"] == 0
     _all_checks(rec)
+
+
+def test_where_mid_faces_do_not_meet_the_region_is_meshed_solid_and_said_so():
+    rec, _ = ms.extract(sf.butt_step(6.0, 3.0), mm_per_unit=1.0)
+    regions = rec["fallback_regions"]
+    assert regions and all(r["faces"] and r["at_mm"] and r["why"] for r in regions)
+    assert any("meshed solid" in n for n in rec["notes"])
+
+
+def test_a_part_the_extraction_cannot_read_is_meshed_solid_whole(tmp_path, monkeypatch):
+    def broken(*_a, **_k):
+        raise RuntimeError("boom")
+
+    path = sf.write_step(sf.flat_plate(), tmp_path / "plate.step")
+    monkeypatch.setattr(ms, "extract", broken)
+    rec = ms.extract_file(path, tmp_path / "out", mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["solid"] and rec["complete"] is False
+    assert (tmp_path / "out" / ms.RECORD_FILE).exists()
