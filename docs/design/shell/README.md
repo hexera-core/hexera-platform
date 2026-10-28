@@ -184,7 +184,7 @@ The GEOMCHECK figures are as we read MSC's Quick Reference Guide. PR 2 checks th
 
 ## 4. Properties and groups (PR 2)
 
-- **One PSHELL per sheet thickness, per part.** Part_3 at 6 mm becomes "Part_3_t6mm". MAT1 comes from the part's material when given. Otherwise it is a placeholder steel with a note, so the deck runs.
+- **One PSHELL per sheet thickness, per part.** Part_3 at 6 mm becomes "Part_3_t6mm". Material: the same as today's solid decks, which write NO material: PSHELL k names MAT1 k (Abaqus: MATERIAL=MAT_k) and the deck header says "mesh only: add MAT1 k". (Checked 29 Oct. The coordinator asked for a marked placeholder steel "the same as the solid decks", but the solid decks have none; this note matches the solid decks until that is settled.) The textbook tests add their own material.
 - **Groups:** one element group per original CAD face pair, named after the CAD faces (`Part_3_Face_12+Face_15`), and one per part.
 - **Joints are marked:**
   - shared-node lines at sewn junctions get a node group per junction;
@@ -237,10 +237,19 @@ Every writer is engine-neutral. They read one internal shell mesh (nodes, quads 
 
 ## 7. Intake and stage
 
-**Intake.** Today's FEA intake asks one thing, the analysis type. Shell adds no new question. It adds one choice on the FEA stage: **"Mesh as: Auto (recommended) / Shell / Solid"**.
+**Intake: two routes into shell (Areen, 29 Oct).** Shell adds no new question.
 
-- **Auto** shells the shell bodies and keeps solid bodies solid. Mixed parts get shell where thin and solid where thick (once PR 3 is in; until then, mixed parts are recommended solid with the reason).
-- The recommendation always shows its measured reason, for example: "Shell recommended: walls 2 to 6 mm on a part 1.2 m long."
+1. **The user says it.** At the first question ("what are you meshing this for?"), shell words set **Mesh as: Shell** with no follow-up question:
+   - shell words: "shell", "2D", "mid-surface" / "midsurface", "plate model", "Femap shell", "CQUAD4", "sheet-metal shell" and the like;
+   - "solid", "3D", "tets" or "hex" set **Solid** the same way.
+
+   This uses the intake's existing deterministic mapping plus the AI guard-rail pattern: a fixed word table first, then the model only for paraphrases, its answer checked against the allowed values (shell, solid, or nothing said). Intake tests cover the word table and a set of paraphrases.
+2. **The user says nothing.** After the check measures the part, the FEA stage shows **"Mesh as: Auto (recommended) / Shell / Solid"**:
+   - **Auto** recommends Shell when the measured thin-wall share is high. The reason is in plain words, for example: "90% of this part is plate under 6 mm thick, so a shell mesh is about 100× smaller, and it is what engineers use for sheet metal."
+   - Mixed parts are recommended Solid until PR 3 lands, then shell where thin and solid where thick (the coordinator's answer, 29 Oct).
+   - The user can switch.
+
+**A user's explicit choice is never overridden.** If they say Shell but the part has solid regions, the stage says which regions stay solid and why.
 
 **Stage:**
 - The extracted mid-surfaces are drawn over the part, coloured by thickness. We use a muted sequential map with a legend in mm.
@@ -301,5 +310,5 @@ Pass rates are reported with 95% ranges (Wilson).
 ## 10. Open questions for Areen
 
 1. FEMAP: can the prospect send one sample model, or confirm that our .neu groups import? Until then the BDF and NEU say "not yet tested in the real solver".
-2. Is placeholder steel (E 210 GPa, ν 0.3, ρ 7850) right when no material is given? Or should the deck have no material, so the user must set one?
-3. Mixed parts in Auto before PR 3: recommend solid with the reason (this note's choice), or shell the thin bodies only?
+2. Material: the solid FEA decks write no material at all (mesh only, the user adds MAT1). The shell decks match that. Should both instead carry a marked placeholder steel (E 210 GPa, ν 0.3, ρ 7850)?
+3. Answered 29 Oct: mixed parts in Auto are recommended Solid until PR 3 lands.

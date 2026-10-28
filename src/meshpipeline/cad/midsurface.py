@@ -583,6 +583,17 @@ def _face_normal_at(face, p):
     return np.array([n.X(), n.Y(), n.Z()])
 
 
+def _near_any(p, faces_boxes, reach: float) -> bool:
+    """Is point p within `reach` of any of the faces (each with its box: boxes first, exact distance after)?"""
+    v = None
+    for f, box in faces_boxes:
+        if _near_box(p, box, reach):
+            v = v if v is not None else _vertex(p)
+            if _dist(v, f) <= reach:
+                return True
+    return False
+
+
 def _inside_edge(edge, face) -> bool:
     """Is the edge inside its one face rather than on its border: a closed surface's seam, or a SLIT (an edge the
     face's boundary runs along on both sides - where the general fuse cut a face along a line that ends inside
@@ -606,6 +617,37 @@ def _inside_edge(edge, face) -> bool:
     return n >= 2
 
 
+#: where along a free edge its outward side is read: the middle first, then off it (a point on a closed
+#: surface's seam, or at a vertex, cannot tell the face's side from the other)
+SIDE_FRACTIONS = (0.5, 0.37, 0.63, 0.21, 0.79)
+
+
+def _outward_at(edge, face, step: float):
+    """(a point on the edge, the unit direction in the face's surface away from the face there) at the first
+    place along the edge where exactly one side lies in the face; None when no place tells."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    c = BRepAdaptor_Curve(edge)
+    a, b = c.FirstParameter(), c.LastParameter()
+    for frac in SIDE_FRACTIONS:
+        q, v = gp_Pnt(), gp_Vec()
+        c.D1(a + (b - a) * frac, q, v)
+        p = np.array([q.X(), q.Y(), q.Z()])
+        tan = np.array([v.X(), v.Y(), v.Z()])
+        n = _face_normal_at(face, p)
+        if n is None or np.linalg.norm(tan) <= 0:
+            continue
+        d = np.cross(tan / np.linalg.norm(tan), n)
+        if np.linalg.norm(d) <= 0:
+            continue
+        d /= float(np.linalg.norm(d))
+        plus, minus = _in_face(face, p + d * step, 1e-3 * step), _in_face(face, p - d * step, 1e-3 * step)
+        if plus != minus:
+            return p, (-d if plus else d)
+    return None
+
+
 def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thick_faces: list | None = None) -> dict:
     """The sewn surface's edges: shared by two faces (a closed face's seam counts so), a junction (three or
     more), a real boundary (one face, the outside just past it), a SOLID LINK (one face, the material past it
@@ -614,7 +656,6 @@ def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thi
     each fused face's wall (its own units) by its index in the fused shape's face map; `scale`: mm per unit;
     `thick_faces`: the body's faces of thick regions (cad/shell_pairs SOLID and THICK roles)."""
     from OCP.BRep import BRep_Tool
-    from OCP.BRepAdaptor import BRepAdaptor_Curve
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp
     from OCP.TopoDS import TopoDS
@@ -626,7 +667,7 @@ def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thi
     shared = junction = boundary = 0
     open_at: list[list[float]] = []
     links: list[list[float]] = []
-    thick = _compound(thick_faces) if thick_faces else None
+    thick = [(f, _box(f)) for f in thick_faces] if thick_faces else []
     for i in range(1, e2f.Extent() + 1):
         e = TopoDS.Edge_s(e2f.FindKey(i))
         if BRep_Tool.Degenerated_s(e):
@@ -644,25 +685,17 @@ def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thi
             continue
         face = TopoDS.Face_s(fmap.FindKey(faces[0]))
         t = owner_t.get(faces[0], 0.0)
-        p = _edge_mid(e)
-        n = _face_normal_at(face, p)
-        c = BRepAdaptor_Curve(e)
-        from OCP.gp import gp_Pnt, gp_Vec
-
-        q, v = gp_Pnt(), gp_Vec()
-        c.D1(0.5 * (c.FirstParameter() + c.LastParameter()), q, v)
-        tan = np.array([v.X(), v.Y(), v.Z()])
-        if n is None or solid is None or np.linalg.norm(tan) <= 0 or t <= 0:
+        if solid is None or t <= 0:
             boundary += 1
             continue
-        d = np.cross(tan / np.linalg.norm(tan), n)
-        d /= max(float(np.linalg.norm(d)), 1e-300)
-        step = 0.01 * t
-        if _in_face(face, p + d * step, 1e-3 * step):
-            d = -d
+        found = _outward_at(e, face, 0.01 * t)
+        if found is None:
+            boundary += 1
+            continue
+        p, d = found
         if not solid.strictly_inside(p + d * OPEN_STEP * t):
             boundary += 1
-        elif thick is not None and _dist(_vertex(p), thick) <= (0.5 + OPEN_STEP) * t + solid.tol:
+        elif _near_any(p, thick, (0.5 + OPEN_STEP) * t + solid.tol):
             links.append(_pt(p * scale))
         else:
             open_at.append(_pt(p * scale))
@@ -711,11 +744,33 @@ def fidelity(mid, fa, fb, t: float) -> tuple[float, int]:
 GROW_WALLS = 2.0
 
 
-def grow(face, reach: float):
+def joined_edges(m: _Mid, others: list[_Mid], fuzzy: float) -> list:
+    """The edges of mid-face m that already meet another mid-face of its body (a flange running into its bend,
+    two pieces of one plate side by side): within JOINED_SHARE of a wall of it."""
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopoDS import TopoDS
+
+    out = []
+    em = _map(m.original, TopAbs_EDGE)
+    for i in range(1, em.Extent() + 1):
+        e = TopoDS.Edge_s(em.FindKey(i))
+        p = _edge_mid(e)
+        for o in others:
+            if o is m:
+                continue
+            reach = JOINED_SHARE * max(m.t, o.t) + fuzzy
+            if _near_box(p, o.box, reach) and _dist(_vertex(p), o.original) <= reach:
+                out.append(e)
+                break
+    return out
+
+
+def grow(face, reach: float, joined: list | None = None):
     """The face grown `reach` (its own units) past its edges on its own surface; None when it cannot be grown.
     A plane grows by offsetting its outline outward and its holes inward (sharp corners kept); any other
     surface by widening its parameter range by `reach` measured at the face's middle (a periodic direction that
-    already closes stays closed)."""
+    already closes stays closed). It never grows past a JOINED edge (one that already meets another mid-face):
+    a band laid tangent along a bend it already meets would only spoil that shared edge."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
@@ -723,9 +778,11 @@ def grow(face, reach: float):
     from OCP.gp import gp_Pnt, gp_Vec
 
     surf = BRep_Tool.Surface_s(face)
+    joined = joined or []
     if _plane(face) is not None:
-        return _grow_plane(face, reach)
+        return _grow_plane(face, reach, joined)
     u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
+    hold = _held_sides(face, joined, (u0, u1, v0, v1))
     a = BRepAdaptor_Surface(face, True)
     p, du_vec, dv_vec = gp_Pnt(), gp_Vec(), gp_Vec()
     a.D1(0.5 * (u0 + u1), 0.5 * (v0 + v1), p, du_vec, dv_vec)
@@ -733,7 +790,10 @@ def grow(face, reach: float):
     if su <= 0 or sv <= 0:
         return None
     du, dv = reach / su, reach / sv
-    lo_u, hi_u, lo_v, hi_v = u0 - du, u1 + du, v0 - dv, v1 + dv
+    lo_u = u0 if "u0" in hold else u0 - du
+    hi_u = u1 if "u1" in hold else u1 + du
+    lo_v = v0 if "v0" in hold else v0 - dv
+    hi_v = v1 if "v1" in hold else v1 + dv
     if surf.IsUPeriodic() and hi_u - lo_u >= surf.UPeriod():
         lo_u, hi_u = u0, u0 + surf.UPeriod()
     if surf.IsVPeriodic() and hi_v - lo_v >= surf.VPeriod():
@@ -743,11 +803,74 @@ def grow(face, reach: float):
         lo_u, hi_u = max(lo_u, b[0]), min(hi_u, b[1])
     if not surf.IsVPeriodic():
         lo_v, hi_v = max(lo_v, b[2]), min(hi_v, b[3])
-    mk = BRepBuilderAPI_MakeFace(surf, lo_u, hi_u, lo_v, hi_v, 1e-7)
-    return mk.Face() if mk.IsDone() else None
+    # as TILES - the face's own range and a band on each grown side - so no one face runs across a closed
+    # surface's seam (the general fuse could not split a grown torus that did, and lost the whole mid-face)
+    us = [lo_u, u0, u1, hi_u]
+    vs = [lo_v, v0, v1, hi_v]
+    tiles = []
+    for a0, a1 in zip(us[:-1], us[1:], strict=True):
+        for b0, b1 in zip(vs[:-1], vs[1:], strict=True):
+            if a1 - a0 <= 1e-12 or b1 - b0 <= 1e-12:
+                continue
+            mk = BRepBuilderAPI_MakeFace(surf, a0, a1, b0, b1, 1e-7)
+            if mk.IsDone():
+                tiles.append(mk.Face())
+    return _compound(tiles) if tiles else None
 
 
-def _grow_plane(face, reach: float):
+def _held_sides(face, joined: list, bounds) -> set[str]:
+    """Which sides of a face's parameter rectangle (u0, u1, v0, v1) a joined edge lies on: those are not grown."""
+    from OCP.BRep import BRep_Tool
+    from OCP.gp import gp_Pnt
+    from OCP.ShapeAnalysis import ShapeAnalysis_Surface
+
+    u0, u1, v0, v1 = bounds
+    sa = ShapeAnalysis_Surface(BRep_Tool.Surface_s(face))
+    eu, ev = 1e-6 * max(abs(u1 - u0), 1e-12), 1e-6 * max(abs(v1 - v0), 1e-12)
+    out: set[str] = set()
+    for e in joined:
+        uv = sa.ValueOfUV(gp_Pnt(*map(float, _edge_mid(e))), 1e-7)
+        for name, val, ref, eps in (("u0", uv.X(), u0, eu), ("u1", uv.X(), u1, eu), ("v0", uv.Y(), v0, ev),
+                                    ("v1", uv.Y(), v1, ev)):
+            if abs(val - ref) <= max(eps, 1e-9):
+                out.add(name)
+    return out
+
+
+def _cut_beyond(grown, face, joined: list, reach: float):
+    """The grown plane with the strip beyond each joined straight edge taken off (a 2D cut in the plane)."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.gp import gp_Pnt
+
+    pl = _plane(face)
+    if pl is None:
+        return grown
+    out = grown
+    for e in joined:
+        if not _is_line(e):
+            continue
+        p0, p1 = _ends(e)
+        d = _outward(face, p0, p1, pl[1], 1e-3 * reach)
+        if d is None:
+            continue
+        poly = BRepBuilderAPI_MakePolygon()
+        for q in (p0, p1, p1 + d * 1.01 * reach, p0 + d * 1.01 * reach):
+            poly.Add(gp_Pnt(*map(float, q)))
+        poly.Close()
+        strip = BRepBuilderAPI_MakeFace(BRep_Tool.Surface_s(face), poly.Wire(), True)
+        if not strip.IsDone():
+            continue
+        cut = BRepAlgoAPI_Cut(out, strip.Face())
+        if cut.IsDone():
+            fs = _faces(cut.Shape())
+            if fs:
+                out = max(fs, key=_area)
+    return out
+
+
+def _grow_plane(face, reach: float, joined: list | None = None):
     from OCP.BRep import BRep_Tool
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
     from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffset
@@ -782,6 +905,8 @@ def _grow_plane(face, reach: float):
             fix = ShapeFix_Face(mf.Face())
             fix.Perform()
             out = fix.Face()
+            if joined:
+                out = _cut_beyond(out, face, joined, reach)
             if _area(out) >= _area(face) * (1 - 1e-9):
                 return out
         except Exception as exc:  # noqa: BLE001 - try the other join, then give up growing this face
@@ -827,14 +952,14 @@ def join_body(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float
 
     grown = []
     for m in mine:
-        g = grow(m.original, 0.5 * t_max + GROW_WALLS * m.t)
+        g = grow(m.original, 0.5 * t_max + GROW_WALLS * m.t, joined_edges(m, mine, fuzzy))
         grown.append(g)
     b = BOPAlgo_Builder()
     for m in mine:
         b.AddArgument(m.original)
     for g in grown:
-        if g is not None:
-            b.AddArgument(g)
+        for tile in (_faces(g) if g is not None else []):
+            b.AddArgument(tile)
     for f in body_faces:
         b.AddArgument(f)
     b.SetFuzzyValue(fuzzy)
@@ -848,22 +973,30 @@ def join_body(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float
     n = fmap.Extent()
     owners: list[set[int]] = [set() for _ in range(n + 1)]
     core: list[set[int]] = [set() for _ in range(n + 1)]
+    skin = [False] * (n + 1)          # a piece of the part's own CAD faces
 
-    def images(shape):
-        mod = list(b.Modified(shape))
-        return mod if mod else ([] if b.IsDeleted(shape) else [shape])
+    # WHICH FACE EACH PIECE IS A PIECE OF, by geometry (a point inside the piece, lying in that face): the fuse's
+    # own history loses a face it merges with a coincident one (a torus mid-face and its grown copy that wraps
+    # round the seam came back "deleted")
+    tol = 10.0 * fuzzy + 1e-9
+    sources = [(i, "core", m.original, m.box) for i, m in enumerate(mine)]
+    sources += [(i, "grown", tile, _box(tile)) for i, g in enumerate(grown) if g is not None for tile in _faces(g)]
+    sources += [(-1, "skin", f, _box(f)) for f in body_faces]
+    from OCP.TopoDS import TopoDS as _T
 
-    for i, m in enumerate(mine):
-        for f in images(m.original):
-            k = fmap.FindIndex(f)
-            if k > 0:
-                core[k].add(i)
+    for k in range(1, n + 1):
+        q = _inner_point(_T.Face_s(fmap.FindKey(k)))
+        if q is None:
+            continue
+        for i, what, f, box in sources:
+            if not _near_box(q, box, tol) or not _in_face(f, q, tol) or _dist(_vertex(q), f) > tol:
+                continue
+            if what == "skin":
+                skin[k] = True
+            else:
                 owners[k].add(i)
-        if grown[i] is not None:
-            for f in images(grown[i]):
-                k = fmap.FindIndex(f)
-                if k > 0:
-                    owners[k].add(i)
+                if what == "core":
+                    core[k].add(i)
     e2f = TopTools_IndexedDataMapOfShapeListOfShape()
     TopExp.MapShapesAndAncestors_s(fused, TopAbs_EDGE, TopAbs_FACE, e2f)
     face_edges: list[list[int]] = [[] for _ in range(n + 1)]
@@ -904,7 +1037,8 @@ def join_body(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float
                     if in_material(g):
                         ext.add(g)
                         todo.append(g)
-        # (c): keep the pieces of an extension that reach another mid-face; a stub ending in the material is dropped
+        # (c): keep the pieces of an extension that reach another mid-face, or run to the part's own skin (a wall
+        # whose mid-face stopped short of its end); a stub ending inside the material (a thick region) is dropped
         comps, left = [], set(ext)
         while left:
             s0 = min(left)
@@ -924,6 +1058,8 @@ def join_body(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float
             meets = any(blocked(ei, i) and any(owners[h] and i not in owners[h] and (core[h] or in_material(h))
                                                for h in edge_faces[ei])
                         for k in comp for ei in face_edges[k])
+            meets = meets or any(any(skin[h] for h in edge_faces[ei]) and not any(i in core[h] for h in edge_faces[ei])
+                                 for k in comp for ei in face_edges[k])
             if meets:
                 keep |= comp
         kept_ext[i] = keep
@@ -1122,6 +1258,10 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                 for other, area in reached[i]:
                     m.extended.append({"to": None if other is None else mine[other].k, "area": area})
             images = [[f for f, o in zip(kept, owner_i, strict=True) if o == i] for i in range(len(mine))]
+            if len(kept) > 1:
+                fused, again = sew(kept, fuzzy)
+                images = [[g for f, o in zip(kept, owner_i, strict=True) if o == i for g in again[kept.index(f)]]
+                          for i in range(len(mine))]
         except Exception as exc:  # noqa: BLE001 - the straight-edge extension and a plain sew stand in
             notes.append(f"{body_names[b]}: the general join failed ({exc}); straight edges were extended instead.")
             for m in mine:

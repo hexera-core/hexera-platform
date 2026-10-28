@@ -198,3 +198,41 @@ def filleted_t(tp: float = 5.0, ts: float = 4.0, r: float = 4.0):
                 and (abs(b[0] - 98) < 1e-6 or abs(b[0] - (98 + ts)) < 1e-6))
 
     return _unify(_fillet(s, _edges_where(s, root), r))
+
+
+def hemmed_sheet(t: float = 2.0, r: float = 1.0, a: float = 80.0, b: float = 20.0, width: float = 50.0):
+    """A `t` sheet `a` long with its end folded back 180 degrees at inside radius `r` into a hem `b` long: two flat
+    walls joined tangentially by a half-cylinder bend (a canister wall's rolled edge)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    ro = r + t
+    zc = ro                                   # bend centre at (0, zc); the long wall below it, the hem above
+
+    def P(x, z):
+        return gp_Pnt(x, 0, z)
+
+    E = BRepBuilderAPI_MakeEdge
+    outer = GC_MakeArcOfCircle(P(0, zc - ro), P(-ro, zc), P(0, zc + ro)).Value()
+    inner = GC_MakeArcOfCircle(P(0, zc + r), P(-r, zc), P(0, zc - r)).Value()
+    edges = [E(P(a, 0), P(0, 0)).Edge(), E(outer).Edge(), E(P(0, zc + ro), P(b, zc + ro)).Edge(),
+             E(P(b, zc + ro), P(b, zc + r)).Edge(), E(P(b, zc + r), P(0, zc + r)).Edge(), E(inner).Edge(),
+             E(P(0, zc - r), P(a, zc - r)).Edge(), E(P(a, zc - r), P(a, 0)).Edge()]
+    w = BRepBuilderAPI_MakeWire()
+    for e in edges:
+        w.Add(e)
+    face = BRepBuilderAPI_MakeFace(w.Wire()).Face()
+    return _unify(BRepPrimAPI_MakePrism(face, gp_Vec(0, width, 0)).Shape())
+
+
+def duct_elbow(R: float = 300.0, r_out: float = 100.0, t: float = 2.0, angle_deg: float = 90.0):
+    """A round duct elbow: a torus segment of bend radius `R`, outside radius `r_out`, wall `t`, turning
+    `angle_deg`, with flat end rims: one torus wall whose mid-surface has a seam."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeTorus
+
+    ang = math.radians(angle_deg)
+    outer = BRepPrimAPI_MakeTorus(R, r_out, ang).Shape()
+    inner = BRepPrimAPI_MakeTorus(R, r_out - t, ang).Shape()
+    return _cut(outer, inner)

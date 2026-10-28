@@ -274,3 +274,21 @@ def test_a_brp_file_is_read_as_brep(tmp_path):
     BRepTools.Write_s(sf.flat_plate(5.0), str(path))
     rec = ms.extract_file(path, mm_per_unit=1.0)
     assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
+
+
+def test_a_hem_folded_back_on_itself_is_one_sheet_with_no_open_edge():
+    rec, _ = ms.extract(sf.hemmed_sheet(), mm_per_unit=1.0)
+    assert rec["bodies"][0]["verdict"] == "shell"
+    assert {m["kind"] for m in _shell_mids(rec)} == {"plane", "cylinder"}
+    assert _sewn(rec)["open_edges"] == 0
+    _all_checks(rec)
+
+
+def test_a_duct_elbow_closes_across_its_seam():
+    R, r_out, t = 300.0, 100.0, 2.0
+    rec, surface = ms.extract(sf.duct_elbow(R, r_out, t, 90.0), mm_per_unit=1.0)
+    assert rec["bodies"][0]["verdict"] == "shell"
+    # a quarter of the torus at the mid radius: (2 pi R) (2 pi r) / 4
+    assert _sewn_area(surface) == pytest.approx(math.pi ** 2 * R * (r_out - t / 2), rel=1e-4)
+    assert _sewn(rec)["open_edges"] == 0
+    _all_checks(rec)
