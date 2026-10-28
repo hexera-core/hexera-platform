@@ -93,6 +93,8 @@ const HANDLERS = {
   // the mesh the run will build, and what the running mesher says it is doing
   plan:        (ev, r, st) => r.plan(st, ev.summary || ""),
   mesh_stage:  (ev, r) => r.meshStage(ev.label || ""),
+  // a step row or a commentary line, already in the user's words (contracts/narration)
+  narrate:     (ev, r, st) => r.narrate(st, ev),
   // the verdict is kept on its lane, so the lane's mark can never contradict it
   verdict:     (ev, r, st) => r.verdict(st, ev.verdict === "PASS", verdictText(ev.verdict)),
   closing:     () => {},          // the stream holds it for the result card

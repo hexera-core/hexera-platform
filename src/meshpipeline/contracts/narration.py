@@ -1,0 +1,166 @@
+# Responsibility: Say what Hexera is doing and what it decided, in short plain words, on the run's live stream.
+# Owns: the narration phrase table (what each kind of work is called), the machine sentence, the leak guard
+# every narrated line passes, and the helpers that publish a step row or a commentary line.
+# Boundaries: words only - it decides nothing and reads only its arguments. A line that fails the guard is
+# dropped, never published; a publisher that cannot narrate (an older double) is skipped.
+# Collaborates with: events (the NARRATE type), contracts/mesh_progress (the mesher's stages), engines/fea_driver
+# (machine, plan and retry lines), ui/js/render/run_progress.js (draws them).
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from meshpipeline.contracts.event_stream import EventStreamError
+
+#: The kinds of work a step row can be. Each has its own status icon in the UI; "say" is a commentary line.
+KINDS = ("read", "measure", "plan", "refine", "layer", "fill", "check", "export", "machine", "say")
+
+#: What the running mesher is doing, by the stage key engines/mesher_stage and runtime/mesh_runner report.
+#: The user reads THESE words, never the mesher's own label: those name tools and phases ("castellating").
+STAGES: dict[str, tuple[str, str]] = {
+    "uploading":    ("machine", "Sending your part to the mesh machine"),
+    "starting":     ("machine", "Getting the mesher ready"),
+    "background":   ("refine",  "Laying out the starting cells"),
+    "features":     ("measure", "Finding the sharp edges"),
+    "castellating": ("refine",  "Refining the cells around your part"),
+    "octree":       ("refine",  "Sizing the cells around your part"),
+    "sizing":       ("refine",  "Setting the element sizes"),
+    "snapping":     ("refine",  "Fitting the cells to your surfaces"),
+    "surface":      ("refine",  "Meshing the surfaces"),
+    "layers":       ("layer",   "Building boundary layers"),
+    "cells":        ("fill",    "Filling the volume"),
+    "volume":       ("fill",    "Filling the volume"),
+    "optimising":   ("check",   "Improving the elements"),
+    "improving":    ("check",   "Improving cell quality"),
+    "curving":      ("refine",  "Curving the elements onto the surface"),
+    "balancing":    ("check",   "Finishing up"),
+    "splitting":    ("machine", "Splitting the work across processors"),
+    "joining":      ("machine", "Joining the pieces back together"),
+    "patches":      ("export",  "Naming the boundaries"),
+    "checking":     ("check",   "Checking the cells"),
+    "returning":    ("export",  "Sending the finished mesh back"),
+}
+#: A stage key this table does not know still narrates - as plain meshing, never as its raw label.
+UNKNOWN_STAGE = ("fill", "Meshing your part")
+
+#: The longest line a row or a commentary bubble carries.
+MAX_CHARS = 240
+
+# THE LEAK GUARD. A line the user reads never names a file or a path, a rule id, a mesher, a mesher's
+# algorithm, a model or its provider, a prompt, or a config key. One list, tested.
+_LEAKS = [
+    re.compile(r"[\\/][\w.-]+[\\/]"),                                         # a path
+    re.compile(r"\b[\w-]+\.(?:json|py|log|ya?ml|txt|sh|msh|inp|stl|step|stp|vtk|cdb|bdf|dict)\b", re.I),
+    re.compile(r"\b[A-Z]{2,}(?:-[a-z]+)?-\d+\b"),                             # a rule id: RUN-4, PLAN-fea-13
+    re.compile(r"\[[A-Z_]{3,}\]"),                                            # a gate tag: [FEA_PLAN]
+    re.compile(r"\b\w+_\w+\b"),                                               # a snake_case key or a raw name
+    re.compile(r"[{}<>=`]"),                                                  # markup, code, config
+    re.compile(r"\b(?:snappy\w*|blockmesh|cartesianmesh|castellat\w*|cfmesh|gmsh|netgen|tetgen|ftetwild|"
+               r"tetwild|mmg\w*|salome|meshadapt|delaunay|hxt|frontal|decomposepar|reconstructparmesh|"
+               r"checkmesh|surfacefeature\w*)\b", re.I),                     # meshers and their internals
+    re.compile(r"\b(?:gpt|openai|deepseek|deepinfra|claude|anthropic|llama|qwen|mistral|gemini|terra|"
+               r"llm|prompt\w*|tokens?|model)\b", re.I),                     # models and their plumbing
+]
+
+
+def leaks(text: str) -> bool:
+    """Whether `text` says something the user must never read (see _LEAKS)."""
+    line = str(text or "")
+    return any(rx.findall(line) for rx in _LEAKS)
+
+
+def plain(text: str) -> str | None:
+    """`text` as one tidy line, or None when it is empty, too long, or fails the leak guard."""
+    line = " ".join(str(text or "").split())
+    if not line or len(line) > MAX_CHARS or leaks(line):
+        return None
+    return line
+
+
+def stage_words(key: str) -> tuple[str, str]:
+    """(kind, words) for a mesher stage key, never the mesher's own label."""
+    return STAGES.get(str(key or "").strip().lower(), UNKNOWN_STAGE)
+
+
+def machine_words(machine: dict | None) -> str:
+    """The machine sentence: "Meshing on a large machine (256 GB)", from the run's machine decision
+    (contracts/mesh_machine). Its name and route are internal; its size is what the user can weigh."""
+    m = machine or {}
+    try:
+        gib = float(m.get("memory_gib") or 0)
+    except (TypeError, ValueError):
+        gib = 0.0
+    size = f" ({gib:.0f} GB)" if gib > 0 else ""
+    return f"Meshing on a large machine{size}" if m.get("where") == "gce" else f"Meshing on a mesh machine{size}"
+
+
+def still_words(words: str, elapsed_s: float) -> str:
+    """The heartbeat on a stage that has not moved: "Still filling the volume · 34 min"."""
+    minutes = max(1, int(round(float(elapsed_s or 0) / 60)))
+    head = words[:1].lower() + words[1:] if words else "working"
+    return f"Still {head} · {minutes} min"
+
+
+def _publisher(publish: Any):
+    return getattr(publish, "anarrate", None) if publish is not None else None
+
+
+async def astep(publish: Any, kind: str, words: str, *, n: int | None = None, of: int | None = None,
+                unit: str = "", op_id: str = "") -> bool:
+    """Publish a step row. False when nothing was said (no publisher, an unknown kind, a leaking line).
+    A lost claim (EventStreamError) is raised, as at every fenced boundary; any other failure is swallowed:
+    narration is a courtesy, never a reason to fail a run."""
+    line = plain(words)
+    say = _publisher(publish)
+    if say is None or line is None or kind not in KINDS:
+        return False
+    try:
+        await say(kind, line, n=n, of=of, unit=unit, op_id=op_id)
+    except EventStreamError:
+        raise
+    except Exception:  # noqa: BLE001 - the live line is a courtesy
+        return False
+    return True
+
+
+async def asay(publish: Any, text: str, *, op_id: str = "") -> bool:
+    """Publish one commentary line: what was decided and why, in the user's terms."""
+    return await astep(publish, "say", text, op_id=op_id)
+
+
+# # what the FEA driver says as it decides
+
+#: Words in a decision's own sentence that read better for a user.
+_SOFTEN = [(re.compile(r"^Version \d+ meshes"), "Meshing"), (re.compile(r"\bzone\(s\)"), "areas"), (re.compile(r"\belement\(s\)"), "elements"),
+           (re.compile(r"\bpair\(s\)"), "pairs"), (re.compile(r"\bface\(s\)"), "faces")]
+
+
+def soften(text: str) -> str:
+    for rx, to in _SOFTEN:
+        text = rx.sub(to, text)
+    return text
+
+
+def plan_lines(decisions: list[dict] | None, *, limit: int = 3) -> list[str]:
+    """Up to `limit` commentary lines from a plan's decision records: their own words, softened, and
+    only those that pass the guard. The records are the source of truth; nothing here is invented."""
+    out: list[str] = []
+    for d in decisions or []:
+        words = plain(soften(str((d or {}).get("words") or "")))
+        if words and words not in out:
+            out.append(words)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def retry_line(n: int, lever: dict | None) -> str:
+    """Why pass `n` runs: the lever's own sentence when it reads plainly, else the plain fact."""
+    words = plain(soften(str((lever or {}).get("words") or "")))
+    if words:
+        return f"Pass {n - 1} did not pass every check. {words[:1].upper()}{words[1:]}"
+    return f"Pass {n - 1} did not pass every check, so pass {n} changes the sizes where it fell short."
+
+
+__all__ = ["KINDS", "MAX_CHARS", "STAGES", "UNKNOWN_STAGE", "asay", "astep", "leaks", "machine_words",
+           "plain", "plan_lines", "retry_line", "soften", "stage_words", "still_words"]

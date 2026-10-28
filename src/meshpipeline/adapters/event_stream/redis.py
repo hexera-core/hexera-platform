@@ -233,6 +233,10 @@ class JobPublisher:
     def mesh_stage(self, key: str, label: str, op_id: str = "") -> None:
         self._emit_keyed(E.mesh_stage(self.agent, key, label), op_id)
 
+    def narrate(self, kind: str, text: str, *, n: int | None = None, of: int | None = None,
+                unit: str = "", op_id: str = "") -> None:
+        self._emit_keyed(E.narrate(self.agent, kind, text, n, of, unit), op_id)
+
     def verdict(self, verdict: str, summary: str = "") -> None:
         self.emit(E.verdict(self.agent, verdict, summary))
 

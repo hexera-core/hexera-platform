@@ -413,8 +413,15 @@ export const Stage = {
     RunLine.model.meshing(engine,budget,history,this.now());RunLine.draw();},
   // WHAT THE RUNNING MESHER SAYS IT IS DOING ("adding wall layers"), under its bar and on the line
   meshStage(label){
-    const m=this.meshBar;if(m&&label){const l=m.el.querySelector('.mb-lbl');if(l)l.textContent=`meshing · ${label}`;}
+    // a narrated run says the stage in the user's words (narrate below); the mesher's label can name a tool
+    const m=this.meshBar;if(m&&label&&!m.narrated){const l=m.el.querySelector('.mb-lbl');if(l)l.textContent=`meshing · ${label}`;}
     RunLine.model.meshStage(label,this.now());RunLine.draw();},
+  // THE RUN'S NARRATION: what it is doing now and what it decided, in plain words, on the line
+  narrate(agent,ev){if(!ev||!ev.text)return;
+    const m=this.meshBar;
+    if(m&&ev.kind!=='say'&&!/^Still /.test(ev.text)){m.narrated=true;
+      const l=m.el.querySelector('.mb-lbl');if(l)l.textContent=String(ev.text);}
+    RunLine.model.narrate(ev,this.now());RunLine.draw();},
   // THE PLAN the run will build (cells, wall layers, where it refines), in its lane and on the line
   plan(agent,summary){if(summary)this.info(agent,'Plan: '+summary);
     RunLine.model.plan(summary,this.now());RunLine.draw();},

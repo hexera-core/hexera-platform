@@ -30,13 +30,14 @@ MESHING:    Final = "meshing"     # the mesher started, with the engine's declar
 MESHED:     Final = "meshed"      # the mesher finished, with the cell count
 PLAN:       Final = "plan"        # the mesh the run will build: cells, wall layers, refinement
 MESH_STAGE: Final = "mesh_stage"  # what the running mesher is doing now, as it reports it
+NARRATE:    Final = "narrate"     # a step row or a commentary line, in plain words (contracts/narration)
 VERDICT:    Final = "verdict"     # the reviewer's decision
 CLOSING:    Final = "closing"     # the run's final word to the user
 
 EVENT_TYPES: Final[frozenset[str]] = frozenset({
     STAGE, ATTEMPT, NOTE, CHECK, ACTION, SEARCH, FILE,
     SCREENSHOT, MESHING, MESHED, VERDICT, CLOSING,
-    REASONING, RATIONALE, TOOL_CALL, TOOL_RESULT, PLAN, MESH_STAGE,
+    REASONING, RATIONALE, TOOL_CALL, TOOL_RESULT, PLAN, MESH_STAGE, NARRATE,
 })
 
 # A reasoning operation's lifecycle. One id, one card, three possible ends.
@@ -240,6 +241,24 @@ def mesh_stage(stage_: str, key: str, label: str) -> UiEvent:
     from meshpipeline.trace.sanitizer import scrub_text
     return UiEvent(MESH_STAGE, stage_, {"key": scrub_text(str(key), limit=40),
                                         "label": scrub_text(str(label), limit=120)})
+
+
+def narrate(stage_: str, kind: str, text: str, n: int | None = None, of: int | None = None,
+            unit: str = "") -> UiEvent:
+    """A step row (kind = the work) or a commentary line (kind "say"). The text has passed
+    contracts/narration.plain already; it is scrubbed again here, as every free text is."""
+    from meshpipeline.contracts.narration import KINDS
+    from meshpipeline.trace.sanitizer import scrub_text
+    if kind not in KINDS:
+        raise ValueError(f"{kind!r} is not a narration kind")
+    data: dict[str, Any] = {"kind": kind, "text": scrub_text(str(text), limit=240)}
+    if n is not None:
+        data["n"] = int(n)
+    if of is not None:
+        data["of"] = int(of)
+    if unit:
+        data["unit"] = scrub_text(str(unit), limit=24)
+    return UiEvent(NARRATE, stage_, data)
 
 
 def verdict(stage_: str, verdict_: str, summary: str = "") -> UiEvent:

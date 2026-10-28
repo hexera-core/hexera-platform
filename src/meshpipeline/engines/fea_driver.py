@@ -775,6 +775,37 @@ def _cite(job_id: str, entries: list[dict]) -> None:
                 source=str(e.get("source") or dr.SOURCE_RULE), words=str(e.get("words") or ""))
 
 
+async def _narrate_pass(publish, *, n: int, first: bool, plan: dict, levers: list[dict], machine: dict,
+                        budget_s: int) -> None:
+    """Say a pass out loud before it meshes: on the first pass the plan's own decisions (their
+    words, through the leak guard), on a later one why it runs again (the lever's words); then the
+    machine it runs on, and the mesh start the run line counts from."""
+    from meshpipeline.contracts import narration as N
+
+    if first:
+        for i, line in enumerate(N.plan_lines(plan.get("decisions"))):
+            await N.asay(publish, line, op_id=f"fea:plan:{n}:{i}")
+    elif levers:
+        await N.asay(publish, N.retry_line(n, levers[-1]), op_id=f"fea:retry:{n}")
+    await N.astep(publish, "machine", N.machine_words(machine), op_id=f"fea:machine:{n}")
+    meshing = getattr(publish, "ameshing", None)
+    if meshing is not None:
+        await meshing(ENGINE, budget_s, None, op_id=f"meshing:fea:{n}")
+
+
+async def _relayed_mesh(publish, ws: Path, *, seq: int, timeout):
+    """One run of the mesher, with its stage reports (the remote beacon, read by the mesh client)
+    relayed to the run's live line while it runs - in the words contracts/narration gives them."""
+    from meshpipeline.contracts import mesh_progress
+    from meshpipeline.engines.runtime import get_engine
+
+    sink = None if publish is None or getattr(publish, "amesh_stage", None) is None else \
+        mesh_progress.publishing_sink(publish, asyncio.get_running_loop(),
+                                      op_prefix=mesh_progress.stage_op_prefix(ws, seq))
+    with mesh_progress.relaying(sink):
+        return await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws, timeout=timeout)
+
+
 def _refuse(ws: Path, *, cause: str, text: str, gate: str = "fea_plan", **facts) -> None:
     from meshpipeline.engines.preflight import PreflightRefusal
 
@@ -1100,7 +1131,6 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 run: BuilderDriverRun, source_path: str = ""):
     from meshpipeline.contracts.failure_cause import FailureCause
     from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
-    from meshpipeline.engines.runtime import get_engine
 
     ws = Path(workspace)
     if staged_solid(ws) is None:
@@ -1262,10 +1292,16 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                       f"{work['stall_window_s'] // 60} minutes, or at the hard limit of "
                                       f"{work['ceiling_s'] // 60} minutes.")}])
             await run.fence("start native mesh")
+            # THE LIVE LINE (contracts/narration): what was decided and why, where it runs, and the
+            # mesher's own stages as it reports them. This path used to say nothing here, so a run
+            # meshing for an hour on a VM still read "Planning the mesh..." on the page.
+            await _narrate_pass(publish, n=n, first=n == n0 + 1, plan=plan, levers=levers,
+                                machine=machine, budget_s=int(work["ceiling_s"]))
             native_t0 = time.monotonic()
+            runs_here = 0
             while True:
-                result = await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws,
-                                                 timeout=work["ceiling_s"])
+                runs_here += 1
+                result = await _relayed_mesh(publish, ws, seq=n * 10 + runs_here, timeout=work["ceiling_s"])
                 if _out_of_memory(result):
                     # RUN-3: OUT OF MEMORY -> THE SAME PLAN ONE MACHINE UP (no lever, no coarsening, no
                     # re-plan), sized from the peak seen when there is one, up to the largest machine
