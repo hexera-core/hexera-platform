@@ -245,9 +245,10 @@ def _shadow_row(job_id: str, plan, outcome: str, *, operations=(), stopped_becau
                 resolved=None, refusals=()) -> None:
     """THE ONE SHADOW WRITER, called from every exit of the node past the pre-pass.
 
-    A shadow run's whole value is the pairing of what the model proposed with what the rules did
-    on the same part, so it is logged once whichever way the loop ended; `not_executed` says the
-    loop never produced a verdict. A no-op when there is no shadow plan. Never raises.
+    A shadow run's whole value is the pairing of what the model-directed portion proposed with
+    what the deterministic portion did on the same part, so it is logged once whichever way the
+    loop ended; `not_executed` says the loop never produced a verdict. A no-op when there is no
+    shadow plan. Never raises.
     """
     if plan is None:
         return
