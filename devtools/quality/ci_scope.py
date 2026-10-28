@@ -56,6 +56,7 @@ def _is_python(path: str) -> bool:
         path in PYTHON_PATHS
         or path.startswith((
             "alembic/",
+            "apps/console/public/static/",
             "deploy/",
             "devtools/",
             "requirements/",

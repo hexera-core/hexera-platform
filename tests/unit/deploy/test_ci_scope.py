@@ -35,6 +35,14 @@ def test_web_workspace_change_runs_only_web_lane():
     assert scope.run_web is True
 
 
+def test_console_static_copy_keeps_python_contracts_on_main():
+    scope = classify(["apps/console/public/static/js/render/geometry_form.js"], event_name="push")
+
+    assert scope.full_ci is True
+    assert scope.run_python is True
+    assert scope.run_web is True
+
+
 def test_unit_test_only_change_skips_image_and_integration_lanes():
     scope = classify(["tests/unit/api/test_chat.py"])
 
