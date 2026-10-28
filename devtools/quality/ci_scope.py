@@ -25,15 +25,19 @@ WEB_PATHS = {
 }
 
 PYTHON_PATHS = {
+    "Dockerfile",
     "Makefile",
-    "pyproject.toml",
     "alembic.ini",
+    "docker-compose.yml",
+    "pyproject.toml",
 }
 
 IMAGE_PATHS = {
     "Dockerfile",
     "Makefile",
+    "alembic.ini",
     "deploy/verify_install.py",
+    "devtools/quality/shard_tests.py",
     "docker-compose.yml",
     "pyproject.toml",
 }

@@ -56,9 +56,29 @@ def test_runtime_python_change_runs_python_and_image_lanes():
 
 
 def test_image_build_inputs_run_image_lanes():
-    for path in ("Makefile", "deploy/verify_install.py", "deploy/docker/entrypoint.sh"):
+    for path in (
+        "Makefile",
+        "deploy/verify_install.py",
+        "deploy/docker/entrypoint.sh",
+    ):
         scope = classify([path])
 
+        assert scope.run_images is True, path
+
+
+def test_migration_config_runs_image_lanes():
+    assert classify(["alembic.ini"]).run_images is True
+
+
+def test_integration_sharder_runs_image_lanes():
+    assert classify(["devtools/quality/shard_tests.py"]).run_images is True
+
+
+def test_container_manifests_keep_repository_contracts():
+    for path in ("Dockerfile", "docker-compose.yml"):
+        scope = classify([path], event_name="pull_request")
+
+        assert scope.run_python is True, path
         assert scope.run_images is True, path
 
 
