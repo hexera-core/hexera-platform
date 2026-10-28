@@ -4,7 +4,7 @@ Every decision a mesh run makes on its own is made by a written rule. Each rule 
 and each decision the run records in its "why" record names the rule behind it
 (`contracts/decision_record.py`). This file is the one home for those rules.
 
-Rulebook version: **33**
+Rulebook version: **34**
 
 How the book is kept honest:
 
@@ -319,6 +319,16 @@ route reads them as guidance (`contracts/user_notes.py`). They are not acceptanc
 | NOTE-1 | in force | **Asked once, kept word for word.** Before the first summary the application asks one optional question ("Anything specific about this simulation we should know? ... Say 'no' to skip."), unless the user already said something specific. It is never asked again and never holds a submission. The user's answer, every message the intake quotes as saying something specific, and the console's notes box are stored verbatim on the session (`user_notes`), never as a model's rewrite; the summary (request_txt) stays the intake's own. |
 | NOTE-2 | in force | **Every route's AI steps read them, as guidance.** Every attempt's workspace gets `user_notes.txt`; the model-led builder, the snappy planner and the FEA judgement calls are shown them and may use them only through the settings they already control, inside those settings' limits; the intake sets a note that fits a declared field (detail level, an engine parameter, a named boundary, far-field margins) there. A route with no AI step in its build (snapgrid's ECXML driver) gets them through the intake. `tests/unit/hygiene/test_user_notes_every_route.py` fails when a route or an engine has no reader. |
 | NOTE-3 | in force | **A note is never a check.** The reviewer reads them as context, outside the text a finding may quote to ask for a rebuild, and never fails a mesh over one. What a note asks that cannot be done (removing holes from the CAD, say) is left and the run carries on. A step may leave one plain line on what it did with them, shown on the result as "From your notes: ...", best effort and never parsed or checked. |
+
+## AIG: the AI never fails or retries a run
+
+The rules plan comes first. An AI change is used only when it is valid and inside the rules' bounds,
+and every AI error falls back to the rules. These rules cover the AI steps outside the FEA builder
+(AI-fea-n above) and the verdict (VER-5).
+
+| ID | Status | Rule |
+|---|---|---|
+| AIG-1 | in force | **The rules build when the AI builder gives no mesh.** On cfMesh, VMTK, gmsh (CFD) and snappy multi-region, an attempt whose builder model was down, busy, slow, raised, or ended its rounds without submitting a mesh is built in the same attempt by the rules plan (`engines/rules_plan.py`): the same tools, validation and gates, the layer count the request names, every size from the engine's own defaults. It is never an infrastructure retry and never a failed run. The why record and the run's notes say so. `BUILDER_AI=off` builds every such attempt by the rules plan. |
 
 ## Reserved families
 
