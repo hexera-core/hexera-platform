@@ -158,9 +158,8 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
     if not regions:
         raise DetailError("this job delivered no mesh boundary to look at")
 
-    out: list[dict] = []
+    hits: list[tuple[str, dict, "np.ndarray"]] = []
     in_range = 0
-    returned = 0
     for region, polymesh in regions:
         rows = [p for p in read_boundary_patches(polymesh) if p["name"] not in skip_names]
         total = sum(int(p["n_faces"]) for p in rows)
@@ -189,18 +188,42 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
             if not idx.size:
                 continue
             in_range += int(idx.size)
-            if returned >= MAX_RETURN_FACES:
-                continue
-            idx = idx[:MAX_RETURN_FACES - returned]
-            returned += int(idx.size)
-            pts_b, polys_b = _pack(points, sizes, flat, offs, idx)
-            out.append({
-                "name": f"{region}/{p['name']}" if region else str(p["name"]),
-                "type": str(p["type"]),
-                "face_count": int(idx.size),
-                "points": pts_b,
-                "polys": polys_b,
-            })
+            hits.append((region, p, idx, (points, sizes, flat, offs)))
+
+    # THE BUDGET IS SHARED OUT, NOT EATEN FIRST-COME. Measured on the delivered coupon, 2026-10-29,
+    # before this: a 4 mm window held 684,660 faces in range across both regions, the cap of
+    # 150,000 was spent walking the patches in order, and the answer came back as 150,000 faces of
+    # `fluid/fluid_to_solid` with the metal side missing altogether. The payload said
+    # `truncated: true` and said nothing about WHAT was dropped, so a reader looking at a
+    # conjugate interface was shown one side of it and had no way to know. Same mistake as
+    # publishing half a conjugate review surface, in a different file.
+    #
+    # Every patch with a face in range keeps at least one, the rest of the budget goes out in
+    # proportion by largest remainder, and the faces kept inside a patch are spread evenly across
+    # it - a contiguous prefix is whatever order the mesher happened to write, which puts the whole
+    # sample in one corner of the window.
+    counts = [int(h[2].size) for h in hits]
+    shares = _share_out(MAX_RETURN_FACES, counts)
+    out: list[dict] = []
+    returned = 0
+    for (region, p, idx, arrays), keep, here in zip(hits, shares, counts):
+        if keep <= 0:
+            continue
+        if keep < idx.size:
+            idx = idx[np.unique(np.linspace(0, idx.size - 1, keep).round().astype(np.int64))]
+        returned += int(idx.size)
+        points, sizes, flat, offs = arrays
+        pts_b, polys_b = _pack(points, sizes, flat, offs, idx)
+        out.append({
+            "name": f"{region}/{p['name']}" if region else str(p["name"]),
+            "type": str(p["type"]),
+            "face_count": int(idx.size),
+            # WHAT THIS PATCH ACTUALLY HAS THERE, so a client drawing a truncated window can say
+            # "1 face in 5 of the coolant" rather than leaving a reader to assume it is all of it.
+            "faces_in_range": int(here),
+            "points": pts_b,
+            "polys": polys_b,
+        })
     return {
         "centre": [float(v) for v in c],
         "radius": r,
@@ -209,6 +232,45 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
         "faces_returned": int(returned),
         "truncated": bool(in_range > returned),
     }
+
+
+def _share_out(budget: int, counts: list[int]) -> list[int]:
+    """How many of each patch's in-range faces to return, so none of them disappears.
+
+    Largest remainder, with a floor of one for every patch that has anything at all. A patch that
+    is 0.3% of the window is worth one face rather than none: the alternative is a region silently
+    missing from a conjugate detail, which is what this replaced.
+    """
+    total = sum(int(n) for n in counts)
+    if total <= 0:
+        return [0 for _ in counts]
+    if total <= int(budget):
+        return [int(n) for n in counts]
+    b = int(budget)
+    if len(counts) >= b:
+        # More patches than the budget has room for. Nothing sensible is left to share, so give
+        # them a face each in the order they came and stop - still every patch rather than one.
+        return [1 if i < b else 0 for i, _ in enumerate(counts)]
+    exact = [b * int(n) / total for n in counts]
+    share = [max(1, int(e)) for e in exact]
+    while sum(share) > b:                                 # the floors can overshoot
+        i = max(range(len(share)), key=lambda j: (share[j], exact[j]))
+        if share[i] <= 1:
+            break
+        share[i] -= 1
+    left = b - sum(share)
+    if left > 0:
+        order = sorted(range(len(counts)), key=lambda j: exact[j] - int(exact[j]), reverse=True)
+        for j in order:
+            if left <= 0:
+                break
+            room = int(counts[j]) - share[j]
+            if room <= 0:
+                continue
+            add = min(room, left)
+            share[j] += add
+            left -= add
+    return [min(int(share[i]), int(counts[i])) for i in range(len(counts))]
 
 
 __all__ = ["CACHED_BOUNDARIES", "MAX_RETURN_FACES", "MAX_SOURCE_FACES", "DetailError",

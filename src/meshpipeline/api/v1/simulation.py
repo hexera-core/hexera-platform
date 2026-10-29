@@ -471,6 +471,9 @@ async def get_detail(job_id: uuid.UUID, x: float, y: float, z: float, radius: fl
             "faces_in_range": out["faces_in_range"], "faces_returned": out["faces_returned"],
             "truncated": out["truncated"],
             "patches": [{"name": q["name"], "type": q["type"], "face_count": q["face_count"],
+                         # how much of this patch is in the window, so a truncated answer can say
+                         # what fraction of each side it is showing rather than only that it cut
+                         "faces_in_range": q["faces_in_range"],
                          "points_b64": base64.b64encode(q["points"]).decode("ascii"),
                          "polys_b64": base64.b64encode(q["polys"]).decode("ascii")}
                         for q in out["patches"]]}

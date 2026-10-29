@@ -193,3 +193,68 @@ def test_the_route_reads_the_workspace_and_says_why_when_it_cannot():
     assert "final_attempt_workspace" in src
     assert "DetailError" in src and "409" in src
     assert "points_b64" in src and "polys_b64" in src
+
+
+#   -- the budget is shared out, not eaten -------------------------------------------------------
+
+def test_a_truncated_window_still_shows_every_region(two_regions, monkeypatch):
+    """MEASURED ON THE DELIVERED COUPON, 2026-10-29, before this existed. A 4 mm window held
+    684,660 faces in range across both regions; the 150,000-face cap was spent walking the patches
+    in the order they came, and the answer was 150,000 faces of `fluid/fluid_to_solid` with the
+    metal side missing altogether:
+
+        faces_in_range 684660 returned 150000 truncated True
+          fluid/fluid_to_solid   mappedWall   faces 150000
+          (and nothing else)
+
+    `truncated: true` said something was dropped and not that a whole REGION was, so a reader
+    looking at a conjugate interface was shown one side of it with no way to tell. Same mistake as
+    publishing half a conjugate review surface, in a different file.
+    """
+    monkeypatch.setattr(D, "MAX_RETURN_FACES", 8)
+    out = D.detail_at(two_regions, centre=NEAR_INLET, radius=10.0)
+    names = {p["name"] for p in out["patches"]}
+    assert any(n.startswith("fluid/") for n in names), "the coolant went missing"
+    assert any(n.startswith("solid/") for n in names), "the metal went missing"
+    assert out["truncated"] is True
+    assert out["faces_returned"] <= 8
+
+
+@pytest.mark.parametrize("budget", [1, 2, 3, 5, 6, 7, 8, 13, 27, 28, 29])
+def test_no_patch_with_a_face_in_range_is_ever_dropped_in_silence(two_regions, monkeypatch,
+                                                                  budget):
+    """The property, across every budget from one face to more than the window holds: a patch is
+    either in the answer or it had nothing there. Six patches, 28 faces in range."""
+    monkeypatch.setattr(D, "MAX_RETURN_FACES", budget)
+    out = D.detail_at(two_regions, centre=NEAR_INLET, radius=10.0)
+    assert out["faces_returned"] <= budget, "the cap is a cap"
+    assert out["faces_returned"] >= min(budget, 1)
+    if budget >= 6:
+        assert len(out["patches"]) == 6, "every patch keeps a face once there is room for one each"
+    for q in out["patches"]:
+        assert q["face_count"] >= 1
+        assert q["face_count"] <= q["faces_in_range"], "more faces than the patch has there"
+
+
+def test_each_patch_says_how_much_of_itself_is_being_shown(two_regions, monkeypatch):
+    """So a client can say "1 face in 5 of the coolant" rather than leaving a reader to read a
+    sample as the whole thing."""
+    monkeypatch.setattr(D, "MAX_RETURN_FACES", 8)
+    out = D.detail_at(two_regions, centre=NEAR_INLET, radius=10.0)
+    assert sum(q["faces_in_range"] for q in out["patches"]) == out["faces_in_range"]
+    assert any(q["face_count"] < q["faces_in_range"] for q in out["patches"]), "nothing was cut"
+
+
+def test_the_faces_kept_are_spread_across_the_patch_and_not_its_first_few(one_region, monkeypatch):
+    """A contiguous prefix is whatever order the mesher wrote, which puts the whole sample in one
+    corner of the window. Three unit hexes span x=0..3 and the wall has 12 faces along them: two
+    faces taken off the front sit inside the first cell, two taken evenly sit at either end."""
+    import struct
+
+    monkeypatch.setattr(D, "MAX_RETURN_FACES", 4)         # 1 inlet + 1 outlet + 2 of the 12 wall
+    out = D.detail_at(one_region, centre=(1.5, 0.5, 0.5), radius=10.0)
+    wall = [q for q in out["patches"] if q["name"] == "wall"]
+    assert wall and wall[0]["face_count"] == 2, [q["name"] for q in out["patches"]]
+    xs = struct.unpack(f"<{len(wall[0]['points']) // 4}f", wall[0]["points"])[0::3]
+    assert max(xs) - min(xs) > 1.5, (
+        "both kept faces are in the same cell, so this is still a prefix: %r" % (sorted(xs),))
