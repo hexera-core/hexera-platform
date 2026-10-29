@@ -166,5 +166,8 @@ def test_the_worker_token_never_reaches_the_command_line(monkeypatch):
     k = lk.start(own, interval_s=60)
     assert k is not None and str(token) not in " ".join(seen["args"])
     assert str(token) in seen["stdin"].decode()
-    k.workdir.joinpath("beat").unlink()
-    k.workdir.rmdir()
+    import shutil
+
+    from meshpipeline.contracts import progress_clock
+    progress_clock.set_marks(remote=None, progress=None)
+    shutil.rmtree(k.workdir)

@@ -100,6 +100,85 @@ def _metre_box(step: Path) -> tuple[list[float], float]:
     return box, diag
 
 
+#: MESH-8 FOR A SINGLE PART: the skins its staged solid was opened without, and each face's CAD origin (the
+#: workspace file the mesher reads to name every face for the CAD face it came from)
+SKINS_FILE = "skins.json"
+#: the staged solid as the CAD drew it, kept beside the opened one
+CAD_SOLID = "geometry_cad.brep"
+
+
+def open_single_skins(ws: Path) -> dict | None:
+    """MESH-8 FOR A SINGLE PART: a part whose staged solid has skins of no thickness (cad/zero_skins - a pocket
+    or hole cut exactly to a wall, its floor left lying on that wall) is staged again with each skin left out and
+    its outline opened through the face it lay on, as an assembly's parts are (cad/fea_assembly.stage). Writes the
+    opened solid as geometry.brep (the drawn one kept as CAD_SOLID) and SKINS_FILE: {"origin": the CAD face of
+    each face of the opened solid, "faces": the CAD's face count, "skins": [{"part", "faces", "on", "pairs"}]}.
+    None when there is nothing to open (no skin, several bodies, a file not read); {"note"} when the opened copy was
+    not sound - the part is then meshed as drawn, said. Never raises."""
+    import shutil
+
+    from OCP.BRepTools import BRepTools
+
+    from meshpipeline.cad import fea_assembly as A
+    from meshpipeline.cad import zero_skins as Z
+    from meshpipeline.cad.scout import read_cad
+
+    try:
+        if (ws / SKINS_FILE).exists() and (ws / CAD_SOLID).exists():
+            # ALREADY OPENED (this workspace driven again): the staged solid is the opened one; its record stands
+            return json.loads((ws / SKINS_FILE).read_text())
+        staged = staged_solid(ws)
+        if staged is None:
+            return None
+        parts = A.solids(read_cad(staged))
+        if len(parts) != 1:
+            return None
+        opened = Z.open_skins(parts[0])
+        if opened.note:
+            return {"note": opened.note}
+        if not opened.skins:
+            return None
+        n = len(Z._faces(parts[0]))
+        if staged.suffix == ".brep":
+            shutil.copyfile(staged, ws / CAD_SOLID)
+        else:
+            BRepTools.Write_s(parts[0], str(ws / CAD_SOLID))
+        BRepTools.Write_s(opened.solid, str(ws / "geometry.brep"))
+        pairs = [A.skin_pair(f"Face_{k.skin}", f"Face_{k.on}") for k in opened.skins]
+        info = {"origin": [int(o) for o in opened.origin], "faces": n,
+                "skins": [{"part": "The part", "faces": [p["face"] for p in pairs],
+                           "on": sorted({p["on"] for p in pairs}, key=lambda f: int(f.rsplit("_", 1)[-1])),
+                           "pairs": pairs}]}
+        (ws / SKINS_FILE).write_text(json.dumps(info, indent=1))
+        return info
+    except Exception as exc:  # noqa: BLE001 - meshed as drawn, as before MESH-8 reached single parts
+        logger.warning("fea driver: a single part's skins were not opened (%s: %s)", type(exc).__name__, exc)
+        return {"note": f"its skins could not be opened ({type(exc).__name__})"}
+
+
+def named_as_cad(record: dict, surface, info: dict) -> dict:
+    """The measurement of an opened single part (open_single_skins) said in the CAD's own face names: each face
+    Face_k of the opened solid renamed to the CAD face it came from, every skin face kept as a face of the part
+    (kind "skin", the face it lies on) so the CAD's face count stands, and the skins recorded. Returns the record."""
+    from meshpipeline.cad import fea_assembly as A
+
+    origin = [int(o) for o in info.get("origin") or []]
+    names = [f"Face_{o}" for o in origin]
+    out = A.rename_record(record, names)
+    out["face_names"] = record.get("face_names") or "Face_k"
+    if len(surface.names) == len(names):
+        surface.names = list(names)
+    faces = dict(out.get("faces") or {})
+    for sk in info.get("skins") or []:
+        for pr in sk.get("pairs") or []:
+            faces[str(pr["face"])] = {"kind": "skin", "skin_on": pr.get("on"), "words": pr.get("words")}
+    out["faces"] = faces
+    out["skins"] = list(info.get("skins") or [])
+    out.setdefault("notes", [])
+    out["notes"] = [*out["notes"], *A.skin_notes(out["skins"])]
+    return out
+
+
 def solids_from_shells(ws: Path) -> int:
     """MESH-1: A FILE OF FACES THAT CLOSE is read as the solid it bounds: a STEP or IGES written as closed
     shells with no solid entity (aircraft and keel surfaces, 24 Oct gate) - the shells are made solids,
@@ -482,6 +561,8 @@ def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None
     if zone_floor_m or zone_floors:
         plan["resolution_short"] = P.shortfalls(zone_list)
     plan["mesh"] = L.mesh_settings(levers)
+    if record.get("skins"):
+        plan["skins"] = list(record["skins"])           # MESH-8, a single part's (an assembly's ride in plan["assembly"])
     if ai:
         plan["ai"] = {**ai, "applied": applied}
         _with_ai(plan)
@@ -1240,8 +1321,12 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                             "words": f"The file's {made} closed shell(s) were read as the solid(s) they bound."}])
     except Exception as exc:  # noqa: BLE001 - the part is meshed, or refused, as it stands
         logger.warning("fea driver: closed shells not read as solids (%s)", type(exc).__name__)
+    # MESH-8 FOR A SINGLE PART: its skins left out, its faces still named for the CAD faces they came from
+    skins = await asyncio.to_thread(open_single_skins, ws)
     try:
         record, surface, diag_m = await asyncio.to_thread(measure_staged, ws)
+        if skins and skins.get("origin"):
+            record = named_as_cad(record, surface, skins)
     except Exception as exc:  # noqa: BLE001 - recorded as the attempt's reason
         logger.exception("fea driver: the staged solid could not be measured - job_id=%s", job_id)
         _refuse(ws, cause=FailureCause.NOT_BUILT.value, text=f"the part could not be measured ({exc})",
@@ -1250,6 +1335,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         outcome = run.outcome(produced_deliverable=False, failure_marker=BUILD_FAILED)
         return False, BUILD_FAILED, outcome
 
+    if skins and skins.get("origin"):
+        _cite(job_id, [{"stage": "fea_plan", "decided": "skins left out", "rule": "MESH-8",
+                        "value": sum(len(sk["faces"]) for sk in skins["skins"]), "inputs": {"skins": skins["skins"]},
+                        "words": " ".join(skin_words(skins["skins"]))}])
+    elif skins and skins.get("note"):
+        _cite(job_id, [{"stage": "fea_plan", "decided": "skins kept", "rule": "MESH-8", "value": 0,
+                        "inputs": {"note": skins["note"]},
+                        "words": f"The part has skins of no thickness, but {skins['note']}: it is meshed as drawn."}])
     staged = staged_solid(ws)
     healed = any("healed" in str(n) for n in record.get("notes") or [])
     _cite(job_id, [{"stage": "fea_plan", "decided": "staged solid", "value": staged.name if staged else None,

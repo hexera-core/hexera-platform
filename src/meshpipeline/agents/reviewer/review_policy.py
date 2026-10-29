@@ -138,6 +138,43 @@ def fea_valid(measured: Mapping | None) -> bool:
     return is_fea(m.get("purpose")) and m.get("fea_valid") is True
 
 
+#: The FEA axes a measurement settles outright, and the measurement that does (engines/fea_review).
+SETTLED_AXES = {"fea_faces_named": "fea_faces_complete"}
+
+
+def settled_by_measurement(axis_key: str, measured: dict | None) -> str:
+    """Why a measurement the run took SETTLES this axis as met, in plain words, or "". A finding on such an axis
+    that did not pass is recorded as passed: the face count is a count, never a judgement (fb44fed7, 27 Oct: a
+    valid 11-part mesh read "FAIL" over 142 named faces against 146, the 4 others skins MESH-8 left out)."""
+    m = measured or {}
+    key = SETTLED_AXES.get(str(axis_key))
+    if key and m.get(key) is True:
+        return ("measured: every CAD face is a named group in every solver file or accounted for - "
+                + (str(m.get("fea_faces_words") or "").strip() or "left out for a measured reason"))
+    return ""
+
+
+def settle(findings, measured: dict | None) -> tuple:
+    """The findings with every one a measurement settles recorded as passed, its reason appended."""
+    import dataclasses
+
+    out = []
+    for f in findings or ():
+        why = "" if getattr(f, "passed", True) else settled_by_measurement(getattr(f, "axis_key", ""), measured)
+        if why and dataclasses.is_dataclass(f) and not isinstance(f, type):
+            f = dataclasses.replace(f, passed=True, wrong_problem="", builder_change="", change_request="",
+                                    finding=(str(getattr(f, "finding", "") or "") + f" [Settled - {why}]").strip())
+        out.append(f)
+    return tuple(out)
+
+
+def review_passes(findings, measured: dict | None) -> bool:
+    """Whether an accepted review PASSES: every finding passed (after settle), or the job is an FEA job whose mesh
+    the measurements call valid - its verdict is the measured checks' (application/final_result.limits_decide_for),
+    and what did not pass stands as concerns. No AI finding turns a valid FEA mesh into a FAIL."""
+    return fea_valid(measured) or not any(getattr(f, "passed", True) is False for f in findings or ())
+
+
 def measured_veto(wrong_problem: str, axis_key: str, measured: dict | None) -> str:
     """A measurement the gates already took that CONTRADICTS a wrong-problem claim, in plain words,
     or "". Only checks that are certain: a claim no measurement speaks to stands on its evidence."""
@@ -264,6 +301,11 @@ def measurements_from(manifest: Mapping | None, state: Mapping | None) -> dict:
         out["purpose"] = purpose
     if fea_review.is_fea(purpose):
         out["fea_valid"] = fea_review.measured_valid(q)
+        # EVERY CAD FACE NAMED OR ACCOUNTED FOR (engines/fea_review.face_accounting), as the run measured it
+        acc = _mapping(q.get("fea_faces"))
+        if acc:
+            out["fea_faces_complete"] = acc.get("complete") is True
+            out["fea_faces_words"] = fea_review.faces_words(acc)
     box = _mapping(mf.get("geometry")).get("body_box")
     if isinstance(box, dict):
         try:
@@ -293,7 +335,7 @@ def blocking_findings(axis_findings) -> list[dict]:
             and str(f.get("blocking") or "") in WRONG_PROBLEM]
 
 
-__all__ = ["FEA_NEVER_FAILED", "LEVERS", "MIN_QUOTE_CHARS", "NOT_WRONG_PROBLEM", "NO_LEVER", "WRONG_PROBLEM",
+__all__ = ["review_passes", "SETTLED_AXES", "settle", "settled_by_measurement", "FEA_NEVER_FAILED", "LEVERS", "MIN_QUOTE_CHARS", "NOT_WRONG_PROBLEM", "NO_LEVER", "WRONG_PROBLEM",
            "Judgement", "asks_for_rebuild", "blocking_findings", "brief_quote_found", "fea_valid",
            "concern_retry_spent",
            "builder_levers", "judge", "judge_all", "measured_veto", "measurements_from"]

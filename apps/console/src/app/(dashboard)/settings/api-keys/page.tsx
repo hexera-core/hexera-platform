@@ -48,12 +48,7 @@ export default async function ApiKeysPage({
         </div>
       </div>
 
-      <div className="summary-grid">
-        <div className="metric-card">
-          <p className="label">Scope</p>
-          <b>You</b>
-          <span>A key acts as your account against the API.</span>
-        </div>
+      <div className="summary-grid summary-grid--compact">
         <div className="metric-card">
           <p className="label">Secret</p>
           <b>Shown once</b>

@@ -825,14 +825,36 @@ def open_skins(solid):
 
 
 def skin_record(opened: list) -> list[dict]:
-    """MESH-8: the skins each part was meshed without, named: [{"part", "faces", "on"}]."""
+    """MESH-8: the skins each part was meshed without, named: [{"part", "faces", "on", "pairs"}] - `pairs` each
+    skin face and the face it lies on, so every CAD face is accounted for (a skin is left out, never lost)."""
     out = []
     for p, o in enumerate(opened, start=1):
         if o.skins:
-            out.append({"part": part_id(p), "faces": [face_name(p, k.skin) for k in o.skins],
-                        "on": sorted({face_name(p, k.on) for k in o.skins}, key=_face_sort)})
+            on: list[str] = sorted({face_name(p, k.on) for k in o.skins}, key=_face_sort)
+            out.append({"part": part_id(p), "faces": [face_name(p, k.skin) for k in o.skins], "on": on,
+                        "pairs": [skin_pair(face_name(p, k.skin), face_name(p, k.on)) for k in o.skins]})
         elif o.note:
             out.append({"part": part_id(p), "faces": [], "on": [], "not_opened": o.note})
+    return out
+
+
+def skin_pair(face: str, on: str) -> dict:
+    """MESH-8: one skin face left out of the mesh and the face it lies on, with the sentence every report uses."""
+    return {"face": face, "on": on, "words": f"{face} lies on {on}: zero thickness, no volume - left out of the mesh"}
+
+
+def skin_pairs(skins) -> list[dict]:
+    """Every skin pair of a sidecar's (or a plan's) MESH-8 record; a record from before the pairs were kept gives
+    each face with the faces its part's skins lay on."""
+    out: list[dict] = []
+    for sk in skins or []:
+        if not isinstance(sk, dict):
+            continue
+        if sk.get("pairs"):
+            out.extend(dict(pr) for pr in sk["pairs"] if isinstance(pr, dict) and pr.get("face"))
+            continue
+        on = ", ".join(str(o) for o in sk.get("on") or [])
+        out.extend(skin_pair(str(f), on) for f in sk.get("faces") or [])
     return out
 
 
@@ -1020,7 +1042,7 @@ def match_body_names(named: list[tuple[str, np.ndarray, float]], parts: list) ->
     return out
 
 
-__all__ = ["BONDED", "CONNECTIONS", "CONTACT", "FACT_KEY", "SIDECAR", "STAGED", "interfaces_of", "stage", "FUZZY_SHARE", "Fused", "PAIR_BONDED", "PAIR_CONTACT",
+__all__ = ["skin_pair", "skin_pairs", "BONDED", "CONNECTIONS", "CONTACT", "FACT_KEY", "SIDECAR", "STAGED", "interfaces_of", "stage", "FUZZY_SHARE", "Fused", "PAIR_BONDED", "PAIR_CONTACT",
            "PAIR_TIE", "VERSION", "compound", "face_name", "fuse", "global_face_names", "match_body_names", "measure_assembly", "pairwise_interfaces",
            "part_id", "part_of_face", "read_body_names", "readable_body_name", "record", "rename_record",
            "solids"]

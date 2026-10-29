@@ -38,9 +38,6 @@ export default async function ConversationsPage({
         <div>
           <p className="page__eyebrow">Conversations</p>
           <h1 className="page__title">Your conversations</h1>
-          <p className="page__intro">
-            What you and Hexera said before each run: your answers and what you confirmed.
-          </p>
         </div>
       </div>
 
@@ -62,7 +59,6 @@ export default async function ConversationsPage({
           <div className="panel__head">
             <div>
               <p className="label">All conversations</p>
-              <p className="page__sub">Each conversation, its length and the run it started.</p>
             </div>
           </div>
           <table className="table">

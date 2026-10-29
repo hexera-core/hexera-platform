@@ -45,7 +45,7 @@ export default async function UsagePage({
           <p className="page__eyebrow">Capacity</p>
           <h1 className="page__title">Credits and usage</h1>
           <p className="page__intro">
-            Credit movements across signup grants, plan allowances, one-off purchases and mesh runs.
+            Track your balance and activity. Credits are charged only for completed runs.
           </p>
         </div>
         <Link className="btn" href="/settings/billing">
@@ -53,16 +53,11 @@ export default async function UsagePage({
         </Link>
       </div>
 
-      <div className="summary-grid">
+      <div className="summary-grid summary-grid--compact">
         <div className="metric-card">
           <p className="label">Balance</p>
           <b>{credits ? credits.balance.toLocaleString() : "--"}</b>
           <span>{credits ? credits.unit : "unavailable"} remaining</span>
-        </div>
-        <div className="metric-card">
-          <p className="label">Charge rule</p>
-          <b>Base + minutes</b>
-          <span>failed runs cost nothing; successful runs debit the ledger</span>
         </div>
       </div>
 
@@ -83,7 +78,7 @@ export default async function UsagePage({
           <div className="panel__head">
             <div>
               <p className="label">Credit ledger</p>
-              <p className="page__sub">Append-only balance movements for this organisation.</p>
+              <p className="page__sub">Credits added or used by this workspace.</p>
             </div>
           </div>
           <table className="table">

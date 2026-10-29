@@ -20,6 +20,9 @@ def test_preflight_publishes_a_web_scope_output():
     assert "run_web" in outputs, (
         "the scope step must publish run_web, so a documentation-only change skips the "
         "workspace lane exactly as it skips the python and image lanes")
+    assert "full_ci" in outputs, (
+        "the scope step must publish full_ci, so PRs can stay fast while main/deploy "
+        "still run the exhaustive lanes")
 
 
 def test_web_lane_exists_and_is_scope_gated():
@@ -38,3 +41,11 @@ def test_web_lane_is_counted_by_the_gate():
     assert "web=${{ needs.web.result }}" in body, (
         "ci-gate waits for the web lane but never reads its result, so a failing "
         "workspace would still post a green required check")
+
+
+def test_expensive_lanes_are_reserved_for_full_ci():
+    jobs = _doc()["jobs"]
+    for name in ("unit", "fea-accuracy", "dependency-scan", "codeql", "images",
+                 "integration", "integration-tier", "ui"):
+        assert "needs.preflight.outputs.full_ci == 'true'" in jobs[name]["if"], (
+            f"{name} runs on pull requests; reserve it for main, scheduled, and manual CI")
