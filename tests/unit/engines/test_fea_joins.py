@@ -143,6 +143,7 @@ def test_a_touch_the_fuse_missed_is_added_and_tied_while_the_fuse_stands(monkeyp
     along a line): an omission, not a wrong answer - the fuse's own joints stand, conformal, and the
     touch is added and tied."""
     shape = fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(10, 0, 0, 10, 10, 10), fx._box(0, 10, 0, 10, 10, 10))
+    # (Part_2 and Part_3 meet along an edge too: a line joint the fuse has no face for, added as well)
     real = A.interfaces_of
 
     def without_the_second(*a, **k):
@@ -150,9 +151,10 @@ def test_a_touch_the_fuse_missed_is_added_and_tied_while_the_fuse_stands(monkeyp
 
     monkeypatch.setattr(A, "interfaces_of", without_the_second)
     rec = A.record(shape, mm_per_unit=1.0)
-    assert rec["joins"]["found_by"] == "fuse" and [f["kind"] for f in rec["joins"]["findings"]] == ["missed"]
-    (added,) = [i for i in rec["interfaces"] if i.get("added")]
-    assert added["parts"] == ["Part_1", "Part_3"] and added["kind"] == "touching"
+    assert rec["joins"]["found_by"] == "fuse" and {f["kind"] for f in rec["joins"]["findings"]} == {"missed"}
+    added = {tuple(i["parts"]): i for i in rec["interfaces"] if i.get("added")}
+    assert added[("Part_1", "Part_3")]["kind"] == "touching" and not added[("Part_1", "Part_3")].get("line")
+    assert added[("Part_2", "Part_3")].get("line")
     side = A.stage(shape, A.BONDED, tmp_path, mm_per_unit=1.0)
     assert side["mode"] == A.PAIR_BONDED
     kinds = {tuple(p["parts"]): p["kind"] for p in side["pairs"]}
@@ -181,6 +183,113 @@ def test_the_pairs_measured_in_parallel_give_the_same_answer(monkeypatch):
         assert (a.kind, a.faces_a, a.faces_b) == (b.kind, b.faces_a, b.faces_b)
         assert a.area == pytest.approx(b.area) and (a.gap or 0.0) == pytest.approx(b.gap or 0.0)
     assert forked.skins == serial.skins and forked.near == serial.near
+
+
+@pytest.fixture(scope="module")
+def one_by_one():
+    parts = A.solids(fx.anchorage(skin=True))
+    keep = J.MAX_WORKERS
+    J.MAX_WORKERS = 1
+    try:
+        return J.measure(parts, tol=3e-4, mm_per_unit=1.0)
+    finally:
+        J.MAX_WORKERS = keep
+
+
+@pytest.mark.parametrize("memory", ["none free", "used up while running"])
+def test_the_workers_read_only_their_own_parts_and_fit_the_memory(monkeypatch, one_by_one, memory):
+    """Each worker reads the parts of its own pairs only (never the whole assembly); no more start at once
+    than the job's free memory holds (none free: one at a time), and when the running ones use it up the
+    newest is stopped and run again later - the same answer as one by one either way."""
+    import subprocess
+
+    parts = A.solids(fx.anchorage(skin=True))
+    real_popen, specs, live, most = subprocess.Popen, [], [], [0]
+
+    def popen(cmd, *a, **k):
+        specs.append(json.loads(open(cmd[-2]).read()))
+        live[:] = [p for p in live if p.poll() is None]
+        proc = real_popen(cmd, *a, **k)
+        live.append(proc)
+        most[0] = max(most[0], len(live))
+        return proc
+
+    reads = []
+
+    def free():
+        reads.append(1)
+        return 64.0 * 2**30 if len(reads) == 1 else 0.0
+
+    real_spawned, answered = J._spawned, []
+
+    def spy(*a, **k):
+        got = real_spawned(*a, **k)
+        answered.append(got is not None and got[3])
+        return got
+
+    monkeypatch.setattr(J, "WORKER_PAIRS", 1)
+    monkeypatch.setattr(J, "_memory_free", (lambda: 0.0) if memory == "none free" else free)
+    monkeypatch.setattr(J, "_spawned", spy)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    spawned = J.measure(parts, tol=3e-4, mm_per_unit=1.0)
+    monkeypatch.setattr(subprocess, "Popen", real_popen)
+    # the workers' own answer, whole - never the one-by-one fallback in the caller hiding a failure
+    assert answered == [True], "the workers did not answer"
+    jobs = {s["brep"] for s in specs}
+    assert len(jobs) > 1, "the workers did not run"
+    if memory == "none free":
+        assert most[0] == 1 and len(specs) == len(jobs), "more workers ran at once than the memory holds"
+    else:
+        assert most[0] > 1 and len(specs) > len(jobs), "no worker was stopped and run again"
+    for spec in specs:
+        assert len(spec["index"]) < len(parts), "a worker read the whole assembly"
+        assert {p for pair in spec["pairs"] for p in pair} == set(spec["index"])
+    assert list(spawned.joints) == list(one_by_one.joints)
+    for k in one_by_one.joints:
+        a, b = spawned.joints[k], one_by_one.joints[k]
+        assert (a.a, a.b, a.kind, a.faces_a, a.faces_b) == (b.a, b.b, b.kind, b.faces_a, b.faces_b)
+        assert a.area == pytest.approx(b.area) and (a.gap or 0.0) == pytest.approx(b.gap or 0.0)
+    assert spawned.skins == one_by_one.skins and spawned.near == one_by_one.near
+
+
+def test_runs_started_late_get_what_is_left_and_finished_runs_are_kept(monkeypatch, one_by_one):
+    """Memory lets one run at a time, and the budget runs out after the first: that run's answer is
+    kept (complete False), the runs not started are not measured - never every finished run thrown
+    away for a measurement started again with no time left (the code review, P1)."""
+    import subprocess
+    import time as real_time
+    from types import SimpleNamespace
+
+    parts = A.solids(fx.anchorage(skin=True))
+    pairs = J._near_pairs(parts, tol=3e-4, mm=1.0)
+    budget, clock, specs = 600.0, [0.0], []
+    real_popen = subprocess.Popen
+
+    def popen(cmd, *a, **k):
+        specs.append(json.loads(open(cmd[-2]).read()))
+        proc = real_popen(cmd, *a, **k)
+        clock[0] = budget          # the first run uses up the budget (within the grace)
+        return proc
+
+    monkeypatch.setattr(J, "time", SimpleNamespace(time=lambda: real_time.time() + clock[0], sleep=real_time.sleep))
+    monkeypatch.setattr(J, "_memory_free", lambda: 0.0)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    t0 = real_time.time()
+    got = J._spawned(parts, pairs, 3, tol=3e-4, mm=1.0, budget_s=budget, t0=t0)
+    monkeypatch.setattr(subprocess, "Popen", real_popen)
+    assert got is not None, "the finished run was thrown away"
+    joints, near, skins, complete, unmeasured = got
+    assert complete is False and len(specs) == 1 and specs[0]["budget_s"] <= budget
+    first = {tuple(x) for x in specs[0]["pairs"]}
+    assert set(joints) <= first
+    assert set(joints) == {k for k in one_by_one.joints if k in first}
+
+
+def test_the_pairs_are_cut_into_runs_of_neighbours():
+    pairs = [(0, 1), (0, 2), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6)]
+    runs = J._chunks(pairs, 3)
+    assert [len(r) for r in runs] == [3, 2, 2] and sum(runs, []) == pairs
+    assert J._chunks(pairs[:2], 8) == [[(0, 1)], [(0, 2)]]
 
 
 def test_the_gap_switch_off_joins_no_gap(clean):
@@ -248,13 +357,17 @@ def test_each_deck_carries_a_gap_joints_reach(tmp_path):
     assert float(real.split(",")[7]) == pytest.approx(reach)          # PINB, the 6th real constant
 
 
-def test_a_touching_tie_keeps_each_solvers_default(tmp_path):
+def test_a_tie_never_moves_a_node(tmp_path):
+    # ADJUST=NO on every tie, touching or across a gap: CalculiX's default moves slave corners onto the
+    # master without their edge midpoints, and elements turn inside out (asm_fw_case: 8,804 "nonpositive
+    # jacobian"); unsettled (no tolerance of its own), a touching tie leaves the reach to the solver
     from meshpipeline.engines import fea_assembly_deck as AD
 
     AD.write_inp(tmp_path / "m.inp", _prep("tie", None))
-    assert "*TIE, NAME=Tie1\n" in (tmp_path / "m.inp").read_text()
+    assert "*TIE, NAME=Tie1, ADJUST=NO\nTie1_Part_1_Tied, Tie1_Part_2\n" in (tmp_path / "m.inp").read_text()
     AD.write_cdb(tmp_path / "m.cdb", _prep("tie", None))
-    assert "R,2\n" in (tmp_path / "m.cdb").read_text()
+    cdb = (tmp_path / "m.cdb").read_text()
+    assert "R,2\n" in cdb and "KEYOPT,5,9,1" in cdb
 
 
 # #
@@ -293,3 +406,92 @@ def test_the_stored_result_comes_back_as_plain_json(monkeypatch):
     got = G.store_status("s", "scouted", "scout", facts={"validity": {"places": [{"bodies": [np.int64(1), np.int64(7)]}]}})
     json.dumps(got)
     assert type(got["facts"]["validity"]["places"][0]["bodies"][0]) is int
+
+
+# #
+# nothing OpenCASCADE throws fails the staging (an industrial STEP: BRepExtrema's StdFail_NotDone, 27 Oct)
+# #
+
+def test_a_distance_opencascade_cannot_give_is_unknown_never_a_crash():
+    from OCP.TopoDS import TopoDS_Shape
+
+    assert np.isnan(J._dist(TopoDS_Shape(), fx._box(0, 0, 0, 1, 1, 1)))
+
+
+def _three_blocks():
+    """Three cubes in a row: the middle one touches each end one over a face; the ends are apart."""
+    return fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(10, 0, 0, 10, 10, 10), fx._box(-10, 0, 0, 10, 10, 10))
+
+
+def test_a_pair_opencascade_throws_on_is_unmeasured_and_the_fuse_stands_there(monkeypatch, tmp_path):
+    real, calls = J._facing, []
+
+    def throws_first(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("StdFail_NotDone: BRepExtrema_DistShapeShape::Value")
+        return real(*a, **k)
+
+    monkeypatch.setattr(J, "_facing", throws_first)
+    rec = A.record(_three_blocks(), mm_per_unit=1.0)
+    # every touch is still there: the first pair's from the fuse, the second measured
+    assert sorted(tuple(i["parts"]) for i in rec["interfaces"]) == [("Part_1", "Part_2"), ("Part_1", "Part_3")]
+    (u,) = rec["joins"]["unmeasured"]
+    assert u["parts"] == ["Part_1", "Part_2"] and "StdFail_NotDone" in u["why"]
+    assert any("could not be measured on their surfaces" in n and "the fuse's answer stands" in n for n in rec["notes"])
+    calls.clear()
+    side = A.stage(_three_blocks(), A.BONDED, tmp_path, mm_per_unit=1.0)
+    assert side["mode"] == A.PAIR_BONDED and len(side["pairs"]) == 2
+
+
+def test_a_measurement_that_fails_outright_leaves_the_fuse_whole(monkeypatch, tmp_path):
+    def boom(*a, **k):
+        raise RuntimeError("StdFail_NotDone")
+
+    monkeypatch.setattr(J, "measure", boom)
+    rec = A.record(_three_blocks(), mm_per_unit=1.0)
+    assert [i["kind"] for i in rec["interfaces"]] == ["touching", "touching"]
+    assert rec["joins"]["found_by"] == "fuse"
+    assert any("could not be measured" in n for n in rec["notes"])
+    side = A.stage(_three_blocks(), A.BONDED, tmp_path, mm_per_unit=1.0)
+    assert len(side["pairs"]) == 2
+
+
+# #
+# parts that meet only along a line, an edge or at a point (the industrial hunt, 27 Oct: a kart's plates on
+# its frame, a ring in a countersink, corners a hair apart)
+# #
+
+def _tube_on_plate():
+    return fx._compound(fx._box(0, 0, -5, 100, 40, 5), fx._cyl(10, 20, 10, 10, 80, axis=(1, 0, 0)))
+
+
+def test_a_tube_lying_on_a_plate_is_joined_along_the_line():
+    rec = A.record(_tube_on_plate(), mm_per_unit=1.0)
+    (itf,) = rec["interfaces"]
+    assert itf["parts"] == ["Part_1", "Part_2"] and itf["kind"] == "touching" and itf.get("line")
+    assert itf["reach_mm"] >= itf["gap_limit_mm"]          # the solver ties a band along the line
+    assert any("meet only along a line" in n for n in rec["notes"])
+
+
+@pytest.mark.parametrize("apart,joined", [(0.0, True), (0.3, True), (0.6, False)])
+def test_corners_and_edges_a_hair_apart_are_joined_within_the_gap_limit(apart, joined):
+    """Two 30 mm cubes meeting along one edge (apart = 0), or with their edges `apart` mm away diagonally."""
+    d = apart / 2 ** 0.5
+    rec = A.record(fx._compound(fx._box(0, 0, 0, 30, 30, 30), fx._box(30 + d, 30 + d, 0, 30, 30, 30)), mm_per_unit=1.0)
+    assert bool(rec["interfaces"]) is joined
+    if joined:
+        (itf,) = rec["interfaces"]
+        assert itf.get("line") and itf["gap_mm"] == pytest.approx(apart, abs=1e-6)
+
+
+def test_a_line_contact_is_tied_with_its_reach_in_a_bonded_mesh(tmp_path):
+    side = A.stage(_tube_on_plate(), A.BONDED, tmp_path, mm_per_unit=1.0)
+    (pair,) = side["pairs"]
+    assert pair["kind"] == A.PAIR_TIE and pair["reach"] > 0 and all(pair["faces"].values())
+
+
+def test_the_stage_says_a_line_contact_in_words():
+    from meshpipeline.application import fea_check as F
+
+    assert F.gap_words("Plate", "Frame", 0.0, line=True) == "Plate meets Frame only along a line or an edge - joined there"

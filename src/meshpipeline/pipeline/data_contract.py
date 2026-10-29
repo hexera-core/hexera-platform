@@ -373,9 +373,10 @@ CONTRACT: tuple[ContractVar, ...] = (
 EVENT_TYPES: dict[str, str] = {
     "repair_review":      "training: a review proposal the model declined (op_id review:propose), "
                           "kept to see which defects the catalogue cannot answer",
-    "planner_shadow":     "training: what the LLM planner proposed beside what the rules planner did "
-                          "on the same part (op_id review:shadow); written once per shadow run, "
-                          "whichever way the repair ended",
+    "planner_shadow":     "training: what the repair surface's model-directed portion proposed "
+                          "beside what its deterministic portion did on the same part (op_id "
+                          "review:shadow); written once per shadow run, whichever way the repair "
+                          "ended. The type name is historical - sealed corpora already carry it",
     "intake_turn":        "training: one intake conversation turn",
     "engine_provenance":  "qa: who chose the approved engine (user_direct | suggested_confirmed), "
                           "appended to the dispatched intake events by the approval in every "
@@ -469,6 +470,8 @@ STATE_FIELDS: dict[str, str] = {
                              "joined there (PLAN-fea-18), as confirmed on the stage; True unless switched off",
     "flow_topology":         "internal/external flow regime DERIVED from the purpose - a neutral "
                              "fact read by the executor/runners, NOT an engine-native param",
+    "leak_closing":          "the leak size the user confirmed on the stage (INS-8): every leak of the "
+                             "surface up to it is closed for the mesh by each route's staging; None = as drawn",
     "requested_extents":     "typed per-direction far-field multiples the user stated (contract)",
     "reference_length_m":    "the metre ruler the extents multiply, pinned at approval (contract)",
     "requirements_strict":   "whether near-misses block (true) or deliver with the miss stated",

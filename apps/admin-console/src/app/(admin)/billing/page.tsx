@@ -80,7 +80,7 @@ export default async function BillingPage() {
         </Alert>
       )}
 
-      <Panel title="Plans" heading="settings/plans.py">
+      <Panel title="Plans">
         {plans.error ? (
           <Alert>{plans.error}</Alert>
         ) : plans.data && plans.data.plans.length > 0 ? (
@@ -112,7 +112,7 @@ export default async function BillingPage() {
             </tbody>
           </table>
         ) : (
-          <EmptyState note="The plan catalogue is empty. settings/plans.py defines PLANS." />
+          <EmptyState note="The plan catalogue is empty." />
         )}
       </Panel>
 
@@ -151,7 +151,7 @@ export default async function BillingPage() {
         )}
       </Panel>
 
-      <Panel title="Credit balance" heading="derived from credit_ledger, never stored">
+      <Panel title="Credit balance">
         {organizations.error ? (
           <Alert>{organizations.error}</Alert>
         ) : orgRows.length > 0 ? (

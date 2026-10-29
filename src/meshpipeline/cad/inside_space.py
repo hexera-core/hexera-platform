@@ -129,6 +129,12 @@ class InsideMap:
     pocket_labels: dict = field(default_factory=dict)
     #: the cubes inside a closed shell (flat, grid order)
     shell: np.ndarray | None = field(default=None, repr=False)
+    #: INS-8: the cubes that closed the surface's leaks (flat, grid order), when the map was read
+    #: with them closed (`close`, the closing's radius in cubes); None for the map as drawn
+    closed: np.ndarray | None = field(default=None, repr=False)
+    close: int = 0
+    #: ...and the leaks among them: each gap between a passage and space that is not it
+    leaks: list = field(default_factory=list)
 
     def where(self, points) -> list[str]:
         """What each point is in, by the map: "out" (the open air), "pocket" (a pocket inside the
@@ -169,6 +175,22 @@ class InsideMap:
 
     def passages(self) -> list[Pocket]:
         return [p for p in self.pockets if p.passage]
+
+    def leak_at(self, point, reach: float) -> bool:
+        """Whether one of the leaks this map closed (INS-8) lies within `reach` of the point: a
+        small hole there is a leak the closing closed, not an opening."""
+        return any(self.leak_distance(s, point) <= reach for s in self.leaks)
+
+    def leak_distance(self, s, point) -> float:
+        """How far a leak's nearest closed cube (its centre) is from the point."""
+        p = np.asarray(point, dtype=float)
+        c = s.cubes
+        if not len(c):
+            return float(np.linalg.norm(np.asarray(s.point, dtype=float) - p))
+        sy, sz = self.shape[1], self.shape[2]
+        ijk = np.stack([c // (sy * sz), (c // sz) % sy, c % sz], axis=1)
+        cen = self.origin + (ijk + 0.5) * self.h
+        return float(np.min(np.linalg.norm(cen - p, axis=1)))
 
     def has_inside(self) -> bool:
         """Space inside the part the fluid can flow through: a pocket with two mouths or more."""
@@ -526,8 +548,14 @@ def _loops(mesh, grid: Grid) -> tuple[list[_Loop], int]:
 
 
 # ------------------------------------------------------------------------------ the map ----
-def read_inside(mesh=None, *, tris=None, cells: int = GRID_CELLS, h_max: float | None = None) -> InsideMap:
-    """The inside-space map of a surface (an open_ends surface, or triangles (n, 3, 3))."""
+def read_inside(mesh=None, *, tris=None, cells: int = GRID_CELLS, h_max: float | None = None,
+                close: int = 0) -> InsideMap:
+    """The inside-space map of a surface (an open_ends surface, or triangles (n, 3, 3)).
+
+    `close` > 0 reads the map with the surface's LEAKS closed (INS-8): every gap in the wall up to
+    2 x `close` cubes wide is filled before the flood, except where the open ends that are caps'
+    loops are (an opening is never closed as a leak); the cubes filled are kept on the map
+    (`InsideMap.closed`). 0 is the map as drawn."""
 
     from meshpipeline.cad.open_ends import surface
     if mesh is None:
@@ -539,12 +567,6 @@ def read_inside(mesh=None, *, tris=None, cells: int = GRID_CELLS, h_max: float |
     shape = grid.shape
     wall = np.zeros(grid.n, dtype=bool)
     wall[raster(V[F], grid)] = True
-    # THE SPACE NO CAP IS NEEDED TO CLOSE: inside a closed shell (metal, or a body that is the fluid)
-    lab0, _n0 = _label(~wall.reshape(shape))
-    out0 = _border_labels(lab0)
-    enclosed = (lab0 > 0) & ~np.isin(lab0, list(out0))
-    open_air = np.isin(lab0, list(out0))
-    del lab0
     loops, small = _loops(mesh, grid)
     if len(loops) > MAX_LOOPS:
         # MORE LOOPS THAN THE MAP CAPS (a perforated plate, a bed of spheres): a map of some of
@@ -553,6 +575,18 @@ def read_inside(mesh=None, *, tris=None, cells: int = GRID_CELLS, h_max: float |
         raise PartialMap(f"{len(loops)} loops the grid can see, more than the {MAX_LOOPS} the map caps")
     for lp in loops:
         lp.cap = _cap_cells(lp, grid)
+    closed = None
+    drawn = wall
+    if close > 0:
+        added = _leak_fill(mesh, wall, grid, int(close))
+        wall = wall | added
+        closed = np.flatnonzero(added)
+    # THE SPACE NO CAP IS NEEDED TO CLOSE: inside a closed shell (metal, or a body that is the fluid)
+    lab0, _n0 = _label(~wall.reshape(shape))
+    out0 = _border_labels(lab0)
+    enclosed = (lab0 > 0) & ~np.isin(lab0, list(out0))
+    open_air = np.isin(lab0, list(out0))
+    del lab0
     notes: list[str] = []
     oa = open_air.ravel()
     lab = np.zeros(shape, dtype=np.int32)
@@ -651,11 +685,225 @@ def read_inside(mesh=None, *, tris=None, cells: int = GRID_CELLS, h_max: float |
     e_deep, e_clear = (None, 0.0)
     if enclosed.any():
         e_deep, e_clear = _deepest(enclosed, grid)
+    pocket_labels = {pid: sorted(g for g in pid_of if pid_of[g] == pid) for pid in range(len(pockets))}
+    spots: list[LeakSpot] = []
+    if closed is not None and len(closed):
+        # the caps left standing close their own loops: a closed cube under a cap (the thickened
+        # rim of an opening) closes nothing the cap does not
+        capped = np.zeros(grid.n, dtype=bool)
+        for lp in loops:
+            if lp.active and lp.cap is not None and len(lp.cap):
+                capped[lp.cap] = True
+        # the leaks are between the part's inside and what is not it: its passages, or - a body
+        # that is the fluid, with no passage - the inside of its closed shell
+        inner = [g for p in pockets if p.passage for g in pocket_labels[p.id]]
+        if not inner and enclosed.any():
+            inner = [int(g) for g in np.unique(flat_lab[enclosed.ravel()]) if g > 0]
+        spots = _leak_spots(drawn, closed[~capped[closed]], flat_lab, grid, inner, V[F])
     return InsideMap(h=grid.h, origin=grid.origin, shape=shape, pockets=pockets, mouths=mouths,
                      enclosed_cells=int(enclosed.sum()), loops_capped=len(loops), loops_small=small,
                      notes=notes, enclosed_deepest=e_deep, enclosed_clearance=e_clear,
                      labels=flat_lab.astype(np.int32), outside_labels=frozenset(outside), shell=enclosed.ravel(),
-                     pocket_labels={pid: sorted(g for g in pid_of if pid_of[g] == pid) for pid in range(len(pockets))})
+                     pocket_labels=pocket_labels, closed=closed, close=int(close), leaks=spots)
+
+
+@dataclass
+class LeakSpot:
+    """One leak the closing closed (INS-8): a gap in the wall between a passage and space that is
+    not that passage (the open air, the part's material, another pocket)."""
+    id: int
+    point: np.ndarray               # its middle, about: the closed cube farthest from the wall
+    width: float                    # how wide the gap is, about (a cube's multiple)
+    cubes: np.ndarray = field(repr=False)   # the closed cubes that close it (flat, grid order)
+    passage: tuple[int, ...] = ()   # the passage labels on its fluid side
+    #: "gap" (closed cubes of the grid) or "hole" (a hole of the surface too small for the grid to
+    #: see, read by the shape rules: its width is its own size)
+    kind: str = "gap"
+
+    def as_dict(self, mm_per_unit: float = 1000.0) -> dict:
+        return {"id": self.id, "kind": self.kind, "width_mm": round(self.width * mm_per_unit, 3),
+                "at_mm": [round(float(v) * mm_per_unit, 2) for v in self.point], "cubes": int(len(self.cubes))}
+
+
+def _bottleneck(cubes: np.ndarray, nb: np.ndarray, flat_lab: np.ndarray, dist: np.ndarray, shape,
+                passage: set) -> tuple[float, int]:
+    """How wide a leak is, in cubes of clearance: the widest way through it from its passage to the
+    space beyond - the largest clearance from the drawn wall (`dist`) that every cube of some path
+    of its cubes keeps (the cubes are let in from the clearest down until the passage and the space
+    beyond first join). Returns that clearance and the cube where they joined (its middle)."""
+    from scipy import ndimage
+    sy, sz = int(shape[1]), int(shape[2])
+    nb = np.unique(nb)
+    lab_nb = flat_lab[nb]
+    src = nb[np.isin(lab_nb, list(passage))]
+    dst = nb[(lab_nb > 0) & ~np.isin(lab_nb, list(passage))]
+    every = np.unique(np.r_[cubes, src, dst])
+    ijk = np.stack([every // (sy * sz), (every // sz) % sy, every % sz], axis=1)
+    lo = ijk.min(axis=0)
+    box = tuple(int(v) for v in ijk.max(axis=0) - lo + 1)
+
+    def local(c):
+        q = np.stack([c // (sy * sz), (c // sz) % sy, c % sz], axis=1) - lo
+        return (q[:, 0] * box[1] + q[:, 1]) * box[2] + q[:, 2]
+
+    ls, ld, lc = local(src), local(dst), local(cubes)
+    dc = dist[cubes]
+    st = ndimage.generate_binary_structure(3, 1)
+    for level in sorted(set(np.round(dc, 6).tolist()), reverse=True):
+        m = np.zeros(int(np.prod(box)), dtype=bool)
+        m[ls] = True
+        m[ld] = True
+        inn = dc >= level - 1e-9
+        m[lc[inn]] = True
+        lab, _n = ndimage.label(m.reshape(box), structure=st)
+        lab = lab.ravel()
+        joined = set(np.unique(lab[ls]).tolist()) & set(np.unique(lab[ld]).tolist())
+        joined.discard(0)
+        if joined:
+            on = inn & np.isin(lab[lc], list(joined)) & (np.abs(dc - level) <= 1e-9)
+            at = int(cubes[np.flatnonzero(on)[0]]) if on.any() else int(cubes[int(np.argmax(dc))])
+            return float(level), at
+    return float(dc.min()), int(cubes[int(np.argmin(dc))])
+
+
+def _surface_distance(points: np.ndarray, T: np.ndarray, tree, k: int = 32) -> np.ndarray:
+    """The exact distance from each point to the nearest of the triangles T (n, 3, 3), over the k
+    triangles whose centres are nearest it (`tree`: a cKDTree of the triangles' centres)."""
+    if not len(points) or not len(T):
+        return np.full(len(points), np.inf)
+    k = min(k, len(T))
+    _d, nn = tree.query(points, k=k)
+    nn = np.asarray(nn).reshape(len(points), -1)
+    best = np.full(len(points), np.inf)
+    for col in range(nn.shape[1]):
+        q = _closest_on_triangles(points, T[nn[:, col]])
+        best = np.minimum(best, np.linalg.norm(q - points, axis=1))
+    return best
+
+
+def _leak_spots(drawn: np.ndarray, closed: np.ndarray, flat_lab: np.ndarray, grid: Grid,
+                passage_labels: list[int], surface_tris: np.ndarray | None = None) -> list[LeakSpot]:
+    """The leaks among the closed cubes: each piece of them (six neighbours) that touches a passage
+    on one side and space that is not that passage on another. Its width is the widest way through
+    it, read off the drawn surface (`surface_tris`, else the drawn wall's cubes): twice the
+    clearance every step of that way keeps."""
+    from scipy import ndimage
+    shape = grid.shape
+    if not passage_labels or not len(closed):
+        return []
+    mask = np.zeros(grid.n, dtype=bool)
+    mask[closed] = True
+    comp, n = ndimage.label(mask.reshape(shape), structure=ndimage.generate_binary_structure(3, 1))
+    comp = comp.ravel()
+    dist = ndimage.distance_transform_edt(~drawn.reshape(shape)).ravel()
+    passage = {int(g) for g in passage_labels}
+    out: list[LeakSpot] = []
+    tree = None
+    order = np.argsort(comp[closed], kind="stable")
+    cs = closed[order]
+    bounds = np.r_[0, np.flatnonzero(np.diff(comp[cs])) + 1, len(cs)]
+    for a, b in zip(bounds[:-1], bounds[1:]):
+        cubes = np.sort(cs[a:b])
+        nb = _neighbours(cubes, shape)
+        labs = set(np.unique(flat_lab[nb]).tolist()) - {0}
+        mine = labs & passage
+        if not mine or not (labs - mine):
+            continue
+        # the clearance of each of its cubes from the drawn surface itself, exactly: the grid's
+        # own count of cubes would read a 0.8 mm pinhole the raster half covers as one cube wide
+        if surface_tris is not None and len(surface_tris):
+            if tree is None:
+                from scipy.spatial import cKDTree
+                tree = cKDTree(surface_tris.mean(axis=1))
+            dist[cubes] = _surface_distance(grid.centre(np.stack(np.unravel_index(cubes, shape), axis=1)),
+                                            surface_tris, tree) / grid.h
+        level, at = _bottleneck(cubes, nb, flat_lab, dist, shape, mine)
+        width = max(2.0 * level, 0.5) * grid.h
+        out.append(LeakSpot(id=len(out), point=grid.centre(np.unravel_index(at, shape)), width=width,
+                            cubes=cubes, passage=tuple(sorted(mine))))
+    out.sort(key=lambda s: (-s.width, float(s.point[0]), float(s.point[1]), float(s.point[2])))
+    for k, s in enumerate(out):
+        s.id = k
+    return out
+
+
+def _leak_fill(mesh, wall: np.ndarray, grid: Grid, r: int) -> np.ndarray:
+    """The cubes that close the wall's gaps up to 2r cubes wide: the wall thickened by r cubes (every
+    free cube within r of it), only where the surface is open - within r + 1 cubes of an edge not
+    on two faces, or of where two pieces of the surface meet (flat, grid order). Nowhere else: a
+    narrow channel of a closed surface is the part's own, never a leak. A hole of a sheet, a slit,
+    the gap between two pieces close when they are at most 2r cubes across; an opening wider than
+    that stays open (only its rim is thickened), one narrower is closed as a leak - as the user's
+    leak size says."""
+    from scipy import ndimage
+    shape = grid.shape
+    W = wall.reshape(shape)
+    added = ((ndimage.distance_transform_edt(~W) <= r) & ~W).ravel()
+    if not added.any():
+        return added
+    # WHERE THE SURFACE IS OPEN: its edges not on two faces, drawn into the grid
+    e = np.flatnonzero(mesh.count != 2)
+    near = np.zeros(grid.n, dtype=bool)
+    if len(e):
+        near[_segment_cells(mesh.verts[mesh.ea[e]], mesh.verts[mesh.eb[e]], grid)] = True
+    # ...and where two pieces of the surface come near each other (no open edge between them)
+    pieces = _surface_pieces(mesh)
+    if int(pieces.max()) > 0:
+        own = np.full(grid.n, -1, dtype=np.int64)
+        for p in range(int(pieces.max()) + 1):
+            cub = raster(mesh.verts[mesh.faces[pieces == p]], grid)
+            clash = own[cub] >= 0
+            near[cub[clash & (own[cub] != p)]] = True
+            own[cub[~clash]] = p
+        Wl = own.reshape(shape)
+        _d, idx = ndimage.distance_transform_edt(Wl < 0, return_indices=True)
+        nearest = Wl[idx[0], idx[1], idx[2]]
+        ridge = np.zeros(shape, dtype=bool)
+        for ax in range(3):
+            a_ = np.swapaxes(nearest, 0, ax)
+            diff = a_[1:] != a_[:-1]
+            r_ = np.swapaxes(ridge, 0, ax)
+            r_[1:] |= diff
+            r_[:-1] |= diff
+        near |= (ridge & (_d <= r + 1)).ravel()
+    if not near.any():
+        return np.zeros(grid.n, dtype=bool)
+    zone = ndimage.distance_transform_edt(~near.reshape(shape)) <= r + 1
+    return added & zone.ravel()
+
+
+#: At most this many pieces of a surface are told apart where the leaks are sought (the largest by
+#: area); the rest - a scan's crumbs - count as one more piece.
+MAX_PIECES = 64
+
+
+def _surface_pieces(mesh) -> np.ndarray:
+    """Each face's piece of the surface (faces joined across edges with two faces), the largest
+    MAX_PIECES apart and every smaller one as one more, numbered largest first."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    n = len(mesh.faces)
+    m = mesh.count == 2
+    a, b = mesh.f0[m], mesh.f1[m]
+    g = coo_matrix((np.ones(len(a)), (a, b)), shape=(n, n))
+    _k, lab = connected_components(g, directed=False)
+    area = np.bincount(lab, weights=mesh.area)
+    order = np.lexsort((np.arange(len(area)), -area))      # largest first, ties by first face
+    rank = np.empty(len(area), dtype=np.int64)
+    rank[order] = np.arange(len(area))
+    return np.minimum(rank[lab], MAX_PIECES)
+
+
+def _segment_cells(a: np.ndarray, b: np.ndarray, grid: Grid) -> np.ndarray:
+    """The cubes the segments a -> b pass through (sampled at a third of a cube), flat."""
+    if not len(a):
+        return np.zeros(0, dtype=np.int64)
+    L = np.linalg.norm(b - a, axis=1)
+    m = np.maximum(np.ceil(L / (grid.h / 3.0)), 1).astype(np.int64)
+    idx = np.repeat(np.arange(len(a)), m + 1)
+    t = np.concatenate([np.linspace(0.0, 1.0, k + 1) for k in m.tolist()])
+    pts = a[idx] + (b[idx] - a[idx]) * t[:, None]
+    return np.unique(_flat(np.floor((pts - grid.origin) / grid.h).astype(np.int64), np.asarray(grid.shape)))
 
 
 #: A surface with more triangles than this is not mapped where the map is a reading for the stage
@@ -669,9 +917,11 @@ CELLS_PER_TRIANGLE = 400
 MIN_GRID_CELLS = 1_500_000
 
 
-def read_inside_or_none(mesh, *, cells: int = GRID_CELLS, why: list | None = None) -> InsideMap | None:
+def read_inside_or_none(mesh, *, cells: int = GRID_CELLS, why: list | None = None,
+                        close_up_to: float | None = None) -> InsideMap | None:
     """The map, or None when the surface is too big to map in the check's time or cannot be read:
-    never a reason to fail the caller (the old readings stand)."""
+    never a reason to fail the caller (the old readings stand). `close_up_to` (the part's own
+    length unit) reads it with every leak up to that wide closed (INS-8)."""
     import logging
     try:
         if mesh is None or len(mesh.faces) > MAP_MAX_TRIANGLES:
@@ -681,6 +931,9 @@ def read_inside_or_none(mesh, *, cells: int = GRID_CELLS, why: list | None = Non
         # the grid as fine as the tessellation's own detail asks, up to the budget: a coarse
         # surface of a few thousand triangles has no loop a finer grid would see
         cells = int(min(cells, max(MIN_GRID_CELLS, CELLS_PER_TRIANGLE * len(mesh.faces))))
+        if close_up_to:
+            h = Grid.around(mesh.verts.min(axis=0), mesh.verts.max(axis=0), cells=cells).h
+            return read_inside(mesh, cells=cells, close=closing_radius(float(close_up_to), h))
         return read_inside(mesh, cells=cells)
     except PartialMap as exc:
         if why is not None:
@@ -691,6 +944,289 @@ def read_inside_or_none(mesh, *, cells: int = GRID_CELLS, why: list | None = Non
         if why is not None:
             why.append(f"the map could not be read ({type(exc).__name__})")
         return None
+
+
+# ------------------------------------------------------------------- closing leaks (INS-8) ----
+#: The closings tried for a surface with no way through it, in cubes of radius (a closing of
+#: radius r closes every gap up to 2r cubes wide): the first that finds the part's inside is read.
+LEAK_RADII = (1, 2, 3, 4)
+#: A closing the user asked for is never wider than this many cubes of radius on the staging's grid.
+LEAK_MAX_RADIUS = 6
+
+
+#: A body that is the fluid gets its closed shell's inside back from a closing only when the map as
+#: drawn read no pocket at all and the inside regained holds at least this share of the part's box:
+#: a crevice the closing shut is no body.
+BODY_SHARE = 0.05
+
+
+def _box_volume(mesh) -> float:
+    return float(np.prod(np.maximum(mesh.verts.max(axis=0) - mesh.verts.min(axis=0), 0.0)))
+
+
+def closing_radius(up_to: float, h: float) -> int:
+    """The closing's radius in cubes of `h` that closes every gap up to `up_to` wide."""
+    return int(min(max(math.ceil(float(up_to) / (2.0 * float(h)) - 1e-9), 1), LEAK_MAX_RADIUS))
+
+
+def surface_is_open(mesh) -> bool:
+    """Whether a surface can leak at all: an edge not on two faces, or more than one piece. A
+    closed surface in one piece keeps its inside and outside apart: it has no leak."""
+    if bool(np.any(mesh.count != 2)):
+        return True
+    return int(_surface_pieces(mesh).max()) > 0
+
+
+def read_leaks(mesh, *, cells: int = GRID_CELLS, plain: InsideMap | None = None,
+               why: list | None = None) -> InsideMap | None:
+    """THE LEAKS OF A SURFACE (INS-8): for a surface whose map as drawn finds no way through it and
+    that is open (an open edge or a second piece), the map read with its leaks closed - the first
+    closing in LEAK_RADII that finds a passage with two mouths or more (or, for a body that is the
+    fluid, the inside of its closed shell the map as drawn had none of), with every leak it closed
+    narrower than that inside (a gap as wide as the passage is a missing piece, not a leak). None
+    when the map as drawn already finds the way through, the surface is closed, or no closing finds
+    it: the map as drawn stands."""
+    try:
+        if mesh is None or len(mesh.faces) > MAP_MAX_TRIANGLES:
+            return None
+        if plain is not None and plain.has_inside():
+            return None
+        if not surface_is_open(mesh):
+            return None
+        cells = int(min(cells, max(MIN_GRID_CELLS, CELLS_PER_TRIANGLE * len(mesh.faces))))
+        shelled = plain.enclosed_cells if plain is not None else 0
+        for r in LEAK_RADII:
+            m = read_inside(mesh, cells=cells, close=r)
+            if not m.leaks:
+                continue
+            if m.has_inside():
+                widest = {}
+                for p in m.passages():
+                    widest[p.id] = 2.0 * p.clearance
+                labels_of = {g: pid for pid, gs in m.pocket_labels.items() for g in gs}
+                ok = all(s.width < max(widest.get(labels_of.get(g, -1), 0.0) for g in s.passage) for s in m.leaks)
+            elif (not m.passages() and not shelled and plain is not None and not plain.pockets
+                  and m.enclosed_volume >= BODY_SHARE * _box_volume(mesh)):
+                # A BODY THAT IS THE FLUID, its skin holed: the closing gives it back the inside of
+                # its closed shell the map as drawn lost
+                ok = all(s.width < 2.0 * m.enclosed_clearance for s in m.leaks)
+            else:
+                continue
+            if ok:
+                return m
+            if why is not None:
+                why.append(f"closing {r} cube(s) found a leak as wide as the passage itself: not a leak")
+            return None
+        return None
+    except PartialMap as exc:
+        if why is not None:
+            why.append(str(exc))
+        return None
+    except Exception as exc:  # noqa: BLE001 - a reading that fails leaves the map as drawn
+        import logging
+        logging.getLogger(__name__).warning("leak reading failed (%s: %s)", type(exc).__name__, exc)
+        if why is not None:
+            why.append(f"the leaks could not be read ({type(exc).__name__})")
+        return None
+
+
+def with_hole_leaks(imap: InsideMap, holes) -> None:
+    """A leaky reading's small holes are leaks too (INS-8): every hole of the surface too small for
+    the grid to see (the shape rules' `holes`, each with a centroid and an equivalent diameter) that
+    no leak already covers is listed as one, its width its own size - the map found the part's
+    inside only once gaps of that scale were closed, so a hole of that scale is one of them."""
+    if not imap.leaks:
+        return
+    for h in holes:
+        d = float(h.equivalent_diameter)
+        if any(imap.leak_distance(s, h.centroid) <= 0.5 * d + 1.5 * imap.h for s in imap.leaks):
+            continue
+        imap.leaks.append(LeakSpot(id=-1, point=np.asarray(h.centroid, dtype=float), width=d,
+                                   cubes=np.zeros(0, dtype=np.int64), kind="hole"))
+    imap.leaks.sort(key=lambda s: (-s.width, float(s.point[0]), float(s.point[1]), float(s.point[2])))
+    for k, s in enumerate(imap.leaks):
+        s.id = k
+
+
+def proposed_leak_size(imap: InsideMap) -> float:
+    """The leak size the stage proposes (INS-8): the widest leak found, and a cube more, at two
+    significant figures, rounded up - so every leak listed is closed."""
+    if not imap.leaks:
+        return 0.0
+    x = max(s.width for s in imap.leaks) + imap.h
+    e = math.floor(math.log10(x)) - 1
+    return math.ceil(x / 10.0 ** e - 1e-9) * 10.0 ** e
+
+
+def leak_facts(imap: InsideMap, mm_per_unit: float = 1000.0) -> dict:
+    """What the check stores and the stage shows about the leaks (INS-8)."""
+    return {"rule": "INS-8", "found": len(imap.leaks),
+            "close_up_to_mm": round(proposed_leak_size(imap) * mm_per_unit, 4),
+            "cell_mm": round(imap.h * mm_per_unit, 4), "radius_cubes": int(imap.close),
+            "leaks": [s.as_dict(mm_per_unit) for s in imap.leaks[:MAX_LEAKS_LISTED]],
+            "more": max(0, len(imap.leaks) - MAX_LEAKS_LISTED)}
+
+
+#: The stage lists at most this many leaks, the widest first.
+MAX_LEAKS_LISTED = 20
+
+
+def leak_covers(imap: InsideMap, V: np.ndarray, F: np.ndarray, spots=None) -> np.ndarray:
+    """THE LEAK COVERS (INS-8): triangles that close each leak where the passage meets it - the
+    faces of its closed cubes the passage touches - with the cover's rim laid onto the surface
+    (V, F: the triangles the leak is in), so no gap is left between the cover and the wall, and
+    its inside smoothed. Triangles (n, 3, 3), facing out of the passage. Deterministic."""
+    shape = np.asarray(imap.shape)
+    lab = imap.labels
+    if lab is None or not imap.leaks:
+        return np.zeros((0, 3, 3))
+    out = []
+    for s in (imap.leaks if spots is None else spots):
+        tris = _cover_of(s, lab, shape, imap.origin, imap.h)
+        if not len(tris):
+            continue
+        out.append(_laid_on(tris, V, F, imap.h))
+    return np.concatenate(out) if out else np.zeros((0, 3, 3))
+
+
+# each of the six directions: (axis, sign) and the four corners of the face between a cube and its
+# neighbour that way, as offsets of the cube's low corner, wound to face along (axis, sign)
+_FACE: dict[tuple[int, int], np.ndarray] = {}
+for _ax in range(3):
+    _u, _w = [a for a in range(3) if a != _ax]
+    for _sg in (1, -1):
+        _base = np.zeros(3, dtype=np.int64)
+        if _sg > 0:
+            _base[_ax] = 1
+        _corners: list[np.ndarray] = []
+        for du, dw in ((0, 0), (1, 0), (1, 1), (0, 1)):
+            q = _base.copy()
+            q[_u] += du
+            q[_w] += dw
+            _corners.append(q)
+        _c = np.asarray(_corners)
+        # (u, w, ax) is right-handed for ax = 0 (y, z, x) and 2 (x, y, z); for ax = 1 (x, z, y) it is not
+        _right = _ax != 1
+        if (_sg > 0) != _right:
+            _c = _c[::-1]
+        _FACE[(_ax, _sg)] = _c
+
+
+def _cover_of(s: LeakSpot, lab: np.ndarray, shape: np.ndarray, origin: np.ndarray, h: float) -> np.ndarray:
+    """The cube faces between a leak's closed cubes and its passage, as triangles facing out of the
+    passage (into the leak)."""
+    sx, sy, sz = (int(v) for v in shape)
+    c = s.cubes
+    i, j, k = c // (sy * sz), (c // sz) % sy, c % sz
+    passage = np.asarray(sorted(s.passage), dtype=np.int64)
+    quads = []
+    for ax in range(3):
+        for sg in (1, -1):
+            d = np.zeros(3, dtype=np.int64)
+            d[ax] = sg
+            ii, jj, kk = i - d[0], j - d[1], k - d[2]       # the passage cube behind this face
+            ok = (ii >= 0) & (ii < sx) & (jj >= 0) & (jj < sy) & (kk >= 0) & (kk < sz)
+            nb = np.zeros(len(c), dtype=np.int64)
+            nb[ok] = lab[(ii[ok] * sy + jj[ok]) * sz + kk[ok]]
+            hit = ok & np.isin(nb, passage)
+            if not hit.any():
+                continue
+            # the face is the passage cube's face toward the leak: (axis, sign) out of the passage
+            low = np.stack([ii[hit], jj[hit], kk[hit]], axis=1)
+            quads.append(low[:, None, :] + _FACE[(ax, sg)][None, :, :])
+    if not quads:
+        return np.zeros((0, 3, 3))
+    Q = np.concatenate(quads).astype(np.float64) * h + origin
+    return np.concatenate([Q[:, [0, 1, 2]], Q[:, [0, 2, 3]]])
+
+
+def _laid_on(T: np.ndarray, V: np.ndarray, F: np.ndarray, h: float) -> np.ndarray:
+    """A cover's rim moved onto the nearest point of the surface (V, F), and its inside points
+    smoothed toward their neighbours (the rim held): a cover that meets the wall, not a staircase
+    a cube off it."""
+    from scipy.spatial import cKDTree
+    P = T.reshape(-1, 3)
+    key = np.round((P - P.min(axis=0)) / h * 2.0).astype(np.int64)
+    uq, inv = np.unique(key, axis=0, return_inverse=True)
+    inv = inv.reshape(-1)
+    pts = np.zeros((len(uq), 3))
+    np.add.at(pts, inv, P)
+    pts /= np.bincount(inv, minlength=len(uq))[:, None]
+    tri = inv.reshape(-1, 3)
+    # the rim: edges on one triangle of the cover
+    e = np.sort(np.concatenate([tri[:, [0, 1]], tri[:, [1, 2]], tri[:, [2, 0]]]), axis=1)
+    ue, cnt = np.unique(e, axis=0, return_counts=True)
+    rim = np.zeros(len(pts), dtype=bool)
+    rim[ue[cnt == 1].ravel()] = True
+    # the surface near the cover, by its triangles' boxes
+    lo, hi = pts.min(axis=0) - 3.0 * h, pts.max(axis=0) + 3.0 * h
+    tv = V[F]
+    near = np.all(tv.max(axis=1) >= lo, axis=1) & np.all(tv.min(axis=1) <= hi, axis=1)
+    cand = tv[near]
+    if len(cand) and rim.any():
+        idx = np.flatnonzero(rim)
+        best = np.full(len(idx), np.inf)
+        to = pts[idx].copy()
+        tree = cKDTree(cand.mean(axis=1))
+        k = min(len(cand), 48)
+        _d, nn = tree.query(pts[idx], k=k)
+        nn = np.atleast_2d(nn).reshape(len(idx), -1)
+        for col in range(nn.shape[1]):
+            q = _closest_on_triangles(pts[idx], cand[nn[:, col]])
+            d = np.linalg.norm(q - pts[idx], axis=1)
+            better = d < best
+            best[better] = d[better]
+            to[better] = q[better]
+        move = best <= 2.5 * h
+        pts[idx[move]] = to[move]
+    # the inside points smoothed (the rim held), a few deterministic sweeps
+    nbrs = np.concatenate([tri[:, [0, 1]], tri[:, [1, 2]], tri[:, [2, 0]], tri[:, [1, 0]], tri[:, [2, 1]], tri[:, [0, 2]]])
+    free = ~rim
+    for _ in range(4):
+        acc = np.zeros_like(pts)
+        np.add.at(acc, nbrs[:, 0], pts[nbrs[:, 1]])
+        deg = np.bincount(nbrs[:, 0], minlength=len(pts))[:, None]
+        avg = acc / np.maximum(deg, 1)
+        pts[free] = 0.5 * pts[free] + 0.5 * avg[free]
+    out = pts[tri]
+    area = np.linalg.norm(np.cross(out[:, 1] - out[:, 0], out[:, 2] - out[:, 0]), axis=1)
+    return out[area > 1e-6 * h * h]
+
+
+def _closest_on_triangles(p: np.ndarray, T: np.ndarray) -> np.ndarray:
+    """The closest point to each p on its triangle T (Ericson, Real-Time Collision Detection 5.1.5)."""
+    a, b, c = T[:, 0], T[:, 1], T[:, 2]
+    ab, ac, ap = b - a, c - a, p - a
+    d1, d2 = np.einsum("ij,ij->i", ab, ap), np.einsum("ij,ij->i", ac, ap)
+    bp = p - b
+    d3, d4 = np.einsum("ij,ij->i", ab, bp), np.einsum("ij,ij->i", ac, bp)
+    cp = p - c
+    d5, d6 = np.einsum("ij,ij->i", ab, cp), np.einsum("ij,ij->i", ac, cp)
+    va = d3 * d6 - d5 * d4
+    vb = d5 * d2 - d1 * d6
+    vc = d1 * d4 - d3 * d2
+    out = np.empty_like(p)
+    done = np.zeros(len(p), dtype=bool)
+
+    def put(mask, val):
+        m = mask & ~done
+        out[m] = val[m]
+        done[m] = True
+
+    put((d1 <= 0) & (d2 <= 0), a)
+    put((d3 >= 0) & (d4 <= d3), b)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        v = d1 / (d1 - d3)
+        put((vc <= 0) & (d1 >= 0) & (d3 <= 0), a + v[:, None] * ab)
+        put((d6 >= 0) & (d5 <= d6), c)
+        w = d2 / (d2 - d6)
+        put((vb <= 0) & (d2 >= 0) & (d6 <= 0), a + w[:, None] * ac)
+        w2 = (d4 - d3) / ((d4 - d3) + (d5 - d6))
+        put((va <= 0) & ((d4 - d3) >= 0) & ((d5 - d6) >= 0), b + w2[:, None] * (c - b))
+        den = 1.0 / (va + vb + vc)
+        v2, w3 = vb * den, vc * den
+        put(np.ones(len(p), dtype=bool), a + ab * v2[:, None] + ac * w3[:, None])
+    return np.where(np.isfinite(out), out, a)
 
 
 #: A cap with less space behind it than this share of its width (most of the cap) closes a dent.

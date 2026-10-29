@@ -245,9 +245,10 @@ def _shadow_row(job_id: str, plan, outcome: str, *, operations=(), stopped_becau
                 resolved=None, refusals=()) -> None:
     """THE ONE SHADOW WRITER, called from every exit of the node past the pre-pass.
 
-    A shadow run's whole value is the pairing of what the model proposed with what the rules did
-    on the same part, so it is logged once whichever way the loop ended; `not_executed` says the
-    loop never produced a verdict. A no-op when there is no shadow plan. Never raises.
+    A shadow run's whole value is the pairing of what the model-directed portion proposed with
+    what the deterministic portion did on the same part, so it is logged once whichever way the
+    loop ended; `not_executed` says the loop never produced a verdict. A no-op when there is no
+    shadow plan. Never raises.
     """
     if plan is None:
         return
@@ -365,8 +366,8 @@ async def node_repair_attempt(state: PipelineState) -> dict:
             from meshpipeline.capture.logger import TrainingLogger
             # A DECLINE IS STILL A TRAINING ROW, and often the most useful one. A run that kept
             # nothing is refused before anything is written, so the success path below never runs
-            # - and an attempted-and-rolled-back sequence is exactly what slice 8 needs to learn
-            # from. The attempts travel in the refusal's own measurements for this reason.
+            # - and an attempted-and-rolled-back sequence is exactly what the model-directed
+            # portion needs to learn from. The attempts travel in the refusal's own measurements.
             TrainingLogger(job_id).log("repair_attempt", op_id="repair:attempt", payload={
                 "route": advice.route, "targets": [dict(t) for t in advice.targets],
                 "operations": [dict(op) for op in exc.measurements.get("operations", [])],

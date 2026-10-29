@@ -161,6 +161,7 @@ def _context_files(workspace: Path, state, source_path: str) -> tuple[str, str]:
                    "flow_axis": state.get("flow_axis")},
         input_kind=str(state.get("input_kind") or ""),
         user_notes=list(state.get("user_notes") or []),
+        leak_closing=state.get("leak_closing") or None,
     )
 
 
@@ -441,6 +442,9 @@ def prepare(state, *, job_id: str, mode: str) -> BuilderAttempt:
     if mode in ("initial", "rebuild"):
         if source_path and Path(source_path).exists():
             _stage_surface(geometry, workspace, engine)
+            # the leak size the user confirmed (INS-8), beside the surface before any staging reads it
+            from meshpipeline.agents.builder.workspace import write_leak_closing
+            write_leak_closing(workspace, state.get("leak_closing") or None)
             _stage_declared(workspace, geometry, state, engine)
         messages = _opening(workspace, state, engine=engine, source_path=source_path)
         if mode == "rebuild":

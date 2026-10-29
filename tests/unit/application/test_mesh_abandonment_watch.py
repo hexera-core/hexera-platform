@@ -38,7 +38,7 @@ class _Clock:
 @pytest.fixture()
 def ownership(monkeypatch):
     """The job row's answer to "is this still the worker's?", and every time it was asked."""
-    state = {"owned": True, "asked": [], "error": None}
+    state = {"owned": True, "asked": [], "error": None, "cancelled": True}
 
     def still_owned(*, job_id, execution_generation, worker_token):
         state["asked"].append((job_id, execution_generation, worker_token))
@@ -47,6 +47,8 @@ def ownership(monkeypatch):
         return state["owned"]
 
     monkeypatch.setattr(claims, "still_owned", still_owned)
+    # not owned, and why: the owner's cancel (the default here), or the job handed on (RUN-4)
+    monkeypatch.setattr(claims, "cancelled_by_owner", lambda *, job_id: state["cancelled"])
     monkeypatch.setattr(worker_drain, "_probe", None)
     return state
 
@@ -62,6 +64,15 @@ def test_a_cancelled_job_stops_the_wait(ownership):
     ownership["owned"] = False
     reason = abandonment_watch_for(OWN)()
     assert reason and "cancelled" in reason
+
+
+def test_a_job_handed_on_leaves_its_remote_run_for_the_next_owner(ownership):
+    # RUN-4, 28 Oct: the cyclone's lease lapsed and its VM was deleted while sending 7 hours back.
+    # Not cancelled - taken over, or the lease lapsed - is told apart, and only a cancel stops a remote.
+    from meshpipeline.contracts.mesh_execution import CANCELLED_BY_OWNER, HANDED_ON
+    ownership["owned"], ownership["cancelled"] = False, False
+    reason = abandonment_watch_for(OWN)()
+    assert reason == HANDED_ON and CANCELLED_BY_OWNER not in reason
 
 
 def test_a_draining_worker_stops_at_once_without_asking_the_database(ownership, monkeypatch):
