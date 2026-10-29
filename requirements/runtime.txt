@@ -20,8 +20,8 @@ uvicorn[standard]==0.32.1
 python-multipart==0.0.31        # REQUIRED: Starlette imports it at request time for the upload route's UploadFile
 
 # LangGraph + LangChain
-# langgraph 1.2.3 is the first release that accepts langgraph-sdk 0.4.x, and sdk 0.4.4 is the fix
-# for CVE-2026-104873 (GHSA-fvww-7h3r-vfhp). The sdk is transitive (constraints.txt), but langgraph
+# langgraph 1.2.3 is the first release that accepts langgraph-sdk 0.4.x; sdk 0.4.4 fixed
+# CVE-2026-104873 (GHSA-fvww-7h3r-vfhp) and 0.4.6 fixes CVE-2026-118667. The sdk is transitive (constraints.txt), but langgraph
 # imports it at startup, and through it langchain-protocol, which needs typing_extensions>=4.13.
 langgraph==1.2.3
 langchain-core==1.4.0

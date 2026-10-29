@@ -22,6 +22,34 @@ def attachment_disposition(name: str) -> str:
     return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(raw, safe='')}"
 
 
+class ChunkReader:
+    """A file-like `read(n)` over an iterator of byte chunks, counting and hashing what it hands out."""
+
+    def __init__(self, chunks) -> None:
+        import hashlib
+        self._it = iter(chunks)
+        self._buf = bytearray()
+        self._md5 = hashlib.md5()  # noqa: S324 - an integrity record of the bytes sent, not a secret
+        self.size = 0
+
+    def read(self, n: int = -1) -> bytes:
+        while n < 0 or len(self._buf) < n:
+            try:
+                self._buf += next(self._it)
+            except StopIteration:
+                break
+        if n < 0:
+            out, self._buf = bytes(self._buf), bytearray()
+        else:
+            out, self._buf = bytes(self._buf[:n]), self._buf[n:]
+        self._md5.update(out)
+        self.size += len(out)
+        return out
+
+    def md5_hex(self) -> str:
+        return self._md5.hexdigest()
+
+
 class MinioStore:
     def __init__(self) -> None:
         self._bucket = provcfg.MINIO_BUCKET
@@ -65,6 +93,29 @@ class MinioStore:
                                 checksum=getattr(res, "etag", None))
         except Exception as exc:  # noqa: BLE001
             raise StorageError(f"minio upload failed for {key}: {exc}") from exc
+
+    #: The part a streamed upload is sent in: the memory one stream holds, and at the store's limit
+    #: of 10,000 parts a ceiling of 640 GB on one object.
+    STREAM_PART_BYTES = 64 * 1024 * 1024
+
+    def upload_stream(self, *, chunks, object_key: str,
+                      content_type: str | None = None) -> StoredObject:
+        """Store the bytes `chunks` yields, of a length nobody knows up front, as one object - a
+        multipart upload in STREAM_PART_BYTES parts, so nothing is written to disk and only a part
+        is held at a time (RUN-7: a big result goes from its exchange bucket straight to here).
+        The checksum returned is the md5 of the bytes sent, measured on the way."""
+        key = normalize_key(object_key)
+        reader = ChunkReader(chunks)
+        try:
+            client = self._client()
+            self._ensure_bucket(client)
+            client.put_object(bucket_name=self._bucket, object_name=key, data=reader, length=-1,
+                              part_size=self.STREAM_PART_BYTES,
+                              content_type=content_type or "application/octet-stream")
+        except Exception as exc:  # noqa: BLE001
+            raise StorageError(f"minio streamed upload failed for {key}: {exc}") from exc
+        return StoredObject(object_key=key, size_bytes=reader.size, content_type=content_type,
+                            checksum=reader.md5_hex())
 
     def get_bytes(self, *, object_key: str) -> bytes:
         from minio.error import S3Error

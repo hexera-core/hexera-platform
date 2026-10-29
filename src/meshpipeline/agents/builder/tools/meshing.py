@@ -99,7 +99,8 @@ def submit_mesh(ctx: BuilderToolContext, args: dict | None = None) -> dict:
     from meshpipeline.engines.runtime import get_engine
     workspace = ctx.workspace
     _pol = _get_spec(getattr(get_engine(ctx.engine), "name", "cfmesh")).run_policy
-    if not (workspace / _pol.submit_marker).exists():
+    from meshpipeline.engines.bucket_files import present
+    if not ((workspace / _pol.submit_marker).exists() or present(workspace, _pol.submit_marker)):
         return {"success": False, "error": _pol.submit_hint}
 
     # THE PER-FLAG DECLARATION. Required only when an engineer actually flagged regions, so an

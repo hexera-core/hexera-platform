@@ -482,6 +482,8 @@ test-native-smoke: ##! Build the mesh image and run the BOUNDED packaging capabi
 	@bash tests/native/run_tier.sh smoke
 test-native-all: ##! Build the mesh image and run the FULL native tier inside it: packaging smoke + minimal five-engine native execution + controlled native failure cases (the longer multiregion/VMTK cases included - expect minutes). NOT collected by the hermetic run; part of the blocking pre-release plan. Excludes the service-backed native-terminal matrix (see test-native-terminal).
 	@bash tests/native/run_tier.sh all
+benchmark-engines: ##! Run curated CAD-repair/downstream cases plus one real execution of every mesh engine; this produces evidence, not a publication claim.
+	@bash tests/native/run_tier.sh benchmark
 test-native-terminal: ##! Build the mesh image + provision real Postgres/Redis/MinIO, then drive each engine's GENUINE native mesh through the REAL production terminal chain (_run_async) and assert REST/Redis/WS/final_result agreement, restart/replay, and native-terminal failure containment. Deterministic Reviewer; no model calls. Local proof only - not hosted.
 	@bash tests/native/run_terminal_matrix.sh
 validate: ##! Run one tier of the test contract in the PINNED validation image (TIER=collect|unit|ui|integration|native|release)

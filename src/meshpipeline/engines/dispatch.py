@@ -81,7 +81,11 @@ def run_engine_local(workspace: Any, *, engine: str, timeout: int) -> dict:
               if engine in _OPENFOAM_ENGINES else None)
     if reason:
         return {"rc": -2, "timed_out": False, "log_tail": f"REJECTED: {reason}"}
+    # a previous pass's record of files kept in the bucket, and its stand-ins, describe a mesh this
+    # run replaces (engines/bucket_files, RUN-7)
+    from meshpipeline.engines.bucket_files import clear
     from meshpipeline.engines.cfmesh.foam_exec import _DEFAULT_BASHRC  # identical across the clones
+    clear(workspace)
     out = _run_stamped(runners[engine], workspace, engine=engine, bashrc=_DEFAULT_BASHRC,
                        timeout=int(timeout))
     # WHAT RIDES HOME (engines/return_scope.py): the workspace is archived and extracted under a

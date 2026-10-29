@@ -17,14 +17,17 @@ from meshpipeline.cad.repair.operations import FILL_OPS, OPERATIONS, RepairOp
 
 logger = logging.getLogger(__name__)
 
-# WHY THIS IS A SEPARATE MODULE WITH A PROTOCOL.
+# WHY THE CHOOSING SITS BEHIND A PROTOCOL.
 #
-# This is the seat a model takes in slice 8. Nearly everything about safety - the caps, the
-# progress rule, the rollback - lives in the session, so a planner choosing badly wastes a budget
-# rather than damaging a part. What a planner chooses is which of the bounded operations
-# (`operations.OPERATIONS`) to point at which located defect, and nothing more. Keeping that behind
-# one small interface is what makes "a model picks, the rules pick, compare them on the same
-# corpus" an experiment rather than a rewrite.
+# Repair is ONE surface with two portions: a deterministic one, built first, and a
+# model-directed one, built later. This protocol is the seam between them, not a boundary
+# between two subsystems - both portions choose from the same bounded operation catalogue, run
+# the same session, and are judged by the same caps. Nearly everything about safety - the caps,
+# the progress rule, the rollback - lives in the session, so choosing badly wastes a budget
+# rather than damaging a part. What either portion chooses is which of the bounded operations
+# (`operations.OPERATIONS`) to point at which located defect, and nothing more. Keeping that
+# behind one small interface is what lets the two portions be measured against each other on
+# one corpus without either being a rewrite of the other.
 #
 # THE ONE EXCEPTION, AND IT IS NOT A SMALL ONE. For a SEALED THROUGH-HOLE - both rims of a missing
 # bore wall patched flat - the refusal below is the ONLY defence in the system. Nothing downstream
@@ -39,7 +42,8 @@ logger = logging.getLogger(__name__)
 # guard too - a planner that can be replaced is only as safe as the guard it consults. Do not read
 # the paragraph above as "the session makes a planner harmless"; for this one behaviour it does not.
 #
-# The rules below are deliberately plain. They are the BASELINE a model has to beat.
+# The rules below are deliberately plain. They are the deterministic portion of this surface,
+# and the reference the model-directed portion is measured against - not a rival engine.
 
 #: Worse first. The loop exists to clear errors; warnings are worth attending to only once the
 #: errors are gone, because a sliver edge beside an open shell is not the part's problem.
@@ -67,7 +71,8 @@ class Candidate:
     #: Set only by DirectedPlanner: the directive this proposal plays. An autonomous proposal has none.
     item_id: str | None = None
     source: str = ""
-    #: The LLM planner's stamp (`llm:<n>`) and its confidence; empty for every other proposal.
+    #: The model-directed portion's stamp (`llm:<n>`) and its confidence; empty for every
+    #: proposal the deterministic portion makes on its own.
     directive_id: str | None = None
     planner_confidence: float | None = None
 
@@ -79,12 +84,17 @@ class Candidate:
 
 @dataclass
 class RunHistory:
-    """What this run has already learned. The planner's only memory.
+    """What this run has already learned. The choosing portion's only memory.
 
     `ineffective` is THE PER-OPERATION LEARNING SIGNAL: a `(defect, operation)` pair the session
     rolled back. Recorded per pair rather than per operation, because an operation that could not
     fix one edge may be exactly right for another, and banning it outright would waste the rest of
-    the catalogue. In slice 8 this is precisely what the model is shown on its next turn.
+    the catalogue.
+
+    NOT YET READ BY THE MODEL-DIRECTED PORTION. That portion runs as a pre-pass before this loop
+    starts (`pipeline/repair_attempt.py`), so it plans once, ahead, and never sees this ledger
+    fill. Feeding it back would require the model to re-plan mid-run, which the current async
+    pre-pass against a synchronous loop cannot do.
     """
 
     ineffective: set[tuple[str, str]] = field(default_factory=set)
@@ -135,7 +145,7 @@ class RunHistory:
 
 
 class Planner(Protocol):
-    """Chooses the next repair to try. A model implements this in slice 8."""
+    """Chooses the next repair to try. Both portions of the repair surface implement this."""
 
     def propose(self, defects, history: RunHistory, *, shape) -> Candidate | None:
         ...
@@ -231,8 +241,8 @@ def held_fingerprints(defects, reserved) -> frozenset[str]:
 class RulesPlanner:
     """Fixed rules: worst defect first, narrowest operation first, whole-shape last.
 
-    Labelled `rules-v1` in what it reports, so a later comparison can say which planner produced a
-    run - the point of slice 8 being a swap behind this interface rather than a rewrite.
+    Labelled `rules-v1` in what it reports, so a comparison can say which portion of the repair
+    surface produced a run - the point of the protocol being a seam rather than a rewrite.
     """
 
     label = "rules-v1"

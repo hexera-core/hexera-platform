@@ -19,6 +19,7 @@ from meshpipeline.adapters.mesh_execution.exchange_coordinates import (
     coordinates_for,
 )
 from meshpipeline.contracts.mesh_execution import (
+    CANCELLED_BY_OWNER,
     MESH_CONTRACT_ENV,
     MESH_EXCHANGE_VERSION,
     PLATFORM_UPDATING_KEY,
@@ -47,6 +48,12 @@ class CloudRunMeshExecutor:
             workspace, engine,
             lambda: run_mesh_remote(workspace, engine=engine, timeout=timeout,
                                     operation_key=operation_key))
+
+    def remote_state(self, operation_key: str) -> str | None:
+        """What became of the run under `operation_key`, read from its exchange (RUN-4, for a new
+        owner deciding whether to adopt it): "result" - its result is written; "running" - its
+        beacon was written within the stall window (WAIT_STALL_S); None - neither."""
+        return remote_state(operation_key)
 
     def collect(self, workspace, *, engine: str, timeout: int, operation_key: str) -> dict:
         # A PREVIOUS worker's submission was durably accepted. Its exchange objects live under
@@ -137,14 +144,24 @@ def _relay_progress(bucket, progress_key: str, seen: dict) -> bool:
             return False
         seen["generation"] = blob.generation
         alive = True
+        from meshpipeline.contracts import progress_clock
+        # the remote was heard: the run is in flight on its machine, whatever this worker's own CPU
+        # says (application/lease_keeper reads this as the job's sign of life)
+        progress_clock.remote_heard()
         doc = json.loads(blob.download_as_bytes())
         doc = doc if isinstance(doc, dict) else {}
         moved = doc.get("progress_at")
-        if moved is None or moved != seen.get("progress_at"):
-            from meshpipeline.contracts import progress_clock
+        # PROGRESS: its output moved, or its processes are working (`alive_at`: CPU, memory - a
+        # mesher filling a volume for an hour writes nothing, and that is still progress)
+        working = doc.get("alive_at")
+        if (moved is None or moved != seen.get("progress_at")
+                or (working is not None and working != seen.get("alive_at"))):
             progress_clock.touch()
         if moved is not None:
             seen["pulses"], seen["progress_at"] = True, moved
+        if working is not None:
+            seen["alive_at"] = working
+        seen["stage"] = str(doc.get("key") or "")
         from meshpipeline.contracts.mesh_progress import report
         report(doc)
     except Exception as exc:  # noqa: BLE001 - the live line is a courtesy, never the run's
@@ -176,6 +193,8 @@ def _poll_gcs_json(bucket, key: str, deadline_s: float, progress_key: str | None
             return json.loads(blob.download_as_bytes())
         if progress_key and _relay_progress(bucket, progress_key, seen):
             heard_at = time.time()
+            if heard is not None:
+                heard["stage"] = seen.get("stage", "")    # the last stage it said (RETURNING: keep it)
         if start_s is not None and heard_at is None and time.time() - start >= start_s:
             if heard is not None:
                 heard["never"] = True
@@ -195,6 +214,47 @@ def _poll_gcs_json(bucket, key: str, deadline_s: float, progress_key: str | None
         if silent and now - start >= deadline_s:
             return None
         time.sleep(10)
+
+
+def remote_state(operation_key: str, *, bucket=None, now: float | None = None) -> str | None:
+    """See CloudRunMeshExecutor.remote_state. Never raises: an unreadable exchange is None."""
+    try:
+        from meshpipeline.adapters.mesh_execution.exchange_coordinates import coordinates_for
+        from meshpipeline.artifact_keys import progress_key_beside
+        coords = coordinates_for(operation_key)
+        if bucket is None:
+            from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
+            bucket = storage_client().bucket(provcfg.GCP_MESH_BUCKET)
+        if bucket.blob(coords.result_object_key).exists():
+            return "result"
+        beacon = bucket.get_blob(progress_key_beside(coords.output_object_key))
+        updated = getattr(beacon, "updated", None) if beacon is not None else None
+        if updated is not None:
+            age = (time.time() if now is None else now) - updated.timestamp()
+            if age <= WAIT_STALL_S:
+                return "running"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not read the exchange of operation %s (%s)", operation_key[:16],
+                       type(exc).__name__)
+    return None
+
+
+def remote_left_running(reason: str, heard: dict | None, bucket, out_key: str) -> tuple[bool, str]:
+    """Whether a remote run whose wait was given up is left to finish (RUN-4), and why: when it is
+    already sending its result back, when its result is written, and whenever its job was not
+    cancelled by its owner (taken over, its lease lapsed, the worker going away) - its result then
+    lands in the exchange for the job's next owner. Only an owner's cancel stops it."""
+    from meshpipeline.contracts.mesh_execution import CANCELLED_BY_OWNER
+    if (heard or {}).get("stage") == "returning":
+        return True, "it is sending its result back"
+    try:
+        if bucket is not None and bucket.blob(out_key).exists():
+            return True, "its result is already written"
+    except Exception:  # noqa: BLE001 - unknown: decided by the reason alone
+        pass
+    if CANCELLED_BY_OWNER in str(reason):
+        return False, ""
+    return True, "its job was handed on, not cancelled - whoever owns it next collects this run"
 
 
 def _access_token() -> str:
@@ -388,6 +448,9 @@ FEA_RESULT_FILE_BYTES_PER_ELEMENT = 600
 #: The margin on a measured size, and the ceiling no result document can lift the limits past.
 FEA_RESULT_MARGIN = 1.15
 FEA_RESULT_MAX_BYTES = 48 * 1024 ** 3
+#: ...the same two for every mesh the mesher measured (RUN-7): one rule, flow and FEA alike.
+RESULT_MARGIN = FEA_RESULT_MARGIN
+RESULT_MAX_BYTES = FEA_RESULT_MAX_BYTES
 RESULT_FILE_BYTES_PER_MEASURED_CELL = 400
 
 
@@ -418,21 +481,24 @@ def result_extraction_limits(result: dict | None = None):
     fea = (isinstance(measured, dict) and bool(measured.get("fea"))) or (
         isinstance(q, dict) and (str(q.get("quality_bar") or "") == "fea" or isinstance(q.get("fea"), dict)))
     if fea:
-        # AN FEA MESH IS NEVER LOST TO SIZE (Areen: only a broken mesh fails): its own allowance, and
-        # the mesher's measurement of what it sent when there is one - bounded, so no document can
-        # lift the limits without end
+        # AN FEA MESH IS NEVER LOST TO SIZE (Areen: only a broken mesh fails): its own allowance
         archive = max(archive, cells * FEA_RESULT_ARCHIVE_BYTES_PER_ELEMENT)
         raw = max(raw, cells * FEA_RESULT_RAW_BYTES_PER_ELEMENT)
         largest = max(largest, cells * FEA_RESULT_FILE_BYTES_PER_ELEMENT)
-        if isinstance(measured, dict):
-            try:
-                m_raw, m_big = int(measured.get("raw") or 0), int(measured.get("largest") or 0)
-            except (TypeError, ValueError):
-                m_raw = m_big = 0
-            raw = max(raw, int(m_raw * FEA_RESULT_MARGIN))
-            archive = max(archive, int(m_raw * FEA_RESULT_MARGIN))      # gzip never grows text much
-            largest = max(largest, int(m_big * FEA_RESULT_MARGIN))
-        archive, raw, largest = (min(v, FEA_RESULT_MAX_BYTES) for v in (archive, raw, largest))
+    if isinstance(measured, dict):
+        # WHAT THE MESHER MEASURED IT SENT, ANY MESH (RUN-7): a 107 M-cell cfMesh mesh came back as
+        # 3.4 GB packed, 22 GB raw - past the flow allowance above, whose cell count is capped at
+        # twice the cell limit - and was built, paid for and lost on the way back. The measurement,
+        # with margin, sizes the limits; bounded, so no document can lift them without end
+        try:
+            m_raw, m_big = int(measured.get("raw") or 0), int(measured.get("largest") or 0)
+        except (TypeError, ValueError):
+            m_raw = m_big = 0
+        raw = max(raw, int(m_raw * RESULT_MARGIN))
+        archive = max(archive, int(m_raw * RESULT_MARGIN))      # gzip never grows text much
+        largest = max(largest, int(m_big * RESULT_MARGIN))
+    if fea or isinstance(measured, dict):
+        archive, raw, largest = (min(v, RESULT_MAX_BYTES) for v in (archive, raw, largest))
     return replace(base, max_archive_bytes=archive, max_total_uncompressed_bytes=raw,
                    max_file_bytes=largest)
 
@@ -489,13 +555,12 @@ def collection_need(archive_bytes: int, result: dict | None) -> int:
 
 
 def worker_room(bucket, out_key: str, result: dict | None, where) -> dict | None:
-    """None when this worker has room to collect the result (or it is not an FEA result); else the
-    refusal - RC_INFRASTRUCTURE, the exchange objects kept for a worker with room - with the numbers
-    the user is told (gigabytes needed and free)."""
+    """None when this worker has room to collect the result; else the refusal - RC_INFRASTRUCTURE,
+    the exchange objects kept for a worker with room - with the numbers the user is told
+    (gigabytes needed and free). Every mesh (RUN-7): a flow mesh's limits are sized by what was
+    built now too, and a worker's disk is finite for it as well."""
     import shutil
 
-    if not _is_fea_result(result):
-        return None
     try:
         blob = bucket.blob(out_key)
         blob.reload()
@@ -610,6 +675,7 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
     # same way a successful one does. rc is the mesh's verdict, not evidence about the exchange.
     collection_complete = False
     result = None                     # set once the remote's result document has been read
+    heard: dict = {}                  # what the wait heard from the remote (its last stage, ...)
     # WHERE IT RUNS (contracts/mesh_machine): the Cloud Run mesh job, or a VM sized to fit the plan -
     # decided by the driver before meshing and written in the workspace; none means Cloud Run
     from meshpipeline.contracts import mesh_machine
@@ -641,7 +707,6 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         # a run THIS worker started is held to the never-heard window; one a previous worker started
         # (collected here) may have been heard by it, and is waited for as before
         start_s = (NEVER_HEARD_VM_S if on_vm else NEVER_HEARD_JOB_S) if submit else None
-        heard: dict = {}
         result = _poll_gcs_json(bucket, res_key, deadline_s=wait_s,
                                 progress_key=progress_key_beside(out_key), start_s=start_s, heard=heard)
         # THE MESH JOB IS ON ANOTHER EXCHANGE CONTRACT (the platform is mid-update): nothing was
@@ -714,16 +779,33 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         import tempfile
 
         from meshpipeline.sandbox.safe_extract import safe_extract_tar
-        # ROOM ON THIS WORKER, measured before a byte is written (an FEA result only: its limits are
-        # sized by what was built, up to FEA_RESULT_MAX_BYTES, and a worker's disk is finite). A result
-        # that cannot fit is refused in words and KEPT in the exchange - never half-written, never lost
+        # ROOM ON THIS WORKER, measured before a byte is written (every mesh: its limits are sized by
+        # what was built, up to RESULT_MAX_BYTES, and a worker's disk is finite). A result that
+        # cannot fit is refused in words and KEPT in the exchange - never half-written, never lost
         _room = worker_room(bucket, out_key, result, ws.parent)
         if _room is not None:
             return {**_room, "ran_on": ran_on}
+        from meshpipeline.engines import bucket_files as BF
+        # the files a previous result kept in the bucket, and its stand-ins, are not this result's
+        BF.clear(ws)
         with tempfile.TemporaryDirectory(prefix="mesh_result_", dir=str(ws.parent)) as _tmp:
             _archive = Path(_tmp) / "result.tar.gz"
             bucket.blob(out_key).download_to_filename(str(_archive))
             safe_extract_tar(path=_archive, dest=str(ws), limits=result_extraction_limits(result))
+        # BIG FILES KEPT IN THE BUCKET (RUN-7): the record is the remote's word, so every object it
+        # names must be one of THIS run's - else nothing it names is ever read (refused: uncollected)
+        try:
+            _kept = BF.read_record(ws, bucket=bucket_name, prefix=out_key)
+        except BF.KeptFileError:
+            BF.clear(ws)
+            raise
+        if _kept:
+            from meshpipeline.adapters.mesh_execution.gcs_exchange import kept_reader
+            # the big files this worker's own checks read come home now, unpacked to their place
+            _got = BF.fetch(ws, kept_reader)
+            logger.info("%s: %d big file(s) sent on their own - %.1f GB fetched, %.1f GB kept in the "
+                        "bucket: %s", engine, len(_kept), _got / 1e9,
+                        sum(k.bytes for k in _kept.values() if not k.fetch) / 1e9, ", ".join(sorted(_kept)))
         # Built BEFORE the exchange is released: this is the last thing that can raise, so the
         # objects must still exist while it happens.
         # The reference travels back so the submission authority can record what was accepted.
@@ -746,7 +828,15 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         # stopped, because nobody will collect it. The exchange objects stay, like any run that
         # was not collected; a submission given up before its trigger has no execution to stop.
         logger.warning("Cloud Run mesh for %s given up before it finished: %s", engine, stop)
-        _stop(operation, engine=engine, why=str(stop))
+        keep, why_kept = remote_left_running(str(stop), heard, bucket, out_key)
+        if keep:
+            # NEVER THROWN AWAY (RUN-4, 28 Oct): the cyclone's VM was deleted while it was sending
+            # back 7 hours of meshing. A remote whose job was handed on - another worker owns it now,
+            # or will - or that is already sending its result back, finishes: its result lands in the
+            # exchange, where the job's owner collects it (application/native_submission adopts it).
+            logger.warning("the remote mesh for %s is left to finish: %s", engine, why_kept)
+        else:
+            _stop(operation, engine=engine, why=str(stop))
         return {"rc": RC_INFRASTRUCTURE, "timed_out": False,
                 "log_tail": f"{ABANDONED_MARKER} {engine}: {stop}"}
     except Exception as exc:  # noqa: BLE001 - any failure is a LOUD mesh failure, not a local run
@@ -765,7 +855,21 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
                 done = find_vm(instance_name(operation_key, str(machine["machine"])))
             _stop(done, engine=engine,
                   why="its result was collected" if collection_complete else "its result was written")
+        handed_on = False
         if bucket is not None and collection_complete:
+            # A JOB HANDED ON while its result was being collected (RUN-4): the result may be the
+            # next owner's to collect (application/native_submission adopts it), so the exchange is
+            # left for it - the bucket's lifecycle tidies it - and this worker's own fence refuses
+            # its copy
+            try:
+                _why = abandonment_reason() or ""
+                handed_on = bool(_why) and CANCELLED_BY_OWNER not in _why
+            except Exception:  # noqa: BLE001
+                handed_on = False
+            if handed_on:
+                logger.warning("the job was handed on while its result was collected: its exchange "
+                               "is left for the job's next owner")
+        if bucket is not None and collection_complete and not handed_on:
             # EXACTLY the three keys this operation owns, each deleted by name. Never a prefix
             # delete: the coordinates are derived per operation key, and a prefix sweep here could
             # take another job's or another generation's exchange with it.

@@ -119,6 +119,15 @@ class Scenario:
     expected_engine: str | None = None
 
 
+@dataclass(frozen=True)
+class EngineBenchmarkCase:
+    """One CAD input and the native engines whose declared domain applies to it."""
+
+    name: str
+    source_path: Path
+    engines: tuple[str, ...]
+
+
 def _inside(directory: Path, relative: str, field: str, name: str) -> Path:
     path = (directory / relative).resolve()
     if not path.is_relative_to(directory.resolve()):
@@ -440,6 +449,41 @@ def _distribution(values: list[float]) -> dict:
             "mean": statistics.fmean(values), "median": statistics.median(values)}
 
 
+def _numeric(value) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def _fidelity_distribution(rows: list[dict]) -> dict[str, dict]:
+    """Distributions for geometry-fidelity facts the manifest records.
+
+    Mesh quality already reports generic numeric `mesh_statistics`; fidelity needs the nested
+    CAD-vs-mesh facts as named figures too, especially `surface_deviation`, which manifests carry
+    as an object (`mean_ratio`, `p95_ratio`, etc.) and a top-level numeric-only pass would skip.
+    """
+    metrics: dict[str, list[float]] = {}
+    for row in rows:
+        stats = row.get("mesh_statistics") or {}
+        surface = stats.get("surface_deviation")
+        if isinstance(surface, dict):
+            for key, value in surface.items():
+                measured = _numeric(value)
+                if measured is not None:
+                    metrics.setdefault(f"surface_deviation_{key}", []).append(measured)
+        for key in (
+            "declared_openings_kept",
+            "declared_openings_expected",
+            "unintended_sealed_passages",
+            "feature_preservation",
+            "boundary_patch_integrity",
+        ):
+            measured = _numeric(stats.get(key))
+            if measured is not None:
+                metrics.setdefault(key, []).append(measured)
+    return {key: _distribution(values) for key, values in sorted(metrics.items())}
+
+
 def summarise(rows: list[dict]) -> dict:
     """The aggregate, computed only from rows - the spec's mesh-engine metrics: success rate,
     quality distribution (never collapsed to pass/fail), cost, per-engine breakdown, and
@@ -488,6 +532,7 @@ def summarise(rows: list[dict]) -> dict:
         "mesh_success_rate": (len(successes) / len(rows)) if rows else None,
         "quality_distribution": {metric: _distribution(vals)
                                  for metric, vals in sorted(quality.items())},
+        "fidelity": _fidelity_distribution(successes),
         "solver_ready": {"ready": sum(1 for r in ready if r is True),
                          "not_ready": sum(1 for r in ready if r is False),
                          "unknown": sum(1 for r in ready if r is None)},
@@ -499,6 +544,48 @@ def summarise(rows: list[dict]) -> dict:
                              "accuracy": (matched / len(scored)) if scored else None,
                              "unscored_because": dict(sorted(unscored.items()))},
     }
+
+
+def run_engine_matrix(cases: list[EngineBenchmarkCase], scratch: Path, *, repair, mesh) -> list[dict]:
+    """Run real repair once, then mesh the original and any delivered repair per applicable engine.
+
+    `repair` and `mesh` are native adapter seams: this function owns the comparison matrix, while
+    the CAD kernel and each engine continue to own how geometry is repaired and a case is authored.
+    A refused repair has no repaired variant; the benchmark never substitutes the original and calls
+    it repaired.
+    """
+    scratch = Path(scratch)
+    rows: list[dict] = []
+    for case in cases:
+        case_root = scratch / case.name
+        repair_path = case_root / "repair" / f"{case.source_path.stem}-repaired{case.source_path.suffix}"
+        repair_path.parent.mkdir(parents=True, exist_ok=True)
+        repair_result = dict(repair(case.source_path, repair_path))
+        artifact = repair_result.pop("artifact", None)
+        repair_evidence = repair_result
+
+        variants = [("original", case.source_path)]
+        if artifact is not None:
+            artifact = Path(artifact)
+            if not artifact.is_file():
+                raise ValueError(
+                    f"case {case.name!r} reported a repaired artifact that does not exist: {artifact}")
+            variants.append(("repaired", artifact))
+
+        for variant, source in variants:
+            for engine in case.engines:
+                workspace = case_root / variant / engine
+                workspace.mkdir(parents=True, exist_ok=True)
+                result = dict(mesh(source, engine, workspace))
+                rows.append({
+                    "case": case.name,
+                    "variant": variant,
+                    "source": str(source),
+                    "engine": engine,
+                    "cad_repair": repair_evidence,
+                    **result,
+                })
+    return rows
 
 
 # -------------------------------------------------------------------------------------- the run
