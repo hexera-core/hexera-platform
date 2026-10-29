@@ -20,12 +20,24 @@ _INT_METRICS: Final[tuple[str, ...]] = (
     "regions", "skew_faces",
     # cells too flat for a solver to integrate over: the count behind "poor-quality cells"
     "small_determinant_cells",
+    # THE THIRD OF THE SIX READINGS, "number of boundary layers in the fluid". The conjugate
+    # engine computes it, writes it to the manifest and the answer is a deliberate zero with the
+    # reason attached (see cfmesh_conjugate/finalize.NEAR_WALL_LAYERS): a prism layer is a cell
+    # inserted on ONE side of a patch, and a conformal interface is the one thing the whole
+    # approach exists to guarantee. The graded levels and the cell size at the wall are what
+    # stands in its place, so all three travel together or none of them means anything.
+    "near_wall_layers", "near_wall_levels",
+    # and the conformality itself, which is the number that says the interface is real: the same
+    # face count on each side of it
+    "interface_faces_fluid", "interface_faces_solid",
 )
 _FLOAT_METRICS: Final[tuple[str, ...]] = (
     "max_non_ortho", "max_skewness", "avg_non_ortho", "skew_fraction",
     # the size RANGE, as lengths. On a two-scale part the ratio is how many octree levels the
     # delivered mesh actually spans, which is the number its budget was set by.
     "min_cell_m", "max_cell_m", "cell_size_ratio", "max_aspect_ratio",
+    # the cell AT the wall, which is the near-wall resolution a reader asking about layers wants
+    "near_wall_cell_m",
 )
 
 # Part kinds. Closed: the viewer groups by these, so a new kind is a deliberate

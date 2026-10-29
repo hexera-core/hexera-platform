@@ -862,7 +862,9 @@ function initViewer(job,surf,uiCfg){
     // mesh's story, and buried among the quality rows they read as incidental.
     const SPAN=[['min_cell_m','Smallest cell'],['max_cell_m','Largest cell']];
     const FOLDED=['avg_non_ortho','skew_faces','skew_fraction','cell_size_ratio',
-                  'internal_faces','small_determinant_cells'];
+                  'internal_faces','small_determinant_cells',
+                  'near_wall_layers','near_wall_levels','near_wall_cell_m',
+                  'interface_faces_fluid','interface_faces_solid'];
     const KNOWN=[...SIZE,...TYPES,...QUALITY,...SPAN].map(r=>r[0])
                  .concat(FOLDED,['units','engine']);
     const isNum=v=>typeof v==='number'&&isFinite(v);
@@ -923,11 +925,39 @@ function initViewer(job,surf,uiCfg){
       span.push(row('cell_size_ratio','Size ratio','&times;',
         `the delivered mesh spans ${Math.log2(q.cell_size_ratio).toFixed(1)} octree levels`));
 
+    /* AT THE WALL - the third of the six readings the customer asked for by name, "number of
+       boundary layers in the fluid". The answer for a conjugate mesh is none, deliberately: a
+       prism layer is a cell inserted on ONE side of a patch and the interface is conformal
+       because both regions are the same cells from the same octree. A bare "0" reads as a
+       failure, so the reason and what stands in its place are on the row. Measured and written
+       to the manifest since the engine was built; it never reached a reader because the metric
+       filter in render/mesh_facts dropped it. */
+    const wall=[];
+    if(has('near_wall_layers'))wall.push(row('near_wall_layers','Boundary layers','',
+      q.near_wall_layers===0
+        ? 'none by design: an extruded layer sits on one side of a patch and would leave every '
+          +'interface face without its partner'
+        : ''));
+    if(has('near_wall_cell_m'))wall.push(
+      `<div class="mx-c mx-row mx-q" data-key="near_wall_cell_m"><div class="mx-k">Cell at the wall</div>`
+      +`<div class="mx-v">${len(q.near_wall_cell_m)}</div>`
+      +(has('near_wall_levels')
+        ? `<div class="mx-sub">graded refinement instead: ${show(q.near_wall_levels)} level`
+          +`${q.near_wall_levels===1?'':'s'} from the background cell</div>`
+        : '')+`</div>`);
+    else if(has('near_wall_levels'))wall.push(row('near_wall_levels','Levels to the wall',''));
+    // the interface itself: equal counts on the two sides ARE the conformality
+    if(has('interface_faces_fluid')){
+      const a=q.interface_faces_fluid,b=q.interface_faces_solid;
+      wall.push(row('interface_faces_fluid','Interface faces','',
+        isNum(b)?(a===b?'the same on both sides':`${show(b)} on the metal side`):''));
+    }
+
     // anything the backend declared that this build has no name for still reaches the user
     const other=Object.keys(q).filter(k=>!KNOWN.includes(k)).map(k=>row(k,k.replace(/_/g,' '),''));
     const sizes=SIZE.filter(([k])=>has(k)),types=TYPES.filter(([k])=>has(k));
     const group=(title,body)=>body?`<div class="mx-group"><div class="mx-gh">${title}</div>${body}</div>`:'';
-    if(!sizes.length&&!types.length&&!quality.length&&!span.length&&!other.length)return;
+    if(!sizes.length&&!types.length&&!quality.length&&!span.length&&!wall.length&&!other.length)return;
     host.innerHTML=`<div class="mx"><div class="mx-h"><span>Delivered mesh</span>`
       +(q.engine?`<span class="eng">${esc(q.engine)}</span>`:'')
       +(q.units?`<span class="eng">${esc(q.units)}</span>`:'')
@@ -936,6 +966,7 @@ function initViewer(job,surf,uiCfg){
       +group('Cell size',span.join(''))
       +group('Cell types',types.map(type).join(''))
       +group('Quality',quality.join(''))
+      +group('At the wall',wall.join(''))
       +group('Other',other.join(''))
       +`</div>`;
   })();
