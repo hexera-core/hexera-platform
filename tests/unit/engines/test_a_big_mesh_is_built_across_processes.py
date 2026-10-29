@@ -191,27 +191,30 @@ def test_the_merge_takes_the_regions_and_not_the_block():
     refuses to read it on purpose, and foamToVTK -allRegions was measured on a case without it -
     rc 0, both regions' internal.vtu, 9 boundary files, the same as with it.
 
-    THIS TEST USED TO ASSERT `-allRegions`, WHICH IS THE OPPOSITE OF WHAT IT IS FOR. The option's
-    own help is "Use all regions in regionProperties", and build() writes
-    `constant/regionProperties` at the END, after the merge - so at reconstruct time the file does
-    not exist and the option falls back to merging every mesh it can find, the pre-split block
-    among them. Measured on a 182,046,234-cell build: processor0 held constant/polyMesh at 5.7 GB
-    against constant/fluid 2.4 GB and constant/solid 2.9 GB, so more than half the merge was the
-    one mesh this chain exists not to rebuild. The regions are named instead.
+    IT ALSO REBUILDS THE BLOCK, which is a cost and not a bug in this assertion. `-allRegions`
+    means "Use all regions in regionProperties" and build() writes that file at the END, after
+    the merge, so the option falls back to every mesh it can find. Measured on a 182,046,234-cell
+    build: processor0 held constant/polyMesh at 5.7 GB against constant/fluid 2.4 GB and
+    constant/solid 2.9 GB. It reaches the regions AFTER the block, which is why every parallel
+    build so far has delivered correctly.
+
+    `-regions '(fluid solid)'` WAS TRIED AND MEASURED NOT TO WORK: rc=0 after 2,039 s on the same
+    processor directories, 39 GB of constant/polyMesh written and neither region - the names
+    accepted and ignored. So this test pins the form that PRODUCES BOTH REGIONS, and a faster one
+    has to be measured to produce them before it replaces this.
     """
-    from meshpipeline.engines.cfmesh_conjugate.conjugate import (
-        FLUID_REGION, RECONSTRUCT_REGIONS, SOLID_REGION)
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import RECONSTRUCT_REGIONS
 
     assert RECONSTRUCT_REGIONS.startswith("reconstructParMesh")
     assert "-constant" in RECONSTRUCT_REGIONS
-    assert "-allRegions" not in RECONSTRUCT_REGIONS, (
-        "it means 'the regions in regionProperties', and that file is not written yet")
-    assert f"-regions '({FLUID_REGION} {SOLID_REGION})'" in RECONSTRUCT_REGIONS
+    assert "-allRegions" in RECONSTRUCT_REGIONS
 
 
-def test_the_merge_does_not_depend_on_a_file_written_after_it():
-    """The ordering that made `-allRegions` wrong. regionProperties is the LAST thing build()
-    writes; anything in the chain that reads it reads nothing."""
+def test_the_merge_runs_before_the_file_that_would_tell_it_the_regions():
+    """Why `-allRegions` cannot name the two regions here: regionProperties is the LAST thing
+    build() writes, so anything in the chain that reads it reads nothing. Written down because it
+    is the thing a future fix has to deal with - either move this write, or name the regions in a
+    way the tool honours."""
     import inspect
 
     src = inspect.getsource(build)
