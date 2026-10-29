@@ -155,3 +155,61 @@ def test_a_needle_swaps_its_long_edge_with_its_neighbour():
     # never across two faces
     T2, swaps2 = sq.flip_past_trias(xyz, trias, [0, 1])
     assert swaps2 == 0 and T2.tolist() == trias.tolist()
+
+
+def _grid(n: int = 3) -> tuple[np.ndarray, np.ndarray]:
+    """An n x n grid of unit quads in the plane z = 0 (node k at (k % (n+1), k // (n+1)))."""
+    xyz = np.array([[i, j, 0.0] for j in range(n + 1) for i in range(n + 1)], dtype=float)
+    quads = np.array([[j * (n + 1) + i, j * (n + 1) + i + 1, (j + 1) * (n + 1) + i + 1, (j + 1) * (n + 1) + i]
+                      for j in range(n) for i in range(n)], dtype=np.int64)
+    return xyz, quads
+
+
+def test_an_inner_node_pulled_aside_moves_back_and_no_quad_is_left_past_a_limit():
+    xyz, quads = _grid(2)                       # 4 quads round the inner node 4 at (1, 1)
+    xyz[4] = [1.75, 1.7, 0.0]                   # pulled towards a corner: its quads past the limits
+    none = np.zeros((0, 3), dtype=np.int64)
+    assert sq._quad_past(sq.quad_measures(xyz, quads)).any()
+    movable = np.zeros(len(xyz), dtype=bool)
+    movable[4] = True
+    moved, n = sq.relax_past(xyz, quads, none, movable)
+    assert n >= 1
+    assert not sq._quad_past(sq.quad_measures(moved, quads)).any()
+    assert moved[4, 2] == 0.0                    # it stays in the plane of its face
+    # a node on a CAD edge (not movable) never moves
+    still, n0 = sq.relax_past(xyz, quads, none, np.zeros(len(xyz), dtype=bool))
+    assert n0 == 0 and np.array_equal(still, xyz)
+
+
+def test_relaxing_is_deterministic_and_leaves_a_good_mesh_alone():
+    xyz, quads = _grid(3)
+    none = np.zeros((0, 3), dtype=np.int64)
+    movable = np.ones(len(xyz), dtype=bool)
+    same, n = sq.relax_past(xyz, quads, none, movable)
+    assert n == 0 and np.array_equal(same, xyz)
+    xyz[5] = [1.8, 1.75, 0.0]
+    a = sq.relax_past(xyz, quads, none, movable)
+    b = sq.relax_past(xyz, quads, none, movable)
+    assert a[1] == b[1] >= 1 and np.array_equal(a[0], b[0])
+
+
+def test_a_small_hole_refines_round_itself_not_the_whole_plate(tmp_path):
+    # a 500 x 300 x 2 plate with one 3 mm hole: the arcs of the hole are fine (24 round), the rim of the plate
+    # keeps the size of the sheet - refining every edge of the face to the size of the hole made 60 times the elements
+    from OCP.BRepTools import BRepTools
+    from tests.fea_fixtures import _box, _cut, _cyl
+
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.engines.gmsh import shell_adapter as sa
+
+    shape = _cut(_box(0, 0, 0, 500, 300, 2.0), _cyl(100, 100, -1, 3.0, 4.0))
+    rec, surface = ms.extract(shape, mm_per_unit=1.0)
+    brep = tmp_path / "plate.brep"
+    BRepTools.Write_s(surface, str(brep))
+    mesh, applied = sa.mesh_shell(brep, rec)
+    q = applied["quality"]
+    assert q["valid"] and q["within_nastran"], q["nastran_past"]
+    assert q["elements"] < 3000, q["elements"]
+    # the element sides along the far rim (x = 500) are the size of the sheet, not of the hole
+    ys = np.sort(mesh.xyz[mesh.xyz[:, 0] > 500 - 1e-6, 1])
+    assert np.median(np.diff(ys)) > 10.0 * (3.0 * math.pi / 2 / 6), np.median(np.diff(ys))

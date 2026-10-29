@@ -31,6 +31,9 @@ SPLIT_PAST = True
 #: SHMESH-11: cut every closed sewn face at its seams before meshing; a face gmsh still cannot mesh as a periodic
 #: surface is re-made as a B-spline (the same surface, exactly) and the mesh made again - at most RESPLINE_MAX faces
 SPLIT_CLOSED = True
+#: SHMESH-14: before any quad is cut, the inner nodes of flat faces round a quad past a limit are moved towards their
+#: neighbours' middle when that brings fewer elements past a limit (at most RELAX_ROUNDS passes)
+RELAX_ROUNDS = 6
 #: SHMESH-13: swap the longest edge of a triangle past a limit with its neighbour's when both come out better
 FLIP_PAST = True
 #: SHMESH-12: merge the ends of sliver edges (under the floor and a fifth of their elements' longest edges)
@@ -59,6 +62,15 @@ def _generate(gmsh, tag_of: dict[int, int]) -> None:
         if m and int(m.group(1)) in tag_of:
             raise _Periodic(tag_of[int(m.group(1))]) from exc
         raise
+
+
+def _arc_radius(gmsh, curve: int) -> float | None:
+    """The radius (model units) of a gmsh curve that is a circle or a circular arc; None for any other curve."""
+    if gmsh.model.getType(1, curve) != "Circle":
+        return None
+    lo, hi = gmsh.model.getParametrizationBounds(1, curve)
+    k = gmsh.model.getCurvature(1, curve, [0.5 * (lo[0] + hi[0])])
+    return 1.0 / float(k[0]) if len(k) and float(k[0]) > 0 else None
 
 
 def _rebuild(brep: Path, owners: list[str], out: Path, change) -> list[str]:
@@ -253,7 +265,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         gmsh.option.setNumber("Mesh.RecombineAll", 1)
         gmsh.option.setNumber("Mesh.RecombinationAlgorithm", RECOMBINATION)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", PER_TURN)
-        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1)
+        # SHMESH-6 is held by the grading fields below; gmsh's own spread of edge sizes into a face carried a
+        # narrow neighbour's size over the whole of a wide face (one 2.5 mm strip: 800,000 elements)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
         gmsh.option.setNumber("Mesh.MeshSizeMin", plan_rules.FLOOR_WALLS * min(walls) / mm)
         gmsh.option.setNumber("Mesh.MeshSizeMax", max(r["size_mm"] for r in rows) / mm)
@@ -296,6 +310,31 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         slivers = len(tiny)
         # SHMESH-1/2: a constant size per face; SHMESH-3/4/6: curves sized by curvature, grown at GROWTH
         fields = []
+        top = max(rows[k]["size_mm"] for k in tag_of.values()) / mm
+
+        def grow(curves: list[int], h0: float) -> None:
+            """SHMESH-6: size h0 on these curves, growing by GROWTH per element up to the largest size in the
+            part - never capped at a smaller one, which would hold every coarser face to it."""
+            if h0 >= top or not curves:
+                return
+            dist = gmsh.model.mesh.field.add("Distance")
+            gmsh.model.mesh.field.setNumbers(dist, "CurvesList", sorted(set(curves)))
+            gmsh.model.mesh.field.setNumber(dist, "Sampling", 50)
+            thr = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(thr, "InField", dist)
+            gmsh.model.mesh.field.setNumber(thr, "SizeMin", h0)
+            gmsh.model.mesh.field.setNumber(thr, "SizeMax", top)
+            gmsh.model.mesh.field.setNumber(thr, "DistMin", 0.0)
+            gmsh.model.mesh.field.setNumber(thr, "DistMax", (top - h0) / (plan_rules.GROWTH - 1.0))
+            fields.append(thr)
+
+        # SHMESH-6: a face finer than the coarsest grades its neighbours from its own edges
+        rims: dict[float, list[int]] = {}
+        for t, k in sorted(tag_of.items()):
+            rims.setdefault(float(rows[k]["size_mm"]), []).extend(
+                abs(c) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False))
+        for h, curves in sorted(rims.items()):
+            grow(curves, h / mm)
         for t, k in sorted(tag_of.items()):
             fid = gmsh.model.mesh.field.add("Constant")
             gmsh.model.mesh.field.setNumber(fid, "VIn", rows[k]["size_mm"] / mm)
@@ -303,18 +342,18 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             gmsh.model.mesh.field.setNumber(fid, "IncludeBoundary", 1)
             fields.append(fid)
             if "curve_mm" in rows[k]:
-                curves = [abs(c) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)]
-                dist = gmsh.model.mesh.field.add("Distance")
-                gmsh.model.mesh.field.setNumbers(dist, "CurvesList", curves)
-                gmsh.model.mesh.field.setNumber(dist, "Sampling", 50)
-                thr = gmsh.model.mesh.field.add("Threshold")
-                h0, h1 = rows[k]["curve_mm"] / mm, rows[k]["size_mm"] / mm
-                gmsh.model.mesh.field.setNumber(thr, "InField", dist)
-                gmsh.model.mesh.field.setNumber(thr, "SizeMin", h0)
-                gmsh.model.mesh.field.setNumber(thr, "SizeMax", h1)
-                gmsh.model.mesh.field.setNumber(thr, "DistMin", 0.0)
-                gmsh.model.mesh.field.setNumber(thr, "DistMax", max(h1 - h0, 0.0) / (plan_rules.GROWTH - 1.0))
-                fields.append(thr)
+                # SHMESH-3: each arc of the face refined to its OWN radius's size, then grown; its straight edges
+                # and wider arcs keep the face's size (one small hole no longer refines the whole rim)
+                by_size: dict[float, list[int]] = {}
+                for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False):
+                    r = _arc_radius(gmsh, abs(c))
+                    if r is None:
+                        continue
+                    h0, _rule = plan_rules.curve_size(r * mm, wall=rows[k]["wall_mm"])
+                    if h0 < rows[k]["size_mm"]:
+                        by_size.setdefault(float(f"{h0:.6g}"), []).append(abs(c))
+                for h0_mm, arcs in sorted(by_size.items()):
+                    grow(arcs, h0_mm / mm)
         mn = gmsh.model.mesh.field.add("Min")
         gmsh.model.mesh.field.setNumbers(mn, "FieldsList", fields)
         gmsh.model.mesh.field.setAsBackgroundMesh(mn)
@@ -339,6 +378,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     t_face += [k] * len(c)
                 else:
                     raise ValueError(f"gmsh made an element of type {et} on a shell face")
+        # SHMESH-14: the nodes inside a flat face (on no CAD edge) may move within its plane
+        movable = np.zeros(len(tags), dtype=bool)
+        for t in sorted(tag_of):
+            if gmsh.model.getType(2, t) == "Plane":
+                inner, _c, _p = gmsh.model.mesh.getNodes(2, t, includeBoundary=False)
+                if len(inner):
+                    movable[index[np.asarray(inner, dtype=np.int64)]] = True
         if log is not None:
             log.extend(gmsh.logger.get())
     finally:
@@ -350,6 +396,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         # SHMESH-12: an edge under the floor, far shorter than its elements' others, is a CAD sliver: one node
         limit = np.array([plan_rules.FLOOR_WALLS * r["wall_mm"] / mm for r in rows])
         Q, T, q_face, t_face, merged = shell_mesh.collapse_short(xyz / mm, Q, T, q_face, t_face, limit)
+    relaxed = 0
+    if RELAX_ROUNDS:
+        xyz, relaxed = shell_quality.relax_past(xyz, Q, T, movable, rounds=RELAX_ROUNDS)
     split = 0
     if SPLIT_PAST:
         # SHMESH-10: a quad past Nastran's own limits becomes two triangles
@@ -399,6 +448,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     quality["edges"] = {k: v for k, v in census.items() if k != "free_edges"}
     quality["turned"] = turned
     quality["split"] = split
+    quality["relaxed_nodes"] = relaxed
     quality["merged_nodes"] = merged
     quality["flipped"] = flipped
     quality["sliver_faces"] = slivers

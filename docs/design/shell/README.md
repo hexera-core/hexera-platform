@@ -202,10 +202,10 @@ The result is a conformal shell: shared nodes along every junction once meshed.
 
 1. **Base:** the coarsest the sheet allows. At most 1/10 of the sheet's size L, and at least 4 elements across every mid-face's narrowest width.
 2. **Floor:** no element smaller than half the wall. Smaller than that, a shell is the wrong element. Where a rule asks for less, the part is meshed at the floor with a plain note.
-3. **Holes and cut-outs:** 6 elements per quarter-turn (24 around), as PLAN-fea-4. Plus one ring of quads round the hole (a washer) and at least 2 element rows between a hole and a free edge.
+3. **Holes and cut-outs:** 6 elements per quarter-turn (24 around), as PLAN-fea-4. Each arc is refined to its own radius and grown from there; the face's straight edges and wider arcs keep the face's size. (Refining every edge of a face to its smallest hole's size filled a 0.5 x 1.2 m bulkhead plate with 329,000 elements; it now takes 3,100 and 1 second.) Plus one ring of quads round the hole (a washer) and at least 2 element rows between a hole and a free edge.
 4. **Curvature:** at most 15 degrees per element on curved mid-faces (6 per quarter-turn), and at least 3 elements across a bend.
 5. **Small features:** at least 3 elements across any flange, strip or web.
-6. **Growth:** 1.3 at most, as PLAN-fea-6.
+6. **Growth:** 1.3 at most, as PLAN-fea-6. Held by grading fields from every finer face's edges and every refined arc, each growing up to the largest size in the part, never capped below it. gmsh's own spreading of edge sizes into a face is off: it carried a 2.5 mm bend strip's size over the whole of a 1.7 m flange (800,000 elements, over 20 minutes; now 50,000 in 25 s).
 7. **Junction lines:** always meshed with shared nodes. Both sides use the same seeds.
 
 **Quality** (SHMESH-8, verdict by limits as VER-1..4).
@@ -231,6 +231,9 @@ The GEOMCHECK figures are as we read MSC's Quick Reference Guide; the warping co
 11. **Seams:** every closed sewn face (a full ring, a torus) is cut at its seams before meshing and fused back conformal. A face gmsh still cannot mesh as a periodic surface is re-made as a B-spline (the same surface) and meshed again.
 12. **Slivers:** an element edge under the floor and either under a fifth of the longest edge of every element on it or under a fifth of the floor is a CAD sliver; its ends become one node (the one most faces meet at stays put). Run before the cut and once after it (a quad folded nearly flat cuts into two slivers along its short diagonal, which then closes).
 13. **Swaps:** a triangle past a limit swaps its longest edge with the triangle across it (same face, never a face's own edge) when both come out better.
+14. **Relax first:** before any quad is cut, a node inside a flat face (on no CAD edge) of an element past a limit moves to the middle of its neighbours when that leaves fewer of its elements past a limit and none turned over (a tie goes to the larger smallest angle). Nodes sharing no element move together; at most 6 passes. The middle of coplanar points stays in their plane, so the node stays on its face. This halves the cut quads on flat sheet parts.
+
+What was tried and dropped for the triangle share (29 Oct, 8th helper): Frontal-Delaunay-for-quads on flat faces only (better on some parts, worse on as many); QuadQS (3 to 5 times slower, no fewer triangles); gmsh's transfinite-automatic (maps wide faces from a narrow neighbour's count: 15 times the elements); mapping only floor-width four-sided strips (left skewed triangles at their ends); meshing a strip narrower than the floor as one compound with its neighbour (gmsh crashed on one part - a whole-process crash). gmsh's Laplace smoothing helped less than rule 14.
 
 **Normals.** Every sheet's normals point one way. They point from face B toward face A of each pair, and outward on closed sections. Offsets and pressures in the user's solver then mean the same thing everywhere.
 

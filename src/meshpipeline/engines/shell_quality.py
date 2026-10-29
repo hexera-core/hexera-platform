@@ -120,6 +120,131 @@ def split_past_quads(xyz: np.ndarray, quads: np.ndarray) -> tuple[np.ndarray, np
     return keep, tri.astype(np.int64), np.repeat(bad, 2)
 
 
+def _past_count(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(quads past a limit or not valid, triangles past a limit or not valid), as bool arrays."""
+    q = _quad_past(quad_measures(xyz, quads)) if len(quads) else np.zeros(0, dtype=bool)
+    t = _tria_past(tria_measures(xyz, trias)) if len(trias) else np.zeros(0, dtype=bool)
+    return q, t
+
+
+def relax_past(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, movable: np.ndarray, *,
+               rounds: int = 6) -> tuple[np.ndarray, int]:
+    """SHMESH-14: every movable node (inside a flat face, on no CAD edge) of an element past one of Nastran's own
+    limits moves to the middle of its edge neighbours when its elements come out better: fewer past a limit, none
+    turned over, and (on a tie) a larger smallest corner angle. The middle of coplanar neighbours lies in their
+    plane, so the node stays on its face. Nodes that share no element move together (in number order, the first
+    free node taken); `rounds` passes at most. Deterministic. Returns (the moved coordinates, how many moves)."""
+    X = xyz.copy()
+    nq = len(quads)
+    elem = np.full((nq + len(trias), 4), -1, dtype=np.int64)
+    elem[:nq] = quads
+    elem[nq:, :3] = trias
+    size = np.where(np.arange(len(elem)) < nq, 4, 3)
+    # each node's elements, as one sorted table
+    flat = elem.ravel()
+    owner = np.repeat(np.arange(len(elem)), 4)
+    ok = flat >= 0
+    flat, owner = flat[ok], owner[ok]
+    order = np.argsort(flat, kind="stable")
+    flat, owner = flat[order], owner[order]
+    start = np.searchsorted(flat, np.arange(len(X) + 1))
+    # edges (each element's sides), for the neighbours' middle
+    a_l, b_l = [], []
+    for k in (3, 4):
+        e = elem[size == k][:, :k]
+        for j in range(k):
+            a_l.append(e[:, j])
+            b_l.append(e[:, (j + 1) % k])
+    ea = np.concatenate(a_l) if a_l else np.zeros(0, dtype=np.int64)
+    eb = np.concatenate(b_l) if b_l else np.zeros(0, dtype=np.int64)
+    lo, hi = np.minimum(ea, eb), np.maximum(ea, eb)
+    edges = np.unique(np.stack([lo, hi], axis=1), axis=0) if len(ea) else np.zeros((0, 2), dtype=np.int64)
+
+    def judge(ids: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Per element of `ids`: past a limit (or turned over), its smallest corner angle, turned over."""
+        past = np.zeros(len(ids), dtype=bool)
+        least = np.full(len(ids), 180.0)
+        flip = np.zeros(len(ids), dtype=bool)
+        isq = ids < nq
+        if isq.any():
+            m = quad_measures(X, elem[ids[isq]])
+            past[isq] = _quad_past(m)
+            least[isq] = m["min_angle_quad"]
+            flip[isq] = m["min_jacobian"] <= 0
+        if (~isq).any():
+            m = tria_measures(X, elem[ids[~isq], :3])
+            past[~isq] = _tria_past(m)
+            least[~isq] = m["min_angle_tria"]
+            flip[~isq] = m["min_jacobian"] <= 0
+        return past, least, flip
+
+    moves = 0
+    for _ in range(rounds):
+        everyone = np.arange(len(elem))
+        bad_el = everyone[judge(everyone)[0]]
+        if not len(bad_el):
+            break
+        cand = np.unique(elem[bad_el].ravel())
+        cand = cand[(cand >= 0) & movable[cand]]
+        if not len(cand):
+            break
+        changed = 0
+        todo = cand.tolist()
+        while todo:
+            taken: list[int] = []
+            used: set[int] = set()
+            rest: list[int] = []
+            for v in todo:
+                mine = owner[start[v]:start[v + 1]].tolist()
+                if used.isdisjoint(mine):
+                    taken.append(v)
+                    used.update(mine)
+                else:
+                    rest.append(v)
+            todo = rest
+            S = np.array(taken, dtype=np.int64)
+            counts = start[S + 1] - start[S]
+            ids = np.concatenate([owner[start[v]:start[v + 1]] for v in taken])
+            who = np.repeat(np.arange(len(S)), counts)
+            p0, l0, _f0 = judge(ids)
+            before_past = np.zeros(len(S), dtype=np.int64)
+            np.add.at(before_past, who, p0.astype(np.int64))
+            before_least = np.full(len(S), 180.0)
+            np.minimum.at(before_least, who, l0)
+            # the neighbours' middle of every node in S
+            pos = {int(v): i for i, v in enumerate(S)}
+            sel_a = np.isin(edges[:, 0], S)
+            sel_b = np.isin(edges[:, 1], S)
+            acc = np.zeros((len(S), 3))
+            cnt = np.zeros(len(S))
+            ia = np.array([pos[int(v)] for v in edges[sel_a, 0]], dtype=np.int64)
+            ib = np.array([pos[int(v)] for v in edges[sel_b, 1]], dtype=np.int64)
+            if len(ia):
+                np.add.at(acc, ia, X[edges[sel_a, 1]])
+                np.add.at(cnt, ia, 1.0)
+            if len(ib):
+                np.add.at(acc, ib, X[edges[sel_b, 0]])
+                np.add.at(cnt, ib, 1.0)
+            go = (cnt > 0) & (before_past > 0)
+            old = X[S].copy()
+            X[S[go]] = acc[go] / cnt[go, None]
+            p1, l1, f1 = judge(ids)
+            after_past = np.zeros(len(S), dtype=np.int64)
+            np.add.at(after_past, who, p1.astype(np.int64))
+            after_least = np.full(len(S), 180.0)
+            np.minimum.at(after_least, who, l1)
+            after_flip = np.zeros(len(S), dtype=bool)
+            np.logical_or.at(after_flip, who, f1)
+            better = go & ~after_flip & ((after_past < before_past) |
+                                         ((after_past == before_past) & (after_least > before_least + 1e-9)))
+            X[S[~better]] = old[~better]
+            changed += int(better.sum())
+        moves += changed
+        if not changed:
+            break
+    return X, moves
+
+
 def _tria_score(xyz: np.ndarray, t: np.ndarray) -> tuple[int, float]:
     """(how many of the triangles are past a limit, their smallest skew): lower first is better, then higher."""
     m = tria_measures(xyz, t)
