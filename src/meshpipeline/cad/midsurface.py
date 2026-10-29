@@ -400,8 +400,8 @@ class _QuickInside:
         x = [float(p[0]), float(p[1]), float(p[2])]
         closest = [0.0, 0.0, 0.0]
         cid, sub, d2 = mutable(0), mutable(0), mutable(0.0)
-        self.loc.FindClosestPoint(x, closest, vtkGenericCell(), cid, sub, d2)
-        if float(d2) <= self.clear * self.clear:
+        self.loc.FindClosestPoint(x, closest, vtkGenericCell(), cid, sub, d2)  # type: ignore[call-overload]
+        if float(d2) <= self.clear * self.clear:  # type: ignore[arg-type]
             return None
         votes = []
         for d in QUICK_RAYS:
@@ -1513,8 +1513,8 @@ def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thi
     links: list[list[float]] = []
     thick = [(f, _box(f)) for f in thick_faces] if thick_faces else []
     # every sewn face with its wall: an edge that ends INSIDE ANOTHER SHELL WALL is no open edge
-    walls = [(k, TopoDS.Face_s(fmap.FindKey(k)), owner_t.get(k, 0.0)) for k in range(1, fmap.Extent() + 1)]
-    walls = [(k, f, w, _box(f)) for k, f, w in walls if w > 0]
+    sewn = [(k, TopoDS.Face_s(fmap.FindKey(k)), owner_t.get(k, 0.0)) for k in range(1, fmap.Extent() + 1)]
+    walls = [(k, f, w, _box(f)) for k, f, w in sewn if w > 0]
     in_wall = below_floor = 0
     adjacency: dict[int, set[int]] = {}
     for i in range(1, e2f.Extent() + 1):
