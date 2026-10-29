@@ -192,7 +192,12 @@ def test_the_route_reads_the_workspace_and_says_why_when_it_cannot():
     src = inspect.getsource(S.get_detail)
     assert "final_attempt_workspace" in src
     assert "DetailError" in src and "409" in src
-    assert "points_b64" in src and "polys_b64" in src
+    # THE TWO BUFFERS, in the shape the route now returns by name rather than as a dict literal:
+    # the browser has to agree with that shape and the browser is tested elsewhere, so
+    # tests/ui/test_detail_window.py drives the shipped viewer against the bytes this builds.
+    assert "detail_response" in src
+    packed = inspect.getsource(D.detail_response)
+    assert "points_b64" in packed and "polys_b64" in packed
 
 
 #   -- the budget is shared out, not eaten -------------------------------------------------------

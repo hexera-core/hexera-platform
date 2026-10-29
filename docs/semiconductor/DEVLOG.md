@@ -1738,6 +1738,15 @@ the only JavaScript linter is `apps/console/eslint.config.mjs` whose first rule 
 `ignores: ["public/static/**"]`, which is where one of the two copies lives. I opened the page on
 the delivered coupon (job 18e2f4ed) and found three defects in an hour.
 
+> CORRECTED, and the sentence to distrust is "nothing in the tree runs `viewer.js`". It does:
+> `tests/ui/` drives the shipped page in a real Chrome over CDP, it fails rather than skips when no
+> browser is on PATH, and five of its files were already driving this very file through
+> `window._vdbg`. Chrome was not installed in this checkout, so the whole gate came back as ~142
+> identical errors and I read it as noise. What was true is narrower: the gate did not cover the
+> detail window, which is where all three of these defects were. See "A correction: the browser
+> gate exists, and it is strict" and "The detail window is in the browser gate now" below. The
+> linter half of the paragraph stands.
+
 | what | where | effect |
 |---|---|---|
 | `tanHalf` called across closures | both copies of viewer.js | every click of Detail threw, always |
@@ -1971,3 +1980,63 @@ gate, without a test in that gate, and the gate had no way to notice.
 The linter half of what I wrote stands: `apps/console/eslint.config.mjs` ignores
 `public/static/**`, which is where one of the two copies lives, and no linter would have caught a
 name resolved in the wrong closure anyway.
+
+### The detail window is in the browser gate now
+
+The gate was never the problem, and the entry above has the shape of the mistake: a feature went
+into a file that HAS a browser gate without a test in that gate, and the gate had no way to notice.
+`tests/ui/` held no mention of `detailWindow`, `v-detail` or `radiusNow`, so all three of the
+morning's defects were invisible to it and visible only to me opening the page.
+
+`tests/ui/test_detail_window.py`, one test per defect, 3 passed in 9.9 s. I put each defect back
+and ran the matching test against it, because a test that passes against the fix proves nothing on
+its own:
+
+| defect | what the test says with the defect put back |
+|---|---|
+| `tanHalf` across closures | `ReferenceError: tanHalf is not defined at radiusNow (viewer.js:1156)` |
+| the budget eaten first-come | drawn patches `[fluid/inlet, fluid/outlet, fluid/wall]`, no solid side |
+| a metric painted under the detail | `non_ortho` active, colour `[92,120,152]`, `hidden: 3`, detail still up |
+
+THE THIRD ROW IS THE DEFECT WRITTEN OUT: the calm end of the scale painted on a merged surface,
+three merged actors switched off, and the window still standing in front of them.
+
+THE FIRST ROW IS WHY A CHECK FOR PAGE ERRORS WOULD NOT HAVE DONE IT. The ReferenceError was thrown
+inside the click handler's own try/catch, which wrote it into the button's label and logged it with
+`console.warn`, not `console.error`, so `assert_clean` sees nothing at all. The test reaches it two
+ways: reading the radius the button would ask for, which is the call that threw, and counting the
+request, which the defect never issued.
+
+The payload is the backend's own, as the heatmap test's is. `detail_at` reads a real two-region
+polyMesh, `MAX_RETURN_FACES` stands in at 8 so a ball holding 28 faces over six patches has to be
+shared out, and the route's JSON shape now has a name - `detail_window.detail_response` - which the
+route returns in one line and the test serves to the browser. A second hand-written copy of that
+shape in the test would have agreed with the route only until one of them changed, and a client and
+a route that agree only while someone reads them side by side is how the first defect shipped.
+
+`_vdbg[job].detail()` gained `names` and `hidden`: which patches are drawn, and whether the merged
+surface the window stands in front of is still off. Both were already locals of the window, and
+both are what the three defects came down to.
+
+I COULD NOT GET A CLEAN FULL-GATE NUMBER, and the reason belongs here because it is the same trap
+as the first wrong version of this correction. The gate is 146 tests now. Run whole while another
+session had this box on a meshing chain, it reported 110 passed, 1 failed and 35 errors - and all
+36 non-passes were one message, `ConnectionClosedError: sent 1011 keepalive ping timeout`. The
+session browser is a single long-lived CDP websocket; under load it misses a keepalive, and every
+test after that errors at setup. Transport, not the page. Run one file per invocation and the
+browser session is too short to time out:
+
+| file | alone |
+|---|---|
+| test_detail_window | 3 passed |
+| test_heatmap | 4 passed |
+| test_browser | 2 passed |
+| test_fresh_downloads | 7 passed |
+| test_a_merged_view_says_it_is_merged | 3 passed |
+| test_thermal_results | 2 passed |
+| test_viewer_controls | 2 passed |
+
+Every file that drives viewer.js passes on its own. The other way to get the same misleading pile
+is `pytest tests/ui tests/unit/...` together: `from conftest import assert_clean` then resolves to
+tests/unit/conftest.py and all 17 viewer files error on import. Both are in the script's header
+now, because a wall of identical errors is what made me write that nothing here runs viewer.js.

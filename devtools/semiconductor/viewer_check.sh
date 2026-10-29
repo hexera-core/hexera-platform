@@ -4,16 +4,17 @@
 #
 # THERE IS A BROWSER GATE AND IT IS STRICT. `tests/ui/` drives the shipped page in a real Chrome
 # over CDP, and with no browser on PATH it FAILS rather than skips, on purpose: "a release must not
-# pass with its browser validation quietly absent." Five of its files import `openViewer` from
+# pass with its browser validation quietly absent." Six of its files import `openViewer` from
 # /static/js/viewer/viewer.js and drive `window._vdbg[...]` directly - test_heatmap, test_browser,
-# test_fresh_downloads, test_a_merged_view_says_it_is_merged, test_thermal_results. 143 tests,
-# about four minutes.
+# test_fresh_downloads, test_a_merged_view_says_it_is_merged, test_thermal_results and
+# test_detail_window. 146 tests, about four minutes on a machine doing nothing else.
 #
-# An earlier version of this header said nothing in the repository runs viewer.js. That was wrong.
-# What is true is narrower: Chrome is not installed in the WSL checkout, so the gate shows up as
-# ~142 errors there and reads like noise, and it does not cover the DETAIL WINDOW - no file in
-# tests/ui mentions detailWindow, v-detail or radiusNow. That is exactly where three defects
-# shipped on 2026-10-29, all found by opening the page by hand:
+# TWO EARLIER VERSIONS OF THIS HEADER WERE WRONG, in narrowing steps, and the steps are the useful
+# part. The first said nothing in the repository runs viewer.js: wrong, the gate does, and it read
+# like noise because Chrome was not installed in the WSL checkout and every one of its ~142 tests
+# errored with the same message. The second said the gate does not cover the DETAIL WINDOW: true
+# when it was written, and the reason three defects shipped on 2026-10-29, all found by opening
+# the page by hand:
 #
 #   * `tanHalf` was a const in one closure and called from a sibling one, so every click of the
 #     Detail button threw ReferenceError. A feature with a route, a bounded reader, a face budget,
@@ -21,12 +22,31 @@
 #   * a truncated detail window dropped a whole region.
 #   * painting a metric with the detail open coloured a surface the detail was hiding.
 #
-# To run the real gate here, install the browser the way the gate's own message says - the
-# `chromium` apt package is a snap wrapper and will not run in WSL:
+# tests/ui/test_detail_window.py covers all three now, one test each, and each test was checked by
+# putting its defect back and watching it fail. So what is true today is narrower again: the gate
+# runs viewer.js, it covers the detail window, and it still cannot tell you anything about a
+# browser you have not installed.
+#
+# To run the real gate, install the browser the way the gate's own message says - the `chromium`
+# apt package is a snap wrapper and will not run in WSL:
 #
 #   curl -fsSLo /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
 #   sudo apt-get install -y /tmp/chrome.deb
 #   .venv/bin/python -m pytest tests/ui -q
+#
+# TWO WAYS THE GATE REPORTS A PILE OF IDENTICAL NON-RESULTS, neither of which is a defect in the
+# page, and both of which look like the wall of errors that got the first version of this header
+# wrong:
+#
+#   * `pytest tests/ui tests/unit/...` in one invocation - with both directories collected,
+#     `from conftest import assert_clean` resolves to tests/unit/conftest.py and all 17 viewer
+#     files error on import. Run tests/ui on its own.
+#   * a loaded machine - the session browser is one long-lived CDP websocket, and under load it
+#     loses its keepalive: `ConnectionClosedError: sent 1011 keepalive ping timeout`, once, and
+#     then every test after it errors at setup. Measured here while another meshing stack had the
+#     box: 110 passed, 36 non-passes, all 36 that same timeout. That is transport, not the page.
+#     Re-run the files one at a time - a short browser session does not time out - and if each
+#     file passes alone, the gate passed.
 #
 # So this script checks the two things that need no browser at all, for a quick loop: both copies
 # PARSE, and both still have the entry points, because they drift.
