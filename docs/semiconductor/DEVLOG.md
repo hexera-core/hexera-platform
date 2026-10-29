@@ -2323,3 +2323,55 @@ upload, and `geometry_progress` states the principle - "Liveness, not a budget".
 the one step priced by a flat wall clock, and its stated justification is that the work is bounded
 by MAX_FACES = 20,000 - while the measurement behind the 300 s is a 9,226-face file at 141.5 s.
 A file at the face limit is 2.2x the faces on a superlinear split.
+
+### The customer's plate failed the budget every time, and the budget was priced off a reading that does not reproduce
+
+Every run of `ColdPlateAssembly_CLEAN.step` through the page came back the same way:
+
+    the fluid inside the parts could not be found (finding the fluid inside the parts took over
+    300 s); this is a limit of the check and not something measured about the part
+
+and a liquid-cooled cold plate read as `solid-body` in a flow. The note is honest, the fallback to
+the inside-space map still finds 4 mouths, and the job that would be built from it is the wrong
+one. The flagship file, the engine built for it, and the wrong answer every time.
+
+I CALLED IT MY OWN LOAD FIRST, AND IT WAS NOT. Measured twice, same file, same checkout, idle box:
+
+| | |
+|---|---|
+| load the STEP | 31.3 s |
+| candidate_caps | 116.6 s, 58 candidates |
+| extract, run 1 | 359.2 s |
+| extract, run 2 | 359.0 s |
+| every `_boundary` walk | 16.1 s, 4.5% |
+| the domain walk alone | 11.0 s, 69 regions, 348 faces |
+| CHECK_BUDGET_S | 300 s |
+
+Two things to say about that.
+
+The first is a reading error of mine worth writing down: I thought a worker was pinning two cores
+through all of this, because `ps %cpu` showed 147-173% long after its task had finished. `ps %cpu`
+is CPU time over the process's LIFETIME, not what it is doing now; `docker stats` said 0.21% and
+was right. Two of my earlier timings really were contended - I had two extractions of the same
+file racing - but the box was idle for these.
+
+The second is that my own domain walk, which I suspected first because every timing today had it
+in, is 11.0 s of 359. Not it.
+
+The 300 s came from "that customer assembly at 9226 faces now measures 141.5 s in `extract` and
+162.9 s of child wall". It does not hold on this box. 900 s now, and the reasoning is that nothing
+else around this is a flat number: the scout's own Celery soft limit is 900 s + 60 s per MB, which
+is 1,853 s for that 15.9 MB upload, and `geometry_progress` states the principle outright,
+"Liveness, not a budget". 900 leaves that enclosing limit in charge for a file this size, is 2.5x
+the measurement rather than 0.84x it, and the work is still bounded by MAX_FACES = 20,000.
+
+STAGE_BUDGET_S goes 600 to 1,200 with it, because the builder's extraction splits the same space
+and then writes a surface out of it - two now, when the domain is worth building - so it cannot be
+the tighter of the two. A test already pinned that relationship, which is what caught the change.
+
+AND THE DOMAIN WALK IS OPT-IN. It covers every region that is not outside, where a passage covers
+only its own, and the check has no use for its 348 faces. 11 s is not the timeout, but it is 11 s
+on the one path with a wall clock.
+
+WHAT WOULD BE BETTER THAN EITHER NUMBER is not spending it. 116.6 s of the 359 is
+`candidate_caps`. That is the next thing to measure into.
