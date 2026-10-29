@@ -19,7 +19,14 @@ from meshpipeline.adapters.model_inference.protocols import (
     protocol_for,
 )
 from meshpipeline.adapters.model_inference.providers import classify
-from meshpipeline.adapters.model_inference.routing import RouteExhausted, Usage, execute
+from meshpipeline.adapters.model_inference.routing import (
+    _NEVER_SWALLOWED,
+    RouteExhausted,
+    Usage,
+    describe_failure,
+    execute,
+)
+from meshpipeline.contracts.model_capacity import CapacityError
 from meshpipeline.contracts.model_inference import (
     Conversation,
     ModelRoundResult,
@@ -58,10 +65,28 @@ def _cost_of(target: RouteTarget, usage: Usage) -> float:
                          cached_input_tokens=usage.cached_input_tokens)
 
 
+def _unexpected_category(exc: BaseException) -> FailureCategory:
+    """The category of an exception that escaped the route rather than exhausting it. Admission
+    (a capacity controller that is missing or broken) is "cannot take this right now" - OVERLOAD,
+    a retryable marker - never PROVIDER_DOWN; anything else is classified as a provider error is."""
+    if isinstance(exc, CapacityError):
+        return FailureCategory.OVERLOAD
+    try:
+        return _classify(exc)
+    except Exception:  # noqa: BLE001 - a classifier that breaks still yields a marker
+        return FailureCategory.APPLICATION_DEFECT
+
+
 async def _run(route: ModelRoute, invoke, *, job_id: str) -> ModelRoundResult:
+    # EVERY agent route answers with a result: an answer, or a failure marker the caller's
+    # provider-failure path handles. No exception but cancellation and the ownership fences
+    # (_NEVER_SWALLOWED) leaves this function - a raw one used to crash the agent node instead
+    # (a builder crash ended the run with no retry).
     try:
         response, target, attempts = await execute(route, invoke, _classify, job_id=job_id,
                                                    cost_of=_cost_of)
+    except _NEVER_SWALLOWED:
+        raise
     except RouteExhausted as exc:
         # `detail` is routing.describe_failure's account - the provider's own words, credentials
         # masked. The marker below keeps only the category, so this line is where they survive.
@@ -72,9 +97,27 @@ async def _run(route: ModelRoute, invoke, *, job_id: str) -> ModelRoundResult:
             failure_marker=marker_for(route.role, exc.category),
             provider=ProviderAttemptInfo(attempts=exc.attempts, provider=exc.provider,
                                          model=exc.model))
+    except Exception as exc:  # noqa: BLE001 - see above: a marker, never a raw exception
+        category = _unexpected_category(exc)
+        logger.error("Router: %s route raised instead of answering - category=%s job_id=%s "
+                     "detail=%s", route.role, category.value, job_id, describe_failure(exc),
+                     exc_info=True)
+        return ModelRoundResult(failure_marker=marker_for(route.role, category))
     # Read back through the protocol of the target that ACTUALLY answered, which failover may
     # have made a different one from the target the first attempt was built for.
-    return protocol_for(target.provider).normalize(response, target, attempts)
+    try:
+        return protocol_for(target.provider).normalize(response, target, attempts)
+    except _NEVER_SWALLOWED:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # The provider answered and the answer could not be read. Asking again may well get a
+        # readable one, so it is the retryable EMPTY_RESPONSE marker, not an outage.
+        logger.error("Router: %s answer from %s could not be read - job_id=%s detail=%s",
+                     route.role, target.label, job_id, describe_failure(exc), exc_info=True)
+        return ModelRoundResult(
+            failure_marker=marker_for(route.role, FailureCategory.EMPTY_RESPONSE),
+            provider=ProviderAttemptInfo(attempts=attempts, provider=target.provider,
+                                         model=target.model))
 
 
 # builder + planner (streaming, tools)
