@@ -46,6 +46,28 @@ export const isUpAxis = (a) => Object.prototype.hasOwnProperty.call(TURN, a);
 /** The world vector that points up the screen for an axis choice. */
 export function upVector(axis) { return (TURN[axis] || TURN["+z"])([0, 0, 1]); }
 
+/* THE SET VIEWS, each given for +Z up as where the camera sits from the part's centre and which
+   way is up on the screen; they turn with the chosen up axis like everything else. Front looks
+   along +Y (the camera on the -Y side), Side looks along -X, Top looks straight down with +Y up
+   the screen, and Corner is the front-quarter view every viewer opens with. */
+export const VIEW_PRESETS = {
+  front: { label: "Front", from: [0, -1, 0], up: [0, 0, 1] },
+  top: { label: "Top", from: [0, 0, 1], up: [0, 1, 0] },
+  side: { label: "Side", from: [1, 0, 0], up: [0, 0, 1] },
+  corner: { label: "Corner (3D)", from: [1, -1, 0.7], up: [0, 0, 1] },
+};
+/** Turn the camera to a set view for an up axis, keeping the focal point and the distance. The
+ *  caller re-frames afterwards. */
+export function presetView(cam, axis, key) {
+  const v = VIEW_PRESETS[key] || VIEW_PRESETS.corner, t = TURN[axis] || TURN["+z"];
+  const d = t(v.from), u = t(v.up);
+  const f = cam.getFocalPoint(), p = cam.getPosition();
+  const dist = Math.hypot(p[0] - f[0], p[1] - f[1], p[2] - f[2]) || 1;
+  const L = Math.hypot(d[0], d[1], d[2]) || 1;
+  cam.setPosition(f[0] + d[0] / L * dist, f[1] + d[1] / L * dist, f[2] + d[2] / L * dist);
+  cam.setViewUp(u[0], u[1], u[2]);
+}
+
 /** Look along `dir` - given for +Z up - turned for `axis` up, keeping the focal point and the
  *  distance. The caller re-frames afterwards. */
 export function orient(cam, axis, dir) {

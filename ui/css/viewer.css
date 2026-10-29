@@ -153,3 +153,123 @@
 .gc-x{font:inherit;font-size:14px;line-height:1;color:#8fa3bd;background:none;border:0;cursor:pointer;padding:2px 5px;border-radius:5px}
 .gc-x:hover{color:#f87171;background:#252c37}
 .gc-dia{width:78px}
+
+/* /
+   THE VIEWER TOOLBAR (viewer/toolbar.js). One compact bar floats at the top of the canvas - View,
+   Section, Parts, Measure, Snapshot - and each button opens one small overlay under it. The picked
+   part is a chip along the bottom, the axes sit in the corner. Every colour is a role from the
+   viewer block in tokens.css, so a theme change is made there.
+/ */
+.v-canvas{container-type:inline-size}
+.vt{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:9;display:flex;align-items:center;gap:2px;
+  padding:4px;border:1px solid var(--toolbar-line);border-radius:10px;background:var(--toolbar-bg);
+  -webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);box-shadow:var(--shadow-2)}
+.vt-btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 9px;border:0;border-radius:7px;
+  background:transparent;color:var(--text-muted);font:500 var(--fs-sm)/1 var(--sans);cursor:pointer;white-space:nowrap}
+.vt-btn:hover{background:var(--hover);color:var(--text)}
+.vt-btn[aria-expanded="true"]{background:var(--overlay-bg);color:var(--text)}
+.vt-btn svg{width:14px;height:14px;flex:none}
+.vt-btn .vt-caret{width:8px;height:8px;opacity:.6}
+.vt-sep{width:1px;height:16px;margin:0 2px;background:var(--divider)}
+@container (max-width:560px){.vt-btn span,.vt-btn .vt-caret{display:none}.vt-btn{padding:0 8px}}
+
+/* the one overlay a button opens */
+.v-ov{position:absolute;z-index:10;width:300px;max-width:calc(100% - 16px);max-height:calc(100% - 72px);
+  overflow-y:auto;overscroll-behavior:contain;border:1px solid var(--overlay-line);border-radius:12px;
+  background:var(--overlay-bg);box-shadow:var(--shadow-2);color:var(--text);font:var(--fs-md)/1.4 var(--sans);
+  animation:v-ov-in .18s cubic-bezier(.16,1,.3,1)}
+.v-ov[hidden]{display:none}
+.v-ov-parts{width:340px}
+@keyframes v-ov-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.vo-tag{padding:10px 12px 0;color:var(--text-faint);font-size:var(--fs-xs)}
+.vo-list{display:flex;flex-direction:column;padding:4px 0}
+.vo-item{display:flex;align-items:center;justify-content:space-between;gap:10px;height:30px;padding:0 12px;border:0;
+  background:transparent;color:var(--text);font:var(--fs-md)/1 var(--sans);text-align:left;cursor:pointer}
+.vo-item:hover{background:var(--hover)}
+.vo-item[aria-pressed="true"]::after{content:"";width:8px;height:5px;margin-right:2px;border-left:1.5px solid var(--text-muted);
+  border-bottom:1.5px solid var(--text-muted);transform:rotate(-45deg) translateY(-2px)}
+.vo-kbd{color:var(--text-faint);font:var(--fs-xs)/1 var(--mono)}
+.vo-opt{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px;padding:8px 12px}
+.vo-opt[hidden],.vo-colour-row[hidden]{display:none}
+.vo-k{color:var(--text-muted)}
+.vo-seg{display:flex;padding:2px;border-radius:var(--r-md);background:var(--overlay-well)}
+.vo-seg button{height:22px;padding:0 9px;border:0;border-radius:4px;background:transparent;color:var(--text-faint);
+  font:var(--fs-xs)/1 var(--sans);cursor:pointer;white-space:nowrap}
+.vo-seg button:hover{color:var(--text)}
+.vo-seg button[aria-pressed="true"]{background:var(--overlay-on);color:var(--text)}
+.vo-select{height:26px;padding:0 6px;border:1px solid var(--border);border-radius:var(--r-md);background:var(--overlay-well);
+  color:var(--text);font:var(--fs-sm)/1 var(--sans);cursor:pointer}
+.vo-range{width:150px;accent-color:var(--steel)}
+.vo-num{color:var(--text);font-variant-numeric:tabular-nums}
+.vo-foot{display:flex;align-items:center;gap:6px;padding:10px 12px;border-top:1px solid var(--divider)}
+.vo-foot .vo-note{flex:1;padding:0}
+.vo-note{padding:10px 12px;color:var(--text-faint);font-size:var(--fs-sm)}
+.vo-pill{height:26px;padding:0 10px;border:1px solid var(--border);border-radius:var(--r-md);background:transparent;
+  color:var(--text-muted);font:var(--fs-sm)/1 var(--sans);cursor:pointer}
+.vo-pill:hover{border-color:var(--border-strong);color:var(--text)}
+.vo-pill[aria-pressed="true"]{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent-hover)}
+.vo-save{display:block;width:calc(100% - 24px);height:30px;margin:6px 12px 12px;border:1px solid var(--border);
+  border-radius:var(--r-md);background:var(--overlay-on);color:var(--text);font:500 var(--fs-md)/1 var(--sans);cursor:pointer}
+.vo-save:hover:not(:disabled){border-color:var(--border-strong)}
+.vo-save:disabled{cursor:default;color:var(--text-muted)}
+
+/* Parts: find, the list, and how the part is shown */
+.vo-search{display:flex;align-items:center;gap:8px;height:40px;padding:0 12px;border-bottom:1px solid var(--divider);color:var(--text-faint)}
+.vo-search svg{width:14px;height:14px;flex:none}
+.vo-search input{flex:1;min-width:0;height:28px;border:0;background:transparent;color:var(--text);font:var(--fs-md)/1 var(--sans)}
+.vo-search input::placeholder{color:var(--text-faint)}
+.vo-search input:focus{outline:none}
+.vo-search:focus-within{box-shadow:inset 0 -1px 0 var(--accent-line)}
+.vo-h{display:flex;align-items:center;justify-content:space-between;padding:10px 12px 4px;color:var(--text-faint);font-size:var(--fs-xs)}
+.vo-link{border:0;background:transparent;color:var(--text-muted);font:var(--fs-xs)/1 var(--sans);cursor:pointer}
+.vo-link:hover{color:var(--text)}
+.vo-rows{max-height:min(300px,40vh);overflow-y:auto}
+.vo-gl{padding:8px 12px 2px;color:var(--text-faint);font-size:var(--fs-xs)}
+.vo-gl[hidden],.vo-row[hidden],.vo-empty[hidden]{display:none}
+.vo-row{display:grid;grid-template-columns:minmax(0,1fr) 30px;align-items:center}
+.vo-row:hover{background:var(--hover)}
+.vo-row.sel{background:var(--accent-soft)}
+.vo-pick{display:grid;grid-template-columns:10px minmax(0,1fr) auto;align-items:center;gap:10px;height:30px;padding:0 0 0 12px;
+  border:0;background:transparent;color:var(--text);text-align:left;cursor:pointer}
+.vo-pick .sw{width:10px;height:10px;border-radius:3px;background:var(--steel-muted)}
+.vo-row.sel .sw{background:var(--accent)!important}
+.vo-pick .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:var(--fs-sm)/1.2 var(--mono)}
+.vo-pick .c{color:var(--text-faint);font:var(--fs-xs)/1 var(--sans);font-variant-numeric:tabular-nums}
+.vo-row.off .n{color:var(--text-faint)}
+.vo-row.meta .sw{background:transparent;border:1px dashed var(--steel-muted)}
+.vo-row.meta .n{color:var(--text-muted)}
+.vo-eye{display:grid;place-items:center;width:26px;height:26px;border:0;border-radius:var(--r-sm);background:transparent;
+  color:var(--text-muted);cursor:pointer}
+.vo-eye:hover{background:var(--hover);color:var(--text)}
+.vo-eye[aria-pressed="false"]{color:var(--text-faint)}
+.vo-eye svg{width:15px;height:15px}
+.vo-empty{padding:8px 12px;color:var(--text-faint);font-size:var(--fs-sm)}
+
+/* the picked part: one small chip along the bottom */
+.v-picked{position:absolute;left:50%;bottom:52px;transform:translateX(-50%);z-index:8;display:flex;align-items:center;gap:10px;
+  max-width:calc(100% - 24px);padding:6px 6px 6px 12px;border:1px solid var(--border);border-radius:10px;
+  background:var(--toolbar-bg);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);font:var(--fs-md)/1.2 var(--sans);white-space:nowrap}
+.v-picked[hidden]{display:none}
+.vp-n{overflow:hidden;text-overflow:ellipsis;color:var(--accent-hover);font:var(--fs-sm)/1.2 var(--mono)}
+.vp-t{overflow:hidden;text-overflow:ellipsis;color:var(--text-muted);font-variant-numeric:tabular-nums}
+.vp-b{height:26px;padding:0 9px;border:1px solid var(--border);border-radius:var(--r-md);background:transparent;
+  color:var(--text-muted);font:var(--fs-sm)/1 var(--sans);cursor:pointer}
+.vp-b:hover{border-color:var(--border-strong);color:var(--text)}
+.vp-b[aria-pressed="true"]{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent-hover)}
+.vp-b[hidden]{display:none}
+.vp-x{display:grid;place-items:center;width:26px;height:26px;border:0;border-radius:var(--r-sm);background:transparent;
+  color:var(--text-faint);cursor:pointer}
+.vp-x:hover{background:var(--hover);color:var(--text)}
+.vp-x svg{width:12px;height:12px}
+
+/* the axes, bottom left above the hint; a measured distance beside its line */
+.v-axes{position:absolute;left:4px;bottom:38px;width:84px;height:84px;overflow:visible;pointer-events:none;z-index:5}
+.v-axes .ax{stroke:var(--text-muted);stroke-width:1.3;stroke-linecap:round}
+.v-axes .ax-l{fill:var(--text-muted);font:11px/1 var(--sans);text-anchor:middle;dominant-baseline:middle}
+.v-axes .back{opacity:.38}
+.v-mlabel{position:absolute;transform:translate(-50%,-140%);z-index:7;padding:2px 7px;border:1px solid var(--accent-line);
+  border-radius:5px;background:var(--toolbar-bg);color:var(--text-bright);font:var(--fs-sm)/1.4 var(--sans);
+  font-variant-numeric:tabular-nums;white-space:nowrap;pointer-events:none}
+.v-mline{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none;z-index:6}
+.v-mline[hidden]{display:none}
+.v-mline line{stroke:var(--accent);stroke-width:1.5;stroke-linecap:round}
