@@ -15,12 +15,42 @@ logger = logging.getLogger(__name__)
 
 
 def _patch_face_counts(workspace: Path) -> dict:
-    bnd = workspace / "constant" / "polyMesh" / "boundary"
+    """nFaces per boundary patch, off the mesh that was DELIVERED.
+
+    THE BLOCK IS NOT THE DELIVERY. A multi-region engine keeps the pre-split block at
+    constant/polyMesh and puts the regions beside it, and this read the block. splitMeshRegions
+    divides the block's faces between the regions, and the port cut carves inlet and outlet out of
+    a block face AFTERWARDS, on the coolant alone - so the block is the mesh as it was before two
+    of the three things that decide what the customer gets. Measured on the delivered coupon,
+    job 18e2f4ed, 2026-10-29:
+
+        block      xmin 1,928  xmax 1,928  ymin 776  ymax 776  zmin 7,504  zmax 17,426
+        delivered  ...the same, except zmax 14,226 - plus inlet 1,600, outlet 1,600 and the
+                   interface at 346,456 faces on each side
+
+    The roster a reader sees showed zmax 3,200 faces too big, which is exactly the two ports cut
+    out of it, and gave no count at all to the ports or to the interface - the one patch a
+    conjugate mesh is for.
+
+    AND AT THE SIZES THAT NEED RANKS THERE IS NO BLOCK AT ALL. The parallel chain stays decomposed
+    through the split and merges the two REGIONS, never the block, so constant/polyMesh does not
+    exist on a big conjugate build and this returned {} - every boundary in the panel with its
+    count blank.
+
+    Summed per BARE name across the regions, because the manifest is keyed by the name the user
+    asked for at intake and two regions can legitimately reach the same block face. A single-region
+    mesh has no region directories, reads the one boundary file it always did, and is unchanged.
+    """
+    root = workspace / "constant"
+    regions = [d / "polyMesh" / "boundary" for d in sorted(root.glob("*"))
+               if d.is_dir() and d.name != "polyMesh" and (d / "polyMesh" / "boundary").is_file()]
     counts: dict[str, int] = {}
-    if bnd.exists():
+    for bnd in regions or [root / "polyMesh" / "boundary"]:
+        if not bnd.exists():
+            continue
         for m in re.finditer(r"(\w+)\s*\{[^}]*?nFaces\s+(\d+)",
                              bnd.read_text(errors="replace"), re.DOTALL):
-            counts[m.group(1)] = int(m.group(2))
+            counts[m.group(1)] = counts.get(m.group(1), 0) + int(m.group(2))
     return counts
 
 
