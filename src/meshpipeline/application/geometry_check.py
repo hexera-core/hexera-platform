@@ -2397,8 +2397,39 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
     except (TypeError, ValueError):
         pass
     model_conf = float(vision.get("confidence", 0.0) or 0.0)
-    if not declared_kind and model_conf >= float(facts.get("confidence", {}).get("input_kind", 0.0)):
-        if vision.get("input_kind") in _kinds_on_offer(facts, proposal):
+    scout_conf = float(facts.get("confidence", {}).get("input_kind", 0.0))
+    on_offer = _kinds_on_offer(facts, proposal)
+    # MEASURED COOLANT IS NOT A CONFIDENCE, and it was losing to one. `_kinds_on_offer` already
+    # holds the principle - "COOLANT ACTUALLY FOUND INSIDE THE PART OUTRANKS THE FLOW THE
+    # MEASURING STEP GUESSED ... a split that closed the space off and measured a volume is far
+    # better evidence than a guess made off flat faces" - but it only decides what MAY be named.
+    # The comparison above decides whether the naming is consulted at all, and the scout's number
+    # there is its own flat-face reading: scout.py sets 0.7 for a body it calls box_like, before
+    # any split has run.
+    #
+    # MEASURED END TO END on the first customer assembly, 2026-10-29
+    # (ColdPlateAssembly_CLEAN.step, 6 solids, 177.5 x 41.84 x 101.0 mm):
+    #
+    #     split      found 52,144.56 mm3 of coolant, 3 openings, 379.5 s
+    #     scout      body_kind single_solid, solid-body, external, confidence 0.70 (box_like)
+    #     naming     "cold plate with internal coolant passages", solid-assembly, internal, 0.62
+    #     proposal   solid-body, external
+    #
+    # 0.62 against 0.70, so the block was skipped and the kind AND the flow were both the
+    # flat-face guess - on a part whose coolant had just been cut out and measured. `patches_from`
+    # then returns no openings for external flow, and the intake correctly refuses a conjugate
+    # case on a geometry with no coolant in it.
+    #
+    # solid-assembly is on offer ONLY when the split found coolant and there are two or more
+    # mouths (MIN_ASSEMBLY_OPENINGS), so naming it is already evidence-gated; this says that where
+    # that evidence exists it is not then overruled by a guess made before it was gathered. Every
+    # other kind still has to clear the scout's confidence, and a kind the user declared is
+    # untouched either way.
+    coolant_found = bool((facts.get("fluid_volume") or {}).get("found"))
+    measured = (coolant_found and vision.get("input_kind") == "solid-assembly"
+                and "solid-assembly" in on_offer)
+    if not declared_kind and (model_conf >= scout_conf or measured):
+        if vision.get("input_kind") in on_offer:
             proposal["input_kind"] = vision["input_kind"]
         if vision.get("flow") in ("internal", "external"):
             proposal["flow"] = vision["flow"]
