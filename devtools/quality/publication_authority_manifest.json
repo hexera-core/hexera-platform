@@ -3033,6 +3033,19 @@
   "roots": []
  },
  {
+  "context": "cad/face_names.py::read_named_faces_guarded::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/face_names.py",
+  "qualname": "read_named_faces_guarded",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_NAMED_FACE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "cad/fea_assembly.py::joined_interfaces::check#1|NotAPublisher|not-a-publisher|",
   "path": "cad/fea_assembly.py",
   "qualname": "joined_interfaces",
