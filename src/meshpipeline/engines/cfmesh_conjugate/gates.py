@@ -215,6 +215,38 @@ def _gate_named_patches(ctx: GateCtx) -> tuple[bool, str]:
         "reach the face it was named on.", FailureCause.CONTRACT_MISMATCH)
 
 
+def _gate_flowable(ctx: GateCtx) -> tuple[bool, str]:
+    """The coolant has a way in and a way out, with faces behind both.
+
+    THE FIRST THING A SOLVE NEEDS, and nothing in this row measured it. `ConjugateReport.flowable`
+    has existed since the engine was written and no gate read it, so a sealed coolant cleared all
+    eight mesh gates and was then refused for a patch-name contract mismatch - a true statement
+    that sends the reader to the wrong lever. With no inlet and no outlet nothing fixes the
+    pressure, the matrix is singular, and the solve dies in the preconditioner; the sealed Murray
+    tree is the part that demonstrated it.
+
+    A SEALED PART IS STILL A LEGAL PLAN, which is why this turns on whether ports were DECLARED.
+    `murray.py` builds a tree sealed inside the metal on purpose and it is the hardest topology in
+    the corpus; refusing it would throw away a good test article. What is refused is a part that
+    asked for an inlet and an outlet and did not get them - the name is there and there is no
+    surface behind it.
+    """
+    q = _q(ctx)
+    if not q.get("coolant_ports_declared"):
+        return True, ""
+    if q.get("coolant_flowable"):
+        return True, ""
+    missing = [n for n, k in (("inlet", "coolant_inlet_faces"),
+                              ("outlet", "coolant_outlet_faces"))
+               if not int(q.get(k) or 0)]
+    return False, refuse(
+        f"[REGION_SPLIT] the coolant has no {' and no '.join(missing)}: "
+        f"inlet {int(q.get('coolant_inlet_faces') or 0)} faces, "
+        f"outlet {int(q.get('coolant_outlet_faces') or 0)} faces. Nothing fixes the pressure in a "
+        "sealed region, so this mesh cannot be solved whatever its quality.",
+        FailureCause.REGION_SPLIT)
+
+
 def _gate_patch_contract(ctx: GateCtx) -> tuple[bool, str]:
     """The boundaries the user named, delivered under those names.
 
@@ -270,6 +302,10 @@ CONJUGATE_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="interface", check=_gate_interface, section="GEOMETRY",
              proves="Heat can cross between the coolant and the metal - the two sides of their "
                     "shared surface carry the same faces",
+             cause=FailureCause.REGION_SPLIT),
+    GateSpec(key="flowable", check=_gate_flowable, section="GEOMETRY",
+             proves="The coolant has a way in and a way out, with faces behind both - without "
+                    "them nothing fixes the pressure and no solver will run",
              cause=FailureCause.REGION_SPLIT),
     GateSpec(key="named_patches", check=_gate_named_patches, section="GROUPS",
              proves="Every boundary you named has a surface behind it in the region that owns it",

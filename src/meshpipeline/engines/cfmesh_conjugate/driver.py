@@ -215,12 +215,23 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # The single-scale path below is unchanged and is what every part in the corpus still takes:
     # of ten read on 2026-10-28, every one came back single-scaled.
     fine_surface = None
+    stretch_zone = None
     scales = rec.get("scales") or None
     if scales and rec.get("fine_surface") and area > 0.0:
         asked = B.CELLS_ACROSS_BY_FIDELITY.get((fidelity or "").strip().lower(),
                                                B.CELLS_ACROSS_BY_FIDELITY[B.DEFAULT_FIDELITY])
+        # THE LICENCE TO STRETCH, carried by the surface that was measured rather than inferred
+        # here. cad/scales measures whether the thin walls are an extrusion when it writes them;
+        # where they are, their cells may be made taller along that axis for free and the cell
+        # saving is exactly the factor. The first customer's microchannel field reads as an
+        # extrusion along y at 0.0694 against a bar of 0.25, while the whole coolant - manifold
+        # loop included - correctly reads as having no prismatic axis at all.
+        fine_rec = rec.get("fine_surface") or {}
+        prismatic = fine_rec.get("prismatic_axis")
         two, two_said = B.plan_two_scales(block_lo=bounds[0], block_hi=bounds[1], scales=scales,
-                                          limit=limit, asked_across=asked)
+                                          limit=limit, asked_across=asked,
+                                          prismatic_axis=(None if prismatic is None
+                                                          else int(prismatic)))
         if two is None:
             # REFUSED, and the reason is the part's own two scales rather than a cell count. Said
             # once, here, because the single-scale path would refuse the same part for a different
@@ -238,6 +249,19 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                         # four of its own cells, which is what the band needs to grade out of; the
                         # depth itself comes from the span, not from this (budget.band_depth)
                         "thickness_m": 4.0 * float(two["fine_cell_m"])}
+        # THE STRETCH ZONE, over the thin walls' own box and no further. Writing it over the whole
+        # block would stretch the manifold too, and the manifold is the part of this coolant that
+        # bends - its cells have to stay cubes. The box is grown by the band's own thickness so
+        # the grading shells on either side of the thin walls are stretched with them rather than
+        # meeting a jump in cell shape at the boundary.
+        if two.get("stretch", 1.0) > 1.0 and fine_rec.get("lo") and fine_rec.get("hi"):
+            pad = 4.0 * float(two["fine_cell_m"])
+            scale = [1.0, 1.0, 1.0]
+            scale[int(two["stretch_axis"])] = float(two["stretch"])
+            stretch_zone = {"name": "microchannels",
+                            "lo": [float(v) - pad for v in fine_rec["lo"]],
+                            "hi": [float(v) + pad for v in fine_rec["hi"]],
+                            "scale": scale}
     elif area > 0.0:
         asked = B.CELLS_ACROSS_BY_FIDELITY.get((fidelity or "").strip().lower(),
                                                B.CELLS_ACROSS_BY_FIDELITY[B.DEFAULT_FIDELITY])
@@ -330,6 +354,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         plan = dataclasses.replace(plan, patch_names=PL._as_lists(names))
     if fine_surface is not None:
         plan = dataclasses.replace(plan, fine_surfaces=(fine_surface,))
+    if stretch_zone is not None:
+        plan = dataclasses.replace(plan, stretch_zones=(stretch_zone,))
 
     from meshpipeline.engines.cfmesh_conjugate import conjugate as C
     (ws / PL.BLOCK_STL).write_text(C.block_surface_stl(lo, hi))

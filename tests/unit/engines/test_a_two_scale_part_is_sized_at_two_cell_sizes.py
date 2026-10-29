@@ -24,9 +24,10 @@ CUSTOMER = {
 }
 
 
-def _plan(scales=None, limit=700_000_000, asked=12):
+def _plan(scales=None, limit=700_000_000, asked=12, prismatic_axis=None, ranks=1):
     return B.plan_two_scales(block_lo=LO, block_hi=HI, scales=scales or CUSTOMER,
-                             limit=limit, asked_across=asked)
+                             limit=limit, asked_across=asked,
+                             prismatic_axis=prismatic_axis, ranks=ranks)
 
 
 # ---------------------------------------------------------------- the estimate, twice over
@@ -79,37 +80,52 @@ BUILT = {"background_m": 3.5206e-4, "broad_levels": 1, "fine_levels": 3,
          "fine_cell_m": 4.4007e-5, "boxes": 102_152_624}
 
 
-def test_the_planner_reaches_the_configuration_that_actually_built():
-    """THE WHOLE POINT. Worked out by hand first, then measured, and now derived by the planner
-    from the part's own geometry - same background, same two spans, same fine cell.
+def test_the_configuration_that_actually_built_is_now_refused_for_being_too_coarse():
+    """IT BUILT, AND IT DOES NOT SOLVE, and those are different questions.
 
-    Two faults used to stop it reaching this, both of which refused a plan already proven to build:
-    the broad surface's span came from LEVELS_LADDER, whose shallowest is 3, where this needs 1;
-    and the deliberately-high estimate was multiplied by ESTIMATE_MARGIN again before being
-    compared against the octree ceiling, which is an exact integer boundary rather than something
-    to leave headroom in.
+    The planner used to derive this configuration exactly - same background, same two spans, same
+    fine cell - and reaching it was the whole point of the two-scale work. What it reaches is 2.23
+    cells across the 0.098 mm slots, and the mesh that came out of it has its coolant in 19
+    disconnected pieces. The run's own report says so: "this mesh will not solve even though
+    checkMesh calls it OK."
+
+    FINE_ACROSS_FLOOR was two while four was unaffordable. It is four now, because stretching the
+    cells along the axis the channels are extruded along brings 4.46 across from 966,955,439 cells
+    to 181,673,384. So the rung that built is below the floor and is refused, which is the
+    behaviour that was wanted all along and could not be had.
     """
     plan, said = _plan(limit=700_000_000)
-    assert plan is not None, f"the planner cannot reach a plan that is known to build: {said}"
+    assert plan is None, (
+        f"2.23 cells across is below the {B.FINE_ACROSS_FLOOR}-cell floor and must be refused; "
+        f"the planner offered {plan}")
+    assert "two scales of passage" in said
+
+
+def test_with_the_stretch_it_reaches_a_resolution_that_holds_the_passages_together():
+    """The same part, the same budget, with the licence to stretch along its extruded axis."""
+    plan, said = _plan(limit=700_000_000, prismatic_axis=1)
+    assert plan is not None, f"the stretched plan has to be reachable: {said}"
     assert plan["background_m"] == pytest.approx(BUILT["background_m"], rel=1e-3)
     assert plan["broad_levels"] == BUILT["broad_levels"]
-    assert plan["fine_levels"] == BUILT["fine_levels"]
-    assert plan["fine_cell_m"] == pytest.approx(BUILT["fine_cell_m"], rel=1e-3)
-    # 2.23 cells across the 0.098 mm slots, against 1.03 on the 99,172,391-cell run whose coolant
-    # came out in 367 disconnected pieces
-    assert plan["fine_across"] == pytest.approx(2.23, abs=0.02)
-    assert "two cell sizes" in said
+    # one level finer than the run that built, which is what doubles the cells across
+    assert plan["fine_levels"] == BUILT["fine_levels"] + 1
+    assert plan["fine_cell_m"] == pytest.approx(BUILT["fine_cell_m"] / 2.0, rel=1e-3)
+    assert plan["fine_across"] == pytest.approx(4.46, abs=0.02)
+    assert plan["fine_across"] >= B.FINE_ACROSS_FLOOR
+    assert plan["stretch"] > 1.0 and plan["stretch_axis"] == 1
+    assert "two cell sizes" in said and "prismatic" in said
 
 
 def test_the_estimate_for_that_configuration_stays_above_the_mesh_and_under_the_ceiling():
     """The two bounds that have to hold at once for this part to be plannable at all, and the
     reason the margin is dropped for one of them."""
-    plan, _said = _plan(limit=700_000_000)
+    plan, _said = _plan(limit=700_000_000, prismatic_axis=1)
     raw = B.two_scale_estimate(
         block_lo=LO, block_hi=HI, broad_cell_m=plan["broad_cell_m"],
         broad_area_m2=CUSTOMER["broad"]["area_m2"], fine_cell_m=plan["fine_cell_m"],
         fine_area_m2=CUSTOMER["fine"]["area_m2"], background_m=plan["background_m"],
-        broad_levels=plan["broad_levels"], fine_levels=plan["fine_levels"], margin=False)
+        broad_levels=plan["broad_levels"], fine_levels=plan["fine_levels"], margin=False,
+        fine_stretch=plan["stretch"])
     assert raw >= BUILT["boxes"], (
         f"the unmargined estimate {raw:,} is UNDER the {BUILT['boxes']:,} that was built")
     assert raw <= B.octree_ceiling_cells(), (

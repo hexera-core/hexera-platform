@@ -361,13 +361,29 @@ def plan_for_budget(*, block_lo, block_hi, narrowest_m: float, wetted_area_m2: f
 #: under a 0.0947 mm cell got 1.03 cells across and the coolant came out in 367 disconnected
 #: pieces, which checkMesh called OK and no solver could have used. Eight is where the return stops
 #: being worth the fourfold cost of the next halving.
-FINE_ACROSS_FLOOR = 2
+#: FOUR, AND IT USED TO BE TWO, which is the number that admitted the run this whole entry is
+#: about. The comment above has said four is the floor since it was written, and the floor the
+#: planner actually enforced was two: the customer plate was planned at 2.23 cells across and
+#: came back with its coolant in 19 disconnected pieces, which checkMesh called OK and no solver
+#: could have used. The previous attempt at 1.03 across gave 367 pieces.
+#:
+#: It was two because four was unaffordable: 4.46 across prices at 966,955,439 cells unstretched,
+#: over any budget and 4.3x what one process can address. Stretching the cells along the axis the
+#: channels are extruded along brings the same resolution to 181,673,384, so the floor can now be
+#: what it always should have been. Raising it without that would simply have refused the part.
+FINE_ACROSS_FLOOR = 4
 FINE_ACROSS_WANTED = 4
-FINE_ACROSS_CAP = 8
+#: TEN, NOT EIGHT, and the reason is that the ladder is discrete. The published guidance for
+#: microchannel conjugate work is of the order of eight cells across the width; the octree halves,
+#: so on the first customer's 0.0982 mm slots the reachable rungs are 4.46 and 8.93, and a cap of
+#: exactly 8 refused the rung that meets the guidance by 0.93 of a cell. The next rung after it is
+#: 17.85, which prices at about 3 billion cells and is refused on cost like everything else.
+FINE_ACROSS_CAP = 10
 #: The most extra octree levels a thin surface may have below the coolant surface. Each level is
 #: another set of grading shells (see DEPTH_AT_FITTED_SPAN), so this is a cost bound, not a
-#: geometric one.
-FINE_EXTRA_LEVELS = (1, 2, 3, 4)
+#: geometric one. Five is here because stretching made the fifth affordable: 8.93 cells across the
+#: customer's slots is 4,903,923,343 cells unstretched and 634,530,269 at a stretch of eight.
+FINE_EXTRA_LEVELS = (1, 2, 3, 4, 5)
 #: The spans the BROAD surface may sit at, which is a different ladder from LEVELS_LADDER on
 #: purpose. A two-scale part wants its background close to its broad surface, because every level
 #: between them is a set of grading shells paid for over the broad surface's whole area - 38,813
@@ -381,21 +397,45 @@ FINE_EXTRA_LEVELS = (1, 2, 3, 4)
 TWO_SCALE_BROAD_LEVELS = (1, 2, 3)
 
 
+#: HOW FAR A CELL MAY BE STRETCHED along an axis the geometry is prismatic along. The saving is
+#: exactly the factor (measured 2026-10-29: a 10 mm box at 1 mm cells went 896 -> 320 cells at
+#: scaleY 4, with the largest cell 4.09x taller), so the only reason not to take more is the cell
+#: shape itself. At 8 a 0.0196 mm in-plane cell is 0.157 mm tall, which still puts a dozen cells
+#: through the first customer's 1.9 mm channel height, and an 8:1 cell is well inside what a
+#: solver tolerates - boundary-layer meshes routinely run an order of magnitude past it.
+MAX_STRETCH = 8.0
+
+#: The stretches the planner will try, coarsest first. Powers of two and one 6 because the useful
+#: range on a 1.9 mm channel height is 4 to 8 and 6 sits where the cell count lands near 250M.
+STRETCH_LADDER: tuple[float, ...] = (8.0, 6.0, 4.0, 2.0, 1.0)
+
+
 def two_scale_estimate(*, block_lo, block_hi, broad_cell_m: float, broad_area_m2: float,
                        fine_cell_m: float, fine_area_m2: float, background_m: float,
-                       broad_levels: int, fine_levels: int, margin: bool = True) -> int:
+                       broad_levels: int, fine_levels: int, margin: bool = True,
+                       fine_stretch: float = 1.0) -> int:
     """A pre-flight cell count for a part meshed at TWO cell sizes.
 
     The same band model as `band_estimate_cells`, applied once per surface - each at its own cell
     size and, which is the part that matters, its own octree SPAN. A thin surface four levels below
     the background carries four levels of grading shells, and those shells are most of the mesh.
+
+    `fine_stretch` is the factor the fine region's cells are STRETCHED by along the axis its
+    geometry is prismatic along, and it divides that region's band exactly. A band is an area
+    divided by a cell's cross-section: making the cell S times taller along one axis of that area
+    means S times fewer of them cover it. The background is deliberately NOT divided even though
+    the cells inside the stretch box are taller too - that makes this an over-estimate, which is
+    the safe direction for a number that chooses a machine.
     """
     if min(broad_cell_m, fine_cell_m, background_m) <= 0.0:
         raise ValueError("every cell size in a two-scale plan has to be positive")
     if fine_cell_m >= broad_cell_m:
         raise ValueError("the fine cell has to be finer than the broad one")
+    if not 1.0 <= float(fine_stretch) <= MAX_STRETCH:
+        raise ValueError(f"a stretch has to be between 1 and {MAX_STRETCH:g}, got {fine_stretch}")
     band_broad = float(broad_area_m2) * band_depth(int(broad_levels)) / broad_cell_m ** 2
-    band_fine = float(fine_area_m2) * band_depth(int(fine_levels)) / fine_cell_m ** 2
+    band_fine = (float(fine_area_m2) * band_depth(int(fine_levels)) / fine_cell_m ** 2
+                 / float(fine_stretch))
     bg = _block_m3(block_lo, block_hi) / background_m ** 3
     # `margin` OFF for the octree ceiling, ON for everything else. ESTIMATE_MARGIN is headroom for
     # sizing a machine, and DEPTH_AT_FITTED_SPAN is already the top of its scatter, so the two
@@ -407,7 +447,9 @@ def two_scale_estimate(*, block_lo, block_hi, broad_cell_m: float, broad_area_m2
 
 
 def plan_two_scales(*, block_lo, block_hi, scales: dict, limit: int,
-                    asked_across: int) -> tuple[dict | None, str]:
+                    asked_across: int,
+                    prismatic_axis: int | None = None,
+                    ranks: int = 1) -> tuple[dict | None, str]:
     """The best two-scale plan that fits, or (None, why) when none does.
 
     `scales` is what cad/scales.scales_of_field measured: the split, and each side's own narrowest
@@ -430,7 +472,14 @@ def plan_two_scales(*, block_lo, block_hi, scales: dict, limit: int,
     fine_a = float(scales["fine"]["area_m2"])
     if min(broad_w, fine_w, broad_a, fine_a) <= 0.0:
         return None, "the scale split carried a width or an area that is not positive"
-    ceiling = octree_ceiling_cells()
+    # THE CEILING IS PER PROCESS, so how many processes there will be is part of the question.
+    # One rank is the honest default: the chain is serial today, so a configuration that needs
+    # more must be refused rather than started and aborted partway through. When the parallel
+    # chain drives this, the rank count comes in here and the rungs above open up - the customer
+    # plate at 8.93 cells across is 2.8x one process's ceiling and comfortably inside eight
+    # ranks', which have already built 202,709,195 cells.
+    ceiling = octree_ceiling_cells(max(1, int(ranks)))
+    needed_ranks = 0           # the most any refused-on-ceiling configuration would have wanted
     best = None
     # the thin side first, because it is the reason to do this at all: walk its resolution down
     # from what is wanted, and under each one take the shallowest octree that fits
@@ -448,16 +497,35 @@ def plan_two_scales(*, block_lo, block_hi, scales: dict, limit: int,
                              broad_area_m2=broad_a, fine_cell_m=fine_cell, fine_area_m2=fine_a,
                              background_m=background, broad_levels=broad_levels,
                              fine_levels=fine_levels)
-                est = two_scale_estimate(**shape)
-                if est > limit:
+                # THE CHEAPEST STRETCH THAT FITS, not the largest. A stretch costs nothing in
+                # accuracy along an axis the geometry is prismatic along, but it is still a
+                # deformation of the cells and there is no reason to take more of it than the
+                # budget needs. Without a prismatic axis the only candidate is 1.0, so a part
+                # that is not prismatic is planned exactly as it always was.
+                ladder = (sorted(STRETCH_LADDER) if prismatic_axis is not None else (1.0,))
+                fitted = None
+                for stretch in ladder:
+                    est = two_scale_estimate(**shape, fine_stretch=stretch)
+                    if est > limit:
+                        continue
+                    # the ceiling is an exact boundary, so it is compared unmargined
+                    raw = two_scale_estimate(**shape, margin=False, fine_stretch=stretch)
+                    if raw > ceiling:
+                        # remembered so a refusal can say what it would have taken, rather than
+                        # only that it did not fit
+                        needed_ranks = max(needed_ranks,
+                                           int(math.ceil(raw / octree_ceiling_cells(1))))
+                        continue
+                    fitted = (stretch, est)
+                    break
+                if fitted is None:
                     continue
-                # the ceiling is an exact boundary, so it is compared against the unmargined count
-                if two_scale_estimate(**shape, margin=False) > ceiling:
-                    continue
+                stretch, est = fitted
                 plan = {"background_m": background, "broad_levels": broad_levels,
                         "fine_levels": fine_levels, "broad_cell_m": broad_cell,
                         "fine_cell_m": fine_cell, "broad_across": broad_across,
-                        "fine_across": across, "estimate": est}
+                        "fine_across": across, "estimate": est,
+                        "stretch": stretch, "stretch_axis": prismatic_axis}
                 # the best plan is the one that resolves the THIN side furthest; ties go to the
                 # cheaper estimate
                 if best is None or (plan["fine_across"], -plan["estimate"]) > (
@@ -468,15 +536,21 @@ def plan_two_scales(*, block_lo, block_hi, scales: dict, limit: int,
         if best is not None and best["fine_across"] >= FINE_ACROSS_WANTED:
             break
     if best is None:
-        return None, (
-            f"this part has two scales of passage - about {broad_w * 1000:.2f} mm and "
-            f"{fine_w * 1000:.4f} mm - and no pair of cell sizes resolves the thin ones at "
-            f"{FINE_ACROSS_FLOOR} cells across inside a limit of {limit:,} cells and this "
-            f"mesher's own ceiling of {ceiling:,}")
+        why = (f"this part has two scales of passage - about {broad_w * 1000:.2f} mm and "
+               f"{fine_w * 1000:.4f} mm - and no pair of cell sizes resolves the thin ones at "
+               f"{FINE_ACROSS_FLOOR} cells across inside a limit of {limit:,} cells and this "
+               f"mesher's own ceiling of {ceiling:,}")
+        if needed_ranks > int(ranks):
+            why += (f"; a configuration that fits the cell limit was refused on the octree "
+                    f"ceiling alone and would build on {needed_ranks} ranks")
+        return None, why
     said = (f"meshed at two cell sizes: {best['broad_cell_m'] * 1000:.4f} mm over the "
             f"{broad_w * 1000:.2f} mm passages ({best['broad_across']} across) and "
             f"{best['fine_cell_m'] * 1000:.5f} mm over the {fine_w * 1000:.4f} mm ones "
             f"({best['fine_across']:.2f} across), about {best['estimate']:,} cells")
+    if best.get("stretch", 1.0) > 1.0:
+        said += (f"; the thin passages' cells are stretched {best['stretch']:g}x along "
+                 f"{'xyz'[int(best['stretch_axis'])]}, which the geometry is prismatic along")
     return best, said
 
 

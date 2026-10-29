@@ -94,6 +94,48 @@ def empty_patches(ws: Path) -> list[str]:
     return out
 
 
+def _carry_mesh_wide(q: dict, rows: list[dict]) -> None:
+    """The whole mesh's own figures, summed or spanned from the regions that make it up.
+
+    THE SUMS ARE SUMS AND THE SPANS ARE SPANS, which is not the same reduction. Faces, points and
+    every cell type add; the cell SIZE does not - the mesh's smallest cell is the smaller of the
+    two regions' smallest, and its largest the larger. Taking max() of both ends, which is what
+    collapsing with a single reducer would do, reports a mesh whose finest cell is the metal's.
+
+    Nothing is written for a reading no region supplied. A mesh whose size was never measured must
+    not report 0.0 m, because every gate that compares a size against a bar passes that.
+    """
+    if not rows:
+        return
+    for key in ("faces", "points", "skew_faces", "small_determinant_cells"):
+        total = sum(int(r.get(key) or 0) for r in rows)
+        if total:
+            q[key] = total
+    types: dict[str, int] = {}
+    for r in rows:
+        for kind, n in (r.get("cell_types") or {}).items():
+            types[kind] = types.get(kind, 0) + int(n)
+    if types:
+        q["cell_types"] = types
+        q.update(types)        # the viewer's metric allowlist reads each kind as its own key
+    lows = [r["min_cell_m"] for r in rows if r.get("min_cell_m")]
+    highs = [r["max_cell_m"] for r in rows if r.get("max_cell_m")]
+    if lows:
+        q["min_cell_m"] = min(lows)
+    if highs:
+        q["max_cell_m"] = max(highs)
+    if lows and highs and min(lows) > 0.0:
+        q["cell_size_ratio"] = max(highs) / min(lows)
+    ars = [r["max_aspect_ratio"] for r in rows if r.get("max_aspect_ratio") is not None]
+    if ars:
+        q["max_aspect_ratio"] = max(ars)
+    avgs = [r["avg_non_ortho"] for r in rows if r.get("avg_non_ortho") is not None]
+    if avgs:
+        # the worse of the two averages, not an average of averages: a mean over two regions of
+        # wildly different cell counts weights them equally, which is not a figure about anything
+        q["avg_non_ortho"] = max(avgs)
+
+
 def quality_of(ws: Path, report: dict) -> dict:
     """The manifest's quality dict, from the report the run left and the delivered regions.
 
@@ -122,7 +164,22 @@ def quality_of(ws: Path, report: dict) -> dict:
                      "volume_m3": float(r.get("volume_m3") or 0.0),
                      "pieces": int(r.get("pieces") or 0),
                      "mesh_ok": bool(r.get("mesh_ok")),
-                     "fatal": list(r.get("fatal") or [])})
+                     "fatal": list(r.get("fatal") or []),
+                     # PER REGION, which is the only way these mean anything here. The coolant is
+                     # the fine region and the metal the coarse one; collapsed with max() and
+                     # min() below they describe a mesh that does not exist. A reader asking "is
+                     # my mesh good" wants to know WHICH half is not.
+                     "faces": int(r.get("faces") or 0),
+                     "points": int(r.get("points") or 0),
+                     "cell_types": dict(r.get("cell_types") or {}),
+                     "min_cell_m": r.get("min_cell_m"),
+                     "max_cell_m": r.get("max_cell_m"),
+                     "max_non_ortho": r.get("max_non_ortho"),
+                     "max_skewness": r.get("max_skewness"),
+                     "max_aspect_ratio": r.get("max_aspect_ratio"),
+                     "avg_non_ortho": r.get("avg_non_ortho"),
+                     "skew_faces": int(r.get("skew_faces") or 0),
+                     "small_determinant_cells": int(r.get("small_determinant_cells") or 0)})
 
     fluid = regions.get(FLUID_REGION) or {}
     plan = report.get("plan") or {}
@@ -196,6 +253,33 @@ def quality_of(ws: Path, report: dict) -> dict:
         # ABSENT rather than 0.0 when it cannot be measured: a zero ratio reads as a perfect fit
         # to every reader that compares it against a bar.
         q["peak_over_predicted"] = q["peak_gib"] / B.peak_gib(q["cells"])
+    # WHETHER THE COOLANT HAS A WAY IN AND A WAY OUT, which is the first thing a solve needs and
+    # the last thing anything here measured. `ConjugateReport.flowable` has existed since the
+    # engine was written and no gate reads it, so a sealed coolant cleared all eight mesh gates
+    # and was refused further down for a patch-name contract mismatch - true, and the wrong
+    # diagnosis. The customer plate is exactly this case: its fittings are bores that stop inside
+    # the metal, so the delivered fluid region carries one patch and no port at all.
+    _ports = report.get("ports") or {}
+    _fluid_patches = (regions.get(FLUID_REGION) or {}).get("patches") or {}
+    # THE PORT IS NAMED TWICE AND THE DELIVERED PATCH WEARS THE SECOND NAME. `ports` carries the
+    # BLOCK FACE the coolant leaves by - `ymin` - because that is what the port plan is written
+    # in; the patch in the delivered mesh is called `coolant_in`, because renameBoundary puts the
+    # user's name on the face before the split. Looking the face name up in the delivered patches
+    # finds nothing and reads as a sealed part, which is how the first version of this refused
+    # the canonical deliverable fixture. `patch_names` is the mapping and `_port` below already
+    # walks it in the other direction.
+    _named = {str(k): str(v) for k, v in (report.get("patch_names") or {}).items()}
+
+    def _faces_of(which: str) -> int:
+        face = str(_ports.get(which) or "")
+        if not face:
+            return 0
+        return int(_fluid_patches.get(_named.get(face, face), 0))
+
+    q["coolant_ports_declared"] = bool(_ports.get("inlet") or _ports.get("outlet"))
+    q["coolant_inlet_faces"] = _faces_of("inlet")
+    q["coolant_outlet_faces"] = _faces_of("outlet")
+    q["coolant_flowable"] = q["coolant_inlet_faces"] > 0 and q["coolant_outlet_faces"] > 0
     q["coolant_pieces_short"] = _pieces_short(q)
     q["resolution_short"] = _resolution_short(plan)
     # WHETHER THE INTERIOR CAN BE CUT AT ALL. The engine declares a REGION inspection target, so
@@ -210,6 +294,7 @@ def quality_of(ws: Path, report: dict) -> dict:
         q["max_non_ortho"] = max(non_ortho)
     if skew:
         q["max_skewness"] = max(skew)
+    _carry_mesh_wide(q, rows)
     q["mesh_ok"] = (bool(report.get("ok")) and not fatal and not missing and not undeclared
                     and not blank and q["interface_ok"])
     return q

@@ -85,6 +85,13 @@ class ConjugatePlan:
     #: filling their bounding box costs, measured 224,431,537 cells against 456,206,329 on the
     #: first customer part. cad/scales.py decides where the thin walls are and writes the file.
     fine_surfaces: tuple[dict, ...] = ()
+    #: Boxes where the cells are STRETCHED along an axis the geometry is prismatic along:
+    #: [{"name", "lo", "hi", "scale": (sx, sy, sz)}]. Not a refinement - it changes the shape of
+    #: the cells, not where the small ones go. A microchannel 0.098 mm wide and 1.9 mm tall with
+    #: a constant cross-section through that height does not need its height resolved as finely
+    #: as its width, and cubes give it no choice. Measured 2026-10-29: scale > 1 stretches along
+    #: the axis and the cell saving follows the factor.
+    stretch_zones: tuple[dict, ...] = ()
 
 
 def background_for(narrowest_m: float, cells_across: int, levels: int) -> float:
@@ -175,6 +182,32 @@ def read_plan(workspace) -> ConjugatePlan:
                           "thickness_m": (None if s.get("thickness_m") is None
                                           else float(s["thickness_m"]))})
         out["fine_surfaces"] = tuple(fines)
+    if out.get("stretch_zones") is not None:
+        stretches = []
+        for n, s in enumerate(out["stretch_zones"]):
+            if not isinstance(s, dict):
+                raise ValueError(f"{PLAN_NAME}: stretch zone {n} is not an object")
+            lo, hi, scale = s.get("lo"), s.get("hi"), s.get("scale")
+            if lo is None or hi is None or scale is None:
+                raise ValueError(f"{PLAN_NAME}: stretch zone {n} needs lo, hi and scale")
+            if len(lo) != 3 or len(hi) != 3 or len(scale) != 3:
+                raise ValueError(f"{PLAN_NAME}: stretch zone {n} needs three axes in each of "
+                                 "lo, hi and scale")
+            if any(float(hi[j]) <= float(lo[j]) for j in range(3)):
+                raise ValueError(f"{PLAN_NAME}: stretch zone {n} has no extent: {lo} .. {hi}")
+            if any(float(v) <= 0.0 for v in scale):
+                raise ValueError(f"{PLAN_NAME}: stretch zone {n} has a non-positive scale "
+                                 f"{tuple(scale)}")
+            if all(float(v) == 1.0 for v in scale):
+                # refused rather than dropped: a zone that scales nothing reads to the next
+                # person as a deliberate choice, and cfMesh would carry it into the dictionary
+                raise ValueError(f"{PLAN_NAME}: stretch zone {n} scales every axis by 1, which "
+                                 "is a zone that does nothing")
+            stretches.append({"name": str(s.get("name") or f"stretch{n}"),
+                              "lo": (float(lo[0]), float(lo[1]), float(lo[2])),
+                              "hi": (float(hi[0]), float(hi[1]), float(hi[2])),
+                              "scale": (float(scale[0]), float(scale[1]), float(scale[2]))})
+        out["stretch_zones"] = tuple(stretches)
     return ConjugatePlan(**out)
 
 

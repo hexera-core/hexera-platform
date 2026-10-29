@@ -8,12 +8,24 @@ from meshpipeline.contracts.mesh_units import completed_mesh_unit
 
 # The quality figures a delivered mesh may declare, and the type each must be.
 # Engines that do not compute one simply omit it.
+#: CLOSED ON PURPOSE, and widened deliberately rather than opened. The viewer groups by these, so
+#: a metric that is not here never reaches a reader however faithfully the mesher measured it -
+#: which is how "cell types and count per type" and "min and max cell sizes" came to be measured
+#: on every run and shown on none (Corintis asked for both by name, 2026-10-29). Adding a metric
+#: is an edit here AND in the viewer's label table; that pairing is the point.
 _INT_METRICS: Final[tuple[str, ...]] = (
-    "cells", "faces", "hexahedra", "polyhedra", "prisms", "pyramids",
-    "tetrahedra", "regions", "skew_faces",
+    "cells", "faces", "points", "internal_faces",
+    # every cell type checkMesh counts, not the four that happened to be listed
+    "hexahedra", "prisms", "wedges", "pyramids", "tet_wedges", "tetrahedra", "polyhedra",
+    "regions", "skew_faces",
+    # cells too flat for a solver to integrate over: the count behind "poor-quality cells"
+    "small_determinant_cells",
 )
 _FLOAT_METRICS: Final[tuple[str, ...]] = (
     "max_non_ortho", "max_skewness", "avg_non_ortho", "skew_fraction",
+    # the size RANGE, as lengths. On a two-scale part the ratio is how many octree levels the
+    # delivered mesh actually spans, which is the number its budget was set by.
+    "min_cell_m", "max_cell_m", "cell_size_ratio", "max_aspect_ratio",
 )
 
 # Part kinds. Closed: the viewer groups by these, so a new kind is a deliberate
@@ -131,6 +143,20 @@ def parts(manifest: dict | None, *, rendered: tuple[str, ...] = (),
         for n in src:
             if isinstance(n, str) and n and n not in names:
                 names.append(n)
+    # WHICH DRAWN SURFACES CARRY EACH DECLARED PATCH.
+    # A multi-region engine draws "<region>/<patch>" because its regions own identically named
+    # block faces and one would otherwise replace the other in this roster. The manifest keeps the
+    # BARE name, deliberately: that is the name the user asked for at intake and the name their
+    # boundary condition will carry. Without this map the two never met - the declared `ymin` was
+    # listed un-renderable and `solid/ymin` was appended beside it as a separate part, so a
+    # conjugate mesh offered 15 entries for 9 boundaries and picking the wrong one did nothing.
+    # One declared patch may legitimately be drawn by SEVERAL surfaces (both regions reach ymin),
+    # which is why this is a list and not a rename.
+    drawn_by: dict[str, list[str]] = {}
+    for drawn in rendered:
+        if isinstance(drawn, str) and "/" in drawn:
+            drawn_by.setdefault(drawn.split("/", 1)[1], []).append(drawn)
+
     for n in names:
         role = str(roles.get(n) or "").strip()
         bmeta: dict[str, Any] = {"name": n}
@@ -139,12 +165,19 @@ def parts(manifest: dict | None, *, rendered: tuple[str, ...] = (),
         fc = _as_int(faces.get(n))
         if fc is not None:
             bmeta["faces"] = fc
-        encloses = role.lower() in _ENCLOSING_ROLES or n in enclosing_set
+        surfaces = drawn_by.get(n, [])
+        if surfaces:
+            bmeta["drawn_as"] = list(surfaces)
+        # enclosing when the role says so, when the engine named this patch, or when every
+        # surface that draws it is enclosing - a boundary half of which wraps the domain is not
+        # one to open hidden
+        encloses = (role.lower() in _ENCLOSING_ROLES or n in enclosing_set
+                    or (bool(surfaces) and all(s in enclosing_set for s in surfaces)))
         if encloses:
             bmeta["encloses_domain"] = True
         out.append(_part(f"{BOUNDARY}:{n}", n, BOUNDARY, "patch_types",
                          visibility=HIDDEN if encloses else VISIBLE,
-                         renderable=n in rendered_set, metadata=bmeta))
+                         renderable=n in rendered_set or bool(surfaces), metadata=bmeta))
 
     # mesh regions
     _q2 = man.get("quality")
@@ -213,8 +246,10 @@ def parts(manifest: dict | None, *, rendered: tuple[str, ...] = (),
     # the user cannot move out of the way (an engine's region surface the manifest never listed)
     if list_drawn:
         named = {p["metadata"].get("name") for p in out if p["renderable"]}
+        # a surface already bound to a declared patch above is that patch, not a second part
+        bound = {s for p in out for s in (p["metadata"].get("drawn_as") or ())}
         for n in rendered:
-            if not isinstance(n, str) or not n or n in named:
+            if not isinstance(n, str) or not n or n in named or n in bound:
                 continue
             named.add(n)
             dmeta: dict[str, Any] = {"name": n}

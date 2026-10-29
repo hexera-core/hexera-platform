@@ -42,6 +42,10 @@ def polymesh_response(raw: list, cell_stats: Any, roles: dict, units: str,
                 "name": p["name"],
                 "type": roles.get(p["name"], p["type"]),
                 "face_count": p["face_count"],
+                # the wetted area this patch delivers, when the reader measured one. On a
+                # conjugate mesh the interface's area is the heat-transfer area, and it is what
+                # staircasing takes away without changing a single face count.
+                **({"area_m2": float(p["area_m2"])} if p.get("area_m2") is not None else {}),
                 "points_b64": base64.b64encode(p["points"]).decode("ascii"),
                 "polys_b64": base64.b64encode(p["polys"]).decode("ascii"),
                 # the engine says when a surface wraps everything else (a domain side, an air

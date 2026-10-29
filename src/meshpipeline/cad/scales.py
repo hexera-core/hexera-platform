@@ -207,8 +207,70 @@ def write_fine_surface(points, faces, radius, *, split_m: float, out_path) -> di
     write_stl_binary(out, [tuple(tuple(float(v) for v in p) for p in t) for t in tri])
     logger.info("scales: the thin walls written as %d triangles over %.1f mm2 to %s",
                 int(keep.sum()), area * 1e6, out.name)
-    return {"file": str(out), "triangles": int(keep.sum()), "area_m2": round(area, 15)}
+    # WHERE THE THIN WALLS ARE, and whether they are an extrusion. Both are measured here because
+    # the triangles are already in hand: reading the STL back to ask costs a second parse of the
+    # same data, and the answer decides the mesh's cell SHAPE (see prismatic_axis). The box is
+    # what a stretch zone is written over, so it travels with the surface it describes.
+    flat = tri.reshape(-1, 3)
+    lo_m, hi_m = flat.min(axis=0), flat.max(axis=0)
+    rec = {"file": str(out), "triangles": int(keep.sum()), "area_m2": round(area, 15),
+           "lo": [float(v) for v in lo_m], "hi": [float(v) for v in hi_m]}
+    pris = prismatic_axis(flat, np.arange(len(flat)).reshape(-1, 3))
+    if pris is not None:
+        rec["prismatic_axis"], rec["prismatic_reading"] = int(pris[0]), float(pris[1])
+        logger.info("scales: the thin walls are an extrusion along %s (%.4f), so their cells may "
+                    "be stretched along it", "xyz"[pris[0]], pris[1])
+    return rec
 
 
-__all__ = ["scales_of_field", "write_fine_surface", "MAX_FINE_SHARE", "MAX_TROUGH_SHARE",
-           "MIN_OCTAVES_APART"]
+#: How flat a surface's area-weighted |normal| along an axis has to be before that axis counts as
+#: one the shape is EXTRUDED along. A true extrusion contributes nothing but its two caps: for a
+#: channel 0.098 mm wide and 1.9 mm tall the caps are 0.098/(1.9+0.098) = 4.9% of the wetted area,
+#: so the reading is about 0.05. A shape with no preferred axis reads 0.5 on every axis - a sphere
+#: exactly so. The bar sits well above a real extrusion and well below indifference.
+MAX_PRISMATIC_NORMAL = 0.25
+
+
+def prismatic_axis(points, faces) -> tuple[int, float] | None:
+    """The axis a surface is extruded along, and how flatly, or None when there is no such axis.
+
+    WHY A MESHER WANTS THIS. An octree cell is a cube, so resolving a channel's WIDTH also buys
+    cells through its height whether or not the height needs them. Where a shape is prismatic the
+    cells may be stretched along that axis for free - cfMesh's `anisotropicSources` - and the cell
+    saving is exactly the stretch factor. "For free" is doing real work in that sentence, which is
+    why this is measured off the geometry rather than assumed off a bounding box: stretching an
+    axis the shape is NOT prismatic along smears features the mesh was built to resolve.
+
+    THE MEASUREMENT IS THE DEFINITION. A surface extruded along an axis has every side-wall normal
+    perpendicular to it; only the caps point along it. So the area-weighted mean of |n . axis| is
+    the fraction of the surface that is cap, and a small number means a long extrusion.
+
+    Returns (axis index, the reading) for the flattest axis under the bar, or None.
+    """
+    import numpy as np
+
+    P = np.asarray(points, dtype=float)
+    F = np.asarray(faces, dtype=int)
+    if len(F) == 0:
+        return None
+    tri = P[F]
+    n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    area = 0.5 * np.linalg.norm(n, axis=1)
+    total = float(area.sum())
+    if total <= 0.0:
+        return None
+    unit = n / np.where(np.linalg.norm(n, axis=1)[:, None] > 0.0,
+                        np.linalg.norm(n, axis=1)[:, None], 1.0)
+    readings = [float((area * np.abs(unit[:, k])).sum() / total) for k in range(3)]
+    axis = int(np.argmin(readings))
+    best = readings[axis]
+    logger.info("scales: area-weighted |normal| per axis x=%.3f y=%.3f z=%.3f", *readings)
+    if best > MAX_PRISMATIC_NORMAL:
+        logger.info("scales: no axis is prismatic enough to stretch along (best %.3f on %s "
+                    "against a bar of %.2f)", best, "xyz"[axis], MAX_PRISMATIC_NORMAL)
+        return None
+    return axis, best
+
+
+__all__ = ["scales_of_field", "write_fine_surface", "prismatic_axis", "MAX_FINE_SHARE",
+           "MAX_PRISMATIC_NORMAL", "MAX_TROUGH_SHARE", "MIN_OCTAVES_APART"]

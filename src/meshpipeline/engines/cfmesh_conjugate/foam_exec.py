@@ -33,9 +33,36 @@ def _foam_env() -> dict:
 _CM = {
     "cells": re.compile(r"cells:\s+(\d+)"),
     "faces": re.compile(r"faces:\s+(\d+)"),
+    "points": re.compile(r"points:\s+(\d+)"),
+    "internal_faces": re.compile(r"internal faces:\s+(\d+)"),
+    # EVERY CELL TYPE checkMesh counts, not two of them. It prints all seven and this table read
+    # hexahedra and polyhedra, so a mesh with prisms in it reported as neither - and "cell types
+    # and count per type" is one of the six readings the first customer asked for by name
+    # (Corintis, 2026-10-29). The counts cost nothing: they are on lines already in the output of
+    # a run that has always been made.
     "hexahedra": re.compile(r"hexahedra:\s+(\d+)"),
+    "prisms": re.compile(r"prisms:\s+(\d+)"),
+    # The lookbehind matters: checkMesh prints "tet wedges:" two lines below "wedges:", and a
+    # bare \bwedges: matches both. It happens to find the right one first today only because of
+    # the order they are printed in, which is not a thing to rely on.
+    "wedges": re.compile(r"(?<!tet )\bwedges:\s+(\d+)"),
+    "pyramids": re.compile(r"pyramids:\s+(\d+)"),
+    "tet_wedges": re.compile(r"tet wedges:\s+(\d+)"),
+    "tetrahedra": re.compile(r"tetrahedra:\s+(\d+)"),
     "polyhedra": re.compile(r"polyhedra:\s+(\d+)"),
+    # THE SIZE RANGE, which is the other reading they asked for. checkMesh prints volumes; a cell
+    # SIZE is the cube root of one, and `min_cell_m`/`max_cell_m` below are derived from these
+    # rather than guessed from a mean. On a two-scale part the ratio between them IS the story.
+    "min_volume": re.compile(r"Min volume = ([0-9.eE+-]*[0-9])"),
+    "max_volume": re.compile(r"Max volume = ([0-9.eE+-]*[0-9])"),
+    "max_aspect_ratio": re.compile(r"Max aspect ratio = ([0-9.eE+-]*[0-9])"),
+    "max_cell_openness": re.compile(r"Max cell openness = ([0-9.eE+-]*[0-9])"),
+    # Cells too flat for a solver to integrate over. checkMesh prints this only when it finds
+    # some, so an absent pattern means none - the same convention as skew_faces below.
+    "small_determinant_cells": re.compile(
+        r"small determinant[^\n]*number of cells:\s*(\d+)"),
     "max_non_ortho": re.compile(r"non-orthogonality Max:\s+([\d.]+)"),
+    "avg_non_ortho": re.compile(r"non-orthogonality Max:\s+[\d.]+\s+average:\s+([\d.eE+-]+)"),
     # The meshed volume, which is how a mesh gets compared with the CAD it came from. A
     # conformal two-region split proves the two sides share a surface and nothing about WHICH
     # cells ended up on which side; the fluid region's volume against the coolant's own is what
@@ -99,7 +126,29 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
                        "quality is unmeasured", float(timeout_s), type(exc).__name__)
         return {"mesh_ok": False, "fatal": ["checkMesh did not finish"],
                 "skew_faces": 0, "skew_fraction": 0.0, "unmeasured": True}
-    return parse_check_mesh(proc.stdout + proc.stderr)
+    raw = proc.stdout + proc.stderr
+    _keep_checkmesh_output(ws, region, raw)
+    return parse_check_mesh(raw)
+
+
+#: What checkMesh said, kept verbatim beside the mesh it said it about.
+CHECKMESH_LOG = "checkMesh{suffix}.log"
+
+
+def _keep_checkmesh_output(ws: Path, region: str, raw: str) -> None:
+    """Write checkMesh's own words next to the mesh, and never fail a run over it.
+
+    THE PARSER IS NOT THE MEASUREMENT. checkMesh walks every cell and every face - 204.9 s on the
+    coolant and 584.5 s on the metal of the first customer plate - and until now the only thing
+    that survived was whatever `_CM` happened to have a regex for. Four of the six readings that
+    customer asked for were in this text on every run since the engine was written, and getting
+    them meant measuring the mesh again. Keeping the text makes a missing metric a re-parse.
+    """
+    try:
+        suffix = f".{region}" if region else ""
+        (ws / CHECKMESH_LOG.format(suffix=suffix)).write_text(raw, encoding="utf-8")
+    except OSError:
+        logger.warning("could not keep checkMesh's output beside the mesh", exc_info=True)
 
 
 def parse_check_mesh(out: str) -> dict:
@@ -122,6 +171,29 @@ def parse_check_mesh(out: str) -> dict:
     # is fully solvable; this fraction - not the single worst value - is the honest quality signal.
     q.setdefault("skew_faces", 0)
     q["skew_fraction"] = (q["skew_faces"] / q["faces"]) if q.get("faces") else 0.0
+    q.setdefault("small_determinant_cells", 0)
+
+    # THE CELL TYPES AS ONE BLOCK, with the kinds that are absent left out rather than written as
+    # zeroes. A reader wants "what is this mesh made of"; seven rows of which five say 0 answers
+    # it worse than one row saying hexahedra. The total is carried so a reader can see at a glance
+    # whether the types account for every cell - they should, and when they do not, something in
+    # the mesh is a kind checkMesh did not name.
+    kinds = ("hexahedra", "prisms", "wedges", "pyramids", "tet_wedges", "tetrahedra", "polyhedra")
+    present = {k: int(q[k]) for k in kinds if int(q.get(k) or 0) > 0}
+    if present:
+        q["cell_types"] = present
+        q["cell_types_total"] = sum(present.values())
+
+    # CELL SIZE AS A LENGTH, because that is what a mesh is judged by and what the budget is set
+    # in. checkMesh reports volumes; the cube root is the edge of the equivalent cube. On a graded
+    # mesh min and max are the two ends of the grading, and their RATIO is how many octree levels
+    # the mesh actually spans - which is the thing a two-scale part is sized by.
+    for src, dst in (("min_volume", "min_cell_m"), ("max_volume", "max_cell_m")):
+        v = q.get(src)
+        if isinstance(v, (int, float)) and v > 0.0:
+            q[dst] = float(v) ** (1.0 / 3.0)
+    if q.get("min_cell_m") and q.get("max_cell_m"):
+        q["cell_size_ratio"] = q["max_cell_m"] / q["min_cell_m"]
     mr = re.search(r"Number of regions:\s*(\d+)", out)
     if mr:
         # Region count is INFORMATION, not a hard gate. A disconnected region is a defect
@@ -142,8 +214,23 @@ def parse_check_mesh(out: str) -> dict:
     return q
 
 
+#: How long foamToVTK may take to WRITE a mesh out. It was 300 s, a fixed ceiling from when
+#: meshes were small, and it is the same mistake CHECK_TIMEOUT_S above already records: foamToVTK
+#: walks every cell and writes every one of them to disk, so its cost follows the cell count and
+#: not the clock. Measured on the first real customer mesh (102,630,992 cells, 2026-10-28): the
+#: VTK directories were created at 21:05:37 and the run gave up at 21:10:38 - 301 s - leaving
+#: `VTK/fluid` and `VTK/solid` empty.
+#:
+#: THAT IS NOT A LOST PICTURE, IT IS A LOST RUN. review_surface.build_region_msh converts this
+#: export into the msh that `mesh_paths.surface` names, and that artifact is required=True
+#: (_shared._RENDER_ARTIFACTS). No export, no surface, no review, and a mesh that took 1.75 hours
+#: to build cannot reach `succeeded` - because a picture of it timed out.
+EXPORT_TIMEOUT_S = 7200.0
+
+
 def export_volume_vtk(workspace, *, all_regions: bool = False, region: str = "",
-                      bashrc: str = _DEFAULT_BASHRC, timeout: int = 300) -> str | None:
+                      bashrc: str = _DEFAULT_BASHRC,
+                      timeout: float = EXPORT_TIMEOUT_S) -> str | None:
     """The cells as VTK, for the reviewer to slice. None on any failure - never a failed mesh.
 
     `all_regions` exports every region of a split case, and `region` says which one's file to
@@ -166,7 +253,12 @@ def export_volume_vtk(workspace, *, all_regions: bool = False, region: str = "",
         run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
                     capture_output=True, text=True, timeout=timeout)
     except Exception:
-        logger.exception("export_volume_vtk: foamToVTK failed")
+        # LOUD, because this is not only a missing picture. The msh that `mesh_paths.surface`
+        # names is converted from what this writes, and that artifact is required - so a quiet
+        # warning here surfaces downstream as a review that cannot open, on a mesh that is
+        # perfectly good and already paid for. Said plainly so the cause is one search away.
+        logger.error("foamToVTK did not finish within %.0f s: the mesh stands, but the review "
+                     "surface is built from this export and will be missing", float(timeout))
         return None
     # THE NEWEST TIME DIRECTORY, not the first alphabetically. foamToVTK names them
     # "<case>_<n>" and a split case has more than one: measured on a real run, this returned

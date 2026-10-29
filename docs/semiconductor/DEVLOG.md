@@ -550,3 +550,163 @@ row plus one `viewer_data` artifact are registered by hand against the local sta
 | the part roster | lists the manifest's bare patch names and the viewer's region-prefixed ones, 15 entities where 9 would do |
 | the other polyMesh engines | snapgrid and snappy_multiregion pack unbudgeted too. Neither delivers at this size today |
 | a real run | cannot reach the console at this size at all: `mesh_paths.surface` is a required render artifact and the review needs it |
+
+## 2026-10-29, cells shaped like the feature, and the readings the customer asked for
+
+Corintis answered three questions on 2026-10-29. The one that turns into work is the third: they
+want to see "mesh count, quality metrics to know if the mesh is of good quality, number of
+boundary layers in the fluid, min and max cell sizes, cell types and count per type, highlight of
+poor-quality cells". Four of those six were already being measured on every run and thrown away.
+
+| reading | before | now, on their own delivered mesh |
+|---|---|---|
+| mesh count | cells only | 102,630,992 cells, 324,194,634 faces, 118,939,386 points, per region |
+| cell types | hexahedra and polyhedra of seven | 100,629,029 hexahedra and 2,001,963 polyhedra |
+| min and max cell size | nothing | 41.71 um .. 370.24 um, a ratio of 8.9 |
+| poor-quality cells | nothing | 28,132 with a small determinant |
+| quality metrics | the worse of the two regions | per region |
+| boundary layers | none, and still none | |
+
+`checkMesh` prints all of it on every run. `_CM` had regexes for two cell types out of seven and no
+sizes at all, and `read_region` kept six fields of what it was handed. The run that produced the
+numbers above cost 204.9 s on the coolant and 584.5 s on the metal, and had cost that every time.
+Its output is now kept verbatim beside the mesh as well, so a reading nobody thought to parse is a
+re-parse rather than a two-hour re-measure.
+
+### The per-region split was hiding the answer
+
+| | coolant | metal |
+|---|---|---|
+| cells | 22,062,782 | 80,568,210 |
+| non-orthogonality, max | 16.92 | 22.71 |
+| cells with a small determinant | 200 | 27,932 |
+
+Collapsed with `max()`, as the manifest did, that reads as one mesh with 28,132 bad cells. It is
+two meshes, and 99.3% of the bad cells are in the half that is not being solved for flow.
+
+### A prefix nobody matched
+
+`_paint` asks `face_quality` to colour the delivered boundary and hands it the payload's patch
+names, which this engine writes as `fluid/fluid_to_solid` so that the two regions' identically
+named block faces cannot replace one another. The polyMesh on disk knows only `fluid_to_solid`.
+Nothing matched, `per_patch` came out empty, `quality_fields` returned None, and the engine whose
+whole question is WHICH SIDE is bad has never drawn a heatmap. Nothing raised; a missing heatmap
+is swallowed by design.
+
+The same mismatch doubled the part roster. A declared `ymin` found no actor and was listed
+un-renderable; `solid/ymin` was appended beside it as a part of its own. Fifteen entries for nine
+boundaries, with the pickable half and the drawable half being different rows.
+
+### A picture that times out takes the run with it
+
+| | |
+|---|---|
+| VTK directories created | 21:05:37 |
+| report written | 21:10:38 |
+| the timeout | 300 s |
+
+`review_surface.build_region_msh` converts foamToVTK's output into the msh that
+`mesh_paths.surface` names, and that artifact is `required=True`. So a fixed 300 s ceiling, from
+when meshes were small, is why a mesh that took 1.75 hours to build cannot reach a verdict. It now
+follows the cell count like `CHECK_TIMEOUT_S` beside it, and says so loudly when it does not
+finish.
+
+### Cells shaped like the feature they resolve
+
+An octree cell is a cube. The customer's slots are 0.098 mm wide, run tens of mm in plane, and are
+1.9 mm tall with a constant cross-section through that height, so resolving the width to five cells
+also buys about ninety-seven cells through a height where a dozen would do.
+
+cfMesh answers this with `anisotropicSources`, which ships in its own ship5415Octree tutorial. I
+measured the convention rather than assuming it, on a 10 mm box at 1 mm cells:
+
+| | cells | largest cell volume |
+|---|---|---|
+| plain | 896 | 1.256e-9 |
+| scaleY 4.0 | 320 | 5.142e-9 |
+| scaleY 0.25 | 3,776 | 4.344e-10 |
+
+So a scale above one stretches along the axis and the saving follows the factor. Guessing it the
+other way quadruples a mesh meant to be quartered.
+
+THE LICENCE IS GEOMETRIC, not a setting. A stretch is free only along an axis the shape is extruded
+along; anywhere else it smears the features the mesh exists to resolve. `cad/scales.prismatic_axis`
+measures it as the area-weighted mean of the normal's component along each axis, which for an
+extrusion is the share of the surface that is cap. On the customer's own files:
+
+| surface | reading |
+|---|---|
+| `fluid_fine.stl`, the microchannels | y at 0.0694 |
+| `fluid.stl`, the whole coolant | no prismatic axis |
+
+which is the right answer both times: the channel field is an extrusion and the manifold loop bends.
+
+### What that buys, priced on the real geometry
+
+| across the slots | cell | stretch | cells | fits 100-700M | one process |
+|---|---|---|---|---|---|
+| 2.23 | 44.01 um | none | 102,630,992 delivered | | yes |
+| 4.46 | 22.00 um | none | 966,955,439 | no | 4.3x over |
+| 4.46 | 22.00 um | 6x | 181,673,384 | yes | yes |
+| 8.93 | 11.00 um | 8x | 634,530,269 | yes | 2.8x over, needs 3 ranks |
+| 8.93 | 11.00 um | none | 4,903,923,343 | no | no |
+| 17.85 | 5.50 um | 8x | 3,019,246,411 | no | no |
+
+The stretch doubles the resolution across the slots for FEWER cells than the unstretched plan, and
+4.46 clears the four-cell floor below which a passage stops holding together. The rung above is
+inside the band and gated on the parallel chain alone, so `plan_two_scales` now takes a rank count
+and a refusal says how many ranks the configuration it had to reject would have taken.
+
+`FINE_ACROSS_CAP` moved from 8 to 10 because the ladder is discrete: the octree halves, so on
+0.0982 mm slots the reachable rungs are 4.46 and 8.93, and a cap of exactly 8 refused the rung that
+meets the published guidance by 0.93 of a cell.
+
+### Open
+
+| item | state |
+|---|---|
+| boundary layers | still none. `generateBoundaryLayers` is in the image and `nLayers` / `thicknessRatio` are keywords cartesianMesh reads, so this is wiring, not a capability |
+| the heatmap on a big mesh | the name fix lands it for anything under the 40M-face cap; the customer's coolant alone is 73M. `checkMesh -writeAllFields` writes nonOrthoAngle, skewness, aspectRatio and cellShapes as volFields, and `-writeSets` writes the bad faces as a surface, which is the cheaper route than re-deriving in numpy |
+| the corpus | a two-scale part is being built (`devtools/semiconductor/geometry/two_scale_plate.py`): 24 x 16 x 3 mm, a 2.1 mm manifold ring feeding 22 slots of 0.098 mm on the customer's own 0.545 mm pitch, in sealed and ported variants. It builds and its volumes close exactly on the block; the width histogram does not split yet at 944 triangles and is being re-read on a subdivided surface |
+| NCC | `createNonConformalCouples` is absent from this build, so non-conformal coupling here means `nearestPatchFaceAMI`, which cfd.direct measures as non-conservative and Cheung (TUM 2016) measured at a 3.8% energy imbalance. Conformal stays the plan for the plate |
+| `pureZoneMixture` | present in this build, which is what makes one coarse chip region with per-material cell zones the answer for an ECXML of up to 2000 solids rather than 2000 regions |
+
+### A sealed coolant was refused for the wrong reason
+
+`ConjugateReport.flowable` has been on the report since the engine was written, with a docstring
+saying what it is for: "with neither, nothing fixes its pressure and no solver will run". No gate
+read it. So the customer's sealed mesh cleared all eight mesh gates and was refused further down
+for a patch-name contract mismatch, which is true and sends the reader to look at their patch
+names when the problem is that their coolant is a closed box.
+
+| | |
+|---|---|
+| their fluid region's patches | `fluid_to_solid`, and nothing else |
+| the plan's ports | inlet '' and outlet '', port_walls [] |
+| what the row said | the patch contract did not match |
+
+There is now a `flowable` gate, and a sealed part that never asked for ports still passes it -
+`murray.py` builds a tree sealed inside the metal deliberately and it is the hardest topology in
+the corpus. What is refused is a part that asked for an inlet and an outlet and did not get them.
+
+The port is named TWICE and that caught me: `ports` carries the block face the coolant leaves by
+(`ymin`), while the delivered patch wears the user's name (`coolant_in`), because renameBoundary
+runs before the split. My first version looked up the face name among the delivered patches,
+found nothing, and refused the canonical deliverable fixture. The existing row test caught it.
+
+### The floor that admitted 2.23 cells across
+
+`FINE_ACROSS_FLOOR` was 2. The comment above it has said since it was written that four is the
+floor at which a passage holds together, and the planner enforced two, which is how the customer
+part came to be planned at 2.23 across and delivered in 19 pieces.
+
+It was two because four was unaffordable: 4.46 across prices at 966,955,439 cells unstretched.
+With the stretch the same resolution is 181,673,384, so the floor is now four and the
+configuration that built is refused - which is the behaviour that was wanted all along.
+
+### Also
+
+The delivered interface AREA is now carried per patch, having been computed and discarded on
+every read. On a conjugate mesh that number is the heat-transfer area, and it is what staircasing
+takes away without changing a single face count: 48,430.54 mm2 delivered against 60,588.07 mm2 of
+wetted CAD on the customer plate, a 20.07% deficit invisible from a face count.

@@ -377,7 +377,8 @@ def render_meshdict(*, block_file: str, fluid_file: str, background_cell_m: floa
                     thickness_m: float | None = None,
                     patch_names: dict[str, tuple[str, str]] | None = None,
                     fine_zones: list | None = None,
-                    fine_surfaces: list | None = None) -> str:
+                    fine_surfaces: list | None = None,
+                    stretch_zones: list | None = None) -> str:
     """The meshDict for the single-domain pass over the whole block.
 
     `surfaceMeshRefinement` is what makes this work. It refines around a surface that is NOT the
@@ -484,6 +485,55 @@ def render_meshdict(*, block_file: str, fluid_file: str, background_cell_m: floa
                 "    }\n")
     if fine_zones:
         out += "}\n"
+
+    # CELLS SHAPED LIKE THE FEATURE THEY RESOLVE. An octree cell is a cube, and a microchannel is
+    # not: the first customer's slots are 0.098 mm wide, run tens of mm in plane, and are 1.9 mm
+    # tall with a constant cross-section through that height. Resolving the WIDTH to 5 cells with
+    # cubes therefore buys about 97 cells through a height where a dozen would do, and the whole
+    # field is priced at the cost of the axis that needed nothing.
+    #
+    # `anisotropicSources` is cfMesh's own answer and it ships in its ship5415Octree tutorial.
+    # MEASURED HERE, because the sign convention decides the sizing and guessing it the wrong way
+    # quadruples the mesh instead of quartering it. A 10 mm box at 1 mm cells, 2026-10-29:
+    #
+    #     plain          896 cells, max cell volume 1.256e-9
+    #     scaleY 4.0     320 cells, max cell volume 5.142e-9   (4.09x taller, 2.8x fewer cells)
+    #     scaleY 0.25  3,776 cells, max cell volume 4.344e-10  (4x shorter, 4.2x more cells)
+    #
+    # So scale > 1 stretches the cell along that axis and the saving follows the factor. The box
+    # is 10 cells tall, which is why the count saving is 2.8x rather than 4x here: the surface
+    # layer cannot stretch. Over a field many cells deep it approaches the factor.
+    #
+    # A STRETCH IS NOT A REFINEMENT and must not be read as one. It changes the SHAPE of the
+    # cells in its box, nothing about where the small ones go. The axis to stretch is the one the
+    # geometry is prismatic along; stretching an axis that carries features smears them.
+    for z in (stretch_zones or []):
+        lo, hi = z["lo"], z["hi"]
+        sx, sy, sz = (float(s) for s in z["scale"])
+        if any(float(hi[k]) <= float(lo[k]) for k in range(3)):
+            raise ConjugateError(f"a stretch zone needs a positive extent, got {lo} .. {hi}")
+        if min(sx, sy, sz) <= 0.0:
+            raise ConjugateError(f"a stretch factor must be positive, got ({sx} {sy} {sz})")
+        if (sx, sy, sz) == (1.0, 1.0, 1.0):
+            raise ConjugateError("a stretch zone that scales nothing is a dictionary entry that "
+                                 "reads as a deliberate choice and does nothing")
+        centre = [0.5 * (float(lo[k]) + float(hi[k])) for k in range(3)]
+        span = [float(hi[k]) - float(lo[k]) for k in range(3)]
+        name = str(z.get("name") or "stretch").strip() or "stretch"
+        out += ("\nanisotropicSources\n{\n" if "anisotropicSources" not in out else "")
+        out += (f"    {name}\n    {{\n"
+                "        type box;\n"
+                f"        centre ({centre[0]:.9g} {centre[1]:.9g} {centre[2]:.9g});\n"
+                f"        lengthX {span[0]:.9g};\n"
+                f"        lengthY {span[1]:.9g};\n"
+                f"        lengthZ {span[2]:.9g};\n"
+                f"        scaleX {sx:.6g};\n"
+                f"        scaleY {sy:.6g};\n"
+                f"        scaleZ {sz:.6g};\n"
+                "    }\n")
+    if stretch_zones:
+        out += "}\n"
+
     if patch_names:
         # NO defaultName and NO defaultType. Every block face is already a named solid of the
         # block STL, so there is nothing for a default to catch - and on the 2D cfMesh path a
@@ -625,6 +675,23 @@ class RegionReport:
     #: re-derived, because that list is where "negative volume cells" and "empty patches on a 3D
     #: mesh" are already named, and both make every solver refuse the case.
     fatal: tuple[str, ...] = ()
+    #: WHAT THE MESH IS MADE OF, and the range of sizes in it. checkMesh prints all of this on
+    #: every run and this report kept six fields and dropped the rest, so the readings a customer
+    #: asks for first - "cell types and count per type", "min and max cell sizes" (Corintis,
+    #: 2026-10-29) - were measured, thrown away, and would have been re-derived by hand.
+    #: Per region, never collapsed with the other: on a conjugate mesh the coolant is the fine
+    #: region and the metal is the coarse one, and a single pair of numbers describes neither.
+    faces: int = 0
+    points: int = 0
+    cell_types: dict[str, int] = field(default_factory=dict)
+    min_cell_m: float | None = None
+    max_cell_m: float | None = None
+    max_aspect_ratio: float | None = None
+    avg_non_ortho: float | None = None
+    skew_faces: int = 0
+    #: Cells too flat for a solver to integrate over. checkMesh names these only when it finds
+    #: them, so zero is the honest default rather than a missing reading.
+    small_determinant_cells: int = 0
 
     @property
     def mean_cell_m(self) -> float:
@@ -743,6 +810,17 @@ def read_region(quality: dict, name: str) -> RegionReport:
         max_non_ortho=quality.get("max_non_ortho"),
         max_skewness=quality.get("max_skewness"),
         fatal=tuple(quality.get("fatal") or ()),
+        # Everything else checkMesh measured. This used to stop at the six fields above, which
+        # meant a run paid for the measurement and then kept a tenth of it.
+        faces=int(quality.get("faces") or 0),
+        points=int(quality.get("points") or 0),
+        cell_types=dict(quality.get("cell_types") or {}),
+        min_cell_m=quality.get("min_cell_m"),
+        max_cell_m=quality.get("max_cell_m"),
+        max_aspect_ratio=quality.get("max_aspect_ratio"),
+        avg_non_ortho=quality.get("avg_non_ortho"),
+        skew_faces=int(quality.get("skew_faces") or 0),
+        small_determinant_cells=int(quality.get("small_determinant_cells") or 0),
     )
 
 
@@ -918,7 +996,7 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
           expect_fluid_pieces: int | None = None, volume_tol: float = DEFAULT_VOLUME_TOL,
           ports: PortPlan | None = None, narrowest_m: float | None = None,
           patch_names: dict | None = None, fine_zones: list | None = None,
-          fine_surfaces: list | None = None,
+          fine_surfaces: list | None = None, stretch_zones: list | None = None,
           bashrc: str = _DEFAULT_BASHRC, timeout: int = 3600) -> ConjugateReport:
     """Mesh the block, split it in two, and report what was actually produced."""
     ws = Path(workspace)
@@ -936,7 +1014,8 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
     (ws / "system" / "meshDict").write_text(render_meshdict(
         block_file=block_stl, fluid_file=fluid_stl,
         background_cell_m=background_cell_m, levels=levels, thickness_m=thickness_m,
-        patch_names=patch_names, fine_zones=fine_zones, fine_surfaces=fine_surfaces))
+        patch_names=patch_names, fine_zones=fine_zones, fine_surfaces=fine_surfaces,
+        stretch_zones=stretch_zones))
     (ws / "system" / "topoSetDict").write_text(render_toposetdict(fluid_file=fluid_stl))
 
     # THE CASE IS SCANNED BEFORE ANYTHING RUNS, which is where every other OpenFOAM bundle scans

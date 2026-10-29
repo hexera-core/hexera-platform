@@ -79,6 +79,7 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             narrowest_m=plan.narrowest_m, patch_names=PL.as_patch_names(plan),
             fine_zones=[dict(z) for z in (plan.fine_zones or ())],
             fine_surfaces=[dict(s) for s in (plan.fine_surfaces or ())],
+            stretch_zones=[dict(z) for z in (plan.stretch_zones or ())],
             bashrc=bashrc, timeout=int(timeout))
     except ConjugateError as exc:
         # A REFUSAL IS NOT A CRASH. The mesher refuses a case it can see is wrong - more than two
@@ -132,7 +133,7 @@ def _review_aids(ws: Path, *, bashrc: str) -> dict:
 
     from meshpipeline.engines.cfmesh_conjugate.review_surface import REVIEW_MSH
 
-    out: dict = {"volume": None, "surface": None, "groups": {}, "bbox": None}
+    out: dict = {"volume": None, "surface": None, "groups": {}, "bbox": None, "why": ""}
     try:
         out["volume"] = export_volume_vtk(ws, all_regions=True, region=FLUID_REGION,
                                           bashrc=bashrc)
@@ -146,6 +147,16 @@ def _review_aids(ws: Path, *, bashrc: str) -> dict:
             out["bbox"] = list(bbox) if bbox else None
     except Exception:                     # noqa: BLE001
         logger.warning("conjugate: the review surface failed (non-fatal)", exc_info=True)
+    # WHY IT IS MISSING, RECORDED. `mesh_paths.surface` is a required render artifact and it is
+    # converted from the VTK export above, so these two failures are one failure wearing two
+    # names - and a reader of a run that could not be reviewed saw neither, only an absence.
+    # The first customer mesh died exactly here: a 301 s timeout left both VTK directories empty
+    # and the 1.75-hour build could not reach a verdict.
+    if not out["surface"]:
+        out["why"] = ("the review surface is converted from the VTK export, and no VTK boundary "
+                      "was written" if not out["volume"] else
+                      "the VTK export was written but held no boundary to convert")
+        logger.error("conjugate: no review surface - %s", out["why"])
     return out
 
 
@@ -165,7 +176,18 @@ def _as_dict(report, plan: PL.ConjugatePlan) -> dict:
                      "pieces": int(r.pieces), "mesh_ok": bool(r.mesh_ok),
                      "fatal": list(r.fatal), "patches": dict(r.patches),
                      "max_non_ortho": r.max_non_ortho,
-                     "max_skewness": r.max_skewness}
+                     "max_skewness": r.max_skewness,
+                     # THE REST OF WHAT CHECKMESH SAID, per region. Collapsed across the two
+                     # regions these describe neither: on a conjugate mesh the coolant is the
+                     # fine region and the metal the coarse one, so one pair of size numbers is
+                     # an average of two different meshes.
+                     "faces": int(r.faces), "points": int(r.points),
+                     "cell_types": dict(r.cell_types),
+                     "min_cell_m": r.min_cell_m, "max_cell_m": r.max_cell_m,
+                     "max_aspect_ratio": r.max_aspect_ratio,
+                     "avg_non_ortho": r.avg_non_ortho,
+                     "skew_faces": int(r.skew_faces),
+                     "small_determinant_cells": int(r.small_determinant_cells)}
             for r in (report.fluid, report.solid)
         },
         "interface_faces_fluid": int(report.interface_faces_fluid),

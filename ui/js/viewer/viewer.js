@@ -417,13 +417,22 @@ function initViewer(job,surf,uiCfg){
         metadata:{name:p.name,role:p.type||'',faces:p.face_count}})))
       .map(p=>{
         const md=p.metadata||{};
-        // the mesh ENTITY this part maps back to - carried by the backend, because
-        // a label is for reading and an entity name is for looking up an actor
+        // the mesh ENTITIES this part maps back to - carried by the backend, because
+        // a label is for reading and an entity name is for looking up an actor.
+        // USUALLY ONE, SOMETIMES SEVERAL. A multi-region engine draws "<region>/<patch>"
+        // because its regions own identically named block faces, while the manifest keeps the
+        // bare name the user asked for at intake. `drawn_as` is the backend saying which drawn
+        // surfaces carry this one declared boundary; both regions can reach ymin, so it is a
+        // list. Without it the declared patch found no actor, read as un-renderable, and the
+        // drawn surfaces were listed again beside it as parts of their own.
         const entity=md.name||p.label;
-        return {id:p.id,label:p.label,kind:p.kind,meta:md,entity:entity,
+        const entities=(Array.isArray(md.drawn_as)&&md.drawn_as.length?md.drawn_as:[entity])
+                        .filter(e=>!!actorOf[e]);
+        return {id:p.id,label:p.label,kind:p.kind,meta:md,
+                entity:entities[0]||entity,entities:entities,
                 role:md.role||'',
                 // declared renderable AND actually present in this payload
-                renderable:p.renderable!==false&&!!actorOf[entity],
+                renderable:p.renderable!==false&&!!entities.length,
                 hiddenByDefault:p.default_visibility==='hidden'};});
 
     const KIND=thermal
@@ -468,9 +477,10 @@ function initViewer(job,surf,uiCfg){
     function paint(){
       const selPart=sel?parts.find(x=>x.id===sel):null;
       entries.forEach(en=>{
-        const p=parts.find(x=>x.renderable&&x.entity===en.patch);
+        const p=parts.find(x=>x.renderable&&x.entities.indexOf(en.patch)>=0);
         const s=p?st[p.id]:null;if(!s)return;
-        const pr=en.actor.getProperty(),isSel=!!(selPart&&selPart.entity===en.patch);
+        const pr=en.actor.getProperty(),
+              isSel=!!(selPart&&selPart.entities.indexOf(en.patch)>=0);
         en.actor.setVisibility(!sliceOn&&!s.hidden&&(!isolated||isSel));
         pr.setOpacity(s.opacity);
         if(isSel){pr.setColor(_SEL[0],_SEL[1],_SEL[2]);
@@ -570,7 +580,11 @@ function initViewer(job,surf,uiCfg){
 
     // THE THERMAL TABLE shows a part alone (or the whole model again) through the same state
     partsApi={isolate:(entity)=>{
-      const p=entity?parts.find(x=>x.renderable&&x.entity===entity):null;
+      // by the part's own name OR by any surface that draws it, so a caller holding either the
+      // declared patch ("ymin") or a drawn one ("solid/ymin") reaches the same part
+      const p=entity?parts.find(x=>x.renderable&&(x.entity===entity
+                                   ||x.entities.indexOf(entity)>=0
+                                   ||(x.meta&&x.meta.name===entity))):null;
       if(p){sel=p.id;isolated=true;st[p.id].hidden=false;}else{sel=null;isolated=false;}
       paint();refit();},
       repaint:()=>{paint();refit();}};
@@ -816,13 +830,22 @@ function initViewer(job,surf,uiCfg){
     // GROUPED, the way the figures are read: how big the mesh is, what its cells are, how good
     // they are. A zero that only says "nothing is wrong" (no skewed faces, a skew fraction of 0)
     // is folded into the figure it qualifies instead of taking a cell of its own.
-    const SIZE=[['cells','Cells'],['faces','Faces'],['regions','Regions']];
+    const SIZE=[['cells','Cells'],['faces','Faces'],['points','Points'],['regions','Regions']];
+    // ALL SEVEN checkMesh counts. Three of them had no label here, so a mesh with wedges in it
+    // listed its hexahedra and said nothing about the rest.
     const TYPES=[['hexahedra','Hexahedra'],['polyhedra','Polyhedra'],['prisms','Prisms'],
-                 ['pyramids','Pyramids'],['tetrahedra','Tetrahedra']];
+                 ['pyramids','Pyramids'],['tetrahedra','Tetrahedra'],['wedges','Wedges'],
+                 ['tet_wedges','Tet wedges']];
     const QUALITY=[['max_non_ortho','Max non-orthogonality','°'],['max_skewness','Max skewness',''],
                    ['max_aspect_ratio','Max aspect ratio','']];
-    const FOLDED=['avg_non_ortho','skew_faces','skew_fraction'];
-    const KNOWN=[...SIZE,...TYPES,...QUALITY].map(r=>r[0]).concat(FOLDED,['units','engine']);
+    // THE SIZE RANGE, as lengths rather than volumes, because that is what a mesh is judged by.
+    // Drawn as its own group: on a two-scale part these two numbers and their ratio ARE the
+    // mesh's story, and buried among the quality rows they read as incidental.
+    const SPAN=[['min_cell_m','Smallest cell'],['max_cell_m','Largest cell']];
+    const FOLDED=['avg_non_ortho','skew_faces','skew_fraction','cell_size_ratio',
+                  'internal_faces','small_determinant_cells'];
+    const KNOWN=[...SIZE,...TYPES,...QUALITY,...SPAN].map(r=>r[0])
+                 .concat(FOLDED,['units','engine']);
     const isNum=v=>typeof v==='number'&&isFinite(v);
     // integers read as counts; a measured value to two decimals, and a very small one in
     // exponent form rather than a run of zeroes
@@ -861,16 +884,37 @@ function initViewer(job,surf,uiCfg){
     else if(has('skew_faces'))quality.push(row('skew_faces','Skewed faces','',[ofFaces,frac].filter(Boolean).join(' ')));
     else if(has('skew_fraction'))quality.push(row('skew_fraction','Skew fraction',''));
     if(has('max_aspect_ratio'))quality.push(row('max_aspect_ratio','Max aspect ratio',''));
+    // CELLS A SOLVER CANNOT INTEGRATE OVER. checkMesh names these only when it finds some, so
+    // the zero case says so rather than leaving a reader to wonder whether it was looked for.
+    if(has('small_determinant_cells'))quality.push(row('small_determinant_cells',
+      'Cells with small determinant','',
+      q.small_determinant_cells===0?'None'
+        :(isNum(q.cells)&&q.cells>0?`${(100*q.small_determinant_cells/q.cells).toPrecision(2)}% of cells`:'')));
+
+    /* A LENGTH, read the way an engineer says it. The backend carries metres because that is the
+       mesh's unit; nobody discusses a microchannel in metres. mm down to a micron, then um. */
+    const len=v=>!isNum(v)?esc(String(v))
+      :Math.abs(v)>=1e-3?`${(v*1e3).toLocaleString(undefined,{maximumSignificantDigits:4})}<small>mm</small>`
+      :`${(v*1e6).toLocaleString(undefined,{maximumSignificantDigits:4})}<small>&micro;m</small>`;
+    const spanRow=([k,l])=>`<div class="mx-c mx-row mx-q" data-key="${k}"><div class="mx-k">${l}</div>`
+      +`<div class="mx-v">${len(q[k])}</div></div>`;
+    const span=SPAN.filter(([k])=>has(k)).map(spanRow);
+    // the ratio is the number that matters on a graded mesh: how many octree levels it spans
+    if(span.length===2&&isNum(q.cell_size_ratio))
+      span.push(row('cell_size_ratio','Size ratio','&times;',
+        `the delivered mesh spans ${Math.log2(q.cell_size_ratio).toFixed(1)} octree levels`));
+
     // anything the backend declared that this build has no name for still reaches the user
     const other=Object.keys(q).filter(k=>!KNOWN.includes(k)).map(k=>row(k,k.replace(/_/g,' '),''));
     const sizes=SIZE.filter(([k])=>has(k)),types=TYPES.filter(([k])=>has(k));
     const group=(title,body)=>body?`<div class="mx-group"><div class="mx-gh">${title}</div>${body}</div>`:'';
-    if(!sizes.length&&!types.length&&!quality.length&&!other.length)return;
+    if(!sizes.length&&!types.length&&!quality.length&&!span.length&&!other.length)return;
     host.innerHTML=`<div class="mx"><div class="mx-h"><span>Delivered mesh</span>`
       +(q.engine?`<span class="eng">${esc(q.engine)}</span>`:'')
       +(q.units?`<span class="eng">${esc(q.units)}</span>`:'')
       +`</div>`
       +(sizes.length?`<div class="mx-size">${sizes.map(stat).join('')}</div>`:'')
+      +group('Cell size',span.join(''))
       +group('Cell types',types.map(type).join(''))
       +group('Quality',quality.join(''))
       +group('Other',other.join(''))

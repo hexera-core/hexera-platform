@@ -453,18 +453,41 @@ def _hotspots(metric: str, values: np.ndarray, limits: np.ndarray, fCtrs, owner,
 
 def attach_quality_fields(resp: dict, polymesh_dir, *, non_ortho_limit: float,
                           skew_limit: float = INTERNAL_SKEW_LIMIT,
-                          aspect_limit: float = ASPECT_RATIO_LIMIT) -> None:
+                          aspect_limit: float = ASPECT_RATIO_LIMIT,
+                          patch_of: dict[str, str] | None = None) -> None:
     """Add `quality_fields` to a viewer response, or leave it untouched.
 
     The colouring is an addition to a mesh the user already has. Nothing that goes wrong while
     measuring it may cost them the mesh, so every failure is logged and swallowed here, and the
-    viewer simply has no heatmap for that job."""
+    viewer simply has no heatmap for that job.
+
+    `patch_of` MAPS A RESPONSE PATCH NAME TO THE ONE THE POLYMESH USES, and exists because they
+    are not always the same string. A payload's names are presentation: the conjugate engine
+    writes "fluid/fluid_to_solid" because both of its regions own a patch called `ymin` and one
+    would silently replace the other in the viewer's roster. The polyMesh on disk knows only the
+    bare name. Passing the presentation names straight through meant `wanted` never matched a
+    single patch, `per_patch` came out empty, `quality_fields` returned None, and the engine that
+    most needs a heatmap - a conjugate mesh, where the question is which side is bad - has never
+    drawn one. Nothing raised; it just silently had no colour.
+    """
     try:
-        names = [p.get("name") for p in (resp.get("patches") or []) if isinstance(p, dict)]
+        names = [str(p.get("name") or "") for p in (resp.get("patches") or [])
+                 if isinstance(p, dict)]
+        alias = dict(patch_of or {})
+        wanted = [alias.get(n, n) for n in names]
         fields = quality_fields(polymesh_dir, non_ortho_limit=non_ortho_limit,
-                                skew_limit=skew_limit, aspect_limit=aspect_limit, patch_names=names)
-        if fields:
-            resp["quality_fields"] = fields
+                                skew_limit=skew_limit, aspect_limit=aspect_limit,
+                                patch_names=wanted)
+        if not fields:
+            return
+        if alias:
+            # back into the payload's own names, so the viewer can match a patch to its colours
+            back = {mesh_name: shown for shown, mesh_name in alias.items()}
+            fields["patches"] = {back.get(k, k): v for k, v in (fields.get("patches") or {}).items()}
+            for h in fields.get("hotspots") or []:
+                if h.get("patch") in back:
+                    h["patch"] = back[h["patch"]]
+        resp["quality_fields"] = fields
     except Exception:  # noqa: BLE001 - a heatmap is never worth a delivery
         logger.exception("viewer quality fields unavailable - the mesh ships without a heatmap")
 

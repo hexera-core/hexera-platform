@@ -116,8 +116,18 @@ def _paint(resp: dict, ws: Path) -> None:
         from meshpipeline.render.face_quality import attach_quality_fields
         bar = MAX_NON_ORTHO.threshold
         if isinstance(bar, (int, float)):
+            # THE NAMES THIS VIEWER DRAWS ARE NOT THE NAMES ON DISK. Every patch here is written
+            # "<region>/<patch>" so the two regions' identically named block faces cannot replace
+            # one another in the roster; the polyMesh knows only the bare name. Handing the
+            # prefixed names to the quality reader matched nothing, so it returned None and this
+            # engine has never drawn a heatmap - silently, because a missing heatmap is swallowed
+            # by design. The map is the correspondence, stated once.
+            prefix = f"{FLUID_REGION}/"
+            alias = {str(p["name"]): str(p["name"])[len(prefix):]
+                     for p in (resp.get("patches") or [])
+                     if isinstance(p, dict) and str(p.get("name", "")).startswith(prefix)}
             attach_quality_fields(resp, ws / "constant" / FLUID_REGION / "polyMesh",
-                                  non_ortho_limit=float(bar))
+                                  non_ortho_limit=float(bar), patch_of=alias)
     except Exception:                      # noqa: BLE001 - a heatmap never costs the view
         logger.warning("conjugate viewer: no quality heatmap (non-fatal)", exc_info=True)
 
