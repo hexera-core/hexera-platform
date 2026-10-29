@@ -57,6 +57,11 @@ JOINED_SHARE = 1e-3
 #: of the thinnest wall: edges that meet within it become one edge, a face another face's edge lies on is split
 #: there - a conformal shell, shared nodes at every junction.
 SEW_SHARE = 1e-3
+#: ... but never below SEW_TOL_FACTOR times the largest tolerance the mid-faces carry themselves (offset B-spline
+#: walls of a lofted cyclone funnel came out of the overlap with 0.0125 mm on 5 mm walls, and a fuzzy value
+#: under that broke the general fuse), up to SEW_SHARE_MAX of the thinnest wall
+SEW_TOL_FACTOR = 4.0
+SEW_SHARE_MAX = 1e-2
 #: AN OPEN EDGE: a free edge of the sewn surface (one face) whose outward side, OPEN_STEP of the wall past
 #: it, is still inside the material - a junction the mid-faces did not reach. A real boundary (a plate's
 #: rim, a hole) has the outside there.
@@ -1662,7 +1667,8 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
         if not mine:
             continue
         t_min = min(m.t for m in mine)
-        fuzzy = SEW_SHARE * t_min
+        fuzzy = min(max(SEW_SHARE * t_min, SEW_TOL_FACTOR * max(_max_tol(m.original) for m in mine)),
+                    SEW_SHARE_MAX * t_min)
         solid = _Solid(sol, 1e-3 * t_min)
         body_faces = [faces[k] for k in range(len(faces)) if body_of[k] == b]
         t_max = max(pairs[i].thickness for i in range(len(pairs))
