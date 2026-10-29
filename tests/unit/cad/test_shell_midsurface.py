@@ -431,3 +431,23 @@ def test_a_wall_stepping_where_a_plate_crosses_it_becomes_one_flat_shell():
     offsets = [abs(m["offset_mm"]) for m in rec["mids"] if "offset_mm" in m]
     assert offsets == [pytest.approx(1.0, abs=1e-6)]
     _all_checks(rec)
+
+
+def test_two_plates_laid_one_on_the_other_are_one_shell_through_their_lap():
+    # the lap is 6 mm thick and 30 mm wide: too narrow to be a shell on its own, yet it is the two 3 mm plates
+    # stacked, so it is shelled with them (SHELL-8) and both plates snap onto its mid-plane with their offsets
+    # (SHELL-7): one flat shell, x 0..370, the bolt holes kept
+    rec, surface = ms.extract(sf.bolted_lap(3.0, 30.0, 3.0), mm_per_unit=1.0)
+    laps = [p for p in rec["pairs"] if p["why"].startswith("a lap")]
+    assert [p["thickness_mm"] for p in laps] == [pytest.approx(6.0)]
+    assert _sewn_area(surface) == pytest.approx(370 * 100 - 2 * math.pi * 9.0, rel=1e-4)
+    offsets = sorted(m.get("offset_mm", 0.0) for m in _shell_mids(rec))
+    assert offsets == pytest.approx([-1.5, 0.0, 1.5])
+    assert _sewn(rec)["open_edges"] == 0 and not rec["fallback_regions"]
+    _all_checks(rec)
+
+
+def test_a_thick_pad_on_one_side_of_a_plate_is_no_lap():
+    # only one face of the pad's pair is a side of a shell plate: a pad, not two plates stacked
+    rec, _ = ms.extract(sf.plate_with_boss(), mm_per_unit=1.0)
+    assert not [p for p in rec["pairs"] if p["why"].startswith("a lap")]

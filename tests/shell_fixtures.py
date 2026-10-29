@@ -284,3 +284,13 @@ def spool(tp: float = 4.0, r_out: float = 20.0, t: float = 4.0, h: float = 100.0
     offset of the top plate's mid-face left its hole's circle a 138 mm tolerance and broke the general fuse."""
     return _fuse(_fuse(_box(-w / 2, -w / 2, 0, w, w, tp), _box(-w / 2, -w / 2, h - tp, w, w, tp)),
                  tube(r_out, t, h - 2 * tp).Moved(_shift(0, 0, tp)))
+
+
+def bolted_lap(t: float = 3.0, lap: float = 30.0, r: float = 3.0):
+    """Two 200 x 100 x `t` plates laid one on the other over `lap` mm and fused (a lap joint, one body): the lower
+    at z 0..t, x 0..200; the upper at z t..2t, x 200-lap..400-lap; two bolt holes of radius `r` through the lap.
+    The lap is 2t thick and only `lap` wide, so it fails the width rule on its own (SHELL-8)."""
+    s = _fuse(_box(0, 0, 0, 200, 100, t), _box(200 - lap, 0, t, 200, 100, t))
+    for y in (30.0, 70.0):
+        s = _cut(s, _cyl(200 - lap / 2, y, -1, r, 2 * t + 2))
+    return _unify(s)

@@ -214,6 +214,29 @@ def sheets(pairs: list[Pair], neighbours: list[set[int]], body_of: list[int]) ->
     return [groups[k] for k in sorted(groups)]
 
 
+def laps(pairs: list[Pair]) -> list[int]:
+    """The LAPS (SHELL-8): even pairs, not shell by their own sheet, that are two shell plates stacked in one body.
+    A pair (A, B) is a lap when face A is also a side of a shell pair (A, C), face B a side of another shell pair
+    (B, D), and its wall is the two walls added up (within EVEN_SHARE): two plates laid one on the other (a lap
+    joint, a doubler, a bracket flange on a plate) and fused. A lap is only a few walls wide, so it fails the
+    width rule on its own; it is as much a shell as the two plates it is made of, and is shelled with them (its
+    mid-face at its own wall; SHELL-7 then snaps the two plates onto it with their offsets). Deterministic: in
+    pair order."""
+    shell_of: dict[int, list[int]] = {}
+    for i, p in enumerate(pairs):
+        if p.even and p.shell and p.mids:
+            shell_of.setdefault(p.a, []).append(i)
+            shell_of.setdefault(p.b, []).append(i)
+    out = []
+    for i, p in enumerate(pairs):
+        if not p.even or p.shell or not p.mids:
+            continue
+        if any(q != r and abs(p.thickness - (pairs[q].thickness + pairs[r].thickness)) <= EVEN_SHARE * p.thickness
+               for q in shell_of.get(p.a, []) for r in shell_of.get(p.b, [])):
+            out.append(i)
+    return out
+
+
 def face_roles(names: list[str], pairs: list[Pair], *, kinds: list[str], widths: list[float],
                radii: list[float | None], neighbours: list[set[int]],
                arcs: list[float] | None = None) -> list[dict]:

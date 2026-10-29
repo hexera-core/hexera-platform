@@ -1617,6 +1617,10 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
         shell = t <= sp.SHELL_RATIO * size and t <= sp.SHELL_WIDTH_RATIO * width
         for i in group:
             pairs[i].sheet, pairs[i].size, pairs[i].width, pairs[i].shell = s_i, size, width, shell
+    # SHELL-8: a lap (two shell plates stacked and fused) is shelled with the plates it is made of
+    for i in sp.laps(pairs):
+        pairs[i].shell = True
+        pairs[i].why = "a lap: two shell plates stacked, shelled with them"
 
     # SHELL-2: every face's role
     widths, radii, arcs = [], [], []
