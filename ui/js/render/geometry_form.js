@@ -228,13 +228,29 @@ function bindPick(root, p, pick) {
       p.unit = b.dataset.unit; p.unit_basis = "chosen"; p.unit_touched = true;
       const unitSel = root.querySelector(".gc-unit"); if (unitSel) unitSel.value = p.unit;
       showUnit(root, p);
+      clearUnitHint(root, p);
     };
   });
+}
+
+/* THE HINT ASKED FOR SOMETHING THE USER HAS NOW DONE. Proceed refuses an unresolved unit and
+   writes "Pick the file's unit first: is the part 8 mm or 8 cm long?" into the hint, and nothing
+   cleared it when they picked - so the form went on telling a customer to do the thing they had
+   just done, under a unit row that already said "your choice". Measured in a browser on the
+   coupon's own run, 2026-10-29. Only the unit's own hint is cleared: an opening that still needs
+   a size is a different unanswered question and its hint stays. */
+function clearUnitHint(root, p) {
+  if (unitChoiceNeeded(p)) return;
+  const hint = root.querySelector(".gc-hint");
+  if (hint && /unit/i.test(hint.textContent || "")) hint.textContent = "";
 }
 export function bindUnit(root, p) {
   const unitSel = root.querySelector(".gc-unit");
   if (!unitSel) return;
-  unitSel.addEventListener("change", () => { p.unit = unitSel.value; p.unit_basis = "chosen"; p.unit_touched = true; showUnit(root, p); });
+  unitSel.addEventListener("change", () => {
+    p.unit = unitSel.value; p.unit_basis = "chosen"; p.unit_touched = true;
+    showUnit(root, p); clearUnitHint(root, p);
+  });
   bindPick(root, p);
   showUnit(root, p);
 }
