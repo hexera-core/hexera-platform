@@ -739,3 +739,39 @@ def test_coverage_cannot_be_credited_from_a_substituted_image(engine, fake_backe
     r = s.execute(RenderCommand(kind=CommandKind.INSPECT_TARGET, target_id="region:midspan"))
     assert r.covers_target == "region:midspan"
     assert _img(r) == PNG_SLICE, "coverage was credited on a foreign image"
+
+
+@pytest.mark.parametrize("engine", VISUAL)
+def test_a_cut_that_shows_nothing_is_refused_and_credits_no_coverage(engine, fake_backend,
+                                                                    tmp_path):
+    """THE ONE THAT GOT THROUGH. A live conjugate run sliced a volume that read as 0 cells, both
+    blank frames were filed as usable target evidence for `region:across_the_flow` and
+    `region:through_the_plate`, and the review returned verdict=passed with concerns=[].
+
+    The adapter already stated the rule for a patch named wrong - "A failure, never a screenshot:
+    a returned image would let the coverage floor count a patch as 'inspected'" - and did not
+    follow it for a region whose cut exposed nothing. It does now: no image, no covers_target, and
+    the backend's own words in the diagnostics.
+    """
+    s = _open(engine, tmp_path, volume=True)
+    fake_backend[0].empty_cut = True
+    r = s.execute(RenderCommand(kind=CommandKind.INSPECT_TARGET, target_id="region:midspan"))
+    assert r.image_ref == "", "a picture of nothing is not a section"
+    assert r.covers_target == "", "coverage was credited on a cut that showed nothing"
+    assert any("passed through no cells" in d for d in r.diagnostics), r.diagnostics
+    # the backend WAS asked - this is a refusal of the answer, not of the question
+    assert ("inspect_region", "midspan") in fake_backend[0].calls
+
+
+@pytest.mark.parametrize("engine", VISUAL)
+def test_a_refused_cut_does_not_reuse_the_last_screenshot(engine, fake_backend, tmp_path):
+    """`_render` reads `last_shot_path` rather than the return value, so a refused cut that fell
+    through to it would be filed with whatever image the previous command happened to leave. The
+    return is checked first, which is why this holds."""
+    s = _open(engine, tmp_path, volume=True)
+    before = s.execute(RenderCommand(kind=CommandKind.CAPTURE))
+    assert before.image_ref, "the setup needs a real earlier shot to steal"
+    fake_backend[0].empty_cut = True
+    r = s.execute(RenderCommand(kind=CommandKind.INSPECT_TARGET, target_id="region:midspan"))
+    assert r.image_ref == ""
+    assert r.image_ref != before.image_ref

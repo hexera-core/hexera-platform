@@ -61,6 +61,17 @@ def _newest_time(region_dir: Path) -> Path | None:
     return max(times, key=lambda d: (_time_index(d.name), d.name))
 
 
+def delivered_regions(ws: Path) -> list[str]:
+    """The regions the MESH has, read off the delivered polyMesh rather than the VTK export.
+
+    The export is what fails; the polyMesh is what was built. Asking the export which regions
+    exist is asking the thing that went wrong to grade itself.
+    """
+    root = ws / "constant"
+    return [d.name for d in sorted(root.glob("*"))
+            if d.is_dir() and d.name != "polyMesh" and (d / "polyMesh" / "boundary").is_file()]
+
+
 def _patch_files(ws: Path, region: str) -> list[Path]:
     """Every boundary patch of one region, in a stable order.
 
@@ -149,6 +160,27 @@ def build_region_msh(workspace) -> tuple[dict[str, list[int]], tuple | None]:
             gmsh.model.setPhysicalName(2, group, region)
             groups[region] = tags
         if not groups:
+            return {}, None
+        # HALF A SURFACE IS NOT THE SURFACE, and publishing it anyway is how a conjugate mesh
+        # came back PASSED on a review that never saw its coolant. Measured on two live runs of
+        # the same coupon: the fluid's .vtp files failed to parse, this published a mesh.msh
+        # holding the solid alone, and the reviewer opened "patches: ['solid']". The second of
+        # them returned verdict=passed with concerns=[], because every gate between here and the
+        # verdict tests presence and not substance - the patch obligation asks for one patch of
+        # any kind, so one inspection of one region's boundary discharges "every renderable
+        # boundary patch".
+        #
+        # The regions are read off the DELIVERED polyMesh, not off the export: the export is the
+        # thing that failed, and asking it which regions exist is asking it to grade itself. A
+        # workspace with no region directories at all - every unit fixture that fakes a VTK tree
+        # - names no required regions and is published as before.
+        want = delivered_regions(ws)
+        missing = [r for r in want if r not in groups]
+        if missing:
+            logger.error("conjugate review: the mesh has %d region(s) (%s) and the surface would "
+                         "carry %d (%s), so it is NOT published - a review of half a conjugate "
+                         "mesh reads as a review of all of it", len(want), ", ".join(want),
+                         len(groups), ", ".join(sorted(groups)))
             return {}, None
         box = gmsh.model.getBoundingBox(-1, -1)
         gmsh.write(str(ws / REVIEW_MSH))

@@ -182,6 +182,14 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("POST", "/api/v1/simulation/{job_id}/review/run"),          # close the park and re-run with the decisions
         ("GET", "/api/v1/simulation/{job_id}/surface"),
         ("GET", "/api/v1/simulation/{job_id}/surface.vtk"),     # the viewer's ParaView export
+        # the viewer's Detail button: the delivered boundary in a ball around what the camera is
+        # looking at, UNMERGED. render.polymesh_budget clusters cells so a mesh fits what a
+        # browser can carry - the first customer plate delivers 13,022,400 boundary faces on the
+        # coolant alone against a budget of 800,000 triangles - so the zoom lets a reader go in
+        # to a few cell widths and what they see there is a merged approximation of the cells
+        # rather than the cells. The consumer is detailWindow() in ui/js/viewer/viewer.js and in
+        # the console's copy.
+        ("GET", "/api/v1/simulation/{job_id}/detail"),
         ("POST", "/api/v1/upload/step-file"),
         # THE DIRECT UPLOAD for a file too large for a request body: begin (a signed PUT URL for
         # one object), then finish (the multipart route's checks on the bytes that arrived). The

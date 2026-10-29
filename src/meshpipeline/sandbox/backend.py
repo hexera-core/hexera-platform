@@ -218,6 +218,7 @@ class MeshRenderBackend:
     def last_shot_path(self) -> Path | None:
         return self._capture.last_shot_path
 
+
     def take_screenshot(self) -> str:
         return self._capture.screenshot(self._plotter)
 
@@ -232,19 +233,51 @@ class MeshRenderBackend:
         # the workspace whenever the manifest value was absolute.
         vp = self._volume_artifact.path
         try:
-            self._volume = pv.read(str(vp))
-            logger.info("render backend: loaded volume %s (%d cells)", vp, self._volume.n_cells)
+            got = pv.read(str(vp))
         except Exception as exc:
             logger.warning("render backend: failed to read volume %s: %s", vp, exc)
             self._volume = None
+            return None
+        # A VOLUME OF NO CELLS IS NOT A VOLUME, and this is the only place the count is known.
+        # pyvista does not raise on a truncated VTK file: measured on a live run, an internal.vtu
+        # of 197,566,474 bytes whose own header declared NumberOfCells='2520586' was 6,718 bytes
+        # short of its closing tags, and pv.read returned n_cells=0 with a UserWarning. The
+        # header lies, so there is no cheap check - the read's own count is the only honest
+        # signal, and it was being logged and thrown away. Everything downstream then treated
+        # that file as the delivered coolant: the region targets were advertised, two blank cuts
+        # were filed as usable evidence, and the review passed with no concerns.
+        if not got.n_cells:
+            logger.warning("render backend: volume %s read as 0 cells - a truncated or empty "
+                           "export, not a mesh to slice; no region can be inspected from it", vp)
+            self._volume = None
+            return None
+        logger.info("render backend: loaded volume %s (%d cells)", vp, got.n_cells)
+        self._volume = got
         return self._volume
 
-    def inspect_region(self, region: ResolvedRegion) -> str:
+    def inspect_region(self, region: ResolvedRegion) -> tuple[str, str]:
+        """(the cut's image, "") - or ("", why there is no cut).
+
+        NOT A SCREENSHOT WHEN THERE IS NO SECTION, in all three of the ways this can produce
+        none. It used to return `take_screenshot()` when there was no volume and when the slice
+        raised, and a blank frame when the cut came back empty: three pictures that are not
+        sections, handed back where a section was asked for. The adapter cannot tell them from a
+        real cut, and render_adapter already states the principle for the patch case it got
+        right - "A failure, never a screenshot: a returned image would let the coverage floor
+        count a patch as 'inspected' because it was named wrong." The same is true of a region.
+
+        Measured on a live conjugate run: a volume that read as 0 cells was sliced twice, both
+        blank frames were recorded as target-specific evidence for `region:across_the_flow` and
+        `region:through_the_plate`, and the review returned verdict=passed with concerns=[].
+
+        THE REASON RIDES IN THE RETURN rather than on a property, so the backend's public surface
+        stays the one test_the_public_surface_of_the_backend_is_unchanged_by_the_split pins. The
+        adapter is the only caller and it is the thing that needs the words.
+        """
         vol = self._load_volume()
         if vol is None:
-            # No volume: nothing to cut. The caller decides what that MEANS - the backend only
-            # reports that it produced no sectional evidence.
-            return self.take_screenshot()
+            return "", ("the volume artifact this job published could not be read as a mesh, so "
+                        "there is nothing to cut")
         normal = list(region.normal)
         origin = list(region.origin) if region.origin is not None else None
         try:
@@ -255,12 +288,19 @@ class MeshRenderBackend:
         except Exception as exc:
             logger.warning("render backend: slice failed for %s: %s",
                            region.region_id, exc)
-            return self.take_screenshot()
+            return "", f"the cut at {region.region_id} could not be taken ({exc})"
+        if not sl.n_cells:
+            # The cut missed the mesh, or the mesh is not where the manifest said it is. Either
+            # way a picture of it shows nothing and must not stand in for one that shows
+            # something.
+            logger.warning("render backend: the cut at %s is empty (%d cells in the volume)",
+                           region.region_id, vol.n_cells)
+            return "", (f"the cut at {region.region_id} passed through no cells, so it exposes "
+                        "nothing of the interior")
         p = pv.Plotter(off_screen=True, window_size=[self._limits.screenshot_w, self._limits.screenshot_h])
         _bound(p.set_background)([c / 255.0 for c in _BG_COLOR])
-        if sl.n_cells:
-            p.add_mesh(sl, show_edges=True, color=(0.80, 0.85, 0.92),
-                       edge_color="black", line_width=1.0, lighting=False)
+        p.add_mesh(sl, show_edges=True, color=(0.80, 0.85, 0.92),
+                   edge_color="black", line_width=1.0, lighting=False)
         ax = int(np.argmax(np.abs(normal)))
         _bound({0: p.view_yz, 1: p.view_xz, 2: p.view_xy}[ax])()
         try:
@@ -272,7 +312,7 @@ class MeshRenderBackend:
                 pass
         buf = io.BytesIO()
         Image.fromarray(img.astype(np.uint8)).save(buf, format="PNG")
-        return self._capture.save_and_encode(buf.getvalue())
+        return self._capture.save_and_encode(buf.getvalue()), ""
 
 
     def scene_facts(self) -> dict:

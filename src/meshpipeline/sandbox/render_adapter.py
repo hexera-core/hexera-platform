@@ -296,9 +296,23 @@ class BackendRenderSession:
             return self._failed(
                 command, f"region {command.target_id!r} needs the volume artifact, "
                          "which this job did not provide")
-        image = self._render(lambda: self._backend.inspect_region(region))
+        # A FAILURE, NEVER A SCREENSHOT - the same rule _toggle_entity states below for a patch
+        # named wrong, which this did not follow for a cut that shows nothing. The backend used
+        # to hand back a picture in all three of the ways a cut can produce nothing (no readable
+        # volume, a slice that raised, an empty slice) and the adapter could not tell them from a
+        # real section. Measured on a live conjugate run: a volume that read as 0 cells was cut
+        # twice, both blank frames were filed as usable target evidence for the two regions, and
+        # the review returned verdict=passed concerns=[]. `_render` reads last_shot_path rather
+        # than this return, so the return is checked FIRST - a stale path from an earlier
+        # screenshot would otherwise be filed as this region's section.
+        cut, why = self._backend.inspect_region(region)
+        if not cut:
+            return self._failed(
+                command, why or f"the cut at {command.target_id!r} produced no section")
+        shot = self._backend.last_shot_path
         return self._evidence(
-            image=image, label=f"section at {name}", purpose="reveal internal structure",
+            image=str(shot) if shot is not None else "",
+            label=f"section at {name}", purpose="reveal internal structure",
             command_kind=command.kind.value, target_ref=command.target_id,
             regions=(name,), covers_target=normalize_region_id(name),
             artifact_key=VOLUME_KEY)

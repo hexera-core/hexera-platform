@@ -25,7 +25,7 @@ PNG_SLICE = _png(b"SLICE")       # inspect_region's section
 
 class FakeBackend:
 
-    def __init__(self, *, patches=None, shot=True, save_dir=None):
+    def __init__(self, *, patches=None, shot=True, save_dir=None, empty_cut=False):
         self.patches = list(PATCHES if patches is None else patches)
         self.calls: list[tuple] = []
         self.kwargs: list[dict] = []
@@ -33,6 +33,8 @@ class FakeBackend:
         self.pan_step, self.zoom_step = 10.0, 1.5
         self.preset = "iso"
         self.isolated = None
+        #: make inspect_region report a cut that exposed nothing - see inspect_region
+        self.empty_cut = bool(empty_cut)
         self.closed = 0
         self.generic_shots = 0
         self._shot = shot
@@ -59,8 +61,18 @@ class FakeBackend:
         return self._write("shot", PNG)
 
     def inspect_region(self, region):
+        """(the cut's image, "") - or ("", why there is no cut), as the backend now returns.
+
+        `empty_cut` is the second half, which the old fake could not express at all: it always
+        returned an image, so the adapter path for a cut that shows nothing had no test. The real
+        backend has three ways to get there - no readable volume, a slice that raised, and a
+        slice of no cells - and a live conjugate run went through the third of them twice and
+        had both blank frames filed as usable evidence for its two regions.
+        """
         self.calls.append(("inspect_region", region.region_id))
-        return self._write("slice", PNG_SLICE)
+        if self.empty_cut:
+            return "", f"the cut at {region.region_id} passed through no cells"
+        return self._write("slice", PNG_SLICE), ""
 
     def zoom_to_region(self, screen_x=0.5, screen_y=0.5, magnification=4.0):
         self.calls.append(("zoom_to_region", screen_x, screen_y, magnification))

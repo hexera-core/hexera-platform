@@ -1629,3 +1629,72 @@ and exits "this image is STALE - the wheel does not match the source" if any is 
 a promise about the source and the only way to keep it is to look for something that was not
 there before. Both scripts moved out of a scratchpad into `devtools/semiconductor/`, because a
 build whose only copy is in a session directory is one nobody else can reproduce.
+
+### A correct conjugate mesh came back PASSED on a review that saw neither of its regions
+
+Job 575f76e6, live, on the stale image:
+
+    render backend (PyVista): loaded .../mesh.msh - patches: ['solid']
+    render backend: loaded volume .../VTK/fluid/cr_ws_n41vtoe6_1/internal.vtu (0 cells)
+    Reviewer: eligibility accepted - verdict=passed rounds=8 blocking=[] improve=[] concerns=[]
+    Reviewer: verdict=PASS tool_calls=10
+
+The mesh was fine: 2,520,586 fluid cells, 4,061,885 solid, both passing checkMesh, interface
+346,456 faces on each side. The review saw the metal's boundary and nothing else, and sliced a
+volume that held no cells, and passed it with no concerns.
+
+WHAT THE VOLUME ACTUALLY WAS. Not empty. **Truncated.** 197,566,474 bytes whose own header
+declared `NumberOfPoints='2777505' NumberOfCells='2520586'`, 6,718 bytes short of its closing
+tags, ending mid-base64. The complete export beside it is 197,573,192 bytes and reads 2,520,586
+cells. `pv.read` does not raise on the short one: it warns and returns `n_cells=0`. So the header
+lies, there is no cheap check, and the read's own count is the only honest signal - which was
+being logged and thrown away. `self._volume.n_cells` appeared exactly once in the codebase, inside
+the log format string.
+
+THE CHAIN, in the order it runs. Each link tests presence and the next one believes it.
+
+| where | what it accepts |
+|---|---|
+| `review_surface.py:199` | publishes `mesh_paths.volume` on `is_file()` - no open, no count |
+| `native.py:195` | `if groups:` publishes a two-region surface when one region made it |
+| `review_session.py:105` | resolves the artifact on `is_file()` plus a 512-byte `<?xml` sniff |
+| `render_inputs.py:76` | `has_volume = volume is not None` gates the region targets |
+| `base.py:615` | drops REGION obligations on the manifest STRING while discovery uses the FILE |
+| `eligibility.py:313` | "produced" is a string-identity test between two lists of ids |
+| `backend.py:236` | reads `n_cells`, logs it, discards it |
+| `backend.py:261` | `if sl.n_cells:` decides only whether to DRAW; the blank frame is returned |
+| `render_runtime.py:276` | the tool text asserts the cut "exposed interior cells" regardless |
+| `unified.py:255` | files `image_ok=True, covered=True` as LITERALS if a PNG path is non-empty |
+| `review_session.py:214` | the only emptiness check in the whole path is the PNG's byte size |
+| `spec.py:82` | the PATCH obligation is kind-only min 1, so one solid patch discharges "every renderable boundary patch" |
+
+So "the interior was inspected" means "a PNG got written", and a blank 1280x960 frame clears the
+byte-size screen by several KB. Eight rounds of blank cuts read as eight rounds of interior
+inspection, and `concerns=[]` is the honest output of that ledger.
+
+WHY THE TWO RUNS DIVERGED. 51d5481d lost its volume to pruning and the file was GONE, so
+`has_volume` was False, the region ids were never advertised, and the string test found them "not
+produced" - `reviewer_evidence_missing`, inconclusive, which is the honest outcome. 575f76e6 had
+the file, so every presence test passed and the same blindness came out as a PASS. Absent evidence
+refuses; empty evidence passes.
+
+TWO CUTS CLOSE IT AT THE SOURCES.
+
+A volume that reads as no cells is not a volume (`backend._load_volume`), and a cut that shows
+nothing is a refusal and not a picture (`backend.inspect_region`, three ways: no readable volume, a
+slice that raised, a slice of no cells). The reason rides in the return rather than on a new
+property, so the backend's public surface stays the one
+`test_the_public_surface_of_the_backend_is_unchanged_by_the_split` pins - and `_failed` carries no
+image, which `_evidence` already turns into an empty `covers_target`, so the ledger cannot file it.
+The adapter checks the RETURN before `last_shot_path`, because that path still holds the previous
+command's screenshot and would otherwise be filed as this region's section.
+
+And half a surface is not the surface (`build_region_msh`). The regions are read off the delivered
+polyMesh rather than off the export, because the export is the thing that failed and asking it
+which regions exist is asking it to grade itself. A workspace with no region directories - every
+unit fixture that fakes a VTK tree - names no required regions and is published as before.
+
+WHAT IS NOT CLOSED. The string-identity target test, the manifest-string/file asymmetry at
+base.py:615, the kind-only PATCH obligation, and the hardcoded `image_ok=True` are reviewer
+contract weaknesses that survive these two cuts. Nothing empty now reaches them, which is why the
+specific hole is shut, but a different empty thing would find them again.
