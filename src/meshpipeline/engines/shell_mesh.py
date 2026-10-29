@@ -21,6 +21,8 @@ class ShellMesh:
     mid: list[str]                           # (q + r,) the mid-face each element came from ("Mid_k")
     part: list[str]                          # (q + r,) its body ("Part_k")
     groups: dict[str, np.ndarray] = field(default_factory=dict)   # name -> element indices (0-based)
+    node_wall: np.ndarray | None = None      # (n,) the wall at each node (mm), where a wall varies (SHELL-9)
+    varies: np.ndarray | None = None         # (q + r,) bool: the element's wall varies (written per corner)
     notes: list[str] = field(default_factory=list)
 
     @property

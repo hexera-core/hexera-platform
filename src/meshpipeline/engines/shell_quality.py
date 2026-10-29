@@ -42,6 +42,32 @@ LIMITS = (
 )
 #: the triangle share a quad-dominant mesh should keep under (a note past it)
 TRIA_SHARE = 0.05
+#: NASTRAN'S OWN LIMITS (SHMESH-8): the MSC Nastran GEOMCHECK defaults, past which the solver itself warns (MSC
+#: Nastran Quick Reference Guide, GEOMCHECK). Every delivered element is held inside these; the tighter Femap /
+#: industry targets above are notes. GEOMCHECK's Q4_WARP (0.05) is a height over the mean diagonal, about 5.7
+#: degrees as an angle; we hold the angle at 5. (shape, figure, op, limit, GEOMCHECK name)
+NASTRAN_LIMITS = (
+    ("quad", "skew_deg", ">=", 30.0, "Q4_SKEW"),
+    ("quad", "taper", "<=", 0.5, "Q4_TAPER"),
+    ("quad", "warp_deg", "<=", 5.0, "Q4_WARP"),
+    ("quad", "min_angle_quad", ">=", 30.0, "Q4_IAMIN"),
+    ("quad", "max_angle_quad", "<=", 150.0, "Q4_IAMAX"),
+    ("tria", "skew_deg", ">=", 10.0, "T3_SKEW"),
+    ("tria", "max_angle_tria", "<=", 160.0, "T3_IAMAX"),
+)
+
+
+def nastran_past(mesh: ShellMesh) -> np.ndarray:
+    """(elements,) bool: the element is past one of Nastran's own GEOMCHECK limits."""
+    q = quad_measures(mesh.xyz, mesh.quads) if len(mesh.quads) else {}
+    t = tria_measures(mesh.xyz, mesh.trias) if len(mesh.trias) else {}
+    out = np.zeros(mesh.n_elements, dtype=bool)
+    for shape, key, op, limit, _card in NASTRAN_LIMITS:
+        d, off = (q, 0) if shape == "quad" else (t, len(mesh.quads))
+        if key in d:
+            v = d[key]
+            out[off:off + len(v)] |= (v < limit) if op == ">=" else (v > limit)
+    return out
 
 
 def _unit(v: np.ndarray) -> np.ndarray:
@@ -131,6 +157,17 @@ def measure(mesh: ShellMesh) -> dict:
         out["past_limits"][key] = past
         if past:
             out["notes"].append(f"{past} of {len(vals)} elements are past the {key} limit ({op} {limit}; {source}).")
+    out["nastran_past"] = {}
+    for shape, key, op, limit, card in NASTRAN_LIMITS:
+        d = q if shape == "quad" else t
+        if key in d:
+            past = int((d[key] < limit).sum() if op == ">=" else (d[key] > limit).sum())
+            if past:
+                out["nastran_past"][card] = past
+    out["within_nastran"] = bool(out["valid"]) and not out["nastran_past"]
+    if out["nastran_past"]:
+        out["notes"].insert(0, "Past Nastran's own GEOMCHECK limits: " + ", ".join(
+            f"{v} elements by {k}" for k, v in out["nastran_past"].items()) + ".")
     if n and len(mesh.trias) / n > TRIA_SHARE:
         out["notes"].append(f"{100 * len(mesh.trias) / n:.1f}% of elements are triangles (target under "
                             f"{100 * TRIA_SHARE:.0f}%).")

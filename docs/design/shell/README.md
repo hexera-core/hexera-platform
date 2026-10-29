@@ -170,6 +170,24 @@ The result is a conformal shell: shared nodes along every junction once meshed.
   - CalculiX: it has no `*SHELL TO SOLID COUPLING`. Candidates, decided by the textbook cases below: the overlap method (the shell edge runs one wall deep into the solid and shares its nodes there, so the moment passes as a force couple), or a `*COUPLING` / `*DISTRIBUTING` over the solid face's thickness band with the shell edge node as the reference node;
   - Nastran: RBE3 from each shell edge node (all six DOFs) to the solid face nodes across the thickness band, or glued shell-to-solid edge contact (BSURF/BCONTACT);
   - Ansys: MPC184 or shell-solid assembly contact (CONTA175 / TARGE170 with the shell-solid KEYOPT).
+- **Decided by the CalculiX cases (29 Oct, `engines/shell_links.py`, SHLINK-1..3, placeholders).** CalculiX's
+  `*DISTRIBUTING` coupling needs element-face surfaces and takes a node into one coupling only, so per-node
+  couplings along a shell edge cannot be written; rotations of shell nodes do not reach `*EQUATION`. What works,
+  with translations only:
+  - **SHLINK-1, edge link: the shell runs into the solid** by one wall (at least one element row), and each of
+    its nodes there is tied (`*EQUATION`) to the mean of the solid nodes on its wall's thickness line (within half
+    the wall along its normal, their foot within a quarter of the shell's element size). The moment crosses as the
+    couple between the overlapped node rows. Wider bands stiffen the join (half an element: 15% stiff), so the
+    solid is meshed with nodes on the overlapped strip.
+  - **SHLINK-2, face link: a solid standing on a shell's face** (a thick web on a shelled plate): each solid node
+    on the contact face rides on the shell point under it, moved rigidly by its offset from the mid-surface.
+  - Measured (`tests/unit/engines/test_shell_textbook.py`, CI's accuracy lane):
+    - half-shell, half-solid cantilever 200 x 20 x 2: tip 0.6% off the pure shell, 1.7% off PL³/3EI;
+    - shell and solid sharing only their meeting line: the tip moved 10^9 times too far (a hinge);
+    - T-joint in bending, web shell into a solid plate: 4.6% off the all-solid T (1.6% off the all-shell T,
+      which is itself 6.3% softer than all-solid: its junction has no corner metal);
+    - T-joint, plate shell under a solid web: 4.0% off the all-solid T.
+  - Nastran (RBE3 / RBE2 on the same node choice) and Ansys (CE) follow in PR 3, with the mixed-part mesher.
 - **The solid region gets at least 2 quadratic elements through the thickness** at the link, so its face can carry the linear stress through the wall that a moment puts on it.
 - **Proved in CalculiX, in the accuracy lane (PR 2):**
   - a cantilever plate, half shell and half solid, tip load: the tip deflection within 2% of the pure-shell model and of beam theory (PL³/3EI);
@@ -227,7 +245,7 @@ The GEOMCHECK figures are as we read MSC's Quick Reference Guide. PR 2 checks th
 - **The FEMAP-native route is a neutral file (.neu)**, whose group block is public. We offer it as soon as the prospect confirms the import in their FEMAP. Until then the BDF says "not yet tested in the real solver", as the solid writers do.
 
 **Abaqus and CalculiX (.inp).**
-- Elements: `*ELEMENT, TYPE=S4R` and `S3`.
+- Elements: `*ELEMENT, TYPE=S4R` and `S3` for Abaqus; **`S4` and `S3` for CalculiX** (29 Oct). CalculiX expands shells into solids: S4R into one layer of C3D8R, which has next to no bending stiffness (the 200 x 20 x 2 cantilever bent 96 mm for 9.4); S4 into C3D8I, 0.6% off.
 - Sections: `*SHELL SECTION, ELSET=…, MATERIAL=…` with the thickness, or `*NODAL THICKNESS`.
 - Sets: an ELSET per group and an NSET per junction.
 - CalculiX solves for real. It expands shells into solid elements, and we check it against the textbook cases.
