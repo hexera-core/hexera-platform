@@ -664,6 +664,7 @@ fi
 
 # native tiers, zero bind mounts
 NATIVE_EVIDENCE="${WORK}/native-terminal-evidence"
+BENCH_EVIDENCE="${WORK}/native-benchmark-evidence"
 TIER_SUMMARY=""; TIER_SECONDS=0
 if [ "${RELEASE_ALLOW_INCOMPLETE:-0}" = "1" ]; then
   stage "native tiers"
@@ -676,8 +677,13 @@ else
   stage "native tiers inside the image, with ZERO bind mounts"
   FIX="${WORK}/fixtures"
   git worktree add --detach "${FIX}" "${COMMIT}" >/dev/null 2>&1
-  chmod -R a+rX "${FIX}/tests" "${FIX}/pyproject.toml"
+  chmod -R a+rX "${FIX}/tests" "${FIX}/pyproject.toml" "${FIX}/devtools"
   mkdir -p "${WORK}/evid" && chmod 777 "${WORK}/evid"
+  # The engine benchmark lives in the `all` tier and MEASURES rather than merely asserts - repaired
+  # vs original cell counts, per-engine quality. Those numbers die with the container unless they
+  # are copied back out, and a gate that ran the benchmark but kept its measurements produces a
+  # green line where the evidence was the point.
+  mkdir -p "${WORK}/bench" && chmod 777 "${WORK}/bench"
 
   # docker create -> docker cp committed fixtures -> docker start -> docker cp evidence
   # -> docker inspect -> docker rm.  Never a host bind mount: a mounted src/ would shadow the
@@ -694,7 +700,13 @@ else
       "${create_args[@]}" --entrypoint python "${IMAGE_TAG[mesh]}" "${run_args[@]}" >/dev/null
     docker cp "${FIX}/tests" "${C}:/srv/tests"
     docker cp "${FIX}/pyproject.toml" "${C}:/srv/pyproject.toml"
+    # devtools/ too: the engine benchmark loads its orchestration seam from
+    # devtools/validation/mesh_benchmark.py, and without it the tier fails on an import rather
+    # than on anything an engine did. Copied, never mounted - and devtools/ ships in no wheel, so
+    # unlike src/ it cannot shadow the installed package the tier is meant to be testing.
+    docker cp "${FIX}/devtools" "${C}:/srv/devtools"
     if [ "${name}" = "terminal" ]; then docker cp "${WORK}/evid" "${C}:/evid"; fi
+    if [ "${name}" = "all" ]; then docker cp "${WORK}/bench" "${C}:/bench"; fi
     local t0 t1; t0=$(date +%s)
     docker start -a "${C}" >"${WORK}/native-${name}.log" 2>&1
     local rc=$?; t1=$(date +%s)
@@ -702,6 +714,10 @@ else
     if [ "${name}" = "terminal" ]; then
       rm -rf "${NATIVE_EVIDENCE}"
       docker cp "${C}:/evid" "${NATIVE_EVIDENCE}" >/dev/null 2>&1
+    fi
+    if [ "${name}" = "all" ]; then
+      rm -rf "${BENCH_EVIDENCE}"
+      docker cp "${C}:/bench" "${BENCH_EVIDENCE}" >/dev/null 2>&1
     fi
     local mounts binds
     mounts="$(docker inspect "${C}" --format '{{json .Mounts}}')"
@@ -734,9 +750,21 @@ else
     record "native smoke" passed 1 "${TIER_SUMMARY}  [${TIER_SECONDS}s, Mounts=[] Binds=null]"
   else record "native smoke" failed 1 "${TIER_SUMMARY}"; _tier_failures smoke; KEEP_WORK=1; fi
 
-  if _tier all --network none -- "${_PYTEST[@]}" -m "not native_terminal" /srv/tests/native; then
+  if _tier all --network none -e BENCHMARK_EVIDENCE_DIR=/bench \
+       -- "${_PYTEST[@]}" -m "not native_terminal" /srv/tests/native; then
     record "native all" passed 1 "${TIER_SUMMARY}  [${TIER_SECONDS}s, Mounts=[] Binds=null]"
   else record "native all" failed 1 "${TIER_SUMMARY}"; _tier_failures all; KEEP_WORK=1; fi
+
+  # The benchmark's own numbers, in the gate log. The evidence files survive in the scratch
+  # directory, which dies with the runner, so what is not printed here is not readable later.
+  if [ -d "${BENCH_EVIDENCE}" ]; then
+    for _ev in "${BENCH_EVIDENCE}"/*.json; do
+      [ -f "${_ev}" ] || continue
+      record "engine benchmark evidence: $(basename "${_ev}" .json)" passed 1 \
+        "$(python3 "${FIX}/devtools/release/summarise_benchmark_evidence.py" "${_ev}" 2>/dev/null \
+           || echo 'evidence present but not summarisable')"
+    done
+  fi
 
   stage "native terminal: isolated release-validation services, then the five-engine matrix"
   PG="amp-rel-${STAMP}-pg"; RD="amp-rel-${STAMP}-redis"; MN="amp-rel-${STAMP}-minio"

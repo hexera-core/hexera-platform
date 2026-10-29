@@ -138,6 +138,40 @@ def test_rebundle_accepts_the_plain_list_the_json_flag_writes(tmp_path):
     assert summary["row_count"] == len(loaded_rows) == 2
 
 
+def test_corpus_summary_reports_cad_simplicity_from_before_after_counts():
+    """Catches a summary that says defects were repaired but hides geometry complexity changes.
+
+    A repair can be valid yet make a STEP harder to inspect or mesh by adding many faces/edges; the
+    benchmark needs the before/after topology deltas beside the repair yield.
+    """
+    rows = [
+        {"file": "simpler.step", "outcome": "repaired", "route": "conservative-repair",
+         "counts_before": {"solids": 1, "faces": 14, "edges": 42, "vertices": 30},
+         "counts_after": {"solids": 1, "faces": 10, "edges": 30, "vertices": 24},
+         "operations_kept": 1, "repaired_defects": {"small_face": 2}, "operations": []},
+        {"file": "busier.step", "outcome": "repaired", "route": "conservative-repair",
+         "counts_before": {"solids": 1, "faces": 6, "edges": 18, "vertices": 12},
+         "counts_after": {"solids": 1, "faces": 8, "edges": 22, "vertices": 14},
+         "operations_kept": 2, "repaired_defects": {"small_edge": 1}, "operations": []},
+        {"file": "unmeasured.step", "outcome": "unreadable", "operations": []},
+    ]
+
+    simplicity = rc.corpus_summary(rows)["cad_simplicity"]
+
+    assert simplicity["files_measured"] == 2
+    assert simplicity["files_with_more_faces"] == 1
+    assert simplicity["files_with_fewer_faces"] == 1
+    assert simplicity["face_delta"] == {"count": 2, "min": -4.0, "max": 2.0,
+                                        "mean": -1.0, "median": -1.0}
+    assert simplicity["edge_delta"] == {"count": 2, "min": -12.0, "max": 4.0,
+                                        "mean": -4.0, "median": -4.0}
+    assert simplicity["vertex_delta"] == {"count": 2, "min": -6.0, "max": 2.0,
+                                          "mean": -2.0, "median": -2.0}
+    assert simplicity["operations_kept"] == {"count": 2, "min": 1.0, "max": 2.0,
+                                             "mean": 1.5, "median": 1.5}
+    assert simplicity["solid_count_changed"] == 0
+
+
 def test_a_refused_redistribution_status_leaves_no_loadable_bundle(tmp_path):
     rows_json = tmp_path / "rows.json"
     rows_json.write_text(json.dumps(_RECORDED_ROWS))

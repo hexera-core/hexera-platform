@@ -115,6 +115,23 @@ Where a node lives: `agents/` if it runs a multi-turn tool loop, else `pipeline/
   surface evidence added (self-intersection, thinness) before the builder starts. Any
   rejection blocks the build, admission rejects physical impossibility only, never
   quality, budget, or "we haven't tested this".
+- **CAD repair** (`cad/repair/*` + `pipeline/repair_attempt.py`): ONE surface with two
+  portions, not two subsystems. The DETERMINISTIC portion (built first) chooses by fixed
+  rules (`cad/repair/plan.py::RulesPlanner`); the MODEL-DIRECTED portion (built later,
+  `agents/repair_review/planner.py`) emits plain directive dicts that join the same queue
+  engineer review already used. Both choose only from the bounded operation catalogue
+  (`cad/repair/operations.py`), run the same session, and are judged by the same caps,
+  progress rule and rollback (`cad/repair/session.py`) - so a bad choice wastes a budget
+  rather than damaging a part. Three things are deliberately NOT symmetric between them:
+  an engineer may answer a defect held for review and the model may not
+  (`cad/repair/directives.py::HELD_ANSWERING_SOURCES`); the paired-rim guard against
+  sealing a through-hole latches for a whole rules run but is re-checked per directive,
+  overridable only by a single-rim engineer approval; and the model-directed portion runs
+  as an async PRE-PASS before the synchronous loop, so it plans once, ahead, and cannot
+  re-plan after a rollback or read the run's `RunHistory` ledger. Posture is read at call
+  time and its module imported lazily (`settings/cad_repair.CAD_REPAIR_LLM_PLANNER`), so
+  `off` touches nothing. Unrelated to the snappy strategy planner below, which merely
+  shares the word.
 - **Mesh engine** (`engines/runtime.py`): `get_engine(name)` returns the engine's
   adapter (`engines/<name>/adapter.py`); only adapters touch the concrete runners
   (`engines/cfmesh/cfmesh_runner.py`, `engines/snappy/snappy_runner.py`, …). The

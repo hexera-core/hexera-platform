@@ -175,16 +175,17 @@ def _planner_posture() -> str:
 
 
 #: Where the model sits in the repair loop's planner seat. "off" is byte-for-byte the prior
-#: behaviour: the rule planner alone, no model call, no shadow row. "shadow" asks the model and
-#: records what it would have done beside what the rules did, without acting on it. "live" lets its
-#: plan act, inside the same caps and measurements every operation already answers to. An unknown
+#: behaviour: the deterministic portion alone, no model call, no shadow row. "shadow" asks the
+#: model and records what it would have directed beside what the deterministic portion did,
+#: without acting on it. "live" lets its directives act, inside the same caps and measurements
+#: every operation already answers to - the same surface, not a second engine. An unknown
 #: value reads as "off": a typo in a deployment must not put a model in charge of geometry.
 CAD_REPAIR_LLM_PLANNER: str = _planner_posture()
 
-#: The most planner model calls one repair run may make. A hard ceiling on spend per run.
+#: The most model calls one repair run may make while directing it. A hard ceiling on spend.
 CAD_REPAIR_LLM_PLANNER_CALLS_MAX: int = int(optional_env("CAD_REPAIR_LLM_PLANNER_CALLS_MAX", "2"))
 
-#: Seconds one planner model call may take before the rule planner's choice stands.
+#: Seconds one model call may take before the deterministic portion's choice stands.
 CAD_REPAIR_LLM_PLANNER_TIMEOUT_S: float = float(
     optional_env("CAD_REPAIR_LLM_PLANNER_TIMEOUT_S", "20.0"))
 
