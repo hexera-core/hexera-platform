@@ -2375,3 +2375,90 @@ on the one path with a wall clock.
 
 WHAT WOULD BE BETTER THAN EITHER NUMBER is not spending it. 116.6 s of the 359 is
 `candidate_caps`. That is the next thing to measure into.
+
+## 2026-10-29, later: the gate under the budget, their second file, and the box I have been paying for
+
+Raising the budget got their plate through the check. It still came out wrong, one line further on.
+
+| | |
+|---|---|
+| split | 52,144.56 mm3 of coolant, 3 openings, 379.5 s |
+| scout | single_solid, solid-body, EXTERNAL, confidence 0.70 (box_like) |
+| naming | "cold plate with internal coolant passages", solid-assembly, internal, 0.62 |
+| proposal | solid-body, EXTERNAL |
+
+`_proposal` hears the naming only when its confidence clears the scout's. 0.62 against 0.70, so
+the block was skipped whole and both the kind and the flow stayed the flat-face reading. External
+flow means `patches_from` returns no openings, and the intake then correctly refuses a conjugate
+case on a geometry with no coolant in it. The customer is told their cold plate is a solid body in
+a stream.
+
+The principle was already in that file, forty lines down, in `_kinds_on_offer`'s own words: coolant
+actually found inside the part outranks the flow the measuring step guessed. That decides what may
+be named. It was never applied to whether the naming is heard at all. The scout's 0.70 is its own
+flat-face number, set for a body it calls `box_like`, which a brazed cold plate is, before any
+split has run.
+
+So a measurement now beats that comparison, and only for the one kind the measurement is about.
+`solid-assembly` is on offer only when the split found coolant and there are two or more mouths,
+so naming it was already evidence-gated twice. Nothing else changes: no split result and the
+scout's reading stands exactly as it did, which is what keeps a car body from being read as a cold
+plate. Seven tests over the numbers that plate produced, the two negatives included.
+
+### Their second file
+
+The chip ECXML, read with our own reader, no changes:
+
+| | |
+|---|---|
+| objects | 57 |
+| materials | 33 |
+| elements ignored | 0 |
+| notes | 0 |
+| total declared power | 0.000 W, across all 44 powerDissipation |
+| solutionDomain | absent |
+| footprint | 70 x 78.6 x 3.571 mm |
+
+It reads clean. It also declares no heat load at all, so there is nothing of that sort to carry
+and I am not inventing one.
+
+What looked like the prize was two monitor points, named `inlet` and `outlet`, at (51, 0, 30.785)
+and (51, 53.5, 30.785) mm. The customer naming their own ports. The geometry check finds three
+openings and has to work out the roles, so a name would settle it.
+
+It does not. Those two are 53.500 mm apart, and a separation does not change under any rotation,
+reflection or shift of the axes, so I tested it against the plate's own openings. Of the 58
+candidate caps on their plate I took the 28 largest:
+
+| | |
+|---|---|
+| pairs within 1 mm of 53.500 mm | 13 |
+| best pair | 53.515 mm, off by 0.015 |
+| what that pair is | a 9,194 mm2 face against a 165 mm2 one |
+| the two faces a person would call the ports | 165.13 mm2 each, 35.102 mm apart |
+
+53.5 mm is a commonplace distance on a part 177.5 x 41.8 x 101.0 mm. The best match by separation
+pairs a large internal cap with a port, and a matcher built on position would have returned it
+with no sign that anything was wrong. The names in that file are in the Icepak model's own frame,
+around its own simplified manifold, and they cannot be put on this plate by geometry.
+
+The door I would have had to open is already shut, and shut for the right reason: `_joined_assembly`
+refuses a file whose format has a check mode of its own, with "a MODEL is not a part that failed to
+be CAD". An ECXML cannot be stapled onto a STEP assembly by position. It should stay that way.
+
+### The box
+
+The bench already has a big one of their plate, from before the fitted domain existed:
+
+| | |
+|---|---|
+| cells | 336,223,062 |
+| cartesianMesh | 1,744.7 s execution, 2,374 s clock, 8 ranks |
+| fluid | 66,764,096, Mesh OK, non-orthogonality max 48.65 |
+| solid | 269,902,486, Mesh OK, non-orthogonality max 50.22 |
+| block.stl | 3,493 bytes |
+
+3,493 bytes is twelve triangles. Every run on that plate so far, all three workspaces, has filled
+the cuboid. The domain measures 276,372 mm3 of a 750,015 mm3 box, share_of_box 0.3685 against a
+BOX_WORTH_KEEPING of 0.6, so the fitted skin will be used from now on and it is 2.71x less volume
+to fill. Most of those 269.9M solid cells are air.
