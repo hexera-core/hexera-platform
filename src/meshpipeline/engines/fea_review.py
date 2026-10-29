@@ -77,8 +77,74 @@ def _m(value) -> Mapping:
     return value if isinstance(value, Mapping) else {}
 
 
+def face_accounting(quality: Mapping | None, plan: Mapping | None) -> dict:
+    """EVERY CAD FACE ACCOUNTED FOR: named in the solver files, or left out for a measured reason - a skin of no
+    thickness (MESH-8: it lies on another face of its part, no volume) or a tiny face meshed as part of its
+    neighbour (MESH-9: its area is in that face's named group). Never counted as missing.
+
+        {"cad", "named", "skins": [{"face", "on", "words"}], "merged": [{"face", "into"}], "accounted",
+         "missing": [names], "complete": bool, "files": {file: {"named", "complete"}}}
+
+    `quality` is the run's quality record (its deck, exports and MESH-9 record), `plan` the FEA plan."""
+    from meshpipeline.cad.fea_assembly import skin_pairs
+
+    q, p = _m(quality), _m(plan)
+    deck = _m(q.get("deck"))
+    cad = [str(_m(f).get("name")) for f in p.get("faces") or [] if _m(f).get("name")]
+    named = {str(k) for k in (deck.get("face_sets") or {})}
+    skins = (skin_pairs(_m(p.get("assembly")).get("skins")) or skin_pairs(p.get("skins"))
+             or [dict(s) for s in deck.get("skins_left_out") or [] if isinstance(s, Mapping)])
+    merged = [{"face": f, "into": list(_m(m).get("into") or [])}
+              for m in _m(q.get("fea_tiny")).get("merged") or [] for f in _m(m).get("face") or []]
+    aside = {str(s.get("face")) for s in skins} | {str(m["face"]) for m in merged}
+    cad_set = set(cad)
+    left = sorted(cad_set - named) if named else []
+    missing = [f for f in left if f not in aside]
+    extra = len((aside & cad_set) - named)
+    exports = _m(_m(q.get("fea")).get("exports"))
+    files: dict = {}
+    for file, n in (("mesh.inp", len(named) or None), ("mesh.bdf", _m(exports.get("nastran")).get("faces")),
+                    ("mesh.cdb", _m(exports.get("ansys")).get("faces"))):
+        if n is None:
+            continue
+        files[file] = {"named": int(n), "complete": not cad or int(n) + extra >= len(cad)}
+    return {"cad": len(cad) or None, "named": len(named) or None, "skins": skins, "merged": merged,
+            "accounted": extra, "missing": missing,
+            "complete": bool(cad) and bool(named) and not missing and all(v["complete"] for v in files.values()),
+            "files": files}
+
+
+def faces_words(acc: Mapping) -> str:
+    """The face accounting in one plain sentence (the reviewer's brief and the result screen)."""
+    a = _m(acc)
+    cad, named = a.get("cad"), a.get("named")
+    if not cad or not named:
+        return ""
+    bits = []
+    if a.get("skins"):
+        n = len(a["skins"])
+        bits.append(f"{n} skin face{'s' if n != 1 else ''} of no thickness left out (MESH-8: "
+                    + "; ".join(str(s.get("words") or s.get("face")) for s in a["skins"][:6])
+                    + (f"; and {n - 6} more" if n > 6 else "") + ")")
+    if a.get("merged"):
+        n = len(a["merged"])
+        bits.append(f"{n} tiny face{'s' if n != 1 else ''} meshed as part of the face beside "
+                    + ("them" if n != 1 else "it") + " (MESH-9: the area is in that face's named group)")
+    said = f"{named} of the CAD's {cad} faces are named groups"
+    if bits:
+        k = int(a.get("accounted") or 0)
+        said += f"; the other {k} {'is' if k == 1 else 'are'} accounted for: " + "; ".join(bits)
+    if a.get("missing"):
+        said += f". NOT accounted for: {', '.join(a['missing'][:8])}" + (" ..." if len(a["missing"]) > 8 else "")
+    else:
+        said += ". Every CAD face is accounted for"
+    return said + "."
+
+
 def facts(workspace) -> dict:
     """The measured facts of the FEA mesh in `workspace`, {} when it holds no FEA mesh."""
+    # a solver file kept in the bucket is part of the mesh all the same (engines/bucket_files, RUN-7)
+    from meshpipeline.engines.bucket_files import present
     ws = Path(workspace)
     q = _read(ws / "quality.json")
     fea = _m(q.get("fea"))
@@ -91,14 +157,16 @@ def facts(workspace) -> dict:
     cells = int(q.get("cells") or 0)
     cad_faces = len(plan.get("faces") or []) or None
     inp_faces = len(deck.get("face_sets") or {}) or None
+    # MESH-8 / MESH-9: the faces left out for a measured reason count as accounted for, never as missing
+    acc = _m(q.get("fea_faces")) or face_accounting(q, plan)
     per_file = [
         {"solver": "CalculiX / Abaqus", "file": "mesh.inp", "element": "C3D10",
-         "present": (ws / "mesh.inp").exists(), "elements": cells or None, "named_faces": inp_faces},
+         "present": present(ws, "mesh.inp"), "elements": cells or None, "named_faces": inp_faces},
         {"solver": "Nastran", "file": "mesh.bdf", "element": "CTETRA (10-node)",
-         "present": (ws / "mesh.bdf").exists(), "elements": nastran.get("elements"),
+         "present": present(ws, "mesh.bdf"), "elements": nastran.get("elements"),
          "named_faces": nastran.get("faces")},
         {"solver": "Ansys MAPDL", "file": "mesh.cdb", "element": "SOLID187",
-         "present": (ws / "mesh.cdb").exists(), "elements": ansys.get("elements"),
+         "present": present(ws, "mesh.cdb"), "elements": ansys.get("elements"),
          "named_faces": ansys.get("faces")},
     ]
     aside = _m(q.get("fea_set_aside"))
@@ -111,6 +179,7 @@ def facts(workspace) -> dict:
         "elements": cells,
         "nodes": q.get("nodes"),
         "cad_faces": cad_faces,
+        "faces": dict(acc),
         "files": per_file,
         "through_wall_min": fea.get("through_wall_min"),
         "hot_spots": len(plan.get("hot_spots") or []),
@@ -121,14 +190,17 @@ def facts(workspace) -> dict:
         "set_aside": {"elements": aside.get("elements"), "cusp": aside.get("cusp_elements"),
                       "micro": aside.get("micro_elements")},
         "straightened": q.get("fea_straightened"),
-        **({"assembly": assembly_checklist(fea.get("assembly"), plan, inp_faces)} if fea.get("assembly") else {}),
+        **({"assembly": assembly_checklist(fea.get("assembly"), plan, inp_faces,
+                                           accounted=int(acc.get("accounted") or 0))}
+           if fea.get("assembly") else {}),
     }
 
 
-def assembly_checklist(asm: Mapping | None, plan: Mapping, named_faces: int | None) -> dict:
+def assembly_checklist(asm: Mapping | None, plan: Mapping, named_faces: int | None, *, accounted: int = 0) -> dict:
     """THE REVIEWER'S CHECKLIST FOR AN ASSEMBLY (PLAN-fea-17), measured from the records: every part
     present (each has elements), every interface shared (bonded: one joint per touching pair) or
-    paired (contact / tied: one pair per touching or overlapping pair), every face named."""
+    paired (contact / tied: one pair per touching or overlapping pair), every face named - or accounted for
+    (`accounted`: skins left out, tiny faces merged; face_accounting)."""
     a = _m(asm)
     plan_asm = _m(plan.get("assembly"))
     parts = list(a.get("parts") or [])
@@ -143,8 +215,8 @@ def assembly_checklist(asm: Mapping | None, plan: Mapping, named_faces: int | No
         "parts": {"present": present, "expected": want_parts, "ok": present == want_parts and want_parts > 0},
         "joints": {"written": len(joints), "expected": wanted_joints,
                    "ok": wanted_joints is None or len(joints) == int(wanted_joints)},
-        "faces": {"named": named_faces, "expected": want_faces or None,
-                  "ok": bool(named_faces) and (not want_faces or int(named_faces or 0) >= want_faces)},
+        "faces": {"named": named_faces, "expected": want_faces or None, "accounted": accounted,
+                  "ok": bool(named_faces) and (not want_faces or int(named_faces or 0) + accounted >= want_faces)},
     }
 
 
@@ -166,6 +238,9 @@ def facts_text(workspace) -> str:
              f"- Elements: {_n(f['elements'])} quadratic tetrahedra (element order {_n(f['element_order'])}), "
              f"{_n(f['nodes'])} nodes.",
              f"- CAD faces in the part: {_n(f['cad_faces'])}."]
+    said = faces_words(f.get("faces") or {})
+    if said:
+        lines.append("- Faces: " + said + " A face left out for one of these reasons is NOT a missing named face.")
     for row in f["files"]:
         lines.append(f"- {row['file']} ({row['solver']}, {row['element']}): "
                      + ("written" if row["present"] else "MISSING")
@@ -188,10 +263,11 @@ def facts_text(workspace) -> str:
                      + f" ({_n(asm['parts']['present'])} of {_n(asm['parts']['expected'])} parts have elements). "
                      + "Every interface shared or paired: " + ("yes" if asm["joints"]["ok"] else "NO")
                      + f" ({_n(asm['joints']['written'])} written of {_n(asm['joints']['expected'])}). "
-                     + "Every face named (Part_k_Face_j): " + ("yes" if asm["faces"]["ok"] else "NO")
-                     + f" ({_n(asm['faces']['named'])} of {_n(asm['faces']['expected'])}).")
+                     + "Every face named (Part_k_Face_j) or accounted for: " + ("yes" if asm["faces"]["ok"] else "NO")
+                     + f" ({_n(asm['faces']['named'])} named + {_n(asm['faces'].get('accounted'))} accounted for, "
+                     f"of {_n(asm['faces']['expected'])}).")
     lines.append("- " + ONE_PREVIEW_GROUP)
     return "\n".join(lines)
 
 
-__all__ = ["FEA_PURPOSE", "assembly_checklist", "ONE_PREVIEW_GROUP", "SOLVER_FILES", "facts", "facts_text", "is_fea", "measured_valid"]
+__all__ = ["face_accounting", "faces_words", "FEA_PURPOSE", "assembly_checklist", "ONE_PREVIEW_GROUP", "SOLVER_FILES", "facts", "facts_text", "is_fea", "measured_valid"]

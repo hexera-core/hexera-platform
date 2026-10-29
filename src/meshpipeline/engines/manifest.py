@@ -63,7 +63,17 @@ def _delivered_mesh_exists(ws: Path, mesh_mode: str) -> bool:
         marker = deliverable.marker if deliverable is not None else "constant/polyMesh/owner"
     except Exception:  # noqa: BLE001 - an unregistered engine must not crash manifest writing
         marker = "constant/polyMesh/owner"
-    return (ws / marker).exists()
+    # a big deck kept in the bucket is still this result's deck (engines/bucket_files, RUN-7)
+    from meshpipeline.engines.bucket_files import present
+    return (ws / marker).exists() or present(ws, marker)
+
+
+def _review_surface(ws: Path) -> str:
+    """The surface the reviewer walks: mesh.msh, or - when a big FEA mesh stayed in the bucket -
+    the surface-only copy the mesher wrote of it (engines/bucket_files, RUN-7)."""
+    from meshpipeline.engines.bucket_files import REVIEW_SURFACE_FILE
+    msh, stand_in = ws / "mesh.msh", ws / REVIEW_SURFACE_FILE
+    return str((stand_in if not msh.exists() and stand_in.is_file() else msh).resolve())
 
 
 def _engine_serves_region_slices(mesh_mode: str) -> bool:
@@ -207,7 +217,7 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
         "patches": patch_entities or {p: [] for p in roles},
         "patch_types": roles,
         "patch_face_counts": fc, "quality": quality,
-        "mesh_paths": {"surface": str((ws / "mesh.msh").resolve()), "volume": volume_path},
+        "mesh_paths": {"surface": _review_surface(ws), "volume": volume_path},
         # the engine's own slices when it names them (a thermal model's: across the board and
         # through the hottest parts), else the generic ones through the body. Every slice is a
         # cut through the VOLUME: with none published there is nothing to cut, so none is promised.

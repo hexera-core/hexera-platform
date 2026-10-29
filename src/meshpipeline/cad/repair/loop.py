@@ -12,6 +12,10 @@ from dataclasses import dataclass, field, replace
 
 import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair.contracts import DefectSeverity
+
+# The ONE list of sources whose directive may answer a held defect, shared with DirectedPlanner so
+# the planner's permission and the session's exemption cannot drift apart.
+from meshpipeline.cad.repair.directives import HELD_ANSWERING_SOURCES
 from meshpipeline.cad.repair.localize import analyzer_only
 from meshpipeline.cad.repair.plan import RulesPlanner, RunHistory
 from meshpipeline.cad.repair.session import HEAL_OP, OpVerdict, RepairSession
@@ -138,7 +142,8 @@ def _unreached(chosen) -> list[dict]:
 
 
 def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: float,
-        session: RepairSession | None = None, clock=time.monotonic) -> RepairRun:
+        session: RepairSession | None = None, clock=time.monotonic,
+        reserved: frozenset = frozenset()) -> RepairRun:
     """Repair `shape` by trying one operation at a time, and report everything that happened.
 
     `session` and `clock` are injectable so the driver's budget arithmetic can be tested without
@@ -163,7 +168,10 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
     def remaining() -> float:
         return limits.timeout_s - (clock() - started)
 
-    work = session if session is not None else RepairSession(shape, remaining_s=remaining)
+    # `reserved` reaches the SESSION as well as the planner: the planner will not aim at a held
+    # entity, and the session will not let a whole-shape sweep remove one it never aimed at.
+    work = session if session is not None else RepairSession(
+        shape, remaining_s=remaining, reserved=reserved)
     if work.remaining_s is None:
         work.remaining_s = remaining
     history = RunHistory()
@@ -198,8 +206,17 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
             stopped = _terminal(work, NO_CANDIDATE)
             break
 
+        # WHAT THIS PROPOSAL IS ALLOWED TO ANSWER. A directive from the engineer being asked (or a
+        # replay of an operation this upload already kept) may aim at a held defect - that is
+        # DirectedPlanner's HELD_ANSWERING_SOURCES - so the session must not then roll the result
+        # back for touching the very entity the answer was about. The exemption is only what this
+        # directive aims at, never every hold on the part.
+        answered_held = (
+            frozenset({*(t.fingerprint for t in candidate.targets),
+                       candidate.defect_fingerprint})
+            if candidate.source in HELD_ANSWERING_SOURCES else frozenset())
         verdict = work.try_op(candidate.op, candidate.targets, candidate.defect_code,
-                              tolerance_mm=tolerance_mm)
+                              tolerance_mm=tolerance_mm, answered_held=answered_held)
         if candidate.source and work.log and work.log[-1] is verdict:
             # THE DIRECTIVE THAT PROPOSED IT travels with the verdict, so what became of an
             # engineer's decision is read off the log and never inferred from op names.
@@ -216,9 +233,23 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
                 break
             continue
 
-        # THE FEEDBACK. Without this the planner proposes the same failing pair until the budget
-        # runs out, and nothing in the run has learned anything. In slice 8 this ledger is exactly
-        # what the model is shown on its next turn.
+        if verdict.evidence.get("declined"):
+            # A DECLINE IS NOT A FAILED ATTEMPT: the operation judged the aim and ran nothing, so
+            # it says nothing about whether progress is possible - and it must not spend the stall
+            # budget, which exists to stop ATTEMPTED work being rolled back over and over. On
+            # hero.stp two multi_body declines of the heal ended the run `stalled` while 56 open
+            # shells a sew would have fixed were never proposed. Recorded against the AIM
+            # (operation + target set) so the planner cannot re-propose it from a sibling finding
+            # on the same tangle; a run of nothing-but-declines still terminates, because every
+            # decline bans its aim (the planner runs dry, `no_candidate`) and the log it joins
+            # still counts against `max_ops`.
+            history.mark_declined(candidate.op.name,
+                                  (t.fingerprint for t in candidate.targets))
+            continue
+
+        # THE FEEDBACK. Without this the same failing pair is proposed until the budget runs out,
+        # and nothing in the run has learned anything. Consumed only within this run: the
+        # model-directed portion plans ahead of the loop and never sees this ledger fill.
         history.mark_ineffective(candidate.defect_fingerprint, candidate.op.name)
         consecutive_misses += 1
         if consecutive_misses >= limits.stall_limit:

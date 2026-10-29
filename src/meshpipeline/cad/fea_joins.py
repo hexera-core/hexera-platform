@@ -11,6 +11,9 @@ reach, and miss the same joint on the mirrored side. The surfaces themselves are
 * TOUCHING: faces of two parts whose outward normals face each other (within 45 degrees of opposite)
   and lie within the fuse's own fuzzy distance, over at least MIN_JOIN_AREA_SHARE of the smaller
   part's size squared.
+* LINE: surfaces that come within the gap limit only along a line, an edge or at a point (no faces
+  facing each other over the least joint area: a tube on a plate, a plate's edge on a frame) - joined
+  there with the gap limit as the solver's reach.
 * GAP (the small-gap join): the same, across a gap of up to gap_limit_mm(): 0.5 mm, or 2% of the
   smaller part's box diagonal when that is less - the bonded-contact tolerance a solver user sets
   for welds and threads the CAD does not draw (a boss sleeved into a clearance hole, a bolt in its
@@ -75,6 +78,8 @@ class Joint:
     gap_max: float | None = None
     at: list[float] | None = None
     limit: float = 0.0
+    #: met along a line, an edge or at a point: no faces facing each other over the least joint area
+    line: bool = False
 
 
 @dataclass
@@ -166,6 +171,22 @@ def _dist(a, b) -> float:
         return float(d.Value()) if d.IsDone() else math.nan
     except Exception:  # noqa: BLE001 - OpenCASCADE's failures arrive as plain exceptions; unknown
         return math.nan
+
+
+def _dist_at(a, b) -> tuple[float, np.ndarray]:
+    """The shapes' distance and the middle of their closest points; (nan, origin) when OpenCASCADE
+    cannot say."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    try:
+        d = BRepExtrema_DistShapeShape(a, b)
+        d.Perform()
+        if not d.IsDone() or d.NbSolution() == 0:
+            return math.nan, np.zeros(3)
+        p, q = d.PointOnShape1(1), d.PointOnShape2(1)
+        return float(d.Value()), np.array([(p.X() + q.X()) / 2, (p.Y() + q.Y()) / 2, (p.Z() + q.Z()) / 2])
+    except Exception:  # noqa: BLE001 - unknown, never a crash
+        return math.nan, np.zeros(3)
 
 
 def _area(shape) -> float:
@@ -584,7 +605,7 @@ def measure(parts: list, *, tol: float, mm_per_unit: float, budget_s: float = BU
             pairs = _near_pairs(parts, tol=tol, mm=mm)
             workers = _workers(len(pairs))
             if workers > 1 and brep.exists():
-                got = _spawned(brep, len(parts), pairs, workers, tol=tol, mm=mm, budget_s=budget_s, t0=t0)
+                got = _spawned(parts, pairs, workers, tol=tol, mm=mm, budget_s=budget_s, t0=t0)
                 if got is not None:
                     out.joints, out.near, out.skins, out.complete, out.unmeasured = got
                     out.seconds = round(time.time() - t0, 2)
@@ -623,6 +644,18 @@ def _round_trip(parts: list, brep) -> list:
 #: only when there are at least WORKER_PAIRS pairs a worker (a worker takes a second or two to start).
 MAX_WORKERS = 8
 WORKER_PAIRS = 4
+#: WHAT A WORKER TAKES: about WORKER_BASE_BYTES to start (Python, OpenCASCADE, numpy, scipy), plus
+#: WORKER_BREP_FACTOR times the size of the B-rep file of the parts it measures (their shapes, faces,
+#: tessellated surfaces and search trees). The workers running at once take at most WORKER_MEMORY_SHARE
+#: of the memory the job has free when they start; one always runs.
+WORKER_BASE_BYTES = 400 * 2**20
+WORKER_BREP_FACTOR = 500.0
+WORKER_MEMORY_SHARE = 0.6
+#: RUNS A WORKER: the pairs are cut into this many runs of neighbours per worker, handed out as workers
+#: come free. One run a worker left one worker with every pair of a heavy part (lab, 28 Oct: a 42-part
+#: launch-pad support 161 -> 247 s, a 114-part boiler 68 -> 101 s); three per worker spread them
+#: (208 s and 87 s), each run still reading only its own parts.
+WORKER_RUNS = 3
 
 
 def _near_pairs(parts: list, *, tol: float, mm: float) -> list[tuple[int, int]]:
@@ -638,6 +671,8 @@ def _near_pairs(parts: list, *, tol: float, mm: float) -> list[tuple[int, int]]:
 
 
 def _workers(n_pairs: int) -> int:
+    """How many runs the pairs are cut into: by cores and pairs (memory decides how many of them run at
+    once, see _spawned)."""
     import os
 
     if n_pairs < 2 * WORKER_PAIRS:
@@ -649,52 +684,144 @@ def _workers(n_pairs: int) -> int:
     return max(1, min(MAX_WORKERS, cores, n_pairs // WORKER_PAIRS))
 
 
-def _spawned(brep, n_parts: int, pairs: list, workers: int, *, tol: float, mm: float, budget_s: float, t0: float):
-    """The pairs measured in `workers` fresh Python processes (`python -m meshpipeline.cad.fea_joins`),
-    each reading the parts from the B-rep file `brep` (measure() wrote it), merged in pair order: (joints,
-    near, skins, complete), or None when a worker could not start, ran out of time or failed (then the
-    caller measures every pair here, one by one). Fresh processes, never forked copies: a fork of a
-    process with threads can stall on a lock another thread held (26 Oct, a test run that never ended)."""
+def _memory_free() -> float | None:
+    """The bytes the job has free (its container's limit less what it uses, else the machine's); None
+    when it cannot be read (then cores alone decide)."""
+    from meshpipeline.sandbox.liveness import memory_in_use
+
+    got = memory_in_use()
+    if got is None:
+        return None
+    used, limit = got
+    return float(max(limit - used, 0))
+
+
+def _chunks(pairs: list, n: int) -> list[list]:
+    """The pairs in `n` runs of neighbours (in pair order, near-equal counts): a part's pairs mostly in
+    one run, so each worker reads few parts, never the whole assembly."""
+    n = max(1, min(n, len(pairs)))
+    size, extra = divmod(len(pairs), n)
+    out, k = [], 0
+    for c in range(n):
+        m = size + (1 if c < extra else 0)
+        out.append(pairs[k:k + m])
+        k += m
+    return [c for c in out if c]
+
+
+def _worker_need(brep_bytes: int) -> float:
+    """The memory a worker reading a B-rep file of `brep_bytes` is counted at."""
+    return WORKER_BASE_BYTES + WORKER_BREP_FACTOR * float(brep_bytes)
+
+
+def _spawned(parts: list, pairs: list, workers: int, *, tol: float, mm: float, budget_s: float, t0: float):
+    """The pairs measured in fresh Python processes (`python -m meshpipeline.cad.fea_joins`), merged in
+    pair order: (joints, near, skins, complete, unmeasured), or None when a worker could not start, ran
+    out of time or failed (then the caller measures every pair here, one by one).
+
+    The pairs are cut into WORKER_RUNS runs of neighbours a worker, at most `workers` running. Each run's worker reads a B-rep file of ITS OWN
+    parts only (written here from the parts as measure() read them back: the same numbers), and only as
+    many run at once as the job's free memory holds (WORKER_MEMORY_SHARE of it, at _worker_need each; one
+    always runs). When they grow past that share anyway, the newest is stopped and run again later, with
+    fewer at once (so too a worker the kernel kills for memory beside others). Never `workers` copies of the whole assembly: 27 Oct, 8 workers of 3.5 GB each, every
+    one reading all 406 parts of a laser cutter, got a 32 GiB job killed.
+    Fresh processes, never forked copies: a fork of a process with threads can stall on a lock another
+    thread held (26 Oct, a test run that never ended)."""
     import pickle
     import subprocess
     import sys
     import tempfile
     from pathlib import Path
 
+    from OCP.BRepTools import BRepTools
+
+    from meshpipeline.cad.fea_assembly import compound
+
     left = budget_s - (time.time() - t0)
     if left <= 30.0:
         return None
+    # every run answers within the measure's own budget (each is started with what is left of it), so
+    # the deadline is that budget and a grace; what finished runs measured is kept when it passes
+    deadline = t0 + budget_s + 120.0
     with tempfile.TemporaryDirectory(prefix="fea_joins_") as tmp:
-        procs = []
+        jobs: list[tuple[list[str], Path, float]] = []
+        specs: dict[str, dict] = {}
+        running: list[tuple[subprocess.Popen, Path, float, list[str]]] = []
+        joints: dict = {}
+        near: dict = {}
+        unmeasured: dict = {}
+        skins: dict[int, set[int]] = {}
+        complete = True
         try:
-            for k in range(workers):
-                spec = Path(tmp) / f"job{k}.json"
-                spec.write_text(json.dumps({"brep": str(brep), "pairs": [list(x) for x in pairs[k::workers]],
-                                            "parts": n_parts, "tol": tol, "mm": mm, "budget_s": left}))
-                out = Path(tmp) / f"out{k}.pkl"
-                procs.append((subprocess.Popen([sys.executable, "-m", "meshpipeline.cad.fea_joins", str(spec), str(out)],
-                                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                               stderr=subprocess.DEVNULL), out))
-            joints: dict = {}
-            near: dict = {}
-            unmeasured: dict = {}
-            skins: dict[int, set[int]] = {}
-            complete = True
-            for proc, out in procs:
-                rc = proc.wait(timeout=max(left, 0.0) + 120.0)
-                if rc != 0 or not out.exists():
+            for k, chunk in enumerate(_chunks(pairs, workers * WORKER_RUNS)):
+                index = sorted({p for pair in chunk for p in pair})
+                brep = Path(tmp) / f"parts{k}.brep"
+                if not BRepTools.Write_s(compound([parts[p] for p in index]), str(brep)):
                     return None
-                j, n, sk, c, um = pickle.loads(out.read_bytes())  # noqa: S301 - our own worker's answer, in our own temp dir
-                joints.update(j)
-                near.update(n)
-                unmeasured.update(um)
-                for part, fs in sk.items():
-                    skins.setdefault(part, set()).update(fs)
-                complete = complete and c
+                spec = Path(tmp) / f"job{k}.json"
+                specs[str(spec)] = {"brep": str(brep), "index": index, "pairs": [list(x) for x in chunk],
+                                    "tol": tol, "mm": mm}
+                out = Path(tmp) / f"out{k}.pkl"
+                jobs.append(([sys.executable, "-m", "meshpipeline.cad.fea_joins", str(spec), str(out)], out,
+                             _worker_need(brep.stat().st_size)))
+            free = _memory_free()
+            room = math.inf if free is None else WORKER_MEMORY_SHARE * free
+            floor = 0.0 if free is None else (1.0 - WORKER_MEMORY_SHARE) * free
+            most = min(workers, len(jobs))
+            while jobs or running:
+                # START what the memory holds, in order; one always runs
+                while jobs and (not running or (len(running) < most
+                                                and sum(r[2] for r in running) + jobs[0][2] <= room)):
+                    # a run started late (memory let only a few run at once) gets what is left of the
+                    # budget; with nothing left, the runs not started are not measured (the fuse's answer
+                    # stands for their pairs, as when one process runs out of time)
+                    left = budget_s - (time.time() - t0)
+                    if left <= 5.0:
+                        jobs.clear()
+                        complete = False
+                        break
+                    cmd, out, need = jobs.pop(0)
+                    Path(cmd[-2]).write_text(json.dumps({**specs[cmd[-2]], "budget_s": left}))
+                    running.append((subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                                     stderr=subprocess.DEVNULL), out, need, cmd))
+                done = [r for r in running if r[0].poll() is not None]
+                if not done:
+                    if time.time() > deadline:
+                        # past the budget: what the finished runs measured is kept, the rest not measured
+                        complete = False
+                        break
+                    # THE GUARD: the workers grew past what was counted for them - the newest one stopped and
+                    # put back to run later, and never again this many at once (it never stops the last one)
+                    now = _memory_free() if free is not None else None
+                    if now is not None and now < floor and len(running) > 1:
+                        proc, out, need, cmd = running.pop()
+                        proc.kill()
+                        proc.wait()
+                        jobs.insert(0, (cmd, out, need))
+                        most = len(running)
+                    time.sleep(0.2)
+                    continue
+                for r in done:
+                    running.remove(r)
+                    proc, out, need, cmd = r
+                    if proc.returncode < 0 and running:
+                        # killed (the kernel's out-of-memory killer) beside others: again later, fewer at once
+                        jobs.insert(0, (cmd, out, need))
+                        most = max(1, len(running))
+                        continue
+                    if proc.returncode != 0 or not out.exists():
+                        return None
+                    j, n, sk, c, um = pickle.loads(out.read_bytes())  # noqa: S301 - our own worker's answer, in our own temp dir
+                    joints.update(j)
+                    near.update(n)
+                    unmeasured.update(um)
+                    for part, fs in sk.items():
+                        skins.setdefault(part, set()).update(fs)
+                    complete = complete and c
         except (OSError, subprocess.SubprocessError, ValueError, EOFError, pickle.UnpicklingError):
             return None
         finally:
-            for proc, _out in procs:
+            for proc, *_rest in running:
                 if proc.poll() is None:
                     proc.kill()
                     proc.wait()
@@ -704,8 +831,9 @@ def _spawned(brep, n_parts: int, pairs: list, workers: int, *, tol: float, mm: f
 
 
 def _worker(spec_path: str, out_path: str) -> int:
-    """One worker of _spawned: the parts read back from the B-rep file, its pairs measured, the answer
-    written."""
+    """One worker of _spawned: its own parts read back from its B-rep file, its pairs measured on them,
+    the answer written in the assembly's numbering (pairs 0-based, parts 1-based)."""
+    import dataclasses
     import pickle
 
     from OCP.BRep import BRep_Builder
@@ -719,13 +847,24 @@ def _worker(spec_path: str, out_path: str) -> int:
     if not BRepTools.Read_s(shape, spec["brep"], BRep_Builder()):
         return 2
     parts = solids(shape)
-    if len(parts) != int(spec["parts"]):
+    index = [int(p) for p in spec["index"]]
+    if len(parts) != len(index):
         return 3
+    local = {g: k for k, g in enumerate(index)}
     t0 = time.time()
     res = _measure(parts, tol=float(spec["tol"]), mm=float(spec["mm"]), budget_s=float(spec["budget_s"]), t0=t0,
-                   out=Measured(tol=float(spec["tol"])), only={(int(i), int(j)) for i, j in spec["pairs"]})
+                   out=Measured(tol=float(spec["tol"])),
+                   only={(local[int(i)], local[int(j)]) for i, j in spec["pairs"]})
+
+    def pair(k: tuple[int, int]) -> tuple[int, int]:
+        return index[k[0]], index[k[1]]
+
+    joints = {pair(k): dataclasses.replace(v, a=index[v.a - 1] + 1, b=index[v.b - 1] + 1)
+              for k, v in res.joints.items()}
     with open(out_path, "wb") as fh:
-        pickle.dump((res.joints, res.near, res.skins, res.complete, res.unmeasured), fh)
+        pickle.dump((joints, {pair(k): v for k, v in res.near.items()},
+                     {index[p - 1] + 1: v for p, v in res.skins.items()}, res.complete,
+                     {pair(k): v for k, v in res.unmeasured.items()}), fh)
     return 0
 
 
@@ -750,10 +889,25 @@ def _measure(parts: list, *, tol: float, mm: float, budget_s: float, t0: float, 
             surfaces[i] = _surface(parts[i], faces[i], diags[i])
         return surfaces[i]
 
+    # A PART LET GO after its last pair: its surface and face tools freed, so what is held is the
+    # surfaces of the parts still to be paired, never every part's at once
+    todo = [(i, j) for i, j in combinations(range(len(parts)), 2) if only is None or (i, j) in only]
+    done_with: dict[int, list[int]] = {}
+    for part, n in {p: n for n, pair in enumerate(todo) for p in pair}.items():
+        done_with.setdefault(n, []).append(part)
+
+    def let_go(n: int) -> None:
+        for part in done_with.get(n, ()):
+            surfaces.pop(part, None)
+            for f in faces[part]:
+                tools = _FACE_TOOLS.get(f.__hash__())
+                if tools is not None and tools[0].IsSame(f):
+                    del _FACE_TOOLS[f.__hash__()]
+
     pairs_tried = 0
-    for i, j in combinations(range(len(parts)), 2):
-        if only is not None and (i, j) not in only:
-            continue
+    for n, (i, j) in enumerate(todo):
+        if n:
+            let_go(n - 1)
         if time.time() - t0 > budget_s:
             out.complete = False
             break
@@ -841,11 +995,20 @@ def _measure(parts: list, *, tol: float, mm: float, budget_s: float, t0: float, 
                 gap = 0.0 if touch >= min_area else float(g[order, 0][np.searchsorted(cum, 0.5 * cum[-1])])
                 fa_keep = sorted(a + 1 for a, v in area_a.items() if v >= 0.1 * min_area)
                 fb_keep = sorted(b + 1 for b, v in area_b.items() if v >= 0.1 * min_area)
-                out.joints[(i, j)] = Joint(i + 1, j + 1, TOUCHING if gap <= tol else GAP, faces_a=fa_keep,
+                # TOUCHING ALONG A LINE: faces that face each other across a band that closes to nothing (a tube
+                # on a plate) touch there, though no touching area is measured - a touch, said as a line one
+                line = False
+                if gap > tol:
+                    a0, b0 = min(((a, b, float(ga.min())) for a, b, _pa, _aa, ga, _fb in seen if len(ga)),
+                                 key=lambda r: r[2])[:2]
+                    if _dist_at(faces[i][a0], faces[j][b0])[0] <= tol:
+                        line = True
+                gap_max = float(g[:, 0].max())
+                out.joints[(i, j)] = Joint(i + 1, j + 1, TOUCHING if gap <= tol or line else GAP, faces_a=fa_keep,
                                            faces_b=fb_keep, area=min(total_a, total_b),
-                                           gap=0.0 if gap <= tol else gap,
-                                           gap_max=float(g[:, 0].max()) if gap > tol else 0.0,
-                                           at=[float(x) for x in where / max(wsum, 1e-300)], limit=limit)
+                                           gap=0.0 if gap <= tol or line else gap,
+                                           gap_max=gap_max if gap > tol else 0.0,
+                                           at=[float(x) for x in where / max(wsum, 1e-300)], limit=limit, line=line)
             elif crossing or sum(flush.values()) >= min_area:
                 # surfaces that cross, or lie on each other the same side out: the parts pass into each other
                 if not crossing:
@@ -855,7 +1018,26 @@ def _measure(parts: list, *, tol: float, mm: float, budget_s: float, t0: float, 
                                            faces_b=sorted({b + 1 for _a, b, _at in crossing}),
                                            at=[float(x) for x in pts.mean(axis=0)], limit=limit)
             else:
-                out.near[(i, j)] = {"skin_only": skinned}
+                # NEAR ALONG A LINE, AN EDGE OR A POINT (a tube lying on a plate, a plate's edge on a frame, a
+                # ring in a countersink, corners a hair apart): no faces face each other over the least joint
+                # area, yet the surfaces come within the gap limit - joined there, as a solver's bonded reach
+                # joins whatever lies within it. A skin is no evidence here either.
+                close = []
+                for (a, b), dd in sorted(approx.items()):
+                    if dd > limit + slack or sk_i.get(a) or sk_j.get(b):
+                        continue
+                    dab, where_ab = _dist_at(faces[i][a], faces[j][b])
+                    if dab <= limit:
+                        close.append((a, b, dab, where_ab))
+                if close and not skinned:
+                    dmin = min(c[2] for c in close)
+                    out.joints[(i, j)] = Joint(
+                        i + 1, j + 1, TOUCHING if dmin <= tol else GAP, faces_a=sorted({c[0] + 1 for c in close}),
+                        faces_b=sorted({c[1] + 1 for c in close}), area=0.0, gap=0.0 if dmin <= tol else dmin,
+                        gap_max=limit, at=[float(x) for x in np.mean([c[3] for c in close], axis=0)], limit=limit,
+                        line=True)
+                else:
+                    out.near[(i, j)] = {"skin_only": skinned}
         except Exception as exc:  # noqa: BLE001 - OpenCASCADE threw on this pair (StdFail_NotDone...)
             # ONE PAIR OPENCASCADE CANNOT MEASURE is that pair unmeasured: the fuse's answer stands for it,
             # and the rest of the assembly is measured as ever
@@ -882,9 +1064,11 @@ def interfaces(measured: Measured, parts: list, volumes: list[float], *, scale: 
         row: dict[str, Any] = {"kind": jt.kind, "parts": [part_id(p), part_id(q)], "faces": faces,
                                "at_mm": [_r(x * scale) for x in (jt.at or [0.0, 0.0, 0.0])],
                                "area_mm2": _r(jt.area * scale * scale) if jt.kind != OVERLAP else None}
-        if jt.kind == GAP:
+        if jt.kind == GAP or jt.line:
             row.update(gap_mm=_r(float(jt.gap or 0.0) * scale), gap_max_mm=_r(float(jt.gap_max or 0.0) * scale),
                        gap_limit_mm=_r(jt.limit * scale))
+        if jt.line:
+            row["line"] = True
         if jt.kind == OVERLAP:
             inside = not jt.faces_a and not jt.faces_b
             smaller = min(volumes[i], volumes[j]) or 1.0

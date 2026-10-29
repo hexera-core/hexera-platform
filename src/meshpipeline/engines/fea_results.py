@@ -132,8 +132,14 @@ FEA_VIEW_MISSING = ("The 3D view could not be built for this mesh, so it is not 
 FILE_MISSING = "This solver file isn't available for this mesh; the other files are complete."
 
 
+def _present(ws: Path, name: str) -> bool:
+    from meshpipeline.engines.bucket_files import present
+    return present(ws, name)
+
+
 def _ready(ws: Path, line: dict) -> dict:
-    ready = (ws / line["file"]).exists()
+    from meshpipeline.engines.bucket_files import present
+    ready = present(ws, line["file"])      # a big file kept in the bucket is ready (RUN-7)
     return {**line, "file_ready": ready, **({} if ready else {"file_note": FILE_MISSING})}
 
 
@@ -218,6 +224,20 @@ def results(workspace) -> dict | None:
     net = safety_net_block(fea.get("ftetwild") or {})
     if net:
         extra["safety_net"] = net
+    # MESH-9: the tiny faces meshed as part of a neighbour - each one's area is in that neighbour's named face
+    from meshpipeline.engines.gmsh.fea_tiny import words as tiny_words
+    tiny = q.get("fea_tiny") or {}
+    if tiny.get("merged"):
+        extra["merged_faces"] = [{"face": m.get("face"), "into": m.get("into"), "width_mm": m.get("width_mm")}
+                                 for m in tiny["merged"]]
+    # MESH-8: the CAD faces left out as skins of no thickness, each with the face it lies on - accounted for, as
+    # the merged faces are (engines/fea_review.face_accounting)
+    from meshpipeline.engines.fea_review import face_accounting, faces_words
+    acc = q.get("fea_faces") or face_accounting(q, plan)
+    if acc.get("skins"):
+        extra["skins_left_out"] = [{"face": s.get("face"), "on": s.get("on"), "words": s.get("words")}
+                                   for s in acc["skins"]]
+    faces_said = faces_words(acc) if (acc.get("skins") or acc.get("merged") or acc.get("missing")) else ""
     return {**extra,
         "title": "FEA mesh",
         "summary": (f"{cells:,} quadratic tetrahedra (10-node), a solid mesh"
@@ -232,11 +252,12 @@ def results(workspace) -> dict | None:
                   "solvers": "Limits: the strictest of Abaqus/CalculiX, Nastran and Ansys."},
         "elements": cells,
         "through_wall": through,
-        "plan_words": list(plan.get("words") or []) + ([net["words"]] if net and net.get("words") else []),
+        "plan_words": (list(plan.get("words") or []) + ([net["words"]] if net and net.get("words") else [])
+                       + [w for w in [tiny_words(tiny), faces_said] if w]),
         "hot_spots": spots,
         "faces": faces,
         "download": {"words": "The full download holds:",
-                     "contains": [{"file": f, "words": w} for f, w in CONTAINS if (ws / f).exists()],
+                     "contains": [{"file": f, "words": w} for f, w in CONTAINS if _present(ws, f)],
                      "later": SAME_NUMBERS},
         # PASS / WARNINGS / FAIL PER SOLVER, by each solver's own published checks
         # (engines/fea_solvers.py), with its file and whether that solver has really run it

@@ -23,11 +23,13 @@ import asyncio
 import json
 import logging
 import math
+import os
 import shutil
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from meshpipeline.engines import bucket_files as BF
 from meshpipeline.engines import fea_ai as FA
 from meshpipeline.engines import fea_ladder as L
 from meshpipeline.engines import fea_plan as P
@@ -98,6 +100,85 @@ def _metre_box(step: Path) -> tuple[list[float], float]:
             gmsh.finalize()
     diag = math.dist(box[:3], box[3:])
     return box, diag
+
+
+#: MESH-8 FOR A SINGLE PART: the skins its staged solid was opened without, and each face's CAD origin (the
+#: workspace file the mesher reads to name every face for the CAD face it came from)
+SKINS_FILE = "skins.json"
+#: the staged solid as the CAD drew it, kept beside the opened one
+CAD_SOLID = "geometry_cad.brep"
+
+
+def open_single_skins(ws: Path) -> dict | None:
+    """MESH-8 FOR A SINGLE PART: a part whose staged solid has skins of no thickness (cad/zero_skins - a pocket
+    or hole cut exactly to a wall, its floor left lying on that wall) is staged again with each skin left out and
+    its outline opened through the face it lay on, as an assembly's parts are (cad/fea_assembly.stage). Writes the
+    opened solid as geometry.brep (the drawn one kept as CAD_SOLID) and SKINS_FILE: {"origin": the CAD face of
+    each face of the opened solid, "faces": the CAD's face count, "skins": [{"part", "faces", "on", "pairs"}]}.
+    None when there is nothing to open (no skin, several bodies, a file not read); {"note"} when the opened copy was
+    not sound - the part is then meshed as drawn, said. Never raises."""
+    import shutil
+
+    from OCP.BRepTools import BRepTools
+
+    from meshpipeline.cad import fea_assembly as A
+    from meshpipeline.cad import zero_skins as Z
+    from meshpipeline.cad.scout import read_cad
+
+    try:
+        if (ws / SKINS_FILE).exists() and (ws / CAD_SOLID).exists():
+            # ALREADY OPENED (this workspace driven again): the staged solid is the opened one; its record stands
+            return json.loads((ws / SKINS_FILE).read_text())
+        staged = staged_solid(ws)
+        if staged is None:
+            return None
+        parts = A.solids(read_cad(staged))
+        if len(parts) != 1:
+            return None
+        opened = Z.open_skins(parts[0])
+        if opened.note:
+            return {"note": opened.note}
+        if not opened.skins:
+            return None
+        n = len(Z._faces(parts[0]))
+        if staged.suffix == ".brep":
+            shutil.copyfile(staged, ws / CAD_SOLID)
+        else:
+            BRepTools.Write_s(parts[0], str(ws / CAD_SOLID))
+        BRepTools.Write_s(opened.solid, str(ws / "geometry.brep"))
+        pairs = [A.skin_pair(f"Face_{k.skin}", f"Face_{k.on}") for k in opened.skins]
+        info = {"origin": [int(o) for o in opened.origin], "faces": n,
+                "skins": [{"part": "The part", "faces": [p["face"] for p in pairs],
+                           "on": sorted({p["on"] for p in pairs}, key=lambda f: int(f.rsplit("_", 1)[-1])),
+                           "pairs": pairs}]}
+        (ws / SKINS_FILE).write_text(json.dumps(info, indent=1))
+        return info
+    except Exception as exc:  # noqa: BLE001 - meshed as drawn, as before MESH-8 reached single parts
+        logger.warning("fea driver: a single part's skins were not opened (%s: %s)", type(exc).__name__, exc)
+        return {"note": f"its skins could not be opened ({type(exc).__name__})"}
+
+
+def named_as_cad(record: dict, surface, info: dict) -> dict:
+    """The measurement of an opened single part (open_single_skins) said in the CAD's own face names: each face
+    Face_k of the opened solid renamed to the CAD face it came from, every skin face kept as a face of the part
+    (kind "skin", the face it lies on) so the CAD's face count stands, and the skins recorded. Returns the record."""
+    from meshpipeline.cad import fea_assembly as A
+
+    origin = [int(o) for o in info.get("origin") or []]
+    names = [f"Face_{o}" for o in origin]
+    out = A.rename_record(record, names)
+    out["face_names"] = record.get("face_names") or "Face_k"
+    if len(surface.names) == len(names):
+        surface.names = list(names)
+    faces = dict(out.get("faces") or {})
+    for sk in info.get("skins") or []:
+        for pr in sk.get("pairs") or []:
+            faces[str(pr["face"])] = {"kind": "skin", "skin_on": pr.get("on"), "words": pr.get("words")}
+    out["faces"] = faces
+    out["skins"] = list(info.get("skins") or [])
+    out.setdefault("notes", [])
+    out["notes"] = [*out["notes"], *A.skin_notes(out["skins"])]
+    return out
 
 
 def solids_from_shells(ws: Path) -> int:
@@ -395,6 +476,8 @@ def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None
     if zone_floor_m or zone_floors:
         plan["resolution_short"] = P.shortfalls(zone_list)
     plan["mesh"] = L.mesh_settings(levers)
+    if record.get("skins"):
+        plan["skins"] = list(record["skins"])           # MESH-8, a single part's (an assembly's ride in plan["assembly"])
     if ai:
         plan["ai"] = {**ai, "applied": applied}
         _with_ai(plan)
@@ -932,19 +1015,42 @@ def _read_quality(ws: Path) -> dict:
         return {}
 
 
+#: The pass files linked rather than copied: the mesh and its solver files, which no step writes into
+#: once made - a later pass clears them (unlinks) before it meshes, and its result lands by replacing
+#: names (sandbox/safe_extract moves over). The records beside them (the plan, the quality) are
+#: rewritten in place by the next pass, so those are always copied.
+LINKED = ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.msh")
+
+
+def _same_file(src: Path, dest: Path) -> None:
+    """`dest` becomes `src`'s content: a hard link for the mesh files (no bytes copied - a 34 M-element
+    pass is about 37 GB of them, and the worker's disk then holds a pass and its copy once), else a
+    copy."""
+    dest.unlink(missing_ok=True)
+    if src.name in LINKED:
+        try:
+            os.link(src, dest)
+            return
+        except OSError:
+            pass
+    shutil.copy2(src, dest)
+
+
 def _keep_pass(ws: Path, n: int) -> None:
     d = ws / PASS_FOLDER.format(n=n)
     d.mkdir(exist_ok=True)
-    for name in DELIVERABLES:
+    # with the record of what this pass kept in the bucket and its stand-ins (RUN-7): a pass
+    # restored later delivers its own kept files, never the last pass's
+    for name in DELIVERABLES + BF.STAND_INS:
         if (ws / name).exists():
-            shutil.copy2(ws / name, d / name)
+            _same_file(ws / name, d / name)
 
 
 def _restore_pass(ws: Path, n: int) -> None:
     d = ws / PASS_FOLDER.format(n=n)
-    for name in DELIVERABLES:
+    for name in DELIVERABLES + BF.STAND_INS:
         if (d / name).exists():
-            shutil.copy2(d / name, ws / name)
+            _same_file(d / name, ws / name)
         else:
             (ws / name).unlink(missing_ok=True)      # the delivered pass did not write it
 
@@ -959,6 +1065,7 @@ def _read_failure(ws: Path) -> dict:
 def _clear_outputs(ws: Path) -> None:
     for name in ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.msh", "quality.json", "fea_failure.json"):
         (ws / name).unlink(missing_ok=True)
+    BF.clear(ws)            # the last pass's record of kept files and its stand-ins (RUN-7)
 
 
 async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run) -> tuple[dict, dict, dict]:
@@ -1062,7 +1169,7 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
         result, machine, work = await _native(ws, machine, work, job_id, n, run)
         await run.fence("accept native mesh output")
         q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
-        made = bool(q) and (ws / "mesh.inp").exists()
+        made = bool(q) and BF.present(ws, "mesh.inp")
         run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
         facts = {**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or ""),
                                 killed=_killed(result)),
@@ -1117,8 +1224,12 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                             "words": f"The file's {made} closed shell(s) were read as the solid(s) they bound."}])
     except Exception as exc:  # noqa: BLE001 - the part is meshed, or refused, as it stands
         logger.warning("fea driver: closed shells not read as solids (%s)", type(exc).__name__)
+    # MESH-8 FOR A SINGLE PART: its skins left out, its faces still named for the CAD faces they came from
+    skins = await asyncio.to_thread(open_single_skins, ws)
     try:
         record, surface, diag_m = await asyncio.to_thread(measure_staged, ws)
+        if skins and skins.get("origin"):
+            record = named_as_cad(record, surface, skins)
     except Exception as exc:  # noqa: BLE001 - recorded as the attempt's reason
         logger.exception("fea driver: the staged solid could not be measured - job_id=%s", job_id)
         _refuse(ws, cause=FailureCause.NOT_BUILT.value, text=f"the part could not be measured ({exc})",
@@ -1127,6 +1238,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         outcome = run.outcome(produced_deliverable=False, failure_marker=BUILD_FAILED)
         return False, BUILD_FAILED, outcome
 
+    if skins and skins.get("origin"):
+        _cite(job_id, [{"stage": "fea_plan", "decided": "skins left out", "rule": "MESH-8",
+                        "value": sum(len(sk["faces"]) for sk in skins["skins"]), "inputs": {"skins": skins["skins"]},
+                        "words": " ".join(skin_words(skins["skins"]))}])
+    elif skins and skins.get("note"):
+        _cite(job_id, [{"stage": "fea_plan", "decided": "skins kept", "rule": "MESH-8", "value": 0,
+                        "inputs": {"note": skins["note"]},
+                        "words": f"The part has skins of no thickness, but {skins['note']}: it is meshed as drawn."}])
     staged = staged_solid(ws)
     healed = any("healed" in str(n) for n in record.get("notes") or [])
     _cite(job_id, [{"stage": "fea_plan", "decided": "staged solid", "value": staged.name if staged else None,
@@ -1342,7 +1461,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 too_big = {**result["too_big_for_worker"], "pass": n}
                 break
             q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
-            made = bool(q) and (ws / "mesh.inp").exists()
+            made = bool(q) and BF.present(ws, "mesh.inp")
             run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
             # LAD-fea-7: killed by the job's memory limit (the kernel's SIGKILL on the mesher)
             killed = _killed(result)

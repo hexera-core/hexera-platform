@@ -127,12 +127,21 @@ on:
         required: false
         default: false
         type: boolean
-      # THE LLM PLANNER'S POSTURE, chosen here like cad_repair. "off" exports nothing, so the API and
-      # fleet keep the shipped default (rules only). "shadow" asks the model and records beside the
-      # rules without acting; "live" lets its plan act inside the repair caps. Declarative: a redeploy
+      # The review rides the cad_repair tick by default. Unticking THIS while cad_repair is ticked
+      # leaves the review at its shipped default (off), so the loop repairs autonomously under its
+      # caps - the posture a demonstration of the autonomous pass needs, and nothing else changes.
+      cad_repair_review:
+        description: "cad_repair_review - keep the repair review on when cad_repair is ticked (untick for the autonomous posture: repairs run under caps without parking for a person)"
+        required: false
+        default: true
+        type: boolean
+      # THE POSTURE OF REPAIR'S MODEL-DIRECTED PORTION, chosen here like cad_repair. "off" exports
+      # nothing, so the API and fleet keep the shipped default (repair's deterministic portion
+      # alone). "shadow" asks the model and records beside that portion without acting; "live" lets
+      # its directives act inside the same repair caps. Declarative: a redeploy
       # left at "off" drops the flag from an environment that had it. Only meaningful with cad_repair.
       llm_planner:
-        description: "llm_planner - the model's posture in the CAD repair planner on the targeted environment: off (rules only), shadow (recorded, never acted on) or live"
+        description: "llm_planner - the posture of the CAD repair surface's model-directed portion on the targeted environment: off (its deterministic portion alone), shadow (recorded, never acted on) or live"
         required: false
         default: "off"
         type: choice
@@ -710,12 +719,18 @@ jobs:
               # empty string it concludes no usable key exists and tries to mint one - which a
               # deploy identity is refused, because storage.hmacKeyAdmin is an owner's role.
               #
-              # THE KEY BELONGS TO 224734058693-compute@, not to dev-api@. An HMAC key is owned by
-              # one service account and whoever presents it authenticates AS that account, so the
-              # bucket grant that makes this work is the one that account already holds. Moving
-              # dev onto a key owned by its own API identity is an owner's one-off act (mint, seal,
-              # retype the id here) and is not what this line is for.
-              echo "minio_access_key=GOOG1EBINWPJ6TMT7VJETWHMRZLC6M2FNQWTMOYSRRDTP4NT7ZWGD5YRZJDHX"
+              # THE KEY BELONGS TO dev-api@, and it is the one minio-secret-key's latest version
+              # (v10) seals. create-object-storage.sh tests this id against the ACTIVE keys of the
+              # API identity (OBJECT_STORE_SA defaults to it), so pinning a key another account
+              # owns made every full deploy decide "no usable key", mint a fresh dev-api@ key and
+              # seal its secret as the new latest - and every merge deploy after it put the API
+              # back on the old id, paired with a secret that is not its own. Storage refused
+              # every call (readyz: object_store down: StorageError) until the next full deploy,
+              # and on the fifth mint GCS's per-account limit stopped the deploy outright.
+              # Pinning the id the latest secret belongs to makes the stage reuse it, so a merge
+              # and a full deploy now hand every runtime the same pair. dev-api@ holds
+              # roles/storage.objectAdmin on the bucket.
+              echo "minio_access_key=GOOG1EK3FARMRHP4LWXETCYFWB2BUX4RLN2NHTJ2VWREUO7ZHW7IVPFI7ET5D"
               echo "minio_bucket=hexera-dev-artifacts-224734058693"
               echo "minio_secret_key_secret=minio-secret-key"
               echo "minio_endpoint=storage.googleapis.com"
@@ -1410,7 +1425,13 @@ jobs:
       # expand to the empty string, which every consumer treats as "not stated" (`-z`), so the
       # shipped defaults stay in force.
       CAD_REPAIR_ENABLED: ${{ inputs.cad_repair && 'true' || '' }}
-      CAD_REPAIR_REVIEW_ENABLED: ${{ inputs.cad_repair && 'true' || '' }}
+      # THE REVIEW IS STATED EITHER WAY once repair is on, and this is the one flag here that
+      # cannot ride the "empty means not stated" convention. Unticking it is a POSITIVE choice -
+      # the autonomous posture - and an empty value does not express it: an environment whose
+      # saved worker.env already carries CAD_REPAIR_REVIEW_ENABLED=true would keep parking
+      # repairs for a person while the API dropped the flag, so the tick would appear to do
+      # nothing. Unticked `cad_repair` still leaves it empty, like its siblings.
+      CAD_REPAIR_REVIEW_ENABLED: ${{ inputs.cad_repair && (inputs.cad_repair_review && 'true' || 'false') || '' }}
       # Planar hole filling rides the same tick. What protects a through-hole is the paired-rim
       # guard (both ends of a missing passage, any cross-section, refuse filling for the run); the
       # session caps only bound the size and volume drift of a fill that is kept.

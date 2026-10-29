@@ -60,6 +60,9 @@ class SolidMesh:
     faces: dict[int, np.ndarray] = field(default_factory=dict)
     #: (E,) the mesher's own element numbers, in `elements` order (empty when not known)
     element_tags: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    #: a CAD solid's faces are named by their own tag (Face_k = CAD face k), so a face that holds no
+    #: triangle (MESH-9: merged into its neighbour) never renames the faces after it; off, the k-th face
+    by_tag: bool = False
 
 
 @dataclass
@@ -163,7 +166,7 @@ def face_sets(mesh: SolidMesh) -> list[FaceSet]:
     for k, (tag, e, lab) in enumerate(zip(tags, np.split(e_all, cuts), np.split(lab_all, cuts), strict=True),
                                       start=1):
         nodes = np.unique(elements[e[:, None], table[lab - 1]])
-        out.append(FaceSet(name=f"Face_{k}", tag=int(tag), elements=e + 1, labels=lab,
+        out.append(FaceSet(name=f"Face_{int(tag) if mesh.by_tag else k}", tag=int(tag), elements=e + 1, labels=lab,
                            nodes=nodes))
     return out
 
@@ -230,7 +233,7 @@ def _alias_names(fsets: list[FaceSet], vols: list[int], aliases: dict[str, list[
 
 def write_inp(path: Path | str, mesh: SolidMesh, aliases: dict[str, list[int]] | None = None,
               *, face_names: dict[int, str] | None = None, units: str = "m",
-              source: str = "") -> dict:
+              source: str = "", notes: list[str] | None = None) -> dict:
     """Write the deck; return what it holds for the run's record: {"face_sets": {Face_k: CAD
     tag}, "face_aliases": {name: [Face_k, ...]}, "cad_face_names": {Face_k: name}, "elements",
     "element_type", "units"}. ``face_names`` maps a CAD face tag to the name the CAD file gave it."""
@@ -243,7 +246,7 @@ def write_inp(path: Path | str, mesh: SolidMesh, aliases: dict[str, list[int]] |
     order = np.argsort(np.asarray(mesh.element_volume), kind="stable")
     elements = elements[order]
     vol = np.asarray(mesh.element_volume)[order]
-    fsets = face_sets(SolidMesh(mesh.node_ids, mesh.xyz, elements, vol, mesh.faces))
+    fsets = face_sets(SolidMesh(mesh.node_ids, mesh.xyz, elements, vol, mesh.faces, by_tag=mesh.by_tag))
     vols = list(dict.fromkeys(int(v) for v in vol))
     alias_out, cad_names = _alias_names(fsets, vols, aliases or {}, face_names or {})
 
@@ -259,6 +262,7 @@ def write_inp(path: Path | str, mesh: SolidMesh, aliases: dict[str, list[int]] |
     pairs = [f"{f.name} = CAD face {f.tag}"
              + (f" ({cad_names[f.name]})" if f.name in cad_names else "") for f in fsets]
     head.extend("**   " + ", ".join(pairs[i:i + 6]) for i in range(0, len(pairs), 6))
+    head.extend(f"** {n}" for n in notes or [])
     if alias_out:
         head.append("** Named groups (a *SURFACE and *NSET over the same faces):")
     for name, members in alias_out.items():
@@ -312,9 +316,18 @@ def write_inp(path: Path | str, mesh: SolidMesh, aliases: dict[str, list[int]] |
             "cad_face_names": cad_names}
 
 
-def from_gmsh(gmsh, volumes: list[int]) -> SolidMesh:
+def retagged(mesh: SolidMesh, tags: dict[int, int] | None) -> SolidMesh:
+    """The mesh with its CAD faces keyed by other tags (MESH-8: an opened solid's face k is the CAD's face
+    tags[k]), so every name read off a tag is the CAD's. The mesh itself when there is no map."""
+    if not tags:
+        return mesh
+    mesh.faces = {int(tags.get(int(t), int(t))): v for t, v in mesh.faces.items()}
+    return mesh
+
+
+def from_gmsh(gmsh, volumes: list[int], *, by_tag: bool = False) -> SolidMesh:
     """The current gmsh model's volume mesh over ``volumes`` and the triangles of every CAD
-    face that bounds one of them."""
+    face that bounds one of them (``by_tag``: a CAD solid, its faces named by their own tags)."""
     tags, coords, _ = gmsh.model.mesh.getNodes()
     xyz = np.asarray(coords, dtype=float).reshape(-1, 3)
     conn_blocks, vol_blocks, tag_blocks = [], [], []
@@ -346,4 +359,4 @@ def from_gmsh(gmsh, volumes: list[int]) -> SolidMesh:
             faces[s] = np.concatenate(blocks)
     return SolidMesh(node_ids=np.asarray(tags, dtype=np.int64), xyz=xyz, elements=elements,
                      element_volume=np.concatenate(vol_blocks), faces=faces,
-                     element_tags=np.concatenate(tag_blocks))
+                     element_tags=np.concatenate(tag_blocks), by_tag=by_tag)

@@ -16,12 +16,8 @@ export default async function ActivityPage() {
   return (
     <>
       <h1>Activity</h1>
-      <p className="admin-lede">
-        Recent runs across every organisation, newest first. Use this when launch traffic needs a
-        quick answer before opening a tenant detail page.
-      </p>
 
-      <Panel title="Recent runs" heading="cross-tenant, newest first">
+      <Panel title="Recent runs">
         {activity.error ? (
           <Alert>{activity.error}</Alert>
         ) : runs.length ? (

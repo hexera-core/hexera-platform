@@ -12,6 +12,7 @@
 | column, fixed-free, L/h = 50 | buckling | Euler P_cr = pi^2 EI / 4L^2 (a dead end load: a pressure follows the face and is not Euler's problem) | 1% |
 | ASSEMBLY: two 100 mm blocks, bonded, under tension | static | one 200 mm bar: end displacement p L / E, and sigma_xx = p on both sides of the joint | 1% |
 | ASSEMBLY: two 100 mm blocks in contact, under compression | static | sigma_xx = -p in both parts (the load crosses the contact pair) | 1% |
+| ASSEMBLY: three bonded blocks, two of them also tied along a line, under tension | static | the reaction balances the pull (0.1%); sigma_xx = p at the pulled end | 1% |
 
 Poisson's ratio is 0 in the plate, the cantilever and the column cases, so a clamped or loaded face
 adds no lateral constraint the closed form leaves out; the other cases use steel's 0.3.
@@ -101,7 +102,10 @@ SLENDER = {"L": 500.0, "h": 10.0}
 #: THE ASSEMBLY CASES (PLAN-fea-17): two cubes of this side (mm) along x, and the end pressure (Pa)
 BLOCKS = {"a": 100.0, "p": 1.0e6, "gap": 0.2}
 #: how each assembly case's parts are joined (the stage's one answer)
-CONNECTION = {"bonded_tension": "bonded", "contact_compression": "contact", "bonded_gap_tension": "bonded"}
+CONNECTION = {"bonded_tension": "bonded", "contact_compression": "contact", "bonded_gap_tension": "bonded",
+              "bonded_corner_tie": "bonded"}
+#: THE CORNER CASE: tests/fea_fixtures.corner_blocks of this section (mm)
+CORNER = {"a": 50.0}
 
 
 def _shape(case: str):
@@ -123,6 +127,9 @@ def _shape(case: str):
         return fx.coil_spring()
     if case in ("modal", "buckling"):
         return _box(0, 0, 0, SLENDER["h"], SLENDER["h"], SLENDER["L"])
+    if case == "bonded_corner_tie":
+        from tests import fea_fixtures as fx
+        return fx.corner_blocks(CORNER["a"])
     if case == "bonded_gap_tension":
         from tests import fea_fixtures as fx
         return fx.gapped_blocks(BLOCKS["a"], BLOCKS["gap"])
@@ -539,6 +546,44 @@ def _bonded_gap_tension(ws, q):
     return end, BLOCKS["p"] * 2 * BLOCKS["a"] * 1e-3 / E, "end displacement (m), as one bar across the gap"
 
 
+def _bonded_corner_tie(ws, q):
+    """A bonded mesh whose joint the measurement also finds as a line contact (tests/fea_fixtures.corner_blocks):
+    Part_2 and Part_3 meet along a line the fused mesh already gives them both, so every node near it is
+    both parts' own. Tied as well, CalculiX stopped ("zero coefficient on the dependent side": a node tied
+    to a face it lies on); settled (settle_ties), it is a bonded joint and no *TIE is written. Held on x = 0
+    (rollers on y = 0 and z = 0), Part_2's end pulled by p: CalculiX solves with no error, the reaction
+    balances the pull to 0.1%, and Part_2's pulled end - a plain bar a section's length past its joint -
+    carries sigma_xx = p."""
+    deck, nodes, nsets = _deck(ws)
+    assert "*TIE" not in deck, "parts that share their nodes are tied as well"
+    assert "Bond_3_Part_2" in deck, "the line contact is not named as a bonded joint"
+    a = CORNER["a"] * 1e-3
+    fixed = _face(nodes, nsets, lambda x: abs(x[0]) < 1e-9)
+    load = _face(nodes, nsets, lambda x: abs(x[0] - 6 * a) < 1e-9)
+    y0 = _faces(nodes, nsets, lambda x: abs(x[1]) < 1e-9)
+    z0 = _faces(nodes, nsets, lambda x: abs(x[2]) < 1e-9)
+    assert len(y0) == 2 and len(z0) == 3, (y0, z0)
+    bc = "\n".join([f"{fixed}, 1, 1, 0.0"] + [f"{f}, 2, 2, 0.0" for f in y0] + [f"{f}, 3, 3, 0.0" for f in z0])
+    dat, frd = _solve(ws, "corner", deck, _material("STEEL", 0.3) + f"""*BOUNDARY
+{bc}
+*STEP
+*STATIC, SOLVER=ITERATIVE CHOLESKY
+*DSLOAD
+{load}, P, {-BLOCKS["p"]:.6e}
+*NODE FILE
+U, S
+*NODE PRINT, NSET={fixed}, TOTALS=ONLY
+RF
+*END STEP
+""")
+    pull = BLOCKS["p"] * a * a
+    assert abs(-_total(dat, 0) / pull - 1.0) < 1e-3, f"reaction {_total(dat, 0):.6g} N against a pull of {pull:.6g} N"
+    st = _frd_stress(frd)
+    far = [st[i][0] for i in nsets[load] if i in st]
+    worst = float(max(far, key=lambda s: abs(s / BLOCKS["p"] - 1.0)))
+    return worst, BLOCKS["p"], "sigma_xx at the pulled end (Pa), worst node"
+
+
 def _contact_compression(ws, q):
     _nodes, _nsets, _load, _u, st = _blocks(ws, 1.0, contact=True)
     sxx = np.array([v[0] for v in st.values()])
@@ -559,6 +604,7 @@ CASES = {
     "bonded_tension": ("static", _bonded_tension, 0.01),
     "contact_compression": ("static", _contact_compression, 0.01),
     "bonded_gap_tension": ("static", _bonded_gap_tension, 0.01),
+    "bonded_corner_tie": ("static", _bonded_corner_tie, 0.01),
 }
 
 

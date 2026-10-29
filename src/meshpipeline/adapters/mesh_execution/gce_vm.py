@@ -26,30 +26,67 @@ RULE = "RUN-4"
 #: Every VM this route starts carries this label, so an operator finds them all.
 LABEL = "mesh-bigjob"
 
-#: What the VM runs at boot: the job's own container with the run's four values from its metadata, its
-#: workspace on disk, then it deletes itself (Compute Engine's lifetime limit is the backstop).
+#: How long past the run's own timeout the mesh container may run on the VM before the VM stops it (the
+#: pull, the upload of the input and the hand-back of the result fit in it); under LIFETIME_MARGIN_S, so the
+#: VM ends itself well before Compute Engine's lifetime limit would.
+CONTAINER_MARGIN_S = 1800
+#: How many times the VM asks to delete itself, and the pause between asks, before it powers off instead.
+SELF_DELETE_TRIES = 3
+
+#: What the VM runs at boot: the job's own container with the run's four values from its metadata and its
+#: workspace on disk, held to the run's timeout plus CONTAINER_MARGIN_S. THE VM ENDS ITSELF however the
+#: container ends - finished, failed, never started, or stopped at its deadline - whatever became of the
+#: worker that started it (RUN-4): it asks to delete itself, and when that is refused (job 6cb2d606, 28 Oct:
+#: its identity may not delete instances, and the silent `curl -sf` left a 16-core VM billing for hours) it
+#: POWERS OFF, which needs no permission and stops the machine's billing. The worker's sweep deletes a VM
+#: that stopped (vm_sweep.py); Compute Engine's lifetime limit is the last backstop.
 STARTUP_SCRIPT = r"""#!/bin/bash
 set -u
 MD=http://metadata.google.internal/computeMetadata/v1
 get() { curl -sf -H Metadata-Flavor:Google "$MD/$1"; }
+say() { echo "[mesh-vm] $*"; logger -t mesh-vm "$*" 2>/dev/null || true; }
+end_vm() {
+  trap - EXIT
+  NAME=$(get instance/name); ZONE=$(get instance/zone)
+  for i in $(seq 1 __TRIES__); do
+    TOKEN=$(get instance/service-accounts/default/token | sed -E 's/.*"access_token":"([^"]+)".*/\1/')
+    CODE=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOKEN" \
+      "https://compute.googleapis.com/compute/v1/$ZONE/instances/$NAME")
+    case "$CODE" in
+      2*|404) say "deleting itself (HTTP $CODE)"; sleep 300; break ;;
+      *) say "self-delete refused (HTTP $CODE), try $i of __TRIES__"; sleep 20 ;;
+    esac
+  done
+  say "powering off: a stopped VM bills no machine, and the worker's sweep deletes it"
+  shutdown -h now || poweroff -f || echo o > /proc/sysrq-trigger
+}
+trap end_vm EXIT
 IMG=$(get instance/attributes/mesh-image)
 mkdir -p /mnt/stateful_partition/work /mnt/stateful_partition/dockercfg
 export HOME=/mnt/stateful_partition/dockercfg
 REG=$(echo "$IMG" | cut -d/ -f1)
 docker-credential-gcr configure-docker --registries="$REG" >/dev/null 2>&1 || true
 for i in 1 2 3; do docker pull "$IMG" && break; sleep 15; done
-docker run --rm --name mesh \
+T=$(get instance/attributes/timeout); T=${T:-0}
+END=$(( $(date +%s) + T + __MARGIN__ ))
+docker run -d --rm --name mesh \
   -e INPUT_URI="$(get instance/attributes/input-uri)" \
   -e OUTPUT_URI="$(get instance/attributes/output-uri)" \
   -e ENGINE="$(get instance/attributes/engine)" \
-  -e TIMEOUT="$(get instance/attributes/timeout)" \
+  -e TIMEOUT="$T" \
   -e HEXERA_MESH_CONTRACT="$(get instance/attributes/mesh-contract)" \
   -e TMPDIR=/work -v /mnt/stateful_partition/work:/work \
-  "$IMG" python -m meshpipeline.runtime.mesh_runner
-TOKEN=$(get instance/service-accounts/default/token | sed -E 's/.*"access_token":"([^"]+)".*/\1/')
-curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
-  "https://compute.googleapis.com/compute/v1/$(get instance/zone)/instances/$(get instance/name)" >/dev/null
-"""
+  "$IMG" python -m meshpipeline.runtime.mesh_runner || say "the mesh container did not start"
+while docker inspect mesh >/dev/null 2>&1; do
+  if [ "$(date +%s)" -ge "$END" ]; then
+    say "past its deadline (the run's timeout + __MARGIN__ s): stopping the mesh"
+    docker stop -t 60 mesh || docker kill mesh || true
+    break
+  fi
+  sleep 30
+done
+say "the mesh container has exited"
+""".replace("__TRIES__", str(SELF_DELETE_TRIES)).replace("__MARGIN__", str(CONTAINER_MARGIN_S))
 
 
 @dataclass(frozen=True)
@@ -159,6 +196,55 @@ def trigger_vm(*, input_uri: str, output_uri: str, engine: str, timeout: int, op
     raise RuntimeError(f"no {machine} VM could be started ({last})")
 
 
+def _zones() -> list[str]:
+    return [f"{provcfg.GCP_REGION}-{s}" for s in ZONE_SUFFIXES]
+
+
+def list_vms(session=None) -> list[dict]:
+    """Every VM this route started in the deployment's project and region (LABEL), as Compute Engine
+    describes it (name, zone, status, creationTimestamp, metadata). A zone that cannot be read is skipped,
+    said; never raises."""
+    import requests as _rq
+
+    from meshpipeline.adapters.mesh_execution.cloud_run_client import _access_token
+    s = session or _rq
+    out: list[dict] = []
+    for zone in _zones():
+        url = (f"https://compute.googleapis.com/compute/v1/projects/{provcfg.GCP_PROJECT_ID}/zones/{zone}"
+               f"/instances?filter=labels.purpose%3D{LABEL}")
+        try:
+            resp = s.get(url, headers={"Authorization": f"Bearer {_access_token()}"}, timeout=30)
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+        except Exception as exc:  # noqa: BLE001 - one zone unread is one zone not swept this time
+            logger.warning("mesh VMs in %s not listed: %s", zone, type(exc).__name__)
+            continue
+        for item in (resp.json() or {}).get("items") or []:
+            out.append({**item, "zone": zone})
+    return out
+
+
+def find_vm(name: str, session=None) -> VmReference | None:
+    """The VM of this name in the region's zones, or None (a worker collecting a run another worker started
+    finds the VM by the name both derive: instance_name)."""
+    import requests as _rq
+
+    from meshpipeline.adapters.mesh_execution.cloud_run_client import _access_token
+    s = session or _rq
+    for zone in _zones():
+        path = f"projects/{provcfg.GCP_PROJECT_ID}/zones/{zone}/instances/{name}"
+        try:
+            resp = s.get(f"https://compute.googleapis.com/compute/v1/{path}",
+                         headers={"Authorization": f"Bearer {_access_token()}"}, timeout=30)
+        except Exception as exc:  # noqa: BLE001 - not found this time; the sweep finds it later
+            logger.info("mesh VM %s not looked up in %s: %s", name, zone, type(exc).__name__)
+            continue
+        if resp.status_code == 200:
+            return VmReference(path)
+    return None
+
+
 def delete_vm(ref: VmReference, *, why: str) -> bool:
     """Delete a VM whose result nobody will collect. Best effort, never raises."""
     import requests as _rq
@@ -177,4 +263,5 @@ def delete_vm(ref: VmReference, *, why: str) -> bool:
     return ok
 
 
-__all__ = ["LABEL", "STARTUP_SCRIPT", "VmReference", "delete_vm", "instance_body", "instance_name", "trigger_vm"]
+__all__ = ["CONTAINER_MARGIN_S", "LABEL", "SELF_DELETE_TRIES", "STARTUP_SCRIPT", "VmReference", "delete_vm",
+           "find_vm", "instance_body", "instance_name", "list_vms", "trigger_vm"]

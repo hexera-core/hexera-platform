@@ -17,14 +17,17 @@ from meshpipeline.cad.repair.operations import FILL_OPS, OPERATIONS, RepairOp
 
 logger = logging.getLogger(__name__)
 
-# WHY THIS IS A SEPARATE MODULE WITH A PROTOCOL.
+# WHY THE CHOOSING SITS BEHIND A PROTOCOL.
 #
-# This is the seat a model takes in slice 8. Nearly everything about safety - the caps, the
-# progress rule, the rollback - lives in the session, so a planner choosing badly wastes a budget
-# rather than damaging a part. What a planner chooses is which of the bounded operations
-# (`operations.OPERATIONS`) to point at which located defect, and nothing more. Keeping that behind
-# one small interface is what makes "a model picks, the rules pick, compare them on the same
-# corpus" an experiment rather than a rewrite.
+# Repair is ONE surface with two portions: a deterministic one, built first, and a
+# model-directed one, built later. This protocol is the seam between them, not a boundary
+# between two subsystems - both portions choose from the same bounded operation catalogue, run
+# the same session, and are judged by the same caps. Nearly everything about safety - the caps,
+# the progress rule, the rollback - lives in the session, so choosing badly wastes a budget
+# rather than damaging a part. What either portion chooses is which of the bounded operations
+# (`operations.OPERATIONS`) to point at which located defect, and nothing more. Keeping that
+# behind one small interface is what lets the two portions be measured against each other on
+# one corpus without either being a rewrite of the other.
 #
 # THE ONE EXCEPTION, AND IT IS NOT A SMALL ONE. For a SEALED THROUGH-HOLE - both rims of a missing
 # bore wall patched flat - the refusal below is the ONLY defence in the system. Nothing downstream
@@ -39,12 +42,22 @@ logger = logging.getLogger(__name__)
 # guard too - a planner that can be replaced is only as safe as the guard it consults. Do not read
 # the paragraph above as "the session makes a planner harmless"; for this one behaviour it does not.
 #
-# The rules below are deliberately plain. They are the BASELINE a model has to beat.
+# The rules below are deliberately plain. They are the deterministic portion of this surface,
+# and the reference the model-directed portion is measured against - not a rival engine.
 
 #: Worse first. The loop exists to clear errors; warnings are worth attending to only once the
 #: errors are gone, because a sliver edge beside an open shell is not the part's problem.
 _SEVERITY_RANK = {DefectSeverity.fatal: 0, DefectSeverity.error: 1,
                   DefectSeverity.warning: 2, DefectSeverity.info: 3}
+
+#: Within one severity, the BIGGER entity first: repairing a shell can rewrite its faces and a
+#: face its edges, never the other way round, so aiming big-first lets one kept operation subsume
+#: the smaller findings before they are proposed at all. The old tie-break was alphabetical
+#: (edge < face), and on a part whose sliver FACE was also reported through twenty of its sliver
+#: EDGES the loop spent its whole stall budget on edge fixes that cannot remove a face and the
+#: face sweep was never proposed. An unknown entity type sorts last, not first: nothing is known
+#: about what it subsumes.
+_ENTITY_RANK = {"shell": 0, "face": 1, "wire": 2, "edge": 3, "vertex": 4}
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +71,8 @@ class Candidate:
     #: Set only by DirectedPlanner: the directive this proposal plays. An autonomous proposal has none.
     item_id: str | None = None
     source: str = ""
-    #: The LLM planner's stamp (`llm:<n>`) and its confidence; empty for every other proposal.
+    #: The model-directed portion's stamp (`llm:<n>`) and its confidence; empty for every
+    #: proposal the deterministic portion makes on its own.
     directive_id: str | None = None
     planner_confidence: float | None = None
 
@@ -70,15 +84,29 @@ class Candidate:
 
 @dataclass
 class RunHistory:
-    """What this run has already learned. The planner's only memory.
+    """What this run has already learned. The choosing portion's only memory.
 
     `ineffective` is THE PER-OPERATION LEARNING SIGNAL: a `(defect, operation)` pair the session
     rolled back. Recorded per pair rather than per operation, because an operation that could not
     fix one edge may be exactly right for another, and banning it outright would waste the rest of
-    the catalogue. In slice 8 this is precisely what the model is shown on its next turn.
+    the catalogue.
+
+    NOT YET READ BY THE MODEL-DIRECTED PORTION. That portion runs as a pre-pass before this loop
+    starts (`pipeline/repair_attempt.py`), so it plans once, ahead, and never sees this ledger
+    fill. Feeding it back would require the model to re-plan mid-run, which the current async
+    pre-pass against a synchronous loop cannot do.
     """
 
     ineffective: set[tuple[str, str]] = field(default_factory=set)
+    #: AIMS AN OPERATION SAID NO TO: `(op, frozenset of target fingerprints)`. Kept apart from
+    #: `ineffective` because a decline ran nothing - it is the operation's judgement, not a trial
+    #: that failed - and keyed by the AIM rather than the proposing defect because one tangle of
+    #: crossing faces is reported once per member face and every member proposes the IDENTICAL
+    #: heal. Keyed per (defect, op), the sibling findings re-proposed work already refused, and
+    #: two multi_body declines spent the whole stall budget while a sew that would have worked
+    #: sat unproposed (hero.stp). Like `ineffective`, never cleared by a kept operation: a kept
+    #: repair that changes the tangle changes its fingerprints, which makes a new key.
+    declined: set[tuple[str, frozenset[str]]] = field(default_factory=set)
     refusals: list[dict] = field(default_factory=list)
     #: Run-level policy, NOT a trial outcome: why planar filling is off for the rest of this run
     #: (empty when it is not). Kept apart from `ineffective` because that set means "tried and
@@ -96,6 +124,14 @@ class RunHistory:
     def was_ineffective(self, defect_fingerprint: str, op_name: str) -> bool:
         return (defect_fingerprint, op_name) in self.ineffective
 
+    def mark_declined(self, op_name: str, target_fingerprints) -> None:
+        self.declined.add((op_name, frozenset(target_fingerprints)))
+
+    def was_declined(self, op_name: str, target_fingerprints) -> bool:
+        """Has this operation already declined EXACTLY this aim? A set, because the heal lists the
+        proposing face first and two sibling findings name the same tangle in different orders."""
+        return (op_name, frozenset(target_fingerprints)) in self.declined
+
     def refuse(self, defect_fingerprint: str, reason: str, detail: str = "") -> None:
         """Record that a defect was not aimed at, ONCE. The loop asks repeatedly, and a list that
         grew on every tick would bury the report it exists to produce."""
@@ -109,7 +145,7 @@ class RunHistory:
 
 
 class Planner(Protocol):
-    """Chooses the next repair to try. A model implements this in slice 8."""
+    """Chooses the next repair to try. Both portions of the repair surface implement this."""
 
     def propose(self, defects, history: RunHistory, *, shape) -> Candidate | None:
         ...
@@ -205,8 +241,8 @@ def held_fingerprints(defects, reserved) -> frozenset[str]:
 class RulesPlanner:
     """Fixed rules: worst defect first, narrowest operation first, whole-shape last.
 
-    Labelled `rules-v1` in what it reports, so a later comparison can say which planner produced a
-    run - the point of slice 8 being a swap behind this interface rather than a rewrite.
+    Labelled `rules-v1` in what it reports, so a comparison can say which portion of the repair
+    surface produced a run - the point of the protocol being a seam rather than a rewrite.
     """
 
     label = "rules-v1"
@@ -252,7 +288,8 @@ class RulesPlanner:
 
         ordered = sorted(
             defects,
-            key=lambda d: (_SEVERITY_RANK.get(d.severity, 9), d.entity_type, d.entity_index,
+            key=lambda d: (_SEVERITY_RANK.get(d.severity, 9),
+                           _ENTITY_RANK.get(d.entity_type, 9), d.entity_index,
                            d.code.value))
 
         held = held_fingerprints(defects, self._reserved)
@@ -289,6 +326,15 @@ class RulesPlanner:
                     continue
                 targets = op.targets_for(defect)
                 if not targets:
+                    continue
+                if history.was_declined(op.name, (t.fingerprint for t in targets)):
+                    # THE OPERATION ALREADY SAID NO TO EXACTLY THIS AIM, proposed from a sibling
+                    # finding on the same tangle. The shape is unchanged (a decline runs nothing),
+                    # so proposing it again can only get the same answer - and on hero.stp getting
+                    # it twice spent the stall budget before the open shells were ever reached.
+                    # Still a CLAIM: a decline is the operation's judgement on the defect, not
+                    # "nothing claims it".
+                    claimed = True
                     continue
                 claimed = True
                 if any(t.fingerprint in held for t in targets):

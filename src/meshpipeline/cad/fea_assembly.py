@@ -396,7 +396,8 @@ def joined_interfaces(parts: list, fused: Fused, volumes: list[float], *, diag: 
                 itf["added"] = True
             interfaces.append(itf)
     for itf in interfaces:
-        if itf.get("kind") == J.GAP:
+        if itf.get("kind") == J.GAP or itf.get("line"):
+            # a line contact's reach is the gap limit's (gap_max), so the solver ties the band along the line
             itf["reach_mm"] = _r(float(itf.get("gap_max_mm") or itf.get("gap_mm") or 0.0) * (1.0 + GAP_REACH_MARGIN)
                                  + tol * scale)
     info = {"trusted": not wrong, "findings": findings,
@@ -416,8 +417,8 @@ def joins_record(info: dict, interfaces: list[dict]) -> dict | None:
     if info["trusted"] and not info["gaps"] and not info["skins"] and info["complete"] and not info["findings"] \
             and not info.get("unmeasured"):
         return None
-    gap_faces = sorted({f for i in interfaces if i.get("kind") == "gap" for v in (i.get("faces") or {}).values()
-                        for f in v}, key=_face_sort)
+    gap_faces = sorted({f for i in interfaces if i.get("kind") == "gap" or i.get("line")
+                        for v in (i.get("faces") or {}).values() for f in v}, key=_face_sort)
     return {"found_by": "fuse" if info["trusted"] else "surfaces", "findings": info["findings"],
             "skins": info["skins"], "skin_faces": sorted({f for v in info["skins"].values() for f in v}, key=_face_sort),
             "gaps": info["gaps"], "gap_faces": gap_faces, "added": info.get("added") or [],
@@ -452,7 +453,13 @@ def joins_notes(info: dict, interfaces: list[dict], *, unit: str = "mm", scale_t
         notes.append(f"{pid} has faces that cross or lie on its own other faces ({_list(faces[:6])}"
                      f"{' and more' if len(faces) > 6 else ''}): a surface of no thickness there, so they join "
                      "no part and size no gap.")
-    gaps = [i for i in interfaces if i.get("kind") == "gap"]
+    lines = [i for i in interfaces if i.get("line")]
+    if lines:
+        words = "; ".join(f"{i['parts'][0]} and {i['parts'][1]}" for i in lines[:6])
+        notes.append(f"{len(lines)} pair(s) of parts meet only along a line, an edge or at a point (no faces facing "
+                     f"each other): {words}{' and more' if len(lines) > 6 else ''} - joined there, the solver tying "
+                     "what lies within the gap limit of the contact.")
+    gaps = [i for i in interfaces if i.get("kind") == "gap" and not i.get("line")]
     if gaps:
         words = "; ".join(f"{i['parts'][0]} and {i['parts'][1]} {_mm(float(i['gap_mm']) * scale_to_mm)} apart"
                           for i in gaps[:6])
@@ -659,7 +666,7 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
     unpaired: list[tuple[str, str]] = []
     for itf in interfaces:
         p, q = (int(x.split("_")[1]) for x in itf["parts"])
-        gap = _gap_fields(itf) if itf.get("kind") == "gap" else {}
+        gap = _gap_fields(itf) if itf.get("kind") == "gap" or itf.get("line") else {}
         if mode == PAIR_BONDED and (gap or itf.get("added")):
             # A SMALL-GAP JOINT in a fused mesh: the two sides are not one surface, so they are tied
             pairs.append({"id": itf["id"], "kind": PAIR_TIE, "parts": [p, q], "overlap": False,
@@ -818,14 +825,36 @@ def open_skins(solid):
 
 
 def skin_record(opened: list) -> list[dict]:
-    """MESH-8: the skins each part was meshed without, named: [{"part", "faces", "on"}]."""
+    """MESH-8: the skins each part was meshed without, named: [{"part", "faces", "on", "pairs"}] - `pairs` each
+    skin face and the face it lies on, so every CAD face is accounted for (a skin is left out, never lost)."""
     out = []
     for p, o in enumerate(opened, start=1):
         if o.skins:
-            out.append({"part": part_id(p), "faces": [face_name(p, k.skin) for k in o.skins],
-                        "on": sorted({face_name(p, k.on) for k in o.skins}, key=_face_sort)})
+            on: list[str] = sorted({face_name(p, k.on) for k in o.skins}, key=_face_sort)
+            out.append({"part": part_id(p), "faces": [face_name(p, k.skin) for k in o.skins], "on": on,
+                        "pairs": [skin_pair(face_name(p, k.skin), face_name(p, k.on)) for k in o.skins]})
         elif o.note:
             out.append({"part": part_id(p), "faces": [], "on": [], "not_opened": o.note})
+    return out
+
+
+def skin_pair(face: str, on: str) -> dict:
+    """MESH-8: one skin face left out of the mesh and the face it lies on, with the sentence every report uses."""
+    return {"face": face, "on": on, "words": f"{face} lies on {on}: zero thickness, no volume - left out of the mesh"}
+
+
+def skin_pairs(skins) -> list[dict]:
+    """Every skin pair of a sidecar's (or a plan's) MESH-8 record; a record from before the pairs were kept gives
+    each face with the faces its part's skins lay on."""
+    out: list[dict] = []
+    for sk in skins or []:
+        if not isinstance(sk, dict):
+            continue
+        if sk.get("pairs"):
+            out.extend(dict(pr) for pr in sk["pairs"] if isinstance(pr, dict) and pr.get("face"))
+            continue
+        on = ", ".join(str(o) for o in sk.get("on") or [])
+        out.extend(skin_pair(str(f), on) for f in sk.get("faces") or [])
     return out
 
 
@@ -908,7 +937,55 @@ def measure_assembly(shape, rec: dict, *, source: Path | str | None, mm_per_unit
 # the CAD's names for its bodies
 # #
 
-def read_body_names(path: Path | str) -> list[tuple[str, np.ndarray, float]]:
+#: THE BODY-NAME READ RUNS IN A PROCESS OF ITS OWN (FEA hunt, 27 Oct): OCC's XDE reader crashed with a segmentation
+#: fault reading an NX moon-buggy assembly's product names, in the geometry check itself. The names are a
+#: courtesy (every part is still Part_k), so a crash, a hang or a memory blow-up costs the names only.
+NAMES_TIMEOUT_S = 900.0
+NAMES_MEMORY_MB = 8192
+_NAMES = "BODY_NAMES "
+
+
+def read_body_names(path: Path | str, *, timeout_s: float = NAMES_TIMEOUT_S,
+                    memory_mb: int = NAMES_MEMORY_MB) -> list[tuple[str, np.ndarray, float]]:
+    """read_body_names_here in a process of its own (sandbox.safe_exec.run_guarded): the same names, or none
+    when the reader crashes, hangs or runs out of memory (said in the log)."""
+    import json
+    import subprocess
+    import sys
+
+    p = Path(path)
+    if p.suffix.lower() not in (".step", ".stp"):
+        return []
+    from meshpipeline.sandbox.safe_exec import run_guarded
+
+    try:
+        proc = run_guarded([sys.executable, "-m", "meshpipeline.cad.fea_assembly", "names", str(p.resolve()),
+                            str(int(memory_mb))], timeout=timeout_s, capture_output=True, text=True)
+    except subprocess.TimeoutExpired:
+        logger.warning("fea assembly: part names of %s not read - the reader took over %d s", p.name, int(timeout_s))
+        return []
+    said = [ln for ln in (proc.stdout or "").splitlines() if ln.startswith(_NAMES)]
+    if proc.returncode != 0 or not said:
+        logger.warning("fea assembly: part names of %s not read - the reader stopped (exit %s)", p.name,
+                       proc.returncode)
+        return []
+    return [(str(n), np.asarray(c, dtype=float), float(v)) for n, c, v in json.loads(said[-1][len(_NAMES):])]
+
+
+def _names_main(argv: list[str]) -> int:
+    """The guarded read's own process: names <file> [memory MB]; prints the names as one JSON line."""
+    import json
+    import resource
+
+    if len(argv) > 1:
+        cap = int(argv[1]) * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+    rows = read_body_names_here(argv[0])
+    print(_NAMES + json.dumps([[n, [float(x) for x in c], float(v)] for n, c, v in rows]), flush=True)
+    return 0
+
+
+def read_body_names_here(path: Path | str) -> list[tuple[str, np.ndarray, float]]:
     """(name, centroid, volume) of every solid the STEP file places, in the reader's own unit: the
     product it is an instance of names it (the instance's own name when the product has none).
     Empty for any other file, or one the reader cannot take."""
@@ -933,6 +1010,8 @@ def read_body_names(path: Path | str) -> list[tuple[str, np.ndarray, float]]:
     tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
 
     def named(label) -> str:
+        if label.IsNull():
+            return ""
         attr = TDataStd_Name()
         if label.FindAttribute(TDataStd_Name.GetID_s(), attr):
             return str(attr.Get().ToExtString()).strip()
@@ -1012,7 +1091,14 @@ def match_body_names(named: list[tuple[str, np.ndarray, float]], parts: list) ->
     return out
 
 
-__all__ = ["BONDED", "CONNECTIONS", "CONTACT", "FACT_KEY", "SIDECAR", "STAGED", "interfaces_of", "stage", "FUZZY_SHARE", "Fused", "PAIR_BONDED", "PAIR_CONTACT",
+__all__ = ["skin_pair", "skin_pairs", "BONDED", "CONNECTIONS", "CONTACT", "FACT_KEY", "SIDECAR", "STAGED", "interfaces_of", "stage", "FUZZY_SHARE", "Fused", "PAIR_BONDED", "PAIR_CONTACT",
            "PAIR_TIE", "VERSION", "compound", "face_name", "fuse", "global_face_names", "match_body_names", "measure_assembly", "pairwise_interfaces",
-           "part_id", "part_of_face", "read_body_names", "readable_body_name", "record", "rename_record",
+           "part_id", "part_of_face", "read_body_names", "read_body_names_here", "readable_body_name", "record", "rename_record",
            "solids"]
+
+
+if __name__ == "__main__":
+    import sys as _sys
+
+    if len(_sys.argv) > 1 and _sys.argv[1] == "names":
+        _sys.exit(_names_main(_sys.argv[2:]))
