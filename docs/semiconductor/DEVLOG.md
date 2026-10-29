@@ -1698,3 +1698,116 @@ WHAT IS NOT CLOSED. The string-identity target test, the manifest-string/file as
 base.py:615, the kind-only PATCH obligation, and the hardcoded `image_ok=True` are reviewer
 contract weaknesses that survive these two cuts. Nothing empty now reaches them, which is why the
 specific hole is shut, but a different empty thing would find them again.
+
+### Eight ranks on eight cores spawned 84 threads and the mesher never left the smoother
+
+A 279,621,370-cell build of the plate on mesh-bench, eight ranks, stretch 6 along the channels:
+
+| | |
+|---|---|
+| threads | 8 ranks x 10 = 84, on 8 vCPU |
+| CPU burnt | 180,053 s in 22,536 s elapsed = 8.0 cores, saturated throughout |
+| where it got to | iteration 1 of the final smoother, 212,460 bad faces, no log line for 26 minutes |
+| what it had left | 2 hours of its 8 hour bound, against a tail that needs longer than that |
+
+Killed. For comparison a 98,973,937-cell build of the same part in ONE process is 640 s of
+ClockTime.
+
+cfMesh is built with OpenMP and its default is a thread per core it can SEE. In one process that
+is right, and it is the whole reason a single-process build gets 2.5x out of four cores. Once
+there are as many processes as cores it is exactly wrong: each rank still asks for eight threads,
+gets one core's worth between them, and spends it on barriers.
+
+`OMP_NUM_THREADS` is now `cores // ranks`, floored at one, exported with `-x` the same way
+`MPI_BUFFER_SIZE` is. An assignment in front of mpirun sets the variable for mpirun and for
+nothing it launches, which is the trap that already cost a build in cfMesh's load balancing. A box
+with cores to spare still threads each rank, so the setting costs nothing where OpenMP was
+helping, and the serial chain does not go through `mpi_command` at all.
+
+The proof it is honoured is the ratio rather than a thread count: on the next run cartesianMesh
+came back `ExecutionTime = 722.7 s  ClockTime = 727 s`, a ratio of 1.0, against 2530.64 / 640 =
+3.95 for the single-process build of the same part.
+
+THE RANK IMBALANCE IS REAL AND SEPARATE. Same measurement: 16,056 CPU-seconds on the lightest rank
+against 29,520 on the heaviest, 1.8x, with scotch asked only to balance cell counts.
+
+### The viewer had never been run in a browser, and three things were broken
+
+Every test of the viewer is Python on the server side. Nothing in the tree runs `viewer.js`, and
+the only JavaScript linter is `apps/console/eslint.config.mjs` whose first rule is
+`ignores: ["public/static/**"]`, which is where one of the two copies lives. I opened the page on
+the delivered coupon (job 18e2f4ed) and found three defects in an hour.
+
+| what | where | effect |
+|---|---|---|
+| `tanHalf` called across closures | both copies of viewer.js | every click of Detail threw, always |
+| the detail budget eaten first-come | render/detail_window.py | a truncated window showed one region |
+| a metric painted under the detail | both copies of viewer.js | a legend over an uncoloured mesh |
+
+THE FIRST ONE IS THE ONE THAT MATTERS. `tanHalf` was a const inside the heatmap's IIFE.
+`radiusNow`, inside the detail window's IIFE, called it by name. Different closure, so the name
+was never in its scope chain:
+
+    ReferenceError: tanHalf is not defined
+        at radiusNow (viewer.js:1112)
+
+Not a race and not a load order. Every click, in every browser, since the feature was written. It
+had a route, a bounded reader, a face budget, a button in the bar and thirty Python tests. Hoisted
+to the scope both closures are in, next to the camera it reads, in both copies.
+
+THE SECOND CAME OUT OF NOT BELIEVING A NUMBER. Measured on the same job, 4 mm window:
+
+    faces_in_range 684660   returned 150000   truncated True
+      fluid/fluid_to_solid   mappedWall   faces 150000
+      (and nothing else)
+
+The cap was spent walking the patches in the order they came, the coolant's interface used all of
+it, and the metal side of that same interface was not in the answer. `truncated: true` said
+something had been cut and not that a REGION had. The budget is shared out now by largest
+remainder with a floor of one face per patch, the faces kept inside a patch are spread evenly
+rather than taken off the front, and every patch says how much of itself is showing. Same window
+afterwards: eight patches, both regions, `fluid_to_solid 72,386/330,400` and
+`solid_to_fluid 72,386/330,400`.
+
+THE THIRD IS AN INTERACTION. The colours go on the merged surface and the detail window hides
+exactly that surface while it is open, so a metric painted with the detail up left a legend
+reading "max 27.0 deg" over cells with no colour on them. The merged surface comes back when a
+metric is painted, which is what any camera move already does.
+
+`devtools/semiconductor/viewer_check.sh` checks the two things that do not need a browser, both
+copies parse and both carry the entry points, and says plainly that it checks nothing else. The
+copies are 87 differing lines apart now, down from 132.
+
+### The face counts in the parts panel were the block's, not the delivery's
+
+Found by reading the panel in a browser and not believing one number. Job 18e2f4ed, off its own
+workspace:
+
+| patch | block | delivered |
+|---|---|---|
+| xmin, xmax | 1,928 | 1,928 |
+| ymin, ymax | 776 | 776 |
+| zmin | 7,504 | 7,504 |
+| zmax | 17,426 | 14,226 |
+| inlet | absent | 1,600 |
+| outlet | absent | 1,600 |
+| fluid_to_solid | absent | 346,456 |
+| solid_to_fluid | absent | 346,456 |
+
+`_patch_face_counts` read `constant/polyMesh/boundary`, which on a multi-region delivery is the
+PRE-SPLIT BLOCK sitting beside the regions. Two things happen to that block before the customer
+gets anything: `splitMeshRegions` divides its faces between the regions, and the port cut carves
+inlet and outlet out of a block face afterwards, on the coolant alone. So zmax was shown 3,200
+faces too big, which is exactly the two ports, and the ports and the interface had no count at
+all. The interface is the one patch a conjugate mesh is for.
+
+AND AT THE SIZES THAT NEED RANKS THERE IS NO BLOCK TO READ. The parallel chain stays decomposed
+through the split and reconstructs the two REGIONS, never the block, so `constant/polyMesh` does
+not exist on a customer-sized conjugate build and this returned `{}`. Every count in the panel
+would have been blank, on the runs that matter most.
+
+Summed per BARE name across the delivered regions, because the manifest is keyed by the name the
+user asked for at intake and two regions can legitimately reach the same block face, which
+`mesh_facts` already says where it maps a declared patch to the surfaces that draw it. A
+single-region mesh has no region directories, reads the one boundary file it always read, and is
+unchanged.
