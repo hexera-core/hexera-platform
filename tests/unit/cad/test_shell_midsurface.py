@@ -348,3 +348,10 @@ def test_a_junction_stopped_short_is_still_open(monkeypatch):
     monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
     rec, _ = ms.extract(sf.l_angle(5.0, 5.0), mm_per_unit=1.0)
     assert _sewn(rec)["open_edges"] >= 1
+
+
+def test_a_spool_closes_at_both_plates():
+    rec, _ = ms.extract(sf.spool(), mm_per_unit=1.0)
+    assert rec["bodies"][0]["verdict"] == "shell"
+    assert _sewn(rec)["open_edges"] == 0
+    _all_checks(rec)

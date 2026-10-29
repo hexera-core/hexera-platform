@@ -838,7 +838,10 @@ def grow(face, reach: float, joined: list | None = None):
     surf = BRep_Tool.Surface_s(face)
     joined = joined or []
     if _plane(face) is not None:
-        return _grow_plane(face, reach, joined)
+        grown = _grow_plane(face, reach, joined)
+        if grown is not None:
+            return grown
+        # the outline offset failed (a disc bounded by one circle did): grow its parameter range as tiles instead
     u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
     hold = _held_sides(face, joined, (u0, u1, v0, v1))
     a = BRepAdaptor_Surface(face, True)

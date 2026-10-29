@@ -248,3 +248,10 @@ def thin_web_on_thick_plate(tp: float = 8.0, ts: float = 3.0):
     """A 3 mm web standing on an 8 mm plate, its ends 20 mm short of the plate ends: the web band runs into the
     plate wall and its two sides end there, inside the plate."""
     return _fuse(_box(0, 0, 0, 200, 100, tp), _box(98, 20, tp, ts, 60, 50))
+
+
+def spool(tp: float = 4.0, r_out: float = 20.0, t: float = 4.0, h: float = 100.0):
+    """A tube welded between two 120 x 120 x `tp` plates (a flanged spool): a tube-on-plate junction at each end,
+    with the disc of plate inside the tube a mid-face of its own (bounded by one circle)."""
+    return _fuse(_fuse(_box(-60, -60, 0, 120, 120, tp), _box(-60, -60, h - tp, 120, 120, tp)),
+                 tube(r_out, t, h - 2 * tp).Moved(_shift(0, 0, tp)))
