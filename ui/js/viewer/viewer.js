@@ -1089,18 +1089,26 @@ function initViewer(job,surf,uiCfg){
   let activeMetric=null,lastProbe=null;
   (function heatmap(){
     const qf=surf.quality_fields;
-    if(!qf||!qf.patches||!qf.metrics||!window.vtk)return;
+    /* NO PER-FACE ARRAYS IS NOT NO HEATMAP. On a mesh whose cells were merged to fit the drawing
+       budget the engine ships the figures and the hotspots without `patches`: one drawn face
+       stands for several delivered ones, so a colour on it was measured on none of them, but a
+       hotspot is a place and a number taken on the faces the mesher wrote and merging the drawing
+       moves neither. The areas panel runs on hotspots alone (buildAreas makes an area per loose
+       hotspot) and paintFaces already turns scalars off where there is nothing to paint - so this
+       asked for `patches` only because it had never been given a payload without them, and a
+       reader of the biggest mesh got no "where to look" at all. */
+    if(!qf||!qf.metrics||!window.vtk)return;
     const META={non_ortho:{fact:'max_non_ortho',b64:'non_ortho_b64'},
                 skewness:{fact:'max_skewness',b64:'skewness_b64'},
                 aspect_ratio:{fact:'max_aspect_ratio',b64:'aspect_ratio_b64'}};
     const avail=Object.keys(META).filter(m=>qf.metrics[m]);
     // decode once. An array that does not match the polygon count is dropped, not trusted:
     // a misaligned field would paint every face with its neighbour's number.
-    entries.forEach(en=>{const p=qf.patches[en.patch];en.q={};if(!p)return;
+    entries.forEach(en=>{const p=(qf.patches||{})[en.patch];en.q={};if(!p)return;
       avail.forEach(m=>{if(!p[META[m].b64])return;const a=b64f32(p[META[m].b64]);
         if(a.length===en.nCells)en.q[m]=a;});
       if(p.cell_faces_b64){const cf=b64u8(p.cell_faces_b64);if(cf.length===en.nCells)en.cellFaces=cf;}});
-    if(!entries.some(en=>Object.keys(en.q).length))return;
+    if(!entries.some(en=>Object.keys(en.q).length)&&!(qf.hotspots||[]).length)return;
 
     /* one ramp per metric: calm below the bar, warm approaching it, red past it. The colours
        are computed here and handed to the mapper as direct per-face RGB, and the legend is
