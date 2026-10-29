@@ -1,4 +1,4 @@
-"""PLAN-fea-90: the general fuse runs in millimetres. The staging writes metres, and OpenCASCADE's
+"""PLAN-fea-23: the general fuse runs in millimetres. The staging writes metres, and OpenCASCADE's
 own tolerances are absolute: the same 406 parts fused in metres grew past 26 GB over 33 minutes, and
 in millimetres took 3.2 GB and 2 minutes (o_ox_mc_laser, lab 27 Oct). The result comes back in the
 parts' own unit with its faces and solids in the same order, so the sidecar still names them right."""

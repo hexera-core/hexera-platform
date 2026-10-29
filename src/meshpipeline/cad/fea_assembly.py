@@ -67,7 +67,7 @@ WHOLLY_INSIDE = 0.999
 #: assemblies are often drawn with faces a few nanometres apart.
 FUZZY_SHARE = 1e-6
 #: The general fuse runs in millimetres (fuse(), docs/RULES.md)
-FUSE_IN_MM = "PLAN-fea-90"
+FUSE_IN_MM = "PLAN-fea-23"
 #: OpenCASCADE's Precision::Confusion: points closer than this, in the shape's own unit, are one point
 _OCC_CONFUSION = 1e-7
 #: Names a CAD exporter gives a body when nobody named it: no better than Part_k.
@@ -214,7 +214,7 @@ def fuse(parts: list, *, fuzzy: float = 0.0, mm_per_unit: float = 1.0) -> Fused:
     """OpenCASCADE's General Fuse of the solids (non-destructive, one thread: the same parts give
     the same result), with each result face's and solid's origins.
 
-    PLAN-fea-90: THE FUSE RUNS IN MILLIMETRES. `mm_per_unit` is the parts' unit (the staging
+    PLAN-fea-23: THE FUSE RUNS IN MILLIMETRES. `mm_per_unit` is the parts' unit (the staging
     writes metres: 1000); parts in another unit are scaled to millimetres for the fuse and the
     result scaled back, its faces and solids in the same order. OpenCASCADE's own tolerances are
     absolute (1e-7), fitted to CAD drawn in millimetres: the same 406 laser-cutter parts fused in
@@ -764,7 +764,7 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
                "surfaces": surfaces, "volumes": volumes, "pairs": pairs, "interfaces": interfaces,
                "unpaired": [{"inner": a, "outer": b} for a, b in unpaired],
                "notes": notes, "fuse_seconds": fused.seconds,
-               # PLAN-fea-90: the unit the general fuse ran in (millimetres, whatever the staging's)
+               # PLAN-fea-23: the unit the general fuse ran in (millimetres, whatever the staging's)
                "fuse_unit": {"rule": FUSE_IN_MM, "unit": "mm", "scaled_by": float(mm_per_unit)},
                "tie_first": ({"overlap_pieces": n_pieces, "overlap_pairs": n_over, "at": TIE_FIRST_PIECES}
                              if tie_first else None)}
