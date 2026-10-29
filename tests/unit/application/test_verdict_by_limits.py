@@ -102,9 +102,42 @@ def test_a_users_dispute_still_rebuilds(limits):
     assert graph.route_after_reviewer(state) == "node_classifier"
 
 
-def test_a_review_that_could_not_finish_is_looked_at_again_or_ends(limits):
+@pytest.mark.parametrize("marker", ["<<API_FAILURE:reviewer_timeout>>", "reviewer_stalled",
+                                    "<<API_FAILURE:reviewer_non_transient>>", "reviewer_crashed"])
+def test_a_review_that_could_not_finish_ends_the_run_and_the_limits_decide(limits, marker):
+    # VER-5: no review rerun and no failure because the model was busy, down or gave no answer
+    state = _state(api_failure=marker, reviewer_verdict="", reviewer_axis_findings=[])
+    assert graph.route_after_reviewer(state) == graph._END
+    outcome = fr.RunOutcome.from_graph_state(state)
+    assert fr.review_blocking(outcome) == []
+
+
+def test_in_shadow_a_review_that_could_not_finish_is_looked_at_again_or_ends(shadow):
     state = _state(api_failure="<<API_FAILURE:reviewer_timeout>>", reviewer_verdict="")
     assert graph.route_after_reviewer(state) in ("node_review_retry", "node_failure_handler")
+
+
+def test_the_review_route_is_in_the_why_record(limits):
+    dr._CITED.pop("v5-why", None)
+    graph.route_after_reviewer(_state(job_id="v5-why", api_failure="reviewer_stalled",
+                                      reviewer_verdict=""))
+    rows = [e for e in dr.cited_for("v5-why") if e["stage"] == "review_route"]
+    assert rows and rows[0]["rule"] == "VER-5" and rows[0]["value"] == "end"
+    assert rows[0]["inputs"]["review_concluded"] is False
+
+
+def test_a_crash_after_a_failing_review_is_rescued_once_the_limits_decide(limits):
+    from meshpipeline.application import post_gate_rescue as pgr
+    state = _state(reviewer_rebuild_required=True)
+    rescued = pgr.rescue(state, RuntimeError("checkpoint write"))
+    assert rescued is not None and rescued["reviewer_verdict"] == "FAIL"
+    # a dispute still needs the engineer's own judgement
+    assert pgr.rescue(_state(user_dispute={"mode": "rebuild"}), RuntimeError("x")) is None
+
+
+def test_in_shadow_a_crash_after_a_failing_review_is_not_rescued(shadow):
+    from meshpipeline.application import post_gate_rescue as pgr
+    assert pgr.rescue(_state(), RuntimeError("checkpoint write")) is None
 
 
 # a review can no longer change a status
@@ -140,8 +173,10 @@ def test_a_passing_review_cannot_hide_a_missed_limit(limits):
 def test_the_reviewers_points_are_shown_as_labelled_notes(limits):
     record = _final(_state()).to_dict()
     notes = fr.review_notes_of(record)
-    assert len(notes) == 2 and all(n.startswith("Reviewer note: ") for n in notes)
+    # the layer point is settled by the measured coverage (VER-7); the wake point stays a note
+    assert len(notes) == 1 and all(n.startswith("Reviewer note: ") for n in notes)
     assert any("The cells fill the solid." in n for n in notes)
+    assert not any("Layers cover only part" in n for n in notes)
     msg = fr.render_message(_final(_state()))
     assert "Reviewer notes (an AI reviewer looked at the mesh" in msg
     assert "Verdict: passed every measured limit (rule VER-3)" in msg
@@ -321,3 +356,68 @@ def test_a_degenerate_fea_element_still_fails(shadow):
 def test_a_flow_mesh_keeps_its_quality_floor_gate():
     rows = vl.gating_rows("gmsh", _manifest(elements_under_floor=3))
     assert any(r["key"] == "elements_under_floor" for r in rows)
+
+
+# VER-6 / VER-7: job fb44fed7 - a valid FEA mesh recorded the model's FAIL over a point the
+# measurements settle. The general pattern: once the limits decide, the recorded review verdict is
+# theirs, and a point a measurement settles is not an open point.
+
+def test_once_the_limits_decide_the_recorded_review_verdict_is_the_measured_one(limits):
+    outcome = fr.RunOutcome.from_graph_state(_state())
+    assert outcome.reviewer_verdict == "FAIL"
+    assert fr.recorded_review_verdict(outcome) == "PASS"
+    notes = fr.reviewer_notes_caveat(outcome)
+    assert notes["model_verdict"] == "FAIL" and notes["verdict_rule"] == "VER-6"
+
+
+def test_in_shadow_the_recorded_review_verdict_is_the_reviews_own(shadow):
+    outcome = fr.RunOutcome.from_graph_state(_state())
+    assert fr.recorded_review_verdict(outcome) == "FAIL"
+
+
+def test_an_invalid_mesh_keeps_the_reviews_own_verdict(limits):
+    outcome = fr.RunOutcome.from_graph_state(_state(executor_success=False,
+                                                    executor_failed_gate="checkmesh"))
+    assert fr.recorded_review_verdict(outcome) == "FAIL"
+
+
+def test_a_point_a_measurement_settles_is_not_an_open_point(limits):
+    # the review says the layers cover only part of the wing; the measured coverage meets its limit
+    outcome = fr.RunOutcome.from_graph_state(_state())
+    rows = fr._verdict_rows(outcome)
+    cov = rows.get("layer_coverage_pct")
+    assert cov is not None and cov.get("measured") == 91.0
+    by = fr.settled_by_measurement(outcome, "prism_layer_coverage", rows)
+    notes = fr.reviewer_notes_caveat(outcome)
+    open_keys = [i["axis_key"] for i in notes["items"]]
+    if dr.limit_met(cov["measured"], str(cov["op"]), cov["limit"]):
+        assert by and "prism_layer_coverage" not in open_keys
+        assert notes["settled"][0]["axis_key"] == "prism_layer_coverage"
+        assert notes["settled"][0]["rule"] == "VER-7"
+    else:
+        assert not by and "prism_layer_coverage" in open_keys
+    # the wake is judged from pictures: no measurement settles it, it stays a note
+    assert "wake_resolution" in open_keys
+
+
+def test_a_point_whose_measurement_misses_its_limit_stays_open(limits):
+    outcome = fr.RunOutcome.from_graph_state(_state(mesh_manifest=_manifest(layer_coverage_pct=3.0)))
+    assert fr.settled_by_measurement(outcome, "prism_layer_coverage") == ""
+    keys = [i["axis_key"] for i in fr.reviewer_notes_caveat(outcome)["items"]]
+    assert "prism_layer_coverage" in keys
+
+
+def test_the_fea_face_accounting_settles_a_face_count_point(limits):
+    # fb44fed7: "142 named Face_k groups while the CAD has 146 faces" - the 4 are MESH-8 skins
+    q = {"fea_faces": {"cad": 146, "named": 142, "accounted": 4, "missing": 0, "complete": True}}
+    outcome = fr.RunOutcome.from_graph_state(_state(mesh_manifest=_manifest(**q)))
+    assert "accounted for" in fr.settled_by_measurement(outcome, "fea_faces_named")
+    q["fea_faces"]["complete"] = False
+    outcome = fr.RunOutcome.from_graph_state(_state(mesh_manifest=_manifest(**q)))
+    assert fr.settled_by_measurement(outcome, "fea_faces_named") == ""
+
+
+def test_an_axis_no_measurement_speaks_to_is_never_settled(limits):
+    outcome = fr.RunOutcome.from_graph_state(_state())
+    for axis in ("surface_capture", "wake_resolution", "farfield_clearance", "lumen_fidelity"):
+        assert fr.settled_by_measurement(outcome, axis) == ""

@@ -103,12 +103,19 @@ While it is off, the review-led verdict still decides, and the limits verdict is
 every run beside it: one `verdict shadow:` log line (limits outcome, rule, review-led outcome,
 whether they agree, the limits missed) and the `verdict` entry in the why record.
 
+**On for dev.** The deploy target turns it on for shared dev and every personal environment
+(`verdict_by_limits` in `.github/workflows/deploy.yml`, sent to the workers as template metadata,
+so a fleet deploy applies it). Prod keeps the default until dev has run with it.
+
 | ID | Status | Rule |
 |---|---|---|
 | VER-1 | in force | **Fail: no valid mesh.** The executor's gates refused the last attempt, or the mesh's own numbers fail one of the engine's gating rows (its `criteria.py` rows marked gating: checkMesh fatal defects, wall captured, ports captured, the quality floors, regions and interfaces). An invalid mesh is never delivered. The resolution floor, the share of skewed faces and the one-job cell limit are not validity: on a sound mesh they are notes (LAD-cfd-3, LAD-cfd-4). |
 | VER-2 | in force | **Delivered with concerns:** the mesh is valid but misses at least one production limit (table below). Each one is listed as measured vs limit. |
 | VER-3 | in force | **Clean pass:** valid, and every production limit that applies is met (a limit whose number was not measured is listed as unmeasured and decides nothing). |
 | VER-4 | in force | **Wrong problem, by measured checks only.** The run failed at a gate that measures one of the ways a mesh can be a different problem than the one confirmed (table below). The gate's own measured account is what the user reads. |
+| VER-6 | in force | **The recorded review verdict is the measured one once the limits decide.** A review that ran on a mesh every gate passed records PASS (job row and final result) when the measured limits deliver it, pass or pass with notes. The model's own call is kept beside its notes, labelled. Job fb44fed7 recorded the model's FAIL on a valid FEA mesh. |
+| VER-7 | in force | **A reviewer point a measurement settles is not an open point.** When a review axis is about a property a measured row measures exactly (layer coverage, cell quality, regions, interfaces, passage resolution, FEA element validity and detail, the FEA face accounting), and that row was measured and met, the point is kept with the measurement that settles it, and is not shown as a note to act on. A point no measurement speaks to stays a note. |
+| VER-5 | in force | **A review never reruns or fails a run once the limits decide.** When a mesh passed every gate, its review ends the run whatever it said, and also when it did not conclude (the model was busy, down, or gave no answer). No review rerun, no rebuild, no failure: the measured limits decide. A crash after the review is rescued the same way, whatever the review said. A user's own dispute keeps its routing. |
 
 ### VER-2 production limits, per engine and purpose
 

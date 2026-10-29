@@ -550,6 +550,10 @@ WORKER_METADATA=(
   || WORKER_METADATA+=("cad-repair-heal-self-intersections=${CAD_REPAIR_HEAL_SELF_INTERSECTIONS}")
 [ -z "${CAD_REPAIR_LLM_PLANNER:-}" ] \
   || WORKER_METADATA+=("cad-repair-llm-planner=${CAD_REPAIR_LLM_PLANNER}")
+# The verdict by measured limits (docs/RULES.md VER), only when the target states it (dev does,
+# prod does not yet): the run decides pass, concerns or fail from the mesh's measured numbers and
+# the AI review only adds notes. Absent, the env object's value (the shipped default, off) stands.
+[ -z "${VERDICT_BY_LIMITS:-}" ] || WORKER_METADATA+=("verdict-by-limits=${VERDICT_BY_LIMITS}")
 WORKER_METADATA+=(${WORKER_SECRET_METADATA[@]+"${WORKER_SECRET_METADATA[@]}"})
 
 # The metadata list is handed to gcloud with '|' as its delimiter. Neither of the obvious
