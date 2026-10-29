@@ -2693,8 +2693,11 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
         bodies.append(row)
 
     # SHELL-3 / SHELL-4: extend and sew the shell mid-faces of every shell or mixed body
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
     surface_faces: list = []
     surface_owner: list[int] = []
+    seen = TopTools_IndexedMapOfShape()
     sewn_rows = []
     for b, sol in enumerate(solids):
         mine = [m for m in mids if m.body == b and pairs[m.pair].shell]
@@ -2753,15 +2756,20 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                                   for a in ((True, False) if free else (True,))]:
                 if method == "general" and census["open_edges"] == 0:
                     break
-                # with the mid-faces in beside their patches, only free-form walls join differently: tried only
-                # when an open edge is left within a grown patch's reach of one (a fan housing's 2 x 2 joins of
-                # a few minutes each, its open edges nowhere near its free-form walls)
-                if not alone:
+                # a variant joins differently only near the walls it treats differently: with the mid-faces in
+                # beside their patches, the free-form walls; without the re-making, the offset walls. It is tried
+                # only when an open edge left is within a grown patch's reach of such a wall - measured to the
+                # wall itself, its box first (a fan housing's free-form wall spans the whole body, so its box
+                # held every open edge: 3 joins of 1 to 2 minutes each, none closing an edge)
+                if not (remake and alone):
                     reach = 0.5 * t_max + GROW_WALLS * max(m.t for m in mine)
-                    walls = [m.box for m in mine if isinstance(BRep_Tool.Surface_s(m.original), FREE_FORM)]
                     listed = census["open_edges"] <= len(census.get("open_at_mm", []))
-                    if listed and not any(_near_box(np.asarray(q, float) / mm, box, reach)
-                               for q in census.get("open_at_mm", []) for box in walls):
+                    walls = [m for m in mine
+                             if (alone or isinstance(BRep_Tool.Surface_s(m.original), FREE_FORM))
+                             and (remake or m.remade or isinstance(BRep_Tool.Surface_s(m.original), Geom_OffsetSurface))]
+                    if listed and not any(_near_box(q, m.box, reach) and _dist(_vertex(q), m.original) <= reach
+                                          for q in (np.asarray(x, float) / mm for x in census.get("open_at_mm", []))
+                                          for m in walls):
                         continue
                 for m in mine:
                     m.extended = []
@@ -2793,6 +2801,11 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
         sewn_rows.append(census)
         for m, imgs in zip(mine, images, strict=True):
             for f in imgs:
+                # a face once only: a join can hand back one face twice, turned both ways (sh0011's cyclone),
+                # and the surface written would hold fewer faces than the record names
+                if seen.Contains(f):
+                    continue
+                seen.Add(f)
                 surface_faces.append(f)
                 surface_owner.append(m.k)
 
