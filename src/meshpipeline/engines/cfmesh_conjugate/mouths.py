@@ -369,6 +369,35 @@ def declared_for(stubs: list, declared: list) -> tuple[list | None, str]:
                   "position: " + ", ".join(f"{n} ({r})" for n, r in rows))
 
 
+def shell_stubs(ports: list) -> list:
+    """Every mouth as a port to cut on the part's own outside, with nothing to extend.
+
+    A STUB EXISTS BECAUSE THE COOLANT HAS TO REACH A BLOCK FACE. On a shell domain it already
+    does: the domain is metal fused with the coolant, so the fuse capped each mouth with the
+    coolant's own end face and the mouth IS part of the boundary. There is no gap to bridge, no
+    geometry added to the coolant, and no `extend` pass - only the patch to cut, which is what a
+    Stub of zero length has always carried (see `Stub.flush`).
+
+    Every mouth becomes a port, in the order they were measured. Which block faces the coolant
+    happens to reach does not come into it, and that is the point: `plan_ports` refused the first
+    customer assembly for reaching no opposite pair of faces, which was true of its cuboid and
+    said nothing about its plumbing.
+    """
+    from meshpipeline.engines.cfmesh_conjugate import conjugate as C
+
+    out: list[Stub] = []
+    for k, port in enumerate(ports or []):
+        centroid = tuple(float(v) for v in (port.get("centroid_m") or ()))
+        normal = tuple(float(v) for v in (port.get("normal") or ()))
+        radius = 0.5 * float(port.get("diameter_m") or 0.0)
+        if len(centroid) != 3 or len(normal) != 3 or radius <= 0.0:
+            continue
+        out.append(Stub(port=k, passage=int(port.get("passage") or 0), face=C.OUTER_PATCH,
+                        centroid=centroid, normal=normal, radius=radius,
+                        length=0.0, volume=0.0))
+    return out
+
+
 def port_rows(stubs: list, *, inlet: str = "coolant_in",
               outlet: str = "coolant_out",
               named: list | None = None) -> tuple[list, str]:

@@ -1754,7 +1754,8 @@ def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
 
 def surface_bounded(source, out_path, *, scale: float = 1.0, kind: str = "cad",
                     angular_deflection: float = 0.2, linear_deflection: float | None = None,
-                    budget_s: float | None = None) -> dict | None:
+                    budget_s: float | None = None, domain_path=None,
+                    domain_patch: str = "") -> dict | None:
     """The coolant of the parts of `source`, written to `out_path` as one closed STL, in a
     time-boxed child process. None - with the reason logged - when there is no coolant to find or
     the surface does not come out closed.
@@ -1767,11 +1768,26 @@ def surface_bounded(source, out_path, *, scale: float = 1.0, kind: str = "cad",
     out_path = Path(out_path)
     answer = run_bounded({"task": "surface", "source": str(source), "scale": float(scale),
                           "kind": kind, "out_path": str(out_path),
+                          **({"domain_path": str(domain_path)} if domain_path else {}),
+                          **({"domain_patch": str(domain_patch)} if domain_patch else {}),
                           "angular_deflection": angular_deflection,
                           "linear_deflection": linear_deflection},
                          out_path.parent / f"{out_path.stem}_fluid_volume",
                          budget_s or STAGE_BUDGET_S)
     rec = answer.get("surface")
+    dom = answer.get("domain")
+    if isinstance(dom, dict) and isinstance(rec, dict):
+        if dom.get("ok"):
+            rec["domain"] = dom
+            logger.info("fluid volume: wrote the domain the mesher fills - %s mm3 of a %s mm3 box "
+                        "(%.1f%%), %d triangles", format(dom["volume_mm3"], ",.0f"),
+                        format(dom["box_mm3"], ",.0f"), dom["share_of_box"] * 100.0,
+                        dom["triangles"])
+        else:
+            # SAID OUT LOUD, because the box standing is a 3x bigger mesh and a silent fallback
+            # looks exactly like a part that was never worth shelling.
+            logger.info("fluid volume: no domain surface (%s) - the box stands",
+                        dom.get("reason") or "no reason given")
     if not rec:
         why = answer.get("error") or (answer.get("extraction") or {}).get("reason") \
             or "the parts hold no fluid that reaches the outside"
@@ -1780,6 +1796,158 @@ def surface_bounded(source, out_path, *, scale: float = 1.0, kind: str = "cad",
     logger.info("fluid volume: wrote the coolant surface - %d triangles, %s mm3 over %d passage(s)",
                 rec["triangles"], rec["volume_mm3"], rec["passages"])
     return rec
+
+
+#: How much of its own bounding box a part has to fill before the box is a reasonable domain. A
+#: conjugate mesher fills ONE manifold volume and cuts the regions out of it afterwards, and the
+#: easy manifold is the cuboid round the part - every cell of air between the part and that cuboid
+#: is paid for at the background size. Measured on the first customer cold plate, 2026-10-29:
+#:
+#:     bounding box      846,543 mm3     177.51 x 47.21 x 101.01 mm
+#:     the six solids    222,662 mm3     26.3% of it
+#:     the coolant        52,145 mm3     one circuit, two ports
+#:     metal + coolant   274,807 mm3     32.5% of it
+#:
+#: Two 33 mm fittings standing off a 7-9 mm plate stack put the other 67.5% there, and none of it
+#: is part. Above this share the cuboid costs little and is the simpler surface; below it, the
+#: part own skin is worth building.
+BOX_WORTH_KEEPING = 0.6
+
+#: The tolerance the coolant own boundary faces are sewn back into a shell with. The faces come
+#: from one split of one shape, so they already share their edges; this is for the last digit.
+SEW_TOL = 1e-7
+
+
+def domain_solid(solids: list, x: Extraction):
+    """Metal UNION coolant as one solid - the volume a conjugate mesher has to fill - or None.
+
+    THE DOMAIN IS NOT THE PART AND NOT THE BOX. A cold plate boundary is one closed surface that
+    runs over the outside, dives in at the inlet, winds through the channels and comes back out at
+    the outlet, so a mesher given it fills the METAL and leaves the coolant outside the domain:
+    measured on a part skin handed to cfMesh, the fluid region came back at 256 cells against
+    495,506. Fusing the coolant back in caps the mouths with the coolant own end faces and leaves
+    exactly the part outer skin, enclosing metal and coolant together - which is the volume the
+    split is going to cut in two.
+
+    Every passage goes in, including a dead end with one port: a bore that opens to the outside is
+    inside the outer skin whether anything flows through it or not. A closed pocket is not a
+    passage (Extraction.pockets) and is already inside the metal.
+    """
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_ListOfShape
+
+    if not solids:
+        return None
+    fluids = []
+    for passage in x.passages:
+        if not passage.boundary:
+            continue
+        sew = BRepBuilderAPI_Sewing(SEW_TOL)
+        for f in passage.boundary:
+            sew.Add(f)
+        sew.Perform()
+        sewn = sew.SewedShape()
+        # TopoDS.Shell_s, not TopoDS_Shell.DownCast_s: this OCP has only the former, and the
+        # cast that does not exist raised inside the child, where _child logged it as "no domain
+        # surface" and the engine quietly kept the box.
+        for sh in (_explore(sewn, TopAbs_SHELL, TopoDS.Shell_s) or [sewn]):
+            so = _shell_solid(sh)
+            if so is not None:
+                fluids.append(so)
+                break
+    if not fluids:
+        return None
+    args, tools = TopTools_ListOfShape(), TopTools_ListOfShape()
+    for one in solids:
+        args.Append(one)
+    for one in fluids:
+        tools.Append(one)
+    fu = BRepAlgoAPI_Fuse()
+    fu.SetArguments(args)
+    fu.SetTools(tools)
+    fu.SetFuzzyValue(FUZZY)
+    fu.Build()
+    if not fu.IsDone():
+        return None
+    return fu.Shape()
+
+
+def write_domain(solids: list, x: Extraction, out_path, *, angular_deflection: float = 0.2,
+                 linear_deflection: float | None = None,
+                 outer_name: str = "") -> dict:
+    """domain_solid as one closed STL, with what it is worth said in the record.
+
+    ALWAYS A DICT, and `ok` says whether there is a domain. A bare None lost the reason: this runs
+    in a time-boxed child process whose stdout is read and thrown away unless it times out (see
+    run_bounded), so the one run anybody wanted explained was the one that left no trace. On the
+    first customer assembly it came back `"domain": null` after 1,001 s with nothing anywhere
+    saying why. The reason travels in the answer now, because that is the only thing that does.
+
+    `outer_name` writes it as ASCII with that ONE named solid instead of binary. Binary STL
+    carries no names and a nameless surface cannot have an inlet, so a mesher handed this needs
+    the name; a caller only measuring it does not, and binary is a fifth of the bytes.
+
+    None when the fuse does not come off or the surface does not come out closed - and that is not
+    a failure, it is the engine keeping the cuboid it has always used. The record is what lets the
+    caller decide: share_of_box is how much of the bounding box the domain actually is, and
+    BOX_WORTH_KEEPING is where the cuboid stops being worth its air.
+    """
+    from pathlib import Path
+
+    from meshpipeline.cad.cad_tessellate import seal_open_rims
+    from meshpipeline.cad.occ_box import mesh_to_size
+    from meshpipeline.cad.stl_io import write_stl_binary, write_stl_solids
+
+    domain = domain_solid(solids, x)
+    if domain is None:
+        return {"ok": False, "reason": "the part and its coolant would not fuse into one solid"}
+    pieces = _solids(domain)
+    if not pieces:
+        return {"ok": False, "reason": "the fuse produced no solid"}
+    lo, hi = _real_box(domain)
+    box = max((hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]), 0.0)
+    vol = sum(_volume(one) for one in pieces)
+    if vol <= 0.0 or box <= 0.0:
+        return {"ok": False, "reason": f"the fused domain measures {vol * 1e9:.4f} mm3 "
+                                       f"in a {box * 1e9:.4f} mm3 box"}
+    mesh_to_size(domain, 1.0 / 2500.0, angular_deflection, linear_deflection=linear_deflection)
+    tris: list = []
+    for f in _faces(domain):
+        tris.extend(_face_triangles(f))
+    if not tris:
+        return {"ok": False, "reason": "the fused domain tessellated to no triangles"}
+    _membranes, rims = seal_open_rims(tris)
+    closed = closed_pieces(tris)
+    # A DOMAIN THAT IS NOT CLOSED IS NOT A DOMAIN. cfMesh fills what the surface encloses, and an
+    # open surface encloses the universe; the caller keeps the cuboid rather than find out.
+    if rims or closed != 1 or len(pieces) != 1:
+        return {"ok": False, "triangles": len(tris), "solids": len(pieces),
+                "volume_mm3": round(vol * 1e9, 4), "box_mm3": round(box * 1e9, 4),
+                "reason": (f"the domain surface is {len(pieces)} solid(s) and {closed} closed "
+                           f"piece(s) with {len(rims)} open rim(s), not one closed piece")}
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if outer_name:
+        write_stl_solids(out_path, {outer_name: tris})
+    else:
+        write_stl_binary(out_path, tris)
+    return {
+        "ok": True,
+        "path": str(out_path),
+        "solid_name": outer_name,
+        "triangles": len(tris),
+        "solids": len(pieces),
+        "volume_mm3": round(vol * 1e9, 4),
+        "box_mm3": round(box * 1e9, 4),
+        "share_of_box": round(vol / box, 4),
+        "metal_mm3": round(sum(_volume(one) for one in solids) * 1e9, 4),
+        "fluid_mm3": round(sum(q.volume for q in x.passages) * 1e9, 4),
+        "lo_m": [round(v, 9) for v in lo],
+        "hi_m": [round(v, 9) for v in hi],
+    }
 
 
 def stage(x: Extraction, declared: list, out_dir, *, angular_deflection: float = 0.2,
@@ -2170,7 +2338,22 @@ def _child(task: dict) -> dict:
         rec = write_surface(x, task["out_path"],
                             angular_deflection=float(task.get("angular_deflection") or 0.2),
                             linear_deflection=task.get("linear_deflection"))
-        return {"surface": rec, "extraction": x.as_dict()}
+        out = {"surface": rec, "extraction": x.as_dict()}
+        # AND THE DOMAIN, on the extraction this has already paid for. The split is the expensive
+        # step - 382 s on the first customer assembly - so a caller that wants the volume a
+        # conjugate mesher fills must not pay for a second one. Never fatal: without it the engine
+        # keeps the cuboid it has always used.
+        if task.get("domain_path"):
+            try:
+                out["domain"] = write_domain(
+                    solids, x, task["domain_path"],
+                    angular_deflection=float(task.get("angular_deflection") or 0.2),
+                    linear_deflection=task.get("linear_deflection"),
+                    outer_name=str(task.get("domain_patch") or ""))
+            except Exception as exc:  # noqa: BLE001 - the box is the answer when this is not
+                out["domain"] = {"ok": False,
+                                 "reason": f"building it raised {type(exc).__name__}: {exc}"}
+        return out
     return x.as_dict()
 
 

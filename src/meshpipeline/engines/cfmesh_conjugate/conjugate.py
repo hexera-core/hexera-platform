@@ -117,6 +117,18 @@ class ConjugateError(RuntimeError):
 #: nothing short of re-cutting patches after the fact can separate them.
 BLOCK_FACES: tuple[str, ...] = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 
+#: The one patch a SHELL domain has: the part's own outside. When the domain handed to cfMesh is
+#: the part rather than the cuboid round it (cad/fluid_volume.write_domain) there are no six faces
+#: to name - there is one surface, and the ports are cut out of it exactly as they are cut out of
+#: a block face today. Measured on the first customer cold plate: the cuboid is 846,543 mm3 and
+#: metal plus coolant is 274,807 mm3, so 67.5% of a box-domain mesh's cells are air.
+OUTER_PATCH = "wall_outer"
+
+
+def is_domain_face(face: str) -> bool:
+    """Whether `face` names a surface a port may be cut out of: a block face, or the shell."""
+    return face in BLOCK_FACES or face == OUTER_PATCH
+
 #: Which axis a face is normal to, and which end of that axis it sits at.
 _FACE_AXIS: dict[str, tuple[int, int]] = {
     "xmin": (0, -1), "xmax": (0, 1),
@@ -415,9 +427,10 @@ def render_port_patch_dicts(ports: list) -> tuple[str, str]:
     for p in ports:
         name = str(p.get("name") or "").strip()
         face = str(p.get("face") or "").strip()
-        if not name or face not in BLOCK_FACES:
+        if not name or not is_domain_face(face):
             raise ConjugateError(
-                f"a port patch needs a name and one of the block faces {BLOCK_FACES}, "
+                f"a port patch needs a name and one of the block faces {BLOCK_FACES} "
+                f"or {OUTER_PATCH!r}, "
                 f"got name={name!r} face={face!r}")
         if name in seen:
             raise ConjugateError(f"two ports are both called {name!r}")
@@ -1345,7 +1358,7 @@ __all__ = ["ConjugateError", "ConjugateReport", "RegionReport", "PortPlan",
            "OCTREE_BOXES_PER_PROCESS", "MPI_FLAGS", "DECOMPOSE_METHOD", "PREPARE_PAR",
            "RECONSTRUCT", "ranks_for", "render_decompose_pardict", "mpi_command",
            "MPI_BUFFER_BYTES",
-           "BLOCK_FACES", "OPEN_FACE_RTOL",
+           "BLOCK_FACES", "OPEN_FACE_RTOL", "OUTER_PATCH", "is_domain_face",
            "CELL_TO_REGION", "REGION_PROPERTIES", "region_properties",
            "block_bounds", "block_surface_stl", "open_faces", "plan_ports",
            "background_complaint", "MIN_BACKGROUND_CELLS_ACROSS_BLOCK",

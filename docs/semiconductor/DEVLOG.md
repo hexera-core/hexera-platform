@@ -1311,3 +1311,90 @@ The configuration was never 181M. It was 280M.
 AND IT MEANS THE BOX MATTERS MORE, NOT LESS. 223M cells that no stretch can reach is, by the
 measurement two sections up, 80% metal - and most of THAT is air in the bounding box around the
 fittings. The term the model cannot divide is the term the box fix removes.
+
+### The review was reading the blank solver fields instead of the mesh
+
+A conjugate mesh that passed every gate came back inconclusive, twice, on two independent runs:
+
+| run | terminal status | what the review opened |
+|---|---|---|
+| 51d5481d | delivered with the review inconclusive (reviewer_evidence_missing) | `patches: ['solid']` |
+| e4b9abfe (Cloud Run jwtzw) | same failure in the log | `XMLPolyDataReader(.../fluid/cr_ws_iewyhoz1_1/boundary/outlet.vtp) raised an error` |
+
+The coolant region was built, measured and correct in both. The only trace was one warning:
+`vtkXMLPolyDataReader: Error parsing input file`.
+
+It was the solver case. `write_solver_case` writes the delivered case's time 0 with
+`<<HEXERA_FILL_THIS_IN>>` where every physical value belongs. `foamToVTK`'s default time range is
+every time, so `-constant` exported `constant` (the mesh), went on to export `0` (the blanks) and
+died on them, leaving a half-written time directory with no `.vtm` beside it. `_newest_time` picked
+that one, because it was the newest.
+
+Measured in the mesh image on a 2x2x2 blockMesh with one volScalarField at time 0:
+
+| flags | field at time 0 | rc | directories written |
+|---|---|---|---|
+| `-constant` | readable | 0 | `tc_0  tc_0.vtm  tc_1  tc_1.vtm` |
+| `-constant -noZero` | readable | 0 | `tc_0  tc_0.vtm` |
+| `-constant` | blank | 1 | `tc_0  tc_0.vtm  tc_1` |
+| `-constant -noZero` | blank | 0 | `tc_0  tc_0.vtm` |
+
+Row three is the delivered tree exactly: `cr_ws_tghpvgh4_0` with its `.vtm` and a 70,361-byte
+`inlet.vtp` ending in `</VTKFile>`, and `cr_ws_tghpvgh4_1` with no `.vtm` and a 65,539-byte
+`inlet.vtp` ending mid-base64.
+
+Two fixes, and they are not the same fix. `-noZero` means the field time is never exported, so the
+broken directory is never written. `prefer_finished` means a time directory with no `.vtm` loses to
+one that has it, so a timeout or a full disk or a kill cannot put a truncated export in front of
+the reader either. It prefers rather than requires: made a precondition the rule would cost a
+readable export its surface, and two existing tests build exactly that tree.
+
+A dropped region also says so now. `if not tags: continue` in `build_region_msh` is why nothing in
+the log an operator reads contained the word "fluid".
+
+### A two-region result never raised the archive ceiling
+
+Live, on the coupon, after the mesher was taught to ask the right authority:
+
+    return scope: The mesh was too large to send back whole within the transfer limit (763 MiB),
+    so the volume export the reviewer slices was left out (330 MB)
+
+763 MiB is `CELL_HARD_LIMIT x RESULT_BYTES_PER_CELL` with the cell count unread. The count was
+there: 2,520,586 in the coolant and 4,061,885 in the metal. `result_extraction_limits` looks for it
+under `quality.cells`, and a conjugate result has no `quality` block - the runner returns
+`{"ok", "problems", "notes", "regions": {...}}`, because a two-region mesh has no single set of
+quality numbers.
+
+| result | archive ceiling |
+|---|---|
+| none | 763 MiB |
+| `quality.cells` 6,707,503 | 1,279 MiB |
+| `regions` 2,520,586 + 4,061,885 | 1,256 MiB (was 763) |
+| `regions` unreadable | 763 MiB |
+| `regions` 100 x 10^12 | 3,052 MiB, clamped at 2 x CELL_HARD_LIMIT |
+
+The coupon now reaches a verdict instead of an evidence gap: two runs on the fixed ceiling came
+back "delivered with the review's concerns listed - every gate passed and no finding makes it the
+wrong problem", with `concerns=['passage_resolution']`.
+
+### The heatmap skipped the worse half of the mesh
+
+It measured the coolant alone, on the grounds that the metal is untouched background. The engine's
+own checkMesh says the opposite about the coupon, in the same report:
+
+| region | max non-ortho | avg | max skew | max aspect |
+|---|---|---|---|---|
+| fluid | 15.8181 | 1.51736 | 0.295526 | 1.61317 |
+| solid | 26.9835 | 2.03453 | 0.513708 | 2.4443 |
+
+The metal is worse on every one, and on the 336,666,582-cell plate it holds 27,932 of the 28,132
+poor cells. Both regions are read now and merged into one `quality_fields`: arrays union, hotspots
+concatenate, each metric keeps the worse max and `scale_to` and the sum of `n_over` and `n_faces`.
+
+Two more things follow from the same place. The poor-cell sets are drawn, at full resolution, after
+the drawing budget rather than inside it - `checkMesh -writeSets vtk` writes one `.vtp` per failed
+check (measured: 4 cells of aspect ratio 2500 gave 18 points and 16 polys), so a few thousand faces
+draw exactly whatever the rest of the mesh had to give up. And on a mesh whose cells were merged for
+drawing the figures and the hotspots now ship without the arrays, where before both were dropped:
+that plate's coolant side is 13,022,400 faces against a budget of 800,000, so every delivery of it
+had no quality view of any kind.
