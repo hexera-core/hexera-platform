@@ -37,23 +37,8 @@ _FOAM_LIST_RE = re.compile(r"(?:^|\n)\s*(\d+)\s*\n\s*\(", re.MULTILINE)
 
 
 def _read_foam_labels(path: Path):
-    try:
-        text = path.read_text(errors="replace")
-    except OSError:
-        return None
-    if "format" in text and "binary" in text.split("FoamFile", 1)[-1][:400]:
-        return None  # binary polyMesh - parser only handles ASCII
-    m = _FOAM_LIST_RE.search(text)
-    if not m:
-        return None
-    start = m.end()  # just past the '('
-    end = text.find(")", start)
-    if end < 0:
-        return None
-    try:
-        return np.fromstring(text[start:end], dtype=np.int64, sep=" ")
-    except Exception:
-        return None
+    from meshpipeline.engines.foam_labels import read_foam_labels
+    return read_foam_labels(path)
 
 
 def _check_polymesh_solvability(workspace: Path, metrics_out: dict) -> tuple[bool, str]:

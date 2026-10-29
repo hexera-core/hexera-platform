@@ -448,6 +448,9 @@ FEA_RESULT_FILE_BYTES_PER_ELEMENT = 600
 #: The margin on a measured size, and the ceiling no result document can lift the limits past.
 FEA_RESULT_MARGIN = 1.15
 FEA_RESULT_MAX_BYTES = 48 * 1024 ** 3
+#: ...the same two for every mesh the mesher measured (RUN-7): one rule, flow and FEA alike.
+RESULT_MARGIN = FEA_RESULT_MARGIN
+RESULT_MAX_BYTES = FEA_RESULT_MAX_BYTES
 RESULT_FILE_BYTES_PER_MEASURED_CELL = 400
 
 
@@ -478,21 +481,24 @@ def result_extraction_limits(result: dict | None = None):
     fea = (isinstance(measured, dict) and bool(measured.get("fea"))) or (
         isinstance(q, dict) and (str(q.get("quality_bar") or "") == "fea" or isinstance(q.get("fea"), dict)))
     if fea:
-        # AN FEA MESH IS NEVER LOST TO SIZE (Areen: only a broken mesh fails): its own allowance, and
-        # the mesher's measurement of what it sent when there is one - bounded, so no document can
-        # lift the limits without end
+        # AN FEA MESH IS NEVER LOST TO SIZE (Areen: only a broken mesh fails): its own allowance
         archive = max(archive, cells * FEA_RESULT_ARCHIVE_BYTES_PER_ELEMENT)
         raw = max(raw, cells * FEA_RESULT_RAW_BYTES_PER_ELEMENT)
         largest = max(largest, cells * FEA_RESULT_FILE_BYTES_PER_ELEMENT)
-        if isinstance(measured, dict):
-            try:
-                m_raw, m_big = int(measured.get("raw") or 0), int(measured.get("largest") or 0)
-            except (TypeError, ValueError):
-                m_raw = m_big = 0
-            raw = max(raw, int(m_raw * FEA_RESULT_MARGIN))
-            archive = max(archive, int(m_raw * FEA_RESULT_MARGIN))      # gzip never grows text much
-            largest = max(largest, int(m_big * FEA_RESULT_MARGIN))
-        archive, raw, largest = (min(v, FEA_RESULT_MAX_BYTES) for v in (archive, raw, largest))
+    if isinstance(measured, dict):
+        # WHAT THE MESHER MEASURED IT SENT, ANY MESH (RUN-7): a 107 M-cell cfMesh mesh came back as
+        # 3.4 GB packed, 22 GB raw - past the flow allowance above, whose cell count is capped at
+        # twice the cell limit - and was built, paid for and lost on the way back. The measurement,
+        # with margin, sizes the limits; bounded, so no document can lift them without end
+        try:
+            m_raw, m_big = int(measured.get("raw") or 0), int(measured.get("largest") or 0)
+        except (TypeError, ValueError):
+            m_raw = m_big = 0
+        raw = max(raw, int(m_raw * RESULT_MARGIN))
+        archive = max(archive, int(m_raw * RESULT_MARGIN))      # gzip never grows text much
+        largest = max(largest, int(m_big * RESULT_MARGIN))
+    if fea or isinstance(measured, dict):
+        archive, raw, largest = (min(v, RESULT_MAX_BYTES) for v in (archive, raw, largest))
     return replace(base, max_archive_bytes=archive, max_total_uncompressed_bytes=raw,
                    max_file_bytes=largest)
 
@@ -549,13 +555,12 @@ def collection_need(archive_bytes: int, result: dict | None) -> int:
 
 
 def worker_room(bucket, out_key: str, result: dict | None, where) -> dict | None:
-    """None when this worker has room to collect the result (or it is not an FEA result); else the
-    refusal - RC_INFRASTRUCTURE, the exchange objects kept for a worker with room - with the numbers
-    the user is told (gigabytes needed and free)."""
+    """None when this worker has room to collect the result; else the refusal - RC_INFRASTRUCTURE,
+    the exchange objects kept for a worker with room - with the numbers the user is told
+    (gigabytes needed and free). Every mesh (RUN-7): a flow mesh's limits are sized by what was
+    built now too, and a worker's disk is finite for it as well."""
     import shutil
 
-    if not _is_fea_result(result):
-        return None
     try:
         blob = bucket.blob(out_key)
         blob.reload()
@@ -774,16 +779,33 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         import tempfile
 
         from meshpipeline.sandbox.safe_extract import safe_extract_tar
-        # ROOM ON THIS WORKER, measured before a byte is written (an FEA result only: its limits are
-        # sized by what was built, up to FEA_RESULT_MAX_BYTES, and a worker's disk is finite). A result
-        # that cannot fit is refused in words and KEPT in the exchange - never half-written, never lost
+        # ROOM ON THIS WORKER, measured before a byte is written (every mesh: its limits are sized by
+        # what was built, up to RESULT_MAX_BYTES, and a worker's disk is finite). A result that
+        # cannot fit is refused in words and KEPT in the exchange - never half-written, never lost
         _room = worker_room(bucket, out_key, result, ws.parent)
         if _room is not None:
             return {**_room, "ran_on": ran_on}
+        from meshpipeline.engines import bucket_files as BF
+        # the files a previous result kept in the bucket, and its stand-ins, are not this result's
+        BF.clear(ws)
         with tempfile.TemporaryDirectory(prefix="mesh_result_", dir=str(ws.parent)) as _tmp:
             _archive = Path(_tmp) / "result.tar.gz"
             bucket.blob(out_key).download_to_filename(str(_archive))
             safe_extract_tar(path=_archive, dest=str(ws), limits=result_extraction_limits(result))
+        # BIG FILES KEPT IN THE BUCKET (RUN-7): the record is the remote's word, so every object it
+        # names must be one of THIS run's - else nothing it names is ever read (refused: uncollected)
+        try:
+            _kept = BF.read_record(ws, bucket=bucket_name, prefix=out_key)
+        except BF.KeptFileError:
+            BF.clear(ws)
+            raise
+        if _kept:
+            from meshpipeline.adapters.mesh_execution.gcs_exchange import kept_reader
+            # the big files this worker's own checks read come home now, unpacked to their place
+            _got = BF.fetch(ws, kept_reader)
+            logger.info("%s: %d big file(s) sent on their own - %.1f GB fetched, %.1f GB kept in the "
+                        "bucket: %s", engine, len(_kept), _got / 1e9,
+                        sum(k.bytes for k in _kept.values() if not k.fetch) / 1e9, ", ".join(sorted(_kept)))
         # Built BEFORE the exchange is released: this is the last thing that can raise, so the
         # objects must still exist while it happens.
         # The reference travels back so the submission authority can record what was accepted.

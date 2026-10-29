@@ -132,8 +132,14 @@ FEA_VIEW_MISSING = ("The 3D view could not be built for this mesh, so it is not 
 FILE_MISSING = "This solver file isn't available for this mesh; the other files are complete."
 
 
+def _present(ws: Path, name: str) -> bool:
+    from meshpipeline.engines.bucket_files import present
+    return present(ws, name)
+
+
 def _ready(ws: Path, line: dict) -> dict:
-    ready = (ws / line["file"]).exists()
+    from meshpipeline.engines.bucket_files import present
+    ready = present(ws, line["file"])      # a big file kept in the bucket is ready (RUN-7)
     return {**line, "file_ready": ready, **({} if ready else {"file_note": FILE_MISSING})}
 
 
@@ -251,7 +257,7 @@ def results(workspace) -> dict | None:
         "hot_spots": spots,
         "faces": faces,
         "download": {"words": "The full download holds:",
-                     "contains": [{"file": f, "words": w} for f, w in CONTAINS if (ws / f).exists()],
+                     "contains": [{"file": f, "words": w} for f, w in CONTAINS if _present(ws, f)],
                      "later": SAME_NUMBERS},
         # PASS / WARNINGS / FAIL PER SOLVER, by each solver's own published checks
         # (engines/fea_solvers.py), with its file and whether that solver has really run it
