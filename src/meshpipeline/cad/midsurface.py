@@ -460,9 +460,11 @@ def _target(m: _Mid, p0, p1, d, mids: list[_Mid], solid: _Solid) -> tuple[_Mid, 
                 continue
             if best is not None and s >= best[1] - 1e-9 * reach:
                 continue
-            if not all(solid.inside(p + d * s * g) for g in (0.25, 0.5, 0.75)):
-                continue
+            # the cheap tests first: the solid classifier on a large body is the slowest call of the extension (an
+            # offshore assembly spent over 30 minutes in it), and every test must pass anyway
             if not _near_box(p + d * s, o.box, reach) or _dist(_vertex(p + d * s), o.original) > reach:
+                continue
+            if not all(solid.inside(p + d * s * g) for g in (0.25, 0.5, 0.75)):
                 continue
             best = (o, s)
         if best is None:
