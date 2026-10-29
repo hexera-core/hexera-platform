@@ -52,7 +52,7 @@ Why per sheet and not per pair: a 2 mm sheet's 3 mm bend is only 5.7 mm wide. Ju
 |---|---|---|
 | paired | one side of a shell wall | in a shell sheet's pair |
 | rim | a plate's edge face, or a hole's bore through the plate | strip width (2 × area / perimeter) ≤ 1.5 × the wall it touches |
-| blend | a fillet or chamfer where walls meet | round with radius ≤ 2 × wall, or flat and ≤ 2 × wall wide |
+| blend | a fillet or chamfer where walls meet | round with radius ≤ 2 × wall and a strip (never a cylinder or cone that closes round its axis: that is a boss, a pin or a bore), or flat and ≤ 2 × wall wide with no parallel face across the metal |
 | thick | a side only of walls too thick to be a shell | in pairs, none of them shell |
 | solid | anything else | |
 
@@ -112,6 +112,7 @@ Each junction type:
 - **T (stiffener on plate):** the stiffener goes down to the plate's mid-plane. The plate's two pieces each go across to the stiffener's mid-plane. Three faces share one line.
 - **L corner:** each leg goes to the other's mid-plane, and they meet on one line.
 - **Cross (two webs through a plate):** the same as two Ts.
+- **Laps (SHELL-8):** two shell plates laid one on the other and fused (a lap joint, a doubler, a bracket flange on a plate). The stacked region is a pair whose two faces are each a side of a shell pair and whose wall is the two walls added up (within 2%). It is a few walls wide, so it fails the width rule on its own; it is shelled with the plates it is made of, and SHELL-7 snaps both plates onto its mid-plane with their offsets: one flat shell.
 - **Plates of different thickness meeting in-plane (a butt step):** the mid-planes are parallel and offset, so nothing above joins them. PR 3 snaps the thinner plate onto the thicker plate's mid-plane and records the offset per element (ZOFFS in Nastran, OFFSET in Abaqus and CalculiX). Stiffness and mass stay right, and the user sees one flat shell. Until then the step shows as an open edge.
 - **Cut-outs and holes:** the overlap keeps them. Their edges are real free edges (the outside lies just past them). Holes smaller than about one element are named for defeaturing later. They are never filled silently.
 - **Fillets and chamfers:** up to 2 walls, absorbed (blend role). Larger rounds with an even wall are their own sheet (a sheet-metal bend). Others are solid and named.
@@ -215,9 +216,13 @@ Every writer is engine-neutral. They read one internal shell mesh (nodes, quads 
 
 **Per mid-face and per body, in PR 1:**
 - **Fidelity:** every point read on a mid-face lies half the wall from both of its faces, within 2% of the wall.
-- **Volume:** a shell body's mid-faces times their walls hold its volume within −15% to +10%. Rims, blends and junction corners are counted once or not at all.
+- **Volume:** a shell body's sewn faces (the mid-faces as extended to their junctions) times their walls hold its volume within −15% to +10%. Junction corners are counted once (a short-legged angle's corner is a fifth of its metal).
 - **Every face accounted for:** each face of a shell body is paired, rim or blend. Nothing is lost.
 - **Connectivity:** every free edge of the sewn surface is either a real boundary (outside just past it) or, on a mixed part, a solid link. An OPEN edge is material past a free edge with no solid region there. It is a junction we did not reach, and it is listed with its place.
+  - The outside is read at 0.05, 0.15 and 0.3 walls past the edge: outside anywhere along the way is a real cut, however narrow (a lanced slit).
+  - An edge ENDS IN A JUNCTION, not open, when it runs along a thicker wall inside it, or when both its ends lie inside sewn walls and one of them on a sewn mid-face (a gusset's slanted edge carried into the plate it stands on).
+  - An edge shorter than half its wall is below the shell mesh's floor (SHMESH-2) and is counted apart, not as open.
+  - A join must keep every mid-face whole: one whose sewn faces hold less than 99% of the mid-faces' own area is not used (a join that loses its mid-faces has no free edge left to count).
 
 **On the mesh, from PR 2:**
 - the same connectivity count on elements: free element edges must lie on free mid-surface edges;

@@ -451,3 +451,72 @@ def test_a_thick_pad_on_one_side_of_a_plate_is_no_lap():
     # only one face of the pad's pair is a side of a shell plate: a pad, not two plates stacked
     rec, _ = ms.extract(sf.plate_with_boss(), mm_per_unit=1.0)
     assert not [p for p in rec["pairs"] if p["why"].startswith("a lap")]
+
+
+@pytest.mark.parametrize("make", [lambda: sf.l_angle(5.0, 5.0), lambda: sf.short_angle(3.0, 40.0)])
+def test_walls_written_as_b_splines_meet_like_plain_ones(make):
+    # every face a B-spline, so every mid-face is an offset surface: OCC will not carry an offset surface past its
+    # own ends, so each is re-made as a B-spline first; and the face classifier's tolerance is read in each
+    # surface's own parameters (0..1 over the whole wall), so a point well inside a grown band is still inside
+    rec, surface = ms.extract(sf.nurbs(make()), mm_per_unit=1.0)
+    assert {m["kind"] for m in _shell_mids(rec)} == {"offset"}
+    plain, plain_surface = ms.extract(make(), mm_per_unit=1.0)
+    assert _sewn_area(surface) == pytest.approx(_sewn_area(plain_surface), rel=1e-4)
+    assert _sewn(rec)["open_edges"] == 0
+    _all_checks(rec)
+
+
+def test_a_gusset_with_a_weld_relief_ends_inside_the_plates_it_stands_on():
+    # the gusset's slanted edges, carried into the base and the upright, end on their mid-faces inside their
+    # walls (and one runs across their corner): ends in the junction, not open
+    rec, _ = ms.extract(sf.gusseted_angle(), mm_per_unit=1.0)
+    assert _sewn(rec)["open_edges"] == 0 and _sewn(rec)["ends_in_wall_edges"] >= 1
+    _all_checks(rec)
+
+
+def test_a_short_legged_angle_holds_its_volume_with_its_corner():
+    # the volume check reads the sewn surface (the mid-faces as extended to their junction) times the walls:
+    # the mid-faces alone hold only 90% of a 16 mm angle of 3 mm plate
+    rec, _ = ms.extract(sf.short_angle(3.0, 16.0), mm_per_unit=1.0)
+    assert rec["bodies"][0]["mid_volume_ratio"] == pytest.approx(1.0, abs=0.02)
+    _all_checks(rec)
+
+
+def test_a_round_stand_off_is_a_solid_region_not_a_fillet():
+    # a cylinder that closes round its axis is never a blend: the boss stays solid, and where the plate's
+    # mid-face meets it is a solid link, not an open edge
+    rec, _ = ms.extract(sf.standoff_plate(), mm_per_unit=1.0)
+    boss = [f for f in rec["faces"] if f["kind"] == "cylinder" and f["role"] == "blend"]
+    assert not boss
+    assert rec["bodies"][0]["verdict"] == "mixed"
+    assert _sewn(rec)["open_edges"] == 0 and _sewn(rec)["solid_link_edges"] >= 1
+
+
+def test_a_slit_narrower_than_the_open_step_is_a_real_cut():
+    # past a 0.5 mm slit in a 3 mm plate the metal starts again 0.9 mm on; the air right past the edge says cut
+    rec, _ = ms.extract(sf.slit_plate(3.0, 0.5), mm_per_unit=1.0)
+    assert _sewn(rec)["open_edges"] == 0
+    _all_checks(rec)
+
+
+def test_a_general_join_that_loses_mid_faces_is_not_used(monkeypatch):
+    # a join that comes back without its mid-faces has no free edge left to count: it must not win on that
+    real = ms.join_body
+
+    def lossy(mine, body_faces, solid, **k):
+        real(mine, body_faces, solid, **k)
+        return ms._compound([]), [], [], [[] for _ in mine]
+
+    monkeypatch.setattr(ms, "join_body", lossy)
+    monkeypatch.setattr(ms, "extend", lambda *a, **k: None)
+    rec, _ = ms.extract(sf.t_joint(), mm_per_unit=1.0)
+    assert _sewn(rec)["join"] == "straight" and _sewn(rec)["open_edges"] > 0
+    assert any("general join lost" in n for n in rec["notes"])
+
+
+def test_a_tube_running_into_a_plug_is_linked_to_it():
+    # the plug's end face inside the tube is narrow, yet it faces the plug's other end across the metal: it is a
+    # side of a thick region, so where the tube's mid-face stops on it is a solid link, not an open edge
+    rec, _ = ms.extract(sf.plugged_tube(), mm_per_unit=1.0)
+    assert not [f for f in rec["faces"] if f["kind"] == "plane" and f["role"] == "blend"]
+    assert _sewn(rec)["open_edges"] == 0 and _sewn(rec)["solid_link_edges"] == 2

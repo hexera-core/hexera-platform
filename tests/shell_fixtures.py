@@ -294,3 +294,57 @@ def bolted_lap(t: float = 3.0, lap: float = 30.0, r: float = 3.0):
     for y in (30.0, 70.0):
         s = _cut(s, _cyl(200 - lap / 2, y, -1, r, 2 * t + 2))
     return _unify(s)
+
+
+def nurbs(shape):
+    """The same part with every face re-made as a B-spline (as some exporters write plain walls): its mid-faces
+    are offset surfaces of B-splines."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_NurbsConvert
+
+    return BRepBuilderAPI_NurbsConvert(shape, True).Shape()
+
+
+def gusseted_angle(tb: float = 4.0, tw: float = 3.0, tg: float = 3.0, leg: float = 40.0, relief: float = 10.0):
+    """A base 120 x 60 x `tb` (z 0..tb) and an upright `tw` thick at x 0..tw, 60 high, with a triangular gusset
+    `tg` thick at y 20..20+tg in their corner: legs `leg`, its inner corner cut off by a 45-degree weld relief
+    `relief` long on each leg. The gusset's slanted edges run on into the base and the upright."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    poly = BRepBuilderAPI_MakePolygon()
+    for x, z in ((tw + relief, tb), (tw + leg, tb), (tw, tb + leg), (tw, tb + relief)):
+        poly.Add(gp_Pnt(x, 20.0, z))
+    poly.Close()
+    gusset = BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(poly.Wire()).Face(), gp_Vec(0, tg, 0)).Shape()
+    return _fuse(_fuse(_box(0, 0, 0, 120, 60, tb), _box(0, 0, 0, tw, 60, 60)), gusset)
+
+
+def short_angle(t: float = 3.0, leg: float = 16.0, length: float = 60.0):
+    """An angle with short legs (`leg` x `length` x `t` each, at z 0..t and x 0..t): its corner is a fifth of
+    its metal."""
+    return _fuse(_box(0, 0, 0, leg, length, t), _box(0, 0, 0, t, length, leg))
+
+
+def standoff_plate(t: float = 3.0, r: float = 3.0, h: float = 6.0, r_hole: float = 0.9):
+    """A 100 x 80 x `t` plate with a round stand-off boss (radius `r`, `h` high) on top, a pilot hole of radius
+    `r_hole` down its axis: the boss is a solid region, its cylinder a full turn - no fillet."""
+    s = _fuse(_box(0, 0, 0, 100, 80, t), _cyl(50, 40, t, r, h))
+    return _cut(s, _cyl(50, 40, t + 1.0, r_hole, h))
+
+
+def slit_plate(t: float = 3.0, w: float = 0.5, length: float = 60.0):
+    """A 200 x 100 x `t` plate with a straight slit `w` wide cut in from one edge, `length` long: narrower than
+    the step the open-edge test takes past an edge."""
+    return _cut(_box(0, 0, 0, 200, 100, t), _box(100 - w / 2, -1, -1, w, length + 1, t + 2))
+
+
+def plugged_tube(r_out: float = 7.0, t: float = 1.2, length: float = 260.0, plug: float = 11.0, ring: float = 2.0):
+    """A thin tube with a solid plug `plug` long inside each end, each plug bored through leaving a ring `ring`
+    wide: the plug's end face facing into the tube is narrow (under 2 walls) but it is a side of the plug, which
+    is a thick region - no chamfer."""
+    r_in = r_out - t
+    s = tube(r_out, t, length)
+    for z0 in (0.0, length - plug):
+        s = _fuse(s, _cut(_cyl(0, 0, z0, r_in, plug), _cyl(0, 0, z0 - 1, r_in - ring, plug + 2)))
+    return s

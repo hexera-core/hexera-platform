@@ -268,8 +268,11 @@ def face_roles(names: list[str], pairs: list[Pair], *, kinds: list[str], widths:
                 row["role"] = BLEND
             elif t is not None and widths[k] <= RIM_FACTOR * t:
                 row["role"] = RIM          # a round rim: a hole's bore through a plate, a rounded plate edge
-            elif t is not None and kinds[k] == "plane" and widths[k] <= BLEND_FACTOR * t:
-                row["role"] = BLEND        # a chamfer
+            elif (t is not None and kinds[k] == "plane" and widths[k] <= BLEND_FACTOR * t
+                  and not any(pairs[i].even for i in in_pairs.get(k, []))):
+                # a chamfer - which faces no parallel face across the metal: a narrow flat face that does (the end
+                # of a plug inside a tube, 11 mm from its other end) is a side of a thick region
+                row["role"] = BLEND
             elif k in in_pairs:
                 row["role"] = THICK
             else:
