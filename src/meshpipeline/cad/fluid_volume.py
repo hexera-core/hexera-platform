@@ -1811,6 +1811,12 @@ def surface_bounded(source, out_path, *, scale: float = 1.0, kind: str = "cad",
 #: Two 33 mm fittings standing off a 7-9 mm plate stack put the other 67.5% there, and none of it
 #: is part. Above this share the cuboid costs little and is the simpler surface; below it, the
 #: part own skin is worth building.
+#:
+#: AND ON THAT ASSEMBLY IT IS NOT BUILT, because the boolean in `domain_solid` does not come off
+#: on it - the measurements are there. The mechanism works and is tested on the 2-channel cold
+#: plate fixture (7.04 mm3 of metal and 0.96 of coolant fuse to 8.00 as one closed piece), and
+#: `write_domain` refuses anything that is not one closed piece, so the engine keeps the cuboid.
+#: No part the engine has met has reached this threshold yet.
 BOX_WORTH_KEEPING = 0.6
 
 #: The tolerance the coolant own boundary faces are sewn back into a shell with. The faces come
@@ -1818,7 +1824,7 @@ BOX_WORTH_KEEPING = 0.6
 SEW_TOL = 1e-7
 
 
-def domain_solid(solids: list, x: Extraction):
+def domain_solid(solids: list, x: Extraction, _skipped: list | None = None):
     """Metal UNION coolant as one solid - the volume a conjugate mesher has to fill - or None.
 
     THE DOMAIN IS NOT THE PART AND NOT THE BOX. A cold plate boundary is one closed surface that
@@ -1829,10 +1835,26 @@ def domain_solid(solids: list, x: Extraction):
     exactly the part outer skin, enclosing metal and coolant together - which is the volume the
     split is going to cut in two.
 
-    Every passage goes in, including a dead end with one port: a bore that opens to the outside is
-    inside the outer skin whether anything flows through it or not. A closed pocket is not a
-    passage (Extraction.pockets) and is already inside the metal.
+    Every passage goes in whose boundary CLOSES, including a dead end with one port: a bore that
+    opens to the outside is inside the outer skin whether anything flows through it or not. A
+    closed pocket is not a passage (Extraction.pockets) and is already inside the metal.
+
+    AND A SHELL THAT DOES NOT CLOSE IS NOT A SOLID, which is the whole reason this checks.
+    `BRepBuilderAPI_MakeSolid` does not require closure, so an open shell comes back as a "solid"
+    that measures whatever its open surface happens to enclose. Measured on the first customer
+    assembly:
+
+        passage 0   9331 faces   1 shell   free_edges 0   solid 52,144.6 mm3   boundary said 52,144.6
+        passage 1     14 faces   1 shell   free_edges 2   solid    933.4 mm3   boundary said  1,517.2
+
+    The second is a dead-end bore whose boundary leaves two edges free. Fusing it took 346.8 s,
+    reported IsDone, and produced a shape whose bounding box measured zero - so the domain was
+    silently abandoned and the box kept. A passage that will not close is skipped and named; what
+    it holds stays a void inside the metal, which is where the engine has always left a pocket.
+
+    `_skipped` collects the passages left out, for the caller to say out loud.
     """
+    from OCP.BOPAlgo import BOPAlgo_GlueShift
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
     from OCP.TopAbs import TopAbs_SHELL
@@ -1842,8 +1864,10 @@ def domain_solid(solids: list, x: Extraction):
     if not solids:
         return None
     fluids = []
-    for passage in x.passages:
+    for k, passage in enumerate(x.passages):
         if not passage.boundary:
+            if _skipped is not None:
+                _skipped.append(k)
             continue
         sew = BRepBuilderAPI_Sewing(SEW_TOL)
         for f in passage.boundary:
@@ -1853,11 +1877,16 @@ def domain_solid(solids: list, x: Extraction):
         # TopoDS.Shell_s, not TopoDS_Shell.DownCast_s: this OCP has only the former, and the
         # cast that does not exist raised inside the child, where _child logged it as "no domain
         # surface" and the engine quietly kept the box.
+        made = None
         for sh in (_explore(sewn, TopAbs_SHELL, TopoDS.Shell_s) or [sewn]):
-            so = _shell_solid(sh)
-            if so is not None:
-                fluids.append(so)
+            if _free_edges(sh):
+                continue
+            made = _shell_solid(sh)
+            if made is not None:
+                fluids.append(made)
                 break
+        if made is None and _skipped is not None:
+            _skipped.append(k)
     if not fluids:
         return None
     args, tools = TopTools_ListOfShape(), TopTools_ListOfShape()
@@ -1869,6 +1898,33 @@ def domain_solid(solids: list, x: Extraction):
     fu.SetArguments(args)
     fu.SetTools(tools)
     fu.SetFuzzyValue(FUZZY)
+    # GLUE, BECAUSE THE TWO BOUNDARIES ARE THE SAME SURFACE. The coolant's boundary faces come out
+    # of the split of THIS shape, so every passage wall the tool carries is coincident with the
+    # cavity wall the argument carries - the case BOPAlgo's glue mode exists for.
+    #
+    # IT IS A SPEED WIN AND NOT A CORRECTNESS FIX, and the difference matters because I wrote it
+    # down as the fix first. Measured on the first customer assembly (6 solids, 222,662 mm3, plus
+    # one coolant circuit of 52,144.6 mm3):
+    #
+    #     no glue      816.6 s    -11.4752 mm3 in a 1,118 mm3 box
+    #     GlueShift    142.2 s    -11.4752 mm3 in a 1,118 mm3 box    identical, 5.7x faster
+    #     GlueFull      81.9 s    2 solids, 0.0 mm3, 24,310 mm3 box  wrong a second way
+    #
+    # GlueShift gives the same answer 5.7x sooner, so it stays. GlueFull asserts that nothing
+    # really intersects, which is too strong here: it returns the same shell twice with opposite
+    # orientations, which is where the exact 0.0 comes from.
+    #
+    # THE BOOLEAN IS WRONG ON THAT ASSEMBLY AND NO GLUE MODE FIXES IT. A 1,118 mm3 bounding box
+    # out of a part whose own box is 846,543 is a fragment. `write_domain` refuses anything that is
+    # not one closed piece, so the engine keeps the cuboid - correct, and 3x the cells. The route
+    # that avoids a boolean is to take the metal's own closed tessellation and flood-fill its outer
+    # skin with the mouth rims as barriers, then add the caps: the rims are chains of mesh edges
+    # because a CAD tessellation respects face boundaries, so it needs no tolerance against this
+    # part's 98 um walls - which is what defeats matching the two tessellations against each other,
+    # since the deflection at 1/2500 of a 210 mm diagonal is 0.084 mm, itself thicker than a wall.
+    # Not attempted.
+    fu.SetGlue(BOPAlgo_GlueShift)
+    fu.SetRunParallel(True)
     fu.Build()
     if not fu.IsDone():
         return None
@@ -1901,9 +1957,12 @@ def write_domain(solids: list, x: Extraction, out_path, *, angular_deflection: f
     from meshpipeline.cad.occ_box import mesh_to_size
     from meshpipeline.cad.stl_io import write_stl_binary, write_stl_solids
 
-    domain = domain_solid(solids, x)
+    skipped: list = []
+    domain = domain_solid(solids, x, skipped)
+    aside = (f" (passage {', '.join(str(k) for k in skipped)} would not close)" if skipped else "")
     if domain is None:
-        return {"ok": False, "reason": "the part and its coolant would not fuse into one solid"}
+        return {"ok": False, "skipped_passages": skipped,
+                "reason": f"the part and its coolant would not fuse into one solid{aside}"}
     pieces = _solids(domain)
     if not pieces:
         return {"ok": False, "reason": "the fuse produced no solid"}
@@ -1911,8 +1970,9 @@ def write_domain(solids: list, x: Extraction, out_path, *, angular_deflection: f
     box = max((hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]), 0.0)
     vol = sum(_volume(one) for one in pieces)
     if vol <= 0.0 or box <= 0.0:
-        return {"ok": False, "reason": f"the fused domain measures {vol * 1e9:.4f} mm3 "
-                                       f"in a {box * 1e9:.4f} mm3 box"}
+        return {"ok": False, "skipped_passages": skipped,
+                "reason": f"the fused domain measures {vol * 1e9:.4f} mm3 "
+                          f"in a {box * 1e9:.4f} mm3 box{aside}"}
     mesh_to_size(domain, 1.0 / 2500.0, angular_deflection, linear_deflection=linear_deflection)
     tris: list = []
     for f in _faces(domain):
@@ -1926,8 +1986,9 @@ def write_domain(solids: list, x: Extraction, out_path, *, angular_deflection: f
     if rims or closed != 1 or len(pieces) != 1:
         return {"ok": False, "triangles": len(tris), "solids": len(pieces),
                 "volume_mm3": round(vol * 1e9, 4), "box_mm3": round(box * 1e9, 4),
+                "skipped_passages": skipped,
                 "reason": (f"the domain surface is {len(pieces)} solid(s) and {closed} closed "
-                           f"piece(s) with {len(rims)} open rim(s), not one closed piece")}
+                           f"piece(s) with {len(rims)} open rim(s), not one closed piece{aside}")}
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if outer_name:
@@ -1944,7 +2005,9 @@ def write_domain(solids: list, x: Extraction, out_path, *, angular_deflection: f
         "box_mm3": round(box * 1e9, 4),
         "share_of_box": round(vol / box, 4),
         "metal_mm3": round(sum(_volume(one) for one in solids) * 1e9, 4),
-        "fluid_mm3": round(sum(q.volume for q in x.passages) * 1e9, 4),
+        "fluid_mm3": round(sum(q.volume for k, q in enumerate(x.passages)
+                               if k not in set(skipped)) * 1e9, 4),
+        "skipped_passages": skipped,
         "lo_m": [round(v, 9) for v in lo],
         "hi_m": [round(v, 9) for v in hi],
     }

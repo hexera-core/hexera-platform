@@ -1398,3 +1398,64 @@ draw exactly whatever the rest of the mesh had to give up. And on a mesh whose c
 drawing the figures and the hotspots now ship without the arrays, where before both were dropped:
 that plate's coolant side is 13,022,400 faces against a budget of 800,000, so every delivery of it
 had no quality view of any kind.
+
+### The box the mesher fills is three times the part, and the boolean that would fix it does not come off
+
+Measured on the real customer assembly (`ColdPlateAssembly_CLEAN.step`, 6 solids, 15.9 MB):
+
+| | volume | share of the bounding box |
+|---|---|---|
+| bounding box, 177.51 x 47.21 x 101.01 mm | 846,543 mm3 | 100% |
+| the six solids | 222,662 mm3 | 26.3% |
+| the coolant, 2 passages | 53,662 mm3 | 6.3% |
+| metal + coolant | 276,324 mm3 | 32.6% |
+
+The conjugate engine hands cfMesh one manifold volume and cuts the two regions out of it
+afterwards, and the easy manifold is the cuboid. Two thirds of every cell in that mesh is air
+outside the part, at the background size. By the stretch measurement above, 223 million of that
+mesh's cells sit outside any stretch zone and no refinement setting reaches them; this is the term
+that does. The box is 3.06x the domain.
+
+THE PART ON ITS OWN IS NOT THE DOMAIN. A cold plate's boundary is one closed surface that runs
+over the outside, dives in at the inlet, winds through the channels and comes back out at the
+outlet, so a mesher handed it fills the METAL: measured on a part skin given to cfMesh, the fluid
+region came back at 256 cells against 495,506. Fusing the coolant back in caps each mouth with the
+coolant's own end face and leaves exactly the outer skin, enclosing metal and coolant together.
+
+That works on the 2-channel cold plate fixture: 7.04 mm3 of metal and 0.96 of coolant fuse to
+8.00 mm3 as one solid, one closed piece, no open rims. It is also the negative control, because
+that plate is a plain cuboid and fills its own box - `share_of_box` 1.0, so there is nothing to
+build.
+
+ON THE CUSTOMER ASSEMBLY THE FUSE IS WRONG, three ways:
+
+| glue mode | time | result |
+|---|---|---|
+| none | 816.6 s | -11.4752 mm3 in a 1,118 mm3 box |
+| `BOPAlgo_GlueShift` | 142.2 s | identical, 5.7x faster |
+| `BOPAlgo_GlueFull` | 81.9 s | 2 solids, 0.0 mm3, 24,310 mm3 box |
+
+A 1,118 mm3 bounding box out of a part whose own box is 846,543: the result is a fragment. Glue is
+a speed win and not a correctness fix - GlueShift stays because it gives the same answer 5.7x
+sooner, and GlueFull asserts that nothing really intersects, which is too strong and hands back
+the same shell twice with opposite orientations, hence the exact 0.0.
+
+TWO REAL DEFECTS CAME OUT OF LOOKING. `BRepBuilderAPI_MakeSolid` does not require a closed shell,
+so an open shell comes back as a "solid" measuring whatever its open surface happens to enclose:
+
+    passage 0   9331 faces   1 shell   free edges 0   solid 52,144.6 mm3   boundary said 52,144.6
+    passage 1     14 faces   1 shell   free edges 2   solid    933.4 mm3   boundary said  1,517.2
+
+Fusing that second one is what took 346.8 s to produce a zero-volume bounding box on the first
+attempt. A shell has to close now, and a passage that will not close is skipped and named. And
+`write_domain` returned a bare None, which lost the reason: it runs in a time-boxed child process
+whose stdout is read and thrown away unless it times out, so the first customer run came back
+`"domain": null` after 1,001 s with nothing anywhere saying why.
+
+WHERE IT STOPS. The gate refuses anything that is not one closed piece, so the engine keeps the
+cuboid and nothing is worse than before. The route that does not go through a boolean is to take
+the metal's own closed tessellation and flood-fill its outer skin with the mouth rims as barriers,
+then add the caps. The rims are chains of mesh edges because a CAD tessellation respects face
+boundaries, so that needs no tolerance against the 98 um walls - which is what defeats matching
+the metal and coolant tessellations against each other, since the tessellation deflection at
+1/2500 of a 210 mm diagonal is 0.084 mm, itself thicker than the walls. Not attempted.
