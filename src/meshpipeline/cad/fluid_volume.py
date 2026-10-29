@@ -1894,7 +1894,13 @@ def _domain_from_split(x: Extraction):
             sew.Add(f)
         sew.Perform()
         sewn = sew.SewedShape()
-        best, best_v = None, 0.0
+        # EVERY CLOSED SHELL, not the biggest one. Sewing a split's faces leaves the odd sliver
+        # that closes nothing - the customer assembly gave two shells, one of them 0 mm3 with a
+        # free edge - and those are skipped exactly as an open passage boundary always was. But a
+        # shell that DOES close is a piece of the domain, and taking only the largest would drop
+        # the rest without saying so. `write_domain` has always summed over several pieces, and
+        # the fuse it replaces produced them.
+        pieces, total = [], 0.0
         for sh in (_explore(sewn, TopAbs_SHELL, TopoDS.Shell_s) or [sewn]):
             if _free_edges(sh):
                 continue
@@ -1902,15 +1908,27 @@ def _domain_from_split(x: Extraction):
             if made is None:
                 continue
             v = abs(_volume(made))
-            if v > best_v:
-                best, best_v = made, v
-        if best is None or best_v <= 0.0:
+            if v <= 0.0:
+                continue
+            pieces.append(made)
+            total += v
+        if not pieces:
             logger.info("fluid volume: the split's own domain did not close (%d face(s)) - "
                         "falling back to the fuse", len(faces))
             return None
-        logger.info("fluid volume: the domain came out of the split, %d face(s), %.1f mm3",
-                    len(faces), best_v * 1e9)
-        return best
+        logger.info("fluid volume: the domain came out of the split, %d face(s), %d piece(s), "
+                    "%.1f mm3", len(faces), len(pieces), total * 1e9)
+        if len(pieces) == 1:
+            return pieces[0]
+        from OCP.BRep import BRep_Builder
+        from OCP.TopoDS import TopoDS_Compound
+
+        comp = TopoDS_Compound()
+        bld = BRep_Builder()
+        bld.MakeCompound(comp)
+        for one in pieces:
+            bld.Add(comp, one)
+        return comp
     except Exception:  # noqa: BLE001 - the fuse below is the fallback, not a second failure
         logger.warning("fluid volume: the split's own domain could not be sewn", exc_info=True)
         return None

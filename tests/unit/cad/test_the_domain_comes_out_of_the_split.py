@@ -91,12 +91,23 @@ def test_a_split_that_carries_nothing_still_fuses(plate):
 
 def test_a_degenerate_shell_does_not_become_the_domain(plate):
     """Sewing faces off a split leaves the odd sliver that closes nothing - two shells came out of
-    the customer assembly, one of them 0 mm3 with a free edge. The largest CLOSED one wins, which
-    is why this takes a maximum rather than the first that closes."""
+    the customer assembly, one of them 0 mm3 with a free edge - and those are skipped exactly as
+    an open passage boundary always was."""
     src = inspect.getsource(FV._domain_from_split)
     assert "_free_edges(sh)" in src, "an open shell bounds nothing and must be skipped"
-    assert "best_v" in src and "> best_v" in src, "it must take the largest, not the first"
-    assert "if best is None or best_v <= 0.0:" in src
+    assert "if v <= 0.0:" in src, "a shell enclosing nothing is not a piece"
+    assert "if not pieces:" in src
+
+
+def test_every_closed_shell_is_kept_and_not_just_the_biggest():
+    """Taking only the largest would drop the rest without saying so. `write_domain` has always
+    summed over several pieces and the fuse this replaces produced them, so the domain may be
+    more than one piece and all of it has to travel."""
+    src = inspect.getsource(FV._domain_from_split)
+    assert "pieces.append(made)" in src
+    assert "TopoDS_Compound" in src, "several pieces travel as a compound"
+    assert "len(pieces) == 1" in src, "one piece stays one solid, not a compound of one"
+    assert "best_v" not in src, "it must not be picking a maximum any more"
 
 
 def test_it_never_turns_a_working_run_into_a_broken_one(plate):
