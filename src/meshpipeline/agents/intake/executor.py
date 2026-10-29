@@ -225,6 +225,16 @@ class IntakeToolExecutor:
             logger.debug("Intake: geometry regions unavailable (%s)", exc)
             return {}
 
+    def _confirmed_up_axis(self) -> str:
+        # WHICH WAY IS UP, as the user confirmed it on the picture (INS-9): the ground lies under
+        # it, so a flow along z is along the ground of a Y-up file. Unreadable: +z, as before.
+        try:
+            from meshpipeline.application.geometry_confirmation import confirmed_up_axis
+
+            return confirmed_up_axis(str(self.state.session_id or ""))
+        except Exception:  # noqa: BLE001 - unknown is +z up, never a refusal
+            return ""
+
     def _staged_upload(self) -> str:
         # The session's upload as a local file (staged, or fetched back from its stored source), or ''.
         return measured_choice.staged_upload(str(self.state.session_id or ""),
@@ -652,7 +662,8 @@ class IntakeToolExecutor:
                 "Not allowed in this turn: you compared engines for the user, who has not selected "
                 "one. Tell them which engines are compatible and ask which they want. Nothing was "
                 "saved."))
-        val_errors = validate_submission(args)
+        _up = self._confirmed_up_axis()
+        val_errors = validate_submission(args, up_axis=_up) if _up else validate_submission(args)
         # STRUCTURAL GATE: authorized ONLY by a matching, unexpired, single-engine SUPPORTED
         # preview TOKEN for the EXACT payload, in this session/owner and the current revision.
         canon = at.canonical_payload(args.get("mesh_engine"), args.get("purpose"),

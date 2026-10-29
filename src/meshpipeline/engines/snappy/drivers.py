@@ -10,7 +10,7 @@ import meshpipeline.engines.snappy.settings as scfg
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.engines.gap_sizing import LIMITED, OVER_LIMIT, accepted_fewer
 from meshpipeline.engines.ground_contact import describe as describe_contact
-from meshpipeline.engines.ground_plane import VERTICAL_AXIS, ground_patch_name
+from meshpipeline.engines.ground_plane import floor_of, ground_patch_name, up_word
 from meshpipeline.engines.port_binding import BindError as _PortBindError
 from meshpipeline.engines.preflight import PreflightRefusal, PreflightStop, check_domain
 from meshpipeline.engines.wake_region import WakeRequest
@@ -647,7 +647,8 @@ def _domain_preflight(state, analysis: dict, dmin, dmax, *,
         strict=bool(state.get("requirements_strict")),
         flow_axis=state.get("flow_axis"),
         body_min=analysis["bbox_min"], body_max=analysis["bbox_max"],
-        domain_min=dmin, domain_max=dmax, grounded=grounded, symmetry_faces=symmetry_faces)
+        domain_min=dmin, domain_max=dmax, grounded=grounded, symmetry_faces=symmetry_faces,
+        floor=floor_of(state.get("up_axis")))
 
 
 async def _preflight_stopped(publish: ExecutionEventPublisher, workspace: Path,
@@ -888,16 +889,23 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                  "a half-model - it has no coplanar cut face to place a symmetry plane on (a "
                  "full-span body straddles the centreline).")
                 + " Mesh the full domain without symmetry, or supply a half-model.")
+    # THE FLOOR FOLLOWS THE UP AXIS the user confirmed on the stage (INS-9): z-min on a +z-up
+    # file, y-min on a +y-up one. A hard-coded z refused flow along z over a Y-up file's floor.
+    _floor = floor_of(state.get("up_axis"))
+    _up_letter = "xyz"[int(_floor[0])]
     if _ground and not _refusal:
         _axis = str(state.get("flow_axis") or "").strip().lower()
-        if _axis[-1:] == "xyz"[VERTICAL_AXIS]:
+        if _axis[-1:] == _up_letter:
             _refusal_op = "snappy:ground-unusable"
-            _refusal = (f"The ground '{_ground}' lies under the body, across z, but the flow was "
-                        f"declared along {_axis} - the floor and the flow cannot share an axis. "
-                        "Say which horizontal axis (+x, -x, +y or -y) the flow travels along, or "
-                        f"drop '{_ground}' if the body is free in the flow.")
-        elif symmetry and int(symmetry["axis"]) == VERTICAL_AXIS and (
-                symmetry.get("slab") or symmetry.get("side") == "min"):
+            _flat = [("+" + a, "-" + a) for a in "xyz" if a != _up_letter]
+            _refusal = (f"The ground '{_ground}' lies under the body, across {_up_letter} (up is "
+                        f"{up_word(_floor)}), but the flow was declared along {_axis} - into the "
+                        "ground. Say which way along the ground the flow travels ("
+                        + ", ".join(x for pair in _flat for x in pair)
+                        + f"), or say which way is up in the file, or drop '{_ground}' if the body "
+                        "is free in the flow.")
+        elif symmetry and int(symmetry["axis"]) == int(_floor[0]) and (
+                symmetry.get("slab") or symmetry.get("side") == _floor[1]):
             _refusal_op = "snappy:ground-unusable"
             _refusal = (f"The ground '{_ground}' and the symmetry plane both fall on the bottom "
                         "face of the domain, and one face can be only one boundary. Drop the "
@@ -925,7 +933,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     _contact = None
     if _ground:
         try:
-            _contact = R.measure_ground_contact(workspace)
+            _contact = R.measure_ground_contact(workspace, floor=_floor)
         except Exception:  # noqa: BLE001 - a measurement, never a reason to stop the build
             logger.warning("ground contact not measured - the floor goes at the body's lowest "
                            "point (job_id=%s)", job_id, exc_info=True)
@@ -944,8 +952,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         _layout.append(
             "The body stands on the ground - "
             + (describe_contact(_contact) if _contact is not None else
-               f"the floor of the domain sits at its lowest point "
-               f"(z = {float(analysis['bbox_min'][VERTICAL_AXIS]):.4g} m)")
+               f"the floor of the domain sits at its lowest point along {up_word(_floor)}")
             + f". The floor is the wall '{_ground}'; the other box faces stay far field.")
     if _layout:
         await publish.anote(
@@ -1073,7 +1080,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             dmin, dmax = R.domain_from_strategy(analysis, strategy, symmetry,
                                                 flow_axis=state.get("flow_axis"),
                                                 ruler_m=state.get("reference_length_m"),
-                                                ground=bool(_ground), contact=_contact)
+                                                ground=bool(_ground), contact=_contact, floor=_floor)
             # DOMAIN PRE-FLIGHT, before the box is written: the post-mesh extent gate measures
             # exactly this prepared box, so a box it would block is known now. Re-plan instead of
             # meshing it (nothing is written yet, so the previous pass's files stay as they were).
@@ -1133,7 +1140,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                  or strategy.get("reference_length_m")),
                 contact=_contact,
                 # the gaps between the body's parts, 13 cells across (engines/gap_sizing)
-                gap_field=_gap_field)
+                gap_field=_gap_field, ground_floor=_floor)
             if int(summary.get("max_cells") or 0) > int(strategy.get("max_cells") or 0):
                 # the gap boxes raised snappy's cell ceiling: the plan memory carries the budget
                 # the pass really used, so an overshoot correction reads it right

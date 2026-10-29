@@ -754,6 +754,9 @@ async def _run_async(req: JobRequest) -> dict:
         # is closed for the mesh by each route's staging; read off the stored confirmation
         from meshpipeline.application.geometry_confirmation import confirmed_leak_closing
         initial_state["leak_closing"] = await asyncio.to_thread(confirmed_leak_closing, str(session_id or ""))
+        # WHICH WAY IS UP, as the user confirmed it on the stage (INS-9): the ground is laid under it
+        from meshpipeline.application.geometry_confirmation import confirmed_up_axis
+        initial_state["up_axis"] = await asyncio.to_thread(confirmed_up_axis, str(session_id or ""))
         # AN FEA ASSEMBLY'S JOINTS, as the user confirmed them on the stage (bonded unless they said
         # contact); read off the stored confirmation, never the event loop's to wait on
         from meshpipeline.application.fea_check import confirmed_connection
