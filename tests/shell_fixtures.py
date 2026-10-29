@@ -264,8 +264,9 @@ def oblique_half_pipe(r_out: float = 160.0, t: float = 3.0, length: float = 600.
     return _cut(half, cutter)
 
 
-def spool(tp: float = 4.0, r_out: float = 20.0, t: float = 4.0, h: float = 100.0):
-    """A tube welded between two 120 x 120 x `tp` plates (a flanged spool): a tube-on-plate junction at each end,
-    with the disc of plate inside the tube a mid-face of its own (bounded by one circle)."""
-    return _fuse(_fuse(_box(-60, -60, 0, 120, 120, tp), _box(-60, -60, h - tp, 120, 120, tp)),
+def spool(tp: float = 4.0, r_out: float = 20.0, t: float = 4.0, h: float = 100.0, w: float = 120.0):
+    """A tube welded between two `w` x `w` x `tp` plates (a flanged spool): a tube-on-plate junction at each end,
+    with the disc of plate inside the tube a mid-face of its own (bounded by one circle). At w = 130 OCC's 2D
+    offset of the top plate's mid-face left its hole's circle a 138 mm tolerance and broke the general fuse."""
+    return _fuse(_fuse(_box(-w / 2, -w / 2, 0, w, w, tp), _box(-w / 2, -w / 2, h - tp, w, w, tp)),
                  tube(r_out, t, h - 2 * tp).Moved(_shift(0, 0, tp)))

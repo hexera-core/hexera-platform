@@ -869,6 +869,13 @@ def grow(face, reach: float, joined: list | None = None):
     if surf.IsVPeriodic() and hi_v - lo_v >= surf.VPeriod():
         lo_v, hi_v = v0, v0 + surf.VPeriod()
     b = surf.Bounds()
+    short = {name for name, want, have, up in (("u0", lo_u, b[0], False), ("u1", hi_u, b[1], True),
+                                               ("v0", lo_v, b[2], False), ("v1", hi_v, b[3], True))
+             if not (surf.IsUPeriodic() if name[0] == "u" else surf.IsVPeriodic())
+             and (want > have if up else want < have)}
+    if short:
+        surf = _extended_surface(face, surf, GROW_EXTEND * reach, short, (u0, u1, v0, v1))
+        b = surf.Bounds()
     if not surf.IsUPeriodic():
         lo_u, hi_u = max(lo_u, b[0]), min(hi_u, b[1])
     if not surf.IsVPeriodic():
@@ -886,6 +893,37 @@ def grow(face, reach: float, joined: list | None = None):
             if mk.IsDone():
                 tiles.append(mk.Face())
     return _compound(tiles) if tiles else None
+
+
+#: a surface that ends where its face does (a lofted B-spline wall, its offset) is carried on past its own ends by
+#: this share of the reach before the face is grown on it, so it can reach the wall it runs into
+GROW_EXTEND = 1.5
+
+
+def _extended_surface(face, surf, length: float, sides: set[str], bounds):
+    """The face's surface carried on `length` (its own units) past each of its own parameter ends in `sides`
+    (OCC's BRepLib::ExtendFace: a B-spline or Bezier continued smoothly, an offset surface by its basis), or the
+    surface itself when it cannot be: the extension must keep the face's own points where they are."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepLib import BRepLib
+    from OCP.TopoDS import TopoDS_Face
+
+    try:
+        out = TopoDS_Face()
+        BRepLib.ExtendFace_s(face, float(length), "u0" in sides, "u1" in sides, "v0" in sides, "v1" in sides, out)
+        if out.IsNull():
+            return surf
+        ext = BRep_Tool.Surface_s(out)
+        u0, u1, v0, v1 = bounds
+        scale = max(length, 1e-12)
+        for fu, fv in ((0.5, 0.5), (0.0, 0.0), (1.0, 1.0), (0.0, 1.0), (1.0, 0.0)):
+            u, v = u0 + fu * (u1 - u0), v0 + fv * (v1 - v0)
+            if surf.Value(u, v).Distance(ext.Value(u, v)) > 1e-6 * scale:
+                return surf
+        return ext
+    except Exception as exc:  # noqa: BLE001 - the surface is grown as far as it goes
+        logger.debug("shell: a surface could not be extended (%s)", exc)
+        return surf
 
 
 def _held_sides(face, joined: list, bounds) -> set[str]:
@@ -964,45 +1002,186 @@ def _cut_beyond(grown, face, joined: list, reach: float):
     return out
 
 
-def _grow_plane(face, reach: float, joined: list | None = None):
+#: an offset outline whose tolerance is above this share of the reach is rebuilt from its edges' 3D curves
+GROW_TOL_SHARE = 1e-4
+
+
+def _max_tol(shape) -> float:
+    from OCP.ShapeAnalysis import ShapeAnalysis_ShapeTolerance
+    from OCP.TopAbs import TopAbs_SHAPE
+
+    return float(ShapeAnalysis_ShapeTolerance().Tolerance(shape, 1, TopAbs_SHAPE))
+
+
+def _clean_wire(wire, reach: float):
+    """The offset outline, or the same outline rebuilt edge by edge from its 3D curves when OCC's 2D offset left
+    it a wild tolerance (a hole's circle came back with a tolerance of 138 mm on a plate whose plane is placed at
+    its corner, and that one wire broke the general fuse of the whole body); None when it cannot be mended."""
     from OCP.BRep import BRep_Tool
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
-    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffset
-    from OCP.GeomAbs import GeomAbs_Arc, GeomAbs_Intersection
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.BRepTools import BRepTools_WireExplorer
+    from OCP.TopoDS import TopoDS
+
+    limit = GROW_TOL_SHARE * reach
+    if _max_tol(wire) <= limit:
+        return wire
+    mw = BRepBuilderAPI_MakeWire()
+    ex = BRepTools_WireExplorer(wire)
+    while ex.More():
+        e = ex.Current()
+        if not BRep_Tool.Degenerated_s(e):
+            first, last = BRep_Tool.Range_s(e)
+            curve = BRep_Tool.Curve_s(e, 0.0, 1.0)
+            if curve is None:
+                return None
+            mk = BRepBuilderAPI_MakeEdge(curve, first, last)
+            if not mk.IsDone():
+                return None
+            # the wire runs the same way round (an outline one way, a hole the other)
+            mw.Add(TopoDS.Edge_s(mk.Edge().Oriented(e.Orientation())))
+            if not mw.IsDone():
+                return None
+        ex.Next()
+    if not mw.IsDone():
+        return None
+    out = TopoDS.Wire_s(mw.Wire().Oriented(wire.Orientation()))
+    return out if _max_tol(out) <= limit else None
+
+
+def _outer_wire(face):
+    from OCP.BRepTools import BRepTools
+
+    return BRepTools.OuterWire_s(face)
+
+
+def _inner_wires(face) -> list:
+    """The face's wires other than its outline (its holes), in the face's own order."""
     from OCP.TopAbs import TopAbs_WIRE
     from OCP.TopoDS import TopoDS
 
+    outer = _outer_wire(face)
+    wm = _map(face, TopAbs_WIRE)
+    return [TopoDS.Wire_s(wm.FindKey(i)) for i in range(1, wm.Extent() + 1) if not wm.FindKey(i).IsSame(outer)]
+
+
+def _face_with_holes(surf, outline, holes: list):
+    """A face on the plane `surf` bounded by `outline` with `holes` cut out, each hole run the other way round
+    from the outline (one that would ADD area is turned round), or None."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.TopoDS import TopoDS
+
+    if outline is None or outline.IsNull():
+        return None
+    mf = BRepBuilderAPI_MakeFace(surf, outline, True)
+    if not mf.IsDone():
+        return None
+    face = mf.Face()
+    if _signed_area(face) < 0:
+        face = BRepBuilderAPI_MakeFace(surf, TopoDS.Wire_s(outline.Reversed()), True).Face()
+    whole = _signed_area(face)
+    for w in holes:
+        for cand in (w, TopoDS.Wire_s(w.Reversed())):
+            mk = BRepBuilderAPI_MakeFace(face)
+            mk.Add(cand)
+            if mk.IsDone() and 0 <= _signed_area(mk.Face()) < whole:
+                face = mk.Face()
+                whole = _signed_area(face)
+                break
+        else:
+            return None
+    return face
+
+
+def _signed_area(face) -> float:
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    g = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(face, g)
+    return float(g.Mass())
+
+
+def _left_over(face, grown) -> float:
+    """The area of `face` not covered by `grown` (both on one plane)."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+
+    cut = BRepAlgoAPI_Cut(face, grown)
+    if not cut.IsDone():
+        return float("inf")
+    return sum(_area(f) for f in _faces(cut.Shape()))
+
+
+def _offset_region(surf, wire, dist: float, join) -> list:
+    """The region inside `wire` (on the plane `surf`) offset by `dist` (outward when positive, inward when
+    negative), as faces - the largest first; [] when nothing is left (a hole shrunk away) or it cannot be done.
+    OCC's 2D offset takes its sign from how the wire runs against the plane's normal, so the sign is checked
+    on the result: an offset that went the wrong way (a 20 mm hole of a base plate grew to 30 mm when asked
+    to shrink to 10) is done again the other way."""
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffset
+    from OCP.TopAbs import TopAbs_WIRE
+    from OCP.TopoDS import TopoDS
+
+    region = _face_with_holes(surf, wire, [])
+    if region is None:
+        return []
+    whole = _area(region)
+    for signed in (dist, -dist):
+        mk = BRepOffsetAPI_MakeOffset(region, join)
+        mk.Perform(signed)
+        if not mk.IsDone():
+            if signed == dist:
+                continue
+            return []
+        wm = _map(mk.Shape(), TopAbs_WIRE)
+        out = []
+        for i in range(1, wm.Extent() + 1):
+            w = _clean_wire(TopoDS.Wire_s(wm.FindKey(i)), abs(dist))
+            f = _face_with_holes(surf, w, []) if w is not None else None
+            if f is not None and _area(f) > 0:
+                out.append(f)
+        total = sum(_area(f) for f in out)
+        if (total > whole) if dist > 0 else (total < whole):
+            out.sort(key=lambda f: -_area(f))
+            return out
+    return []
+
+
+def _grow_plane(face, reach: float, joined: list | None = None):
+    """A plane face grown `reach` past its edges in its own plane: its outline offset outward and each hole
+    offset inward on its own (a hole that shrinks away is gone), the shrunk holes cut from the grown outline.
+    Each wire is offset alone: OCC's 2D offset of a whole face with holes grew a 20 mm hole of a bolted base
+    plate to 30 mm instead of 10 mm, and left another hole's circle a 138 mm tolerance."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.GeomAbs import GeomAbs_Arc, GeomAbs_Intersection
+    from OCP.ShapeFix import ShapeFix_Face
+
     surf = BRep_Tool.Surface_s(face)
+    holes = _inner_wires(face)
     for join in (GeomAbs_Intersection, GeomAbs_Arc):
         try:
-            mk = BRepOffsetAPI_MakeOffset(face, join)
-            mk.Perform(reach)
-            if not mk.IsDone():
+            grown = _offset_region(surf, _outer_wire(face), reach, join)
+            if not grown:
                 continue
-            wm = _map(mk.Shape(), TopAbs_WIRE)
-            wires = [TopoDS.Wire_s(wm.FindKey(i)) for i in range(1, wm.Extent() + 1)]
-            if not wires:
-                continue
-            # the outline is the wire whose own face is largest; the rest are the holes left
-            sized = []
-            for w in wires:
-                f = BRepBuilderAPI_MakeFace(surf, w, True)
-                sized.append((_area(f.Face()) if f.IsDone() else 0.0, w))
-            sized.sort(key=lambda x: -x[0])
-            mf = BRepBuilderAPI_MakeFace(surf, sized[0][1], True)
-            for _a, w in sized[1:]:
-                mf.Add(w)
-            if not mf.IsDone():
-                continue
-            from OCP.ShapeFix import ShapeFix_Face
-
-            fix = ShapeFix_Face(mf.Face())
-            fix.Perform()
-            out = fix.Face()
+            out = grown[0]
+            for w in holes:
+                for left in _offset_region(surf, w, -reach, join):
+                    cut = BRepAlgoAPI_Cut(out, left)
+                    if not cut.IsDone():
+                        raise ValueError("a shrunk hole could not be cut out")
+                    fs = _faces(cut.Shape())
+                    if not fs:
+                        raise ValueError("a shrunk hole took the whole face")
+                    out = _compound(fs) if len(fs) > 1 else fs[0]
+            if len(_faces(out)) == 1:
+                fix = ShapeFix_Face(_faces(out)[0])
+                fix.Perform()
+                out = fix.Face()
             if joined:
                 out = _cut_beyond(out, face, joined, reach)
                 out = _plane_union(out, face)
-            if _area(out) >= _area(face) * (1 - 1e-9):
+            # the grown face must hold the whole face it was grown from
+            if _area(out) >= _area(face) * (1 - 1e-9) and _left_over(face, out) <= 1e-6 * _area(face):
                 return out
         except Exception as exc:  # noqa: BLE001 - try the other join, then give up growing this face
             logger.debug("shell: a plane could not be grown (%s)", exc)
@@ -1011,38 +1190,50 @@ def _grow_plane(face, reach: float, joined: list | None = None):
 
 #: the deflections (shares of the face's box diagonal) _inner_point meshes a face at, coarse first
 INNER_MESH_SHARES = (0.05, 0.005, 0.0005)
+#: ... and how many of each mesh's largest triangles it tries for a middle inside the face
+INNER_TRIES = 64
 
 
 def _inner_point(face):
     """A point inside the face (its own units), or None: the middle of the largest triangle of the face's own
     triangulation (UV coordinates, so on the surface exactly) - inside any face, however thin (a 1.5 mm band
     along a 200 mm edge has no point of a coarse parameter grid in it). A curved sliver the coarse mesher
-    cannot triangulate (a 1 mm band along a 550 mm curved edge) is meshed again finer."""
+    cannot triangulate (a 1 mm band along a 550 mm curved edge) is meshed again finer. The point must lie IN the
+    face: a coarse mesh cuts across a curved border (a 2 mm ring round a 40 mm hole, meshed at a 9 mm sag), so a
+    triangle's middle can fall outside it; the largest triangle whose middle is in the face is taken, finer
+    meshes after."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepClass import BRepClass_FaceClassifier
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.gp import gp_Pnt2d
+    from OCP.TopAbs import TopAbs_IN
     from OCP.TopLoc import TopLoc_Location
 
     lo, hi = _box(face)
     size = float(np.linalg.norm(hi - lo)) or 1.0
-    tri = None
+    fallback = None
     for share in INNER_MESH_SHARES:
         BRepMesh_IncrementalMesh(face, share * size, False, 0.5, False)
         tri = BRep_Tool.Triangulation_s(face, TopLoc_Location())
-        if tri is not None and tri.NbTriangles() > 0 and tri.HasUVNodes():
-            break
-    else:
+        if tri is None or tri.NbTriangles() == 0 or not tri.HasUVNodes():
+            continue
+        sized = []
+        for k in range(1, tri.NbTriangles() + 1):
+            a, b, c = tri.Triangle(k).Get()
+            pa, pb, pc = tri.UVNode(a), tri.UVNode(b), tri.UVNode(c)
+            A = abs((pb.X() - pa.X()) * (pc.Y() - pa.Y()) - (pc.X() - pa.X()) * (pb.Y() - pa.Y()))
+            sized.append((-A, k, ((pa.X() + pb.X() + pc.X()) / 3.0, (pa.Y() + pb.Y() + pc.Y()) / 3.0)))
+        sized.sort()
+        if fallback is None:
+            fallback = sized[0][2]
+        for _a, _k, uv in sized[:INNER_TRIES]:
+            if BRepClass_FaceClassifier(face, gp_Pnt2d(*uv), 1e-9).State() == TopAbs_IN:
+                q = BRepAdaptor_Surface(face, False).Value(*uv)
+                return np.array([q.X(), q.Y(), q.Z()])
+    if fallback is None:
         return None
-    best, uv = -1.0, None
-    for k in range(1, tri.NbTriangles() + 1):
-        a, b, c = tri.Triangle(k).Get()
-        pa, pb, pc = tri.UVNode(a), tri.UVNode(b), tri.UVNode(c)
-        A = abs((pb.X() - pa.X()) * (pc.Y() - pa.Y()) - (pc.X() - pa.X()) * (pb.Y() - pa.Y()))
-        if A > best:
-            best, uv = A, ((pa.X() + pb.X() + pc.X()) / 3.0, (pa.Y() + pb.Y() + pc.Y()) / 3.0)
-    if uv is None:
-        return None
-    q = BRepAdaptor_Surface(face, False).Value(*uv)
+    q = BRepAdaptor_Surface(face, False).Value(*fallback)
     return np.array([q.X(), q.Y(), q.Z()])
 
 

@@ -384,3 +384,30 @@ def test_a_wall_cut_slantwise_runs_to_its_cut_face(tilt):
     rec, _ = ms.extract(sf.oblique_half_pipe(tilt_deg=tilt), mm_per_unit=1.0)
     assert rec["bodies"][0]["verdict"] == "shell"
     _all_checks(rec)
+
+
+@pytest.mark.parametrize("w", [120.0, 130.0])
+def test_a_spool_closes_whatever_its_plate_size(w):
+    rec, _ = ms.extract(sf.spool(w=w), mm_per_unit=1.0)
+    assert _sewn(rec)["open_edges"] == 0 and _sewn(rec)["join"] == "general"
+    _all_checks(rec)
+
+
+@pytest.mark.parametrize("normal_z", [1.0, -1.0])
+def test_a_hole_offset_inward_shrinks_whichever_way_its_plane_faces(normal_z):
+    # OCC's 2D offset takes its sign from how the wire runs against the plane's normal: a 20 mm hole asked to
+    # shrink by 10 once grew to 30. The region is checked, and offset the other way when it went wrong.
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.Geom import Geom_Plane
+    from OCP.GeomAbs import GeomAbs_Arc
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt
+
+    surf = Geom_Plane(gp_Pnt(-65, -65, 2), gp_Dir(0, 0, normal_z))
+    for z_dir in (1.0, -1.0):
+        circle = BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(gp_Pnt(0, 0, 2), gp_Dir(0, 0, z_dir)), 20.0)).Edge()
+        wire = BRepBuilderAPI_MakeWire(circle).Wire()
+        (shrunk,) = ms._offset_region(surf, wire, -10.0, GeomAbs_Arc)
+        assert ms._area(shrunk) == pytest.approx(math.pi * 100.0, rel=1e-6)
+        (grown,) = ms._offset_region(surf, wire, 10.0, GeomAbs_Arc)
+        assert ms._area(grown) == pytest.approx(math.pi * 900.0, rel=1e-6)
+        assert ms._offset_region(surf, wire, -25.0, GeomAbs_Arc) == []
