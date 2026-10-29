@@ -1271,3 +1271,43 @@ What refuses it is the READ. `Istream >> scalar` on a word is a FOAM FATAL ERROR
 when a field is read rather than when it is parsed - later than claimed, still before anything is
 solved, and all the mechanism needs. But the two are different claims and only one of them is
 true, so the wording is now the true one everywhere it appears.
+
+### The stretch does not save what the model says it saves
+
+Two runs of the same plan at the same cell size, differing only in the stretch along the channels:
+
+| stretch | estimate (margin off) | internal boxes BUILT | ratio |
+|---|---|---|---|
+| 3 | 271,705,176 | 336,223,062 | 1.24x |
+| 6 | 145,699,361 | 279,621,370 | 1.92x |
+
+`two_scale_estimate` divides the FINE band by the stretch factor and leaves the background and the
+broad band alone, which is right in principle and said so in its own comment ("The background is
+deliberately NOT divided ... that makes this an over-estimate, which is the safe direction"). It
+is not an over-estimate here. It is 1.24x to 1.92x UNDER, and it gets worse the more the cells are
+stretched, because the term it divides is not the one that dominates.
+
+Fitting the two measured points to A + B/S:
+
+    A + B/3 = 336,223,062       A = 223,000,000       the part no stretch touches
+    A + B/6 = 279,621,370       B = 339,600,000       the fine band at S = 1
+
+So about 223 MILLION CELLS OF THIS PART ARE NOT IN THE STRETCHED ZONE at this cell size, and no
+stretch reaches them. At S = 8 the whole mesh is still 265M; the floor is A. Stretching from 3 to
+6 - doubling it - took 17% off the box count, not half.
+
+WHAT THIS CHANGES. The earlier measurement that "scale > 1 stretches along the axis and the cell
+saving follows the factor" was taken on a 10 mm box whose every cell was inside the stretch zone,
+and it is true of that box. On the customer's plate the stretch zone is the microchannel field and
+the rest of the mesh - the manifold loop, the grading shells around it, the background filling the
+block - is the 223M. The factor is right about the cells it reaches and says nothing about how many
+of them there are.
+
+It also explains the earlier arithmetic that looked wrong: a stretch of 6 was planned at
+181,673,384 cells and died on the per-process octree ceiling at 231 s, which the ceiling explains
+on its own - but the plan it died on was already an estimate 1.9x under what it would have built.
+The configuration was never 181M. It was 280M.
+
+AND IT MEANS THE BOX MATTERS MORE, NOT LESS. 223M cells that no stretch can reach is, by the
+measurement two sections up, 80% metal - and most of THAT is air in the bounding box around the
+fittings. The term the model cannot divide is the term the box fix removes.

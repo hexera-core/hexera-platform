@@ -29,7 +29,12 @@ from meshpipeline.engines.cfmesh_conjugate import budget as B
 MiB = 1024 ** 2
 GiB = 1024 ** 3
 
-#: What the coupon actually did: ~6.5M cells, 570 MB compressed, against a 512 MiB ceiling.
+#: What the coupon actually did: ~6.5M cells, 570 MB compressed - reported against a 512 MiB
+#: ceiling, which turned out to be the WRONG ceiling. `return_scope` was pruning and refusing
+#: against `safe_extract`'s generic 512 MiB while the caller extracts a returned mesh under
+#: `result_extraction_limits`, which allowed 1,279 MiB once it read that mesh's cell count.
+#: Nothing was too big. `OLD_CAP` is kept here because it is the number the run quoted and the
+#: refusal's wording is still exercised through it; the DRIVER no longer uses it.
 COUPON_CELLS = 6_500_000
 OLD_CAP = 512 * MiB
 
@@ -48,12 +53,19 @@ def test_the_coupon_is_refused_at_the_ceiling_it_actually_hit():
     assert "6,500,000" in said
 
 
-def test_the_refusal_names_the_setting_and_not_the_part():
+def test_the_refusal_names_the_lever_that_moves_it_and_not_the_part():
     """It is a configuration to raise, not a geometry to redraw, and a customer told otherwise
-    goes and edits their CAD for nothing."""
+    goes and edits their CAD for nothing.
+
+    THE LEVER IS THE CELL BUDGET, not the generic archive ceiling, and the first version of this
+    named the wrong one. `result_extraction_limits` sizes a returned mesh's archive from
+    CELL_HARD_LIMIT and will not believe a cell count past twice it, so the generic
+    WORKSPACE_ARCHIVE_MAX_BYTES is a FLOOR under that and raising it moves nothing.
+    """
     said = B.refuse_for_return(COUPON_CELLS, cap_bytes=OLD_CAP)
-    assert "WORKSPACE_ARCHIVE_MAX_BYTES" in said
-    assert "WORKSPACE_ARCHIVE_MAX_TOTAL_BYTES" in said
+    assert "CELL_HARD_LIMIT" in said
+    assert "result_extraction_limits" in said
+    assert "only a floor" in said
     assert "The mesh would build" in said
 
 
@@ -109,11 +121,28 @@ def test_the_driver_refuses_before_it_meshes():
     assert src.index("refuse_for_return") < src.index("run_cartesian_mesh")
 
 
-def test_it_reads_the_extractor_s_own_limit_rather_than_a_copy():
+def test_it_reads_the_ceiling_the_caller_will_apply():
     """A second copy of 512 MiB in this engine is one that drifts from the extractor that enforces
-    it, and the extractor's is a setting."""
+    it - and worse, 512 MiB is not the ceiling the caller applies at all. A returned mesh is
+    extracted under `result_extraction_limits`, which sizes the archive from the cell budget and
+    from the mesh's own cell count."""
     from meshpipeline.engines.cfmesh_conjugate import driver as D
 
     src = inspect.getsource(D.drive)
-    assert "safe_extract" in src
-    assert "536870912" not in src and "512" not in src.split("refuse_for_return")[0][-400:]
+    assert "result_extraction_limits" in src
+    assert "default_limits" not in src, "the generic ceiling is a floor, not the bound"
+    assert "536870912" not in src
+
+
+def test_the_ceiling_it_uses_is_the_one_the_extractor_gives(monkeypatch):
+    """Apples to apples: the estimate is handed over as the cell count, because that is the number
+    the extractor will be given too."""
+    from meshpipeline.adapters.mesh_execution.cloud_run_client import result_extraction_limits
+
+    for cells in (6_707_503, 28_444_758):
+        cap = result_extraction_limits({"rc": 0, "quality": {"cells": cells}}).max_archive_bytes
+        assert B.refuse_for_return(cells, cap_bytes=cap) == "", (
+            f"{cells:,} came home under that ceiling")
+    for cells in (102_630_992, 336_666_582):
+        cap = result_extraction_limits({"rc": 0, "quality": {"cells": cells}}).max_archive_bytes
+        assert B.refuse_for_return(cells, cap_bytes=cap), f"{cells:,} cannot"

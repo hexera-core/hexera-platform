@@ -89,7 +89,10 @@ def run_engine_local(workspace: Any, *, engine: str, timeout: int) -> dict:
     # behind - a built mesh is never lost on the way back for a file the delivery can do without
     try:
         from meshpipeline.engines.return_scope import scope_return
-        scope = scope_return(workspace)
+        # THE RESULT TRAVELS WITH IT so the MEASURED cell count raises the ceiling: the mesher
+        # knows exactly how many cells it just wrote, and the extractor waiting for the archive
+        # will use that number too (result_extraction_limits).
+        scope = scope_return(workspace, result=out if isinstance(out, dict) else None)
     except Exception:  # noqa: BLE001 - trimming is an economy, never a reason to fail a run
         import logging
         logging.getLogger(__name__).warning("return scope failed; the workspace goes as it is",

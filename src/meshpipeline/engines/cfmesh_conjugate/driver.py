@@ -310,10 +310,20 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # and is then lost at the last step, which is exactly what the coupon plate did. Same shape as
     # the two checks above: priced from the estimate, refused before anything runs, and the reason
     # names the setting rather than blaming the part.
-    from meshpipeline.sandbox.safe_extract import default_limits as _extract_limits
+    # THE CEILING THE CALLER WILL ACTUALLY APPLY, not the generic one. A returned mesh is
+    # extracted under `result_extraction_limits`, which sizes the archive from the cell budget and
+    # from the mesh's own cell count - so comparing an estimate against safe_extract's 512 MiB
+    # floor refuses meshes the caller would take. Measured 2026-10-29: the coupon plate's archive
+    # was 570 MB and the extractor waiting for it allowed 1,279 MiB.
+    #
+    # The estimate is handed over as the cell count, because that is the number the extractor will
+    # be given too - and `result_extraction_limits` bounds what it will believe at twice
+    # CELL_HARD_LIMIT, which is why a 100M-cell mesh is still refused on an 8M budget. That bound
+    # is the real lever and the refusal names it.
+    from meshpipeline.adapters.mesh_execution.cloud_run_client import result_extraction_limits
 
-    return_said = B.refuse_for_return(estimate,
-                                      cap_bytes=_extract_limits().max_archive_bytes)
+    _cap = result_extraction_limits({"rc": 0, "quality": {"cells": int(estimate)}})
+    return_said = B.refuse_for_return(estimate, cap_bytes=_cap.max_archive_bytes)
     if return_said:
         logger.info("conjugate: refusing to start - %s - job_id=%s", return_said, job_id)
         await run.fence("deliver builder outcome")

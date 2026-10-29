@@ -304,9 +304,10 @@ def refuse_for_return(cells: int, *, cap_bytes: int) -> str:
         return ""
     return (f"this mesh cannot be sent home: about {int(cells):,} cells is roughly {want:.1f} GiB "
             f"of archive against a {cap:.1f} GiB ceiling. The mesh would build; it is the journey "
-            "back that does not fit. Raise WORKSPACE_ARCHIVE_MAX_BYTES (and "
-            "WORKSPACE_ARCHIVE_MAX_TOTAL_BYTES with it) for a deployment that means to carry "
-            "meshes this size.")
+            "back that does not fit. That ceiling is CELL_HARD_LIMIT's worth of mesh "
+            "(adapters/mesh_execution/cloud_run_client.result_extraction_limits sizes it from the "
+            "budget, and will not believe a cell count past twice it), so the budget is what "
+            "moves it - not the generic archive ceiling, which is only a floor under this.")
 
 
 def peak_gib(cells: int) -> float:
@@ -481,8 +482,28 @@ def two_scale_estimate(*, block_lo, block_hi, broad_cell_m: float, broad_area_m2
     geometry is prismatic along, and it divides that region's band exactly. A band is an area
     divided by a cell's cross-section: making the cell S times taller along one axis of that area
     means S times fewer of them cover it. The background is deliberately NOT divided even though
-    the cells inside the stretch box are taller too - that makes this an over-estimate, which is
-    the safe direction for a number that chooses a machine.
+    the cells inside the stretch box are taller too.
+
+    AND THAT IS NOT AN OVER-ESTIMATE, which is what this said. Measured on the customer plate,
+    2026-10-29, two runs of one plan differing only in the stretch:
+
+        stretch 3   estimate 271,705,176   BUILT 336,223,062   1.24x under
+        stretch 6   estimate 145,699,361   BUILT 279,621,370   1.92x under
+
+    Fitting A + B/S to those gives A = 223 million - the cells no stretch reaches, the manifold
+    loop and its grading shells and the background filling the block - against a fine band of 339
+    million at S = 1. So the term this divides is not the term that dominates, the error grows
+    with the stretch, and it leans the UNSAFE way: a plan sized here at 146M built 280M, which is
+    past one process's octree ceiling.
+
+    The earlier bench measurement that the saving follows the factor was taken on a 10 mm box
+    whose every cell was inside the stretch zone. It is true of that box. The factor is right
+    about the cells it reaches and says nothing about how many of the mesh's cells those are.
+
+    NOT CORRECTED HERE YET, because the correction is a second measured term (how much of the
+    block the stretch zone actually covers) and not a fudge on this one - and because the 223M it
+    would have to predict is mostly air in the bounding box, which is a thing to remove rather
+    than to estimate better.
     """
     if min(broad_cell_m, fine_cell_m, background_m) <= 0.0:
         raise ValueError("every cell size in a two-scale plan has to be positive")

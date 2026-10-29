@@ -5,7 +5,9 @@
 """WHAT RIDES HOME WITH THE MESH.
 
 The mesher's workspace goes back to the caller as one gzip archive, and the caller extracts it
-through the bounded extractor (sandbox/safe_extract), whose generic ceiling is 512 MiB. Twelve
+through the bounded extractor, under `cloud_run_client.result_extraction_limits`: the generic
+512 MiB of sandbox/safe_extract is a FLOOR under that, and the bound is the cell budget's worth
+(800 MB at the default 8 M) or the measured mesh's, whichever is larger. See archive_ceiling. Twelve
 dev-side runs of the verify-5fix sweep built their mesh and then lost it on the way back - 550 MB
 to 1,005 MB archives, "archive is ... bytes, over the 536870912 cap" - the fclib spray-can nozzle
 among them. The heaviest thing in such a workspace after the polyMesh itself is the VOLUME export
@@ -65,12 +67,37 @@ def raw_bytes(workspace) -> int:
     return sum(p.stat().st_size for p in Path(workspace).rglob("*") if p.is_file())
 
 
-def archive_ceiling() -> int:
-    from meshpipeline.sandbox.safe_extract import default_limits
-    return int(default_limits().max_archive_bytes)
+def archive_ceiling(result: dict | None = None) -> int:
+    """The ceiling the CALLER will extract this archive under, which is the only one that matters.
+
+    NOT `default_limits()`, which is what this read until it was measured. The caller extracts a
+    returned mesh with `cloud_run_client.result_extraction_limits` - "a returned mesh workspace may
+    be as large as a mesh the cell budget allows" - which is CELL_HARD_LIMIT cells at
+    RESULT_BYTES_PER_CELL (800 MB at the default 8 M), and more again when the result document says
+    how many cells the mesh HAS (RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL, 200 a cell). The generic
+    512 MiB is a floor under those, not the bound.
+
+    So this was pruning - and then refusing - against a number three times smaller than the one it
+    was keeping the archive inside of. Measured on 2026-10-29: the coupon plate's conjugate mesh
+    gave up its volume export (725 MB) and still reported
+
+        the workspace is still about 570 MB compressed, over the 512 MiB ceiling, with nothing
+        optional left to leave out
+
+    while the extractor waiting for it would have taken 800 MB on the budget alone and 1.34 GB
+    once it read the mesh's 6.7 M cells. Nothing was too big. The same two labs in this module's
+    own header - a 557 MB snappy passage and a 560 MB aorta - are why
+    `result_extraction_limits` exists at all, and this never asked it.
+
+    `result` is the engine's own result dict when the caller has one, so the MEASURED cell count
+    counts: the mesher knows exactly how many cells it just wrote.
+    """
+    from meshpipeline.adapters.mesh_execution.cloud_run_client import result_extraction_limits
+    return int(result_extraction_limits(result).max_archive_bytes)
 
 
-def scope_return(workspace, *, ceiling: int | None = None) -> dict | None:
+def scope_return(workspace, *, ceiling: int | None = None,
+                 result: dict | None = None) -> dict | None:
     """Trim the workspace a mesh run returns (see the module text). Returns the record of what
     was left out, or None when nothing was."""
     import shutil
@@ -83,7 +110,7 @@ def scope_return(workspace, *, ceiling: int | None = None) -> dict | None:
         if d.is_dir():
             shutil.rmtree(d, ignore_errors=True)
             removed.append(name + "/")
-    cap = int(ceiling if ceiling is not None else archive_ceiling())
+    cap = int(ceiling if ceiling is not None else archive_ceiling(result))
     left_out: list[dict] = []
     # a workspace whose raw bytes fit can never compress past the ceiling: nothing to measure.
     # One that does not is measured file by file (about a minute for a few GB of mesh files).
