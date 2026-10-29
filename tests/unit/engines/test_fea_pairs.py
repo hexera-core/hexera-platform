@@ -329,7 +329,9 @@ def test_each_pairs_type_reaches_every_solver_file(tmp_path, monkeypatch):
     ws = _stage_ws(fx.welded_and_bolted(), tmp_path / "wb")
     q = _drive(ws, monkeypatch, fea_connection="bonded", fea_pairs={"Part_1|Part_3": {"type": "contact"}})
     inp = (ws / "mesh.inp").read_text()
-    ties = re.findall(r"\*TIE, NAME=(\w+)\n(\w+), (\w+)", inp)
+    # the tie as settled (PLAN-fea-18): tolerance and ADJUST=NO on the card, the tied slave nodes as <slave>_Tied
+    ties = [(n, s.removesuffix("_Tied"), m)
+            for n, s, m in re.findall(r"^\*TIE, NAME=(\w+)[^\n]*ADJUST=NO\n(\w+), (\w+)", inp, flags=re.M)]
     contacts = re.findall(r"\*CONTACT PAIR, INTERACTION=\w+, TYPE=SURFACE TO SURFACE\n(\w+), (\w+)", inp)
     assert len(ties) == 1 and len(contacts) == 1
     assert {"Part_1", "Part_2"} == {re.search(r"_(Part_\d+)$", s).group(1) for s in ties[0][1:]}
@@ -387,7 +389,9 @@ def test_a_bonded_pair_the_mesh_leaves_open_is_named_in_red_never_a_clean_pass(t
     assert opened["parts"] == ["Part_1", "Part_2"] or opened["parts"] == ["Part_2", "Part_1"]
     assert opened["reach_from"] == "set" and opened["needed_m"] == pytest.approx(2e-4, rel=0.05)
     assert opened["tied_share"] == 0.0 and opened["faces"]
-    assert "POSITION TOLERANCE=" in (ws / "mesh.inp").read_text()
+    # the tie writer (settle_ties, PLAN-fea-18) writes no *TIE for a tie with no node in reach: it says so
+    deck = (ws / "mesh.inp").read_text()
+    assert not re.search(r"^\*TIE,", deck, flags=re.M) and "nothing to tie" in deck
     out = fea_results.results(ws)
     assert out["check"]["outcome"] != "pass"
     row = next(r for r in out["check"]["rows"] if r["key"] == "fea_open_bonded_pairs")

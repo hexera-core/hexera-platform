@@ -944,8 +944,10 @@ def _segment(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.linalg.norm(p - (a + t[..., None] * ab), axis=-1)
 
 
-def _point_triangle(p: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray) -> np.ndarray:
-    """The exact distance from each point to its triangle (all arrays (..., 3))."""
+def _point_triangle_exact(p: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray) -> np.ndarray:
+    """The exact distance from each point to its triangle, edges and corners included (all arrays
+    (..., 3)): the open-pair check's measure. settle_ties uses _point_triangle, which counts a node
+    only over a facet (never beside the rim)."""
     n = np.cross(b - a, c - a)
     mag = np.linalg.norm(n, axis=-1)
     nh = n / np.maximum(mag, 1e-300)[..., None]
@@ -973,7 +975,7 @@ def _nearest(points: np.ndarray, facets: np.ndarray) -> np.ndarray:
         _d, idx = tree.query(pts, k=k)
         idx = np.asarray(idx).reshape(len(pts), k)
         t = facets[idx]                                                   # (n, k, 3, 3)
-        d = _point_triangle(pts[:, None, :], t[:, :, 0], t[:, :, 1], t[:, :, 2])
+        d = _point_triangle_exact(pts[:, None, :], t[:, :, 0], t[:, :, 1], t[:, :, 2])
         out[s:s + _CHUNK] = d.min(axis=1)
     return out
 
