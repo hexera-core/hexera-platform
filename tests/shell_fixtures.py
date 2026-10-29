@@ -7,7 +7,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from tests.fea_fixtures import _box, _cut, _cyl, _fuse, _unify
+from tests.fea_fixtures import _box, _cut, _cyl, _edges_where, _fillet, _fuse, _unify
 
 
 def write_step(shape, path: Path | str) -> Path:
@@ -62,17 +62,21 @@ def tube(r_out: float = 25.0, t: float = 2.0, length: float = 200.0):
     return _cut(_cyl(0, 0, 0, r_out, length), _cyl(0, 0, -1, r_out - t, length + 2))
 
 
-def bent_bracket(t: float = 2.0, r: float = 3.0, a: float = 60.0, b: float = 40.0, width: float = 50.0):
+def bent_bracket(t: float = 2.0, r: float = 3.0, a: float = 60.0, b: float = 40.0, width: float = 50.0,
+                 outer_r: float | None = None):
     """A sheet-metal angle: a `t` thick sheet bent 90 degrees at inside radius `r`, flanges `a` (along x)
     and `b` (along z) long outside the bend, `width` deep along y. Mid-surface: two planes and the
-    quarter cylinder of radius r + t/2 between them, meeting tangentially."""
+    quarter cylinder of radius r + t/2 between them, meeting tangentially. `outer_r`: the outside radius when
+    the bend is NOT concentric (a CAD model rounding both corners alike: outer_r = r puts the outside arc's
+    centre t off the inside one's along each flange, the wall t at the flanges and t * sqrt(2) mid-bend)."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
     from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
     from OCP.GC import GC_MakeArcOfCircle
     from OCP.gp import gp_Pnt, gp_Vec
 
-    ro = r + t
-    c = (r + t, r + t)          # the bend's centre in (x, z)
+    ro = r + t if outer_r is None else outer_r
+    c = (r + t, r + t)          # the inside arc's centre in (x, z)
+    co = (ro, ro)               # the outside arc's (the same point when concentric)
     s2 = math.sqrt(0.5)
 
     def P(x, z):
@@ -81,11 +85,11 @@ def bent_bracket(t: float = 2.0, r: float = 3.0, a: float = 60.0, b: float = 40.
     # profile in the xz plane: the horizontal flange runs along +x at z 0..t, the upright along +z at x 0..t
     pts = {
         "h_out_end": P(c[0] + a, 0), "h_in_end": P(c[0] + a, t),
-        "bend_out_h": P(c[0], 0), "bend_in_h": P(c[0], t),
-        "bend_out_v": P(0, c[1]), "bend_in_v": P(t, c[1]),
+        "bend_out_h": P(co[0], 0), "bend_in_h": P(c[0], t),
+        "bend_out_v": P(0, co[1]), "bend_in_v": P(t, c[1]),
         "v_out_end": P(0, c[1] + b), "v_in_end": P(t, c[1] + b),
     }
-    arc_out = GC_MakeArcOfCircle(pts["bend_out_h"], P(c[0] - ro * s2, c[1] - ro * s2), pts["bend_out_v"]).Value()
+    arc_out = GC_MakeArcOfCircle(pts["bend_out_h"], P(co[0] - ro * s2, co[1] - ro * s2), pts["bend_out_v"]).Value()
     arc_in = GC_MakeArcOfCircle(pts["bend_in_v"], P(c[0] - r * s2, c[1] - r * s2), pts["bend_in_h"]).Value()
     E = BRepBuilderAPI_MakeEdge
     edges = [E(pts["h_in_end"], pts["h_out_end"]).Edge(), E(pts["h_out_end"], pts["bend_out_h"]).Edge(),
@@ -421,3 +425,17 @@ def twisted_strap(w: float = 20.0, t: float = 1.27, length: float = 40.0, turn: 
         far = BRepBuilderAPI_Transform(_box(-w / 2, length, -t / 2, w, flats, t), tr, True).Shape()
         s = _unify(_fuse(_fuse(s, _box(-w / 2, -flats, -t / 2, w, flats, t)), far))
     return s
+
+
+def rounded_tube(w: float = 180.0, t: float = 1.0, r: float = 5.0, outer_r: float | None = None,
+                 length: float = 90.0):
+    """A square tube `w` wide outside, `t` thick, `length` long (along z), its corners rounded inside at `r` and
+    outside at `outer_r` (default `r`: both alike, as a CAD model that rounds a box's edges and shells it gives,
+    so the corners are NOT concentric - the wall t at the flats and about t * sqrt(2) mid-corner)."""
+    ro = r if outer_r is None else outer_r
+
+    def upright(x0, y0, dx, dy, z0, dz, rad):
+        b = _box(x0, y0, z0, dx, dy, dz)
+        return _fillet(b, _edges_where(b, lambda bb: bb[5] - bb[2] > 0.5 * dz), rad)
+
+    return _unify(_cut(upright(0, 0, w, w, 0, length, ro), upright(t, t, w - 2 * t, w - 2 * t, -1, length + 2, r)))

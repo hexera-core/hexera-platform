@@ -2101,7 +2101,7 @@ def _inner_point(face):
 
 
 def join_body(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float, fuzzy: float,
-              remake: bool = True):
+              remake: bool = True, patch_alone: bool = True):
     """SHELL-3 v2 for one body: (the fused shape, the kept faces, each kept face's mid-face index into `mine`,
     for each mid-face the extensions it kept as [(other mid index or None, area)])."""
     from OCP.BOPAlgo import BOPAlgo_Builder
@@ -2123,7 +2123,7 @@ def join_body(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float
         # the fuse does not merge with the mid-face's own: both in the fuse were the same wall twice (a twisted
         # strap held 29% more metal than it has). The patch alone goes in; its pieces inside the mid-face are the
         # mid-face's own (read by geometry below).
-        if g is not None and isinstance(_BT.Surface_s(m.original), FREE_FORM):
+        if patch_alone and g is not None and isinstance(_BT.Surface_s(m.original), FREE_FORM):
             continue
         b.AddArgument(m.original)
     for g in grown:
@@ -2346,6 +2346,84 @@ STEP_PARALLEL_DEG = 1.0
 STEP_TOUCH = 0.5
 
 
+
+#: SHELL-10, A FITTED MID-FACE BRIDGED TO THE MID-FACE IT CONTINUES: a bend whose outside is not concentric with its
+#: inside (a CAD model that rounds both corners of a sheet alike) is a tapered wall, and its fitted mid-face ends
+#: where its two faces stop facing each other - short of its flanges' mid-faces, which run on almost tangent to
+#: it, so neither extension nor the general fuse meets them. A free edge of a fitted mid-face that runs alongside
+#: a free edge of another mid-face of the body - every one of BRIDGE_SAMPLES + 1 points of each edge within
+#: BRIDGE_WALLS of the thicker wall of the other edge, the two edges apart by more than the sewing tolerance, and
+#: the strip between them inside the material - is joined to it by the ruled strip between the two edges, a part
+#: of the fitted mid-face.
+BRIDGE_WALLS = 1.0
+BRIDGE_SAMPLES = 4
+
+
+def _free_edges(face, others: list, tol: float) -> list:
+    """The edges of a face that no other face (in `others`) lies along (its middle point further than tol)."""
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopoDS import TopoDS
+
+    emap = _map(face, TopAbs_EDGE)
+    out = []
+    for i in range(1, emap.Extent() + 1):
+        e = TopoDS.Edge_s(emap.FindKey(i))
+        if _length(e) <= tol:
+            continue
+        mid = _vertex(_edge_points(e, 2)[1])
+        if not any(_dist(mid, o) <= tol for o in others):
+            out.append(e)
+    return out
+
+
+def bridges(mine: list[_Mid], solid: _Solid, fuzzy: float) -> list[tuple[int, int, object]]:
+    """SHELL-10: the ruled strips joining fitted mid-faces to the mid-faces they continue: [(fitted mid index,
+    other mid index, strip face)]."""
+    from OCP.BRepFill import BRepFill
+    from OCP.TopoDS import TopoDS
+
+    out: list[tuple[int, int, object]] = []
+    if not any(m.fitted for m in mine):
+        return out
+    faces = [m.face for m in mine]
+    tol = 10.0 * fuzzy
+    free = [_free_edges(f, faces[:i] + faces[i + 1:], tol) for i, f in enumerate(faces)]
+    used: set[tuple[int, int, int, int]] = set()
+    for i, m in enumerate(mine):
+        if not m.fitted:
+            continue
+        for a, ea in enumerate(free[i]):
+            pa = _edge_points(ea, BRIDGE_SAMPLES)
+            for j, o in enumerate(mine):
+                if j == i:
+                    continue
+                reach = BRIDGE_WALLS * max(m.t_max, o.t_max)
+                for b, eb in enumerate(free[j]):
+                    key = (min(i, j), a if i < j else b, max(i, j), b if i < j else a)
+                    if key in used:
+                        continue
+                    pb = _edge_points(eb, BRIDGE_SAMPLES)
+                    gaps = [_dist(_vertex(x), eb) for x in pa] + [_dist(_vertex(x), ea) for x in pb]
+                    if max(gaps) > reach or max(gaps) <= tol:
+                        continue
+                    # the strip between them, its middle in the material
+                    flip = (np.linalg.norm(pa[0] - pb[0]) + np.linalg.norm(pa[-1] - pb[-1])
+                            > np.linalg.norm(pa[0] - pb[-1]) + np.linalg.norm(pa[-1] - pb[0]))
+                    mids = [0.5 * (x + y) for x, y in zip(pa, pb[::-1] if flip else pb, strict=True)]
+                    if not all(solid.inside(x) for x in mids[1:-1]):
+                        continue
+                    try:
+                        strip = BRepFill.Face_s(ea, TopoDS.Edge_s(eb.Reversed()) if flip else eb)
+                    except Exception as exc:  # noqa: BLE001 - no strip, the edge stays open
+                        logger.debug("shell: no strip between Mid_%d and Mid_%d (%s)", m.k + 1, o.k + 1, exc)
+                        continue
+                    if strip.IsNull() or _area(strip) <= tol * _length(ea):
+                        continue
+                    used.add(key)
+                    out.append((i, j, strip))
+    return out
+
+
 def _join_straight(mine: list[_Mid], solid: _Solid, fuzzy: float, notes: list[str], body: str):
     """The straight-edge extension (extend) and a plain sew: (fused shape, each mid-face's faces in it)."""
     for m in mine:
@@ -2357,16 +2435,28 @@ def _join_straight(mine: list[_Mid], solid: _Solid, fuzzy: float, notes: list[st
     if len(mine) == 1:
         return _compound([mine[0].face]), [[mine[0].face]]
     try:
-        return sew([m.face for m in mine], fuzzy)
+        strips = bridges(mine, solid, fuzzy)
+    except Exception as exc:  # noqa: BLE001 - no strips, the edges stay as they are
+        logger.debug("shell: the fitted mid-faces could not be bridged on %s (%s)", body, exc)
+        strips = []
+    for i, j, strip in strips:
+        mine[i].extended.append({"to": mine[j].k, "area": _area(strip)})
+    try:
+        fused, images = sew([m.face for m in mine] + [f for _i, _j, f in strips], fuzzy)
     except ValueError as exc:
         notes.append(f"{body}: {exc}.")
         return _compound([m.face for m in mine]), [[m.face] for m in mine]
+    out = [list(images[i]) for i in range(len(mine))]
+    for n, (i, _j, _f) in enumerate(strips):
+        out[i] += images[len(mine) + n]
+    return fused, out
 
 
 def _join_general(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float, fuzzy: float,
-                  remake: bool = True):
+                  remake: bool = True, patch_alone: bool = True):
     """The general join (join_body) and one more sew of what it kept: (fused shape, each mid-face's faces)."""
-    fused, kept, owner_i, reached = join_body(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy, remake=remake)
+    fused, kept, owner_i, reached = join_body(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy, remake=remake,
+                                              patch_alone=patch_alone)
     for i, m in enumerate(mine):
         for other, area in reached[i]:
             m.extended.append({"to": None if other is None else mine[other].k, "area": area})
@@ -2644,15 +2734,21 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
             from OCP.Geom import Geom_OffsetSurface
 
             offsets = any(m.remade or isinstance(BRep_Tool.Surface_s(m.original), Geom_OffsetSurface) for m in mine)
+            # a free-form mid-face's grown patch goes in alone (a twisted strap's wall was there twice with both),
+            # and also with the mid-face beside it, as alone can leave a re-made offset wall's junctions open that
+            # both close (a cyclone): the one leaving fewer open edges is kept, on a tie the alone one
+            free = any(isinstance(BRep_Tool.Surface_s(m.original), FREE_FORM) for m in mine)
             core = sum(_area(m.true_face) for m in mine)
             ext_general: list = []
-            for remake in ((True, False) if offsets else (True,)):
+            for remake, alone in [(r, a) for r in ((True, False) if offsets else (True,))
+                                  for a in ((True, False) if free else (True,))]:
                 if method == "general" and census["open_edges"] == 0:
                     break
                 for m in mine:
                     m.extended = []
                 try:
-                    general = _join_general(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy, remake=remake)
+                    general = _join_general(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy, remake=remake,
+                                            patch_alone=alone)
                     census_g = census_of(*general)
                 except Exception as exc:  # noqa: BLE001 - the straight join stands
                     logger.debug("shell: the general join failed on %s (%s)", body_names[b], exc)

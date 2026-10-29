@@ -682,3 +682,23 @@ def test_variable_walls_read_the_same_twice():
     a.pop("seconds")
     b.pop("seconds")
     assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
+# -------------------------------------------------------- bends not concentric (SHELL-10, bridged) ----
+@pytest.mark.parametrize("make", [lambda: sf.rounded_tube(), lambda: sf.bent_bracket(t=1.0, r=5.0, outer_r=5.0),
+                                  lambda: sf.rounded_tube(t=1.5, r=10.0)])
+def test_a_bend_whose_outside_is_not_concentric_sews_to_its_flanges(make, monkeypatch):
+    # the bend's faces are not an even pair: its fitted mid-face ends where they stop facing each other, short of
+    # the flanges' mid-planes running on almost tangent to it; a ruled strip carries it to them. The general join
+    # sometimes closes these too (not on a fan housing's 1 mm duct, sh0021): the straight join must on its own
+    def no_general(*_a, **_k):
+        raise RuntimeError("the general join is off in this test")
+
+    monkeypatch.setattr(ms, "_join_general", no_general)
+    rec, _ = ms.extract(make(), mm_per_unit=1.0)
+    _all_checks(rec)
+    assert rec["bodies"][0]["verdict"] == "shell"
+    assert any(m.get("fitted") for m in _shell_mids(rec))
+    assert _sewn(rec)["open_edges"] == 0
+    assert rec["bodies"][0]["mid_volume_ratio"] == pytest.approx(1.0, abs=0.02)
+

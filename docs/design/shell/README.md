@@ -133,6 +133,7 @@ Each junction type:
 - **Cut-outs and holes:** the overlap keeps them. Their edges are real free edges (the outside lies just past them). Holes smaller than about one element are named for defeaturing later. They are never filled silently.
 - **Fillets and chamfers:** up to 2 walls, absorbed (blend role). Larger rounds with an even wall are their own sheet (a sheet-metal bend). Others are solid and named.
 - **Tapers:** fitted mid-faces (section 2.2.1), joined like any other mid-face.
+- **Bends whose outside is not concentric (SHELL-10, 29 Oct).** A CAD model that rounds both corners of a sheet alike (inside and outside radius the same) gives a bend whose wall is t at the flanges and about t x 1.41 mid-bend: a tapered wall. Its fitted mid-face ends where its two faces stop facing each other, short of the flanges' mid-planes, which run on almost tangent to it, so neither the extension nor the general fuse meets them (a fan housing's 1 mm duct, sh0021 Part_33: 16 open edges). The rule: a free edge of a fitted mid-face that runs alongside a free edge of another mid-face of the body - every one of 5 points along each edge within one wall (the thicker) of the other edge, further apart than the sewing tolerance, the strip between them in the material - is joined to it by the ruled strip between the two edges, which is part of the fitted mid-face. Part_33: 0 open edges, volume 1.002.
 - **Cylinder ends on plates (tube frames, nozzles):** PR 3. The same rule, with the cylinder carried along its axis to the target and cut by it.
 
 ### 2.4 Sewing (SHELL-4)
@@ -150,7 +151,7 @@ The result is a conformal shell: shared nodes along every junction once meshed.
 - Inside-or-outside: a point well clear of the skin is told by the body's own closed triangulation (three rays that must agree). Near the skin, the exact classifier answers.
 - Faces that cannot touch are fused apart. The part's own faces go into the general join as one argument, so they are not intersected with each other.
 - Readers are built once per face (projectors, surface analysers), and each point's inside state is kept.
-- **A free-form mid-face's grown patch goes into the general join alone** (29 Oct). The patch is the mid-face's parameter box widened, so it lies over the mid-face itself, on a surface the fuse does not merge with the mid-face's own. With both in, the wall was there twice: a twisted strap held 29% more metal than it has, and its join left 4 open edges. Its pieces inside the mid-face are the mid-face's own, read by geometry.
+- **A free-form mid-face's grown patch goes into the general join alone** (29 Oct). The patch is the mid-face's parameter box widened, so it lies over the mid-face itself, on a surface the fuse does not merge with the mid-face's own. With both in, the wall was there twice: a twisted strap held 29% more metal than it has, and its join left 4 open edges. Its pieces inside the mid-face are the mid-face's own, read by geometry. The general join is also run with the mid-face in beside its patch, and the one leaving fewer open edges is kept (on a tie, the patch alone): on a cyclone of re-made offset walls (sh0011) the patch alone left 29 open edges where both left 5.
 
 ### 2.5 Assemblies and mixed parts (PR 3)
 
