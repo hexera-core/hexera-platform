@@ -967,12 +967,18 @@ def staged_tags(gmsh, sidecar: dict) -> tuple[dict[int, int], dict[int, int]]:
 def assembly_summary(asm: dict, sidecar: dict, prep) -> dict:
     """What the delivery says of an assembly: how the parts are joined, each part with its element
     count, every joint as written, and the notes."""
+    choices = [c for c in sidecar.get("joints") or [] if isinstance(c, dict)]
     return {"connection": asm.get("connection"), "mode": sidecar.get("mode"),
             "parts": [{"id": p["id"], "name": p["name"], "elements": p["last"] - p["first"] + 1} for p in prep.parts],
             "joints": [{"name": j.name, "kind": j.kind, "parts": [f"Part_{j.parts[0]}", f"Part_{j.parts[1]}"],
                         "slave": j.sides[0].name, "master": j.sides[1].name, "overlap": j.overlap,
+                        **({"pair": j.pair} if j.pair else {}),
                         **({"reach_m": j.reach} if j.reach else {})}
                        for j in prep.joints],
+            # PLAN-fea-19/20: every pair's type and every overlap's owner, as staged, with the reason
+            "pairs": [{k: c.get(k) for k in ("key", "parts", "kind", "type", "source", "why", "keep", "keep_source",
+                                             "keep_why", "reach_mm") if c.get(k) is not None} for c in choices],
+            "joint_counts": dict(sidecar.get("joint_counts") or {}),
             # a part with no elements of its own: wholly inside another, so fused with it (bonded)
             "absorbed": [p["id"] for p in sidecar.get("parts") or []
                          if p["id"] not in {q["id"] for q in prep.parts}],
@@ -1569,6 +1575,19 @@ def _mesh(workspace) -> int:
             deck = written["deck"]
             exports = {"nastran": written["nastran"], "ansys": written["ansys"]}
             assembly_out = assembly_summary(asm, sidecar, prep)
+            # PLAN-fea-21: every bonded pair meshed apart has mesh nodes within its reach, face by face -
+            # an OPEN bonded pair is named on the result, never a quiet pass
+            try:
+                checked = AD.open_joints(prep)
+            except Exception as exc:  # noqa: BLE001 - unmeasured is said, never taken as closed
+                print(f"[GMSH-FEA] the bonded pairs' reach was not checked: {exc}", file=sys.stderr)
+                checked = {"checked": None, "closed": None, "open": [], "error": f"{type(exc).__name__}: {exc}"[:300]}
+            assembly_out["bonded_check"] = {k: v for k, v in checked.items() if k != "open"}
+            assembly_out["open_bonded"] = checked["open"]
+            if checked["open"]:
+                print("[GMSH-FEA] OPEN BONDED PAIR(S) (PLAN-fea-21): "
+                      + "; ".join(f"{o['name']} ({o['parts'][0]}-{o['parts'][1]})" for o in checked["open"][:10]),
+                      file=sys.stderr)
             # the viewer's clickable faces: each name and the mesh surfaces that carry it
             assembly_out["face_tags"] = {k: sorted(set(v)) for k, v in (face_tags or {}).items()}
         else:

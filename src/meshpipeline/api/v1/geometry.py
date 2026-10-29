@@ -149,6 +149,13 @@ class ConfirmIn(BaseModel):
     close_leaks_mm: float | None = Field(default=None, ge=0)
     #: SET BY THE SERVER with `close_leaks_mm`: what the switch decided, in words.
     leaks_summary: str = ""
+    #: PLAN-fea-19/20: the stage's choices for single pairs - by pair key ("Part_1|Part_3") or as rows -
+    #: each {"type": bonded|contact|off, "keep": Part_k (an overlap), "reach_mm"}. Checked by the
+    #: server and kept only where it differs from the rule; read into the run from the stored
+    #: confirmation (application/fea_check.confirmed_pairs).
+    fea_pairs: dict | list | None = None
+    #: SET BY THE SERVER for an FEA assembly: the pairs the user set, in words.
+    pairs_summary: str = ""
 
     @field_validator("extents")
     @classmethod
@@ -587,9 +594,14 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         gaps = list((asm or {}).get("gap_joins") or [])
         gap_on = fea_check.gap_joins_answer(body.fea_gap_joins) if body.fea_gap_joins is not None \
             else fea_check.DEFAULT_GAP_JOINS
+        # PLAN-fea-19/20: the single pairs the user set, kept where they differ from the rule
+        pair_changes = fea_check.pairs_answer(body.fea_pairs, asm, connection=connection or fea_check.DEFAULT_CONNECTION,
+                                              gap_joins=gap_on) if asm else {}
         body = body.model_copy(update={
             "fea_connection": connection,
             "parts_summary": fea_check.parts_words(asm) if asm else "",
+            "fea_pairs": pair_changes or None,
+            "pairs_summary": fea_check.pairs_summary(pair_changes, asm),
             "fea_gap_joins": gap_on if gaps else None,
             "gap_summary": (("Joined across small gaps: " if gap_on else "Left open (small gaps not joined): ")
                             + "; ".join(g["words"].split(" - ")[0] for g in gaps[:8])

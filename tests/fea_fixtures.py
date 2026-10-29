@@ -531,3 +531,35 @@ def anchorage(skin: bool = True):
     bolts = [_fuse(_cyl(0, y, -8, r_shank, 13), _cyl(0, y, 5, 4.0, 2.5)) for y in ys]
     del TopAbs_SHELL, TopoDS
     return _compound(bar, *bosses, *brackets, *bolts)
+
+
+# ------------------------------------------------------------------- PLAN-fea-19/20/21 ----
+def welded_and_bolted():
+    """A base plate (Part_1: 60 x 20 x 5 mm) with two 20 x 20 x 10 mm blocks standing on it: Part_2
+    at x 0..20 (welded: bonded) and Part_3 at x 40..60 (bolted: a contact pair) - one part half welded
+    and half bolted, the case one whole-assembly answer cannot say."""
+    return _compound(_box(0, 0, 0, 60, 20, 5), _box(0, 0, 5, 20, 20, 10), _box(40, 0, 5, 20, 20, 10))
+
+
+#: THE PIN IN ITS BRACKET (PLAN-fea-20): a 5 mm pin drawn into a 4 mm hole (a 1 mm ring of interference,
+#: wide enough to mesh coarsely and to tell who kept it).
+PIN = {"r_hole": 4.0, "r_pin": 5.0, "length": 20.0, "plate": (30.0, 30.0, 10.0)}
+
+
+def pin_in_bracket():
+    """Part_1 the bracket (30 x 30 x 10 mm, a 4 mm hole through it), Part_2 the pin (5 mm, 20 mm long,
+    standing 5 mm out each side): they pass into each other over a 1 mm ring. The pin is the smaller
+    body and the higher-numbered one - so the file's order would give the ring to the bracket."""
+    w, d, h = PIN["plate"]
+    bracket = _cut(_box(0, 0, 0, w, d, h), _cyl(w / 2, d / 2, -1, PIN["r_hole"], h + 2))
+    pin = _cyl(w / 2, d / 2, -5, PIN["r_pin"], PIN["length"])
+    return _compound(bracket, pin)
+
+
+def off_and_bonded_blocks(size: float = 100.0):
+    """Three blocks of `size` mm: Part_1 = A, a cube at the origin; Part_2 = B, a cube beside it along x
+    (they touch over x = size); Part_3 = C on top of A along y (they touch over y = size), 0.9 of A's
+    length - so C stops a tenth of the size short of B and never meets it, not even along an edge (parts
+    meeting along a line are joined too, PLAN-fea-18)."""
+    return _compound(_box(0, 0, 0, size, size, size), _box(size, 0, 0, size, size, size),
+                     _box(0, size, 0, 0.9 * size, size, size))
