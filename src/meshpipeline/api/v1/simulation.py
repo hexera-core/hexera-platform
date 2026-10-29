@@ -434,6 +434,48 @@ async def get_surface(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     return out
 
 
+@router.get("/{job_id}/detail")
+async def get_detail(job_id: uuid.UUID, x: float, y: float, z: float, radius: float,
+                     owner_id: str = Depends(owner_dep),
+                     organization_id: str = Depends(org_dep)):
+    """One small neighbourhood of the DELIVERED boundary, at the resolution the mesher wrote.
+
+    THE MAIN VIEW IS MERGED AND THIS IS NOT. `render.polymesh_budget.fit_to_budget` clusters cells
+    so a delivered mesh fits what a browser can carry - the first customer cold plate delivers
+    13,022,400 boundary faces on the coolant alone against a budget of 800,000 triangles, so about
+    sixteen delivered faces become one drawn one. The payload says so, and the viewer's zoom still
+    lets a reader go in to a few cell widths, where what they see is a merged approximation of the
+    cells rather than the cells. This is the same reader on the same polyMesh, restricted to a box
+    around the point they asked about, with nothing merged.
+
+    Unlike /surface this READS THE WORKSPACE, which is why it is bounded (detail_window
+    MAX_SOURCE_FACES) and why it refuses in words rather than returning a coarser answer that
+    would look like the mesh.
+    """
+    from meshpipeline.application.job_service import final_attempt_workspace
+    from meshpipeline.render.detail_window import DetailError, detail_at
+
+    async with get_db() as db:
+        job = await svc.get_job(db, job_id, owner_id, organization_id=organization_id)
+    if job is None:
+        raise HTTPException(404, "No such job")
+    ws = await asyncio.to_thread(final_attempt_workspace, str(job_id))
+    if ws is None:
+        raise HTTPException(404, "This job's workspace is no longer on this machine")
+    try:
+        out = await asyncio.to_thread(detail_at, ws, centre=(x, y, z), radius=radius)
+    except DetailError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    import base64
+    return {"job_id": str(job_id), "centre": out["centre"], "radius": out["radius"],
+            "faces_in_range": out["faces_in_range"], "faces_returned": out["faces_returned"],
+            "truncated": out["truncated"],
+            "patches": [{"name": q["name"], "type": q["type"], "face_count": q["face_count"],
+                         "points_b64": base64.b64encode(q["points"]).decode("ascii"),
+                         "polys_b64": base64.b64encode(q["polys"]).decode("ascii")}
+                        for q in out["patches"]]}
+
+
 async def _up_axis_of(job_id: uuid.UUID, owner_id: str, organization_id: str) -> str | None:
     """Which way is up for the part a job meshed - what the user confirmed on its geometry check,
     else what the check proposed - for the viewer to open with. None when the job had no check or
