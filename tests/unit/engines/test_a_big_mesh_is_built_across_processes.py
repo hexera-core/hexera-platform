@@ -191,23 +191,53 @@ def test_the_merge_takes_the_regions_and_not_the_block():
     refuses to read it on purpose, and foamToVTK -allRegions was measured on a case without it -
     rc 0, both regions' internal.vtu, 9 boundary files, the same as with it.
 
-    IT ALSO REBUILDS THE BLOCK, which is a cost and not a bug in this assertion. `-allRegions`
-    means "Use all regions in regionProperties" and build() writes that file at the END, after
-    the merge, so the option falls back to every mesh it can find. Measured on a 182,046,234-cell
-    build: processor0 held constant/polyMesh at 5.7 GB against constant/fluid 2.4 GB and
-    constant/solid 2.9 GB. It reaches the regions AFTER the block, which is why every parallel
-    build so far has delivered correctly.
+    ONE MERGE PER REGION, NAMED, and the two forms that read like it do not work. Measured three
+    ways on the same processor directories of a 182,046,234-cell build (mesh-bench, 2026-10-29) -
+    the controlled comparison, because the disk could not afford a second mesh:
 
-    `-regions '(fluid solid)'` WAS TRIED AND MEASURED NOT TO WORK: rc=0 after 2,039 s on the same
-    processor directories, 39 GB of constant/polyMesh written and neither region - the names
-    accepted and ignored. So this test pins the form that PRODUCES BOTH REGIONS, and a faster one
-    has to be measured to produce them before it replaces this.
+        -regions '(fluid solid)'   2,039 s   constant/polyMesh 39 GB   and NEITHER region
+        -region fluid                824 s   constant/fluid    16 GB
+        -region solid              1,169 s   constant/solid    23 GB
+
+    `-allRegions` means "Use all regions in regionProperties", and build() writes that file at the
+    END, after the merge - so it falls back to every mesh it can find, the pre-split block first.
+    `-regions` is accepted and ignored, which OpenFOAM says in one line: "Warning: No
+    regionProperties, assume default region". Both reach the regions eventually, so every parallel
+    build delivered; both spent the block's time first, and in processor0 the block is 5.7 GB
+    against fluid's 2.4 and solid's 2.9.
     """
-    from meshpipeline.engines.cfmesh_conjugate.conjugate import RECONSTRUCT_REGIONS
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import (
+        FLUID_REGION, RECONSTRUCT_REGIONS, SOLID_REGION)
 
     assert RECONSTRUCT_REGIONS.startswith("reconstructParMesh")
-    assert "-constant" in RECONSTRUCT_REGIONS
-    assert "-allRegions" in RECONSTRUCT_REGIONS
+    assert RECONSTRUCT_REGIONS.count("-constant") == 2
+    assert f"-region {FLUID_REGION}" in RECONSTRUCT_REGIONS
+    assert f"-region {SOLID_REGION}" in RECONSTRUCT_REGIONS
+    assert "-allRegions" not in RECONSTRUCT_REGIONS
+    assert "-regions" not in RECONSTRUCT_REGIONS, (
+        "accepted and ignored: 'Warning: No regionProperties, assume default region'")
+
+
+def test_a_failed_first_merge_stops_the_second():
+    """`&&`, not `;`. The stage's exit code has to be the one that failed, or a half-merged
+    delivery walks into the region check with a story about what went wrong."""
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import RECONSTRUCT_REGIONS
+
+    assert " && " in RECONSTRUCT_REGIONS
+    assert ";" not in RECONSTRUCT_REGIONS
+
+
+def test_the_two_merges_are_one_stage_because_the_customer_is_watching():
+    """`engines/mesher_stage` maps the stage NAME to what is shown while it runs. Splitting this
+    into two chain entries would say "joining the pieces back together" twice."""
+    import inspect
+
+    from meshpipeline.engines.mesher_stage import _TOOLS
+
+    assert _TOOLS["reconstructParMesh"][1] == "joining the pieces back together"
+    src = inspect.getsource(build)
+    par = src.split("if int(ranks) > 1:", 1)[1].split("else:", 1)[0]
+    assert par.count("RECONSTRUCT_REGIONS") == 1, "one entry, so the stage is announced once"
 
 
 def test_the_merge_runs_before_the_file_that_would_tell_it_the_regions():

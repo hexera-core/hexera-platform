@@ -804,28 +804,41 @@ DECOMPOSE_HEADER = ('FoamFile { version 2.0; format ascii; class dictionary; '
 #: viewer pointed there draws a mesh that was never delivered), and `foamToVTK -allRegions` was
 #: measured on a case without it - rc 0, both regions' internal.vtu, 9 boundary files, the same as
 #: with it.
-#: THIS STAGE REBUILDS THE BLOCK AS WELL AS THE REGIONS, and that is a known cost rather than a
-#: known fix. `-allRegions` means, in its own help, "Use all regions in regionProperties", and
-#: build() writes `constant/regionProperties` at the END, after the merge - so there is no such
-#: file here and the option falls back to every mesh it can find, the pre-split block included.
+#: ONE MERGE PER REGION, NAMED. Not `-allRegions`, and not `-regions` either.
 #:
-#: MEASURED ON A 182,046,234-CELL BUILD, mesh-bench, 2026-10-29, in processor0 alone:
+#: `-allRegions` means, in its own help, "Use all regions in regionProperties", and build() writes
+#: `constant/regionProperties` at the END, after the merge - so there is no such file when this
+#: runs and the option falls back to every mesh it can find, the pre-split block included. It does
+#: reach the two regions afterwards, which is why every parallel build delivered correctly; it was
+#: slow, not wrong.
 #:
-#:     constant/polyMesh   5.7 GB      the block, which nothing downstream wants
-#:     constant/fluid      2.4 GB
-#:     constant/solid      2.9 GB
+#: `-regions '(fluid solid)'` reads like the fix and is not. OpenFOAM accepts the names, ignores
+#: them, and says so in one line nobody was reading:
 #:
-#: so more than half the merge is the one mesh this chain exists not to rebuild, and the one the
-#: viewer refuses to read on purpose. The coupon cannot show it: at 59,074 cells the stage is
-#: seconds either way.
+#:     Exec   : reconstructParMesh -constant -regions (fluid solid)
+#:     Warning: No regionProperties, assume default region
 #:
-#: `-regions '(fluid solid)'` IS NOT THE FIX AND WAS MEASURED NOT TO BE. On the same processor
-#: directories it returned rc=0 after 2,039 s having written 39 GB of `constant/polyMesh` and
-#: neither region - the block again, silently, with the names accepted and ignored. What
-#: `-allRegions` does do is reach the regions after the block, which is why every parallel build
-#: so far has delivered correctly; it is slow, not wrong, and a change here has to be measured to
-#: produce `constant/fluid` and `constant/solid` before it is believed.
-RECONSTRUCT_REGIONS = "reconstructParMesh -constant -allRegions"
+#: MEASURED THREE WAYS on the same processor directories of a 182,046,234-cell build, mesh-bench,
+#: 2026-10-29 - the controlled comparison, because the disk could not afford a second mesh:
+#:
+#:     -regions '(fluid solid)'   2,039 s   constant/polyMesh 39 GB   and neither region
+#:     -region fluid                824 s   constant/fluid    16 GB
+#:     -region solid              1,169 s   constant/solid    23 GB
+#:
+#: 1,993 s for exactly the two meshes the delivery needs, against 2,039 s spent on the block
+#: BEFORE the regions were started. In processor0 the block is 5.7 GB against fluid's 2.4 and
+#: solid's 2.9, so it was always going to be more than half the stage - and it is the one mesh the
+#: viewer refuses to read on purpose, because it carries both regions' face counts added together.
+#:
+#: ONE CHAIN ENTRY, keeping the stage name: `engines/mesher_stage` maps `reconstructParMesh` to
+#: what the customer is shown while it runs ("joining the pieces back together"), and two stages
+#: would say it twice. `&&` so a failed first merge stops the second and the stage's exit code is
+#: the one that failed.
+#:
+#: The coupon cannot test any of this: at 59,074 cells the whole stage is seconds either way,
+#: which is why the equivalence test that proved this chain CORRECT could not also prove it quick.
+RECONSTRUCT_REGIONS = (f"reconstructParMesh -constant -region {FLUID_REGION}"
+                       f" && reconstructParMesh -constant -region {SOLID_REGION}")
 #: WHAT THE PARALLEL SPLIT LEAVES BEHIND. `splitMeshRegions` writes each region's system/<region>
 #: dictionaries beside the mesh it split, which when it runs decomposed is inside processor0 and
 #: not at the root - so the reconstructed case has constant/fluid/polyMesh and no
