@@ -348,3 +348,76 @@ def plugged_tube(r_out: float = 7.0, t: float = 1.2, length: float = 260.0, plug
     for z0 in (0.0, length - plug):
         s = _fuse(s, _cut(_cyl(0, 0, z0, r_in, plug), _cyl(0, 0, z0 - 1, r_in - ring, plug + 2)))
     return s
+
+
+# ------------------------------------------------------------------------------ variable walls (SHELL-9) ----
+def _profile_xz(pts):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.gp import gp_Pnt
+
+    poly = BRepBuilderAPI_MakePolygon()
+    for x, z in pts:
+        poly.Add(gp_Pnt(x, 0, z))
+    poly.Close()
+    return BRepBuilderAPI_MakeFace(poly.Wire()).Face()
+
+
+def _revolved(pts):
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeRevol
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt
+
+    return _unify(BRepPrimAPI_MakeRevol(_profile_xz(pts), gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)),
+                                        2 * math.pi).Shape())
+
+
+def wedge_plate(t0: float = 4.0, t1: float = 8.0, length: float = 200.0, width: float = 100.0):
+    """A TAPERED plate `length` x `width`, flat below (z = 0) and `t0` thick at x = 0 rising to `t1` at x = `length`:
+    one wall whose thickness varies linearly, its top turned atan((t1 - t0) / length) from its bottom."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Vec
+
+    return BRepPrimAPI_MakePrism(_profile_xz([(0, 0), (length, 0), (length, t1), (0, t0)]),
+                                 gp_Vec(0, width, 0)).Shape()
+
+
+def drafted_tube(r_out: float = 50.0, t0: float = 4.0, t1: float = 2.5, h: float = 120.0):
+    """A tube with a straight outside (radius `r_out`) and a drafted inside: the wall `t0` thick at the bottom, `t1`
+    at the top (a moulded or printed tube): a cylinder facing a cone, closed round its axis."""
+    return _revolved([(r_out, 0), (r_out, h), (r_out - t1, h), (r_out - t0, 0)])
+
+
+def drafted_cyclone(R: float = 100.0, r: float = 40.0, H: float = 200.0, L: float = 150.0):
+    """A printed cyclone body: a cylinder (outside radius `R`, `H` high) with a drafted inside - its wall 5 mm at
+    the bottom, 3 mm at the top - running into a cone down to radius `r` over `L` whose wall is slightly uneven
+    (about 3.8 to 4.6 mm): two tapered walls meeting round a circle."""
+    return _revolved([(R, H), (R, 0), (r, -L), (r - 4, -L), (R - 5, 0), (R - 3, H)])
+
+
+def twisted_strap(w: float = 20.0, t: float = 1.27, length: float = 40.0, turn: float = 90.0, flats: float = 30.0,
+                  sections: int = 9):
+    """A flat bar `w` x `t` twisted `turn` degrees over `length` (lofted through `sections` turned rectangles: its two
+    wide faces free-form, its wall about 1.18 to 1.27 thick) between two straight flats `flats` long, fused."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakePolygon, BRepBuilderAPI_Transform
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
+
+    def turned(y, ang):
+        tr = gp_Trsf()
+        tr.SetRotation(gp_Ax1(gp_Pnt(0, y, 0), gp_Dir(0, 1, 0)), ang)
+        p = BRepBuilderAPI_MakePolygon()
+        for x, z in ((-w / 2, -t / 2), (w / 2, -t / 2), (w / 2, t / 2), (-w / 2, t / 2)):
+            p.Add(gp_Pnt(x, y, z).Transformed(tr))
+        p.Close()
+        return p.Wire()
+
+    loft = BRepOffsetAPI_ThruSections(True, False)
+    for i in range(sections):
+        loft.AddWire(turned(length * i / (sections - 1), math.radians(turn) * i / (sections - 1)))
+    loft.Build()
+    s = loft.Shape()
+    if flats:
+        tr = gp_Trsf()
+        tr.SetRotation(gp_Ax1(gp_Pnt(0, length, 0), gp_Dir(0, 1, 0)), math.radians(turn))
+        far = BRepBuilderAPI_Transform(_box(-w / 2, length, -t / 2, w, flats, t), tr, True).Shape()
+        s = _unify(_fuse(_fuse(s, _box(-w / 2, -flats, -t / 2, w, flats, t)), far))
+    return s

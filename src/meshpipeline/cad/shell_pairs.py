@@ -38,6 +38,13 @@ PAIR_SHARE = 0.1
 PAIR_SAMPLES = 7
 EVEN_SHARE = 0.02
 PAIR_DEG = 2.0
+#: A TAPERED WALL (SHELL-9, variable thickness): a pair that is not even, whose faces turn from each other by at
+#: most TAPER_DEG where they face each other (the points of A whose foot lies on B itself, at least
+#: TAPER_MIN_POINTS of them). Its mid-surface is fitted through the midpoints (cad/midsurface.fitted_mid) and its
+#: thickness varies over it; whether it is a shell is judged at its THICKEST point (SHELL-2). A draft, a wedge, a
+#: printed funnel's drafted wall. Steeper than that, the two faces are two sides of a solid region, not one wall.
+TAPER_DEG = 10.0
+TAPER_MIN_POINTS = 6
 #: SHELL OR SOLID (SHELL-2) is judged per SHEET: the even wall pairs of one thickness (within EVEN_SHARE) whose
 #: faces are the same or meet at a CAD edge - a bent sheet's flanges and bends, a deck plate's pieces between
 #: stiffeners. A sheet is a shell when its thickness is at most SHELL_RATIO of its size L, the square root of
@@ -77,6 +84,15 @@ class Pair:
     sheet: int | None = None              # which sheet (0-based) it belongs to
     shell: bool = False                   # its sheet is thin against its size and width (SHELL-2)
     mids: list[int] = field(default_factory=list)   # the mid-faces built from it (cad/midsurface)
+    tapered: bool = False                 # a TAPERED wall (SHELL-9): not even, but turned at most TAPER_DEG
+    t_min: float | None = None            # mm, a tapered wall's thinnest and thickest reading
+    t_max: float | None = None
+
+    def span(self) -> tuple[float, float]:
+        """The wall's thinnest and thickest reading, mm (an even wall's are its thickness)."""
+        if self.tapered and self.t_min is not None and self.t_max is not None:
+            return self.t_min, self.t_max
+        return self.thickness, self.thickness
 
 
 def _sample_rays(s: ff.Surface, *, rays: int = PAIR_RAYS, seed: int = 0):
@@ -229,11 +245,77 @@ def even_wall(fa, fb, mm: float) -> tuple[bool, float, float, str]:
     return True, med, spread, ""
 
 
+def tapered_wall(fa, fb, mm: float) -> tuple[bool, float, float, float, str]:
+    """The TAPERED-wall test (SHELL-9) of faces fa, fb whose coordinates are `mm` millimetres each: points spread
+    over fa (PAIR_SAMPLES x PAIR_SAMPLES over its parameters, the ones inside it) are projected onto fb's surface;
+    only those whose foot lies on fb itself are read. (passed, thinnest mm, thickest mm, largest turn degrees,
+    why not)."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.gp import gp_Pnt2d
+    from OCP.TopAbs import TopAbs_IN, TopAbs_ON, TopAbs_REVERSED
+
+    nan = float("nan")
+    sa = BRepAdaptor_Surface(fa, True)
+    sb = BRepAdaptor_Surface(fb, True)
+    proj = _projector(fb)
+    u0, u1, v0, v1 = sa.FirstUParameter(), sa.LastUParameter(), sa.FirstVParameter(), sa.LastVParameter()
+    if not all(math.isfinite(x) for x in (u0, u1, v0, v1)):
+        return False, nan, nan, nan, "a face without bounds"
+    sign = (-1.0 if fa.Orientation() == TopAbs_REVERSED else 1.0) * (-1.0 if fb.Orientation() == TopAbs_REVERSED
+                                                                     else 1.0)
+    tol_a = max(BRep_Tool.Tolerance_s(fa), 1e-9)
+    tol_b = max(BRep_Tool.Tolerance_s(fb), 1e-9)
+    dists, turned = [], []
+    n = PAIR_SAMPLES
+    for i in range(n):
+        for j in range(n):
+            u = u0 + (u1 - u0) * (i + 0.5) / n
+            v = v0 + (v1 - v0) * (j + 0.5) / n
+            if BRepClass_FaceClassifier(fa, gp_Pnt2d(u, v), tol_a).State() != TopAbs_IN:
+                continue
+            pa = BRepLProp_SLProps(sa, u, v, 1, 1e-9)
+            if not pa.IsNormalDefined():
+                continue
+            proj.Perform(pa.Value())
+            if proj.NbPoints() < 1:
+                continue
+            ub, vb = proj.LowerDistanceParameters()
+            if BRepClass_FaceClassifier(fb, gp_Pnt2d(ub, vb), tol_b).State() not in (TopAbs_IN, TopAbs_ON):
+                continue
+            pb = BRepLProp_SLProps(sb, ub, vb, 1, 1e-9)
+            if not pb.IsNormalDefined():
+                continue
+            na, nb = pa.Normal(), pb.Normal()
+            dot = sign * (na.X() * nb.X() + na.Y() * nb.Y() + na.Z() * nb.Z())
+            dists.append(float(proj.LowerDistance()) * mm)
+            turned.append(math.degrees(math.acos(max(-1.0, min(1.0, -dot)))))
+    if len(dists) < TAPER_MIN_POINTS:
+        return False, nan, nan, nan, "too few points of the faces face each other"
+    lo, hi, turn = float(min(dists)), float(max(dists)), float(max(turned))
+    if lo <= 0:
+        return False, lo, hi, turn, "the faces touch"
+    if turn > TAPER_DEG:
+        return False, lo, hi, turn, f"the faces are not parallel (they turn by up to {turn:.1f} degrees)"
+    return True, lo, hi, turn, ""
+
+
+def _same_wall(p: Pair, q: Pair) -> bool:
+    """Two pairs are of one thickness (SHELL-2): within EVEN_SHARE, or - a tapered wall - their spans overlap
+    within it."""
+    if not p.tapered and not q.tapered:
+        return abs(p.thickness - q.thickness) <= EVEN_SHARE * max(p.thickness, q.thickness)
+    (a0, a1), (b0, b1) = p.span(), q.span()
+    return a0 <= b1 * (1 + EVEN_SHARE) and b0 <= a1 * (1 + EVEN_SHARE)
+
+
 def sheets(pairs: list[Pair], neighbours: list[set[int]], body_of: list[int]) -> list[list[int]]:
-    """The SHEETS (SHELL-2): groups of even pairs (indices into `pairs`, those with mid-faces) of one body
-    and one thickness (within EVEN_SHARE) whose faces are shared or meet at a CAD edge. Deterministic: in
-    pair order."""
-    live = [i for i, p in enumerate(pairs) if p.even and p.mids]
+    """The SHEETS (SHELL-2): groups of even or tapered pairs (indices into `pairs`, those with mid-faces) of one
+    body and one thickness (within EVEN_SHARE; a tapered wall's span) whose faces are shared or meet at a CAD
+    edge. Deterministic: in pair order."""
+    live = [i for i, p in enumerate(pairs) if (p.even or p.tapered) and p.mids]
     parent = {i: i for i in live}
 
     def root(i: int) -> int:
@@ -249,7 +331,7 @@ def sheets(pairs: list[Pair], neighbours: list[set[int]], body_of: list[int]) ->
             pj = pairs[j]
             if body_of[pi.a] != body_of[pj.a]:
                 continue
-            if abs(pi.thickness - pj.thickness) > EVEN_SHARE * max(pi.thickness, pj.thickness):
+            if not _same_wall(pi, pj):
                 continue
             if {pj.a, pj.b} & near_i:
                 ri, rj = root(i), root(j)
@@ -330,5 +412,5 @@ def face_roles(names: list[str], pairs: list[Pair], *, kinds: list[str], widths:
     return out
 
 
-__all__ = ["BLEND", "PAIRED", "RIM", "SHELL_RATIO", "SHELL_WIDTH_RATIO", "SOLID", "THICK", "Pair", "even_wall", "face_roles", "sheets",
-           "ray_partners"]
+__all__ = ["BLEND", "PAIRED", "RIM", "SHELL_RATIO", "SHELL_WIDTH_RATIO", "SOLID", "TAPER_DEG", "THICK", "Pair",
+           "even_wall", "face_roles", "sheets", "ray_partners", "tapered_wall"]

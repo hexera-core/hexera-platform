@@ -33,7 +33,7 @@ A wall pair is two faces of one body that face each other across an even wall.
   - the normals are opposite within 2 degrees.
 - **The surface type does not matter.** Two planes, two coaxial cylinders or cones, two concentric spheres and two offset free-form faces all pass the same test. There is no list of shapes.
 - **A face can have several partners.** A deck plate's bottom face pairs with each top face between the stiffeners.
-- **Variable walls are named, not shelled yet** (tapers, wedges, cast walls). They stay solid until PR 3 (section 2.5).
+- **Tapered walls (SHELL-9, 29 Oct).** A pair that is not even, but whose faces turn from each other by at most 10 degrees where they face each other (the points of A whose foot lies on B itself, at least 6 of them), is a tapered wall: a draft, a wedge, a printed funnel's drafted side, a twisted strap. Whether it is a shell is judged at its thickest point. Its mid-surface is fitted (section 2.2). Steeper than 10 degrees, the two faces are two sides of a solid region and stay so.
 
 ### 1.2 Sheets and the shell-or-solid rule (SHELL-2)
 
@@ -91,6 +91,22 @@ This is exact for every even wall. The prototype got exact results:
 - tube: 30,159.3 mm² for 2π · 24 · 200;
 - bend: 314.16 mm² for a quarter-cylinder of radius 4, 50 mm deep.
 
+### 2.2.1 The fitted mid-face (SHELL-9, 29 Oct)
+
+For a tapered wall, and for an even wall whose two half-offsets do not overlap (two free-form faces whose offsets are not quite the same surface: a twisted strap):
+
+1. Over a 17 x 17 grid of face A's parameters, each point of A is paired with its foot on B's surface. Their midpoint is moved along the line between them until it lies as far from A's surface as from B's (3 steps).
+2. A cubic B-spline surface interpolates the grid of midpoints, its parameters A's own scaled to 0..1, so A's outline maps onto it exactly (an affine map of B-spline poles). An approximation of higher degree waved between the points: a twisted strap's mid-surface came out 14 times its area.
+3. When B does not lie across the whole of A, B's outline is projected onto A's surface too, and the mid-face is where the two outlines overlap. The overlap is worked out flat, in the plane of the parameters, and laid back onto the surface: a Boolean on a fitted surface closed round a cylinder's seam found nothing.
+4. A wall closed round its axis (a drafted tube) has its two seam sides sewn into one edge.
+5. The thickness at a point is its distance to A plus its distance to B; the record keeps the thinnest and thickest (`thickness_range_mm`), and PR 2 writes it per node (CQUAD4 T1 to T4, `*NODAL THICKNESS`).
+
+A fitted mid-face is kept only when:
+- every point read on it lies as far from A as from B, within 2% of the local thickness (|dA - dB| <= 0.02 (dA + dB));
+- it is itself at least four walls wide (as a shell sheet is). A narrower one is a local feature of the wall beside it, which that wall's own mid-face runs across when it is joined (a flat dimple 1.4 walls wide in a printed cylinder's side).
+
+Otherwise the pair stays a variable wall, with the reason.
+
 ### 2.3 Junctions: extend to meet (SHELL-3)
 
 At a junction the mid-faces stop short of each other.
@@ -116,10 +132,7 @@ Each junction type:
 - **Plates of different thickness meeting in-plane (a butt step):** the mid-planes are parallel and offset, so nothing above joins them. PR 3 snaps the thinner plate onto the thicker plate's mid-plane and records the offset per element (ZOFFS in Nastran, OFFSET in Abaqus and CalculiX). Stiffness and mass stay right, and the user sees one flat shell. Until then the step shows as an open edge.
 - **Cut-outs and holes:** the overlap keeps them. Their edges are real free edges (the outside lies just past them). Holes smaller than about one element are named for defeaturing later. They are never filled silently.
 - **Fillets and chamfers:** up to 2 walls, absorbed (blend role). Larger rounds with an even wall are their own sheet (a sheet-metal bend). Others are solid and named.
-- **Tapers:** named as variable walls and left solid until PR 3. PR 3's approach:
-  - sample the midpoints between the two faces;
-  - fit a B-spline mid-surface (`GeomAPI_PointsToBSplineSurface`);
-  - store the thickness per node (CQUAD4 T1 to T4, or `*NODAL THICKNESS`).
+- **Tapers:** fitted mid-faces (section 2.2.1), joined like any other mid-face.
 - **Cylinder ends on plates (tube frames, nozzles):** PR 3. The same rule, with the cylinder carried along its axis to the target and cut by it.
 
 ### 2.4 Sewing (SHELL-4)
@@ -137,6 +150,7 @@ The result is a conformal shell: shared nodes along every junction once meshed.
 - Inside-or-outside: a point well clear of the skin is told by the body's own closed triangulation (three rays that must agree). Near the skin, the exact classifier answers.
 - Faces that cannot touch are fused apart. The part's own faces go into the general join as one argument, so they are not intersected with each other.
 - Readers are built once per face (projectors, surface analysers), and each point's inside state is kept.
+- **A free-form mid-face's grown patch goes into the general join alone** (29 Oct). The patch is the mid-face's parameter box widened, so it lies over the mid-face itself, on a surface the fuse does not merge with the mid-face's own. With both in, the wall was there twice: a twisted strap held 29% more metal than it has, and its join left 4 open edges. Its pieces inside the mid-face are the mid-face's own, read by geometry.
 
 ### 2.5 Assemblies and mixed parts (PR 3)
 

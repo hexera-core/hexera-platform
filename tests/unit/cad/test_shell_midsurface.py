@@ -603,3 +603,82 @@ def test_an_extruded_free_form_wall_is_projected_on_within_its_own_reach():
         proj.Perform(p)
         whole = GeomAPI_ProjectPointOnSurf(p, BRep_Tool.Surface_s(face))
         assert proj.NbPoints() >= 1 and proj.LowerDistance() == pytest.approx(whole.LowerDistance(), abs=1e-9)
+
+
+# ---------------------------------------------------------------------- variable walls (SHELL-9) ----
+def _tapered(rec: dict) -> list[dict]:
+    return [p for p in rec["pairs"] if p.get("tapered")]
+
+
+@pytest.mark.parametrize(("t0", "t1", "length"), [(4.0, 8.0, 200.0), (3.0, 12.0, 150.0)])
+def test_a_tapered_plate_is_one_shell_carrying_its_thickness_range(t0, t1, length):
+    rec, _ = ms.extract(sf.wedge_plate(t0, t1, length), mm_per_unit=1.0)
+    _all_checks(rec)
+    assert rec["bodies"][0]["verdict"] == "shell"
+    (pair,) = _tapered(rec)
+    lo, hi = pair["thickness_range_mm"]
+    # the wall measured square to the mid-surface: t cos(turn), the turn atan((t1 - t0) / length)
+    c = math.cos(math.atan((t1 - t0) / length))
+    assert lo == pytest.approx(t0 * c, rel=2e-3) and hi == pytest.approx(t1 * c, rel=2e-3)
+    assert pair["shell"] and pair["thickness_mm"] == pytest.approx(hi)
+    (mid,) = _shell_mids(rec)
+    assert mid["fitted"] and mid["thickness_range_mm"] == pytest.approx([lo, hi], rel=1e-3)
+    # the mid-face spans the plate (on the slant midway, trimmed where both faces lie across it: its ends a little
+    # short), and holds the plate's metal within 1%
+    assert mid["area_mm2"] == pytest.approx(100.0 * math.hypot(length, 0.5 * (t1 - t0)), rel=5e-3)
+    assert rec["bodies"][0]["mid_volume_ratio"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_a_wall_turned_past_the_taper_limit_stays_a_variable_wall():
+    # 3 to 40 mm over 100 mm: the faces turn 20 degrees - two sides of a solid wedge, not one wall
+    rec, _ = ms.extract(sf.wedge_plate(3.0, 40.0, 100.0), mm_per_unit=1.0)
+    assert not _tapered(rec) and not _shell_mids(rec)
+    assert rec["bodies"][0]["verdict"] == "solid"
+
+
+def test_a_drafted_tube_is_one_closed_shell_round_its_seam():
+    rec, _ = ms.extract(sf.drafted_tube(), mm_per_unit=1.0)
+    _all_checks(rec)
+    assert rec["bodies"][0]["verdict"] == "shell"
+    (pair,) = _tapered(rec)
+    assert pair["thickness_range_mm"] == pytest.approx([2.5, 4.0], rel=2e-3)
+    assert _sewn(rec)["open_edges"] == 0
+
+
+def test_a_drafted_cyclone_cylinder_runs_into_its_uneven_cone():
+    rec, _ = ms.extract(sf.drafted_cyclone(), mm_per_unit=1.0)
+    _all_checks(rec)
+    assert rec["bodies"][0]["verdict"] == "shell"
+    assert len(_tapered(rec)) == 2 and all(m["fitted"] for m in _shell_mids(rec))
+    assert rec["bodies"][0]["mid_volume_ratio"] == pytest.approx(1.0, abs=0.01)
+
+
+@pytest.mark.parametrize("flats", [0.0, 30.0])
+def test_a_twisted_strap_is_one_shell_through_its_twist(flats):
+    rec, _ = ms.extract(sf.twisted_strap(flats=flats), mm_per_unit=1.0)
+    _all_checks(rec)
+    assert rec["bodies"][0]["verdict"] == "shell"
+    assert any(m.get("fitted") for m in _shell_mids(rec))
+    assert rec["bodies"][0]["mid_volume_ratio"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_a_fitted_mid_face_lies_midway_and_reads_the_wall_on_both_sides():
+    shape = sf.wedge_plate(4.0, 8.0)
+    faces = ms._faces(shape)
+    rec, _ = ms.extract(shape, mm_per_unit=1.0)
+    (pair,) = _tapered(rec)
+    a, b = (int(n.split("_")[1]) - 1 for n in pair["faces"])
+    got, lo, hi, mean, why = ms.fitted_mid(faces[a], faces[b], 8.0, 8e-4)
+    assert got and not why
+    _worst, rel, n, flo, fhi = ms.fitted_fidelity(got[0], faces[a], faces[b])
+    assert n >= 9 and rel <= 1e-3 and lo <= flo <= fhi <= hi
+    assert mean == pytest.approx(6.0, rel=0.01)
+
+
+def test_variable_walls_read_the_same_twice():
+    shape = sf.drafted_cyclone()
+    a, _ = ms.extract(shape, mm_per_unit=1.0)
+    b, _ = ms.extract(shape, mm_per_unit=1.0)
+    a.pop("seconds")
+    b.pop("seconds")
+    assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)

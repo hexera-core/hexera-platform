@@ -555,12 +555,418 @@ def mid_faces(fa, fb, t: float, fuzzy: float) -> list:
     return overlap(toward(fa, fb, t / 2.0), toward(fb, fa, t / 2.0), fuzzy)
 
 
+# ----------------------------------------------------------------------------- fitted mid-faces ----
+#: SHELL-9, A MID-SURFACE FITTED THROUGH THE MIDPOINTS: for a TAPERED wall (shell_pairs.tapered_wall), and for an
+#: even wall whose two half-offsets do not overlap (two free-form faces whose offsets are not the same surface: a
+#: twisted strap). Over a FIT_SAMPLES x FIT_SAMPLES grid of face A's parameters, each point of A is paired with its
+#: foot on B's surface; their midpoint is moved along the line between them until it lies as far from A's surface
+#: as from B's (FIT_ITERATIONS steps). A cubic B-spline surface interpolates the grid of midpoints, its parameters
+#: A's own scaled to 0..1 (iso-parametric), so A's outline maps onto it exactly; B's outline is projected onto it,
+#: and the mid-face is where the two overlap. The wall's thickness at a point is its distance to A plus its
+#: distance to B. A fitted mid-face is kept only when every point read on it lies as far from A as from B within
+#: FIDELITY_SHARE of the local thickness.
+FIT_SAMPLES = 17
+FIT_ITERATIONS = 3
+FIT_EDGE_SAMPLES = 24
+
+
+def _np(p) -> np.ndarray:
+    return np.array([p.X(), p.Y(), p.Z()])
+
+
+def _surface_distance(proj, x: np.ndarray) -> float | None:
+    from OCP.gp import gp_Pnt
+
+    proj.Perform(gp_Pnt(*map(float, x)))
+    return float(proj.LowerDistance()) if proj.NbPoints() > 0 else None
+
+
+def _midpoint(pa_proj, pb_proj, p: np.ndarray) -> tuple[np.ndarray, float] | None:
+    """The point midway between A and B on the line from A's point `p` to its foot on B, and the wall there."""
+    from OCP.gp import gp_Pnt
+
+    pb_proj.Perform(gp_Pnt(*map(float, p)))
+    if pb_proj.NbPoints() < 1:
+        return None
+    q = _np(pb_proj.NearestPoint())
+    d = q - p
+    n = float(np.linalg.norm(d))
+    if n <= 0:
+        return None
+    d /= n
+    m = 0.5 * (p + q)
+    for _ in range(FIT_ITERATIONS):
+        ra, rb = _surface_distance(pa_proj, m), _surface_distance(pb_proj, m)
+        if ra is None or rb is None:
+            return None
+        m = m + d * 0.5 * (rb - ra)
+    da, db = _surface_distance(pa_proj, m), _surface_distance(pb_proj, m)
+    if da is None or db is None:
+        return None
+    return m, da + db
+
+
+def _mapped_curve(edge, face, box):
+    """The edge's curve on `face`, as a 2D B-spline in the face's parameters scaled by `box` to 0..1 (exact: an
+    affine map of a B-spline's poles)."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve2d
+    from OCP.Geom2d import Geom2d_TrimmedCurve
+    from OCP.Geom2dConvert import Geom2dConvert
+    from OCP.gp import gp_Pnt2d
+
+    a = BRepAdaptor_Curve2d(edge, face)
+    c = Geom2dConvert.CurveToBSplineCurve_s(Geom2d_TrimmedCurve(a.Curve(), a.FirstParameter(),
+                                                                a.LastParameter()))
+    u0, u1, v0, v1 = box
+    for i in range(1, c.NbPoles() + 1):
+        q = c.Pole(i)
+        c.SetPole(i, gp_Pnt2d((q.X() - u0) / (u1 - u0), (q.Y() - v0) / (v1 - v0)))
+    from OCP.TopAbs import TopAbs_REVERSED
+
+    if edge.Orientation() == TopAbs_REVERSED:
+        c.Reverse()                      # run the way the wire runs: each new edge is forward in its wire
+    return c
+
+
+def _wire_on(surf, curves: list):
+    """A wire on `surf` through 2D curves given in order, end to end (each edge with its 3D curve), or None."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.BRepLib import BRepLib
+
+    mw = BRepBuilderAPI_MakeWire()
+    for c in curves:
+        me = BRepBuilderAPI_MakeEdge(c, surf)
+        if not me.IsDone():
+            return None
+        e = me.Edge()
+        if not BRepLib.BuildCurve3d_s(e, 1e-7):
+            return None
+        mw.Add(e)
+        if not mw.IsDone():
+            return None
+    return mw.Wire()
+
+
+def _wire_edges(wire, face) -> list:
+    from OCP.BRepTools import BRepTools_WireExplorer
+
+    out = []
+    ex = BRepTools_WireExplorer(wire, face)
+    while ex.More():
+        out.append(ex.Current())
+        ex.Next()
+    return out
+
+
+def _curves_of_a(fa, box) -> list[list]:
+    """Face A's outline and holes as 2D curves in the fitted surface's parameters (outline first)."""
+    return [[_mapped_curve(e, fa, box) for e in _wire_edges(w, fa)] for w in [_outer_wire(fa), *_inner_wires(fa)]]
+
+
+def _region_on(surf, wires: list[list]):
+    """The face on `surf` bounded by 2D-curve wires (outline first), or None."""
+    built = [_wire_on(surf, w) for w in wires]
+    if not built or any(w is None for w in built):
+        return None
+    return _face_with_holes(surf, built[0], built[1:])
+
+
+def _overlap_2d(wires_a: list[list], wires_b: list[list], surf, fuzzy: float) -> list:
+    """The overlap of two regions given as 2D-curve wires in the fitted surface's parameters, worked out FLAT (in
+    the plane of the parameters, where a Boolean is plain: on a fitted surface closed round a cylinder's seam it
+    found nothing) and laid back onto `surf`."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.Geom import Geom_Plane
+    from OCP.Geom2d import Geom2d_TrimmedCurve
+    from OCP.GeomAPI import GeomAPI
+    from OCP.gp import gp_Pln
+    from OCP.TopAbs import TopAbs_REVERSED
+
+    pln = gp_Pln()
+    flat = Geom_Plane(pln)
+
+    def flat_region(wires):
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+
+        built = []
+        for w in wires:
+            mw = BRepBuilderAPI_MakeWire()
+            for c in w:
+                mw.Add(BRepBuilderAPI_MakeEdge(GeomAPI.To3d_s(c, pln)).Edge())
+                if not mw.IsDone():
+                    return None
+            built.append(mw.Wire())
+        return _face_with_holes(flat, built[0], built[1:])
+
+    ra, rb = flat_region(wires_a), flat_region(wires_b)
+    if ra is None or rb is None:
+        return []
+    out = []
+    for f in overlap(ra, rb, fuzzy):
+        wires = []
+        for w in [_outer_wire(f), *_inner_wires(f)]:
+            curves = []
+            for e in _wire_edges(w, f):
+                a = BRepAdaptor_Curve(e)
+                c = Geom2d_TrimmedCurve(GeomAPI.To2d_s(a.Curve().Curve(), pln), a.FirstParameter(), a.LastParameter())
+                curves.append(c.Reversed() if e.Orientation() == TopAbs_REVERSED else c)
+            wires.append(curves)
+        g = _region_on(surf, wires)
+        if g is not None:
+            out.append(g)
+    return out
+
+
+def _edge_points(edge, k: int) -> list[np.ndarray]:
+    """k + 1 points along an edge, in the edge's own direction in its wire."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.TopAbs import TopAbs_REVERSED
+
+    c = BRepAdaptor_Curve(edge)
+    f, l = c.FirstParameter(), c.LastParameter()
+    pts = [_np(c.Value(f + (l - f) * i / k)) for i in range(k + 1)]
+    return pts[::-1] if edge.Orientation() == TopAbs_REVERSED else pts
+
+
+def _covers(fb, fa) -> bool:
+    """Every point read along face A's edges has its foot on face B (B lies across the whole of A)."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.gp import gp_Pnt, gp_Pnt2d
+    from OCP.TopAbs import TopAbs_IN, TopAbs_ON
+
+    proj = sp._projector(fb)
+    tol = max(BRep_Tool.Tolerance_s(fb), 1e-7)
+    for w in [_outer_wire(fa), *_inner_wires(fa)]:
+        for e in _wire_edges(w, fa):
+            for p in _edge_points(e, FIT_EDGE_SAMPLES // 4):
+                proj.Perform(gp_Pnt(*map(float, p)))
+                if proj.NbPoints() < 1:
+                    return False
+                u, v = proj.LowerDistanceParameters()
+                if BRepClass_FaceClassifier(fb, gp_Pnt2d(u, v), tol).State() not in (TopAbs_IN, TopAbs_ON):
+                    return False
+    return True
+
+
+def _curves_of_b(fb, fa, box) -> list[list] | None:
+    """Face B's outline and holes projected onto A's surface, as 2D curves in the fitted surface's parameters
+    (outline first), or None. Points on a periodic surface are kept continuous with the one before, and the whole
+    outline is moved by whole periods onto A's range."""
+    from OCP.BRep import BRep_Tool
+    from OCP.Geom2dAPI import Geom2dAPI_PointsToBSpline
+    from OCP.gp import gp_Pnt, gp_Pnt2d
+    from OCP.TColgp import TColgp_Array1OfPnt2d
+
+    sa = BRep_Tool.Surface_s(fa)
+    proj = sp._projector(fa)
+    u0, u1, v0, v1 = box
+    per_u = sa.UPeriod() if sa.IsUPeriodic() else None
+    per_v = sa.VPeriod() if sa.IsVPeriodic() else None
+    last = [0.5 * (u0 + u1), 0.5 * (v0 + v1)]
+
+    def near(x: float, ref: float, per: float | None) -> float:
+        return x if per is None else x + per * round((ref - x) / per)
+
+    def points(w) -> list[np.ndarray] | None:
+        """Each edge's points in A's parameters scaled to 0..1, end to end and closed."""
+        out: list[np.ndarray] = []
+        for e in _wire_edges(w, fb):
+            uv = []
+            for p in _edge_points(e, FIT_EDGE_SAMPLES):
+                proj.Perform(gp_Pnt(*map(float, p)))
+                if proj.NbPoints() < 1:
+                    return None
+                u, v = proj.LowerDistanceParameters()
+                u, v = near(u, last[0], per_u), near(v, last[1], per_v)
+                last[0], last[1] = u, v
+                uv.append(((u - u0) / (u1 - u0), (v - v0) / (v1 - v0)))
+            if out:
+                uv[0] = tuple(out[-1][-1])
+            out.append(np.array(uv))
+        if not out or np.linalg.norm(out[-1][-1] - out[0][0]) > 1e-6:
+            return None              # the outline did not close (it wound round a periodic surface)
+        out[-1][-1] = out[0][0]
+        return out
+
+    def shifted(wires: list, per: float | None, axis: int, span: float) -> None:
+        """Move the wires by whole periods onto A's range 0..1 (most overlap; a whole turn lands on it)."""
+        if per is None:
+            return
+        step = per / span
+        lo = min(float(c[:, axis].min()) for c in wires[0])
+        hi = max(float(c[:, axis].max()) for c in wires[0])
+        best = max(range(-3, 4), key=lambda k: (min(hi + k * step, 1.0) - max(lo + k * step, 0.0), -abs(k)))
+        for w in wires:
+            for c in w:
+                c[:, axis] += best * step
+
+    def wire(w):
+        curves = []
+        for uv in w:
+            arr = TColgp_Array1OfPnt2d(1, len(uv))
+            for i, (s, t) in enumerate(uv, 1):
+                arr.SetValue(i, gp_Pnt2d(float(s), float(t)))
+            fit = Geom2dAPI_PointsToBSpline(arr, 3, 3)
+            if not fit.IsDone():
+                return None
+            curves.append(fit.Curve())
+        return curves
+
+    wires = [points(_outer_wire(fb))]
+    if wires[0] is None:
+        return None
+    for w in _inner_wires(fb):
+        wires.append(points(w))
+        if wires[-1] is None:
+            return None
+    shifted(wires, per_u, 0, u1 - u0)
+    shifted(wires, per_v, 1, v1 - v0)
+    out = [wire(w) for w in wires]
+    return None if any(c is None for c in out) else out
+
+
+def _seamed(face, tol: float):
+    """The face with its own coincident boundary edges sewn into one (a seam), when that leaves one face of the
+    same area; else the face as it was."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+
+    sw = BRepBuilderAPI_Sewing(tol)
+    sw.Add(face)
+    sw.Perform()
+    out = _faces(sw.SewedShape())
+    if len(out) == 1 and abs(_area(out[0]) - _area(face)) <= 1e-6 * _area(face):
+        return out[0]
+    return face
+
+
+def _valid_faces(face) -> list:
+    """The face when it is valid; else as OpenCASCADE's shape fixer leaves it, when that is valid; else none."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.ShapeFix import ShapeFix_Shape
+
+    if BRepCheck_Analyzer(face).IsValid():
+        return [face]
+    fx = ShapeFix_Shape(face)
+    fx.Perform()
+    out = [f for f in _faces(fx.Shape()) if _area(f) > 0]
+    return out if out and all(BRepCheck_Analyzer(f).IsValid() for f in out) else []
+
+
+def fitted_fidelity(mid, fa, fb) -> tuple[float, float, int, float, float]:
+    """A fitted mid-face read on a FIDELITY_SAMPLES grid: (the largest |dA - dB| / 2, its own units; the largest
+    |dA - dB| / (dA + dB); points read; the thinnest and thickest dA + dB)."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.gp import gp_Pnt2d
+    from OCP.TopAbs import TopAbs_IN
+
+    a = BRepAdaptor_Surface(mid, True)
+    u0, u1, v0, v1 = a.FirstUParameter(), a.LastUParameter(), a.FirstVParameter(), a.LastVParameter()
+    worst, rel, n, lo, hi = 0.0, 0.0, 0, math.inf, 0.0
+    k = FIDELITY_SAMPLES
+    for i in range(k):
+        for j in range(k):
+            u, v = u0 + (u1 - u0) * (i + 0.5) / k, v0 + (v1 - v0) * (j + 0.5) / k
+            if BRepClass_FaceClassifier(mid, gp_Pnt2d(u, v), 1e-9).State() != TopAbs_IN:
+                continue
+            vx = _vertex(_np(a.Value(u, v)))
+            da, db = _dist(vx, fa), _dist(vx, fb)
+            worst = max(worst, 0.5 * abs(da - db))
+            rel = max(rel, abs(da - db) / (da + db) if da + db > 0 else math.inf)
+            lo, hi = min(lo, da + db), max(hi, da + db)
+            n += 1
+    return worst, rel, n, lo, hi
+
+
+def fitted_mid(fa, fb, t_hint: float, fuzzy: float) -> tuple[list, float, float, float, str]:
+    """SHELL-9: the fitted mid-faces of faces fa, fb ([] when none can be made, with why), and the wall's thinnest,
+    thickest and mean thickness over them (own units). `t_hint`: the wall as read by the pair test."""
+    from OCP.Approx import Approx_IsoParametric
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.BRepTools import BRepTools
+    from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface
+    from OCP.gp import gp_Pnt, gp_Pnt2d
+    from OCP.TColgp import TColgp_Array2OfPnt
+    from OCP.TopAbs import TopAbs_IN, TopAbs_ON
+
+    box = BRepTools.UVBounds_s(fa)
+    u0, u1, v0, v1 = box
+    if not all(math.isfinite(x) for x in box) or u1 <= u0 or v1 <= v0:
+        return [], 0.0, 0.0, 0.0, "a face without bounds"
+    sa = BRep_Tool.Surface_s(fa)
+    pa_proj, pb_proj = sp._projector(fa), sp._projector(fb)
+    n = FIT_SAMPLES
+    grid = TColgp_Array2OfPnt(1, n, 1, n)
+    walls = np.zeros((n, n))
+    for i in range(n):
+        for j in range(n):
+            p = sa.Value(u0 + (u1 - u0) * i / (n - 1), v0 + (v1 - v0) * j / (n - 1))
+            got = _midpoint(pa_proj, pb_proj, _np(p))
+            if got is None:
+                return [], 0.0, 0.0, 0.0, "a point of the wall has no midpoint"
+            m, w = got
+            grid.SetValue(i + 1, j + 1, gp_Pnt(*map(float, m)))
+            walls[i, j] = w
+    # a cubic interpolation through the midpoints (an approximation of higher degree waved between them: a twisted
+    # strap's mid-surface came out 14 times its area)
+    fit = GeomAPI_PointsToBSplineSurface()
+    fit.Interpolate(grid, Approx_IsoParametric)
+    if not fit.IsDone():
+        return [], 0.0, 0.0, 0.0, "no surface could be fitted through the midpoints"
+    surf = fit.Surface()
+    wires_a = _curves_of_a(fa, box)
+    if _covers(fb, fa):
+        region = _region_on(surf, wires_a)
+        if region is None:
+            return [], 0.0, 0.0, 0.0, "the face's outline could not be laid on the fitted surface"
+        faces = [region]
+    else:
+        wires_b = _curves_of_b(fb, fa, box)
+        faces = _overlap_2d(wires_a, wires_b, surf, 1e-6) if wires_b is not None else []
+        if not faces:
+            return [], 0.0, 0.0, 0.0, "the two faces do not overlap"
+    from OCP.BRepLib import BRepLib
+
+    for f in faces:
+        BRepLib.BuildCurves3d_s(f)
+    if surf.IsUClosed() or surf.IsVClosed():
+        # a wall closed round (a drafted tube): the fitted face's two sides along the seam are one edge
+        faces = [_seamed(f, 1e-4 * t_hint) for f in faces]
+    faces = [g for f in faces for g in _valid_faces(f)]
+    if not faces:
+        return [], 0.0, 0.0, 0.0, "the fitted mid-face is not a valid face"
+    read = [walls[i, j] for i in range(n) for j in range(n)
+            if any(BRepClass_FaceClassifier(f, gp_Pnt2d(i / (n - 1), j / (n - 1)), 1e-9).State()
+                   in (TopAbs_IN, TopAbs_ON) for f in faces)]
+    worst_rel, lo, hi = 0.0, math.inf, 0.0
+    for f in faces:
+        _w, rel, _n, flo, fhi = fitted_fidelity(f, fa, fb)
+        worst_rel = max(worst_rel, rel)
+        lo, hi = min(lo, flo), max(hi, fhi)
+    if worst_rel > FIDELITY_SHARE:
+        return [], 0.0, 0.0, 0.0, (f"the fitted mid-surface is off the middle by {100 * worst_rel:.1f}% of the wall")
+    if not read and not math.isfinite(lo):
+        return [], 0.0, 0.0, 0.0, "no point of the fitted mid-surface could be read"
+    read = read or [lo, hi]
+    lo, hi = min(lo, *read), max(hi, *read)
+    # a fitted mid-face is itself a few walls wide (as a shell sheet is, SHELL-2): a narrower one is a local feature
+    # of the wall beside it (a flat dimple 1.4 walls wide in a printed cylinder's side), which that wall's own
+    # mid-face runs across when it is joined
+    if width_of(_compound(faces)) < hi / sp.SHELL_WIDTH_RATIO:
+        return [], 0.0, 0.0, 0.0, "it is narrower than four walls (a local feature of the wall beside it)"
+    return faces, float(lo), float(hi), float(np.mean(read)), ""
+
+
 # ------------------------------------------------------------------------------------ extension ----
 class _Mid:
     """One mid-face while it is built."""
 
     def __init__(self, k: int, face, pair: int, body: int, t: float):
         self.k, self.face, self.pair, self.body, self.t = k, face, pair, body, t
+        self.fitted = False              # fitted through the midpoints (SHELL-9)
+        self.t_min = self.t_max = t      # the wall's thinnest and thickest over it (a tapered wall's differ)
         self.plane = _plane(face)
         self.extended: list[dict] = []
         self.original = face
@@ -1710,7 +2116,15 @@ def join_body(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float
                  extend=remake or not m.remade)
         grown.append(g)
     b = BOPAlgo_Builder()
-    for m in mine:
+    from OCP.BRep import BRep_Tool as _BT
+
+    for m, g in zip(mine, grown, strict=True):
+        # a free-form mid-face's grown patch lies over the mid-face itself (its parameter box widened), on a surface
+        # the fuse does not merge with the mid-face's own: both in the fuse were the same wall twice (a twisted
+        # strap held 29% more metal than it has). The patch alone goes in; its pieces inside the mid-face are the
+        # mid-face's own (read by geometry below).
+        if g is not None and isinstance(_BT.Surface_s(m.original), FREE_FORM):
+            continue
         b.AddArgument(m.original)
     for g in grown:
         for tile in (_faces(g) if g is not None else []):
@@ -1854,7 +2268,7 @@ def join_body(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float
             chosen.setdefault(k, i)
     from OCP.TopoDS import TopoDS
 
-    kept = [TopoDS.Face_s(fmap.FindKey(k)) for k in sorted(chosen)]
+    kept =[TopoDS.Face_s(fmap.FindKey(k)) for k in sorted(chosen)]
     owner = [chosen[k] for k in sorted(chosen)]
     reached: list[list[tuple[int | None, float]]] = [[] for _ in mine]
     for i, ks in kept_ext.items():
@@ -2073,25 +2487,54 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
         except Exception as exc:  # noqa: BLE001 - a pair that cannot be read is no pair
             logger.debug("shell: pair %s/%s could not be read (%s)", names[a], names[b], exc)
             ok, t, spread, why = False, float("nan"), float("nan"), "the faces could not be read"
-        pairs.append(sp.Pair(a=a, b=b, thickness=t, spread=spread, rays=rays, even=ok, why=why))
+        pair = sp.Pair(a=a, b=b, thickness=t, spread=spread, rays=rays, even=ok, why=why)
+        # SHELL-9: a wall that is not even but turns little is a TAPERED wall, judged at its thickest point
+        if not ok and ("not parallel" in why or "not even" in why):
+            try:
+                tap, lo, hi, _turn, why_t = sp.tapered_wall(faces[small], faces[big], mm)
+            except Exception as exc:  # noqa: BLE001 - no taper read: the pair stays as it was
+                logger.debug("shell: taper of %s/%s could not be read (%s)", names[a], names[b], exc)
+                tap = False
+            if tap:
+                pair.tapered, pair.t_min, pair.t_max, pair.thickness = True, lo, hi, hi
+                pair.why = f"a tapered wall, {lo:.3g} to {hi:.3g} mm"
+        pairs.append(pair)
 
-    # the mid-faces of every even pair, and each pair's width and verdict (SHELL-2)
+    # the mid-faces of every even or tapered pair, and each pair's width and verdict (SHELL-2)
     mids: list[_Mid] = []
     for i, p in enumerate(pairs):
-        if not p.even:
+        if not p.even and not p.tapered:
             continue
         t_u = p.thickness / mm
-        try:
-            got = mid_faces(faces[p.a], faces[p.b], t_u, 1e-4 * t_u)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("shell: the mid-face of %s/%s failed (%s)", names[p.a], names[p.b], exc)
-            got = []
+        got = []
+        if p.even:
+            try:
+                got = mid_faces(faces[p.a], faces[p.b], t_u, 1e-4 * t_u)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("shell: the mid-face of %s/%s failed (%s)", names[p.a], names[p.b], exc)
+        fitted, lo_u, hi_u, mean_u = False, t_u, t_u, t_u
         if not got:
-            p.why = "the two faces do not overlap"
-            continue
+            # SHELL-9: a tapered wall, or an even one whose half-offsets do not overlap (a twisted strap): fitted
+            small, big = (p.a, p.b) if _area(faces[p.a]) <= _area(faces[p.b]) else (p.b, p.a)
+            try:
+                got, lo_u, hi_u, mean_u, why_f = fitted_mid(faces[small], faces[big], t_u, 1e-4 * t_u)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("shell: the fitted mid-face of %s/%s failed (%s)", names[p.a], names[p.b], exc)
+                got, why_f = [], "the faces could not be read"
+            fitted = bool(got)
+            if not got:
+                p.why = "the two faces do not overlap" if p.even else f"{p.why}; no mid-surface: {why_f}"
+                p.tapered = False
+                continue
+            if p.tapered:
+                p.t_min, p.t_max, p.thickness = lo_u * mm, hi_u * mm, hi_u * mm
+                p.why = f"a tapered wall, {p.t_min:.3g} to {p.t_max:.3g} mm"
         for f in got:
             p.mids.append(len(mids))
-            mids.append(_Mid(len(mids), f, i, body_of[p.a], t_u))
+            m = _Mid(len(mids), f, i, body_of[p.a], mean_u if fitted else t_u)
+            if fitted:
+                m.fitted, m.t_min, m.t_max = True, lo_u, hi_u
+            mids.append(m)
     neighbours = _neighbours(shape, fmap)
     # SHELL-2: shell or solid, sheet by sheet
     for s_i, group in enumerate(sp.sheets(pairs, neighbours, body_of)):
@@ -2164,7 +2607,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
         solid = _Solid(sol, 1e-3 * t_min, wall=t_min)
         body_faces = [faces[k] for k in range(len(faces)) if body_of[k] == b]
         t_max = max(pairs[i].thickness for i in range(len(pairs))
-                    if pairs[i].even and body_of[pairs[i].a] == b and pairs[i].shell) / mm
+                    if (pairs[i].even or pairs[i].tapered) and body_of[pairs[i].a] == b and pairs[i].shell) / mm
         snap_steps(mine, solid)
         for m in mine:
             g = remade_offset(m.original, OFFSET_REMAKE_SHARE * m.t)
@@ -2243,10 +2686,17 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
     worst_rel = 0.0
     for m in mids:
         p = pairs[m.pair]
-        err, npts = fidelity(m.true_face, faces[p.a], faces[p.b], m.t)
-        worst_rel = max(worst_rel, err / m.t if m.t > 0 else 0.0)
+        if m.fitted:
+            # SHELL-9: as far from one face as from the other, within FIDELITY_SHARE of the wall there
+            err, rel, npts, _lo, _hi = fitted_fidelity(m.true_face, faces[p.a], faces[p.b])
+            worst_rel = max(worst_rel, rel)
+        else:
+            err, npts = fidelity(m.true_face, faces[p.a], faces[p.b], m.t)
+            worst_rel = max(worst_rel, err / m.t if m.t > 0 else 0.0)
         mid_rows.append({"id": f"Mid_{m.k + 1}", "pair": f"P{m.pair + 1}", "body": body_names[m.body],
                          "faces": [names[p.a], names[p.b]], "thickness_mm": _r(p.thickness),
+                         **({"fitted": True, "thickness_range_mm": [_r(m.t_min * mm), _r(m.t_max * mm)],
+                             "thickness_mean_mm": _r(m.t * mm)} if m.fitted else {}),
                          "shell": bool(p.shell), "area_mm2": _r(_area(m.true_face) * mm * mm),
                          **({"offset_mm": _r(m.offset * mm)} if m.offset else {}),
                          "kind": fm._kind_word(BRepAdaptor_Surface(m.true_face if m.remade else m.original,
@@ -2282,6 +2732,8 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
               "bodies": bodies,
               "pairs": [{"id": f"P{i + 1}", "faces": [names[p.a], names[p.b]], "thickness_mm": _r(p.thickness),
                          "spread": _r(p.spread), "rays": p.rays, "even": p.even, "why": p.why,
+                         **({"tapered": True, "thickness_range_mm": [_r(p.span()[0]), _r(p.span()[1])]}
+                            if p.tapered else {}),
                          "sheet": None if p.sheet is None else f"S{p.sheet + 1}",
                          "size_mm": None if p.size is None else _r(p.size),
                          "width_mm": None if p.width is None else _r(p.width),
