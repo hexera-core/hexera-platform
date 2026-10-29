@@ -92,12 +92,12 @@ export default async function RepairPage() {
     <div className="page">
       <div className="page__head">
         <div>
-          <p className="page__eyebrow">Proof of concept</p>
+          <p className="page__eyebrow">Repair evidence</p>
           <h1 className="page__title">CAD Repair System</h1>
           <p className="page__intro">
             Broken CAD stops a mesh before it starts. The CAD Repair System locates each defect,
             repairs only what it can name, and credits a fix only by re-reading the file it
-            wrote. Both parts below are real corpus files; red marks the located defects.
+            wrote. The examples below are real corpus files; red marks the located defects.
           </p>
         </div>
       </div>
