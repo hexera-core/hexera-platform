@@ -184,7 +184,7 @@ The GEOMCHECK figures are as we read MSC's Quick Reference Guide. PR 2 checks th
 
 ## 4. Properties and groups (PR 2)
 
-- **One PSHELL per sheet thickness, per part.** Part_3 at 6 mm becomes "Part_3_t6mm". Material: the same as today's solid decks, which write NO material: PSHELL k names MAT1 k (Abaqus: MATERIAL=MAT_k) and the deck header says "mesh only: add MAT1 k". (Checked 29 Oct. The coordinator asked for a marked placeholder steel "the same as the solid decks", but the solid decks have none; this note matches the solid decks until that is settled.) The textbook tests add their own material.
+- **One PSHELL per sheet thickness, per part.** Part_3 at 6 mm becomes "Part_3_t6mm". Material: exactly as today's solid decks - mesh only, no material: PSHELL k names MAT1 k (Abaqus: MATERIAL=MAT_k) and the deck header says "add MAT1 k" (decided 29 Oct). The textbook tests add their own material.
 - **Groups:** one element group per original CAD face pair, named after the CAD faces (`Part_3_Face_12+Face_15`), and one per part.
 - **Joints are marked:**
   - shared-node lines at sewn junctions get a node group per junction;
@@ -310,5 +310,5 @@ Pass rates are reported with 95% ranges (Wilson).
 ## 10. Open questions for Areen
 
 1. FEMAP: can the prospect send one sample model, or confirm that our .neu groups import? Until then the BDF and NEU say "not yet tested in the real solver".
-2. Material: the solid FEA decks write no material at all (mesh only, the user adds MAT1). The shell decks match that. Should both instead carry a marked placeholder steel (E 210 GPa, ν 0.3, ρ 7850)?
+2. Decided 29 Oct: no material in the deck, exactly as the solid decks (mesh only, "add MAT1").
 3. Answered 29 Oct: mixed parts in Auto are recommended Solid until PR 3 lands.
