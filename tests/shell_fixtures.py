@@ -110,6 +110,14 @@ def plate_with_boss(t: float = 4.0):
     return _fuse(_box(0, 0, 0, 200, 100, t), _box(85, 35, t, 30, 30, 30))
 
 
+def stepped_wall_through_plate(tp: float = 2.0, t_low: float = 4.0, t_high: float = 2.0, h: float = 60.0):
+    """A 200 x 100 x `tp` plate (z 0..tp) crossed by an upright wall that is `t_low` thick below it and `t_high`
+    above it, flush on one side (x = 102): the wall steps right where the plate crosses it, so the two wall
+    pieces never touch each other - the plate parts them (a stamped heatsink's fin root)."""
+    return _fuse(_fuse(_box(0, 0, 0, 200, 100, tp), _box(102 - t_low, 0, -h, t_low, 100, h)),
+                 _box(102 - t_high, 0, tp, t_high, 100, h))
+
+
 def plate_with_rod(t: float = 5.0, r: float = 8.0, length: float = 250.0):
     """A 200 x 100 x `t` plate with a solid round rod (radius `r`, `length` long) hung under its middle: the rod
     is round with a radius under two walls, yet no fillet - a solid region the plate is tied to."""

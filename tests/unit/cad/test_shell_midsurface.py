@@ -422,3 +422,12 @@ def test_a_hole_offset_inward_shrinks_whichever_way_its_plane_faces(normal_z):
         (grown,) = ms._offset_region(surf, wire, 10.0, GeomAbs_Arc)
         assert ms._area(grown) == pytest.approx(math.pi * 900.0, rel=1e-6)
         assert ms._offset_region(surf, wire, -25.0, GeomAbs_Arc) == []
+
+
+def test_a_wall_stepping_where_a_plate_crosses_it_becomes_one_flat_shell():
+    # the two wall pieces never touch (the plate parts them by its wall), yet they are one stepped wall: the
+    # thinner piece is snapped onto the thicker piece's mid-plane with its offset kept (SHELL-7)
+    rec, _ = ms.extract(sf.stepped_wall_through_plate(), mm_per_unit=1.0)
+    offsets = [abs(m["offset_mm"]) for m in rec["mids"] if "offset_mm" in m]
+    assert offsets == [pytest.approx(1.0, abs=1e-6)]
+    _all_checks(rec)

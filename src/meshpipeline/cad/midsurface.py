@@ -1436,8 +1436,8 @@ FALLBACK_WALLS = 3.0
 #: SHELL-7, PLATES OF TWO THICKNESSES MEETING IN LINE (a butt step, flush on one side): their mid-planes are
 #: parallel and apart by half the difference, so nothing meets. The thinner plate's mid-face is moved onto the
 #: thicker one's mid-plane - when the two are parallel within STEP_PARALLEL_DEG, apart by no more than half the
-#: thicker wall, and touch edge to edge (the faces come within the offset plus STEP_TOUCH of the thinner wall) -
-#: and the offset is kept for the solver (Nastran ZOFFS, Abaqus / CalculiX OFFSET): the same stiffness and mass,
+#: thicker wall, and touch edge to edge (the faces come within the offset plus STEP_TOUCH of the thicker wall:
+#: a plate crossing right at the step parts them by its own wall) - and the offset is kept for the solver (Nastran ZOFFS, Abaqus / CalculiX OFFSET): the same stiffness and mass,
 #: one flat shell. The checks still read where the mid-face really lies.
 STEP_PARALLEL_DEG = 1.0
 STEP_TOUCH = 0.5
@@ -1496,7 +1496,7 @@ def snap_steps(mine: list[_Mid], solid: _Solid) -> None:
                 continue
             if not _near_box(m.box[0], (o.box[0], o.box[1]), abs(d) + o.t + max(m.box[1] - m.box[0])):
                 continue
-            if _dist(m.original, o.original) > abs(d) + STEP_TOUCH * m.t:
+            if _dist(m.original, o.original) > abs(d) + STEP_TOUCH * o.t:
                 continue
             if best is None or o.t > best[0].t:
                 best = (o, d)
