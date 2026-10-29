@@ -292,6 +292,10 @@ def tapered_wall(fa, fb, mm: float) -> tuple[bool, float, float, float, str]:
             dot = sign * (na.X() * nb.X() + na.Y() * nb.Y() + na.Z() * nb.Z())
             dists.append(float(proj.LowerDistance()) * mm)
             turned.append(math.degrees(math.acos(max(-1.0, min(1.0, -dot)))))
+            if turned[-1] > TAPER_DEG:
+                # one point turned past the limit settles it: no taper (most pairs the rays find across a
+                # corner are two sides of a solid; reading all 49 points of each was half a fan housing's pairing)
+                return False, nan, nan, turned[-1], f"the faces are not parallel (they turn by {turned[-1]:.1f} degrees)"
     if len(dists) < TAPER_MIN_POINTS:
         return False, nan, nan, nan, "too few points of the faces face each other"
     lo, hi, turn = float(min(dists)), float(max(dists)), float(max(turned))

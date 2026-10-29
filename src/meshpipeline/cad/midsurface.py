@@ -566,6 +566,9 @@ def mid_faces(fa, fb, t: float, fuzzy: float) -> list:
 #: distance to B. A fitted mid-face is kept only when every point read on it lies as far from A as from B within
 #: FIDELITY_SHARE of the local thickness.
 FIT_SAMPLES = 17
+#: a pair whose two faces are both narrower than four walls by this margin is not fitted (its mid-face would be
+#: rejected as narrower than four walls; the margin covers a mid-face a little wider than either face)
+FIT_WIDTH_SLACK = 1.5
 FIT_ITERATIONS = 3
 FIT_EDGE_SAMPLES = 24
 
@@ -2607,7 +2610,13 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
             # SHELL-9: a tapered wall, or an even one whose half-offsets do not overlap (a twisted strap): fitted
             small, big = (p.a, p.b) if _area(faces[p.a]) <= _area(faces[p.b]) else (p.b, p.a)
             try:
-                got, lo_u, hi_u, mean_u, why_f = fitted_mid(faces[small], faces[big], t_u, 1e-4 * t_u)
+                # a fitted mid-face lies between its two faces: when both are far narrower than four of its
+                # walls, so is it - not fitted at all (17 x 17 midpoints each; a fan housing has hundreds)
+                wide = FIT_WIDTH_SLACK * max(width_of(faces[p.a]), width_of(faces[p.b]))
+                if wide < t_u / sp.SHELL_WIDTH_RATIO:
+                    got, why_f = [], "it is narrower than four walls (a local feature of the wall beside it)"
+                else:
+                    got, lo_u, hi_u, mean_u, why_f = fitted_mid(faces[small], faces[big], t_u, 1e-4 * t_u)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("shell: the fitted mid-face of %s/%s failed (%s)", names[p.a], names[p.b], exc)
                 got, why_f = [], "the faces could not be read"
@@ -2744,6 +2753,16 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                                   for a in ((True, False) if free else (True,))]:
                 if method == "general" and census["open_edges"] == 0:
                     break
+                # with the mid-faces in beside their patches, only free-form walls join differently: tried only
+                # when an open edge is left within a grown patch's reach of one (a fan housing's 2 x 2 joins of
+                # a few minutes each, its open edges nowhere near its free-form walls)
+                if not alone:
+                    reach = 0.5 * t_max + GROW_WALLS * max(m.t for m in mine)
+                    walls = [m.box for m in mine if isinstance(BRep_Tool.Surface_s(m.original), FREE_FORM)]
+                    listed = census["open_edges"] <= len(census.get("open_at_mm", []))
+                    if listed and not any(_near_box(np.asarray(q, float) / mm, box, reach)
+                               for q in census.get("open_at_mm", []) for box in walls):
+                        continue
                 for m in mine:
                     m.extended = []
                 try:
