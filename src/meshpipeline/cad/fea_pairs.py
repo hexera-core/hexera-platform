@@ -238,6 +238,12 @@ OPEN_OVERLAP_WAY_OUT = ("they pass into each other, and meshed apart a tie joins
                         "cross - remove the overlap in the CAD, or switch this pair to Contact or Off on the stage; "
                         "with every pair that touches left Bonded the two are meshed as one piece instead")
 
+#: PLAN-fea-21 for a tie whose nodes all lie BESIDE the other part's surface (settle_ties ties a node only where
+#: it lies over a face): no reach mends that.
+OPEN_BESIDE_WAY_OUT = ("its nearest nodes lie beside the other part's faces, not over them, and no reach ties a node "
+                       "beside a face - switch this pair to Contact or Off on the stage, or mend where the two meet "
+                       "in the CAD")
+
 
 def open_words(row: Mapping) -> str:
     """One OPEN bonded pair (engines/fea_assembly_deck.open_joints) in plain words, with the way on:
@@ -251,11 +257,15 @@ def open_words(row: Mapping) -> str:
         named = ", ".join(f"{f.get('face')} (nearest {_mm(1000.0 * float(f.get('nearest_m') or 0.0))})"
                           for f in faces[:4]) + (f" and {len(faces) - 4} more" if len(faces) > 4 else "")
         what = f"{named} {'has' if len(faces) == 1 else 'have'} no mesh node within the {_mm(reach_mm)} reach"
+    elif row.get("beside"):
+        what = f"no node of it lies over the other part's surface within the {_mm(reach_mm)} reach"
     else:
         what = f"no node of it lies within the {_mm(reach_mm)} reach"
     src = {"solver default": " (the solvers' default)", "set": " (set on the stage)"}.get(str(row.get("reach_from")), "")
     if row.get("overlap"):
         return f"{row.get('name')} ({parts[0]} and {parts[1]}): {what}{src} - " + OPEN_OVERLAP_WAY_OUT
+    if row.get("beside"):
+        return f"{row.get('name')} ({parts[0]} and {parts[1]}): {what}{src} - " + OPEN_BESIDE_WAY_OUT
     # a little past the farthest node, so every one is inside it
     return (f"{row.get('name')} ({parts[0]} and {parts[1]}): {what}{src} - "
             + OPEN_WAY_OUT.format(needed=_mm(need_mm * 1.05 + 1e-6)))
@@ -268,6 +278,6 @@ def counts(choices: Sequence[Mapping]) -> dict:
                           or c.get("reach_mm"))}
 
 
-__all__ = ["BONDED", "CITE_EACH", "CONTACT", "MAX_REACH_MM", "OFF", "OPEN_OVERLAP_WAY_OUT", "OPEN_RULE", "OPEN_WAY_OUT", "OWNER_RULE", "SAME_SIZE",
+__all__ = ["BONDED", "CITE_EACH", "CONTACT", "MAX_REACH_MM", "OFF", "OPEN_BESIDE_WAY_OUT", "OPEN_OVERLAP_WAY_OUT", "OPEN_RULE", "OPEN_WAY_OUT", "OWNER_RULE", "SAME_SIZE",
            "TYPES", "TYPE_LABELS", "TYPE_RULE", "TYPE_WORDS", "changes_only", "choose", "clean_overrides", "counts",
            "decisions", "default_keep", "default_type", "open_words", "pair_key", "pair_words", "part_no"]

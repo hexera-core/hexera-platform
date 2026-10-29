@@ -1023,6 +1023,14 @@ def open_joints(prep: Prepared) -> dict:
                     open_faces.append({"face": name, "nearest_m": best})
         slave = _nearest(xyz_of(j.sides[0].nodes), facets[1])
         tied = float(np.mean(slave <= reach * (1.0 + 1e-9))) if len(slave) else 0.0
+        # SETTLED (settle_ties): the solver ties exactly the settled nodes - only those that lie OVER the
+        # master, within the tolerance. A node beside the master's edge is near it but never tied, so a tie
+        # that ties no node joins nothing, however near its nodes are (lab, 29 Oct: g_c0181 Tie_18 and
+        # g_c0154 Tie_12 wrote "nothing to tie" while this check read them closed)
+        beside = False
+        if j.tied is not None and len(slave):
+            tied = len(j.tied) / len(np.unique(j.sides[0].nodes))
+            beside = not len(j.tied) and not open_faces
         if open_faces or (len(slave) and tied == 0.0):
             out["open"].append({"name": j.name, "pair": j.pair, "parts": [f"Part_{j.parts[0]}", f"Part_{j.parts[1]}"],
                                 "reach_m": reach, "reach_from": said,
@@ -1030,7 +1038,10 @@ def open_joints(prep: Prepared) -> dict:
                                 "faces": open_faces, "tied_share": round(tied, 4),
                                 # parts that pass into each other, tied apart: joined only where their surfaces
                                 # cross, so no reach is the way on (cad/fea_pairs.open_words)
-                                **({"overlap": True} if j.overlap else {})})
+                                **({"overlap": True} if j.overlap else {}),
+                                # every node near it lies beside the other part's surface, none over it: a wider
+                                # reach ties none of them (cad/fea_pairs.open_words)
+                                **({"beside": True} if beside else {})})
         else:
             out["closed"] += 1
     return out

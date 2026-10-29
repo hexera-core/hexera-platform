@@ -409,3 +409,34 @@ def test_a_bonded_pair_across_its_measured_gap_is_closed(tmp_path, monkeypatch):
     assert asm["open_bonded"] == [] and asm["bonded_check"] == {"checked": 1, "closed": 1}
     row = next(r for r in fea_results.results(ws)["check"]["rows"] if r["key"] == "fea_open_bonded_pairs")
     assert row["ok"] is True
+
+
+def test_an_open_pair_whose_nodes_lie_beside_the_face_is_not_told_to_widen_the_reach():
+    words = P.open_words({"name": "Tie_18", "parts": ["Part_3", "Part_5"], "reach_m": 3e-4, "needed_m": 1e-4,
+                          "reach_from": "tie tolerance", "faces": [], "beside": True})
+    assert "over the other part's surface" in words and "Contact or Off" in words and "reach to at least" not in words
+
+
+def test_a_settled_tie_that_ties_no_node_is_open_however_near_its_nodes(tmp_path, monkeypatch):
+    # the measured 0.2 mm gap, tied: closed; then the same deck with the settled tie emptied (as settle_ties
+    # leaves a tie whose near nodes all lie beside the master) - the check must read it OPEN, never closed
+    from meshpipeline.engines import fea_assembly_deck as AD
+
+    ws = _stage_ws(fx.gapped_blocks(10.0, 0.2), tmp_path / "beside")
+    captured = {}
+    real = AD.open_joints
+
+    def spy(prep):
+        captured["prep"] = prep
+        return real(prep)
+
+    monkeypatch.setattr(AD, "open_joints", spy)
+    _drive(ws, monkeypatch, fea_connection="bonded")
+    prep = captured["prep"]
+    (tie,) = [j for j in prep.joints if j.kind == "tie"]
+    assert tie.tied is not None and len(tie.tied)
+    assert real(prep)["closed"] == 1
+    tie.tied = np.zeros(0, dtype=np.int64)
+    got = real(prep)
+    (row,) = got["open"]
+    assert got["closed"] == 0 and row["tied_share"] == 0.0 and row.get("beside") is True
