@@ -330,6 +330,8 @@ class FakePublisher:
         self._rec("plan", cells=cells, layers=layers, refinements=refinements, op_id=op_id)
     def mesh_stage(self, key, label, op_id="") -> None:
         self._rec("mesh_stage", key=key, label=label, op_id=op_id)
+    def narrate(self, kind, text, *, n=None, of=None, unit="", op_id="") -> None:
+        self._rec("narrate", kind=kind, text=text, n=n, of=of, unit=unit, op_id=op_id)
     def verdict(self, verdict, summary="") -> None: self._rec("verdict", verdict=verdict)
     def closing(self, text, event_id="") -> None:
         # production passes the terminal identity so an early close and a later

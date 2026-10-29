@@ -72,7 +72,9 @@ def test_the_running_step_is_named_with_a_moving_mark_and_its_time_counts_up(liv
       const later = snap();
       line.show(col, L.slow, {});
       const slow = snap();
-      return {first, later, slow, anim: getComputedStyle(el().querySelector('.gp-mark'), '::before').animationName};
+      const icon = el().querySelector('.gp-mark svg');
+      return {first, later, slow, icon: icon ? icon.getAttribute('class') : '',
+              anim: icon ? getComputedStyle(icon.querySelector('.wi-live')).animationName : ''};
     """)
     first, later, slow = out["first"], out["later"], out["slow"]
     assert first["state"] == "running" and first["live"] is True and first["role"] == "status"
@@ -80,7 +82,8 @@ def test_the_running_step_is_named_with_a_moving_mark_and_its_time_counts_up(liv
     assert later["time"] in ("9 s", "10 s")                       # counted up between polls
     assert first["last"] is True and first["toggle"] == "1 done"    # queued, then picked up
     assert slow["note"] == "Still reading - big file (180 MB), this can take a few minutes"
-    assert out["anim"] == "gp-pulse"
+    # the mark is the icon of the work running now (reading: a scan line walking down a page)
+    assert out["icon"] == "wi wi-read" and out["anim"] == "wi-scan"
     assert_clean(live, "the live line while a step runs")
 
 
