@@ -1708,10 +1708,21 @@ def fea_blocker(facts: dict) -> bool:
     return bool(blocker(facts)[0])
 
 
-#: PLAN-fea-22: what the naming keeps back of its own time limit after sizing the mesh (storing the result)
-SIZING_MARGIN_S = 90.0
-#: ...and the least worth starting: with less left, the mesh is sized when it runs
-SIZING_MIN_S = 60.0
+#: PLAN-fea-22: THE SIZING'S OWN TIME. It runs after the stage is shown (the naming has landed), for up to
+#: fea_plan_options.BUDGET_S whatever the naming itself took - the naming task is given that much more
+#: (naming_task_limits) - and stores what it made; a run started before it is done sizes the part itself and takes
+#: the recommended mesh (engines/fea_driver.size_choice). This is what the task keeps back for storing the result.
+SIZING_MARGIN_S = 120.0
+
+
+def naming_task_limits(session_id: str) -> tuple[int, int]:
+    """The naming TASK's (soft, hard) limits: the naming's own (naming_limits_for), plus the FEA sizing's budget and
+    its margin, which run after the stage is shown (the check's own time box still holds the naming to its limits:
+    once the stage is ready, nothing waits on the sizing)."""
+    from meshpipeline.engines.fea_plan_options import BUDGET_S
+    soft, hard = naming_limits_for(session_id)
+    extra = int(BUDGET_S + SIZING_MARGIN_S)
+    return soft + extra, hard + extra
 
 
 def size_fea_plan(session_id: str, stored: dict, interpretation: dict | None, *, token: str,
@@ -1723,9 +1734,9 @@ def size_fea_plan(session_id: str, stored: dict, interpretation: dict | None, *,
     from meshpipeline.application.fea_check import PLAN_FACT_KEY
     from meshpipeline.engines import fea_plan_options as PO
 
-    budget = min(PO.BUDGET_S, naming_limits_for(session_id)[0] - (time.time() - started) - SIZING_MARGIN_S)
-    got: dict = {"sized": False, "why": "There was no time left to size the mesh before it runs"}
-    if budget >= SIZING_MIN_S:
+    budget = PO.BUDGET_S
+    got: dict = {"sized": False, "why": "The mesh could not be sized before it runs"}
+    if budget > 0:
         try:
             from meshpipeline.cad.ingest import canonicalise
             from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
@@ -1738,9 +1749,16 @@ def size_fea_plan(session_id: str, stored: dict, interpretation: dict | None, *,
                 canonical = canonicalise(_fetch(ref, work), work, stem="geometry", ecxml_form="placed")
                 if canonical.kind is GeometryKind.cad:
                     prepared, _note = _prepared_coordinates(canonical.path, interp_ref, ref)
-                    options = PO.bounded(canonical.path, to_metres=float(prepared.to_metres), budget_s=budget)
+                    kept = work / PO.PLANS_FILE
+                    options = PO.bounded(canonical.path, to_metres=float(prepared.to_metres), budget_s=budget,
+                                         plans_out=kept)
                     got = {"sized": True, **options} if options else \
                         {"sized": False, "why": "The mesh could not be sized in time before it runs"}
+                    if options and kept.exists():
+                        # PLANNED ONCE: the plans kept for the run (it reuses them when made for its staged solid)
+                        from meshpipeline.contracts.object_storage import get_object_store
+                        get_object_store().upload_file(local_path=kept,
+                                                       object_key=check_object_key(session_id, PO.PLANS_FILE))
         except Exception as exc:  # noqa: BLE001 - the run sizes it; the stage says so
             logger.warning("geometry check: the FEA mesh was not sized (%s: %s)", type(exc).__name__, str(exc)[:200])
             got = {"sized": False, "why": "The mesh could not be sized before it runs"}

@@ -763,6 +763,9 @@ async def _run_async(req: JobRequest) -> dict:
         # PLAN-fea-22: THE SIZE THE USER PICKED (the full-rules mesh unless they picked the quicker one)
         from meshpipeline.application.fea_check import confirmed_plan_choice
         initial_state["fea_plan_choice"] = await asyncio.to_thread(confirmed_plan_choice, str(session_id or ""))
+        # PLANNED ONCE: where the stage kept the plans it made (the run reuses them for this very staged solid)
+        from meshpipeline.application.fea_check import plans_object_key
+        initial_state["fea_plans_object"] = plans_object_key(str(session_id or ""))
 
         initial_state["repair_directives"] = list(req.repair_directives)
 

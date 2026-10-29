@@ -321,12 +321,22 @@ def _elements_words(n: int, at_least: bool = False) -> str:
     return f"{'at least' if at_least else 'about'} {said} elements"
 
 
-def _time_words(minutes) -> str:
+def _time_words(minutes, usual=None) -> str:
+    """A mesh's time: what it usually takes and its upper end (Areen, 28 Oct)."""
+    from meshpipeline.engines.fea_plan_options import minutes_words
     try:
         m = int(minutes)
     except (TypeError, ValueError):
         return ""
-    return f"up to about {max(1, m)} minutes" if m < 90 else f"up to about {m / 60.0:.1f} hours"
+    try:
+        u = int(usual) if usual is not None else None
+    except (TypeError, ValueError):
+        u = None
+    return minutes_words(u, m)
+
+
+#: said once under the times: a pass the ladder repeats takes longer than one pass
+RETRY_WORDS = "A retry can take longer."
 
 
 def _machine_words(row: dict) -> str:
@@ -339,7 +349,7 @@ def _machine_words(row: dict) -> str:
 def _option(row: dict, key: str, recommended: str) -> dict:
     label = "Full rules" if key == PLAN_FULL else "Quicker"
     bits = [_elements_words(int(row.get("elements") or 0), bool(row.get("at_least"))), _machine_words(row),
-            _time_words(row.get("minutes"))]
+            _time_words(row.get("minutes"), row.get("usual_minutes"))]
     words = " · ".join(b for b in bits if b)
     if key == PLAN_QUICKER and row.get("short_zones"):
         words += f" · {int(row['short_zones'])} zones coarser than their rules"
@@ -351,25 +361,29 @@ def plan_view(facts: dict | None) -> dict | None:
     """PLAN-fea-22, the size choice as the stage shows it: "sizing" while the check plans the mesh, then the two
     meshes with the one the evidence recommends (preselected) and why - or, when the full-rules mesh fits the
     standard machine, that there is nothing to choose; "not sized" when the check could not plan it in time
-    (the run makes the full-rules mesh). None before the check started sizing it."""
+    (the run sizes it and takes the recommended mesh itself - it never waits for the user). None before the check
+    started sizing it."""
     got = (facts or {}).get(PLAN_FACT_KEY)
     if not isinstance(got, dict):
         return None
     if got.get("sizing"):
-        return {"state": "sizing", "words": "Sizing the mesh..."}
+        return {"state": "sizing", "words": ("Sizing the mesh... You can go on: if it is not ready by then, the run "
+                                                 "takes the recommended mesh itself.")}
     if not got.get("sized"):
         return {"state": "not_sized", "words": (got.get("why") or "The mesh is sized when it runs") + ": "
-                "the full-rules mesh is made, on the machine it needs."}
+                "the run sizes it and takes the recommended mesh, without waiting for you."}
     full = got.get("full") or {}
     rec = PLAN_QUICKER if got.get("recommended") == PLAN_QUICKER else PLAN_FULL
     options = [_option(full, PLAN_FULL, rec)]
     if got.get("choice") and isinstance(got.get("quicker"), dict):
         options.append(_option(got["quicker"], PLAN_QUICKER, rec))
-    out: dict = {"state": "sized", "choice": len(options) > 1, "recommended": rec, "why": str(got.get("why") or ""),
+    out: dict = {"state": "sized", "choice": len(options) > 1, "recommended": rec,
+                 "why": " ".join(w for w in (str(got.get("why") or ""), RETRY_WORDS) if w),
                  "question": PLAN_QUESTION, "options": options}
     if len(options) == 1:
         out["words"] = (f"{_elements_words(int(full.get('elements') or 0), bool(full.get('at_least')))} on "
-                        f"{_machine_words(full)}, {_time_words(full.get('minutes'))}.")
+                        f"{_machine_words(full)}, {_time_words(full.get('minutes'), full.get('usual_minutes'))}. "
+                        f"{RETRY_WORDS}")
     return out
 
 
@@ -392,9 +406,18 @@ def plan_words(answer: str, facts: dict | None) -> str:
     return f"Mesh: {opt['label'].lower()} ({opt['words']})."
 
 
+def plans_object_key(session_id: str) -> str:
+    """Where the check keeps the plans its sizing made (engines/fea_plan_options.PLANS_FILE); "" without a session."""
+    if not session_id:
+        return ""
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.engines.fea_plan_options import PLANS_FILE
+    return check_object_key(session_id, PLANS_FILE)
+
+
 def confirmed_plan_choice(session_id: str) -> str:
     """PLAN-fea-22: the size choice confirmed on the stage (the stored confirmation's fea_plan): "quicker" or
-    "full"; "" when nothing was picked (the run then makes the full-rules mesh)."""
+    "full"; "" when nothing was picked (the run then takes the recommended mesh itself, and says so)."""
     import json
 
     if not session_id:

@@ -69,6 +69,9 @@ def test_the_stage_shows_both_meshes_with_the_recommended_one_picked(monkeypatch
     full, quick = view["options"]
     assert (full["key"], quick["key"]) == ("full", "quicker") and quick["recommended"] and not full["recommended"]
     assert "25.0 million elements" in full["words"] and "GiB machine" in full["words"]
+    # THE TIME, AS IT USUALLY GOES AND ITS UPPER END (Areen, 28 Oct), and that a retry can take longer
+    assert "usually about" in full["words"] and ", up to " in full["words"]
+    assert view["why"].endswith("A retry can take longer.")
     assert "the standard machine" in quick["words"] and "1 zones coarser" in quick["words"]
     # the answer is checked against what was offered: the pick, else the recommended one
     assert F.plan_answer("full", _facts(out)) == "full"
@@ -86,7 +89,8 @@ def test_no_choice_offered_means_no_answer(monkeypatch):
     assert F.plan_view({F.PLAN_FACT_KEY: {"sizing": True, "token": "t"}})["state"] == "sizing"
     assert F.plan_answer("quicker", {F.PLAN_FACT_KEY: {"sizing": True}}) == ""
     not_sized = F.plan_view({F.PLAN_FACT_KEY: {"sized": False, "why": "There was no time left"}})
-    assert not_sized["state"] == "not_sized" and "full-rules mesh is made" in not_sized["words"]
+    assert not_sized["state"] == "not_sized" and "takes the recommended mesh" in not_sized["words"]
+    assert "without waiting for you" in not_sized["words"]
 
 
 def test_the_run_caps_the_plan_only_when_the_quicker_mesh_was_picked():
@@ -101,3 +105,116 @@ def test_the_run_caps_the_plan_only_when_the_quicker_mesh_was_picked():
     assert MM.choose(process_gib=FD.memory_need(at_aim)[0], workspace_gib=FD.memory_need(at_aim)[1])["where"] == "cloud_run"
     over = 1.02 * at_aim
     assert MM.choose(process_gib=FD.memory_need(over)[0], workspace_gib=FD.memory_need(over)[1])["where"] == "gce"
+
+
+def test_the_time_is_said_as_usually_and_up_to():
+    assert PO.minutes_words(30, 60) == "usually about 30 minutes, up to 60 minutes"
+    assert PO.minutes_words(45, 200) == "usually about 45 minutes, up to 3.3 hours"
+    assert PO.minutes_words(None, 20) == "up to about 20 minutes"
+    assert PO.minutes_words(20, 20) == "up to about 20 minutes"
+    assert PO.minutes_words(5, None) == ""
+    # the usual time is the measured whole-run rate; the upper end the part's slow rate (PLAN-fea-13)
+    row = PO.row({"faces": {}}, _plan(6_000_000), PO.FULL)
+    assert row["usual_minutes"] < row["minutes"]
+
+
+def _choose_stub(monkeypatch, full: dict, quick: dict, calls: list):
+    def choose(record, surface, diag_m, *, ai=None, cap=None, **_kw):
+        calls.append(cap)
+        return dict(quick if cap is not None else full)
+    monkeypatch.setattr(FD, "choose_plan", choose)
+    monkeypatch.setattr(FD, "_restate", lambda record, plan: plan)
+
+
+@pytest.mark.parametrize("quick_short,expected", [(("corner", "round"), "quicker"), (("corner", "fillet"), "full")])
+def test_with_nothing_picked_the_run_takes_the_recommended_mesh_and_says_so(monkeypatch, quick_short, expected):
+    """THE RUN NEVER WAITS (Areen, 28 Oct): no pick (the stage had not sized it, or no answer came) is the
+    recommended mesh, decided by the run from its own plans by the stage's rule, and said."""
+    calls: list = []
+    full, quick = _plan(25_000_000), _plan(3_000_000, quick_short)
+    _choose_stub(monkeypatch, full, quick, calls)
+    plan, said = FD.size_choice({}, {"faces": {}}, None, 0.1, levers=[], ceiling_s=1.0, ai=None, kept=None, key="k")
+    assert plan["estimate"]["elements"] == (3_000_000 if expected == "quicker" else 25_000_000)
+    assert said["value"] == expected and said["inputs"]["picked"] is False and said["rule"] == "PLAN-fea-22"
+    assert said["words"].startswith("No size was picked before the run started, so the run took the recommended mesh")
+    assert calls == [None, PO.standard_elements()]
+
+
+def test_nothing_to_choose_is_the_full_plan_and_nothing_said(monkeypatch):
+    calls: list = []
+    _choose_stub(monkeypatch, _plan(1_000_000), _plan(900_000), calls)
+    plan, said = FD.size_choice({}, {"faces": {}}, None, 0.1, levers=[], ceiling_s=1.0, ai=None, kept=None, key="k")
+    assert plan["estimate"]["elements"] == 1_000_000 and said == {} and calls == [None]
+
+
+@pytest.mark.parametrize("pick", ["full", "quicker"])
+def test_the_pick_is_planned_and_said(monkeypatch, pick):
+    calls: list = []
+    _choose_stub(monkeypatch, _plan(25_000_000), _plan(3_000_000, ("corner",)), calls)
+    plan, said = FD.size_choice({"fea_plan_choice": pick}, {"faces": {}}, None, 0.1, levers=[], ceiling_s=1.0,
+                                ai=None, kept=None, key="k")
+    assert said["value"] == pick and said["inputs"]["picked"] is True
+    assert calls == ([PO.standard_elements()] if pick == "quicker" else [None])
+
+
+def test_the_stages_plans_are_reused_only_for_the_same_solid_and_code(monkeypatch):
+    """PLANNED ONCE: the run reuses the plans the stage kept when they were made for this staged solid and code (and
+    the AI changed nothing); otherwise it plans itself."""
+    calls: list = []
+    _choose_stub(monkeypatch, _plan(25_000_000), _plan(3_000_000, ("round",)), calls)
+    kept = {"key": "same", "full": _plan(24_000_000), "quicker": _plan(2_900_000, ("round",))}
+    plan, said = FD.size_choice({}, {"faces": {}}, None, 0.1, levers=[], ceiling_s=1.0, ai=None, kept=kept, key="same")
+    assert calls == [] and plan["estimate"]["elements"] == 2_900_000 and said["inputs"]["reused_stage_plan"] is True
+    plan, said = FD.size_choice({}, {"faces": {}}, None, 0.1, levers=[], ceiling_s=1.0, ai=None, kept=kept,
+                                key="other")
+    assert calls == [None, PO.standard_elements()] and said["inputs"]["reused_stage_plan"] is False
+    # an AI decision that changes a size: the stage planned without it, so the run plans itself
+    calls.clear()
+    monkeypatch.setattr(FD, "_ai_changes_nothing", lambda record, ai, diag_m: (False, []))
+    used_ai = {"status": "used", "decision": {"zones": {"H1": {"priority": "refine"}}}}
+    FD.size_choice({"fea_plan_choice": "full"}, {"faces": {}}, None, 0.1, levers=[], ceiling_s=1.0, ai=used_ai,
+                   kept=kept, key="same")
+    assert calls == [None]
+    # a lever (a later pass) never reuses them
+    calls.clear()
+    monkeypatch.setattr(FD, "_ai_changes_nothing", lambda record, ai, diag_m: (True, []))
+    FD.size_choice({"fea_plan_choice": "full"}, {"faces": {}}, None, 0.1, levers=[{"lever": "x"}], ceiling_s=1.0,
+                   ai=None, kept=kept, key="same")
+    assert calls == [None]
+
+
+def test_an_ai_decision_that_changes_nothing_keeps_the_stages_plans():
+    record = {"faces": {}}
+    assert FD._ai_changes_nothing(record, None, 0.1) == (True, [])
+    assert FD._ai_changes_nothing(record, {"status": "skipped"}, 0.1) == (True, [])
+    refine = {"status": "used", "decision": {"zones": {"H1": {"priority": "refine"}}}}
+    assert FD._ai_changes_nothing(record, refine, 0.1)[0] is False
+
+
+def test_the_plans_key_is_the_staged_solid_the_answers_and_the_code(tmp_path):
+    (tmp_path / "geometry.brep").write_bytes(b"solid A")
+    a = PO.plans_key(tmp_path, connection="bonded", gap_joins=True)
+    assert a == PO.plans_key(tmp_path, connection="bonded", gap_joins=True)
+    assert a != PO.plans_key(tmp_path, connection="contact", gap_joins=True)
+    assert a != PO.plans_key(tmp_path, connection="bonded", gap_joins=False)
+    (tmp_path / "geometry.brep").write_bytes(b"solid B")
+    assert a != PO.plans_key(tmp_path, connection="bonded", gap_joins=True)
+    assert PO.kept_plan({"key": "k", "full": {"x": 1}}, "k", "full") == {"x": 1}
+    assert PO.kept_plan({"key": "k", "full": {"x": 1}}, "j", "full") is None
+    assert PO.kept_plan(None, "k", "full") is None
+
+
+def test_the_measured_memory_is_recorded_against_the_model():
+    got = FD.memory_measured({"quality": {"peak_rss_mb": 20 * 1024, "cells": 5_000_000}},
+                             {"estimate": {"elements": 5_400_000}})
+    assert got["peak_gib"] == 20.0 and got["elements"] == 5_000_000
+    assert got["bytes_per_element"] == round((20 * 1024 - FD.MEMORY_BASE_MB) * 1024 * 1024 / 5_000_000)
+    assert got["model_bytes_per_element"] == FD.BYTES_PER_ELEMENT and got["planned_elements"] == 5_400_000
+    assert FD.memory_measured({"quality": {}}, {}) is None
+
+
+def test_the_sizing_has_its_own_time_beyond_the_naming(monkeypatch):
+    from meshpipeline.application import geometry_check as GC
+    monkeypatch.setattr(GC, "naming_limits_for", lambda _s: (600, 900))
+    soft, hard = GC.naming_task_limits("s")
+    assert soft == 600 + int(PO.BUDGET_S + GC.SIZING_MARGIN_S) and hard == 900 + int(PO.BUDGET_S + GC.SIZING_MARGIN_S)

@@ -468,7 +468,10 @@ STATE_FIELDS: dict[str, str] = {
     "fea_gap_joins":         "whether an FEA assembly's parts that face each other across a small gap are "
                              "joined there (PLAN-fea-18), as confirmed on the stage; True unless switched off",
     "fea_plan_choice":       "PLAN-fea-22's size choice as confirmed on the stage: 'quicker' (sized to the standard "
-                             "mesh job) or 'full' (the full-rules mesh); '' when none was offered - the full-rules mesh",
+                             "mesh job) or 'full' (the full-rules mesh); '' when none was picked - the run takes the "
+                             "recommended one itself, and says so",
+    "fea_plans_object":      "PLAN-fea-22: where the stage kept the plans it made (engines/fea_plan_options.PLANS_FILE); "
+                             "the run reuses them when made for its staged solid and code",
     "flow_topology":         "internal/external flow regime DERIVED from the purpose - a neutral "
                              "fact read by the executor/runners, NOT an engine-native param",
     "leak_closing":          "the leak size the user confirmed on the stage (INS-8): every leak of the "
