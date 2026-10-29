@@ -19,6 +19,9 @@ from meshpipeline.contracts import user_notes as un
 
 logger = logging.getLogger(__name__)
 
+#: the blank line between a [SYSTEM] note and the tool's own result
+_TWO_LINES = chr(10) * 2
+
 INTAKE_CATEGORIES = {
     "web_search": "research",
     "recommend_compatible_engines": "recommendation",
@@ -252,6 +255,28 @@ class IntakeToolExecutor:
             logger.debug("Intake: confirmed patches unavailable (%s)", exc)
             return ()
 
+    def _with_confirmed_port_details(self, patches) -> tuple[list, list[str]]:
+        """The submitted ports, with any measured field the stage confirmed and the submission
+        lost. Never fatal: an unreadable confirmation restores nothing and the submission stands
+        exactly as it arrived."""
+        try:
+            from meshpipeline.application.geometry_confirmation import (
+                confirmed_port_details,
+                restore_port_details,
+            )
+
+            confirmed = confirmed_port_details(str(self.state.session_id or ""))
+            if not confirmed:
+                return list(patches or []), []
+            rows, restored = restore_port_details(patches, confirmed)
+            if restored:
+                logger.info("Intake: restored the confirmed port details on %s - job_id=%s",
+                            ", ".join(restored), self._job_id)
+            return rows, restored
+        except Exception as exc:  # noqa: BLE001 - unknown restores nothing
+            logger.debug("Intake: confirmed port details unavailable (%s)", exc)
+            return list(patches or []), []
+
     async def run(self, tool: str, args: dict | None) -> IntakeToolResult:
         st = self.state
         st.tools_invoked.append(tool)
@@ -280,9 +305,23 @@ class IntakeToolExecutor:
         # approved snapshot, the builder payload and the manifest check see any of it, so none of
         # them can disagree. The model is told every change in the tool result.
         _changes = None
+        _restored: list[str] = []
         if isinstance(args, dict) and "patches" in args:
             _changes = _normalize_declared_patches(args)
             args = {**args, "patches": _changes.patches}
+            # ...AND THE NUMBERS ONLY THE STAGE MEASURED, at the same boundary and for the same
+            # reason. A port's location and size are measured off the part and confirmed by the
+            # user on a picture; the submission's patch list is then produced by a MODEL asked in
+            # prose to copy them across. Measured live, same file, same path, twice: one run
+            # submitted near_mm and its sizes, the next submitted bare names. The bare one built a
+            # correct mesh and was refused for it - with no location the conjugate engine cannot
+            # bind the declared ports to the coolant's mouths, so it named them itself and the
+            # patch contract rejected the names the user had approved, 29 minutes in, with no
+            # retry. The model keeps every judgement here; it stops being the courier for numbers
+            # it did not measure.
+            _patches, _restored = self._with_confirmed_port_details(args["patches"])
+            if _restored:
+                args = {**args, "patches": _patches}
 
         before = st.authorization_signature()
         handler = getattr(self, f"_do_{tool}", None)
@@ -294,6 +333,13 @@ class IntakeToolExecutor:
         result = await handler(args)
         after = st.authorization_signature()
         content = result.content
+        if _restored:
+            # SAID OUT LOUD, like every other change made at this boundary, so the model is never
+            # working from a declaration it cannot see.
+            _rn = ("[SYSTEM] The size and location the user confirmed on the geometry stage were "
+                   "put back on: " + ", ".join(sorted(set(_restored)))
+                   + ". They are measured values from that confirmation, not new input.")
+            content = (_rn + _TWO_LINES + content) if content else _rn
         if _changes is not None and _changes.changed:
             from meshpipeline.contracts.patch_names import declaration_note
             _note = declaration_note(_changes)

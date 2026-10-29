@@ -581,6 +581,91 @@ def confirmed_opening_names(session_id) -> tuple[str, ...]:
                  if isinstance(o, dict) and o.get("name") and o.get("role") != "not_an_opening")
 
 
+#: WHAT A PORT CARRIES THAT ONLY THE STAGE MEASURED. Exactly the fields
+#: `admission_token.approved_intent_canonical` puts in its `port_declaration`, because those are
+#: the ones an approval is fingerprinted on and an engine binds ports with.
+PORT_DETAIL_FIELDS: tuple[str, ...] = (
+    "near_mm", "diameter_mm", "inner_diameter_mm", "outer_diameter_mm",
+    "width_mm", "height_mm", "area_mm2", "interchangeable_with",
+)
+
+
+def confirmed_port_details(session_id) -> dict[str, dict]:
+    """Each confirmed port's MEASURED fields, by name, from the stored confirmation.
+
+    The stage measured these off the part and drew them as stickers the user pressed Proceed on,
+    and `confirmed.json` is written before the session takes the declaration ("the stored copy
+    goes first"), so it is the durable record of them. Empty when nothing was confirmed or the
+    store cannot be read, and then nothing is restored from it.
+    """
+    import json
+
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.contracts.object_storage import get_object_store
+
+    try:
+        record = json.loads(get_object_store().get_bytes(
+            object_key=check_object_key(str(session_id), "confirmed.json")))
+    except Exception:  # noqa: BLE001 - unknown, never a refusal
+        return {}
+    out: dict[str, dict] = {}
+    for q in (record.get("patches") or []):
+        if not isinstance(q, dict):
+            continue
+        name = str(q.get("name") or "").strip()
+        role = str(q.get("type") or q.get("role") or "").strip().lower()
+        if not name or role not in ("inlet", "outlet"):
+            continue
+        have = {k: q[k] for k in PORT_DETAIL_FIELDS
+                if q.get(k) is not None and q.get(k) != []}
+        if have:
+            out[name] = have
+    return out
+
+
+def restore_port_details(patches, confirmed: dict) -> tuple[list, list[str]]:
+    """Put back the measured fields the stage confirmed, on the ports that lost them.
+
+    WHY THIS EXISTS. The stage measures where each port is, the user confirms it on a picture, and
+    `confirmed.json` records it - and then the submission's patch list is produced by a MODEL,
+    which is asked in prose to copy those numbers across. Measured live, same file, same path,
+    twice:
+
+        run A  patches [{inlet, near_mm [6,5,2], diameter_mm 0.9}, {outlet, near_mm [2,1,2], ...}]
+        run B  patches [{inlet}, {outlet}]
+
+    Run B's mesh built correctly and was then refused: with no `near_mm` the conjugate engine
+    cannot bind the declared ports to the coolant's mouths, so it named them `coolant_in` and
+    `coolant_out`, and the patch contract rejected the mesh for not carrying the names the user
+    approved. 29 minutes of meshing, no retry ("a cause another attempt cannot change").
+    `mouths.declared_for` already carries the scar of this failing once before.
+
+    WHAT THIS DOES AND DOES NOT DO. It fills a measured field that is ABSENT, from the
+    confirmation of this same session, on a port of the same name. It never overwrites a value the
+    model did state - a user who corrects a bore in the conversation is still right - never adds or
+    removes a patch, and never touches a name or a role. The model keeps every judgement; it just
+    stops being the courier for numbers it did not measure.
+
+    Returns the patches and the names actually restored, so the change can be said out loud.
+    """
+    rows, restored = [], []
+    for p in (patches or []):
+        if not isinstance(p, dict):
+            rows.append(p)
+            continue
+        name = str(p.get("name") or "").strip()
+        role = str(p.get("type") or p.get("role") or "").strip().lower()
+        have = confirmed.get(name) or {}
+        missing = {k: v for k, v in have.items()
+                   if role in ("inlet", "outlet") and (p.get(k) is None or p.get(k) == [])}
+        if missing:
+            rows.append({**p, **missing})
+            restored.append(name)
+        else:
+            rows.append(p)
+    return rows, restored
+
+
 #: The one wall an internal flow's confirmation declares for every surface that is not an opening.
 BUILT_IN_WALL = "wall"
 

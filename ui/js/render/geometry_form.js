@@ -343,7 +343,14 @@ export function readExternal(root, p) {
 export function readForm(root, p) {
   const flow = root.querySelector(".gc-flow").value;
   const openings = flow === "external" ? [] : [...root.querySelectorAll("tbody tr")].map((tr) => {
-    const id = Number(tr.dataset.id), o = (p.openings || []).find((x) => x.id === id) || {};
+    // Number(x.id), not x.id: `id` is already coerced off the row's dataset, so a strict
+    // compare against an opening whose id came through as a string finds nothing, `o`
+    // becomes {} and EVERY measured field is dropped while the name and role survive from
+    // the row's own inputs - a port with no size and no location, which is what a
+    // conjugate engine cannot bind and the patch contract then refuses. Ten other id
+    // comparisons in this client coerce, including the card's own reader in
+    // render/stage.js; this was the one that did not.
+    const id = Number(tr.dataset.id), o = (p.openings || []).find((x) => Number(x.id) === id) || {};
     const body = { id, name: tr.querySelector(".gc-name").value.trim() || o.name || `opening_${id}`,
                    role: tr.querySelector(".gc-role").value, centroid_mm: o.centroid_mm || null };
     // which way the mouth faces, out of the part - measured, never typed - when it is known

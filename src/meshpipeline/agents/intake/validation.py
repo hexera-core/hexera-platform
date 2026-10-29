@@ -715,13 +715,25 @@ def normalise_submission(args: dict) -> SubmittedRequirements:
     # to another workflow is not a boundary this run can carry.
     allowed_roles = (set(PURPOSES[purpose].boundary_roles) if purpose in PURPOSES
                      else set(_ALL_BOUNDARY_ROLES))
+    # THE MEASURED FIELDS TRAVEL WITH THE NAME. This used to rebuild every patch as exactly
+    # {name, type} and drop the rest, which is where a port's location and size left the
+    # submission on their way to the session: the approval record keeps the model's arguments
+    # verbatim, so the two copies of the same declaration disagreed, and the session's - the one
+    # a later turn, a unit change or a re-submission reads back - was the empty one. Only the
+    # fields a port declaration is made of, so nothing else a model invents rides along.
+    from meshpipeline.application.geometry_confirmation import PORT_DETAIL_FIELDS
+
     patches: list[dict] = []
     for p in (args.get("patches", []) or []):
         if not isinstance(p, dict):
             continue
         name, role = (p.get("name") or "").strip(), (p.get("type") or "").strip()
         if name and role in allowed_roles:
-            patches.append({"name": name, "type": role})
+            entry = {"name": name, "type": role}
+            if role in ("inlet", "outlet"):
+                entry.update({k: p[k] for k in PORT_DETAIL_FIELDS
+                              if p.get(k) is not None and p.get(k) != []})
+            patches.append(entry)
 
     # The mesh-detail preference, resolved ONCE by the shared policy: an omitted or blank value is
     # not a user selection, so it becomes requested=None + effective=STANDARD + source=default. A
