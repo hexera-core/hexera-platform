@@ -807,10 +807,20 @@ def _curves_of_b(fb, fa, box) -> list[list] | None:
     def wire(w):
         curves = []
         for uv in w:
-            arr = TColgp_Array1OfPnt2d(1, len(uv))
-            for i, (s, t) in enumerate(uv, 1):
+            # points that coincide (a short edge sampled onto one spot) are one; under two points there is no
+            # curve, and the degree is held under the point count - OpenCASCADE's fit corrupts memory otherwise
+            # (a whole-process crash on a cyclone cone)
+            keep = [np.asarray(uv[0], dtype=float)]
+            for p in uv[1:]:
+                if np.linalg.norm(np.asarray(p, dtype=float) - keep[-1]) > 1e-12:
+                    keep.append(np.asarray(p, dtype=float))
+            if len(keep) < 2:
+                return None
+            deg = min(3, len(keep) - 1)
+            arr = TColgp_Array1OfPnt2d(1, len(keep))
+            for i, (s, t) in enumerate(keep, 1):
                 arr.SetValue(i, gp_Pnt2d(float(s), float(t)))
-            fit = Geom2dAPI_PointsToBSpline(arr, 3, 3)
+            fit = Geom2dAPI_PointsToBSpline(arr, deg, deg)
             if not fit.IsDone():
                 return None
             curves.append(fit.Curve())
