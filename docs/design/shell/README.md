@@ -196,7 +196,7 @@ The result is a conformal shell: shared nodes along every junction once meshed.
 
 ## 3. Meshing (PR 2)
 
-**Engine.** gmsh on the sewn mid-surface: Frontal-Delaunay for quads (algorithm 8) plus Blossom recombination, and quad-dominant output. If gmsh leaves too many triangles on a family of parts, Salome SMESH (quadrangle mapping, LGPL) is the second engine. The system recommends one, the user picks, and the plan is engine-neutral as on the FEA path.
+**Engine.** gmsh on the sewn mid-surface: Frontal-Delaunay (algorithm 6) plus Blossom recombination, and quad-dominant output. (Frontal-Delaunay for quads, algorithm 8, left faces of B-spline mid-surfaces up to 7 times coarser than their size, with long thin quads past Nastran's limits; QuadQS, algorithm 11, made 3 to 5 times the elements asked for.) If gmsh leaves too many triangles on a family of parts, Salome SMESH (quadrangle mapping, LGPL) is the second engine. The system recommends one, the user picks, and the plan is engine-neutral as on the FEA path.
 
 **Element size rules** (SHMESH-1..7, placeholders). Each is general and measured:
 
@@ -216,14 +216,21 @@ The result is a conformal shell: shared nodes along every junction once meshed.
 | Measure | Nastran GEOMCHECK default (CQUAD4 / CTRIA3) | Femap / industry target |
 |---|---|---|
 | aspect ratio | IAR 100 (warn) | ≤ 5 |
-| warp | Q4_WARP 0.05 | ≤ 5 degrees (≤ 10 notes) |
+| warp | Q4_WARP 0.05, the warping coefficient 2H / (D1 + D2) | ≤ 10 degrees between the two halves (notes) |
 | skew | Q4_SKEW 30° min, T3_SKEW 10° min | ≥ 45° (quad) |
 | taper | Q4_TAPER 0.5 | ≤ 0.5 |
 | interior angle | Q4_IAMIN 30°, Q4_IAMAX 150°, T3_IAMAX 160° | quad 45 to 135°, tria 20 to 120° |
 | Jacobian | (must be positive) | ≥ 0.6 |
 | triangle share | | ≤ 5% of elements |
 
-The GEOMCHECK figures are as we read MSC's Quick Reference Guide. PR 2 checks them against the guide and cites the page, as `fea_solvers.py` does.
+The GEOMCHECK figures are as we read MSC's Quick Reference Guide; the warping coefficient's formula is Altair's statement of Nastran's (H: the corners' height off the mean plane, D1 and D2 the diagonals). Held as an angle of 5 degrees (as first written here) it was 4.5 times stricter than the solver: a square whose corners stand 0.05 of a diagonal off its plane is 22.6 degrees.
+
+**Every delivered element inside Nastran's own limits** (SHMESH-10..13, placeholders). After gmsh, in this order:
+
+10. **Cut:** a quad past any GEOMCHECK limit becomes two triangles, on the diagonal whose triangles are better (fewer past a limit, then the larger smallest angle). A triangle has no warp or taper.
+11. **Seams:** every closed sewn face (a full ring, a torus) is cut at its seams before meshing and fused back conformal. A face gmsh still cannot mesh as a periodic surface is re-made as a B-spline (the same surface) and meshed again.
+12. **Slivers:** an element edge under the floor and either under a fifth of the longest edge of every element on it or under a fifth of the floor is a CAD sliver; its ends become one node (the one most faces meet at stays put). Run before the cut and once after it (a quad folded nearly flat cuts into two slivers along its short diagonal, which then closes).
+13. **Swaps:** a triangle past a limit swaps its longest edge with the triangle across it (same face, never a face's own edge) when both come out better.
 
 **Normals.** Every sheet's normals point one way. They point from face B toward face A of each pair, and outward on closed sections. Offsets and pressures in the user's solver then mean the same thing everywhere.
 

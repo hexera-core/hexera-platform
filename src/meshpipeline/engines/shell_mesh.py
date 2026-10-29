@@ -165,7 +165,25 @@ def collapse_short(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face
         else:
             parent[ra] = rb
     to = np.array([root(a) for a in range(n)], dtype=np.int64)
+    # a merge that would turn an element over (its normal against its own before) is undone, its whole cluster
+    for _ in range(3):
+        bad_roots: set[int] = set()
+        for conn, _f in elems:
+            c = [int(to[a]) for a in conn]
+            if c == conn:
+                continue
+            kept = [c[i] for i in range(len(c)) if c[i] != c[(i + 1) % len(c)]]
+            if len(kept) < 3 or len(set(kept)) != len(kept):
+                continue
+            if float(np.dot(_normal(xyz, np.array(kept)), _normal(xyz, np.array(conn)))) <= 0.0:
+                bad_roots |= {int(to[a]) for a in conn}
+        if not bad_roots:
+            break
+        undo = np.isin(to, np.array(sorted(bad_roots), dtype=np.int64))
+        to[undo] = np.flatnonzero(undo)
     merged = int((to != np.arange(n)).sum())
+    if not merged:
+        return quads, trias, list(q_face), list(t_face), 0
     out_q, out_t, fq, ft = [], [], [], []
     for conn, f in elems:
         c = [int(to[a]) for a in conn]
@@ -182,6 +200,5 @@ def collapse_short(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face
     Q = np.array(out_q, dtype=np.int64).reshape(-1, 4)
     T = np.array(out_t, dtype=np.int64).reshape(-1, 3)
     return Q, T, fq, ft, merged
-
 
 __all__ = ["ShellMesh", "edge_census", "edge_users", "collapse_short", "orient"]

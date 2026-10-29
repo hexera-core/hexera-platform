@@ -49,6 +49,7 @@ class _Periodic(Exception):
 
 
 def _generate(gmsh, tag_of: dict[int, int]) -> None:
+    """Mesh in 2D; a face gmsh cannot mesh as a periodic surface raises _Periodic for it (SHMESH-11)."""
     import re
 
     try:
@@ -178,7 +179,7 @@ def _faces_and_facts(brep: Path, mm: float):
             if a.GetType() == GeomAbs_Circle:
                 radii.append(a.Circle().Radius() * mm)
             ex.Next()
-        out.append({"centroid": np.array([c.X(), c.Y(), c.Z()]), "width": ms.strip_width(f) * mm,
+        out.append({"centroid": np.array([c.X(), c.Y(), c.Z()]), "area": g.Mass(), "width": ms.strip_width(f) * mm,
                     "box_width": ms.width_of(f) * mm, "radii": radii, "bend": fm.face_radius(f, mm),
                     "normal_face": f})
     return out
@@ -263,15 +264,36 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         surfaces = [t for _d, t in gmsh.model.getEntities(2)]
         if len(surfaces) != len(facts):
             raise ValueError(f"gmsh read {len(surfaces)} faces of the mid-surface's {len(facts)}")
-        # each gmsh surface to its sewn face, by centroid (never by trusting the order)
+        # each gmsh surface to its sewn face, by centroid and area (never by trusting the order); faces alike in
+        # both (a cone's apex slivers of 1e-6 mm2, all at one point) go in order, each sewn face once
         cents = np.array([f["centroid"] for f in facts])
+        areas = np.array([f["area"] for f in facts])
+        scale = 1e-9 * max(1.0, float(np.abs(cents).max()) if len(cents) else 1.0)
         tag_of: dict[int, int] = {}
-        for t in surfaces:
+        free = np.ones(len(facts), dtype=bool)
+        for t in sorted(surfaces):
             c = np.array(gmsh.model.occ.getCenterOfMass(2, t))
-            k = int(np.argmin(np.linalg.norm(cents - c, axis=1)))
-            if k in tag_of.values():
-                raise ValueError("two gmsh faces matched one mid-surface face")
+            a = float(gmsh.model.occ.getMass(2, t))
+            dist = np.where(free, np.linalg.norm(cents - c, axis=1), np.inf)
+            best = float(dist.min())
+            if not np.isfinite(best):
+                raise ValueError("gmsh read more faces than the mid-surface has")
+            near = np.flatnonzero(dist <= best + scale)
+            k = int(near[np.argmin(np.abs(areas[near] - a))])
+            free[k] = False
             tag_of[t] = k
+        # SHMESH-12: a sewn face smaller than a square a fifth of the floor across (a cone's apex slivers of 1e-6
+        # mm2) is no wall: it is taken out before meshing (gmsh stopped at one, "the 1D mesh seems not to be
+        # forming a closed loop"); its edges stay, so its neighbours mesh up to them
+        tiny = sorted(t for t, k in tag_of.items()
+                      if facts[k]["area"] * mm * mm < (shell_mesh.SHORT_SHARE * plan_rules.FLOOR_WALLS
+                                                       * rows[k]["wall_mm"]) ** 2)
+        if tiny:
+            gmsh.model.occ.remove([(2, t) for t in tiny])
+            gmsh.model.occ.synchronize()
+            for t in tiny:
+                del tag_of[t]
+        slivers = len(tiny)
         # SHMESH-1/2: a constant size per face; SHMESH-3/4/6: curves sized by curvature, grown at GROWTH
         fields = []
         for t, k in sorted(tag_of.items()):
@@ -298,13 +320,15 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         gmsh.model.mesh.field.setAsBackgroundMesh(mn)
         _generate(gmsh, tag_of)
         node_tags, coords, _p = gmsh.model.mesh.getNodes()
-        index = {int(t): i for i, t in enumerate(node_tags)}
+        tags = np.asarray(node_tags, dtype=np.int64)
+        index = np.full(int(tags.max()) + 1 if len(tags) else 1, -1, dtype=np.int64)
+        index[tags] = np.arange(len(tags))
         xyz = np.asarray(coords, dtype=float).reshape(-1, 3) * mm
         quads, trias, q_face, t_face = [], [], [], []
         for t, k in sorted(tag_of.items()):
             types, _tags, conns = gmsh.model.mesh.getElements(2, t)
             for et, conn in zip(types, conns, strict=True):
-                c = np.vectorize(index.get)(np.asarray(conn, dtype=np.int64))
+                c = index[np.asarray(conn, dtype=np.int64)]
                 if et == 3:
                     c = c.reshape(-1, 4)
                     quads.append(c)
@@ -377,6 +401,10 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     quality["split"] = split
     quality["merged_nodes"] = merged
     quality["flipped"] = flipped
+    quality["sliver_faces"] = slivers
+    if slivers:
+        mesh.notes.append(f"{slivers} sewn face(s) under a fifth of the floor across (CAD slivers) carry no "
+                          "elements (SHMESH-12).")
     if merged:
         mesh.notes.append(f"{merged} node(s) at the ends of sliver edges (under the floor, a fifth of their elements' longest) "
                           "were merged (SHMESH-12).")
