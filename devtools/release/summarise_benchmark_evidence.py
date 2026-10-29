@@ -13,6 +13,30 @@ def _rows(doc: object) -> list[dict]:
     return doc if isinstance(doc, list) else []
 
 
+def _quality(row: dict, stats: dict) -> list[str]:
+    """The measured quality numbers, not just the mesh size.
+
+    Cell counts alone cannot answer "is this mesh any good", and the evidence JSON these lines
+    are drawn from lives under the gate's scratch directory, which is removed unless a tier
+    failed. Whatever is omitted here is therefore gone once the runner dies - so the measured
+    quality travels in the summary rather than only in a file nobody will have.
+    """
+    bits: list[str] = []
+    for key, label in (("max_non_ortho", "non_ortho"), ("max_skewness", "skew")):
+        value = stats.get(key, row.get(key))
+        if value is not None:
+            bits.append(f"{label}={value}")
+    deviation = stats.get("surface_deviation", row.get("surface_deviation"))
+    if isinstance(deviation, dict):
+        # The ratio a fidelity claim rests on; the rest of the block stays in the JSON.
+        for key in ("p95_ratio", "max_ratio"):
+            if deviation.get(key) is not None:
+                bits.append(f"surf_dev_{key}={deviation[key]}")
+    elif deviation is not None:
+        bits.append(f"surf_dev={deviation}")
+    return bits
+
+
 def _describe(row: dict) -> str:
     label = str(row.get("case") or row.get("engine") or "?")
     variant = row.get("variant")
@@ -26,6 +50,7 @@ def _describe(row: dict) -> str:
     cells = stats.get("cells", row.get("cells"))
     if cells:
         bits.append("cells=" + str(cells))
+    bits.extend(_quality(row, stats))
     return " ".join(bits)
 
 

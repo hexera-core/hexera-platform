@@ -52,7 +52,12 @@ case "$MODE" in
              /srv/tests/native/test_native_engine_benchmark.py)
     TIMEOUT=3600
     EVIDENCE_DIR="${BENCHMARK_EVIDENCE_DIR:-$PWD/.benchmark-evidence}"
-    mkdir -p "$EVIDENCE_DIR"
+    # World-writable because the image runs as uid 1000 and this directory is created by whoever
+    # ran make. On a host whose caller is not uid 1000, an owner-only directory means the engines
+    # run for minutes and the write at the end raises PermissionError - the one failure that costs
+    # the whole tier and reports nothing. Docker Desktop maps ownership and hides this; Linux does
+    # not. Same reason validate.sh chmods its own evidence directories.
+    mkdir -p "$EVIDENCE_DIR" && chmod 777 "$EVIDENCE_DIR"
     EVIDENCE=(-v "$EVIDENCE_DIR:/srv/evidence" -e BENCHMARK_EVIDENCE_DIR=/srv/evidence)
     ;;
   *) usage ;;
