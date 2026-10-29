@@ -277,6 +277,13 @@ function initViewer(job,surf,uiCfg){
   // part keeps its selection edge - and a listener on it, so the problem areas follow what is shown
   let repaintParts=null,onPartsPainted=null;
   const cam=ren.getActiveCamera();
+  /* HALF THE VIEW'S HEIGHT PER UNIT OF DISTANCE, in the scope BOTH closures below
+     need it in. It used to be a const inside the heatmap's IIFE, and `radiusNow` in
+     the detail window's IIFE called it by name - a different closure, so the name was
+     never in its scope chain and every click of Detail threw
+     `ReferenceError: tanHalf is not defined` before it asked the server for anything.
+     Measured in a browser on the delivered coupon, 2026-10-29. */
+  const tanHalf=()=>Math.tan(cam.getViewAngle()*Math.PI/360);
   // CAD is z-up, and the geometry check already draws parts that way: start from a front-quarter
   // view looking slightly down with +z up. vtk's default camera is +y-up, which laid cars and
   // aircraft on their side in the mesh viewer. A part modelled another way up opens the way the
@@ -1231,7 +1238,6 @@ function initViewer(job,surf,uiCfg){
     const faceSize=(en,cid)=>{const v=newell(en,cid);return Math.sqrt(0.5*Math.hypot(v[0],v[1],v[2]));};
     const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
     const unit=v=>{const l=Math.hypot(v[0],v[1],v[2])||1;return [v[0]/l,v[1]/l,v[2]/l];};
-    const tanHalf=()=>Math.tan(cam.getViewAngle()*Math.PI/360);
     function camDist(){const f=cam.getFocalPoint(),q=cam.getPosition();
       return Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||1e-12;}
     function unionBounds(list){if(!list.length)return null;
