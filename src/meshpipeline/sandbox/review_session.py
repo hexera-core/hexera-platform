@@ -25,6 +25,54 @@ from meshpipeline.contracts.review_evidence import (
 
 logger = logging.getLogger(__name__)
 
+# A FULL-RESOLUTION BLANK FRAME IS THE LARGEST CLASS OF WORTHLESS EVIDENCE, and the byte-size
+# band below is guaranteed to pass it: a blank 1280x960 PNG is several KB, comfortably inside the
+# band, and on job 575f76e6 eight of them were filed as eight interior inspections. Size says the
+# file is a plausible image; only the pixels say anything was drawn.
+#
+# The measure is deliberately the crudest one that cannot be argued with: the share of pixels
+# that are not the frame's MOST COMMON colour, which is whatever the renderer cleared to. Below
+# this share nothing was drawn - 1 in 10,000 of a 1280x960 frame is 122 pixels, and 122 pixels
+# are not a mesh at any zoom. It is NOT a quality bar: a legitimate view with the model small in
+# frame is thousands of pixels and passes.
+#
+# THE MOST COMMON COLOUR, not the corner pixel. Reading the background off a corner costs
+# nothing and is right nearly always, and is catastrophically wrong the one time the model
+# reaches that corner: the measure inverts and a full frame reads as blank. A mode over the
+# whole frame assumes nothing about where the model sits.
+EMPTY_FRAME_PIXEL_SHARE = 1e-4
+
+
+def frame_shows_nothing(path: Path) -> str | None:
+    """Why this frame is blank, or None - which also covers "could not measure it".
+
+    A measurement that cannot be taken is not evidence of blankness, so an unreadable or
+    undecodable frame falls through to the checks that already own those cases. Pillow and numpy
+    are imported here rather than at module scope: this module is on the import path of
+    render_inputs and must stay importable without the render stack.
+    """
+    try:
+        import numpy as np
+        from PIL import Image
+
+        with Image.open(path) as im:
+            arr = np.asarray(im.convert("RGB"))
+    except Exception as exc:  # noqa: BLE001 - see the docstring; never fail a review on this
+        logger.debug("review session: could not measure frame %s: %s", path.name, exc)
+        return None
+    if arr.size == 0:
+        return "the frame has no pixels"
+    rgb = arr.astype(np.uint32)
+    packed = (rgb[..., 0] << 16) | (rgb[..., 1] << 8) | rgb[..., 2]
+    total = int(packed.size)
+    background = int(np.unique(packed.ravel(), return_counts=True)[1].max())
+    drawn = total - background
+    if drawn > max(1, int(total * EMPTY_FRAME_PIXEL_SHARE)):
+        return None
+    return (f"the frame is blank - {drawn} of {total} pixels differ from the background, so "
+            "nothing was drawn in it")
+
+
 # The sandbox is AUTHORITATIVE on limits. An engine declaration may ask for less; it can never
 # raise these. (RenderContext carries the request; these are the ceilings.)
 MAX_IMAGES_PER_SESSION = 64
@@ -213,6 +261,11 @@ class ReviewSession:
         size = real.stat().st_size
         if size == 0 or size > self._limits.max_image_bytes:
             return self._demote(item, f"image size {size}B is outside the permitted range")
+        # THE PIXELS, NOT THE BYTES. See EMPTY_FRAME_PIXEL_SHARE: the band above is the only
+        # emptiness check this path had, and a blank full-resolution frame sails through it.
+        blank = frame_shows_nothing(real)
+        if blank is not None:
+            return self._demote(item, blank)
         self._images += 1
         if self._images > self._limits.max_images:
             # Refuse THIS view, never the whole review: raising here threw away every finding the

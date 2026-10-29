@@ -76,7 +76,7 @@ def _mint_session_evidence(ledger, group_ids=("group:2:1", "group:2:2", "group:2
     for i, tid in enumerate(group_ids, 1):
         ev = EvidenceItem(evidence_id=f"toggle-{i:03d}", seq=i, label="group shown",
                           purpose="isolate a physical group", image_ref="/shot.png",
-                          covers_target=tid)
+                          target_ref=tid, covers_target=tid)
         ids.append(record_operation_evidence(ledger, ev, inventory, "toggle_patch"))
     return ids
 
@@ -168,7 +168,7 @@ class _FakeRuntime:
                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}]
         if tid in self._ids:
             ev = EvidenceItem(evidence_id="s", seq=1, label="l", purpose="p",
-                              image_ref="/x.png", covers_target=tid)
+                              image_ref="/x.png", target_ref=tid, covers_target=tid)
             return TypedToolResult(img, ev, True)
         return TypedToolResult("no such group; nothing inspected", None, True)
 

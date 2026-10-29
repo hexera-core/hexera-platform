@@ -241,23 +241,55 @@ class UnifiedReviewOutcome:
     run_record: dict = field(default_factory=dict)
 
 
+def _entity_of(target_id: str) -> str:
+    """The entity a target id names, without its kind prefix: `patch:wall` and `wall` both -> wall.
+
+    The two statements compared in record_operation_evidence are written in different alphabets:
+    a command addresses a patch by its bare name and a region by `region:<name>`, while
+    covers_target is always normalised. Comparing the entity is comparing the thing itself.
+    """
+    return str(target_id or "").rsplit(":", 1)[-1].strip()
+
+
 # evidence recording (neutral: types the session's own result)
 def record_operation_evidence(ledger: EvidenceLedger, ev, inventory: dict, operation: str) -> str:
     if ev is None:
         return ""
-    if not getattr(ev, "image_ref", ""):
+    # NEITHER OF THESE IS A LITERAL ANY MORE. They were `image_ok=True, covered=True`, written
+    # unconditionally whenever `ev.image_ref` was a non-empty string - so "this target was
+    # inspected" was decided by "a PNG path came back", and on job 575f76e6 eight blank cuts
+    # through a volume holding no cells were filed as eight interior inspections of two regions.
+    #
+    # image_ok: the render session produced a frame AND its own validation kept it.
+    # review_session._validate clears image_ref for a frame that escaped the sandbox, does not
+    # exist, is outside the size band, is past the view budget, or was MEASURED to have nothing
+    # drawn in it - so a surviving image_ref is now a fact about pixels, not about a path.
+    image_ok = bool(getattr(ev, "image_ref", ""))
+    if not image_ok:
         detail = "; ".join(getattr(ev, "diagnostics", ()) or ()) or "no usable image produced"
         return ledger.add_validation(f"{operation}: {detail}", operation)
     covers = getattr(ev, "covers_target", "")
     if covers and covers in inventory:
         target = inventory[covers]
+        # covered: the session's TWO independent statements about this frame agree - the entity
+        # the command addressed (`target_ref`) and the entity the session claims it covered
+        # (`covers_target`). Every renderer in the tree sets both, so a disagreement means the
+        # coverage claim is about something other than what was rendered, and that is an attempt
+        # rather than an inspection. `usable` is image_ok AND covered, so it is filed and cited
+        # as neither.
+        covered = _entity_of(getattr(ev, "target_ref", "")) == _entity_of(covers)
+        if not covered:
+            logger.warning(
+                "reviewer: %s claims to cover %r but addressed %r - filed as not covered",
+                operation, covers, getattr(ev, "target_ref", ""))
         return ledger.add_target_inspection(
-            InspectionTargetRef(target.kind, covers), operation, image_ok=True, covered=True)
+            InspectionTargetRef(target.kind, covers), operation,
+            image_ok=image_ok, covered=covered)
     if getattr(ev, "view_id", ""):
         return ledger.add_render_view(ev.view_id, getattr(ev, "artifact_key", "") or "",
-                                      operation, image_ok=True)
+                                      operation, image_ok=image_ok)
     return ledger.add_render_view("", getattr(ev, "artifact_key", "") or "", operation,
-                                  image_ok=True)
+                                  image_ok=image_ok)
 
 
 # The properties one axis finding MUST carry. Anything outside these and FINDING_OPTIONAL - including

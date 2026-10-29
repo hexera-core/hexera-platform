@@ -50,8 +50,11 @@ class _FakeRuntime:
         img = [{"type": "text", "text": "ok"},
                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}]
         if tid in self._ids:
+            # target_ref AND covers_target, as every renderer in src sets them: the command's
+            # own address and the session's coverage claim. record_operation_evidence files
+            # `covered` from the two agreeing, so a fake that sets one is not a session result.
             ev = EvidenceItem(evidence_id="s", seq=1, label="l", purpose="p",
-                              image_ref="/x.png", covers_target=tid)
+                              image_ref="/x.png", target_ref=tid, covers_target=tid)
             return TypedToolResult(img, ev, True)
         # a generic frame with no target provenance (or an unknown target) - no coverage
         return TypedToolResult("no such target; nothing inspected", None, True)
@@ -305,7 +308,7 @@ def test_non_patch_kinds_survive_into_coverage(engine, kinds, monkeypatch, tmp_p
     L = EvidenceLedger()
     for t in targets:
         ev = EvidenceItem(evidence_id="s", seq=1, label="l", purpose="p", image_ref="/x.png",
-                          covers_target=t.target_id)
+                          target_ref=t.target_id, covers_target=t.target_id)
         record_operation_evidence(L, ev, {t.target_id: t}, "toggle_patch")
     covered = {r.target.kind for r in L.target_inspections() if r.usable}
     assert kinds <= covered

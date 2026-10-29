@@ -77,10 +77,53 @@ def _build_driver():
     return drive
 
 
+#: What the renderer draws for this engine, and therefore what a PATCH obligation can name. The
+#: conjugate surface is ONE physical group per REGION (cfmesh_conjugate/review_surface) rather
+#: than one per boundary patch, so the renderable entities are the region names themselves - the
+#: coolant and the metal - and `patch:<region>` is the id a toggle of one of them covers.
+def _region_names(manifest) -> list[str]:
+    """The regions the DELIVERED mesh has, off checkMesh's own per-region rows.
+
+    Trusted job data, as every obligation resolver must be: the export is the thing that fails,
+    so reading the regions off the quality block (measured on constant/<region>/polyMesh) keeps
+    the obligation independent of whatever the review surface managed to carry.
+    """
+    m = manifest or {}
+    rows = (m.get("quality") or {}).get("regions") or []
+    names = [str(r.get("name")).strip() for r in rows
+             if isinstance(r, dict) and str(r.get("name") or "").strip()]
+    return sorted(dict.fromkeys(names))
+
+
 def _target_obligations(manifest, engine_params, purpose):
     from meshpipeline.contracts.evidence_ledger import TargetObligation
     m = manifest or {}
-    obs = [TargetObligation(kind=TargetKind.PATCH, provenance="every renderable boundary patch")]
+
+    # ONE PATCH IS NOT EVERY PATCH, AND ON A TWO-BODY MESH IT IS HALF THE MESH.
+    # This was `TargetObligation(kind=PATCH)` - kind-only, min_count falling through to 1 - under
+    # a provenance string reading "every renderable boundary patch". One inspection of one entity
+    # discharged it. Measured on job 575f76e6: the review surface carried the solid alone
+    # ("patches: ['solid']"), the reviewer toggled it, the obligation was satisfied, and the
+    # coolant boundary being absent from the file went unremarked all the way to
+    # verdict=passed concerns=[].
+    #
+    # EXACT IDS, ONE PER REGION, because this engine's renderable entities ARE its regions and
+    # there are exactly two of them. The cost is two toggles out of a review's view budget, and
+    # the names come from the delivered mesh rather than from discovery, so a surface that lost
+    # a region cannot satisfy the obligation by not offering it: discovery comes up short and
+    # eligibility.missing_target_obligations refuses before the model is asked.
+    regions = _region_names(m)
+    if regions:
+        obs = [TargetObligation(
+            kind=TargetKind.PATCH, exact_ids=tuple(f"patch:{r}" for r in regions),
+            provenance="each delivered region's own boundary - the coolant's and the metal's")]
+    else:
+        # No measured region rows: a manifest this engine did not write, or a fixture. Fall back
+        # to the kind-only floor rather than inventing names, and say that is what happened.
+        obs = [TargetObligation(kind=TargetKind.PATCH,
+                                provenance="a renderable boundary (no per-region rows in the "
+                                           "manifest to name)")]
+
     names = [r.get("name") for r in (m.get("inspection_regions") or [])
              if isinstance(r, dict) and r.get("name")]
     if names:
@@ -256,6 +299,13 @@ SPEC = EngineSpec(
         _load_viewer_surface=_viewer_surface,
         render_artifacts=_RENDER_ARTIFACTS,
         inspection_targets=_INSPECTION_TARGETS,
+        # THE INTERIOR IS THE PRODUCT HERE, not a view of it. A conformal two-region split and
+        # one merged block agree on every number the gates print - cells, faces, non-ortho, skew
+        # - and differ only in a cut through the coolant. So a run that published no volume has
+        # produced nothing this review can judge, and base.expected_target_obligations must not
+        # waive the region obligation off an absent `mesh_paths.volume`: the review says the
+        # evidence is missing instead of passing a mesh it never looked inside.
+        review_requires_the_interior=True,
         _load_target_obligations=lambda: _target_obligations,
         home_turf=HOME_TURF,
         briefing=BRIEFING,

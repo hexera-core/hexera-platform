@@ -286,10 +286,18 @@ def _check_obligation(o, ledger: EvidenceLedger) -> list[str]:
                 # Worded as an order, not a state: a reviewer once parsed "target X has no
                 # usable inspection" as "X is not available", declared the review impossible
                 # and stalled out on a production-grade mesh. The region is always inspectable.
+                # The TOOL'S OWN ARGUMENT, which is the bare entity name: inspect_region
+                # takes 'across_the_flow', never 'region:across_the_flow'. Naming the prefixed
+                # id here read as the argument to type and could only be refused. Patches are
+                # named too, now that an engine can oblige exact patch ids (cfmesh_conjugate
+                # obliges one per region).
+                entity = tid.split(":", 1)[-1]
+                how = ("the slice tool with region" if o.kind is TargetKind.REGION
+                       else "toggle_patch on")
                 reasons.append(
                     f"required {o.kind.value} '{tid}' has not been inspected in this session. "
-                    f"It IS available - inspect it now (for a region: the slice tool with "
-                    f"region '{tid}'), then cite the t- id that inspection returns{prov}")
+                    f"It IS available - inspect it now ({how} '{entity}'), then cite the t- id "
+                    f"that inspection returns{prov}")
         return reasons
     have = len(ledger.usable_inspections_of_kind(o.kind))
     need = max(o.min_count, 1)

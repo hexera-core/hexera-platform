@@ -596,6 +596,18 @@ class EngineSpec:
     # obligation per inspection target this engine declares required; an engine that can assert
     # something stronger, or whose applicability is conditional, provides its own resolver.
     _load_target_obligations: Callable[[], Callable[..., tuple] | None] = lambda: None
+    # IS THE INTERIOR THIS ENGINE'S PRODUCT, OR A VIEW OF IT?
+    # False (the default) means the interior slices are an aid: the mesh can be judged from its
+    # boundaries and its measured quality when no volume was published, and the waiver in
+    # expected_target_obligations applies. True means the mesh IS its interior - a conjugate
+    # split and one merged block print the same numbers in every gate, and only a cut through
+    # the coolant tells them apart - so a run with no volume has not produced a reviewable mesh
+    # and the region obligation stands, to be refused as missing evidence rather than waived
+    # into a PASS.
+    # DECLARED, never inferred. Every region engine declares `region:*` required, so deriving
+    # this from the targets would delete the waiver for all of them at once, which is the
+    # failure the waiver was added for.
+    review_requires_the_interior: bool = False
 
     def expected_target_obligations(self, manifest=None, engine_params=None,
                                     purpose: str = "") -> tuple:
@@ -607,12 +619,28 @@ class EngineSpec:
             obs = tuple(TargetObligation(kind=t.kind,
                                          provenance=f"{t.target_id} (declared required)")
                         for t in self.inspection_targets if t.required)
-        # ONE RULE FOR EVERY ENGINE: an obligation follows what the run produced. Every region is
-        # a cut through the VOLUME, so a run that published no volume owes no region inspection -
-        # demanding one ended the review before the model was asked (EXPECTED_TARGET_MISSING) on
-        # a mesh that passed every gate. A volume that IS published but cannot be opened is still
-        # refused by the artifact resolver; nothing is waived here.
-        if not ((manifest or {}).get("mesh_paths") or {}).get("volume"):
+        # AN OBLIGATION FOLLOWS WHAT THE RUN PRODUCED. Every region is a cut through the VOLUME,
+        # so a run that published no volume owes no region inspection - demanding one ended the
+        # review before the model was asked (EXPECTED_TARGET_MISSING) on a mesh that passed every
+        # gate.
+        #
+        # THE TWO AUTHORITIES, AND WHICH HALF OF THEM IS DANGEROUS. This clause reads the
+        # manifest's CLAIM (`mesh_paths.volume`, a string); the render session advertises region
+        # targets off the resolved FILE (render_inputs.has_volume). The two meet in exactly one
+        # place, eligibility.missing_target_obligations, and there the disagreement is the
+        # answer:
+        #   claim yes / file no  - the obligation stands and discovery cannot meet it, so the
+        #                          review refuses. That is what the PRUNED volume on job
+        #                          51d5481d did, and it is the honest outcome.
+        #   claim no  / file no  - waived here, and NOTHING downstream then asks to see inside
+        #                          the mesh at all. That is the dangerous half: a review of the
+        #                          outside of a mesh whose whole point is the inside passes with
+        #                          no concerns, which is the shape job 575f76e6 came back in.
+        # So the waiver is the engine's to refuse. An engine that declares
+        # `review_requires_the_interior` never waives, and an absent volume becomes stated
+        # missing evidence instead of a question nobody asked.
+        if (not self.review_requires_the_interior
+                and not ((manifest or {}).get("mesh_paths") or {}).get("volume")):
             obs = tuple(o for o in obs if o.kind is not TargetKind.REGION)
         return obs
 

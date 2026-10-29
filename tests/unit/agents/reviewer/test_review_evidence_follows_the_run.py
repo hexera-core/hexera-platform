@@ -43,6 +43,26 @@ from meshpipeline.engines.registry import engine_names, get_spec
 _REGION_ENGINES = [n for n in engine_names()
                    if any(t.kind is TargetKind.REGION for t in get_spec(n).inspection_targets)]
 
+# WHY THE WAIVER IS NO LONGER UNIVERSAL (2026-10-29). The waiver above is right when the interior
+# is a VIEW of the mesh: the boundaries and the measured quality still say whether the mesh is
+# good, so a run that exported no volume is reviewed on what it produced rather than refused for
+# what it did not.
+#
+# It is wrong when the interior IS the mesh. On job 575f76e6 a conjugate review passed a mesh it
+# had seen neither region of, and the same waiver is the other way into that: a conformal
+# two-region split and one merged block agree on every number the gates print - cells, faces,
+# non-ortho, skew, even the interface count - and differ only in a cut through the coolant. With
+# no volume published, the waiver dropped the region obligation, nothing downstream asked to see
+# inside, and a review of the outside came back PASS. An absent interior there is missing
+# evidence, which is a stated outcome, not a smaller review.
+#
+# So each engine declares it (EngineSpec.review_requires_the_interior) and the two groups are
+# checked for opposite behaviour, rather than one rule standing for both.
+_WAIVING_ENGINES = [n for n in _REGION_ENGINES
+                    if not get_spec(n).review_requires_the_interior]
+_INTERIOR_ENGINES = [n for n in _REGION_ENGINES
+                     if get_spec(n).review_requires_the_interior]
+
 _GEOMETRY_SOURCE = {'source_id': '11111111-1111-4111-8111-111111111111', 'owner_id': 'o',
                     'object_key': 'sources/11111111-1111-4111-8111-111111111111',
                     'sha256': '1cf0557a718c367ab1cb8e34e7a86a191fbc5f1ff9f1b64f4466c8d2784ba4b8',
@@ -74,9 +94,10 @@ def _region_obligations(engine, manifest):
 
 def test_there_are_region_engines_to_check():
     assert len(_REGION_ENGINES) >= 4
+    assert _WAIVING_ENGINES and _INTERIOR_ENGINES, "both halves of the rule need an engine"
 
 
-@pytest.mark.parametrize("engine", _REGION_ENGINES)
+@pytest.mark.parametrize("engine", _WAIVING_ENGINES)
 @pytest.mark.parametrize("volume", ["none", "directory"])
 def test_no_volume_file_means_no_slice_is_promised_or_owed(tmp_path, engine, volume):
     (tmp_path / "constant").mkdir()
@@ -85,6 +106,23 @@ def test_no_volume_file_means_no_slice_is_promised_or_owed(tmp_path, engine, vol
     assert m["mesh_paths"]["volume"] is None
     assert m["inspection_regions"] == []
     assert _region_obligations(engine, m) == []
+
+
+@pytest.mark.parametrize("engine", _INTERIOR_ENGINES)
+@pytest.mark.parametrize("volume", ["none", "directory"])
+def test_an_engine_whose_product_is_the_interior_still_owes_the_slice(tmp_path, engine, volume):
+    """The other half, and the reason it exists is in the block above _WAIVING_ENGINES.
+
+    The obligation cannot be met - the session offers no region target without a volume - and
+    that is the point: eligibility.missing_target_obligations refuses the review as missing
+    evidence instead of letting it pass on the outside views alone.
+    """
+    (tmp_path / "constant").mkdir()
+    raw = None if volume == "none" else str((tmp_path / "constant").resolve())
+    m = _manifest(tmp_path, engine, raw)
+    assert m["mesh_paths"]["volume"] is None
+    obs = _region_obligations(engine, m)
+    assert obs, f"{engine} waived its region obligation with no volume published"
 
 
 @pytest.mark.parametrize("engine", _REGION_ENGINES)

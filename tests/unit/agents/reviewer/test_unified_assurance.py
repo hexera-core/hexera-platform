@@ -434,6 +434,10 @@ def test_fail_rejected_when_only_a_generic_view_or_no_evidence():
 def _ev(**kw):
     base = {"evidence_id": "s-1", "seq": 1, "label": "l", "purpose": "p", "image_ref": "/x.png"}
     base.update(kw)
+    # A session result addresses the target it covers. Every renderer in src sets both fields,
+    # and record_operation_evidence files `covered` from the two agreeing, so an item built with
+    # covers_target alone is not a session result - default target_ref to it.
+    base.setdefault("target_ref", base.get("covers_target", ""))
     return EvidenceItem(**base)
 
 

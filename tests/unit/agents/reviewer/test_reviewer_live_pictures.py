@@ -61,7 +61,7 @@ class _Renderer:
                   "image_url": {"url": f"data:image/png;base64,{self.look(self.drawn, tid)}"}}]
         return TypedToolResult(frame, EvidenceItem(
             evidence_id="s", seq=self.drawn, label="l", purpose="p",
-            image_ref=f"/views/{self.drawn}.png", covers_target=tid), True)
+            image_ref=f"/views/{self.drawn}.png", target_ref=tid, covers_target=tid), True)
 
 
 class _Model:

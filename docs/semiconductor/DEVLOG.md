@@ -1699,6 +1699,9 @@ base.py:615, the kind-only PATCH obligation, and the hardcoded `image_ok=True` a
 contract weaknesses that survive these two cuts. Nothing empty now reaches them, which is why the
 specific hole is shut, but a different empty thing would find them again.
 
+(Three of those four are closed in "The four gates that survived those two cuts", below. The
+string-identity target test is still open, and that entry says what answering it would cost.)
+
 ### Eight ranks on eight cores spawned 84 threads and the mesher never left the smoother
 
 A 279,621,370-cell build of the plate on mesh-bench, eight ranks, stretch 6 along the channels:
@@ -2040,3 +2043,137 @@ Every file that drives viewer.js passes on its own. The other way to get the sam
 is `pytest tests/ui tests/unit/...` together: `from conftest import assert_clean` then resolves to
 tests/unit/conftest.py and all 17 viewer files error on import. Both are in the script's header
 now, because a wall of identical errors is what made me write that nothing here runs viewer.js.
+### The four gates that survived those two cuts, and what each one measures now
+
+The two cuts in "A correct conjugate mesh came back PASSED" closed the specific hole: nothing
+empty reaches the reviewer's contract any more. The contract itself was untouched, and an
+adversarial read of it found four places where a question about substance was answered with a
+fact about presence. A different empty thing would have found all four.
+
+| where | the test it was | the test it is |
+|---|---|---|
+| `cfmesh_conjugate/spec.py` | PATCH obligation kind-only, min 1 | `patch:fluid` AND `patch:solid`, named off checkMesh's own region rows |
+| `engines/base.py` | an absent `mesh_paths.volume` STRING waived every region obligation | the waiver is the engine's to refuse, and this engine refuses it |
+| `reviewer/unified.py` | `image_ok=True, covered=True` as literals beside a PNG path | read off the evidence: a kept frame, and two statements agreeing |
+| `sandbox/review_session.py` | the PNG's byte size | the pixels |
+
+ONE PATCH WAS NEVER EVERY PATCH. The obligation read
+`TargetObligation(kind=PATCH)`, which is kind-only, and `required_count()` floors that at one.
+Its provenance string said "every renderable boundary patch". So one inspection of one entity
+discharged it, and that is exactly what 575f76e6 did: the surface carried the solid alone, the
+reviewer toggled it, the obligation was satisfied, and the absent coolant boundary was never
+asked about.
+
+This engine is the cheap case and the obvious one. `review_surface.build_region_msh` writes ONE
+physical group per REGION rather than one per patch, so the renderable entities ARE the two
+bodies, and exact coverage costs two toggles out of a review's view budget. The ids come from
+`quality.regions`, which is checkMesh's own per-region measurement of the delivered polyMesh, not
+from the export and not from discovery: a surface that lost a region cannot satisfy the
+obligation by not offering it, because `missing_target_obligations` then comes up short and the
+review refuses before the model is asked.
+
+THE OTHER FOUR ENGINES HAVE THE SAME GAP AND I LEFT IT. cfmesh, snappy, snappy_multiregion and
+snapgrid all carry the identical kind-only PATCH obligation under the identical provenance
+string. The difference is arithmetic: their entities are boundary patches rather than regions,
+and snapgrid meshes up to 2,000 placed parts. Exact coverage there is tens to thousands of
+inspections against a 64-image session cap and a 30-round budget, so widening it would end
+reviews with no verdict on meshes that passed every gate, which is the failure this codebase has
+already paid for twice. The right answer for those is a floor that is neither 1 nor N, and I do
+not have the measurement to pick it. It is written down here rather than guessed at.
+
+THE WAIVER, AND WHICH HALF OF IT IS DANGEROUS. `base.expected_target_obligations` dropped every
+REGION obligation when `manifest["mesh_paths"]["volume"]` was falsy. That clause reads a CLAIM, a
+string; the render session advertises region targets off the resolved FILE. Two authorities, and
+they meet in exactly one place:
+
+| claim | file | what happens |
+|---|---|---|
+| yes | no | the obligation stands, discovery cannot meet it, EXPECTED_TARGET_MISSING. The pruned volume on 51d5481d, and the honest outcome |
+| yes | yes | compared at full strength |
+| no | no | waived, and nothing downstream asks to see inside the mesh at all |
+
+The third row is the one with no floor under it. For an engine whose interior is a VIEW of the
+mesh the waiver is right, and demanding a slice there is what ended reviews on good meshes. For
+this engine the interior IS the mesh: a conformal two-region split and one merged block agree on
+cells, faces, non-ortho, skew and the interface count, and differ only in a cut through the
+coolant. A review of the outside of one cannot tell it from the other. And `mesh_paths.volume`
+goes absent on a real path, not a hypothetical one: `review_volume` returns None whenever the
+fluid VTK export is missing, and the artifact is declared optional precisely so that does not
+fail the mesh.
+
+So the engine declares it. `EngineSpec.review_requires_the_interior` is False everywhere and True
+for cfmesh_conjugate, and a conjugate run with no volume is now stated missing evidence rather
+than a question nobody asked. DECLARED, not derived: all five region engines mark `region:*`
+required, so reading the flag off the targets would delete the waiver for all of them at once.
+
+IMAGE_OK AND COVERED WERE LITERALS AND ARE NOT ANY MORE.
+
+`image_ok` is now `bool(ev.image_ref)`, which is a different sentence than it was yesterday
+because of the row below it. `review_session._validate` clears `image_ref` for a frame that
+escaped the sandbox, does not exist, is outside the size band, is past the view budget, or was
+MEASURED to have nothing drawn in it. A surviving `image_ref` is a fact about pixels.
+
+`covered` is the only independent pair the evidence carries: the entity the command ADDRESSED
+(`target_ref`) and the entity the session claims it COVERED (`covers_target`). Every renderer in
+the tree sets both, in three places (`sandbox/render_adapter`, `gmsh/review_renderer`,
+`vmtk/review_renderer`), and a disagreement means the coverage claim is about something other
+than what was rendered. `usable` is the AND of the two, so such a record is filed and cited as
+neither. The invariant is pinned at the source by an AST scan rather than in the fakes, because
+four test fakes were setting `covers_target` alone, which is a shape no session produces.
+
+THE EMPTINESS CHECK IS ON THE PIXELS NOW. A blank 1280x960 PNG is several KB and clears the
+byte-size band by a wide margin, which is how eight blank cuts read as eight interior
+inspections. The measure is the share of pixels that are not the frame's most common colour,
+with a floor of 1 in 10,000: on 1280x960 that is 122 pixels, and 122 pixels are not a mesh at any
+zoom. It is not a quality bar. A legitimate view with the model small in frame is thousands of
+pixels and passes.
+
+The first version read the background off the top-left pixel, and a unit fixture broke it in the
+first run: the fixture wrote its drawn pixels from index 0, one of them landed on the corner, and
+the measure inverted. A frame whose model reaches the corner would have read as blank. The mode
+over the whole frame assumes nothing about where the model sits, and that case is now its own
+test.
+
+The measure speaks only about frames it can decode. A file that Pillow cannot open falls through
+as unmeasured, because a measurement that cannot be taken is not evidence of blankness, and the
+checks that own those cases (missing, unreadable, out of band) are already above it.
+
+It costs 118 ms on the worst frame I could build (1280x960, a 500x700 block of random colour, a
+1,060,712-byte PNG, five runs), nearly all of it the decode. At the 64-image session cap that is
+7.5 s across a review that runs for minutes.
+
+THE REFUSAL. `inspect_region` was the one tool in the runtime whose text made a claim about what
+the picture SHOWS: "This cut exposes the interior cells", said whether the renderer had produced
+a section, a blank frame or nothing. Every other tool there answers a refusal by naming the way
+out, and job 53bbce4b is on record for what the generic version costs. It now names the backend's
+own reason, the other declared regions, and what to do if the interior cannot be seen at all, and
+the success text says the cut was taken only because it passed through cells.
+
+Also small: the order that demands an uninspected target named the PREFIXED id as the tool's
+argument ("the slice tool with region 'region:across_the_flow'"), which can only be refused.
+It names the bare entity now, and names toggle_patch for a patch, which matters because an
+engine can oblige exact patch ids as of this commit.
+
+WHAT I DID NOT CHANGE, AND THE QUESTION IT IS. `eligibility.missing_target_obligations` decides
+"produced" by string identity between two lists of ids. No artifact, no geometry, no count. The
+obvious objection is that a target can be produced and empty, which is the whole subject of this
+entry.
+
+I left it because the honest version is expensive in a way the others were not. A measured
+quantity on an inspection target has to come from the backend, and the backend only knows it by
+doing the work: the face count of a patch needs the patch loaded, and the cell count of a
+region's cut needs the volume read and sliced at every declared region BEFORE the session opens.
+On the Corintis plate that is a 197 MB read and two slices at session open, on every review,
+including the ones where the reviewer never cuts. The cheap half of the same protection is
+already in: the backend refuses a cut that passes through no cells, the surface is not published
+holding one region of two, and a blank frame is measured. What string identity still lets through
+is a target that loads, draws, and is empty of the thing it was supposed to show. Closing that
+means paying the load up front, and the trade is worth measuring before it is made.
+
+Also still open: the other four engines' patch obligations, above, and the undecodable frame.
+
+tests/unit/agents/reviewer/test_the_gates_test_substance_and_not_presence.py, 22 tests, one per
+claim above. tests/unit/agents/reviewer/test_render_runtime.py gained the empty-cut refusal.
+tests/unit/agents/reviewer/test_review_evidence_follows_the_run.py had asserted the waiver for
+every region engine; it now checks the two halves of the rule for opposite behaviour, with the
+reason in the file.

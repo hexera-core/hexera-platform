@@ -273,11 +273,29 @@ class ReviewerRenderRuntime:
             )
         ev = await self._exec(RenderCommand(kind=CommandKind.INSPECT_TARGET,
                                       target_id=f"region:{region_name}"))
+        if not ev.image_ref:
+            # THE ONE TOOL HERE THAT DID NOT NAME THE WAY OUT, and the only one whose text made
+            # a claim about what the picture SHOWS. "This cut exposes the interior cells" was
+            # said whether the renderer had produced a section, a blank frame or nothing at all:
+            # on job 575f76e6 it was said over two cuts through a volume that read as 0 cells.
+            # The backend now refuses rather than returning a picture of nothing, so the refusal
+            # is reachable - and it has to read like go_to_coordinates' and toggle_patch's do,
+            # because a refusal with no way on costs a round and teaches the reviewer nothing.
+            others = [n for n in known if n != region_name]
+            return (
+                f"No section was taken at region '{region_name}': "
+                f"{'; '.join(ev.diagnostics) or 'the renderer produced no section'}. "
+                f"Other declared regions: {', '.join(others) or 'none'}. "
+                "Cut one of those instead, or judge the interior from the mesh metrics already "
+                "on file - and if the interior cannot be seen at all, say so in your findings "
+                "rather than passing the axis on the outside views."
+            )
         return await self._parts(ev, (
             f"Internal slice through the VOLUME mesh at region '{region_name}'. "
-            "This cut exposes the interior cells - inspect the near-wall band and "
-            "internal sizing yourself. The mesh script holds the exact numbers "
-            "(layer count, sizes); use the slice to confirm what is actually there."))
+            "The cut was taken only because it passed through cells, so what is drawn IS the "
+            "interior - inspect the near-wall band and internal sizing yourself. The mesh "
+            "script holds the exact numbers (layer count, sizes); use the slice to confirm "
+            "what is actually there."))
 
     async def _t_toggle_patch(self, args: dict) -> Any:
         patch_name = args.get("patch_name", "")

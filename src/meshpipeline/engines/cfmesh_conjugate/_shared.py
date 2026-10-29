@@ -23,16 +23,19 @@ _RENDER_ARTIFACTS = (
         purpose="the coolant region's cells - a conformal split and one merged block look alike in "
                 "every number checkMesh prints, and the slice through the coolant is where they "
                 "differ",
-        # OPTIONAL, and that is a real state rather than a shortfall - the same reading every
-        # other bundle takes. A volume export is a review aid: foam_exec.export_volume_vtk returns
-        # None rather than failing a mesh over one, and base.py drops the region obligations when
-        # the manifest publishes no volume, with its own comment recording why - demanding one
-        # "ended the review before the model was asked (EXPECTED_TARGET_MISSING) on a mesh that
-        # passed every gate". Required here would re-introduce exactly that.
+        # OPTIONAL AS AN ARTIFACT, REQUIRED AS EVIDENCE, and those are two different
+        # statements. Optional here means the RESOLVER does not raise EVIDENCE_MISSING on it:
+        # foam_exec.export_volume_vtk returns None rather than failing a mesh over an export, and
+        # raising at resolution "ended the review before the model was asked
+        # (EXPECTED_TARGET_MISSING) on a mesh that passed every gate".
         #
-        # So the floor is made real the other way round: finalize publishes the per-region volume
-        # on every run, and then the region slices materialise because the volume is THERE, not
-        # because the declaration insisted on it.
+        # What it used to ALSO mean, and no longer does, is that an absent volume waived the
+        # region obligation. base.py waived it for every engine off the manifest string, so a
+        # conjugate run whose fluid export went missing was reviewed on its outside and could
+        # pass - the same shape as job 575f76e6, reached a different way. This bundle now
+        # declares `review_requires_the_interior=True` (spec.py), so the obligation stands, the
+        # session cannot offer a region target without a volume, and the review says the evidence
+        # is missing. The mesh is still delivered; the review is inconclusive, which is honest.
         required=False,
     ),
 )

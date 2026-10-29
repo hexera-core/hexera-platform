@@ -228,6 +228,31 @@ async def test_unknown_region_is_truthfully_refused(runtime, fake_backend, tmp_p
     assert not any(c[0] == "inspect_region" for c in fake_backend[0].calls)
 
 
+async def test_a_cut_that_exposed_nothing_is_refused_with_the_way_out(runtime, fake_backend,
+                                                                      tmp_path):
+    """The one tool here whose text made a claim about what the picture SHOWS.
+
+    "This cut exposes the interior cells" was said whether the renderer had produced a section,
+    a blank frame or nothing at all - on job 575f76e6 it was said over two cuts through a volume
+    that read as 0 cells, and both were filed as interior inspections. The backend now refuses
+    rather than returning a picture of nothing, so the refusal is reachable, and it has to read
+    like go_to_coordinates' and toggle_patch's do: a refusal with no way on costs a round and
+    teaches the reviewer nothing.
+    """
+    async with await _open(runtime) as rt:
+        fake_backend[0].empty_cut = True
+        r = await rt.execute_viewer_tool("inspect_region", {"region_name": "midspan"})
+        typed = await rt.execute_typed("inspect_region", {"region_name": "midspan"})
+    assert isinstance(r, str), "a cut that exposed nothing produced an image"
+    assert "No section was taken at region 'midspan'" in r
+    assert "passed through no cells" in r, "the backend's own reason was not carried"
+    assert "nearwall" in r, "the other declared region was not offered"
+    assert "say so in your findings" in r, "the reviewer was not told what to do about it"
+    assert "exposes the interior cells" not in r and "IS the interior" not in r
+    assert typed.evidence is not None and not typed.evidence.image_ref
+    assert typed.evidence.covers_target == "", "a refused cut must cover no target"
+
+
 async def test_unknown_patch_preserves_the_exact_legacy_text(runtime, fake_backend, tmp_path):
     async with await _open(runtime) as rt:
         r = await rt.execute_viewer_tool(
