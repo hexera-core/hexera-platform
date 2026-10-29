@@ -391,14 +391,44 @@ FEA_RESULT_MAX_BYTES = 48 * 1024 ** 3
 RESULT_FILE_BYTES_PER_MEASURED_CELL = 400
 
 
+def _reported_cells(result: dict | None) -> int:
+    """The cell count a mesh runner puts at the TOP of its result, or 0.
+
+    WHERE THE NUMBER ACTUALLY IS. A live conjugate run on Cloud Run reported
+
+        mesh complete: {"rc": 0, ..., "cells": 6582471, "reproducibility": {...},
+                        "return_scope": {"ceiling_bytes": 800000000,
+                                         "archive_bytes_est": 689484779,
+                                         "left_out": [{"file": "VTK/solid/.../internal.vtu",
+                                                       "bytes": 330346080}]}}
+
+    6,582,471 is the two regions added up (2,520,586 and 4,061,885) and the runner had already
+    put it there. 800,000,000 is CELL_HARD_LIMIT x RESULT_BYTES_PER_CELL - the floor - so the
+    count was never read, and the volume export the reviewer slices was dropped to get under it.
+    At 6,582,471 cells the ceiling is 1,316,494,200 bytes and the whole workspace, export
+    included, is about 791 MB.
+
+    I LOOKED IN TWO PLACES THE RESULT DOES NOT HAVE. `quality.cells` is a single-region engine's
+    shape, and `regions[*].cells` is the conjugate RUNNER's shape - but by the time dispatch hands
+    the result to return_scope it has been flattened, and the live run above is what says so.
+    """
+    if not isinstance(result, dict):
+        return 0
+    try:
+        return max(0, int(result.get("cells") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _region_cells(result: dict | None) -> int:
     """The cell count of a result that reports its mesh REGION BY REGION, or 0.
 
     A conjugate result has no `quality` block at all: the cfmesh_conjugate runner returns
     {"ok", "problems", "notes", "regions": {"fluid": {"cells": ...}, "solid": {"cells": ...}}},
-    because a two-region mesh has no single set of quality numbers. So the archive ceiling fell
-    back to its floor on exactly the engine that produces the biggest workspaces, and a live run
-    said so:
+    because a two-region mesh has no single set of quality numbers. This reads that shape, and
+    `_reported_cells` reads the shape the result has by the time it reaches return_scope - which
+    is the one that was actually failing. So the archive ceiling fell back to its floor on exactly
+    the engine that produces the biggest workspaces, and a live run said so:
 
         return scope: The mesh was too large to send back whole within the transfer limit
         (763 MiB), so the volume export the reviewer slices was left out (330 MB)
@@ -441,7 +471,7 @@ def result_extraction_limits(result: dict | None = None):
         cells = max(0, int((q or {}).get("cells") or 0)) if isinstance(q, dict) else 0
     except (TypeError, ValueError):
         cells = 0
-    cells = cells or _region_cells(result)
+    cells = cells or _reported_cells(result) or _region_cells(result)
     # the count is the remote's word: bounded, so no document can lift the limits without end
     cells = min(cells, 2 * int(polcfg.CELL_HARD_LIMIT))
     archive = max(base.max_archive_bytes, by_budget, cells * RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL)

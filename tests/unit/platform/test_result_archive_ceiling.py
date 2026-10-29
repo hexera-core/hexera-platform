@@ -159,3 +159,75 @@ def test_no_document_can_lift_the_ceiling_without_end():
     absurd = {"regions": {f"r{i}": {"cells": 10 ** 12} for i in range(100)}}
     cap = 2 * int(polcfg.CELL_HARD_LIMIT) * crc.RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL
     assert crc.result_extraction_limits(absurd).max_archive_bytes == cap
+
+
+# #
+# where the cell count actually is by the time return_scope asks
+# #
+#: The result a live conjugate run on Cloud Run reported, trimmed to what the ceiling reads:
+#:
+#:     mesh complete: {"rc": 0, ..., "cells": 6582471, "reproducibility": {...},
+#:                     "return_scope": {"ceiling_bytes": 800000000,
+#:                                      "archive_bytes_est": 689484779,
+#:                                      "left_out": [{"file": ".../internal.vtu",
+#:                                                    "bytes": 330346080}]}}
+#:
+#: 6,582,471 is the two regions added up, 2,520,586 and 4,061,885, and the runner had already put
+#: it at the top. 800,000,000 is the floor, so the count was never read.
+LIVE = {"rc": 0, "timed_out": False, "outcome": "ok", "cells": 6_582_471,
+        "reproducibility": {"engine": "cfmesh_conjugate"}}
+#: What that workspace needed to come home whole: the archive it sent plus the archive estimate of
+#: the volume export it dropped to fit.
+LIVE_WHOLE = 689_484_779 + 101_859_643
+
+
+def test_the_count_the_runner_puts_at_the_top_is_read():
+    """I LOOKED IN TWO PLACES THE RESULT DOES NOT HAVE. `quality.cells` is a single-region
+    engine's shape and `regions[*].cells` is the conjugate RUNNER's shape, but by the time
+    dispatch hands the result to return_scope it has been flattened to a top-level `cells` - and
+    the live run above is what says so, after a commit that claimed to have fixed this."""
+    assert _mib(crc.result_extraction_limits(LIVE)) == 1256
+    assert _mib(crc.result_extraction_limits(None)) == 763, "the floor, for reference"
+
+
+def test_the_live_workspace_now_comes_home_whole():
+    """The point of the figure, and it is closer than it looks.
+
+    689,484,779 bytes of archive plus the 101,859,643 the volume export would have added is
+    791,344,422, against a floor of 800,000,000 - so by the raw ceiling it FITTED, and the first
+    version of this test said so and failed. `return_scope.HEADROOM` is why it did not: the
+    archive is kept to 0.9 of the ceiling, which made the real bar 720,000,000 and the export the
+    thing that had to go.
+
+    With the count read the ceiling is 1,316,494,200 and the bar 1,184,844,780, so the whole
+    workspace rides home with 393 MB to spare - and the export is the file the reviewer slices.
+    """
+    from meshpipeline.engines.return_scope import HEADROOM
+    from meshpipeline.sandbox.safe_extract import default_limits
+
+    floor = max(default_limits().max_archive_bytes,
+                int(polcfg.CELL_HARD_LIMIT) * crc.RESULT_BYTES_PER_CELL)
+    assert LIVE_WHOLE < floor, "the raw floor was never the bar - the headroom was"
+    assert LIVE_WHOLE > floor * HEADROOM, "if it fitted the bar there was nothing to fix"
+
+    ceiling = crc.result_extraction_limits(LIVE).max_archive_bytes
+    assert LIVE_WHOLE <= ceiling * HEADROOM
+
+
+def test_a_quality_block_still_wins_over_the_top_level():
+    """An engine that reports both is reporting the same mesh twice; `quality` is the one the
+    single-region path has always used and nothing about it changed."""
+    both = dict(LIVE, quality={"cells": 10})
+    assert _mib(crc.result_extraction_limits(both)) == _mib(
+        crc.result_extraction_limits({"quality": {"cells": 10}}))
+
+
+def test_an_unreadable_top_level_count_leaves_the_floor_where_it_is():
+    for junk in ({"cells": "lots"}, {"cells": None}, {"cells": -3}, {"cells": [1]}):
+        assert _mib(crc.result_extraction_limits(junk)) == 763, junk
+
+
+def test_the_top_level_count_is_bounded_like_every_other():
+    """The count is the remote's word wherever it is written."""
+    cap = 2 * int(polcfg.CELL_HARD_LIMIT) * crc.RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL
+    assert crc.result_extraction_limits({"cells": 10 ** 12}).max_archive_bytes == cap

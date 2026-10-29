@@ -1079,6 +1079,84 @@ function initViewer(job,surf,uiCfg){
     window._vdbg[job].vtk=()=>a;
   })();
 
+  /* DETAIL - the real cells of one place, when the drawn surface is merged.
+     `fit_to_budget` clusters cells so a delivered mesh fits what a browser can carry: the first
+     customer cold plate delivers 13,022,400 boundary faces on the coolant alone against a budget
+     of 800,000 triangles, so about sixteen delivered faces become one drawn one. The zoom still
+     lets a reader go right in, where the surface under their cursor is a merged approximation of
+     the cells rather than the cells - every number they are given is the mesh's own and the
+     surface is not. This asks the backend for a ball of the DELIVERED boundary around wherever
+     the camera is looking, and swaps it in for the merged one while it is on, because two
+     coincident surfaces at different resolutions fight for the same depth and neither reads.
+     Off again and the merged actors come back exactly as they were. */
+  (function detailWindow(){
+    if(surf.kind!=='polymesh')return;
+    const bar=document.querySelector('#viewer-'+job+' .v-dl');if(!bar||!window.vtk)return;
+    const a=document.createElement('a');a.className='v-dlbtn';a.href='#';a.id='v-detail-'+job;
+    a.title='the real cells around what you are looking at, unmerged';
+    a.innerHTML='<b>Detail</b><span>'+(surf.reduced?'cells here, unmerged':'the cells here')+'</span>';
+    const lbl=a.querySelector('span'),was=lbl.textContent;
+    let shown=[];              // the detail's own actors
+    let hidden=[];             // the merged actors this turned off
+    function clear(){
+      shown.forEach(ac=>ren.removeActor(ac));shown=[];
+      hidden.forEach(en=>en.actor.setVisibility(true));hidden=[];
+      a.removeAttribute('aria-pressed');lbl.textContent=was;rw.render();}
+    /* HOW BIG A BALL. What the camera can see: half the view's height at this distance, so the
+       detail is the neighbourhood the reader is actually looking at and not a guess at a scale.
+       Floored at a few of the finest cells so a reader who has not zoomed in still gets cells
+       rather than one face. */
+    function radiusNow(){
+      const f=cam.getFocalPoint(),p=cam.getPosition();
+      const d=Math.hypot(p[0]-f[0],p[1]-f[1],p[2]-f[2]);
+      const half=d*tanHalf();
+      const floor=4*((stats&&stats.p10>0)?stats.p10:diag*0.002);
+      return Math.max(half,floor);}
+    a.onclick=async e=>{
+      e.preventDefault();
+      if(a.dataset.busy)return;
+      if(shown.length){clear();return;}
+      a.dataset.busy='1';lbl.textContent='reading…';
+      try{
+        const f=cam.getFocalPoint(),r=radiusNow();
+        const q=`x=${f[0]}&y=${f[1]}&z=${f[2]}&radius=${r}`;
+        const res=await fetch(`/api/v1/simulation/${job}/detail?${q}`,{headers:headers()});
+        if(!res.ok){
+          // the backend refuses in words - too big to read, no workspace left on this machine -
+          // and the words are the useful part
+          let why='';try{why=((await res.json())||{}).detail||'';}catch(_e){why='';}
+          lbl.textContent=why?String(why).slice(0,90):('detail '+res.status);
+          return;}
+        const got=await res.json();
+        if(!(got.patches||[]).length){lbl.textContent='no cells there';return;}
+        entries.forEach(en=>{if(en.actor.getVisibility()){en.actor.setVisibility(false);hidden.push(en);}});
+        (got.patches||[]).forEach((p,i)=>{
+          const pd=vtk.Common.DataModel.vtkPolyData.newInstance();
+          pd.getPoints().setData(b64f32(p.points_b64),3);
+          pd.getPolys().setData(b64u32(p.polys_b64));
+          const mapper=vtk.Rendering.Core.vtkMapper.newInstance();mapper.setInputData(pd);
+          const ac=vtk.Rendering.Core.vtkActor.newInstance();ac.setMapper(mapper);
+          const base=_PATCH_COLS[i%_PATCH_COLS.length],pr=ac.getProperty();
+          pr.setColor(base[0],base[1],base[2]);
+          pr.setEdgeVisibility(true);pr.setEdgeColor(_EDGE[0],_EDGE[1],_EDGE[2]);pr.setLineWidth(1);
+          pr.setAmbient(0.30);pr.setDiffuse(0.78);
+          if(pr.setBackfaceCulling)pr.setBackfaceCulling(false);
+          ren.addActor(ac);shown.push(ac);});
+        // SAID, NOT IMPLIED. A reader given 150,000 of 404,725 faces with no word about it reads
+        // the gap as mesh that is not there.
+        lbl.textContent=got.truncated
+          ?`${got.faces_returned.toLocaleString()} of ${got.faces_in_range.toLocaleString()} faces - zoom in`
+          :`${got.faces_returned.toLocaleString()} cells, unmerged`;
+        a.setAttribute('aria-pressed','true');
+        rw.render();}
+      catch(err){lbl.textContent='detail failed';console.warn('detail',err);}
+      finally{delete a.dataset.busy;}};
+    bar.appendChild(a);
+    // any camera move puts the merged surface back: the ball was cut where the camera WAS
+    host.addEventListener('wheel',()=>{if(shown.length)clear();},{capture:true,passive:true});
+    window._vdbg[job].detail=()=>({button:a,shown:shown.length,radius:radiusNow()});
+  })();
+
   /* QUALITY HEATMAP - the boundary coloured by the quality of the cell behind each face.
      The payload carries one float per drawn polygon (render/face_quality.py, aligned with the
      surface reader's own filter) and the bar the engine's gate judges against. The
