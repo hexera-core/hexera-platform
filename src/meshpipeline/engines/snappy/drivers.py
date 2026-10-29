@@ -344,7 +344,7 @@ def _write_timed_out_plan(workspace: Path, strategy: dict) -> None:
 
 
 def _sibling_timed_out_plan(workspace: Path) -> dict | None:
-    """The newest EARLIER attempt's broken-pass plan, else None. Siblings only: this workspace's
+    """The newest EARLIER attempt's broken-pass or size-brake plan, else None. Siblings only: this workspace's
     own record belongs to a pass of this very attempt, which the running driver holds in memory,
     and a re-executed node must re-derive its passes exactly as before. A record of a pass that
     ran out of time (written before D3, no `_why`) is not read: a clock never makes a pass coarser."""
@@ -361,7 +361,11 @@ def _sibling_timed_out_plan(workspace: Path) -> dict | None:
         # an absent record is the ordinary case (no pass of that attempt came out broken)
         except Exception:  # noqa: BLE001,S112
             continue
-        if isinstance(plan, dict) and plan.get("_why") == "broken":
+        # a broken pass and a pass the SIZE BRAKE stopped are both measured (the mesher's own count
+        # or its checks), never a clock - the next attempt starts from that lesson (main's size
+        # brake, merged after D3: without this the next attempt repeated the same over-budget
+        # passes and failed - epa_daycab in the full benchmark)
+        if isinstance(plan, dict) and plan.get("_why") in ("broken", "oversize"):
             return plan
     return None
 

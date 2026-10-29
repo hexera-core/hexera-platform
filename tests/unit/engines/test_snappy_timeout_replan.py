@@ -155,6 +155,17 @@ def test_a_broken_pass_plan_is_remembered_for_the_next_attempt_only(tmp_path):
     assert drv._sibling_timed_out_plan(a2) is None
 
 
+def test_a_size_brake_stop_is_remembered_for_the_next_attempt(tmp_path):
+    # the size brake is a measured count, not a clock: the next attempt starts from its cut budget
+    # (full benchmark, epa_daycab: without it the next attempt repeated the same over-budget passes)
+    a1, a2 = tmp_path / "attempt_1", tmp_path / "attempt_2"
+    a1.mkdir()
+    a2.mkdir()
+    over = {**_TIMED_OUT, "_why": "oversize", "_oversize": {"ratio": 2.3}, "_budget_factor": 0.4}
+    drv._write_timed_out_plan(a1, over)
+    assert drv._sibling_timed_out_plan(a2) == over
+
+
 # the drivers, end to end, with the native toolchain stubbed at the engine seam
 
 class _Publish:
