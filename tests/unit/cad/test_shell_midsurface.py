@@ -355,3 +355,32 @@ def test_a_spool_closes_at_both_plates():
     assert rec["bodies"][0]["verdict"] == "shell"
     assert _sewn(rec)["open_edges"] == 0
     _all_checks(rec)
+
+
+def test_a_sliver_the_coarse_mesher_cannot_triangulate_still_gives_an_inner_point(monkeypatch):
+    # a thin curved sliver of a grown mid-face (a hopper wall cut slantwise) once came back with no triangles at
+    # the coarse deflection, so it had no inner point, no owner, and its wall was left open: it is meshed finer
+    import OCP.BRepMesh as bm
+
+    real = bm.BRepMesh_IncrementalMesh
+    face = ms._faces(sf.tube())[0]
+    lo, hi = ms._box(face)
+    coarse = ms.INNER_MESH_SHARES[0] * float(np.linalg.norm(hi - lo))
+    calls = []
+
+    def fussy(shape, deflection, *a):
+        calls.append(deflection)
+        return None if deflection >= 0.99 * coarse else real(shape, deflection, *a)
+
+    monkeypatch.setattr(bm, "BRepMesh_IncrementalMesh", fussy)
+    p = ms._inner_point(face)
+    assert p is not None and len(calls) == 2
+    assert ms._dist(ms._vertex(p), face) <= 1e-6
+
+
+@pytest.mark.parametrize("tilt", [20.0, 50.0])
+def test_a_wall_cut_slantwise_runs_to_its_cut_face(tilt):
+    # the two wall faces end at different heights; the mid-face is carried on to the cut face, no open edge
+    rec, _ = ms.extract(sf.oblique_half_pipe(tilt_deg=tilt), mm_per_unit=1.0)
+    assert rec["bodies"][0]["verdict"] == "shell"
+    _all_checks(rec)

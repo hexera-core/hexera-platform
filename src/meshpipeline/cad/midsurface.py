@@ -1009,10 +1009,15 @@ def _grow_plane(face, reach: float, joined: list | None = None):
     return None
 
 
+#: the deflections (shares of the face's box diagonal) _inner_point meshes a face at, coarse first
+INNER_MESH_SHARES = (0.05, 0.005, 0.0005)
+
+
 def _inner_point(face):
     """A point inside the face (its own units), or None: the middle of the largest triangle of the face's own
     triangulation (UV coordinates, so on the surface exactly) - inside any face, however thin (a 1.5 mm band
-    along a 200 mm edge has no point of a coarse parameter grid in it)."""
+    along a 200 mm edge has no point of a coarse parameter grid in it). A curved sliver the coarse mesher
+    cannot triangulate (a 1 mm band along a 550 mm curved edge) is meshed again finer."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
@@ -1020,9 +1025,13 @@ def _inner_point(face):
 
     lo, hi = _box(face)
     size = float(np.linalg.norm(hi - lo)) or 1.0
-    BRepMesh_IncrementalMesh(face, 0.05 * size, False, 0.5, False)
-    tri = BRep_Tool.Triangulation_s(face, TopLoc_Location())
-    if tri is None or tri.NbTriangles() == 0 or not tri.HasUVNodes():
+    tri = None
+    for share in INNER_MESH_SHARES:
+        BRepMesh_IncrementalMesh(face, share * size, False, 0.5, False)
+        tri = BRep_Tool.Triangulation_s(face, TopLoc_Location())
+        if tri is not None and tri.NbTriangles() > 0 and tri.HasUVNodes():
+            break
+    else:
         return None
     best, uv = -1.0, None
     for k in range(1, tri.NbTriangles() + 1):

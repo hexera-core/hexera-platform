@@ -250,6 +250,20 @@ def thin_web_on_thick_plate(tp: float = 8.0, ts: float = 3.0):
     return _fuse(_box(0, 0, 0, 200, 100, tp), _box(98, 20, tp, ts, 60, 50))
 
 
+def oblique_half_pipe(r_out: float = 160.0, t: float = 3.0, length: float = 600.0, tilt_deg: float = 34.0):
+    """Half of a round tube (y >= 0), `length` long along z, its top end cut by a plane tilted `tilt_deg` about
+    the x axis (a hopper chute): the cut face meets the wall slantwise, so the two wall faces end at different
+    heights and the mid-face's own end stops short of the cut face by a thin curved sliver of wall."""
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
+    from OCP.TopLoc import TopLoc_Location
+
+    half = _cut(tube(r_out, t, length), _box(-2 * r_out, -2 * r_out, -1, 4 * r_out, 2 * r_out, length + 2))
+    tr = gp_Trsf()
+    tr.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0.5 * length), gp_Dir(1, 0, 0)), math.radians(tilt_deg))
+    cutter = _box(-4 * r_out, -4 * r_out, 0.5 * length, 8 * r_out, 8 * r_out, length).Moved(TopLoc_Location(tr))
+    return _cut(half, cutter)
+
+
 def spool(tp: float = 4.0, r_out: float = 20.0, t: float = 4.0, h: float = 100.0):
     """A tube welded between two 120 x 120 x `tp` plates (a flanged spool): a tube-on-plate junction at each end,
     with the disc of plate inside the tube a mid-face of its own (bounded by one circle)."""
