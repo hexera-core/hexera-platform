@@ -1147,9 +1147,10 @@ function initViewer(job,surf,uiCfg){
     a.innerHTML='<b>Detail</b><span>'+(surf.reduced?'cells here, unmerged':'the cells here')+'</span>';
     const lbl=a.querySelector('span'),was=lbl.textContent;
     let shown=[];              // the detail's own actors
+    let shownNames=[];         // and what each one is, so what was drawn can be read back
     let hidden=[];             // the merged actors this turned off
     function clear(){
-      shown.forEach(ac=>ren.removeActor(ac));shown=[];
+      shown.forEach(ac=>ren.removeActor(ac));shown=[];shownNames=[];
       hidden.forEach(en=>en.actor.setVisibility(true));hidden=[];
       a.removeAttribute('aria-pressed');lbl.textContent=was;rw.render();}
     /* HOW BIG A BALL. What the camera can see: half the view's height at this distance, so the
@@ -1191,7 +1192,7 @@ function initViewer(job,surf,uiCfg){
           pr.setEdgeVisibility(true);pr.setEdgeColor(_EDGE[0],_EDGE[1],_EDGE[2]);pr.setLineWidth(1);
           pr.setAmbient(0.30);pr.setDiffuse(0.78);
           if(pr.setBackfaceCulling)pr.setBackfaceCulling(false);
-          ren.addActor(ac);shown.push(ac);});
+          ren.addActor(ac);shown.push(ac);shownNames.push(String(p.name||''));});
         // SAID, NOT IMPLIED. A reader given 150,000 of 404,725 faces with no word about it reads
         // the gap as mesh that is not there.
         lbl.textContent=got.truncated
@@ -1205,7 +1206,11 @@ function initViewer(job,surf,uiCfg){
     // any camera move puts the merged surface back: the ball was cut where the camera WAS
     host.addEventListener('wheel',()=>{if(shown.length)clear();},{capture:true,passive:true});
     closeDetail=()=>{if(shown.length)clear();};
-    window._vdbg[job].detail=()=>({button:a,shown:shown.length,radius:radiusNow()});
+    /* WHAT A READER CAN ACTUALLY SEE, which is what all three of this window's defects came
+       down to: which patches are drawn - a budget that drops a region drops it from here -
+       and whether the merged surface this stands in front of is still hidden. */
+    window._vdbg[job].detail=()=>({button:a,shown:shown.length,names:shownNames.slice(),
+                                   hidden:hidden.length,radius:radiusNow()});
   })();
 
   /* QUALITY HEATMAP - the boundary coloured by the quality of the cell behind each face.

@@ -234,6 +234,30 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
     }
 
 
+def detail_response(job_id: str, cut: dict) -> dict:
+    """One cut as the ROUTE serves it: the two buffers base64'd, every number as measured.
+
+    This is a named shape rather than a dict literal in the handler because the browser has to
+    agree with it and the browser is tested somewhere else. `tests/ui/test_detail_window.py`
+    drives the shipped viewer against the bytes this builds from a real polyMesh, so a key
+    renamed here fails in the browser gate instead of in front of a reader. The window shipped
+    with a client that threw before it ever issued the request, and a client and a route that
+    were only ever read side by side is how that happens.
+    """
+    import base64
+
+    return {"job_id": job_id, "centre": cut["centre"], "radius": cut["radius"],
+            "faces_in_range": cut["faces_in_range"], "faces_returned": cut["faces_returned"],
+            "truncated": cut["truncated"],
+            "patches": [{"name": q["name"], "type": q["type"], "face_count": q["face_count"],
+                         # how much of this patch is in the window, so a truncated answer can say
+                         # what fraction of each side it is showing rather than only that it cut
+                         "faces_in_range": q["faces_in_range"],
+                         "points_b64": base64.b64encode(q["points"]).decode("ascii"),
+                         "polys_b64": base64.b64encode(q["polys"]).decode("ascii")}
+                        for q in cut["patches"]]}
+
+
 def _share_out(budget: int, counts: list[int]) -> list[int]:
     """How many of each patch's in-range faces to return, so none of them disappears.
 
