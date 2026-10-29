@@ -2177,3 +2177,149 @@ claim above. tests/unit/agents/reviewer/test_render_runtime.py gained the empty-
 tests/unit/agents/reviewer/test_review_evidence_follows_the_run.py had asserted the waiver for
 every region engine; it now checks the two halves of the rule for opposite behaviour, with the
 reason in the file.
+
+### The whole chain, at scale, on the customer's own plate
+
+`ColdPlateAssembly_CLEAN.step`, 177.5 x 41.84 x 101.0 mm, meshed on mesh-bench through the
+parallel chain with both of today's fixes in it - one OpenMP thread per rank, and one merge per
+region:
+
+| stage | processes | wall |
+|---|---|---|
+| preparePar | 1 | 1 s |
+| cartesianMesh | 8 ranks | 727 s |
+| topoSet | 8 ranks | 348 s |
+| splitMeshRegions | 8 ranks | 568 s |
+| reconstructParMesh, fluid | 1 | 824 s |
+| reconstructParMesh, solid | 1 | 1,169 s |
+
+And what came out, checked:
+
+| region | cells | checkMesh | max skewness |
+|---|---|---|---|
+| fluid | 75,162,351 | Mesh OK | 0.704509 |
+| solid | 107,107,563 | Mesh OK | 0.691260 |
+
+182,269,914 cells. The interface is **13,181,685 faces on each side**, which is the conformality
+the whole split-after-meshing approach rests on, measured at scale on the part it was built for
+rather than on a coupon.
+
+WHAT THIS RUN IS NOT. Its plan declares no ports, so the coolant is a sealed region with the
+interface and nothing else - a bench measurement of the chain, not a delivery. A delivered mesh
+needs the mouths cut and named, which is the pipeline's own path.
+
+THE SERIAL BASELINE for the same part was 12,831.9 s of tail behind a 2,399.6 s mesher. The tail
+here is 2,909 s behind a 727 s mesher, at 54% of the cells.
+
+### The domain was in the split all along
+
+The box the mesher fills is three times the part, and the boolean that would fix it does not come
+off on the one assembly that needs it. That entry ended "Not attempted", with a route written down
+that goes through the tessellation. The route turned out to be shorter than that.
+
+`_split` classifies every region of space as outside, metal or space - that is how it finds the
+coolant at all. So metal plus coolant is "every region that is not outside", and its boundary is
+every face of those regions that two of them do not share: the part's outer skin, with each port
+mouth closed by its own cap. `_boundary` has always been able to take the boundary of a SET of
+regions; it was only ever asked for one passage at a time. The answer was computed on every run
+and thrown away.
+
+Measured on `ColdPlateAssembly_CLEAN.step` - Corintis's own assembly, 6 solids, 2 passages, 70
+regions, 53,661.8 mm3 of coolant - which is the part the boolean cannot do:
+
+| | |
+|---|---|
+| domain faces | 348 |
+| sewn | 2 shells, one degenerate (1 free edge, 0 mm3), one CLOSED |
+| closed shell | 276,372.4 mm3 |
+| the cuboid the engine meshes today | 750,014.9 mm3 |
+| ratio | 2.71x less volume to fill |
+
+276,372.4 against the 276,324 the fuse gives on the fixture it does work on is the same answer to
+four figures. Same domain, by a route with no boolean and no tolerance - which is what matters on
+a part whose walls are 98 um and whose tessellation deflection is 84.
+
+NO MATCHING ANYWHERE, which is the whole reason this works where the other routes do not. The
+faces come from one split of one shape, so they already share their edges. The degenerate shell is
+expected and is skipped exactly as an open passage boundary always was; the largest CLOSED shell
+is the domain.
+
+The fuse stays as the fallback: an extraction from before this carries no boundary and fuses as it
+did, and a sew that raises returns None rather than failing a path that already worked.
+
+WHAT IT IS WORTH is already written down in `cfmesh_conjugate/conjugate.py`, next to the patch
+name a shell domain would use: "the cuboid is 846,543 mm3 and metal plus coolant is 274,807 mm3,
+so 67.5% of a box-domain mesh's cells are air."
+
+AND THE CONSUMER SIDE IS ALREADY BUILT. `OUTER_PATCH = "wall_outer"`, `is_domain_face`, and
+`mouths.shell_stubs` - which cuts the ports out of the shell instead of a block face, is
+documented against this exact assembly, and has NO CALLERS. `_child` already handles
+`domain_path`. The driver writes `block_surface_stl(lo, hi)` unconditionally and never asks. One
+branch there is what connects it.
+
+### The mesher fills the part now, and everything it needed was already there
+
+The entry above gets the domain out of the split. This connects it, and the connecting turned out
+to be two edits, because the consumer side had been written and left uncalled:
+
+| what | where | callers before today |
+|---|---|---|
+| `OUTER_PATCH = "wall_outer"` | conjugate.py | the name only |
+| `is_domain_face` | conjugate.py | accepts it already |
+| `mouths.shell_stubs` | mouths.py | NONE |
+| `domain_path` handling | fluid_volume._child | nothing asked |
+| the record and its logging | fluid_volume.surface_bounded | nothing asked |
+
+The driver wrote `block_surface_stl(lo, hi)` unconditionally. It asks for the domain now, on the
+extraction it is already paying for - one extraction, two answers, since asking twice would double
+the slowest step in a build.
+
+On `ColdPlateAssembly_CLEAN.step`:
+
+| | |
+|---|---|
+| ok | true |
+| solid_name | wall_outer |
+| triangles | 27,696 |
+| volume | 276,372.39 mm3 |
+| box | 750,014.89 mm3 |
+| share_of_box | 0.3685 against BOX_WORTH_KEEPING 0.60 |
+| metal | 222,661.97 mm3 |
+| fluid | 53,661.79 mm3 |
+
+ONE DECISION IN ONE PLACE. `use_shell_domain` sits beside the patch name it decides about and the
+driver asks it rather than doing the arithmetic inline. It is false for everything that is not a
+measurement - no domain, one that did not come out, a part that fills its own box, a missing
+share, and a share that is a STRING, which `float()` would have taken. My own test caught me
+writing that one: a record that went through something which stringified it is not a measurement
+to act on.
+
+THE PORTS ARE CUT WHERE THEY ALREADY ARE. On a box the mouths are inside it and must be stubbed
+out to a face first, which is why both of that plate's fittings land on xmax and a face can carry
+one name. On a shell they are on the surface already, so each is a zero-length stub and a patch
+cut in place.
+
+NOT YET SEEN IN A LIVE BUILD, and it changes the surface cfMesh is handed, so it wants one.
+
+### A budget that does not scale with the file it is given
+
+Running their plate through the page while two extractions of the same file were racing each
+other, the check came back:
+
+    the fluid inside the parts could not be found (finding the fluid inside the parts took over
+    300 s); this is a limit of the check and not something measured about the part
+
+and the part read as `solid-body` in an internal flow - a solid in a flow, not a cold plate with
+coolant. The note is honest and the fallback is the inside-space map, which still found 4 mouths.
+But the job that would have been built from it is the wrong job.
+
+Today's timeout was mine: `extract` on that file is 141.5 s idle and measured 420.8 s while I had
+a second extraction of it running. So the 300 s stands on one contended reading and I have not
+moved it.
+
+Worth writing down anyway: everything around this budget scales with the file and this one does
+not. The scout's own Celery soft limit is 900 s + 60 s per MB, which is 1,853 s for that 15.9 MB
+upload, and `geometry_progress` states the principle - "Liveness, not a budget". The extraction is
+the one step priced by a flat wall clock, and its stated justification is that the work is bounded
+by MAX_FACES = 20,000 - while the measurement behind the 300 s is a 9,226-face file at 141.5 s.
+A file at the face limit is 2.2x the faces on a superlinear split.
