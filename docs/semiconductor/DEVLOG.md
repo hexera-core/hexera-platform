@@ -1593,3 +1593,39 @@ Nothing builds one from the other and nothing checks they agree. After a full `m
 into the console copy. They have drifted 132 lines apart and `ui/` is ahead - it carries the
 `drawn_as` handling for a multi-region engine, with a comment about this engine, that the console
 copy does not have. Every conjugate fix has gone into `ui/` only.
+
+### Every mesh image after the first shipped stale source under a current tag
+
+The build script only built the wheel if one was not already there:
+
+    [ -f dist/meshpipeline-0.1-py3-none-any.whl ] || { ... python -m build --wheel ... }
+
+so once `dist/` held a wheel from any earlier run, every build after that installed THAT wheel and
+tagged the image after the current commit. Measured: the image tagged `semi-32417451` had no
+`NO_FIELD_TIME` and no `prefer_finished`, committed two and three commits before it.
+
+Two live end-to-end runs reproduced bugs that were already fixed, and a good deal of diagnosis
+went into a mystery that was a build cache. The third of them, job 575f76e6 on the stale image, is
+also the clearest statement of what the time-0 export does:
+
+    render backend (PyVista): loaded .../mesh.msh - patches: ['solid']
+    render backend: loaded volume .../VTK/fluid/cr_ws_n41vtoe6_1/internal.vtu (0 cells)
+
+Both halves of the reviewer's evidence came from `_1`, the time-0 directory. The boundary was the
+truncated one, so the coolant's patches did not parse and the review opened on the metal alone.
+And the VOLUME was the time-0 export too - **zero cells**. It was not that the volume was missing;
+when it came home it was empty, and the reviewer sliced nothing. That is a third consequence of
+the same bug, and it is why an earlier run reached a verdict on a volume that held no cells.
+
+`dist/` is removed and the wheel built every time. The image's smoke test now looks for things the
+newest commits added rather than only that the package imports:
+
+    OK   export excludes the field time
+    OK   a truncated export is not believed
+    OK   the reported cell count raises the ceiling
+    OK   the tail goes parallel
+
+and exits "this image is STALE - the wheel does not match the source" if any is missing. A tag is
+a promise about the source and the only way to keep it is to look for something that was not
+there before. Both scripts moved out of a scratchpad into `devtools/semiconductor/`, because a
+build whose only copy is in a session directory is one nobody else can reproduce.
