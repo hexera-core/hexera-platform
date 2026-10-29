@@ -34,7 +34,12 @@ BOUNDARY: Final = "boundary"
 REGION: Final = "region"
 CELL_GROUP: Final = "cellGroup"
 INSPECTION: Final = "inspection"
-KINDS: Final[frozenset[str]] = frozenset({BOUNDARY, REGION, CELL_GROUP, INSPECTION})
+#: The cells checkMesh would not pass, drawn as their own surface. A kind of their own because
+#: the viewer groups by kind and these were arriving as ordinary boundary patches: the sixth of
+#: the six readings the customer asked for is "highlight of poor-quality cells", and a highlight
+#: listed between ymin and zmax in the same palette colour as a wall is not one.
+POOR_CELLS: Final = "poorCells"
+KINDS: Final[frozenset[str]] = frozenset({BOUNDARY, REGION, CELL_GROUP, INSPECTION, POOR_CELLS})
 
 VISIBLE: Final = "visible"
 HIDDEN: Final = "hidden"
@@ -123,14 +128,17 @@ def _region_rows(q: dict) -> list[dict]:
 
 
 def parts(manifest: dict | None, *, rendered: tuple[str, ...] = (),
-          enclosing: tuple[str, ...] = (), list_drawn: bool = False) -> list[dict[str, Any]]:
+          enclosing: tuple[str, ...] = (), list_drawn: bool = False,
+          poor: tuple[str, ...] = ()) -> list[dict[str, Any]]:
     """The mesh parts the viewer lists. `rendered` names the surfaces the payload draws;
     `enclosing` those of them the engine says wrap everything else (they open hidden, like an
-    enclosing role). `list_drawn` - a DELIVERED mesh - also lists every drawn surface no
-    declared part names, so nothing the user sees is a surface they cannot pick."""
+    enclosing role); `poor` those that are sets of cells that failed a check. `list_drawn` - a
+    DELIVERED mesh - also lists every drawn surface no declared part names, so nothing the user
+    sees is a surface they cannot pick."""
     man: dict = manifest or {}
     rendered_set = set(rendered)
     enclosing_set = set(enclosing)
+    poor_set = set(poor)
     out: list[dict[str, Any]] = []
 
     # boundary patches, in manifest order
@@ -253,6 +261,13 @@ def parts(manifest: dict | None, *, rendered: tuple[str, ...] = (),
                 continue
             named.add(n)
             dmeta: dict[str, Any] = {"name": n}
+            # a poor-cell set is never an enclosing surface and never opens hidden: it exists to
+            # be seen, and a reader who has to find it in a list to turn it on has not been shown
+            # anything
+            if n in poor_set:
+                out.append(_part(f"{POOR_CELLS}:{n}", n, POOR_CELLS, "surface",
+                                 renderable=True, metadata=dmeta))
+                continue
             encloses = n in enclosing_set
             if encloses:
                 dmeta["encloses_domain"] = True

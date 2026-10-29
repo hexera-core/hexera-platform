@@ -41,6 +41,12 @@ function b64u32(b){return new Uint32Array(b64u8(b).buffer);}
 
 /* geometry fills: a warm drawing-office grey, each patch a step of tint so the parts read
    apart without shouting; the ORANGE selection is never ambiguous against any of them */
+/* THE SIXTH READING. A poor-cell set is the boundary of the cells that failed a
+   check, and it used to be drawn in whatever palette colour its index landed on -
+   indistinguishable from a wall, listed between ymin and zmax. It is a highlight or
+   it is nothing. */
+const _POOR_TYPE='poorQuality';
+const _POOR_COL=[0.93,0.27,0.22];
 const _PATCH_COLS=[[0.80,0.78,0.72],[0.64,0.77,0.75],[0.83,0.76,0.60],
                    [0.72,0.72,0.70],[0.66,0.71,0.73],[0.76,0.70,0.66]];
 const _EDGE=[0.27,0.25,0.22];          /* hairline edges at rest */
@@ -252,12 +258,15 @@ function initViewer(job,surf,uiCfg){
     mapper.setInputData(pd);
     const actor=vtk.Rendering.Core.vtkActor.newInstance();
     actor.setMapper(mapper);
-    const base=_PATCH_COLS[i%_PATCH_COLS.length];
+    const poor=(p.type===_POOR_TYPE);
+    const base=poor?_POOR_COL:_PATCH_COLS[i%_PATCH_COLS.length];
     const pr=actor.getProperty();
     pr.setColor(base[0],base[1],base[2]);
     pr.setEdgeVisibility(true);pr.setEdgeColor(_EDGE[0],_EDGE[1],_EDGE[2]);pr.setLineWidth(1);
-    pr.setAmbient(0.30);pr.setDiffuse(0.78);
-    pr.setSpecular(0.10);pr.setSpecularPower(18);pr.setSpecularColor(1,1,1);
+    // lit flat and hot rather than shaded, so a set of a few hundred cells inside a mesh of
+    // millions reads as a mark on it and not as another surface
+    pr.setAmbient(poor?0.75:0.30);pr.setDiffuse(poor?0.35:0.78);
+    pr.setSpecular(poor?0:0.10);pr.setSpecularPower(18);pr.setSpecularColor(1,1,1);
     // DOUBLE-SIDED. An OpenFOAM boundary face points out of the FLUID, so a car's wall faces point
     // into the car; with back faces culled the near side vanished and the viewer drew the inside of
     // the body (a car read as an open tray). The depth test does the hiding instead.
@@ -440,7 +449,7 @@ function initViewer(job,surf,uiCfg){
       // a thermal model's regions are the file's parts, its boundary the sides of the air box
       ?{boundary:'Sides of the air box',region:'Parts',cellGroup:'Cell types',inspection:'Slices'}
       :{boundary:'Boundary patches',region:'Regions',cellGroup:'Cell types',
-        inspection:'Inspection structures'};
+        inspection:'Inspection structures',poorCells:'Poor-quality cells'};
     // a thermal model's slices are drawn from the thermal panel, so they are not listed twice
     if(thermal)parts=parts.filter(p=>p.kind!=='inspection');
     const kindLabel=k=>KIND[k]||String(k).replace(/([A-Z])/g,' $1')

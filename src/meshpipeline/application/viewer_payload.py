@@ -26,11 +26,13 @@ def _attach_facts(resp: dict, manifest: dict) -> None:
         drawn = [p for p in (resp.get("patches") or []) if isinstance(p, dict) and p.get("name")]
         rendered = tuple(str(p.get("name")) for p in drawn)
         enclosing = tuple(str(p.get("name")) for p in drawn if p.get("encloses_domain"))
+        # the engine marks these with a type of their own (cfmesh_conjugate.viewer.POOR_TYPE)
+        poor = tuple(str(p.get("name")) for p in drawn if p.get("type") == "poorQuality")
         q = _quality(manifest) if resp.get("is_mesh") else {}
         if q:
             resp["quality"] = q
         # a DELIVERED mesh lists every surface it draws; an input skin only what is declared
-        resp["parts"] = _parts(manifest, rendered=rendered, enclosing=enclosing,
+        resp["parts"] = _parts(manifest, rendered=rendered, enclosing=enclosing, poor=poor,
                                list_drawn=bool(resp.get("is_mesh")))
     except Exception as exc:      # a malformed manifest must not cost the user their mesh
         logger.warning("surface: mesh facts unavailable (%s)", exc)

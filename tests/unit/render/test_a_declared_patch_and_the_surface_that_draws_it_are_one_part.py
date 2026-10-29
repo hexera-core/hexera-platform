@@ -11,6 +11,8 @@ Nothing connected the two. The declared `ymin` found no actor and was listed un-
 mesh: 15 entries for 9 boundaries, with the pickable half and the drawable half being different
 rows, so picking the row a reader would naturally pick did nothing at all.
 """
+import pathlib
+
 from meshpipeline.render.mesh_facts import parts
 
 
@@ -107,3 +109,62 @@ def test_a_single_region_engine_is_unchanged():
     assert all(p["renderable"] for p in rows)
     assert all("drawn_as" not in p["metadata"] for p in rows), (
         "a name that needs no translation should not carry one")
+
+
+#   -- the cells that failed a check are their own kind ------------------------------------------
+
+#: what collect_poor_sets leaves and the engine's viewer draws, one surface per set per region
+POOR = ("fluid/highAspectRatioCells", "solid/nonOrthoFaces")
+
+
+def test_a_poor_cell_set_is_not_a_boundary_patch():
+    """THE SIXTH OF THE SIX READINGS the customer asked for is "highlight of poor-quality cells".
+    These were arriving as ordinary boundary patches: listed between ymin and zmax, drawn in
+    whatever palette colour the index landed on, indistinguishable from a wall. A highlight that
+    looks like a wall and sorts like a wall is not a highlight."""
+    rows = parts(_manifest(), rendered=DRAWN + POOR, enclosing=ENCLOSING,
+                 poor=POOR, list_drawn=True)
+    kinds = {p["metadata"]["name"]: p["kind"] for p in rows}
+    assert kinds["fluid/highAspectRatioCells"] == "poorCells"
+    assert kinds["solid/nonOrthoFaces"] == "poorCells"
+    assert not any(p["metadata"]["name"] in POOR for p in _boundaries(rows))
+
+
+def test_a_poor_cell_set_opens_visible_and_can_be_picked():
+    """It exists to be seen. A reader who has to find it in a list and turn it on has not been
+    shown anything."""
+    rows = [p for p in parts(_manifest(), rendered=DRAWN + POOR, enclosing=ENCLOSING,
+                             poor=POOR, list_drawn=True) if p["kind"] == "poorCells"]
+    assert len(rows) == 2
+    for q in rows:
+        assert q["default_visibility"] == "visible"
+        assert q["renderable"] is True and q["selectable"] is True
+        assert "encloses_domain" not in q["metadata"], "a set of bad cells does not wrap the model"
+
+
+def test_a_mesh_with_nothing_wrong_with_it_has_no_such_part():
+    """The common case and not a defect: a set holds the cells that failed a check, so a mesh
+    that passes writes no files and there is nothing to list."""
+    rows = parts(_manifest(), rendered=DRAWN, enclosing=ENCLOSING, list_drawn=True)
+    assert not [p for p in rows if p["kind"] == "poorCells"]
+
+
+def test_naming_a_surface_poor_that_is_not_drawn_adds_nothing():
+    """`poor` names surfaces the payload draws. One that is not drawn is not a part, the same as
+    any other name that is not in `rendered`."""
+    rows = parts(_manifest(), rendered=DRAWN, enclosing=ENCLOSING, poor=POOR, list_drawn=True)
+    assert not [p for p in rows if p["kind"] == "poorCells"]
+
+
+def test_the_kind_is_in_the_closed_set_both_sides_group_by():
+    """mesh_facts says it plainly where the kinds are declared: "Closed: the viewer groups by
+    these, so a new kind is a deliberate addition on both sides rather than a string that appears
+    one day." The viewer's own KIND map is the other side."""
+    from meshpipeline.render.mesh_facts import KINDS, POOR_CELLS
+
+    assert POOR_CELLS in KINDS
+    for rel in ("ui/js/viewer/viewer.js",
+                "apps/console/public/static/js/viewer/viewer.js"):
+        src = pathlib.Path(rel).read_text()
+        assert "poorCells:" in src, f"{rel} does not group the kind it is sent"
+        assert "_POOR_TYPE" in src, f"{rel} does not colour it apart"
