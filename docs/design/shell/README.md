@@ -132,6 +132,12 @@ The extended mid-faces of each body are run through OCC's general fuse (`BOPAlgo
 
 The result is a conformal shell: shared nodes along every junction once meshed.
 
+**Speed (29 Oct).** No corpus file may take more than 10 minutes. The same answers, read faster:
+- An offset mid-face (a drafted or free-form wall) is re-made as a B-spline before the join, only when every point read stays within 1/10,000 of the wall. One fuse of an offset against a plane ran past 40 minutes; the B-spline takes 0.01 s. The checks still read the offset.
+- Inside-or-outside: a point well clear of the skin is told by the body's own closed triangulation (three rays that must agree). Near the skin, the exact classifier answers.
+- Faces that cannot touch are fused apart. The part's own faces go into the general join as one argument, so they are not intersected with each other.
+- Readers are built once per face (projectors, surface analysers), and each point's inside state is kept.
+
 ### 2.5 Assemblies and mixed parts (PR 3)
 
 **Bonded plates in different bodies:**
