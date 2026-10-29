@@ -10,10 +10,9 @@ export type ConsoleSection = {
   label: string;
   group: "product" | "account";
   available: boolean;
-  /** THE RAIL'S ONLY CONTENT. When the sidebar narrows - on the run routes, and on any viewport
-   *  under 860px - the label is hidden and this is all that identifies the section. An item
-   *  without one renders as an empty box, which is exactly how the nav shipped before. SVG path
-   *  data for a 24x24 viewBox, stroked in currentColor. */
+  /** The mark beside the label. On a viewport under 860px the sidebar becomes a bar and the
+   *  icon is what the eye finds first. SVG path data for a 24x24 viewBox, stroked in
+   *  currentColor. */
   icon: string;
 };
 
