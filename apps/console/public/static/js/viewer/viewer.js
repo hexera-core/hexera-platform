@@ -284,6 +284,9 @@ function initViewer(job,surf,uiCfg){
      `ReferenceError: tanHalf is not defined` before it asked the server for anything.
      Measured in a browser on the delivered coupon, 2026-10-29. */
   const tanHalf=()=>Math.tan(cam.getViewAngle()*Math.PI/360);
+  /* The detail window's own way of putting the merged surface back, for the things that
+     have to put it back and are not the detail window. Null until it exists. */
+  let closeDetail=null;
   // CAD is z-up, and the geometry check already draws parts that way: start from a front-quarter
   // view looking slightly down with +z up. vtk's default camera is +y-up, which laid cars and
   // aircraft on their side in the mesh viewer. A part modelled another way up opens the way the
@@ -1100,6 +1103,7 @@ function initViewer(job,surf,uiCfg){
     bar.appendChild(a);
     // any camera move puts the merged surface back: the ball was cut where the camera WAS
     host.addEventListener('wheel',()=>{if(shown.length)clear();},{capture:true,passive:true});
+    closeDetail=()=>{if(shown.length)clear();};
     window._vdbg[job].detail=()=>({button:a,shown:shown.length,radius:radiusNow()});
   })();
 
@@ -1522,6 +1526,11 @@ function initViewer(job,surf,uiCfg){
     function setMetric(m){
       if(m===activeMetric)m=null;
       cancelFly();
+      /* THE COLOURS GO ON THE MERGED SURFACE, which the detail window hides while it is open -
+         so painting a metric with the detail up left a legend saying "max 27.0 deg" over a mesh
+         with no colour on it anywhere. Measured in a browser on the delivered coupon. The merged
+         surface comes back, which is the same thing any camera move already does. */
+      if(m&&closeDetail)closeDetail();
       activeMetric=m;onlyBad=false;selArea=-1;
       const rp=m?ramp(m):null;curRp=rp;
       paintFaces(m,rp);
