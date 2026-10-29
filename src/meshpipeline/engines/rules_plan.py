@@ -1,5 +1,5 @@
 # Responsibility: Build an attempt on a model-led engine (cfMesh, VMTK, gmsh CFD, snappy multi-region) by the rules alone, with the same tools and gates the model uses, so a busy, failed or wandering builder model never fails a run.
-# Owns: the rules plan's tool sequence per engine (AIG-1), the BUILDER_AI switch, and when an attempt falls back to it.
+# Owns: the rules plan's tool sequence per engine (AIG-1), the BUILDER_AI switch, when an attempt falls back to it, and the rules plan's configure_mesh arguments an AI plan is compared with (AIG-2).
 # Boundaries: answers builder rounds in place of the model; every tool call still goes through the builder's executor, its validation and every gate. It invents no size: each engine's own defaults and staged reading decide them.
 # Collaborates with: agents/builder/invoke.py (runs it when the model gave no mesh), agents/builder/loop.py (the loop it drives), engines/<engine>/authoring.py (the defaults it leaves in force), pipeline/engine_fallback.layer_request (the layers the user asked for).
 """THE RULES BUILD WHEN THE AI DOES NOT (docs/RULES.md AIG-1).
@@ -86,6 +86,25 @@ def requested_layers(state: Mapping[str, Any]) -> int | None:
         return None
 
 
+def _cfmesh_args(asked: int | None) -> dict:
+    return {} if asked is None else {"n_layers": asked}
+
+
+def configure_args(engine: str, workspace) -> dict | None:
+    """The configure_mesh arguments the rules plan sends for `engine` in `workspace` when they
+    follow from the request alone (cfMesh: the layers it asks for, every size the engine's) - what
+    the AI plan is compared with (engines/plan_guard, AIG-2). None when the rules plan needs a tool's
+    answer first (VMTK and snappy multi-region read the geometry report; gmsh writes a spec file)."""
+    if str(engine or "") != "cfmesh":
+        return None
+    try:
+        from meshpipeline.engines.workspace_facts import read_request_txt
+        request = read_request_txt(workspace)
+    except Exception:  # noqa: BLE001 - no request read: the engine's standard count
+        request = ""
+    return _cfmesh_args(requested_layers({"request_txt": request or ""}))
+
+
 def _vmtk_args(report: Mapping) -> dict:
     if report.get("staged_ports"):
         return {}                         # the engine staged the seeds and the sizing itself
@@ -128,8 +147,7 @@ class RulesBuilder:
         e = self.engine
         if e == "cfmesh":
             if "configure_mesh" not in names:
-                asked = requested_layers(self.state)
-                return self._result([("configure_mesh", {} if asked is None else {"n_layers": asked})])
+                return self._result([("configure_mesh", _cfmesh_args(requested_layers(self.state)))])
             return self._result([("run_mesh", {})])
         if "geometry_report" not in names:
             return self._result([("geometry_report", {})])
@@ -159,4 +177,5 @@ class RulesBuilder:
         return self.next_round(messages)
 
 
-__all__ = ["BUILDER_AI", "ENGINES", "GMSH_SPEC", "RULE", "RulesBuilder", "covers", "requested_layers"]
+__all__ = ["BUILDER_AI", "ENGINES", "GMSH_SPEC", "RULE", "RulesBuilder", "configure_args", "covers",
+           "requested_layers"]
