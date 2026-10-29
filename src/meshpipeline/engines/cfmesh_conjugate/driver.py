@@ -394,7 +394,19 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             fluid_stl = ws / PL.FLUID_STL
             grown, added = MO.extend(read_stl_triangles(fluid_stl), stubs)
             write_stl_binary(fluid_stl, grown)
-            port_patches, ports_said = MO.port_rows(stubs)
+            # THE NAMES THE USER APPROVED, bound to the mouths by position. Without this the
+            # cut ports carry this module's own defaults and the patch contract refuses the
+            # finished mesh: the coupon plate meshed, came home, and failed with "The mesh has
+            # no boundary called 'inlet' or 'outlet' (it has 'coolant_in' and 'coolant_out') ...
+            # so the mesh does not match what you approved" (2026-10-29). The mesh was fine.
+            from meshpipeline.engines.workspace_facts import port_declaration
+
+            _declared = [d for d in port_declaration(ws)
+                         if isinstance(d, dict) and d.get("name")]
+            _named, _named_why = MO.declared_for(stubs, _declared)
+            if _named_why:
+                logger.info("conjugate: %s - job_id=%s", _named_why, job_id)
+            port_patches, ports_said = MO.port_rows(stubs, named=_named)
             logger.info("conjugate: %d stub(s) added %.4f mm3 to the coolant; %s - job_id=%s",
                         len(stubs), added * 1e9, ports_said, job_id)
             # the coolant is a different shape now, so what the split is checked against moves

@@ -1129,3 +1129,82 @@ to its own skin has none. The port CUTTER is the mechanism that does not need th
 face to a box round a mouth - and after this session's work every mouth on a real skin is flush with
 the boundary by construction, which is the case it now handles. So the two pieces exist; what is
 missing is the reading that says which patch a cut port is cut OUT of when there is no block.
+
+### The box is not a surface you can simply swap
+
+The metal region is 80% of a 336M-cell mesh and most of it is air, so the obvious move is to hand
+cfMesh the part's own skin instead of its bounding box. Measured on the coupon before writing any
+of it, same cell size both ways:
+
+| surface | cells | fluid | solid | split |
+|---|---|---|---|---|
+| the bounding box | 1,500,000 | 495,506 | 1,004,494 | clean, `zmax` and `fluid_to_solid` on the coolant |
+| the part's own skin | 1,037,018 | **256** | 1,036,762 | clean, and WRONG |
+
+cfMesh meshes the part's skin perfectly happily - 1,037,018 cells, "Mesh OK.", 117,274 boxes
+discarded outside it - and the coolant comes out as 256 cells instead of 495,506.
+
+THE REASON IS THE SKIN ITSELF. A cold plate's skin is the boundary between the metal and the air
+AND between the metal and the coolant: the channel walls are part of it. So the closed surface
+bounds the METAL ALONE, and cfMesh fills exactly that. The coolant is on the other side of it - a
+cavity, outside the domain - and was never meshed, so there are no shared faces to split along and
+no conformal interface to have.
+
+Which is what the box is FOR, and the engine's own header has said so from the first line: "Give
+it ONE manifold domain - the outer block of the whole part - and let it build a single octree
+across metal and coolant alike. Then cut the finished mesh in two." The box is not a lazy envelope.
+It is the thing that makes both regions one mesh.
+
+WHAT WOULD ACTUALLY WORK is the part's outer boundary with its cavities FILLED - the solid plus the
+coolant as one closed volume - which is a smaller domain than the bbox without being the metal
+alone. On the coupon that is no saving at all, because the coupon's outer shape IS a full
+8 x 6 x 2 mm slab and filled-part equals box to within a rounding error. On the first customer's
+plate it is the whole saving: the bbox is 750,015 mm3 because the FITTINGS stick out of it, the
+part is 276,324 mm3, and the part plus its ~52,140 mm3 of coolant is about 328,000 mm3 - so 2.29x
+less domain, and all of it air around the fittings rather than air inside the plate.
+
+It cannot be taken off the skin by connectivity, either: the bores join the channel walls to the
+outer surface, so a cold plate's skin is ONE connected shell and there is no inner piece to drop.
+Capping the mouths first is what separates them, and `cad/cad_tessellate.tessellate_internal` and
+`cad/bore_staging` already do exactly that for the hollow-wall case ("a cap over each WHOLE mouth,
+so the cavity is sealed").
+
+So the work is: cap the mouths, take the outer shell of what that closes, mesh THAT, and cut the
+ports out of its own patch rather than out of a block face - which is the one piece that already
+exists, because a cut port needs no six named faces. Not started. The measurement above is why it
+is not a one-line change, and it cost twenty minutes instead of a day.
+
+### The mesh was built and refused for what the ports were called
+
+The coupon plate went the whole way through the console: the stage read it as a cooled solid with
+its two 0.9 mm bores, the intake proposed the conjugate engine, the ports were cut out of the lid,
+the mesher ran on the Cloud Run job, the workspace came home - and then
+
+    failed_gate     patch_contract
+    failure_detail  The mesh has no boundary called 'inlet' or 'outlet' (it has 'coolant_in' and
+                    'coolant_out'); the mesh has 'coolant_in' and 'coolant_out', which you did
+                    not approve, so the mesh does not match what you approved. This is our
+                    mistake, not your geometry's.
+
+Nothing was wrong with the mesh. `port_rows` names the first mouth it measured `coolant_in`, says
+out loud that which end is fed is a guess, and its own docstring has said from the day it was
+written that "A declared pair of names from intake overrides it". The one caller never passed
+them. The gate was right and the message it wrote about itself was right.
+
+BOUND BY POSITION, NOT BY ORDER. The declaration carries a `near_mm` for every port - it is what
+the user confirmed on the stage - and the stubs carry the mouths the coolant's own surface has.
+The two lists are measured by different code on different surfaces, so nothing promises they come
+out in the same order, and an inlet and an outlet swapped is a case that solves and runs
+backwards. `declared_for` matches each mouth to its nearest declared port within two mouth
+diameters and takes that port's name AND its role.
+
+ALL OR NOTHING. A declaration that places only some of the mouths is refused whole and the engine
+keeps its own names, because half the patches under the user's names and half under ours is worse
+than all of ours: a reader of the delivered case cannot tell which half is which.
+
+On the run after the fix:
+
+    conjugate: the ports are cut under the names declared at intake, matched to the mouths by
+    position: inlet (inlet), outlet (outlet)
+    conjugate: 2 stub(s) added 0.0000 mm3 to the coolant; inlet and outlet are cut out of zmax,
+    0.903 mm and 0.903 mm across.

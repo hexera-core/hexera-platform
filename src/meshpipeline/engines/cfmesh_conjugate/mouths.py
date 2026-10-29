@@ -311,8 +311,67 @@ def extend(triangles: list, stubs: list) -> tuple[list, float]:
     return out, sum(s.volume for s in stubs)
 
 
+#: How far a declared port may be from the mouth it names, as a multiple of the mouth's own
+#: diameter. The declaration's `near_mm` comes from the stage, where the user confirmed an opening
+#: the scout measured off the same faces - so they agree closely, and this is slack for the
+#: difference between a face's centroid and the mouth the inside-space map read on the skin.
+DECLARED_WITHIN = 2.0
+
+
+def declared_for(stubs: list, declared: list) -> tuple[list | None, str]:
+    """Each stub's name and role from the DECLARATION, bound by where the port is.
+
+    WHY NOT BY ORDER. `port_rows` names the first mouth it measured the inlet and says out loud
+    that it is a guess. The user has already said which is which, at the stage, with a position
+    for each - so the guess is unnecessary, and acting on it instead cost the coupon plate its
+    whole run:
+
+        failed_gate patch_contract: The mesh has no boundary called 'inlet' or 'outlet' (it has
+        'coolant_in' and 'coolant_out') ... so the mesh does not match what you approved.
+
+    The mesh was built. It was refused for calling the ports by this module's default names.
+
+    BY LOCATION AND NOT BY THE ORDER THE DECLARATION IS IN EITHER, because the two lists are
+    measured by different code on different surfaces: the declaration off the B-rep faces at
+    intake, the stubs off the coolant's own mouths. Nothing promises they come out in the same
+    order, and an inlet and an outlet swapped is a case that solves and runs backwards.
+
+    Returns (None, why) when every stub cannot be named, because a partly declared set is worse
+    than the honest default: half the patches would carry the user's names and half would not.
+    """
+    rows: list = []
+    if not stubs or not declared:
+        return None, ""
+    used: set[int] = set()
+    for st in stubs:
+        want = 1000.0 * DECLARED_WITHIN * 2.0 * st.radius          # mm
+        best, best_d = None, float("inf")
+        for i, d in enumerate(declared):
+            if i in used:
+                continue
+            near = d.get("near_mm") or []
+            if len(near) != 3:
+                continue
+            gap = math.sqrt(sum((1000.0 * st.centroid[a] - float(near[a])) ** 2
+                                for a in range(3)))
+            if gap < best_d:
+                best, best_d = i, gap
+        if best is None or best_d > want:
+            return None, ("the declared ports could not be matched to the mouths by position, so "
+                          "the mesh keeps this engine's own port names")
+        used.add(best)
+        d = declared[best]
+        role = str(d.get("type") or "").strip().lower()
+        rows.append((str(d.get("name") or ""), role if role in ("inlet", "outlet") else "wall"))
+    if not all(n for n, _r in rows):
+        return None, "a declared port has no name"
+    return rows, ("the ports are cut under the names declared at intake, matched to the mouths by "
+                  "position: " + ", ".join(f"{n} ({r})" for n, r in rows))
+
+
 def port_rows(stubs: list, *, inlet: str = "coolant_in",
-              outlet: str = "coolant_out") -> tuple[list, str]:
+              outlet: str = "coolant_out",
+              named: list | None = None) -> tuple[list, str]:
     """The stubs as patches to cut, and what to say about which end is which.
 
     WHY THIS IS NOT `plan_ports`. That one chooses an inlet and an outlet from the BLOCK FACES the
@@ -332,16 +391,21 @@ def port_rows(stubs: list, *, inlet: str = "coolant_in",
     """
     rows = []
     for k, s in enumerate(stubs):
-        role, name = (("inlet", inlet) if k == 0 else
-                      ("outlet", outlet) if k == 1 else
-                      ("wall", f"mouth_{k + 1}"))
+        if named is not None and k < len(named):
+            name, role = named[k][0], named[k][1]
+        else:
+            role, name = (("inlet", inlet) if k == 0 else
+                          ("outlet", outlet) if k == 1 else
+                          ("wall", f"mouth_{k + 1}"))
         rows.append({"name": name, "type": role, "face": s.face,
                      "centre_m": tuple(float(v) for v in s.crossing),
                      "diameter_m": 2.0 * float(s.radius)})
     if len(stubs) < 2:
         return rows, (f"{len(stubs)} mouth(s) can be opened to a block face, and a solve needs "
                       "two: one to be fed through and one to leave by")
-    said = (f"{inlet} and {outlet} are cut out of "
+    first, second = ((named[0][0], named[1][0]) if named is not None and len(named) > 1
+                     else (inlet, outlet))
+    said = (f"{first} and {second} are cut out of "
             + (f"{stubs[0].face}" if stubs[0].face == stubs[1].face
                else f"{stubs[0].face} and {stubs[1].face}")
             + f", {2000.0 * stubs[0].radius:.3f} mm and {2000.0 * stubs[1].radius:.3f} mm across")
