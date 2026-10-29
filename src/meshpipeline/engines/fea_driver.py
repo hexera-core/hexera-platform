@@ -1433,13 +1433,13 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 levers.append(stall_lever)
                 continue
             if result.get("spinning"):
-                # LAD-fea-90: A 3D REFINEMENT THAT SPINS is the part's, not ours - gmsh kept inserting
+                # LAD-fea-14: A 3D REFINEMENT THAT SPINS is the part's, not ours - gmsh kept inserting
                 # points and rejecting nearly all of them - so the pass is a fill that failed: no mesh
                 # came back, and the ladder goes on as after any failed fill (LAD-fea-2: HXT next)
                 from meshpipeline.engines.gmsh.gmsh_runner import spin_words
                 refine = (result.get("watchdog") or {}).get("refine") or {}
                 _cite(job_id, [{"stage": "fea_ladder", "decided": "spinning", "value": refine.get("iterations"),
-                                "rule": "LAD-fea-90", "inputs": {"pass": n, **refine},
+                                "rule": "LAD-fea-14", "inputs": {"pass": n, **refine},
                                 "words": (spin_words((refine.get("iterations"), refine.get("kept"),
                                                       refine.get("rejected"))).capitalize()
                                           + f", so pass {n} was stopped as a fill that failed.")}])

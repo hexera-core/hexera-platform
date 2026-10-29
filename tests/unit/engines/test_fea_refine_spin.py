@@ -1,4 +1,4 @@
-"""LAD-fea-90: gmsh's 3D refinement can spin - insert points and reject nearly all of them - while
+"""LAD-fea-14: gmsh's 3D refinement can spin - insert points and reject nearly all of them - while
 it keeps printing and burning CPU, so the stall watch (PLAN-fea-13) never stops it. g_c0103 (a 9-part
 gripper mount, 1.4M elements planned) refined for 3.8 hours to the lab's limit. The watchdog now reads
 gmsh's own counts and stops a spinning refinement, and the driver takes it as a fill that failed."""
