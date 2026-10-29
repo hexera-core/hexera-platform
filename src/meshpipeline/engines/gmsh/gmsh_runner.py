@@ -472,18 +472,99 @@ def _note_fea_threads(ws: Path) -> None:
         logger.debug("fea threads not noted")
 
 
+#: LAD-fea-14: gmsh's 3D refinement is SPINNING - inserting points and throwing nearly all of them
+#: away - when, past REFINE_SPIN_MIN_ITERATIONS, the points it rejected outnumber the nodes it kept
+#: REFINE_SPIN_RATIO times over, at two looks REFINE_SPIN_HOLD_S apart. A refinement that gets there
+#: keeps printing and burning CPU, so the stall watch never stops it: g_c0103 (a 9-part Inventor
+#: gripper mount, 1.4M elements planned) refined for 3.8 hours to the lab's limit, 9.3M iterations
+#: for 211k nodes kept and 8.9M rejected after 8 minutes; a healthy refinement rejects none
+#: (g_c0007: "It. 35000 - 35000 nodes created ... (nodes removed 0 0)"; lab, 27 Oct).
+REFINE_SPIN_MIN_ITERATIONS = 1_000_000
+REFINE_SPIN_RATIO = 10.0
+REFINE_SPIN_HOLD_S = 300.0
+#: how much of the log's end is read at each look
+_REFINE_TAIL_BYTES = 4096
+
+
+def refine_counts(text: str) -> tuple[int, int, int] | None:
+    """(iterations, nodes kept, points rejected) from the last line of gmsh's 3D refinement in
+    `text` ("It. N - M nodes created - worst tet radius R (nodes removed a b)"), else None."""
+    import re
+    found = re.findall(r"It\. (\d+) - (\d+) nodes created - worst tet radius [^(]*\(nodes removed (\d+) (\d+)\)",
+                       text or "")
+    if not found:
+        return None
+    it, kept, _a, rejected = (int(x) for x in found[-1])
+    return it, kept, rejected
+
+
+def spinning_now(counts: tuple[int, int, int] | None) -> bool:
+    """One look: past the iteration floor, with rejected points over REFINE_SPIN_RATIO x the kept ones."""
+    if counts is None:
+        return False
+    it, kept, rejected = counts
+    return it >= REFINE_SPIN_MIN_ITERATIONS and rejected > REFINE_SPIN_RATIO * max(kept, 1)
+
+
+class RefineSpin:
+    """LAD-fea-14: asked at every watchdog look (sandbox/safe_exec.run_watched `spinning`): True once
+    gmsh's 3D refinement has been spinning (spinning_now) for REFINE_SPIN_HOLD_S."""
+
+    def __init__(self, log_path: Path, *, hold_s: float = REFINE_SPIN_HOLD_S, clock=None) -> None:
+        import time
+        self.log_path = Path(log_path)
+        self.hold_s = float(hold_s)
+        self._clock = clock or time.monotonic
+        self._since: float | None = None
+        self.counts: tuple[int, int, int] | None = None
+
+    def _tail(self) -> str:
+        try:
+            with open(self.log_path, "rb") as fh:
+                size = fh.seek(0, 2)
+                fh.seek(max(0, size - _REFINE_TAIL_BYTES))
+                return fh.read().decode("utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    def __call__(self) -> bool:
+        counts = refine_counts(self._tail())
+        now = self._clock()
+        if counts is not None and self.counts is not None and counts[0] < self.counts[0]:
+            self._since = None          # a new refinement (the next volume, the next pass) starts afresh
+        if counts is not None:
+            self.counts = counts
+        if not spinning_now(counts):
+            self._since = None
+            return False
+        if self._since is None:
+            self._since = now
+        return now - self._since >= self.hold_s
+
+
+def spin_words(counts) -> str:
+    """The spin in plain words, for the why record."""
+    it, kept, rejected = (int(x or 0) for x in (counts or (0, 0, 0)))
+    return (f"gmsh's 3D refinement was spinning: after {it:,} iterations it had kept {kept:,} nodes and "
+            f"rejected {rejected:,} points")
+
+
 def _run_fea_watched(ws: Path, *, timeout: int) -> dict:
     """AN FEA MESH, WATCHED: stopped only after FEA_STALL_WINDOW_S with no progress, or at `timeout`
     (the hard ceiling). What the watchdog saw is returned (`watchdog`) for the why-record."""
     from meshpipeline.sandbox.safe_exec import run_watched
     _note_fea_threads(ws)
+    spin = RefineSpin(ws / FEA_LOG)
     # -u: its output reaches the log as it is written (the watchdog reads the log growing)
     w = run_watched([sys.executable, "-u", "-m", "meshpipeline.engines.gmsh.driver", str(ws)],
                     log_path=ws / FEA_LOG, hard_timeout=float(timeout), stall_s=stall_window(),
-                    progress_paths=(ws / "fea_stage.json",))
+                    progress_paths=(ws / "fea_stage.json",), spinning=spin)
     seen = {"stopped": w.stopped, "seconds": w.seconds, "longest_silence_s": w.longest_silence_s,
             "silence_at_stop_s": w.silence_at_stop_s, "stall_window_s": stall_window(),
             "ceiling_s": float(timeout), "cpu_s": w.cpu_s}
+    if w.stopped == "spinning" and spin.counts:
+        it, kept, rejected = spin.counts
+        seen["refine"] = {"iterations": it, "kept": kept, "rejected": rejected}
     if w.stopped == "memory":
         # THE MEMORY GUARD stopped it (sandbox/safe_exec.run_watched) before the kernel's OOM killer:
         # the same outcome RUN-3 answers (fea_driver._out_of_memory), one machine up
@@ -495,7 +576,10 @@ def _run_fea_watched(ws: Path, *, timeout: int) -> dict:
     else:
         out = describe_native_result(returncode=-1, args=None, stage="gmsh driver", output=w.tail,
                                      outcome=NativeOutcome.timed_out)
-        out["stalled"] = w.stopped == "stalled"
+        # a refinement that spins is stopped as the stall watch stops a silent one: the part's,
+        # never a reason to move the same plan to another machine (fea_driver RUN-5)
+        out["stalled"] = w.stopped in ("stalled", "spinning")
+        out["spinning"] = w.stopped == "spinning"
     out["watchdog"] = seen
     return out
 
