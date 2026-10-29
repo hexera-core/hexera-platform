@@ -92,3 +92,70 @@ def test_naming_the_files_stops_on_time_inside_a_huge_member(tmp_path):
     assert time.monotonic() - t < 2.0
     assert "after.bin" not in out
     assert largest_members(path=path, budget_s=60.0).count("MB") >= 2
+
+
+# #
+# a result that reports its mesh region by region
+# #
+#: The coupon as the conjugate runner reports it: no `quality` block at all, because a two-region
+#: mesh has no single set of quality numbers. These are its measured counts.
+CONJUGATE = {"ok": True, "problems": [], "notes": [],
+             "regions": {"fluid": {"cells": 2_520_586, "mesh_ok": True},
+                         "solid": {"cells": 4_061_885, "mesh_ok": True}}}
+
+
+def _mib(limits) -> int:
+    return round(limits.max_archive_bytes / (1024 * 1024))
+
+
+def test_a_two_region_result_raises_the_ceiling_too():
+    """THE BUG. A conjugate result has no `quality`, so the ceiling fell back to its floor on
+    exactly the engine that produces the biggest workspaces, and a live run said so:
+
+        return scope: The mesh was too large to send back whole within the transfer limit
+        (763 MiB), so the volume export the reviewer slices was left out (330 MB)
+
+    763 MiB is the floor. The two regions hold 6,582,471 cells between them.
+    """
+    assert _mib(crc.result_extraction_limits(None)) == 763, "the floor, for reference"
+    assert _mib(crc.result_extraction_limits(CONJUGATE)) == 1256
+
+
+def test_the_regions_are_added_up_not_taken_one_at_a_time():
+    """The archive carries both regions, so the ceiling is sized by both."""
+    one = {"regions": {"fluid": {"cells": 2_520_586}}}
+    assert _mib(crc.result_extraction_limits(CONJUGATE)) > _mib(crc.result_extraction_limits(one))
+
+
+def test_the_volume_export_the_reviewer_needs_now_fits():
+    """What the figure is for. That workspace was over 763 MiB only with its 330 MB volume export,
+    and the export is what a conclusive review is built from: without it the reviewer loaded the
+    boundary alone and the job delivered "inconclusive" on a mesh that passed every gate."""
+    ceiling = crc.result_extraction_limits(CONJUGATE).max_archive_bytes
+    assert ceiling > 763 * 1024 * 1024 + 330_000_000
+
+
+def test_a_quality_block_still_wins_when_there_is_one():
+    """Single-region engines are untouched: `quality.cells` is read first and the regions are only
+    the fallback."""
+    both = dict(CONJUGATE, quality={"cells": 6_707_503})
+    assert _mib(crc.result_extraction_limits(both)) == _mib(
+        crc.result_extraction_limits({"quality": {"cells": 6_707_503}}))
+
+
+def test_nonsense_regions_leave_the_floor_where_it_is():
+    """The count is the remote's word; anything unreadable is simply not a count."""
+    for junk in ({"regions": None}, {"regions": []}, {"regions": {"fluid": None}},
+                 {"regions": {"fluid": {"cells": "lots"}}}, {"regions": {"fluid": {}}},
+                 {"regions": {"fluid": {"cells": -9}}}):
+        assert _mib(crc.result_extraction_limits(junk)) == 763, junk
+
+
+def test_no_document_can_lift_the_ceiling_without_end():
+    """Same bound as the `quality` path: twice CELL_HARD_LIMIT, however many regions say otherwise.
+    A hundred regions of a trillion cells each must not buy a hundred trillion bytes."""
+    import meshpipeline.settings.policy as polcfg
+
+    absurd = {"regions": {f"r{i}": {"cells": 10 ** 12} for i in range(100)}}
+    cap = 2 * int(polcfg.CELL_HARD_LIMIT) * crc.RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL
+    assert crc.result_extraction_limits(absurd).max_archive_bytes == cap

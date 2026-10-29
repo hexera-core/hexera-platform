@@ -391,6 +391,38 @@ FEA_RESULT_MAX_BYTES = 48 * 1024 ** 3
 RESULT_FILE_BYTES_PER_MEASURED_CELL = 400
 
 
+def _region_cells(result: dict | None) -> int:
+    """The cell count of a result that reports its mesh REGION BY REGION, or 0.
+
+    A conjugate result has no `quality` block at all: the cfmesh_conjugate runner returns
+    {"ok", "problems", "notes", "regions": {"fluid": {"cells": ...}, "solid": {"cells": ...}}},
+    because a two-region mesh has no single set of quality numbers. So the archive ceiling fell
+    back to its floor on exactly the engine that produces the biggest workspaces, and a live run
+    said so:
+
+        return scope: The mesh was too large to send back whole within the transfer limit
+        (763 MiB), so the volume export the reviewer slices was left out (330 MB)
+
+    763 MiB is CELL_HARD_LIMIT x RESULT_BYTES_PER_CELL with the count unread. That mesh had
+    6,707,503 cells across its two regions, which at RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL is
+    1,279 MiB - and the 330 MB export is what a conclusive review is built from, so the figure
+    mattered. Same bound as the `quality` path: the count is the remote's word, and the caller
+    clamps it to twice CELL_HARD_LIMIT.
+    """
+    regions = (result or {}).get("regions") if isinstance(result, dict) else None
+    if not isinstance(regions, dict):
+        return 0
+    total = 0
+    for one in regions.values():
+        if not isinstance(one, dict):
+            continue
+        try:
+            total += max(0, int(one.get("cells") or 0))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
 def result_extraction_limits(result: dict | None = None):
     """The extraction limits for a RETURNED mesh workspace: the generic limits, with the archive
     ceiling sized from the cell budget - CELL_HARD_LIMIT cells at RESULT_BYTES_PER_CELL (800 MB
@@ -409,6 +441,7 @@ def result_extraction_limits(result: dict | None = None):
         cells = max(0, int((q or {}).get("cells") or 0)) if isinstance(q, dict) else 0
     except (TypeError, ValueError):
         cells = 0
+    cells = cells or _region_cells(result)
     # the count is the remote's word: bounded, so no document can lift the limits without end
     cells = min(cells, 2 * int(polcfg.CELL_HARD_LIMIT))
     archive = max(base.max_archive_bytes, by_budget, cells * RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL)
