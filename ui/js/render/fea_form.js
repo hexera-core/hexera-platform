@@ -4,7 +4,9 @@
 // found (FEA build step 3): the thinnest wall and the hot spots the mesh will be refined at, shown
 // only (version 1 refines them all automatically; nothing here edits them). For an ASSEMBLY (a file
 // of several bodies): its parts, where they touch or pass into each other (marked on the part), and
-// its one question, "How are the parts connected?" - bonded (the default) or contact.
+// its one question, "How are the parts connected?" - bonded (the default) or contact - with every
+// pair listed under it (PLAN-fea-19/20): what was measured, its type to pick (Bonded / Contact / Off,
+// the answer by default) and, where parts pass into each other, which part keeps its full shape.
 // Boundaries: markup and a reading of it. No fluid, no openings, no flow axis and no stickers: an
 // FEA part is meshed as itself. It fetches nothing and starts no run; the stage and the card both
 // use it, and confirming is the callback they were handed.
@@ -53,7 +55,93 @@ function partLabel(p) {
 }
 
 /** What an assembly view shows, in one string: a later view that says more is drawn again. */
-const assemblySig = (a) => `${(a.parts || []).length}/${(a.interfaces || []).length}/${(a.notes || []).length}/${a.measured === false ? 0 : 1}`;
+const assemblySig = (a) => `${(a.parts || []).length}/${(a.interfaces || []).length}/${(a.notes || []).length}/${a.measured === false ? 0 : 1}/${(a.pairs || []).length}`;
+
+/** Text for an attribute in double quotes (esc() leaves quotes alone: a reason or a JSON map has them). */
+const attr = (s) => esc(s).replace(/"/g, "&quot;");
+
+/** A number as the stage says it: three figures at most. */
+const n3 = (v) => String(Number(Number(v).toPrecision(3)));
+
+/** PLAN-fea-19: what was measured of one pair, in words: "touch over 120 mm²", "sit 0.2 mm apart over
+ *  45 mm²", "pass into each other (12% of the smaller part, about 0.4 mm deep)". */
+export function pairMeasured(r) {
+  const area = r.area_mm2 == null ? "" : ` over ${n3(r.area_mm2)} mm²`;
+  if (r.kind === "gap") return `sit ${mmWords(r.gap_mm)} apart${area}`;
+  if (r.kind === "overlap") {
+    const bits = [];
+    if (r.overlap_share != null) bits.push(`${n3(100 * r.overlap_share)}% of the smaller part`);
+    if (r.depth_mm != null) bits.push(`about ${n3(r.depth_mm)} mm deep`);
+    return `pass into each other${bits.length ? ` (${bits.join(", ")})` : ""}`;
+  }
+  return `touch${area}`;
+}
+
+/** The type a pair takes by rule under the stage's answers (the server's `defaults`, by
+ *  "bonded|on" = Bonded with small gaps joined, ...). */
+export function pairDefault(r, conn, gapOn) {
+  const k = `${conn === "contact" ? "contact" : "bonded"}|${gapOn === false ? "off" : "on"}`;
+  return ((r.defaults || {})[k]) || r.type || "bonded";
+}
+
+/** One pair's row: its tag, its two parts, what was measured, its type to pick and - where the
+ *  parts pass into each other - which part keeps the shared piece; the reason under it. */
+function pairRowHtml(r, tag, label, types, k0) {
+  const [a, b] = r.parts || ["?", "?"];
+  const name = (id) => label[id] ? `${id} · ${label[id]}` : id;
+  const opts = types.map((t) => `<option value="${attr(t.key)}"${t.key === r.type ? " selected" : ""}>${esc(t.label)}</option>`).join("");
+  const keep = r.keep ? `<select class="fea-pair-keep" data-key="${attr(r.key)}" aria-label="${attr(`Which part keeps its full shape where ${a} and ${b} overlap`)}">
+        ${[a, b].map((p) => `<option value="${attr(p)}"${p === r.keep ? " selected" : ""}>${esc(p)} keeps its shape</option>`).join("")}</select>` : "";
+  // THE WAY ON FROM AN OPEN PAIR (PLAN-fea-21): a reach of the user's own, for a bonded pair; blank keeps the
+  // measured reach (a small gap) or the solver's default (parts that touch)
+  const reach = `<input class="fea-pair-reach" type="number" min="0" step="any" data-key="${attr(r.key)}" aria-label="${attr(`Reach for ${a} and ${b}, in mm`)}" title="${attr(r.reach_mm != null ? `Blank: the measured reach, ${n3(r.reach_mm)} mm` : "Blank: the solver's own default")}" placeholder="${attr(r.reach_mm != null ? `reach ${n3(r.reach_mm)} mm` : "reach, mm")}"${r.type === "bonded" ? "" : " hidden"}>`;
+  return `<li class="fea-spot-row fea-itf-row fea-pair ${attr(r.kind || "touching")}" data-spot="${attr(tag)}" data-key="${attr(r.key)}"
+      data-defaults="${attr(JSON.stringify(r.defaults || {}))}" data-whys="${attr(JSON.stringify(r.why || {}))}">
+      <span class="fea-spot-id">${esc(tag)}</span>
+      <span class="fea-pair-body"><span class="fea-pair-what">${esc(name(a))} and ${esc(name(b))} ${esc(pairMeasured(r))}</span>
+        <span class="fea-pair-set"><select class="fea-pair-type" data-key="${attr(r.key)}" aria-label="${attr(`How ${a} and ${b} are joined`)}">${opts}</select>${keep}${reach}</span>
+        <span class="fea-pair-why">${esc(((r.why || {})[k0]) || "")}</span>
+        ${r.keep_why ? `<span class="fea-pair-why fea-keep-why">${esc(r.keep_why)}</span>` : ""}</span></li>`;
+}
+
+/** THE STAGE'S ANSWERS CHANGED (the whole-assembly question or the small-gap switch): every pair the
+ *  user has not set follows the rule again, its reason with it. */
+export function followPairDefaults(root) {
+  const conn = (root.querySelector('input[name="fea-connection"]:checked') || {}).value || "bonded";
+  const gapBox = root.querySelector('input[name="fea-gap-joins"]');
+  const gapOn = gapBox ? !!gapBox.checked : true;
+  const k = `${conn === "contact" ? "contact" : "bonded"}|${gapOn ? "on" : "off"}`;
+  root.querySelectorAll(".fea-pair").forEach((row) => {
+    const sel = row.querySelector(".fea-pair-type");
+    if (!sel) return;
+    let defaults = {}, whys = {};
+    try { defaults = JSON.parse(row.dataset.defaults || "{}"); whys = JSON.parse(row.dataset.whys || "{}"); } catch (e) { /* the row keeps its value */ }
+    if (sel.dataset.touched !== "1" && defaults[k]) sel.value = defaults[k];
+    const why = row.querySelector(".fea-pair-why");
+    if (why) why.textContent = sel.dataset.touched === "1" ? "Set by you for this pair." : (whys[k] || "");
+    const reach = row.querySelector(".fea-pair-reach");
+    if (reach) reach.hidden = sel.value !== "bonded";
+  });
+}
+
+/** The pairs as the user left them: {key: {type, keep?, reach_mm?}} (the server keeps only the
+ *  ones that differ from the rule). */
+export function readPairs(root) {
+  const out = {};
+  root.querySelectorAll(".fea-pair").forEach((row) => {
+    const key = row.dataset.key;
+    const sel = row.querySelector(".fea-pair-type");
+    if (!key || !sel) return;
+    const r = { type: sel.value };
+    const keep = row.querySelector(".fea-pair-keep");
+    if (keep) r.keep = keep.value;
+    const reach = row.querySelector(".fea-pair-reach");
+    const mm = reach && !reach.hidden && reach.value !== "" ? Number(reach.value) : NaN;
+    if (Number.isFinite(mm) && mm > 0) r.reach_mm = mm;
+    out[key] = r;
+  });
+  return out;
+}
 
 /** A length in millimetres as the stage says it: "0.19 mm". */
 const mmWords = (v) => (v == null || isNaN(v) ? "a small gap" : `${Number(Number(v).toPrecision(2))} mm`);
@@ -68,6 +156,15 @@ export function followAssembly(root, a) {
   const picked = root.querySelector('input[name="fea-connection"]:checked');
   const gapBox = root.querySelector('input[name="fea-gap-joins"]');
   const gapOn = gapBox ? gapBox.checked : null;
+  // THE PAIRS THE USER SET are kept too, by pair key
+  const set = {};
+  root.querySelectorAll(".fea-pair").forEach((row) => {
+    const sel = row.querySelector(".fea-pair-type");
+    const keep = row.querySelector(".fea-pair-keep");
+    const reach = row.querySelector(".fea-pair-reach");
+    set[row.dataset.key] = { type: sel && sel.dataset.touched === "1" ? sel.value : null,
+      keep: keep && keep.dataset.touched === "1" ? keep.value : null, reach: reach ? reach.value : "" };
+  });
   const html = assemblyHtml(a);
   if (box) box.outerHTML = html;
   else {
@@ -81,6 +178,17 @@ export function followAssembly(root, a) {
   }
   const gapAgain = root.querySelector('input[name="fea-gap-joins"]');
   if (gapAgain && gapOn !== null) gapAgain.checked = gapOn;
+  root.querySelectorAll(".fea-pair").forEach((row) => {
+    const was = set[row.dataset.key];
+    if (!was) return;
+    const sel = row.querySelector(".fea-pair-type");
+    if (sel && was.type) { sel.value = was.type; sel.dataset.touched = "1"; }
+    const keep = row.querySelector(".fea-pair-keep");
+    if (keep && was.keep) { keep.value = was.keep; keep.dataset.touched = "1"; }
+    const reach = row.querySelector(".fea-pair-reach");
+    if (reach && was.reach) reach.value = was.reach;
+  });
+  followPairDefaults(root);
   return true;
 }
 
@@ -89,7 +197,13 @@ export function followAssembly(root, a) {
 export function assemblyHtml(a) {
   if (!a) return "";
   const parts = (a.parts || []).map((p) => `<li class="fea-part-row" data-part="${esc(p.id)}">${partLabel(p)}</li>`).join("");
-  const rows = (a.interfaces || []).map((i) => {
+  // PLAN-fea-19/20: EVERY PAIR with its type to pick (and who keeps an overlap), when the server sends them
+  const label = {};
+  (a.parts || []).forEach((p) => { if (p.name) label[p.id] = p.name; });
+  const types = a.pair_types || [{ key: "bonded", label: "Bonded" }, { key: "contact", label: "Contact" }, { key: "off", label: "Off" }];
+  const k0 = `${a.default === "contact" ? "contact" : "bonded"}|${a.gap_default === false ? "off" : "on"}`;
+  const pairRows = (a.pairs || []).map((r) => pairRowHtml(r, String(r.id || "").replace("Interface_", "I"), label, types, k0)).join("");
+  const rows = pairRows || (a.interfaces || []).map((i) => {
     const tag = String(i.id || "").replace("Interface_", "I");
     const what = i.kind === "overlap"
       ? (i.overlap_share == null ? "pass into each other"
@@ -118,7 +232,7 @@ export function assemblyHtml(a) {
       ${gapHtml}${joinNotes}${free}${a.overlap_note ? `<div class="gc-note">${esc(a.overlap_note)}</div>` : ""}
       <p class="fea-q fea-conn-q">${esc(a.question || "How are the parts connected?")}</p>
       <div class="fea-conn" role="radiogroup" aria-label="${esc(a.question || "How are the parts connected?")}">${opts}</div>
-      <div class="gc-note">One answer for every joint for now; each face is still named, so you can change any joint in your solver.</div>
+      <div class="gc-note">${esc(a.pair_note || (pairRows ? "Each pair follows the answer above unless you change it in the list." : "One answer for every joint; each face is still named, so you can change any joint in your solver."))}</div>
     </div>`;
 }
 
@@ -292,6 +406,8 @@ export function readFeaForm(root, p) {
   if (conn) body.fea_connection = conn.value;
   const gapBox = root.querySelector ? root.querySelector('input[name="fea-gap-joins"]') : null;
   if (gapBox) body.fea_gap_joins = !!gapBox.checked;
+  // PLAN-fea-19/20: each pair as it is set (the server keeps the ones that differ from the rule)
+  if (root.querySelector && root.querySelector(".fea-pair")) body.fea_pairs = readPairs(root);
   const upSel = root.closest ? root.closest(".gc-stage")?.querySelector(".v-up select") : null;
   const up = (upSel && upSel.value) || p.up_axis;
   if (up) body.up_axis = up;
@@ -304,6 +420,23 @@ export function bindFeaPanel(root, f, p, { confirm, done }) {
   bindUnit(root, p);
   const form = root.querySelector(".fea-form") || root;
   bindMeasure(form);
+  // THE PAIRS (PLAN-fea-19/20), one listener for the form, so a list drawn again later is wired too: a
+  // pair the user sets is theirs; the whole-assembly answer and the small-gap switch move the rest
+  form.addEventListener("change", (e) => {
+    const t = e.target;
+    if (!t || !t.classList) return;
+    if (t.classList.contains("fea-pair-type") || t.classList.contains("fea-pair-keep")) {
+      t.dataset.touched = "1";
+      const row = t.closest(".fea-pair");
+      if (row && t.classList.contains("fea-pair-keep")) {
+        const why = row.querySelector(".fea-keep-why");
+        if (why) why.textContent = `${t.value} keeps its full shape there (set by you).`;
+      }
+      followPairDefaults(form);
+    } else if (t.name === "fea-connection" || t.name === "fea-gap-joins") {
+      followPairDefaults(form);
+    }
+  });
   const btn = form.querySelector(".gc-proceed"), hint = form.querySelector(".gc-hint");
   if (!btn) return;
   btn.onclick = async () => {
