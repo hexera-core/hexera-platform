@@ -24,10 +24,20 @@ def stl_response(patches: dict[str, list], roles: dict, units: str,
     return {"kind": "stl", "mesh_units": units, "patches": out}
 
 
-def polymesh_response(raw: list, cell_stats: Any, roles: dict, units: str) -> dict | None:
+def polymesh_response(raw: list, cell_stats: Any, roles: dict, units: str,
+                      reduced: dict | None = None) -> dict | None:
+    """The delivered boundary as the browser receives it.
+
+    `reduced` is carried through UNTOUCHED and is the whole of this function's honesty about size:
+    when a caller has merged cells to fit a browser's budget, the payload says how many faces were
+    delivered, how many are drawn, and at what resolution. Without it a reader has no way to tell a
+    mesh that is coarse from a mesh that is being SHOWN coarse, and the face count is the mesh's
+    own measurement of itself.
+    """
     if not raw:
         return None
     return {"kind": "polymesh", "mesh_units": units, "cell_stats": cell_stats,
+            **({"reduced": reduced} if reduced else {}),
             "patches": [{
                 "name": p["name"],
                 "type": roles.get(p["name"], p["type"]),

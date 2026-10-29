@@ -6,7 +6,11 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from meshpipeline.engines.cfmesh_conjugate.conjugate import FLUID_REGION, SOLID_REGION
+from meshpipeline.engines.cfmesh_conjugate.conjugate import (
+    FLUID_REGION,
+    SOLID_REGION,
+    SOLID_TO_FLUID,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +60,15 @@ def conjugate_viewer(workspace, *, roles: dict, units: str,
             bare = str(p["name"])
             p["name"] = f"{region}/{bare}"
             merged_roles[p["name"]] = (roles or {}).get(bare, p["type"])
+            # THE METAL'S OUTSIDE WRAPS EVERYTHING. A cooled solid is a block with coolant inside
+            # it, so the solid region's every patch except the coupling is a face of that block,
+            # and a viewer that opens them shown draws six grey rectangles with the part of
+            # interest sealed inside. `encloses_domain` is how an engine says this: render/
+            # mesh_facts opens such a part HIDDEN and the viewer re-frames on what is left, which
+            # on this engine is the coolant. Without it the first thing a reader sees of a
+            # conjugate mesh is the one surface that tells them nothing.
+            if region == SOLID_REGION and bare != SOLID_TO_FLUID:
+                p["encloses_domain"] = True
         raw += patches
         if cell_stats:
             stats.append(cell_stats)
@@ -69,8 +82,23 @@ def conjugate_viewer(workspace, *, roles: dict, units: str,
     if stats:
         cell_stats = {k: min(float(s[k]) for s in stats if s.get(k) is not None)
                       for k in ("p10", "typ") if any(s.get(k) is not None for s in stats)}
-    resp = polymesh_response(raw, cell_stats or None, merged_roles, units)
-    if resp:
+    # WHAT A BROWSER CAN ACTUALLY CARRY. Packed whole, the first real customer cold plate's
+    # coolant side is 13,022,400 faces: 416.8 MB raw, 555.8 MB of base64, measured on the
+    # delivered workspace on 2026-10-28. That is past the 512 MiB `sandbox.safe_extract` puts on a
+    # workspace archive before a browser has been asked to parse a byte of it, and 32x the
+    # 400,000-triangle budget the INPUT skin path has considered browser-safe all along. The
+    # delivered path had no budget of any kind. `fit_to_budget` merges cells FOR DRAWING and
+    # returns the record that says so; nothing about the mesh on disk changes.
+    from meshpipeline.render.polymesh_budget import fit_to_budget
+    raw, reduced = fit_to_budget(raw)
+
+    resp = polymesh_response(raw, cell_stats or None, merged_roles, units, reduced=reduced)
+    if resp and not reduced:
+        # THE HEATMAP IS PER FACE, so it describes the surface only while the faces are the ones
+        # the mesher wrote. Once cells have been merged for drawing, one drawn face stands for
+        # several delivered ones and a colour on it was measured on none of them. A mesh big
+        # enough to need merging is also the one whose quality_fields pass reads 29 million points
+        # and 73 million faces, so skipping it is not only the honest answer here.
         _paint(resp, ws)
     return resp
 

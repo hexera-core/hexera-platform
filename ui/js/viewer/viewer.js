@@ -877,6 +877,23 @@ function initViewer(job,surf,uiCfg){
       +`</div>`;
   })();
 
+  /* WHAT A PATCH'S face_count MEANS WHEN THE MESH IS TOO BIG TO DRAW WHOLE.
+     Past the viewer's budget the server merges cells FOR DRAWING and ships `reduced`, which
+     carries what was actually delivered. face_count is then the DRAWN count, and printing it as
+     the delivered one tells a reader their mesh is twenty times coarser than the one they paid
+     for - measured on the first customer cold plate, 608,781 drawn against 13,022,400 built.
+     So the per-patch number comes from `reduced` when there is one, and the line says plainly
+     that what is on screen is a merged view and at what size. */
+  const reduced=surf.reduced||null;
+  const facesOf=p=>{
+    const d=reduced&&reduced.patches&&reduced.patches[p.name];
+    const n=d?d.delivered_faces:(p.face_count||p.tri_count||0);
+    return `${p.name}: ${(n||0).toLocaleString()} faces`;
+  };
+  const drawnNote=reduced
+    ?` · drawn merged at ${(reduced.resolution_m*1000).toLocaleString(undefined,{maximumFractionDigits:2})} mm`
+      +` (${reduced.drawn_triangles.toLocaleString()} of ${reduced.delivered_faces.toLocaleString()} faces on screen)`
+    :'';
   const statusEl=document.getElementById('v-status-'+job);
   statusEl.textContent=thermal&&surf.is_mesh
     // a thermal model says what it is in its own words: its parts, its cells, its power
@@ -885,7 +902,7 @@ function initViewer(job,surf,uiCfg){
     :surf.fea&&surf.is_mesh?'your delivered FEA mesh · '+(surf.fea.summary||'')
     :(surf.is_mesh?'your delivered mesh · '
                 :'input surface - the mesh itself could not be rendered · ')
-    +(surf.patches||[]).map(p=>`${p.name}: ${(p.face_count||p.tri_count||0).toLocaleString()} faces`).join(' · ');
+    +(surf.patches||[]).map(facesOf).join(' · ')+drawnNote;
   statusEl.title=statusEl.textContent;   // one line on screen; the whole of it on hover
 
   /* A DELIVERED THERMAL MODEL - its parts table, its quality in words, its ready-made slices

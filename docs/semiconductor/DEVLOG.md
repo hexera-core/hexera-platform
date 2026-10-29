@@ -485,3 +485,68 @@ short fat bore.
 | the quota | 32 CPUs all-regions with about 20 on CI runners. Only an 8-core box is creatable, and mesh-bench already is one |
 | the depth model | one controlled pair, one part. The span term is 4.95 cells per level and the scatter at a fixed span is 6.9 to 11.86 |
 | the test corpus | all ten generated parts read as one scale. None of them reproduces the difficulty of the customer part |
+
+## 2026-10-29, the console opens the mesh
+
+| | before | after |
+|---|---|---|
+| viewer payload | 555.8 MB of base64, coolant side alone | 18.7 MB, whole case |
+| what is drawn | nothing, it never got that far | 636,713 triangles of 13,504,416 delivered faces |
+| resolution drawn | | merged at 2.04 mm, stated in the payload and on the status line |
+| payload built in | | 115.9 s, peak 6.14 GiB, on the box holding the 47 GB workspace |
+| the API serves it in | | 0.36 s |
+
+The mesh built on 2026-10-28 was on disk and checkMesh passed on both regions, and nothing
+downstream could open it. Three limits, each measured on that workspace rather than guessed at.
+
+| step | what happened | the limit |
+|---|---|---|
+| export for review | `VTK/fluid` and `VTK/solid` created at 21:05:37, the report written at 21:10:38, both directories empty | the 300 s timeout in `export_volume_vtk` |
+| ship it home | the coolant side alone packs to 555.8 MB | the 512 MiB workspace archive cap |
+| draw it | 13,022,400 faces handed to a browser with no budget applied | 400,000 triangles, which is what the INPUT skin path has always held itself to |
+
+The input skin has had a budget since it was written. The delivered mesh had none:
+`polymesh_response` base64-packs every face it is given. `render/polymesh_budget.py` gives it one.
+It clusters on the compact (points, polys) pair rather than on a triangle soup, so it sorts 13
+million rows where `skin_mesh.simplified` would sort 78 million, and the coolant interface reduces
+in about 50 s.
+
+### The payload says what it is showing
+
+`fit_to_budget` returns a `reduced` block and `polymesh_response` carries it through:
+
+    {"delivered_faces": 13504416, "drawn_triangles": 636713, "resolution_m": 0.0020381, ...}
+
+The viewer's status line reads the delivered counts out of it and ends with "drawn merged at
+2.04 mm (636,713 of 13,504,416 faces on screen)". Without that the console printed the drawn count
+as the delivered one, which tells a reader their mesh is twenty times coarser than it is.
+
+`delivered_faces` counts the mesh's own faces and `drawn_triangles` counts triangles. The first
+version summed the fan triangulation into both and reported 27,020,802 delivered for a boundary of
+13,504,416 faces.
+
+### The metal was hiding the coolant
+
+The solid region's every patch except the coupling is a face of the block the part was cut from, so
+a viewer that opens them shown draws six grey rectangles with the coolant sealed inside. That is
+what the first load looked like. `conjugate_viewer` now sets `encloses_domain` on them, which
+`render/mesh_facts` turns into HIDDEN, and the viewer re-frames on what is left.
+
+### How it got into the console
+
+The payload is built where the mesh is, which the pipeline does not do: `artifact_uploader` builds
+it on the worker, after the workspace has travelled home, and this workspace cannot travel. The
+Cloud Run client sizes the return caps from a cell count clamped to 2 x CELL_HARD_LIMIT = 16M
+(`adapters/mesh_execution/cloud_run_client.py:413-416`), which gives 12.8 GB against tens of GB. So
+for now the payload is built on mesh-bench by the product's own code, 18.7 MB travels, and a job
+row plus one `viewer_data` artifact are registered by hand against the local stack.
+
+### Open
+
+| item | state |
+|---|---|
+| the channels are not visible | the coolant merges at 0.41 mm and the slots are 0.098 mm. A whole-part payload cannot show them at any budget. The answer is a second level: the three cuts `cfmesh_conjugate/slices.py` already names, shipped at full resolution beside the preview |
+| the quality heatmap | not attached on a reduced payload, because it is per face. It was not attaching on this engine anyway: `_paint` looks up bare patch names against region-prefixed ones |
+| the part roster | lists the manifest's bare patch names and the viewer's region-prefixed ones, 15 entities where 9 would do |
+| the other polyMesh engines | snapgrid and snappy_multiregion pack unbudgeted too. Neither delivers at this size today |
+| a real run | cannot reach the console at this size at all: `mesh_paths.surface` is a required render artifact and the review needs it |
