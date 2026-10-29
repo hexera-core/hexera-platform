@@ -171,8 +171,17 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # one: without it there is a solid and no fluid, and nothing to split the block along.
     fluid_stl = ws / PL.FLUID_STL
     fluid_stl.parent.mkdir(parents=True, exist_ok=True)
+    # ...AND THE DOMAIN THE MESHER WILL FILL, out of the same extraction. A conjugate mesher fills
+    # ONE manifold volume and cuts the regions out of it afterwards, and the easy manifold is the
+    # cuboid round the part - every cell of air between the part and that cuboid is paid for at
+    # the background size. Measured on the first customer cold plate: the cuboid is 846,543 mm3
+    # and metal plus coolant is 274,807 mm3, so 67.5% of a box-domain mesh's cells are air.
+    # Never fatal: no domain, or one not worth its faces, and the box stands exactly as before.
+    from meshpipeline.engines.cfmesh_conjugate import conjugate as _C
+
     rec = await asyncio.to_thread(surface_bounded, src, fluid_stl, scale=cad_scale(src),
-                                  kind="cad")
+                                  kind="cad", domain_path=ws / PL.DOMAIN_STL,
+                                  domain_patch=_C.OUTER_PATCH)
     if rec:
         wrong = coolant_sits_inside(rec, bounds[0], bounds[1])
         if wrong:
@@ -184,6 +193,22 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         await run.fence("deliver builder outcome")
         return False, NO_COOLANT, run.outcome(produced_deliverable=False, exhausted=True,
                                               failure_marker=NO_COOLANT)
+
+    # THE PART'S OWN SKIN, OR THE BOX. `write_domain` already measured which: share_of_box is how
+    # much of its bounding box the domain actually is, and BOX_WORTH_KEEPING is where the cuboid
+    # stops being worth its air. Decided once, here, so everything below reads one flag.
+    _dom = rec.get("domain") if isinstance(rec, dict) else None
+    shell = _C.use_shell_domain(rec)
+    if shell:
+        logger.info("conjugate: the domain is the part's own skin - %s mm3 of a %s mm3 box "
+                    "(%.1f%%), %d triangles, so the air the box would have meshed is not meshed "
+                    "- job_id=%s", format(_dom["volume_mm3"], ",.0f"),
+                    format(_dom["box_mm3"], ",.0f"), _dom["share_of_box"] * 100.0,
+                    _dom["triangles"], job_id)
+    elif _dom and _dom.get("ok"):
+        logger.info("conjugate: the part fills %.1f%% of its own box, so the box IS the domain "
+                    "and there is nothing to build - job_id=%s",
+                    float(_dom.get("share_of_box") or 0.0) * 100.0, job_id)
 
     # A retry a review asked for is meshed one step finer: the build is deterministic, so the
     # same plan would rebuild exactly the mesh the review just rejected.
@@ -395,7 +420,12 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if rec.get("ports"):
         from meshpipeline.engines.cfmesh_conjugate import mouths as MO
 
-        stubs, mouth_said = MO.stubs_for(rec["ports"], lo, hi)
+        # ON A SHELL THERE IS NOTHING TO STUB OUT TO. The mouths are already on the domain's own
+        # surface, so each is a patch cut where it is - `mouths.shell_stubs`, written against this
+        # exact assembly and until now called by nothing. On a box the mouths are inside it and
+        # have to reach a face first, which is what `stubs_for` does.
+        stubs, mouth_said = ((MO.shell_stubs(rec["ports"]), [])
+                             if shell else MO.stubs_for(rec["ports"], lo, hi))
         for line in mouth_said:
             logger.info("conjugate: %s - job_id=%s", line, job_id)
         if stubs:
@@ -434,7 +464,11 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         plan = dataclasses.replace(plan, port_patches=tuple(port_patches))
 
     from meshpipeline.engines.cfmesh_conjugate import conjugate as C
-    (ws / PL.BLOCK_STL).write_text(C.block_surface_stl(lo, hi))
+    if shell:
+        # the domain STL IS the surface cfMesh fills, under the one name a shell has
+        (ws / PL.BLOCK_STL).write_bytes((ws / PL.DOMAIN_STL).read_bytes())
+    else:
+        (ws / PL.BLOCK_STL).write_text(C.block_surface_stl(lo, hi))
     PL.write_plan(ws, plan)
     run.note_authoring()
     note_native_pass(ws, 1)

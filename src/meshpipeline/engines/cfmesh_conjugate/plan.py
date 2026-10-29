@@ -21,6 +21,10 @@ PLAN_NAME = "conjugate_plan.json"
 #: What the mesher reads. The block is written by the driver from the part's own bounds; the
 #: coolant is the surface the extractor wrote (cad/fluid_volume.write_surface).
 BLOCK_STL = "constant/triSurface/block.stl"
+#: THE PART'S OWN SKIN, when it is worth building instead of the cuboid round it
+#: (cad/fluid_volume.write_domain). Written beside the block and copied over it when it is used,
+#: so everything downstream still reads one surface under one name.
+DOMAIN_STL = "constant/triSurface/domain.stl"
 FLUID_STL = "constant/triSurface/fluid.stl"
 #: The thin side of a two-scale part's wall, written beside the coolant surface by
 #: cad/fluid_volume.write_surface (FINE_SURFACE_NAME). Present only for a part that has two scales;

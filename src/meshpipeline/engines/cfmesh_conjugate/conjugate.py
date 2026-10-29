@@ -126,6 +126,37 @@ BLOCK_FACES: tuple[str, ...] = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 OUTER_PATCH = "wall_outer"
 
 
+def use_shell_domain(surface: dict | None) -> bool:
+    """Whether to fill the part's own skin instead of the cuboid round it.
+
+    The record `cad/fluid_volume.write_domain` leaves on the coolant surface has already measured
+    both: `share_of_box` is how much of its bounding box the domain actually is, and
+    BOX_WORTH_KEEPING is where the cuboid stops being worth its air. A conjugate mesher fills ONE
+    manifold volume and cuts the regions out of it afterwards, so every cell between the part and
+    that cuboid is paid for at the background size.
+
+    MEASURED ON THE FIRST CUSTOMER COLD PLATE: the domain is 276,372 mm3 of a 750,015 mm3 box,
+    share_of_box 0.3685, which is 2.71x less volume to fill - and the comment beside OUTER_PATCH
+    puts the same thing in cells: 67.5% of a box-domain mesh's cells are air.
+
+    FALSE FOR EVERYTHING ELSE, deliberately. No domain, a domain that did not come out, or a part
+    that fills its own box: the box stands exactly as it always has, which is the simpler surface
+    and costs almost nothing on a part that is nearly a cuboid.
+    """
+    from meshpipeline.cad.fluid_volume import BOX_WORTH_KEEPING
+
+    dom = (surface or {}).get("domain") if isinstance(surface, dict) else None
+    if not isinstance(dom, dict) or not dom.get("ok"):
+        return False
+    share = dom.get("share_of_box")
+    # A NUMBER, not something that parses as one. `float("0.3")` is 0.3 and a string here means
+    # the record went through something that stringified it, which is not a measurement this may
+    # act on - the box stands and the run is the one it always was.
+    if not isinstance(share, (int, float)) or isinstance(share, bool):
+        return False
+    return 0.0 < float(share) < BOX_WORTH_KEEPING
+
+
 def is_domain_face(face: str) -> bool:
     """Whether `face` names a surface a port may be cut out of: a block face, or the shell."""
     return face in BLOCK_FACES or face == OUTER_PATCH
@@ -1470,7 +1501,7 @@ __all__ = ["ConjugateError", "ConjugateReport", "RegionReport", "PortPlan",
            "OCTREE_BOXES_PER_PROCESS", "MPI_FLAGS", "DECOMPOSE_METHOD", "PREPARE_PAR",
            "ranks_for", "render_decompose_pardict", "mpi_command", "omp_threads",
            "MPI_BUFFER_BYTES",
-           "BLOCK_FACES", "OPEN_FACE_RTOL", "OUTER_PATCH", "is_domain_face",
+           "BLOCK_FACES", "OPEN_FACE_RTOL", "OUTER_PATCH", "is_domain_face", "use_shell_domain",
            "RECONSTRUCT_REGIONS", "REGION_DICTS",
            "CELL_TO_REGION", "REGION_PROPERTIES", "region_properties",
            "block_bounds", "block_surface_stl", "open_faces", "plan_ports",
