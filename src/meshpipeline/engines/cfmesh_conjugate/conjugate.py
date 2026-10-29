@@ -33,6 +33,7 @@ of the CAD it was built from. A conjugate solve then ran on the result.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -845,16 +846,46 @@ def render_decompose_pardict(ranks: int, *, method: str = DECOMPOSE_METHOD) -> s
         ""))
 
 
-def mpi_command(script: str, ranks: int) -> str:
+def omp_threads(ranks: int, *, cores: int = 0) -> int:
+    """How many OpenMP threads one rank may take, so the ranks do not fight over the cores.
+
+    MEASURED ON THE RUN THAT MADE THIS NECESSARY. A 279,621,370-cell build of the Corintis plate
+    on mesh-bench (8 vCPU), eight ranks, 2026-10-29:
+
+        8 ranks x 10 threads = 84 threads on 8 cores
+        every rank pegged at ~100% of ONE core, 180,053 CPU-seconds in 22,536 s = 8.0 cores
+        six hours fifteen in the mesher, and it never left it
+
+    cfMesh is built with OpenMP and its default is a thread per core it can SEE. In one process
+    that is right and it is the whole reason a single-process build gets 2.5x out of 4 cores. Once
+    there are as many processes as cores it is exactly wrong: each rank still asks for eight
+    threads, gets one core's worth between them, and spends it on barriers.
+
+    `cores // ranks`, floored at one. On a box with more cores than ranks each rank still gets its
+    share of threads, so the setting costs nothing where OpenMP was helping. `os.cpu_count()` is
+    the CONTAINER's view, which is the right one: this builds a command the mesh container runs,
+    and the chain is assembled inside it.
+    """
+    n = max(1, int(ranks))
+    c = int(cores) or (os.cpu_count() or 1)
+    return max(1, c // n)
+
+
+def mpi_command(script: str, ranks: int, *, threads: int = 0) -> str:
     """One OpenFOAM utility run across `ranks` processes, with the flags that make it start.
 
     `-x MPI_BUFFER_SIZE` is not decoration: setting the variable in the launching shell sets it
     for mpirun and for nothing else. Each rank is its own process and reads its own environment
     at Pstream init, so without the export the buffer stays at controlDict's 20 MB in all of
     them and the build dies in cfMesh's load balancing.
+
+    `OMP_NUM_THREADS` travels the same way and for the same reason - see `omp_threads` for the
+    run that proved it has to.
     """
-    return (f"MPI_BUFFER_SIZE={MPI_BUFFER_BYTES} mpirun {' '.join(MPI_FLAGS)} "
-            f"-x MPI_BUFFER_SIZE -np {int(ranks)} {script} -parallel")
+    omp = int(threads) or omp_threads(ranks)
+    return (f"MPI_BUFFER_SIZE={MPI_BUFFER_BYTES} OMP_NUM_THREADS={omp} "
+            f"mpirun {' '.join(MPI_FLAGS)} -x MPI_BUFFER_SIZE -x OMP_NUM_THREADS "
+            f"-np {int(ranks)} {script} -parallel")
 
 
 def region_properties() -> str:
@@ -1393,7 +1424,7 @@ __all__ = ["ConjugateError", "ConjugateReport", "RegionReport", "PortPlan",
            "FLUID_REGION", "SOLID_REGION", "FLUID_TO_SOLID", "SOLID_TO_FLUID",
            "SPLIT_ARGS", "DEFAULT_REFINEMENT_LEVELS", "DEFAULT_VOLUME_TOL",
            "OCTREE_BOXES_PER_PROCESS", "MPI_FLAGS", "DECOMPOSE_METHOD", "PREPARE_PAR",
-           "ranks_for", "render_decompose_pardict", "mpi_command",
+           "ranks_for", "render_decompose_pardict", "mpi_command", "omp_threads",
            "MPI_BUFFER_BYTES",
            "BLOCK_FACES", "OPEN_FACE_RTOL", "OUTER_PATCH", "is_domain_face",
            "RECONSTRUCT_REGIONS", "REGION_DICTS",

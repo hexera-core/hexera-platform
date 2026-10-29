@@ -38,6 +38,7 @@ from meshpipeline.engines.cfmesh_conjugate.conjugate import (
     ConjugateError,
     build,
     mpi_command,
+    omp_threads,
     ranks_for,
     render_decompose_pardict,
 )
@@ -135,9 +136,10 @@ def test_both_flags_are_there_and_both_were_measured():
     """--allow-run-as-root because the mesh container is root and Open MPI refuses to start.
     --oversubscribe because Open MPI counts the slots it believes it has, not the cores the box
     has: inside the container nproc said 8 and mpirun still refused 8 ranks without it."""
-    cmd = mpi_command("cartesianMesh", 8)
-    assert cmd == ("MPI_BUFFER_SIZE=1000000000 mpirun --allow-run-as-root "
-                   "--oversubscribe -x MPI_BUFFER_SIZE -np 8 cartesianMesh -parallel")
+    cmd = mpi_command("cartesianMesh", 8, threads=1)
+    assert cmd == ("MPI_BUFFER_SIZE=1000000000 OMP_NUM_THREADS=1 mpirun --allow-run-as-root "
+                   "--oversubscribe -x MPI_BUFFER_SIZE -x OMP_NUM_THREADS "
+                   "-np 8 cartesianMesh -parallel")
     assert set(MPI_FLAGS) == {"--allow-run-as-root", "--oversubscribe"}
 
 
@@ -283,3 +285,54 @@ def test_a_plan_with_no_process_at_all_is_refused(tmp_path, bad):
         "ranks": bad}))
     with pytest.raises(ValueError, match="at least one process"):
         PL.read_plan(tmp_path)
+
+
+#   -- the ranks do not fight over the cores ----------------------------------------------------
+
+def test_one_thread_a_rank_when_there_are_as_many_ranks_as_cores():
+    """THE RUN THAT PAID FOR THIS. 279,621,370 cells, eight ranks on mesh-bench's 8 vCPU: each
+    rank spawned ten threads, 84 in all, every rank got about one core's worth of CPU and spent
+    it on OpenMP barriers. 180,053 CPU-seconds in 22,536 s is 8.0 cores saturated, and after six
+    hours fifteen the mesher had not finished - against 640 s of ClockTime for a 98,973,937-cell
+    build of the same part in ONE process."""
+    assert omp_threads(8, cores=8) == 1
+
+
+def test_a_box_with_cores_to_spare_still_threads_each_rank():
+    """The setting must not cost anything where OpenMP was helping: cfMesh gets 2.5x out of 4
+    cores in one process, and that is worth having in each rank when the cores exist."""
+    assert omp_threads(2, cores=32) == 16
+    assert omp_threads(4, cores=8) == 2
+
+
+def test_more_ranks_than_cores_is_still_one_thread_and_not_zero():
+    """`ranks_for` returns what the octree CEILING demands, not what the box has - so a plan can
+    ask for more ranks than there are cores, and `cores // ranks` is 0 there. OMP_NUM_THREADS=0
+    is not a floor, it is OpenMP being told to pick for itself again."""
+    assert omp_threads(16, cores=8) == 1
+    assert omp_threads(64, cores=1) == 1
+
+
+def test_a_serial_build_is_not_touched_by_any_of_this():
+    """One process should use every core it can see, which is the default - and the serial chain
+    does not go through mpi_command at all."""
+    assert omp_threads(1, cores=8) == 8
+    # sliced the way the serial-chain test above slices it: maxsplit=1, because `build` guards on
+    # the rank count three times and the chunk between two guards is not the branch.
+    serial = inspect.getsource(build).split("else:", 1)[1].split("if port_patches", 1)[0]
+    assert "OMP_NUM_THREADS" not in serial and "mpi_command" not in serial
+
+
+def test_the_thread_count_travels_to_the_ranks_and_not_just_to_mpirun():
+    """Same trap as MPI_BUFFER_SIZE: an assignment in front of mpirun sets the variable for
+    mpirun and for nothing it launches. Each rank reads its own environment."""
+    cmd = mpi_command("cartesianMesh", 8, threads=1)
+    assert "OMP_NUM_THREADS=1 mpirun" in cmd, "the launching shell has to have it"
+    assert "-x OMP_NUM_THREADS" in cmd, "...and it has to be exported to the ranks"
+
+
+def test_every_stage_of_the_parallel_chain_is_pinned_the_same_way():
+    """topoSet and splitMeshRegions are not OpenMP, so this costs them nothing - but they go
+    through the same builder, and a stage that quietly did not would be the one to find out."""
+    for script in ("cartesianMesh", "topoSet", "splitMeshRegions -cellZonesOnly -overwrite"):
+        assert "-x OMP_NUM_THREADS" in mpi_command(script, 8)
