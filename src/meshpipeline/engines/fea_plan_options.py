@@ -49,7 +49,7 @@ VERSION = 2
 #: how long the check may spend sizing the two meshes (a child process, stopped at it). It is the sizing's own time,
 #: after the stage is shown - never what the naming has left: the stage says "Sizing the mesh..." meanwhile, and a
 #: run started before it is done takes the recommended mesh itself (lab, 28 Oct: on 4 vCPUs the 32 corpus parts
-#: offered a choice took 72-3,136 s to size; 27 of 32 within 1,800 s)
+#: offered a choice took 72-3,136 s to size; 29 of 32 within 1,800 s)
 BUDGET_S = 1800.0
 #: the plans kept for the run (application/geometry_check stores it beside the check)
 PLANS_FILE = "fea_plans.json"
