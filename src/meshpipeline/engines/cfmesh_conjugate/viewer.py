@@ -113,13 +113,14 @@ def conjugate_viewer(workspace, *, roles: dict, units: str,
     raw += _poor_surfaces(ws)
 
     resp = polymesh_response(raw, cell_stats or None, merged_roles, units, reduced=reduced)
-    if resp and not reduced:
-        # THE HEATMAP IS PER FACE, so it describes the surface only while the faces are the ones
-        # the mesher wrote. Once cells have been merged for drawing, one drawn face stands for
-        # several delivered ones and a colour on it was measured on none of them. A mesh big
-        # enough to need merging is also the one whose quality_fields pass reads 29 million points
-        # and 73 million faces, so skipping it is not only the honest answer here.
-        _paint(resp, ws)
+    if resp:
+        # THE COLOURS ARE PER FACE AND THE HOTSPOTS ARE NOT, and that is the whole difference.
+        # Once cells have been merged for drawing, one drawn face stands for several delivered
+        # ones and a colour on it was measured on none of them - so the arrays go. A hotspot is a
+        # place and a number, measured on the faces the mesher wrote, and merging the drawing
+        # does not move it or change it. This used to skip BOTH on a reduced mesh, which is the
+        # mesh a reader most needs told where to look.
+        _paint(resp, ws, colours=not reduced)
     return resp
 
 
@@ -189,7 +190,7 @@ def _poor_surfaces(ws: Path) -> list[dict]:
     return out
 
 
-def _paint(resp: dict, ws: Path) -> None:
+def _paint(resp: dict, ws: Path, *, colours: bool = True) -> None:
     """The heatmap the viewer colours the boundary with, measured on BOTH regions' meshes.
 
     The bar it paints red is this engine's own non-orthogonality criterion, so the picture and the
@@ -246,8 +247,19 @@ def _paint(resp: dict, ws: Path) -> None:
             one: dict = {"patches": mine}
             attach_quality_fields(one, polymesh, non_ortho_limit=float(bar), patch_of=alias)
             _merge_quality(merged, one.get("quality_fields"))
-        if merged:
-            resp["quality_fields"] = merged
+        if not merged:
+            return
+        if not colours:
+            # The measurement still runs - it is bounded by face_quality.MAX_FACES_FOR_FIELDS,
+            # which refuses a mesh past 40 M faces on its own - and what survives is the figures
+            # and the places. `metrics` is the mesh describing itself and `hotspots` are where its
+            # worst cells are; only the per-patch arrays depended on the drawn faces being the
+            # delivered ones.
+            merged.pop("patches", None)
+            logger.info("conjugate viewer: cells were merged for drawing, so the heatmap is the "
+                        "figures and %d hotspot(s) without the per-face colours",
+                        len(merged.get("hotspots") or []))
+        resp["quality_fields"] = merged
     except Exception:                      # noqa: BLE001 - a heatmap never costs the view
         logger.warning("conjugate viewer: no quality heatmap (non-fatal)", exc_info=True)
 

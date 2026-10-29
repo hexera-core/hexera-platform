@@ -134,3 +134,59 @@ def test_a_metric_only_one_region_has_is_carried_not_dropped():
                                                     "n_over": 0, "n_faces": 12562721}}})
     assert out["metrics"]["skewness"]["max"] == 0.513708
     assert out["metrics"]["non_ortho"]["max"] == 15.8181
+
+
+# #
+# a mesh whose cells were merged for drawing
+# #
+def test_the_colours_go_but_the_places_stay(tmp_path, monkeypatch):
+    """A drawn face on a merged mesh stands for several delivered ones, so a colour on it was
+    measured on none of them. A hotspot is a place and a number, taken on the faces the mesher
+    wrote; merging the drawing moves neither. This used to drop BOTH, on the mesh a reader most
+    needs told where to look - the customer plate's coolant side is 13,022,400 faces against
+    render.polymesh_budget.DRAWN_MAX_TRIANGLES of 800,000."""
+    resp = {"patches": [{"name": "fluid/inlet", "type": "patch"}]}
+    (tmp_path / "constant" / "fluid" / "polyMesh").mkdir(parents=True)
+    (tmp_path / "constant" / "fluid" / "polyMesh" / "boundary").write_text("0()")
+
+    def fake(one, _polymesh, **_kw):
+        one["quality_fields"] = {k: v for k, v in FLUID.items()}
+
+    monkeypatch.setattr("meshpipeline.render.face_quality.attach_quality_fields", fake)
+    V._paint(resp, tmp_path, colours=False)
+    got = resp["quality_fields"]
+    assert "patches" not in got, "a colour measured on no delivered face does not ship"
+    assert got["metrics"]["non_ortho"]["max"] == 15.8181
+    assert len(got["hotspots"]) == 1
+
+
+def test_with_the_faces_as_delivered_the_colours_ship(tmp_path, monkeypatch):
+    """The unmerged case is unchanged."""
+    resp = {"patches": [{"name": "fluid/inlet", "type": "patch"}]}
+    (tmp_path / "constant" / "fluid" / "polyMesh").mkdir(parents=True)
+    (tmp_path / "constant" / "fluid" / "polyMesh" / "boundary").write_text("0()")
+
+    def fake(one, _polymesh, **_kw):
+        one["quality_fields"] = {k: v for k, v in FLUID.items()}
+
+    monkeypatch.setattr("meshpipeline.render.face_quality.attach_quality_fields", fake)
+    V._paint(resp, tmp_path, colours=True)
+    assert set(resp["quality_fields"]["patches"]) == {"fluid/inlet", "fluid/fluid_to_solid"}
+
+
+def test_the_viewer_asks_for_the_places_whether_or_not_it_got_colours():
+    """The browser half. The heatmap block used to require `patches` and bail without them, so a
+    payload of figures and hotspots was ignored; buildAreas already makes an area per loose
+    hotspot, and paintFaces already turns scalars off where there is nothing to paint."""
+    from pathlib import Path as _P
+
+    js = _P("apps/console/public/static/js/viewer/viewer.js")
+    if not js.is_file():
+        import pytest
+        pytest.skip("the console is not in this checkout")
+    src = js.read_text(encoding="utf-8")
+    assert "if(!qf||!qf.metrics||!window.vtk)return;" in src, "patches must not be required"
+    assert "if(!qf||!qf.patches||!qf.metrics" not in src
+    assert "const p=(qf.patches||{})[en.patch]" in src, "absent patches is not an error"
+    assert ("if(!entries.some(en=>Object.keys(en.q).length)"
+            "&&!(qf.hotspots||[]).length)return;") in src
