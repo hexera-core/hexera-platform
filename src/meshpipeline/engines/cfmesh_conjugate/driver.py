@@ -305,6 +305,20 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         await run.fence("deliver builder outcome")
         return False, NO_COOLANT, run.outcome(produced_deliverable=False, exhausted=True,
                                               failure_marker=NO_COOLANT)
+    # ...AND WHETHER IT CAN COME BACK. The mesher runs off-box and its workspace returns as one
+    # archive through a bounded extractor; a mesh too big for that archive is a mesh that builds
+    # and is then lost at the last step, which is exactly what the coupon plate did. Same shape as
+    # the two checks above: priced from the estimate, refused before anything runs, and the reason
+    # names the setting rather than blaming the part.
+    from meshpipeline.sandbox.safe_extract import default_limits as _extract_limits
+
+    return_said = B.refuse_for_return(estimate,
+                                      cap_bytes=_extract_limits().max_archive_bytes)
+    if return_said:
+        logger.info("conjugate: refusing to start - %s - job_id=%s", return_said, job_id)
+        await run.fence("deliver builder outcome")
+        return False, NO_COOLANT, run.outcome(produced_deliverable=False, exhausted=True,
+                                              failure_marker=NO_COOLANT)
     # A MESH IS WORTH HAVING EVEN WHEN THE PORTS CANNOT BE NAMED, and refusing to build one was
     # costing whole parts. The ports are the block faces the coolant reaches, which works while a
     # part's mouths lie ON those faces - eight of the nine in the package, because a channel milled
@@ -327,9 +341,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             fluid_hi=[float(v) for v in rec["bbox_max_m"]],
             cells_across=cells_across, levels=levels)
     except ConjugateError as exc:
+        # SAID LATER, NOT HERE. At this point nothing yet knows whether the ports will be CUT out
+        # of a face - that is decided forty lines down, once the mouths have been read - so a line
+        # here claiming the mesh has no named ports is a line written before the answer exists.
+        # Measured on the coupon plate, 2026-10-29: this logged "meshing without named ports" and
+        # the mouths step then logged "coolant_in and coolant_out are cut out of zmax, 0.903 mm and
+        # 0.903 mm across" four lines later. The reporting block at the end of this function is
+        # where `ports_refused` is turned into words, and it knows.
         ports_refused = str(exc)
-        logger.info("conjugate: meshing without named ports - %s - job_id=%s",
-                    ports_refused[:200], job_id)
         plan, lo, hi = PL.plan_for(
             narrowest_m=narrowest, fluid_volume_m3=float(rec["volume_m3"]),
             passages=int(rec["passages"]), solid_lo=bounds[0], solid_hi=bounds[1],
@@ -349,6 +368,39 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if machine.get("where") == "gce":
         logger.info("conjugate: %s - job_id=%s", machine.get("words"), job_id)
 
+    # A MOUTH THAT STOPS INSIDE THE METAL IS STILL A PORT. The conjugate case takes its inlet and
+    # outlet from the block's six named faces, which works while a part's mouths lie ON those
+    # faces - eight of the nine parts in the package, because a channel milled across a plate
+    # ends flush with the side it was cut on. A Corintis cold plate's mouths are fitting BORES and
+    # the block is sized by the fittings' own bodies, so the coolant stops inside the metal on
+    # every side and the whole job died on a question about SOLVING rather than about meshing.
+    #
+    # `mouths.py` has been in this package, written and tested against that exact part, imported
+    # by nothing but its own unit test. Two steps make it real: a stub out to the face so the
+    # coolant reaches one, and a patch CUT where it crosses rather than a renamed face - because
+    # both of that plate's fittings point +x, so both stubs land on xmax and a face carries one
+    # name. See conjugate.render_port_patch_dicts.
+    port_patches = None
+    ports_said = ""
+    if rec.get("ports"):
+        from meshpipeline.engines.cfmesh_conjugate import mouths as MO
+
+        stubs, mouth_said = MO.stubs_for(rec["ports"], lo, hi)
+        for line in mouth_said:
+            logger.info("conjugate: %s - job_id=%s", line, job_id)
+        if stubs:
+            from meshpipeline.cad.stl_io import read_stl_triangles, write_stl_binary
+
+            fluid_stl = ws / PL.FLUID_STL
+            grown, added = MO.extend(read_stl_triangles(fluid_stl), stubs)
+            write_stl_binary(fluid_stl, grown)
+            port_patches, ports_said = MO.port_rows(stubs)
+            logger.info("conjugate: %d stub(s) added %.4f mm3 to the coolant; %s - job_id=%s",
+                        len(stubs), added * 1e9, ports_said, job_id)
+            # the coolant is a different shape now, so what the split is checked against moves
+            plan = dataclasses.replace(
+                plan, expect_fluid_volume_m3=float(plan.expect_fluid_volume_m3 or 0.0) + added)
+
     names, named_said = declared_port_names(ws, plan)
     if names:
         plan = dataclasses.replace(plan, patch_names=PL._as_lists(names))
@@ -356,6 +408,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         plan = dataclasses.replace(plan, fine_surfaces=(fine_surface,))
     if stretch_zone is not None:
         plan = dataclasses.replace(plan, stretch_zones=(stretch_zone,))
+    if port_patches:
+        plan = dataclasses.replace(plan, port_patches=tuple(port_patches))
 
     from meshpipeline.engines.cfmesh_conjugate import conjugate as C
     (ws / PL.BLOCK_STL).write_text(C.block_surface_stl(lo, hi))
@@ -369,8 +423,19 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if fine_surface is not None:
         payload.append(PL.FLUID_FINE_STL)
     note_native_payload(ws, payload)
-    for line in (said, named_said, ports_refused and
-                 f"the mesh has no named inlet or outlet: {ports_refused}"):
+    # ...AND THE REFUSAL IS NOT SAID ONCE THE PORTS WERE CUT. `plan_ports` refuses a part whose
+    # mouths reach no opposite pair of block faces, which is true of the BLOCK and says nothing
+    # about the plumbing - and the cutter exists for exactly that part. Measured on the coupon
+    # plate, 2026-10-29: the run logged "coolant_in and coolant_out are cut out of zmax, 0.903 mm
+    # and 0.903 mm across" and then, three lines later, "the mesh has no named inlet or outlet".
+    # Both from the same run, and the second one false. A reader of that pair concludes the mesh
+    # is unsolvable when it is the one shape this engine learned to solve.
+    unnamed = "" if port_patches else ports_refused
+    # `ports_said` is NOT here: the stub block above already logged it beside what the stubs
+    # added, which is where it belongs and where a reader needs it.
+    for line in (said, named_said, unnamed and
+                 f"meshing without named ports, and the mesh has no named inlet or outlet: "
+                 f"{unnamed}"):
         if line:
             logger.info("conjugate: %s - job_id=%s", line, job_id)
 

@@ -122,11 +122,21 @@ async def _joined_assembly(first: Path, first_suffix: str, first_name: str, part
         CAD_SUFFIXES,
         MAX_FILES,
         NOT_CAD,
+        NOT_CAD_MODEL,
         TOO_MANY,
         AssemblyFilesError,
         Member,
         combine,
     )
+    from meshpipeline.contracts.intake_formats import format_for_suffix
+
+    def _refusal(name: str, suffix: str) -> str:
+        """Which refusal this file earns. A MODEL is not a part that failed to be CAD."""
+        fmt = format_for_suffix(suffix)
+        if fmt is not None and str(fmt.check_mode or ""):
+            # a format with a check mode of its own describes a model, not one solid
+            return NOT_CAD_MODEL.format(name=name or "that file")
+        return NOT_CAD.format(name=name or "a file")
 
     if len(parts) + 1 > MAX_FILES:
         first.unlink(missing_ok=True)
@@ -135,11 +145,12 @@ async def _joined_assembly(first: Path, first_suffix: str, first_name: str, part
     saved: list[Path] = [first]
     try:
         if first_suffix not in CAD_SUFFIXES:
-            raise HTTPException(status_code=422, detail=NOT_CAD.format(name=first_name))
+            raise HTTPException(status_code=422,
+                                detail=_refusal(first_name, first_suffix))
         for k, part in enumerate(parts, start=2):
             name, suffix = sanitised_upload_name(part.filename or "")
             if suffix not in CAD_SUFFIXES:
-                raise HTTPException(status_code=422, detail=NOT_CAD.format(name=name or "a file"))
+                raise HTTPException(status_code=422, detail=_refusal(name, suffix))
             # ITS OWN FOLDER: a file whose bytes are another format than its name is renamed to that
             # format's staged name (checked_upload), which must never be another part's file
             folder = session_dir / f"part_{k}"
@@ -150,7 +161,7 @@ async def _joined_assembly(first: Path, first_suffix: str, first_name: str, part
             dest, suffix = await _asyncio.to_thread(checked_upload, dest, suffix)
             saved[-1] = dest
             if suffix not in CAD_SUFFIXES:
-                raise HTTPException(status_code=422, detail=NOT_CAD.format(name=name))
+                raise HTTPException(status_code=422, detail=_refusal(name, suffix))
             members.append(Member(dest, Path(name).stem))
         joined = session_dir / staged_name_for(".step")
         if joined in saved:

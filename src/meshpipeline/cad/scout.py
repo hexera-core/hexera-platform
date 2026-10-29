@@ -320,18 +320,19 @@ VIEW_MAX_TRIANGLES = 400_000
 VIEW_REMESHES = 3
 
 
-def write_view_stl(path, dest, *, prepared, angular_deflection: float = 0.3, shape=None,
-                   max_triangles: int = VIEW_MAX_TRIANGLES) -> Path:
-    """The part's skin as a binary STL in metres, for the pictures the user and the vision model
-    look at. Coarser than a meshing surface on purpose: it only has to look right. `shape` is the
-    part as read_cad read it, when the caller has it already: a big STEP takes 10-25 s to read.
+def view_shape(path, dest_unused=None, *, prepared, angular_deflection: float = 0.3, shape=None,
+               max_triangles: int = VIEW_MAX_TRIANGLES):
+    """The part scaled to metres and MESHED to view size - the shape `write_view_stl` writes.
 
-    SIZED TO THE MODEL (occ_box.mesh_for_model): a part of up to a few thousand faces is drawn
-    exactly as it always was; a bigger model at deflections that grow with its face count, and one
-    that still comes out past `max_triangles` is meshed again coarser - a view that has to look
-    right, drawn in seconds, never a skin too heavy for the stage to open."""
+    SPLIT OUT SO NOTHING IS MESHED TWICE. The stage draws one welded skin and, for a file of
+    several solids, the same solids again as separate named parts (cad/solid_parts). Both read the
+    same triangles, and a big STEP takes 10-25 s to tessellate: meshing it once for the picture
+    and again for the parts would double the slowest step of the check for no new information.
+
+    `dest_unused` is positional only so this reads the same way as write_view_stl at a call site;
+    it is ignored.
+    """
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
-    from OCP.StlAPI import StlAPI_Writer
 
     from meshpipeline.cad.normalise import occ_scale_transform
     from meshpipeline.cad.occ_box import MAX_ANGULAR, mesh_for_model, remesh, triangle_count
@@ -351,11 +352,65 @@ def write_view_stl(path, dest, *, prepared, angular_deflection: float = 0.3, sha
         lin *= k
         angular = min(max(MAX_ANGULAR, angular_deflection), angular * math.sqrt(k))
         remesh(shape, lin, angular)
+    return shape
+
+
+def write_view_stl(path, dest, *, prepared, angular_deflection: float = 0.3, shape=None,
+                   max_triangles: int = VIEW_MAX_TRIANGLES) -> Path:
+    """The part's skin as a binary STL in metres, for the pictures the user and the vision model
+    look at. Coarser than a meshing surface on purpose: it only has to look right. `shape` is the
+    part as read_cad read it, when the caller has it already: a big STEP takes 10-25 s to read.
+
+    SIZED TO THE MODEL (occ_box.mesh_for_model): a part of up to a few thousand faces is drawn
+    exactly as it always was; a bigger model at deflections that grow with its face count, and one
+    that still comes out past `max_triangles` is meshed again coarser - a view that has to look
+    right, drawn in seconds, never a skin too heavy for the stage to open.
+
+    A caller that also wants the MESHED SHAPE - to draw the file's solids as separate parts -
+    takes `view_shape` first and passes the result in as `meshed`, so the tessellation happens
+    once (see view_shape).
+    """
+    from OCP.StlAPI import StlAPI_Writer
+
+    shape = view_shape(path, prepared=prepared, angular_deflection=angular_deflection,
+                       shape=shape, max_triangles=max_triangles)
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     writer = StlAPI_Writer()
     writer.ASCIIMode = False
     if not writer.Write(shape, str(dest)):
+        raise UnreadableCad("the part's skin could not be written for viewing")
+    return dest
+
+
+def draw_view(path, dest, *, prepared, angular_deflection: float = 0.3, shape=None,
+              max_triangles: int = VIEW_MAX_TRIANGLES):
+    """The view skin written, AND the meshed shape it was written from: (Path, shape).
+
+    ONE SEAM, on purpose. The geometry check needs both halves - the skin it stores and turns, and
+    the same tessellation again to draw the file's solids as separate named parts - and splitting
+    the call into `view_shape` then `write_meshed_stl` split the seam the check's own tests fake.
+    Four of them patch the drawing step with a box so the check can run on a file that is not
+    really CAD; with two functions to patch, the real reader ran and refused the fake
+    ("the file could not be read as CAD (geometry.step)").
+
+    A test that fakes drawing should have ONE thing to fake, so this is that thing.
+    """
+    meshed = view_shape(path, prepared=prepared, angular_deflection=angular_deflection,
+                        shape=shape, max_triangles=max_triangles)
+    return write_meshed_stl(meshed, dest), meshed
+
+
+def write_meshed_stl(meshed, dest) -> Path:
+    """A shape `view_shape` already meshed, written as the view skin. The second half of
+    write_view_stl, for the caller that took the two halves apart to keep the shape."""
+    from OCP.StlAPI import StlAPI_Writer
+
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    writer = StlAPI_Writer()
+    writer.ASCIIMode = False
+    if not writer.Write(meshed, str(dest)):
         raise UnreadableCad("the part's skin could not be written for viewing")
     return dest
 

@@ -1,0 +1,40 @@
+[
+  {
+    "name": "two_scale_plate_sealed",
+    "kind": "two_scale",
+    "smallest_feature_um": 98.0,
+    "fluid_volume_mm3": 413.44488,
+    "solid_volume_mm3": 738.55512,
+    "fluid_bodies": 1,
+    "slots": 22,
+    "pitch_mm": 0.545,
+    "manifold_mm": 2.1,
+    "scale_ratio": 21.428571428571427,
+    "channel_height_mm": 1.9000000000000001,
+    "reached_faces": [],
+    "ported": false,
+    "source": {
+      "note": "built for this corpus: the only part in it with two scales of passage, at the first customer's own 21:1 ratio and 0.545 mm slot pitch"
+    }
+  },
+  {
+    "name": "two_scale_plate_ported",
+    "kind": "two_scale",
+    "smallest_feature_um": 98.0,
+    "fluid_volume_mm3": 414.74088,
+    "solid_volume_mm3": 737.40312,
+    "fluid_bodies": 1,
+    "slots": 22,
+    "pitch_mm": 0.545,
+    "manifold_mm": 2.1,
+    "scale_ratio": 21.428571428571427,
+    "channel_height_mm": 1.9000000000000001,
+    "reached_faces": [
+      "zmax"
+    ],
+    "ported": true,
+    "source": {
+      "note": "built for this corpus: the only part in it with two scales of passage, at the first customer's own 21:1 ratio and 0.545 mm slot pitch"
+    }
+  }
+]

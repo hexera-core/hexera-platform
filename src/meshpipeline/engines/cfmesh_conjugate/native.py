@@ -80,6 +80,8 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             fine_zones=[dict(z) for z in (plan.fine_zones or ())],
             fine_surfaces=[dict(s) for s in (plan.fine_surfaces or ())],
             stretch_zones=[dict(z) for z in (plan.stretch_zones or ())],
+            port_patches=[dict(p) for p in (plan.port_patches or ())],
+            ranks=int(getattr(plan, "ranks", 1) or 1),
             bashrc=bashrc, timeout=int(timeout))
     except ConjugateError as exc:
         # A REFUSAL IS NOT A CRASH. The mesher refuses a case it can see is wrong - more than two
@@ -97,7 +99,30 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         return _result(RC_REFUSED, stage=_STAGE,
                        output=f"FAILED: {type(exc).__name__}: {exc}")
 
+    # THE SOLVER CASE AROUND THE MESH, written here because this is where the delivered patch
+    # names are. Structure only - both regions, every patch named as the mesh names it, the
+    # coupled condition on the interface written out in full - and every physical number left as
+    # a token OpenFOAM cannot parse. A mesh without a case is a mesh the customer has to wire up
+    # themselves and the commonest way that goes wrong is a conjugate interface that runs and
+    # transfers no heat; a case with an invented flow rate is worse, because it solves.
+    #
+    # IT NEVER FAILS THE RUN. The mesh is the deliverable and a mesh is never lost over the case
+    # written beside it.
+    case_files: list[str] = []
+    try:
+        from meshpipeline.engines.cfmesh_conjugate.solver_case import write_solver_case
+
+        case_files = write_solver_case(
+            ws, fluid_patches=dict(report.fluid.patches or {}),
+            solid_patches=dict(report.solid.patches or {}),
+            ports=({"inlet": report.ports.inlet, "outlet": report.ports.outlet}
+                   if report.ports else None))
+    except Exception:                     # noqa: BLE001
+        logger.warning("conjugate: the solver case could not be written (non-fatal)",
+                       exc_info=True)
+
     body = _as_dict(report, plan)
+    body["solver_case"] = case_files
     # WRITTEN BEFORE THE AIDS AND AGAIN AFTER. The aids are the expensive part of the run - a
     # 35 MB surface and a per-region VTK export - and a report that only appeared once they
     # finished would be lost by anything that killed the process while they ran, taking the
@@ -187,7 +212,9 @@ def _as_dict(report, plan: PL.ConjugatePlan) -> dict:
                      "max_aspect_ratio": r.max_aspect_ratio,
                      "avg_non_ortho": r.avg_non_ortho,
                      "skew_faces": int(r.skew_faces),
-                     "small_determinant_cells": int(r.small_determinant_cells)}
+                     "small_determinant_cells": int(r.small_determinant_cells),
+                     # WHERE the poor cells are, beside how many of them there are
+                     "poor_sets": [dict(x) for x in (r.poor_sets or ())]}
             for r in (report.fluid, report.solid)
         },
         "interface_faces_fluid": int(report.interface_faces_fluid),
@@ -201,7 +228,8 @@ def _as_dict(report, plan: PL.ConjugatePlan) -> dict:
                  "cells_across": plan.cells_across, "volume_tol": plan.volume_tol,
                  "narrowest_m": plan.narrowest_m,
                  "expect_fluid_volume_m3": plan.expect_fluid_volume_m3,
-                 "expect_fluid_pieces": plan.expect_fluid_pieces},
+                 "expect_fluid_pieces": plan.expect_fluid_pieces,
+                 "ranks": int(getattr(plan, "ranks", 1) or 1)},
     }
 
 

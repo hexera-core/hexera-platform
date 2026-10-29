@@ -35,6 +35,22 @@ class Machine:
 
 
 #: THE CLOUD RUN MESH JOB'S MEMORY (deploy/gcp MESH_MEMORY, the same on dev and prod).
+#:
+#: A DEPLOYED JOB CAN DISAGREE WITH THIS AND NOTHING NOTICES, which is worth knowing before
+#: trusting a `choose()`. Measured 2026-10-29: `deploy/gcp/generated.prod.env` says
+#: `MESH_MEMORY=32Gi` and so does this, while the live `hexera-mesh` job was running with
+#:
+#:     resources: limits: { cpu: '8', memory: 16Gi }
+#:
+#: - half of it, since 2026-09-13. Every decision made on that deployment priced a run against
+#: twice the memory the job had, so a plan this called a fit was one the job could be killed for.
+#:
+#: IT STAYS A CONSTANT. It was briefly made environment-overridable so a deployment could state
+#: its own, and that is the wrong shape: a setting whose only purpose is to describe a
+#: misconfiguration invites the misconfiguration to be kept. 32Gi is what a mesh job IS, by the
+#: deployment's own manifest; a job that is not 32Gi is a job to fix. (It is not read FROM the job
+#: either - `choose` runs in the sizing path before any machine exists, and a Cloud Run API call
+#: there would make every plan wait on a round trip.)
 CLOUD_RUN_GIB = 32.0
 #: What one run may use of a machine's memory: the OS, the container runtime and the runner keep the rest.
 USABLE_SHARE = 0.9
@@ -70,8 +86,21 @@ def choose(*, process_gib: float, workspace_gib: float, why: str = "") -> dict:
                                 f"and the job has {CLOUD_RUN_GIB:.0f} GiB."), why=why)
     machine = next((m for m in MACHINES if process <= usable_gib(m)), CEILING)
     over = process > usable_gib(CEILING)
-    words = (f"It needs about {cloud_need:.0f} GiB, more than the Cloud Run mesh job's {CLOUD_RUN_GIB:.0f} GiB, "
-             f"so it runs on a {machine.name} VM ({machine.memory_gib:.0f} GiB).")
+    # THE NUMBER QUOTED IS THE ONE THE CHOICE WAS MADE ON. It used to quote `cloud_need`, which is
+    # process + files, beside a VM chosen on `process` alone - and the two differ by the whole
+    # workspace, so a correct decision read as a doomed one:
+    #
+    #     "It needs about 107 GiB, more than the Cloud Run mesh job's 32 GiB, so it runs on a
+    #      n2-highmem-8 VM (64 GiB)."
+    #
+    # Nothing was wrong with the choice. A VM gets a real disk, sized from `workspace_gib`
+    # (adapters/mesh_execution/gce_vm.MIN_DISK_GB), so the files it writes are not in its memory;
+    # on Cloud Run they are, which is the only reason the two are ever added together. The
+    # sentence said otherwise, read end to end on the first customer part on 2026-10-29.
+    words = (f"The mesher needs about {process:.0f} GiB and the workspace about {files:.0f} GiB. "
+             f"Together that is past the Cloud Run mesh job's {CLOUD_RUN_GIB:.0f} GiB, which holds "
+             f"both in memory, so it runs on a {machine.name} VM ({machine.memory_gib:.0f} GiB) "
+             "with the workspace on its disk.")
     if over:
         words += (f" That is the largest machine allowed; the mesher needs about {process:.0f} GiB, more than "
                   "it holds, so the plan is coarsened to fit it.")

@@ -8,6 +8,13 @@
 # Secrets - never commit. .env.example is the tracked template and is deliberately not matched.
 .env
 .env*.local
+# ...AND ANY COPY OF IT. `.env` alone matches that one name; a backup taken before an edit -
+# `.env.bak.1793255684`, which is what `cp .env .env.bak.$(date +%s)` leaves - matched neither
+# pattern above and showed up as an untracked file holding every secret in the deployment, one
+# `git add -A` from being committed (2026-10-29). `.env.example` still is not matched: it has no
+# second dot after `env`.
+.env.*
+!.env.example
 *.pem
 *.key
 # The canonical home of the local Google credential, and the cloud credential directory some

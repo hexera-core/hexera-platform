@@ -92,6 +92,18 @@ class ConjugatePlan:
     #: as its width, and cubes give it no choice. Measured 2026-10-29: scale > 1 stretches along
     #: the axis and the cell saving follows the factor.
     stretch_zones: tuple[dict, ...] = ()
+    #: Ports to CUT out of a block face rather than rename a whole face into:
+    #: [{"name", "type", "face", "centre_m", "diameter_m"}]. This is what lets two ports share one
+    #: face, which is the shape a cold plate fed and drained through its lid actually has - and
+    #: the first customer's, whose fittings both point +x.
+    port_patches: tuple[dict, ...] = ()
+    #: How many processes mesh the block. 1 for every part that fits in one, which is every part
+    #: in the corpus. Above `conjugate.OCTREE_BOXES_PER_PROCESS` cells one process runs out of
+    #: 32-bit label space inside cfMesh's octree addressing and the build dies with "Negative size
+    #: requested" - not out of memory, out of int - so the only way to the sizes a microchannel
+    #: plate asks for is more of them. The sizing step works it out (budget.plan_two_scales) and
+    #: this carries it, because the container is handed a workspace and nothing else.
+    ranks: int = 1
 
 
 def background_for(narrowest_m: float, cells_across: int, levels: int) -> float:
@@ -147,6 +159,11 @@ def read_plan(workspace) -> ConjugatePlan:
             if len(got) != 3:
                 raise ValueError(f"{PLAN_NAME}: {k} is not three numbers")
             out[k] = (float(got[0]), float(got[1]), float(got[2]))
+    if out.get("ranks") is not None:
+        n = int(out["ranks"])
+        if n < 1:
+            raise ValueError(f"{PLAN_NAME}: ranks is {n}, and a run needs at least one process")
+        out["ranks"] = n
     if out.get("fine_zones") is not None:
         zones = []
         for n, z in enumerate(out["fine_zones"]):
@@ -208,6 +225,26 @@ def read_plan(workspace) -> ConjugatePlan:
                               "hi": (float(hi[0]), float(hi[1]), float(hi[2])),
                               "scale": (float(scale[0]), float(scale[1]), float(scale[2]))})
         out["stretch_zones"] = tuple(stretches)
+    if out.get("port_patches") is not None:
+        cut = []
+        for n, p in enumerate(out["port_patches"]):
+            if not isinstance(p, dict):
+                raise ValueError(f"{PLAN_NAME}: port patch {n} is not an object")
+            name, face, centre = p.get("name"), p.get("face"), p.get("centre_m")
+            diameter = p.get("diameter_m")
+            if not name or not face or centre is None or diameter is None:
+                raise ValueError(f"{PLAN_NAME}: port patch {n} needs name, face, centre_m "
+                                 "and diameter_m")
+            if len(centre) != 3:
+                raise ValueError(f"{PLAN_NAME}: port patch {n} has no centre in three axes")
+            if float(diameter) <= 0.0:
+                raise ValueError(f"{PLAN_NAME}: port patch {n} has diameter {diameter}, which is "
+                                 "not a mouth")
+            cut.append({"name": str(name), "type": str(p.get("type") or "patch"),
+                        "face": str(face),
+                        "centre_m": (float(centre[0]), float(centre[1]), float(centre[2])),
+                        "diameter_m": float(diameter)})
+        out["port_patches"] = tuple(cut)
     return ConjugatePlan(**out)
 
 

@@ -372,6 +372,85 @@ ROLE_TO_OF_TYPE = {"inlet": "patch", "outlet": "patch", "wall": "wall",
                    "external": "wall", "symmetry": "symmetryPlane", "empty": "empty"}
 
 
+#: How far either side of a mouth's centre the port box reaches, as a multiple of its own
+#: diameter. Generous on purpose: the box only has to contain the faces the mouth actually
+#: crosses, and those are staircased, so a box that hugs the nominal circle clips the corners off
+#: and the port comes back with fewer faces than the bore has. Everything outside the mouth is
+#: still excluded, because the box is intersected with ONE block face rather than the whole mesh.
+PORT_BOX_DIAMETERS = 0.75
+
+#: The file the port cutter's own topoSet actions are written to. Separate from `topoSetDict`
+#: because that one belongs to the region split and runs later with different contents; one file
+#: holding both would mean the split's actions ran while the ports were being cut.
+PORT_TOPOSET = "topoSetDict.ports"
+
+
+def render_port_patch_dicts(ports: list) -> tuple[str, str]:
+    """(topoSetDict, createPatchDict) that cut one named patch per mouth out of a block face.
+
+    WHY A PATCH AND NOT A RENAMED FACE. `renameBoundary` gives a whole block face the user's name,
+    which works while one port lands on each face and fails the moment two do. The first customer
+    assembly is exactly that: its inlet and outlet are both fittings pointing +x, so after their
+    bores are stubbed out to the boundary BOTH land on `xmax`, and a face can only carry one name.
+    `plan_ports` then refuses the part for reaching no opposite pair - a true statement about the
+    block's faces and nothing about the plumbing, which is perfectly ordinary. A cold plate fed
+    and drained through its lid has the same shape.
+
+    So the port is cut out of the face instead: the faces of that block face lying inside a box
+    around the mouth become a patch of their own, and what is left of the face stays a wall.
+
+    CUT BEFORE THE SPLIT, on the block mesh, which is where `renameBoundary` acts too and for the
+    same reason: the coolant's end and the metal's outer face at that end are two faces of one
+    plane, and both should carry the name the user gave that end of the part. splitMeshRegions
+    then hands each region the part of the patch it owns.
+
+    `ports` rows carry: name, type (inlet/outlet/...), face (which block face), centre_m, and
+    diameter_m. An empty list gives two empty dictionaries and no stage runs.
+    """
+    if not ports:
+        return "", ""
+    acts: list[str] = []
+    entries: list[str] = []
+    seen: set[str] = set()
+    for p in ports:
+        name = str(p.get("name") or "").strip()
+        face = str(p.get("face") or "").strip()
+        if not name or face not in BLOCK_FACES:
+            raise ConjugateError(
+                f"a port patch needs a name and one of the block faces {BLOCK_FACES}, "
+                f"got name={name!r} face={face!r}")
+        if name in seen:
+            raise ConjugateError(f"two ports are both called {name!r}")
+        seen.add(name)
+        centre = [float(v) for v in (p.get("centre_m") or ())]
+        diameter = float(p.get("diameter_m") or 0.0)
+        if len(centre) != 3:
+            raise ConjugateError(f"port {name!r} has no centre in three axes")
+        if diameter <= 0.0:
+            raise ConjugateError(f"port {name!r} has diameter {diameter}, which is not a mouth")
+        r = PORT_BOX_DIAMETERS * diameter
+        lo = " ".join(f"{centre[k] - r:.9g}" for k in range(3))
+        hi = " ".join(f"{centre[k] + r:.9g}" for k in range(3))
+        sel = f"port_{name}"
+        acts += [f"    {{ name {sel}; type faceSet; action new; source patchToFace; "
+                 f"patch {face}; }}",
+                 f"    {{ name {sel}; type faceSet; action subset; source boxToFace; "
+                 f"box ({lo}) ({hi}); }}"]
+        of_type = ROLE_TO_OF_TYPE.get(str(p.get("type") or "").strip().lower(), "patch")
+        entries.append(f"    {{ name {name}; patchInfo {{ type {of_type}; }} "
+                       f"constructFrom set; set {sel}; }}")
+
+    head = "FoamFile {{ version 2.0; format ascii; class dictionary; object {obj}; }}\n\n"
+    topo = head.format(obj="topoSetDict") + "actions\n(\n" + "\n".join(acts) + "\n);\n"
+    # EVERY ENTRY IS SET-BASED, and that is not incidental. snappy_multiregion records what
+    # happens otherwise: "a whole-patch move in the same dict as the set moves overrides them
+    # (the ports came back empty and every exterior face became wall)". What is left of the block
+    # face keeps its own name by doing nothing to it.
+    patch = (head.format(obj="createPatchDict") + "pointSync false;\n\npatches\n(\n"
+             + "\n".join(entries) + "\n);\n")
+    return topo, patch
+
+
 def render_meshdict(*, block_file: str, fluid_file: str, background_cell_m: float,
                     levels: int = DEFAULT_REFINEMENT_LEVELS,
                     thickness_m: float | None = None,
@@ -647,6 +726,110 @@ REGION_PROPERTIES = "regionProperties"
 SPLIT_ARGS = ("splitMeshRegions", "-cellZonesOnly", "-overwrite")
 
 
+#: WHY A BIG MESH NEEDS MORE THAN ONE PROCESS, and it is not about how long it takes. cfMesh's
+#: octree addressing holds about twelve 32-bit labels per box, so ONE process runs out of label
+#: space at (2^31 - 1) / 12 boxes. The run this was measured on asked for 181,673,384 cells - the
+#: Corintis plate at 22.00 um with its cells stretched 6x along the channels - which is 2.7M over
+#: the ceiling, and it died inside `meshOctreeAddressing::createNodeLabels` with "Negative size
+#: requested" after 231 s (2026-10-29). Not out of memory: out of int.
+#:
+#: The ceiling is PER PROCESS. Each rank octrees its own share of the domain, so N ranks lift it
+#: N-fold, and nothing about the geometry or the cell size changes. That is why the way past it is
+#: a rank count rather than a coarser mesh.
+OCTREE_BOXES_PER_PROCESS = 178_956_970
+
+#: Two flags, both measured rather than chosen.
+#:
+#: `--allow-run-as-root`: the mesh container runs as root and Open MPI refuses to start at all
+#: otherwise.
+#:
+#: `--oversubscribe`: Open MPI counts the slots it believes it has, not the cores the box has.
+#: Inside the container `nproc` reported 8 and mpirun still refused 8 ranks - "Either request
+#: fewer slots for your application, or make more slots available for use" - until this was
+#: passed. Measured on mesh-bench (8 vCPU, Open MPI 4.1.2), 2026-10-29.
+MPI_FLAGS = ("--allow-run-as-root", "--oversubscribe")
+
+#: HOW BIG THE BUFFERED SEND MAY BE, in bytes, and this one is not optional above a few million
+#: cells. cfMesh's octree load balancing moves boxes between ranks with `MPI_Bsend`, which sends
+#: into a buffer the application attached beforehand - OpenFOAM attaches `mpiBufferSize` from
+#: controlDict, 20 MB by default, and `MPI_BUFFER_SIZE` overrides it. A 272M-cell build of the
+#: Corintis plate on 8 ranks got four rebalances in and died on the fifth after 40 s:
+#:
+#:     Distributing load between processors
+#:     *** An error occurred in MPI_Bsend
+#:     *** MPI_ERR_BUFFER: invalid buffer pointer
+#:
+#: The same chain at 6.1M cells never came near the default. One gigabyte a rank, because the
+#: buffer is resident for the whole run: eight ranks is 8 GiB held against a 251 GB box, which is
+#: affordable, and the message that overflowed 20 MB is nowhere near a thousand times that.
+MPI_BUFFER_BYTES = 1_000_000_000
+
+#: scotch, because this decomposition only has to be BALANCED. Nothing is solved on it: the mesh
+#: is merged again before topoSet, the split or any reader touches it, so the tidier subdomain
+#: boundaries a geometric method gives buy nothing here and its hand-set coefficients are one
+#: more thing to get wrong on a part nobody has seen.
+DECOMPOSE_METHOD = "scotch"
+
+#: cfMesh's own parallel preparation: it reads system/decomposeParDict and lays out one
+#: processorN directory per rank for `cartesianMesh -parallel` to mesh into. It is cfMesh's, not
+#: decomposePar's - there is no mesh yet to decompose.
+PREPARE_PAR = "preparePar"
+
+#: The one line of `system/decomposeParDict` that is not a number, kept out of the f-string
+#: because it is the only place in this file where a quote has to survive being written.
+DECOMPOSE_HEADER = ('FoamFile { version 2.0; format ascii; class dictionary; '
+                    'location "system"; object decomposeParDict; }')
+
+#: ...and the merge back to one mesh in constant/polyMesh. It prints "Not well tested & use at
+#: your own risk!" on every run; measured on an 8-rank 6,100,416-cell build of the ported
+#: two-scale plate (2026-10-29) the merged mesh came back from checkMesh with "Mesh OK." and
+#: 18,420,912 faces.
+RECONSTRUCT = "reconstructParMesh -constant"
+
+
+def ranks_for(cells: int, *, available: int = 0) -> int:
+    """How many ranks a mesh of `cells` cells needs to stay under the per-process label ceiling.
+
+    1 for anything that fits in one process, which is what every part in the corpus does. The
+    count is what the CEILING demands and not what the box can run: a plan that needs more ranks
+    than the machine has cores is still a plan that needs them, and saying so is more use than
+    silently meshing something smaller. `available` caps it only when a caller passes one.
+    """
+    n = int(cells)
+    if n <= OCTREE_BOXES_PER_PROCESS:
+        return 1
+    need = -(-n // OCTREE_BOXES_PER_PROCESS)              # ceiling division
+    return min(need, int(available)) if available else need
+
+
+def render_decompose_pardict(ranks: int, *, method: str = DECOMPOSE_METHOD) -> str:
+    """`system/decomposeParDict`: how many ways preparePar splits the domain, and by what rule."""
+    n = int(ranks)
+    if n < 2:
+        raise ConjugateError(f"a parallel run needs at least two ranks, got {ranks}")
+    if not str(method).isalnum():
+        # It is interpolated into a dictionary OpenFOAM reads; the case guard scans for the
+        # executable constructs and a method name is not the place to start trusting free text.
+        raise ConjugateError(f"not a decomposition method name: {method!r}")
+    return _NEWLINE.join((
+        DECOMPOSE_HEADER,
+        f"numberOfSubdomains {n};",
+        f"method          {method};",
+        ""))
+
+
+def mpi_command(script: str, ranks: int) -> str:
+    """One OpenFOAM utility run across `ranks` processes, with the flags that make it start.
+
+    `-x MPI_BUFFER_SIZE` is not decoration: setting the variable in the launching shell sets it
+    for mpirun and for nothing else. Each rank is its own process and reads its own environment
+    at Pstream init, so without the export the buffer stays at controlDict's 20 MB in all of
+    them and the build dies in cfMesh's load balancing.
+    """
+    return (f"MPI_BUFFER_SIZE={MPI_BUFFER_BYTES} mpirun {' '.join(MPI_FLAGS)} "
+            f"-x MPI_BUFFER_SIZE -np {int(ranks)} {script} -parallel")
+
+
 def region_properties() -> str:
     """`constant/regionProperties`: the two regions, and which of them is the coolant."""
     return ("FoamFile { version 2.0; format ascii; class dictionary; object regionProperties; "
@@ -692,6 +875,13 @@ class RegionReport:
     #: Cells too flat for a solver to integrate over. checkMesh names these only when it finds
     #: them, so zero is the honest default rather than a missing reading.
     small_determinant_cells: int = 0
+    #: WHERE THE POOR CELLS ARE, not how many: [{name, path, bytes}] per set checkMesh
+    #: collected them into (foam_exec.POOR_SETS), kept under poor_cells/<region>/. The
+    #: count has been carried since the readings were widened, and a count says a
+    #: customer has a problem without saying where - "highlight of poor-quality cells"
+    #: was the sixth thing Corintis asked for (2026-10-29). Empty on a mesh that passed,
+    #: because the sets ARE the cells that failed a check and a clean mesh has none.
+    poor_sets: tuple[dict, ...] = ()
 
     @property
     def mean_cell_m(self) -> float:
@@ -821,6 +1011,7 @@ def read_region(quality: dict, name: str) -> RegionReport:
         avg_non_ortho=quality.get("avg_non_ortho"),
         skew_faces=int(quality.get("skew_faces") or 0),
         small_determinant_cells=int(quality.get("small_determinant_cells") or 0),
+        poor_sets=tuple(dict(x) for x in (quality.get("poor_sets") or ())),
     )
 
 
@@ -997,12 +1188,23 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
           ports: PortPlan | None = None, narrowest_m: float | None = None,
           patch_names: dict | None = None, fine_zones: list | None = None,
           fine_surfaces: list | None = None, stretch_zones: list | None = None,
+          port_patches: list | None = None, ranks: int = 1,
           bashrc: str = _DEFAULT_BASHRC, timeout: int = 3600) -> ConjugateReport:
     """Mesh the block, split it in two, and report what was actually produced."""
     ws = Path(workspace)
     # The mark BEFORE this build, so the one after it can be attributed. See peak_rss_bytes.
     rss_before = children_peak_rss_bytes()
     (ws / "system").mkdir(parents=True, exist_ok=True)
+    # THE CASE'S OWN DICTIONARIES, if nobody has written them yet. In a pipeline run the spec's
+    # `case_scaffold` hook has already run and this does nothing. Outside one it is the difference
+    # between a mesher that starts and a FOAM FATAL ERROR on a missing controlDict after the
+    # workspace has been staged - every OpenFOAM application reads controlDict before doing
+    # anything, and this function writes two dictionaries into the same directory while assuming
+    # a third. It assumes it no longer.
+    if not (ws / "system" / "controlDict").is_file():
+        from meshpipeline.engines.cfmesh_conjugate.case_scaffold import write_case_skeleton
+
+        write_case_skeleton(ws)
     # THE ZONES ARE PASSED HERE, and for one run they were not. render_meshdict has taken
     # `fine_zones` since the day it was written, the unit tests hand them to it directly, and this
     # - the only place in the package that writes a meshDict - left the argument off. cfMesh read a
@@ -1017,6 +1219,10 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         patch_names=patch_names, fine_zones=fine_zones, fine_surfaces=fine_surfaces,
         stretch_zones=stretch_zones))
     (ws / "system" / "topoSetDict").write_text(render_toposetdict(fluid_file=fluid_stl))
+    # BEFORE THE SCAN, not after it. scan_case_dicts below reads every dictionary in system/ and
+    # constant/, and a dictionary written after it is a dictionary nothing checked.
+    if int(ranks) > 1:
+        (ws / "system" / "decomposeParDict").write_text(render_decompose_pardict(int(ranks)))
 
     # THE CASE IS SCANNED BEFORE ANYTHING RUNS, which is where every other OpenFOAM bundle scans
     # (cfmesh/native.py, cfmesh/cfmesh_runner.py, snappy/native.py, snappy_multiregion/native.py
@@ -1029,15 +1235,73 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
     if reason:
         raise ConjugateError(f"the case dictionaries were rejected before any stage ran: {reason}")
 
+    # THE PORT PATCHES ARE CUT AFTER THE SPLIT, ON THE COOLANT ALONE, and that placement was
+    # measured rather than reasoned. Cut on the block mesh beforehand, one cut serves both regions
+    # - which sounds right, and is how `renameBoundary` works, because a renamed face genuinely is
+    # shared: the coolant's end and the metal's outer face at that end are two faces of one plane.
+    # A CUT port is not that. The box round a mouth catches the lid metal ringing the bore as well
+    # as the bore itself, and the split then hands the metal a patch called `coolant_in`. Measured
+    # on the ported two-scale plate, 2026-10-29: the coolant got 36 faces and 36, and the metal got
+    # 50 and 53 of lid surface wearing the coolant's names. Those are external walls and naming
+    # them after a port is how a solver comes to have a mass-flow inlet on the outside of a plate.
+    #
+    # After the split and with `-region fluid` the same box selects from the coolant's own `zmax`
+    # and the metal keeps its face intact.
+    #
+    # ONLY THE MESHER GOES PARALLEL, and the rest of the chain is untouched. The ceiling that
+    # forces this is cfMesh's octree addressing (OCTREE_BOXES_PER_PROCESS) and nothing downstream
+    # shares it: topoSet, the split and the port cut all run on a polyMesh, whose labels index
+    # faces and points and have room to spare at the sizes in question. So the mesh is merged
+    # back the moment it exists and every measured behaviour after that point - the cell-zone
+    # split, the two-region check, where the ports are cut - is the same code on the same mesh it
+    # has always been. Making five stages parallel to get past a ceiling one of them has would
+    # have put all five on a path nothing has measured.
+    if int(ranks) > 1:
+        chain: list[tuple[str, str]] = [
+            (PREPARE_PAR, PREPARE_PAR),
+            ("cartesianMesh", mpi_command("cartesianMesh", int(ranks))),
+            ("reconstructParMesh", RECONSTRUCT),
+        ]
+    else:
+        chain = [("cartesianMesh", "cartesianMesh")]
+    chain += [("topoSet", "topoSet"), ("splitMeshRegions", " ".join(SPLIT_ARGS))]
+    if port_patches:
+        topo_ports, create_ports = render_port_patch_dicts(list(port_patches))
+        # UNDER THE REGION'S OWN system/, AND UNDER THE DEFAULT NAME, so neither command needs
+        # `-dict` at all. `-dict` with `-region` does not mean what it looks like: the path is
+        # resolved as <case>/<region>/<path>, so `system/fluid/topoSetDict.ports` asks for
+        # case/fluid/system/fluid/... and a bare filename asks for case/fluid/<name>. Both exit
+        # on the missing file. The region-aware lookup finds system/<region>/topoSetDict by
+        # itself and does not fall back to the root one, which the split's own dict relies on in
+        # the other direction.
+        sysdir = ws / "system" / FLUID_REGION
+        sysdir.mkdir(parents=True, exist_ok=True)
+        (sysdir / "topoSetDict").write_text(topo_ports)
+        (sysdir / "createPatchDict").write_text(create_ports)
+        # `-constant` on createPatch is not an option and it exits on it, the same way
+        # splitMeshRegions does. topoSet takes it; createPatch does not. Both were written from
+        # the same habit and only one of them was right.
+        chain += [("topoSetPorts", f"topoSet -constant -region {FLUID_REGION}"),
+                  ("createPatch", f"createPatch -overwrite -region {FLUID_REGION}")]
+
     seconds: dict[str, float] = {}
-    for stage, script in (("cartesianMesh", "cartesianMesh"),
-                          ("topoSet", "topoSet"),
-                          ("splitMeshRegions", " ".join(SPLIT_ARGS))):
+    for stage, script in chain:
         rc, took = _foam(ws, script, ws / f"{stage}.log", bashrc=bashrc, timeout=timeout)
         seconds[stage] = round(took, 1)
         if rc != 0:
             raise ConjugateError(f"{stage} exited {rc} after {took:.0f}s; see {stage}.log",
                                  rc=rc, stage=stage)
+
+    # THE PER-RANK COPIES GO, once the merged mesh is on disk. They are a second whole copy of
+    # the mesh: at the sizes that need ranks at all that is hundreds of gigabytes of scratch, and
+    # the workspace is archived and returned whole. Removed only after reconstructParMesh has
+    # exited 0, which the chain above guarantees by raising on any other code.
+    if int(ranks) > 1:
+        import shutil
+
+        for d in sorted(ws.glob("processor*")):
+            if d.is_dir():
+                shutil.rmtree(d, ignore_errors=True)
 
     # Out of constant/ before anything scans it again. See CELL_TO_REGION.
     leftover = ws / "constant" / CELL_TO_REGION
@@ -1078,6 +1342,9 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
 __all__ = ["ConjugateError", "ConjugateReport", "RegionReport", "PortPlan",
            "FLUID_REGION", "SOLID_REGION", "FLUID_TO_SOLID", "SOLID_TO_FLUID",
            "SPLIT_ARGS", "DEFAULT_REFINEMENT_LEVELS", "DEFAULT_VOLUME_TOL",
+           "OCTREE_BOXES_PER_PROCESS", "MPI_FLAGS", "DECOMPOSE_METHOD", "PREPARE_PAR",
+           "RECONSTRUCT", "ranks_for", "render_decompose_pardict", "mpi_command",
+           "MPI_BUFFER_BYTES",
            "BLOCK_FACES", "OPEN_FACE_RTOL",
            "CELL_TO_REGION", "REGION_PROPERTIES", "region_properties",
            "block_bounds", "block_surface_stl", "open_faces", "plan_ports",

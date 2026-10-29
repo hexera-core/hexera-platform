@@ -763,7 +763,26 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
             # the same skin, stored for the stage the user turns the part in (the preview stored
             # it already when there was one: the same file, drawn once)
             skin_key = check_object_key(session_id, "skin.json")
-            _store_json(skin_key, _placed_skin_payload(fetched) if placed else skin_payload(skin))
+            # THE FILE'S OWN SOLIDS WHERE IT HAS SEVERAL. A thermal model has always been drawn
+            # this way (_placed_skin_payload); a STEP assembly was drawn as one welded lump, so a
+            # customer checking that we read their six-part package could not see whether we had
+            # found their parts at all. The payload is the same one either way, so nothing in the
+            # console changes.
+            drawn_parts = None if placed else _parts_skin(work)
+            _store_json(skin_key,
+                        _placed_skin_payload(fetched) if placed
+                        else drawn_parts or skin_payload(skin))
+            if drawn_parts:
+                facts["parts_drawn"] = [
+                    {k: pt.get(k) for k in ("name", "part_id", "triangles", "size_mm",
+                                            "volume_mm3")}
+                    for pt in drawn_parts["patches"]]
+                if drawn_parts.get("parts_not_drawn"):
+                    facts.setdefault("notes", []).append(
+                        "the file holds "
+                        f"{drawn_parts['part_count']} solids and "
+                        f"{len(drawn_parts['parts_not_drawn'])} of them could not be drawn: "
+                        + ", ".join(drawn_parts["parts_not_drawn"]))
         # which way the part stands up, as far as its shape says: the code's half of the up
         # proposal, weighed against the pictures once the model has seen them
         facts["up_evidence"] = read_up_evidence(skin)
@@ -1107,6 +1126,47 @@ def _store_upright_sheet(session_id: str, skin: Path, work: Path, store) -> dict
     return {"object_key": key, "order": list(sheet.order)}
 
 
+#: What `_draw_parts` leaves beside the skin when the file holds several solids: the stage's skin
+#: payload with one named patch per part, which the console already draws for a thermal model
+#: (cad/ingest/ecxml_place.placed_skin). A file of one solid leaves none and is drawn as before.
+PARTS_SKIN = "parts_skin.json"
+
+
+def _draw_parts(meshed, local_path: Path, work: Path) -> None:
+    """Draw the file's solids as separate named parts, into `work/PARTS_SKIN`.
+
+    NEVER FAILS THE CHECK. It is a drawing: a file whose solids cannot be drawn separately is
+    still measured, still confirmed and still meshed, from the welded skin it always used.
+    """
+    from meshpipeline.cad.solid_parts import parts_payload
+
+    try:
+        payload = parts_payload(meshed, path=local_path)
+    except Exception:                     # noqa: BLE001
+        logger.warning("geometry check: the file's solids could not be drawn separately",
+                       exc_info=True)
+        return
+    if not payload:
+        return
+    try:
+        Path(work, PARTS_SKIN).write_text(json.dumps(payload), encoding="utf-8")
+    except OSError:
+        logger.warning("geometry check: %s could not be written", PARTS_SKIN, exc_info=True)
+
+
+def _parts_skin(work: Path) -> dict | None:
+    """What `_draw_parts` left, or None."""
+    f = Path(work, PARTS_SKIN)
+    if not f.is_file():
+        return None
+    try:
+        got = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        logger.warning("geometry check: %s is unreadable", PARTS_SKIN, exc_info=True)
+        return None
+    return got if isinstance(got, dict) and got.get("patches") else None
+
+
 def _scout_exact(local_path: Path, work: Path, interp_ref, ref, on_skin=None) -> tuple[dict, Path]:
     """A STEP or IGES file: OpenCASCADE reads real faces, so the openings come out exact.
     `on_skin(skin, seed)` is told the moment the part's skin is drawn - before it is measured -
@@ -1114,7 +1174,7 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref, on_skin=None) ->
     from meshpipeline.application import geometry_progress as gp
     from meshpipeline.cad.fluid_volume_check import read_fluid_volume, wants_fluid_volume
     from meshpipeline.cad.normalise import occ_scale_transform
-    from meshpipeline.cad.scout import count_solids, read_cad, scout_cad, write_view_stl
+    from meshpipeline.cad.scout import count_solids, draw_view, read_cad, scout_cad
 
     prepared, unit_note = _prepared_coordinates(local_path, interp_ref, ref)
     # read once: the scout and the view skin each work on their own scaled copy of it
@@ -1124,7 +1184,12 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref, on_skin=None) ->
     scale_to_m = float(interp.scale_to_metres) if interp is not None else 0.001
     # THE SKIN FIRST, sized to the part (cad/scout.view_deflection): the stage can show the part
     # while the rest of it is measured, and a skin is all a preview needs
-    skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared, shape=shape)
+    # MESHED ONCE, DRAWN TWICE. The welded skin is what the stage turns and what the vision
+    # model is shown; the file's own solids, drawn separately and named, are what tells a customer
+    # we read their assembly correctly. Both are the same triangles - a big STEP takes 10-25 s to
+    # tessellate and doing it twice would double the slowest step of the check for nothing.
+    skin, meshed = draw_view(local_path, work / "skin.stl", prepared=prepared, shape=shape)
+    _draw_parts(meshed, local_path, work)
     gp.note_work(triangles=gp.skin_triangles(skin))
     if on_skin is not None:
         try:
@@ -1241,15 +1306,59 @@ def vet_by_map(facts: dict, imap) -> None:
         max(kept, key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
 
 
+#: How far a face-read opening may be from a mapped mouth and still be the same opening, as a
+#: multiple of the mouth's own width. Generous on purpose: the two are measured differently - the
+#: faces off the B-rep exactly, the mouths off the drawn skin - so they do not agree to the micron.
+SAME_OPENING = 2.0
+
+
+def _at_a_mouth(port: dict, mouths: list) -> bool:
+    """Whether a face-read opening sits at one of the mapped passage's mouths."""
+    c = port.get("centroid_m") or []
+    if len(c) != 3:
+        return False
+    for h in mouths:
+        q = h.get("centroid_m") or []
+        if len(q) != 3:
+            continue
+        width = max(float(h.get("diameter_mm") or 0.0), 1e-3) / 1000.0
+        if sum((float(c[k]) - float(q[k])) ** 2 for k in range(3)) <= (SAME_OPENING * width) ** 2:
+            return True
+    return False
+
+
 def map_openings(facts: dict) -> None:
-    """A CAD PART'S OPENINGS FROM ITS MAP (INS-2), when its faces gave fewer than two: the mouths
-    the inside-space map read on its skin (`facts["holes"]`, marked `passage`), proposed as the
-    openings - the largest the inlet - with a side pocket's mouths as not openings. The faces'
-    exact openings always win when there are two or more of them. Never fails the scout."""
+    """A CAD PART'S OPENINGS FROM ITS MAP (INS-2): the mouths the inside-space map read on its skin
+    (`facts["holes"]`, marked `passage`), proposed as the openings - the largest the inlet - with a
+    side pocket's mouths as not openings. Never fails the scout.
+
+    THE FACES WIN WHEN THEY ARE THE SAME OPENINGS, and that is a geometric test rather than a
+    count. It used to be a count - "the faces' exact openings always win when there are two or
+    more of them" - and the count is what got the coupon plate wrong. Measured end to end on
+    2026-10-29: an 8 x 6 x 2 mm plate with two 0.8 mm bores through its lid produced the brief
+
+        the `inlet` patch, which is 7.82 mm across and located near (4, 3, 0) mm, and exits
+        through the `outlet` patch, which is 7.71 mm across and located near (4, 3, 2) mm
+
+    7.82 and 7.71 mm are the equal-area diameters of the plate's two largest FLAT FACES, top and
+    bottom: both rim-free, both on an extremity, so both read as openings, so the count reached two
+    and the bores were never looked at. The full 24 x 16 x 3 mm plate got this right only because
+    its faces happened to give NONE.
+
+    A face that is not at a mouth of the part's own passage is not where the coolant leaves, and
+    the map is the thing that knows where the mouths are. So when the map found a passage with two
+    or more mouths, a face reading that does not line up with them is replaced.
+    """
     ports = [o for o in facts.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
     mouths = [h for h in facts.get("holes") or [] if h.get("passage", True)]
-    if len(ports) >= 2 or len(mouths) < 2 or not (facts.get("inside") or {}).get("has_inside"):
+    if len(mouths) < 2 or not (facts.get("inside") or {}).get("has_inside"):
         return
+    if len(ports) >= 2 and all(_at_a_mouth(o, mouths) for o in ports):
+        return                 # the faces ARE the mouths, measured exactly: keep them
+    if len(ports) >= 2:
+        facts.setdefault("notes", []).append(
+            f"the part's faces gave {len(ports)} opening(s) that are not at the mouths of its "
+            "inside passage, so the map's mouths are proposed instead")
     side = [h for h in facts.get("holes") or [] if not h.get("passage", True)]
     mouths = sorted(mouths, key=lambda h: -float(h.get("area_mm2") or 0.0))
     out: list[dict] = []

@@ -339,6 +339,38 @@ def may_switch_on_its_own(state: Mapping) -> bool:
     return engine_source(state) in _SWITCHABLE_SOURCES
 
 
+def source_format(state: Mapping) -> str:
+    """The upload's format key, off its own name (contracts/intake_formats); "" when unknown.
+
+    IT IS A PROPERTY OF THE FILE, not of a tessellation, which is the whole point of reading it
+    here. `EngineSpec.admit` refuses an engine that does not read the upload's format, and it only
+    does so when the facts NAME that format - which until now meant `surface_analysis`, and that
+    comes from STAGING the surface. For the one engine the check exists for, staging is the thing
+    the wrong format breaks: snapgrid tessellates by reading the ECXML model, so a STEP upload
+    threw inside `prepare_surface`, geometry_admission swallowed it as "a staging hiccup is a
+    system issue - defer, never reject", and the run reached the builder and threw again.
+
+    Measured on the coupon plate, 2026-10-29: the conjugate engine crashed, the ladder moved
+    attempt 2 to "snapgrid, which delivers the same approved mesh", and snapgrid ended the job
+    with `ValueError: no ECXML model beside source.step`. It was never a rung.
+
+    READ OFF THE RAW SNAPSHOT, not through GeometrySourceRef or MaterializedGeometry. Both
+    validate and both RAISE on a partial snapshot - "missing 'object_key'" - and this runs after
+    an engine has already failed, where an exception takes the whole fallback with it. A file name
+    is a string; nothing here needs a contract object to read one.
+    """
+    from meshpipeline.agents.intake.measured_choice import source_format_of
+
+    geom = state.get("geometry")
+    if not isinstance(geom, Mapping):
+        return ""
+    ref = geom.get("ref")
+    ref = ref if isinstance(ref, Mapping) else {}
+    return source_format_of(ref.get("original_filename") or "",
+                            ref.get("suffix_hint") or "",
+                            geom.get("path") or "")
+
+
 def _declared_evidence(state: Mapping, engine: str, *, form: str | None = None):
     """What `engine` is asked to build: the approved declaration, from this file - or, with
     `form`, from the same request in that geometry form (what WOULD pass, for an offer)."""
@@ -348,7 +380,13 @@ def _declared_evidence(state: Mapping, engine: str, *, form: str | None = None):
     patches = tuple(
         PatchSummary(name=str(p.get("name", "")).strip(), type=str(p.get("type", "")).strip())
         for p in (state.get("intake_patches") or []) if isinstance(p, Mapping))
+    # THE UPLOAD'S FORMAT TRAVELS WITH THE DECLARATION. surface_analysis is where admit() looks
+    # for it and it is filled in from a staged surface; this is the same fact, known without
+    # staging anything. Only the key is set, so nothing that reads the rest of surface_analysis
+    # sees a measurement that was not taken.
+    fmt = source_format(state)
     return AdmissionEvidence(
+        surface_analysis=({"source_format": fmt} if fmt else None),
         engine=engine,
         purpose=str(state.get("purpose", "") or ""),
         input_kind=str(state.get("input_kind", "") or "") or None,

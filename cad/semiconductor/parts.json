@@ -421,6 +421,98 @@
     }
   },
   {
+    "name": "two_scale_plate_ported",
+    "solid_stl": "two_scale_plate_ported_solid.stl",
+    "fluid_stl": "two_scale_plate_ported_fluid.stl",
+    "narrowest_um": 98.0,
+    "fluid_volume_mm3": 414.740845532,
+    "solid_volume_mm3": 737.40322868,
+    "wetted_area_mm2": 1144.437604053,
+    "passages": 1,
+    "passage_extent_mm": [
+      21.999999997,
+      13.999999617,
+      2.499999944
+    ],
+    "extent_mm": [
+      24.0,
+      16.000001,
+      3.0
+    ],
+    "fluid_lo": [
+      0.0010000000474974513,
+      0.0010000000474974513,
+      0.0005499999970197678
+    ],
+    "fluid_hi": [
+      0.023000000044703484,
+      0.014999999664723873,
+      0.0030499999411404133
+    ],
+    "solid_lo": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "solid_hi": [
+      0.024000000208616257,
+      0.01600000075995922,
+      0.003000000026077032
+    ],
+    "note": "built for this corpus: the only part in it with two scales of passage, at the first customer's own 21:1 ratio and 0.545 mm slot pitch",
+    "declared": {
+      "kind": "two_scale",
+      "fluid_volume_mm3": 414.74088,
+      "fluid_bodies": 1
+    }
+  },
+  {
+    "name": "two_scale_plate_sealed",
+    "solid_stl": "two_scale_plate_sealed_solid.stl",
+    "fluid_stl": "two_scale_plate_sealed_fluid.stl",
+    "narrowest_um": 98.0,
+    "fluid_volume_mm3": 413.444845976,
+    "solid_volume_mm3": 738.555228768,
+    "wetted_area_mm2": 1140.117605109,
+    "passages": 1,
+    "passage_extent_mm": [
+      21.999999997,
+      13.999999617,
+      2.05000001
+    ],
+    "extent_mm": [
+      24.0,
+      16.000001,
+      3.0
+    ],
+    "fluid_lo": [
+      0.0010000000474974513,
+      0.0010000000474974513,
+      0.0005499999970197678
+    ],
+    "fluid_hi": [
+      0.023000000044703484,
+      0.014999999664723873,
+      0.0026000000070780516
+    ],
+    "solid_lo": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "solid_hi": [
+      0.024000000208616257,
+      0.01600000075995922,
+      0.003000000026077032
+    ],
+    "note": "built for this corpus: the only part in it with two scales of passage, at the first customer's own 21:1 ratio and 0.545 mm slot pitch",
+    "declared": {
+      "kind": "two_scale",
+      "fluid_volume_mm3": 413.44488,
+      "fluid_bodies": 1
+    }
+  },
+  {
     "name": "unit_cell_100um",
     "solid_stl": "unit_cell_100um_solid.stl",
     "fluid_stl": "unit_cell_100um_fluid.stl",

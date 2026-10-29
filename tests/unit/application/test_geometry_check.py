@@ -241,8 +241,10 @@ def test_the_check_stores_the_skin_the_viewer_draws(tmp_path, monkeypatch):
 
     def _skin(path, dest, *, prepared, shape=None):
         write_stl_binary(Path(dest), _box_triangles((0, 0, 0), (1, 1, 1)))
-        return Path(dest)
-    monkeypatch.setattr(scout_mod, "write_view_stl", _skin)
+    # draw_view returns (the skin's path, the meshed shape). The shape is only used to
+    # draw the file's solids as separate named parts, which a one-solid fake has none of.
+        return Path(dest), None
+    monkeypatch.setattr(scout_mod, "draw_view", _skin)
     monkeypatch.setattr(snaps_mod, "render_snapshots", lambda skin, openings, out: [])
     monkeypatch.setattr(snaps_mod, "render_upright_sheet",
                         lambda skin, out, **k: (_ for _ in ()).throw(RuntimeError("nothing is drawn in this test")))
@@ -298,8 +300,10 @@ def test_a_step_files_check_serves_the_holes_of_the_skin_the_stage_is_clicked_on
 
     def _skin(path, dest, *, prepared, shape=None):
         write_stl_binary(Path(dest), tube)
-        return Path(dest)
-    monkeypatch.setattr(scout_mod, "write_view_stl", _skin)
+    # draw_view returns (the skin's path, the meshed shape). The shape is only used to
+    # draw the file's solids as separate named parts, which a one-solid fake has none of.
+        return Path(dest), None
+    monkeypatch.setattr(scout_mod, "draw_view", _skin)
     monkeypatch.setattr(snaps_mod, "render_snapshots", lambda skin, openings, out: [])
     monkeypatch.setattr(snaps_mod, "render_upright_sheet",
                         lambda skin, out, **k: (_ for _ in ()).throw(RuntimeError("nothing is drawn in this test")))

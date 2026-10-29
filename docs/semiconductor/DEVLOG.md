@@ -710,3 +710,422 @@ The delivered interface AREA is now carried per patch, having been computed and 
 every read. On a conjugate mesh that number is the heat-transfer area, and it is what staircasing
 takes away without changing a single face count: 48,430.54 mm2 delivered against 60,588.07 mm2 of
 wetted CAD on the customer plate, a 20.07% deficit invisible from a face count.
+
+## 2026-10-29, past one process, and a cold plate that reads as one
+
+Two things were blocking the sizes this engine exists for, and they turned out to be unrelated.
+
+### The ceiling was an int, not a machine
+
+The Corintis plate at 22.00 um with its cells stretched 6x along the channels prices at
+181,673,384 cells. It was launched, and it died 231 s in:
+
+    --> FOAM FATAL ERROR: Negative size requested.
+        From void Foam::Module::LongList<T, Offset>::allocateSize(Foam::label)
+        #4  Foam::Module::meshOctreeAddressing::createNodeLabels() const
+
+On a box with 251 GB of memory and 402 GB of free scratch. `budget.py` had priced that boundary
+since before any of this - twelve 32-bit labels a box, so (2^31 - 1) / 12 = 178,956,970 boxes a
+process - and `refuse_for_octree` has named the way past it in words all along. Nothing drove it,
+so every configuration above the ceiling was refused at planning time and the one that slipped
+through aborted. 181,673,384 is 2.7 million over.
+
+The ceiling is PER PROCESS, which is the whole point: each rank octrees its own share.
+
+| | |
+|---|---|
+| `preparePar` | cfMesh's own, not `decomposePar`: there is no mesh yet to decompose. Reads `system/decomposeParDict`, lays out one `processorN` per rank |
+| `mpirun -np N cartesianMesh -parallel` | each rank meshes its own subdomain |
+| `reconstructParMesh -constant` | back to one mesh in `constant/polyMesh` |
+| then the chain as it was | `topoSet`, `splitMeshRegions`, the port cut, `checkMesh` |
+
+ONLY THE MESHER GOES PARALLEL. The ceiling belongs to cfMesh's octree addressing and nothing
+downstream shares it, so the mesh is merged the moment it exists and the cell-zone split, the
+two-region check and where the ports are cut are the same code on the same kind of mesh they have
+always run on. Making five stages parallel to get past a ceiling one of them has would have put
+all five on a path nothing has measured.
+
+Proven first on the ported two-scale plate at 0.5 mm, 8 ranks: 2,317,572 cells in each processor
+directory in 68.29 s, and the merged mesh came back from checkMesh as
+
+    points 6,220,725   faces 18,420,912   internal faces 18,181,584   cells 6,100,416   Mesh OK.
+
+### Three flags, every one of them measured
+
+| flag | what happens without it |
+|---|---|
+| `--allow-run-as-root` | the mesh container runs as root and Open MPI refuses to start |
+| `--oversubscribe` | Open MPI counts the slots it believes it has, not the cores the box has. `nproc` said 8 inside the container and mpirun still refused 8 ranks: "Either request fewer slots for your application, or make more slots available for use" |
+| `-x MPI_BUFFER_SIZE=1000000000` | cfMesh's octree load balancing sends boxes with `MPI_Bsend`, into a buffer the application attached beforehand. OpenFOAM attaches controlDict's `mpiBufferSize`, 20 MB. The 272M build got four rebalances in and died on the fifth after 40 s with `MPI_ERR_BUFFER: invalid buffer pointer`. Setting the variable in the launching shell is not enough - each rank reads its own environment at Pstream init, so it has to be exported |
+
+The same chain at 6.1M cells never came near any of the three.
+
+### What the box can hold, which is the binding limit now
+
+At 748.1 bytes a cell, the rungs on the customer plate's own plan (background 352.06 um, broad 1
+level, fine 4 levels, so 22.00 um at the slots):
+
+| stretch | cells | ranks the ceiling demands | peak | fits 251 GB |
+|---|---|---|---|---|
+| 1 | 775,728,436 | 5 | 540.9 GiB | no |
+| 2 | 397,710,991 | 3 | 277.5 GiB | no |
+| 3 | 271,705,176 | 2 | 189.7 GiB | yes |
+| 4 | 208,702,268 | 2 | 145.8 GiB | yes |
+| 6 | 145,699,361 | 1 | 101.9 GiB | yes |
+| 8 | 114,197,907 | 1 | 80.0 GiB | yes |
+
+The ceiling and the memory are different limits and they bind in different places: stretch 4 needs
+two ranks for the ceiling while fitting one box's memory twice over.
+
+### A cold plate was being read as a car
+
+The other half of this was nothing to do with size. Uploaded to the running stack, a 24 x 16 x 3
+mm plate with two 1.2 mm bores through its lid came back from the stage as
+
+    input_kind solid-body   flow external
+    opening  inlet   1.35 mm across at (18, 13.9, 3) mm
+    opening  outlet  1.35 mm across at (6, 2.05, 3) mm
+    note: the space inside the part is 415 mm3, open at 2 places
+
+Two openings named inlet and outlet, with their diameters and their positions, beside a reading
+that says the fluid flows AROUND the part. Nothing asks the user which it is: `flow_question`
+returns "" the moment there are two ports. Accepting what was drawn produced "No openings: the
+fluid flows around the whole body" - `patches_from` returns no patches at all for external flow -
+and the intake then refused, correctly, to mesh a conjugate case on a geometry with no coolant in
+it.
+
+The scout is not wrong to read a plate as box-like; a 24 x 16 x 3 mm block IS shaped like a body
+in a flow (flat_share 1.32, fill 0.64). What was wrong is serving that reading as the default
+AFTER the split had cut 414.6 mm3 of coolant out of the part and found it open at both ends.
+
+`fold`'s rule for one solid - "THE SPLIT ADDS WHAT IT LEARNED AND OVERRULES NOTHING" - is about
+the OPENINGS, which is what the pipe tee lost when the split replaced its three correct ports with
+"the space inside the parts". Those stay the scout's. The flow is a different question and the
+split has just answered it, so one solid whose coolant was found open at two or more places now
+reads `internal` / `solid-assembly`, which is the kind `purposes.py` describes in as many words.
+
+With that answered the whole chain runs with nobody steering it: upload, stage, confirm, intake,
+`cfmesh_conjugate` proposed over the snap grid and snappy multi-region, the coolant conditions
+asked for, and a job queued. It then stopped where it should:
+
+    conjugate: refusing to start - this part does not fit: 4 cells across its narrowest passage at
+    3 octree levels is about 28,444,758 cells against a limit of 8,000,000
+
+`CELL_HARD_LIMIT` is already environment-overridable and its comment says what it is: the Cloud Run
+feasibility limit, 8 vCPU / 32 GiB / ~50 min. It is a statement about where the mesh is built, not
+a number to argue with - and the 100 to 700 million band this engine is for needs the box, not the
+limit, raised.
+
+### The case around the mesh, with the numbers left out
+
+A mesh is not a case. chtMultiRegionFoam will not start without a field file per region naming
+every patch, a thermophysical model per region, and the coupled condition on the interface - and
+all of that is STRUCTURE, which the mesh determines: which regions exist, what the patches are
+called, which patch is the interface, which are the ports. None of it is a physical choice.
+
+The physical choices are not ours and are not guessed at. `solver_case.py` writes
+`<<HEXERA_FILL_THIS_IN>>` where the flow rate, the inlet temperature, the outlet pressure, the
+coolant and the metal go, and that token is one OpenFOAM cannot parse: an unfinished case stops on
+the first file that still has one. A plausible default is the worse failure, because 1 m/s of water
+at 20 C solves, publishes a peak temperature, and is wrong about the part.
+
+Two things in it were wrong first and are worth recording.
+
+| | |
+|---|---|
+| the comment ate the terminator | `internalField uniform <<...>> // initial temperature;` puts the semicolon inside the comment, so the entry has no end. The comment goes after it |
+| an outlet was an inlet | the first version treated both as one "port": both ends came back with a fixed inlet temperature and a prescribed flow rate, which is a case with no way out and two conflicting flow rates. Where each condition goes is not symmetric - the velocity is prescribed at one end and the pressure at the other |
+
+### Boundary layers, which this engine will not have
+
+Corintis asked for the number of boundary layers in the fluid. The answer is none, by construction.
+
+A conjugate interface is conformal because both regions are made of the same cells from the same
+octree: every face on the coolant side IS the face on the metal side. An extruded prism layer is a
+new cell inserted on ONE side of a patch, so a stack on `fluid_to_solid` leaves every one of its
+faces without a partner - the single property this whole approach exists to guarantee.
+
+cfMesh could not do it here anyway. `boundaryLayers.patchBoundaryLayers` names patches, and at
+meshing time the coolant's wall is not a patch: it is interior to one manifold block, and the patch
+is made by `splitMeshRegions` afterwards. `generateBoundaryLayers -region fluid` would run on the
+delivered mesh, which is exactly the thing that must not be run on it.
+
+What the mesh has instead is graded octree refinement toward the wall, which gives matched cells on
+both sides and is the conformal equivalent of a layer stack. The manifest now carries those
+numbers - `near_wall_levels`, `near_wall_cell_m`, `near_wall_layers` at zero - because near-wall
+resolution is asked about on every run and a reader needs the number that exists.
+
+### Where the poor cells are, not how many
+
+The readings have carried a COUNT of poor cells since they were widened: 28,132 on the customer
+plate, 27,932 of them in the metal. A count says a customer has a problem without saying where,
+and "highlight of poor-quality cells" was the sixth thing they asked for.
+
+checkMesh has already collected those cells into sets by the time it prints the count. `-writeSets
+vtk` is the flag that writes them out, and it costs nothing on a good mesh: the sets ARE the cells
+that failed a check, so a mesh that passes writes no files (measured on the 8-rank 6,100,416-cell
+build - "Mesh OK." and nothing written). On a bad one the set is small by definition, 28,132 out of
+102.6 million, so it is drawable at full resolution whatever the mesh's size - which a heatmap over
+the whole boundary is not.
+
+ONE FOLDER PER REGION, because checkMesh writes them by the set's own name and nothing else, so
+the metal's run writes `skewFaces.vtk` over the coolant's. On a conjugate mesh that is the whole
+measurement lost: one file called skewFaces cannot be both 27,932 cells and 200.
+
+### A file of several parts, drawn as several parts
+
+A thermal model has always been drawn as its parts - one block per part under its own name and
+colour, and the console has always known how to draw that. A STEP assembly got none of it. The
+customer's package is six solids and arrived on the stage as one grey shape, so a customer checking
+that we had read their assembly could not see whether we had found their parts at all.
+
+`cad/solid_parts.py` returns the same payload from a STEP. Named from the file where the file names
+them, `Part_k` where it does not, and each part carries its own extent and volume - because "is
+this my part?" is the question the stage exists to answer and a name does not answer it. Measured
+on a three-solid STEP of 10x8x3, 6x6x6 and 20x2x2 mm boxes: 240.0, 216.0 and 80.0 mm3, every
+volume exact.
+
+MESHED ONCE, DRAWN TWICE. A big STEP takes 10-25 s to tessellate, and the welded skin and the
+separate parts are the same triangles, so `write_view_stl` was split: `view_shape` meshes and
+returns the shape, `write_meshed_stl` writes it. One solid gets none of this and is drawn exactly
+as before, which is every part in the corpus.
+
+### A mouth already on a face could not get a port
+
+The port cutter was built for the plate fed and drained through its lid and could not be reached
+from it. `render_port_patch_dicts` cuts a patch out of a block face so two ports can share one -
+and the only way in was `stubs_for`, which returns a stub for a mouth that stops INSIDE the metal.
+A mouth already ON its face needs no stub, so it got none, so it got no port row, so no patch was
+cut. Driven through the console end to end:
+
+    conjugate: meshing without named ports - the coolant reaches no opposite pair of block faces
+    ... It reaches zmax. Name a pair yourself with --inlet/--outlet, or cut ports into the coolant
+    geometry ...
+
+Every clause is true and the part is still unsolvable. "Cut ports into the coolant geometry" is
+advice to go and edit the CAD when the engine can cut them itself.
+
+A flush mouth is now a Stub of zero length - nothing to draw, nothing added to the coolant, only a
+patch to cut - and it is emitted ONLY when the faces reached hold no opposite pair, which is
+exactly the case `plan_ports` refuses. Eight of the nine parts in the package take their ports from
+renamed faces on an opposite pair and are untouched; so is a bore that stops inside the metal.
+
+### Two sentences that said the wrong thing
+
+| | |
+|---|---|
+| the machine | "It needs about 107 GiB, more than the Cloud Run mesh job's 32 GiB, so it runs on a n2-highmem-8 VM (64 GiB)." Nothing was wrong with the choice: a VM gets a real disk sized from `workspace_gib`, so the files it writes are not in its memory, and only Cloud Run holds both. The sentence quoted process-plus-files beside a machine chosen on process alone, so a correct decision read as a doomed one |
+| two mouths on one face | said "the only way two of them on one face can carry different names", which does not cover one on zmax and one on xmax - the same problem for the same reason |
+
+### 336 million cells, and what the merge costs
+
+The Corintis plate at 22.00 um with its cells stretched 3x, eight ranks on mesh-bench (8 vCPU,
+251 GB):
+
+| | |
+|---|---|
+| octree boxes | 336,223,062, against a per-process ceiling of 178,956,970 |
+| cartesianMesh | ExecutionTime 1744.7 s, ClockTime 2374 s |
+| peak memory | 212 GB of 251, swap never touched (64 GB of it was there as insurance) |
+| per rank | 23 to 27 GB, 8 ranks |
+| octree nodes | 43,153,353 in one rank, where "Resizing points!" is the step that overflowed serially |
+
+THE MERGE IS THE EXPENSIVE HALF, and most of what it spends is wasted here.
+`reconstructParMesh` writes the merged mesh first - that part finished and `constant/` came to
+69 GB - and then walks the processor directories again writing `pointProcAddressing`,
+`faceProcAddressing`, `cellProcAddressing` and `boundaryProcAddressing` into each one. Those are
+the maps between the decomposed and the merged mesh, for carrying FIELDS across. A mesh-only run
+has no fields, and `build` deletes the processor directories as soon as the merge exits, so every
+byte of it is written to be thrown away. It took longer than the mesher.
+
+There is no flag to skip it: `-addressing-only` is the opposite option, writing the addressing
+without the mesh. What does skip it is `redistributePar -reconstruct -overwrite`, which merges in
+parallel and writes no addressing at all. Not swapped in yet - the serial path is the one that has
+been measured end to end - but that is the next thing to measure on this part.
+
+### The ladder offered an engine that cannot read the file
+
+Driving the coupon plate end to end, the conjugate engine crashed, and:
+
+    node_engine_fallback: cfmesh_conjugate could not mesh this shape (engine: engine_crashed) -
+    attempt 2 moves to snapgrid, which delivers the same approved mesh
+
+    ValueError: no ECXML model beside source.step - the snap-grid mesher reads the ECXML file
+    itself
+
+snapgrid reads ECXML and nothing else, and `EngineSpec.admit` has refused the mismatch since
+snapgrid was written. `ladder` calls `admit`. The check fires only when the facts NAME the
+upload's format, that name lived in `surface_analysis`, and `surface_analysis` comes from STAGING
+the surface - which is exactly what the wrong format breaks. snapgrid's `tessellate_to_stl` threw
+inside `prepare_surface`, `geometry_admission` swallowed it as "a staging hiccup is a system
+issue - defer, never reject", and the run reached the builder and threw again, as a crash rather
+than a refusal.
+
+The format is a property of the FILE. `engine_fallback.source_format` reads it off the snapshot's
+own name, so the check fires before anything is staged: a STEP now ladders
+`cfmesh_conjugate, snappy_multiregion` and an ECXML still ladders snapgrid. Read off the RAW
+mapping rather than through `GeometrySourceRef`, which raises on a partial snapshot - and this
+code runs after an engine has already failed, where an exception takes the fallback with it.
+
+### Two openings, and they were the wrong two
+
+The coupon's brief came out as
+
+    the `inlet` patch, which is 7.82 mm across and located near (4, 3, 0) mm, and exits through
+    the `outlet` patch, which is 7.71 mm across and located near (4, 3, 2) mm
+
+The coupon is 8 x 6 x 2 mm and its bores are 0.8 mm. 7.82 and 7.71 mm are the equal-area
+diameters of the plate's two LARGEST FLAT FACES, top and bottom.
+
+`map_openings` replaces the face reading with the inside-space map's mouths only when the faces
+gave FEWER THAN TWO openings. On the full plate the faces gave none, so the two bores were
+promoted and the stage showed them at 1.35 mm. On the coupon the faces gave two - zmin and zmax,
+both rim-free flats on an extremity - so it returned early and the bores were never looked at.
+
+The inside-space map had them: `has_inside` true, one passage, two mouths. The count of face
+openings is not what should decide between the two readings - whether a face is where the coolant
+LEAVES is, and the map is the thing that knows where the mouths are.
+
+So the faces keep their openings when they LINE UP with the mapped mouths, within twice a mouth's
+own width, and are replaced when they do not. A pipe whose two ends genuinely are faces keeps
+them, measured exactly off the B-rep, which is the point of preferring faces at all; the coupon's
+two big flats do not line up with anything and are put aside, with the reason said. Re-read after
+the change:
+
+    input_kind solid-assembly   flow internal
+    openings   inlet 0.64 mm2   outlet 0.64 mm2        (a 0.8 mm bore, not a 48 mm2 face)
+    note: the part's faces gave 2 opening(s) that are not at the mouths of its inside passage,
+          so the map's mouths are proposed instead
+
+### The engine was never in the image that runs it
+
+The whole chain reached the mesher and then:
+
+    rc=-4: [DISPATCH] unknown engine 'cfmesh_conjugate' - known: ['cfmesh', 'gmsh', 'snappy',
+    'snappy_multiregion', 'vmtk']. The mesh image is likely stale; redeploy
+
+It is not stale, it is from before. The Cloud Run job `hexera-mesh` pins
+`sha256:0c46c0757da9...`, pushed 2026-09-13, and this engine was written in October. So every
+conjugate job driven through the console has been failing at dispatch for as long as the engine has
+existed, and the bench runs never saw it because the bench mounts the source over the image with
+PYTHONPATH.
+
+`make mesh-deploy COMPONENTS=images` is the authority for the job's image and it is the wrong
+instrument here twice over: it PROMOTES a digest from `deploy/output/release.json` rather than
+building one, and `hexera-mesh` is the job Areen's main uses.
+
+So the semi stack has its own:
+
+| | |
+|---|---|
+| image | the branch's wheel installed over `mesh:ff752ca1df02` - the SAME native floor, a new Python package |
+| why not the `mesh` target | it builds OpenFOAM 2412 from the ESI apt repository, vmtk through conda and fTetWild from source: ~2 GB, slow, and the Dockerfile calls the ESI mirror "the least reliable thing in this build". None of it moved on this branch |
+| `USER root` for the install | as the image's own user pip says "Defaulting to user installation because normal site-packages is not writeable" and the wheel lands in the build user's home, which is not necessarily the user Cloud Run runs as |
+| `--no-deps` | nothing under requirements/ moved, so resolving the tree again could only move a pin the floor was built against |
+| the job | `hexera-mesh-semi`, rendered from the project's own `deploy/gcp/cloud-run/mesh-job.yaml`, digest-pinned, same service account, maxRetries 0 |
+| 32Gi, not 16Gi | `deploy/gcp/generated.prod.env` says `MESH_MEMORY=32Gi` and `settings/policy.CLOUD_RUN_GIB` prices against 32. The live `hexera-mesh` is at 16Gi, so the code has been sizing jobs against twice the memory that job has |
+
+NOTHING OF THE SHARED DEPLOYMENT IS TOUCHED, and that was checked rather than assumed: a tag in
+the same repository cannot reach a job that pins a digest, and `hexera-mesh` was read back
+afterwards still on `sha256:0c46c075...`.
+
+The image was verified before it was pushed - `cfmesh_conjugate` in `all_engine_names()`, the
+octree ceiling and the MPI flags importable, the solver case's blank token present - because an
+image whose only symptom is "unknown engine" is one nobody checks until a customer's job dies on
+it.
+
+### Two sentences about ports, both of them false at the time they were printed
+
+Driving the coupon through the console, one run said all three of these:
+
+    conjugate: meshing without named ports - the coolant reaches no opposite pair of block faces
+    conjugate: 2 mouth(s) already lie on a block face ... so they are CUT out of their faces
+    conjugate: 2 stub(s) added 0.0000 mm3; coolant_in and coolant_out are cut out of zmax
+    conjugate: the mesh has no named inlet or outlet: the coolant reaches no opposite pair ...
+
+The first and the last are the same claim, printed either side of the thing that disproves it. The
+first was logged inside the `except` around `plan_ports`, forty lines before the mouths are read -
+so it was written before the answer existed. It is now carried and said once, at the end, where
+`port_patches` is known, and it is not said at all when the ports were cut.
+
+### One flush mouth is not a flow path
+
+The first version of the flush-mouth rule cut a port out of any face the mouths reached when no
+opposite pair was there - including a part with ONE flush mouth. `port_rows` already says what is
+wrong with that ("a solve needs two"), and an inlet with no outlet is as unsolvable cut as uncut,
+so the cut was work and risk for nothing. The bar is BOTH_ENDS, and the row that caught it was an
+existing one: `test_a_mouth_already_flush_with_a_face_is_left_alone`.
+
+### The split does not overrule a wall
+
+The cooled-solid reading was set for every one-solid part whose coolant the split found, and
+`test_one_solid_keeps_the_reading_it_had` caught the pipe tee at once. A part the scout read as
+`pipe_wall` is metal AROUND a fluid and its ordinary case is the fluid alone; reading it as
+`solid-assembly` would impose a two-region case on the commonest internal-flow part there is. The
+stage already OFFERS the cooled-solid kind for it when mouths were found (`_kinds_on_offer`), which
+is the right strength for a part that could be either.
+
+`single_solid` - a solid body with coolant found inside it - is the cold plate, and that one is a
+conjugate case whatever else is true.
+
+### One seam, because the tests fake it
+
+Splitting `write_view_stl` into `view_shape` and `write_meshed_stl` split the seam four of the
+geometry check's own tests patch: they replace the drawing step with a box so the check can run on
+a file that is not really CAD, and with two functions to patch the real reader ran and refused the
+fake ("the file could not be read as CAD (geometry.step)"). `draw_view` is the one seam - the skin
+written and the meshed shape handed back - so a test that fakes drawing has one thing to fake.
+
+### 336,666,582 cells, split in two
+
+The Corintis plate at 22.00 um with its cells stretched 3x, eight ranks on mesh-bench, the whole
+chain through to the split:
+
+| | cells | points | faces |
+|---|---|---|---|
+| fluid | 66,764,096 | 80,080,797 | 213,315,900 |
+| solid | 269,902,486 | 286,222,005 | 826,279,918 |
+| total | **336,666,582** | | |
+
+Against 336,223,062 octree boxes, so BOXES_PER_CELL at 1.0 is right to 0.13% on a part at this
+size - the figure was fitted on a 99M-box run.
+
+THE INTERFACE IS 21,637,041 FACES ON EACH SIDE. Equal, as it has been on every part this engine
+has meshed, and that is the measurement the whole approach exists to produce. It holds at 336
+million.
+
+| stage | |
+|---|---|
+| preparePar | 8 processor directories |
+| cartesianMesh, 8 ranks | ExecutionTime 1744.7 s, ClockTime 2374 s, peak 212 GB of 251 |
+| reconstructParMesh | ~75 min, and most of it the per-rank addressing nothing reads (see above) |
+| topoSet | read the merged 42.6 GB `faces` file in ONE process and finished |
+| splitMeshRegions | ~78 min, 199 GB peak |
+
+TOPOSET AND THE SPLIT RAN SERIALLY ON 336 MILLION CELLS AND NEITHER OVERFLOWED, which was the open
+question behind "reconstructParMesh ... is the step to skip": the octree's twelve labels per box do
+not have an equivalent in the merged polyMesh, whose faces are written and read as a stream rather
+than indexed through one flat array. So reconstruct-then-serial is a real path at this size, and
+not only the parallel-all-the-way one.
+
+THE DISK IS THE LIMIT NOW, not the labels and not the memory. ASCII polyMesh at 336M cells is 71.6
+GB merged (`faces` alone is 42.6 GB) and the two regions are another 44 GB beside it. The eight
+processor copies were deleted by hand mid-run to keep the split's write from running out - which is
+what `build` does at that point anyway, and the reason it does.
+
+### Four fifths of it is air
+
+The solid region is 269,902,486 of those 336,666,582 cells: 80%. The block is the part's bounding
+box, 750,015 mm3, and the plate itself is 276,324 mm3 - so most of those cells are the air around a
+cold plate, meshed as metal, carrying its thermal mass into a conjugate solve.
+
+Measured at scale this is no longer an efficiency note. The same coolant resolution on the part's
+own fused skin is about 130 million cells rather than 336 million, which is the difference between
+a mesh that needs eight ranks and one that fits a single process.
+
+What stands in the way is not the mesher: cfMesh fills a closed surface, and the part's skin is one.
+It is that `plan_ports` names an inlet and an outlet from the BLOCK's six faces, and a part meshed
+to its own skin has none. The port CUTTER is the mechanism that does not need them - it narrows a
+face to a box round a mouth - and after this session's work every mouth on a real skin is flush with
+the boundary by construction, which is the case it now handles. So the two pieces exist; what is
+missing is the reading that says which patch a cut port is cut OUT of when there is no block.

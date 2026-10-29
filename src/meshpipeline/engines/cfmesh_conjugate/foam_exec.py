@@ -92,8 +92,68 @@ _FATAL = (("negative volume", "negative-volume cells"),
 CHECK_TIMEOUT_S = 7200.0
 
 
+#: The sets checkMesh collects a failing check's cells and faces into, and writes with
+#: `-writeSets`. Read off the utility's own strings rather than guessed at.
+POOR_SETS = (
+    "skewFaces", "nonOrthoFaces", "wrongOrientedFaces", "warpedFaces", "concaveFaces",
+    "lowWeightFaces", "lowVolRatioFaces", "lowQualityTetFaces", "edgeFaces", "multiZoneFaces",
+    "highAspectRatioCells", "underdeterminedCells", "concaveCells", "zipUpCells",
+    "twoInternalFacesCells", "multiZoneCells",
+)
+
+
+#: Where the poor-cell surfaces are KEPT, one folder per region. checkMesh writes them wherever
+#: `mergeAndWrite` puts them - under postProcessing, by the set's own name and nothing else - so
+#: the metal's run writes `skewFaces.vtk` over the coolant's. On a conjugate mesh that is the
+#: whole measurement lost: 27,932 of the first customer plate's 28,132 poor cells are in the metal
+#: and 200 are in the coolant, and one file called skewFaces cannot be both.
+POOR_DIR = "poor_cells"
+
+
+def collect_poor_sets(workspace, *, region: str = "") -> list[dict]:
+    """Move the poor-cell surfaces checkMesh just wrote under `POOR_DIR/<region>/`, and say what
+    they are: [{name, path, bytes}], the path relative to the workspace.
+
+    FOUND BY NAME rather than by path, because the path is OpenFOAM's to choose and has moved
+    between versions; the names are the utility's own and are what it calls the sets in its own
+    output. Moved rather than copied, so a later region's run cannot pick them up again.
+    """
+    ws = Path(workspace)
+    want = {n.lower() for n in POOR_SETS}
+    dest = ws / POOR_DIR / (region or "mesh")
+    out: list[dict] = []
+    for f in sorted([*ws.rglob("*.vtk"), *ws.rglob("*.vtp")]):
+        if f.stem.lower() not in want or POOR_DIR in f.parts:
+            continue
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+            landed = dest / f.name
+            f.replace(landed)
+            out.append({"name": f.stem, "path": str(landed.relative_to(ws)),
+                        "bytes": int(landed.stat().st_size)})
+        except OSError:
+            logger.warning("could not keep the poor-cell set %s", f.name, exc_info=True)
+    return out
+
+
+def poor_sets(workspace, *, region: str = "") -> list[dict]:
+    """What `collect_poor_sets` has kept for one region, or for every region when none is named."""
+    ws = Path(workspace)
+    root = ws / POOR_DIR / region if region else ws / POOR_DIR
+    if not root.is_dir():
+        return []
+    out = []
+    for f in sorted([*root.rglob("*.vtk"), *root.rglob("*.vtp")]):
+        try:
+            out.append({"name": f.stem, "path": str(f.relative_to(ws)),
+                        "bytes": int(f.stat().st_size)})
+        except OSError:
+            continue
+    return out
+
+
 def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
-               timeout_s: float = CHECK_TIMEOUT_S) -> dict:
+               timeout_s: float = CHECK_TIMEOUT_S, write_sets: bool = True) -> dict:
     ws = Path(workspace)
     # A measurement taken WHERE THE MESH WAS BUILT wins, because here it may be impossible:
     # on the Cloud Run path the mesh is built in a container that has checkMesh and read back
@@ -113,7 +173,19 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
         return {"mesh_ok": False, "fatal": [f"case dicts rejected: {reason}"],
                 "skew_faces": 0, "skew_fraction": 0.0}
     _reg = f" -region {region}" if region else ""
-    cmd = f"source {bashrc} >/dev/null 2>&1 && checkMesh -constant{_reg}"
+    # -writeSets: WHICH CELLS ARE POOR, not how many. Corintis asked for a "highlight of
+    # poor-quality cells" (2026-10-29) and the engine could only answer with a count - 28,132 on
+    # their plate, 27,932 of them in the metal - which says a customer has a problem without
+    # saying where. checkMesh has already collected those cells into sets by the time it prints
+    # the count; this is the flag that makes it write them out.
+    #
+    # IT COSTS NOTHING ON A GOOD MESH. The sets are the cells that FAILED a check, so a mesh that
+    # passes writes no files at all (measured on the 8-rank 6,100,416-cell build: "Mesh OK." and
+    # nothing written). On a bad one the set is small by definition - 28,132 cells out of 102.6
+    # million - so it is drawable at full resolution whatever the mesh's size, which a heatmap
+    # over the whole boundary is not.
+    sets = " -writeSets vtk" if write_sets else ""
+    cmd = f"source {bashrc} >/dev/null 2>&1 && checkMesh -constant{_reg}{sets}"
     # A MEASUREMENT THAT DID NOT FINISH IS NOT A BAD MESH. It used to raise out of here, which
     # discarded a mesh the mesher had already built - hours of work thrown away at the last step by
     # the step that was only ever supposed to describe it. Now it says so, and the manifest records
@@ -128,7 +200,14 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
                 "skew_faces": 0, "skew_fraction": 0.0, "unmeasured": True}
     raw = proc.stdout + proc.stderr
     _keep_checkmesh_output(ws, region, raw)
-    return parse_check_mesh(raw)
+    q = parse_check_mesh(raw)
+    if write_sets:
+        # RECORDED, not re-derived. The reading already carries the COUNT of poor cells; this is
+        # where they are, which is the half a customer can act on.
+        found = collect_poor_sets(ws, region=region)
+        if found:
+            q["poor_sets"] = found
+    return q
 
 
 #: What checkMesh said, kept verbatim beside the mesh it said it about.

@@ -47,6 +47,11 @@ OVERSHOOT = 0.5
 #: as good as on it and gets no stub: `open_faces` will have found it.
 ALREADY_THERE = 0.05
 
+#: A flow path needs a way in and a way out, so this many ports or none. Named here rather than
+#: imported from cad/fluid_volume_check, which has its own BOTH_ENDS for the same reason: this
+#: module is about triangles and block faces and does not read that one's facts.
+BOTH_ENDS = 2
+
 #: The six block faces, as the rest of this bundle names them, with the axis and sign of each.
 FACES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 _AXIS = {"xmin": (0, -1), "xmax": (0, 1), "ymin": (1, -1), "ymax": (1, 1),
@@ -67,9 +72,30 @@ class Stub:
     volume: float                   # metres^3 it adds to the coolant
 
     @property
+    def flush(self) -> bool:
+        """The mouth is already ON its block face, so there is nothing to extend - only a patch to
+        cut. Carried as a Stub of zero length because everything after this point wants the same
+        row either way: which face, where on it, how wide, which passage."""
+        return self.length <= 0.0
+
+    @property
     def reach(self) -> tuple:
         """Where the stub ends, past the block face."""
         return tuple(self.centroid[k] + self.normal[k] * self.length for k in range(3))
+
+    @property
+    def crossing(self) -> tuple:
+        """Where the stub crosses the block face, which is where its patch has to be cut.
+
+        NOT `reach`, which is deliberately PAST the face so the surface crosses it rather than
+        landing on it. A box centred on `reach` is centred outside the mesh and catches the face
+        only by its own half-width.
+        """
+        if self.flush:
+            return self.centroid     # it is on the face; pulling back by the overshoot would
+            #                          put the box a radius inside the mesh instead
+        d = self.length - OVERSHOOT * 2.0 * self.radius
+        return tuple(self.centroid[k] + self.normal[k] * d for k in range(3))
 
 
 def _unit(v) -> tuple:
@@ -96,14 +122,48 @@ def face_ahead(centroid, normal, block_lo, block_hi) -> tuple[str, float]:
     return best, best_t
 
 
+#: Which faces face each other. `plan_ports` names an inlet and an outlet from the block's own
+#: faces, and it needs an OPPOSITE PAIR to do it: that is what "a way for the coolant to flow from
+#: one side of the part to the other" means.
+OPPOSITE = {"xmin": "xmax", "xmax": "xmin", "ymin": "ymax", "ymax": "ymin",
+            "zmin": "zmax", "zmax": "zmin"}
+
+
+def nameable_by_faces(faces) -> bool:
+    """Whether a set of block faces holds an opposite pair - which is the whole of `plan_ports`'
+    test, written here so this module can tell the shape it must act on from the shape it must
+    leave alone."""
+    got = set(faces)
+    return any(OPPOSITE[f] in got for f in got)
+
+
 def stubs_for(ports: list, block_lo, block_hi) -> tuple[list, list]:
     """The stubs the mouths of `ports` need, and what to say about the ones that get none.
 
     `ports` is the surface record's own list (cad/fluid_volume.write_surface): each row carries
     where the mouth is, which way the fluid leaves through it, the area the flow crosses and
     whether anything lies straight ahead of it.
+
+    A MOUTH ALREADY ON A FACE GETS A STUB OF ZERO LENGTH, and only when its faces cannot be named
+    the ordinary way. The ordinary way is `renameBoundary` on an opposite pair of block faces, and
+    it is what eight of the nine parts in this package use, proven: a channel milled across a
+    plate ends flush with the side it was cut on, one mouth per side. Those are untouched here.
+
+    What is not untouched is the plate fed and drained through its LID. Both mouths are flush, so
+    neither needs extending; both are on zmax, so `renameBoundary` cannot give them different
+    names; and `plan_ports` refuses the part for "reaching no opposite pair of block faces" -
+    true of the block and nothing about the plumbing. Measured end to end on 2026-10-29, on the
+    ported two-scale plate driven through the console:
+
+        conjugate: meshing without named ports - the coolant reaches no opposite pair of block
+        faces ... It reaches zmax.
+
+    A mesh with no inlet and no outlet is not solvable, which is the whole reason the port CUTTER
+    exists - and the only way into it was through stubbing, so a mouth that needed no stub could
+    never reach it.
     """
     out: list = []
+    flush: list = []
     said: list = []
     for k, p in enumerate(ports):
         centroid = tuple(float(v) for v in p["centroid_m"])
@@ -123,11 +183,40 @@ def stubs_for(ports: list, block_lo, block_hi) -> tuple[list, list]:
             said.append(f"mouth {k + 1} at ({where}) mm points at no block face")
             continue
         if distance <= ALREADY_THERE * 2.0 * radius:
-            continue                        # flush already; open_faces will have found it
+            flush.append(Stub(port=k, passage=int(p.get("passage", 0)), face=face,
+                              centroid=centroid, normal=normal, radius=radius,
+                              length=0.0, volume=0.0))
+            continue
         length = distance + OVERSHOOT * 2.0 * radius
         out.append(Stub(port=k, passage=int(p.get("passage", 0)), face=face, centroid=centroid,
                         normal=normal, radius=radius, length=length,
                         volume=math.pi * radius * radius * length))
+    if flush:
+        reached = [st.face for st in (*out, *flush)]
+        # TWO OF THEM, OR NONE. A cut port is work and risk, and one mouth buys neither a flow
+        # path nor a name worth having: `port_rows` says "a solve needs two" and a lone inlet with
+        # no outlet is as unsolvable cut as it is uncut. The existing row for this is
+        # test_a_mouth_already_flush_with_a_face_is_left_alone, which caught the first version of
+        # this rule cutting a single flush mouth out of xmax for nothing.
+        if len(out) + len(flush) < BOTH_ENDS:
+            said.append(
+                f"{len(flush)} mouth(s) already lie on a block face, and one mouth is not a flow "
+                "path - so nothing is cut: a port needs a way in and a way out")
+        elif nameable_by_faces(reached):
+            said.append(
+                f"{len(flush)} mouth(s) already lie on a block face that can be renamed, so they "
+                "keep the block's own names rather than being cut out of it")
+        else:
+            # SAID FOR BOTH SHAPES IT COVERS. Two mouths on one face is the commonest - a plate
+            # fed and drained through its lid - and one on zmax with one on xmax is the same
+            # problem: a renamed face gives the WHOLE face one name, so neither arrangement can
+            # carry an inlet and an outlet the coolant flows between.
+            said.append(
+                f"{len(flush)} mouth(s) already lie on a block face, and the faces reached "
+                f"({', '.join(sorted(set(reached)))}) hold no opposite pair - so they are CUT out "
+                "of their faces instead of renaming them: a renamed face carries one name for the "
+                "whole face, and the coolant needs a way in and a way out")
+            out.extend(flush)
     return out, said
 
 
@@ -143,6 +232,15 @@ def _basis(normal) -> tuple:
 
 
 def stub_triangles(stub: Stub, sides: int = STUB_SIDES) -> list:
+    # A FLUSH MOUTH HAS NOTHING TO DRAW. It is already on the face; the row exists so the patch
+    # gets cut, and joining a zero-length tube onto the coolant would add a degenerate ring of
+    # triangles to a surface the mesher reads with surfaceToCell.
+    if stub.flush:
+        return []
+    return _stub_triangles(stub, sides)
+
+
+def _stub_triangles(stub: Stub, sides: int = STUB_SIDES) -> list:
     """The stub as triangles wound OUT of the fluid, ready to join the coolant surface.
 
     A tube, a far cap, AND A NEAR CAP WOUND THE OTHER WAY. The near cap is coincident with the
@@ -211,3 +309,48 @@ def extend(triangles: list, stubs: list) -> tuple[list, float]:
     for s in stubs:
         out.extend(stub_triangles(s))
     return out, sum(s.volume for s in stubs)
+
+
+def port_rows(stubs: list, *, inlet: str = "coolant_in",
+              outlet: str = "coolant_out") -> tuple[list, str]:
+    """The stubs as patches to cut, and what to say about which end is which.
+
+    WHY THIS IS NOT `plan_ports`. That one chooses an inlet and an outlet from the BLOCK FACES the
+    coolant reaches, which is the right question while one port lands on each face. These are cut
+    out of a face, so two of them can share one - and on the first customer assembly they do,
+    because both fittings point +x. `plan_ports` refuses that part for reaching no opposite pair,
+    which is true of its block and says nothing about its plumbing.
+
+    WHICH END IS COLD CANNOT BE INFERRED, and this does not pretend otherwise. Nothing in a pair
+    of bores says which one is fed; the order here is the order the mouths were measured in, said
+    out loud, exactly as `plan_ports` says it for the two-faces-not-opposite case. A declared pair
+    of names from intake overrides it.
+
+    Fewer than two stubs is not an error here: a part with one way in and no way out is refused by
+    the flowable gate with the numbers to show for it, which is a better place to say so than a
+    planner that has not meshed anything yet.
+    """
+    rows = []
+    for k, s in enumerate(stubs):
+        role, name = (("inlet", inlet) if k == 0 else
+                      ("outlet", outlet) if k == 1 else
+                      ("wall", f"mouth_{k + 1}"))
+        rows.append({"name": name, "type": role, "face": s.face,
+                     "centre_m": tuple(float(v) for v in s.crossing),
+                     "diameter_m": 2.0 * float(s.radius)})
+    if len(stubs) < 2:
+        return rows, (f"{len(stubs)} mouth(s) can be opened to a block face, and a solve needs "
+                      "two: one to be fed through and one to leave by")
+    said = (f"{inlet} and {outlet} are cut out of "
+            + (f"{stubs[0].face}" if stubs[0].face == stubs[1].face
+               else f"{stubs[0].face} and {stubs[1].face}")
+            + f", {2000.0 * stubs[0].radius:.3f} mm and {2000.0 * stubs[1].radius:.3f} mm across")
+    if stubs[0].face == stubs[1].face:
+        said += (". Both are on one face, which a renamed block face cannot express and is why "
+                 "they are cut rather than renamed")
+    if len(stubs) > 2:
+        said += (f". The other {len(stubs) - 2} mouth(s) are cut as walls: which of several is "
+                 "fed is not something the geometry says")
+    said += (f". The direction is a guess - {inlet} is the mouth measured first - so name them "
+             "at intake to fix it")
+    return rows, said

@@ -252,6 +252,63 @@ def refuse_for_octree(cells: int) -> str:
             f"skip. An Int64 build of OpenFOAM would lift it outright.{proven}")
 
 
+#: HOW WELL A RETURNED WORKSPACE COMPRESSES, as a share of the mesh's written size.
+#:
+#: ONE MEASUREMENT, and it is named as one. The coupon plate's conjugate mesh came home on
+#: 2026-10-29 at "about 570 MB compressed" with the volume export (725 MB on its own) already
+#: given up, against a `written_gib` estimate of about 11 GiB for that plan - so a little over a
+#: twentieth. Two ASCII polyMeshes are integers and short decimals, which is the most
+#: compressible thing a mesher produces, and `written_gib` is itself a deliberate over-estimate,
+#: so the two compound.
+#:
+#: BIASED TO NOT REFUSE, deliberately. The first version of this guessed a quarter, which prices
+#: the same mesh at 2.8 GiB and would have refused a part that came home fine. budget.py already
+#: records what that costs in the other direction - "Stacking a conservative estimate on a
+#: conservative ceiling refuses work twice for one reason" - and the asymmetry here is plain: a
+#: wasted run is an hour, a wrongly refused mesh is a part the customer cannot have. So this
+#: UNDER-states the archive, and what it still catches is the band this engine is for, where the
+#: answer is not close: at 336,666,582 cells the merged mesh alone is 71.6 GB on disk and no
+#: archive ceiling is going to carry it.
+#:
+#: It wants more points. Two more delivered conjugate meshes of different sizes would settle it.
+ARCHIVE_SHARE_OF_WRITTEN = 0.055
+
+
+def archive_gib(cells: int) -> float:
+    """What the returned workspace archive will be, in GiB, for a mesh of `cells`."""
+    return written_gib(cells) * ARCHIVE_SHARE_OF_WRITTEN
+
+
+def refuse_for_return(cells: int, *, cap_bytes: int) -> str:
+    """Why a mesh of `cells` cannot be SENT HOME, or "" when it can.
+
+    CHECKED BEFORE MESHING, because the alternative is what happened: the coupon plate meshed on
+    Cloud Run, split into two regions, built its review surface, and only then said
+
+        return scope: the workspace is still about 570 MB compressed, over the 512 MiB ceiling,
+        with nothing optional left to leave out
+
+    An hour of a customer's time and a Cloud Run execution to be told a number that was knowable
+    before the first cell. The ceiling is a setting (WORKSPACE_ARCHIVE_MAX_BYTES, a zip-bomb guard
+    on an untrusted archive) so the refusal names it: this is a configuration to raise, not a part
+    to redraw.
+
+    IT IS NOT A CEILING ON THIS ENGINE. A conjugate mesh is two ASCII polyMeshes and its archive
+    grows with the cell count without bound - at 336,666,582 cells the merged mesh alone is 71.6
+    GB on disk - so above some size the archive stops being the way a mesh travels at all. Saying
+    so here is the honest version of that; it is not a claim that the size is wrong.
+    """
+    want = archive_gib(cells)
+    cap = max(0, int(cap_bytes)) / 1024.0 ** 3
+    if cap <= 0.0 or want <= cap:
+        return ""
+    return (f"this mesh cannot be sent home: about {int(cells):,} cells is roughly {want:.1f} GiB "
+            f"of archive against a {cap:.1f} GiB ceiling. The mesh would build; it is the journey "
+            "back that does not fit. Raise WORKSPACE_ARCHIVE_MAX_BYTES (and "
+            "WORKSPACE_ARCHIVE_MAX_TOTAL_BYTES with it) for a deployment that means to carry "
+            "meshes this size.")
+
+
 def peak_gib(cells: int) -> float:
     """What the mesher will need at its peak, in GiB, for a mesh of `cells`."""
     return (PEAK_FIXED_BYTES + max(0, int(cells)) * PEAK_BYTES_PER_CELL) / (1024.0 ** 3)
@@ -610,6 +667,7 @@ def fits(estimate: int, limit: int) -> bool:
     return int(estimate) <= int(limit)
 
 
-__all__ = ["PEAK_BYTES_PER_CELL", "PEAK_FIXED_BYTES", "peak_gib", "written_gib", "DEPTH_AT_FITTED_SPAN", "DEPTH_PER_LEVEL", "band_depth", "span_of", "plan_two_scales", "two_scale_estimate", "FINE_ACROSS_FLOOR", "FINE_ACROSS_WANTED", "CELLS_ACROSS_BY_FIDELITY", "DEFAULT_FIDELITY", "ESTIMATE_MARGIN",
+__all__ = ["ARCHIVE_SHARE_OF_WRITTEN", "archive_gib", "refuse_for_return",
+           "PEAK_BYTES_PER_CELL", "PEAK_FIXED_BYTES", "peak_gib", "written_gib", "DEPTH_AT_FITTED_SPAN", "DEPTH_PER_LEVEL", "band_depth", "span_of", "plan_two_scales", "two_scale_estimate", "FINE_ACROSS_FLOOR", "FINE_ACROSS_WANTED", "CELLS_ACROSS_BY_FIDELITY", "DEFAULT_FIDELITY", "ESTIMATE_MARGIN",
            "LEVELS_LADDER", "band_estimate_cells", "plan_for_budget",
            "FLOOR_CELLS_ACROSS", "LEVELS", "cells_across_for", "estimate_cells", "fits"]

@@ -40,6 +40,20 @@ CAD_SUFFIXES = (*STEP_SUFFIXES, ".iges", ".igs", ".brep", ".brp")
 
 NOT_CAD = ("Several files are joined into one assembly only when each is a CAD solid (STEP, IGES or BREP): "
            "{name} is not. Upload it on its own, or export the whole assembly as one STEP file.")
+#: ...AND WHEN THE OTHER FILE IS A MODEL RATHER THAN A PART, which is a different thing to say.
+#: An ECXML is a thermal model - parts, materials, powers, fans - and joining it into an assembly
+#: is not what anyone wants done with it; neither is being told it "is not a CAD solid", which
+#: reads as a complaint about the file. The first real customer's input is exactly this pair: a
+#: STEP of the cold plate and a chip.ecxml beside it (Corintis, 2026-10-29).
+#:
+#: It says what to do today. Carrying the two together - the STEP meshed, the ECXML's powers and
+#: materials filling in the solver case's blanks - is the feature this refusal is standing in for,
+#: and promising it here would be a promise the upload route cannot keep.
+NOT_CAD_MODEL = (
+    "{name} is a thermal model (its parts, their materials and powers), not a part to join into "
+    "an assembly - so the two cannot be uploaded together yet. Upload the CAD on its own to mesh "
+    "the geometry, or the model on its own to mesh what it describes. Which one you want decides "
+    "which: the CAD gives you the plate's own faces, the model gives you every part in it.")
 TOO_MANY = ("An assembly upload takes at most {n} files. Export the assembly as one STEP file and upload that.")
 
 _SCHEMA = re.compile(rb"FILE_SCHEMA\s*\(\s*\(\s*'([^']*)'", re.IGNORECASE)
@@ -355,7 +369,7 @@ def combine(members: list[Member], dest: Path | str, *, guarded: bool = True) ->
     return combine_guarded(members, dest, timeout_s=join_timeout_s(members))
 
 
-__all__ = ["CAD_SUFFIXES", "JOIN_MEMORY_MB", "JOIN_S_PER_MB", "JOIN_TIMEOUT_CEILING_S", "JOIN_TIMEOUT_S", "MAX_FILES", "NOT_CAD", "TOO_HEAVY", "TOO_MANY",
+__all__ = ["CAD_SUFFIXES", "JOIN_MEMORY_MB", "JOIN_S_PER_MB", "JOIN_TIMEOUT_CEILING_S", "JOIN_TIMEOUT_S", "MAX_FILES", "NOT_CAD", "NOT_CAD_MODEL", "TOO_HEAVY", "TOO_MANY",
            "UNIT_UNKNOWN", "AssemblyFilesError", "Member", "can_join_as_text", "combine", "combine_guarded", "join_timeout_s",
            "join_occ", "join_text", "unit_plan"]
 

@@ -142,6 +142,42 @@ def fold(facts: dict, answer: dict) -> None:
         # six of the eleven cold plates yield their coolant this way, four exact to the CAD.
         notes.append(f"the space inside the part is {_litres(_volume_l(passages))}, open at "
                      f"{len(openings)} place{'s' if len(openings) != 1 else ''}")
+        # ...BUT A READING THAT CONTRADICTS IT IS NOT SERVED AS THE DEFAULT. Overruling nothing
+        # is about the OPENINGS and the input kind, which is what the pipe tee lost. The FLOW is
+        # a different question and the split has just answered it: it cut the coolant out of this
+        # solid and found it open at two or more places, which is a part the fluid goes THROUGH.
+        #
+        # WHAT IT COST TO LEAVE THIS ALONE, measured end to end on 2026-10-29. A cold plate's
+        # proposal came back with two openings named inlet and outlet, their diameters and their
+        # positions - and `flow: external`, because the scout reads a 24 x 16 x 3 mm plate as a
+        # box in a flow (flat_share 1.32, fill 0.64). Nothing asked the user about it:
+        # flow_question returns "" the moment there are two ports. Confirming what was drawn then
+        # produced "No openings: the fluid flows around the whole body" - the openings dropped by
+        # patches_from, which returns none for external flow - and the intake, correctly, refused
+        # to mesh a conjugate case on a geometry with no coolant in it. Two openings called inlet
+        # and outlet beside "the fluid flows around the whole body" is not a reading a user should
+        # be asked to notice is wrong.
+        #
+        # solid-assembly is the kind for it, and purposes.py says so in as many words: "ONE solid
+        # with coolant passages through it (a cold plate, a chip package, a heat-exchanger core),
+        # where the solid is the part uploaded and the fluid is the space found inside it".
+        #
+        # ...FOR A SOLID BODY, AND NOT FOR A WALL. A part the scout read as `pipe_wall` or
+        # `hollow_wall` is metal AROUND a fluid, and its ordinary case is the fluid alone -
+        # internal CFD, nothing conjugate about it. Reading a tee as solid-assembly would impose
+        # a two-region case on the commonest internal-flow part there is, and the stage already
+        # OFFERS the cooled-solid reading for it when mouths were found (`_kinds_on_offer`), which
+        # is the right strength for a part that could be either.
+        #
+        # `single_solid` is the cold plate: a solid body, with coolant found inside it. That one is
+        # a conjugate case whatever else is true, and it is the one that was being read as a car.
+        #
+        # The first version of this set both for every one-solid part and
+        # test_one_solid_keeps_the_reading_it_had caught the tee immediately.
+        if str(facts.get("body_kind") or "") == "single_solid":
+            facts["flow"] = "internal"
+            facts["input_kind"] = "solid-assembly"
+            facts.setdefault("confidence", {})["input_kind"] = 0.85
         return
     facts["openings"] = openings
     facts["openings_from"] = "fluid_volume"

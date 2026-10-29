@@ -364,6 +364,19 @@
   "roots": []
  },
  {
+  "context": "adapters/mesh_execution/gce_vm.py::_insert_failed::error#1|NotAPublisher|not-a-publisher|",
+  "path": "adapters/mesh_execution/gce_vm.py",
+  "qualname": "_insert_failed",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "adapters/model_capacity/redis.py::RedisCapacityController.acquire::error#1|NotAPublisher|not-a-publisher|",
   "path": "adapters/model_capacity/redis.py",
   "qualname": "RedisCapacityController.acquire",

@@ -144,6 +144,23 @@ def trigger_vm(*, input_uri: str, output_uri: str, engine: str, timeout: int, op
             raise SubmissionIndeterminate(
                 f"{engine}: the VM request failed in transport ({type(exc).__name__}); it may exist") from None
         if 200 <= resp.status_code < 300:
+            # THE 200 IS THE REQUEST BEING ACCEPTED, NOT THE VM EXISTING. instances.insert returns
+            # an Operation, and quota is evaluated inside it: a project with four free vCPU accepts
+            # the request for an eight-core VM with HTTP 200 and then fails the operation with
+            # QUOTA_EXCEEDED. Nothing here looked, so this logged "mesh runs on a n2-highmem-8 VM",
+            # returned a reference to an instance that was never created, and the run settled in
+            # to wait for a result object that nothing would ever write - until the whole job's
+            # timeout. Measured end to end on 2026-10-29: CPUS_ALL_REGIONS 28 used of 32, the
+            # operation failed at 06:45:27, and the job was still "running" twenty-five minutes
+            # later with no VM in the project and nothing said about why.
+            why = _insert_failed(resp, zone=zone)
+            if why:
+                last = why
+                if "QUOTA" in why.upper():
+                    # NOT A ZONE PROBLEM, so trying the next zone cannot help: the quota that
+                    # binds here is CPUS_ALL_REGIONS, which is one number for the project.
+                    break
+                continue
             ref = VmReference(f"projects/{provcfg.GCP_PROJECT_ID}/zones/{zone}/instances/{name}")
             logger.warning("mesh for %s runs on a %s VM in %s (%s, %s)", engine, machine, zone, name, RULE)
             return ref
@@ -157,6 +174,59 @@ def trigger_vm(*, input_uri: str, output_uri: str, engine: str, timeout: int, op
             continue
         break
     raise RuntimeError(f"no {machine} VM could be started ({last})")
+
+
+#: How long to watch the creation operation before believing the VM is coming. A rejection is
+#: immediate - quota is checked as the operation starts - and a real creation takes tens of
+#: seconds, so this is long enough to catch the first and short enough to cost nothing on the
+#: second. The run's own timeout is the backstop it always was.
+CONFIRM_S = 20.0
+#: ...checked this often. Three looks in twenty seconds.
+CONFIRM_EVERY_S = 7.0
+
+
+def _insert_failed(resp, *, zone: str) -> str:
+    """Why the accepted insert did NOT produce a VM ("" when it did, or when it is still coming).
+
+    Returns the reason as the API gave it, because "QUOTA_EXCEEDED" is the one word that tells a
+    reader to go and look at a quota rather than at the part.
+    """
+    import time
+
+    import requests as _rq
+
+    try:
+        op = resp.json()
+        op_name = str(op.get("name") or "")
+    except ValueError:
+        return ""
+    if not op_name:
+        return ""
+    url = (f"https://compute.googleapis.com/compute/v1/projects/{provcfg.GCP_PROJECT_ID}"
+           f"/zones/{zone}/operations/{op_name}")
+    from meshpipeline.adapters.mesh_execution.cloud_run_client import _access_token
+
+    deadline = time.monotonic() + CONFIRM_S
+    while True:
+        try:
+            got = _rq.get(url, headers={"Authorization": f"Bearer {_access_token()}"}, timeout=30)
+            if not (200 <= got.status_code < 300):
+                return ""              # cannot tell; the run's own timeout is the backstop
+            body = got.json()
+        except (_rq.exceptions.RequestException, ValueError):
+            return ""
+        errors = ((body.get("error") or {}).get("errors") or [])
+        if errors:
+            first = errors[0]
+            code = str(first.get("code") or "").strip()
+            msg = str(first.get("message") or "").strip()
+            logger.error("the VM creation operation failed in %s: %s %s", zone, code, msg)
+            return f"{code or 'operation failed'} in {zone}: {msg}"[:400]
+        if str(body.get("status") or "") == "DONE":
+            return ""                  # it exists
+        if time.monotonic() >= deadline:
+            return ""                  # still being made; that is the normal case
+        time.sleep(CONFIRM_EVERY_S)
 
 
 def delete_vm(ref: VmReference, *, why: str) -> bool:

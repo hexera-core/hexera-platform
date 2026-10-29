@@ -282,6 +282,14 @@ def quality_of(ws: Path, report: dict) -> dict:
     q["coolant_flowable"] = q["coolant_inlet_faces"] > 0 and q["coolant_outlet_faces"] > 0
     q["coolant_pieces_short"] = _pieces_short(q)
     q["resolution_short"] = _resolution_short(plan)
+    # WHERE THE POOR CELLS ARE. The count is already here per region; these are the surfaces
+    # checkMesh wrote them out as, which is the half a customer can open beside their mesh.
+    q["poor_cell_sets"] = [
+        {"region": str(r.get("name")), **dict(x)}
+        for r in rows for x in (r.get("poor_sets") or ())]
+    # NEAR-WALL RESOLUTION, reported on every run because it is asked for on every run. See
+    # NEAR_WALL_LAYERS for why the layer count is zero and what stands in its place.
+    q.update(_near_wall(plan))
     # WHETHER THE INTERIOR CAN BE CUT AT ALL. The engine declares a REGION inspection target, so
     # the review context tells the reviewer to call inspect_region - and the slices are published
     # only when a per-region volume was exported. Without one the reviewer is sent to a tool that
@@ -311,6 +319,43 @@ def _pieces_short(q: dict) -> list[str]:
     if want <= 0 or got == want:
         return []
     return [f"the coolant came out as {got} piece(s) where the part's geometry has {want}"]
+
+
+#: HOW MANY PRISM LAYERS A CONJUGATE MESH HAS, and the number is not a shortfall to be fixed.
+#:
+#: Corintis asked for "number of boundary layers in the fluid" (2026-10-29), and the answer for
+#: this engine is none, BY CONSTRUCTION. A conjugate interface is conformal because both regions
+#: are made of the same cells from the same octree: every face on the coolant side is the same
+#: face on the metal side. An extruded prism layer is a new cell inserted on ONE side of a patch,
+#: so a layer stack on `fluid_to_solid` would leave every one of its faces without a partner -
+#: which is the single property the whole split-after-meshing approach exists to guarantee.
+#:
+#: cfMesh could not do it here anyway: `boundaryLayers.patchBoundaryLayers` names PATCHES, and at
+#: meshing time the coolant's wall is not a patch - it is interior to one manifold block, and the
+#: patch is created by `splitMeshRegions` afterwards. `generateBoundaryLayers -region fluid` would
+#: run on the delivered mesh and is exactly the thing that must not be run on it.
+#:
+#: WHAT THE MESH HAS INSTEAD is graded octree refinement toward the wall, which gives matched
+#: cells on both sides and is therefore the conformal equivalent: the cell at the wall is the
+#: background halved once per level. Those are the numbers below, and they are what a reader
+#: asking about near-wall resolution actually needs.
+NEAR_WALL_LAYERS = 0
+
+
+def _near_wall(plan: dict) -> dict:
+    """The near-wall resolution: how fine the cell at the coolant's wall is, and over how many
+    graded levels it got there. Read off the plan, which is where the sizing was decided."""
+    bg = float(plan.get("background_cell_m") or 0.0)
+    levels = int(plan.get("levels") or 0)
+    # THE FINE SURFACES ARE WHERE THE WALL ACTUALLY IS on a two-scale part: the thin passages get
+    # more levels than the coolant as a whole, so the coolant's own level count understates the
+    # resolution at the only wall that was hard to resolve. The deepest wins.
+    for surf in plan.get("fine_surfaces") or ():
+        levels = max(levels, int((surf or {}).get("levels") or 0))
+    out: dict = {"near_wall_layers": NEAR_WALL_LAYERS, "near_wall_levels": levels}
+    if bg > 0.0 and levels >= 0:
+        out["near_wall_cell_m"] = bg / 2 ** levels
+    return out
 
 
 def _resolution_short(plan: dict) -> list[str]:

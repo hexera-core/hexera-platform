@@ -345,8 +345,10 @@ def test_the_scout_stores_each_pictures_camera_the_six_way_picture_and_the_shape
 
     def _skin(path, dest, *, prepared, shape=None):
         write_stl_binary(Path(dest), _box_triangles((0, 0, 0), (1, 1, 1)))
-        return Path(dest)
-    monkeypatch.setattr(scout_mod, "write_view_stl", _skin)
+    # draw_view returns (the skin's path, the meshed shape). The shape is only used to
+    # draw the file's solids as separate named parts, which a one-solid fake has none of.
+        return Path(dest), None
+    monkeypatch.setattr(scout_mod, "draw_view", _skin)
 
     def _pictures(skin, openings, out):
         Path(out).mkdir(parents=True, exist_ok=True)
