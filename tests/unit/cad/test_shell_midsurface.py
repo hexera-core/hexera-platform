@@ -215,6 +215,17 @@ def test_a_plate_with_a_thick_boss_is_mixed_and_its_links_to_the_boss_are_named(
     assert sewn["solid_link_edges"] == 4 and sewn["open_edges"] == 0
 
 
+def test_a_long_rod_under_a_plate_is_a_solid_region_not_a_blend():
+    # round with radius 8 under a 5 mm plate (under two walls), but 250 mm long: no fillet strip
+    rec, _ = ms.extract(sf.plate_with_rod(), mm_per_unit=1.0)
+    (body,) = rec["bodies"]
+    assert body["verdict"] == "mixed"
+    rod = next(f for f in rec["faces"] if f["kind"] == "cylinder")
+    assert rod["role"] in (sp.SOLID, sp.THICK)
+    sewn = _sewn(rec)
+    assert sewn["open_edges"] == 0 and sewn["solid_link_edges"] >= 1
+
+
 def test_an_assembly_names_its_faces_by_part_and_shells_each_body():
     rec, _ = ms.extract(sf.two_plates_assembly(3.0), mm_per_unit=1.0)
     assert [(b["body"], b["verdict"]) for b in rec["bodies"]] == [("Part_1", "shell"), ("Part_2", "shell")]

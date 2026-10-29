@@ -53,6 +53,10 @@ SHELL_WIDTH_RATIO = 0.25
 #: blend is bridged when the mid-faces are extended to meet.
 RIM_FACTOR = 1.5
 BLEND_FACTOR = 2.0
+#: ... and a round blend is a STRIP: its own width (2 x area / perimeter, the arc it turns through) is at most
+#: half a turn of that largest radius. A 250 mm long 16 mm rod hung under a 5 mm plate is round with radius 8,
+#: but it is no fillet: it is a solid region
+BLEND_ARC = math.pi * BLEND_FACTOR
 
 #: the roles a face can have
 PAIRED, THICK, RIM, BLEND, SOLID = "paired", "thick", "rim", "blend", "solid"
@@ -211,10 +215,13 @@ def sheets(pairs: list[Pair], neighbours: list[set[int]], body_of: list[int]) ->
 
 
 def face_roles(names: list[str], pairs: list[Pair], *, kinds: list[str], widths: list[float],
-               radii: list[float | None], neighbours: list[set[int]]) -> list[dict]:
+               radii: list[float | None], neighbours: list[set[int]],
+               arcs: list[float] | None = None) -> list[dict]:
     """Each face's role (SHELL-2): PAIRED (a side of a shell wall), THICK (a side only of walls too thick to
     be a shell), RIM, BLEND or SOLID - with the pairs it is in and, for a rim or a blend, the shell wall that
-    takes it up. `widths`: each face's own in-plane width (mm); `radii`: its radius when it is round."""
+    takes it up. `widths`: each face's own in-plane width (mm); `radii`: its radius when it is round; `arcs`:
+    its developed width (2 x area / perimeter, mm, not capped by its box: a rod reads its length)."""
+    arcs = arcs if arcs is not None else widths
     shell_t: dict[int, float] = {}
     in_pairs: dict[int, list[int]] = {}
     for i, p in enumerate(pairs):
@@ -233,7 +240,8 @@ def face_roles(names: list[str], pairs: list[Pair], *, kinds: list[str], widths:
             r = radii[k]
             if t is not None and kinds[k] == "plane" and widths[k] <= RIM_FACTOR * t:
                 row["role"] = RIM
-            elif t is not None and r is not None and r <= BLEND_FACTOR * t and kinds[k] != "plane":
+            elif (t is not None and r is not None and r <= BLEND_FACTOR * t and kinds[k] != "plane"
+                  and arcs[k] <= BLEND_ARC * t):
                 row["role"] = BLEND
             elif t is not None and widths[k] <= RIM_FACTOR * t:
                 row["role"] = RIM          # a round rim: a hole's bore through a plate, a rounded plate edge

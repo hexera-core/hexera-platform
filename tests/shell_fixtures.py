@@ -110,6 +110,12 @@ def plate_with_boss(t: float = 4.0):
     return _fuse(_box(0, 0, 0, 200, 100, t), _box(85, 35, t, 30, 30, 30))
 
 
+def plate_with_rod(t: float = 5.0, r: float = 8.0, length: float = 250.0):
+    """A 200 x 100 x `t` plate with a solid round rod (radius `r`, `length` long) hung under its middle: the rod
+    is round with a radius under two walls, yet no fillet - a solid region the plate is tied to."""
+    return _fuse(_box(0, 0, 0, 200, 100, t), _cyl(100, 50, -length, r, length))
+
+
 def two_plates_assembly(t: float = 3.0):
     """Two separate plates in one file (two bodies): 100 x 100 x `t` at z 0 and a 100 x 50 x `t` one at
     z 20 above it."""

@@ -1614,14 +1614,17 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
             pairs[i].sheet, pairs[i].size, pairs[i].width, pairs[i].shell = s_i, size, width, shell
 
     # SHELL-2: every face's role
-    widths, radii = [], []
+    widths, radii, arcs = [], [], []
     for k, f in enumerate(faces):
         try:
             widths.append(strip_width(f) * mm)
         except Exception:  # noqa: BLE001
             widths.append(float("inf"))
+        per = _length(f)
+        arcs.append(2.0 * _area(f) / per * mm if per > 0 else float("inf"))
         radii.append(None if kinds[k] == "plane" else fm.face_radius(f, mm))
-    roles = sp.face_roles(names, pairs, kinds=kinds, widths=widths, radii=radii, neighbours=neighbours)
+    roles = sp.face_roles(names, pairs, kinds=kinds, widths=widths, radii=radii, neighbours=neighbours,
+                          arcs=arcs)
     for k, row in enumerate(roles):
         row["body"] = body_names[body_of[k]] if body_of[k] >= 0 else None
 
