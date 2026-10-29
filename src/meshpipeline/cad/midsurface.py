@@ -255,6 +255,29 @@ def _free_form() -> tuple:
 FREE_FORM = _free_form()
 
 
+#: one surface analyser per face, kept: building one reads the whole surface (a B-spline hull's: 5 ms), and the
+#: same faces are asked about thousands of times (the extension and the edge census)
+_ANALYSERS: dict[int, tuple] = {}
+ANALYSERS_KEPT = 4096
+
+
+def _analyser(face):
+    """The face's surface (as BRep_Tool gives it, placed) and its ShapeAnalysis_Surface, built once per face."""
+    from OCP.BRep import BRep_Tool
+    from OCP.ShapeAnalysis import ShapeAnalysis_Surface
+
+    key = hash(face)
+    got = _ANALYSERS.get(key)
+    if got is not None and got[0].IsSame(face):
+        return got[1], got[2]
+    if len(_ANALYSERS) >= ANALYSERS_KEPT:
+        _ANALYSERS.clear()
+    surf = BRep_Tool.Surface_s(face)
+    sa = ShapeAnalysis_Surface(surf)
+    _ANALYSERS[key] = (face, surf, sa)
+    return surf, sa
+
+
 def _in_face(face, p, tol) -> bool:
     """Does point p (on or near the face's surface) lie inside the face, `tol` (its own units) clear of its edges?
     OCC's face classifier reads its tolerance in the surface's PARAMETERS. On the analytic surfaces those are
@@ -265,14 +288,13 @@ def _in_face(face, p, tol) -> bool:
     from OCP.BRep import BRep_Tool
     from OCP.BRepClass import BRepClass_FaceClassifier
     from OCP.gp import gp_Pnt, gp_Vec
-    from OCP.ShapeAnalysis import ShapeAnalysis_Surface
     from OCP.TopAbs import TopAbs_IN
 
     q = gp_Pnt(*map(float, p))
     surf = BRep_Tool.Surface_s(face)
     if isinstance(surf, FREE_FORM):
         try:
-            sa = ShapeAnalysis_Surface(surf)
+            surf, sa = _analyser(face)
             uv = _in_range(face, surf, sa.ValueOfUV(q, float(tol)))
             if sa.Gap() > max(tol, IN_FACE_GAP):
                 return False                # off the surface: not in the face (as OCC's own classifier says)
@@ -288,28 +310,164 @@ def _in_face(face, p, tol) -> bool:
     return BRepClass_FaceClassifier(face, q, tol).State() == TopAbs_IN
 
 
-class _Solid:
-    """Is a point inside a body (or on its skin)?"""
+#: THE QUICK INSIDE TEST: OpenCASCADE's solid classifier reads every face of the body for every point (47 ms a point,
+#: 1,300 s of one 26-minute wave-energy float). So a point clear of the body's skin is told by its own closed
+#: triangulation instead - a copy of the body meshed within QUICK_DEFLECTION of the thinnest wall, three rays
+#: from the point counting the triangles they cross (odd: inside), all three agreeing. "Clear" is farther than
+#: QUICK_CLEAR deflections plus twice the tolerance from every triangle: the true skin lies within the deflection of
+#: its triangles, so no skin passes between the point and where the triangles say. A point nearer the skin, rays
+#: that disagree, a body whose triangulation is not closed: the exact classifier, as before. The same answer, read
+#: faster.
+QUICK_DEFLECTION = 0.005
+QUICK_CLEAR = 4.0
+QUICK_ANGLE = 0.35
+#: the three ray directions (fixed, off every axis and diagonal: a ray along a mesh edge or a face plane is rare)
+QUICK_RAYS = ((0.5376, 0.6232, 0.5679), (-0.7081, 0.2214, 0.6705), (0.1523, -0.8734, 0.4625))
 
-    def __init__(self, solid, tol: float):
+
+class _QuickInside:
+    """A closed triangulation of a copy of the body and a cell locator on it; `state(p)` is True (inside), False
+    (outside) or None (not clear of the skin, or the rays disagree: ask the exact classifier)."""
+
+    def __init__(self, solid, deflection: float, tol: float):
+        from OCP.BRep import BRep_Tool
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+        from OCP.BRepMesh import BRepMesh_IncrementalMesh
+        from OCP.TopLoc import TopLoc_Location
+        from vtkmodules.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray
+        from vtkmodules.vtkCommonCore import vtkPoints
+        from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData, vtkStaticCellLocator
+        from vtkmodules.vtkFiltersFlowPaths import vtkModifiedBSPTree
+
+        self.ok = False
+        copy = BRepBuilderAPI_Copy(solid, True, False).Shape()     # the body's own faces keep their meshes
+        BRepMesh_IncrementalMesh(copy, float(deflection), False, QUICK_ANGLE, False)
+        xyz, tris, base = [], [], 0
+        for f in _faces(copy):
+            loc = TopLoc_Location()
+            tri = BRep_Tool.Triangulation_s(f, loc)
+            if tri is None or tri.NbTriangles() == 0:
+                return                                              # a face with no mesh: no quick test
+            tr = loc.Transformation()
+            for k in range(1, tri.NbNodes() + 1):
+                q = tri.Node(k).Transformed(tr)
+                xyz.append((q.X(), q.Y(), q.Z()))
+            for k in range(1, tri.NbTriangles() + 1):
+                a, b, c = tri.Triangle(k).Get()
+                tris.append((base + a - 1, base + b - 1, base + c - 1))
+            base += tri.NbNodes()
+        pts_np = np.asarray(xyz, dtype=float)
+        tri_np = np.asarray(tris, dtype=np.int64)
+        # closed: every triangle edge is shared by an even number of triangles once the faces' copies of their shared
+        # edge nodes are welded (they are the same points of the same edge)
+        def closed(keys) -> bool:
+            _, weld = np.unique(keys, axis=0, return_inverse=True)
+            w = weld.ravel()[tri_np]
+            edges = np.sort(np.concatenate([w[:, [0, 1]], w[:, [1, 2]], w[:, [2, 0]]]), axis=1)
+            edges = edges[edges[:, 0] != edges[:, 1]]
+            _, counts = np.unique(edges, axis=0, return_counts=True)
+            return len(counts) > 0 and not np.any(counts % 2)
+
+        if not (closed(pts_np) or closed(np.round(pts_np / max(tol, 1e-12)))):
+            return
+        pts = vtkPoints()
+        pts.SetData(numpy_to_vtk(np.ascontiguousarray(pts_np), deep=True))
+        cells = vtkCellArray()
+        offsets = np.arange(0, 3 * len(tri_np) + 1, 3, dtype=np.int64)
+        cells.SetData(numpy_to_vtkIdTypeArray(offsets, deep=True),
+                      numpy_to_vtkIdTypeArray(np.ascontiguousarray(tri_np.ravel()), deep=True))
+        pd = vtkPolyData()
+        pd.SetPoints(pts)
+        pd.SetPolys(cells)
+        self.loc = vtkStaticCellLocator()           # the nearest triangle
+        self.loc.SetDataSet(pd)
+        self.loc.BuildLocator()
+        self.rays = vtkModifiedBSPTree()            # every triangle a ray crosses (the static locator missed some)
+        self.rays.SetDataSet(pd)
+        self.rays.BuildLocator()
+        self.pd = pd
+        lo, hi = pts_np.min(axis=0), pts_np.max(axis=0)
+        self.reach = 2.0 * float(np.linalg.norm(hi - lo)) + 1.0
+        self.clear = QUICK_CLEAR * float(deflection) + 2.0 * tol
+        self.ok = True
+
+    def state(self, p) -> bool | None:
+        from vtkmodules.vtkCommonCore import mutable, vtkIdList, vtkPoints
+        from vtkmodules.vtkCommonDataModel import vtkGenericCell
+
+        if not self.ok:
+            return None
+        x = [float(p[0]), float(p[1]), float(p[2])]
+        closest = [0.0, 0.0, 0.0]
+        cid, sub, d2 = mutable(0), mutable(0), mutable(0.0)
+        self.loc.FindClosestPoint(x, closest, vtkGenericCell(), cid, sub, d2)
+        if float(d2) <= self.clear * self.clear:
+            return None
+        votes = []
+        for d in QUICK_RAYS:
+            end = [x[i] + self.reach * d[i] for i in range(3)]
+            hit_pts, hit_ids = vtkPoints(), vtkIdList()
+            self.rays.IntersectWithLine(x, end, 0.0, hit_pts, hit_ids)
+            votes.append(hit_ids.GetNumberOfIds() % 2 == 1)
+        return votes[0] if votes[0] == votes[1] == votes[2] else None
+
+
+class _Solid:
+    """Is a point inside a body (or on its skin)? A point outside the body's box is outside without the classifier,
+    a point clear of the skin is told by the body's triangulation (_QuickInside), and every point's state is kept:
+    the joins and the edge census ask about the same points again and again."""
+
+    def __init__(self, solid, tol: float, wall: float | None = None):
         from OCP.BRepClass3d import BRepClass3d_SolidClassifier
 
         self.c = BRepClass3d_SolidClassifier(solid)
         self.tol = tol
+        self.quick = None
+        if wall is not None and wall > 0:
+            try:
+                self.quick = _QuickInside(solid, QUICK_DEFLECTION * wall, tol)
+            except Exception as exc:  # noqa: BLE001 - the exact classifier alone
+                logger.debug("shell: no quick inside test for a body (%s)", exc)
+                self.quick = None
+        from OCP.Bnd import Bnd_Box
+        from OCP.BRepBndLib import BRepBndLib
+
+        b = Bnd_Box()
+        BRepBndLib.Add_s(solid, b, False)       # the exact geometry, not a mesh inside a curved face
+        x0, y0, z0, x1, y1, z1 = b.Get()
+        self.lo = np.array([x0, y0, z0]) - 2.0 * tol
+        self.hi = np.array([x1, y1, z1]) + 2.0 * tol
+        self.states: dict[tuple[float, float, float], int] = {}
+
+    def _state(self, p):
+        from OCP.gp import gp_Pnt
+        from OCP.TopAbs import TopAbs_OUT
+
+        key = (float(p[0]), float(p[1]), float(p[2]))
+        st = self.states.get(key)
+        if st is None:
+            from OCP.TopAbs import TopAbs_IN
+
+            quick = None
+            if any(key[i] < self.lo[i] or key[i] > self.hi[i] for i in range(3)):
+                st = TopAbs_OUT
+            elif self.quick is not None and (quick := self.quick.state(key)) is not None:
+                st = TopAbs_IN if quick else TopAbs_OUT
+            else:
+                self.c.Perform(gp_Pnt(*key), self.tol)
+                st = self.c.State()
+            self.states[key] = st
+        return st
 
     def inside(self, p) -> bool:
-        from OCP.gp import gp_Pnt
         from OCP.TopAbs import TopAbs_IN, TopAbs_ON
 
-        self.c.Perform(gp_Pnt(*map(float, p)), self.tol)
-        return self.c.State() in (TopAbs_IN, TopAbs_ON)
+        return self._state(p) in (TopAbs_IN, TopAbs_ON)
 
     def strictly_inside(self, p) -> bool:
-        from OCP.gp import gp_Pnt
         from OCP.TopAbs import TopAbs_IN
 
-        self.c.Perform(gp_Pnt(*map(float, p)), self.tol)
-        return self.c.State() == TopAbs_IN
+        return self._state(p) == TopAbs_IN
 
 
 # ------------------------------------------------------------------------------------ mid-faces ----
@@ -345,15 +503,50 @@ def overlap(a, b, fuzzy: float) -> list:
     return [f for f in _faces(c.Shape()) if _area(f) > 0]
 
 
+def _centre_point(face):
+    """The point at the middle of the face's parameter box when it lies inside the face, else None."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Pnt2d
+    from OCP.TopAbs import TopAbs_IN
+
+    u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
+    u, v = 0.5 * (u0 + u1), 0.5 * (v0 + v1)
+    if not all(math.isfinite(x) for x in (u, v)):
+        return None
+    if BRepClass_FaceClassifier(face, gp_Pnt2d(u, v), 1e-9).State() != TopAbs_IN:
+        return None
+    q = BRepAdaptor_Surface(face, False).Value(u, v)
+    return np.array([q.X(), q.Y(), q.Z()])
+
+
+def _centre_gap(shape, other) -> float | None:
+    """How far the middle of an offset face lies from `other` (a point to a face), or None when its middle is not
+    inside it."""
+    try:
+        q = _centre_point(_faces(shape)[0])
+    except Exception:  # noqa: BLE001 - no quick reading
+        return None
+    return None if q is None else _dist(_vertex(q), other)
+
+
 def toward(face, other, half: float):
     """The face offset `half` toward `other` (its wall partner): the inward offset, checked by distance - the
     simple offset follows the surface's own normal, which is not the face's outward side on every surface (a
-    revolved cone's), so the side that lands half the wall from `other` is taken."""
+    revolved cone's), so the side that lands half the wall from `other` is taken. Read first from the offset's
+    middle (a point to a face): when that lies half the wall from `other`, it is the side. Else face to face, the
+    nearer of the two sides (the face to face distance ran 90 s on one offset B-spline pair of a plywood hull, and
+    the middle alone misreads a small bend whose partner lies to one side)."""
     first = half_offset(face, half)
-    if abs(_dist(first, other) - half) <= 0.05 * half:
+    quick = _centre_gap(first, other)
+    if quick is not None and abs(quick - half) <= 0.05 * half:
+        return first
+    d1 = _dist(first, other)
+    if abs(d1 - half) <= 0.05 * half:
         return first
     second = half_offset(face, -half)
-    return second if abs(_dist(second, other) - half) < abs(_dist(first, other) - half) else first
+    return second if abs(_dist(second, other) - half) < abs(d1 - half) else first
 
 
 def mid_faces(fa, fb, t: float, fuzzy: float) -> list:
@@ -373,8 +566,56 @@ class _Mid:
         self.original = face
         self.true_face = face            # where the mid-face really lies (the checks read this one)
         self.offset = 0.0                # how far it was moved onto a thicker neighbour's mid-plane (SHELL-7)
+        self.remade = False              # an offset surface re-made as a B-spline before the join (remade_offset)
         self.box = _box(face)            # the original face's box, its own units
         self.face_box = self.box         # the (extended) face's
+
+
+#: AN OFFSET MID-FACE IS RE-MADE AS A B-SPLINE before it is joined (OpenCASCADE's ShapeCustom, offset surfaces
+#: only): the same face, every point read on it within OFFSET_REMAKE_SHARE of the wall of where it was, else it
+#: stays an offset. The general fuse of the offset of an extruded B-spline with a plane ran for over 40 minutes (a
+#: fan housing), the same B-spline in 0.01 s. The checks still read the offset itself (true_face).
+OFFSET_REMAKE_SHARE = 1e-4
+OFFSET_REMAKE_SAMPLES = 3
+
+
+def remade_offset(face, tol: float):
+    """The face, its offset surface re-made as a B-spline, when every point read on it lies within `tol` (its own
+    units) of the face; None for any other surface, or when it cannot be re-made that close."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.Geom import Geom_BSplineSurface, Geom_OffsetSurface
+    from OCP.gp import gp_Pnt2d
+    from OCP.ShapeCustom import ShapeCustom
+    from OCP.TopAbs import TopAbs_IN
+
+    if not isinstance(BRep_Tool.Surface_s(face), Geom_OffsetSurface):
+        return None
+    try:
+        out = _faces(ShapeCustom.ConvertToBSpline_s(face, False, False, True, False))
+        if len(out) != 1 or not isinstance(BRep_Tool.Surface_s(out[0]), Geom_BSplineSurface):
+            return None
+        g = out[0]
+        a = BRepAdaptor_Surface(g, True)
+        u0, u1, v0, v1 = a.FirstUParameter(), a.LastUParameter(), a.FirstVParameter(), a.LastVParameter()
+        k = OFFSET_REMAKE_SAMPLES
+        read = 0
+        for i in range(k):
+            for j in range(k):
+                u, v = u0 + (u1 - u0) * (i + 0.5) / k, v0 + (v1 - v0) * (j + 0.5) / k
+                if BRepClass_FaceClassifier(g, gp_Pnt2d(u, v), 1e-9).State() != TopAbs_IN:
+                    continue
+                q = a.Value(u, v)
+                if _dist(_vertex((q.X(), q.Y(), q.Z())), face) > tol:
+                    return None
+                read += 1
+        if read == 0 or abs(_area(g) - _area(face)) > 1e-6 * max(_area(face), 1e-300):
+            return None
+        return g
+    except Exception as exc:  # noqa: BLE001 - the offset stays
+        logger.debug("shell: an offset mid-face could not be re-made as a B-spline (%s)", exc)
+        return None
 
 
 def _box(shape) -> tuple[np.ndarray, np.ndarray]:
@@ -622,8 +863,36 @@ def extend(m: _Mid, mids: list[_Mid], solid: _Solid, fuzzy: float) -> None:
 
 
 # ------------------------------------------------------------------------------------------ sew ----
-def sew(faces: list, fuzzy: float):
-    """The general fuse of the faces (one thread): (the fused shape, for each input the faces it became)."""
+def touching_groups(boxes: list, reach: float) -> list[list[int]]:
+    """The faces in groups that can touch: two faces whose boxes, each grown by `reach`, overlap are in one
+    group (and so on, transitively). Faces in different groups are apart by more than `reach` - no fuse can
+    join them. Each group in index order, the groups by their first index: deterministic."""
+    n = len(boxes)
+    if n == 0:
+        return []
+    lo = np.array([b[0] for b in boxes]) - reach
+    hi = np.array([b[1] for b in boxes]) + reach
+    parent = list(range(n))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(n):
+        touch = np.nonzero(np.all(lo[i + 1:] <= hi[i], axis=1) & np.all(hi[i + 1:] >= lo[i], axis=1))[0] + i + 1
+        for j in touch.tolist():
+            a, b = root(i), root(j)
+            if a != b:
+                parent[max(a, b)] = min(a, b)
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(root(i), []).append(i)
+    return [groups[k] for k in sorted(groups)]
+
+
+def _fuse(faces: list, fuzzy: float):
     from OCP.BOPAlgo import BOPAlgo_Builder
 
     b = BOPAlgo_Builder()
@@ -635,12 +904,33 @@ def sew(faces: list, fuzzy: float):
     b.Perform()
     if b.HasErrors():
         raise ValueError("the mid-faces could not be sewn")
-    out = b.Shape()
     images = []
     for f in faces:
         mod = list(b.Modified(f))
         images.append(mod if mod else ([] if b.IsDeleted(f) else [f]))
-    return out, images
+    return b.Shape(), images
+
+
+def sew(faces: list, fuzzy: float):
+    """The general fuse of the faces (one thread): (the fused shape, for each input the faces it became). Faces
+    that cannot touch (touching_groups) are fused apart, group by group, and the results put in one compound: the
+    same surface, without one fuse over every face of a large part at once (a fan housing's 400 mid-faces stalled
+    a single fuse for over 40 minutes)."""
+    groups = touching_groups([_box(f) for f in faces], 2.0 * fuzzy)
+    if len(groups) <= 1:
+        return _fuse(faces, fuzzy)
+    images: list = [None] * len(faces)
+    parts = []
+    for g in groups:
+        if len(g) == 1:
+            parts.append(faces[g[0]])
+            images[g[0]] = [faces[g[0]]]
+            continue
+        out, imgs = _fuse([faces[i] for i in g], fuzzy)
+        parts.append(out)
+        for i, im in zip(g, imgs, strict=True):
+            images[i] = im
+    return _compound(parts), images
 
 
 def _edge_mid(edge):
@@ -653,13 +943,11 @@ def _edge_mid(edge):
 
 
 def _face_normal_at(face, p):
-    from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepLProp import BRepLProp_SLProps
     from OCP.gp import gp_Pnt
-    from OCP.ShapeAnalysis import ShapeAnalysis_Surface
 
-    uv = ShapeAnalysis_Surface(BRep_Tool.Surface_s(face)).ValueOfUV(gp_Pnt(*map(float, p)), 1e-9)
+    uv = _analyser(face)[1].ValueOfUV(gp_Pnt(*map(float, p)), 1e-9)
     pr = BRepLProp_SLProps(BRepAdaptor_Surface(face), uv.X(), uv.Y(), 1, 1e-9)
     if not pr.IsNormalDefined():
         return None
@@ -824,6 +1112,16 @@ def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thi
         ks = {fmap.FindIndex(f) for f in e2f.FindFromIndex(i)} - {0}
         for k in ks:
             adjacency.setdefault(k, set()).update(ks - {k})
+    # each face's connected surface, read once (one set shared by every face in it)
+    component: dict[int, set[int]] = {}
+
+    def reach_of(k: int) -> set[int]:
+        if k not in component:
+            comp = _sewn_reach(k, adjacency)
+            for j in comp:
+                component[j] = comp
+        return component[k]
+
     for i in range(1, e2f.Extent() + 1):
         e = TopoDS.Edge_s(e2f.FindKey(i))
         if BRep_Tool.Degenerated_s(e):
@@ -852,8 +1150,7 @@ def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thi
         q = p + d * OPEN_STEP * t
         if not solid.strictly_inside(q) or not all(solid.strictly_inside(p + d * f * t) for f in SLIT_STEPS):
             boundary += 1
-        elif _ends_in_wall(p, q, faces[0], walls, solid.tol, sewn_to=_sewn_reach(faces[0], adjacency),
-                           ends=_ends(e)):
+        elif _ends_in_wall(p, q, faces[0], walls, solid.tol, sewn_to=reach_of(faces[0]), ends=_ends(e)):
             # SHELL-3: the edge of a thinner plate's band that runs into a thicker plate's wall and ends there (the
             # thinner plate's own side, inside the junction): the material past it is the other wall, meshed
             in_wall += 1
@@ -930,12 +1227,13 @@ def joined_edges(m: _Mid, others: list[_Mid], fuzzy: float, *, curved_only: bool
     return out
 
 
-def grow(face, reach: float, joined: list | None = None, *, remake: bool = True):
+def grow(face, reach: float, joined: list | None = None, *, remake: bool = True, extend: bool = True):
     """The face grown `reach` (its own units) past its edges on its own surface; None when it cannot be grown.
     A plane grows by offsetting its outline outward and its holes inward (sharp corners kept); any other
     surface by widening its parameter range by `reach` measured at the face's middle (a periodic direction that
     already closes stays closed). It never grows past a JOINED edge (one that already meets another mid-face):
-    a band laid tangent along a bend it already meets would only spoil that shared edge."""
+    a band laid tangent along a bend it already meets would only spoil that shared edge. `extend`: False keeps the
+    surface within its own ends (a re-made offset in the join that does not re-make offsets, as the offset was)."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
@@ -981,7 +1279,7 @@ def grow(face, reach: float, joined: list | None = None, *, remake: bool = True)
                                                ("v0", lo_v, b[2], False), ("v1", hi_v, b[3], True))
              if not (surf.IsUPeriodic() if name[0] == "u" else surf.IsVPeriodic())
              and (want > have if up else want < have)}
-    if short:
+    if short and extend:
         surf = _extended_surface(face, surf, GROW_EXTEND * reach, short, (u0, u1, v0, v1), remake=remake)
         b = surf.Bounds()
     if not surf.IsUPeriodic():
@@ -1408,7 +1706,8 @@ def join_body(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float
     grown = []
     for m in mine:
         g = grow(m.original, 0.5 * t_max + GROW_WALLS * m.t,
-                 joined_edges(m, mine, fuzzy, curved_only=m.plane is not None), remake=remake)
+                 joined_edges(m, mine, fuzzy, curved_only=m.plane is not None), remake=remake,
+                 extend=remake or not m.remade)
         grown.append(g)
     b = BOPAlgo_Builder()
     for m in mine:
@@ -1416,8 +1715,10 @@ def join_body(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float
     for g in grown:
         for tile in (_faces(g) if g is not None else []):
             b.AddArgument(tile)
-    for f in body_faces:
-        b.AddArgument(f)
+    # the faces of the part itself as ONE argument: they already meet edge to edge, and the general fuse does not
+    # intersect the faces of one argument with each other (a fan housing's skin against itself was most of its join)
+    if body_faces:
+        b.AddArgument(_compound(body_faces))
     b.SetFuzzyValue(fuzzy)
     b.SetRunParallel(False)
     b.SetNonDestructive(True)
@@ -1440,7 +1741,21 @@ def join_body(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float
     sources += [(-1, "skin", f, _box(f)) for f in body_faces]
     from OCP.TopoDS import TopoDS as _T
 
+    # a piece the fuse's history gives only to the part's own faces is skin, read without a point (meshing every
+    # skin piece of a fan housing's extruded B-spline walls for a point took minutes); a piece any mid-face or grown
+    # tile may share is read by geometry, as below
+    def pieces_of(f) -> list[int]:
+        mod = list(b.Modified(f))
+        got = mod if mod else ([] if b.IsDeleted(f) else [f])
+        return [k for k in (fmap.FindIndex(x) for x in got) if k > 0]
+
+    of_skin = {k for f in body_faces for k in pieces_of(f)}
+    of_mids = {k for m in mine for k in pieces_of(m.original)}
+    of_mids |= {k for g in grown if g is not None for tile in _faces(g) for k in pieces_of(tile)}
     for k in range(1, n + 1):
+        if k in of_skin and k not in of_mids:
+            skin[k] = True
+            continue
         q = _inner_point(_T.Face_s(fmap.FindKey(k)))
         if q is None:
             continue
@@ -1846,11 +2161,17 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
         t_min = min(m.t for m in mine)
         fuzzy = min(max(SEW_SHARE * t_min, SEW_TOL_FACTOR * max(_max_tol(m.original) for m in mine)),
                     SEW_SHARE_MAX * t_min)
-        solid = _Solid(sol, 1e-3 * t_min)
+        solid = _Solid(sol, 1e-3 * t_min, wall=t_min)
         body_faces = [faces[k] for k in range(len(faces)) if body_of[k] == b]
         t_max = max(pairs[i].thickness for i in range(len(pairs))
                     if pairs[i].even and body_of[pairs[i].a] == b and pairs[i].shell) / mm
         snap_steps(mine, solid)
+        for m in mine:
+            g = remade_offset(m.original, OFFSET_REMAKE_SHARE * m.t)
+            if g is not None:
+                m.original = m.face = g
+                m.box = m.face_box = _box(g)
+                m.remade = True
         thick_faces = [faces[k] for k in range(len(faces))
                        if body_of[k] == b and roles[k]["role"] in (sp.SOLID, sp.THICK)]
 
@@ -1879,7 +2200,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
             from OCP.BRep import BRep_Tool
             from OCP.Geom import Geom_OffsetSurface
 
-            offsets = any(isinstance(BRep_Tool.Surface_s(m.original), Geom_OffsetSurface) for m in mine)
+            offsets = any(m.remade or isinstance(BRep_Tool.Surface_s(m.original), Geom_OffsetSurface) for m in mine)
             core = sum(_area(m.true_face) for m in mine)
             ext_general: list = []
             for remake in ((True, False) if offsets else (True,)):
@@ -1928,7 +2249,8 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                          "faces": [names[p.a], names[p.b]], "thickness_mm": _r(p.thickness),
                          "shell": bool(p.shell), "area_mm2": _r(_area(m.true_face) * mm * mm),
                          **({"offset_mm": _r(m.offset * mm)} if m.offset else {}),
-                         "kind": fm._kind_word(BRepAdaptor_Surface(m.original, True).GetType()),
+                         "kind": fm._kind_word(BRepAdaptor_Surface(m.true_face if m.remade else m.original,
+                                                                   True).GetType()),
                          "extended": [{"to": None if e["to"] is None else f"Mid_{e['to'] + 1}",
                                        **({"by_mm": _r(e["by"] * mm)} if "by" in e else {}),
                                        **({"area_mm2": _r(e["area"] * mm * mm)} if "area" in e else {})}

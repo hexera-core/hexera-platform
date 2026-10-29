@@ -520,3 +520,86 @@ def test_a_tube_running_into_a_plug_is_linked_to_it():
     rec, _ = ms.extract(sf.plugged_tube(), mm_per_unit=1.0)
     assert not [f for f in rec["faces"] if f["kind"] == "plane" and f["role"] == "blend"]
     assert _sewn(rec)["open_edges"] == 0 and _sewn(rec)["solid_link_edges"] == 2
+
+
+# ------------------------------------------------------------------------------------------ speed ----
+def test_faces_that_cannot_touch_are_sewn_in_separate_groups():
+    boxes = [(np.zeros(3), np.ones(3)), (np.array([1.005, 0, 0]), np.array([2.0, 1, 1])),
+             (np.array([5.0, 5, 5]), np.array([6.0, 6, 6]))]
+    assert ms.touching_groups(boxes, 0.01) == [[0, 1], [2]]
+    assert ms.touching_groups(boxes, 0.001) == [[0], [1], [2]]
+    assert ms.touching_groups(boxes[::-1], 0.01) == [[0], [1, 2]]
+    # two T-joints far apart, sewn in one call: each junction still splits its plate, and nothing is lost
+    rec_one, _ = ms.extract(sf.t_joint(), mm_per_unit=1.0)
+    two = ms._compound([sf.t_joint(), sf.t_joint().Moved(sf._shift(0, 1000, 0))])
+    rec_two, _ = ms.extract(two, mm_per_unit=1.0)
+    for row in rec_two["sewn"]:
+        assert row["open_edges"] == 0 and row["junction_edges"] == _sewn(rec_one)["junction_edges"]
+
+
+def test_the_quick_inside_test_agrees_with_the_exact_classifier():
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_IN, TopAbs_SOLID
+    from OCP.TopoDS import TopoDS
+
+    for shape, wall in ((sf.box_section(), 4.0), (sf.nurbs(sf.tube()), 2.0), (sf.bent_bracket(), 2.0)):
+        sol = TopoDS.Solid_s(ms._map(shape, TopAbs_SOLID).FindKey(1))
+        quick = ms._QuickInside(sol, ms.QUICK_DEFLECTION * wall, 1e-3 * wall)
+        assert quick.ok
+        exact = BRepClass3d_SolidClassifier(sol)
+        lo, hi = ms._box(sol)
+        pts = lo + np.random.default_rng(0).random((400, 3)) * (hi - lo)
+        told = 0
+        for p in pts:
+            st = quick.state(p)
+            if st is None:
+                continue
+            told += 1
+            exact.Perform(gp_Pnt(*map(float, p)), 1e-3 * wall)
+            assert st == (exact.State() == TopAbs_IN), p
+        assert told >= 0.8 * len(pts)
+
+
+def test_an_offset_mid_face_is_remade_as_a_bspline_where_it_lies():
+    from OCP.BRep import BRep_Tool
+    from OCP.Geom import Geom_BSplineSurface, Geom_OffsetSurface
+
+    top = max(ms._faces(sf.nurbs(sf.flat_plate())), key=ms._area)
+    off = ms._faces(ms.half_offset(top, 2.5))[0]
+    assert isinstance(BRep_Tool.Surface_s(off), Geom_OffsetSurface)
+    g = ms.remade_offset(off, 1e-4)
+    assert g is not None and isinstance(BRep_Tool.Surface_s(g), Geom_BSplineSurface)
+    assert ms._area(g) == pytest.approx(ms._area(off), rel=1e-6)
+    assert ms.remade_offset(ms._faces(sf.flat_plate())[0], 1e-4) is None
+    # a closed offset that the re-making cannot hold to the same area (a tube) stays an offset, and shells as before
+    outer = max(ms._faces(sf.nurbs(sf.tube())), key=ms._area)
+    assert ms.remade_offset(ms._faces(ms.half_offset(outer, 1.0))[0], 1e-4) is None
+    rec, _ = ms.extract(sf.nurbs(sf.tube()), mm_per_unit=1.0)
+    _all_checks(rec)
+    assert [m["kind"] for m in _shell_mids(rec)] == ["offset"]
+
+
+def test_an_extruded_free_form_wall_is_projected_on_within_its_own_reach():
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.GeomAPI import GeomAPI_PointsToBSpline
+    from OCP.gp import gp_Pnt, gp_Vec
+    from OCP.TColgp import TColgp_Array1OfPnt
+
+    pts = TColgp_Array1OfPnt(1, 5)
+    for i, (x, y) in enumerate(((0, 0), (25, 8), (50, 0), (75, -8), (100, 0)), start=1):
+        pts.SetValue(i, gp_Pnt(x, y, 0))
+    curve = GeomAPI_PointsToBSpline(pts).Curve()
+    face = ms._faces(BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeEdge(curve).Edge(), gp_Vec(0, 0, 40)).Shape())[0]
+    from OCP.BRep import BRep_Tool
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+
+    proj = sp._projector(face)
+    from OCP.Precision import Precision
+
+    assert any(Precision.IsInfinite_s(x) for x in BRep_Tool.Surface_s(face).Bounds())
+    for p in (gp_Pnt(50, 3, 20), gp_Pnt(10, -4, 1), gp_Pnt(90, 6, 39)):
+        proj.Perform(p)
+        whole = GeomAPI_ProjectPointOnSurf(p, BRep_Tool.Surface_s(face))
+        assert proj.NbPoints() >= 1 and proj.LowerDistance() == pytest.approx(whole.LowerDistance(), abs=1e-9)

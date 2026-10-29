@@ -126,6 +126,54 @@ def ray_partners(s: ff.Surface) -> dict[tuple[int, int], int]:
     return {k: both[k] for k in sorted(nominated)}
 
 
+#: A surface that runs to infinity one way (an extrusion, a revolution's profile, an offset of either - not the
+#: analytic plane, cylinder, cone) is projected on within the partner face's own parameter box grown by
+#: PROJECT_SPAN times its span on every side: the foot of a wall point lies by its partner face, and a search over
+#: an unbounded parameter ran for 18 s a pair (a fan housing's extruded skins, 400 pairs).
+PROJECT_SPAN = 1.0
+
+
+#: the projectors kept, one per face (a face is the partner of many pairs: a fan housing's skin of 70)
+_PROJECTORS: dict[int, tuple] = {}
+PROJECTORS_KEPT = 2048
+
+
+def _projector(fb):
+    """One point projector onto face fb's surface, built once for every point read on it."""
+    key = hash(fb)
+    got = _PROJECTORS.get(key)
+    if got is not None and got[0].IsSame(fb):
+        return got[1]
+    if len(_PROJECTORS) >= PROJECTORS_KEPT:
+        _PROJECTORS.clear()
+    proj = _new_projector(fb)
+    _PROJECTORS[key] = (fb, proj)
+    return proj
+
+
+def _new_projector(fb):
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepTools import BRepTools
+    from OCP.GeomAbs import GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_Plane, GeomAbs_Sphere, GeomAbs_Torus
+    from OCP.GeomAdaptor import GeomAdaptor_Surface
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+    from OCP.Precision import Precision
+
+    surf = BRep_Tool.Surface_s(fb)
+    proj = GeomAPI_ProjectPointOnSurf()
+    s0, s1, t0, t1 = surf.Bounds()
+    infinite = any(Precision.IsInfinite_s(x) for x in (s0, s1, t0, t1))
+    analytic = GeomAdaptor_Surface(surf).GetType() in (GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone, GeomAbs_Sphere,
+                                                       GeomAbs_Torus)
+    if infinite and not analytic:
+        u0, u1, v0, v1 = BRepTools.UVBounds_s(fb)
+        du, dv = PROJECT_SPAN * max(u1 - u0, 1e-9), PROJECT_SPAN * max(v1 - v0, 1e-9)
+        s0, s1 = max(s0, u0 - du), min(s1, u1 + du)
+        t0, t1 = max(t0, v0 - dv), min(t1, v1 + dv)
+    proj.Init(surf, s0, s1, t0, t1)
+    return proj
+
+
 def even_wall(fa, fb, mm: float) -> tuple[bool, float, float, str]:
     """The exact even-wall test (PAIR_SAMPLES, EVEN_SHARE, PAIR_DEG) of OpenCASCADE faces fa, fb, whose
     coordinates are `mm` millimetres each: (passed, median thickness mm, spread, why not)."""
@@ -133,12 +181,11 @@ def even_wall(fa, fb, mm: float) -> tuple[bool, float, float, str]:
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepClass import BRepClass_FaceClassifier
     from OCP.BRepLProp import BRepLProp_SLProps
-    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
     from OCP.gp import gp_Pnt2d
     from OCP.TopAbs import TopAbs_IN, TopAbs_REVERSED
 
     sa = BRepAdaptor_Surface(fa, True)
-    sb_geom = BRep_Tool.Surface_s(fb)
+    proj = _projector(fb)
     u0, u1, v0, v1 = sa.FirstUParameter(), sa.LastUParameter(), sa.FirstVParameter(), sa.LastVParameter()
     if not all(math.isfinite(x) for x in (u0, u1, v0, v1)):
         return False, float("nan"), float("nan"), "a face without bounds"
@@ -157,7 +204,7 @@ def even_wall(fa, fb, mm: float) -> tuple[bool, float, float, str]:
             if not pa.IsNormalDefined():
                 continue
             p = pa.Value()
-            proj = GeomAPI_ProjectPointOnSurf(p, sb_geom)
+            proj.Perform(p)
             if proj.NbPoints() < 1:
                 continue
             ub, vb = proj.LowerDistanceParameters()
