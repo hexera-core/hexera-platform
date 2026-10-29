@@ -1,0 +1,136 @@
+"""The heatmap has to cover the metal, because the metal is the worse half.
+
+The conjugate viewer painted the coolant only, on the grounds that the metal is untouched
+background. Measured on the customer coupon, the engine's own checkMesh says the opposite in the
+same report:
+
+    fluid   max non-ortho 15.8181   avg 1.51736   max skew 0.295526   max aspect 1.61317
+    solid   max non-ortho 26.9835   avg 2.03453   max skew 0.513708   max aspect 2.4443
+
+and on the 336,666,582-cell plate the metal holds 27,932 of the 28,132 poor cells. A reader who
+opens the heatmap, sees the coolant clean and concludes the mesh is clean has been shown the half
+of it that is.
+
+One response carries one `quality_fields`, so these are the merge rules.
+"""
+from __future__ import annotations
+
+import inspect
+
+from meshpipeline.engines.cfmesh_conjugate import viewer as V
+
+#: The coupon's two regions as the quality reader hands them over, with the figures its checkMesh
+#: measured on them.
+FLUID = {
+    "basis": "owner_cell_max",
+    "patches": {"fluid/inlet": {"count": 1600, "non_ortho_b64": "A"},
+                "fluid/fluid_to_solid": {"count": 346456, "non_ortho_b64": "B"}},
+    "hotspots": [{"metric": "non_ortho", "value": 15.8181, "patch": "fluid/fluid_to_solid",
+                  "x": 0.0, "y": 0.0, "z": 0.0}],
+    "metrics": {
+        "non_ortho": {"label": "non-orthogonality", "limit": 65.0, "max": 15.8181,
+                      "n_over": 0, "n_faces": 7818309},
+        "aspect_ratio": {"label": "aspect ratio", "limit": 1000.0, "floor": 1.0,
+                         "scale_to": 2.0, "max": 1.61317, "n_over": 0, "n_faces": 7818309},
+    },
+}
+SOLID = {
+    "basis": "owner_cell_max",
+    "patches": {"solid/xmin": {"count": 1928, "non_ortho_b64": "C"}},
+    "hotspots": [{"metric": "non_ortho", "value": 26.9835, "patch": "solid/xmin",
+                  "x": 1.0, "y": 0.0, "z": 0.0}],
+    "metrics": {
+        "non_ortho": {"label": "non-orthogonality", "limit": 65.0, "max": 26.9835,
+                      "n_over": 0, "n_faces": 12562721},
+        "aspect_ratio": {"label": "aspect ratio", "limit": 1000.0, "floor": 1.0,
+                         "scale_to": 2.4443, "max": 2.4443, "n_over": 0, "n_faces": 12562721},
+    },
+}
+
+
+def _merged():
+    out: dict = {}
+    V._merge_quality(out, FLUID)
+    V._merge_quality(out, SOLID)
+    return out
+
+
+def test_the_metal_is_measured_at_all():
+    """The whole point: both regions' polyMesh directories are read, not just the coolant's."""
+    src = inspect.getsource(V._paint)
+    assert "for region in (FLUID_REGION, SOLID_REGION)" in src
+    assert src.count("attach_quality_fields") >= 1
+
+
+def test_both_regions_patches_survive_the_merge():
+    """Three patches went in under region-prefixed names; three come out."""
+    got = _merged()
+    assert set(got["patches"]) == {"fluid/inlet", "fluid/fluid_to_solid", "solid/xmin"}
+
+
+def test_the_worse_max_is_the_one_reported():
+    """26.9835 is the mesh's non-orthogonality, not 15.8181. Taking the coolant's would describe
+    a mesh 1.7x better than the one delivered."""
+    got = _merged()
+    assert got["metrics"]["non_ortho"]["max"] == 26.9835
+    assert got["metrics"]["aspect_ratio"]["max"] == 2.4443
+
+
+def test_the_colour_range_covers_both():
+    """`scale_to` spans the viewer's colours. Left at the coolant's 2.0 every metal face past it
+    would be drawn at the top of the ramp and read as the worst thing in the mesh."""
+    got = _merged()
+    assert got["metrics"]["aspect_ratio"]["scale_to"] == 2.4443
+    assert got["metrics"]["aspect_ratio"]["floor"] == 1.0
+
+
+def test_the_counts_add_up():
+    """A two-region mesh's face count is the two regions'. 7,818,309 + 12,562,721."""
+    got = _merged()
+    assert got["metrics"]["non_ortho"]["n_faces"] == 7818309 + 12562721
+    assert got["metrics"]["non_ortho"]["n_over"] == 0
+
+
+def test_the_bar_is_not_doubled():
+    """`limit` is the same criterion on both sides - summing it would move the red line."""
+    got = _merged()
+    assert got["metrics"]["non_ortho"]["limit"] == 65.0
+    assert got["metrics"]["aspect_ratio"]["limit"] == 1000.0
+
+
+def test_every_hotspot_is_kept_with_the_patch_it_was_measured_on():
+    """The hotspots are the locations a reader is sent to, and the metal's are the far ones."""
+    got = _merged()
+    assert len(got["hotspots"]) == 2
+    assert {h["patch"] for h in got["hotspots"]} == {"fluid/fluid_to_solid", "solid/xmin"}
+    assert max(h["value"] for h in got["hotspots"]) == 26.9835
+
+
+def test_one_region_alone_is_not_damaged():
+    """The common case on a single-region split, and on a mesh where one side would not read."""
+    out: dict = {}
+    V._merge_quality(out, FLUID)
+    assert out["metrics"]["non_ortho"]["max"] == 15.8181
+    assert out["basis"] == "owner_cell_max"
+    assert set(out["patches"]) == {"fluid/inlet", "fluid/fluid_to_solid"}
+
+
+def test_nothing_measured_leaves_nothing_behind():
+    """A region whose mesh could not be read contributes nothing rather than an empty shell, so
+    the viewer never receives a quality_fields with no numbers in it."""
+    out: dict = {}
+    V._merge_quality(out, None)
+    V._merge_quality(out, "not a dict")
+    assert out == {}
+
+
+def test_a_metric_only_one_region_has_is_carried_not_dropped():
+    """Skewness on one side and not the other is a real state: MAX_FACES_FOR_FIELDS can stop the
+    bigger region being measured at all."""
+    out: dict = {}
+    V._merge_quality(out, FLUID)
+    V._merge_quality(out, {"patches": {}, "hotspots": [],
+                           "metrics": {"skewness": {"limit": 4.0, "max": 0.513708,
+                                                    "n_over": 0, "n_faces": 12562721}}})
+    assert out["metrics"]["skewness"]["max"] == 0.513708
+    assert out["metrics"]["non_ortho"]["max"] == 15.8181
