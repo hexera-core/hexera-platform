@@ -242,3 +242,9 @@ def butt_step(t1: float = 6.0, t2: float = 3.0):
     """Two plates of different thickness butted in line, flush underneath: 100 x 50 x `t1` then 100 x 50 x `t2`
     along x. Their mid-planes are parallel and offset, so nothing the extension does joins them yet."""
     return _fuse(_box(0, 0, 0, 100, 50, t1), _box(100, 0, 0, 100, 50, t2))
+
+
+def thin_web_on_thick_plate(tp: float = 8.0, ts: float = 3.0):
+    """A 3 mm web standing on an 8 mm plate, its ends 20 mm short of the plate ends: the web band runs into the
+    plate wall and its two sides end there, inside the plate."""
+    return _fuse(_box(0, 0, 0, 200, 100, tp), _box(98, 20, tp, ts, 60, 50))

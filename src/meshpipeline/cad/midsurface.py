@@ -585,6 +585,47 @@ def _face_normal_at(face, p):
     return np.array([n.X(), n.Y(), n.Z()])
 
 
+#: an edge ENDS IN ANOTHER WALL when both it and the point past it lie within this share over half of that
+#: wall's thickness from that wall's mid-face
+IN_WALL_SLACK = 1.05
+#: ... and when the step past it runs along that wall: within 60 degrees of parallel to it
+IN_WALL_COS = 0.5
+
+
+def _sewn_reach(start: int, adjacency: dict[int, set[int]]) -> set[int]:
+    """Every sewn face reachable from `start` through shared edges: the connected surface it belongs to."""
+    seen, todo = {start}, [start]
+    while todo:
+        k = todo.pop()
+        for j in adjacency.get(k, ()):
+            if j not in seen:
+                seen.add(j)
+                todo.append(j)
+    return seen
+
+
+def _ends_in_wall(p, q, own: int, walls: list, tol: float, sewn_to: set | None = None) -> bool:
+    """Do the edge point p and the point q just past it both lie inside the wall of a sewn face that the edge's own
+    sheet is sewn to (`sewn_to`: the face indices joined to it through the surface)? Two sheets that never meet -
+    a butt step left unsnapped - are a gap, not one wall holding the other."""
+    vp = vq = None
+    for k, f, w, box in walls:
+        if k == own or (sewn_to is not None and k not in sewn_to):
+            continue
+        reach = 0.5 * w * IN_WALL_SLACK + tol
+        if not (_near_box(p, box, reach) and _near_box(q, box, reach)):
+            continue
+        vp = vp if vp is not None else _vertex(p)
+        vq = vq if vq is not None else _vertex(q)
+        if _dist(vp, f) <= reach and _dist(vq, f) <= reach:
+            n = _face_normal_at(f, p)
+            step = q - p
+            # it runs ALONG that wall (a plate side inside a thicker plate), not INTO it (a junction stopped short)
+            if n is not None and abs(float(np.dot(step / max(float(np.linalg.norm(step)), 1e-300), n))) <= IN_WALL_COS:
+                return True
+    return False
+
+
 def _near_any(p, faces_boxes, reach: float) -> bool:
     """Is point p within `reach` of any of the faces (each with its box: boxes first, exact distance after)?"""
     v = None
@@ -670,6 +711,15 @@ def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thi
     open_at: list[list[float]] = []
     links: list[list[float]] = []
     thick = [(f, _box(f)) for f in thick_faces] if thick_faces else []
+    # every sewn face with its wall: an edge that ends INSIDE ANOTHER SHELL WALL is no open edge
+    walls = [(k, TopoDS.Face_s(fmap.FindKey(k)), owner_t.get(k, 0.0)) for k in range(1, fmap.Extent() + 1)]
+    walls = [(k, f, w, _box(f)) for k, f, w in walls if w > 0]
+    in_wall = 0
+    adjacency: dict[int, set[int]] = {}
+    for i in range(1, e2f.Extent() + 1):
+        ks = {fmap.FindIndex(f) for f in e2f.FindFromIndex(i)} - {0}
+        for k in ks:
+            adjacency.setdefault(k, set()).update(ks - {k})
     for i in range(1, e2f.Extent() + 1):
         e = TopoDS.Edge_s(e2f.FindKey(i))
         if BRep_Tool.Degenerated_s(e):
@@ -695,14 +745,20 @@ def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thi
             boundary += 1
             continue
         p, d = found
-        if not solid.strictly_inside(p + d * OPEN_STEP * t):
+        q = p + d * OPEN_STEP * t
+        if not solid.strictly_inside(q):
             boundary += 1
+        elif _ends_in_wall(p, q, faces[0], walls, solid.tol, sewn_to=_sewn_reach(faces[0], adjacency)):
+            # SHELL-3: the edge of a thinner plate's band that runs into a thicker plate's wall and ends there (the
+            # thinner plate's own side, inside the junction): the material past it is the other wall, meshed
+            in_wall += 1
         elif _near_any(p, thick, (0.5 + OPEN_STEP) * t + solid.tol):
             links.append(_pt(p * scale))
         else:
             open_at.append(_pt(p * scale))
     return {"faces": int(fmap.Extent()), "edges": int(e2f.Extent()), "shared_edges": shared,
-            "junction_edges": junction, "boundary_edges": boundary, "solid_link_edges": len(links),
+            "junction_edges": junction, "boundary_edges": boundary, "ends_in_wall_edges": in_wall,
+            "solid_link_edges": len(links),
             "open_edges": len(open_at), "open_at_mm": open_at[:50], "solid_link_at_mm": links[:50]}
 
 

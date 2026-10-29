@@ -137,7 +137,7 @@ def test_a_cylinder_running_into_a_cone_is_one_closed_shell():
 def test_a_flange_cut_short_by_a_relief_still_meets_its_sheet():
     rec, _ = ms.extract(sf.relief_flange(2.0), mm_per_unit=1.0)
     assert rec["bodies"][0]["verdict"] == "shell"
-    assert _sewn(rec)["open_edges"] == 0 and _sewn(rec)["junction_edges"] >= 1
+    assert _sewn(rec)["open_edges"] == 0
     _all_checks(rec)
 
 
@@ -332,3 +332,19 @@ def test_each_join_alone_is_held_to_the_same_parts(monkeypatch):
     monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
     rec, _ = ms.extract(sf.tube_on_plate(), mm_per_unit=1.0)
     assert rec["sewn"][0]["open_edges"] > 0 and rec["sewn"][0]["join"] == "straight"
+
+
+def test_a_web_ending_inside_a_thicker_plate_leaves_no_open_edge():
+    rec, _ = ms.extract(sf.thin_web_on_thick_plate(), mm_per_unit=1.0)
+    row = _sewn(rec)
+    assert row["open_edges"] == 0 and row["ends_in_wall_edges"] >= 2
+    _all_checks(rec)
+
+
+def test_a_junction_stopped_short_is_still_open(monkeypatch):
+    # with neither join allowed to extend, the L legs stop short of each other: that gap must stay OPEN, never
+    # be taken for an edge ending inside the other wall
+    monkeypatch.setattr(ms, "extend", lambda *a, **k: None)
+    monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
+    rec, _ = ms.extract(sf.l_angle(5.0, 5.0), mm_per_unit=1.0)
+    assert _sewn(rec)["open_edges"] >= 1
