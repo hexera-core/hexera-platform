@@ -1641,12 +1641,26 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
         return landed
     if _is_fea(purpose_text):
         # AN FEA PART has no openings, no flow and no far field to name: the stage shows the part,
-        # its size and unit, its bodies and the clean check, all measured. No model is asked.
+        # its size and unit, its bodies and the clean check, all measured. No model names anything.
         # What the FEA plan sizes from is measured here, in the unit just settled: the walls and
         # the stress hot spots (FEA build step 3)
         from meshpipeline.cad.fea_measure import FACT_KEY
 
         facts[FACT_KEY] = fea_measurements(stored, facts, interpretation)
+        # SHSTAGE-1: SHELL OR SOLID, when the user's words say it: the word table, the model only for a
+        # paraphrase (checked against the allowed values); the stage opens on it and never overrides it
+        from meshpipeline.application import mesh_as
+
+        facts[MESH_AS_KEY] = mesh_as.as_record(mesh_as.read_mesh_as_sync(purpose_text, session_id=session_id,
+                                                                          owner_id=owner_id))
+        # SHSTAGE-2: THE SHELL CHECK starts with the measured part: its status says "measuring" before the stage
+        # opens, and the stage never waits on it (application/shell_check)
+        try:
+            from meshpipeline.application import shell_check
+
+            shell_check.start(session_id, owner_id, facts=facts, interpretation=interpretation)
+        except Exception as exc:  # noqa: BLE001 - no shell check is Auto = solid, never a failed naming
+            logger.warning("geometry naming: the shell check was not started (%s)", type(exc).__name__)
         proposal = _proposal(facts, {})
         result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
         result.update(named=True, facts=facts, vision={}, proposal=proposal,
@@ -1742,6 +1756,9 @@ def merged_onto_full(named: dict, named_from: dict, full: dict) -> dict:
 #: An upload larger than this is not measured for FEA in the naming step (the record says so; the
 #: plan then sizes from the part's size alone). Version 1's parts are single parts, far smaller.
 FEA_MEASURE_MAX_MB = 80.0
+#: SHSTAGE-1: where an FEA part's facts keep what the user's words said about meshing it as a shell or a
+#: solid (application/mesh_as.as_record).
+MESH_AS_KEY = "mesh_as_words"
 
 
 class _TooBig(ValueError):

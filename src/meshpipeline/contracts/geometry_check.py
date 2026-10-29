@@ -48,3 +48,24 @@ def enqueue_naming(**kwargs: Any) -> bool:
         return False
     _naming_enqueuer(**kwargs)
     return True
+
+
+ShellCheckEnqueuer = Callable[..., Any]
+"""Starts one shell check (SHSTAGE-2): enqueue_shell_check(session_id=..., owner_id=..., interpretation=...)."""
+
+_shell_enqueuer: ShellCheckEnqueuer | None = None
+
+
+def set_shell_check_enqueuer(enqueuer: ShellCheckEnqueuer | None) -> None:
+    global _shell_enqueuer
+    _shell_enqueuer = enqueuer
+
+
+def enqueue_shell_check(**kwargs: Any) -> bool:
+    """Hand an FEA part's shell check to whoever runs it. False when nothing is configured to, so the
+    stage says the walls were not measured instead of measuring forever."""
+    if _shell_enqueuer is None:
+        logger.info("shell check not configured - skipping enqueue for session=%s", kwargs.get("session_id"))
+        return False
+    _shell_enqueuer(**kwargs)
+    return True

@@ -760,6 +760,9 @@ async def _run_async(req: JobRequest) -> dict:
         initial_state["fea_connection"] = await asyncio.to_thread(confirmed_connection, str(session_id or ""))
         from meshpipeline.application.fea_check import confirmed_gap_joins
         initial_state["fea_gap_joins"] = await asyncio.to_thread(confirmed_gap_joins, str(session_id or ""))
+        # SHSTAGE-5: SHELL OR SOLID, as settled on the stage at Proceed (solid when nothing says)
+        from meshpipeline.application.shell_check import confirmed_mesh_as
+        initial_state["fea_mesh_as"] = await asyncio.to_thread(confirmed_mesh_as, str(session_id or ""))
 
         initial_state["repair_directives"] = list(req.repair_directives)
 

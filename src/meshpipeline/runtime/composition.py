@@ -66,6 +66,14 @@ def _enqueue_geometry_naming(**kwargs) -> None:
                               soft_time_limit=soft, time_limit=hard)
 
 
+def _enqueue_shell_check(**kwargs) -> None:
+    from meshpipeline.adapters.pipeline_execution.celery import shell_check_geometry
+    from meshpipeline.application.shell_check import SHELL_CHECK_LIMIT_S
+    # SHSTAGE-2: the extraction's own limit (a child process) plus room to store what it wrote
+    shell_check_geometry.apply_async(kwargs=kwargs, task_id=f"geometry-shell-{kwargs.get('session_id', '')}",
+                                     soft_time_limit=SHELL_CHECK_LIMIT_S + 120, time_limit=SHELL_CHECK_LIMIT_S + 180)
+
+
 def _route_model(step: str) -> str:
     """The model a step's route asks (the decision cache keys by it: a new model is a new key)."""
     if step == "builder":
@@ -136,6 +144,7 @@ def install_adapters() -> None:
     training_export.set_export_enqueuer(_enqueue_training_export)
     geometry_check.set_scout_enqueuer(_enqueue_geometry_scout)
     geometry_check.set_naming_enqueuer(_enqueue_geometry_naming)
+    geometry_check.set_shell_check_enqueuer(_enqueue_shell_check)
     mesh_execution.set_mesh_executor(build_mesh_executor())
     # THE PRE-FLIGHT: the written case is held to the approved patches before any mesher starts,
     # so a name the case does not carry costs seconds and an internal error naming it - never a
