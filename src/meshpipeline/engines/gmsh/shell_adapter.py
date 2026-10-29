@@ -15,17 +15,136 @@ from pathlib import Path
 
 import numpy as np
 
+from meshpipeline.engines import shell_mesh, shell_quality
 from meshpipeline.engines import shell_plan as plan_rules
-from meshpipeline.engines import shell_quality
 from meshpipeline.engines.shell_mesh import ShellMesh, edge_census, orient
 
 logger = logging.getLogger(__name__)
 
-#: gmsh: Frontal-Delaunay for quads, Blossom recombination; quad-dominant (a few triangles where quads cannot fit)
-ALGORITHM = 8
+#: gmsh: Frontal-Delaunay, then Blossom recombination into quads; quad-dominant (a few triangles where quads cannot
+#: fit). Frontal-Delaunay-for-quads (8) left faces of B-spline mid-surfaces 7 times coarser than their size and
+#: their quads past Nastran limits; QuadQS (11) made 3 to 5 times the elements asked for
+ALGORITHM = 6
 RECOMBINATION = 1
+#: SHMESH-10: cut every quad past Nastran's own limits into two triangles
+SPLIT_PAST = True
+#: SHMESH-11: cut every closed sewn face at its seams before meshing; a face gmsh still cannot mesh as a periodic
+#: surface is re-made as a B-spline (the same surface, exactly) and the mesh made again - at most RESPLINE_MAX faces
+SPLIT_CLOSED = True
+#: SHMESH-13: swap the longest edge of a triangle past a limit with its neighbour's when both come out better
+FLIP_PAST = True
+#: SHMESH-12: merge the ends of sliver edges (under the floor and a fifth of their elements' longest edges)
+COLLAPSE_SHORT = True
+RESPLINE_MAX = 16
 #: SHMESH-3/4 through gmsh's own curvature sizing: elements per full turn of every curve and curved face
 PER_TURN = 4 * plan_rules.CURVE_PER_QUARTER
+
+
+class _Periodic(Exception):
+    """gmsh could not mesh sewn face `face` (0-based, in the surface's own order) as a periodic surface."""
+
+    def __init__(self, face: int) -> None:
+        super().__init__(f"face {face}")
+        self.face = face
+
+
+def _generate(gmsh, tag_of: dict[int, int]) -> None:
+    import re
+
+    try:
+        gmsh.model.mesh.generate(2)
+    except Exception as exc:
+        m = re.search(r"periodic surface (\d+)", str(exc))
+        if m and int(m.group(1)) in tag_of:
+            raise _Periodic(tag_of[int(m.group(1))]) from exc
+        raise
+
+
+def _rebuild(brep: Path, owners: list[str], out: Path, change) -> list[str]:
+    """The sewn surface with some faces replaced: change(k, face) gives the faces that stand for face k (None:
+    unchanged). The new faces and the rest are fused back into one conformal surface (a neighbour's edge is cut
+    where a new corner lies on it), written to `out`; returns the owners, one per face of it."""
+    from OCP.BOPAlgo import BOPAlgo_Builder
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS, TopoDS_Shape
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    from meshpipeline.cad import midsurface as ms
+
+    shape = TopoDS_Shape()
+    if not BRepTools.Read_s(shape, str(brep), BRep_Builder()):
+        raise ValueError("the mid-surface could not be read")
+    before = ms._faces(shape)
+    if len(before) != len(owners):
+        raise ValueError(f"the mid-surface has {len(before)} faces but the record names {len(owners)}")
+    pieces: list[tuple[object, str]] = []
+    changed = False
+    for k, (f, own) in enumerate(zip(before, owners, strict=True)):
+        got = change(k, f)
+        changed = changed or got is not None
+        pieces += [(g, own) for g in (got if got is not None else [f])]
+    if not changed:
+        BRepTools.Write_s(shape, str(out))
+        return list(owners)
+    if len(pieces) == 1:
+        BRepTools.Write_s(pieces[0][0], str(out))
+        return [pieces[0][1]]
+    bop = BOPAlgo_Builder()
+    for g, _own in pieces:
+        bop.AddArgument(g)
+    bop.SetRunParallel(False)
+    bop.Perform()
+    if bop.HasErrors():
+        raise ValueError("the re-made faces of the mid-surface could not be fused back")
+    fused = bop.Shape()
+    after = ms._faces(fused)
+    index = TopTools_IndexedMapOfShape()
+    for f in after:
+        index.Add(f)
+    owner_of: dict[int, str] = {}
+    for g, own in pieces:
+        images = [TopoDS.Face_s(x) for x in bop.Modified(g)] or ([] if bop.IsDeleted(g) else [g])
+        for x in images:
+            k = index.FindIndex(x)
+            if k > 0:
+                owner_of.setdefault(k, own)
+    if len(owner_of) != len(after):
+        raise ValueError("a re-made face of the mid-surface could not be traced to its mid-face")
+    BRepTools.Write_s(fused, str(out))
+    return [owner_of[k] for k in range(1, len(after) + 1)]
+
+
+def split_closed(brep: Path, owners: list[str], out: Path) -> list[str]:
+    """SHMESH-11: every sewn face closed on itself (a full ring, a torus, a sphere: a seam in it) is cut at its seams
+    into open pieces. gmsh cannot mesh some closed faces ("impossible to mesh periodic surface")."""
+    from OCP.ShapeUpgrade import ShapeUpgrade_ShapeDivideClosed
+
+    from meshpipeline.cad import midsurface as ms
+
+    def cut(_k, f):
+        tool = ShapeUpgrade_ShapeDivideClosed(f)
+        tool.SetNbSplitPoints(1)
+        tool.Perform()
+        got = ms._faces(tool.Result())
+        return got if len(got) > 1 else None
+
+    return _rebuild(brep, owners, out, cut)
+
+
+def respline(brep: Path, owners: list[str], face: int, out: Path) -> list[str]:
+    """SHMESH-11: sewn face `face` re-made as a B-spline surface (exactly the same surface, without its period)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_NurbsConvert
+
+    from meshpipeline.cad import midsurface as ms
+
+    def convert(k, f):
+        if k != face:
+            return None
+        nc = BRepBuilderAPI_NurbsConvert(f, True)
+        return ms._faces(nc.Shape())
+
+    return _rebuild(brep, owners, out, convert)
 
 
 def _faces_and_facts(brep: Path, mm: float):
@@ -85,11 +204,37 @@ def _reference_normal(face) -> np.ndarray | None:
 
 def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None) -> tuple[ShellMesh, dict]:
     """Mesh the sewn mid-surface: (the shell mesh in millimetres, the plan as applied: one row per face)."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="shell_mesh_") as tmp:
+        owners = list(record["surface_faces"])
+        if SPLIT_CLOSED:
+            cut = Path(tmp) / "cut.brep"
+            owners = split_closed(Path(brep), owners, cut)
+            brep = cut
+        resplined = 0
+        while True:
+            try:
+                mesh, applied = _mesh_once(Path(brep), record, owners, float(mm_per_unit), log)
+            except _Periodic as p:
+                if resplined >= RESPLINE_MAX:
+                    raise ValueError(f"gmsh could not mesh {resplined + 1} periodic faces") from p
+                nxt = Path(tmp) / f"respline_{resplined}.brep"
+                owners = respline(Path(brep), owners, p.face, nxt)
+                brep = nxt
+                resplined += 1
+                continue
+            applied["quality"]["resplined_faces"] = resplined
+            if resplined:
+                mesh.notes.append(f"{resplined} face(s) gmsh could not mesh as periodic surfaces were re-made as "
+                                  "B-splines (the same surface) and meshed (SHMESH-11).")
+            return mesh, applied
+
+
+def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list | None) -> tuple[ShellMesh, dict]:
     import gmsh
 
-    mm = float(mm_per_unit)
     facts = _faces_and_facts(Path(brep), mm)
-    owners = record["surface_faces"]
     if len(owners) != len(facts):
         raise ValueError(f"the mid-surface has {len(facts)} faces but the record names {len(owners)}")
     rows = []
@@ -151,7 +296,7 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         mn = gmsh.model.mesh.field.add("Min")
         gmsh.model.mesh.field.setNumbers(mn, "FieldsList", fields)
         gmsh.model.mesh.field.setAsBackgroundMesh(mn)
-        gmsh.model.mesh.generate(2)
+        _generate(gmsh, tag_of)
         node_tags, coords, _p = gmsh.model.mesh.getNodes()
         index = {int(t): i for i, t in enumerate(node_tags)}
         xyz = np.asarray(coords, dtype=float).reshape(-1, 3) * mm
@@ -176,6 +321,30 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         gmsh.finalize()
     Q = np.vstack(quads) if quads else np.zeros((0, 4), dtype=np.int64)
     T = np.vstack(trias) if trias else np.zeros((0, 3), dtype=np.int64)
+    merged = 0
+    if COLLAPSE_SHORT:
+        # SHMESH-12: an edge under the floor, far shorter than its elements' others, is a CAD sliver: one node
+        limit = np.array([plan_rules.FLOOR_WALLS * r["wall_mm"] / mm for r in rows])
+        Q, T, q_face, t_face, merged = shell_mesh.collapse_short(xyz / mm, Q, T, q_face, t_face, limit)
+    split = 0
+    if SPLIT_PAST:
+        # SHMESH-10: a quad past Nastran's own limits becomes two triangles
+        keep, cut, came = shell_quality.split_past_quads(xyz, Q)
+        if len(cut):
+            qf = np.array(q_face, dtype=np.int64)
+            T = np.vstack([T, cut])
+            t_face = t_face + qf[came].tolist()
+            Q, q_face = Q[keep], qf[keep].tolist()
+            split = len(came) // 2
+        if COLLAPSE_SHORT and split:
+            # a quad folded nearly flat (two opposite corners a sliver apart) cuts into two slivers along that short
+            # diagonal: it closes up, its edges zipped pairwise (SHMESH-12 on the cut)
+            Q, T, q_face, t_face, again = shell_mesh.collapse_short(xyz / mm, Q, T, q_face, t_face, limit)
+            merged += again
+    flipped = 0
+    if FLIP_PAST and len(T):
+        # SHMESH-13: a triangle past a limit swaps its longest edge with its neighbour's when both come out better
+        T, flipped = shell_quality.flip_past_trias(xyz, T, t_face)
     # keep only the nodes the elements use, renumbered in order
     used = np.unique(np.concatenate([Q.ravel(), T.ravel()]))
     remap = np.full(len(xyz), -1, dtype=np.int64)
@@ -205,6 +374,14 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
     quality = shell_quality.measure(mesh)
     quality["edges"] = {k: v for k, v in census.items() if k != "free_edges"}
     quality["turned"] = turned
+    quality["split"] = split
+    quality["merged_nodes"] = merged
+    quality["flipped"] = flipped
+    if merged:
+        mesh.notes.append(f"{merged} node(s) at the ends of sliver edges (under the floor, a fifth of their elements' longest) "
+                          "were merged (SHMESH-12).")
+    if split:
+        mesh.notes.append(f"{split} quad(s) past Nastran's own limits were cut into two triangles each (SHMESH-10).")
     floored = [r["face"] for r in rows if r["floored"]]
     if floored:
         mesh.notes.append(f"{len(floored)} face(s) asked for elements finer than half their wall; they are meshed at "

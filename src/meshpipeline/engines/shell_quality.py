@@ -14,6 +14,9 @@
 * aspect ratio: longest edge over shortest.
 * warp (degrees): the larger of the angles between the normals of the two triangles each diagonal cuts the
   quad into (0 for a flat quad).
+* warp coefficient (Nastran's own, GEOMCHECK Q4_WARP): 2H / (D1 + D2), H the corners' distance from the mean
+  plane (through the corners' mean, normal to both diagonals), D1 and D2 the diagonals (0 for a flat quad). A
+  square whose corners stand 0.05 of a diagonal off the plane reads 0.05 here and 22.6 degrees above.
 * skew (degrees): the smaller angle between the two lines joining opposite edge midpoints (90 is ideal);
   for a triangle, the smallest angle between a median and the line joining the other two edge midpoints.
 * taper: the largest share by which a corner triangle (the corner and its two neighbours) departs from
@@ -44,12 +47,13 @@ LIMITS = (
 TRIA_SHARE = 0.05
 #: NASTRAN'S OWN LIMITS (SHMESH-8): the MSC Nastran GEOMCHECK defaults, past which the solver itself warns (MSC
 #: Nastran Quick Reference Guide, GEOMCHECK). Every delivered element is held inside these; the tighter Femap /
-#: industry targets above are notes. GEOMCHECK's Q4_WARP (0.05) is a height over the mean diagonal, about 5.7
-#: degrees as an angle; we hold the angle at 5. (shape, figure, op, limit, GEOMCHECK name)
+#: industry targets above are notes. Q4_WARP is Nastran's warping coefficient 2H / (D1 + D2) held at 0.05, as
+#: Nastran computes it (Altair's "element quality calculations, Nastran"), not an angle: the 5-degree angle held
+#: here before was 4.5 times stricter than the solver. (shape, figure, op, limit, GEOMCHECK name)
 NASTRAN_LIMITS = (
     ("quad", "skew_deg", ">=", 30.0, "Q4_SKEW"),
     ("quad", "taper", "<=", 0.5, "Q4_TAPER"),
-    ("quad", "warp_deg", "<=", 5.0, "Q4_WARP"),
+    ("quad", "warp_coef", "<=", 0.05, "Q4_WARP"),
     ("quad", "min_angle_quad", ">=", 30.0, "Q4_IAMIN"),
     ("quad", "max_angle_quad", "<=", 150.0, "Q4_IAMAX"),
     ("tria", "skew_deg", ">=", 10.0, "T3_SKEW"),
@@ -68,6 +72,108 @@ def nastran_past(mesh: ShellMesh) -> np.ndarray:
             v = d[key]
             out[off:off + len(v)] |= (v < limit) if op == ">=" else (v > limit)
     return out
+
+
+def _quad_past(q: dict[str, np.ndarray]) -> np.ndarray:
+    """(quads,) bool: the quad is past one of Nastran's own quad limits (or not valid)."""
+    out = q["min_jacobian"] <= 0
+    for shape, key, op, limit, _card in NASTRAN_LIMITS:
+        if shape == "quad":
+            out = out | ((q[key] < limit) if op == ">=" else (q[key] > limit))
+    return out
+
+
+def _tria_past(t: dict[str, np.ndarray]) -> np.ndarray:
+    out = t["min_jacobian"] <= 0
+    for shape, key, op, limit, _card in NASTRAN_LIMITS:
+        if shape == "tria":
+            out = out | ((t[key] < limit) if op == ">=" else (t[key] > limit))
+    return out
+
+
+def split_past_quads(xyz: np.ndarray, quads: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """SHMESH-10: every quad past one of Nastran's own limits is cut into two triangles on the diagonal whose
+    triangles are better (fewer past the triangle limits first, then the larger smallest angle; the first
+    diagonal on a tie). A triangle has no warp or taper, and the cut halves the corner that was too open.
+
+    Returns (the indices of the quads kept, the new triangles (k, 3) in the quads' turning sense, the quad
+    each triangle came from)."""
+    none = np.zeros((0, 3), dtype=np.int64), np.zeros(0, dtype=np.int64)
+    if not len(quads):
+        return (np.zeros(0, dtype=np.int64), *none)
+    past = _quad_past(quad_measures(xyz, quads))
+    bad = np.flatnonzero(past)
+    keep = np.flatnonzero(~past)
+    if not len(bad):
+        return (keep, *none)
+    q = quads[bad]
+    cuts = (np.stack([q[:, [0, 1, 2]], q[:, [0, 2, 3]]], axis=1),      # diagonal 0-2
+            np.stack([q[:, [0, 1, 3]], q[:, [1, 2, 3]]], axis=1))      # diagonal 1-3
+    score = []
+    for c in cuts:
+        m = tria_measures(xyz, c.reshape(-1, 3))
+        fails = _tria_past(m).reshape(-1, 2).sum(axis=1)
+        least = m["min_angle_tria"].reshape(-1, 2).min(axis=1)
+        score.append((fails, least))
+    second = (score[1][0] < score[0][0]) | ((score[1][0] == score[0][0]) & (score[1][1] > score[0][1]))
+    tri = np.where(second[:, None, None], cuts[1], cuts[0]).reshape(-1, 3)
+    return keep, tri.astype(np.int64), np.repeat(bad, 2)
+
+
+def _tria_score(xyz: np.ndarray, t: np.ndarray) -> tuple[int, float]:
+    """(how many of the triangles are past a limit, their smallest skew): lower first is better, then higher."""
+    m = tria_measures(xyz, t)
+    return int(_tria_past(m).sum()), float(m["skew_deg"].min())
+
+
+def flip_past_trias(xyz: np.ndarray, trias: np.ndarray, t_face: list[int], *, rounds: int = 4) -> tuple[np.ndarray, int]:
+    """SHMESH-13: a triangle past one of Nastran's limits and the triangle across its longest edge (the same face,
+    that edge theirs alone) swap that edge for the other diagonal when the two new triangles are better (fewer past
+    a limit, then the larger smallest skew) and turn the same way. A face's own edges never move. Deterministic:
+    triangles in number order, `rounds` passes at most. Returns (the triangles, how many swaps)."""
+    T = trias.copy()
+    swaps = 0
+    for _ in range(rounds):
+        past = np.flatnonzero(_tria_past(tria_measures(xyz, T))) if len(T) else np.zeros(0, dtype=np.int64)
+        if not len(past):
+            break
+        users: dict[tuple[int, int], list[int]] = {}
+        for i, c in enumerate(T.tolist()):
+            for k in range(3):
+                a, b = c[k], c[(k + 1) % 3]
+                users.setdefault((min(a, b), max(a, b)), []).append(i)
+        done = set()
+        changed = 0
+        for i in past.tolist():
+            if i in done:
+                continue
+            c = T[i].tolist()
+            lens = [float(np.linalg.norm(xyz[c[k]] - xyz[c[(k + 1) % 3]])) for k in range(3)]
+            k = int(np.argmax(lens))
+            a, b = c[k], c[(k + 1) % 3]
+            others = [j for j in users.get((min(a, b), max(a, b)), []) if j != i]
+            if len(others) != 1 or others[0] in done or t_face[others[0]] != t_face[i]:
+                continue
+            j = others[0]
+            p = c[(k + 2) % 3]                                  # i runs a -> b -> p
+            d = [x for x in T[j].tolist() if x not in (a, b)]
+            if len(d) != 1:
+                continue
+            q = d[0]
+            new = np.array([[a, q, p], [q, b, p]], dtype=np.int64)  # same turning sense as (a, b, p)
+            n_old = np.cross(xyz[b] - xyz[a], xyz[p] - xyz[a])
+            n_new = [np.cross(xyz[t[1]] - xyz[t[0]], xyz[t[2]] - xyz[t[0]]) for t in new]
+            if any(float(np.dot(n, n_old)) <= 0 for n in n_new):
+                continue
+            (f_new, s_new), (f_old, s_old) = _tria_score(xyz, new), _tria_score(xyz, T[[i, j]])
+            if f_new < f_old or (f_new == f_old and s_new > s_old):
+                T[i], T[j] = new[0], new[1]
+                done |= {i, j}
+                changed += 1
+        swaps += changed
+        if not changed:
+            break
+    return T, swaps
 
 
 def _unit(v: np.ndarray) -> np.ndarray:
@@ -98,6 +204,10 @@ def quad_measures(xyz: np.ndarray, quads: np.ndarray) -> dict[str, np.ndarray]:
     n4 = _unit(np.cross(p[:, 2] - p[:, 1], p[:, 3] - p[:, 1]))
     warp = np.maximum(np.degrees(np.arccos(np.clip(np.einsum("mi,mi->m", n1, n2), -1, 1))),
                       np.degrees(np.arccos(np.clip(np.einsum("mi,mi->m", n3, n4), -1, 1))))
+    d1 = np.linalg.norm(p[:, 2] - p[:, 0], axis=1)
+    d2 = np.linalg.norm(p[:, 3] - p[:, 1], axis=1)
+    h = np.abs(np.einsum("mki,mi->mk", p - p.mean(axis=1, keepdims=True), n)).max(axis=1)
+    warp_coef = 2.0 * h / np.maximum(d1 + d2, 1e-300)
     mids = 0.5 * (p + p[:, [1, 2, 3, 0]])
     a = _unit(mids[:, 2] - mids[:, 0])
     b = _unit(mids[:, 3] - mids[:, 1])
@@ -109,6 +219,7 @@ def quad_measures(xyz: np.ndarray, quads: np.ndarray) -> dict[str, np.ndarray]:
     jmax = jac.max(axis=1)
     return {"min_jacobian": jac.min(axis=1), "jacobian_ratio": jac.min(axis=1) / np.where(jmax > 0, jmax, 1.0),
             "aspect": lengths.max(axis=1) / np.maximum(lengths.min(axis=1), 1e-300), "warp_deg": warp,
+            "warp_coef": warp_coef,
             "skew_deg": ang, "taper": taper, "min_angle_quad": angles.min(axis=1),
             "max_angle_quad": angles.max(axis=1)}
 
@@ -182,4 +293,5 @@ def element_angle_deg(radius: float, size: float) -> float:
     return math.degrees(size / radius) if radius > 0 else 0.0
 
 
-__all__ = ["LIMITS", "TRIA_SHARE", "measure", "quad_measures", "tria_measures"]
+__all__ = ["LIMITS", "NASTRAN_LIMITS", "TRIA_SHARE", "measure", "nastran_past", "quad_measures",
+           "flip_past_trias", "split_past_quads", "tria_measures"]

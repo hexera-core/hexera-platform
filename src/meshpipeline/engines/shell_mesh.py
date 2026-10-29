@@ -112,4 +112,76 @@ def edge_census(mesh: ShellMesh) -> dict:
             "junction": junction, "normals_disagree": clash, "free_edges": free}
 
 
-__all__ = ["ShellMesh", "edge_census", "edge_users", "orient"]
+#: SHMESH-12: an element edge shorter than the floor (FLOOR_WALLS times the wall: below what a shell carries) and
+#: either shorter than SHORT_SHARE of the longest edge of every element on it, or than SHORT_SHARE of the floor
+#: itself, is a CAD sliver (a 0.002 mm edge where two kayak panels nearly meet; a 0.2 mm step meshed among 1.5 mm
+#: edges): its two ends become one node
+SHORT_SHARE = 0.2
+
+
+def collapse_short(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int], t_face: list[int],
+                   limit: np.ndarray) -> tuple[np.ndarray, np.ndarray, list[int], list[int], int]:
+    """SHMESH-12: merge the two ends of every element edge shorter than `limit[face]` (the smaller of its elements'
+    faces' floors) and either than SHORT_SHARE of the longest edge of each element on it or than SHORT_SHARE of
+    that floor. A cluster of merged nodes keeps the one most faces meet at (a junction or a corner holds its
+    place), the lowest numbered on a tie, where it is. A triangle left with two corners one is dropped; a quad
+    with one pair merged becomes a triangle, with more is dropped. Returns (quads, trias, their faces, how many
+    nodes merged); the nodes themselves stay (unused ones are dropped by the caller)."""
+    n = len(xyz)
+    elems = [(q, f) for q, f in zip(quads.tolist(), q_face, strict=True)] + \
+            [(t, f) for t, f in zip(trias.tolist(), t_face, strict=True)]
+    lim: dict[tuple[int, int], float] = {}
+    faces_at: list[set[int]] = [set() for _ in range(n)]
+    for conn, f in elems:
+        p = xyz[conn]
+        longest = float(np.linalg.norm(p[list(range(1, len(conn))) + [0]] - p, axis=1).max())
+        for i, a in enumerate(conn):
+            faces_at[a].add(f)
+            b = conn[(i + 1) % len(conn)]
+            key = (a, b) if a < b else (b, a)
+            lim[key] = min(lim.get(key, np.inf), max(SHORT_SHARE * float(limit[f]),
+                                                      min(float(limit[f]), SHORT_SHARE * longest)))
+    short = sorted((float(np.linalg.norm(xyz[a] - xyz[b])), a, b) for (a, b), m in lim.items()
+                   if float(np.linalg.norm(xyz[a] - xyz[b])) < m)
+    if not short:
+        return quads, trias, list(q_face), list(t_face), 0
+    parent = list(range(n))
+
+    def root(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def better(a: int, b: int) -> bool:
+        return (len(faces_at[a]), -a) > (len(faces_at[b]), -b)
+
+    for _d, a, b in short:
+        ra, rb = root(a), root(b)
+        if ra == rb:
+            continue
+        if better(ra, rb):
+            parent[rb] = ra
+        else:
+            parent[ra] = rb
+    to = np.array([root(a) for a in range(n)], dtype=np.int64)
+    merged = int((to != np.arange(n)).sum())
+    out_q, out_t, fq, ft = [], [], [], []
+    for conn, f in elems:
+        c = [int(to[a]) for a in conn]
+        # drop repeats next to each other (round the element)
+        kept = [c[i] for i in range(len(c)) if c[i] != c[(i + 1) % len(c)]]
+        if len(set(kept)) != len(kept):
+            continue
+        if len(kept) == 4:
+            out_q.append(kept)
+            fq.append(f)
+        elif len(kept) == 3:
+            out_t.append(kept)
+            ft.append(f)
+    Q = np.array(out_q, dtype=np.int64).reshape(-1, 4)
+    T = np.array(out_t, dtype=np.int64).reshape(-1, 3)
+    return Q, T, fq, ft, merged
+
+
+__all__ = ["ShellMesh", "edge_census", "edge_users", "collapse_short", "orient"]

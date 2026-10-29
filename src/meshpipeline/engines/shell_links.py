@@ -1,7 +1,7 @@
 # Responsibility: The SHELL-TO-SOLID JOIN that carries bending moments (design section 2.5, SHLINK-1..3,
 # placeholders): the linear constraints that tie a shell mesh to a solid mesh on a mixed part, written per solver.
-# Boundaries: pure numpy over node coordinates; it meshes nothing. CalculiX / Abaqus *EQUATION text here; the
-# Nastran (RBE3) and Ansys (CE) forms follow the same node choice.
+# Boundaries: pure numpy over node coordinates; it meshes nothing. CalculiX / Abaqus *EQUATION, Nastran MPC and
+# Ansys CE text here, the same ties in each (only CalculiX's is solved in our tests).
 # Collaborates with: engines/shell_mesh.py (the shell side), engines/shell_writers.py (writes the decks),
 # tests/unit/engines/test_shell_textbook.py (the CalculiX proof cases).
 """THE SHELL-TO-SOLID JOIN.
@@ -109,4 +109,43 @@ def equations(ties: list[Tie]) -> list[str]:
     return lines
 
 
-__all__ = ["OVERLAP_WALLS", "Tie", "band_ties", "equations", "face_ties"]
+def _terms(t: Tie) -> list[tuple[int, int, float]]:
+    """The tie as sum c_j u_j = 0: the dependent first (1), the rest moved to its side."""
+    return [(t.node, t.dof, 1.0)] + [(n, d, -c) for n, d, c in t.terms if abs(c) > 1e-14]
+
+
+def nastran_mpcs(ties: list[Tie], sid: int = 1) -> list[str]:
+    """The Nastran form: one MPC card per tie (sum A_j u_j = 0, the first grid the dependent one), in large fixed
+    fields (16 characters: a 1/3 keeps its digits). The small-field layout - SID, two (grid, component,
+    coefficient) triplets a line, a continuation's first field blank - laid four fields a line, continued by '*'.
+    The case control must select it: MPC = sid."""
+    from meshpipeline.engines.fea_writers import _f16
+
+    lines: list[str] = []
+    for t in ties:
+        trip = [[f"{n:>16}", f"{d:>16}", _f16(c)] for n, d, c in _terms(t)]
+        data = [f"{sid:>16}", *trip[0], *(trip[1] if len(trip) > 1 else [" " * 16] * 3), " " * 16]
+        for i in range(2, len(trip), 2):
+            pair = trip[i] + (trip[i + 1] if i + 1 < len(trip) else [" " * 16] * 3)
+            data += [" " * 16, *pair, " " * 16]
+        for i in range(0, len(data), 4):
+            lines.append(("MPC*    " if i == 0 else "*       ") + "".join(data[i:i + 4]).rstrip())
+    return lines
+
+
+_ANSYS_DOF = {1: "UX", 2: "UY", 3: "UZ", 4: "ROTX", 5: "ROTY", 6: "ROTZ"}
+
+
+def ansys_ces(ties: list[Tie]) -> list[str]:
+    """The Ansys form: one constraint equation per tie (0 = sum C_j u_j), CE with three terms a command and
+    CE,HIGH carrying on the highest-numbered equation."""
+    lines: list[str] = []
+    for t in ties:
+        terms = [f"{n},{_ANSYS_DOF[d]},{c:.12g}" for n, d, c in _terms(t)]
+        lines.append("CE,NEXT,0," + ",".join(terms[:3]))
+        for i in range(3, len(terms), 3):
+            lines.append("CE,HIGH,0," + ",".join(terms[i:i + 3]))
+    return lines
+
+
+__all__ = ["OVERLAP_WALLS", "Tie", "ansys_ces", "band_ties", "equations", "face_ties", "nastran_mpcs"]

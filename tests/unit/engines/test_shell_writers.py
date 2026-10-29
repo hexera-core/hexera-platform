@@ -60,3 +60,69 @@ def test_every_file_reads_back_the_same_mesh(tmp_path, units):
 def test_a_small_field_real_keeps_its_digits(x):
     s = sw._r8(x)
     assert len(s) <= 8 and sw._real(s) == pytest.approx(x, rel=1e-4)
+
+
+def _ties():
+    from meshpipeline.engines.shell_links import Tie
+
+    # a shell node tied to the mean of three solid nodes (SHLINK-1), and a solid node riding on a shell (SHLINK-2)
+    return [Tie(7, 1, [(11, 1, 1 / 3), (12, 1, 1 / 3), (13, 1, 1 / 3)]),
+            Tie(20, 3, [(7, 3, 0.5), (8, 3, 0.5), (7, 4, 1.25), (8, 5, -0.75)])]
+
+
+def _parse(lines, head):
+    eqs, cur = [], None
+    for ln in lines:
+        f = ln.split(",")
+        if f[0] == head and not (head == "CE" and f[1] == "HIGH"):
+            cur = []
+            eqs.append(cur)
+            f = f[2:] if head == "MPC" else f[3:]
+        elif head == "MPC" and f[0] == "" and f[1] == "":
+            f = f[2:]
+        elif head == "CE" and f[1] == "HIGH":
+            f = f[3:]
+        assert cur is not None
+        for i in range(0, len(f), 3):
+            cur.append((int(f[i]), f[i + 1], float(f[i + 2])))
+    return eqs
+
+
+def test_the_moment_join_writes_the_same_ties_for_nastran_and_ansys():
+    from meshpipeline.engines.shell_links import ansys_ces, equations, nastran_mpcs
+
+    ties = _ties()
+    want = [[(t.node, t.dof, 1.0)] + [(n, d, -c) for n, d, c in t.terms] for t in ties]
+    mpc = nastran_mpcs(ties, sid=4)
+    assert all(ln.startswith(("MPC*    ", "*       ")) and len(ln) <= 72 for ln in mpc)
+    cards: list[list[str]] = []
+    for ln in mpc:
+        if ln.startswith("MPC*"):
+            cards.append([])
+        cards[-1] += [ln[8 + 16 * i:24 + 16 * i] for i in range(4)]
+    assert all(int(c[0]) == 4 for c in cards)
+    got = []
+    for c in cards:
+        tok = [f.strip() for f in c[1:] if f.strip()]
+        got.append([(int(tok[i]), int(tok[i + 1]), float(tok[i + 2])) for i in range(0, len(tok), 3)])
+    assert got == [[(n, d, pytest.approx(c)) for n, d, c in eq] for eq in want]
+    dof = {"UX": 1, "UY": 2, "UZ": 3, "ROTX": 4, "ROTY": 5, "ROTZ": 6}
+    ce = ansys_ces(ties)
+    assert ce[0].startswith("CE,NEXT,0,") and any(ln.startswith("CE,HIGH,0,") for ln in ce)
+    got = [[(n, dof[d], c) for n, d, c in eq] for eq in _parse(ce, "CE")]
+    assert got == [[(n, d, pytest.approx(c)) for n, d, c in eq] for eq in want]
+    assert equations(ties)[0] == "*EQUATION"
+
+
+def test_pynastran_reads_the_moment_join_mpcs(tmp_path):
+    bdf_mod = pytest.importorskip("pyNastran.bdf.bdf")
+    from meshpipeline.engines.shell_links import nastran_mpcs
+
+    grids = [f"GRID,{i},,{float(i)},0.,0." for i in (7, 8, 11, 12, 13, 20)]
+    (tmp_path / "j.bdf").write_text("\n".join([*grids,*nastran_mpcs(_ties(), sid=4), "ENDDATA"]) + "\n")
+    b = bdf_mod.BDF(debug=None)
+    b.read_bdf(str(tmp_path / "j.bdf"), punch=True, xref=False)
+    mpcs = b.mpcs[4]
+    assert len(mpcs) == 2
+    assert mpcs[1].nodes == [20, 7, 8, 7, 8] and [int(c) for c in mpcs[1].components] == [3, 3, 3, 4, 5]
+    assert mpcs[1].coefficients == pytest.approx([1.0, -0.5, -0.5, -1.25, 0.75])
