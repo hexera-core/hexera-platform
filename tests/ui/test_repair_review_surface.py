@@ -110,9 +110,11 @@ def test_a_parked_run_opens_review_with_the_first_groups_sample(live):
     out = live.evaluate("""({
       rail: [...document.querySelectorAll('.rv-rail li')].map(li => [li.dataset.group, li.className]),
       item: document.querySelector('.rv-item').textContent,
+      title: document.querySelector('.rv-title').textContent,
       full: getComputedStyle(document.querySelector('.rv')).position,
       count: document.querySelector('.rv-step').textContent,
     })""")
+    assert "CAD Repair System" in out["title"]
     assert [r[0] for r in out["rail"]] == ["gap", "seam", "odd"]
     assert "current" in out["rail"][0][1] and "todo" in out["rail"][1][1]
     assert out["full"] == "fixed", "the review is not full screen"
@@ -239,6 +241,7 @@ def test_the_parked_run_page_states_the_count_and_the_promise(live):
       const { parkedCopy } = await import('/static/js/review/review.js');
       return parkedCopy({open: 8, decided: 0, groups: [1, 2, 3]});
     })()""")
+    assert "CAD Repair System is waiting on you" in out, out
     assert "8" in out and "nothing was changed without you" in out.lower(), out
 
 

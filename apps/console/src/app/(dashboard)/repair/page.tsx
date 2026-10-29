@@ -1,16 +1,15 @@
-import { notFound, redirect } from "next/navigation";
+import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
 import { ownerIdFromSession } from "@/lib/auth/session";
 
-// CAD repair proof of concept.
+// CAD Repair System evidence.
 //
 // Everything on this page is a measured result, not marketing copy: the turntables under
 // /repair-poc/ are renders of real corpus files before and after the pipeline's repair wrote
 // them, and every number below comes from the corpus run rows (re-inspection of the written
-// file, never the repair's own claim). The page is static evidence of what the flagged engine
-// does today; it drives no repair itself. Gated by CAD_REPAIR_POC, the same posture as the
-// pipeline's own CAD_REPAIR_ENABLED: off everywhere a deployment does not say otherwise.
+// file, never the repair's own claim). The page is static evidence of what the system does today;
+// it drives no repair itself. The live interaction happens in the run review surface.
 
 type Showcase = {
   slug: string;
@@ -83,10 +82,7 @@ const CORPUS_STATS = [
   { value: "0", label: "damaged results written" },
 ] as const;
 
-export default async function RepairPocPage() {
-  if (process.env.CAD_REPAIR_POC !== "true") {
-    notFound();
-  }
+export default async function RepairPage() {
   const ownerId = ownerIdFromSession(await auth());
   if (!ownerId) {
     redirect("/sign-in");
@@ -97,9 +93,9 @@ export default async function RepairPocPage() {
       <div className="page__head">
         <div>
           <p className="page__eyebrow">Proof of concept</p>
-          <h1 className="page__title">CAD repair</h1>
+          <h1 className="page__title">CAD Repair System</h1>
           <p className="page__intro">
-            Broken CAD stops a mesh before it starts. The repair engine locates each defect,
+            Broken CAD stops a mesh before it starts. The CAD Repair System locates each defect,
             repairs only what it can name, and credits a fix only by re-reading the file it
             wrote. Both parts below are real corpus files; red marks the located defects.
           </p>

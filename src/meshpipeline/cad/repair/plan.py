@@ -19,15 +19,10 @@ logger = logging.getLogger(__name__)
 
 # WHY THE CHOOSING SITS BEHIND A PROTOCOL.
 #
-# Repair is ONE surface with two portions: a deterministic one, built first, and a
-# model-directed one, built later. This protocol is the seam between them, not a boundary
-# between two subsystems - both portions choose from the same bounded operation catalogue, run
-# the same session, and are judged by the same caps. Nearly everything about safety - the caps,
-# the progress rule, the rollback - lives in the session, so choosing badly wastes a budget
-# rather than damaging a part. What either portion chooses is which of the bounded operations
-# (`operations.OPERATIONS`) to point at which located defect, and nothing more. Keeping that
-# behind one small interface is what lets the two portions be measured against each other on
-# one corpus without either being a rewrite of the other.
+# CAD Repair System has one planner path. Optional directives from an engineer, replay, or model
+# enter that path before its bounded rules fallback; every candidate uses the same operation
+# catalogue, session, caps, progress rule, and rollback. Choosing badly therefore wastes budget
+# rather than damaging a part. This protocol keeps the operation choice behind one small interface.
 #
 # THE ONE EXCEPTION, AND IT IS NOT A SMALL ONE. For a SEALED THROUGH-HOLE - both rims of a missing
 # bore wall patched flat - the refusal below is the ONLY defence in the system. Nothing downstream
@@ -35,15 +30,14 @@ logger = logging.getLogger(__name__)
 # is skipped because a shape with a free boundary has `solids == 0`, the patch area is declared by
 # the fill so `_accounted` passes, and the progress rule correctly sees the rim's `open_shell`
 # gone. Every check agrees the part was repaired, and the customer has a plate with no bolt hole.
-# So the decision is carried by the PAIRED-RIM GUARD (`paired_rim_fingerprints`): RulesPlanner
-# refuses filling for the run once any pair is seen, DirectedPlanner applies the same guard to
-# every directive fill except one engineer's single-rim approval, and a check that cannot run, or
+# So the decision is carried by the PAIRED-RIM GUARD (`paired_rim_fingerprints`): the rules fallback
+# refuses filling for the run once any pair is seen, and RepairPlanner applies the same guard to
+# every directive fill except one engineer's single-rim approval. A check that cannot run, or
 # cannot resolve or judge (a non-planar loop) a candidate rim, fails closed. The fill operation itself still has no rim check, so a NEW planner must call this
 # guard too - a planner that can be replaced is only as safe as the guard it consults. Do not read
 # the paragraph above as "the session makes a planner harmless"; for this one behaviour it does not.
 #
-# The rules below are deliberately plain. They are the deterministic portion of this surface,
-# and the reference the model-directed portion is measured against - not a rival engine.
+# The rules below are the planner's deliberately plain fallback and benchmark reference.
 
 #: Worse first. The loop exists to clear errors; warnings are worth attending to only once the
 #: errors are gone, because a sliver edge beside an open shell is not the part's problem.
@@ -68,11 +62,10 @@ class Candidate:
     targets: tuple[EntityRef, ...]
     defect_code: DefectCode
     defect_fingerprint: str
-    #: Set only by DirectedPlanner: the directive this proposal plays. An autonomous proposal has none.
+    #: Set only when RepairPlanner is playing a directive. A fallback proposal has none.
     item_id: str | None = None
     source: str = ""
-    #: The model-directed portion's stamp (`llm:<n>`) and its confidence; empty for every
-    #: proposal the deterministic portion makes on its own.
+    #: Optional model guidance stamp (`llm:<n>`) and confidence; empty for fallback proposals.
     directive_id: str | None = None
     planner_confidence: float | None = None
 
@@ -145,7 +138,7 @@ class RunHistory:
 
 
 class Planner(Protocol):
-    """Chooses the next repair to try. Both portions of the repair surface implement this."""
+    """Chooses the next operation for CAD Repair System to try."""
 
     def propose(self, defects, history: RunHistory, *, shape) -> Candidate | None:
         ...
@@ -339,7 +332,7 @@ class RulesPlanner:
                 claimed = True
                 if any(t.fingerprint in held for t in targets):
                     # AIMED AT A HELD ENTITY, by an operation answering some OTHER code on it: the
-                    # same refusal DirectedPlanner gives a model's directive. Filtering by code
+                    # same refusal RepairPlanner gives a model-authored directive. Filtering by code
                     # alone let a small_edge fix change the very face the engineer is being asked
                     # about. The defect is not refused outright - a later operation whose targets
                     # avoid the held entity may still claim it.

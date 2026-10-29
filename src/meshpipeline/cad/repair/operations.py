@@ -821,8 +821,8 @@ class FillPlanarHole:
     because a shape with a free boundary has `solids == 0`, the area is declared by this operation
     so `_accounted` passes, and the progress rule correctly sees the rim's `open_shell` gone - the
     part is sealed and every check agrees it was repaired. So every path that proposes a fill
-    consults `plan.paired_rim_fingerprints`: RulesPlanner refuses filling for the run once a pair
-    is seen, and DirectedPlanner (where a model's directives play) applies the same guard to every
+    consults `plan.paired_rim_fingerprints`: the rules fallback refuses filling for the run once a
+    pair is seen, and RepairPlanner applies the same guard to every directive-proposed
     fill except one engineer's single-rim approval. The guard fails closed when it cannot run, or
     cannot resolve or judge (a non-planar loop) a candidate rim. A new planner that proposes fills without it would bypass the
     only defence.
