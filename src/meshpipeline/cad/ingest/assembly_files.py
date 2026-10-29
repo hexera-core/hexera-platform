@@ -227,7 +227,7 @@ def join_occ(members: list[Member], dest: Path, scale: dict[int, float] | None =
 
     doc = TDocStd_Document(TCollection_ExtendedString("assembly"))
     tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
-    from meshpipeline.cad.fea_assembly import match_body_names, read_body_names, solids
+    from meshpipeline.cad.fea_assembly import match_body_names, read_body_names_here, solids
 
     for k_m, m in enumerate(members):
         shape = _read(m.path)
@@ -239,7 +239,7 @@ def join_occ(members: list[Member], dest: Path, scale: dict[int, float] | None =
         said: list[str] = []
         if m.path.suffix.lower() in STEP_SUFFIXES and bodies:
             try:
-                said = match_body_names(read_body_names(m.path), bodies)
+                said = match_body_names(read_body_names_here(m.path), bodies)   # already in its own process
             except Exception:  # noqa: BLE001 - a courtesy: the file's name still names it
                 said = []
         if len(bodies) <= 1:

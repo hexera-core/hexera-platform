@@ -210,7 +210,7 @@ class RepairSession:
             # nothing. That makes `kept` stop meaning "repaired something", which is precisely the
             # signal this slice exists to accumulate.
             #
-            # It matters most for the seat a MODEL takes in slice 8: the rules planner proposes
+            # It matters most for the model-directed portion: the deterministic portion proposes
             # only from the defect list, but a model can propose any target it likes, and this is
             # the check that stops a confident wrong guess being recorded as a success. Refused
             # before the kernel is called, so a bogus target costs nothing.

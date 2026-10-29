@@ -135,12 +135,13 @@ on:
         required: false
         default: true
         type: boolean
-      # THE LLM PLANNER'S POSTURE, chosen here like cad_repair. "off" exports nothing, so the API and
-      # fleet keep the shipped default (rules only). "shadow" asks the model and records beside the
-      # rules without acting; "live" lets its plan act inside the repair caps. Declarative: a redeploy
+      # THE POSTURE OF REPAIR'S MODEL-DIRECTED PORTION, chosen here like cad_repair. "off" exports
+      # nothing, so the API and fleet keep the shipped default (repair's deterministic portion
+      # alone). "shadow" asks the model and records beside that portion without acting; "live" lets
+      # its directives act inside the same repair caps. Declarative: a redeploy
       # left at "off" drops the flag from an environment that had it. Only meaningful with cad_repair.
       llm_planner:
-        description: "llm_planner - the model's posture in the CAD repair planner on the targeted environment: off (rules only), shadow (recorded, never acted on) or live"
+        description: "llm_planner - the posture of the CAD repair surface's model-directed portion on the targeted environment: off (its deterministic portion alone), shadow (recorded, never acted on) or live"
         required: false
         default: "off"
         type: choice

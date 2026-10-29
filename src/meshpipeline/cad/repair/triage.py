@@ -24,10 +24,10 @@ from meshpipeline.cad.repair.operations import MAX_SMALL_FACE_REMOVALS as _MAX_S
 # The roadmap's posture is that AI classifies, plans and explains while deterministic tools own
 # the geometry. Before a model can be allowed to recommend anything, there has to be something to
 # measure it against and a corpus to learn from, and this repository has neither yet: no operator
-# has made a recorded repair decision. So this is the BASELINE - rules over the defect taxonomy
-# the inspection already produces. It is what a model must beat on operator agreement before it
-# may take this function's place, and the operator decisions it is shown beside are the labels
-# that training will use.
+# has made a recorded repair decision. So this is the DETERMINISTIC PORTION - rules over the
+# defect taxonomy the inspection already produces. It is the reference the model-directed portion
+# is measured against on operator agreement, and the operator decisions it is shown beside are the
+# labels that training will use.
 #
 # It is also the shape the model will have to fit: a route, a confidence, the evidence behind it,
 # and the right to abstain. An honest "I do not know" is worth more than a confident guess about

@@ -247,9 +247,9 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
                                   (t.fingerprint for t in candidate.targets))
             continue
 
-        # THE FEEDBACK. Without this the planner proposes the same failing pair until the budget
-        # runs out, and nothing in the run has learned anything. In slice 8 this ledger is exactly
-        # what the model is shown on its next turn.
+        # THE FEEDBACK. Without this the same failing pair is proposed until the budget runs out,
+        # and nothing in the run has learned anything. Consumed only within this run: the
+        # model-directed portion plans ahead of the loop and never sees this ledger fill.
         history.mark_ineffective(candidate.defect_fingerprint, candidate.op.name)
         consecutive_misses += 1
         if consecutive_misses >= limits.stall_limit:
