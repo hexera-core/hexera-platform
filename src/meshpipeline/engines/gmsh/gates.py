@@ -47,7 +47,8 @@ def _gate_gmsh_manifest_valid(ctx: GateCtx) -> tuple[bool, str]:
     for key in ["schema_version", "geometry", "patches", "validation"]:
         if key not in manifest:
             return False, f"[MANIFEST_VALIDATION_FAILED] mesh_manifest.json missing required key: {key}"
-    if not (ws / "mesh.inp").exists():
+    from meshpipeline.engines.bucket_files import present
+    if not present(ws, "mesh.inp"):     # a big deck kept in the bucket is there (RUN-7)
         return False, ("[MANIFEST_VALIDATION_FAILED] mesh.inp missing - the FEA "
                        "deck (the deliverable) was not written; run_mesh again")
     q = manifest.get("quality", {}) or {}

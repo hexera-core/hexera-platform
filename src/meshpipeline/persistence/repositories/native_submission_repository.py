@@ -191,6 +191,55 @@ def still_owned(*, job_id, execution_generation: int, worker_token) -> bool:
         return cur.fetchone() is not None
 
 
+_OWNER_OF = """
+select j.status::text from native_submission_claims c join simulation_jobs j on j.id = c.job_id
+ where c.provider_reference = %(reference)s
+"""
+
+
+def owner_live(provider_reference: str) -> bool | None:
+    """Whether the job that started the remote run `provider_reference` (a claim's reference: "gce:<instance>")
+    is still running: True while its job has not ended, False once it has, None when no claim names it.
+    Read-only and synchronous (the VM sweep, adapters/mesh_execution/vm_sweep.py)."""
+    from meshpipeline.persistence.job_state import TERMINAL_STATES
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(_OWNER_OF, {"reference": str(provider_reference)})
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return str(row[0]) not in {s.name for s in TERMINAL_STATES}
+
+
+def cancelled_by_owner(*, job_id) -> bool:
+    """Whether the job's owner cancelled it (its status is `cancelled`) - as opposed to the job being
+    taken over or its lease lapsing, after which its remote run is still worth collecting."""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("select status::text from simulation_jobs where id = %(job)s", {"job": str(job_id)})
+        row = cur.fetchone()
+    return row is not None and str(row[0]) == "cancelled"
+
+
+#: THE SAME RUN FROM AN EARLIER GENERATION: the same job, the same planned operation, the same
+#: payload and engine - newest first. A failed one is no run to adopt.
+_EARLIER = """
+select operation_key
+  from native_submission_claims
+ where job_id = %(job)s and execution_generation < %(gen)s and semantic_operation = %(op)s
+   and payload_digest = %(digest)s and engine = %(engine)s and disposition <> 'failed'
+ order by execution_generation desc
+"""
+
+
+def earlier_runs(*, job_id, execution_generation: int, semantic_operation: str, payload_digest: str,
+                 engine: str) -> list[str]:
+    """The operation keys of this same run submitted under an earlier generation of the job (RUN-4):
+    a new owner collects one still running, or already finished, instead of meshing again."""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(_EARLIER, {"job": str(job_id), "gen": int(execution_generation),
+                               "op": semantic_operation, "digest": payload_digest, "engine": engine})
+        return [str(r[0]) for r in cur.fetchall()]
+
+
 def token_fingerprint(worker_token) -> str:
     # The project's safe representation: a raw worker token is never stored, logged or published.
     return hashlib.sha256(str(worker_token).encode()).hexdigest()[:32]

@@ -183,6 +183,11 @@ def _on_worker_ready(sender=None, **kwargs):
 
     from meshpipeline.adapters.mesh_execution.access_check import run_at_start
     threading.Thread(target=run_at_start, name="mesh-access-check", daemon=True).start()
+    # ...and sweep this deployment's big-machine VMs that have nothing left to do (stopped, result written,
+    # job ended) now and every quarter hour, whatever became of the worker that started them (RUN-4,
+    # adapters/mesh_execution/vm_sweep.py; job 6cb2d606's VM billed for hours after its run)
+    from meshpipeline.adapters.mesh_execution.vm_sweep import run_forever
+    threading.Thread(target=run_forever, name="mesh-vm-sweep", daemon=True).start()
 
 
 @worker_process_shutdown.connect

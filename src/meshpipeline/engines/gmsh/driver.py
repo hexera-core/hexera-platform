@@ -1437,13 +1437,14 @@ def main(workspace: str) -> int:
         gmsh.finalize()
 
 
-def _write_deck(gmsh, ws: Path, *, discrete: bool, source: str = "Hexera gmsh engine", by_tag: bool = False) -> dict:
+def _write_deck(gmsh, ws: Path, *, discrete: bool, source: str = "Hexera gmsh engine", by_tag: bool = False,
+                retag: dict[int, int] | None = None, notes: list[str] | None = None) -> dict:
     """mesh.inp from the meshed model: the solid group's volumes, every CAD face that bounds
     them as Face_k, each named surface group (the plan's, and the default group) as an alias,
     and the CAD's own face names where it has them - read from the staging record for a B-rep,
     and the surface's own names (an STL solid per patch) for a discrete surface. `by_tag`: a CAD solid's
     faces named by their own tags (MESH-9 leaves a merged face with no triangle)."""
-    from meshpipeline.engines.gmsh.abaqus_deck import from_gmsh, write_inp
+    from meshpipeline.engines.gmsh.abaqus_deck import from_gmsh, retagged, write_inp
     solid = [int(t) for _d, p in gmsh.model.getPhysicalGroups(3)
              for t in gmsh.model.getEntitiesForPhysicalGroup(3, p)]
     if not solid:
@@ -1460,8 +1461,12 @@ def _write_deck(gmsh, ws: Path, *, discrete: bool, source: str = "Hexera gmsh en
             names = names_for_model(gmsh, ws)
     except Exception as exc:  # noqa: BLE001 - a courtesy: every face is still Face_k
         print(f"[GMSH] CAD face names not read: {exc}", file=sys.stderr)
-    return write_inp(ws / "mesh.inp", from_gmsh(gmsh, sorted(set(solid)), by_tag=by_tag), aliases,
-                     face_names=names, units="m", source=source)
+    if retag:
+        # MESH-8: an opened solid's faces named for the CAD faces they came from (`retag`: its tag -> the CAD's)
+        names = {int(retag.get(int(t), int(t))): n for t, n in names.items()}
+        aliases = {k: [int(retag.get(int(t), int(t))) for t in v] for k, v in aliases.items()}
+    return write_inp(ws / "mesh.inp", retagged(from_gmsh(gmsh, sorted(set(solid)), by_tag=by_tag), retag), aliases,
+                     face_names=names, units="m", source=source, notes=notes)
 
 
 #: Where the driver leaves the reason it stopped without a mesh, for finalize to tell the user.

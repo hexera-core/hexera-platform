@@ -19,7 +19,9 @@ def read_msh(workspace, *, by_face: bool = False, face_names: dict[int, str] | N
     -> its name (Part_k_Face_j); the surfaces of one name are one patch."""
     msh = Path(workspace) / "mesh.msh"
     if not msh.exists() or msh.stat().st_size == 0:
-        return None
+        # A BIG FEA MESH STAYED IN THE BUCKET (engines/bucket_files, RUN-7): the mesher wrote its
+        # surface, as this reads it, beside the record - read that, never the volume
+        return load_viewer_mesh(Path(workspace)) if by_face else None
     import gmsh
     import numpy as np
     _mine = not gmsh.isInitialized()
@@ -118,3 +120,135 @@ def surface_patches_of(mesh: dict | None) -> dict[str, list]:
 
 def surface_patches(workspace) -> dict[str, list]:
     return surface_patches_of(read_msh(workspace))
+
+
+#: The most triangles the stand-in view of a big mesh draws: past it each face is thinned on its own
+#: (its border kept exactly, so faces still meet), for a view a browser opens and a worker holds.
+VIEW_MAX_TRIANGLES = 1_500_000
+
+
+def downsample(mesh: dict, max_triangles: int = VIEW_MAX_TRIANGLES) -> dict:
+    """`mesh` (read_msh's by-face form) with its surface thinned to about `max_triangles`: each patch
+    decimated on its own (VTK's DecimatePro, topology kept, no border vertex removed) - the shape
+    and every face's outline as before, fewer triangles inside. Unchanged when already under."""
+    import numpy as np
+    total = sum(max(0, len(poly) - 2) for _n, polys in mesh["patches"] for poly in polys)
+    if total <= max_triangles:
+        return mesh
+    import vtk
+    from vtk.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray, vtk_to_numpy
+    keep = max_triangles / float(total)
+    points = np.asarray(mesh["points"], dtype=np.float64)
+    out_points: list = []
+    out_patches: list = []
+    at = 0
+    for name, polys in mesh["patches"]:
+        tris = np.asarray([[poly[0], poly[k], poly[k + 1]] for poly in polys for k in range(1, len(poly) - 1)],
+                          dtype=np.int64)
+        if not len(tris):
+            continue
+        used, local = np.unique(tris, return_inverse=True)
+        local = local.reshape(-1, 3)
+        pd = vtk.vtkPolyData()
+        pts = vtk.vtkPoints()
+        pts.SetData(numpy_to_vtk(points[used], deep=True))
+        pd.SetPoints(pts)
+        cells = vtk.vtkCellArray()
+        cells.ImportLegacyFormat(numpy_to_vtkIdTypeArray(
+            np.hstack([np.full((len(local), 1), 3, dtype=np.int64), local]).ravel(), deep=True))
+        pd.SetPolys(cells)
+        dec = vtk.vtkDecimatePro()
+        dec.SetInputData(pd)
+        dec.SetTargetReduction(max(0.0, min(0.99, 1.0 - keep)))
+        dec.PreserveTopologyOn()
+        dec.BoundaryVertexDeletionOff()
+        dec.SplittingOff()
+        dec.Update()
+        res = dec.GetOutput()
+        if res.GetNumberOfPolys():
+            p = vtk_to_numpy(res.GetPoints().GetData())
+            conn = vtk_to_numpy(res.GetPolys().GetConnectivityArray()).reshape(-1, 3)
+        else:
+            p, conn = points[used], local
+        out_points.append(np.asarray(p, dtype=np.float64))
+        out_patches.append((name, (conn + at).tolist()))
+        at += len(p)
+    return {"points": np.vstack(out_points) if out_points else points[:0], "cells": [], "patches": out_patches,
+            "downsampled": {"triangles": total, "shown": sum(len(p) for _n, p in out_patches)}}
+
+
+def save_viewer_mesh(path: Path, mesh: dict) -> None:
+    """`mesh` (read_msh's by-face form) as the viewer needs it once the volume is gone: the points
+    the surface uses and every patch's polygons - no volume cells (an FEA view draws none) - thinned
+    to VIEW_MAX_TRIANGLES when the surface is bigger (downsample)."""
+    import numpy as np
+    mesh = downsample(mesh, VIEW_MAX_TRIANGLES)
+    sizes: list[int] = []
+    nodes: list[int] = []
+    names: list[str] = []
+    counts: list[int] = []
+    for name, polys in mesh["patches"]:
+        names.append(str(name))
+        counts.append(len(polys))
+        for poly in polys:
+            sizes.append(len(poly))
+            nodes.extend(int(i) for i in poly)
+    flat = np.asarray(nodes, dtype=np.int64)
+    used, inverse = np.unique(flat, return_inverse=True) if len(flat) else (flat, flat)
+    with open(path, "wb") as fh:
+        np.savez_compressed(fh, points=np.asarray(mesh["points"], dtype=np.float64)[used],
+                            names=np.asarray(names, dtype=str), counts=np.asarray(counts, dtype=np.int64),
+                            sizes=np.asarray(sizes, dtype=np.int64),
+                            nodes=np.asarray(inverse, dtype=np.int64).reshape(-1),
+                            full_triangles=np.asarray(
+                                [int((mesh.get("downsampled") or {}).get("triangles") or 0)], dtype=np.int64))
+
+
+def load_viewer_mesh(workspace: Path) -> dict | None:
+    """The stand-in save_viewer_mesh wrote (engines/bucket_files.VIEWER_MESH_FILE), in read_msh's
+    by-face form; None when there is none, {} when it cannot be read (logged)."""
+    from meshpipeline.engines.bucket_files import VIEWER_MESH_FILE
+    p = Path(workspace) / VIEWER_MESH_FILE
+    if not p.is_file():
+        return None
+    import numpy as np
+    try:
+        with np.load(p, allow_pickle=False) as d:
+            points, names, counts = d["points"], [str(n) for n in d["names"]], d["counts"]
+            sizes, nodes = d["sizes"], d["nodes"]
+        patches: list = []
+        at = node_at = 0
+        for name, count in zip(names, counts):
+            polys = []
+            for s in sizes[at:at + int(count)]:
+                polys.append(nodes[node_at:node_at + int(s)].tolist())
+                node_at += int(s)
+            at += int(count)
+            patches.append((name, polys))
+        return {"points": points, "cells": [], "patches": patches}
+    except Exception as exc:  # noqa: BLE001 - the viewer degrades, it never fails a job
+        logger.warning("gmsh viewer stand-in unreadable: %s", exc)
+        return {}
+
+
+def write_surface_only(src: Path, dest: Path) -> bool:
+    """`src` without its volume elements: the boundary and its named groups, for the reviewer's
+    pictures of a mesh whose volume stayed in the bucket. True when written."""
+    import gmsh
+    _mine = not gmsh.isInitialized()
+    if _mine:
+        gmsh.initialize(interruptible=False)
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.open(str(src))
+        gmsh.model.removePhysicalGroups(gmsh.model.getPhysicalGroups(3))
+        for _d, tag in gmsh.model.getEntities(3):
+            gmsh.model.mesh.removeElements(3, tag)
+        gmsh.model.mesh.reclassifyNodes()
+        gmsh.option.setNumber("Mesh.SaveAll", 0)
+        gmsh.write(str(dest))
+        gmsh.model.remove()
+        return dest.is_file() and dest.stat().st_size > 0
+    finally:
+        if _mine:
+            gmsh.finalize()

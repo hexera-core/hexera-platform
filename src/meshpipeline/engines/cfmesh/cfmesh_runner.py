@@ -353,7 +353,14 @@ def machine_for_plan(workspace, plan: dict | None) -> dict:
     no such wall. Written into the workspace (contracts/mesh_machine) and returned."""
     from meshpipeline.contracts import mesh_machine as MM
     from meshpipeline.contracts.native_time import CLOUD_RUN_WALL_S
-    decision = MM.choose(process_gib=0.0, workspace_gib=0.0, why="cfMesh run plan")
+    # THE FILES IT WILL WRITE, from the plan (RUN-7): the machine's disk - and the Cloud Run job's
+    # memory, which holds its files - are sized by the mesh the plan expects, not left at nothing
+    try:
+        cells = max(0, int((plan or {}).get("estimated_cells") or 0))
+    except (TypeError, ValueError):
+        cells = 0
+    decision = MM.choose(process_gib=0.0, workspace_gib=cells * MM.FLOW_FILE_BYTES_PER_CELL / 2**30,
+                         why="cfMesh run plan")
     seconds = (plan or {}).get("estimated_seconds")
     decision = MM.for_time(decision, planned_s=float(seconds) if seconds else None,
                            wall_s=float(CLOUD_RUN_WALL_S))

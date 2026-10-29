@@ -7,10 +7,13 @@ release artifact that another engineer can re-run.
 
 ## Inputs And Current Contrast
 
-The CAD repair engine already has a conservative targeted loop: located defects, named entity
+The CAD repair surface already has a conservative targeted loop: located defects, named entity
 targets, per-operation caps, rollback on failed progress, and re-inspection of the written repair.
-The corpus runner reports before/after defects by re-reading the output file, and the LLM planner
-can run shadow or live behind the same repair session guardrails. The strongest current evidence is
+That loop is the surface's deterministic portion; its model-directed portion can run shadow or
+live behind the SAME session guardrails, choosing from the same bounded operation catalogue. They
+are two portions of one surface, so a comparison between them attributes a difference to model
+direction - never to a second engine. The corpus runner reports before/after defects by re-reading
+the output file. The strongest current evidence is
 the OCCT/NIST corpus work recorded in the demo package and in `devtools/validation/evidence/`.
 
 The accessible README contrast says the engine repairs unsewn geometry well, but its capability is
@@ -34,7 +37,7 @@ delta, topology stats) and a one-sentence `expected_repair`. Integration point: 
 track with labelled ground truth, scored strictly after the run — answers are never shown to the
 engine — while OCCT continues to represent messy real-world translator failures.
 
-A first blind dry run over that campaign (engine commit a044a017, rules planner, host kernel) found
+A first blind dry run over that campaign (engine commit a044a017, deterministic portion only, host kernel) found
 `small_face` on 42/50 files, triaged all 42 to manual cleanup, and attempted zero operations. That
 is the measured contrast with the generator's design: their defects surface as sliver/small-face
 geometry our triage currently routes away from repair, so triage reachability and a conservative
@@ -54,9 +57,11 @@ but its per-file bug-report provenance needs a redistribution review before bund
 files are safer for public redistribution and citation. Generated corpora from
 `hexera-cad-defect-generation` should be ours to publish only after license and teammate review.
 
-Baselines must be named and run from frozen artifacts. Minimum baselines are: no repair, current
-rules planner, current LLM shadow agreement, live LLM planner where enabled, and at least one
-external CAD kernel repair baseline when licensing permits. Mesh baselines must include the current
+Baselines must be named and run from frozen artifacts. Minimum baselines are: no repair, the
+repair surface's deterministic portion alone, its model-directed portion in shadow (agreement),
+its model-directed portion live where enabled, and at least one external CAD kernel repair
+baseline when licensing permits. The first three are passes of one surface, not rival engines;
+only the external kernel is a genuine second implementation. Mesh baselines must include the current
 default engine selection and at least one fixed-engine path per supported mesh engine.
 
 ## CAD-Repair Benchmark
@@ -86,10 +91,13 @@ These are the primary metrics for CAD repair.
 - Safety refusals: correct refusal rate on intentional openings and unsafe/generated traps.
 - Damage rate: any new warning-or-worse defect, solid loss, face loss, cap violation, or unaccounted
   area/volume change.
+- CAD simplicity: before/after face, edge, vertex, solid and kept-operation deltas, reported as
+  distributions so a valid repair that makes the model harder to mesh is visible.
 - Operation coverage: kept, rolled back, declined, and failed per operation.
 - Triage reachability: files routed to repair, review, manual cleanup, ask-customer, or no-op.
-- Planner value: live/shadow agreement, live repaired-defect delta versus rules-only, and decline
-  quality for unsupported operations.
+- Value of model direction: live/shadow agreement with the deterministic portion, the
+  repaired-defect delta live adds over the deterministic portion alone, and decline quality for
+  unsupported operations.
 - Downstream utility: repaired CAD reaches mesh staging and produces a valid mesh more often than
   the original.
 
@@ -123,7 +131,7 @@ These are the primary metrics for mesh generation.
 - Mesh quality: max non-orthogonality, skewness, negative volume count, layer completion, boundary
   patch integrity, region labels, and solver-readiness checks.
 - Fidelity: surface deviation from source CAD/STL, feature preservation, declared openings kept,
-  and no unintended sealed passages.
+  and no unintended sealed passages, reported as distributions separate from generic mesh quality.
 - Cost: wall time, container/runtime cost where available, CPU/GPU/memory peak, cells per second,
   and retry count.
 - Robustness: success under restart, checkpoint resume, worker takeover, and artifact delivery
@@ -136,6 +144,19 @@ Each run should produce a manifest containing source hash, selected engine, engi
 mesh statistics, quality criteria, solver-readiness verdict, timings, and links to VTK/OpenFOAM or
 other deliverables. Public figures should report both pass rate and quality distribution; a single
 pass/fail score hides too much.
+
+### Current native engine evidence
+
+Run `make benchmark-engines` against a current mesh image. The opt-in native benchmark exercises
+the production dispatch path for cfMesh, snappyHexMesh, Gmsh, snappy multi-region and VMTK. It also
+runs a curated CAD-to-Gmsh downstream matrix over a repairable loose-face export, a clean control,
+and an intentional through-passage: repair runs once per CAD input, the original is always meshed,
+and only an artifact actually delivered by repair is meshed as the repaired variant.
+
+This is engine evidence, not yet a publication table. The first downstream slice proves that a
+real repair can change a real native mesh outcome and that clean/unsafe inputs do not acquire a
+fabricated repaired variant. Broader original-versus-repaired comparisons for the CFD and
+specialized engines require domain-correct case authoring for those same CAD inputs.
 
 ## First Implementation Slice
 
