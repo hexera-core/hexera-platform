@@ -825,7 +825,7 @@ called, which patch is the interface, which are the ports. None of it is a physi
 
 The physical choices are not ours and are not guessed at. `solver_case.py` writes
 `<<HEXERA_FILL_THIS_IN>>` where the flow rate, the inlet temperature, the outlet pressure, the
-coolant and the metal go, and that token is one OpenFOAM cannot parse: an unfinished case stops on
+coolant and the metal go, and that token is not a NUMBER: an unfinished case stops on
 the first file that still has one. A plausible default is the worse failure, because 1 m/s of water
 at 20 C solves, publishes a peak temperature, and is wrong about the part.
 
@@ -1208,3 +1208,66 @@ On the run after the fix:
     position: inlet (inlet), outlet (outlet)
     conjugate: 2 stub(s) added 0.0000 mm3 to the coolant; inlet and outlet are cut out of zmax,
     0.903 mm and 0.903 mm across.
+
+### What the 336M run actually delivered
+
+| | |
+|---|---|
+| cells | 66,764,096 fluid + 269,902,486 solid = **336,666,582** |
+| interface | 21,637,041 faces, both sides, equal |
+| fluid volume | 5.51626e-5 m3 against 5.3661786893e-5 expected: 2.8% high, inside the 5% tolerance |
+| fluid cells | 65,290,108 hexahedra + 1,473,988 polyhedra |
+| cell sizes | 29.22 um .. 521.93 um |
+| quality | max non-orthogonality 48.65 (avg 6.21), max skewness 1.66, 0 skew faces, 0 small-determinant cells, checkMesh OK on both regions |
+| peak | 257,691,721,728 bytes = 240 GiB, on a 251 GB box |
+
+AND IT IS REFUSED, by the engine's own verdict:
+
+    fluid is in 5 disconnected piece(s), expected 2. Islands mean the cells are too coarse to hold
+    the passage together; this mesh will not solve even though checkMesh calls it OK.
+
+So the stretch of 3 along the channels is too far. The window is narrow and now bounded on both
+sides from measurement: stretch 6 was refused for the per-process octree ceiling (181,673,384 cells
+against 178,956,970) and stretch 3 fragments the coolant. With the ceiling lifted by the ranks,
+stretch 6 is buildable and is the rung `plan_two_scales` itself picked as fitting, so it is the run
+to do - not a coarser one.
+
+### The mesher is the fast part
+
+| stage | seconds |
+|---|---|
+| preparePar | 0.6 |
+| cartesianMesh, 8 ranks | 2,399.6 |
+| reconstructParMesh | 4,518.4 |
+| topoSet | 2,240.2 |
+| splitMeshRegions | 6,073.3 |
+| checkMesh fluid | 654.3 |
+| checkMesh solid | 1,903.3 |
+
+Four hours and fifty minutes, of which the MESH is forty minutes. Everything after it runs in one
+process on the merged mesh, and `reconstructParMesh` plus `splitMeshRegions` alone are 2.9 hours -
+4.4x the mesher they are serving.
+
+Two of those are addressable and both have been named already: the merge spends most of itself
+writing per-rank addressing nothing reads (`redistributePar -reconstruct` writes none), and the
+split's 6,073 s is a single process walking 336 million cells. The third, topoSet at 2,240 s, is
+`surfaceToCell` testing every cell centre against the coolant surface, which has a -parallel of
+its own.
+
+So the parallel chain's next question is not whether the mesher scales - it does - but whether the
+THREE SERIAL STAGES after it should stay serial. They were kept serial deliberately, because the
+ceiling belongs to the octree and nothing downstream shares it, and that reasoning is still right
+about correctness. It is wrong about time.
+
+### A claim of mine that was not true
+
+"a token OpenFOAM cannot parse", said of the solver case's blanks, in the module, its tests and
+this log. Checked on 2026-10-29 by running every file the writer produces through `foamDictionary`
+in the mesh image: all twelve parse, blanks and all. A dictionary is a stream of tokens and
+`<<HEXERA_FILL_THIS_IN>>` is a legal word in one; `foamDictionary` even reads the coupled condition
+straight back with the blank sitting in its `value`.
+
+What refuses it is the READ. `Istream >> scalar` on a word is a FOAM FATAL ERROR, so the case stops
+when a field is read rather than when it is parsed - later than claimed, still before anything is
+solved, and all the mechanism needs. But the two are different claims and only one of them is
+true, so the wording is now the true one everywhere it appears.

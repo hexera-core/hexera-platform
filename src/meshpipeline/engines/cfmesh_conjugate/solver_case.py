@@ -11,7 +11,7 @@ ports. None of it is a physical choice.
 
 The physical choices are not ours and are not guessed at: the flow rate, the inlet temperature,
 the outlet pressure, the metal and the coolant. Those are the customer's to decide after they
-have the mesh, and this writes `{}` in their place - a token OpenFOAM cannot parse, so a
+have the mesh, and this writes `BLANK` in their place - a token that is not a NUMBER, so a
 case nobody finished REFUSES TO RUN rather than running on a number someone invented. A plausible
 default is the worse failure here: 1 m/s of water at 20 C will solve, publish a peak temperature,
 and be wrong about the part.
@@ -37,9 +37,16 @@ from meshpipeline.engines.cfmesh_conjugate.conjugate import (
     SOLID_TO_FLUID,
 )
 
-#: THE TOKEN THAT STOPS AN UNFINISHED CASE. OpenFOAM cannot parse it, so every field left blank
-#: makes the solver exit on the file that names it instead of solving something plausible. The
-#: word says who has to fill it in.
+#: THE TOKEN THAT STOPS AN UNFINISHED CASE: it is not a NUMBER, so the first thing that reads it
+#: as one stops on it instead of solving something plausible. The word says who has to fill it in.
+#:
+#: NOT "a token OpenFOAM cannot parse", which is what this said until it was checked. Every file
+#: this module writes was put through `foamDictionary` in the mesh image on 2026-10-29 and all
+#: twelve parse, blanks and all - a dictionary is a stream of tokens and this is a legal word in
+#: one. What refuses it is the read: `Istream >> scalar` on a word is a FOAM FATAL ERROR, so the
+#: case stops when a field is read rather than when it is parsed. Later, and still before anything
+#: is solved, which is all the mechanism needs - but the two are not the same claim and only one
+#: of them is true.
 BLANK = "<<HEXERA_FILL_THIS_IN>>"
 
 #: The two OpenFOAM families this writes for, and the name each gives the coupled condition.

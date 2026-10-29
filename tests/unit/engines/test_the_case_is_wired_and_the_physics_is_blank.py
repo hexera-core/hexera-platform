@@ -12,7 +12,7 @@ the interface pair - which `splitMeshRegions` creates, and which is the commones
 case comes to run and silently transfer no heat.
 
 THEIRS, and never guessed at: the flow rate, the inlet temperature, the outlet pressure, the
-coolant and the metal. Those are written as a token OpenFOAM cannot parse, so an unfinished case
+coolant and the metal. Those are written as a token that is not a NUMBER, so an unfinished case
 REFUSES TO RUN. A plausible default is the worse failure: 1 m/s of water at 20 C solves, publishes
 a peak temperature, and is wrong about the part.
 """
@@ -152,9 +152,12 @@ def test_nothing_physical_was_chosen_for_them(case, rel):
     assert BLANK in _read(case, rel), rel
 
 
-def test_the_token_is_one_openfoam_cannot_parse(case):
-    """That is the whole mechanism: the solver stops on the first file that still has one, instead
-    of solving on a number somebody invented."""
+def test_the_token_is_not_a_number(case):
+    """THE MECHANISM, stated as what it is. Every file this writes parses under `foamDictionary`
+    in the mesh image, blanks and all - a dictionary is a stream of tokens and this is a legal
+    word in one. What refuses it is reading it AS a number, which happens when a field is read and
+    still before anything is solved. "A token OpenFOAM cannot parse" was the first wording and it
+    was wrong; it was checked on 2026-10-29 and all twelve files parsed."""
     assert BLANK.startswith("<<") and BLANK.endswith(">>")
     assert not BLANK.strip("<>").replace("_", "").isdigit()
 

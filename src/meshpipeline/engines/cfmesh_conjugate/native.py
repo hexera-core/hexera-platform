@@ -102,7 +102,7 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     # THE SOLVER CASE AROUND THE MESH, written here because this is where the delivered patch
     # names are. Structure only - both regions, every patch named as the mesh names it, the
     # coupled condition on the interface written out in full - and every physical number left as
-    # a token OpenFOAM cannot parse. A mesh without a case is a mesh the customer has to wire up
+    # a token that is not a number. A mesh without a case is a mesh the customer has to wire up
     # themselves and the commonest way that goes wrong is a conjugate interface that runs and
     # transfers no heat; a case with an invented flow rate is worse, because it solves.
     #
@@ -130,7 +130,8 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     _write_report(ws, body)
     # THE REVIEW AIDS, built here because this is where OpenFOAM is. Neither can fail the run:
     # a mesh is never lost over a picture of it.
-    body["review"] = _review_aids(ws, bashrc=bashrc)
+    body["review"] = _review_aids(ws, bashrc=bashrc, refused=bool(report.problems),
+                                  cells=int(report.fluid.cells + report.solid.cells))
     _write_report(ws, body)
     tail = (f"fluid {report.fluid.cells:,} cells, solid {report.solid.cells:,}, interface "
             f"{report.interface_faces_fluid:,} faces both sides")
@@ -139,7 +140,24 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     return _result(RC_OK, output=tail, cells=int(report.fluid.cells + report.solid.cells))
 
 
-def _review_aids(ws: Path, *, bashrc: str) -> dict:
+#: THE VOLUME EXPORT IS SKIPPED ABOVE THIS, when the mesh was refused. foamToVTK writes a second
+#: copy of every cell, and on a mesh this size that copy is hundreds of gigabytes - measured on
+#: 2026-10-29, where a 336,666,582-cell mesh whose own gate had ALREADY refused it (the coolant
+#: came out in 5 pieces) was still being exported with 168 GB left on the disk, and the export had
+#: to be killed by hand to stop it taking the box with it.
+#:
+#: A refused mesh gets no review, so the slices it would feed are slices nobody asks for. The
+#: surface is still built: it is small, it is a required render artifact, and a reader of a
+#: refusal wants to SEE what was refused.
+#:
+#: ...and only above this size, because the always-export rule is deliberate and right at the
+#: sizes it was written for. native.py's own note: "ALWAYS, on every run, and that is deliberate
+#: ... the way the region slices actually materialise is by the volume being THERE." A 10M-cell
+#: refusal exports in seconds and a reviewer may yet be asked about it; a 300M one cannot.
+VOLUME_SKIP_ABOVE_CELLS = 40_000_000
+
+
+def _review_aids(ws: Path, *, bashrc: str, refused: bool = False, cells: int = 0) -> dict:
     """The per-region volume and the two-region surface, for the reviewer, and what they are.
 
     WHAT THEY ARE IS RECORDED HERE because finalize runs on the other side of the container
@@ -159,11 +177,19 @@ def _review_aids(ws: Path, *, bashrc: str) -> dict:
     from meshpipeline.engines.cfmesh_conjugate.review_surface import REVIEW_MSH
 
     out: dict = {"volume": None, "surface": None, "groups": {}, "bbox": None, "why": ""}
-    try:
-        out["volume"] = export_volume_vtk(ws, all_regions=True, region=FLUID_REGION,
-                                          bashrc=bashrc)
-    except Exception:                     # noqa: BLE001
-        logger.warning("conjugate: the volume export failed (non-fatal)", exc_info=True)
+    skip = refused and int(cells) > VOLUME_SKIP_ABOVE_CELLS
+    if skip:
+        out["volume_skipped"] = (
+            f"the mesh was refused and has {int(cells):,} cells, so the volume export - a second "
+            "copy of every cell - is not written: no review will open it, and at this size it is "
+            "hundreds of gigabytes of disk")
+        logger.warning("conjugate: %s", out["volume_skipped"])
+    else:
+        try:
+            out["volume"] = export_volume_vtk(ws, all_regions=True, region=FLUID_REGION,
+                                              bashrc=bashrc)
+        except Exception:                 # noqa: BLE001
+            logger.warning("conjugate: the volume export failed (non-fatal)", exc_info=True)
     try:
         groups, bbox = build_region_msh(ws)
         if groups:
@@ -178,9 +204,11 @@ def _review_aids(ws: Path, *, bashrc: str) -> dict:
     # The first customer mesh died exactly here: a 301 s timeout left both VTK directories empty
     # and the 1.75-hour build could not reach a verdict.
     if not out["surface"]:
-        out["why"] = ("the review surface is converted from the VTK export, and no VTK boundary "
-                      "was written" if not out["volume"] else
-                      "the VTK export was written but held no boundary to convert")
+        out["why"] = (
+            out.get("volume_skipped") or
+            ("the review surface is converted from the VTK export, and no VTK boundary "
+             "was written" if not out["volume"] else
+             "the VTK export was written but held no boundary to convert"))
         logger.error("conjugate: no review surface - %s", out["why"])
     return out
 
