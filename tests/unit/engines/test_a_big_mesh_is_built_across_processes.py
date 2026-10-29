@@ -336,3 +336,30 @@ def test_every_stage_of_the_parallel_chain_is_pinned_the_same_way():
     through the same builder, and a stage that quietly did not would be the one to find out."""
     for script in ("cartesianMesh", "topoSet", "splitMeshRegions -cellZonesOnly -overwrite"):
         assert "-x OMP_NUM_THREADS" in mpi_command(script, 8)
+
+
+def test_the_cores_counted_are_the_jobs_and_not_the_machines(monkeypatch):
+    """THE TRAP IS NAMED IN THE HELPER'S OWN DOCSTRING: "Cloud Run hands the process a wide mask
+    and os.cpu_count() reports the host". Counting the host there would give every rank as many
+    threads as the machine has cores while the cgroup gives the container a handful, which is the
+    exact oversubscription this exists to stop, on the platform where it is hardest to see."""
+    import meshpipeline.engines.determinism as D
+
+    monkeypatch.setattr(D, "job_cpus", lambda: 4)      # the container's share
+    monkeypatch.setattr("os.cpu_count", lambda: 64)    # the host underneath it
+    assert omp_threads(4) == 1, "it counted the machine"
+    assert omp_threads(2) == 2
+
+
+def test_a_cpu_count_that_cannot_be_read_still_gives_a_thread_count(monkeypatch):
+    """A thread count never costs a build. If the cgroup read raises for any reason the fallback
+    is the old answer, not an exception out of command construction."""
+    import meshpipeline.engines.determinism as D
+
+    def boom():
+        raise OSError("no cgroup here")
+
+    monkeypatch.setattr(D, "job_cpus", boom)
+    monkeypatch.setattr("os.cpu_count", lambda: 8)
+    assert omp_threads(8) == 1
+    assert omp_threads(1) == 8

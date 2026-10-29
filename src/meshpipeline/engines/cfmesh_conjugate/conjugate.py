@@ -862,13 +862,23 @@ def omp_threads(ranks: int, *, cores: int = 0) -> int:
     threads, gets one core's worth between them, and spends it on barriers.
 
     `cores // ranks`, floored at one. On a box with more cores than ranks each rank still gets its
-    share of threads, so the setting costs nothing where OpenMP was helping. `os.cpu_count()` is
-    the CONTAINER's view, which is the right one: this builds a command the mesh container runs,
-    and the chain is assembled inside it.
+    share of threads, so the setting costs nothing where OpenMP was helping.
+
+    `determinism.job_cpus()` AND NOT `os.cpu_count()`, which is the trap its own docstring names:
+    "Cloud Run hands the process a wide mask and os.cpu_count() reports the host". Counting the
+    host there would hand every rank as many threads as the machine has cores while the cgroup
+    gives the container a handful, which is the exact oversubscription this exists to stop, on the
+    one platform where it is hardest to see. It reads the cgroup quota first, the affinity mask
+    next, and os.cpu_count() only when nothing else says.
     """
+    from meshpipeline.engines.determinism import job_cpus
+
     n = max(1, int(ranks))
-    c = int(cores) or (os.cpu_count() or 1)
-    return max(1, c // n)
+    try:
+        c = int(cores) or job_cpus()
+    except Exception:                      # noqa: BLE001 - a thread count never costs a build
+        c = int(cores) or (os.cpu_count() or 1)
+    return max(1, int(c) // n)
 
 
 def mpi_command(script: str, ranks: int, *, threads: int = 0) -> str:
