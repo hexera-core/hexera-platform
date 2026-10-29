@@ -1811,3 +1811,163 @@ user asked for at intake and two regions can legitimately reach the same block f
 `mesh_facts` already says where it maps a declared patch to the surfaces that draw it. A
 single-region mesh has no region directories, reads the one boundary file it always read, and is
 unchanged.
+
+### The six readings, and the two that were still not reaching the reader
+
+Corintis asked for six things by name. Where each one stood when I opened the delivered coupon in
+a browser:
+
+| # | reading | where it was |
+|---|---|---|
+| 1 | mesh count | shown: 6,582,471 cells, 20,381,030 faces, 7,216,181 points |
+| 2 | quality metrics | shown: max non-ortho 26.98 deg, skewness 0.51, aspect ratio 2.44 |
+| 3 | boundary layers in the fluid | measured, in the manifest, filtered out before the viewer |
+| 4 | min and max cell sizes | shown: 11.69 um to 160.5 um, ratio 13.73x |
+| 5 | cell types and count per type | shown: 6,404,482 hexahedra (97%), 177,989 polyhedra (3%) |
+| 6 | highlight of poor-quality cells | shipped as an ordinary wall, in a wall's colour |
+
+READING 3 WENT THE WAY TWO OTHERS ALREADY HAD. `render/mesh_facts` keeps a list of the metrics
+that may reach a payload, and says in its own comment what that list costs when something is left
+off it: "a metric that is not here never reaches a reader however faithfully the mesher measured
+it - which is how 'cell types and count per type' and 'min and max cell sizes' came to be measured
+on every run and shown on none". The layer count was still being dropped there. Measured on the
+coupon's own manifest:
+
+    manifest quality : near_wall_layers 0, near_wall_levels 3, near_wall_cell_m 1.96e-05
+    viewer payload   : none of the three
+
+The answer is a deliberate zero and that is exactly why it cannot ship alone. A conjugate
+interface is conformal because both regions are the same cells from the same octree; a prism layer
+is a new cell inserted on ONE side of a patch, so a stack on the interface would leave every face
+without its partner. The mesh has graded refinement toward the wall instead, so the three numbers
+travel together and the reason is on the row:
+
+    Boundary layers      0       none by design: an extruded layer sits on one side of a patch
+                                 and would leave every interface face without its partner
+    Cell at the wall  19.6 um    graded refinement instead: 3 levels from the background cell
+    Interface faces  346,456     the same on both sides
+
+The interface count came through with them. Equal counts on the two sides ARE the conformality,
+and the parts panel could not show a face count for that patch at all.
+
+READING 6 HAD NO CLIENT SIDE. The engine writes the poor-cell sets, moves them under
+`poor_cells/<region>/`, reads them with pyvista and ships them typed `poorQuality`. Both copies of
+viewer.js contained zero occurrences of that string, so a set of failing cells arrived as an
+ordinary boundary patch, took the next colour in the palette and was listed between ymin and zmax.
+`POOR_CELLS` is a part kind of its own now, on both sides, which is what mesh_facts asks for where
+the kinds are declared: "Closed: the viewer groups by these, so a new kind is a deliberate
+addition on both sides rather than a string that appears one day." They open visible, are never
+treated as enclosing, and are drawn flat and hot rather than shaded so a few hundred cells inside
+a mesh of millions read as a mark on it.
+
+Not yet seen in a browser: the coupon has nothing wrong with it, n_over is 0 on all three metrics
+at the engine's bars, so it writes no sets. The customer plate had 28,132 poor cells, 27,932 of
+them in the metal.
+
+AND THE CONSOLE'S COPY WAS THREE READINGS BEHIND, not one. It had no cell-size group, no size
+ratio and no small-determinant count, so "min and max cell sizes" and part of "cell types" had
+been fixed in the served viewer only. The `meshFacts` IIFE reads `surf`, `q`, `host` and `esc` and
+nothing else, so it ported whole. 87 differing lines between the two copies, now 47.
+
+### A customer run, driven from the page rather than from a script
+
+Uploaded the coupon through the page itself and answered as a customer would. What it did:
+
+| step | what happened |
+|---|---|
+| upload | drew the part, 4 s, "check it and press Proceed now" |
+| named | "Liquid-cooled cold plate with internal channels", 26 s |
+| openings | 2 found, 0.8 x 0.8 mm each, confidence 85% then 99% after the naming |
+| proposed | solid-assembly, mm, internal flow, inlet and outlet, flow axis +x |
+| unit | refused to proceed: 8 mm is small for what it had just named, so it asked |
+| engine | conjugate recommended as best fit, with the single-solid heads-up on the snappy row |
+| conditions | water at 20 C, 1 L/min, steady CHT, proposed |
+| submitted | after a confirm, six exchanges in all |
+
+Everything it proposed was right, and the one thing it stopped for was worth stopping for.
+
+ONE DEFECT. Proceed refuses an unresolved unit and writes the question into the hint. Picking the
+unit satisfies the check and the unit row redraws to "your choice, the part would be 8 mm long" -
+and nothing cleared the hint, so the form went on saying "Pick the file's unit first" directly
+under a row saying it had been picked. Cleared now when the unit is chosen, by the button and the
+select alike, and only the unit's own hint: an opening that still has no size is a different
+unanswered question.
+
+### The parallel tail, measured, and the merge that was rebuilding the block
+
+The chain was proven equivalent on the coupon in October but never timed at a size that needs
+ranks. A 182,046,234-cell build of the plate on mesh-bench, 8 ranks, no stretch zones:
+
+| stage | processes | wall |
+|---|---|---|
+| preparePar | 1 | 1 s |
+| cartesianMesh | 8 ranks | 727 s |
+| topoSet | 8 ranks | 348 s |
+| splitMeshRegions | 8 ranks | 568 s |
+| reconstructParMesh | 1 | see below |
+
+The serial baseline is the 336,666,582-cell build: cartesianMesh 2,399.6 s on 8 ranks, then
+reconstructParMesh 4,518.4 s, topoSet 2,240.2 s and splitMeshRegions 6,073.3 s in ONE process,
+12,831.9 s of tail. Scaled per cell to this build's size that tail predicts 1,211 s of topoSet and
+3,284 s of the split; measured on ranks they are 348 s and 568 s. Different builds, so this is a
+rate and not a race, and the rate is what the chain was changed for.
+
+THE MESHER IS ALSO A DIFFERENT NUMBER NOW and for a different reason: `ExecutionTime = 722.7 s
+ClockTime = 727 s` is a ratio of 1.0, which is one OpenMP thread per rank. The same part in one
+process reads 2530.64 / 640 = 3.95.
+
+AND THE LAST STAGE WAS REBUILDING THE BLOCK. 25 minutes into `reconstructParMesh -constant
+-allRegions`, 39 GB written into `constant/polyMesh` at the root and neither region produced. What
+each processor directory held:
+
+    constant/polyMesh   5.7 GB     the pre-split block
+    constant/fluid      2.4 GB
+    constant/solid      2.9 GB
+
+`splitMeshRegions -cellZonesOnly -overwrite`, run decomposed, writes the regions BESIDE the base
+mesh rather than replacing it. And `-allRegions` means, in its own help, "Use all regions in
+regionProperties" - while build() writes `constant/regionProperties` at the end, after the merge.
+No file, so the option falls back to merging every mesh it can find, and the block is bigger than
+both regions together.
+
+The trap is already written down in the same file, forty lines further on, for the next command
+that meets it: "PER REGION, never `-allRegions`. `checkMesh -allRegions` reports the PRE-SPLIT
+mesh". The coupon could not show it - at 59,074 cells the stage is seconds either way - so the
+equivalence test that proved the chain correct could not also prove it quick.
+
+`-regions '(fluid solid)'` now, measured on the same processor directories the killed run left,
+which is the controlled comparison the disk could not afford on a second mesh.
+
+### A correction: the browser gate exists, and it is strict
+
+I wrote above that nothing in the tree runs `viewer.js`. That is wrong, and the way I found out is
+worth keeping: `pytest tests/ui` here reports 142 errors, every one of them the same message, and
+I had read that as noise.
+
+`tests/ui/` drives the shipped page in a REAL Chrome over CDP. With no browser on PATH it fails
+rather than skips, deliberately:
+
+    No Chrome/Chromium on PATH. The UI gate validates the shipped page in a REAL browser, so this
+    is a hard failure rather than a skip - a release must not pass with its browser validation
+    quietly absent.
+
+Five of its files import `openViewer` from `/static/js/viewer/viewer.js` and drive
+`window._vdbg[job]` and `window._vdbg[job + ':heat']` directly - the same hooks I had been using by
+hand all afternoon. Chrome simply is not installed in this WSL checkout, and the `chromium` apt
+package is a snap wrapper that will not run here, which is why the gate's own message says to
+install Google Chrome's .deb instead. I did, and ran it:
+
+    143 passed, 2 warnings in 260.48s
+
+Everything today's viewer work touched passes it: the hoisted camera helper, the poor-cell kind
+and its colour, the At the wall group, the detail window closing when a metric is painted, the
+console copy's ported meshFacts block, the unit hint, the coerced id.
+
+WHAT IS ACTUALLY TRUE, and it is narrower and more useful than what I wrote. The gate does not
+cover the DETAIL WINDOW: no file in tests/ui mentions `detailWindow`, `v-detail` or `radiusNow`.
+That is precisely where the three defects were. A feature was added to a file that has a browser
+gate, without a test in that gate, and the gate had no way to notice.
+
+The linter half of what I wrote stands: `apps/console/eslint.config.mjs` ignores
+`public/static/**`, which is where one of the two copies lives, and no linter would have caught a
+name resolved in the wrong closure anyway.
