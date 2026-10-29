@@ -757,9 +757,14 @@ def candidate_caps(solids: list, loose: list, diag: float) -> list[_Cap]:
 
 # --------------------------------------------------------------------------- the split ----
 def extract(shape, *, max_faces: int = MAX_FACES, extra_caps: list | None = None,
-            fuzzy: float = FUZZY) -> Extraction:
+            fuzzy: float = FUZZY, want_domain: bool = False) -> Extraction:
     """The fluid the parts of `shape` (metres) hold. Never raises for geometry it cannot split:
-    the reason is said in the result."""
+    the reason is said in the result.
+
+    `want_domain` also walks out the boundary of metal-plus-coolant (`Extraction.domain_boundary`).
+    OFF BY DEFAULT because it is not free and almost nothing wants it: the geometry CHECK asks for
+    passages, caps and volumes, and it is the one caller with a wall-clock budget
+    (CHECK_BUDGET_S). Only a build that is going to write the domain asks for it."""
     t0 = time.time()
     lo, hi = _real_box(shape)
     diag = math.dist(lo, hi)
@@ -774,7 +779,7 @@ def extract(shape, *, max_faces: int = MAX_FACES, extra_caps: list | None = None
         return Extraction([], 0, 0, 0, time.time() - t0, diag=diag, reason="no faces to bound a fluid")
     caps = candidate_caps(solids, loose, diag) + list(extra_caps or [])
     try:
-        found = _split(solids, loose, caps, diag, lo, hi, fuzzy)
+        found = _split(solids, loose, caps, diag, lo, hi, fuzzy, want_domain=want_domain)
     except ExtractionError as exc:
         return Extraction([], len(solids) or len(loose), len(caps), 0, time.time() - t0, diag=diag,
                           reason=str(exc))
@@ -794,7 +799,7 @@ def extract(shape, *, max_faces: int = MAX_FACES, extra_caps: list | None = None
     return out
 
 
-def _split(solids, loose, caps, diag, lo, hi, fuzzy=FUZZY):
+def _split(solids, loose, caps, diag, lo, hi, fuzzy=FUZZY, *, want_domain: bool = False):
     from OCP.BOPAlgo import BOPAlgo_MakerVolume
     from OCP.BRep import BRep_Builder
     from OCP.BRepClass3d import BRepClass3d_SolidClassifier
@@ -977,8 +982,12 @@ def _split(solids, loose, caps, diag, lo, hi, fuzzy=FUZZY):
     # the port mouths closed by their own caps. "unknown" counts as inside - it is a region the
     # classifier could find no point in, and it lies within the outer skin by construction, since
     # the outside regions are the ones holding a point beyond every part.
-    inside = _Members([i for i, k in enumerate(kind) if k != "outside"])
-    domain = _boundary(inside, regions, owners, owner_ids) if inside.regions else []
+    # ONLY WHEN SOMETHING WILL USE IT. This walks every face of every region that is not outside,
+    # where a passage walks only its own - on the first customer assembly that is the difference
+    # between a split that fits CHECK_BUDGET_S and one that does not, and the check does not want
+    # a domain at all.
+    inside = _Members([i for i, k in enumerate(kind) if k != "outside"]) if want_domain else None
+    domain = _boundary(inside, regions, owners, owner_ids) if (inside and inside.regions) else []
     return keep, pockets, len(regions), leaks, domain
 
 
@@ -2209,17 +2218,38 @@ def _file_safe(name: str) -> str:
 #: which is 1853 s for that 15.9 MB upload), and a step that beats its progress is never stopped
 #: for taking long (application/geometry_progress: "Liveness, not a budget").
 #:
-#: 300 s, because the work is bounded and that bound can be priced. `extract` refuses anything over
-#: MAX_FACES = 20000 faces outright, and that customer assembly at 9226 faces now measures 141.5 s
-#: in `extract` and 162.9 s of child wall, down from 347.5 / 360.3 once the solid classifiers are
-#: built once. A file at the face limit is the worst case this will ever be handed. Against what
-#: actually runs: 4.8x the slowest part in the corpus (62.6 s) and 1.8x that assembly.
+#: 300 s WAS PRICED OFF A READING THAT DOES NOT REPRODUCE. It was set from "that customer assembly
+#: at 9226 faces now measures 141.5 s in `extract` and 162.9 s of child wall". Measured again on
+#: 2026-10-29, same file, same checkout, on an idle box (load 0.31, every container under 1%),
+#: twice:
+#:
+#:     extract   359.2 s      of which candidate_caps 116.6 s
+#:     extract   359.0 s      and the boundary walks 16.1 s, 4.5%
+#:
+#: 359 s against a 300 s budget, reproducibly, on the one part this engine was built for. What it
+#: cost: the geometry check timed out on every run of Corintis's plate, fell back to the
+#: inside-space map, and read a liquid-cooled cold plate as a solid body in a flow - the wrong job,
+#: from the flagship file, every time.
+#:
+#: 900 s, and the reasoning is that NOTHING ELSE AROUND THIS IS A FLAT NUMBER. The scout's own
+#: Celery soft limit is sized from the file - 900 s + 60 s per MB, which is 1,853 s for that
+#: 15.9 MB upload - and `application/geometry_progress` states the principle outright: "Liveness,
+#: not a budget". 900 s leaves that enclosing limit in charge of a file this size, is 2.5x the
+#: measurement rather than 0.84x it, and is still a bound: `extract` refuses anything over
+#: MAX_FACES = 20000 faces outright, and the slowest part in the corpus is 62.6 s.
+#:
+#: WHAT WOULD BE BETTER than either number is not spending it. 116.6 s of the 359 is
+#: `candidate_caps`, which is the next thing to measure into.
 #:
 #: A SPLIT THAT RUNS OUT OF TIME IS NOT "NO COOLANT". The two used to arrive downstream as the same
 #: thing (`found` false either way), which withheld the conjugate mesher from a part whose coolant
 #: the split would have found; cad/fluid_volume_check.fold now says which of the two it was.
-CHECK_BUDGET_S = 300.0
-STAGE_BUDGET_S = 600.0
+CHECK_BUDGET_S = 900.0
+#: The BUILDER's own extraction, which splits the same space and then writes a surface out of it -
+#: and now a second one when the domain is worth building. It cannot be the tighter of the two, and
+#: `test_the_check_budget_leaves_room_for_an_assembly_at_the_face_limit` pins that relationship
+#: rather than either number. 1,200 s keeps the same 1.33x over the check that 600 held over 300.
+STAGE_BUDGET_S = 1200.0
 
 
 def _log_child(out, err, why: str) -> None:
@@ -2474,7 +2504,7 @@ def _child(task: dict) -> dict:
     if len(solids) >= 2 and not touching_parts(solids, math.dist(lo, hi)):
         skipped = {"found": False, "reason": "the parts do not touch: their own skins bound the fluid"}
         return {"staged": None, "extraction": skipped} if task.get("task") == "stage" else skipped
-    x = extract(shape)
+    x = extract(shape, want_domain=bool(task.get("domain_path")))
     if task.get("task") == "stage":
         rec = stage(x, task.get("declared") or [], task["out_dir"],
                     angular_deflection=float(task.get("angular_deflection") or 0.2),

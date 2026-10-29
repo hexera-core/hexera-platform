@@ -104,17 +104,21 @@ def test_a_caller_that_passes_nothing_still_works():
 # the budget, and what it is measured against
 
 def test_the_check_budget_leaves_room_for_an_assembly_at_the_face_limit():
-    """300 s, priced off the one bound the extraction actually has.
+    """Priced off the one bound the extraction actually has, and re-priced when it was measured.
 
     `extract` refuses anything over MAX_FACES outright, so the worst case is a file at that limit.
-    The customer assembly at 9226 faces measures 162.9 s of child wall; the budget has to clear
-    that with room, and 120 s did not. This pins the relationship rather than the number, so
-    raising MAX_FACES without looking at the budget fails here.
+    The 300 s this used to assert came from "141.5 s in extract, 162.9 s of child wall" on the
+    customer assembly. That does not reproduce: measured twice on 2026-10-29, same file, same
+    checkout, idle box (load 0.31, every container under 1%), `extract` took 359.2 s and 359.0 s.
+
+    359 s against 300 is why the geometry check timed out on every run of that plate and read a
+    liquid-cooled cold plate as a solid body in a flow. This pins the relationship rather than the
+    number, so raising MAX_FACES without looking at the budget still fails here.
     """
     assert fv.MAX_FACES == 20000
-    assert fv.CHECK_BUDGET_S >= 300.0, (
-        "a six-solid customer assembly takes 162.9 s of child wall at 9226 faces, and the slowest "
-        "part in the corpus takes 62.6 s: a budget under 300 s discards real parts")
+    assert fv.CHECK_BUDGET_S >= 600.0, (
+        "the six-solid customer assembly measures 359 s in extract at 9226 faces, twice, on an "
+        "idle box: a budget that does not clear it discards the part this engine was built for")
     assert fv.STAGE_BUDGET_S >= fv.CHECK_BUDGET_S, (
         "the builder's own extraction writes a surface as well as splitting, so its budget cannot "
         "be the tighter of the two")
@@ -145,3 +149,23 @@ def test_a_part_that_really_holds_no_fluid_is_not_marked_unfinished():
     facts = {"flow": "external", "solids": 6, "openings": [{"id": 1}, {"id": 2}], "notes": []}
     fold(facts, {"found": False, "reason": "no space inside the parts", "parts": 6, "caps": 0})
     assert not facts["fluid_volume"].get("unfinished")
+
+
+def test_the_budget_clears_the_part_it_was_re_priced_for():
+    """The measurement, as a number this file keeps: 359.2 s and 359.0 s on ColdPlateAssembly_
+    CLEAN.step, so a budget at or under that is one the flagship part cannot pass."""
+    assert fv.CHECK_BUDGET_S > 359.2, (
+        "measured twice on an idle box; a budget below this reads that cold plate as a solid body")
+
+
+def test_the_check_does_not_pay_for_a_domain_it_never_asked_for():
+    """The domain walk covers every region that is not outside, where a passage covers only its
+    own - 11.0 s of a 359 s split on that assembly, for 348 faces the CHECK has no use for. It is
+    off unless a caller says it will write one."""
+    import inspect
+
+    assert "want_domain" in inspect.signature(fv.extract).parameters
+    assert inspect.signature(fv.extract).parameters["want_domain"].default is False
+    src = inspect.getsource(fv._child)
+    assert "want_domain=bool(task.get(\"domain_path\"))" in src, (
+        "the child must ask for it exactly when it is going to write one")

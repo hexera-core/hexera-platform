@@ -141,8 +141,11 @@ def test_the_fuse_rides_on_the_extraction_already_paid_for():
     src = inspect.getsource(FV._child)
     assert "domain_path" in src
     assert "write_domain(" in src
-    at_extract = src.index("x = extract(shape)")
+    at_extract = src.index("x = extract(shape")
     assert src.index("write_domain(") > at_extract, "it must reuse x, not extract again"
+    # ...and it asks the extraction for the domain exactly when it is going to write one, so the
+    # geometry check does not pay for a walk it has no use for
+    assert "want_domain=bool(task.get(\"domain_path\"))" in src
 
 
 def test_the_caller_has_to_ask_for_it():

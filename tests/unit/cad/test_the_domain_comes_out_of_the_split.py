@@ -41,7 +41,10 @@ def plate():
     if not FIXTURE.is_file():
         pytest.skip(f"{FIXTURE} is not in this checkout")
     shape = FV._load({"source": str(FIXTURE), "scale": 1e-3, "kind": "cad"})
-    return FV._solids(shape), FV.extract(shape)
+    # ASKED FOR, because it is not free: the walk covers every region that is not outside, which
+    # on the customer assembly is 11.0 s of a 359 s split for 348 faces the geometry check has no
+    # use for. Only a build that is going to write the domain asks.
+    return FV._solids(shape), FV.extract(shape, want_domain=True)
 
 
 def test_the_split_carries_the_domain_it_already_knew(plate):
@@ -103,3 +106,13 @@ def test_it_never_turns_a_working_run_into_a_broken_one(plate):
     assert "except Exception" in src
     assert src.rstrip().endswith("return None")
     assert "falling back to the fuse" in src
+
+
+def test_nobody_pays_for_it_unless_they_asked():
+    """The geometry check reads passages, caps and volumes and never a domain - and it is the one
+    caller with a wall-clock budget. 11.0 s of a 359 s split, against a budget that was 300."""
+    if not FIXTURE.is_file():
+        pytest.skip(f"{FIXTURE} is not in this checkout")
+    shape = FV._load({"source": str(FIXTURE), "scale": 1e-3, "kind": "cad"})
+    assert FV.extract(shape).domain_boundary == [], "the check paid for a domain it never wanted"
+    assert FV.extract(shape, want_domain=True).domain_boundary, "asking for it got nothing"
