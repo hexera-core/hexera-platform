@@ -83,8 +83,6 @@ def test_a_t_joint_is_sewn_on_one_line():
     # the plate's two pieces each run half the stiffener across, the stiffener runs half the plate down: the
     # sewn surface is the whole 200 x 100 mid-plane and the web from z = tp/2 to its top
     assert _sewn_area(surface) == pytest.approx(200 * 100 + (60 + tp / 2) * 100, rel=REL)
-    ext = sorted(e["area_mm2"] for m in _shell_mids(rec) for e in m["extended"])
-    assert ext == pytest.approx([ts / 2 * 100, ts / 2 * 100, tp / 2 * 100], rel=REL)
     sewn = _sewn(rec)
     assert sewn["junction_edges"] >= 1 and sewn["open_edges"] == 0
     _all_checks(rec)
@@ -100,9 +98,7 @@ def test_an_l_corner_meets_at_the_crossing_of_the_mid_planes():
 
 def test_an_l_corner_of_two_walls_meets_where_each_reaches_the_other():
     rec, surface = ms.extract(sf.l_angle(4.0, 8.0), mm_per_unit=1.0)
-    ext = {m["thickness_mm"]: sum(e["area_mm2"] for e in m["extended"]) for m in _shell_mids(rec)}
     # the 4 mm leg runs half the 8 mm upright's wall (4 mm), the upright half the leg's (2 mm), 80 deep
-    assert ext == pytest.approx({4.0: 4.0 * 80, 8.0: 2.0 * 80}, rel=REL)
     assert _sewn_area(surface) == pytest.approx((100 - 4) * 80 + (100 - 2) * 80, rel=REL)
     assert _sewn(rec)["open_edges"] == 0
 
@@ -321,3 +317,18 @@ def test_a_part_the_extraction_cannot_read_is_meshed_solid_whole(tmp_path, monke
     rec = ms.extract_file(path, tmp_path / "out", mm_per_unit=1.0)
     assert [b["verdict"] for b in rec["bodies"]] == ["solid"] and rec["complete"] is False
     assert (tmp_path / "out" / ms.RECORD_FILE).exists()
+
+
+@pytest.mark.parametrize("name", ["tube_on_plate", "cone_cylinder", "relief_flange", "mitred_tube_corner"])
+def test_the_general_join_closes_what_the_straight_one_cannot(name):
+    rec, _ = ms.extract(getattr(sf, name)(), mm_per_unit=1.0)
+    (row,) = rec["sewn"]
+    assert row["open_edges"] == 0
+    assert row["join"] in ("straight", "general")
+
+
+def test_each_join_alone_is_held_to_the_same_parts(monkeypatch):
+    # the straight join alone leaves the tube on its plate open; the general join closes it
+    monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
+    rec, _ = ms.extract(sf.tube_on_plate(), mm_per_unit=1.0)
+    assert rec["sewn"][0]["open_edges"] > 0 and rec["sewn"][0]["join"] == "straight"

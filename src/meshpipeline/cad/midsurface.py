@@ -746,7 +746,7 @@ def fidelity(mid, fa, fb, t: float) -> tuple[float, int]:
 GROW_WALLS = 2.0
 
 
-def joined_edges(m: _Mid, others: list[_Mid], fuzzy: float) -> list:
+def joined_edges(m: _Mid, others: list[_Mid], fuzzy: float, *, curved_only: bool = False) -> list:
     """The edges of mid-face m that already meet another mid-face of its body (a flange running into its bend,
     two pieces of one plate side by side): within JOINED_SHARE of a wall of it."""
     from OCP.TopAbs import TopAbs_EDGE
@@ -758,7 +758,7 @@ def joined_edges(m: _Mid, others: list[_Mid], fuzzy: float) -> list:
         e = TopoDS.Edge_s(em.FindKey(i))
         p = _edge_mid(e)
         for o in others:
-            if o is m:
+            if o is m or (curved_only and o.plane is not None):
                 continue
             reach = JOINED_SHARE * max(m.t, o.t) + fuzzy
             if _near_box(p, o.box, reach) and _dist(_vertex(p), o.original) <= reach:
@@ -792,6 +792,15 @@ def grow(face, reach: float, joined: list | None = None):
     if su <= 0 or sv <= 0:
         return None
     du, dv = reach / su, reach / sv
+    for name, per in (("u", surf.UPeriod() if surf.IsUPeriodic() else None),
+                      ("v", surf.VPeriod() if surf.IsVPeriodic() else None)):
+        if per:
+            span = (u1 - u0) if name == "u" else (v1 - v0)
+            cap = max(0.0, min(0.25 * per, 0.45 * (per - span)))
+            if name == "u":
+                du = min(du, cap)
+            else:
+                dv = min(dv, cap)
     lo_u = u0 if "u0" in hold else u0 - du
     hi_u = u1 if "u1" in hold else u1 + du
     lo_v = v0 if "v0" in hold else v0 - dv
@@ -827,16 +836,40 @@ def _held_sides(face, joined: list, bounds) -> set[str]:
     from OCP.ShapeAnalysis import ShapeAnalysis_Surface
 
     u0, u1, v0, v1 = bounds
-    sa = ShapeAnalysis_Surface(BRep_Tool.Surface_s(face))
+    surf = BRep_Tool.Surface_s(face)
+    sa = ShapeAnalysis_Surface(surf)
     eu, ev = 1e-6 * max(abs(u1 - u0), 1e-12), 1e-6 * max(abs(v1 - v0), 1e-12)
+    pu = surf.UPeriod() if surf.IsUPeriodic() else None
+    pv = surf.VPeriod() if surf.IsVPeriodic() else None
+
+    def near(val: float, ref: float, eps: float, period: float | None) -> bool:
+        d = val - ref
+        if period:
+            d = (d + 0.5 * period) % period - 0.5 * period
+        return abs(d) <= max(eps, 1e-9)
+
     out: set[str] = set()
     for e in joined:
         uv = sa.ValueOfUV(gp_Pnt(*map(float, _edge_mid(e))), 1e-7)
-        for name, val, ref, eps in (("u0", uv.X(), u0, eu), ("u1", uv.X(), u1, eu), ("v0", uv.Y(), v0, ev),
-                                    ("v1", uv.Y(), v1, ev)):
-            if abs(val - ref) <= max(eps, 1e-9):
+        for name, val, ref, eps, per in (("u0", uv.X(), u0, eu, pu), ("u1", uv.X(), u1, eu, pu),
+                                         ("v0", uv.Y(), v0, ev, pv), ("v1", uv.Y(), v1, ev, pv)):
+            if near(val, ref, eps, per):
                 out.add(name)
     return out
+
+
+def _plane_union(a, b):
+    """The union of two faces on one plane, as one face (the larger piece when it comes apart)."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+    from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+
+    f = BRepAlgoAPI_Fuse(a, b)
+    if not f.IsDone():
+        return a
+    u = ShapeUpgrade_UnifySameDomain(f.Shape(), True, True, True)
+    u.Build()
+    fs = _faces(u.Shape())
+    return _compound(fs) if fs else a
 
 
 def _cut_beyond(grown, face, joined: list, reach: float):
@@ -868,7 +901,7 @@ def _cut_beyond(grown, face, joined: list, reach: float):
         if cut.IsDone():
             fs = _faces(cut.Shape())
             if fs:
-                out = max(fs, key=_area)
+                out = _compound(fs)          # every piece: a strip can part the band in two
     return out
 
 
@@ -909,6 +942,7 @@ def _grow_plane(face, reach: float, joined: list | None = None):
             out = fix.Face()
             if joined:
                 out = _cut_beyond(out, face, joined, reach)
+                out = _plane_union(out, face)
             if _area(out) >= _area(face) * (1 - 1e-9):
                 return out
         except Exception as exc:  # noqa: BLE001 - try the other join, then give up growing this face
@@ -954,7 +988,7 @@ def join_body(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float
 
     grown = []
     for m in mine:
-        g = grow(m.original, 0.5 * t_max + GROW_WALLS * m.t, joined_edges(m, mine, fuzzy))
+        g = grow(m.original, 0.5 * t_max + GROW_WALLS * m.t, joined_edges(m, mine, fuzzy, curved_only=m.plane is not None))
         grown.append(g)
     b = BOPAlgo_Builder()
     for m in mine:
@@ -1150,6 +1184,37 @@ STEP_PARALLEL_DEG = 1.0
 STEP_TOUCH = 0.5
 
 
+def _join_straight(mine: list[_Mid], solid: _Solid, fuzzy: float, notes: list[str], body: str):
+    """The straight-edge extension (extend) and a plain sew: (fused shape, each mid-face's faces in it)."""
+    for m in mine:
+        m.face = m.original
+        try:
+            extend(m, mine, solid, fuzzy)
+        except Exception as exc:  # noqa: BLE001 - a mid-face that cannot be extended keeps its shape
+            logger.debug("shell: Mid_%d could not be extended (%s)", m.k + 1, exc)
+    if len(mine) == 1:
+        return _compound([mine[0].face]), [[mine[0].face]]
+    try:
+        return sew([m.face for m in mine], fuzzy)
+    except ValueError as exc:
+        notes.append(f"{body}: {exc}.")
+        return _compound([m.face for m in mine]), [[m.face] for m in mine]
+
+
+def _join_general(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float, fuzzy: float):
+    """The general join (join_body) and one more sew of what it kept: (fused shape, each mid-face's faces)."""
+    fused, kept, owner_i, reached = join_body(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy)
+    for i, m in enumerate(mine):
+        for other, area in reached[i]:
+            m.extended.append({"to": None if other is None else mine[other].k, "area": area})
+    images = [[f for f, o in zip(kept, owner_i, strict=True) if o == i] for i in range(len(mine))]
+    if len(kept) > 1:
+        fused, again = sew(kept, fuzzy)
+        images = [[g for f, o in zip(kept, owner_i, strict=True) if o == i for g in again[kept.index(f)]]
+                  for i in range(len(mine))]
+    return fused, images
+
+
 def snap_steps(mine: list[_Mid], solid: _Solid) -> None:
     """SHELL-7 on one body's mid-faces, thickest first (a plate snaps to a neighbour already settled)."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
@@ -1341,43 +1406,42 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
         t_max = max(pairs[i].thickness for i in range(len(pairs))
                     if pairs[i].even and body_of[pairs[i].a] == b and pairs[i].shell) / mm
         snap_steps(mine, solid)
-        try:
-            # SHELL-3 v2: grow, cut, keep
-            fused, kept, owner_i, reached = join_body(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy)
-            for i, m in enumerate(mine):
-                for other, area in reached[i]:
-                    m.extended.append({"to": None if other is None else mine[other].k, "area": area})
-            images = [[f for f, o in zip(kept, owner_i, strict=True) if o == i] for i in range(len(mine))]
-            if len(kept) > 1:
-                fused, again = sew(kept, fuzzy)
-                images = [[g for f, o in zip(kept, owner_i, strict=True) if o == i for g in again[kept.index(f)]]
-                          for i in range(len(mine))]
-        except Exception as exc:  # noqa: BLE001 - the straight-edge extension and a plain sew stand in
-            notes.append(f"{body_names[b]}: the general join failed ({exc}); straight edges were extended instead.")
-            for m in mine:
-                try:
-                    extend(m, mine, solid, fuzzy)
-                except Exception as exc2:  # noqa: BLE001 - a mid-face that cannot be extended keeps its shape
-                    logger.debug("shell: Mid_%d could not be extended (%s)", m.k + 1, exc2)
-            if len(mine) == 1:
-                fused, images = _compound([mine[0].face]), [[mine[0].face]]
-            else:
-                try:
-                    fused, images = sew([m.face for m in mine], fuzzy)
-                except ValueError as exc3:
-                    notes.append(f"{body_names[b]}: {exc3}.")
-                    fused, images = _compound([m.face for m in mine]), [[m.face] for m in mine]
-        fmap_f = _map(fused, TopAbs_FACE)
-        owner_t = {}
-        for m, imgs in zip(mine, images, strict=True):
-            for f in imgs:
-                k = fmap_f.FindIndex(f)
-                if k > 0:
-                    owner_t[k] = m.t
         thick_faces = [faces[k] for k in range(len(faces))
                        if body_of[k] == b and roles[k]["role"] in (sp.SOLID, sp.THICK)]
-        census = edge_census(fused, owner_t, solid, scale=mm, thick_faces=thick_faces)
+
+        def census_of(fused, images, mine=mine, solid=solid, thick_faces=thick_faces):
+            fmap_f = _map(fused, TopAbs_FACE)
+            owner_t = {}
+            for m, imgs in zip(mine, images, strict=True):
+                for f in imgs:
+                    k = fmap_f.FindIndex(f)
+                    if k > 0:
+                        owner_t[k] = m.t
+            return edge_census(fused, owner_t, solid, scale=mm, thick_faces=thick_faces)
+
+        # SHELL-3, BOTH JOINS, THE BETTER KEPT: the straight-edge extension (plane to plane: T, L, box, the bent and
+        # slotted sheets of the corpus) and the general join (grow, cut, keep: any surfaces - a tube on a plate,
+        # a cylinder into a cone, a relief-cut flange). The one leaving fewer open edges is kept; on a tie, the
+        # straight one. Deterministic: each is.
+        straight = _join_straight(mine, solid, fuzzy, notes, body_names[b])
+        census = census_of(*straight)
+        chosen, method, ext_straight = straight, "straight", [list(m.extended) for m in mine]
+        if census["open_edges"]:
+            for m in mine:
+                m.extended = []
+            try:
+                general = _join_general(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy)
+                census_g = census_of(*general)
+                if census_g["open_edges"] < census["open_edges"]:
+                    chosen, method, census = general, "general", census_g
+            except Exception as exc:  # noqa: BLE001 - the straight join stands
+                logger.debug("shell: the general join failed on %s (%s)", body_names[b], exc)
+            if method == "straight":
+                for m, ext in zip(mine, ext_straight, strict=True):
+                    m.extended = ext
+        fused, images = chosen
         census["body"] = body_names[b]
+        census["join"] = method
         sewn_rows.append(census)
         for m, imgs in zip(mine, images, strict=True):
             for f in imgs:
