@@ -67,10 +67,10 @@ def _faces_and_facts(brep: Path, mm: float):
 
 def _reference_normal(face) -> np.ndarray | None:
     """The face's oriented normal at its middle (the side its sheet's normals are turned to)."""
-    from meshpipeline.cad import midsurface as ms
-
     from OCP.BRepGProp import BRepGProp
     from OCP.GProp import GProp_GProps
+
+    from meshpipeline.cad import midsurface as ms
 
     g = GProp_GProps()
     BRepGProp.SurfaceProperties_s(face, g)
@@ -195,7 +195,7 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         mesh.groups[name] = np.concatenate([mesh.groups[name], np.flatnonzero(np.array(mid_of) == m)])
     for p in sorted(set(part)):
         mesh.groups[p] = np.flatnonzero(np.array(part) == p)
-    reference = {}
+    reference: dict[str, np.ndarray] = {}
     for k, f in enumerate(facts):
         n = _reference_normal(f["normal_face"])
         if n is not None:
