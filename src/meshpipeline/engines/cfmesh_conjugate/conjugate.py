@@ -804,7 +804,23 @@ DECOMPOSE_HEADER = ('FoamFile { version 2.0; format ascii; class dictionary; '
 #: viewer pointed there draws a mesh that was never delivered), and `foamToVTK -allRegions` was
 #: measured on a case without it - rc 0, both regions' internal.vtu, 9 boundary files, the same as
 #: with it.
-RECONSTRUCT_REGIONS = "reconstructParMesh -constant -allRegions"
+#: `-regions` AND NOT `-allRegions`, which does not mean what it reads as. Its own help says
+#: "Use all regions in regionProperties" - and this chain writes `constant/regionProperties` at
+#: the END of build(), after the merge, so at reconstruct time there is no such file and the
+#: option falls back to merging every mesh it can find, the pre-split BLOCK among them.
+#:
+#: MEASURED ON A 182,046,234-CELL BUILD, mesh-bench, 2026-10-29, in processor0 alone:
+#:
+#:     constant/polyMesh   5.7 GB      the block, which nothing downstream wants
+#:     constant/fluid      2.4 GB
+#:     constant/solid      2.9 GB
+#:
+#: The block is bigger than both regions together, so `-allRegions` was spending more than half
+#: the merge on the one mesh this chain exists not to rebuild - and it is the mesh the viewer
+#: refuses to read on purpose, because it carries both regions' face counts added together. The
+#: coupon could not show this: at 59,074 cells the whole stage is seconds either way.
+RECONSTRUCT_REGIONS = (f"reconstructParMesh -constant -regions "
+                       f"'({FLUID_REGION} {SOLID_REGION})'")
 #: WHAT THE PARALLEL SPLIT LEAVES BEHIND. `splitMeshRegions` writes each region's system/<region>
 #: dictionaries beside the mesh it split, which when it runs decomposed is inside processor0 and
 #: not at the root - so the reconstructed case has constant/fluid/polyMesh and no
