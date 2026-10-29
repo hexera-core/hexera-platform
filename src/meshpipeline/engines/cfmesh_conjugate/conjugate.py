@@ -797,7 +797,21 @@ DECOMPOSE_HEADER = ('FoamFile { version 2.0; format ascii; class dictionary; '
 #: your own risk!" on every run; measured on an 8-rank 6,100,416-cell build of the ported
 #: two-scale plate (2026-10-29) the merged mesh came back from checkMesh with "Mesh OK." and
 #: 18,420,912 faces.
-RECONSTRUCT = "reconstructParMesh -constant"
+#: Merge the two REGIONS instead of the whole block, which is what lets topoSet and the split run
+#: decomposed. The root block mesh is never reconstructed and nothing downstream wants it: the
+#: viewer refuses to read it on purpose (it carries both regions' face counts added together, so a
+#: viewer pointed there draws a mesh that was never delivered), and `foamToVTK -allRegions` was
+#: measured on a case without it - rc 0, both regions' internal.vtu, 9 boundary files, the same as
+#: with it.
+RECONSTRUCT_REGIONS = "reconstructParMesh -constant -allRegions"
+#: WHAT THE PARALLEL SPLIT LEAVES BEHIND. `splitMeshRegions` writes each region's system/<region>
+#: dictionaries beside the mesh it split, which when it runs decomposed is inside processor0 and
+#: not at the root - so the reconstructed case has constant/fluid/polyMesh and no
+#: system/fluid/fvSchemes, and the next command to open that region exits on the missing file
+#: (measured: checkMesh -region fluid, "cannot find file system/fluid/fvSchemes"). `-n` so this
+#: cannot clobber the port cut's own topoSetDict, which build writes to the same directory before
+#: the chain runs.
+REGION_DICTS = "cp -rn processor0/system/. system/ 2>/dev/null; true"
 
 
 def ranks_for(cells: int, *, available: int = 0) -> int:
@@ -1261,23 +1275,46 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
     # After the split and with `-region fluid` the same box selects from the coolant's own `zmax`
     # and the metal keeps its face intact.
     #
-    # ONLY THE MESHER GOES PARALLEL, and the rest of the chain is untouched. The ceiling that
-    # forces this is cfMesh's octree addressing (OCTREE_BOXES_PER_PROCESS) and nothing downstream
-    # shares it: topoSet, the split and the port cut all run on a polyMesh, whose labels index
-    # faces and points and have room to spare at the sizes in question. So the mesh is merged
-    # back the moment it exists and every measured behaviour after that point - the cell-zone
-    # split, the two-region check, where the ports are cut - is the same code on the same mesh it
-    # has always been. Making five stages parallel to get past a ceiling one of them has would
-    # have put all five on a path nothing has measured.
+    # THE WHOLE CHAIN GOES PARALLEL, AND THE MERGE IS OF THE REGIONS. The ceiling that forces the
+    # mesher onto ranks is cfMesh's octree addressing (OCTREE_BOXES_PER_PROCESS) and nothing
+    # downstream shares it, so this used to merge the block the moment it existed and run the rest
+    # serially. That was right about correctness and wrong about time. Measured on the 336,666,582
+    # cell customer build:
+    #
+    #     cartesianMesh        2,399.6 s   on 8 ranks
+    #     reconstructParMesh   4,518.4 s   one process
+    #     topoSet              2,240.2 s   one process
+    #     splitMeshRegions     6,073.3 s   one process
+    #
+    # The three serial stages are 4.4x the mesher. Staying decomposed to the end makes topoSet and
+    # the split parallel and leaves one merge, of two smaller meshes instead of the whole block.
+    #
+    # THE TWO CHAINS WERE MEASURED AGAINST EACH OTHER on the coupon's own block and coolant, at a
+    # size where the answer is checkable:
+    #
+    #                     fluid cells   solid cells   interface   fluid non-ortho   solid
+    #     serial               29,812        29,262      22,534           16.2739   35.3268
+    #     parallel to end      29,813        29,261      22,534           16.2739   35.3442
+    #
+    # Both pass checkMesh. The interface is 22,534 faces on both sides in both chains, which is
+    # the conformality the whole approach rests on, and the total is 59,074 either way. ONE CELL
+    # MOVES between the regions: `topoSet surfaceToCell` classifies a cell on a processor boundary
+    # differently from how it classifies it with the mesh whole. That is a real difference and not
+    # a rounding - the parallel chain is not bit-identical - and it is one cell in 59,074 on the
+    # boundary between two regions that share 22,534 faces exactly.
     if int(ranks) > 1:
         chain: list[tuple[str, str]] = [
             (PREPARE_PAR, PREPARE_PAR),
             ("cartesianMesh", mpi_command("cartesianMesh", int(ranks))),
-            ("reconstructParMesh", RECONSTRUCT),
+            ("topoSet", mpi_command("topoSet", int(ranks))),
+            ("splitMeshRegions", mpi_command(" ".join(SPLIT_ARGS), int(ranks))),
+            ("reconstructParMesh", RECONSTRUCT_REGIONS),
+            ("regionDicts", REGION_DICTS),
         ]
     else:
-        chain = [("cartesianMesh", "cartesianMesh")]
-    chain += [("topoSet", "topoSet"), ("splitMeshRegions", " ".join(SPLIT_ARGS))]
+        chain = [("cartesianMesh", "cartesianMesh"),
+                 ("topoSet", "topoSet"),
+                 ("splitMeshRegions", " ".join(SPLIT_ARGS))]
     if port_patches:
         topo_ports, create_ports = render_port_patch_dicts(list(port_patches))
         # UNDER THE REGION'S OWN system/, AND UNDER THE DEFAULT NAME, so neither command needs
@@ -1356,9 +1393,10 @@ __all__ = ["ConjugateError", "ConjugateReport", "RegionReport", "PortPlan",
            "FLUID_REGION", "SOLID_REGION", "FLUID_TO_SOLID", "SOLID_TO_FLUID",
            "SPLIT_ARGS", "DEFAULT_REFINEMENT_LEVELS", "DEFAULT_VOLUME_TOL",
            "OCTREE_BOXES_PER_PROCESS", "MPI_FLAGS", "DECOMPOSE_METHOD", "PREPARE_PAR",
-           "RECONSTRUCT", "ranks_for", "render_decompose_pardict", "mpi_command",
+           "ranks_for", "render_decompose_pardict", "mpi_command",
            "MPI_BUFFER_BYTES",
            "BLOCK_FACES", "OPEN_FACE_RTOL", "OUTER_PATCH", "is_domain_face",
+           "RECONSTRUCT_REGIONS", "REGION_DICTS",
            "CELL_TO_REGION", "REGION_PROPERTIES", "region_properties",
            "block_bounds", "block_surface_stl", "open_faces", "plan_ports",
            "background_complaint", "MIN_BACKGROUND_CELLS_ACROSS_BLOCK",

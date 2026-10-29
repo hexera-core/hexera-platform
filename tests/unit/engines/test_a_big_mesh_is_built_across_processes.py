@@ -35,7 +35,6 @@ from meshpipeline.engines.cfmesh_conjugate.conjugate import (
     MPI_FLAGS,
     OCTREE_BOXES_PER_PROCESS,
     PREPARE_PAR,
-    RECONSTRUCT,
     ConjugateError,
     build,
     mpi_command,
@@ -150,20 +149,87 @@ def test_the_utility_is_told_it_is_parallel():
 #   -- the runner actually does it --------------------------------------------------------------
 
 def test_the_serial_chain_is_untouched_by_any_of_this():
-    """Every part in the corpus meshes in one process and must keep doing it exactly as before."""
+    """Every part in the corpus meshes in one process and must keep doing it exactly as before:
+    the mesher, then topoSet, then the split, with no mpirun and nothing to prepare."""
     src = inspect.getsource(build)
-    assert 'chain = [("cartesianMesh", "cartesianMesh")]' in src
+    serial = src.split("else:", 1)[1].split("if port_patches", 1)[0]
+    assert '("cartesianMesh", "cartesianMesh")' in serial
+    assert '("topoSet", "topoSet")' in serial
+    assert '" ".join(SPLIT_ARGS)' in serial
+    assert "mpi_command" not in serial and "PREPARE_PAR" not in serial
     assert "ranks" in inspect.signature(build).parameters
     assert inspect.signature(build).parameters["ranks"].default == 1
 
 
-def test_the_parallel_chain_prepares_meshes_and_merges_in_that_order():
-    """preparePar before the mesher because there is nothing to mesh into otherwise, and the merge
-    before topoSet because topoSet runs on one mesh."""
+def test_the_parallel_chain_stays_decomposed_to_the_end():
+    """THE MERGE MOVED, and this test used to assert the opposite - "the merge before topoSet
+    because topoSet runs on one mesh". topoSet runs perfectly well on a decomposed one, and
+    merging first put the three stages after the mesher in a single process:
+
+        cartesianMesh        2,399.6 s   on 8 ranks
+        reconstructParMesh   4,518.4 s   one process
+        topoSet              2,240.2 s   one process
+        splitMeshRegions     6,073.3 s   one process
+
+    on the 336,666,582-cell customer build - 4.4x the mesher, after it. So the order is
+    preparePar, mesh, tag, split, and THEN one merge, of the two regions rather than the block.
+    """
     src = inspect.getsource(build)
-    assert "PREPARE_PAR" in src and "mpi_command" in src and "RECONSTRUCT" in src
-    assert src.index("PREPARE_PAR") < src.index("mpi_command"), "nothing to mesh into yet"
-    assert src.index("RECONSTRUCT") < src.index('("topoSet", "topoSet")')
+    par = src.split("if int(ranks) > 1:", 1)[1].split("else:", 1)[0]
+    assert PREPARE_PAR == "preparePar", "cfMesh's own, because there is no mesh to decompose yet"
+    order = [par.index(k) for k in ("PREPARE_PAR", '("cartesianMesh"', '("topoSet"',
+                                    '("splitMeshRegions"', "RECONSTRUCT_REGIONS")]
+    assert order == sorted(order), "preparePar, mesh, tag, split, merge - in that order"
+    assert par.count("mpi_command") == 3, "the mesher, topoSet and the split all go parallel"
+    assert "RECONSTRUCT_REGIONS" in par and 'RECONSTRUCT,' not in par
+
+
+def test_the_merge_takes_the_regions_and_not_the_block():
+    """The root block mesh is never reconstructed, and nothing downstream wants it: the viewer
+    refuses to read it on purpose, and foamToVTK -allRegions was measured on a case without it -
+    rc 0, both regions' internal.vtu, 9 boundary files, the same as with it."""
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import RECONSTRUCT_REGIONS
+
+    assert RECONSTRUCT_REGIONS.startswith("reconstructParMesh")
+    assert "-allRegions" in RECONSTRUCT_REGIONS
+    assert "-constant" in RECONSTRUCT_REGIONS
+
+
+def test_the_regions_dictionaries_are_brought_up_from_the_ranks():
+    """splitMeshRegions writes each region's system/<region> beside the mesh it split, which when
+    it runs decomposed is inside processor0. Without them the reconstructed case has
+    constant/fluid/polyMesh and no system/fluid/fvSchemes, and the next command to open that
+    region exits on the missing file - measured: checkMesh -region fluid, "cannot find file
+    system/fluid/fvSchemes"."""
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import REGION_DICTS
+
+    assert "processor0/system" in REGION_DICTS
+    assert " -rn " in REGION_DICTS, (
+        "no-clobber, or this overwrites the port cut's own topoSetDict in the same directory")
+    src = inspect.getsource(build)
+    par = src.split("if int(ranks) > 1:", 1)[1].split("else:", 1)[0]
+    assert par.index("RECONSTRUCT_REGIONS") < par.index("REGION_DICTS"), (
+        "there is nothing to copy into until the regions exist")
+
+
+def test_one_cell_may_move_and_the_interface_may_not():
+    """What the two chains were measured to agree and disagree about, on the coupon's own block
+    and coolant:
+
+                        fluid cells   solid cells   interface   fluid non-ortho   solid
+        serial               29,812        29,262      22,534           16.2739   35.3268
+        parallel to end      29,813        29,261      22,534           16.2739   35.3442
+
+    Both pass checkMesh. The interface is 22,534 faces on both sides in both chains, which is the
+    conformality the whole approach rests on, and the total is 59,074 either way. ONE CELL MOVES
+    between the regions, because topoSet classifies a cell on a processor boundary differently
+    from how it classifies it with the mesh whole. Recorded here rather than asserted - it needs
+    a mesher to reproduce - so that the number is written down where the next person looks.
+    """
+    src = inspect.getsource(build)
+    assert "22,534" in src, "the interface figure belongs beside the chain it justifies"
+    assert "ONE CELL" in src and "MOVES between the regions" in src
+    assert "59,074" in src
 
 
 def test_the_dictionary_is_written_before_the_case_is_scanned():
@@ -178,7 +244,7 @@ def test_the_per_rank_copies_are_removed_once_the_mesh_is_one_mesh():
     ranks at all - and the workspace is archived and returned whole."""
     src = inspect.getsource(build)
     assert 'glob("processor*")' in src
-    assert src.index('glob("processor*")') > src.index("RECONSTRUCT"), (
+    assert src.index('glob("processor*")') > src.index("RECONSTRUCT_REGIONS"), (
         "removing them before the merge would delete the mesh")
 
 

@@ -1459,3 +1459,58 @@ then add the caps. The rims are chains of mesh edges because a CAD tessellation 
 boundaries, so that needs no tolerance against the 98 um walls - which is what defeats matching
 the metal and coolant tessellations against each other, since the tessellation deflection at
 1/2500 of a 210 mm diagonal is 0.084 mm, itself thicker than the walls. Not attempted.
+
+### The three stages after the mesher are 4.4x the mesher, and they do not have to be serial
+
+On the 336,666,582-cell customer build:
+
+| stage | time | processes |
+|---|---|---|
+| cartesianMesh | 2,399.6 s | 8 ranks |
+| reconstructParMesh | 4,518.4 s | 1 |
+| topoSet | 2,240.2 s | 1 |
+| splitMeshRegions | 6,073.3 s | 1 |
+
+The mesher is 40 minutes of a 4h50 run. The three stages after it, all in one process, are 4.4x
+that. They were serial on purpose: the ceiling that forces the mesher onto ranks is cfMesh's
+octree addressing and nothing downstream shares it, so the block was merged the moment it existed.
+Right about correctness, wrong about time.
+
+The alternative is to stay decomposed to the end and merge the two REGIONS instead of the block:
+
+    preparePar
+    mpirun cartesianMesh    -parallel
+    mpirun topoSet          -parallel
+    mpirun splitMeshRegions -parallel
+    reconstructParMesh -constant -allRegions
+
+Measured both chains against each other on the coupon's own block and coolant, 4 ranks:
+
+| chain | fluid cells | solid cells | interface faces | fluid max non-ortho | solid max non-ortho | checkMesh |
+|---|---|---|---|---|---|---|
+| serial, today | 29,812 | 29,262 | 22,534 | 16.2739 | 35.3268 | OK |
+| parallel to the end | 29,813 | 29,261 | 22,534 | 16.2739 | 35.3442 | OK |
+
+The interface is 22,534 faces on both sides in both chains, which is the conformality the whole
+approach rests on, and the total is 59,074 either way. ONE CELL moves between the regions, because
+`topoSet surfaceToCell` classifies a cell on a processor boundary differently from how it
+classifies it with the mesh whole. That is a real difference and not a rounding - the parallel
+chain is not bit-identical - and it is one cell in 59,074 on a boundary the two regions share
+exactly.
+
+TWO THINGS HAD TO BE HANDLED. `splitMeshRegions` writes each region's `system/<region>`
+dictionaries beside the mesh it split, which when it runs decomposed is inside `processor0` and not
+at the root - so the reconstructed case has `constant/fluid/polyMesh` and no
+`system/fluid/fvSchemes`, and `checkMesh -region fluid` exits on the missing file. They are copied
+up with `cp -rn`, no-clobber, because the port cut writes its own `topoSetDict` into the same
+directory before the chain runs.
+
+And the root block mesh is never reconstructed now. Nothing downstream wants it: the viewer refuses
+to read it on purpose (it carries both regions' face counts added together, so a viewer pointed
+there draws a mesh that was never delivered), and `foamToVTK -constant -noZero -noFaceZones
+-allRegions` was measured on a case without it - rc 0, both regions' `internal.vtu`, 9 boundary
+files, the same as with it.
+
+On this coupon the parallel chain is slower, as expected: cartesianMesh 8 s serial against 52 s on
+4 ranks, because 52,026 octree boxes is all MPI overhead. The figure that matters is the 12,831 s
+of serial tail on the part that needs ranks, and that is not measured yet - it needs the big box.
