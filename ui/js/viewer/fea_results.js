@@ -48,9 +48,18 @@ function assemblyHtml(a) {
   if (!a) return "";
   const parts = (a.parts || []).map((p) => `<tr><td><b>${esc(p.id)}</b>${p.name ? ` · ${esc(p.name)}` : ""}</td>`
     + `<td class="n">${esc((p.elements || 0).toLocaleString())}</td></tr>`).join("");
+  // PLAN-fea-21: AN OPEN BONDED PAIR, in red, with the pair and the way on - never a quiet pass
+  const open = (a.open_bonded || []).length ? `<div class="fe-open" role="alert">
+        <b>${(a.open_bonded || []).length === 1 ? "A bonded pair is open" : `${a.open_bonded.length} bonded pairs are open`}</b>: the solver will not join these faces.
+        <ul>${a.open_bonded.map((o) => `<li>${esc(o.words)}</li>`).join("")}</ul></div>` : "";
+  // PLAN-fea-19/20: each pair as it was joined, and who kept an overlap
+  const pairs = (a.pairs || []).length ? `<details class="fe-pairs"><summary>Pairs <span class="tr-n">${a.pairs.length}</span></summary>
+        <ul class="tr-q">${a.pairs.map((c) => `<li class="fe-pair ${esc(c.type || "")}">${esc(c.words)}</li>`).join("")}</ul></details>` : "";
   return `<div class="v-sec fe-asm">
       <div class="v-sec-h">Parts <span class="tr-n">${(a.parts || []).length}</span></div>
+      ${open}
       <div class="tr-sum">${esc(a.words || "")}</div>
+      ${pairs}
       <div class="tr-wrap"><table class="tr-tab"><thead><tr><th>Part</th><th class="n">Elements</th></tr></thead>
         <tbody>${parts}</tbody></table></div>
       ${(a.joints || []).length ? `<ul class="tr-q">${a.joints.map((j) => `<li><b>${esc(j.name)}</b> ${esc(j.words)}</li>`).join("")}</ul>` : ""}
@@ -123,7 +132,10 @@ export function feaDownloads(bar, job, f) {
         + (r.error != null ? `; fails ${r.op === "<=" ? "over" : "under"} ${fmt(r.error)}` : "")
         + ` (${r.source})`))))
     .concat(f.assembly ? ["", "Parts:"].concat((f.assembly.parts || []).map((p) => `  ${p.id}${p.name ? ` (${p.name})` : ""}: ${p.elements} elements`),
-      [`  ${f.assembly.words || ""}`], (f.assembly.joints || []).map((j) => `  ${j.name}: ${j.words}`)) : [])
+      [`  ${f.assembly.words || ""}`], (f.assembly.joints || []).map((j) => `  ${j.name}: ${j.words}`),
+      (f.assembly.open_bonded || []).length ? ["", "OPEN BONDED PAIRS (not joined - the solver will not tie these faces):"]
+        .concat(f.assembly.open_bonded.map((o) => `  ! ${o.words}`)) : [],
+      (f.assembly.pairs || []).length ? ["", "Pairs:"].concat(f.assembly.pairs.map((c) => `  ${c.words}`)) : []) : [])
     .concat(["", "The plan:"], (f.plan_words || []).map((w) => `  - ${w}`))
     .concat(["", "Hot spots:"], (f.hot_spots || []).map((h) => `  ${h.id} ${h.words} (${(h.faces || []).join(", ")})`))
     .concat(["", "Named faces:"], (f.faces || []).map((x) => `  ${x.label}`));

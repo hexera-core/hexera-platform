@@ -494,6 +494,14 @@ def assembly_words(asm: Mapping) -> list[str]:
     else:
         out.append(f"Contact (the parts can slide or separate): each part is meshed on its own, and the {n} "
                    "touching pair(s) are written as named contact pairs, the smaller surface the slave.")
+    raw = asm.get("joint_counts")
+    counts: Mapping = raw if isinstance(raw, Mapping) else {}
+    kinds = [t for t in ("bonded", "contact", "off") if counts.get(t)]
+    if len(kinds) > 1 or counts.get("edited"):
+        # PLAN-fea-19: the pairs are not all joined one way - each as its own choice says
+        out.append(f"Each pair as chosen: {counts.get('bonded', 0)} bonded, {counts.get('contact', 0)} "
+                   f"contact, {counts.get('off', 0)} off" + (f", {counts['edited']} of them set on the stage."
+                                                              if counts.get("edited") else "."))
     out.extend(str(x) for x in asm.get("notes") or [] if x)
     return out
 

@@ -14,7 +14,11 @@ Fuse algorithm; gmsh's fragment is the same operation). In its result:
 * a face that is the image of faces of TWO parts is a shared face: the parts TOUCH there (an
   interface - in a bonded mesh the parts share its nodes; with contact it is a contact pair);
 * a solid that is the image of TWO parts is where they PASS INTO each other (interference): a
-  bonded mesh makes it one piece of material, counted with the lower-numbered part, and says so.
+  bonded mesh makes it one piece of material, kept by the SMALLER body (PLAN-fea-20, cad/fea_pairs:
+  the larger gives way there, as SpaceClaim's interference tool does), and says so.
+
+Each pair of parts that meet is joined as its own choice says (PLAN-fea-19, cad/fea_pairs): Bonded,
+Contact or Off, the stage's whole-assembly answer by default.
 
 A record (record()) for the stage and the plan:
 
@@ -281,8 +285,12 @@ def interfaces_of(fused: Fused, volumes: list[float], *, scale: float = 1.0) -> 
                     if p in pair and face_name(p, j) not in faces[part_id(p)]:
                         faces[part_id(p)].append(face_name(p, j))
             smaller = min(vols[pair[0] - 1][0], vols[pair[1] - 1][0]) or 1.0
+            # HOW DEEP THEY PASS INTO EACH OTHER, about: the shared piece's volume over half its
+            # surface (a thin ring of depth t: t; a solid cube of side s: s/3)
+            skin = sum(_props(s, False)[0] for s in pieces)
             interfaces.append({"kind": "overlap", "parts": [part_id(p) for p in pair], "faces": faces,
                                "at_mm": _pt(centre * mm), "overlap_share": round(vol / smaller, 6),
+                               "depth_mm": _r(2.0 * vol / skin * mm) if skin > 0 else None,
                                "area_mm2": None})
             continue
         ks = by_pair[pair]
@@ -491,7 +499,9 @@ def record(shape, *, mm_per_unit: float, names: list[str] | None = None) -> dict
         name = readable_body_name((names or [])[p - 1] if names and p - 1 < len(names) else "")
         out_parts.append({"id": part_id(p), "name": name, "faces": len(_faces(s)),
                           "centroid_mm": _pt(c * mm), "box_mm": _pt((b - a) * mm),
-                          "volume_share": round(v / total, 6)})
+                          "volume_share": round(v / total, 6),
+                          # PLAN-fea-20 reads which of two parts is the smaller (a share can round to 0)
+                          "volume_mm3": _r(v * mm ** 3)})
     notes: list[str] = []
     fused = fuse(parts, fuzzy=FUZZY_SHARE * diag)
     rec: dict[str, Any] = {"version": VERSION, "parts": out_parts, "interfaces": [], "free_parts": [], "fused": not fused.error,
@@ -566,12 +576,13 @@ SIDECAR = "assembly.json"
 
 
 def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | None = None,
-          tie: bool = False, gap_joins: bool = True, mm_per_unit: float = 1000.0) -> dict:
+          tie: bool = False, gap_joins: bool = True, mm_per_unit: float = 1000.0,
+          pairs: dict | None = None) -> dict:
     """Write STAGED and SIDECAR for `connection` into `out_dir`, and return the sidecar.
 
     BONDED: the general fuse itself - the parts share every face where they touch, so the mesh is
     conformal there (shared nodes); where they pass into each other the shared piece is one piece
-    of material, counted with the lower-numbered part. Should the fuse fail, the parts are staged
+    of material, kept by the smaller body (PLAN-fea-20). Should the fuse fail, the parts are staged
     side by side and every touching pair is TIED instead (bonded, not conformal) - never a stop;
     `tie` asks for that directly (a fused assembly the mesher could not build as one).
     CONTACT: the parts side by side, each meshed on its own; every pair the fuse found touching
@@ -580,18 +591,26 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
     each other across a small gap are joined there - tied when bonded, a contact pair with contact -
     each pair with its measured gap and its reach (`gap_joins` off: not joined); a fuse the surfaces
     contradict is set aside, and the measured joints are tied (bonded) or paired (contact).
+    PLAN-fea-19: EACH PAIR is joined as its own choice says (cad/fea_pairs.choose: the connection by
+    default, `pairs` the user's choices by pair key): a bonded pair is shared or tied, a contact pair
+    a contact pair, an Off pair not joined. A bonded assembly whose touching or overlapping pair is
+    set to contact or off is meshed apart, its bonded pairs tied (a fused mesh joins every touch).
     `mm_per_unit`: the staged shape's unit (the staging writes metres).
 
     The sidecar says, for every face and solid of STAGED in MapShapes order (gmsh's tag order for
-    the file it reads), its names (Part_p_Face_j; a shared face has one per part) and its parts,
-    with its area / volume and centre in metres for the mesher to check that order against."""
+    the file it reads), its names (Part_p_Face_j; a shared face has one per part) and its parts
+    (and the part that OWNS a shared solid), with its area / volume and centre in metres for the
+    mesher to check that order against; and every pair's choice (`joints`)."""
     from OCP.BRepTools import BRepTools
+
+    from meshpipeline.cad import fea_pairs as P
 
     out = Path(out_dir)
     parts = solids(shape)
     lo, hi = _box(shape)
     diag = float(np.linalg.norm(hi - lo)) or 1.0
     vols = [_props(s, True)[0] for s in parts]
+    volume_of = {part_id(k): v for k, v in enumerate(vols, start=1)}
     notes: list[str] = []
     # MESH-8: EACH PART AS IT IS MESHED - its zero-thickness skins left out (cad/zero_skins), every face of
     # what is meshed still named for the CAD face it came from; a part with none is the part itself
@@ -611,8 +630,19 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
         mode = PAIR_TIE
         notes.append("The parts could not be meshed as one where they meet, so each part is meshed on its own and "
                      "tied there (bonded, but their nodes are not shared).")
-    interfaces, info = joined_interfaces(parts, fused, vols, diag=diag, mm_per_unit=mm_per_unit, scale=1.0,
-                                         gap_joins=gap_joins)
+    # EVERY small-gap pair is measured: whether each is joined is its own choice (PLAN-fea-19; the
+    # small-gap switch sets their default)
+    found, info = joined_interfaces(parts, fused, vols, diag=diag, mm_per_unit=mm_per_unit, scale=1.0,
+                                    gap_joins=True)
+    choices = P.choose(found, connection=connection, gap_joins=gap_joins, volume_of=volume_of, overrides=pairs)
+    choice = {str(c["id"]): c for c in choices}
+    off = [i for i in found if choice.get(str(i["id"]), {}).get("type") == P.OFF]
+    interfaces = [i for i in found if i not in off]
+    info = {**info, "gaps": [i["id"] for i in interfaces if i.get("kind") == "gap"],
+            "added": [i["id"] for i in interfaces if i.get("added")]}
+    # a touch the fuse missed (PLAN-fea-18, "added") or a line meet is tied in a fused mesh, never shared:
+    # like a gap
+    tied_apart = {str(i["id"]) for i in found if i.get("kind") == "gap" or i.get("added") or i.get("line")}
     if not info["trusted"] and mode == PAIR_BONDED:
         # THE FUSE IS WRONG HERE (PLAN-fea-18): its one piece cannot be meshed as the parts are, so each
         # part is meshed on its own and tied where its surfaces meet the others
@@ -638,6 +668,23 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
                      "round of one runs onto the other's face at no angle - and parts fused there leave a crack no "
                      "mesher can fill, so each part is meshed on its own and tied where they meet (bonded, but "
                      "their nodes are not shared).")
+    # A PAIR THAT MUST NOT SHARE NODES (PLAN-fea-19): a touching or overlapping pair set to contact or off
+    # cannot be one fused mesh, so the parts are meshed apart and the bonded pairs tied
+    unshared = [c for c in choices if c["kind"] in ("touching", "overlap") and c["type"] != P.BONDED
+                and str(c["id"]) not in tied_apart]
+    if mode == PAIR_BONDED and unshared:
+        mode = PAIR_TIE
+        listed = "; ".join(f"{c['parts'][0]} and {c['parts'][1]} {P.TYPE_LABELS[c['type']].lower()}"
+                           for c in unshared[:6]) + (" and more" if len(unshared) > 6 else "")
+        notes.append(f"Each part is meshed on its own and the bonded pairs are tied, because some pairs that touch "
+                     f"are set not to be bonded ({listed}): one shared mesh would join them.")
+    for itf_off in off[:8]:
+        a, b = itf_off["parts"]
+        why = choice.get(str(itf_off["id"]), {})
+        notes.append(f"{a} and {b} are not joined (Off: {why.get('why', 'set on the stage')}): the mesh leaves them "
+                     "unconnected there.")
+    if len(off) > 8:
+        notes.append(f"{len(off) - 8} more pair(s) are not joined (Off).")
     if mode == PAIR_BONDED:
         staged = fused.shape
         face_names = [[face_name(p, j) for p, j in o] for o in fused.face_origins]
@@ -650,6 +697,20 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
         staged = compound([BRepBuilderAPI_Copy(s).Shape() for s in mesh_parts])
         face_names = [[_origin_name(n, opened)] for n in global_face_names(staged)]
         vol_parts = [[p] for p in range(1, len(parts) + 1)]
+    # PLAN-fea-20: WHO KEEPS A SHARED PIECE - the overlap pair's choice (the smaller body by default);
+    # a piece three or more parts share goes to the smallest of them
+    keep_of = {c["key"]: part_no_of(c["keep"]) for c in choices if c.get("keep")}
+
+    def owner_of(owners: list[int]) -> int:
+        key = P.pair_key([part_id(p) for p in owners])
+        if len(owners) == 2 and key in keep_of:
+            return keep_of[key]
+        best = min(owners)
+        for p in sorted(owners):
+            if vols[p - 1] < vols[best - 1] * (1.0 - P.SAME_SIZE):
+                best = p
+        return best
+
     out.mkdir(parents=True, exist_ok=True)
     BRepTools.Write_s(staged, str(out / STAGED))
     surfaces = []
@@ -660,25 +721,34 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
     volumes = []
     for k, s in enumerate(solids(staged)):
         v, c = _props(s, True)
-        volumes.append({"parts": vol_parts[k] if k < len(vol_parts) else [], "volume_m3": _r(v),
-                        "centroid_m": _pt(c)})
-    pairs = []
+        owners = vol_parts[k] if k < len(vol_parts) else []
+        volumes.append({"parts": owners, "volume_m3": _r(v), "centroid_m": _pt(c),
+                        **({"owner": owner_of(owners)} if len(owners) > 1 else {})})
+    pairs_out = []
     unpaired: list[tuple[str, str]] = []
     for itf in interfaces:
         p, q = (int(x.split("_")[1]) for x in itf["parts"])
+        ch = choice.get(str(itf["id"])) or {}
+        bonded = ch.get("type", P.BONDED if connection == BONDED else P.CONTACT) == P.BONDED
         gap = _gap_fields(itf) if itf.get("kind") == "gap" or itf.get("line") else {}
-        if mode == PAIR_BONDED and (gap or itf.get("added")):
-            # A SMALL-GAP JOINT in a fused mesh: the two sides are not one surface, so they are tied
-            pairs.append({"id": itf["id"], "kind": PAIR_TIE, "parts": [p, q], "overlap": False,
-                          "faces": {str(p): itf["faces"].get(part_id(p)) or [],
-                                    str(q): itf["faces"].get(part_id(q)) or []}, **gap})
+        if ch.get("reach_mm"):
+            # THE USER'S REACH for this pair (the way on from an open bonded pair, PLAN-fea-21)
+            gap = {**gap, "reach": _r(float(ch["reach_mm"]) / float(mm_per_unit or 1.0)), "reach_set": True}
+        extra = {"key": ch.get("key") or P.pair_key(itf["parts"]), "joint": ch.get("type")}
+        if mode == PAIR_BONDED and str(itf["id"]) in tied_apart:
+            # A SMALL-GAP JOINT (or a touch the fuse missed) in a fused mesh: the two sides are not one
+            # surface, so they are tied (or paired, when that pair is set to contact)
+            pairs_out.append({"id": itf["id"], "kind": PAIR_TIE if bonded else PAIR_CONTACT, "parts": [p, q],
+                              "overlap": False, "faces": {str(p): itf["faces"].get(part_id(p)) or [],
+                                                          str(q): itf["faces"].get(part_id(q)) or []},
+                              **gap, **extra})
             continue
         if mode == PAIR_BONDED:
             # the faces both parts share: one surface per side, where the bond's stress is read
             shared = [k for k, o in enumerate(fused.face_origins) if {p, q} <= {a for a, _j in o}]
             if itf["kind"] == "overlap" or not shared:
                 continue
-            pairs.append({"id": itf["id"], "kind": PAIR_BONDED, "parts": [p, q], "surfaces": shared})
+            pairs_out.append({"id": itf["id"], "kind": PAIR_BONDED, "parts": [p, q], "surfaces": shared, **extra})
         else:
             fp, fq = itf["faces"].get(part_id(p)) or [], itf["faces"].get(part_id(q)) or []
             if not fp or not fq:
@@ -687,34 +757,57 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
                 inner, outer = (part_id(p), part_id(q)) if fp else (part_id(q), part_id(p))
                 unpaired.append((inner, outer))
                 continue
-            pairs.append({"id": itf["id"], "kind": PAIR_TIE if mode == PAIR_TIE else PAIR_CONTACT,
-                          "parts": [p, q], "overlap": itf["kind"] == "overlap",
-                          "faces": {str(p): fp, str(q): fq}, **gap})
+            pairs_out.append({"id": itf["id"], "kind": PAIR_TIE if bonded else PAIR_CONTACT,
+                              "parts": [p, q], "overlap": itf["kind"] == "overlap",
+                              "faces": {str(p): fp, str(q): fq}, **gap, **extra})
     joined = {p for i in interfaces for p in i["parts"]}
     free = [part_id(p) for p in range(1, len(parts) + 1) if part_id(p) not in joined]
     if free:
         one = len(free) == 1
-        notes.append(f"{_list(free)} touch{'es' if one else ''} no other part: in the mesh "
-                     f"{'it is a separate piece' if one else 'each is a separate piece'}, held only by the supports "
-                     "you set in your solver.")
+        notes.append(f"{_list(free)} touch{'es' if one else ''} no other part{' it is joined to' if off else ''}: "
+                     f"in the mesh {'it is a separate piece' if one else 'each is a separate piece'}, held only by "
+                     "the supports you set in your solver.")
     over = [i for i in interfaces if i["kind"] == "overlap"]
-    # A PART WHOLLY INSIDE ANOTHER (a body drawn twice, a pin modelled inside its boss): bonded, it is
-    # all one piece of material with the other, so it has no elements of its own
-    inside = [i for i in over if float(i.get("overlap_share") or 0.0) >= WHOLLY_INSIDE]
-    if inside and mode == PAIR_BONDED:
-        for i in inside:
-            lo_id, hi_id = i["parts"]                     # the shared piece counts with lo_id
-            v_lo, v_hi = (vols[int(x.split("_")[1]) - 1] for x in (lo_id, hi_id))
-            if v_hi <= v_lo:
-                notes.append(f"{hi_id} lies wholly inside {lo_id} (drawn twice?): bonded, it is one piece of "
-                             f"material with {lo_id}, so it has no elements of its own.")
-            else:
-                notes.append(f"{lo_id} lies wholly inside {hi_id}: bonded, they are one piece of material there.")
     if over and mode == PAIR_BONDED:
-        notes.append(f"{len(over)} pair(s) of parts pass into each other: where they do, the mesh is one piece "
-                     "of material, counted with the lower-numbered part (" + "; ".join(
-                         f"{i['parts'][0]} and {i['parts'][1]}, {100 * float(i['overlap_share']):.3g}% of the "
-                         "smaller part" for i in over) + ").")
+        # PLAN-fea-20, said pair by pair: the smaller body keeps its full shape, the larger gives way
+        said_pairs = []
+        for i in over:
+            ch = choice.get(str(i["id"])) or {}
+            keep = str(ch.get("keep") or i["parts"][0])
+            other = i["parts"][1] if keep == i["parts"][0] else i["parts"][0]
+            share = (f", {100 * float(i['overlap_share']):.3g}% of the smaller part"
+                     if i.get("overlap_share") is not None else "")
+            mine = " (your choice)" if ch.get("keep_source") == "user" else ""
+            said_pairs.append(f"{keep} keeps it from {other}{share}{mine}")
+            if float(i.get("overlap_share") or 0.0) >= WHOLLY_INSIDE:
+                # A PART WHOLLY INSIDE ANOTHER (a body drawn twice, a pin modelled inside its boss)
+                v_k, v_o = volume_of.get(keep, 0.0), volume_of.get(other, 0.0)
+                if v_k <= v_o * (1.0 + P.SAME_SIZE) and v_o <= v_k * (1.0 + P.SAME_SIZE):
+                    notes.append(f"{other} lies wholly inside {keep} (drawn twice?): bonded, it is one piece of "
+                                 f"material with {keep}, so it has no elements of its own.")
+                elif v_k > v_o:
+                    notes.append(f"{other} lies wholly inside {keep}, and {keep} keeps the shared piece: {other} has "
+                                 "no elements of its own.")
+                else:
+                    notes.append(f"{keep} lies wholly inside {other}: bonded, {keep} keeps its full shape and {other} "
+                                 "gives way around it (one piece of material there).")
+        notes.append(f"{len(over)} pair(s) of parts pass into each other: where they do, the mesh is one piece of "
+                     "material, and the smaller body keeps its full shape there while the larger gives way "
+                     "(SpaceClaim's interference rule) - " + "; ".join(said_pairs) + ".")
+        # A PART LEFT WITH NO ELEMENTS: every piece of it is kept by another part (a body drawn once whole and
+        # once in pieces; a larger body the user gave the shared piece). Said, never dropped quietly.
+        held = [list(o) for o in vol_parts if o]
+        own = {o[0] if len(o) == 1 else owner_of(o) for o in held}
+        for p in range(1, len(parts) + 1):
+            pid = part_id(p)
+            if p in own or any(n.startswith(f"{pid} lies wholly inside") or f"{pid} has no elements" in n
+                               for n in notes):
+                continue
+            keepers = [part_id(k) for k in sorted({owner_of(o) for o in held if p in o and len(o) > 1})]
+            notes.append(f"{pid} has no elements of its own: every piece of it is shared with "
+                         f"{_list(keepers) if keepers else 'other parts'}, which keep{'s' if len(keepers) == 1 else ''} "
+                         "it, so it is not in the mesh files - give it a shared piece on the stage, or remove the "
+                         "doubled material in the CAD.")
     elif over and mode == PAIR_TIE:
         notes.append(f"{len(over)} pair(s) of parts pass into each other: tied, each keeps its own elements "
                      "there, so the shared piece is counted in both parts (its stiffness and mass twice) - fix "
@@ -732,11 +825,16 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
                "parts": [{"id": part_id(p), "name": readable_body_name((names or [""] * len(parts))[p - 1]
                                                                         if names and p - 1 < len(names) else "")}
                          for p in range(1, len(parts) + 1)],
-               "surfaces": surfaces, "volumes": volumes, "pairs": pairs, "interfaces": interfaces,
+               "surfaces": surfaces, "volumes": volumes, "pairs": pairs_out, "interfaces": interfaces,
                "unpaired": [{"inner": a, "outer": b} for a, b in unpaired],
                "notes": notes, "fuse_seconds": fused.seconds,
                "tie_first": ({"overlap_pieces": n_pieces, "overlap_pairs": n_over, "at": TIE_FIRST_PIECES}
-                             if tie_first else None)}
+                             if tie_first else None),
+               # PLAN-fea-19/20: every pair's joint and owner, with its reason, and the counts
+               "joints": choices, "joint_counts": P.counts(choices)}
+    if pairs:
+        # the user's own choices, as given: a restage (tied after a failed fused pass) keeps them
+        sidecar["pair_choices"] = P.clean_overrides(pairs)
     if grazed:
         sidecar["tangent_meets"] = [list(pq) for pq in grazed]   # absent when none: the sidecar is as before
     said = joins_record(info, interfaces)
@@ -816,6 +914,14 @@ def _tangent_meets(fused: Fused) -> list[tuple[int, int]]:
                 if pa != pb and len(pa) == 1 and len(pb) == 1 and float(normals[a][1] @ normals[b][1]) < TANGENT_COS:
                     out.add((min(pa[0], pb[0]), max(pa[0], pb[0])))
     return sorted(out)
+
+
+def part_no_of(pid: str) -> int:
+    """Part_k -> k."""
+    try:
+        return int(str(pid).split("_")[1])
+    except (IndexError, ValueError):
+        return 0
 
 
 def open_skins(solid):
