@@ -307,6 +307,50 @@ def parse_check_mesh(out: str) -> dict:
 EXPORT_TIMEOUT_S = 7200.0
 
 
+#: EXCLUDE THE FIELD TIME. The delivered case has two times: `constant`, which is the mesh, and
+#: `0`, which solver_case writes with <<HEXERA_FILL_THIS_IN>> where every physical value belongs.
+#: foamToVTK's default time range is every time, so `-constant` alone exported the mesh AND tried
+#: to export the blank fields - and died on them. Measured in the mesh image, 2026-10-29, on a
+#: 2x2x2 blockMesh carrying one volScalarField at time 0:
+#:
+#:     -constant            readable field    rc 0    tc_0  tc_0.vtm  tc_1  tc_1.vtm
+#:     -constant -noZero    readable field    rc 0    tc_0  tc_0.vtm
+#:     -constant            BLANK field       rc 1    tc_0  tc_0.vtm  tc_1        <- no .vtm
+#:     -constant -noZero    BLANK field       rc 0    tc_0  tc_0.vtm
+#:
+#: That third row is what a live run left behind: a half-written time directory whose last .vtp
+#: stopped mid-base64, and no .vtm beside it. review_surface read it as the newest time, the fluid
+#: came back unparseable, the review ran on the solid alone, and the job terminated "delivered
+#: with the review inconclusive" on a mesh that had passed every gate. The mesh is in `constant`
+#: and a review wants the mesh, so the field time is not exported at all.
+NO_FIELD_TIME = "-noZero"
+#: foamToVTK writes "<case>_<n>.vtm" beside "<case>_<n>/" only once that time is fully written, so
+#: a time directory WITHOUT its .vtm is an export that died partway. This is the general guard
+#: behind NO_FIELD_TIME: whatever kills an export mid-write leaves this same signature, and a
+#: reviewer has to be able to tell a finished export from a truncated one.
+VTM_SUFFIX = ".vtm"
+
+
+def finished_export(time_dir) -> bool:
+    """True when foamToVTK finished writing this time directory - see VTM_SUFFIX."""
+    d = Path(time_dir)
+    return d.is_dir() and d.with_suffix(VTM_SUFFIX).is_file()
+
+
+def prefer_finished(time_dirs: list) -> list:
+    """The finished exports, or all of them when none is finished.
+
+    A PREFERENCE AND NOT A PRECONDITION, deliberately. The .vtm's job is to break the tie between
+    a complete export and a half-written one, which is the case that was actually delivered. Made
+    a hard requirement it does the opposite of its purpose: a readable internal.vtu whose marker
+    is missing for any reason at all would leave the review with no surface where today it has
+    one. Falling back costs nothing, because the per-file read is already inside a try/except and
+    a region that ends up with nothing now says so by name.
+    """
+    finished = [d for d in time_dirs if finished_export(d)]
+    return finished or list(time_dirs)
+
+
 def export_volume_vtk(workspace, *, all_regions: bool = False, region: str = "",
                       bashrc: str = _DEFAULT_BASHRC,
                       timeout: float = EXPORT_TIMEOUT_S) -> str | None:
@@ -327,7 +371,8 @@ def export_volume_vtk(workspace, *, all_regions: bool = False, region: str = "",
         logger.warning("export_volume_vtk: %s", reason)
         return None
     _all = " -allRegions" if all_regions else ""
-    cmd = f"source {bashrc} >/dev/null 2>&1 && foamToVTK -constant -noFaceZones{_all}"
+    cmd = (f"source {bashrc} >/dev/null 2>&1 && "
+           f"foamToVTK -constant {NO_FIELD_TIME} -noFaceZones{_all}")
     try:
         run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
                     capture_output=True, text=True, timeout=timeout)
@@ -344,6 +389,9 @@ def export_volume_vtk(workspace, *, all_regions: bool = False, region: str = "",
     # review_0 while the review's own lookup returned review_1, so the two disagreed about which
     # file described the delivered mesh. The index is read numerically so _10 sorts after _9.
     def newest(paths: list) -> str | None:
+        # A truncated export is worse than a missing one: it reads as a mesh and is not one.
+        keep = set(prefer_finished([p.parent for p in paths]))
+        paths = [p for p in paths if p.parent in keep]
         if not paths:
             return None
         def key(p):

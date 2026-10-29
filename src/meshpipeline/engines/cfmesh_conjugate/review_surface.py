@@ -11,6 +11,7 @@ from meshpipeline.engines.cfmesh_conjugate.conjugate import (
     SOLID_REGION,
     SOLID_TO_FLUID,
 )
+from meshpipeline.engines.cfmesh_conjugate.foam_exec import prefer_finished
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +40,22 @@ def _time_index(case_dir_name: str) -> int:
 
 
 def _newest_time(region_dir: Path) -> Path | None:
-    """The latest time directory foamToVTK wrote for a region.
+    """The latest FINISHED time directory foamToVTK wrote for a region.
 
-    Only the newest describes the mesh as delivered. Globbing across the tree would collect every
+    Only one time describes the mesh as delivered. Globbing across the tree would collect every
     step it wrote, and since patches are named by file stem the same patch would be added twice
     under one region - a surface with the boundary laid on top of itself.
+
+    FINISHED, because "the newest" on its own read a truncated export as the mesh. A live run
+    delivered two fluid times: constant (the mesh, 70,361-byte inlet.vtp, complete) and 0 (the
+    blank solver fields, 65,539 bytes, stopping mid-base64 with no closing tag). This picked the
+    second, pv.read raised "Error parsing input file", the loop in build_region_msh logged it and
+    moved on, and the review opened with patches: ['solid'] - no coolant at all - on a mesh whose
+    fluid was there and correct. foam_exec.NO_FIELD_TIME stops that export being attempted;
+    prefer_finished is what stops a half-written one being believed, whatever wrote it - and it
+    prefers rather than requires, so a missing marker can never cost a surface that is readable.
     """
-    times = [p for p in region_dir.iterdir() if p.is_dir()]
+    times = prefer_finished([p for p in region_dir.iterdir() if p.is_dir()])
     if not times:
         return None
     return max(times, key=lambda d: (_time_index(d.name), d.name))
@@ -126,6 +136,14 @@ def build_region_msh(workspace) -> tuple[dict[str, list[int]], tuple | None]:
                 gmsh.model.mesh.addElementsByType(tag, 2, [], tris)
                 tags.append(tag)
             if not tags:
+                # LOUD, and naming the region. A dropped region used to leave no trace here at
+                # all: the fluid's patches failed to read, this continued, and the only sign was
+                # the reviewer refusing two region targets it could not find. Nothing in the log
+                # an operator reads said the word "fluid". The mesh stands - this module never
+                # fails one - but the review will be inconclusive and the reason belongs here.
+                logger.error("conjugate review: region %r contributed no readable surface from "
+                             "%d boundary file(s) - the review will not see it: %s",
+                             region, len(files), ", ".join(f.name for f in files) or "(none)")
                 continue
             group = gmsh.model.addPhysicalGroup(2, tags)
             gmsh.model.setPhysicalName(2, group, region)
