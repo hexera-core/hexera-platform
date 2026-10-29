@@ -1514,3 +1514,82 @@ files, the same as with it.
 On this coupon the parallel chain is slower, as expected: cartesianMesh 8 s serial against 52 s on
 4 ranks, because 52,026 octree boxes is all MPI overhead. The figure that matters is the 12,831 s
 of serial tail on the part that needs ranks, and that is not measured yet - it needs the big box.
+
+### A reader who zooms in on a 98 um channel is shown merged cells
+
+`polymesh_budget.fit_to_budget` clusters cells so a delivered mesh fits what a browser can carry.
+The first customer plate delivers 13,022,400 boundary faces on the coolant alone against a budget
+of 800,000 triangles, so about sixteen delivered faces become one drawn one. The payload says so,
+and the zoom still lets a reader go right in - where the surface under their cursor is a merged
+approximation of the cells rather than the cells. Every face count, size and quality figure they
+are given is the mesh's own. The surface is not.
+
+`render/detail_window.detail_at` is the answer, served at `/simulation/<job>/detail`: the same
+reader, on the same delivered polyMesh, restricted to a ball around the point they asked about,
+with nothing merged, and the count of what was in range beside it. Measured on the delivered
+coupon (fluid 349,656 boundary faces, solid 375,594):
+
+| ball | time | in range | returned |
+|---|---|---|---|
+| 0.3 mm, first ask | 8.05 s | 732 | 732, one patch |
+| 0.3 mm, asked again | 0.04 s | 732 | 732 |
+| 1.0 mm | 0.10 s | 23,223 | 23,223 over four patches |
+| 4.0 mm | 0.51 s | 404,725 | 150,000, truncated |
+
+Every patch's two buffers agreed with its declared face count with no index past its own points,
+and `fluid_to_solid` and `solid_to_fluid` both came back 8,869 faces - the conjugate interface
+showing up equal on both sides in the detail cut too.
+
+Three things the measurements changed. It read the pre-split block: `splitMeshRegions` leaves it at
+`constant/polyMesh` carrying every patch with the two regions' face counts added together, which is
+why the viewer refuses to read it, and the first version of this did not - a 0.3 mm ball came back
+with `zmax` 732 faces beside `fluid/inlet` 732, the first being a surface that was never delivered
+standing in for the one that was. It was 28.1 s a request, because it computed a centroid per face
+in a Python loop; one `np.add.reduceat` over the flattened connectivity took that to 8.0 s. And 8 s
+is still not a click, so the compact form is kept - connectivity as one int64 array, points and
+centroids as float64, about 70 MB for the coupon's two regions - keyed by the owner file's size and
+mtime so a workspace rebuilt under the same path is read again.
+
+What it refuses: a radius that is not a length, and a boundary past `MAX_SOURCE_FACES`, named,
+because the read is the whole boundary (a face's position is not known until its points are, so
+there is no way to seek to a neighbourhood) and a reader who asked for the coolant and was given
+the metal would read the metal as the coolant. The customer plate's 13,022,400-face coolant side is
+that case and needs an index built at delivery, which this does not do.
+
+### The ceiling fix read two keys the result does not have
+
+The commit that raised the archive ceiling for a two-region result was followed by a live run
+reporting the same floor:
+
+    mesh complete: {"rc": 0, ..., "cells": 6582471, ...,
+                    "return_scope": {"ceiling_bytes": 800000000,
+                                     "archive_bytes_est": 689484779,
+                                     "left_out": [{"file": ".../internal.vtu",
+                                                   "bytes": 330346080,
+                                                   "archive_bytes_est": 101859643}]}}
+
+The count was at the top, already added up: 6,582,471 is 2,520,586 of coolant plus 4,061,885 of
+metal. `quality.cells` is a single-region engine's shape and `regions[*].cells` is the conjugate
+RUNNER's shape, and by the time dispatch hands the result to `return_scope` it has been flattened
+to a top-level `cells`. Neither key was there.
+
+And the arithmetic is closer than it was written: 689,484,779 plus 101,859,643 is 791,344,422
+against a ceiling of 800,000,000, so by the raw number it FITTED - the test asserting otherwise
+failed and was right to. `return_scope.HEADROOM` is why it did not: the archive is kept to 0.9 of
+the ceiling, making the real bar 720,000,000. With the count read the ceiling is 1,316,494,200 and
+the bar 1,184,844,780, so the whole workspace rides home with 393 MB to spare.
+
+### The viewer I fixed was not the viewer the stack serves
+
+There are two copies of the viewer:
+
+| file | bytes | who serves it |
+|---|---|---|
+| `ui/js/viewer/viewer.js` | 100,421 | the local stack and the API's /ui (docker-compose mounts ./ui at /srv/ui) |
+| `apps/console/public/static/js/viewer/viewer.js` | 96,830 | the Next.js console |
+
+Nothing builds one from the other and nothing checks they agree. After a full `make dev-build` and
+`dev-up`, `/static/js/viewer/viewer.js` still carried the old code, because the change had gone
+into the console copy. They have drifted 132 lines apart and `ui/` is ahead - it carries the
+`drawn_as` handling for a multi-region engine, with a comment about this engine, that the console
+copy does not have. Every conjugate fix has gone into `ui/` only.
