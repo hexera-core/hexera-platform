@@ -84,6 +84,11 @@ def test_a_complete_workspace_produces_a_valid_bundle(tmp_path, engine):
         names = set(tf.getnames())
     for rel in spec.deliverable.required:
         assert f"{spec.deliverable.prefix}/{rel}" in names, rel
+    # the Everything bundle carries the Mesh report, the same page the result screen downloads
+    from meshpipeline.render.mesh_report import REPORT_FILE
+    assert f"{spec.deliverable.prefix}/{REPORT_FILE}" in names
+    page = (ws / REPORT_FILE).read_text(encoding="utf-8")
+    assert page.startswith("<!DOCTYPE html>") and "Mesh report" in page
 
 
 @pytest.mark.parametrize("engine", ENGINES)

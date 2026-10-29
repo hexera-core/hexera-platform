@@ -16,8 +16,7 @@ import { getSurface } from "../api/endpoints.js";
 import { headers } from "../api/client.js";
 import { acceptMesh, flagDispute } from "./dispute.js";
 import { VIEWER_FALLBACK } from "./config.js";
-import { roundNumbers } from "../render/outcome.js";
-import { bindFreshDownloads, downloadAttrs } from "../render/download.js";
+import { bindFreshDownloads } from "../render/download.js";
 import { MOUSE_HINT, UP_AXES, VIEW_PRESETS, bindMouse, isUpAxis, orient, presetView, saveUp, savedUp, shield, upVector } from "./view_controls.js";
 // the floating toolbar (View, Section, Parts, Measure, Snapshot) and the part's theme colours
 import { ICONS, axesHtml, bindSeg, bindToolbar, cssRgb, drawAxes, optRow, savePng, segHtml, snapshotPng, themeRgb, toolbarHtml } from "./toolbar.js";
@@ -25,7 +24,8 @@ import { ICONS, axesHtml, bindSeg, bindToolbar, cssRgb, drawAxes, optRow, savePn
 import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml } from "./thermal_results.js";
 // a delivered FEA mesh (a structural solid) is read face by face, with its quality against each
 // solver limit, its plan and its hot spots (FEA build step 5)
-import { bindFeaResults, feaDownloads, feaResultsHtml } from "./fea_results.js";
+import { bindFeaResults, feaResultsHtml } from "./fea_results.js";
+import { bindResultPanel, downloadsHtml, hotSpotsHtml, keyNumbers, keyNumbersHtml, notesHtml, verdictHtml, verdictOf } from "./result_panel.js";
 
 let _vtkP=null;
 function loadVtk(){if(window.vtk)return Promise.resolve();
@@ -61,17 +61,6 @@ const MEASURE_HINT='Click two points on the part · Drag still rotates';
 const ON_CANVAS_UI='.v-pin,.v-legend,.v-probe,.v-heatctl,.vt,.v-ov,.v-picked,.v-mlabel';
 const _SEL_COLS=['#e8613c','#f2c744','#3fa650','#3f7fd9','#b455c8','#38c2c2'];
 
-/* THE REVIEW'S POINTS, one per row. A point arrives as one string - "Important: Cells degrade
-   where ..." or "Reviewer note: Wall layers: 4.71 of 5 ..." - so its lead word becomes a tag and
-   its label leads the row; long decimals are printed as an engineer would (71.0953 -> 71.1). */
-function reviewList(items){
-  const rows=(items||[]).map(x=>String(x||'').trim()).filter(Boolean).map(t=>{
-    const imp=/^important\s*[:-]\s*/i.test(t);
-    const body=t.replace(/^important\s*[:-]\s*/i,'').replace(/^reviewer note:\s*/i,'');
-    return `<li class="oc-row${imp?' important':''}">${imp?'<span class="oc-tag">Important</span>':''}`
-      +`<span class="oc-txt">${esc(roundNumbers(body))}</span></li>`;}).join('');
-  return rows?`<ul class="oc-list v-concern-list">${rows}</ul>`:'';
-}
 /* the reviewer's full reasoning, whole and folded away - it used to be cut at 600 characters */
 function reasonDetails(text){
   const t=String(text||'').trim();
@@ -127,66 +116,35 @@ export async function openViewer(job,anchorEl,opts){
   opts=opts||{};
   if(document.getElementById('viewer-'+job)){document.getElementById('viewer-'+job).scrollIntoView({behavior:'smooth'});return;}
   const box=document.createElement('div');box.className='viewer';box.id='viewer-'+job;
-  const _m=opts.metrics||{};
-  const _dl=(opts.files||[]).filter(f=>f.type!=='video');
-  // the case the user asked for leads; the previews follow it
-  const _dlHtml=_dl.slice().sort((a,b)=>(b.type==='mesh_bundle')-(a.type==='mesh_bundle')).map(f=>{
-      const primary=f.type==='mesh_bundle'?' primary':'';
-      return `<a class="v-dlbtn${primary}" href="${esc(f.url||'#')}"${downloadAttrs(job,f)} download target="_blank" rel="noopener">
-                <b>${esc(f.label||f.type)}</b><span>${fmtBytes(f.size)}</span></a>`;}).join('');
+  // THE RESULT SCREEN (revamp 5/5) reads top to bottom the way a glance does: is it good, how big
+  // and how good, take it away, then two folded lists. Everything long is in the Mesh report.
+  const notesFor=(fea)=>{
+    const fromRun=(opts.withNotes||[]).length||(opts.concerns||[]).length;
+    // a mesh opened without the run's own notes still lists the figures past a limit, in the server's words
+    const feaRows=!fromRun&&fea&&fea.check?(fea.check.rows||[]).filter(r=>r.ok===false).map(r=>r.words||r.label):[];
+    return notesHtml([
+      {kind:'Why it was not signed off',items:opts.unreviewed?(opts.findings||[]):[],serious:true},
+      {kind:'Points to weigh',items:opts.concerns||[],serious:true},
+      {kind:'Past a limit',items:(opts.withNotes||[]).concat(feaRows)},
+      {kind:'Reviewer notes',items:opts.notes||[]}],
+      opts.concerns||opts.unreviewed?reasonDetails(opts.reasoning):'');};
   const upAxis=savedUp('job',job)||'+z';
-  // THE PANEL READS TOP TO BOTTOM the way the result is used: the verdict and the download, the
-  // mesh's own figures, its parts, and last the way to ask for a change - beside the marks it sends.
   box.innerHTML=`<div class="v-bar">
-      <div class="v-sec v-head">
-        <div class="v-row v-titlerow">
-          <b class="v-title">${opts.unreviewed?'Mesh - not signed off':'Your mesh'}</b>
-          <span class="v-meta">
-            ${opts.unreviewed
-              ? `<span class="v-pill fail">DID NOT PASS REVIEW</span>`
-              : opts.concerns
-              ? `<span class="v-pill concerns">DELIVERED WITH CONCERNS</span>`
-              : opts.withNotes
-              ? `<span class="v-pill concerns">PASSED, WITH NOTES</span>`
-              : (_m.pass!==undefined?`<span class="v-pill${_m.pass?'':' fail'}">${_m.pass?'PASS':'FAIL'}</span>`:'')}
-            ${_m.attempts?`<span class="sep">·</span><span>${_m.attempts} attempt${_m.attempts!==1?'s':''}</span>`:''}
-          </span>
-        </div>
+      <div class="v-sec v-head rp-head">
+        ${verdictHtml(verdictOf(opts))}
+        <div class="rp-keys-host" id="v-keys-${job}">${keyNumbersHtml(keyNumbers({},opts))}</div>
         <div class="v-row"><span class="v-status" id="v-status-${job}">loading…</span></div>
       </div>
       ${opts.unreviewed?`<div class="v-why">
-        <p class="v-why-h">Sound, but not signed off</p>
-        <p class="v-why-p">The mesh passed every validity check, so it will solve. The reviewer did
-        not sign it off on quality${(opts.findings||[]).length?':':'.'}</p>
-        ${reviewList(opts.findings)}
-        ${reasonDetails(opts.reasoning)}
-        <div class="v-why-act">
-          Look at it yourself. If it is good enough for your study, say so: it is checked again
-          against <i>your</i> standard and delivered.
-          <button class="v-btn primary" id="v-accept-${job}">This is acceptable →</button>
-        </div></div>`:''}
-      ${opts.withNotes&&opts.withNotes.length?`<div class="v-why v-concerns">
-        <p class="v-why-h">Passed, with notes</p>
-        <p class="v-why-p">The mesh is valid and passed every check that decides a run. These figures are
-        past a limit, listed so you can weigh them:</p>
-        ${reviewList(opts.withNotes)}
+        <p class="v-why-p">Look at it yourself. If it is good enough for your study, say so: it is checked
+        again against <i>your</i> standard and delivered.</p>
+        <div class="v-why-act"><button class="v-btn primary" id="v-accept-${job}">This is acceptable →</button></div>
         </div>`:''}
-      ${opts.concerns?`<div class="v-why v-concerns">
-        <p class="v-why-h">Points to weigh</p>
-        <p class="v-why-p">The mesh passed every validity check, so it is sound, will solve and is
-        yours. Look at these before you rely on the results:</p>
-        ${reviewList(opts.concerns)}
-        ${reasonDetails(opts.reasoning)}
-        </div>`:''}
-      ${(opts.notes||[]).length?`<div class="v-why v-notes">
-        <p class="v-why-h">Reviewer notes</p>
-        <p class="v-why-p">An AI reviewer looked at the mesh. Its notes are for you to weigh; they
-        do not decide the result.</p>
-        ${reviewList(opts.notes)}
-        </div>`:''}
-      <div class="v-sec v-dl">${_dlHtml}</div>
-      <div class="v-thermal" id="v-thermal-${job}"></div>
+      <div class="v-sec v-dl">${downloadsHtml(job,opts.files||[])}</div>
       <div class="v-fea" id="v-fea-${job}"></div>
+      <div class="v-sec rp-lists" id="v-lists-${job}"><div class="rp-notes-host" id="v-notes-${job}">${notesFor(null)}</div>
+        <div class="rp-spots-host" id="v-spots-${job}"></div></div>
+      <div class="v-thermal" id="v-thermal-${job}"></div>
       <div class="v-facts" id="v-facts-${job}"></div>
       <div class="v-sec v-review">
         <div class="v-sec-h">Changes</div>
@@ -211,6 +169,24 @@ export async function openViewer(job,anchorEl,opts){
   // each Download click asks the API for a fresh link, so one read long after the page loaded -
   // or a large file's retry - never meets an expired one
   bindFreshDownloads(box);
+  bindResultPanel(box,job,{fetchReport:async j=>{
+    const r=await fetch(`/api/v1/simulation/${j}/report.html`,{headers:headers()});
+    if(!r.ok)throw new Error('report '+r.status);
+    return r.blob();}});
+  // once the mesh is read: its key numbers, and for an FEA mesh its notes and its hot spots by kind
+  const fillResult=(surf)=>{
+    const keys=document.getElementById('v-keys-'+job);
+    if(keys)keys.innerHTML=keyNumbersHtml(keyNumbers(surf||{},opts));
+    const fea=surf&&surf.fea;if(!fea)return;
+    const notes=document.getElementById('v-notes-'+job);if(notes)notes.innerHTML=notesFor(fea);
+    const head=box.querySelector('.rp-verdict');
+    if(head)head.outerHTML=verdictHtml(verdictOf(opts,fea));
+    const host=document.getElementById('v-spots-'+job),spots=fea.hot_spots||[];
+    if(!host||!spots.length)return;
+    host.innerHTML=hotSpotsHtml(spots);
+    const dbg=()=>(window._vdbg||{})[job+':fea']||{};
+    bindResultPanel(host,job,{spots,point:at=>dbg().point&&dbg().point(at),
+                              isolate:face=>dbg().isolate&&dbg().isolate(face)});};
   // THE MESH TAKES THE STAGE. With a workbench on the page the delivered mesh fills it and the
   // conversation becomes the drawer beside it; an earlier result stays in the DOM, hidden, so
   // its context is not torn down under a still-running render. Without one (an embedding
@@ -244,6 +220,7 @@ export async function openViewer(job,anchorEl,opts){
       if(cr&&cr.ok)Object.assign(uiCfg,(await cr.json()).viewer||{});
       const surf=await getSurface(job);
       initViewer(job,surf,uiCfg);
+      fillResult(surf);
       document.getElementById('v-load-'+job)?.remove();
     }catch(e){
       // SAY WHY. A copy of the delivered-mesh figures block used to sit here, pasted into the
@@ -1029,7 +1006,6 @@ function initViewer(job,surf,uiCfg){
         ren.addActor(marker);}
       rw.render();}
     host.innerHTML=feaResultsHtml(job,fea);
-    feaDownloads(document.querySelector('#viewer-'+job+' .v-dl'),job,fea);
     const api=bindFeaResults(host,job,fea,{
       isolate:name=>{if(partsApi)partsApi.isolate(name);},
       point:at=>point(at)});
