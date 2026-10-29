@@ -142,13 +142,17 @@ The result is a conformal shell: shared nodes along every junction once meshed.
   - Ansys: bonded contact.
 
 **Mixed part (shell meets solid):**
-- The shell's edge on the solid region is a "solid link" in the record, with its place.
-- The connection, per solver:
-  - Abaqus: `*SHELL TO SOLID COUPLING`;
-  - Nastran: RBE3 from the shell edge nodes to the solid face nodes;
-  - Ansys: an MPC184 or contact-based shell-solid assembly;
-  - CalculiX has no shell-to-solid keyword, so it gets the overlap method: the shell edge runs one wall deep into the solid and shares its nodes there.
-- Proved on a textbook mixed case: a plate with a solid boss, against the all-solid mesh.
+- The shell's edge on the solid region is a "solid link" in the record, with its place. The same holds for every SHELL-6 fallback region (an open edge meshed solid).
+- **The join must carry BENDING MOMENTS, not just forces (Areen, 29 Oct).** Shell nodes have rotations; solid nodes have none. A plain node tie or shared nodes lets the shell hinge at the joint, which no check on forces will show. So never a plain tie; the connection, per solver:
+  - Abaqus: `*SHELL TO SOLID COUPLING` (or a distributing coupling over the solid face across the shell's thickness band);
+  - CalculiX: it has no `*SHELL TO SOLID COUPLING`. Candidates, decided by the textbook cases below: the overlap method (the shell edge runs one wall deep into the solid and shares its nodes there, so the moment passes as a force couple), or a `*COUPLING` / `*DISTRIBUTING` over the solid face's thickness band with the shell edge node as the reference node;
+  - Nastran: RBE3 from each shell edge node (all six DOFs) to the solid face nodes across the thickness band, or glued shell-to-solid edge contact (BSURF/BCONTACT);
+  - Ansys: MPC184 or shell-solid assembly contact (CONTA175 / TARGE170 with the shell-solid KEYOPT).
+- **The solid region gets at least 2 quadratic elements through the thickness** at the link, so its face can carry the linear stress through the wall that a moment puts on it.
+- **Proved in CalculiX, in the accuracy lane (PR 2):**
+  - a cantilever plate, half shell and half solid, tip load: the tip deflection within 2% of the pure-shell model and of beam theory (PL³/3EI);
+  - a T-joint under bending (the stiffener shell, the plate solid, and the other way round), against the all-solid mesh;
+  - a plate with a solid boss, against the all-solid mesh.
 
 ## 3. Meshing (PR 2)
 
@@ -239,6 +243,7 @@ Every writer is engine-neutral. They read one internal shell mesh (nodes, quads 
    - modal: f_mn from the Kirchhoff plate formula;
    - buckling: σcr = 4π²E/(12(1−ν²)) · (t/b)²;
    - then the stiffened panel modal case against our fine solid mesh.
+5. Shell-to-solid moment transfer (section 2.5): the half-shell, half-solid cantilever (tip within 2% of pure shell and of PL³/3EI) and the T-joint in bending against all-solid.
 
 ## 7. Intake and stage
 
