@@ -49,6 +49,8 @@ RESPLINE_MAX = 16
 RESPLINE_UNRECOVERED = True
 #: SHMESH-11c: a face whose 1D mesh gmsh reads as not a closed loop is re-made as a B-spline too
 RESPLINE_LOOP = True
+#: ... at most this many faces in one mesh (a duct whose faces failed one after another, 14 re-made, then hung gmsh)
+RESPLINE_LOOP_MAX = 4
 #: SHMESH-11e: no face is re-made once the meshes so far have taken this long (each re-made face meshes it all again)
 RESPLINE_BUDGET_S = 300.0
 #: SHMESH-11g: faces on offset surfaces are meshed as B-splines
@@ -56,6 +58,8 @@ OFFSETS_AS_SPLINES = True
 #: SHMESH-20: the most elements a shell plan may ask for (area / size^2 summed over its faces; gmsh makes about 1,000
 #: a second here, and its counts run 0.4 to 3.3 times the plan's on the corpus)
 PLANNED_MAX = 1.5e6
+#: SHMESH-21: a shell mesh is stopped after this long (0: unbounded)
+MESH_DEADLINE_S = 900.0
 #: SHMESH-17: two triangles of a face that together make a quad inside Nastran's own limits are joined into it
 PAIR_TRIAS = True
 #: SHMESH-18: a triangle walked through at most WALK_DEPTH quads of its face to meet another (0: off)
@@ -85,10 +89,11 @@ PER_TURN = 4 * plan_rules.CURVE_PER_QUARTER
 class _Periodic(Exception):
     """gmsh could not mesh sewn face `face` (0-based, in the surface's own order) as a periodic surface."""
 
-    def __init__(self, face: int, *, kin: bool = False) -> None:
+    def __init__(self, face: int, *, kin: bool = False, loop: bool = False) -> None:
         super().__init__(f"face {face}")
         self.face = face
         self.kin = kin      # re-make every sewn face on the same surface with it (SHMESH-11b)
+        self.loop = loop    # gmsh read the face's 1D mesh as not a closed loop (SHMESH-11c)
 
 
 def _generate(gmsh, tag_of: dict[int, int]) -> None:
@@ -113,7 +118,7 @@ def _generate(gmsh, tag_of: dict[int, int]) -> None:
             at = [int(x) for line in gmsh.logger.get() for x in re.findall(r"Meshing surface (\d+)", line)]
             kind = gmsh.model.getType(2, at[-1]).lower() if at else ""
             if at and at[-1] in tag_of and "spline" not in kind and "bezier" not in kind:
-                raise _Periodic(tag_of[at[-1]], kin="recover" in text) from exc
+                raise _Periodic(tag_of[at[-1]], kin="recover" in text, loop="recover" not in text) from exc
         raise
 
 
@@ -468,7 +473,50 @@ def _reference_normal(face) -> np.ndarray | None:
 
 
 def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None) -> tuple[ShellMesh, dict]:
-    """Mesh the sewn mid-surface: (the shell mesh in millimetres, the plan as applied: one row per face)."""
+    """Mesh the sewn mid-surface: (the shell mesh in millimetres, the plan as applied: one row per face).
+
+    SHMESH-21: run in a forked child stopped after MESH_DEADLINE_S (ValueError, in words): gmsh can hang on a face
+    with no way back to Python (fresh fr017's re-made faces: over 20 minutes on one 2D mesh), and a hung mesh must
+    fail fast for the solid mesh to be delivered. Without fork (not Linux), or with no deadline, it runs here."""
+    import multiprocessing as mp
+    import os
+
+    if MESH_DEADLINE_S <= 0 or "fork" not in mp.get_all_start_methods():
+        return _mesh_shell(brep, record, mm_per_unit=mm_per_unit, log=log)
+    recv, send = mp.get_context("fork").Pipe(duplex=False)
+
+    def child() -> None:
+        try:
+            got: list = []
+            mesh, applied = _mesh_shell(brep, record, mm_per_unit=mm_per_unit, log=got)
+            send.send(("ok", (mesh, applied), got))
+        except BaseException as exc:  # noqa: BLE001 - told to the parent, which raises it there
+            send.send(("error", f"{type(exc).__name__}: {exc}", None))
+        finally:
+            send.close()
+            os._exit(0)
+
+    proc = mp.get_context("fork").Process(target=child, daemon=True)
+    proc.start()
+    send.close()
+    try:
+        if not recv.poll(MESH_DEADLINE_S):
+            raise ValueError(f"the shell mesh ran past {MESH_DEADLINE_S / 60:.0f} minutes and was stopped (SHMESH-21)")
+        status, out, got = recv.recv()
+    finally:
+        if proc.is_alive():
+            proc.kill()
+        proc.join()
+        recv.close()
+    if status != "ok":
+        raise ValueError(out)
+    if log is not None:
+        log.extend(got)
+    return out
+
+
+def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None) -> tuple[ShellMesh, dict]:
+    """mesh_shell, unbounded, in this process."""
     import tempfile
 
     with tempfile.TemporaryDirectory(prefix="shell_mesh_") as tmp:
@@ -483,7 +531,7 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 # SHMESH-11d: the closed faces' pieces would not fuse back with the rest (a 45 degree cone's pieces,
                 # exact or fuzzy): the surface is meshed as sewn, and a closed face gmsh stops on is re-made below
                 split_note = f"the closed faces were meshed whole ({exc})"
-        resplined = 0
+        resplined = loops = 0
         started = time.monotonic()
         while True:
             try:
@@ -491,6 +539,11 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
             except _Periodic as p:
                 if resplined >= RESPLINE_MAX:
                     raise ValueError(f"gmsh could not mesh {resplined + 1} periodic faces") from p
+                loops += p.loop
+                if loops > RESPLINE_LOOP_MAX:
+                    # SHMESH-11c: a surface whose faces fail one after another is not a seam to take out: it stops
+                    raise ValueError(f"gmsh could not close the boundary of {loops} faces in turn, each re-made as a "
+                                     "B-spline; the shell mesh is given up (SHMESH-11c)") from p
                 # SHMESH-11e: each re-made face costs a whole mesh again; past the budget the mesh stops and says why
                 spent = time.monotonic() - started
                 if spent > RESPLINE_BUDGET_S:
