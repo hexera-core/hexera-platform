@@ -25,7 +25,7 @@ import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml }
 // a delivered FEA mesh (a structural solid) is read face by face, with its quality against each
 // solver limit, its plan and its hot spots (FEA build step 5)
 import { bindFeaResults, feaResultsHtml } from "./fea_results.js";
-import { bindResultPanel, downloadsHtml, hotSpotsHtml, keyNumbers, keyNumbersHtml, notesHtml, verdictHtml, verdictOf } from "./result_panel.js";
+import { bindResultPanel, cfdPastLimit, downloadsHtml, hotSpotsHtml, keyNumbers, keyNumbersHtml, notesHtml, verdictHtml, verdictOf } from "./result_panel.js";
 
 let _vtkP=null;
 function loadVtk(){if(window.vtk)return Promise.resolve();
@@ -118,14 +118,14 @@ export async function openViewer(job,anchorEl,opts){
   const box=document.createElement('div');box.className='viewer';box.id='viewer-'+job;
   // THE RESULT SCREEN (revamp 5/5) reads top to bottom the way a glance does: is it good, how big
   // and how good, take it away, then two folded lists. Everything long is in the Mesh report.
-  const notesFor=(fea)=>{
+  const notesFor=(fea,extra=[])=>{
     const fromRun=(opts.withNotes||[]).length||(opts.concerns||[]).length;
     // a mesh opened without the run's own notes still lists the figures past a limit, in the server's words
     const feaRows=!fromRun&&fea&&fea.check?(fea.check.rows||[]).filter(r=>r.ok===false).map(r=>r.words||r.label):[];
     return notesHtml([
       {kind:'Why it was not signed off',items:opts.unreviewed?(opts.findings||[]):[],serious:true},
       {kind:'Points to weigh',items:opts.concerns||[],serious:true},
-      {kind:'Past a limit',items:(opts.withNotes||[]).concat(feaRows)},
+      {kind:'Past a limit',items:(opts.withNotes||[]).concat(feaRows,extra)},
       {kind:'Reviewer notes',items:opts.notes||[]}],
       opts.concerns||opts.unreviewed?reasonDetails(opts.reasoning):'');};
   const upAxis=savedUp('job',job)||'+z';
@@ -177,7 +177,15 @@ export async function openViewer(job,anchorEl,opts){
   const fillResult=(surf)=>{
     const keys=document.getElementById('v-keys-'+job);
     if(keys)keys.innerHTML=keyNumbersHtml(keyNumbers(surf||{},opts));
-    const fea=surf&&surf.fea;if(!fea)return;
+    const fea=surf&&surf.fea;
+    if(!fea){
+      // a CFD figure past its limit is a note, as the Mesh report says (dev-areen 2026-10-30: the
+      // screen said "Passed." with the non-orthogonality in orange, the report "Passed with notes")
+      const past=cfdPastLimit(surf);if(!past.length)return;
+      const notes=document.getElementById('v-notes-'+job);if(notes)notes.innerHTML=notesFor(null,past);
+      const head=box.querySelector('.rp-verdict');
+      if(head)head.outerHTML=verdictHtml(verdictOf({...opts,withNotes:(opts.withNotes||[]).concat(past)}));
+      return;}
     const notes=document.getElementById('v-notes-'+job);if(notes)notes.innerHTML=notesFor(fea);
     const head=box.querySelector('.rp-verdict');
     if(head)head.outerHTML=verdictHtml(verdictOf(opts,fea));
@@ -994,11 +1002,23 @@ function initViewer(job,surf,uiCfg){
     const fea=surf.fea||null,host=document.getElementById('v-fea-'+job);
     if(!fea||!host)return;
     let marker=null;
+    let markerR=0;
+    const dropMarker=()=>{if(marker){ren.removeActor(marker);marker=null;}};
+    // the marker is sized to what is on screen: a face shown alone is framed close, and a ball sized
+    // to the whole model then covered the very place it marks (dev-areen 2026-10-30, job 94b8c76d)
+    function shownDiag(){
+      const b=[Infinity,-Infinity,Infinity,-Infinity,Infinity,-Infinity];
+      entries.forEach(e=>{if(!e.actor.getVisibility())return;const ab=e.actor.getBounds();
+        if(!ab||!(ab[1]>=ab[0]))return;
+        for(let k=0;k<6;k+=2){b[k]=Math.min(b[k],ab[k]);b[k+1]=Math.max(b[k+1],ab[k+1]);}});
+      const d=Math.hypot(b[1]-b[0],b[3]-b[2],b[5]-b[4]);
+      return Number.isFinite(d)&&d>0?d:diag;}
     function point(at){
-      if(marker){ren.removeActor(marker);marker=null;}
+      dropMarker();
       const S=vtk.Filters&&vtk.Filters.Sources&&vtk.Filters.Sources.vtkSphereSource;
       if(at&&at.length===3&&S){
-        const src=S.newInstance({center:at,radius:Math.max(diag*0.012,1e-9),thetaResolution:20,phiResolution:14});
+        const r=Math.min(diag*0.012,shownDiag()*0.04);markerR=r;
+        const src=S.newInstance({center:at,radius:Math.max(r,1e-9),thetaResolution:20,phiResolution:14});
         const mapper=vtk.Rendering.Core.vtkMapper.newInstance();mapper.setInputConnection(src.getOutputPort());
         marker=vtk.Rendering.Core.vtkActor.newInstance();marker.setMapper(mapper);
         const pr=marker.getProperty();pr.setColor(_SEL[0],_SEL[1],_SEL[2]);pr.setAmbient(0.6);
@@ -1010,8 +1030,9 @@ function initViewer(job,surf,uiCfg){
       isolate:name=>{if(partsApi)partsApi.isolate(name);},
       point:at=>point(at)});
     window._vdbg=window._vdbg||{};
-    window._vdbg[job+':fea']={isolate:name=>{if(partsApi)partsApi.isolate(name);api&&api.pick(name);},
-      point:at=>point(at),marker:()=>!!marker,
+    // the old marker goes before the view is refitted to the face, so the camera frames the face alone
+    window._vdbg[job+':fea']={isolate:name=>{dropMarker();if(partsApi)partsApi.isolate(name);api&&api.pick(name);},
+      point:at=>point(at),marker:()=>!!marker,markerSize:()=>marker?{r:markerR,shown:shownDiag()}:null,
       visible:()=>entries.filter(e=>e.actor.getVisibility()).map(e=>e.patch),
       text:()=>host.innerText};
   })();

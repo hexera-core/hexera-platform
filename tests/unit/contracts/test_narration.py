@@ -130,6 +130,15 @@ def test_plan_lines_are_the_records_own_words_only_when_plain():
     assert N.plan_lines(None) == []
 
 
+def test_the_plans_group_names_are_not_said_twice_plural():
+    # dev-areen 2026-10-30: the live line read "87 walls areas, the finest 0.719 mm."
+    words = [f"{n} {what} zone(s), the finest 0.7 mm." for n, what in
+             ((87, "walls"), (33, "hot spots"), (2, "capped corners"), (4, "rounds"))]
+    assert N.plan_lines([{"words": w} for w in words], limit=4) == [
+        "87 wall areas, the finest 0.7 mm.", "33 hot spot areas, the finest 0.7 mm.",
+        "2 capped corner areas, the finest 0.7 mm.", "4 round areas, the finest 0.7 mm."]
+
+
 def test_a_retry_says_why_and_never_a_leaky_reason():
     assert N.retry_line(2, {"words": "a degenerate element, so the next pass grows sizes more gently."}) == \
         "Pass 1 did not pass every check. A degenerate element, so the next pass grows sizes more gently."

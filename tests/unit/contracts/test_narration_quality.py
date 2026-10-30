@@ -12,13 +12,13 @@ CFD_STEEP = {"cells": 2679296, "max_non_ortho": 67.9123, "max_skewness": 19.0431
 
 def test_a_clean_fea_mesh_reads_as_good_with_its_numbers():
     assert N.quality_line(FEA_CLEAN) == \
-        "Quality looks good: 4,197 elements, worst element 0.46 (1 is perfect), every wall at least 6 elements thick."
+        "Quality looks good: 4,197 elements, worst element 0.457 (1 is perfect), every wall at least 6 elements thick."
 
 
 def test_an_fea_mesh_with_notes_says_so_and_never_good():
     line = N.quality_line({**FEA_CLEAN, "min_sicn": 0.000601, "elements_under_floor": 1})
     assert line.startswith("The mesh is valid; some figures are past a limit")
-    assert "worst element 0.0006" in line
+    assert "worst element 0.000601" in line
     thin = N.quality_line({**FEA_CLEAN, "fea": {"through_wall_min": 1.4}})
     assert "the thinnest wall 1.4 elements thick" in thin and not thin.startswith("Quality looks good")
 
@@ -46,3 +46,12 @@ def test_every_quality_line_passes_the_guard():
     for q in (FEA_CLEAN, CFD_STEEP, {**FEA_CLEAN, "elements_under_floor": 2}, {**FEA_CLEAN, "fea_inverted": 1}):
         line = N.quality_line(q)
         assert line and not N.leaks(line), line
+
+
+def test_the_worst_element_is_the_scaled_jacobian_the_result_screen_shows():
+    # dev-areen 2026-10-30 (job 94b8c76d): the live line said 0.33 (the SICN) while the result
+    # screen and the Mesh report said worst scaled Jacobian 0.198
+    q = {"cells": 409108, "min_sicn": 0.3301, "fea_min_scaled_jacobian": 0.198, "fea_inverted": 0,
+         "elements_under_floor": 0, "fea_rules_short": 0, "fea": {"through_wall_min": 2.0}}
+    assert N.quality_line(q) == \
+        "Quality looks good: 409k elements, worst element 0.198 (1 is perfect), every wall at least 2 elements thick."

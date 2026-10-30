@@ -94,6 +94,10 @@ def test_an_fea_result_is_a_verdict_four_numbers_the_downloads_and_two_folded_li
     step = live.evaluate("""({at: document.querySelector('#viewer-rp-fea .rp-spotkind[data-kind="fillet"] .rp-at').textContent,
                              marker: window._vdbg['rp-fea:fea'].marker()})""")
     assert step == {"at": "1 of 26", "marker": True}, step
+    # the marker fits what is on screen: the face shown alone, never a ball that covers it
+    # (dev-areen 2026-10-30: a ball sized to the whole model filled the view)
+    size = live.evaluate("window._vdbg['rp-fea:fea'].markerSize()")
+    assert size and 0 < size["r"] <= 0.04 * size["shown"] + 1e-12, size
 
     # the Mesh report downloads from its route
     live.evaluate("document.getElementById('v-report-rp-fea').click()")
@@ -109,3 +113,31 @@ def test_a_passed_cfd_mesh_has_no_empty_lists(live, tmp_path):
     assert got["keys"][0] == "Cells" and "Time" not in got["keys"], got
     assert got["drops"] == [] and got["downloads"] == ["Everything", "Mesh report", "ParaView"], got
     assert_clean(live, "the CFD result screen")
+
+
+def test_hot_spot_kinds_are_plural_in_plain_english(live):
+    # dev-areen 2026-10-30: six notches showed as "Notchs"
+    kinds = live.evaluate("""(async () => {
+      const { hotSpotsHtml } = await import('/static/js/viewer/result_panel.js');
+      const shapes = ['notch', 'notch', 'hole', 'hole', 'inside corners', 'inside corners', 'box', 'box',
+                      'cavity', 'cavity', 'key', 'key', 'fillet'];
+      const div = document.createElement('div');
+      div.innerHTML = hotSpotsHtml(shapes.map((shape, i) => ({id: 'H' + i, shape})));
+      return [...div.querySelectorAll('.rp-spotkind b')].map((b) => b.textContent).sort();
+    })()""")
+    assert kinds == ["Boxes", "Cavities", "Fillet", "Holes", "Inside corners", "Keys", "Notches"], kinds
+
+
+def test_a_cfd_figure_past_its_limit_is_a_note_as_the_report_says(live, tmp_path):
+    # dev-areen 2026-10-30 (job f5385d0f): non-orthogonality 65.0072 against a 65 limit showed in orange
+    # under "Passed.", while the Mesh report said "Passed with notes"
+    surf = _payload(tmp_path, shear=0.0)
+    surf["quality"]["max_non_ortho"] = 65.0072
+    surf["quality_fields"]["metrics"]["non_ortho"]["limit"] = 65
+    _open(live, "rp-cfd-over", surf, {"metrics": {"pass": True}, "files": FILES[1:], "notes": []})
+    got = _read(live, "rp-cfd-over")
+    assert got["verdict"].startswith("Passed with notes.") and "notes" in got["verdictCls"], got
+    assert got["noteGroups"] == ["Past a limit"] and "Worst non-orthogonality" in got["noteText"], got
+    shown = live.evaluate("document.querySelector('#v-keys-rp-cfd-over').innerText")
+    assert "65.01°" in shown, shown
+    assert_clean(live, "the CFD result screen with a figure past its limit")

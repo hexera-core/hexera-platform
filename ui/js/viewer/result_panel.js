@@ -67,13 +67,23 @@ export function keyNumbers(surf = {}, opts = {}) {
   } else if (typeof q.max_non_ortho === "number") {
     const lim = surf.quality_fields && surf.quality_fields.metrics && surf.quality_fields.metrics.non_ortho
       && surf.quality_fields.metrics.non_ortho.limit;
-    out.push({ k: "Worst non-ortho", v: `${three(q.max_non_ortho)}°`,
-               sub: typeof lim === "number" ? `limit ${three(lim)}°` : "", bad: typeof lim === "number" && q.max_non_ortho > lim });
+    const over = typeof lim === "number" && q.max_non_ortho > lim;
+    // just over its limit reads as over: "65.01°", never "65°" beside "limit 65°"
+    const v = over && three(q.max_non_ortho) === three(lim) ? Number(q.max_non_ortho.toFixed(2)) : three(q.max_non_ortho);
+    out.push({ k: "Worst non-ortho", v: `${v}°`, sub: typeof lim === "number" ? `limit ${three(lim)}°` : "", bad: over });
     if (typeof q.max_skewness === "number") out.push({ k: "Worst skewness", v: three(q.max_skewness) });
   }
   const took = tookWords(opts.createdAt, opts.endedAt);
   if (took) out.push({ k: "Time", v: took });
   return out.slice(0, 4);
+}
+
+/** A CFD mesh's figures past their limit, as notes in the server's shape ("title - why: measured x, limit y"). */
+export function cfdPastLimit(surf = {}) {
+  const q = (surf && surf.quality) || {}, m = surf && surf.quality_fields && surf.quality_fields.metrics;
+  const lim = m && m.non_ortho && m.non_ortho.limit;
+  if (typeof q.max_non_ortho !== "number" || typeof lim !== "number" || !(q.max_non_ortho > lim)) return [];
+  return [`Worst non-orthogonality (degrees) - the solver needs care with these cells: measured ${Number(q.max_non_ortho.toFixed(2))}, limit at most ${three(lim)}`];
 }
 
 export function keyNumbersHtml(list) {
@@ -134,7 +144,9 @@ export function notesHtml(groups, extra = "") {
 }
 
 const kindOf = (h) => String(h.shape || h.type || "hot spot");
-const plural = (k, n) => n === 1 ? k : /[sx]$/.test(k) ? k : k.replace(/y$/, "ie") + "s";
+// "Notch" -> "Notches", "Box" -> "Boxes", "Body" -> "Bodies"; a kind already plural ("Holes") stays
+const plural = (k, n) => n === 1 || /s$/.test(k) ? k
+  : /(x|z|ch|sh)$/.test(k) ? `${k}es` : /[^aeiou]y$/.test(k) ? `${k.slice(0, -1)}ies` : `${k}s`;
 
 /** Hot spots grouped by kind: [{kind, count, short, ids, why}], the biggest group first. */
 export function groupSpots(spots = []) {

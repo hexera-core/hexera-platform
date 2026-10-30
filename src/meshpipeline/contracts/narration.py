@@ -131,7 +131,9 @@ async def asay(publish: Any, text: str, *, op_id: str = "") -> bool:
 # # what the FEA driver says as it decides
 
 #: Words in a decision's own sentence that read better for a user.
-_SOFTEN = [(re.compile(r"^Version \d+ meshes"), "Meshing"), (re.compile(r"\bzone\(s\)"), "areas"), (re.compile(r"\belement\(s\)"), "elements"),
+# the plan says "87 walls zone(s)" (its own group names are plural): one plural is enough - "87 wall areas"
+_SOFTEN = [(re.compile(r"^Version \d+ meshes"), "Meshing"),
+           (re.compile(r"\b(wall|hot spot|capped corner|round)s zone\(s\)"), r"\1 areas"), (re.compile(r"\bzone\(s\)"), "areas"), (re.compile(r"\belement\(s\)"), "elements"),
            (re.compile(r"\bpair\(s\)"), "pairs"), (re.compile(r"\bface\(s\)"), "faces")]
 
 
@@ -217,8 +219,12 @@ def quality_line(q: dict | None) -> str | None:
         if inverted > 0:
             return plain(f"{inverted} elements are inside out, so no solver can use this mesh yet.")
         bits = [f"{cells_words(cells)} elements"] if cells else []
-        if sicn is not None:
-            bits.append(f"worst element {sicn:.2g} (1 is perfect)")
+        # the worst element is the scaled Jacobian, the figure the result screen and the report
+        # show beside its limit (dev-areen 2026-10-30: the line said 0.33, the SICN, beside a 0.198)
+        worst = _num(q.get("fea_min_scaled_jacobian"))
+        worst = worst if worst is not None else sicn
+        if worst is not None:
+            bits.append(f"worst element {worst:.3g} (1 is perfect)")
         tw = _num(fea.get("through_wall_min"))
         if tw is not None:
             bits.append(f"every wall at least {max(1, floor(tw))} elements thick" if tw >= 2
