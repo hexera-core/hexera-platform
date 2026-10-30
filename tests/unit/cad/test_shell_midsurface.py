@@ -206,6 +206,21 @@ def test_a_chunky_block_is_solid_and_has_no_mid_surface():
     assert not _shell_mids(rec) and rec["surface_faces"] == [] and rec["sewn"] == []
 
 
+def test_a_thick_bracket_stays_solid_and_says_why_in_numbers():
+    # SHELL-2c: an 8 mm angle with 40 mm legs is about 5 walls long, not 10 - solid, and the reason says so
+    rec, _ = ms.extract(sf.short_angle(8.0, 40.0, 30.0), mm_per_unit=1.0)
+    (body,) = rec["bodies"]
+    assert body["verdict"] == "solid"
+    assert body["closest_wall"]["thickness_mm"] == 8.0 and body["closest_wall"]["span_walls"] < 10
+    assert "8 mm thick" in body["why"] and "at least 10 times" in body["why"]
+
+
+def test_a_block_says_its_walls_are_as_thick_as_they_are_long():
+    # a 50 x 40 x 30 block: its most plate-like "wall" is 30 mm thick over a 45 mm span, 1.5 walls
+    rec, _ = ms.extract(sf.chunky_block(), mm_per_unit=1.0)
+    assert "30 mm thick" in rec["bodies"][0]["why"] and "1.5 times" in rec["bodies"][0]["why"]
+
+
 def test_a_plate_with_a_thick_boss_is_mixed_and_its_links_to_the_boss_are_named():
     rec, _ = ms.extract(sf.plate_with_boss(4.0), mm_per_unit=1.0)
     (body,) = rec["bodies"]
@@ -772,3 +787,84 @@ def test_a_bend_whose_outside_is_not_concentric_sews_to_its_flanges(make, monkey
     assert _sewn(rec)["open_edges"] == 0
     assert rec["bodies"][0]["mid_volume_ratio"] == pytest.approx(1.0, abs=0.02)
 
+
+def _sewn_faces(surface) -> list:
+    return ms._faces(surface)
+
+
+@pytest.mark.parametrize(("ratio", "angle"), [(1.0, 90.0), (0.5, 45.0)])
+def test_a_pipe_branch_is_joined_on_its_saddle(ratio, angle):
+    # SHELL-14: an equal tee and a 45 degree lateral: both mid-cylinders joined on their saddle, every check met
+    rec, surface = ms.extract(sf.pipe_branch(ratio=ratio, angle_deg=angle), mm_per_unit=1.0)
+    _all_checks(rec)
+    assert rec["bodies"][0]["verdict"] == "shell"
+    assert rec["bodies"][0]["mid_volume_ratio"] == pytest.approx(1.0, abs=0.01)
+    # each mid-cylinder's grown patch is one face: no band edge left a wall's width from the junction
+    assert len(_sewn_faces(surface)) <= 12
+
+
+def test_grown_along_its_open_direction_a_tube_is_one_face():
+    # SHELL-14: a tube grown past its ends is one face, not its own face and two bands
+    shape = sf.tube(25.0, 2.0, 100.0)
+    rec, _ = ms.extract(shape, mm_per_unit=1.0)
+    mid = rec["mids"][0]
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    face = ms._faces(BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 24.0, 100.0).Shape())[0]
+    grown = ms.grow(face, 5.0)
+    assert len(ms._faces(grown)) == 1
+    assert ms._area(grown) == pytest.approx(2 * math.pi * 24.0 * 110.0, rel=1e-6)
+    assert mid["kind"] == "cylinder"
+
+
+@pytest.mark.parametrize("part", ["l_angle", "tube", "t_joint"])
+def test_an_iges_copy_reads_as_its_step(part, tmp_path):
+    # SHELL-15: an IGES file of trimmed surfaces (no topology) is sewn at a measured tolerance into the same solid:
+    # the same verdicts, walls and open edges as the STEP
+    shape = getattr(sf, part)()
+    step = ms.extract_file(sf.write_step(shape, tmp_path / "p.step"), tmp_path / "s", mm_per_unit=1.0)
+    iges = ms.extract_file(sf.write_iges(shape, tmp_path / "p.igs"), tmp_path / "i", mm_per_unit=1.0)
+    assert [b["verdict"] for b in iges["bodies"]] == [b["verdict"] for b in step["bodies"]]
+    walls = sorted({round(p["thickness_mm"], 4) for p in step["pairs"] if p["shell"]})
+    assert sorted({round(p["thickness_mm"], 4) for p in iges["pairs"] if p["shell"]}) == walls
+    assert iges["checks"] == step["checks"]
+    assert any("SHELL-15" in n for n in iges["notes"])
+
+
+def test_iges_sewing_never_reaches_across_a_wall(tmp_path):
+    # SHELL-15: the tolerance is capped at a tenth of the narrowest face (a 2 mm plate's rim): its two sides stay apart
+    shape = sf.flat_plate(2.0)
+    rec = ms.extract_file(sf.write_iges(shape, tmp_path / "p.igs"), tmp_path / "i", mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
+    (note,) = [n for n in rec["notes"] if "SHELL-15" in n]
+    tol = float(note.split("measured ")[1].split(" mm")[0])
+    assert tol <= 0.2
+
+
+def test_touching_iges_bodies_stay_apart(tmp_path):
+    # SHELL-15b: two plates fused face to face in a STEP are one body; two separate touching boxes written as IGES
+    # come back as two solids, not one shell sewn across them
+    from tests.fea_fixtures import _box
+
+    a, b = _box(0, 0, 0, 100, 60, 3), _box(100, 0, 0, 100, 60, 3)
+    comp = ms._compound([a, b])
+    shape, notes = ms.solidify(ms._compound(ms._faces(comp)), 1.0)
+    from OCP.TopAbs import TopAbs_SOLID
+
+    assert ms._map(shape, TopAbs_SOLID).Extent() == 2
+    assert sorted(round(ms._volume(s), 3) for s in (ms._map(shape, TopAbs_SOLID).FindKey(i) for i in (1, 2))) == \
+        [18000.0, 18000.0]
+
+
+def test_a_wall_split_into_strips_is_as_wide_as_the_wall():
+    # SHELL-2b: faces that share an edge are one region: the shared edge is not their outline. A 120 x 60 x 2 box's
+    # top and front faces (sharing a 120 mm edge) read 60 wide as one region; added up apart, 49
+    from tests.fea_fixtures import _box
+
+    box = _box(0, 0, 0, 120, 60, 2)
+    top = [f for f in ms._faces(box) if ms._box(f)[0][2] > 1.999]
+    front = [f for f in ms._faces(box) if ms._box(f)[1][1] < 1e-3]
+    assert len(top) == 1 and len(front) == 1
+    assert ms.union_width(top + front) == pytest.approx(60.0, rel=1e-6)
+    assert ms.width_of(ms._compound(top + front)) < 50.0
