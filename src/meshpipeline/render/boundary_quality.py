@@ -412,6 +412,169 @@ def has_quality(polymesh) -> bool:
     return True
 
 
+#: How many of the worst faces per metric are reported as hotspots. The same number
+#: `render.face_quality` ships, so a reader cannot tell the two paths apart by the length of a
+#: list.
+MAX_HOTSPOTS_PER_METRIC = 60
+
+
+def _sidecar_hotspots(metric: str, values, limit: float, centroids, patch_of, names: list[str],
+                      offset: int = 0) -> list[dict]:
+    """The worst faces over the bar, as places. Same shape as face_quality's, minus cell_faces."""
+    import numpy as np
+
+    v = np.asarray(values)
+    over = np.nonzero(v > float(limit))[0]
+    if not len(over):
+        return []
+    order = over[np.argsort(-(v[over]))][:MAX_HOTSPOTS_PER_METRIC]
+    out = []
+    for f in order:
+        f = int(f)
+        pid = int(patch_of[f])
+        c = centroids[f]
+        out.append({"metric": metric, "value": float(v[f]),
+                    "x": float(c[0]), "y": float(c[1]), "z": float(c[2]),
+                    "patch": names[pid] if 0 <= pid < len(names) else None})
+    return [dict(h, face=int(h.pop("_f", 0)) + offset) if "_f" in h else h for h in out]
+
+
+def quality_fields_from_sidecar(polymesh, *, non_ortho_limit: float, skew_limit: float = 4.0,
+                                aspect_limit: float = 1000.0, patch_names=None) -> dict | None:
+    """The viewer's quality fields, read from checkMesh's own numbers instead of re-derived.
+
+    The same payload shape `render.face_quality.quality_fields` returns, so one viewer reads both,
+    with three honest differences recorded in it: the basis is per metric and is checkMesh's,
+    skewness is judged against the BOUNDARY bar of 20 rather than the internal 4 because every
+    value here is a boundary face's own, and every count is over boundary faces rather than over
+    the mesh. See `attach_sidecar_quality` for why this exists.
+
+    None when there is no usable sidecar, or when no patch asked for has any face here - the same
+    two answers face_quality gives, so the caller needs no new branch.
+    """
+    import base64
+
+    import numpy as np
+
+    from meshpipeline.render.face_quality import BOUNDARY_SKEW_LIMIT
+
+    try:
+        q = open_quality(polymesh)
+    except Exception as exc:                # noqa: BLE001 - absent, stale or mismatched: no fields
+        logger.info("boundary quality unavailable for the viewer: %s", exc)
+        return None
+    from meshpipeline.render.boundary_index import open_index
+
+    idx = open_index(polymesh)
+    names = [str(p["name"]) for p in idx.patches]
+    wanted = set(patch_names) if patch_names else None
+
+    # THE BAR EACH METRIC IS ACTUALLY JUDGED BY, given what the sidecar says each value IS.
+    bars = {"non_ortho": float(non_ortho_limit),
+            "skewness": float(BOUNDARY_SKEW_LIMIT),
+            "aspect_ratio": float(aspect_limit)}
+    labels = {"non_ortho": ("non-orthogonality", "\u00b0"),
+              "skewness": ("skewness", ""), "aspect_ratio": ("aspect ratio", "")}
+
+    per_patch: dict[str, dict] = {}
+    for p in idx.patches:
+        name = str(p["name"])
+        if wanted is not None and name not in wanted:
+            continue
+        lo = int(p["first_face"])
+        n = int(p["n_faces"])
+        if n <= 0:
+            continue
+        row: dict = {"count": n}
+        for key in ("non_ortho", "skewness", "aspect_ratio"):
+            if key not in q.metrics:
+                continue
+            arr = np.asarray(q.values(key, np.arange(lo, lo + n, dtype=np.int64)),
+                             dtype=np.float32)
+            row[f"{key}_b64"] = base64.b64encode(arr.tobytes()).decode("ascii")
+        if len(row) > 1:
+            per_patch[name] = row
+    if not per_patch:
+        return None
+
+    metrics: dict = {}
+    hotspots: list[dict] = []
+    for key in ("non_ortho", "skewness", "aspect_ratio"):
+        if key not in q.metrics:
+            continue
+        whole = np.asarray(q.values(key, np.arange(idx.n_faces, dtype=np.int64)),
+                           dtype=np.float32)
+        finite = whole[np.isfinite(whole)]
+        label, unit = labels[key]
+        m = {"label": label, "unit": unit, "limit": bars[key],
+             "max": float(finite.max()) if finite.size else 0.0,
+             "n_over": int(np.count_nonzero(whole > bars[key])),
+             "n_faces": int(idx.n_faces),
+             # WHAT THESE NUMBERS ARE OF, because they are not of the same thing face_quality's
+             # are: boundary faces only, and one value per face as checkMesh wrote it.
+             "scope": "boundary",
+             "basis": q.basis(key),
+             "source": str(q.meta.get("source") or "checkMesh"),
+             }
+        if key == "skewness":
+            # The internal bar is carried but NOT applied: nothing here is an internal face.
+            m["internal_limit"] = float(skew_limit)
+        if key == "aspect_ratio":
+            m["floor"] = 1.0
+            m["scale_to"] = float(max(m["max"], 2.0))
+        metrics[key] = m
+        hotspots += _sidecar_hotspots(key, whole, bars[key], idx.centroids, idx.patch_of, names)
+
+    logger.info("viewer quality fields from checkMesh's own fields: %d boundary faces over %d "
+                "patch(es), %d hotspot(s)", idx.n_faces, len(per_patch), len(hotspots))
+    return {"basis": "checkMesh_per_metric", "metrics": metrics, "patches": per_patch,
+            "hotspots": hotspots}
+
+
+def attach_sidecar_quality(resp: dict, polymesh, *, non_ortho_limit: float,
+                           skew_limit: float = 4.0, aspect_limit: float = 1000.0,
+                           patch_of: dict[str, str] | None = None) -> None:
+    """Add `quality_fields` to a viewer response from the sidecar, or leave it untouched.
+
+    WHY THIS EXISTS. `render.face_quality` is the first choice and it refuses any mesh over its
+    40 M-face cap, because its measurement needs the whole polyMesh resident - about 25.6 GB for
+    this plate's coolant and 36.3 GB for its metal. On a mesh past the cap it returns None,
+    `cfmesh_conjugate.viewer._paint` finds nothing to merge and returns, and the payload carries
+    no `quality_fields` at all. Two of the six readings the customer asked for go missing on the
+    meshes big enough to need them, silently, because a heatmap is swallowed by design.
+
+    checkMesh measured all three metrics on the way past and `-writeFields` wrote them down;
+    `write_quality` has already reduced them to one value per boundary face. This reads that.
+
+    Same contract as `face_quality.attach_quality_fields`: `patch_of` maps a response patch name
+    to the one the polyMesh uses, every failure is logged and swallowed, and a response that
+    already has fields is left exactly as it is.
+    """
+    if resp.get("quality_fields"):
+        return
+    try:
+        alias = dict(patch_of or {})
+        names = [str(p.get("name") or "") for p in (resp.get("patches") or [])
+                 if isinstance(p, dict)]
+        fields = quality_fields_from_sidecar(
+            polymesh, non_ortho_limit=non_ortho_limit, skew_limit=skew_limit,
+            aspect_limit=aspect_limit, patch_names=[alias.get(n, n) for n in names])
+        if not fields:
+            return
+        if alias:
+            back = {mesh_name: shown for shown, mesh_name in alias.items()}
+            fields["patches"] = {back.get(k, k): v
+                                 for k, v in (fields.get("patches") or {}).items()}
+            for h in fields.get("hotspots") or []:
+                if h.get("patch") in back:
+                    h["patch"] = back[h["patch"]]
+        resp["quality_fields"] = fields
+    except Exception:                       # noqa: BLE001 - a heatmap is never worth a delivery
+        logger.exception("viewer quality fields from the sidecar unavailable - no heatmap")
+
+
 __all__ = ["BoundaryQuality", "CHECKMESH_WRITE_FIELDS", "FIELDS", "FIELD_FILES",
+           "MAX_HOTSPOTS_PER_METRIC", "attach_sidecar_quality",
+           "quality_fields_from_sidecar",
            "QUALITY_DIRNAME", "QUALITY_VERSION", "QualityUnavailable", "has_quality",
            "open_quality", "quality_dir", "write_quality"]

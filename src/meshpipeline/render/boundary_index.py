@@ -450,6 +450,43 @@ class BoundaryIndex:
     def patches(self) -> list[dict]:
         return list(self.meta.get("patches") or ())
 
+    @property
+    def points(self):
+        """The BOUNDARY's own points, float32 (n_points, 3), already compacted and renumbered -
+        not the volume's. `render.index_surface` draws from these."""
+        return self._a["points"]
+
+    @property
+    def sizes(self):
+        """Corner count per face, uint8 (n_faces,). A face under three corners is kept in the
+        NUMBERING on purpose, so a face id here is the boundary file's own; whoever draws decides
+        what to do with it."""
+        return self._a["sizes"]
+
+    @property
+    def conn(self):
+        """Every face's corners end to end, uint32, as local ids into `points`. A patch's faces are
+        contiguous in this numbering, so a patch's connectivity is one SLICE of this rather than a
+        gather - which is the whole reason drawing from the index is affordable."""
+        return self._a["conn"]
+
+    @property
+    def centroids(self):
+        """One centroid per face, float32 (n_faces, 3), in this index's own face numbering.
+
+        Exposed because a caller that has to say WHERE a bad face is cannot get there through
+        `faces_near`, which needs the place as its input. `render.boundary_quality` builds the
+        viewer's hotspots from these.
+        """
+        return self._a["centroids"]
+
+    @property
+    def patch_of(self):
+        """Which patch each face belongs to, uint16 (n_faces,), as an index into `patches` -
+        or NO_PATCH for a face no patch names. Exposed for the same reason as `centroids`: a
+        hotspot has to name its patch, and the mapping is already written down here."""
+        return self._a["patch_of"]
+
     def faces_near(self, centre, radius: float):
         """The ids of every face whose centroid is within `radius` of `centre`.
 

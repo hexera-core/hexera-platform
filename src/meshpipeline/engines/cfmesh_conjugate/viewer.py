@@ -50,6 +50,7 @@ def conjugate_viewer(workspace, *, roles: dict, units: str,
     that was never delivered and shows no split at all.
     """
     from meshpipeline.engines.cfmesh_conjugate.polymesh_surface import boundary_surface
+    from meshpipeline.render.index_surface import surface_from_index
     from meshpipeline.render.viewer_pack import polymesh_response
 
     ws = Path(workspace)
@@ -60,12 +61,28 @@ def conjugate_viewer(workspace, *, roles: dict, units: str,
         polymesh = ws / "constant" / region / "polyMesh"
         if not (polymesh / "boundary").is_file():
             continue
+        skip = tuple(skip_names) + _SKIP
         try:
-            patches, cell_stats = boundary_surface(
-                polymesh, skip_names=tuple(skip_names) + _SKIP)
-        except (OSError, ValueError):
-            logger.warning("conjugate viewer: %s has no readable mesh", region, exc_info=True)
-            continue
+            # THE INDEX FIRST, BECAUSE THE PARSE DOES NOT SURVIVE THIS SIZE. `boundary_surface`
+            # reads the whole polyMesh - the entire points file in one bytes object plus a
+            # translated copy of it, then one Python list per boundary face - which `native.py`
+            # prices at about 303 s for 13,181,685 faces behind a 2.7 GB points file. This plate's
+            # coolant region is 31,184,373 boundary faces behind 246,049,422 internal ones and its
+            # metal region 40,667,460 behind 711,609,849. `write_index` did that parse once in the
+            # worker and wrote the answer down; `surface_from_index` slices it. Byte-identical
+            # output, so this is a cost change and not a measurement change.
+            #
+            # NO `region=`. The prefixing is done below, on purpose, and passing it here as well
+            # gives "fluid/fluid/coolant_in".
+            patches, cell_stats = surface_from_index(polymesh, skip_names=skip)
+        except Exception as exc:  # noqa: BLE001 - any trouble with the sidecar falls back
+            logger.info("conjugate viewer: %s has no usable boundary index (%s), parsing the "
+                        "polyMesh instead", region, exc)
+            try:
+                patches, cell_stats = boundary_surface(polymesh, skip_names=skip)
+            except (OSError, ValueError):
+                logger.warning("conjugate viewer: %s has no readable mesh", region, exc_info=True)
+                continue
         for p in patches:
             bare = str(p["name"])
             p["name"] = f"{region}/{bare}"
@@ -216,6 +233,7 @@ def _paint(resp: dict, ws: Path, *, colours: bool = True) -> None:
     """
     try:
         from meshpipeline.engines.openfoam_criteria import MAX_NON_ORTHO
+        from meshpipeline.render.boundary_quality import attach_sidecar_quality
         from meshpipeline.render.face_quality import attach_quality_fields
         bar = MAX_NON_ORTHO.threshold
         if not isinstance(bar, (int, float)):
@@ -246,6 +264,15 @@ def _paint(resp: dict, ws: Path, *, colours: bool = True) -> None:
             # them - harmless, but it asks a reader of this code to work that out.
             one: dict = {"patches": mine}
             attach_quality_fields(one, polymesh, non_ortho_limit=float(bar), patch_of=alias)
+            # AND WHEN THE MESH IS TOO BIG TO MEASURE AGAIN, read what checkMesh measured.
+            # `face_quality` re-derives all three metrics from the whole polyMesh and refuses
+            # past MAX_FACES_FOR_FIELDS, 40 M faces - which this plate's coolant region exceeds
+            # by 237 M and its metal region by 712 M. Before this the refusal ended the heatmap:
+            # no colours, no figures, no hotspots, and viewer.js gives up when it has neither
+            # patches nor hotspots, so two of the six readings the customer asked for by name
+            # went missing on exactly the meshes that need them. checkMesh had already written
+            # the numbers down and nothing read them.
+            attach_sidecar_quality(one, polymesh, non_ortho_limit=float(bar), patch_of=alias)
             _merge_quality(merged, one.get("quality_fields"))
         if not merged:
             return
