@@ -80,6 +80,31 @@ def test_without_gate_a_blocking_finding_is_reported_not_failed(tmp_path, capsys
     assert "::warning " in capsys.readouterr().out
 
 
+def test_a_baselined_serious_finding_is_shown_but_only_a_new_one_fails(tmp_path, capsys):
+    mod = _module()
+    sarif_dir = tmp_path / "sarif"
+    sarif_dir.mkdir()
+    old = _result(0)
+    old["partialFingerprints"] = {"primaryLocationLineHash": "aaaa:1"}
+    _write(sarif_dir, _sarif([old]))
+    baseline = tmp_path / "baseline.json"
+    assert mod.main(["--write-baseline", str(baseline), str(sarif_dir)]) == 0
+    assert mod.main(["--gate", "--baseline", str(baseline), str(sarif_dir)]) == 0
+    assert "baselined" in capsys.readouterr().out
+
+    # Same rule, same file, different line content: a new finding, and it fails.
+    new = _result(0)
+    new["partialFingerprints"] = {"primaryLocationLineHash": "bbbb:1"}
+    _write(sarif_dir, _sarif([new]))
+    assert mod.main(["--gate", "--baseline", str(baseline), str(sarif_dir)]) == 1
+    assert "no longer found" in capsys.readouterr().out
+
+
+def test_the_checked_in_codeql_baseline_reads(tmp_path):
+    baseline = REPO / "devtools" / "quality" / "codeql_baseline.json"
+    assert _module().load_baseline(baseline), "the CodeQL lane gates against this file"
+
+
 def test_no_sarif_is_no_verdict_and_never_passes(tmp_path):
     assert _module().main(["--gate", str(tmp_path)]) == 2
 

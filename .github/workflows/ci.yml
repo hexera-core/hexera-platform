@@ -372,8 +372,9 @@ jobs:
           path: ${{ runner.temp }}/codeql-sarif
           if-no-files-found: warn
       # Every finding is printed here either way. When the SARIF was not uploaded, nothing else
-      # gates it, so this step fails the lane on high/critical (or error-level) findings - the
-      # same bar code scanning's own pull-request check applies.
+      # gates it, so this step fails the lane on a NEW high/critical (or error-level) finding -
+      # the same bar code scanning's own pull-request check applies. The ones that predate this
+      # gate are listed in codeql_baseline.json: shown every run, fixed and deleted over time.
       - name: CodeQL findings
         env:
           SARIF_DIR: ${{ runner.temp }}/codeql-sarif
@@ -381,7 +382,8 @@ jobs:
         run: |
           gate=()
           [ "$GATE" = "true" ] && gate=(--gate)
-          python3 devtools/quality/sarif_findings.py --title CodeQL "${gate[@]}" "$SARIF_DIR"
+          python3 devtools/quality/sarif_findings.py --title CodeQL "${gate[@]}" \
+            --baseline devtools/quality/codeql_baseline.json "$SARIF_DIR"
 
   # ONE IMAGE PER LANE. This used to be a single job that built api, then pipeline, then mesh, then
   # smoked all three - 9m43s of strictly serial work whose red X said "an image broke" without

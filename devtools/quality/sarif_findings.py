@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
-# Responsibility: Print a scanner's SARIF findings in the job log, and with --gate fail on the serious ones.
-# Boundaries: it reads SARIF files only; it runs no scanner and uploads nothing.
+# Responsibility: Print a scanner's SARIF findings in the job log, and with --gate fail on NEW serious ones.
+# Boundaries: it reads SARIF files and the checked-in baseline; it runs no scanner and uploads nothing.
 """Show SARIF findings where a reader can see them, and gate on them when nothing else will.
 
 With code scanning available, findings go to the Security tab and its pull-request check gates
 them. Without it (GitHub Advanced Security off), the SARIF never leaves the runner, so the lane
-calls this with --gate: every finding is printed, and the job fails on the ones code scanning's
-default check would fail on - a security severity of 7.0 or more (high, critical), or for a rule
-without a security severity, the `error` level.
+calls this with --gate: every finding is printed, and the job fails on the serious ones code
+scanning's default check would fail on - a security severity of 7.0 or more (high, critical),
+or for a rule without a security severity, the `error` level.
+
+Serious findings that already existed when the gate was introduced are listed in a baseline
+(--baseline) so they are shown but do not fail every run; a NEW one does. Like the mypy ratchet,
+the baseline is meant to shrink: fix a listed finding and delete its entry. Entries are matched
+on rule, file and CodeQL's line-content fingerprint, so moving code does not unlist a finding,
+and changing the flagged line makes it count as new and be looked at again.
 
 A run that produced no SARIF at all is no verdict, and no verdict never passes.
+
+Regenerate the baseline from a run's SARIF artifact (only to accept findings someone reviewed):
+    python devtools/quality/sarif_findings.py --write-baseline devtools/quality/codeql_baseline.json python.sarif
 """
 from __future__ import annotations
 
@@ -31,9 +40,10 @@ class Finding:
     path: str
     line: int | None
     message: str
+    fingerprint: str = ""
 
     @property
-    def blocking(self) -> bool:
+    def serious(self) -> bool:
         if self.security_severity is not None:
             return self.security_severity >= BLOCKING_SECURITY_SEVERITY
         return self.level == "error"
@@ -41,6 +51,10 @@ class Finding:
     @property
     def where(self) -> str:
         return f"{self.path}:{self.line}" if self.line else self.path
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.rule, self.path, self.fingerprint or f"line:{self.line}")
 
 
 def _rules(run: dict) -> dict[tuple[int | None, int], dict]:
@@ -104,6 +118,7 @@ def findings(document: dict) -> list[Finding]:
                 path=(location.get("artifactLocation") or {}).get("uri", "?"),
                 line=(location.get("region") or {}).get("startLine"),
                 message=" ".join(((result.get("message") or {}).get("text") or "").split()),
+                fingerprint=(result.get("partialFingerprints") or {}).get("primaryLocationLineHash", ""),
             ))
     return out
 
@@ -116,6 +131,21 @@ def _sarif_files(paths: list[str]) -> list[Path]:
     return files
 
 
+def load_baseline(path: Path) -> set[tuple[str, str, str]]:
+    entries = json.loads(path.read_text(encoding="utf-8")).get("findings", [])
+    return {(e["rule"], e["path"], e["fingerprint"]) for e in entries}
+
+
+def write_baseline(path: Path, found: list[Finding]) -> int:
+    entries = [
+        {"rule": f.rule, "path": f.path, "fingerprint": f.key[2], "line": f.line, "message": f.message}
+        for f in sorted({f.key: f for f in found if f.serious}.values(), key=lambda f: f.key)
+    ]
+    path.write_text(json.dumps({"findings": entries}, indent=2) + "\n", encoding="utf-8")
+    print(f"wrote {len(entries)} baselined finding(s) to {path}")
+    return 0
+
+
 def _escape(text: str) -> str:
     """Workflow-command data escaping, so a message cannot end or forge the annotation."""
     return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
@@ -126,16 +156,19 @@ def _escape_property(text: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("paths", nargs="+", help="SARIF files, or directories searched for *.sarif")
     parser.add_argument("--gate", action="store_true",
-                        help="exit 1 when a finding is high/critical (or error level)")
+                        help="exit 1 on a serious finding that is not in the baseline")
+    parser.add_argument("--baseline", type=Path, help="JSON of serious findings already accepted")
+    parser.add_argument("--write-baseline", type=Path, help="write every serious finding here and exit")
     parser.add_argument("--title", default="Scanner", help="names the scanner in the output")
     args = parser.parse_args(argv)
+    title = _escape_property(args.title)
 
     files = _sarif_files(args.paths)
     if not files:
-        print(f"::error title={_escape_property(args.title)} produced no SARIF::"
+        print(f"::error title={title} produced no SARIF::"
               f"no *.sarif under {', '.join(args.paths)} - the scan gave no verdict")
         return 2
 
@@ -144,39 +177,59 @@ def main(argv: list[str] | None = None) -> int:
         try:
             found.extend(findings(json.loads(file.read_text(encoding="utf-8"))))
         except (OSError, ValueError) as exc:
-            print(f"::error title={_escape_property(args.title)} SARIF unreadable::{file}: {_escape(str(exc))}")
+            print(f"::error title={title} SARIF unreadable::{file}: {_escape(str(exc))}")
             return 2
 
-    blocking = [f for f in found if f.blocking]
-    print(f"{args.title}: {len(found)} finding(s) in {len(files)} SARIF file(s), "
-          f"{len(blocking)} high/critical or error level.")
-    for f in sorted(found, key=lambda f: (not f.blocking, f.path, f.line or 0)):
+    if args.write_baseline:
+        return write_baseline(args.write_baseline, found)
+
+    try:
+        baseline = load_baseline(args.baseline) if args.baseline else set()
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"::error title={title} baseline unreadable::{args.baseline}: {_escape(str(exc))}")
+        return 2
+
+    def status(f: Finding) -> str:
+        if not f.serious:
+            return "minor"
+        return "baselined" if f.key in baseline else "NEW"
+
+    order = {"NEW": 0, "baselined": 1, "minor": 2}
+    ranked = sorted(found, key=lambda f: (order[status(f)], f.path, f.line or 0))
+    new = [f for f in found if status(f) == "NEW"]
+    baselined = [f for f in found if status(f) == "baselined"]
+    stale = baseline - {f.key for f in found}
+
+    print(f"{args.title}: {len(found)} finding(s) in {len(files)} SARIF file(s): {len(new)} new serious "
+          f"(high/critical or error level), {len(baselined)} serious already in the baseline, "
+          f"{len(found) - len(new) - len(baselined)} minor.")
+    for f in ranked:
         severity = f"{f.security_severity:.1f}" if f.security_severity is not None else "-"
-        print(f"  [{'BLOCKING' if f.blocking else 'note    '}] {f.rule} (level {f.level}, "
-              f"severity {severity}) {f.where}: {f.message}")
-        if not f.blocking:
+        print(f"  [{status(f):9}] {f.rule} (level {f.level}, severity {severity}) {f.where}: {f.message}")
+        if status(f) != "NEW":
             continue
         kind = "error" if args.gate else "warning"
         props = f"file={_escape_property(f.path)},title={_escape_property(f.rule)}"
         if f.line:
             props += f",line={f.line}"
         print(f"::{kind} {props}::{_escape(f.message)}")
+    for rule, path, _ in sorted(stale):
+        print(f"  [gone     ] {rule} {path}: listed in the baseline but no longer found - delete its entry")
 
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as handle:
-            handle.write(f"### {args.title} findings\n\n{len(found)} finding(s), "
-                         f"{len(blocking)} blocking.\n\n")
+            handle.write(f"### {args.title} findings\n\n{len(found)} finding(s): {len(new)} new serious, "
+                         f"{len(baselined)} baselined serious.\n\n")
             if found:
-                handle.write("| Blocking | Rule | Severity | Where | Message |\n|---|---|---|---|---|\n")
-                for f in sorted(found, key=lambda f: (not f.blocking, f.path, f.line or 0)):
+                handle.write("| Status | Rule | Severity | Where | Message |\n|---|---|---|---|---|\n")
+                for f in ranked:
                     severity = f"{f.security_severity:.1f}" if f.security_severity is not None else f.level
                     message = f.message.replace("|", "\\|")
-                    handle.write(f"| {'yes' if f.blocking else 'no'} | `{f.rule}` | {severity} | "
-                                 f"`{f.where}` | {message} |\n")
+                    handle.write(f"| {status(f)} | `{f.rule}` | {severity} | `{f.where}` | {message} |\n")
 
-    if args.gate and blocking:
-        print(f"{args.title}: {len(blocking)} blocking finding(s); fix them or suppress each with a reason.")
+    if args.gate and new:
+        print(f"{args.title}: {len(new)} new serious finding(s); fix them, or suppress each with a reason.")
         return 1
     return 0
 
