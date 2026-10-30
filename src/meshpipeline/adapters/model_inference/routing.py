@@ -16,6 +16,8 @@ from typing import Any
 
 from meshpipeline.contracts import inference_telemetry as telemetry
 from meshpipeline.contracts import model_capacity as capacity
+from meshpipeline.contracts.event_stream import StaleExecutionPublish
+from meshpipeline.contracts.execution_guard import StaleWorkerFenced
 from meshpipeline.contracts.inference_telemetry import InferenceCall
 from meshpipeline.contracts.model_routing import (
     FailureCategory,
@@ -25,6 +27,11 @@ from meshpipeline.contracts.model_routing import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: What a model call must never turn into a failure marker: a fenced (superseded) worker and a
+#: refused stale publish end the execution on purpose. Cancellation is a BaseException and is
+#: never caught by the `except Exception` arms that use this.
+_NEVER_SWALLOWED: tuple[type[BaseException], ...] = (StaleExecutionPublish, StaleWorkerFenced)
 
 
 class Phase(str, Enum):
@@ -164,12 +171,24 @@ async def execute(
             budget = _domain_budget(target.domain.key, route)
             # Queueing spends the SAME total budget as the attempts do.
             queue_wait = budget_clock.cap(route.queue_deadline_s)
-            lease = await capacity.acquire(target.domain.key, budget, queue_wait)
+            # ADMISSION THAT BREAKS is admission refused, never an exception out of the route: a
+            # missing controller (CapacityError) or a controller whose store is unreachable is
+            # "the provider cannot take this right now" - OVERLOAD, retryable and failover-
+            # eligible - so the caller gets a failure marker, not a crashed agent node.
+            _admission_error = ""
+            try:
+                lease = await capacity.acquire(target.domain.key, budget, queue_wait)
+            except _NEVER_SWALLOWED:
+                raise
+            except Exception as exc:  # noqa: BLE001 - becomes an admission refusal below
+                lease, last_cause = None, exc
+                _admission_error = describe_failure(exc)
             if lease is None:
-                expired = budget_clock.expired()
+                expired = budget_clock.expired() and not _admission_error
                 last_category = FailureCategory.TIMEOUT if expired else FailureCategory.OVERLOAD
                 last_phase = Phase.TIMEOUT if expired else Phase.ADMISSION
-                _why = ("route deadline exhausted while queued" if expired
+                _why = (f"admission failed ({_admission_error})" if _admission_error
+                        else "route deadline exhausted while queued" if expired
                         else f"queue deadline {queue_wait:.1f}s exceeded")
                 last_detail = f"{target.label}: {_why} at budget {budget}"
                 logger.warning("route %s: %s", route.role, last_detail)
@@ -185,8 +204,16 @@ async def execute(
                 (result, category, detail, attempts, usage, latency, started,
                  cause) = await _attempt_target(route, target, invoke, classify, budget_clock)
             finally:
-                # ALWAYS returns the slot: success, failure, timeout, and cancellation alike.
-                await capacity.release(lease)
+                # ALWAYS returns the slot: success, failure, timeout, and cancellation alike. A
+                # release that breaks is logged, never allowed to replace the call's own outcome
+                # (an answer already received, or the failure being reported).
+                try:
+                    await capacity.release(lease)
+                except _NEVER_SWALLOWED:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("route %s: releasing the %s slot failed: %s", route.role,
+                                   target.label, describe_failure(exc))
             last_attempts = attempts
 
             if category is None:

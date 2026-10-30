@@ -210,8 +210,8 @@ class RepairSession:
             # nothing. That makes `kept` stop meaning "repaired something", which is precisely the
             # signal this slice exists to accumulate.
             #
-            # It matters most for the model-directed portion: the deterministic portion proposes
-            # only from the defect list, but a model can propose any target it likes, and this is
+            # It matters most for model guidance: the rules fallback proposes only from the defect
+            # list, but a model can propose any target it likes, and this is
             # the check that stops a confident wrong guess being recorded as a success. Refused
             # before the kernel is called, so a bogus target costs nothing.
             return self._record(OpVerdict(op=op.name, targets=fingerprints, defect_code=code,
@@ -239,7 +239,7 @@ class RepairSession:
         # FixSmallFaces answering a `small_edge` on a held face would carry the face off while the
         # engineer is still being asked about it. Checked here, where what actually went is known,
         # and cheap enough to run before the caps.
-        # `answered_held` IS THE ENGINEER'S ANSWER. DirectedPlanner lets an engineer's directive -
+        # `answered_held` IS THE ENGINEER'S ANSWER. RepairPlanner lets an engineer's directive -
         # and a replay of an operation this upload already kept - aim at a held defect, because
         # being asked and answering is the whole point of review. A blanket refusal here would
         # roll back the repair the engineer just approved. So the exemption is exactly the

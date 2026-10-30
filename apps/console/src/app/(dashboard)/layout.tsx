@@ -40,7 +40,6 @@ export default async function DashboardLayout({ children }: { children: React.Re
           credits={credits ? `${credits.balance}` : "--"}
           email={ownerId}
           recent={recent && Array.isArray(recent.items) ? recent.items : null}
-          repairPoc={process.env.CAD_REPAIR_POC === "true"}
           signOut={<SignOutButton />}
         />
         <main className="main">{children}</main>

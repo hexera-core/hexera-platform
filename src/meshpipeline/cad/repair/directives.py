@@ -1,4 +1,4 @@
-# Responsibility: Play an engineer's (or a replayed) list of repair directives before the rules planner.
+# Responsibility: Choose every CAD repair operation: optional directives first, then bounded rules.
 # Owns: resolving a directive's operation name and target fingerprints against the CURRENT defects,
 #       and recording each directive it could not play.
 # Boundaries: it proposes. A directive is a planner directive, NOT a cap waiver - the session's
@@ -53,10 +53,10 @@ def _crossing_components(op, refs: list[EntityRef], by_fingerprint) -> list[Enti
     return out
 
 
-class DirectedPlanner:
-    """Proposes each directive in order, then whatever the fallback planner proposes."""
+class RepairPlanner:
+    """The CAD Repair System planner: directives first, then the bounded rules fallback."""
 
-    label = "directed-v1"
+    label = "repair-v1"
 
     def __init__(self, directives, fallback=None, ops=OPERATIONS, *,
                  reserved: frozenset[DefectCode] = frozenset()) -> None:
@@ -167,3 +167,7 @@ class DirectedPlanner:
                          planner_confidence=(float(directive["planner_confidence"])
                                              if isinstance(directive.get("planner_confidence"),
                                                            (int, float)) else None))
+
+
+# Compatibility for callers that imported the old implementation-shaped name.
+DirectedPlanner = RepairPlanner

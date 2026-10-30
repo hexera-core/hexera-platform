@@ -227,16 +227,17 @@ class _Store:
         Path(destination).write_bytes(self.get_bytes(object_key=object_key))
 
 
-def _scouted_car(sid: str) -> dict:
+def _scouted_car(sid: str, facts: dict | None = None) -> dict:
     sheet = gc.check_object_key(sid, "upright.png")
+    facts = facts or _car_facts()
     return {"status": "scouted", "session_id": sid, "written_at": 1.0, "named": False,
-            "facts": _car_facts(), "proposal": gc._proposal(_car_facts(), None), "snapshots": [],
+            "facts": facts, "proposal": gc._proposal(facts, None), "snapshots": [],
             "skin_key": gc.check_object_key(sid, "skin.json"),
             "upright_sheet": {"object_key": sheet, "order": ORDER}}
 
 
-def _naming(monkeypatch, sid: str, vision: dict, up_answer: dict | None = None):
-    store = _Store({gc.check_object_key(sid, "scout.json"): json.dumps(_scouted_car(sid)).encode(),
+def _naming(monkeypatch, sid: str, vision: dict, up_answer: dict | None = None, facts: dict | None = None):
+    store = _Store({gc.check_object_key(sid, "scout.json"): json.dumps(_scouted_car(sid, facts)).encode(),
                     gc.check_object_key(sid, "upright.png"): b"png"})
     monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
     monkeypatch.setattr(gc, "_name_with_vision", lambda facts, shots, **k: dict(vision))
@@ -274,8 +275,13 @@ def test_the_naming_asks_which_way_is_up_of_a_body_in_a_flow_with_its_name(monke
 
 def test_the_naming_never_asks_it_of_a_part_the_fluid_flows_through(monkeypatch):
     sid = "abcdef12-8888"
-    _, asked = _naming(monkeypatch, sid, _vision(part="pipe elbow", flow="internal", input_kind="body-surface",
-                                                 confidence=0.95))
+    # a closed body with two flat ends, which the model (clearly surer than the code) reads as the
+    # fluid inside a passage; a body with no measured ends could not be turned into one
+    ends = [{"id": i, "name": f"end_{i}", "role": r, "shape": "circle", "diameter_mm": 50.0,
+             "centroid_mm": [0.0, 0.0, 0.0], "normal": [1, 0, 0], "confidence": 0.6}
+            for i, r in ((1, "inlet"), (2, "outlet"))]
+    _, asked = _naming(monkeypatch, sid, _vision(part="pipe elbow", flow="internal", input_kind="fluid-domain",
+                                                 confidence=0.95), facts=_car_facts(openings=ends))
     result = gc.run_geometry_naming(session_id=sid, owner_id="o1", purpose_text="water through it")
     assert asked == [] and result["proposal"]["up_axis"] == "+z"
 

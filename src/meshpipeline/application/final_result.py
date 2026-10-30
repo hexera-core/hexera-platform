@@ -1380,15 +1380,110 @@ def measured_verdict_caveat(outcome: RunOutcome) -> dict | None:
                        for r in v["missed"]]}
 
 
+#: VER-7: the review axes a measured number settles, and the measured rows (verdict_limits keys, or
+#: a quality fact) that measure exactly that property. Conservative on purpose: an axis listed here is
+#: one where a met measurement means the property is there, so a reviewer point saying otherwise is
+#: contradicted by the numbers. An axis not listed (shape, wake, staircasing - judged from pictures)
+#: always stays a note.
+SETTLED_BY: dict[str, tuple[str, ...]] = {
+    "prism_layer_coverage": ("layer_coverage_pct", "layer_coverage"),
+    "near_wall_layers_generated": ("layer_coverage_pct", "layer_coverage", "thin_layers_short"),
+    "element_quality_distribution": ("fatal", "max_non_ortho", "skew_fraction", "min_sicn",
+                                     "min_quality", "sicn_low_fraction"),
+    "fea_element_validity": ("elements_under_floor", "min_sicn", "fea_inverted"),
+    "region_split_completeness": ("regions_missing",),
+    "interface_continuity": ("interface_ok",),
+    "conformal_interface": ("interface_ok",),
+    "passage_near_wall_resolution": ("passage_cells_across", "resolution_short"),
+    "fea_detail": ("through_wall_min", "fea_resolution_short"),
+    # the measured face accounting (MESH-8 skins, MESH-9 merges): quality.fea_faces.complete
+    "fea_faces_named": ("fea_faces.complete",),
+}
+
+
+def _verdict_rows(outcome: RunOutcome) -> dict[str, dict]:
+    v = measured_verdict(outcome)
+    inputs = (v or {}).get("inputs") or {}
+    rows: dict[str, dict] = {}
+    for group in ("gating", "limits"):
+        for r in inputs.get(group) or []:
+            if isinstance(r, Mapping) and r.get("key"):
+                rows[str(r["key"])] = dict(r)
+    return rows
+
+
+def settled_by_measurement(outcome: RunOutcome, axis_key: str,
+                           rows: Mapping[str, Mapping] | None = None) -> str:
+    """VER-7: the measurement that settles a reviewer point on `axis_key`, in plain words, or "".
+    Settled only when at least one row that measures that property was measured, and every such
+    row that was measured is met. A point no measurement speaks to stays a note."""
+    keys = SETTLED_BY.get(str(axis_key or ""), ())
+    if not keys:
+        return ""
+    from meshpipeline.contracts import decision_record as dr
+    rows = _verdict_rows(outcome) if rows is None else rows
+    quality = (outcome.manifest or {}).get("quality") if isinstance(outcome.manifest, Mapping) else {}
+    quality = quality if isinstance(quality, Mapping) else {}
+    said: list[str] = []
+    for key in keys:
+        if key == "fea_faces.complete":
+            faces = quality.get("fea_faces")
+            if not isinstance(faces, Mapping) or faces.get("complete") is None:
+                continue
+            if faces.get("complete") is not True:
+                return ""
+            said.append("every CAD face is named or accounted for")
+            continue
+        r = rows.get(key)
+        if r is None or r.get("measured") is None:
+            continue
+        met = dr.limit_met(r.get("measured"), str(r.get("op") or ""), r.get("limit"))
+        if met is not True:
+            return ""
+        said.append(f"{r.get('label') or key}: measured {r.get('measured')}, limit {r.get('op')} {r.get('limit')}")
+    return "; ".join(said)
+
+
 def reviewer_notes_caveat(outcome: RunOutcome) -> dict | None:
     """The concluded review's points as notes, when the limits decide. Shown, labelled, decide
-    nothing - whatever verdict the review reached, a wrong-problem claim included."""
+    nothing - whatever verdict the review reached, a wrong-problem claim included. A point a
+    measurement settles (VER-7) is not shown as an open point: it is kept, with the measurement
+    that settles it, under `settled`."""
     if not limits_decide_for(outcome) or not _concluded_on_valid_mesh(outcome):
         return None
-    items = _review_points(outcome)
-    if not items:
+    rows = _verdict_rows(outcome)
+    items: list[dict] = []
+    settled: list[dict] = []
+    for i in _review_points(outcome):
+        by = settled_by_measurement(outcome, i.get("axis_key", ""), rows)
+        (settled if by else items).append({**i, "settled_by": by, "rule": "VER-7"} if by else i)
+    if not items and not settled:
         return None
-    return {"kind": REVIEWER_NOTES, "items": items}
+    # VER-6: the model's own call, kept beside its notes - the recorded verdict is the measured one
+    out: dict = {"kind": REVIEWER_NOTES, "items": items, "verdict_rule": "VER-6",
+                 "model_verdict": str(outcome.reviewer_verdict or "")}
+    if settled:
+        out["settled"] = settled
+    return out
+
+
+def recorded_review_verdict(outcome: RunOutcome) -> str:
+    """VER-6: the review verdict a run records (job row, final result) once the measured limits
+    decide it. The review ran and every gate passed, so its verdict is the measured one: PASS when
+    the limits deliver (pass, or pass with notes); the model's own call is kept beside its notes
+    (`model_verdict`). Anything else, and every run the limits do not decide, records what the
+    review said, as before."""
+    raw = str(outcome.reviewer_verdict or "")
+    try:
+        if not (limits_decide_for(outcome) and _concluded_on_valid_mesh(outcome)):
+            return raw
+        v = measured_verdict(outcome)
+        if v is not None and v.get("outcome") in ("pass", "concerns"):
+            return "PASS"
+    except Exception:  # noqa: BLE001 - a record never touches a verdict
+        logging.getLogger(__name__).warning("recorded review verdict: kept the review's own",
+                                            exc_info=True)
+    return raw
 
 
 def old_review_outcome(decision_succeeded: bool, outcome: RunOutcome) -> str:

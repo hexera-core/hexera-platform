@@ -403,6 +403,32 @@
   "roots": []
  },
  {
+  "context": "adapters/model_inference/router.py::_run::error#2|NotAPublisher|not-a-publisher|",
+  "path": "adapters/model_inference/router.py",
+  "qualname": "_run",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "adapters/model_inference/router.py::_run::error#3|NotAPublisher|not-a-publisher|",
+  "path": "adapters/model_inference/router.py",
+  "qualname": "_run",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 3,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agent_tools/shared/web_search.py::_retrieve::search#1|NotAPublisher|not-a-publisher|agent_tools/shared/web_search.py::WebSearchProvider",
   "path": "agent_tools/shared/web_search.py",
   "qualname": "_retrieve",
@@ -955,6 +981,19 @@
   "method": "stage",
   "ordinal": 1,
   "receiver": "self.tally()",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/loop/provider_round.py::ProviderRound.invoke::error#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/loop/provider_round.py",
+  "qualname": "ProviderRound.invoke",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

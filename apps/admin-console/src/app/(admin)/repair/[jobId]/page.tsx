@@ -49,7 +49,6 @@ function AttemptTable({ attempts }: { attempts: readonly RepairAttemptRow[] }) {
       <thead>
         <tr>
           <th>#</th>
-          <th>Mode</th>
           <th>Profile</th>
           <th>Tool</th>
           <th>Result</th>
@@ -63,7 +62,6 @@ function AttemptTable({ attempts }: { attempts: readonly RepairAttemptRow[] }) {
         {attempts.map((a) => (
           <tr key={a.attempt_no}>
             <td>{a.attempt_no}</td>
-            <td>{a.mode}</td>
             <td>{a.profile || "—"}</td>
             <td>{a.tool_version || "—"}</td>
             <td>{a.status ? repairStatusLabel(a.status) : "—"}</td>
@@ -258,9 +256,9 @@ export default async function RepairJobPage({
         )}
       </Panel>
 
-      <Panel title="What was measured" heading={`${attempts.length} attempt(s)`}>
+      <Panel title="CAD Repair System evidence" heading={`${attempts.length} attempt(s)`}>
         {attempts.length === 0 ? (
-          <EmptyState note="Nothing has inspected or repaired this geometry yet." />
+          <EmptyState note="The CAD Repair System has not inspected or repaired this geometry yet." />
         ) : (
           <AttemptTable attempts={attempts} />
         )}

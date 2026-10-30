@@ -8,7 +8,7 @@ import { FilesPanel } from "@/app/_components/files-panel";
 import { RecentRunsList } from "@/app/_components/recent-runs-list";
 import type { RecentRun } from "@/app/_components/recent-runs";
 import type { RunRead } from "@/app/_components/run-files";
-import { CONSOLE_SECTIONS, currentSection, visibleSections } from "@/app/_components/sections";
+import { CONSOLE_SECTIONS, currentSection } from "@/app/_components/sections";
 import { PanelIcon, useSidebar } from "@/app/_components/shell";
 
 type SidebarProps = {
@@ -16,9 +16,6 @@ type SidebarProps = {
   credits: string;
   /** The first read of the recent runs, done by the layout; null when the API could not say. */
   recent: RecentRun[] | null;
-  /** The server-side CAD_REPAIR_POC switch, read by the layout; a Client Component cannot read
-   *  the env itself. */
-  repairPoc: boolean;
   /** Rendered, never imported: SignOutButton's inline "use server" action cannot be reached
    *  from a Client Component's import graph. The layout builds it and hands it over. */
   signOut: React.ReactNode;
@@ -28,16 +25,15 @@ type SidebarProps = {
 
 /** The slim sidebar: the brand and the hide switch, New run, the product sections, the recent
  *  runs, and the account tucked into one Settings fold at the foot. */
-export function Sidebar({ credits, email, files = null, recent, repairPoc, signOut }: SidebarProps) {
+export function Sidebar({ credits, email, files = null, recent, signOut }: SidebarProps) {
   const pathname = usePathname();
   const current = currentSection(pathname);
   const { pane, setHidden, setPane } = useSidebar();
   // ON A RUN PAGE the slot has two jobs: the runs, or this run's files. Elsewhere it is the nav.
   const onRun = /^\/runs\/.+/.test(pathname);
   const showFiles = onRun && pane === "files";
-  const sections = visibleSections(repairPoc);
-  const product = sections.filter((section) => section.group === "product");
-  const account = sections.filter((section) => section.group === "account");
+  const product = CONSOLE_SECTIONS.filter((section) => section.group === "product");
+  const account = CONSOLE_SECTIONS.filter((section) => section.group === "account");
   const inSettings = account.some((section) => section.href === current);
 
   return (

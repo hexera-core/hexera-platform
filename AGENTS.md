@@ -3,7 +3,7 @@
 Rules for any coding agent working in this repository. Human contributors may read them as
 guidance; for an agent they are the default and a departure needs a reason stated in the change.
 
-## The default loop is a dev deploy, not a local stack
+## The default loop is personal dev, then shared dev
 
 This repository has a documented per-developer cloud environment: your own API, console, mesh job
 and worker fleet inside `hexera-dev`, named `dev-<slug>-*`, created by the first deploy that names
@@ -17,6 +17,21 @@ schema, the real worker fleet and the real mesh job; a compose stack runs a loca
 against local Postgres, Redis and MinIO, so every failure it reproduces still has to be re-proved
 somewhere real. Cloud spend is not the constraint here — an agent's wall-clock and a reviewer's
 trust in the result are.
+
+The working loop is:
+
+1. Run the fast host gates.
+2. Deploy the branch to the task's personal dev slug.
+3. Test the changed behaviour there, against the real deployed API, console, workers, data and mesh
+   pieces it needs.
+4. Deploy extra containers only when the change needs them: `data` for schema/storage changes,
+   `fleet` for worker or mesh changes, `console` when browser behaviour changed, and `app` when API
+   behaviour changed.
+5. Iterate in that personal slug until the PR is merged.
+6. After merge, test the same behaviour in shared dev. Agents do not deploy shared dev themselves:
+   propose the empty-slug deploy command, let a human run it, then verify the merged behaviour there.
+7. If shared dev exposes another issue, go back to a personal slug and repeat the loop with a new
+   small PR.
 
 ### What stays on the host
 
@@ -34,10 +49,11 @@ twenty minutes for an answer that took two seconds.
 
 ### What goes to your environment
 
-Anything that needs Postgres, Redis, the object store, a real image, a worker, or a mesh: the
-integration and container tiers, end-to-end pipeline runs, console and API behaviour, worker
-autoscaling, migrations, and anything whose failure you cannot explain from unit tests. Prefer a
-redeploy over an hour of local reconstruction.
+Anything that needs Postgres, Redis, the object store, a real image, a worker, or a mesh goes first
+to the personal slug: the integration and container tiers, end-to-end pipeline runs, console and API
+behaviour, worker autoscaling, migrations, and anything whose failure you cannot explain from unit
+tests. Prefer a redeploy over an hour of local reconstruction. Use shared dev only after the PR has
+merged, to prove the merged path in the shared environment.
 
 ## Deploying
 
@@ -48,7 +64,7 @@ gh workflow run deploy.yml --ref "$(git branch --show-current)" \
 gh workflow run deploy.yml --ref "$(git branch --show-current)" \
   -f slug=<slug> -f console=true -f fleet=true
 
-# every deploy after that
+# every deploy after that: select only the changed tiers
 gh workflow run deploy.yml --ref "$(git branch --show-current)" \
   -f slug=<slug> -f app=true -f console=true
 
@@ -63,7 +79,9 @@ gcloud run services describe dev-<slug>-api --region us-central1 --format='value
 gcloud logging read 'resource.labels.service_name="dev-<slug>-api"' --limit 50 --freshness 10m
 ```
 
-Every stage is idempotent, so a failed run is rerun rather than unwound.
+Every stage is idempotent, so a failed run is rerun rather than unwound. Do not tick `data`,
+`fleet`, `console` or `app` out of habit; deploy the containers and infrastructure tiers the change
+actually needs.
 
 ## What an agent may deploy, and what it may not
 
@@ -93,7 +111,9 @@ Redeploying is cheap and encouraged; leaving resources standing is what costs. S
 Claim a thing works only after running the command that proves it, and say which command that was.
 "Deployed successfully" is a statement about the workflow, not about the change: name the request
 you made, the log line you read, or the tier that passed. A green deploy with an unexercised code
-path is an untested change.
+path is an untested change. For merged work, the claim is not complete until the changed behaviour
+has also been checked in shared dev, or until you state exactly why shared-dev verification is out
+of scope for this change.
 
 ## Change size
 
