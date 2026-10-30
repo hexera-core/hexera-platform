@@ -181,6 +181,11 @@ async def areviewer_verdict(publish: ExecutionEventPublisher, *, passed: bool,
                             failed_axes: tuple[str, ...] = (),
                             rebuild_axes: tuple[str, ...] | None = None,
                             blocking_axes: tuple[str, ...] = ()) -> None:
+    # the same finding on the run's live line, in plain words (contracts/narration)
+    from meshpipeline.contracts import narration as N
+    await N.asay(publish, N.review_line(passed=passed, failed_axes=failed_axes,
+                                        rebuild_axes=rebuild_axes or (), blocking_axes=blocking_axes),
+                 op_id=f"review:{'pass' if passed else 'fail'}:{len(failed_axes)}")
     if passed:
         await _asay(publish, "The mesh meets your brief.",
                     "every acceptance criterion the brief set was checked and met")

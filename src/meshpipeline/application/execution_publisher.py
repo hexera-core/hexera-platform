@@ -195,6 +195,13 @@ class OwnershipCheckedPublisher:
             self._inner.mesh_stage(key, label, op_id=op_id)
 
     @_healing
+    async def anarrate(self, kind: str, text: str, *, n: int | None = None, of: int | None = None,
+                       unit: str = "", op_id: str = "") -> None:
+        _own = await self._authorized("narrate")
+        with self._fenced(_own):
+            self._inner.narrate(kind, text, n=n, of=of, unit=unit, op_id=op_id)
+
+    @_healing
     async def averdict(self, verdict: str, summary: str = "") -> None:
         _own = await self._authorized("verdict")
         with self._fenced(_own):

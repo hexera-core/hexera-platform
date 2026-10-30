@@ -477,6 +477,26 @@ async def get_surface_vtk(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                              f'attachment; filename="mesh_quality_{str(job_id)[:8]}.vtk"'})
 
 
+@router.get("/{job_id}/report.html")
+async def get_mesh_report(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                          organization_id: str = Depends(org_dep)):
+    """THE MESH REPORT as its own download (render/mesh_report.py): every limit, place, hot spot,
+    solver check and joint the short result screen leaves out. Built from the stored viewer payload,
+    as the copy in the Everything bundle was, so the two are the same page - and a run delivered
+    before the bundle carried one still gets its report. Served as an attachment, never shown in place."""
+    from fastapi.responses import Response
+
+    from meshpipeline.render.mesh_report import mesh_report_html
+    data = await _viewer_data(job_id, owner_id, organization_id=organization_id)
+    if not data.get("surface"):
+        raise HTTPException(404, "No delivered mesh was stored for this job")
+    body = await asyncio.to_thread(mesh_report_html, data)
+    return Response(content=body.encode("utf-8"), media_type="text/html; charset=utf-8",
+                    headers={"Content-Disposition":
+                             f'attachment; filename="mesh_report_{str(job_id)[:8]}.html"',
+                             "X-Content-Type-Options": "nosniff"})
+
+
 #: The one sanitized failure this route returns when a dispute child could not be queued. A repeat of
 #: an operation whose child already failed to launch is answered with the SAME text, so the public
 #: contract gains no new shape from the retry policy.

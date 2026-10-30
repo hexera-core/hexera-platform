@@ -143,6 +143,7 @@ setResultHandler((data, anchor) => {
     // flag -> re-review controls attached to the thing they describe.
     openViewer(job, anchor,
       { metrics: { attempts: data.attempts, pass: true }, files: data.files || [],
+        createdAt: data.createdAt, endedAt: data.endedAt,
         concerns: data.reviewOutcome === "delivered_with_concerns" ? (data.concerns || []) : null,
         reasoning: data.reviewOutcome === "delivered_with_concerns" ? (data.reasoning || "") : "",
         // passed by the measured limits, with figures past a limit: listed as notes, as on the result screen
@@ -151,6 +152,7 @@ setResultHandler((data, anchor) => {
   } else if (surface === "unreviewed") {
     openViewer(job, anchor,
       { metrics: { attempts: data.attempts, pass: false }, files: data.files || [],
+        createdAt: data.createdAt, endedAt: data.endedAt,
         unreviewed: true, findings: data.findings || [], reasoning: data.reasoning || "" });
   } else {
     // A TERMINAL failure - no valid mesh was ever produced. Any mesh file left in the workspace

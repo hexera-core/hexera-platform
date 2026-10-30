@@ -218,7 +218,8 @@ def results(workspace) -> dict | None:
     spots = []
     for h in plan.get("hot_spots") or []:
         row = {"id": h.get("id"), "type": h.get("type"), "shape": h.get("shape"), "faces": h.get("faces") or [],
-               "at_m": h.get("at_m"), "capped": bool(h.get("capped")), "words": _shape_words(h)}
+               "at_m": h.get("at_m"), "capped": bool(h.get("capped")), "words": _shape_words(h),
+               "radius_mm": h.get("radius_mm")}
         if h.get("id") in spot_rows:
             row["short"] = spot_rows[h["id"]]
         spots.append(row)
@@ -251,12 +252,15 @@ def results(workspace) -> dict | None:
                                  for m in tiny["merged"]]
     # MESH-8: the CAD faces left out as skins of no thickness, each with the face it lies on - accounted for, as
     # the merged faces are (engines/fea_review.face_accounting)
-    from meshpipeline.engines.fea_review import face_accounting, faces_words
+    from meshpipeline.engines.fea_review import face_accounting, faces_short, faces_words
     acc = q.get("fea_faces") or face_accounting(q, plan)
     if acc.get("skins"):
         extra["skins_left_out"] = [{"face": s.get("face"), "on": s.get("on"), "words": s.get("words")}
                                    for s in acc["skins"]]
     faces_said = faces_words(acc) if (acc.get("skins") or acc.get("merged") or acc.get("missing")) else ""
+    if faces_said:
+        # the same account in one short line, for the result screen (the whole sentence is in the plan words)
+        extra["faces_short"] = faces_short(acc)
     return {**extra,
         "title": "FEA mesh",
         "summary": (f"{cells:,} quadratic tetrahedra (10-node), a solid mesh"

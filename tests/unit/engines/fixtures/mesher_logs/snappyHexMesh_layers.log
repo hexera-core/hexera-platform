@@ -1,0 +1,20 @@
+    Number of edges             : 6533417
+    Number of edges to retest   : 6533417
+    Number of intersected edges : 239822
+Calculated surface intersections in = 1.83 s
+
+Initial mesh : cells:2044453  faces:6533417  points:2494925  unbalance:0.00826969
+Cells per refinement level:
+    faces on cells with determinant < 0.001                : 0
+Detected 6 illegal faces (concave, zero area or negative cell pyramid volume)
+
+Before layer addition : cells:2044453  faces:6500377  points:2462888  unbalance:0.00826969
+Ideal layer addition : cells:3.08262e+06  unbalance:0.599383
+
+Shrinking and layer addition phase
+Edge intersection testing:
+    Number of edges             : 8515391
+    Number of edges to retest   : 0
+    Number of intersected edges : 934208
+Mesh with layers : cells:2679296  faces:8515391  points:3208544  unbalance:0.240347
+

@@ -177,6 +177,9 @@ def _relay_progress(bucket, progress_key: str, seen: dict) -> bool:
 #: never heard from (booting, or a runner that writes no beacon) is waited for to the deadline, as before.
 WAIT_STALL_S = 900 + 300
 
+#: How often a quiet remote stage is re-said as "Still ... · N min" on the run's live line.
+BEAT_S = 120
+
 
 def _poll_gcs_json(bucket, key: str, deadline_s: float, progress_key: str | None = None,
                    stall_s: float = WAIT_STALL_S, start_s: float | None = None,
@@ -188,6 +191,12 @@ def _poll_gcs_json(bucket, key: str, deadline_s: float, progress_key: str | None
     start = time.time()
     seen: dict = {}
     heard_at: float | None = None
+    beat_at = start
+    from meshpipeline.contracts import mesh_progress
+    if progress_key:
+        # until the remote's beacon speaks (a VM boots and pulls its image first), the user is told
+        # what is happening now, not left on the last stage the worker reached
+        mesh_progress.report({"key": "starting", "label": "getting the mesher ready"})
     while True:
         if blob.exists():
             return json.loads(blob.download_as_bytes())
@@ -205,6 +214,10 @@ def _poll_gcs_json(bucket, key: str, deadline_s: float, progress_key: str | None
         if reason:
             raise _Abandoned(reason)
         now = time.time()
+        if progress_key and now - beat_at >= BEAT_S:
+            # THE HEARTBEAT: a long stage with no new word from the remote still moves the page
+            beat_at = now
+            mesh_progress.beat()
         silent = heard_at is None or now - heard_at >= stall_s
         if silent and heard_at is not None and seen.get("pulses"):
             # heard, pulsing, then nothing for stall_s: the remote is GONE (its machine went away)
@@ -689,6 +702,8 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         ws = Path(workspace)
         bucket = storage_client().bucket(bucket_name)
         if submit:
+            from meshpipeline.contracts import mesh_progress
+            mesh_progress.report({"key": "uploading", "label": "sending the part to the mesh machine"})
             in_blob = bucket.blob(in_key, chunk_size=_UPLOAD_CHUNK_BYTES)
             in_blob.upload_from_string(_tar_dir(ws), content_type="application/gzip",
                                        timeout=_UPLOAD_TIMEOUT_S)

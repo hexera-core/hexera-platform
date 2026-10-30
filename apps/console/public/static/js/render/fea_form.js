@@ -362,7 +362,7 @@ export function followClean(root, f) {
   const blocked = f.single_part_only || "";
   let box = root.querySelector(".fea-blocked");
   if (blocked && !box) {
-    const acts = root.querySelector(".gc-tools") || root.querySelector(".gc-actions");
+    const acts = root.querySelector(".fea-q") || root.querySelector(".gc-actions");
     if (acts) acts.insertAdjacentHTML("beforebegin", `<div class="fea-blocked" role="alert">${esc(blocked)}</div>`);
     box = root.querySelector(".fea-blocked");
     moved = true;
@@ -390,7 +390,6 @@ export function feaPanelHtml(f, p) {
       ${measureHtml(f.measure, p)}
       ${assemblyHtml(f.assembly)}
       ${blocked ? `<div class="fea-blocked" role="alert">${esc(blocked)}</div>` : ""}
-      <div class="gc-tools"><button class="gc-measure v-btn" type="button" title="measure between two points on the part">Measure</button><span class="gc-tools-hint">click two points to check a length</span></div>
       <p class="fea-q">${esc(f.question || "Is this your part and are the units right?")}</p>
       <div class="gc-actions"><button class="gc-proceed" type="button"${blocked ? " disabled" : ""}>Yes, proceed</button>
         <span class="gc-hint">${blocked ? esc(f.way_out || "Upload a single part to go on.") : "Change the unit first if the size is wrong."}</span></div>

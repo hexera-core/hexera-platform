@@ -16,14 +16,16 @@ import { getSurface } from "../api/endpoints.js";
 import { headers } from "../api/client.js";
 import { acceptMesh, flagDispute } from "./dispute.js";
 import { VIEWER_FALLBACK } from "./config.js";
-import { roundNumbers } from "../render/outcome.js";
-import { bindFreshDownloads, downloadAttrs } from "../render/download.js";
-import { MOUSE_HINT, bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
+import { bindFreshDownloads } from "../render/download.js";
+import { MOUSE_HINT, UP_AXES, VIEW_PRESETS, bindMouse, isUpAxis, orient, presetView, saveUp, savedUp, shield, upVector } from "./view_controls.js";
+// the floating toolbar (View, Section, Parts, Measure, Snapshot) and the part's theme colours
+import { ICONS, axesHtml, bindSeg, bindToolbar, cssRgb, drawAxes, optRow, savePng, segHtml, snapshotPng, themeRgb, toolbarHtml } from "./toolbar.js";
 // a delivered thermal model (an ECXML upload) is read part by part, with slices and its own files
 import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml } from "./thermal_results.js";
 // a delivered FEA mesh (a structural solid) is read face by face, with its quality against each
 // solver limit, its plan and its hot spots (FEA build step 5)
-import { bindFeaResults, feaDownloads, feaResultsHtml } from "./fea_results.js";
+import { bindFeaResults, feaResultsHtml } from "./fea_results.js";
+import { bindResultPanel, cfdPastLimit, downloadsHtml, hotSpotsHtml, keyNumbers, keyNumbersHtml, notesHtml, verdictHtml, verdictOf } from "./result_panel.js";
 
 let _vtkP=null;
 function loadVtk(){if(window.vtk)return Promise.resolve();
@@ -39,115 +41,112 @@ function b64u8(b){const bin=atob(b),n=bin.length,u=new Uint8Array(n);
   for(let i=0;i<n;i++)u[i]=bin.charCodeAt(i);return u;}
 function b64u32(b){return new Uint32Array(b64u8(b).buffer);}
 
-/* geometry fills: a warm drawing-office grey, each patch a step of tint so the parts read
-   apart without shouting; the ORANGE selection is never ambiguous against any of them */
-const _PATCH_COLS=[[0.80,0.78,0.72],[0.64,0.77,0.75],[0.83,0.76,0.60],
-                   [0.72,0.72,0.70],[0.66,0.71,0.73],[0.76,0.70,0.66]];
+/* geometry fills: a mid-tone grey, each patch a step of tint so the parts read apart without
+   shouting; the ORANGE selection and the edges stand out on every one of them. The values come
+   from the theme (tokens.css --part-body, --part-tint-1..5), so a new theme recolours the part;
+   these are only the fallback. The material is matte: little ambient, little shine. */
+const _PATCH_FALLBACK=[[0.49,0.51,0.54],[0.44,0.53,0.51],[0.54,0.51,0.45],
+                       [0.45,0.49,0.55],[0.52,0.48,0.53],[0.48,0.52,0.46]];
+function patchColours(){
+  return _PATCH_FALLBACK.map((c,i)=>themeRgb(i?`--part-tint-${i}`:'--part-body',c));}
+const _AMB=0.22,_DIF=0.80,_SPEC=0.06;
 const _EDGE=[0.27,0.25,0.22];          /* hairline edges at rest */
 /* darker while the faces carry colour, so every cell still reads against the data (the original
    heatmap's edge, lightened with the calm end of its scale so a whole part does not read dark) */
 const _EDGE_HEAT=[0.24,0.23,0.22];
 const _SEL=[1.0,0.31,0.0],_SEL_EDGE=[0.62,0.22,0.02];
 const HEAT_HINT='Click a face to see its numbers · Drag still rotates';
+const MEASURE_HINT='Click two points on the part · Drag still rotates';
+// the page's own controls laid over the canvas: a click on one is never a click on the part
+const ON_CANVAS_UI='.v-pin,.v-legend,.v-probe,.v-heatctl,.vt,.v-ov,.v-picked,.v-mlabel';
 const _SEL_COLS=['#e8613c','#f2c744','#3fa650','#3f7fd9','#b455c8','#38c2c2'];
 
-/* THE REVIEW'S POINTS, one per row. A point arrives as one string - "Important: Cells degrade
-   where ..." or "Reviewer note: Wall layers: 4.71 of 5 ..." - so its lead word becomes a tag and
-   its label leads the row; long decimals are printed as an engineer would (71.0953 -> 71.1). */
-function reviewList(items){
-  const rows=(items||[]).map(x=>String(x||'').trim()).filter(Boolean).map(t=>{
-    const imp=/^important\s*[:-]\s*/i.test(t);
-    const body=t.replace(/^important\s*[:-]\s*/i,'').replace(/^reviewer note:\s*/i,'');
-    return `<li class="oc-row${imp?' important':''}">${imp?'<span class="oc-tag">Important</span>':''}`
-      +`<span class="oc-txt">${esc(roundNumbers(body))}</span></li>`;}).join('');
-  return rows?`<ul class="oc-list v-concern-list">${rows}</ul>`:'';
-}
 /* the reviewer's full reasoning, whole and folded away - it used to be cut at 600 characters */
 function reasonDetails(text){
   const t=String(text||'').trim();
   return t?`<details class="oc-more"><summary>Why the reviewer said this</summary><p>${esc(t)}</p></details>`:'';
 }
 
+/* THE TOOLS ON THE CANVAS: one toolbar floating at the top - View, Section, Parts, Measure,
+   Snapshot - each opening one small overlay; the axes in the corner; the part the user picked as
+   a small chip along the bottom. Every control a tool needs is in its overlay, so nothing is a
+   column of buttons beside the part. */
+function viewerToolsHtml(job,upAxis){
+  const upOpts=UP_AXES.map(([v,l])=>`<option value="${v}"${v===upAxis?' selected':''}>${l}</option>`).join('');
+  const view=`<div class="vo-list">
+      <button type="button" class="vo-item" id="v-fitbtn-${job}">Fit to screen<span class="vo-kbd">F</span></button>
+      <button type="button" class="vo-item" id="v-fitall-${job}" hidden>Fit all<span class="vo-kbd">ground and all</span></button>
+      ${Object.entries(VIEW_PRESETS).map(([k,v])=>`<button type="button" class="vo-item" data-view="${k}">${v.label}</button>`).join('')}
+    </div>
+    ${optRow('Up',`<select class="vo-select" id="v-up-${job}" aria-label="Which axis points up">${upOpts}</select>`)}
+    ${optRow('Camera',segHtml('camera',[['persp','Perspective'],['flat','Flat']],'persp','Camera'))}
+    ${optRow('Axes',segHtml('axes',[['on','On'],['off','Off']],'on','Axes'))}`;
+  const section=`${optRow('Cut across',segHtml('cut-axis',[['x','X'],['y','Y'],['z','Z']],'x','Cut across'))}
+    ${optRow('Where',`<input type="range" class="vo-range" id="v-cut-at-${job}" min="0" max="100" value="50" aria-label="Where the cut is">`)}
+    <div class="vo-foot"><button type="button" class="vo-pill" id="v-cut-on-${job}" aria-pressed="false">Section off</button>
+      <button type="button" class="vo-pill" id="v-cut-flip-${job}">Flip</button></div>`;
+  const parts=`<label class="vo-search">${ICONS.search}<input type="search" id="v-parts-q-${job}" placeholder="Find a part" aria-label="Find a part" autocomplete="off"></label>
+    <div class="vo-h"><span id="v-bnd-count-${job}">Parts</span><button type="button" class="vo-link" id="v-bnd-restore-${job}">Show all</button></div>
+    <div class="vo-rows" id="v-bnd-chips-${job}"></div>
+    <div class="vo-h"><span>Show</span></div>
+    ${optRow('Surface',segHtml('surface',[['solid','Solid'],['edges','Solid + edges'],['wire','Wire']],'edges','Surface'))}
+    <div class="vo-colour-row" hidden><div class="vo-h"><span>Colour by</span></div>
+      <div class="vo-list" id="v-colour-${job}" role="group" aria-label="Colour by"></div></div>
+    <p class="vo-note">Click a part to find it. Esc closes.</p>`;
+  const measure=`<p class="vo-tag">Distance between two points</p>
+    ${optRow('Distance',`<span class="vo-num" id="v-meas-val-${job}">-</span>`)}
+    <div class="vo-foot"><span class="vo-note" id="v-meas-note-${job}">Click two points on the part.</span>
+      <button type="button" class="vo-pill" id="v-meas-clear-${job}">Clear</button></div>`;
+  const snapshot=`${optRow('Background',segHtml('snap-bg',[['scene','Scene'],['transparent','Transparent'],['white','White']],'scene','Background'))}
+    ${optRow('Size',segHtml('snap-scale',[['1','1×'],['2','2×'],['4','4×']],'2','Size'))}
+    ${optRow('Colour bar',segHtml('snap-bar',[['yes','Include'],['no','Leave out']],'yes','Colour bar'),{cls:'vo-snap-bar',hidden:true})}
+    <button type="button" class="vo-save" id="v-snap-save-${job}">Save picture</button>`;
+  return toolbarHtml('v-'+job,[{key:'view',body:view},{key:'section',body:section},{key:'parts',body:parts},
+                               {key:'measure',body:measure},{key:'snapshot',body:snapshot}])
+    +axesHtml('v-axes')
+    // the measured line is drawn over the part, so it still shows where it passes behind a face
+    +`<svg class="v-mline" aria-hidden="true" hidden><line x1="0" y1="0" x2="0" y2="0"/></svg>`
+    +`<div class="v-picked" id="v-picked-${job}" role="status" hidden>
+        <span class="vp-n"></span><span class="vp-t"></span>
+        <button type="button" class="vp-b" data-a="iso" aria-pressed="false">Show only this</button>
+        <button type="button" class="vp-b" data-a="hide">Hide</button>
+        <button type="button" class="vp-x" data-a="clear" aria-label="Clear the pick">${ICONS.close}</button></div>`;
+}
+
 export async function openViewer(job,anchorEl,opts){
   opts=opts||{};
   if(document.getElementById('viewer-'+job)){document.getElementById('viewer-'+job).scrollIntoView({behavior:'smooth'});return;}
   const box=document.createElement('div');box.className='viewer';box.id='viewer-'+job;
-  const _m=opts.metrics||{};
-  const _dl=(opts.files||[]).filter(f=>f.type!=='video');
-  // the case the user asked for leads; the previews follow it
-  const _dlHtml=_dl.slice().sort((a,b)=>(b.type==='mesh_bundle')-(a.type==='mesh_bundle')).map(f=>{
-      const primary=f.type==='mesh_bundle'?' primary':'';
-      return `<a class="v-dlbtn${primary}" href="${esc(f.url||'#')}"${downloadAttrs(job,f)} download target="_blank" rel="noopener">
-                <b>${esc(f.label||f.type)}</b><span>${fmtBytes(f.size)}</span></a>`;}).join('');
+  // THE RESULT SCREEN (revamp 5/5) reads top to bottom the way a glance does: is it good, how big
+  // and how good, take it away, then two folded lists. Everything long is in the Mesh report.
+  const notesFor=(fea,extra=[])=>{
+    const fromRun=(opts.withNotes||[]).length||(opts.concerns||[]).length;
+    // a mesh opened without the run's own notes still lists the figures past a limit, in the server's words
+    const feaRows=!fromRun&&fea&&fea.check?(fea.check.rows||[]).filter(r=>r.ok===false).map(r=>r.words||r.label):[];
+    return notesHtml([
+      {kind:'Why it was not signed off',items:opts.unreviewed?(opts.findings||[]):[],serious:true},
+      {kind:'Points to weigh',items:opts.concerns||[],serious:true},
+      {kind:'Past a limit',items:(opts.withNotes||[]).concat(feaRows,extra)},
+      {kind:'Reviewer notes',items:opts.notes||[]}],
+      opts.concerns||opts.unreviewed?reasonDetails(opts.reasoning):'');};
   const upAxis=savedUp('job',job)||'+z';
-  // THE PANEL READS TOP TO BOTTOM the way the result is used: the verdict and the download, the
-  // mesh's own figures, its parts, and last the way to ask for a change - beside the marks it sends.
   box.innerHTML=`<div class="v-bar">
-      <div class="v-sec v-head">
-        <div class="v-row v-titlerow">
-          <b class="v-title">${opts.unreviewed?'Mesh - not signed off':'Your mesh'}</b>
-          <span class="v-meta">
-            ${opts.unreviewed
-              ? `<span class="v-pill fail">DID NOT PASS REVIEW</span>`
-              : opts.concerns
-              ? `<span class="v-pill concerns">DELIVERED WITH CONCERNS</span>`
-              : opts.withNotes
-              ? `<span class="v-pill concerns">PASSED, WITH NOTES</span>`
-              : (_m.pass!==undefined?`<span class="v-pill${_m.pass?'':' fail'}">${_m.pass?'PASS':'FAIL'}</span>`:'')}
-            ${_m.attempts?`<span class="sep">·</span><span>${_m.attempts} attempt${_m.attempts!==1?'s':''}</span>`:''}
-          </span>
-        </div>
+      <div class="v-sec v-head rp-head">
+        ${verdictHtml(verdictOf(opts))}
+        <div class="rp-keys-host" id="v-keys-${job}">${keyNumbersHtml(keyNumbers({},opts))}</div>
         <div class="v-row"><span class="v-status" id="v-status-${job}">loading…</span></div>
       </div>
       ${opts.unreviewed?`<div class="v-why">
-        <p class="v-why-h">Sound, but not signed off</p>
-        <p class="v-why-p">The mesh passed every validity check, so it will solve. The reviewer did
-        not sign it off on quality${(opts.findings||[]).length?':':'.'}</p>
-        ${reviewList(opts.findings)}
-        ${reasonDetails(opts.reasoning)}
-        <div class="v-why-act">
-          Look at it yourself. If it is good enough for your study, say so: it is checked again
-          against <i>your</i> standard and delivered.
-          <button class="v-btn primary" id="v-accept-${job}">This is acceptable →</button>
-        </div></div>`:''}
-      ${opts.withNotes&&opts.withNotes.length?`<div class="v-why v-concerns">
-        <p class="v-why-h">Passed, with notes</p>
-        <p class="v-why-p">The mesh is valid and passed every check that decides a run. These figures are
-        past a limit, listed so you can weigh them:</p>
-        ${reviewList(opts.withNotes)}
+        <p class="v-why-p">Look at it yourself. If it is good enough for your study, say so: it is checked
+        again against <i>your</i> standard and delivered.</p>
+        <div class="v-why-act"><button class="v-btn primary" id="v-accept-${job}">This is acceptable →</button></div>
         </div>`:''}
-      ${opts.concerns?`<div class="v-why v-concerns">
-        <p class="v-why-h">Points to weigh</p>
-        <p class="v-why-p">The mesh passed every validity check, so it is sound, will solve and is
-        yours. Look at these before you rely on the results:</p>
-        ${reviewList(opts.concerns)}
-        ${reasonDetails(opts.reasoning)}
-        </div>`:''}
-      ${(opts.notes||[]).length?`<div class="v-why v-notes">
-        <p class="v-why-h">Reviewer notes</p>
-        <p class="v-why-p">An AI reviewer looked at the mesh. Its notes are for you to weigh; they
-        do not decide the result.</p>
-        ${reviewList(opts.notes)}
-        </div>`:''}
-      <div class="v-sec v-dl">${_dlHtml}</div>
-      <div class="v-thermal" id="v-thermal-${job}"></div>
+      <div class="v-sec v-dl">${downloadsHtml(job,opts.files||[])}</div>
       <div class="v-fea" id="v-fea-${job}"></div>
+      <div class="v-sec rp-lists" id="v-lists-${job}"><div class="rp-notes-host" id="v-notes-${job}">${notesFor(null)}</div>
+        <div class="rp-spots-host" id="v-spots-${job}"></div></div>
+      <div class="v-thermal" id="v-thermal-${job}"></div>
       <div class="v-facts" id="v-facts-${job}"></div>
-      <!-- MESH PARTS: every selectable entity the loaded case actually declares -
-           boundary patches, regions, cell zones, face zones, layer groups. The list
-           is read from the mesh payload, so a part appears because the case has it. -->
-      <div class="v-bnd" id="v-bnd-${job}">
-        <div class="v-bnd-head">
-          <span class="v-bnd-lbl">Mesh parts</span>
-          <span class="v-bnd-count" id="v-bnd-count-${job}"></span>
-          <span style="flex:1"></span>
-          <button class="v-bnd-act v-quiet" id="v-bnd-restore-${job}">Restore full mesh</button>
-        </div>
-        <div class="v-bnd-cols">
-          <div class="v-bnd-list" id="v-bnd-chips-${job}"></div>
-          <div class="v-bnd-insp" id="v-bnd-note-${job}"></div>
-        </div>
-      </div>
       <div class="v-sec v-review">
         <div class="v-sec-h">Changes</div>
         <div class="v-row">
@@ -164,13 +163,39 @@ export async function openViewer(job,anchorEl,opts){
       </div></div>
     <div class="v-canvas" id="v-canvas-${job}">
       <div class="v-loading" id="v-load-${job}"><svg class="v-spin" viewBox="0 0 24 24" aria-hidden="true"><circle class="sp-arm" cx="12" cy="12" r="7.2"/><path class="sp-hd" d="M19.20 8.16L22.40 14.56L16.00 14.56Z"/><path class="sp-hd" d="M4.80 15.84L1.60 9.44L8.00 9.44Z"/></svg><div>Loading mesh…</div></div>
-      <div class="v-tools">${upSelectHtml('v-up-'+job,upAxis)}<button class="v-btn v-tool" id="v-fitbtn-${job}" type="button" title="Frame the whole mesh">Fit</button></div>
+      ${viewerToolsHtml(job,upAxis)}
       <div class="v-hint" id="v-hint-${job}">${MOUSE_HINT}</div>
       <div class="v-count" id="v-count-${job}"></div></div>
     <div class="v-flags" id="v-flags-${job}" style="display:none"></div>`;
   // each Download click asks the API for a fresh link, so one read long after the page loaded -
   // or a large file's retry - never meets an expired one
   bindFreshDownloads(box);
+  bindResultPanel(box,job,{fetchReport:async j=>{
+    const r=await fetch(`/api/v1/simulation/${j}/report.html`,{headers:headers()});
+    if(!r.ok)throw new Error('report '+r.status);
+    return r.blob();}});
+  // once the mesh is read: its key numbers, and for an FEA mesh its notes and its hot spots by kind
+  const fillResult=(surf)=>{
+    const keys=document.getElementById('v-keys-'+job);
+    if(keys)keys.innerHTML=keyNumbersHtml(keyNumbers(surf||{},opts));
+    const fea=surf&&surf.fea;
+    if(!fea){
+      // a CFD figure past its limit is a note, as the Mesh report says (dev-areen 2026-10-30: the
+      // screen said "Passed." with the non-orthogonality in orange, the report "Passed with notes")
+      const past=cfdPastLimit(surf);if(!past.length)return;
+      const notes=document.getElementById('v-notes-'+job);if(notes)notes.innerHTML=notesFor(null,past);
+      const head=box.querySelector('.rp-verdict');
+      if(head)head.outerHTML=verdictHtml(verdictOf({...opts,withNotes:(opts.withNotes||[]).concat(past)}));
+      return;}
+    const notes=document.getElementById('v-notes-'+job);if(notes)notes.innerHTML=notesFor(fea);
+    const head=box.querySelector('.rp-verdict');
+    if(head)head.outerHTML=verdictHtml(verdictOf(opts,fea));
+    const host=document.getElementById('v-spots-'+job),spots=fea.hot_spots||[];
+    if(!host||!spots.length)return;
+    host.innerHTML=hotSpotsHtml(spots);
+    const dbg=()=>(window._vdbg||{})[job+':fea']||{};
+    bindResultPanel(host,job,{spots,point:at=>dbg().point&&dbg().point(at),
+                              isolate:face=>dbg().isolate&&dbg().isolate(face)});};
   // THE MESH TAKES THE STAGE. With a workbench on the page the delivered mesh fills it and the
   // conversation becomes the drawer beside it; an earlier result stays in the DOM, hidden, so
   // its context is not torn down under a still-running render. Without one (an embedding
@@ -204,6 +229,7 @@ export async function openViewer(job,anchorEl,opts){
       if(cr&&cr.ok)Object.assign(uiCfg,(await cr.json()).viewer||{});
       const surf=await getSurface(job);
       initViewer(job,surf,uiCfg);
+      fillResult(surf);
       document.getElementById('v-load-'+job)?.remove();
     }catch(e){
       // SAY WHY. A copy of the delivered-mesh figures block used to sit here, pasted into the
@@ -224,7 +250,9 @@ export async function openViewer(job,anchorEl,opts){
 
 function initViewer(job,surf,uiCfg){
   const host=document.getElementById('v-canvas-'+job);
-  const grw=vtk.Rendering.Misc.vtkGenericRenderWindow.newInstance({background:[0.035,0.055,0.075]});
+  // the scene is the theme's viewer canvas, so the part sits on the same black as the page
+  const sceneBg=themeRgb('--viewer-canvas',[0.035,0.055,0.075]);
+  const grw=vtk.Rendering.Misc.vtkGenericRenderWindow.newInstance({background:sceneBg});
   grw.setContainer(host);
   const ren=grw.getRenderer(),rw=grw.getRenderWindow();
   const apiRW=grw.getApiSpecificRenderWindow?grw.getApiSpecificRenderWindow():grw.getOpenGLRenderWindow();
@@ -235,6 +263,7 @@ function initViewer(job,surf,uiCfg){
 
   /* one IMMUTABLE actor per patch - real polygon cells */
   const entries=[];let totalFaces=0;
+  const _PATCH_COLS=patchColours();
   (surf.patches||[]).forEach((p,i)=>{
     let pts,polys,nCells;
     if(p.polys_b64){pts=b64f32(p.points_b64);polys=b64u32(p.polys_b64);
@@ -256,8 +285,8 @@ function initViewer(job,surf,uiCfg){
     const pr=actor.getProperty();
     pr.setColor(base[0],base[1],base[2]);
     pr.setEdgeVisibility(true);pr.setEdgeColor(_EDGE[0],_EDGE[1],_EDGE[2]);pr.setLineWidth(1);
-    pr.setAmbient(0.30);pr.setDiffuse(0.78);
-    pr.setSpecular(0.10);pr.setSpecularPower(18);pr.setSpecularColor(1,1,1);
+    pr.setAmbient(_AMB);pr.setDiffuse(_DIF);
+    pr.setSpecular(_SPEC);pr.setSpecularPower(18);pr.setSpecularColor(1,1,1);
     // DOUBLE-SIDED. An OpenFOAM boundary face points out of the FLUID, so a car's wall faces point
     // into the car; with back faces culled the near side vanished and the viewer drew the inside of
     // the body (a car read as an open tray). The depth test does the hiding instead.
@@ -287,8 +316,44 @@ function initViewer(job,surf,uiCfg){
   // with no choice stored for this job, the way up the geometry check proposed (surf.up_axis)
   if(upSel&&!savedUp('job',job)&&isUpAxis(surf.up_axis))upSel.value=surf.up_axis;
   orient(cam,(upSel&&upSel.value)||'+z',VIEW_DIR);
-  ren.resetCamera();rw.render();
+  // one render for the opening view (below, once it is framed): a big model drawn twice in a row
+  // held the page past a headless browser's patience
+  ren.resetCamera();
   const _bs=ren.computeVisiblePropBounds();
+  /* FRAMED ON THE PART. A CFD case's ground is a flat patch many body lengths across: a fit on
+     everything shown opened on the ground with the body a speck (dev-areen 2026-10-30, an Ahmed
+     body). The view frames the part - every shown patch but a flat one far bigger than the rest -
+     and the ground stays drawn around it; "Fit all" takes in everything shown. Read from the
+     patches' own shapes, never their names. */
+  function partBounds(){
+    if(surf.fea||surf.thermal)return null;
+    const vis=entries.filter(e=>e.actor.getVisibility());
+    const ext=e=>{const b=e.pd.getBounds();return [b[1]-b[0],b[3]-b[2],b[5]-b[4]];};
+    const union=list=>{const b=[Infinity,-Infinity,Infinity,-Infinity,Infinity,-Infinity];
+      list.forEach(e=>{const a=e.pd.getBounds();for(let k=0;k<6;k+=2){b[k]=Math.min(b[k],a[k]);b[k+1]=Math.max(b[k+1],a[k+1]);}});
+      return b;};
+    const span=b=>Math.hypot(b[1]-b[0],b[3]-b[2],b[5]-b[4]);
+    const flatBig=vis.filter(e=>{const x=ext(e).sort((a,c)=>a-c);
+      if(!(x[2]>0)||x[0]>1e-3*x[2])return false;
+      const rest=vis.filter(o=>o!==e);
+      return rest.length>0&&Math.hypot(...x)>=3*span(union(rest));});
+    const keep=vis.filter(e=>!flatBig.includes(e));
+    return flatBig.length&&keep.length?union(keep):null;}
+  const fitAllBtn=document.getElementById('v-fitall-'+job);
+  // frame the part (or everything shown when there is no ground to set aside); the clipping range
+  // still takes in all that is shown, so the ground is drawn to its edge
+  function frameCam(all){
+    const pb=all?null:partBounds();
+    if(fitAllBtn)fitAllBtn.hidden=!(all||pb);
+    if(pb){ren.resetCamera(pb);
+      // resetCamera fits the part's sphere to the view's HEIGHT: in a canvas narrower than it is tall
+      // the part ran off both sides (dev-areen 2026-10-30, job c92c4240). Step back by the shortfall.
+      const s=apiRW.getSize&&apiRW.getSize();
+      if(s&&s[0]>0&&s[1]>s[0]){const k=s[1]/s[0];
+        if(cam.getParallelProjection())cam.setParallelScale(cam.getParallelScale()*k);else cam.dolly(1/k);}}
+    else ren.resetCamera();
+    ren.resetCameraClippingRange();}
+  frameCam();rw.render();
   const diag=Math.max(Math.hypot(_bs[1]-_bs[0],_bs[3]-_bs[2],_bs[5]-_bs[4]),1e-9);
   // The viewer renders the BOUNDARY surface, so `totalFaces` is boundary faces - not
   // cells. Say the real cell count when the backend knows it, and name what we counted
@@ -297,14 +362,22 @@ function initViewer(job,surf,uiCfg){
     surf.cell_count?surf.cell_count.toLocaleString()+' cells'
                    :totalFaces.toLocaleString()+' boundary faces';
 
-  document.getElementById('v-fitbtn-'+job).onclick=()=>{ren.resetCamera();clampCam();rw.render();};
+  function fit(){frameCam();clampCam();ren.resetCameraClippingRange();rw.render();}
+  document.getElementById('v-fitbtn-'+job).onclick=fit;
+  // the zoom-out stop learns the distance everything needs, as the parts panel's refit does
+  if(fitAllBtn)fitAllBtn.onclick=()=>{_clamping=true;
+    try{frameCam(true);const f=cam.getFocalPoint(),q=cam.getPosition();
+      _refitDist=Math.max(_refitDist,Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||0);}
+    finally{_clamping=false;}
+    clampCam();ren.resetCameraClippingRange();rw.render();};
   // WHICH WAY IS UP: turn the camera to the chosen axis, re-frame, and remember it for this job
   function setUp(axis){
-    orient(cam,axis,VIEW_DIR);ren.resetCamera();clampCam();rw.render();
+    orient(cam,axis,VIEW_DIR);frameCam();clampCam();ren.resetCameraClippingRange();rw.render();
     if(upSel&&upSel.value!==axis)upSel.value=axis;
     saveUp('job',job,axis);}
   if(upSel)upSel.onchange=()=>setUp(upSel.value);
-  shield(host.querySelector('.v-tools'));
+  // a press or a scroll on the toolbar, an overlay or the picked chip is not an orbit or a zoom
+  host.querySelectorAll('.vt,.v-ov,.v-picked').forEach(shield);
 
  /* camera envelope: adaptive zoom caps computed from the real cells
      Full fidelity always - edges always on, full resolution. Instead of
@@ -357,6 +430,9 @@ function initViewer(job,surf,uiCfg){
       const r=capRange();
       const k=d<r[0]?r[0]/d:(d>r[1]?r[1]/d:1);
       if(k!==1)cam.setPosition(f[0]+vx*k,f[1]+vy*k,f[2]+vz*k);
+      // a camera the clamp moved keeps the part between its near and far planes: a mesh of a few
+      // large cells (its zoom-in stop is past the fit distance) otherwise opened with nothing drawn
+      if(k!==1||dx||dy||dz)ren.resetCameraClippingRange();
     }finally{_clamping=false;}}
 
  /* region markers: one click = one concern
@@ -373,6 +449,11 @@ function initViewer(job,surf,uiCfg){
   const units=surf.mesh_units||'m';
   const flags=[];              // {x,y,z,span,patch,note,col,actors:[..],el}
   let markMode=false,downXY=null,_colorSeq=0,_lastR=0;
+  // THE TOOLBAR'S STATE, declared before the frame loop below reads it: the toolbar itself, the
+  // two-point measurement, the axes in the corner, and the colour bar a snapshot can carry
+  let tb=null,measuring=false,measureLabel=null,axesOn=true,barSpec=null,onMetric=null,heatApi=null;
+  const measurePts=[],measureActors=[];
+  const axesEl=host.querySelector('.v-axes'),mlineEl=host.querySelector('.v-mline');
 
 /* /
      BOUNDARY SELECTION - operate on the patch actors that already exist.
@@ -396,12 +477,16 @@ function initViewer(job,surf,uiCfg){
      (regions, cell shape groups, slice planes) are listed and inspectable, and
      say so rather than pretending to be renderable.
 / */
+  // THE SURFACE STYLE (Parts > Show) and the way a click on the part picks it: both are the parts
+  // panel's, set from the toolbar
+  let surfaceMode='edges',selectPart=null;
   (function meshParts(){
-    const chips=document.getElementById('v-bnd-chips-'+job);
-    if(!chips)return;
-    const bRest =document.getElementById('v-bnd-restore-'+job),
-          cntEl =document.getElementById('v-bnd-count-'+job),
-          note  =document.getElementById('v-bnd-note-'+job);
+    const rowsEl=document.getElementById('v-bnd-chips-'+job);
+    if(!rowsEl)return;
+    const bRest=document.getElementById('v-bnd-restore-'+job),
+          cntEl=document.getElementById('v-bnd-count-'+job),
+          qEl=document.getElementById('v-parts-q-'+job),
+          chip=document.getElementById('v-picked-'+job);
 
     const actorOf={};entries.forEach(en=>{actorOf[en.patch]=en;});
 
@@ -429,7 +514,7 @@ function initViewer(job,surf,uiCfg){
     const KIND=thermal
       // a thermal model's regions are the file's parts, its boundary the sides of the air box
       ?{boundary:'Sides of the air box',region:'Parts',cellGroup:'Cell types',inspection:'Slices'}
-      :{boundary:'Boundary patches',region:'Regions',cellGroup:'Cell types',
+      :{boundary:'Patches',region:'Regions',cellGroup:'Cell types',
         inspection:'Inspection structures'};
     // a thermal model's slices are drawn from the thermal panel, so they are not listed twice
     if(thermal)parts=parts.filter(p=>p.kind!=='inspection');
@@ -439,14 +524,15 @@ function initViewer(job,surf,uiCfg){
     // A part the backend opens HIDDEN is one that encloses everything else: shown
     // solid it is a wall of colour with the body trapped inside. It opens hidden AND
     // translucent, so one click brings it back as a shell you can see through. The
-    // BACKEND decides which parts those are - from the case's own declared roles -
-    // and "Restore full mesh" returns to exactly that.
+    // BACKEND decides which parts those are - from the case's own declared roles.
     const dflt=p=>({hidden:!!(p.renderable&&p.hiddenByDefault),
                     opacity:p.hiddenByDefault?0.18:1});
     const st={};parts.forEach(p=>{
       const en=actorOf[p.entity],d=dflt(p);
       st[p.id]={hidden:d.hidden,opacity:d.opacity,entity:p.entity,
-                base:en?en.actor.getProperty().getColor().slice():null};});
+                // the colour SET on the part: getColor() is the lit mix with the white shine,
+                // and painting that back lightened every part a step
+                base:en?en.actor.getProperty().getDiffuseColor().slice():null};});
     let sel=null,isolated=false;
 
     // Re-frame on what is VISIBLE. Without this, hiding the enclosing outer
@@ -457,7 +543,7 @@ function initViewer(job,surf,uiCfg){
     // clamp once against the widened envelope.
     function refit(){try{
         _clamping=true;
-        ren.resetCamera();
+        frameCam();
         const f=cam.getFocalPoint(),q=cam.getPosition();
         _refitDist=Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||0;
         _clamping=false;
@@ -473,100 +559,90 @@ function initViewer(job,surf,uiCfg){
         const pr=en.actor.getProperty(),isSel=!!(selPart&&selPart.entity===en.patch);
         en.actor.setVisibility(!sliceOn&&!s.hidden&&(!isolated||isSel));
         pr.setOpacity(s.opacity);
+        // Solid, Solid + edges, or Wire (Parts > Show > Surface)
+        pr.setEdgeVisibility(surfaceMode!=='solid');
+        if(surfaceMode==='wire')pr.setRepresentationToWireframe();else pr.setRepresentationToSurface();
         if(isSel){pr.setColor(_SEL[0],_SEL[1],_SEL[2]);
                   pr.setEdgeColor(_SEL_EDGE[0],_SEL_EDGE[1],_SEL_EDGE[2]);pr.setAmbient(0.40);}
         else{pr.setColor(s.base[0],s.base[1],s.base[2]);
-             pr.setEdgeColor(edgeCol[0],edgeCol[1],edgeCol[2]);pr.setAmbient(0.30);}
+             pr.setEdgeColor(edgeCol[0],edgeCol[1],edgeCol[2]);pr.setAmbient(_AMB);}
       });
       rw.render();
-      chips.querySelectorAll('.v-bnd-chip').forEach(c=>{
-        const s=st[c.dataset.p];
-        c.classList.toggle('sel',c.dataset.p===sel);
-        c.classList.toggle('hidden-b',!!(s&&s.hidden));
-        const v=c.querySelector('.v-bnd-vis');
-        if(v)v.textContent=s&&s.hidden?'hidden':'';
+      rowsEl.querySelectorAll('.vo-row').forEach(r=>{
+        const s=st[r.dataset.p],off=!!(s&&s.hidden);
+        r.classList.toggle('sel',r.dataset.p===sel);
+        r.classList.toggle('off',off);
+        const eye=r.querySelector('.vo-eye');
+        if(eye){eye.setAttribute('aria-pressed',String(!off));eye.innerHTML=off?ICONS.eyeOff:ICONS.eyeOn;
+          eye.setAttribute('aria-label',(off?'Show ':'Hide ')+r.dataset.label);}
       });
-      note.innerHTML=inspect(selPart);
-      wire();
+      showChip(selPart);
       if(onPartsPainted)onPartsPainted();
     }
     repaintParts=paint;
 
-    // INSPECT - one part at a time: its OpenFOAM identity, its own statistics,
-    // and the controls that apply to IT. Nothing is on screen for a part the
-    // user has not selected, which is why the list stays a list.
-    function inspect(p){
-      if(!p){
-        const off=parts.filter(x=>x.renderable&&st[x.id].hidden).map(x=>x.label);
-        return `<div class="ins-empty">Select a part to inspect it.`
-          +`<span>${parts.length} selectable entities were read from this case.</span>`
-          +(off.length?`<span class="ins-off">Hidden: ${off.map(esc).join(', ')}</span>`:'')
-          +`</div>`;
-      }
-      const rend=p.renderable,s=st[p.id];
-      const rows=Object.entries(p.meta||{}).filter(([k])=>k!=='name'&&k!=='role')
-        .filter(([,v])=>v!==null&&v!==undefined)
-        .map(([k,v])=>`<div class="ins-cell"><dt class="ins-k">${esc(k.replace(/_/g,' '))}</dt>`
-          +`<dd class="ins-v">${esc(Array.isArray(v)?v.join(', ')
-             :(typeof v==='number'?v.toLocaleString():String(v)))}</dd></div>`).join('');
-      return `<div class="ins-top"><span class="ins-nm">${esc(p.label)}</span>
-          <span class="ins-badge">${esc(p.role||p.kind)}</span></div>
-        <dl class="ins-grid">
-          <div class="ins-cell"><dt class="ins-k">kind</dt>
-            <dd class="ins-v">${esc(kindLabel(p.kind))}</dd></div>
-          <div class="ins-cell"><dt class="ins-k">declared type</dt>
-            <dd class="ins-v">${esc(p.role||'-')}</dd></div>
-          ${rows}
-        </dl>
-        ${rend?`<div class="ins-acts">
-          <button class="v-bnd-act on" data-a="hl">Highlighted</button>
-          <button class="v-bnd-act${s.hidden?' on':''}" data-a="hide">${s.hidden?'Show':'Hide'}</button>
-          <button class="v-bnd-act${isolated?' on':''}" data-a="iso">Isolate</button>
-          <label class="v-bnd-op">Opacity
-            <input type="range" data-a="op" min="10" max="100" value="${Math.round(s.opacity*100)}">
-            <span>${Math.round(s.opacity*100)}%</span></label>
-        </div>`
-        :`<div class="ins-no">This entity is declared by the case but ships no surface
-            geometry in the viewer payload, so it is inspect-only here.</div>`}`;
+    // THE PICKED PART is a small chip along the bottom: what it is, its size, and the two things
+    // to do with it. Everything else the case says about it is in the chip's tooltip.
+    function showChip(p){
+      if(!chip)return;
+      chip.hidden=!p;
+      if(!p)return;
+      const md=p.meta||{},n=md.faces||md.cells;
+      const size=n?`${Number(n).toLocaleString()} ${md.faces?'face':'cell'}${Number(n)!==1?'s':''}`:'';
+      chip.querySelector('.vp-n').textContent=p.label;
+      chip.querySelector('.vp-t').textContent=p.renderable
+        ?[size,p.role&&p.role!==p.label?p.role:''].filter(Boolean).join(' · ')
+        :'Listed by the case, with no surface to show';
+      chip.title=Object.entries(md).filter(([k,v])=>k!=='name'&&v!==null&&v!==undefined&&v!=='')
+        .map(([k,v])=>`${k.replace(/_/g,' ')}: ${Array.isArray(v)?v.join(', '):(typeof v==='number'?v.toLocaleString():v)}`).join('\n');
+      const iso=chip.querySelector('[data-a=iso]'),hide=chip.querySelector('[data-a=hide]');
+      iso.hidden=hide.hidden=!p.renderable;
+      iso.setAttribute('aria-pressed',String(isolated));
+      iso.textContent=isolated?'Show everything':'Show only this';
+      hide.textContent=st[p.id].hidden?'Show':'Hide';
     }
+    if(chip)chip.addEventListener('click',e=>{
+      const b=e.target.closest('[data-a]');if(!b)return;
+      const a=b.dataset.a,was=isolated;
+      if(a==='clear'){sel=null;isolated=false;paint();if(was)refit();return;}
+      if(!sel)return;
+      if(a==='hide'){const s=st[sel];s.hidden=!s.hidden;if(s.hidden&&isolated)isolated=false;paint();refit();}
+      if(a==='iso'){isolated=!isolated;if(isolated)st[sel].hidden=false;paint();refit();}});
 
-    // the inspector is re-rendered on every paint, so its controls are re-bound
-    function wire(){
-      note.querySelectorAll('[data-a]').forEach(el=>{
-        const a=el.dataset.a;
-        if(a==='op'){el.oninput=()=>{st[sel].opacity=(+el.value)/100;
-                       el.nextElementSibling.textContent=el.value+'%';
-                       entries.forEach(en=>{if(en.patch!==st[sel].entity)return;
-                         const pr=en.actor.getProperty();
-                         pr.setOpacity(st[sel].opacity);});
-                       rw.render();};return;}
-        el.onclick=()=>{
-          if(a==='hide'){const s=st[sel];s.hidden=!s.hidden;
-                         if(s.hidden&&isolated)isolated=false;paint();refit();}
-          if(a==='iso'){isolated=!isolated;
-                        if(isolated)st[sel].hidden=false;paint();refit();}
-          if(a==='hl'){sel=null;isolated=false;paint();}
-        };});
-    }
-
-    // grouped by kind, in discovery order
+    // THE LIST, in the Parts overlay: grouped by kind in discovery order when the case has more
+    // than one kind; each row picks its part, and its eye shows or hides it
     const seen=[];parts.forEach(p=>{if(!seen.includes(p.kind))seen.push(p.kind);});
-    cntEl.textContent=parts.length+' in this case';
+    cntEl.textContent=(seen.length===1?kindLabel(seen[0]):'Parts')+' · '+parts.length;
     seen.forEach(k=>{
-      const g=document.createElement('div');g.className='v-bnd-group';
-      g.innerHTML=`<div class="v-bnd-gl">${esc(kindLabel(k))}</div>`;
+      if(seen.length>1){const g=document.createElement('div');g.className='vo-gl';g.textContent=kindLabel(k);rowsEl.appendChild(g);}
       parts.filter(p=>p.kind===k).forEach(p=>{
-        const c=document.createElement('button');
-        c.className='v-bnd-chip'+(p.renderable?'':' meta');c.dataset.p=p.id;
-        const stat=p.meta&&(p.meta.faces||p.meta.cells);
-        c.innerHTML=`<span class="sw"></span>
-          <span class="nm">${esc(p.label)}</span>
-          <span class="v-bnd-vis"></span>
-          <span class="fc">${stat?Number(stat).toLocaleString():''}</span>`;
-        c.onclick=()=>{sel=(sel===p.id)?null:p.id;
-                       if(!sel||!p.renderable)isolated=false;paint();};
-        g.appendChild(c);});
-      chips.appendChild(g);});
+        const r=document.createElement('div');
+        r.className='vo-row'+(p.renderable?'':' meta');r.dataset.p=p.id;
+        r.dataset.label=p.label;r.dataset.q=String(p.label).toLowerCase();
+        const md=p.meta||{},n=md.faces||md.cells,base=st[p.id].base;
+        r.innerHTML=`<button type="button" class="vo-pick" title="${esc(p.label)}">`
+          +`<span class="sw"${base?` style="background:${cssRgb(base)}"`:''}></span>`
+          +`<span class="n">${esc(p.label)}</span>`
+          +`<span class="c">${n?`${Number(n).toLocaleString()} ${md.faces?'face':'cell'}${Number(n)!==1?'s':''}`:''}</span></button>`
+          +(p.renderable?'<button type="button" class="vo-eye" aria-pressed="true"></button>':'<span class="vo-eye-none"></span>');
+        r.querySelector('.vo-pick').onclick=()=>{sel=(sel===p.id)?null:p.id;
+          if(!sel||!p.renderable)isolated=false;paint();};
+        const eye=r.querySelector('.vo-eye');
+        if(eye)eye.onclick=()=>{const s=st[p.id];s.hidden=!s.hidden;
+          if(s.hidden&&isolated&&sel===p.id)isolated=false;paint();refit();};
+        rowsEl.appendChild(r);});});
+    // FIND A PART: the list narrows as the user types; a group with nothing left loses its title
+    const none=document.createElement('p');none.className='vo-empty';none.hidden=true;rowsEl.appendChild(none);
+    qEl.addEventListener('input',()=>{
+      const q=qEl.value.trim().toLowerCase();let shown=0,group=null,inGroup=0;
+      const closeGroup=()=>{if(group)group.hidden=!inGroup;};
+      [...rowsEl.children].forEach(el=>{
+        if(el.classList.contains('vo-gl')){closeGroup();group=el;inGroup=0;return;}
+        if(!el.classList.contains('vo-row'))return;
+        el.hidden=!!q&&!el.dataset.q.includes(q);
+        if(!el.hidden){shown++;inGroup++;}});
+      closeGroup();
+      none.hidden=shown>0;none.textContent=`No part is called "${qEl.value.trim()}".`;});
 
     // THE THERMAL TABLE shows a part alone (or the whole model again) through the same state
     partsApi={isolate:(entity)=>{
@@ -574,10 +650,12 @@ function initViewer(job,surf,uiCfg){
       if(p){sel=p.id;isolated=true;st[p.id].hidden=false;}else{sel=null;isolated=false;}
       paint();refit();},
       repaint:()=>{paint();refit();}};
-    bRest.onclick=()=>{sel=null;isolated=false;
-                       parts.forEach(p=>{const d=dflt(p);
-                         st[p.id].hidden=d.hidden;st[p.id].opacity=d.opacity;});
-                       paint();refit();};
+    // a click on the part picks it, as a row in the list does
+    selectPart=(entity)=>{const p=entity?parts.find(x=>x.renderable&&x.entity===entity):null;
+      if(p&&sel===p.id)return;
+      sel=p?p.id:null;if(!sel)isolated=false;paint();};
+    // SHOW ALL: every part back on screen, nothing isolated
+    bRest.onclick=()=>{isolated=false;parts.forEach(p=>{st[p.id].hidden=false;});paint();refit();};
     paint();refit();          // open framed on what the defaults actually show
   })();
 
@@ -619,7 +697,9 @@ function initViewer(job,surf,uiCfg){
     return viewH*(+sizeEl.value)/200;}
   sizeEl.oninput=()=>{sizeLbl.textContent=fmtR(worldR());};
 
-  function setMarkMode(on){markMode=on;selBtn.classList.toggle('armed',on);
+  function setMarkMode(on){
+    if(on&&measuring&&tb)tb.close();     // marking and measuring both take the click: one at a time
+    markMode=on;selBtn.classList.toggle('armed',on);
     selBtn.textContent=on?'Marking… (click the mesh)':'Mark region';
     host.style.cursor=on?'crosshair':'';
     hintEl.textContent=on?'Click a spot on the mesh to mark it · Drag still rotates'
@@ -727,6 +807,16 @@ function initViewer(job,surf,uiCfg){
              const vx=f.x-cp[0],vy=f.y-cp[1],vz=f.z-cp[2];
              const facing=(f.nrm?(f.nrm[0]*vx+f.nrm[1]*vy+f.nrm[2]*vz):-1)<0;
              f.el.classList.toggle('back',!facing);}});
+    if(axesOn)drawAxes(axesEl,cam);
+    // the measured line, over the part, with its distance at the middle
+    if(mlineEl){const two=measureLabel&&measurePts.length===2;
+      const ends=two?measurePts.map(p=>ren.worldToNormalizedDisplay(p[0],p[1],p[2],aspect)):null;
+      const ok=two&&ends.every(nd=>nd[2]>0&&nd[2]<1);
+      mlineEl.toggleAttribute('hidden',!ok);if(measureLabel)measureLabel.style.display=ok?'':'none';
+      if(ok){const ln=mlineEl.firstElementChild,xy=nd=>[nd[0]*rect.width,(1-nd[1])*rect.height];
+        const [a,b]=ends.map(xy);
+        ln.setAttribute('x1',a[0]);ln.setAttribute('y1',a[1]);ln.setAttribute('x2',b[0]);ln.setAttribute('y2',b[1]);
+        measureLabel.style.left=((a[0]+b[0])/2)+'px';measureLabel.style.top=((a[1]+b[1])/2)+'px';}}
     requestAnimationFrame(badgeLoop);})();
 
   // a click (not a drag) while armed places a marker - the camera still
@@ -735,7 +825,7 @@ function initViewer(job,surf,uiCfg){
   host.addEventListener('pointerdown',e=>{downXY=[e.clientX,e.clientY];},true);
   host.addEventListener('pointerup',e=>{
     if(!markMode||!downXY)return;
-    if(e.target&&e.target.closest&&e.target.closest('.v-pin,.v-tools,.v-legend,.v-probe,.v-heatctl'))return;
+    if(e.target&&e.target.closest&&e.target.closest(ON_CANVAS_UI))return;
     if(Math.hypot(e.clientX-downXY[0],e.clientY-downXY[1])>6)return;
     pickCell(e,placeMarker);},true);
 
@@ -955,11 +1045,23 @@ function initViewer(job,surf,uiCfg){
     const fea=surf.fea||null,host=document.getElementById('v-fea-'+job);
     if(!fea||!host)return;
     let marker=null;
+    let markerR=0;
+    const dropMarker=()=>{if(marker){ren.removeActor(marker);marker=null;}};
+    // the marker is sized to what is on screen: a face shown alone is framed close, and a ball sized
+    // to the whole model then covered the very place it marks (dev-areen 2026-10-30, job 94b8c76d)
+    function shownDiag(){
+      const b=[Infinity,-Infinity,Infinity,-Infinity,Infinity,-Infinity];
+      entries.forEach(e=>{if(!e.actor.getVisibility())return;const ab=e.actor.getBounds();
+        if(!ab||!(ab[1]>=ab[0]))return;
+        for(let k=0;k<6;k+=2){b[k]=Math.min(b[k],ab[k]);b[k+1]=Math.max(b[k+1],ab[k+1]);}});
+      const d=Math.hypot(b[1]-b[0],b[3]-b[2],b[5]-b[4]);
+      return Number.isFinite(d)&&d>0?d:diag;}
     function point(at){
-      if(marker){ren.removeActor(marker);marker=null;}
+      dropMarker();
       const S=vtk.Filters&&vtk.Filters.Sources&&vtk.Filters.Sources.vtkSphereSource;
       if(at&&at.length===3&&S){
-        const src=S.newInstance({center:at,radius:Math.max(diag*0.012,1e-9),thetaResolution:20,phiResolution:14});
+        const r=Math.min(diag*0.012,shownDiag()*0.04);markerR=r;
+        const src=S.newInstance({center:at,radius:Math.max(r,1e-9),thetaResolution:20,phiResolution:14});
         const mapper=vtk.Rendering.Core.vtkMapper.newInstance();mapper.setInputConnection(src.getOutputPort());
         marker=vtk.Rendering.Core.vtkActor.newInstance();marker.setMapper(mapper);
         const pr=marker.getProperty();pr.setColor(_SEL[0],_SEL[1],_SEL[2]);pr.setAmbient(0.6);
@@ -967,13 +1069,13 @@ function initViewer(job,surf,uiCfg){
         ren.addActor(marker);}
       rw.render();}
     host.innerHTML=feaResultsHtml(job,fea);
-    feaDownloads(document.querySelector('#viewer-'+job+' .v-dl'),job,fea);
     const api=bindFeaResults(host,job,fea,{
       isolate:name=>{if(partsApi)partsApi.isolate(name);},
       point:at=>point(at)});
     window._vdbg=window._vdbg||{};
-    window._vdbg[job+':fea']={isolate:name=>{if(partsApi)partsApi.isolate(name);api&&api.pick(name);},
-      point:at=>point(at),marker:()=>!!marker,
+    // the old marker goes before the view is refitted to the face, so the camera frames the face alone
+    window._vdbg[job+':fea']={isolate:name=>{dropMarker();if(partsApi)partsApi.isolate(name);api&&api.pick(name);},
+      point:at=>point(at),marker:()=>!!marker,markerSize:()=>marker?{r:markerR,shown:shownDiag()}:null,
       visible:()=>entries.filter(e=>e.actor.getVisibility()).map(e=>e.patch),
       text:()=>host.innerText};
   })();
@@ -1065,7 +1167,9 @@ function initViewer(job,surf,uiCfg){
         out[o]=ca[0]+(cb[0]-ca[0])*t;out[o+1]=ca[1]+(cb[1]-ca[1])*t;out[o+2]=ca[2]+(cb[2]-ca[2])*t;};
       const pc=v=>(100*(v-lo)/((hi-lo)||1)).toFixed(1)+'%';
       const css='linear-gradient(0deg,'+pts.map(([v,c])=>`rgb(${c}) ${pc(v)}`).join(',')+')';
-      return {color,hi,lo,open,css,limitPct:pc(lim)};}
+      // the same stops as fractions of the bar, for the colour bar a snapshot draws
+      const stops=pts.map(([v,c])=>[(v-lo)/((hi-lo)||1),c]);
+      return {color,hi,lo,open,css,stops,limitPct:pc(lim),limitFrac:(lim-lo)/((hi-lo)||1)};}
     function fmt(m,v){const u=qf.metrics[m].unit||'';return (u==='°'?v.toFixed(1):v.toFixed(2))+u;}
 
     /* PROBLEM AREAS. The faces over the bar, and those near it (80% of it and up), gathered into
@@ -1279,6 +1383,8 @@ function initViewer(job,surf,uiCfg){
       if(!(e.target&&e.target.closest&&e.target.closest('.v-legend,.v-probe')))cancelFly();},true);
     host.addEventListener('wheel',()=>cancelFly(),{capture:true,passive:true});
     document.getElementById('v-fitbtn-'+job).addEventListener('click',()=>cancelFly());
+    if(fitAllBtn)fitAllBtn.addEventListener('click',()=>cancelFly());
+    host.querySelectorAll('.vo-item[data-view]').forEach(b=>b.addEventListener('click',()=>cancelFly()));
 
     /* WHERE THE CAMERA STOPS: the area in the middle of the view, close enough that its own faces
        read as cells - 20 px across when the area is small, never under 12 px when it is wide - and
@@ -1466,7 +1572,12 @@ function initViewer(job,surf,uiCfg){
         // a press or a scroll on the scale is not the start of an orbit or a zoom
         shield(legend);
         host.appendChild(legend);}
-      if(!markMode)hintEl.textContent=rp?HEAT_HINT:MOUSE_HINT;
+      if(!markMode&&!measuring)hintEl.textContent=rp?HEAT_HINT:MOUSE_HINT;
+      // the colour bar a snapshot can carry: the same name, stops and limit as the one on screen
+      barSpec=rp?{label:qf.metrics[m].label.replace(/^./,c=>c.toUpperCase()),stops:rp.stops,
+        ticks:[[1,fmt(m,rp.hi)]].concat(rp.open?[]:[[rp.limitFrac,fmt(m,qf.metrics[m].limit)+' limit',true]])
+          .concat([[0,rp.lo?fmt(m,rp.lo):'0']])}:null;
+      if(onMetric)onMetric(m);
       document.querySelectorAll(`#v-facts-${job} .mx-c.live, #v-heatctl-${job} a`).forEach(c=>{
         const on=c.dataset.metric===m;c.classList.toggle('on',on);
         if(!c.classList.contains('mx-c'))return;
@@ -1531,8 +1642,8 @@ function initViewer(job,surf,uiCfg){
       return `<div class="pr"><span class="pr-k">${esc(md.label)}</span><span class="pr-v">${esc(fmt(m,v))}</span>`
         +`<span class="pr-s ${bad?'over':'ok'}">${bad?'over':'under'} the ${esc(fmt(m,md.limit))} limit</span></div>`;}
     host.addEventListener('pointerup',e=>{
-      if(markMode||!activeMetric||!downXY)return;
-      if(e.target&&e.target.closest&&e.target.closest('.v-probe,.v-legend,.v-pin,.v-heatctl,.v-tools'))return;
+      if(markMode||measuring||!activeMetric||!downXY)return;
+      if(e.target&&e.target.closest&&e.target.closest(ON_CANVAS_UI))return;
       if(Math.hypot(e.clientX-downXY[0],e.clientY-downXY[1])>6)return;
       pickCell(e,(en,cid)=>showProbe(en,cid));},true);
 
@@ -1559,5 +1670,208 @@ function initViewer(job,surf,uiCfg){
       colorOf:(patch,cid)=>{const en=entries.find(t=>t.patch===patch);if(!en)return null;
         const sc=en.pd.getCellData().getScalars();if(!sc||!en.actor.getMapper().getScalarVisibility())return null;
         const a=sc.getData();return [a[cid*3],a[cid*3+1],a[cid*3+2]];}};
+    heatApi={metrics:avail.map(m=>[m,String(qf.metrics[m].label||m).replace(/^./,c=>c.toUpperCase())]),set:setMetric};
+  })();
+
+  /* THE TOOLBAR. View, Section, Parts, Measure and Snapshot each open one small overlay over the
+     canvas (viewer/toolbar.js draws and opens them); what each one does to the scene is here. */
+  (function tools(){
+    tb=bindToolbar(host,{
+      onOpen:(k,byKey)=>{
+        if(k==='measure')setMeasuring(true);
+        if(k==='snapshot')snapRow.hidden=!barSpec;
+        // the search box takes the typing at once; elsewhere focus follows only the keyboard
+        if(k==='parts'){const q=document.getElementById('v-parts-q-'+job);if(q)q.focus();}
+        else if(byKey){const f=host.querySelector(`.v-ov[data-tool="${k}"] button,.v-ov[data-tool="${k}"] input`);if(f)f.focus();}},
+      onClose:k=>{if(k==='measure')setMeasuring(false);}});
+    const ov=k=>host.querySelector(`.v-ov[data-tool="${k}"]`);
+
+    /* VIEW: fit, the set views, which way is up, the camera, the axes. F fits from anywhere on
+       the page that is not a text box, while this viewer is the one on screen. */
+    ov('view').querySelectorAll('.vo-item[data-view]').forEach(b=>{
+      b.onclick=()=>{presetView(cam,(upSel&&upSel.value)||'+z',b.dataset.view);fit();};});
+    bindSeg(ov('view'),'camera',v=>{cam.setParallelProjection(v==='flat');frameCam();clampCam();ren.resetCameraClippingRange();rw.render();});
+    bindSeg(ov('view'),'axes',v=>{axesOn=v==='on';if(axesEl)axesEl.style.display=axesOn?'':'none';});
+    const onKey=e=>{
+      if(!document.body.contains(host)){document.removeEventListener('keydown',onKey);return;}
+      if(e.key!=='f'&&e.key!=='F')return;
+      if(e.ctrlKey||e.metaKey||e.altKey||e.defaultPrevented)return;
+      const t=e.target;
+      if(t&&(t.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)))return;
+      if(!host.offsetParent)return;          // hidden behind another result
+      e.preventDefault();fit();};
+    document.addEventListener('keydown',onKey);
+
+    /* SECTION: a plane across X, Y or Z cuts the part away on one side, so the inside reads;
+       the line where it cuts is drawn on the part. The mesh itself is never changed. */
+    const cut={on:false,axis:'x',at:0.5,flip:false,lines:[]};
+    const cutOn=document.getElementById('v-cut-on-'+job),cutAt=document.getElementById('v-cut-at-'+job);
+    const CUT_LINE=themeRgb('--part-cut',[0.62,0.71,0.83]);
+    let cutQueued=false;
+    function applyCut(){
+      cutQueued=false;
+      entries.forEach(en=>en.actor.getMapper().removeAllClippingPlanes());
+      cut.lines.forEach(a=>ren.removeActor(a));cut.lines=[];
+      if(cut.on){
+        const k={x:0,y:1,z:2}[cut.axis],lo=_bs[2*k],hi=_bs[2*k+1];
+        const o=[(_bs[0]+_bs[1])/2,(_bs[2]+_bs[3])/2,(_bs[4]+_bs[5])/2];o[k]=lo+(hi-lo)*cut.at;
+        // the part on the low side stays; Flip keeps the other side
+        const n=[0,0,0];n[k]=cut.flip?1:-1;
+        entries.forEach(en=>{
+          const plane=vtk.Common.DataModel.vtkPlane.newInstance({origin:o,normal:n});
+          en.actor.getMapper().addClippingPlane(plane);
+          if(!en.actor.getVisibility())return;
+          const cutter=vtk.Filters.Core.vtkCutter.newInstance();
+          cutter.setCutFunction(vtk.Common.DataModel.vtkPlane.newInstance({origin:o,normal:n}));
+          cutter.setInputData(en.pd);
+          const mp=vtk.Rendering.Core.vtkMapper.newInstance();mp.setInputConnection(cutter.getOutputPort());
+          const ac=vtk.Rendering.Core.vtkActor.newInstance();ac.setMapper(mp);ac.setPickable(false);
+          const pp=ac.getProperty();pp.setColor(...CUT_LINE);pp.setLineWidth(2);pp.setLighting(false);
+          ren.addActor(ac);cut.lines.push(ac);});}
+      cutOn.setAttribute('aria-pressed',String(cut.on));
+      cutOn.textContent=cut.on?'Section on':'Section off';
+      rw.render();}
+    // the slider moves many times a second: one cut per frame
+    const queueCut=()=>{if(!cutQueued){cutQueued=true;requestAnimationFrame(applyCut);}};
+    bindSeg(ov('section'),'cut-axis',v=>{cut.axis=v;cut.on=true;applyCut();});
+    cutAt.addEventListener('input',()=>{cut.at=(+cutAt.value)/100;cut.on=true;queueCut();});
+    cutOn.onclick=()=>{cut.on=!cut.on;applyCut();};
+    document.getElementById('v-cut-flip-'+job).onclick=()=>{cut.flip=!cut.flip;cut.on=true;applyCut();};
+
+    /* PARTS > SHOW: the surface style, and - when the mesh carries quality fields - what the part
+       is coloured by. The colour choices are the heatmap's own switch, so the figures in the side
+       panel and this list always agree. */
+    bindSeg(ov('parts'),'surface',v=>{surfaceMode=v;if(repaintParts)repaintParts();else rw.render();});
+    const colourBox=document.getElementById('v-colour-'+job);
+    if(heatApi&&heatApi.metrics.length&&colourBox){
+      colourBox.closest('.vo-colour-row').hidden=false;
+      colourBox.innerHTML=[['part','Part']].concat(heatApi.metrics).map(([v,l])=>
+        `<button type="button" class="vo-item" data-colour="${v}" aria-pressed="${String(v==='part')}">${esc(l)}</button>`).join('');
+      colourBox.addEventListener('click',e=>{const b=e.target.closest('[data-colour]');if(!b)return;
+        const v=b.dataset.colour;
+        if(v==='part'){if(activeMetric)heatApi.set(activeMetric);}
+        else if(v!==activeMetric)heatApi.set(v);});
+      onMetric=m=>{colourBox.querySelectorAll('[data-colour]').forEach(b=>{
+        b.setAttribute('aria-pressed',String(b.dataset.colour===(m||'part')));});};}
+
+    /* MEASURE: two clicks on the part draw a thin line between the points, a dot at each end and
+       the distance beside it, in the mesh's own unit. A third click starts again. It changes
+       nothing about the mesh - a ruler, not an edit. */
+    const measVal=document.getElementById('v-meas-val-'+job),measNote=document.getElementById('v-meas-note-'+job);
+    const MEASURE_COL=_SEL;
+    function setMeasuring(on){
+      measuring=on;
+      if(on&&markMode)setMarkMode(false);
+      host.style.cursor=on||markMode?'crosshair':'';
+      hintEl.textContent=on?MEASURE_HINT:(markMode?hintEl.textContent:(activeMetric?HEAT_HINT:MOUSE_HINT));}
+    function fmtLen(d){
+      const nice=v=>Number(v.toPrecision(4)).toLocaleString(undefined,{maximumFractionDigits:6});
+      if(units==='m'&&d<1)return nice(d*1000)+' mm';
+      return nice(d)+' '+units;}
+    function measuredNow(){
+      if(measurePts.length<2)return {points:measurePts.map(p=>p.slice()),distance:null,label:null};
+      const [a,b]=measurePts,d=Math.hypot(b[0]-a[0],b[1]-a[1],b[2]-a[2]);
+      return {points:measurePts.map(p=>p.slice()),distance:d,label:fmtLen(d)};}
+    function clearMeasure(){
+      measurePts.length=0;measureActors.splice(0).forEach(a=>ren.removeActor(a));
+      if(measureLabel){measureLabel.remove();measureLabel=null;}
+      measVal.textContent='-';measNote.textContent='Click two points on the part.';
+      rw.render();}
+    function addMeasurePoint(pt){
+      if(measurePts.length>=2)clearMeasure();
+      measurePts.push(pt);
+      const mp=vtk.Rendering.Core.vtkMapper.newInstance();mp.setInputData(spherePd(pt[0],pt[1],pt[2],0.004*diag));
+      const ac=vtk.Rendering.Core.vtkActor.newInstance();ac.setMapper(mp);ac.setPickable(false);
+      ac.getProperty().setColor(...MEASURE_COL);ac.getProperty().setLighting(false);
+      ren.addActor(ac);measureActors.push(ac);
+      if(measurePts.length===2){
+        const pd=vtk.Common.DataModel.vtkPolyData.newInstance();
+        pd.getPoints().setData(Float32Array.from([...measurePts[0],...measurePts[1]]),3);
+        pd.getLines().setData(Uint32Array.from([2,0,1]));
+        const lm=vtk.Rendering.Core.vtkMapper.newInstance();lm.setInputData(pd);
+        const la=vtk.Rendering.Core.vtkActor.newInstance();la.setMapper(lm);la.setPickable(false);
+        const lp=la.getProperty();lp.setColor(...MEASURE_COL);lp.setLineWidth(1.5);lp.setLighting(false);
+        ren.addActor(la);measureActors.push(la);
+        const m=measuredNow();
+        measureLabel=document.createElement('div');measureLabel.className='v-mlabel';measureLabel.textContent=m.label;
+        host.appendChild(measureLabel);
+        measVal.textContent=m.label;measNote.textContent='Click again to start a new one.';}
+      else measNote.textContent='Now click the second point.';
+      rw.render();
+      return measuredNow();}
+    // the point under the click: on the picked face, where the line of sight meets it
+    function surfacePoint(en,cid,clientX,clientY){
+      const c=cellCenter(en,cid);
+      try{
+        const rect=host.getBoundingClientRect(),size=apiRW.getSize();
+        const x=(clientX-rect.left)*(size[0]/rect.width),y=(rect.height-(clientY-rect.top))*(size[1]/rect.height);
+        const a=apiRW.displayToWorld(x,y,0,ren),b=apiRW.displayToWorld(x,y,1,ren);
+        const d=[b[0]-a[0],b[1]-a[1],b[2]-a[2]],n=newell(en,cid),q=en.polys[cellOffsets(en)[cid]+1]*3;
+        const den=n[0]*d[0]+n[1]*d[1]+n[2]*d[2];
+        if(!(Math.abs(den)>1e-30))return c;
+        const t=(n[0]*(en.pts[q]-a[0])+n[1]*(en.pts[q+1]-a[1])+n[2]*(en.pts[q+2]-a[2]))/den;
+        const p=[a[0]+t*d[0],a[1]+t*d[1],a[2]+t*d[2]];
+        // a point that lands off the face (an edge-on face) falls back to the face's centre
+        const o=cellOffsets(en)[cid];let reach=0;
+        for(let j=1;j<=en.polys[o];j++){const v=en.polys[o+j]*3;
+          reach=Math.max(reach,Math.hypot(en.pts[v]-c[0],en.pts[v+1]-c[1],en.pts[v+2]-c[2]));}
+        return Math.hypot(p[0]-c[0],p[1]-c[1],p[2]-c[2])<=reach*1.05?p:c;
+      }catch(err){return c;}}
+    function measureAt(clientX,clientY){
+      return new Promise(res=>{let done=false;
+        pickCell({clientX,clientY},(en,cid)=>{done=true;res(addMeasurePoint(surfacePoint(en,cid,clientX,clientY)));});
+        setTimeout(()=>{if(!done)res(null);},1500);});}
+    document.getElementById('v-meas-clear-'+job).onclick=clearMeasure;
+    // a click on the part (not a drag) measures while Measure is open; with no tool armed and no
+    // colour on, it picks the part it lands on
+    host.addEventListener('pointerup',e=>{
+      if(!downXY||markMode)return;
+      if(e.target&&e.target.closest&&e.target.closest(ON_CANVAS_UI))return;
+      if(Math.hypot(e.clientX-downXY[0],e.clientY-downXY[1])>6)return;
+      if(measuring){measureAt(e.clientX,e.clientY);return;}
+      if(!activeMetric&&selectPart)pickCell(e,en=>selectPart(en.patch));},true);
+
+    /* SNAPSHOT: the view as a PNG - on the scene's background, a transparent one or white, at
+       1x, 2x or 4x the canvas, with the colour bar when the part is coloured by a figure. */
+    const snapRow=ov('snapshot').querySelector('.vo-snap-bar');
+    const snap={bg:'scene',scale:'2',bar:'yes'};
+    bindSeg(ov('snapshot'),'snap-bg',v=>{snap.bg=v;});
+    bindSeg(ov('snapshot'),'snap-scale',v=>{snap.scale=v;});
+    bindSeg(ov('snapshot'),'snap-bar',v=>{snap.bar=v;});
+    async function takeSnapshot(o){
+      o=Object.assign({},snap,o||{});
+      return snapshotPng({ren,rw,apiRW,background:o.bg,scale:Number(o.scale)||1,sceneBg,
+                          bar:o.bar==='yes'?barSpec:null});}
+    const saveBtn=document.getElementById('v-snap-save-'+job);
+    saveBtn.onclick=async()=>{
+      if(saveBtn.disabled)return;
+      saveBtn.disabled=true;saveBtn.textContent='Saving…';
+      try{const r=await takeSnapshot();savePng(r.blob,`mesh_${String(job).slice(0,8)}.png`);
+        saveBtn.textContent='Saved';}
+      catch(err){console.warn('snapshot',err);saveBtn.textContent='Could not save. Try 1×.';}
+      finally{setTimeout(()=>{saveBtn.disabled=false;saveBtn.textContent='Save picture';},1600);}};
+
+    /* support/debug hook - the browser tier drives the toolbar through it */
+    window._vdbg[job+':tools']={open:k=>tb.open(k),close:()=>tb.close(),current:()=>tb.current(),
+      measureAt,measured:()=>measuredNow(),measuring:()=>measuring,clearMeasure,
+      cut:()=>({on:cut.on,axis:cut.axis,at:cut.at,flip:cut.flip,lines:cut.lines.length,
+        planes:entries.map(en=>en.actor.getMapper().getClippingPlanes().length)}),
+      surface:()=>{const pp=entries[0].actor.getProperty();
+        return {mode:surfaceMode,edges:!!pp.getEdgeVisibility(),rep:pp.getRepresentation()};},
+      parallel:()=>!!cam.getParallelProjection(),axes:()=>axesOn&&!!axesEl&&axesEl.style.display!=='none',
+      visible:()=>entries.filter(en=>en.actor.getVisibility()).map(en=>en.patch),
+      selected:()=>{const c=document.getElementById('v-picked-'+job);return c&&!c.hidden?c.querySelector('.vp-n').textContent:null;},
+      colourOf:patch=>{const en=entries.find(t=>t.patch===patch);return en?en.actor.getProperty().getDiffuseColor().slice():null;},
+      material:()=>{const pp=entries[0].actor.getProperty();return {ambient:pp.getAmbient(),specular:pp.getSpecular()};},
+      background:()=>ren.getBackground().slice(),
+      // where a point of the part is on the page, in client pixels - for real clicks in the tests
+      screenOf:pt=>{const size=apiRW.getSize(),rect=host.getBoundingClientRect();
+        const nd=ren.worldToNormalizedDisplay(pt[0],pt[1],pt[2],size[0]/size[1]);
+        return [rect.left+nd[0]*rect.width,rect.top+(1-nd[1])*rect.height];},
+      dir:()=>cam.getDirectionOfProjection().slice(),
+      snapshot:async o=>{const r=await takeSnapshot(o);const g=r.canvas.getContext('2d');
+        const px=(x,y)=>Array.from(g.getImageData(x,y,1,1).data);
+        return {width:r.width,height:r.height,bytes:r.blob.size,corner:px(1,1),
+                canvas:apiRW.getSize().slice(),png:o&&o.png?r.canvas.toDataURL():undefined};}};
   })();
 }
