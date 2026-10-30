@@ -463,9 +463,12 @@ def test_a_kept_fea_result_is_delivered_whole_from_the_bucket(tmp_path, small_fi
     deck = b"*NODE\n" + b"1, 0.0, 0.0, 0.0\n" * 800
     (ws / "mesh.inp").write_bytes(deck)
     (ws / "mesh.cdb").write_bytes(b"N," * 900)
-    expected_tar = _tarfile_bundle(ws, [m.path for m in __import__(
-        "meshpipeline.engines.registry", fromlist=["get_spec"]).get_spec("gmsh").deliverable.members],
-        "gmsh_case")
+    members = [m.path for m in __import__(
+        "meshpipeline.engines.registry", fromlist=["get_spec"]).get_spec("gmsh").deliverable.members]
+    # the workspace as it was, for the archive the uploader would have packed from local files
+    import shutil
+    orig = tmp_path / "as_written"
+    shutil.copytree(ws, orig)
     bucket = _Bucket()
     BF.keep(ws, bucket="ex", output_key="o", writer=bucket.writer)
     assert not (ws / "mesh.inp").exists()
@@ -480,6 +483,10 @@ def test_a_kept_fea_result_is_delivered_whole_from_the_bucket(tmp_path, small_fi
         report = asyncio.run(au.upload_job_artifacts(db=_Db(), job_id=job, workspace=ws, engine="gmsh"))
         assert report.required_all_delivered() and not report.optional_failures
         bundle = store.objects[f"jobs/{job}/gmsh_case.tar.gz"]
+        # the Mesh report the uploader wrote goes in the Everything bundle with the rest
+        from meshpipeline.render.mesh_report import REPORT_FILE
+        shutil.copy(ws / REPORT_FILE, orig / REPORT_FILE)
+        expected_tar = _tarfile_bundle(orig, [*members, REPORT_FILE], "gmsh_case")
         assert gzip.decompress(bundle) == expected_tar
         assert store.objects[f"jobs/{job}/exports/mesh.inp"] == deck
         assert store.objects[f"jobs/{job}/exports/mesh.cdb"] == b"N," * 900

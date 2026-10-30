@@ -53,6 +53,27 @@ def _tail(path: Path) -> str:
         return fh.read().decode("utf-8", errors="replace")
 
 
+#: How many cells or elements the mesher says it has made so far, by the lines the meshers really print
+#: (tests/unit/engines/fixtures/mesher_logs, taken from real runs): snappyHexMesh's mesh summaries
+#: ("Mesh with layers : cells:2679296  faces:..." - but never "Ideal layer addition : cells:3.08262e+06", an
+#: estimate written as a float), gmsh's "- 185067 tetrahedra created in 21.1 sec.", cfMesh's "101392 cells" under
+#: "Mesh has :" and its "New cells size 101386". The LAST one in the log is the count now. A log with none
+#: gives no count, never a guess.
+_COUNTS = [re.compile(r"\bcells:(\d+)(?![\d.eE+])"),
+           re.compile(r"\b(\d+) tetrahedra created\b"),
+           re.compile(r"^(\d+) cells\s*$", re.M),
+           re.compile(r"^New cells size (\d+)\s*$", re.M)]
+
+
+def _count_of(text: str) -> int | None:
+    best, at = None, -1
+    for rx in _COUNTS:
+        for m in rx.finditer(text):
+            if m.start() > at:
+                best, at = int(m.group(1)), m.start()
+    return best
+
+
 def _last_of(text: str, patterns) -> tuple[str, str] | None:
     best, at = None, -1
     for rx, key, label in patterns:
@@ -72,11 +93,12 @@ def read_stage(workspace) -> dict | None:
             return None
         newest = max(logs, key=lambda p: p.stat().st_mtime)
         tool = newest.stem.split("_")[0]
+        tail = _tail(newest)
         if tool == "snappyHexMesh":
-            found = _last_of(_tail(newest), _SNAPPY)
+            found = _last_of(tail, _SNAPPY)
             key, label = found or ("snappy", "starting snappyHexMesh")
         elif tool == "cartesianMesh":
-            found = _last_of(_tail(newest), _CFMESH)
+            found = _last_of(tail, _CFMESH)
             key, label = found or ("cfmesh", "starting cartesianMesh")
         elif tool == "gmshfea":
             # the FEA mesher notes its step itself (engines/gmsh/fea_adapter.STAGE_FILE)
@@ -87,7 +109,11 @@ def read_stage(workspace) -> dict | None:
             key, label = _TOOLS[tool]
         else:
             return None
-        return {"key": key, "label": label, "tool": tool}
+        out: dict = {"key": key, "label": label, "tool": tool}
+        n = _count_of(tail)
+        if n:
+            out["n"] = n
+        return out
     except Exception:  # noqa: BLE001 - a stage we cannot read is a line with only its clock
         return None
 

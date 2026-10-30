@@ -4,6 +4,16 @@
 // Boundaries: it renders the line the API serves (application/geometry_progress); it fetches
 // nothing and decides nothing about the check. The poll that feeds it lives in shell/composer.js.
 import { esc } from "../core/format.js";
+import { workIcon } from "./work_icons.js";
+
+/* which kind of work a running step is, for its icon - a served `kind` (the run's narration) wins */
+const STEP_KIND = { reading: "read", measuring: "measure", openings: "measure", pictures: "read", naming: "check",
+                    engine: "plan", plan: "plan", mesh: "fill", quality: "check", review: "check" };
+function runningKind(p) {
+  if (p.kind) return String(p.kind);
+  const active = (p.steps || []).find((s) => s.state === "active");
+  return active ? STEP_KIND[active.key] || "" : "";
+}
 
 /** 14 s, 2 min 5 s, 12 min - the server's own words for a duration (duration_words). */
 export function durationWords(seconds) {
@@ -51,8 +61,13 @@ export function progressHtml(p, opts = {}) {
       + `${p.advice ? `<div class="gp-advice">${esc(p.advice)}</div>` : ""}`
       + `${p.can_retry ? '<div class="gp-acts"><button type="button" class="gp-retry">Try again</button></div>' : ""}`
     : "";
+  // the mark: a tick or a cross once it has ended; while it works, the icon of the work it is doing
+  const mark = state === "done" ? "✓" : failed ? "✕" : live ? workIcon(runningKind(p)) : "";
+  // WHAT HEXERA DECIDED AND WHY, as it decides: the run's own plain sentences, always in view
+  const said = (p.said || []).map((t) => `<p class="gp-say">${esc(t)}</p>`).join("");
   return `<div class="gp" data-state="${esc(state)}"${live ? ' data-live="1"' : ""}${p.slow ? ` data-slow="${esc(p.slow)}"` : ""}>`
-    + `<div class="gp-head"><span class="gp-mark" aria-hidden="true">${state === "done" ? "✓" : failed ? "✕" : ""}</span>`
+    + (said ? `<div class="gp-said" aria-live="polite">${said}</div>` : "")
+    + `<div class="gp-head"><span class="gp-mark" aria-hidden="true">${mark}</span>`
     + `<span class="gp-now" role="status" aria-live="polite">${esc(p.current || "")}</span>`
     + `<span class="gp-time num" aria-hidden="true">${esc(time)}</span>${toggle}</div>`
     + (note ? `<div class="gp-note">${esc(note)}</div>` : "")
@@ -65,7 +80,8 @@ export function progressHtml(p, opts = {}) {
    focus off a button the user is on. */
 function signature(p, opts) {
   if (!p) return "";
-  return JSON.stringify([p.state, p.current, p.note, p.slow, p.reason, p.advice, p.can_retry, !!p.live,
+  return JSON.stringify([p.state, p.current, p.note, p.slow, p.reason, p.advice, p.can_retry, !!p.live, p.kind || "",
+    (p.said || []).length,
     !!opts.offline, !!opts.ended,
     (p.steps || []).map((s) => [s.key, s.state, s.state === "active" ? null : s.seconds])]);
 }

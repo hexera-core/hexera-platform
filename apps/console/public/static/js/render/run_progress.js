@@ -22,11 +22,21 @@ const QUIET_NOTE_MS = 10 * 60 * 1000;
 /* how long a step may run before its line says so - the mesh's own is the engine's measured time */
 const SOFT_MS = { engine: 60e3, plan: 5 * 60e3, quality: 3 * 60e3, review: 5 * 60e3 };
 
+/** "1.2M", "850k", "4,200" - a count read at a glance (the server's cells_words). */
+export function countWords(n) {
+  const v = Math.round(Number(n) || 0);
+  if (v >= 1e6) return `${(v / 1e6).toFixed(1).replace(/\.0$/, "")}M`;
+  if (v >= 1e4) return `${Math.round(v / 1000)}k`;
+  return v.toLocaleString("en-GB");
+}
+/* the most commentary lines a run line keeps in view: the newest, the older ones scroll away */
+const SAID_MAX = 6;
+
 export function createRunProgress(now = () => Date.now()) {
-  let steps, attempt, waitingText, ended, meshInfo, lastEventAt;
+  let steps, attempt, waitingText, ended, meshInfo, lastEventAt, said, told, pre;
   function reset() {
     steps = STEPS.map(([key, doing, label]) => ({ key, doing, label, state: "todo", seconds: null, t0: null }));
-    attempt = 1; waitingText = ""; ended = null; meshInfo = null; lastEventAt = 0;
+    attempt = 1; waitingText = ""; ended = null; meshInfo = null; lastEventAt = 0; said = []; told = null; pre = null;
   }
   reset();
   const step = (k) => steps.find((s) => s.key === k);
@@ -70,8 +80,30 @@ export function createRunProgress(now = () => Date.now()) {
       touch(at); start("mesh", at);
       const e = step("engine"); if (!e.engine && engine) e.label = "Mesh engine: " + engine;
       meshInfo = { budget: Number(budgetS) || 0, typical: (history && history.typical_s) || 0, stage: "" };
+      // the machine was said just before the mesher started: it is what the mesh is doing first
+      if (told) Object.assign(meshInfo, told);
     },
-    meshStage(label, at) { touch(at); if (meshInfo) meshInfo.stage = String(label || ""); },
+    /** the mesher's own label - used only for a run that does not narrate (an older worker):
+     *  a narrated run says the same thing in the user's words, and its label can name a tool */
+    meshStage(label, at) { touch(at); if (meshInfo && !meshInfo.narrated) meshInfo.stage = String(label || ""); },
+    /** a narration event (contracts/narration): a commentary line, or what the mesh is doing now */
+    narrate(ev, at) {
+      touch(at);
+      const text = String(ev.text || "").trim();
+      if (!text) return;
+      if (ev.kind === "say") {
+        if (!said.includes(text)) { said.push(text); if (said.length > SAID_MAX) said.shift(); }
+        return;
+      }
+      // a heartbeat re-says the stage already in view: it only adds its note, the stage and count stay
+      const info = /^Still /.test(text) ? { narrated: true, beat: text }
+        : { narrated: true, kind: String(ev.kind || ""), stage: text, n: ev.n, of: ev.of, unit: ev.unit || "", beat: "" };
+      // before the mesher runs: the machine waits for the mesh; any other work (measuring, planning)
+      // is what the step running now is doing
+      if (!meshInfo && ev.kind !== "machine" && !/^Still /.test(text)) { pre = { kind: info.kind, stage: text, at }; return; }
+      if (!meshInfo) { told = { ...(told || {}), ...info }; return; }
+      Object.assign(meshInfo, info);
+    },
     meshed(cells, at) {
       touch(at); const s = step("mesh");
       if (s.state !== "active") start("mesh", at);
@@ -100,6 +132,8 @@ export function createRunProgress(now = () => Date.now()) {
       ended = { pass: !!data.pass, cancelled: !!data.cancelled, concerns: !!data.concerns, notes: !!data.notes,
                 total: data.totalMs != null ? data.totalMs / 1000 : null };
     },
+    /** The commentary said so far, oldest first. */
+    said() { return said.slice(); },
     /** The line as check_progress draws it. */
     view() {
       const t = now();
@@ -127,8 +161,19 @@ export function createRunProgress(now = () => Date.now()) {
       }
       const elapsed = Math.max(0, (t - active.t0) / 1000);
       let current = prefix + active.doing, note = "";
+      let kind = "";
+      if (active.key !== "mesh" && pre && pre.at >= active.t0) {
+        kind = pre.kind; current = `${prefix}${pre.stage}…`;
+      }
+      if (active.key === "mesh" && meshInfo && meshInfo.narrated) {
+        kind = meshInfo.kind || "fill";
+        const count = meshInfo.n != null && meshInfo.of ? ` · ${countWords(meshInfo.n)} of about ${countWords(meshInfo.of)}${meshInfo.unit ? " " + meshInfo.unit : ""}`
+          : meshInfo.n != null ? ` · ${countWords(meshInfo.n)}${meshInfo.unit ? " " + meshInfo.unit : ""} so far` : "";
+        current = `${prefix}${meshInfo.stage || "Meshing your part"}${count}…`;
+        if (meshInfo.beat) note = meshInfo.beat + ". It's still working; this updates when it moves.";
+      }
       if (active.key === "mesh" && meshInfo) {
-        if (meshInfo.stage) current = `${prefix}Meshing on the cloud mesher - ${meshInfo.stage}…`;
+        if (meshInfo.stage && !meshInfo.narrated) current = `${prefix}Meshing on the cloud mesher - ${meshInfo.stage}…`;
         const typ = meshInfo.typical, cap = meshInfo.budget;
         if (cap && elapsed >= cap) note = "Past its time limit - it should stop by itself any moment now.";
         else if (cap && elapsed >= 0.8 * cap) note = `If it's still going at ${durationWords(cap)}, it stops by itself.`;
@@ -140,7 +185,7 @@ export function createRunProgress(now = () => Date.now()) {
         note = "No news from the run for a while. It's still running; this updates when it moves.";
       }
       return { state: "running", live: true, steps: shown, current, note, elapsed_s: elapsed,
-               slow: note ? "yes" : undefined };
+               slow: note ? "yes" : undefined, kind };
     },
   };
 }
@@ -153,7 +198,8 @@ export function createRunLine() {
   const api = {
     model,
     attach(el) { host = el; },
-    draw() { if (host && host.isConnected) line.show(host, model.view(), { pinned: true, id: "run-progress" }); },
+    // the commentary stays in view after the run ends, so the line still says why it went the way it did
+    draw() { if (host && host.isConnected) line.show(host, { ...model.view(), said: model.said() }, { pinned: true, id: "run-progress" }); },
     reset() { model.reset(); line.reset(); host = null; },
   };
   return api;

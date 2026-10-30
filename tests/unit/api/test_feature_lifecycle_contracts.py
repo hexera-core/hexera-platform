@@ -182,6 +182,7 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("POST", "/api/v1/simulation/{job_id}/review/run"),          # close the park and re-run with the decisions
         ("GET", "/api/v1/simulation/{job_id}/surface"),
         ("GET", "/api/v1/simulation/{job_id}/surface.vtk"),     # the viewer's ParaView export
+        ("GET", "/api/v1/simulation/{job_id}/report.html"),     # the Mesh report, a download of its own
         ("POST", "/api/v1/upload/step-file"),
         # THE DIRECT UPLOAD for a file too large for a request body: begin (a signed PUT URL for
         # one object), then finish (the multipart route's checks on the bytes that arrived). The

@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hexera console revamp - 2. Meshing, live</title>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mock.css"></head>
+<body>
+<div class="app">
+  <aside class="pane" data-pane="files" data-stage="live"></aside>
+
+  <section class="convo" aria-label="Conversation">
+    <div class="convo-top"><span class="file">pump_housing.step</span><span class="kind">CFD mesh · OpenFOAM</span><span class="spacer"></span>
+      <button class="ghost">Cancel run</button></div>
+    <div class="feed">
+      <details><summary class="fold"><svg class="chev" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3.5 2l3 3-3 3"/></svg>
+        Check and brief · 7 steps · 1 min 12 s</summary>
+        <div class="steps" style="margin-top:6px">
+          <div class="step done"><span class="ic" data-ic="done"></span><span class="w">Read your CAD: 1 solid, 418 faces</span><span class="live-n">4 s</span></div>
+          <div class="step done"><span class="ic" data-ic="done"></span><span class="w">Measured walls: thinnest 1.8 mm</span><span class="live-n">22 s</span></div>
+          <div class="step done"><span class="ic" data-ic="done"></span><span class="w">Found 2 openings: inlet and outlet</span><span class="live-n">9 s</span></div>
+        </div></details>
+
+      <div class="msg-user">CFD, water through the housing. Inlet 2 m/s.</div>
+
+      <p class="say">Water goes in one opening and out the other, so this is internal flow. I'm meshing the space inside the housing, not the air around it.</p>
+
+      <div class="steps">
+        <div class="step done"><span class="ic" data-ic="done"></span><span class="w">Found the space the water fills: 1 region</span><span class="live-n">6 s</span></div>
+        <div class="step done"><span class="ic" data-ic="done"></span><span class="w">Planned the mesh</span><span class="live-n">48 s</span></div>
+      </div>
+
+      <p class="say">Cells are <b>2.1 mm</b> across the main flow. The <b>26 fillets</b> and <b>3 holes</b> bend the flow, so they get the finest cells. I expect about <b>1.9M cells</b>.</p>
+      <p class="say">The narrowest gap is <b>1.8 mm</b>. It gets at least 3 cells across, so the flow through it is resolved.</p>
+
+      <div class="steps">
+        <div class="step done"><span class="ic" data-ic="done"></span><span class="w">Started a mesh machine</span><span class="live-n">31 s</span></div>
+        <div class="step done"><span class="ic" data-ic="done"></span><span class="w">Refined around 26 fillets and 3 holes</span><span class="live-n">1 min 04 s</span></div>
+      </div>
+
+      <p class="say">The first try at the wall layers thinned out at a sharp lip by the outlet. Trying again with gentler layer growth there.</p>
+
+      <div class="steps" aria-live="polite">
+        <div class="step done"><span class="ic" data-ic="done"></span><span class="w">Built 5 boundary layers on 14 walls, second try</span><span class="live-n">52 s</span></div>
+        <div class="step now"><span class="ic" data-ic="fill"></span><span class="w">Filling the volume</span>
+          <span class="live-n"><span data-count-from="1180000" data-count-step="9000" data-count-fmt="m" data-count-of="1900000" data-count-max="1900000"></span> of about 1.9M cells</span>
+          <span class="bar"><i style="--p:62%"></i></span></div>
+        <div class="step"><span class="ic"></span><span class="w" style="color:var(--text-faint)">Checking quality</span><span></span></div>
+        <div class="step"><span class="ic"></span><span class="w" style="color:var(--text-faint)">Writing your solver files</span><span></span></div>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="chips">
+        <span class="chip"><span class="d live"></span>Meshing · <span class="m" data-clock="372"></span></span>
+        <span class="chip">Mesh machine · 64 GB</span>
+        <span class="chip">Usually about 9 min</span>
+      </div>
+      <div class="box"><span class="ph">Ask about the run, or tell Hexera what to change…</span>
+        <button class="send" aria-label="Send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 13V3M3.5 7.5L8 3l4.5 4.5"/></svg></button></div>
+    </div>
+  </section>
+
+  <section class="viewer" aria-label="Part view">
+    <div class="vt" data-vt=""></div>
+    <div class="v-stage" data-part></div>
+    <div class="v-left">Your part. The mesh shows here when it is checked.</div>
+    <div class="v-corner"><span>182 × 120 × 96 mm</span></div>
+  </section>
+</div>
+<script defer src="shell.js"></script><script defer src="icons.js"></script><script defer src="part.js"></script>
+</body></html>
