@@ -373,14 +373,48 @@ def detail_response(job_id: str, cut: dict) -> dict:
             # THE BAR TRAVELS WITH THE VALUES, so a colour on screen has a stated line behind it.
             # Without one a client can only invent a ramp, and then 18 deg and 68 deg are the
             # same hue with nothing saying which side of anything they are on.
-            out["quality_limit"] = {m: QUALITY_BARS[m] for m in qual["values"]
-                                    if m in QUALITY_BARS}
+            #
+            # IN THE SAME SHAPE `face_quality.quality_fields` sends the main surface's, so the
+            # viewer's existing ramp and legend read it unchanged and no metric needs a special
+            # case in the client. `scale_to` on aspect ratio is the same judgement made there:
+            # checkMesh's bar is 1000 against cells at 1 to 3, so a ramp drawn to the bar is one
+            # flat colour, and the span becomes the data's own with the bar as a tick outside it.
+            out["quality_metrics"] = _metric_descriptors(qual["values"])
         return out
 
     return {"job_id": job_id, "centre": cut["centre"], "radius": cut["radius"],
             "faces_in_range": cut["faces_in_range"], "faces_returned": cut["faces_returned"],
             "truncated": cut["truncated"],
             "patches": [one(q) for q in cut["patches"]]}
+
+
+def _metric_descriptors(values: dict) -> dict:
+    """One descriptor per metric in a cut, shaped as the main surface's are."""
+    import numpy as np
+
+    label = {"non_ortho": ("non-orthogonality", "°"), "skewness": ("skewness", ""),
+             "aspect_ratio": ("aspect ratio", "")}
+    out = {}
+    for metric, arr in values.items():
+        a = np.asarray(arr, dtype=np.float64)
+        finite = a[np.isfinite(a)]
+        hi = float(finite.max()) if finite.size else 0.0
+        bar = QUALITY_BARS.get(metric)
+        name, unit = label.get(metric, (metric, ""))
+        md = {"label": name, "unit": unit, "max": hi,
+              "n_faces": int(finite.size),
+              "n_over": int(np.count_nonzero(finite > bar)) if bar is not None else 0}
+        if bar is not None:
+            md["limit"] = float(bar)
+        if metric == "skewness":
+            # named for what it is: the bar a BOUNDARY face is held to, which is the only kind
+            # of face in a cut
+            md["boundary_limit"] = float(QUALITY_BARS["skewness"])
+        if metric == "aspect_ratio":
+            md["floor"] = 1.0
+            md["scale_to"] = float(max(hi, 2.0))
+        out[metric] = md
+    return out
 
 
 def _share_out(budget: int, counts: list[int]) -> list[int]:

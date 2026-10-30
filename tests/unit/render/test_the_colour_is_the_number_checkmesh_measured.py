@@ -279,13 +279,35 @@ def test_the_bar_travels_with_the_values_and_skewness_gets_the_boundary_one(regi
     Q.write_quality(pm, region="fluid")
     body = D.detail_response("a-job", _cut(region))
     for q in body["patches"]:
-        assert q["quality_limit"] == {"non_ortho": 65.0, "skewness": 20.0,
-                                       "aspect_ratio": 1000.0}
+        md = q["quality_metrics"]
+        assert {m: md[m]["limit"] for m in md} == {"non_ortho": 65.0, "skewness": 20.0,
+                                                    "aspect_ratio": 1000.0}
     # and it is the boundary bar precisely because the basis says so
     assert D.QUALITY_BARS["skewness"] == 20.0
     from meshpipeline.render.face_quality import INTERNAL_SKEW_LIMIT
     assert INTERNAL_SKEW_LIMIT == 4.0, "the internal bar, which a cut must NOT use"
     assert D.QUALITY_BARS["skewness"] != INTERNAL_SKEW_LIMIT
+
+
+def test_the_descriptors_are_the_shape_the_main_surface_already_sends(region):
+    """So the viewer's ramp and legend read a cut's metrics unchanged, and no metric needs a
+    special case in the client."""
+    from meshpipeline.render import detail_window as D
+
+    pm, _ = region
+    Q.write_quality(pm, region="fluid")
+    md = D.detail_response("a-job", _cut(region))["patches"][0]["quality_metrics"]
+
+    assert md["non_ortho"]["unit"] == "°" and md["skewness"]["unit"] == ""
+    for m in md:
+        assert md[m]["max"] >= 0.0 and md[m]["n_faces"] > 0
+        assert md[m]["n_over"] == 0, "nothing in this fixture is over its bar"
+    # checkMesh's aspect bar is 1000 against cells at 1 to 3, so a ramp drawn to the bar is one
+    # flat colour; the span becomes the data's own, exactly as the main surface does it
+    assert md["aspect_ratio"]["floor"] == 1.0
+    assert md["aspect_ratio"]["scale_to"] == pytest.approx(max(md["aspect_ratio"]["max"], 2.0))
+    assert "scale_to" not in md["non_ortho"], "65 deg is a real bar and the ramp should show it"
+    assert md["skewness"]["boundary_limit"] == 20.0
 
 
 def test_a_cut_with_no_quality_beside_it_simply_has_none(region):
