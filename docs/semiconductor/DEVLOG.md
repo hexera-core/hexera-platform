@@ -2577,3 +2577,36 @@ variable reaches it, so inside that same 4-CPU container it launches 32 threads 
 pin it has existed in `fluid_volume.main` since it was written, reading `task["threads"]`, and
 nothing has ever set it. Whether setting it is worth anything is being measured, and the same run
 says whether thread count changes the split's answer, which decides whether it is safe at all.
+
+### The thread cap I was sure about, measured and dropped
+
+The geometry worker's container is held to 4 CPUs (`NanoCpus=4e9`). Inside it `nproc` and
+`sched_getaffinity` both say 32, `determinism.job_cpus()` correctly says 4, and OpenCASCADE's
+default pool launches 32 threads a job because it sizes itself from the host and no environment
+variable reaches it. Both of the operations that dominate ask for that pool: `fluid_volume` sets
+`SetRunParallel(True)` on the volume maker in `_split` and on the fuse. Eight times
+oversubscribed, on the one path with a wall clock. I was confident.
+
+Same file, same container, one arm after the other so neither contended:
+
+| | 32 threads, as it is | 4 threads, the cgroup's own |
+|---|---|---|
+| load | 32.9 s | 35.0 s |
+| candidate_caps | 119.4 s | 147.7 s |
+| extract, whole | 436.9 s | 443.2 s |
+| caps | 58 | 58 |
+| passages | 2 | 2 |
+| regions | 70 | 70 |
+
+Capping it is 1.4% slower overall and 23.7% slower on cap detection. So it is not a cost worth
+paying attention to and the hook stays unused. `fluid_volume.main` has read `task["threads"]` since
+it was written and nothing has ever set it; that remains true on purpose now rather than by
+accident.
+
+TWO THINGS THAT COME WITH IT. The first is that I had already written down that this
+oversubscription explained the same file taking 379.5 s in one run and 711.1 s in another. It does
+not explain anything: capping the threads moves neither number. The spread is real - 359.0, 359.2,
+384.3, 436.9 and 711.1 s across runs of one file - and the threads are not its cause. The second is
+that thread count does not change what the split finds here: identical caps, passages and regions
+in both arms. That is worth having, because it is the opposite of what this module records about
+cfMesh, whose thread count does change its output.
