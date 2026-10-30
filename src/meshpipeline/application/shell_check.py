@@ -60,6 +60,8 @@ MIXED_WHY = ("{share}% of this part is plate {thin}, but it also has thick regio
 OPEN_WHY = ("This part is plate {thin}, but its mid-surfaces do not meet at {n} place{s} yet, so a shell mesh "
             "would have gaps there. Auto meshes it as a solid.")
 SOLID_WHY = "No wall of this part is thin against its size, so it is meshed as a solid."
+#: SHSTAGE-3b: the same with the measured reason the shell check gave (cad/midsurface SHELL-2c)
+SOLID_DETAIL_WHY = "No wall of this part is thin against its size: {detail}. So it is meshed as a solid."
 LOW_SHARE_WHY = ("Only {share}% of this part is thin plate, so it is meshed as a solid.")
 TRIANGLES_WHY = ("Shell meshes need a CAD file (STEP or IGES): this file is triangles, with no faces to find the "
                  "mid-surface on. It is meshed as a solid.")
@@ -241,6 +243,16 @@ def _thin_words(s: dict) -> str:
     return f"{_mm(lo)} to {_mm(hi)} thick"
 
 
+def _solid_detail(summary: dict | None, body: str | None = None) -> str:
+    """SHSTAGE-3b: the measured reason a whole body stays solid ("its most plate-like wall is 8 mm thick and spans
+    about 42 mm, ..."), read from the shell check's words after its colon; "" when there is none. With no body
+    named, the part's: its one body's, or the reason every solid body shares."""
+    whys = {str(r.get("why") or "") for r in (summary or {}).get("solid_regions") or []
+            if r.get("whole") and (body is None or r.get("body") == body)}
+    details = {w.split(": ", 1)[1].strip() for w in whys if ": " in w}
+    return details.pop() if len(details) == 1 else ""
+
+
 def recommendation(summary: dict | None, *, cad: bool = True, status: str = READY, reason: str = "") -> tuple[str, str]:
     """SHSTAGE-3: what Auto meshes the part as, and why, in plain words: ("shell" | "solid", the reason), or
     ("", "") while the walls are still being measured."""
@@ -254,7 +266,8 @@ def recommendation(summary: dict | None, *, cad: bool = True, status: str = READ
     share = float(summary.get("share") or 0.0)
     pct = max(0, min(100, int(round(100 * share))))
     if not verdicts or verdicts == {"solid"}:
-        return pm.MESH_SOLID, SOLID_WHY
+        detail = _solid_detail(summary)
+        return pm.MESH_SOLID, SOLID_DETAIL_WHY.format(detail=detail) if detail else SOLID_WHY
     if verdicts != {"shell"}:
         return pm.MESH_SOLID, MIXED_WHY.format(share=pct, thin=_thin_words(summary))
     if summary.get("open_edges"):
@@ -276,6 +289,9 @@ def not_shelled(summary: dict | None) -> list[dict]:
         if reg.get("whole"):
             words = (f"{reg.get('body')} stays solid: no wall of it is thin against its size." if many
                      else "The whole part stays solid: no wall is thin against its size.")
+            detail = _solid_detail(s, reg.get("body"))
+            if detail:
+                words = f"{words[:-1]}: {detail}."
         else:
             n = int(reg.get("n_faces") or len(reg.get("faces") or []))
             where = f"A thick region of {who if many else 'the part'} ({n} face{'s' if n != 1 else ''})"

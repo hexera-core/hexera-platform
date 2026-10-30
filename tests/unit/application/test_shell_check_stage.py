@@ -98,12 +98,21 @@ def test_a_mixed_part_is_recommended_solid_and_says_what_stays_solid(parts):
     assert sc.settle(view, "auto")["mesh_as"] == "solid"
 
 
+def test_a_solid_reason_without_numbers_keeps_the_plain_words():
+    summary = {"bodies": [{"body": "Part_1", "verdict": "solid"}],
+               "solid_regions": [{"body": "Part_1", "whole": True, "why": "no wall is thin against its size"}]}
+    assert sc.recommendation(summary) == ("solid", sc.SOLID_WHY)
+
+
 def test_a_solid_part_is_solid_even_when_shell_is_asked_for_with_the_reason(parts):
     rec, drawn, _ = parts["block"]
     view = sc.shell_view(_ready(sc.summarise(rec, drawn)), CAD, {"value": "shell", "by": "table"})
-    assert view["recommend"] == "solid" and view["reason"] == sc.SOLID_WHY
+    # SHSTAGE-3b: the reason carries the measured wall: a 50 x 40 x 30 block's thinnest "wall" is 30 mm over 45 mm
+    assert view["recommend"] == "solid" and view["reason"].startswith("No wall of this part is thin against its size: ")
+    assert "30 mm thick" in view["reason"] and view["reason"].endswith("So it is meshed as a solid.")
     assert view["default"] == "shell" and view["said_words"] == "You asked for a shell mesh in the chat."
-    assert view["not_shelled"][0]["words"] == "The whole part stays solid: no wall is thin against its size."
+    assert view["not_shelled"][0]["words"].startswith("The whole part stays solid: no wall is thin against its size: ")
+    assert "30 mm thick" in view["not_shelled"][0]["words"]
     settled = sc.settle(view, "shell")
     assert settled["mesh_as"] == "solid" and settled["why"] == sc.NOTHING_TO_SHELL
 
