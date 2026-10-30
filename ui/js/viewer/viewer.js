@@ -316,7 +316,9 @@ function initViewer(job,surf,uiCfg){
   // with no choice stored for this job, the way up the geometry check proposed (surf.up_axis)
   if(upSel&&!savedUp('job',job)&&isUpAxis(surf.up_axis))upSel.value=surf.up_axis;
   orient(cam,(upSel&&upSel.value)||'+z',VIEW_DIR);
-  ren.resetCamera();rw.render();
+  // one render for the opening view (below, once it is framed): a big model drawn twice in a row
+  // held the page past a headless browser's patience
+  ren.resetCamera();
   const _bs=ren.computeVisiblePropBounds();
   /* FRAMED ON THE PART. A CFD case's ground is a flat patch many body lengths across: a fit on
      everything shown opened on the ground with the body a speck (dev-areen 2026-10-30, an Ahmed
