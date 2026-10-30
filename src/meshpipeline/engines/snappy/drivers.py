@@ -996,6 +996,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         if plan is None:   # repair: re-plan WITH the previous plan + critique (iterate with memory)
             _po = await plan_with_accounting(
                 surface=_plan_surface(state, workspace),
+                reference_length_m=state.get("reference_length_m"),
                 workspace=workspace, job_id=job_id,
                 request_txt=state.get("request_txt", ""),
                 mesh_fidelity=state.get("effective_mesh_fidelity", ""),
@@ -2056,6 +2057,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         if plan is None:
             _po = await plan_with_accounting(
                 surface=_plan_surface(state, workspace),
+                reference_length_m=state.get("reference_length_m"),
                 workspace=workspace, job_id=job_id,
                 request_txt=state.get("request_txt", ""),
                 mesh_fidelity=state.get("effective_mesh_fidelity", ""),
@@ -2107,13 +2109,20 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                         _prev[0], _prev[1], _prev[1] / _prev[0], _corr,
                         polcfg.CELL_HARD_LIMIT)
                 _budget = _corr
-        _sl = strategy.get("surface_level", 2)
-        surface_level = int(_sl[-1] if isinstance(_sl, (list, tuple)) else _sl)
-        cells_across = max(8, int(strategy.get("cells_across_diameter", 24)))
-        n_layers = max(0, int(strategy.get("n_layers", 3)))
-        first_rel = float(strategy.get("first_layer_rel", 0.3))
+        # each knob read so a value that is not a usable number keeps its rules default - the
+        # planner's answer is guarded already (planner.validate_plan), and a pass is never lost
+        # to one bad knob that reached here some other way
+        from meshpipeline.engines.snappy.planner import plan_float, plan_int
+        surface_level = max(0, plan_int(strategy, "surface_level", 2))
+        cells_across = max(8, plan_int(strategy, "cells_across_diameter", 24))
+        n_layers = max(0, plan_int(strategy, "n_layers", 3))
+        first_rel = plan_float(strategy, "first_layer_rel", 0.3)
+        if first_rel <= 0.0:
+            first_rel = 0.3
         quality = strategy.get("quality", "balanced")
-        feature_level = int(strategy.get("feature_level", surface_level + 1))
+        if quality not in ("balanced", "strict"):
+            quality = "balanced"
+        feature_level = max(0, plan_int(strategy, "feature_level", surface_level + 1))
         # base cell sized so the wall cell (base / 2^level) resolves the bore into `cells_across`
         base_cell = (bore_D / cells_across) * (2 ** surface_level)
         # THIN FEATURES. The wall cell above is sized from the BORE, so a feature thinner
@@ -2475,6 +2484,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             or state.get("reviewer_feedback", "")
         _po = await plan_with_accounting(
             surface=_plan_surface(state, workspace),
+            reference_length_m=state.get("reference_length_m"),
             workspace=workspace, job_id=job_id,
             request_txt=state.get("request_txt", ""),
             mesh_fidelity=state.get("effective_mesh_fidelity", ""), prior_feedback=prior_fb,

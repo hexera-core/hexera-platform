@@ -68,6 +68,10 @@ def face_plan(record: Mapping, mid_id: str, *, width: float, radii: list[float],
     mid = next(m for m in record["mids"] if m["id"] == mid_id)
     pair = next(p for p in record["pairs"] if p["id"] == mid["pair"])
     wall = float(pair["thickness_mm"])
+    if mid.get("thickness_range_mm"):
+        # SHELL-9b: a wall that varies is sized by its thinnest point (where it bends first; a wedge sized by its
+        # thickest got 4 elements across where 20 were due, and its modes came out 14% stiff)
+        wall = min(wall, float(mid["thickness_range_mm"][0]))
     size = float(pair.get("size_mm") or width)
     pairs = {p["id"]: p for p in record["pairs"]}
     span = max([float(pairs[m["pair"]].get("size_mm") or 0.0) for m in record["mids"]

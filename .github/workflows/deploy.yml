@@ -224,6 +224,10 @@ jobs:
       admin_domain: ${{ steps.pick.outputs.admin_domain }}
       billing_export_table: ${{ steps.pick.outputs.billing_export_table }}
       worker_env_uri: ${{ steps.pick.outputs.worker_env_uri }}
+      # THE VERDICT BY MEASURED LIMITS (docs/RULES.md VER): 'true' on shared dev and every personal
+      # environment, unstated on prod (its shipped default, off, stays in force) until dev has run
+      # with it. It reaches the workers as template metadata, so a fleet deploy applies it.
+      verdict_by_limits: ${{ steps.pick.outputs.verdict_by_limits }}
       outreach_enabled: ${{ steps.pick.outputs.outreach_enabled }}
       outreach_worker_job: ${{ steps.pick.outputs.outreach_worker_job }}
       outreach_db_host: ${{ steps.pick.outputs.outreach_db_host }}
@@ -551,6 +555,8 @@ jobs:
               # the settings inventory's own output. It carries policy, model routing and limits and
               # no credential; endpoints and secrets are injected onto the instance at boot.
               echo "worker_env_uri=gs://${_did}-transfer-${_num}/worker.env"
+              # the measured limits decide pass, concerns or fail; the AI review only adds notes
+              echo "verdict_by_limits=true"
               # THE OBJECT STORE. Every field is pinned EXCEPT the access id, and the exception is
               # the point.
               #
@@ -707,6 +713,8 @@ jobs:
               # hand. It carries policy, model routing and limits, never a credential: the object
               # and instance metadata are both readable by anyone who can describe the instance.
               echo "worker_env_uri=gs://dev-transfer-224734058693/worker.env"
+              # the measured limits decide pass, concerns or fail; the AI review only adds notes
+              echo "verdict_by_limits=true"
               # THE OBJECT STORE DEV ALREADY OWNS. Everything below RESTATES live configuration -
               # the bucket, the HMAC key and the secret container all exist and the worker fleet
               # has been reading exactly these values out of worker.env all along. Only the API
@@ -1442,6 +1450,8 @@ jobs:
       CAD_REPAIR_HEAL_SELF_INTERSECTIONS: ${{ inputs.cad_repair && 'true' || '' }}
       # The planner posture, stated only when it is not "off"; empty means "not stated".
       CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || '' }}
+      # The verdict by measured limits, per target (the `target` job): 'true' on dev, empty on prod.
+      VERDICT_BY_LIMITS: ${{ needs.target.outputs.verdict_by_limits }}
     steps:
       # A SHALLOW CHECKOUT IS ENOUGH HERE, unlike release's. Nothing in this job reads history:
       # lib.sh derives the image tag from `rev-parse --short=12 HEAD` plus a `diff --quiet HEAD`

@@ -114,6 +114,18 @@ def plate_with_boss(t: float = 4.0):
     return _fuse(_box(0, 0, 0, 200, 100, t), _box(85, 35, t, 30, 30, 30))
 
 
+def plate_with_filleted_pad(t: float = 2.0, h: float = 10.0, r: float = 2.0):
+    """A 200 x 100 x `t` plate with a 30 x 30 x `h` pad on top, its foot rounded into the plate by `r` mm fillets:
+    the plate's edges at the pad lie past the fillets, further from the pad's faces than a wall."""
+    s = _fuse(_box(0, 0, 0, 200, 100, t), _box(85, 35, t, 30, 30, h))
+
+    def foot(b):
+        return (abs(b[2] - t) < 1e-6 and abs(b[5] - t) < 1e-6 and b[0] >= 85 - 1e-6 and b[3] <= 115 + 1e-6
+                and b[1] >= 35 - 1e-6 and b[4] <= 65 + 1e-6)
+
+    return _unify(_fillet(s, _edges_where(s, foot), r))
+
+
 def stepped_wall_through_plate(tp: float = 2.0, t_low: float = 4.0, t_high: float = 2.0, h: float = 60.0):
     """A 200 x 100 x `tp` plate (z 0..tp) crossed by an upright wall that is `t_low` thick below it and `t_high`
     above it, flush on one side (x = 102): the wall steps right where the plate crosses it, so the two wall

@@ -26,3 +26,14 @@ def test_the_sheet_size_still_binds_when_it_is_finer():
 def test_the_floor_holds_under_every_rule():
     h, rule = P.base_size(wall=10.0, size=1000.0, width=10.0)
     assert rule == "SHMESH-2" and h == pytest.approx(P.FLOOR_WALLS * 10.0)
+
+
+def test_a_wall_that_varies_is_sized_by_its_thinnest_point():
+    # SHELL-9b: a wedge 2 to 5.5 mm, 100 mm wide: 50 of its thinnest walls wide, a panel (20 across); read at its
+    # thickest wall it was 18 walls wide and got 4 across
+    rec = {"mids": [{"id": "Mid_1", "pair": "P1", "body": "Part_1", "thickness_range_mm": [2.0, 5.5]}],
+           "pairs": [{"id": "P1", "thickness_mm": 5.5, "size_mm": 300.0}]}
+    from meshpipeline.engines import shell_plan as plan
+
+    row = plan.face_plan(rec, "Mid_1", width=100.0, radii=[])
+    assert row["wall_mm"] == 2.0 and row["size_mm"] == 5.0 and row["rule"] == "SHMESH-15"

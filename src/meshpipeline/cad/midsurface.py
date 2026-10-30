@@ -893,6 +893,42 @@ def fitted_fidelity(mid, fa, fb) -> tuple[float, float, int, float, float]:
     return worst, rel, n, lo, hi
 
 
+#: a wall varies when its thickest point is more than WALL_VARIES thicker than its thinnest
+WALL_VARIES = 0.01
+#: SHELL-9b: a fitted mid-face's wall is read at WALL_SAMPLES x WALL_SAMPLES points inside it and WALL_EDGE_SAMPLES
+#: along each of its edges (distance to A plus distance to B), and the record carries them, so the mesh can give
+#: every node its own wall (a tapered wall meshed at its thickest point was 41 to 147% too stiff)
+WALL_SAMPLES = 9
+WALL_EDGE_SAMPLES = 8
+
+
+def wall_samples(mid, fa, fb) -> list[list[float]]:
+    """SHELL-9b: [x, y, z, wall] (own units) at points read inside the mid-face and along its edges."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.gp import gp_Pnt2d
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_IN
+    from OCP.TopoDS import TopoDS
+
+    a = BRepAdaptor_Surface(mid, True)
+    u0, u1, v0, v1 = a.FirstUParameter(), a.LastUParameter(), a.FirstVParameter(), a.LastVParameter()
+    pts = []
+    k = WALL_SAMPLES
+    for i in range(k):
+        for j in range(k):
+            u, v = u0 + (u1 - u0) * (i + 0.5) / k, v0 + (v1 - v0) * (j + 0.5) / k
+            if BRepClass_FaceClassifier(mid, gp_Pnt2d(u, v), 1e-9).State() == TopAbs_IN:
+                pts.append(_np(a.Value(u, v)))
+    emap = _map(mid, TopAbs_EDGE)
+    for i in range(1, emap.Extent() + 1):
+        pts += _edge_points(TopoDS.Edge_s(emap.FindKey(i)), WALL_EDGE_SAMPLES)
+    out = []
+    for x in pts:
+        v = _vertex(x)
+        out.append([float(x[0]), float(x[1]), float(x[2]), _dist(v, fa) + _dist(v, fb)])
+    return out
+
+
 def fitted_mid(fa, fb, t_hint: float, fuzzy: float) -> tuple[list, float, float, float, str]:
     """SHELL-9: the fitted mid-faces of faces fa, fb ([] when none can be made, with why), and the wall's thinnest,
     thickest and mean thickness over them (own units). `t_hint`: the wall as read by the pair test."""
@@ -986,6 +1022,7 @@ class _Mid:
         self.original = face
         self.true_face = face            # where the mid-face really lies (the checks read this one)
         self.offset = 0.0                # how far it was moved onto a thicker neighbour's mid-plane (SHELL-7)
+        self.offset_normal = np.zeros(3)  # the direction the true mid-face lies at that distance from it
         self.remade = False              # an offset surface re-made as a B-spline before the join (remade_offset)
         self.box = _box(face)            # the original face's box, its own units
         self.face_box = self.box         # the (extended) face's
@@ -1503,13 +1540,40 @@ def _outward_at(edge, face, step: float):
     return None
 
 
-def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thick_faces: list | None = None) -> dict:
+def _unjoined(census: dict) -> int:
+    """The edges a join is judged by: the open ones, and the links SHELL-6b finds across a blend or into a thick
+    wall's slab (a join that meets the walls themselves is preferred to those)."""
+    return int(census["open_edges"]) + int(census.get("blend_link_edges", 0))
+
+
+def _in_thick_wall(p, walls: list, tol: float) -> bool:
+    """SHELL-6b: does point p lie in the wall of a thick pair - as far from its two faces, added up, as the wall is
+    thick (within 2%)? `walls`: (face a, face b, wall, box) in own units."""
+    v = None
+    for fa, fb, w, box in walls:
+        if not _near_box(p, box, tol):
+            continue
+        v = v if v is not None else _vertex(p)
+        da = _dist(v, fa)
+        if da > w:
+            continue
+        db = _dist(v, fb)
+        if db <= w and da + db <= 1.02 * w + tol:
+            return True
+    return False
+
+
+def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thick_faces: list | None = None,
+                thick_walls: list | None = None, thick_rounds: list | None = None) -> dict:
     """The sewn surface's edges: shared by two faces (a closed face's seam counts so), a junction (three or
     more), a real boundary (one face, the outside just past it), a SOLID LINK (one face, the material past it
     belonging to a thick region of the same body - where a mixed part's shell meets its solid) or OPEN (one
     face, still material past it, no thick region there: a junction the mid-faces did not reach). `owner_t`:
     each fused face's wall (its own units) by its index in the fused shape's face map; `scale`: mm per unit;
-    `thick_faces`: the body's faces of thick regions (cad/shell_pairs SOLID and THICK roles)."""
+    `thick_faces`: the body's faces of thick regions (cad/shell_pairs SOLID and THICK roles); `thick_walls`: its
+    thick pairs (face a, face b, wall, box), whose wall the material past an edge may be, and `thick_rounds` the
+    blends that round into its thick regions (SHELL-6b). Such links are also counted apart (blend_link_edges):
+    the joins are chosen as if they were open, so a join that meets the walls themselves is still preferred."""
     from OCP.BRep import BRep_Tool
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp
@@ -1523,6 +1587,8 @@ def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thi
     open_at: list[list[float]] = []
     links: list[list[float]] = []
     thick = [(f, _box(f)) for f in thick_faces] if thick_faces else []
+    rounds = [(f, _box(f)) for f in thick_rounds] if thick_rounds else []
+    soft = 0
     # every sewn face with its wall: an edge that ends INSIDE ANOTHER SHELL WALL is no open edge
     sewn = [(k, TopoDS.Face_s(fmap.FindKey(k)), owner_t.get(k, 0.0)) for k in range(1, fmap.Extent() + 1)]
     walls = [(k, f, w, _box(f)) for k, f, w in sewn if w > 0]
@@ -1576,13 +1642,18 @@ def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thi
             in_wall += 1
         elif _near_any(p, thick, (0.5 + OPEN_STEP) * t + solid.tol):
             links.append(_pt(p * scale))
+        elif (_near_any(p, rounds, (0.5 + OPEN_STEP) * t + solid.tol)
+              or (thick_walls and _in_thick_wall(q, thick_walls, solid.tol))):
+            # SHELL-6b: a link across the blend that rounds into a thick region, or into a thick wall's slab
+            links.append(_pt(p * scale))
+            soft += 1
         elif _length(e) < FLOOR_SHARE * t:
             below_floor += 1
         else:
             open_at.append(_pt(p * scale))
     return {"faces": int(fmap.Extent()), "edges": int(e2f.Extent()), "shared_edges": shared,
             "junction_edges": junction, "boundary_edges": boundary, "ends_in_wall_edges": in_wall, "below_floor_edges": below_floor,
-            "solid_link_edges": len(links),
+            "solid_link_edges": len(links), "blend_link_edges": soft,
             "open_edges": len(open_at), "open_at_mm": open_at[:50], "solid_link_at_mm": links[:50]}
 
 
@@ -2509,6 +2580,92 @@ def bridges(mine: list[_Mid], solid: _Solid, fuzzy: float) -> list[tuple[int, in
     return out
 
 
+#: SHELL-13, AN OPEN EDGE BRIDGED TO THE JUNCTION IT STOPS SHORT OF: after the join, an edge still open (material
+#: past it) that runs alongside an edge of another mid-face of the body - a junction line where two mid-faces meet,
+#: or another free edge - is joined to it by the ruled strip between the two, when every one of BRIDGE_SAMPLES + 1
+#: points of each edge lies within SHELL-3's reach of the other (half the other wall plus EXTEND_WALLS of the
+#: thicker), the two are further apart than the sewing tolerance, and the strip's middle is in the material. The
+#: nearest such edge is taken. An extruded profile's curved (fitted) wall grown to the corner of its two flat walls
+#: stopped 0.7 mm short of it (fresh fr013). The strip belongs to the open edge's mid-face; the joined surface is
+#: kept only when it leaves fewer open edges.
+CLOSE_STRIPS = True
+
+
+def close_strips(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy: float, open_at: list):
+    """SHELL-13 on one body's joined surface: (fused, images, strips made) with the open edges at `open_at` (points
+    on them, own units) bridged where they can be; None when none can."""
+    from OCP.BRepFill import BRepFill
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    tol = 10.0 * fuzzy
+    fmap = _map(fused, TopAbs_FACE)
+    owner: dict[int, int] = {}
+    for i, imgs in enumerate(images):
+        for f in imgs:
+            k = fmap.FindIndex(f)
+            if k > 0:
+                owner.setdefault(k, i)
+    e2f = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(fused, TopAbs_EDGE, TopAbs_FACE, e2f)
+    edges = []  # (edge, owner mids, free)
+    for n in range(1, e2f.Extent() + 1):
+        e = TopoDS.Edge_s(e2f.FindKey(n))
+        if _length(e) <= tol:
+            continue
+        ks = {fmap.FindIndex(f) for f in e2f.FindFromIndex(n)} - {0}
+        own = {owner[k] for k in ks if k in owner}
+        if own:
+            edges.append((e, own, len(ks) == 1))
+    points = [_vertex(np.asarray(q, float)) for q in open_at]
+    strips: list[tuple[int, object]] = []
+    for e, own, free in edges:
+        if not free or not any(_dist(q, e) <= tol for q in points):
+            continue
+        (i,) = own
+        pa = _edge_points(e, BRIDGE_SAMPLES)
+        best = None
+        for eb, own_b, _free_b in edges:
+            if eb.IsSame(e) or i in own_b:
+                continue
+            j = min(own_b)
+            reach = 0.5 * mine[j].t_max + EXTEND_WALLS * max(mine[i].t_max, mine[j].t_max)
+            if not _near_box(pa[len(pa) // 2], _box(eb), reach):
+                continue
+            pb = _edge_points(eb, BRIDGE_SAMPLES)
+            gaps = [_dist(_vertex(x), eb) for x in pa] + [_dist(_vertex(x), e) for x in pb]
+            if max(gaps) > reach or max(gaps) <= tol or (best is not None and max(gaps) >= best[0]):
+                continue
+            flip = (np.linalg.norm(pa[0] - pb[0]) + np.linalg.norm(pa[-1] - pb[-1])
+                    > np.linalg.norm(pa[0] - pb[-1]) + np.linalg.norm(pa[-1] - pb[0]))
+            mids = [0.5 * (x + y) for x, y in zip(pa, pb[::-1] if flip else pb, strict=True)]
+            if not all(solid.inside(x) for x in mids[1:-1]):
+                continue
+            try:
+                strip = BRepFill.Face_s(e, TopoDS.Edge_s(eb.Reversed()) if flip else eb)
+            except Exception as exc:  # noqa: BLE001 - no strip, the edge stays open
+                logger.debug("shell: no strip from Mid_%d to Mid_%d (%s)", mine[i].k + 1, mine[j].k + 1, exc)
+                continue
+            if strip.IsNull() or _area(strip) <= tol * _length(e):
+                continue
+            best = (max(gaps), strip)
+        if best is not None:
+            strips.append((i, best[1]))
+    if not strips:
+        return None
+    faces = [TopoDS.Face_s(fmap.FindKey(k)) for k in range(1, fmap.Extent() + 1)]
+    out, imgs = sew(faces + [f for _i, f in strips], fuzzy)
+    new_images: list[list] = [[] for _ in mine]
+    for k in range(1, len(faces) + 1):
+        if k in owner:
+            new_images[owner[k]] += list(imgs[k - 1])
+    for n, (i, _f) in enumerate(strips):
+        new_images[i] += list(imgs[len(faces) + n])
+    return out, new_images, strips
+
+
 def _join_straight(mine: list[_Mid], solid: _Solid, fuzzy: float, notes: list[str], body: str):
     """The straight-edge extension (extend) and a plain sew: (fused shape, each mid-face's faces in it)."""
     for m in mine:
@@ -2593,6 +2750,7 @@ def snap_steps(mine: list[_Mid], solid: _Solid) -> None:
         m.plane = _plane(moved_face)
         m.box = m.face_box = _box(moved_face)
         m.offset = -d                         # the true mid-face lies this far from the shell's reference plane
+        m.offset_normal = np.asarray(o.plane[1], float)   # ... along this direction (SHELL-7: ZOFFS / OFFSET)
 
 
 def fallback_regions(sewn_rows: list[dict], faces: list, names: list[str], body_of: list[int],
@@ -2799,10 +2957,27 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                 m.original = m.face = g
                 m.box = m.face_box = _box(g)
                 m.remade = True
-        thick_faces = [faces[k] for k in range(len(faces))
-                       if body_of[k] == b and roles[k]["role"] in (sp.SOLID, sp.THICK)]
+        thick_k = {k for k in range(len(faces)) if body_of[k] == b and roles[k]["role"] in (sp.SOLID, sp.THICK)}
+        # SHELL-6b: a blend that rounds into a thick region is that region's side (a pad whose foot is all fillet
+        # and round, no flat side: the plate's edge lies past the fillet, further than the plain test reaches;
+        # a power-supply bracket's pad, fresh fr003, 4 edges)
+        round_k = {k for k in range(len(faces)) if body_of[k] == b and roles[k]["role"] == sp.BLEND
+                   and neighbours[k] & thick_k}
+        thick_faces = [faces[k] for k in sorted(thick_k)]
+        thick_rounds = [faces[k] for k in sorted(round_k)]
+        # SHELL-6b: and the walls of its thick pairs (an edge whose material past it is a thick wall - a plate
+        # running onto a pad, the edge inside the pad's slab - meets that solid region)
+        thick_walls = []
+        for pr in pairs:
+            if pr.shell or body_of[pr.a] != b or not ({pr.a, pr.b} & thick_k) or not (pr.even or pr.tapered):
+                continue
+            lo_a, hi_a = _box(faces[pr.a])
+            lo_b, hi_b = _box(faces[pr.b])
+            thick_walls.append((faces[pr.a], faces[pr.b], pr.thickness / mm,
+                                (np.minimum(lo_a, lo_b), np.maximum(hi_a, hi_b))))
 
-        def census_of(fused, images, mine=mine, solid=solid, thick_faces=thick_faces):
+        def census_of(fused, images, mine=mine, solid=solid, thick_faces=thick_faces, thick_walls=thick_walls,
+                      thick_rounds=thick_rounds):
             fmap_f = _map(fused, TopAbs_FACE)
             owner_t = {}
             for m, imgs in zip(mine, images, strict=True):
@@ -2810,7 +2985,8 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                     k = fmap_f.FindIndex(f)
                     if k > 0:
                         owner_t[k] = m.t
-            return edge_census(fused, owner_t, solid, scale=mm, thick_faces=thick_faces)
+            return edge_census(fused, owner_t, solid, scale=mm, thick_faces=thick_faces, thick_walls=thick_walls,
+                               thick_rounds=thick_rounds)
 
         # SHELL-3, BOTH JOINS, THE BETTER KEPT: the straight-edge extension (plane to plane: T, L, box, the bent and
         # slotted sheets of the corpus) and the general join (grow, cut, keep: any surfaces - a tube on a plate,
@@ -2819,7 +2995,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
         straight = _join_straight(mine, solid, fuzzy, notes, body_names[b])
         census = census_of(*straight)
         chosen, method, ext_straight = straight, "straight", [list(m.extended) for m in mine]
-        if census["open_edges"]:
+        if _unjoined(census):
             for m in mine:
                 m.extended = []
             # the general join, and - when a mid-face is an offset surface, re-made as a B-spline to be grown past its
@@ -2836,7 +3012,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
             ext_general: list = []
             for remake, alone in [(r, a) for r in ((True, False) if offsets else (True,))
                                   for a in ((True, False) if free else (True,))]:
-                if method == "general" and census["open_edges"] == 0:
+                if method == "general" and _unjoined(census) == 0:
                     break
                 # a variant joins differently only near the walls it treats differently: with the mid-faces in
                 # beside their patches, the free-form walls; without the re-making, the offset walls. It is tried
@@ -2874,7 +3050,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                 elif _max_tol(general[0]) > JOIN_TOL_WALLS * t_min:
                     notes.append(f"{body_names[b]}: a general join left a tolerance of {_max_tol(general[0]) * mm:.3g} "
                                  f"mm (over {JOIN_TOL_WALLS:g} of the thinnest wall) and was not used (SHELL-12).")
-                elif census_g["open_edges"] < census["open_edges"]:
+                elif _unjoined(census_g) < _unjoined(census):
                     chosen, method, census = general, "general", census_g
                     ext_general = [list(m.extended) for m in mine]
             if method == "general":
@@ -2884,6 +3060,21 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                 for m, ext in zip(mine, ext_straight, strict=True):
                     m.extended = ext
         fused, images = chosen
+        if CLOSE_STRIPS and census["open_edges"] and census["open_edges"] <= len(census.get("open_at_mm", [])):
+            try:
+                closed = close_strips(fused, images, mine, solid, fuzzy,
+                                      [np.asarray(q, float) / mm for q in census["open_at_mm"]])
+            except Exception as exc:  # noqa: BLE001 - the join stands
+                logger.debug("shell: open edges of %s could not be bridged (%s)", body_names[b], exc)
+                closed = None
+            if closed is not None:
+                census_c = census_of(closed[0], closed[1])
+                if census_c["open_edges"] < census["open_edges"] and _max_tol(closed[0]) <= JOIN_TOL_WALLS * t_min:
+                    fused, images, census = closed[0], closed[1], census_c
+                    for i, strip in closed[2]:
+                        mine[i].extended.append({"to": None, "area": _area(strip)})
+                    notes.append(f"{body_names[b]}: {len(closed[2])} open edge(s) bridged to the junction beside them "
+                                 "(SHELL-13).")
         census["body"] = body_names[b]
         census["join"] = method
         sewn_rows.append(census)
@@ -2909,12 +3100,18 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
         else:
             err, npts = fidelity(m.true_face, faces[p.a], faces[p.b], m.t)
             worst_rel = max(worst_rel, err / m.t if m.t > 0 else 0.0)
+        # SHELL-9b: a fitted mid-face's wall where it varies, read at points over it (for the mesh's nodes)
+        samples = []
+        if m.fitted and m.t_max > m.t_min * (1.0 + WALL_VARIES):
+            samples = [[_r(c * mm) for c in row] for row in wall_samples(m.true_face, faces[p.a], faces[p.b])]
         mid_rows.append({"id": f"Mid_{m.k + 1}", "pair": f"P{m.pair + 1}", "body": body_names[m.body],
                          "faces": [names[p.a], names[p.b]], "thickness_mm": _r(p.thickness),
                          **({"fitted": True, "thickness_range_mm": [_r(m.t_min * mm), _r(m.t_max * mm)],
                              "thickness_mean_mm": _r(m.t * mm)} if m.fitted else {}),
                          "shell": bool(p.shell), "area_mm2": _r(_area(m.true_face) * mm * mm),
-                         **({"offset_mm": _r(m.offset * mm)} if m.offset else {}),
+                         **({"offset_mm": _r(m.offset * mm),
+                             "offset_normal": [_r(c) for c in m.offset_normal]} if m.offset else {}),
+                         **({"wall_samples_mm": samples} if samples else {}),
                          "kind": fm._kind_word(BRepAdaptor_Surface(m.true_face if m.remade else m.original,
                                                                    True).GetType()),
                          "extended": [{"to": None if e["to"] is None else f"Mid_{e['to'] + 1}",

@@ -100,7 +100,8 @@ def test_a_face_re_made_as_a_b_spline_keeps_its_area_and_owner(tmp_path):
     faces = [f for f in ms._faces(piece) if BRepAdaptor_Surface(f).GetType() == GeomAbs_Cylinder]
     brep = _write(ms._compound(faces), tmp_path / "piece.brep")
     area = sum(ms._area(f) for f in faces)
-    owners = sa.respline(brep, ["Mid_1"], 0, tmp_path / "spline.brep")
+    owners, made = sa.respline(brep, ["Mid_1"], 0, tmp_path / "spline.brep")
+    assert made == 1
     from OCP.BRep import BRep_Builder
     from OCP.BRepTools import BRepTools
     from OCP.TopoDS import TopoDS_Shape
@@ -213,3 +214,71 @@ def test_a_small_hole_refines_round_itself_not_the_whole_plate(tmp_path):
     # the element sides along the far rim (x = 500) are the size of the sheet, not of the hole
     ys = np.sort(mesh.xyz[mesh.xyz[:, 0] > 500 - 1e-6, 1])
     assert np.median(np.diff(ys)) > 10.0 * (3.0 * math.pi / 2 / 6), np.median(np.diff(ys))
+
+
+def _cylinder_piece(tmp_path, degrees: float = 170.0, r: float = 30.0, h: float = 50.0):
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.GeomAbs import GeomAbs_Cylinder
+
+    from meshpipeline.cad import midsurface as ms
+
+    piece = BRepPrimAPI_MakeCylinder(r, h, math.radians(degrees)).Shape()
+    faces = [f for f in ms._faces(piece) if BRepAdaptor_Surface(f).GetType() == GeomAbs_Cylinder]
+    return _write(ms._compound(faces), tmp_path / "piece.brep")
+
+
+def test_a_node_inside_a_curved_face_relaxes_on_its_surface():
+    # SHMESH-14c: a 2 x 2 grid of quads wrapped on a radius-10 cylinder, its inner node pulled aside round the
+    # axis; relaxed with the surface's own projection it moves back and stays on the cylinder
+    ang = np.array([0.0, 0.1, 0.2])
+    z = np.array([0.0, 1.0, 2.0])
+    xyz = np.array([[10 * math.cos(a), 10 * math.sin(a), h] for h in z for a in ang])
+    quads = np.array([[0, 1, 4, 3], [1, 2, 5, 4], [3, 4, 7, 6], [4, 5, 8, 7]])
+    xyz[4] = [10 * math.cos(0.175), 10 * math.sin(0.175), 1.7]
+    assert sq._quad_past(sq.quad_measures(xyz, quads)).any()
+    movable = np.zeros(len(xyz), dtype=bool)
+    movable[4] = True
+
+    def onto(nodes, pts):
+        r = np.hypot(pts[:, 0], pts[:, 1])[:, None]
+        return np.column_stack([pts[:, :2] * (10.0 / r), pts[:, 2]])
+
+    moved, n = sq.relax_past(xyz, quads, np.zeros((0, 3), dtype=np.int64), movable, project=onto)
+    assert n >= 1
+    assert not sq._quad_past(sq.quad_measures(moved, quads)).any()
+    assert np.hypot(*moved[4, :2]) == pytest.approx(10.0, abs=1e-12)
+
+
+def test_a_relaxed_cylinder_keeps_every_node_on_its_surface(tmp_path):
+    from meshpipeline.engines.gmsh import shell_adapter as sa
+
+    mesh, applied = sa.mesh_shell(_cylinder_piece(tmp_path), _ring_record())
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+    assert np.hypot(mesh.xyz[:, 0], mesh.xyz[:, 1]) == pytest.approx(30.0, abs=1e-6)
+
+
+def test_a_face_whose_boundary_gmsh_cannot_recover_is_re_made_as_a_b_spline(tmp_path, monkeypatch):
+    # SHMESH-11b: the first 2D mesh stops on the analytic cylinder ("impossible to recover the edge"); the face is
+    # re-made as the same surface in B-spline form and the part meshed again
+    import gmsh
+
+    from meshpipeline.engines.gmsh import shell_adapter as sa
+
+    real = gmsh.model.mesh.generate
+    real_get = gmsh.logger.get
+    calls = {"n": 0}
+
+    def generate(dim=3):
+        if dim == 2 and calls["n"] == 0:
+            calls["n"] += 1
+            raise Exception("Impossible to recover the edge 3 7")
+        return real(dim)
+
+    monkeypatch.setattr(gmsh.model.mesh, "generate", generate)
+    monkeypatch.setattr(gmsh.logger, "get", lambda: real_get() + ["Info: Meshing surface 1 (Cylinder, Frontal-Delaunay)"])
+    mesh, applied = sa.mesh_shell(_cylinder_piece(tmp_path), _ring_record())
+    q = applied["quality"]
+    assert q["resplined_faces"] == 1 and q["valid"] and q["within_nastran"]
+    assert any("SHMESH-11" in n for n in mesh.notes)
+    assert np.hypot(mesh.xyz[:, 0], mesh.xyz[:, 1]) == pytest.approx(30.0, abs=1e-6)

@@ -112,6 +112,39 @@ U
     assert -0.03 <= off <= 0.01, off
 
 
+# ---------------------------------------------------------------------------- the tapered cantilever ----
+def test_a_tapered_cantilever_bends_as_its_varying_wall_says(tmp_path):
+    # SHELL-9b: a strip 300 x 30 whose wall runs from 3 mm (the loaded end, x = 0) to 6 mm (the root, x = 300).
+    # Meshed at one wall (its thickest) the tip moved 3.3 times too little; with each node's own wall it bends as
+    # beam theory with I(x) = b t(x)^3 / 12 says
+    L, B, T0, T1, P = 300.0, 30.0, 3.0, 6.0, 10.0
+    mesh, deck, q = _shell(sf.wedge_plate(T0, T1, L, B), tmp_path, "taper")
+    assert mesh.varies is not None and mesh.varies.all()
+    # the fitted mid-face ends a hair short of the strip ends (where both faces lie across it)
+    x0, x1 = float(mesh.xyz[:, 0].min()), float(mesh.xyz[:, 0].max())
+    assert x0 < 0.01 * L and x1 > 0.99 * L
+    tip, root = _nodes(mesh, lambda p: p[0] < x0 + 1e-6), _nodes(mesh, lambda p: p[0] > x1 - 1e-6)
+    dat, _frd = _solve(tmp_path, "taper", deck + _nset("ROOT", root) + _nset("TIP", tip) + """*BOUNDARY
+ROOT, 1, 6
+*STEP
+*STATIC
+*CLOAD
+""" + "".join(f"{i}, 3, {-P / len(tip):.9e}\n" for i in tip) + """*NODE PRINT, NSET=TIP
+U
+*END STEP
+""")
+    rows = [r.split() for r in dat.splitlines()]
+    uz = np.array([float(r[3]) for r in rows if len(r) == 4 and r[0].isdigit()])
+    x = np.linspace(x0, x1, 20001)
+    t = T0 + (T1 - T0) * x / L
+    f = P * (x - x0) ** 2 / (E * B * t ** 3 / 12.0)
+    beam = float(np.sum(0.5 * (f[1:] + f[:-1]) * np.diff(x)))
+    off = float(-uz.mean() / beam - 1.0)
+    _record("shell tapered cantilever", "static (S4)", "tip deflection (mm)", float(-uz.mean()), beam, 0.04, q)
+    assert q["within_nastran"]
+    assert abs(off) <= 0.04, off
+
+
 # -------------------------------------------------------------------------------- the plate with a hole ----
 def test_a_plate_with_a_hole_in_tension_has_heywoods_kt(tmp_path):
     W, Lp, T, R, S = 100.0, 200.0, 3.0, 10.0, 10.0

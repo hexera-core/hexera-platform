@@ -355,9 +355,40 @@ async def node_deliver_sound(state: PipelineState) -> dict:
     }
 
 
+def limits_end_the_review(state: PipelineState) -> bool:
+    """VER-5: once the measured limits decide (VERDICT_BY_LIMITS), the review of a mesh every gate
+    passed ends the run whatever it said - and whether or not it concluded. Its points are notes;
+    the verdict is the measured one, worked out at terminal assembly. A user's dispute is the user's
+    own decision and keeps its routing."""
+    from meshpipeline.settings import policy as _polcfg
+    return bool(_polcfg.VERDICT_BY_LIMITS and state.get("executor_success") is True
+                and not state.get("executor_failed_gate") and not state.get("user_dispute"))
+
+
 def route_after_reviewer(
     state: PipelineState,
 ) -> Literal["__end__", "node_classifier", "node_failure_handler", "node_review_retry"]:
+    if limits_end_the_review(state):
+        # THE REVIEW ONLY ADDS NOTES, AND A REVIEW THAT DID NOT CONCLUDE ADDS NONE (VER-5). No rerun
+        # of a review that cannot change the outcome, no failure because a model was busy or down:
+        # the measured limits decide pass, concerns or fail on the mesh the gates passed.
+        logger.info("route_after_reviewer: the measured limits decide (VER-5) → END "
+                    "(review %s, attempt=%d/%d) - job_id=%s",
+                    ("did not conclude: " + str(state.get("api_failure"))) if state.get("api_failure")
+                    else f"concluded {state.get('reviewer_verdict')}, a note only",
+                    int(state.get("retry_count", 0) or 0), bcfg.BUILDER_MAX_TOTAL_ATTEMPTS,
+                    state.get("job_id"))
+        try:
+            from meshpipeline.contracts import decision_record as dr
+            dr.cite(str(state.get("job_id") or ""), stage="review_route", decided="review route",
+                    value="end", rule="VER-5",
+                    inputs={"review_concluded": not state.get("api_failure"),
+                            "reviewer_verdict": str(state.get("reviewer_verdict") or ""),
+                            "attempt": int(state.get("retry_count", 0) or 0)},
+                    words="the review only adds notes: the measured limits decide this run")
+        except Exception:  # noqa: BLE001 - a record never changes a route
+            logger.debug("route_after_reviewer: why record not kept", exc_info=True)
+        return _END
     if state.get("api_failure"):
         # A review that could not conclude says nothing about the mesh. When another look can
         # change that, look again rather than throw away a mesh that passed every gate.
