@@ -75,6 +75,7 @@ function viewerToolsHtml(job,upAxis){
   const upOpts=UP_AXES.map(([v,l])=>`<option value="${v}"${v===upAxis?' selected':''}>${l}</option>`).join('');
   const view=`<div class="vo-list">
       <button type="button" class="vo-item" id="v-fitbtn-${job}">Fit to screen<span class="vo-kbd">F</span></button>
+      <button type="button" class="vo-item" id="v-fitall-${job}" hidden>Fit all<span class="vo-kbd">ground and all</span></button>
       ${Object.entries(VIEW_PRESETS).map(([k,v])=>`<button type="button" class="vo-item" data-view="${k}">${v.label}</button>`).join('')}
     </div>
     ${optRow('Up',`<select class="vo-select" id="v-up-${job}" aria-label="Which axis points up">${upOpts}</select>`)}
@@ -317,6 +318,34 @@ function initViewer(job,surf,uiCfg){
   orient(cam,(upSel&&upSel.value)||'+z',VIEW_DIR);
   ren.resetCamera();rw.render();
   const _bs=ren.computeVisiblePropBounds();
+  /* FRAMED ON THE PART. A CFD case's ground is a flat patch many body lengths across: a fit on
+     everything shown opened on the ground with the body a speck (dev-areen 2026-10-30, an Ahmed
+     body). The view frames the part - every shown patch but a flat one far bigger than the rest -
+     and the ground stays drawn around it; "Fit all" takes in everything shown. Read from the
+     patches' own shapes, never their names. */
+  function partBounds(){
+    if(surf.fea||surf.thermal)return null;
+    const vis=entries.filter(e=>e.actor.getVisibility());
+    const ext=e=>{const b=e.pd.getBounds();return [b[1]-b[0],b[3]-b[2],b[5]-b[4]];};
+    const union=list=>{const b=[Infinity,-Infinity,Infinity,-Infinity,Infinity,-Infinity];
+      list.forEach(e=>{const a=e.pd.getBounds();for(let k=0;k<6;k+=2){b[k]=Math.min(b[k],a[k]);b[k+1]=Math.max(b[k+1],a[k+1]);}});
+      return b;};
+    const span=b=>Math.hypot(b[1]-b[0],b[3]-b[2],b[5]-b[4]);
+    const flatBig=vis.filter(e=>{const x=ext(e).sort((a,c)=>a-c);
+      if(!(x[2]>0)||x[0]>1e-3*x[2])return false;
+      const rest=vis.filter(o=>o!==e);
+      return rest.length>0&&Math.hypot(...x)>=3*span(union(rest));});
+    const keep=vis.filter(e=>!flatBig.includes(e));
+    return flatBig.length&&keep.length?union(keep):null;}
+  const fitAllBtn=document.getElementById('v-fitall-'+job);
+  // frame the part (or everything shown when there is no ground to set aside); the clipping range
+  // still takes in all that is shown, so the ground is drawn to its edge
+  function frameCam(all){
+    const pb=all?null:partBounds();
+    if(fitAllBtn)fitAllBtn.hidden=!(all||pb);
+    if(pb)ren.resetCamera(pb);else ren.resetCamera();
+    ren.resetCameraClippingRange();}
+  frameCam();rw.render();
   const diag=Math.max(Math.hypot(_bs[1]-_bs[0],_bs[3]-_bs[2],_bs[5]-_bs[4]),1e-9);
   // The viewer renders the BOUNDARY surface, so `totalFaces` is boundary faces - not
   // cells. Say the real cell count when the backend knows it, and name what we counted
@@ -325,11 +354,17 @@ function initViewer(job,surf,uiCfg){
     surf.cell_count?surf.cell_count.toLocaleString()+' cells'
                    :totalFaces.toLocaleString()+' boundary faces';
 
-  function fit(){ren.resetCamera();clampCam();rw.render();}
+  function fit(){frameCam();clampCam();ren.resetCameraClippingRange();rw.render();}
   document.getElementById('v-fitbtn-'+job).onclick=fit;
+  // the zoom-out stop learns the distance everything needs, as the parts panel's refit does
+  if(fitAllBtn)fitAllBtn.onclick=()=>{_clamping=true;
+    try{frameCam(true);const f=cam.getFocalPoint(),q=cam.getPosition();
+      _refitDist=Math.max(_refitDist,Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||0);}
+    finally{_clamping=false;}
+    clampCam();ren.resetCameraClippingRange();rw.render();};
   // WHICH WAY IS UP: turn the camera to the chosen axis, re-frame, and remember it for this job
   function setUp(axis){
-    orient(cam,axis,VIEW_DIR);ren.resetCamera();clampCam();rw.render();
+    orient(cam,axis,VIEW_DIR);frameCam();clampCam();ren.resetCameraClippingRange();rw.render();
     if(upSel&&upSel.value!==axis)upSel.value=axis;
     saveUp('job',job,axis);}
   if(upSel)upSel.onchange=()=>setUp(upSel.value);
@@ -500,7 +535,7 @@ function initViewer(job,surf,uiCfg){
     // clamp once against the widened envelope.
     function refit(){try{
         _clamping=true;
-        ren.resetCamera();
+        frameCam();
         const f=cam.getFocalPoint(),q=cam.getPosition();
         _refitDist=Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||0;
         _clamping=false;
@@ -1340,6 +1375,7 @@ function initViewer(job,surf,uiCfg){
       if(!(e.target&&e.target.closest&&e.target.closest('.v-legend,.v-probe')))cancelFly();},true);
     host.addEventListener('wheel',()=>cancelFly(),{capture:true,passive:true});
     document.getElementById('v-fitbtn-'+job).addEventListener('click',()=>cancelFly());
+    if(fitAllBtn)fitAllBtn.addEventListener('click',()=>cancelFly());
     host.querySelectorAll('.vo-item[data-view]').forEach(b=>b.addEventListener('click',()=>cancelFly()));
 
     /* WHERE THE CAMERA STOPS: the area in the middle of the view, close enough that its own faces
@@ -1646,7 +1682,7 @@ function initViewer(job,surf,uiCfg){
        the page that is not a text box, while this viewer is the one on screen. */
     ov('view').querySelectorAll('.vo-item[data-view]').forEach(b=>{
       b.onclick=()=>{presetView(cam,(upSel&&upSel.value)||'+z',b.dataset.view);fit();};});
-    bindSeg(ov('view'),'camera',v=>{cam.setParallelProjection(v==='flat');ren.resetCamera();clampCam();rw.render();});
+    bindSeg(ov('view'),'camera',v=>{cam.setParallelProjection(v==='flat');frameCam();clampCam();ren.resetCameraClippingRange();rw.render();});
     bindSeg(ov('view'),'axes',v=>{axesOn=v==='on';if(axesEl)axesEl.style.display=axesOn?'':'none';});
     const onKey=e=>{
       if(!document.body.contains(host)){document.removeEventListener('keydown',onKey);return;}

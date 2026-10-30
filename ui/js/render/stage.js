@@ -57,6 +57,20 @@ const MARKS = {
   warn: "finished with a warning", nomesh: "no mesh was built here", ended: "stopped",
 };
 
+/** A tool call in words: the backend's public label, else its name with the underscores gone
+ *  ("zoom_to_region" -> "Zoom to region"). */
+export function toolWords(ev){
+  const s=String((ev&&(ev.public_label||ev.tool_name))||'').replace(/[_-]+/g,' ').trim();
+  return s?s.charAt(0).toUpperCase()+s.slice(1):'';}
+/** True for text that is a JSON object or list, whole or in part - never shown as reasoning. */
+export function looksLikeJson(text){
+  const t=String(text||'').trim();
+  return /^[\[{]/.test(t)||(t.match(/"[^"\n]{1,60}"\s*:/g)||[]).length>=2;}
+/** Reasoning as a person reads it: no JSON drafts, no markdown stars. '' when nothing is left. */
+export function plainReasoning(text){
+  if(!text||looksLikeJson(text))return '';
+  return String(text).replace(/\*\*([^*]+)\*\*/g,'$1').trim();}
+
 export const Stage = {
   // The empty state names no formats. It used to say "(STL or STEP)" while the server accepted
   // four, so a user holding a .vtp or .iges read that their file was unsupported and never tried
@@ -600,7 +614,8 @@ export const Stage = {
     // only an explicitly RUNNING card pulses; a phaseless one is static
     card.querySelector('.e-think').classList.toggle('active',head.running);
     const body=card.querySelector('.body');
-    if(ev.content){body.textContent=ev.content;body.style.display='';}
+    const said=plainReasoning(ev.content);
+    if(said){body.textContent=said;body.style.display='';}
     else{body.textContent='';body.style.display='none';}
     this.scroll(n);},
 
@@ -608,6 +623,9 @@ export const Stage = {
   // label and nothing else; in raw mode the real name, arguments and result come
   // too. The browser never maps a tool name to a label: a browser that could has
   // already been told the name.
+  // NEVER RAW JSON ON THE PAGE (dev-areen 2026-10-30: the open Review lane showed the reviewer's
+  // arguments, results and JSON drafts). A call shows its name in words; its arguments and its
+  // result stay out of the page; a reasoning text that is a JSON draft shows only its header.
   toolCall(agent,ev){
     const n=this.node(agent);this.bump(n);
     n.tools=n.tools||{};
@@ -615,10 +633,8 @@ export const Stage = {
     const r=document.createElement('div');r.className='row';
     const blocked=ev.status==='blocked';
     r.innerHTML=`<div class="e-tool${blocked?' bad':''}"><span class="tag">${blocked?'blocked':'tool call'}</span>`
-      +`<span class="call">${esc(ev.tool_name||ev.public_label||'')}</span></div>`;
+      +`<span class="call">${esc(toolWords(ev))}</span></div>`;
     n.body.appendChild(r);
-    if(ev.arguments!=null){const d=document.createElement('div');d.className='e-detail';
-      d.textContent=JSON.stringify(ev.arguments,null,1);n.body.appendChild(d);}
     if(ev.id)n.tools[ev.id]={el:r};
     this.scroll(n);},
   toolResult(agent,ev){
@@ -635,12 +651,10 @@ export const Stage = {
     }else if(!t){
       this.bump(n);const r=document.createElement('div');r.className='row';
       r.innerHTML=`<div class="e-tool${ev.status==='success'?'':' bad'}"><span class="tag">result</span>`
-        +`<span class="call">${esc(ev.tool_name||ev.public_label||'')}</span>`
+        +`<span class="call">${esc(toolWords(ev))}</span>`
         +(bits.length?`<span class="tres"> · ${esc(bits.join(' · '))}</span>`:'')+`</div>`;
       n.body.appendChild(r);
     }
-    if(ev.result!=null){const d=document.createElement('div');d.className='e-detail';
-      d.textContent=JSON.stringify(ev.result,null,1);n.body.appendChild(d);}
     this.scroll(n);},
 
   // RATIONALE - the application's own conclusion. Always shown: it was written for
