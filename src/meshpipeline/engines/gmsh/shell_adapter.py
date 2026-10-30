@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import time
 from pathlib import Path
 
 import numpy as np
@@ -46,6 +47,15 @@ RESPLINE_MAX = 16
 #: again. Seen on a ship's 3 m hull cylinder with 25 mm slots (sh0048): the same face scaled down by 10 meshed, and
 #: so did its B-spline at full size - gmsh's handling of the large periodic analytic surface, not the face's shape
 RESPLINE_UNRECOVERED = True
+#: SHMESH-11c: a face whose 1D mesh gmsh reads as not a closed loop is re-made as a B-spline too
+RESPLINE_LOOP = True
+#: SHMESH-11e: no face is re-made once the meshes so far have taken this long (each re-made face meshes it all again)
+RESPLINE_BUDGET_S = 300.0
+#: SHMESH-11g: faces on offset surfaces are meshed as B-splines
+OFFSETS_AS_SPLINES = True
+#: SHMESH-20: the most elements a shell plan may ask for (area / size^2 summed over its faces; gmsh makes about 1,000
+#: a second here, and its counts run 0.4 to 3.3 times the plan's on the corpus)
+PLANNED_MAX = 1.5e6
 #: SHMESH-17: two triangles of a face that together make a quad inside Nastran's own limits are joined into it
 PAIR_TRIAS = True
 #: SHMESH-18: a triangle walked through at most WALK_DEPTH quads of its face to meet another (0: off)
@@ -94,10 +104,16 @@ def _generate(gmsh, tag_of: dict[int, int]) -> None:
         m = re.search(r"periodic surface (\d+)", str(exc))
         if m and int(m.group(1)) in tag_of:
             raise _Periodic(tag_of[int(m.group(1))]) from exc
-        if RESPLINE_UNRECOVERED and "recover" in str(exc).lower():
+        text = str(exc).lower()
+        # SHMESH-11c: and so does a face whose boundary's 1D mesh gmsh reads as "not a closed loop" (an analytic or
+        # trimmed face on a closed surface whose loop runs across the surface's seam in its parameters: a tee's run,
+        # a mitred bend's pieces; fresh fr015/fr017) - as a B-spline it has no seam. A face already a B-spline is
+        # not re-made again (gmsh names it "BSpline surface"): the error stands
+        if RESPLINE_UNRECOVERED and ("recover" in text or (RESPLINE_LOOP and "closed loop" in text)):
             at = [int(x) for line in gmsh.logger.get() for x in re.findall(r"Meshing surface (\d+)", line)]
-            if at and at[-1] in tag_of and gmsh.model.getType(2, at[-1]) not in ("BSplineSurface", "BezierSurface"):
-                raise _Periodic(tag_of[at[-1]], kin=True) from exc
+            kind = gmsh.model.getType(2, at[-1]).lower() if at else ""
+            if at and at[-1] in tag_of and "spline" not in kind and "bezier" not in kind:
+                raise _Periodic(tag_of[at[-1]], kin="recover" in text) from exc
         raise
 
 
@@ -267,11 +283,22 @@ def _rebuild(brep: Path, owners: list[str], out: Path, change) -> list[str]:
     if len(pieces) == 1:
         BRepTools.Write_s(pieces[0][0], str(out))
         return [pieces[0][1]]
-    bop = BOPAlgo_Builder()
-    for g, _own in pieces:
-        bop.AddArgument(g)
-    bop.SetRunParallel(False)
-    bop.Perform()
+    def fuse(fuzzy: float):
+        b = BOPAlgo_Builder()
+        for g, _own in pieces:
+            b.AddArgument(g)
+        b.SetRunParallel(False)
+        b.SetNonDestructive(True)
+        if fuzzy > 0:
+            b.SetFuzzyValue(fuzzy)
+        b.Perform()
+        return b
+
+    bop = fuse(0.0)
+    if bop.HasErrors():
+        # SHMESH-11d: once more with a fuzzy value of twice the surface's own largest tolerance (its sewn edges'
+        # gaps, measured): an exact fuse of a duct's pieces failed outright (fresh fr015)
+        bop = fuse(2.0 * max(ms._max_tol(shape), 1e-7))
     if bop.HasErrors():
         raise ValueError("the re-made faces of the mid-surface could not be fused back")
     fused = bop.Shape()
@@ -295,16 +322,27 @@ def _rebuild(brep: Path, owners: list[str], out: Path, change) -> list[str]:
 def split_closed(brep: Path, owners: list[str], out: Path) -> list[str]:
     """SHMESH-11: every sewn face closed on itself (a full ring, a torus, a sphere: a seam in it) is cut at its seams
     into open pieces. gmsh cannot mesh some closed faces ("impossible to mesh periodic surface")."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_NurbsConvert
+    from OCP.Geom import Geom_OffsetSurface
     from OCP.ShapeUpgrade import ShapeUpgrade_ShapeDivideClosed
 
     from meshpipeline.cad import midsurface as ms
 
     def cut(_k, f):
+        # SHMESH-11g: a face on an offset surface (a drafted wall's mid-face) is re-made as a B-spline first: cut at
+        # its seam as an offset it came apart into invalid halves that the fuse dropped (fresh fr018: the whole cone
+        # gone, a mesh of 0 elements), and gmsh reads offset surfaces as "Unknown" anyway
+        remade = None
+        if OFFSETS_AS_SPLINES and isinstance(BRep_Tool.Surface_s(f), Geom_OffsetSurface):
+            got = ms._faces(BRepBuilderAPI_NurbsConvert(f, True).Shape())
+            if len(got) == 1:
+                remade = f = got[0]
         tool = ShapeUpgrade_ShapeDivideClosed(f)
         tool.SetNbSplitPoints(1)
         tool.Perform()
         got = ms._faces(tool.Result())
-        return got if len(got) > 1 else None
+        return got if len(got) > 1 else ([remade] if remade is not None else None)
 
     return _rebuild(brep, owners, out, cut)
 
@@ -435,23 +473,37 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
 
     with tempfile.TemporaryDirectory(prefix="shell_mesh_") as tmp:
         owners = list(record["surface_faces"])
+        split_note = ""
         if SPLIT_CLOSED:
             cut = Path(tmp) / "cut.brep"
-            owners = split_closed(Path(brep), owners, cut)
-            brep = cut
+            try:
+                owners = split_closed(Path(brep), owners, cut)
+                brep = cut
+            except ValueError as exc:
+                # SHMESH-11d: the closed faces' pieces would not fuse back with the rest (a 45 degree cone's pieces,
+                # exact or fuzzy): the surface is meshed as sewn, and a closed face gmsh stops on is re-made below
+                split_note = f"the closed faces were meshed whole ({exc})"
         resplined = 0
+        started = time.monotonic()
         while True:
             try:
                 mesh, applied = _mesh_once(Path(brep), record, owners, float(mm_per_unit), log)
             except _Periodic as p:
                 if resplined >= RESPLINE_MAX:
                     raise ValueError(f"gmsh could not mesh {resplined + 1} periodic faces") from p
+                # SHMESH-11e: each re-made face costs a whole mesh again; past the budget the mesh stops and says why
+                spent = time.monotonic() - started
+                if spent > RESPLINE_BUDGET_S:
+                    raise ValueError(f"gmsh stopped on a face again after {resplined} face(s) re-made and "
+                                     f"{spent / 60:.0f} minutes; the shell mesh is given up (SHMESH-11e)") from p
                 nxt = Path(tmp) / f"respline_{resplined}.brep"
                 owners, made = respline(Path(brep), owners, p.face, nxt, kin=p.kin)
                 brep = nxt
                 resplined += made
                 continue
             applied["quality"]["resplined_faces"] = resplined
+            if split_note:
+                mesh.notes.append(f"{split_note[0].upper()}{split_note[1:]} (SHMESH-11d).")
             if resplined:
                 mesh.notes.append(f"{resplined} face(s) gmsh could not mesh (a periodic surface, or a boundary it "
                                   "could not recover) were re-made as B-splines (the same surface) and meshed "
@@ -471,6 +523,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         rows.append({"face": k + 1, **plan_rules.face_plan(record, owners[k], width=width, radii=f["radii"],
                                                          bend=f["bend"])})
     walls = [r["wall_mm"] for r in rows]
+    # SHMESH-20: a plan far past what a shell mesh is made in within the time allowed stops before gmsh starts, and
+    # says so (a ship's 3 m slotted hull, sh0048: about 3 million planned, over an hour of gmsh)
+    planned = sum(f["area"] * mm * mm / r["size_mm"] ** 2 for f, r in zip(facts, rows, strict=True))
+    if planned > PLANNED_MAX:
+        raise ValueError(f"the shell mesh plan asks for about {planned / 1e6:.1f} million elements over {len(facts)} "
+                         f"faces, past the {PLANNED_MAX / 1e6:.1f} million a shell mesh is made of in the time allowed "
+                         "(SHMESH-20)")
     gmsh.initialize(["-noenv"], readConfigFiles=False)
     try:
         gmsh.option.setNumber("General.Terminal", 0)
