@@ -135,13 +135,15 @@ def _past_count(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray) -> tuple[
 
 
 def relax_past(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, movable: np.ndarray, *,
-               rounds: int = 6, weights: tuple[int, int] = (1, 16), parallelogram: bool | None = None
-               ) -> tuple[np.ndarray, int]:
+               rounds: int = 6, weights: tuple[int, int] = (1, 16), parallelogram: bool | None = None,
+               project=None) -> tuple[np.ndarray, int]:
     """SHMESH-14: every movable node (inside a flat face, on no CAD edge) of an element past one of Nastran's own
     limits moves to the middle of its edge neighbours when its elements come out better: fewer past a limit, none
     turned over, and (on a tie) a larger smallest corner angle. The middle of coplanar neighbours lies in their
     plane, so the node stays on its face. Nodes that share no element move together (in number order, the first
-    free node taken); `rounds` passes at most. Deterministic. Returns (the moved coordinates, how many moves)."""
+    free node taken); `rounds` passes at most. Deterministic. Returns (the moved coordinates, how many moves).
+    `project(nodes, points)`, when given, lays each tried point back onto its node's own face (SHMESH-14c: nodes
+    inside curved faces move too, on their surface)."""
     X = xyz.copy()
     nq = len(quads)
     elem = np.full((nq + len(trias), 4), -1, dtype=np.int64)
@@ -274,6 +276,8 @@ def relax_past(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, movable: n
             best_past = before_past.copy()
             best_least = before_least.copy()
             moved = np.zeros(len(S), dtype=bool)
+            if project is not None:
+                cands = [project(S, c) for c in cands]
             for cand in cands:
                 X[S[go]] = cand[go]
                 p1, l1, f1, h1 = judge(ids)

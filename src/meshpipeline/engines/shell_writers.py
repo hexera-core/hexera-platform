@@ -85,6 +85,7 @@ class ShellPrepared:
     prop_of: np.ndarray                          # (elements,) 1-based property of each element
     corner: dict[int, np.ndarray] = field(default_factory=dict)   # element -> corner walls (mm), variable only
     junctions: dict[str, np.ndarray] = field(default_factory=dict)  # name -> 1-based node ids
+    offsets: list[float] = field(default_factory=list)            # property p's mid-plane off its nodes (mm)
 
     @property
     def n_nodes(self) -> int:
@@ -109,12 +110,25 @@ def prepare(mesh: ShellMesh, *, units: str = "m") -> ShellPrepared:
     parts = sorted(set(mesh.part), key=lambda s: (len(s), s))
     mat = {p: i + 1 for i, p in enumerate(parts)}
     props: list[tuple[str, float, int]] = []
-    index: dict[tuple[str, float], int] = {}
+    offsets: list[float] = []
+    index: dict[tuple[str, float, float, bool], int] = {}
     prop_of = np.zeros(mesh.n_elements, dtype=np.int64)
+    varies = (np.asarray(mesh.varies, dtype=bool) if mesh.varies is not None and mesh.node_wall is not None
+              else np.zeros(mesh.n_elements, dtype=bool))
+    zoffs = np.asarray(mesh.zoffs, dtype=float) if mesh.zoffs is not None else np.zeros(mesh.n_elements)
     for e in range(mesh.n_elements):
-        key = (mesh.part[e], round(float(mesh.wall[e]), WALL_DIGITS))
+        # a property per part and wall; apart for an offset mid-plane (SHELL-7) and for a varying wall (its
+        # section reads the corners' walls: *NODAL THICKNESS covers every element of its set)
+        z = round(float(zoffs[e]), WALL_DIGITS) + 0.0
+        key = (mesh.part[e], round(float(mesh.wall[e]), WALL_DIGITS), z, bool(varies[e]))
         if key not in index:
-            props.append((f"{key[0]}_t{wall_label(key[1])}mm", key[1], mat[key[0]]))
+            name = f"{key[0]}_t{wall_label(key[1])}mm"
+            if z:
+                name += f"_z{'m' if z < 0 else ''}{wall_label(abs(z))}"
+            if key[3]:
+                name += "_varies"
+            props.append((name, key[1], mat[key[0]]))
+            offsets.append(z)
             index[key] = len(props)
         prop_of[e] = index[key]
     corner: dict[int, np.ndarray] = {}
@@ -122,7 +136,7 @@ def prepare(mesh: ShellMesh, *, units: str = "m") -> ShellPrepared:
         for e in np.flatnonzero(mesh.varies).tolist():
             corner[e] = np.asarray(mesh.node_wall)[mesh.element_nodes(e)]
     return ShellPrepared(mesh=mesh, scale=scale, parts=parts, props=props, prop_of=prop_of, corner=corner,
-                         junctions=junction_sets(mesh))
+                         junctions=junction_sets(mesh), offsets=offsets)
 
 
 def _ranges(ids: np.ndarray) -> list[tuple[int, int]]:
@@ -167,12 +181,17 @@ def write_bdf(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
         ids = [int(v) + 1 for v in conn]
         card = "CQUAD4" if len(ids) == 4 else "CTRIA3"
         fields: list = [e + 1, int(prep.prop_of[e]), *ids]
+        z = prep.offsets[int(prep.prop_of[e]) - 1] if prep.offsets else 0.0
         if e in prep.corner:
-            # THETA/MCID, ZOFFS blank; TFLAG 0; T1..Tn the corner walls
             # after the corners: THETA, ZOFFS (and CTRIA3's blank 9th field), then the continuation's blank and
-            # TFLAG, then T1..Tn
+            # TFLAG, then T1..Tn the corner walls
             pad = [""] * (4 if card == "CQUAD4" else 5)
+            if z:
+                pad[1] = _r8(z * s)
             fields += [*pad, *[_r8(t * s) for t in prep.corner[e].tolist()]]
+        elif z:
+            # SHELL-7: ZOFFS, the element's mid-plane off its grids' plane along its normal
+            fields += ["", _r8(z * s)]
         lines.extend(_cards(card, fields))
     for i, (_name, t, mid) in enumerate(prep.props, start=1):
         lines.extend(_cards("PSHELL", [i, mid, _r8(t * s), mid, _r8(BENDING_RATIO), mid, _r8(SHEAR_RATIO)]))
@@ -197,6 +216,7 @@ class ShellReadBack:
     groups: dict[str, set[int]]
     junctions: dict[str, set[int]]
     names: dict[int, str] = field(default_factory=dict)  # property -> name
+    zoffs: dict[int, float] = field(default_factory=dict)  # element -> its mid-plane offset (offset elements only)
 
 
 def read_bdf(path: Path | str) -> ShellReadBack:
@@ -208,6 +228,7 @@ def read_bdf(path: Path | str) -> ShellReadBack:
     groups: dict[str, set[int]] = {}
     junctions: dict[str, set[int]] = {}
     names: dict[int, str] = {}
+    zoffs: dict[int, float] = {}
     lines = Path(path).read_text(encoding="ascii").splitlines()
     group: str | None = None
     last_comment = ""
@@ -251,11 +272,14 @@ def read_bdf(path: Path | str) -> ShellReadBack:
             t = [_real(v) for v in f[10:10 + n] if v]
             if t:
                 corner[e] = tuple(t)
+            zf = f[3 + n] if len(f) > 3 + n else ""
+            if zf:
+                zoffs[e] = _real(zf)
         elif name == "PSHELL":
             walls[int(f[0])] = _real(f[2])
         elif name == "SET3":
             junctions[last_comment] = {int(v) for v in f[2:] if v}
-    return ShellReadBack(nodes, elements, prop, walls, corner, groups, junctions, names)
+    return ShellReadBack(nodes, elements, prop, walls, corner, groups, junctions, names, zoffs)
 
 
 # ---------------------------------------------------------------------------- Abaqus / CalculiX ----
@@ -315,6 +339,10 @@ def write_inp(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
     varied = {int(prep.prop_of[e]) for e in prep.corner}
     for i, (_name, t, mid) in enumerate(prep.props, start=1):
         extra = ", NODAL THICKNESS" if i in varied else ""
+        z = prep.offsets[i - 1] if prep.offsets else 0.0
+        if z:
+            # SHELL-7: OFFSET is the nodes' plane off the shell's mid-surface, in walls along the normal
+            extra += f", OFFSET={-z / t:.9g}"
         lines.append(f"*SHELL SECTION, ELSET=P_{i}, MATERIAL=MAT_{mid}{extra}")
         lines.append(f"{t * s:.9g}")
     for mid, body in sorted((materials or {}).items()):
@@ -381,11 +409,13 @@ def write_cdb(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
     as Ansys advises for thin shells; KEYOPT 1 stays 0, bending and membrane). One section per property; an element
     of a varying wall gets its own section at its corners' mean (to WALL_DIGITS)."""
     m, s = prep.mesh, prep.scale
-    secs: list[tuple[float, int]] = [(t, mid) for _n, t, mid in prep.props]
+    offs = prep.offsets or [0.0] * len(prep.props)
+    secs: list[tuple[float, int, float]] = [(t, mid, z) for (_n, t, mid), z in zip(prep.props, offs, strict=True)]
     sec_of = prep.prop_of.copy()
-    seen: dict[tuple[float, int], int] = {}
+    seen: dict[tuple[float, int, float], int] = {}
     for e, ws in sorted(prep.corner.items()):
-        key = (round(float(np.mean(ws)), WALL_DIGITS), prep.props[int(prep.prop_of[e]) - 1][2])
+        key = (round(float(np.mean(ws)), WALL_DIGITS), prep.props[int(prep.prop_of[e]) - 1][2],
+               offs[int(prep.prop_of[e]) - 1])
         if key not in seen:
             secs.append(key)
             seen[key] = len(secs)
@@ -401,9 +431,12 @@ def write_cdb(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
         "ET,1,181",
         "KEYOPT,1,3,2",
     ]
-    for i, (t, mid) in enumerate(secs, start=1):
+    for i, (t, mid, z) in enumerate(secs, start=1):
         label = prep.props[i - 1][0] if i <= len(prep.props) else f"VARIES_{i}"
         lines += [f"SECTYPE,{i},SHELL,,{ansys_name(label)}", f"SECDATA,{t * s:.9g},{mid}"]
+        if z:
+            # SHELL-7: the node plane off the mid-plane, along the normal
+            lines.append(f"SECOFFSET,USER,{-z * s:.9g}")
     lines += [f"NBLOCK,6,SOLID,{len(m.xyz):>10d},{len(m.xyz):>10d}", "(3i9,6e21.13e3)"]
     for k, (x, y, z) in enumerate((m.xyz * s).tolist(), start=1):
         lines.append(f"{k:>9d}{0:>9d}{0:>9d}{x:21.13E}{y:21.13E}{z:21.13E}")

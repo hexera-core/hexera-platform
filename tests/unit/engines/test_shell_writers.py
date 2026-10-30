@@ -33,7 +33,7 @@ def test_every_file_reads_back_the_same_mesh(tmp_path, units):
     sw.write_all(tmp_path, m, units=units)
     s = 1e-3 if units == "m" else 1.0
     prep = sw.prepare(m, units=units)
-    assert [p[0] for p in prep.props] == ["Part_1_t2mm", "Part_1_t1p5mm", "Part_2_t3mm"]
+    assert [p[0] for p in prep.props] == ["Part_1_t2mm", "Part_1_t1p5mm", "Part_2_t3mm_varies"]
     assert [p[2] for p in prep.props] == [1, 1, 2]
     assert prep.junctions == {"J_Mid_1_Mid_2": pytest.approx(np.array([1, 4]))}
     for read in (sw.read_bdf(tmp_path / "shell.bdf"), sw.read_inp(tmp_path / "shell.inp"),
@@ -47,7 +47,7 @@ def test_every_file_reads_back_the_same_mesh(tmp_path, units):
         assert {"PART_1", "PART_2"} <= names and len(read.groups) == 4
     bdf = sw.read_bdf(tmp_path / "shell.bdf")
     assert bdf.corner == {3: pytest.approx((1.0 * s, 2.0 * s, 3.0 * s))}
-    assert bdf.names == {1: "Part_1_t2mm", 2: "Part_1_t1p5mm", 3: "Part_2_t3mm"}
+    assert bdf.names == {1: "Part_1_t2mm", 2: "Part_1_t1p5mm", 3: "Part_2_t3mm_varies"}
     assert bdf.groups["Part_1"] == {1, 2}
     inp = sw.read_inp(tmp_path / "shell.inp")
     assert inp.corner == {3: pytest.approx((1.0 * s, 2.0 * s, 3.0 * s))}
@@ -126,3 +126,25 @@ def test_pynastran_reads_the_moment_join_mpcs(tmp_path):
     assert len(mpcs) == 2
     assert mpcs[1].nodes == [20, 7, 8, 7, 8] and [int(c) for c in mpcs[1].components] == [3, 3, 3, 4, 5]
     assert mpcs[1].coefficients == pytest.approx([1.0, -0.5, -0.5, -1.25, 0.75])
+
+
+def test_an_offset_mid_plane_is_written_to_every_deck(tmp_path):
+    # SHELL-7: the 1.5 mm plate (Mid_2) is snapped onto a thicker plate's mid-plane; its own mid-plane lies 0.25 mm
+    # along its normal: Nastran ZOFFS 0.25, Abaqus / CalculiX OFFSET -0.25 / 1.5 (the nodes below the mid-surface),
+    # Ansys SECOFFSET,USER the nodes' distance from the mid-plane, -0.25; the varying triangle keeps its corners
+    m = _mesh()
+    m.zoffs = np.array([0.0, 0.25, 0.0])
+    sw.write_all(tmp_path, m, units="mm")
+    prep = sw.prepare(m, units="mm")
+    assert [p[0] for p in prep.props] == ["Part_1_t2mm", "Part_1_t1p5mm_z0p25", "Part_2_t3mm_varies"]
+    bdf = sw.read_bdf(tmp_path / "shell.bdf")
+    assert bdf.zoffs == {2: pytest.approx(0.25)}
+    assert bdf.corner == {3: pytest.approx((1.0, 2.0, 3.0))}
+    inp = (tmp_path / "shell.inp").read_text()
+    assert "*SHELL SECTION, ELSET=P_2, MATERIAL=MAT_1, OFFSET=-0.166666667" in inp
+    assert "SECOFFSET,USER,-0.25" in (tmp_path / "shell.cdb").read_text()
+    bdf_mod = pytest.importorskip("pyNastran.bdf.bdf")
+    b = bdf_mod.BDF(debug=None)
+    b.read_bdf(str(tmp_path / "shell.bdf"), punch=True, xref=False)
+    assert b.elements[2].zoffset == pytest.approx(0.25)
+    assert b.elements[3].T1 == pytest.approx(1.0) and b.elements[3].T3 == pytest.approx(3.0)

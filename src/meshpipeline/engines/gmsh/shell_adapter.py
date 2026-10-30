@@ -34,11 +34,18 @@ SPLIT_CLOSED = True
 #: SHMESH-14: before any quad is cut, the inner nodes of flat faces round a quad past a limit are moved towards their
 #: neighbours' middle when that brings fewer elements past a limit (at most RELAX_ROUNDS passes)
 RELAX_ROUNDS = 6
+#: SHMESH-14c: the nodes inside curved faces relax too, each tried point laid back onto the face's surface
+RELAX_CURVED = True
 #: SHMESH-13: swap the longest edge of a triangle past a limit with its neighbour's when both come out better
 FLIP_PAST = True
 #: SHMESH-12: merge the ends of sliver edges (under the floor and a fifth of their elements' longest edges)
 COLLAPSE_SHORT = True
 RESPLINE_MAX = 16
+#: SHMESH-11b: an analytic face (a cylinder, a cone) whose boundary gmsh's 2D mesher cannot recover ("impossible to
+#: recover the edge") is re-made as a B-spline (the same surface, exactly, without its period) and the mesh made
+#: again. Seen on a ship's 3 m hull cylinder with 25 mm slots (sh0048): the same face scaled down by 10 meshed, and
+#: so did its B-spline at full size - gmsh's handling of the large periodic analytic surface, not the face's shape
+RESPLINE_UNRECOVERED = True
 #: SHMESH-17: two triangles of a face that together make a quad inside Nastran's own limits are joined into it
 PAIR_TRIAS = True
 #: SHMESH-18: a triangle walked through at most WALK_DEPTH quads of its face to meet another (0: off)
@@ -74,15 +81,22 @@ class _Periodic(Exception):
 
 
 def _generate(gmsh, tag_of: dict[int, int]) -> None:
-    """Mesh in 2D; a face gmsh cannot mesh as a periodic surface raises _Periodic for it (SHMESH-11)."""
+    """Mesh in 2D; a face gmsh cannot mesh as a periodic surface raises _Periodic for it (SHMESH-11), and so does
+    an analytic face whose boundary gmsh's 2D mesher cannot recover (SHMESH-11b): the face gmsh was meshing when
+    it stopped, read from its log."""
     import re
 
+    gmsh.logger.start()
     try:
         gmsh.model.mesh.generate(2)
     except Exception as exc:
         m = re.search(r"periodic surface (\d+)", str(exc))
         if m and int(m.group(1)) in tag_of:
             raise _Periodic(tag_of[int(m.group(1))]) from exc
+        if RESPLINE_UNRECOVERED and "recover" in str(exc).lower():
+            at = [int(x) for line in gmsh.logger.get() for x in re.findall(r"Meshing surface (\d+)", line)]
+            if at and at[-1] in tag_of and gmsh.model.getType(2, at[-1]) not in ("BSplineSurface", "BezierSurface"):
+                raise _Periodic(tag_of[at[-1]]) from exc
         raise
 
 
@@ -388,8 +402,9 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 continue
             applied["quality"]["resplined_faces"] = resplined
             if resplined:
-                mesh.notes.append(f"{resplined} face(s) gmsh could not mesh as periodic surfaces were re-made as "
-                                  "B-splines (the same surface) and meshed (SHMESH-11).")
+                mesh.notes.append(f"{resplined} face(s) gmsh could not mesh (a periodic surface, or a boundary it "
+                                  "could not recover) were re-made as B-splines (the same surface) and meshed "
+                                  "(SHMESH-11).")
             return mesh, applied
 
 
@@ -553,13 +568,19 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     t_face += [k] * len(c)
                 else:
                     raise ValueError(f"gmsh made an element of type {et} on a shell face")
-        # SHMESH-14: the nodes inside a flat face (on no CAD edge) may move within its plane
+        # SHMESH-14: the nodes inside a flat face (on no CAD edge) may move within its plane; SHMESH-14c: inside a
+        # curved face too, laid back onto its surface
         movable = np.zeros(len(tags), dtype=bool)
+        on_face = np.full(len(tags), -1, dtype=np.int64)
         for t in sorted(tag_of):
-            if gmsh.model.getType(2, t) == "Plane":
+            plane = gmsh.model.getType(2, t) == "Plane"
+            if plane or RELAX_CURVED:
                 inner, _c, _p = gmsh.model.mesh.getNodes(2, t, includeBoundary=False)
                 if len(inner):
-                    movable[index[np.asarray(inner, dtype=np.int64)]] = True
+                    at = index[np.asarray(inner, dtype=np.int64)]
+                    movable[at] = True
+                    if not plane:
+                        on_face[at] = tag_of[t]
         if log is not None:
             log.extend(gmsh.logger.get())
     finally:
@@ -572,13 +593,16 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         limit = np.array([plan_rules.FLOOR_WALLS * r["wall_mm"] / mm for r in rows])
         Q, T, q_face, t_face, merged = shell_mesh.collapse_short(xyz / mm, Q, T, q_face, t_face, limit)
     relaxed = 0
+    project = _projector(facts, on_face, mm) if RELAX_CURVED and (on_face >= 0).any() else None
     if RELAX_ROUNDS:
         # the neighbours' middle first; then also where each quad round a node would be a parallelogram (SHMESH-14b),
         # for what the middle left past a limit (tried at once, the parallelogram moves mended a quad and left a
         # sliver triangle beside it that the middle had mended)
-        xyz, relaxed = shell_quality.relax_past(xyz, Q, T, movable, rounds=RELAX_ROUNDS, parallelogram=False)
+        xyz, relaxed = shell_quality.relax_past(xyz, Q, T, movable, rounds=RELAX_ROUNDS, parallelogram=False,
+                                                project=project)
         if shell_quality.RELAX_PARALLELOGRAM:
-            xyz, again = shell_quality.relax_past(xyz, Q, T, movable, rounds=RELAX_ROUNDS, parallelogram=True)
+            xyz, again = shell_quality.relax_past(xyz, Q, T, movable, rounds=RELAX_ROUNDS, parallelogram=True,
+                                                  project=project)
             relaxed += again
     split = 0
     if SPLIT_PAST:
@@ -602,7 +626,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     if RELAX_ROUNDS and split and len(T):
         # SHMESH-14 once more, after the cut, for the triangles it left past a limit; no quad may come out past one
         # (a quad past a limit outweighs every triangle round a node)
-        xyz, again = shell_quality.relax_past(xyz, Q, T, movable, rounds=RELAX_ROUNDS, weights=(64, 1))
+        xyz, again = shell_quality.relax_past(xyz, Q, T, movable, rounds=RELAX_ROUNDS, weights=(64, 1),
+                                              project=project)
         relaxed += again
     paired = 0
     if PAIR_TRIAS and len(T) > 1:
@@ -643,10 +668,14 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         if n is not None:
             reference.setdefault(owners[k], n)
     turned = orient(mesh, reference)
+    varied = node_walls(mesh, mids)
+    offset = element_offsets(mesh, mids)
     census = edge_census(mesh)
     quality = shell_quality.measure(mesh)
     quality["edges"] = {k: v for k, v in census.items() if k != "free_edges"}
     quality["turned"] = turned
+    quality["varied_wall_elements"] = varied
+    quality["offset_elements"] = offset
     quality["split"] = split
     quality["relaxed_nodes"] = relaxed
     quality["merged_nodes"] = merged
@@ -668,6 +697,112 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         mesh.notes.append(f"{len(floored)} face(s) asked for elements finer than half their wall; they are meshed at "
                           "half the wall (SHMESH-2).")
     return mesh, {"faces": rows, "quality": quality, "per_turn": PER_TURN, "growth": plan_rules.GROWTH}
+
+
+def _projector(facts: list[dict], on_face: np.ndarray, mm: float):
+    """SHMESH-14c: project(nodes, points) - each point laid onto its node's own curved face's surface (the closest
+    point; mm in and out). Nodes of flat faces (on_face -1) are left as given (the middle of coplanar points stays
+    in their plane)."""
+    from OCP.BRep import BRep_Tool
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+    from OCP.gp import gp_Pnt
+
+    surfaces: dict[int, object] = {}
+
+    def project(nodes: np.ndarray, pts: np.ndarray) -> np.ndarray:
+        out = pts.copy()
+        for i, v in enumerate(nodes.tolist()):
+            k = int(on_face[v])
+            if k < 0:
+                continue
+            if k not in surfaces:
+                surfaces[k] = BRep_Tool.Surface_s(facts[k]["normal_face"])
+            p = pts[i] / mm
+            pr = GeomAPI_ProjectPointOnSurf(gp_Pnt(float(p[0]), float(p[1]), float(p[2])), surfaces[k])
+            if pr.NbPoints() > 0:
+                q = pr.NearestPoint()
+                out[i] = np.array([q.X(), q.Y(), q.Z()]) * mm
+        return out
+
+    return project
+
+
+#: SHELL-9b: a node's wall is read from the WALL_NEAREST wall readings of its mid-face nearest it (a plane through
+#: them, so a wall that varies evenly - a taper, a draft - is read exactly), kept within their thinnest and thickest
+WALL_NEAREST = 8
+#: a mid-face's wall varies when its thickest reading is more than WALL_VARIES thicker than its thinnest
+WALL_VARIES = 0.01
+
+
+def _wall_at(points: np.ndarray, samples: np.ndarray) -> np.ndarray:
+    """The wall at each point (mm): a least-squares plane through the WALL_NEAREST readings nearest it
+    (x, y, z, wall rows of `samples`), clipped to the readings' range."""
+    xyz, w = samples[:, :3], samples[:, 3]
+    k = min(WALL_NEAREST, len(samples))
+    out = np.empty(len(points))
+    for i, p in enumerate(points):
+        d = np.linalg.norm(xyz - p, axis=1)
+        near = np.argsort(d, kind="stable")[:k]
+        A = np.column_stack([np.ones(k), xyz[near] - p])
+        coef, *_rest = np.linalg.lstsq(A, w[near], rcond=1e-9)
+        out[i] = coef[0]
+    return np.clip(out, float(w.min()), float(w.max()))
+
+
+def node_walls(mesh: ShellMesh, mids: dict[str, dict]) -> int:
+    """SHELL-9b: every node of a mid-face whose wall varies (a tapered or drafted wall, fitted) gets its own wall,
+    read from the record's wall readings; its elements are written per corner (CQUAD4 T1..T4, *NODAL
+    THICKNESS). A varying mid-face without readings is never meshed at one wall: it stops here. Returns how many
+    elements carry corner walls."""
+    mid_of = np.array(mesh.mid)
+    varies = np.zeros(mesh.n_elements, dtype=bool)
+    total = np.zeros(len(mesh.xyz))
+    count = np.zeros(len(mesh.xyz))
+    for m in sorted(set(mesh.mid), key=lambda x: int(x.split("_")[1])):
+        row = mids[m]
+        lo, hi = row.get("thickness_range_mm", [row.get("thickness_mm"), row.get("thickness_mm")])
+        if not (lo and hi and hi > lo * (1.0 + WALL_VARIES)):
+            continue
+        samples = np.asarray(row.get("wall_samples_mm") or [], dtype=float).reshape(-1, 4)
+        if len(samples) < 3:
+            raise ValueError(f"{m}'s wall varies ({lo:g} to {hi:g} mm) but the record holds no wall readings: it "
+                             "cannot be meshed at one wall (SHELL-9b)")
+        els = np.flatnonzero(mid_of == m)
+        nodes = np.unique(np.concatenate([mesh.element_nodes(int(e)) for e in els]))
+        total[nodes] += _wall_at(mesh.xyz[nodes], samples)
+        count[nodes] += 1.0
+        varies[els] = True
+    if not varies.any():
+        return 0
+    mesh.node_wall = np.where(count > 0, total / np.maximum(count, 1.0), 0.0)
+    mesh.varies = varies
+    used = np.unique(np.concatenate([mesh.element_nodes(int(e)) for e in np.flatnonzero(varies)]))
+    if np.any(mesh.node_wall[used] <= 0):
+        raise ValueError("a node of a varying wall came out with no wall (SHELL-9b)")
+    return int(varies.sum())
+
+
+def element_offsets(mesh: ShellMesh, mids: dict[str, dict]) -> int:
+    """SHELL-7: an element of a mid-face snapped onto a thicker neighbour's mid-plane (a thickness step, a lap)
+    carries the distance from its nodes' plane to its own true mid-plane, along its own normal (Nastran ZOFFS,
+    Abaqus / CalculiX OFFSET, Ansys SECOFFSET). Returns how many elements are offset."""
+    from meshpipeline.engines.shell_mesh import _normal
+
+    z = np.zeros(mesh.n_elements)
+    for e, m in enumerate(mesh.mid):
+        row = mids[m]
+        off = float(row.get("offset_mm") or 0.0)
+        if not off:
+            continue
+        n_o = np.asarray(row.get("offset_normal") or [0.0, 0.0, 0.0], dtype=float)
+        if not np.linalg.norm(n_o):
+            raise ValueError(f"{m} is offset {off:g} mm but the record gives no direction (SHELL-7)")
+        n_e = _normal(mesh.xyz, mesh.element_nodes(e))
+        z[e] = off * float(np.dot(n_o, n_e / max(float(np.linalg.norm(n_e)), 1e-300)))
+    if not np.any(z):
+        return 0
+    mesh.zoffs = z
+    return int(np.count_nonzero(z))
 
 
 def mesh_run(out_dir: Path | str, *, mm_per_unit: float = 1.0) -> tuple[ShellMesh, dict]:

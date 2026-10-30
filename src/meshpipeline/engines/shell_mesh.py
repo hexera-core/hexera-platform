@@ -23,6 +23,8 @@ class ShellMesh:
     groups: dict[str, np.ndarray] = field(default_factory=dict)   # name -> element indices (0-based)
     node_wall: np.ndarray | None = None      # (n,) the wall at each node (mm), where a wall varies (SHELL-9)
     varies: np.ndarray | None = None         # (q + r,) bool: the element's wall varies (written per corner)
+    zoffs: np.ndarray | None = None          # (q + r,) mm: the element's true mid-plane off its nodes' plane, along
+    #                                          its normal (SHELL-7 steps and laps: Nastran ZOFFS, Abaqus OFFSET)
     notes: list[str] = field(default_factory=list)
 
     @property
