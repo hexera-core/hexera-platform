@@ -2758,3 +2758,69 @@ number until the thermal test stops running a mesher in-process or the fixture s
 THE LESSON IS THE ONE THIS FILE KEEPS TEACHING ME. A wall of identical errors out of tests/ui has
 now had three separate causes - no Chrome installed, the wrong conftest collected, and this - and
 each time I reached first for the explanation that needed no measurement. Twice it was wrong.
+
+### A 336 million cell mesh passed both checkMesh runs and would not have solved
+
+The big run landed. 336,666,582 cells across the two regions, both halves Mesh OK, and the report
+says `ok: false`.
+
+| | cells | max non-ortho | max skew | max aspect | pieces |
+|---|---|---|---|---|---|
+| fluid | 66,764,096 | 48.65 | 1.659 | 3.786 | 5 |
+| solid | 269,902,486 | 50.22 | 1.653 | 4.222 | 1 |
+
+Interface 21,637,041 faces, the same on both sides. Peak 240 GiB. Stage times:
+
+| stage | s |
+|---|---|
+| preparePar | 0.6 |
+| cartesianMesh | 2,399.6 |
+| topoSet | 2,240.2 |
+| splitMeshRegions | 6,073.3 |
+| reconstructParMesh | 4,518.4 |
+| checkMesh fluid | 654.3 |
+| checkMesh solid | 1,903.3 |
+| total | 17,789.7 (4.94 h) |
+
+THE FLUID CAME OUT IN FIVE PIECES AND SHOULD BE TWO. The two are the inlet and outlet manifolds.
+The other three are islands, which means the coolant circuit pinched off somewhere and the mesh
+has passages that do not connect to the ports they are fed from. checkMesh does not look for this
+and says nothing about it, so a mesh that cannot solve passes every check the mesher runs.
+
+WHY IT PINCHED. The plan sized the cells off the narrowest passage it measured, 2.112 mm, and got
+12 cells across it at a 0.3521 mm background with one level of refinement. The fluid came out at
+93.84 um mean. But this part has a second scale: the measurement on it reads passages at
+0.0982 mm and `thin_gap_m` 4.1e-05, which is 41 um. A 93.84 um cell cannot hold a 41 um gap open,
+so the fine branches close and the circuit splits. The two scales are the same thing the engine
+refuses two-scale parts for; the refusal is right and this run went round it by being driven
+stage by stage on the bench instead of through the engine.
+
+The workspace is gone. I have the report and the stage logs, not the mesh.
+
+### The fitted skin is a net loss on this part and I stopped the run
+
+Both runs on 8 ranks, 0.3521 mm background, 1 level, only the block changed.
+
+| | cartesianMesh | cells |
+|---|---|---|
+| box | 2,399.6 s | 336,223,062 |
+| the part's own skin | 14,794 s and not finished | 269,650,437 |
+
+So 6.2x the time on the stage that dominates, to mesh 19.8% fewer cells, and it was still going.
+I killed it at 4 h 06 m. Eight ranks at 99% CPU and 162 GiB resident for that whole time.
+
+WHERE IT GOES WRONG IS NOT THE SURFACE. Surface untangling converges to 0 bad faces on the fitted
+skin, same as the box. The volume smoothing phase after it is where the bad faces appear, and they
+do not clear: 1,362 at first, up to 9,523, 5,283 when I stopped it. The skin is 27,696 triangles
+and 36.9% of the box volume, so the geometry it has to conform to is not the problem either.
+
+THE GATE CURRENTLY PICKS THIS PATH FOR THE CUSTOMER'S PART. `use_shell_domain` compares
+`share_of_box` 0.3685 against BOX_WORTH_KEEPING 0.6 and returns True, so a production run of
+ColdPlateAssembly_CLEAN.step fills the skin rather than the box. On the only part either has been
+measured on, that is the slower and worse of the two by a wide margin.
+
+I am not flipping the gate on this. The fitted run never finished, so I have "6.2x and still
+going" and not "finishes and is worse", and a gate that decides which domain to mesh for every
+part deserves a completed comparison. What the measurement does say is that volume share is not
+the thing to decide it on, because the cell saving it predicts is off by a factor of three and the
+time cost does not appear in it at all.
