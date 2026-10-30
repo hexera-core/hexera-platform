@@ -96,7 +96,7 @@ def _broken_mesh_moves_to(state) -> str:
 
 async def _run_shared_loop(attempt: BuilderAttempt, state, *, job_id: str,
                            publish: ExecutionEventPublisher,
-                           timeout_s: int) -> tuple[str, list]:
+                           timeout_s: int, provider_call=None) -> tuple[str, list]:
     from meshpipeline.agents.builder.loop import _run_tool_loop
 
     return await _wait_on_model_time(
@@ -127,9 +127,41 @@ async def _run_shared_loop(attempt: BuilderAttempt, state, *, job_id: str,
             # The user's own notes (contracts/user_notes): submit_mesh may then carry one plain
             # line on what the build did with them. Passed only when there are some.
             **({"user_notes": list(state["user_notes"])} if state.get("user_notes") else {}),
+            **({"provider_call": provider_call} if provider_call is not None else {}),
         ),
         timeout=timeout_s,
     )
+
+
+def _ran_a_mesher(attempt: BuilderAttempt) -> bool:
+    for c in attempt.tool_calls or ():
+        name = (c.get("tool") or c.get("name")) if isinstance(c, dict) else getattr(c, "name", "")
+        if str(name or "") in ("run_mesh", "submit_mesh"):
+            return True
+    return False
+
+
+async def _run_rules_plan(attempt: BuilderAttempt, state, *, job_id: str,
+                          publish: ExecutionEventPublisher, timeout_s: int, why: str) -> TurnOutcome:
+    """AIG-1: this attempt is built by the rules plan (engines/rules_plan) - the same
+    tools, validation and gates - because the AI gave no mesh (`why`). Never an api_failure: the
+    rules plan asks no provider, so a model outage can neither retry nor fail the run."""
+    from meshpipeline.engines.rules_plan import RULE, RulesBuilder
+    logger.warning("Builder: the rules plan builds this attempt (%s) - engine=%s job_id=%s",
+                   why, attempt.engine, job_id)
+    try:
+        from meshpipeline.contracts import decision_record as dr
+        dr.cite(job_id, stage="builder", decided="who built the attempt", value="rules plan", rule=RULE,
+                inputs={"why": why, "engine": attempt.engine,
+                        "attempt": int(state.get("retry_count", 0) or 0)},
+                alternatives=["the AI builder"],
+                words=f"the AI builder gave no mesh ({why}); the rules plan built this attempt")
+    except Exception:  # noqa: BLE001 - a record never changes the build
+        logger.debug("builder: why record not kept", exc_info=True)
+    final_text, messages_out = await _run_shared_loop(
+        attempt, state, job_id=job_id, publish=publish, timeout_s=timeout_s,
+        provider_call=RulesBuilder(attempt.engine, state))
+    return TurnOutcome(spec_authored=True, final_text=final_text, messages_out=messages_out)
 
 
 async def _wait_on_model_time(work, *, timeout: float, poll_s: float = 5.0):
@@ -175,8 +207,40 @@ async def run_attempt(attempt: BuilderAttempt, state, *, job_id: str,
                 timeout_s=int(driver_timeout_s) if driver_timeout_s else timeout_s)
             return TurnOutcome(spec_authored=spec_authored, final_text=final_text,
                                driver_stop=stop)
-        final_text, messages_out = await _run_shared_loop(
-            attempt, state, job_id=job_id, publish=publish, timeout_s=timeout_s)
+        from meshpipeline.engines import rules_plan as rb
+        if not rb.covers(attempt.engine):
+            final_text, messages_out = await _run_shared_loop(
+                attempt, state, job_id=job_id, publish=publish, timeout_s=timeout_s)
+            return TurnOutcome(spec_authored=True, final_text=final_text, messages_out=messages_out)
+        if not rb.BUILDER_AI:
+            return await _run_rules_plan(attempt, state, job_id=job_id, publish=publish,
+                                         timeout_s=timeout_s, why="BUILDER_AI is off")
+        # THE AI BUILDS FIRST; THE RULES PLAN WHEN IT GIVES NO MESH (AIG-1). A provider outage, a
+        # model that ran out of time, raised, or ended its rounds without submitting never fails or
+        # retries the run: the same attempt is built by the rules plan.
+        why = ""
+        final_text, messages_out = "", []
+        try:
+            final_text, messages_out = await _run_shared_loop(
+                attempt, state, job_id=job_id, publish=publish, timeout_s=timeout_s)
+        except (fence.StaleWorkerFenced, StaleExecutionPublish, asyncio.CancelledError):
+            raise
+        except TimeoutError:
+            why = "the AI builder ran out of time"
+        except RuntimeError as exc:
+            why = (f"the AI builder was unavailable ({str(exc).replace(f'{API_FAILURE_MARK} ', '')})"
+                   if API_FAILURE_MARK in str(exc) else f"the AI builder raised {type(exc).__name__}")
+            if API_FAILURE_MARK not in str(exc):
+                logger.exception("Builder unexpected RuntimeError - job_id=%s", job_id)
+        except Exception as exc:  # noqa: BLE001 - an AI error falls back to the rules
+            logger.exception("Builder unexpected error - job_id=%s", job_id)
+            why = f"the AI builder raised {type(exc).__name__}"
+        if not why and not final_text:
+            why = ("the AI builder ended its rounds without submitting a mesh"
+                   if _ran_a_mesher(attempt) else "the AI builder ended its rounds without running a mesher")
+        if why:
+            return await _run_rules_plan(attempt, state, job_id=job_id, publish=publish,
+                                         timeout_s=timeout_s, why=why)
         return TurnOutcome(spec_authored=True, final_text=final_text, messages_out=messages_out)
     except (fence.StaleWorkerFenced, StaleExecutionPublish):
         # SUPERSESSION, not a Builder failure. This worker lost execution ownership: a newer

@@ -4,7 +4,7 @@ Every decision a mesh run makes on its own is made by a written rule. Each rule 
 and each decision the run records in its "why" record names the rule behind it
 (`contracts/decision_record.py`). This file is the one home for those rules.
 
-Rulebook version: **44**
+Rulebook version: **45**
 
 How the book is kept honest:
 
@@ -103,12 +103,19 @@ While it is off, the review-led verdict still decides, and the limits verdict is
 every run beside it: one `verdict shadow:` log line (limits outcome, rule, review-led outcome,
 whether they agree, the limits missed) and the `verdict` entry in the why record.
 
+**On for dev.** The deploy target turns it on for shared dev and every personal environment
+(`verdict_by_limits` in `.github/workflows/deploy.yml`, sent to the workers as template metadata,
+so a fleet deploy applies it). Prod keeps the default until dev has run with it.
+
 | ID | Status | Rule |
 |---|---|---|
 | VER-1 | in force | **Fail: no valid mesh.** The executor's gates refused the last attempt, or the mesh's own numbers fail one of the engine's gating rows (its `criteria.py` rows marked gating: checkMesh fatal defects, wall captured, ports captured, the quality floors, regions and interfaces). An invalid mesh is never delivered. The resolution floor, the share of skewed faces and the one-job cell limit are not validity: on a sound mesh they are notes (LAD-cfd-3, LAD-cfd-4). |
 | VER-2 | in force | **Delivered with concerns:** the mesh is valid but misses at least one production limit (table below). Each one is listed as measured vs limit. |
 | VER-3 | in force | **Clean pass:** valid, and every production limit that applies is met (a limit whose number was not measured is listed as unmeasured and decides nothing). |
 | VER-4 | in force | **Wrong problem, by measured checks only.** The run failed at a gate that measures one of the ways a mesh can be a different problem than the one confirmed (table below). The gate's own measured account is what the user reads. |
+| VER-5 | in force | **A review never reruns or fails a run once the limits decide.** When a mesh passed every gate, its review ends the run whatever it said, and also when it did not conclude (the model was busy, down, or gave no answer). No review rerun, no rebuild, no failure: the measured limits decide. A crash after the review is rescued the same way, whatever the review said. A user's own dispute keeps its routing. |
+| VER-6 | in force | **The recorded review verdict is the measured one once the limits decide.** A review that ran on a mesh every gate passed records PASS (job row and final result) when the measured limits deliver it, pass or pass with notes. The model's own call is kept beside its notes, labelled. Job fb44fed7 recorded the model's FAIL on a valid FEA mesh. |
+| VER-7 | in force | **A reviewer point a measurement settles is not an open point.** When a review axis is about a property a measured row measures exactly (layer coverage, cell quality, regions, interfaces, passage resolution, FEA element validity and detail, the FEA face accounting), and that row was measured and met, the point is kept with the measurement that settles it, and is not shown as a note to act on. A point no measurement speaks to stays a note. |
 
 ### VER-2 production limits, per engine and purpose
 
@@ -290,7 +297,7 @@ own plan.
 | AI-fea-3 | in force | **Small features.** Set aside: a hole, fillet or notch of radius at most 2% of the part's diagonal is meshed as coarser (AI-fea-2); a wall or anything larger is never set aside. Keep: a micro detail (PLAN-fea-12) at least a fiftieth of the base size gets a zone of its own size, so the mesh follows it; a smaller one stays set aside. |
 | AI-fea-4 | in force | **The user's element budget** - only one they stated - lowers the element limit; it never raises it past the element, memory or time limits. Over it, the plan coarsens as any limit does (PLAN-fea-8). |
 | AI-fea-5 | in force | **The minimums hold** after every choice: no choice leaves fewer than 2 elements through a wall, 4 per quarter-turn of a round or hot spot, or a corner coarser than half its wall. Then the plan is held to valid elements, the element, memory and time limits and every gate exactly as any plan is - over the limit, PLAN-fea-8 coarsens it to its validity minimums and names what is short. A zone the AI refined is checked on the mesh against its own finer target, so a refinement the mesh missed is named and pulls LAD-fea-3. The AI's refinements never cost the rules' own zones: when they would take the plan over its limit they are left out first (its other choices stand), and only then does PLAN-fea-8 coarsen. |
-| AI-fea-6 | in force | **The AI never fails a run.** Off, unreachable, slow (240 s, or what the attempt has left after 15 minutes kept for meshing, if less), no tool call, an answer the schema refuses: the rules' own plan, said in one line. Choices on ids the model was not shown are dropped and recorded. |
+| AI-fea-6 | in force | **The AI never fails a run, and its availability never changes the mesh.** Unreachable, busy, slow (240 s, or what the attempt has left after 15 minutes kept for meshing, if less), no tool call, an answer the schema refuses: the decision saved for this same question (the AI decision cache: the same part, the same words, the same owner) is used when there is one; otherwise the rules' own plan. Either way it is said in one line and the why record names which. Off (`FEA_AI=off`): the rules' own plan. Choices on ids the model was not shown are dropped and recorded. |
 | AI-fea-7 | in force | **Joints** (an assembly): bonded or contact per touching pair is shown as a suggestion for the user to confirm; it is never applied by itself. |
 | AI-fea-8 | in force | **After a failed pass** (no mesh, or an invalid one) the AI may pick one lever from those the ladder allows for that failure (`engines/fea_ladder.lever_options`): the ladder's own first, the other unpulled fill lever, or LAD-fea-6. Any other answer: the ladder's own. |
 
@@ -325,6 +332,16 @@ route reads them as guidance (`contracts/user_notes.py`). They are not acceptanc
 | NOTE-1 | in force | **Asked once, kept word for word.** Before the first summary the application asks one optional question ("Anything specific about this simulation we should know? ... Say 'no' to skip."), unless the user already said something specific. It is never asked again and never holds a submission. The user's answer, every message the intake quotes as saying something specific, and the console's notes box are stored verbatim on the session (`user_notes`), never as a model's rewrite; the summary (request_txt) stays the intake's own. |
 | NOTE-2 | in force | **Every route's AI steps read them, as guidance.** Every attempt's workspace gets `user_notes.txt`; the model-led builder, the snappy planner and the FEA judgement calls are shown them and may use them only through the settings they already control, inside those settings' limits; the intake sets a note that fits a declared field (detail level, an engine parameter, a named boundary, far-field margins) there. A route with no AI step in its build (snapgrid's ECXML driver) gets them through the intake. `tests/unit/hygiene/test_user_notes_every_route.py` fails when a route or an engine has no reader. |
 | NOTE-3 | in force | **A note is never a check.** The reviewer reads them as context, outside the text a finding may quote to ask for a rebuild, and never fails a mesh over one. What a note asks that cannot be done (removing holes from the CAD, say) is left and the run carries on. A step may leave one plain line on what it did with them, shown on the result as "From your notes: ...", best effort and never parsed or checked. |
+
+## AIG: the AI never fails or retries a run
+
+The rules plan comes first. An AI change is used only when it is valid and inside the rules' bounds,
+and every AI error falls back to the rules. These rules cover the AI steps outside the FEA builder
+(AI-fea-n above) and the verdict (VER-5).
+
+| ID | Status | Rule |
+|---|---|---|
+| AIG-1 | in force | **The rules build when the AI builder gives no mesh.** On cfMesh, VMTK, gmsh (CFD) and snappy multi-region, an attempt whose builder model was down, busy, slow, raised, or ended its rounds without submitting a mesh is built in the same attempt by the rules plan (`engines/rules_plan.py`): the same tools, validation and gates, the layer count the request names, every size from the engine's own defaults. It is never an infrastructure retry and never a failed run. The why record and the run's notes say so. `BUILDER_AI=off` builds every such attempt by the rules plan. |
 
 ## Reserved families
 

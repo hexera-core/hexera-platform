@@ -49,6 +49,8 @@ async def _run_tool_loop(
     user_dispute: dict | None = None,   # the engineer's flags, when answering a dispute
     broken_mesh_moves_to: str = "",     # the engine a broken mesh moves this run to ('' = stays)
     user_notes: list | None = None,     # the user's own notes, verbatim (contracts/user_notes)
+    provider_call=None,                 # who answers the rounds: the builder model (default) or
+                                        # the rules plan (engines/rules_plan, AIG-1)
 ) -> tuple[str, list]:
 
     # The clock starts when this coroutine starts; run_mesh derives its dispatch budget from what
@@ -108,7 +110,7 @@ async def _run_tool_loop(
     # outcome, a control path - the Builder's exhaustion is fully described by the record's exit
     # reason and tally. A parallel string would be vocabulary with no consumer.
     result = await run_agent_loop(
-        driver=policy, provider_call=_provider_call(engine, job_id, user_id),
+        driver=policy, provider_call=provider_call or _provider_call(engine, job_id, user_id),
         messages=conversation,
         tools=(_active_tools(engine, user_notes=user_notes) if user_notes else _active_tools(engine)),
         job_id=job_id, user_id=user_id,
