@@ -22,6 +22,20 @@ logger = logging.getLogger(__name__)
 #: Failure markers this driver ends an attempt with (the run record carries them).
 NO_SOURCE = "conjugate_source_missing"
 NO_COOLANT = "conjugate_no_coolant"
+#: REFUSED FOR ITS SIZE, NOT FOR ITS COOLANT. Four refusals below price the part against a budget
+#: and decline before anything runs: two scales of passage that no pair of cell sizes resolves, an
+#: estimate over the deployment's cell limit, cartesianMesh's own 32-bit octree ceiling, and an
+#: archive the caller would not take back. Every one of them reported `conjugate_no_coolant`, on
+#: parts whose coolant had just been found, measured and written to disk a few lines earlier.
+#:
+#: MEASURED on the first customer assembly, 2026-10-30 (ColdPlateAssembly_CLEAN.step, job
+#: 7439e942): the split wrote 53,661.79 mm3 of coolant over two passages and the driver then
+#: refused for two scales of passage - 2.11 mm against 0.0982 mm - and filed it as "no coolant".
+#: The log line above each refusal says the true reason; the marker is what survives into the
+#: failure record, and it was saying the opposite. The comment beside the archive check already
+#: states the standard this did not meet: "the reason names the setting rather than blaming the
+#: part".
+TOO_FINE = "conjugate_too_fine_for_budget"
 BUILD_FAILED = "conjugate_build_failed"
 
 #: The CAD extensions the coolant can be cut out of. A triangle file cannot: the extraction needs
@@ -264,8 +278,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             # thing about their own geometry.
             logger.info("conjugate: refusing to start - %s - job_id=%s", two_said, job_id)
             await run.fence("deliver builder outcome")
-            return False, NO_COOLANT, run.outcome(produced_deliverable=False, exhausted=True,
-                                                  failure_marker=NO_COOLANT)
+            return False, TOO_FINE, run.outcome(produced_deliverable=False, exhausted=True,
+                                                  failure_marker=TOO_FINE)
         narrowest = float(scales["broad"]["width_m"])
         cells_across, levels, estimate, said = (two["broad_across"], two["broad_levels"],
                                                 two["estimate"], two_said)
@@ -302,8 +316,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             # kernel kill. The sentence says the number rather than asking for "less detail".
             logger.info("conjugate: refusing to start - %s - job_id=%s", said, job_id)
             await run.fence("deliver builder outcome")
-            return False, NO_COOLANT, run.outcome(produced_deliverable=False, exhausted=True,
-                                                  failure_marker=NO_COOLANT)
+            return False, TOO_FINE, run.outcome(produced_deliverable=False, exhausted=True,
+                                                  failure_marker=TOO_FINE)
     else:
         cells_across, estimate, said = B.cells_across_for(
             fidelity=fidelity, block_lo=bounds[0], block_hi=bounds[1],
@@ -328,8 +342,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if octree_said:
         logger.info("conjugate: refusing to start - %s - job_id=%s", octree_said, job_id)
         await run.fence("deliver builder outcome")
-        return False, NO_COOLANT, run.outcome(produced_deliverable=False, exhausted=True,
-                                              failure_marker=NO_COOLANT)
+        return False, TOO_FINE, run.outcome(produced_deliverable=False, exhausted=True,
+                                              failure_marker=TOO_FINE)
     # ...AND WHETHER IT CAN COME BACK. The mesher runs off-box and its workspace returns as one
     # archive through a bounded extractor; a mesh too big for that archive is a mesh that builds
     # and is then lost at the last step, which is exactly what the coupon plate did. Same shape as
@@ -352,8 +366,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if return_said:
         logger.info("conjugate: refusing to start - %s - job_id=%s", return_said, job_id)
         await run.fence("deliver builder outcome")
-        return False, NO_COOLANT, run.outcome(produced_deliverable=False, exhausted=True,
-                                              failure_marker=NO_COOLANT)
+        return False, TOO_FINE, run.outcome(produced_deliverable=False, exhausted=True,
+                                              failure_marker=TOO_FINE)
     # A MESH IS WORTH HAVING EVEN WHEN THE PORTS CANNOT BE NAMED, and refusing to build one was
     # costing whole parts. The ports are the block faces the coolant reaches, which works while a
     # part's mouths lie ON those faces - eight of the nine in the package, because a channel milled
@@ -526,5 +540,5 @@ def _finer(fidelity: str) -> str:
         return "" if (fidelity or "").strip().lower() == ladder[-1] else ladder[-1]
 
 
-__all__ = ["BUILD_FAILED", "NO_COOLANT", "NO_SOURCE", "cad_scale", "coolant_sits_inside",
+__all__ = ["BUILD_FAILED", "NO_COOLANT", "NO_SOURCE", "TOO_FINE", "cad_scale", "coolant_sits_inside",
            "declared_port_names", "drive", "find_source", "skin_bounds"]
