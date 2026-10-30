@@ -275,6 +275,53 @@ def background_complaint(lo, hi, background_m: float) -> str:
         "nothing about whether the mesh will be accurate.")
 
 
+#: A part longer than this is not a part, it is a unit. Everything downstream of the staging is in
+#: METRES, and nothing this engine meshes - cold plate, coupon, manifold, heat sink - is ten metres
+#: across. A millimetre surface read as metres is at least a thousand times its real size, so any
+#: part from 10 mm upward lands past this bar.
+#:
+#: WHY A SIZE AND NOT A CELL COUNT. The cell estimate cannot see a unit error at all: budget.py
+#: prices area/cell**2 and volume/background**3, which are dimensionless ratios, so a consistently
+#: millimetre job produces the IDENTICAL estimate to a consistently metre one and every gate built
+#: on the estimate - CELL_HARD_LIMIT, refuse_for_octree, the archive ceiling - passes it. The only
+#: number that reveals the mistake is an absolute length. Measured: the plate whose surfaces were
+#: written unscaled estimated 334,340,370 cells, passed every gate that was asked, and built
+#: 877,659,515 octree boxes before it was killed at 250 of 251 GiB.
+#:
+#: The same check exists for the authoring side as devtools/semiconductor/parts.MAX_PART_M, at
+#: 0.3 because that package only ever holds chips. This one is the engine's, so it is set where no
+#: real part can reach it.
+MAX_PART_M = 10.0
+
+#: Round factors a unit mistake actually comes out as, so the complaint can name one instead of
+#: leaving a reader to divide. 1e3 is millimetres read as metres (and 1e6 is that twice over, which
+#: is what an unscaled OpenCASCADE transfer of a metre-declared file gives); 25.4 and 10 are inches
+#: and centimetres read as millimetres.
+_UNIT_FACTORS = ((1e6, "millimetres twice over, or a metre-declared file transferred unscaled"),
+                 (1e3, "millimetres read as metres"),
+                 (25.4, "inches read as millimetres"),
+                 (10.0, "centimetres read as millimetres"))
+
+
+def part_size_complaint(lo, hi) -> str:
+    """Empty when the part's extent could be metres, otherwise what is wrong with it.
+
+    See MAX_PART_M for why this is measured in metres rather than in cells.
+
+    IT DOES NOT NAME THE FACTOR, deliberately. One extent cannot tell you which unit was missed:
+    a plate left in millimetres reads 170.2, and 170.2 divided by 25.4 is 6.7 m, which is just as
+    plausible a part as 0.1702 m. Guessing picked the wrong one. `driver.coolant_sits_inside` has
+    TWO extents to compare and so can name the factor exactly; this one reports the size and stops.
+    """
+    longest = max(float(hi[k]) - float(lo[k]) for k in range(3))
+    if longest <= MAX_PART_M:
+        return ""
+    return (f"the part's longest side is {longest:.6g} m, and nothing this engine meshes is over "
+            f"{MAX_PART_M:g} m. Every length below here is metres, so this one was never "
+            "converted: scale the geometry on the way in rather than meshing it as it stands - it "
+            "does not fail, it runs until someone kills it.")
+
+
 def block_surface_stl(lo, hi) -> str:
     """The outer block as an ASCII STL of six named solids, one per face.
 
@@ -1524,6 +1571,7 @@ __all__ = ["ConjugateError", "ConjugateReport", "RegionReport", "PortPlan",
            "CELL_TO_REGION", "REGION_PROPERTIES", "region_properties",
            "block_bounds", "block_surface_stl", "open_faces", "plan_ports",
            "background_complaint", "MIN_BACKGROUND_CELLS_ACROSS_BLOCK",
+           "part_size_complaint", "MAX_PART_M",
            "children_peak_rss_bytes",
            "render_meshdict", "render_toposetdict", "interface_cell_m",
            "read_region", "boundary_patches", "interface_faces", "verify", "build"]

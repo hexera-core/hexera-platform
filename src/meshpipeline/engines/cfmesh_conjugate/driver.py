@@ -38,6 +38,20 @@ NO_COOLANT = "conjugate_no_coolant"
 TOO_FINE = "conjugate_too_fine_for_budget"
 BUILD_FAILED = "conjugate_build_failed"
 
+#: A FIFTH REFUSAL, AND IT IS NOT A SIZE ONE. The four above price a part against a budget and
+#: decline because the answer is too many cells. This one declines because the geometry is not in
+#: metres at all, which is a different fact about a different thing: the part is not too fine, it
+#: is mis-measured, and filing it as `conjugate_too_fine_for_budget` would tell the next reader to
+#: ask for less detail on a part whose detail was never the problem.
+#:
+#: It cannot be a size refusal even in principle, because no cell count can detect it. budget.py
+#: prices area/cell**2 and volume/background**3 - dimensionless ratios - so a job consistently in
+#: millimetres yields the IDENTICAL estimate to one consistently in metres. Measured: the plate
+#: whose surfaces were written unscaled estimated 334,340,370 cells, passed every gate it was
+#: offered, and built 877,659,515 octree boxes before it was killed at 250 of 251 GiB. The only
+#: number that reveals it is an absolute length, which is what conjugate.part_size_complaint reads.
+NOT_METRES = "conjugate_geometry_not_metres"
+
 #: The CAD extensions the coolant can be cut out of. A triangle file cannot: the extraction needs
 #: the solid's own faces to find which of them bound the space inside it.
 _CAD = (".step", ".stp", ".iges", ".igs", ".brep")
@@ -76,7 +90,7 @@ def skin_bounds(workspace) -> tuple[list[float], list[float]] | None:
 
 
 def cad_scale(source) -> float:
-    """What the CAD's own coordinates must be multiplied by to be metres.
+    """What an OpenCASCADE transfer's own coordinates must be multiplied by to be metres.
 
     THE ONE SLIP THIS FILE COULD CARRY IS A UNIT, and it carried it: the extraction was called with
     scale=1.0 on a STEP that declares millimetres, so the manifold plate's coolant came back as
@@ -84,13 +98,36 @@ def cad_scale(source) -> float:
     size, the background cell, the cell estimate - and nothing in the chain had any way to notice,
     because every one of them was consistently wrong.
 
-    The unit comes from the same reader the rest of the platform resolves units with
-    (cad/unit_evidence.parser_applied_unit), never from the file's name or a default.
+    IT IS 1e-3, FOR EVERY FILE, AND THAT IS THE WHOLE POINT. OpenCASCADE transfers into its own
+    system unit, so a shape it hands back is in MILLIMETRES whatever the file declared - it has
+    already applied the file's unit on our behalf. The contract says so
+    (contracts/coordinate_state.OCC_OUTPUT_UNIT) and the same conversion is what the staging path
+    applies through `PreparedCoordinates.to_metres`, which collapses to exactly 1e-3 whenever the
+    interpretation agrees with what the parser applied.
+
+    Returning the DECLARED unit's scale, as this did, is right ONLY for a millimetre file, which is
+    every file the corpus happens to be made of. Measured on this plate by rewriting one entity of
+    its STEP and reading each variant back through the same reader:
+
+        declares        raw extent OCC returns      declared scale      what that gives
+        millimetre            177.5085                   1e-3            0.177509 m   right
+        metre              177500.0158                   1.0        177500.015811 m   1000x out
+        centimetre           1775.0853                   1e-2           17.750853 m     10x out
+
+    So the correct factor is the one that undoes OCC's own normalisation, and nothing else. The
+    declared unit is deliberately not consulted: it would only reintroduce the bug, and reading it
+    also inherits `parser_applied_unit`'s five fallbacks to metre, each of which silently became a
+    no-op conversion under the old formula.
+
+    `source` is kept in the signature because this is the seam every caller already passes a path
+    to, and because a user OVERRIDE of the unit - the one case where the file's own declaration
+    matters - belongs here when there is one to thread through.
     """
-    from meshpipeline.cad.unit_evidence import parser_applied_unit
+    from meshpipeline.contracts.coordinate_state import OCC_OUTPUT_UNIT
     from meshpipeline.contracts.geometry_units import scale_to_metres
 
-    return float(scale_to_metres(parser_applied_unit(Path(source))))
+    _ = Path(source)
+    return float(scale_to_metres(OCC_OUTPUT_UNIT))
 
 
 def coolant_sits_inside(rec: dict, lo, hi) -> str:
@@ -109,9 +146,25 @@ def coolant_sits_inside(rec: dict, lo, hi) -> str:
     slack = 1e-9 + 1e-6 * max(float(hi[k]) - float(lo[k]) for k in range(3))
     for k in range(3):
         if c_lo[k] < float(lo[k]) - slack or c_hi[k] > float(hi[k]) + slack:
-            return (f"the coolant runs from {c_lo[k] * 1e3:.4g} to {c_hi[k] * 1e3:.4g} mm on "
+            said = (f"the coolant runs from {c_lo[k] * 1e3:.4g} to {c_hi[k] * 1e3:.4g} mm on "
                     f"axis {k} where the part runs {float(lo[k]) * 1e3:.4g} to "
                     f"{float(hi[k]) * 1e3:.4g} mm")
+            # ...AND IF IT IS A UNIT, SAY SO. This check is what catches a scale that was never
+            # applied, and it reported it as "no coolant found in the part" - which reads as a
+            # geometry failure and sends the next hour into the extraction. When the two extents
+            # differ by a round factor, that factor IS the answer.
+            part = max(float(hi[j]) - float(lo[j]) for j in range(3))
+            cool = max(c_hi[j] - c_lo[j] for j in range(3))
+            if part > 0 and cool > 0:
+                from meshpipeline.engines.cfmesh_conjugate.conjugate import _UNIT_FACTORS
+
+                ratio = cool / part
+                for factor, what in _UNIT_FACTORS:
+                    if 0.9 <= ratio / factor <= 1.1:
+                        return (f"{said}. The coolant is {ratio:.4g} times the part, which is "
+                                f"{what}: the extraction was handed the wrong scale, not the "
+                                "wrong geometry")
+            return said
     return ""
 
 
@@ -163,8 +216,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         review_caused_retry,
     )
     from meshpipeline.cad.fluid_volume import surface_bounded
-    from meshpipeline.engines.cfmesh_conjugate.conjugate import ConjugateError
     from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import ConjugateError
     from meshpipeline.engines.registry import get_spec
     from meshpipeline.engines.runtime import get_engine
 
@@ -180,6 +233,18 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         await run.fence("deliver builder outcome")
         return False, NO_SOURCE, run.outcome(produced_deliverable=False,
                                              failure_marker=NO_SOURCE)
+    # IS THIS A PART, OR IS IT A UNIT. Checked here, first, before anything is extracted or priced,
+    # because it is the only question in this function that no later gate can answer: the cell
+    # estimate is a dimensionless ratio, so a job that is consistently in the wrong unit passes
+    # CELL_HARD_LIMIT, refuse_for_octree and the archive ceiling alike and then meshes until it is
+    # killed. See conjugate.MAX_PART_M for the run that did.
+    from meshpipeline.engines.cfmesh_conjugate import conjugate as _CU
+
+    if (wrong_size := _CU.part_size_complaint(bounds[0], bounds[1])):
+        logger.warning("conjugate: refusing to start - %s - job_id=%s", wrong_size, job_id)
+        await run.fence("deliver builder outcome")
+        return False, NOT_METRES, run.outcome(produced_deliverable=False, exhausted=True,
+                                              failure_marker=NOT_METRES)
 
     # THE COOLANT, cut out of the part itself. This is the step that makes the case a conjugate
     # one: without it there is a solid and no fluid, and nothing to split the block along.
@@ -542,5 +607,5 @@ def _finer(fidelity: str) -> str:
         return "" if (fidelity or "").strip().lower() == ladder[-1] else ladder[-1]
 
 
-__all__ = ["BUILD_FAILED", "NO_COOLANT", "NO_SOURCE", "TOO_FINE", "cad_scale", "coolant_sits_inside",
-           "declared_port_names", "drive", "find_source", "skin_bounds"]
+__all__ = ["BUILD_FAILED", "NO_COOLANT", "NOT_METRES", "NO_SOURCE", "TOO_FINE", "cad_scale",
+           "coolant_sits_inside", "declared_port_names", "drive", "find_source", "skin_bounds"]

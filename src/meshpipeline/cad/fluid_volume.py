@@ -1785,7 +1785,7 @@ def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
     }
 
 
-def surface_bounded(source, out_path, *, scale: float = 1.0, kind: str = "cad",
+def surface_bounded(source, out_path, *, scale: float | None = None, kind: str = "cad",
                     angular_deflection: float = 0.2, linear_deflection: float | None = None,
                     budget_s: float | None = None, domain_path=None,
                     domain_patch: str = "") -> dict | None:
@@ -1795,9 +1795,23 @@ def surface_bounded(source, out_path, *, scale: float = 1.0, kind: str = "cad",
 
     Unlike `stage_bounded` this needs NOTHING declared: the caller has a file and wants the fluid
     inside it, which is the case a cold plate arrives as.
+
+    `scale` IS REQUIRED, AND IT USED TO DEFAULT TO 1.0. OpenCASCADE hands back millimetres whatever
+    the file declared, so 1.0 means "write the STL in millimetres" while this module's own
+    docstrings, and every `_m` key in the record it returns, say metres. A caller that simply
+    forgot it got a surface a thousand times too big with no complaint anywhere, and then a mesher
+    asked for micron cells across a 170 mm plate: 877,659,515 octree boxes and 250 of 251 GiB
+    before it was killed, twice. `engines/cfmesh_conjugate/driver.cad_scale` is the factor; pass it.
+    `cad/cad_tessellate._occ_to_metres` already refuses the same way for the same reason.
     """
     from pathlib import Path
 
+    if scale is None:
+        raise ExtractionError(
+            "surface_bounded needs the scale that makes this CAD's coordinates metres - "
+            "engines/cfmesh_conjugate/driver.cad_scale(source) - because OpenCASCADE returns "
+            "millimetres whatever the file declares, and every _m key of the record this returns "
+            "is labelled metres")
     out_path = Path(out_path)
     answer = run_bounded({"task": "surface", "source": str(source), "scale": float(scale),
                           "kind": kind, "out_path": str(out_path),
