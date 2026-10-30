@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import gzip
-import io
 import json
 import os
-import tarfile
+import tempfile
 from pathlib import Path
 
 import meshpipeline.engines.return_scope as RS
+import meshpipeline.parallel_gzip as PG
 from meshpipeline.adapters.mesh_execution.gcs_exchange import RESULT_ARCHIVE_LEVEL as ARCHIVE_LEVEL
+from meshpipeline.adapters.mesh_execution.gcs_exchange import write_result_archive
 
 
 def _ws(tmp_path: Path, *, volume_bytes: int = 3_000_000) -> Path:
@@ -28,14 +29,15 @@ def _ws(tmp_path: Path, *, volume_bytes: int = 3_000_000) -> Path:
 
 
 def _archive_bytes(ws: Path) -> int:
-    """The archive the mesher really sends, at the level it really sends it
-    (gcs_exchange.RESULT_ARCHIVE_LEVEL). Measuring against tarfile's level-9 default instead was
-    measuring against an archive nothing writes."""
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=ARCHIVE_LEVEL) as tf:
-        for child in sorted(ws.iterdir()):
-            tf.add(str(child), arcname=child.name)
-    return len(buf.getvalue())
+    """The archive the mesher really sends, written by the code that really sends it.
+
+    Measuring against a tarfile default instead of against the archiver has been wrong twice over:
+    first its level-9 compresslevel, and then its single deflate stream, once the archive began to
+    be written on every core the job has. Both times the thing being measured was an archive
+    nothing writes, and the second time it was hiding a measure that read LOW.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        return write_result_archive(ws, Path(tmp) / "output.tar.gz")
 
 
 def test_the_measure_matches_the_real_archive_and_never_reads_low(tmp_path):
@@ -43,8 +45,9 @@ def test_the_measure_matches_the_real_archive_and_never_reads_low(tmp_path):
     est, real = RS.estimate_archive_bytes(ws), _archive_bytes(ws)
     # NOT `0.99 * real`, which is what this allowed: the measure reading 1% low is the whole
     # failure, and it did read low here (6,192,083 against 6,193,573) until frame_bytes counted
-    # the members the files' own bytes do not. On the coupon's real workspace the margin was
-    # 19,881 bytes in 244,704,856 - 0.008% - so there was never room to spend on a tolerance.
+    # the members the files' own bytes do not. On the coupon's real workspace the margin is
+    # 45,843 bytes in 244,703,534 - 0.019% - before the charge for the archiver's cut, so there
+    # was never room to spend on a tolerance.
     assert real <= est <= 1.15 * real, (est, real)
 
 
@@ -118,9 +121,9 @@ def test_an_empty_file_still_costs_its_archive_header(tmp_path):
 # has to read HIGH, or a built mesh is lost on the way back.
 # #
 #: Measured on the two-scale coupon's own workspace (1,120,883,923 bytes over 105 files, the mesh
-#: of job 575f76e6): the fast measure read 303,084,615 bytes in 26.0 s where the exact one read
-#: 244,724,737 in 114.1 s - 1.2385 of it, and 4.4 times as fast.
-COUPON_FAST_OVER_EXACT = 1.2385
+#: of job 575f76e6): the fast measure read 303,383,687 bytes where the exact one read 245,023,809
+#: - this much of it - in 4.3 s against 22.1 s on 32 cores.
+COUPON_FAST_OVER_EXACT = 1.2382
 #: ...but level 1 is not guaranteed to read high FILE BY FILE. Over the same workspace's 62 files
 #: of 4 KiB or more, one read LOW against level 6 - a boundary .vtp, at this fraction of its
 #: level-6 size. FAST_TRUST is the margin that covers it.
@@ -150,6 +153,45 @@ def test_the_margin_on_the_fast_measure_covers_the_worst_file_measured():
     """FAST_TRUST is not a round number someone liked: it is the room left for a file the cheap
     level reads low on, and it has to stay several times wider than the worst one measured."""
     assert (1 - RS.FAST_TRUST) >= 5 * (1 - COUPON_WORST_FAST_FILE)
+
+
+#: Measured 2026-10-29 over seven synthetic inputs at three chunk sizes (repetitive ASCII, an
+#: owner-like cycle, formatted floats, zeros, random, half random, one long line): the worst a
+#: single cut of the stream cost the archive, rounded up from 20.6 bytes. On the coupon's own
+#: workspace the 67 cuts GAINED 19.7 bytes each.
+WORST_CUT_BYTES = 21
+
+
+def test_the_charge_for_the_parallel_cut_covers_the_worst_cut_measured():
+    """The archive is no longer one deflate stream - it is cut into chunks so it can be written on
+    every core - and a cut can move its size by bytes no file's own contents know anything about.
+    Same rule as FAST_TRUST: the charge stays far above the worst ever measured, because measuring
+    a worst case is not proving one."""
+    assert PG.CUT_BYTES >= 20 * WORST_CUT_BYTES
+
+
+def test_every_measure_charges_for_the_cut_the_archiver_makes(tmp_path, monkeypatch):
+    """A cut costs the archive the same whichever measure answered the question, so all of them
+    charge it - the raw path included, which compresses nothing and so could never notice."""
+    ws = _ws(tmp_path, volume_bytes=200_000)
+    want = RS.raw_bytes(ws) + RS.frame_bytes(ws) + RS.cut_bytes(ws)
+    (ws / "_rescue").mkdir()      # removed before the measure runs, so `want` is what it will see
+    rec = RS.scope_return(ws, ceiling=512 * 2**20)
+    assert rec["measure"] == "raw" and rec["archive_bytes_est"] == want
+
+    exact = RS.estimate_archive_bytes(ws)
+    monkeypatch.setattr(PG, "CUT_BYTES", PG.CUT_BYTES + 1_000_000)
+    assert RS.estimate_archive_bytes(ws) == exact + 1_000_000
+
+
+def test_the_measure_still_reads_high_when_the_archive_is_cut_many_times(tmp_path, monkeypatch):
+    """Where the cut charge earns its keep. At the production chunk size every workspace a test
+    can afford to build is a SINGLE chunk, so the charge would never be held against an archive
+    that was really cut - and the cutting is the only thing about the archive that changed."""
+    monkeypatch.setattr(PG, "CHUNK_BYTES", 32 * 1024)
+    ws = _ws(tmp_path, volume_bytes=6_000_000)
+    assert RS.cut_bytes(ws) > 100 * PG.CUT_BYTES, "not cut often enough to be testing anything"
+    assert _archive_bytes(ws) <= RS.estimate_archive_bytes(ws)
 
 
 def _levels_used(monkeypatch, record):

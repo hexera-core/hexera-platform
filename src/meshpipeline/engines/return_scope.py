@@ -1,7 +1,7 @@
 # Responsibility: Keep the workspace a mesh run sends home inside the size every extractor accepts, by leaving out what the delivery can do without.
 # Owns: the estimate of the returned archive, the list of optional heavy files, and the record of what was left out.
 # Boundaries: runs on the mesher's side, after the engine and before the workspace is archived; it never touches the mesh, its quality record or anything a gate reads.
-# Collaborates with: engines/dispatch.run_engine_local (calls it), adapters/mesh_execution/gcs_exchange (writes the archive this measures, at RESULT_ARCHIVE_LEVEL), sandbox/safe_extract (the limits it keeps inside), engines/*/finalize (which treat a missing volume export as a real, optional state).
+# Collaborates with: engines/dispatch.run_engine_local (calls it), adapters/mesh_execution/gcs_exchange (writes the archive this measures, at RESULT_ARCHIVE_LEVEL), parallel_gzip (compresses on every core, here and there, and prices the cut), sandbox/safe_extract (the limits it keeps inside), engines/*/finalize (which treat a missing volume export as a real, optional state).
 """WHAT RIDES HOME WITH THE MESH.
 
 The mesher's workspace goes back to the caller as one gzip archive, and the caller extracts it
@@ -28,12 +28,19 @@ what the archive costs. Job 575f76e6 (two-scale coupon, execution hexera-mesh-se
 2026-10-29) logged its decision at 13:56 and the worker was still waiting past 14:20 for an
 archive of 689,484,779 bytes. Most of that tail was the ARCHIVE's own level, now
 gcs_exchange.RESULT_ARCHIVE_LEVEL. Measured on that coupon's own 1.12 GB workspace, the two
-passes together took 671 s - 113.4 s to decide and 557.8 s to send; at the levels now written
-they take 147 s, for an archive 0.25% larger. The measure's share is paid here, and it is paid
-at the CHEAPEST level that can still answer the question:
+passes together took 665 s - 106.9 s to decide and 557.8 s to send. The archive's level came down,
+and BOTH passes are now spread over every core the job has (parallel_gzip):
 
-  * raw bytes and the archive's framing, when the workspace fits even uncompressed - nothing
-    can push it over;
+    fast measure, level 1      303,383,687 bytes    24.2 s on one core     4.3 s on 32
+    exact measure, level 6     245,023,809 bytes   106.9 s on one core    22.1 s on 32
+    the archive, level 6       244,703,534 bytes   111.8 s on one core     7.4 s on 32
+
+So the return is 11.7 s where the cheap measure settles it and 29.5 s where it does not, against
+the 665 s that started this. The measure's share is paid here, and it is paid at the CHEAPEST
+level that can still answer the question:
+
+  * raw bytes, the archive's framing and what its cutting costs, when the workspace fits even
+    uncompressed - nothing can push it over;
   * FAST_LEVEL, when that shows the archive clear of the bar - a workspace this far under
     cannot reach it, and the exact figure would change nothing;
   * MEASURE_LEVEL, the exact measure, only when the answer is actually in doubt - which is also
@@ -46,6 +53,7 @@ from __future__ import annotations
 import json
 import logging
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -60,16 +68,16 @@ OPTIONAL_GLOBS = ("VTK/**/internal.vtu",)
 HEADROOM = 0.9
 #: How the archive's size is measured: every file compressed whole, plus the framing the archive
 #: carries and the files do not (frame_bytes). It reads HIGH against the archive at this same
-#: level (gcs_exchange.RESULT_ARCHIVE_LEVEL) - but only just: 19,881 bytes in 244,704,856 on the
-#: coupon's workspace, 0.008%. All the slack there is comes from charging each member's header raw
-#: and from the dictionary the archive carries across members and this does not. That margin is
-#: the whole safety of the module, so nothing may be shaved off it on the grounds that it looks
-#: generous. No sampling: a file can compress unevenly.
+#: level (gcs_exchange.RESULT_ARCHIVE_LEVEL) - but only just: 45,843 bytes in 244,703,534 on the
+#: coupon's workspace, 0.019%, before cut_bytes widens it to 320,275. All the slack there is comes
+#: from charging each member's header raw and from the dictionary the archive carries across
+#: members and this does not. That margin is the whole safety of the module, so nothing may be
+#: shaved off it on the grounds that it looks generous. No sampling: a file can compress unevenly.
 MEASURE_LEVEL = 6
 #: The same measure done cheaply, to settle a workspace that CLEARLY fits without paying for the
 #: exact one. Measured on the coupon's own workspace (1,120,883,923 bytes over 105 files):
-#: 303,084,615 bytes in 26.0 s against the exact measure's 244,724,737 in 114.1 s - 24% high and
-#: 4.4 times as fast. Still no sampling; still every byte.
+#: 303,383,687 bytes against the exact measure's 245,023,809 - 24% high - in 4.3 s against 22.1 s
+#: on 32 cores, and 24.2 s against 106.9 s on one. Still no sampling; still every byte.
 FAST_LEVEL = 1
 #: ...but the fast measure is not guaranteed to read high FILE BY FILE, so it is only allowed to
 #: settle the question this far clear of the bar. Level 1 beat level 6 on one of the coupon's 62
@@ -101,6 +109,24 @@ def frame_bytes(workspace) -> int:
     return sum(_MEMBER_BYTES for _ in Path(workspace).rglob("*")) + _ARCHIVE_TAIL
 
 
+def cut_bytes(workspace) -> int:
+    """What the archiver's PARALLEL CUT may add, which the files' own bytes know nothing about.
+
+    The archive is no longer one deflate stream: it is written on every core the job has, which
+    means the stream is cut into chunks and each cut can move the size a little
+    (parallel_gzip.cut_cost - 20.6 bytes at worst measured, charged at 4,096). How many cuts there
+    are follows from how long the UNCOMPRESSED stream is, so it is
+    charged off the raw size and the framing, both of which are a stat walk and not a compression.
+
+    That length is slightly UNDER-counted - tar pads each member's content up to 512 bytes and
+    this does not count the padding - so the cut count can be a hair low on a workspace of very
+    many tiny files. The charge is two hundred times the worst cut measured, which is where the
+    room for that lives.
+    """
+    from meshpipeline.parallel_gzip import cut_cost
+    return cut_cost(raw_bytes(workspace) + frame_bytes(workspace))
+
+
 def compressed_size(path: Path, level: int = MEASURE_LEVEL) -> int:
     """What `path` adds to a gzip archive, measured by compressing it whole."""
     z = zlib.compressobj(level)
@@ -117,13 +143,31 @@ def estimate_archive_bytes(workspace, *, level: int = MEASURE_LEVEL,
 
     `into` collects what each file measured, so a file this walk has already compressed is never
     compressed a second time to decide whether to leave it out.
+
+    ON EVERY CORE THE JOB HAS, like the archive it is measuring. Every file is compressed on its
+    own either way, so the threads change which core does the work and NOTHING about the number
+    that comes out: the same files at the same level are the same bytes. That matters at the scale
+    this module exists for - with the archive itself spread over the cores (parallel_gzip) a
+    serial measure is the LONGER half of the return, and
+    the whole point of the cheap levels above was that the deciding pass must not cost what the
+    sending pass costs. Biggest file first, so the last core to pick up work is not the one the
+    others wait on. The floor is one file: a workspace whose bytes are nearly all in a single
+    `owner` cannot be measured faster than that file compresses.
     """
-    total = _ARCHIVE_TAIL
+    from meshpipeline.engines.determinism import job_cpus
+    from meshpipeline.parallel_gzip import workers
+    total = _ARCHIVE_TAIL + cut_bytes(workspace)
+    files = []
     for p in Path(workspace).rglob("*"):
-        if not p.is_file():
+        if p.is_file():
+            files.append(p)
+        else:
             total += _MEMBER_BYTES      # a directory is a member too; compressed_size charges files
-            continue
-        share = compressed_size(p, level)
+    files.sort(key=lambda p: -p.stat().st_size)
+    with ThreadPoolExecutor(max_workers=workers(job_cpus()),
+                            thread_name_prefix="measure") as pool:
+        shares = list(pool.map(lambda p: compressed_size(p, level), files))
+    for p, share in zip(files, shares):
         if into is not None:
             into[p] = share
         total += share
@@ -187,7 +231,7 @@ def scope_return(workspace, *, ceiling: int | None = None,
     # framing fit can never compress past the bar; one the fast level puts clear of the bar cannot
     # reach it; only what is left is compressed at the exact level, and only that can give a file
     # up.
-    estimate = raw_bytes(ws) + frame_bytes(ws)
+    estimate = raw_bytes(ws) + frame_bytes(ws) + cut_bytes(ws)
     if estimate > bar:
         measure = "fast"
         estimate = estimate_archive_bytes(ws, level=FAST_LEVEL)
@@ -231,5 +275,5 @@ def scope_return(workspace, *, ceiling: int | None = None,
 
 __all__ = ["FAST_LEVEL", "FAST_TRUST", "HEADROOM", "MEASURE_LEVEL", "OPTIONAL_GLOBS",
            "RETURN_SCOPE_FILE", "SCRATCH_DIRS", "archive_ceiling", "compressed_size",
-           "estimate_archive_bytes", "frame_bytes", "raw_bytes", "scope_return"]
+           "cut_bytes", "estimate_archive_bytes", "frame_bytes", "raw_bytes", "scope_return"]
 

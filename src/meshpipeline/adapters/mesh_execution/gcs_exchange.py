@@ -8,6 +8,8 @@ import pathlib
 import tarfile
 import tempfile
 
+import meshpipeline.parallel_gzip as parallel_gzip
+
 
 def storage_client():
     # The project comes from the setting, never from inference. google.auth can only guess one from
@@ -47,7 +49,8 @@ RESULT_UPLOAD_TIMEOUT_S = 300
 #: How the returned archive is compressed. NOT tarfile's level-9 default, which is what this was
 #: and what most of a long return tail is. Measured on the two-scale coupon's own workspace: level
 #: 9 wrote its 1,120,883,923-byte workspace as 244,089,415 bytes in 557.8 s where level 6 wrote
-#: 244,704,856 in 121.2 s - 4.6 times the time to save 0.25% of the archive. It is worst on the
+#: 244,704,856 in 121.2 s, both on one thread - 4.6 times the time to save 0.25% of the archive.
+#: It is worst on the
 #: polyMesh, which is most of the bytes: 2.0 MB/s against level 6's 8.3 on a 177 MB `faces` and
 #: 0.7 against 16.9 on `owner`, for 0.196 of raw against 0.197 and 0.081 against 0.081.
 #: Job 575f76e6 (execution
@@ -56,6 +59,9 @@ RESULT_UPLOAD_TIMEOUT_S = 300
 #: The measure that decides what rides home (engines/return_scope.MEASURE_LEVEL) is this same
 #: level and still reads HIGH against it, because it compresses every file on its own, carries no
 #: dictionary across members and charges each one a full uncompressed tar header.
+#: The figures above are one thread each, which is how the level was chosen. The archive is no
+#: longer written on one: parallel_gzip spreads it over every core the job has, and the same
+#: workspace archived in 7.4 s.
 RESULT_ARCHIVE_LEVEL = 6
 
 
@@ -68,18 +74,40 @@ def upload_progress(output_uri: str, stage: dict) -> None:
         json.dumps(stage), content_type="application/json", timeout=30)
 
 
+def write_result_archive(workspace: str | pathlib.Path,
+                         archive: str | pathlib.Path) -> int:
+    """Write the returned archive exactly as the mesher sends it, and say how big it came out.
+
+    Separate from the upload, and named, because the measure that decides what goes INTO it
+    (engines/return_scope) has to be held against the real thing: an estimate that reads lower
+    than this archive is the one failure that loses a built mesh. Measuring against a tarfile
+    default instead of against this has been wrong twice - first its level-9 compresslevel, then
+    its single-threaded deflate stream.
+    """
+    from meshpipeline.engines.determinism import job_cpus
+    ws = pathlib.Path(workspace)
+    out = pathlib.Path(archive)
+    # the cores THE JOB has, never os.cpu_count() - see parallel_gzip.workers
+    cores = parallel_gzip.workers(job_cpus())
+    with out.open("wb") as fh, \
+            parallel_gzip.ParallelGzipWriter(fh, level=RESULT_ARCHIVE_LEVEL,
+                                             worker_count=cores) as gz, \
+            tarfile.open(fileobj=gz, mode="w|") as tf:
+        # Same rule as the input side: children only, so no "." member is written. The local
+        # worker extracts this through the identical safe_extract, so a "." root here fails
+        # the run just as surely - one step later, after the mesh has already been paid for.
+        for child in sorted(ws.iterdir()):
+            tf.add(str(child), arcname=child.name)
+    return out.stat().st_size
+
+
 def upload_result(output_uri: str, workspace: str, result: dict) -> None:
     gcs = storage_client()
     out_bucket, out_key = split_gs(output_uri)
     ws = pathlib.Path(workspace)
     with tempfile.TemporaryDirectory(prefix="mesh_out_", dir=str(ws.parent)) as tmp:
         archive = pathlib.Path(tmp) / "output.tar.gz"
-        with tarfile.open(name=str(archive), mode="w:gz", compresslevel=RESULT_ARCHIVE_LEVEL) as tf:
-            # Same rule as the input side: children only, so no "." member is written. The local
-            # worker extracts this through the identical safe_extract, so a "." root here fails
-            # the run just as surely - one step later, after the mesh has already been paid for.
-            for child in sorted(ws.iterdir()):
-                tf.add(str(child), arcname=child.name)
+        write_result_archive(ws, archive)
         gcs.bucket(out_bucket).blob(out_key, chunk_size=RESULT_UPLOAD_CHUNK_BYTES) \
             .upload_from_filename(str(archive), content_type="application/gzip",
                                   timeout=RESULT_UPLOAD_TIMEOUT_S)
