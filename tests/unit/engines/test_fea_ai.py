@@ -10,6 +10,7 @@ import math
 import pytest
 
 from meshpipeline.contracts import model_inference as llm
+from meshpipeline.contracts.model_capacity import CapacityError
 from meshpipeline.contracts.model_inference import ModelRoundResult, ToolCallRequest
 from meshpipeline.engines import fea_ai as A
 from meshpipeline.engines import fea_ladder as L
@@ -240,6 +241,96 @@ def test_the_same_part_replays_the_same_decision_from_the_cache(router):
     first, second = _decide(), _decide()
     assert inner.calls == 1
     assert first["decision"] == second["decision"] and first["key"] == second["key"]
+
+
+class _Busy:
+    """A provider that answers once, then is busy (CapacityError), slow, or down."""
+
+    def __init__(self, answer, exc):
+        self.answer, self.exc, self.calls = answer, exc, 0
+
+    async def call_builder_model(self, messages, tools=None, tool_choice="auto", job_id="", user_id="",
+                                 parallel_tool_calls=None, on_reasoning=None):
+        self.calls += 1
+        if self.calls > 1:
+            if isinstance(self.exc, ModelRoundResult):
+                return self.exc
+            raise self.exc
+        return self.answer
+
+
+@pytest.mark.parametrize("busy", [CapacityError("no capacity"), TimeoutError(),
+                                  ModelRoundResult(failure_marker="<<API_FAILURE:builder_rate_limit>>")],
+                         ids=["capacity", "timeout", "marker"])
+@pytest.mark.parametrize("mode", ["record", "reuse"])
+def test_a_busy_ai_reuses_the_saved_decision_for_the_same_part(router, busy, mode):
+    """CI 2026-10: the AI was busy (CapacityError) and contact_compression got the rules' plan instead
+    of the AI's (-1.53%). The result must not depend on the AI being available."""
+    from meshpipeline.contracts.decision_cache import CachingModelRouter, MemoryDecisions
+
+    inner = _Busy(_answer(GOOD), busy)
+    router(CachingModelRouter(inner, model_of=lambda _s: "gpt-test", store=MemoryDecisions(), mode=mode))
+    first = _decide()
+    if mode == "reuse":
+        # reuse never asks again: make the record unreachable through the normal path to prove the
+        # busy path reads it on its own
+        inner.calls = 1
+        router(CachingModelRouter(inner, model_of=lambda _s: "gpt-test",
+                                  store=llm._router._store, mode="record"))
+    second = _decide()
+    assert first["status"] == second["status"] == "used"
+    assert first["decision"] == second["decision"] and second["source"] == "saved"
+    assert "saved decision" in second["note"]
+    assert A.decisions(second)[0]["inputs"]["from"] == "saved"
+
+
+def test_a_busy_ai_with_nothing_saved_is_the_rules_plan_and_says_so(router):
+    from meshpipeline.contracts.decision_cache import CachingModelRouter, MemoryDecisions
+
+    router(CachingModelRouter(_Router(exc=CapacityError("busy")), model_of=lambda _s: "gpt-test",
+                              store=MemoryDecisions(), mode="reuse"))
+    ai = _decide()
+    assert ai["status"] == "failed" and ai["decision"] == {}
+    assert ai["source"] == "rules (nothing saved)" and "nothing was saved" in ai["note"]
+    assert A.decisions(ai)[0]["inputs"]["saved"] == "rules (nothing saved)"
+
+
+def test_a_saved_decision_is_never_shared_across_owners(router):
+    from meshpipeline.contracts.decision_cache import CachingModelRouter, MemoryDecisions
+
+    store = MemoryDecisions()
+    router(CachingModelRouter(_Router(_answer(GOOD)), model_of=lambda _s: "gpt-test", store=store, mode="record"))
+    assert _decide()["status"] == "used"
+    router(CachingModelRouter(_Router(exc=CapacityError("busy")), model_of=lambda _s: "gpt-test", store=store,
+                              mode="record"))
+    other = asyncio.run(A.decide(RECORD, {"request_txt": "care about the bolt holes", "user_id": "u2"}, ZONES,
+                                 diag_m=DIAG, limit=5_000_000, job_id="j2", enabled=True))
+    assert other["status"] == "failed" and other["decision"] == {}
+
+
+def test_no_time_to_spare_still_uses_the_saved_decision(router):
+    from meshpipeline.contracts.decision_cache import CachingModelRouter, MemoryDecisions
+
+    inner = _Router(_answer(GOOD))
+    router(CachingModelRouter(inner, model_of=lambda _s: "gpt-test", store=MemoryDecisions(), mode="reuse"))
+    first = _decide()
+    late = _decide(wait_s=5)
+    assert inner.calls == 1 and late["status"] == "used" and late["decision"] == first["decision"]
+
+
+def test_a_busy_lever_pick_reuses_the_saved_pick(router):
+    from meshpipeline.contracts.decision_cache import CachingModelRouter, MemoryDecisions
+
+    opts = [{"lever": "a", "words": "first"}, {"lever": "b", "words": "second"}]
+    pick = ModelRoundResult(tool_calls=(ToolCallRequest(id="call_abcdef123", name=A.TOOL_LEVER,
+                                                        arguments=json.dumps({"lever": "b", "reason": "r"})),))
+    inner = _Busy(pick, CapacityError("busy"))
+    router(CachingModelRouter(inner, model_of=lambda _s: "gpt-test", store=MemoryDecisions(), mode="record"))
+    used = {"status": "used", "decision": {"analysis": "static"}}
+    state = {"user_id": "u1"}
+    a, _ = asyncio.run(A.choose_lever(opts, FAILED_FILL, ai=used, state=state, job_id="j"))
+    b, rec = asyncio.run(A.choose_lever(opts, FAILED_FILL, ai=used, state=state, job_id="j"))
+    assert a["lever"] == b["lever"] == "b" and rec["status"] == "used"
 
 
 # ------------------------------------------------------------------ AI-fea-8: levers ---------------------

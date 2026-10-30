@@ -184,12 +184,19 @@ def test_a_tool_exception_produces_exactly_one_record_and_still_propagates(captu
 
 # what the provider can do
 
-def test_a_provider_exception_propagates_and_is_never_dressed_as_a_provider_failure(captured):
+def test_a_provider_exception_ends_the_round_with_its_own_marker_never_a_crash(captured):
+    # The AI may never crash a run: a provider call that raises (the router answers every failure
+    # with a marker, so this is a stand-in or a bug) ends the round as a failed provider round the
+    # run's own failure handling takes over. Its marker is its own - never a real provider's - so
+    # it is not mistaken for one, and the exception is logged with its traceback.
+    from meshpipeline.agents.loop.provider_round import ROUND_RAISED_MARKER
+
     async def _boom(**kw):
         raise RuntimeError("router bug")
-    with pytest.raises(RuntimeError, match="router bug"):
-        _drive([], _Driver(), provider=_boom)
-    assert not any(getattr(r, "exit", None) is LoopExit.provider_failed for r in captured)
+    result, _ = _drive([], _Driver(), provider=_boom)
+    assert result.exit is LoopExit.provider_failed
+    assert result.failure_marker == ROUND_RAISED_MARKER
+    assert "builder_" not in ROUND_RAISED_MARKER and "reviewer_" not in ROUND_RAISED_MARKER
 
 
 def test_provider_attempts_are_reported_by_the_router_and_never_retried_here(captured):
