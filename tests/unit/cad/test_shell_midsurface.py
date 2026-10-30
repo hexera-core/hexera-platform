@@ -345,6 +345,31 @@ def test_each_join_alone_is_held_to_the_same_parts(monkeypatch):
     assert rec["sewn"][0]["open_edges"] > 0 and rec["sewn"][0]["join"] == "straight"
 
 
+def test_the_general_join_in_its_own_process_gives_the_same_record(monkeypatch):
+    forked, _ = ms.extract(sf.tube_on_plate(), mm_per_unit=1.0)
+    monkeypatch.setattr(ms, "JOIN_DEADLINE_S", 0.0)          # 0: run here, unbounded
+    here, _ = ms.extract(sf.tube_on_plate(), mm_per_unit=1.0)
+    assert forked["sewn"][0]["join"] == "general"
+    for r in (forked, here):
+        r.pop("seconds", None)
+    assert json.dumps(forked, sort_keys=True) == json.dumps(here, sort_keys=True)
+
+
+def test_a_general_join_past_its_deadline_is_stopped_and_the_straight_join_stands(monkeypatch):
+    import time as _time
+
+    def slow(*_a, **_k):
+        _time.sleep(30.0)
+
+    monkeypatch.setattr(ms, "_join_general", slow)
+    monkeypatch.setattr(ms, "JOIN_DEADLINE_S", 0.5)
+    t0 = _time.time()
+    rec, _ = ms.extract(sf.tube_on_plate(), mm_per_unit=1.0)
+    assert _time.time() - t0 < 20.0
+    assert rec["sewn"][0]["join"] == "straight" and rec["sewn"][0]["open_edges"] > 0
+    assert any("SHELL-11" in n for n in rec["notes"])
+
+
 def test_a_web_ending_inside_a_thicker_plate_leaves_no_open_edge():
     rec, _ = ms.extract(sf.thin_web_on_thick_plate(), mm_per_unit=1.0)
     row = _sewn(rec)

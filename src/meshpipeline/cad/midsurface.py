@@ -2347,6 +2347,72 @@ def _regions(faces: list[int], neighbours: list[set[int]]) -> list[list[int]]:
 FALLBACK_WALLS = 3.0
 #: a join's sewn faces must hold the body's mid-faces' own area to within this share (SHELL-3)
 JOIN_KEEP_SHARE = 0.01
+#: SHELL-11: one general join may take at most JOIN_DEADLINE_S seconds. OpenCASCADE's general fuse cannot be
+#: stopped from inside (no time budget reaches its Perform), and on a cone meeting a ring (fr018) it ran past 40
+#: minutes; no join of the training corpus comes near it. Where the system can fork, the join runs in a child
+#: process and is stopped at the deadline; the straight join then stands, and the record says so.
+JOIN_DEADLINE_S = 300.0
+
+
+def _join_general_bounded(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float, fuzzy: float,
+                          remake: bool, patch_alone: bool, deadline_s: float | None = None):
+    """_join_general, run in a forked child stopped after `deadline_s` seconds (TimeoutError). The child hands back
+    the fused shape (a binary BRep file: every number exact), each mid-face's faces as indices into it with their orientation, and the
+    extensions each mid-face kept. Without fork (not Linux), the join runs here, unbounded."""
+    import multiprocessing as mp
+    import os
+    import tempfile
+
+    limit = JOIN_DEADLINE_S if deadline_s is None else deadline_s
+    if "fork" not in mp.get_all_start_methods() or limit <= 0:
+        return _join_general(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy, remake=remake,
+                             patch_alone=patch_alone)
+    from OCP.BinTools import BinTools
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS, TopoDS_Shape
+
+    with tempfile.TemporaryDirectory(prefix="shell_join_") as tmp:
+        path = os.path.join(tmp, "fused.bin")
+        recv, send = mp.get_context("fork").Pipe(duplex=False)
+
+        def child() -> None:
+            try:
+                fused, images = _join_general(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy, remake=remake,
+                                              patch_alone=patch_alone)
+                BinTools.Write_s(fused, path)
+                fmap = _map(fused, TopAbs_FACE)
+                send.send(("ok", [[(fmap.FindIndex(f), int(f.Orientation())) for f in imgs] for imgs in images],
+                           [list(m.extended) for m in mine]))
+            except BaseException as exc:  # noqa: BLE001 - told to the parent, which keeps the straight join
+                send.send(("error", f"{type(exc).__name__}: {exc}", None))
+            finally:
+                send.close()
+                os._exit(0)
+
+        proc = mp.get_context("fork").Process(target=child, daemon=True)
+        proc.start()
+        send.close()
+        try:
+            if not recv.poll(limit):
+                raise TimeoutError(f"the general join ran past {limit:.0f} s and was stopped")
+            status, images, extended = recv.recv()
+        finally:
+            if proc.is_alive():
+                proc.kill()
+            proc.join()
+            recv.close()
+        if status != "ok":
+            raise ValueError(images)
+        fused = TopoDS_Shape()
+        if not BinTools.Read_s(fused, path):
+            raise ValueError("the general join's result could not be read back")
+    fmap = _map(fused, TopAbs_FACE)
+    for m, ext in zip(mine, extended, strict=True):
+        m.extended = ext
+    from OCP.TopAbs import TopAbs_Orientation
+
+    return fused, [[TopoDS.Face_s(fmap.FindKey(k)).Oriented(TopAbs_Orientation(o)) for k, o in imgs if k > 0]
+                   for imgs in images]
 
 
 #: SHELL-7, PLATES OF TWO THICKNESSES MEETING IN LINE (a butt step, flush on one side): their mid-planes are
@@ -2784,9 +2850,12 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                 for m in mine:
                     m.extended = []
                 try:
-                    general = _join_general(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy, remake=remake,
-                                            patch_alone=alone)
+                    general = _join_general_bounded(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy, remake=remake,
+                                                    patch_alone=alone)
                     census_g = census_of(*general)
+                except TimeoutError as exc:
+                    notes.append(f"{body_names[b]}: {exc} (SHELL-11); the joins already made stand.")
+                    break
                 except Exception as exc:  # noqa: BLE001 - the straight join stands
                     logger.debug("shell: the general join failed on %s (%s)", body_names[b], exc)
                     continue
