@@ -210,6 +210,36 @@ def owner_live(provider_reference: str) -> bool | None:
     return str(row[0]) not in {s.name for s in TERMINAL_STATES}
 
 
+def cancelled_by_owner(*, job_id) -> bool:
+    """Whether the job's owner cancelled it (its status is `cancelled`) - as opposed to the job being
+    taken over or its lease lapsing, after which its remote run is still worth collecting."""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("select status::text from simulation_jobs where id = %(job)s", {"job": str(job_id)})
+        row = cur.fetchone()
+    return row is not None and str(row[0]) == "cancelled"
+
+
+#: THE SAME RUN FROM AN EARLIER GENERATION: the same job, the same planned operation, the same
+#: payload and engine - newest first. A failed one is no run to adopt.
+_EARLIER = """
+select operation_key
+  from native_submission_claims
+ where job_id = %(job)s and execution_generation < %(gen)s and semantic_operation = %(op)s
+   and payload_digest = %(digest)s and engine = %(engine)s and disposition <> 'failed'
+ order by execution_generation desc
+"""
+
+
+def earlier_runs(*, job_id, execution_generation: int, semantic_operation: str, payload_digest: str,
+                 engine: str) -> list[str]:
+    """The operation keys of this same run submitted under an earlier generation of the job (RUN-4):
+    a new owner collects one still running, or already finished, instead of meshing again."""
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(_EARLIER, {"job": str(job_id), "gen": int(execution_generation),
+                               "op": semantic_operation, "digest": payload_digest, "engine": engine})
+        return [str(r[0]) for r in cur.fetchall()]
+
+
 def token_fingerprint(worker_token) -> str:
     # The project's safe representation: a raw worker token is never stored, logged or published.
     return hashlib.sha256(str(worker_token).encode()).hexdigest()[:32]

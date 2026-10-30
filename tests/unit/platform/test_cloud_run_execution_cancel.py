@@ -18,6 +18,8 @@ import meshpipeline.settings.providers as provcfg
 from meshpipeline.adapters.mesh_execution import gcs_exchange
 from meshpipeline.adapters.mesh_execution.exchange_coordinates import coordinates_for
 from meshpipeline.contracts.mesh_execution import (
+    CANCELLED_BY_OWNER,
+    HANDED_ON,
     RC_INFRASTRUCTURE,
     RC_TIMED_OUT,
     abandonment_watch,
@@ -225,16 +227,27 @@ def _watch_after(polls: int, reason: str):
 def test_a_run_given_up_while_waiting_cancels_its_execution(exchange):
     # THE INCIDENT, at the adapter: the result never comes, and the run is given up after a few
     # polls. The execution it was waiting on is cancelled by name, and the answer says why.
-    with abandonment_watch(_watch_after(2, "the job was cancelled")):
+    with abandonment_watch(_watch_after(2, CANCELLED_BY_OWNER)):
         out = crc.run_mesh_remote(exchange["workspace"], engine="snappy", timeout=2400,
                                   operation_key=KEY)
     assert exchange["triggers"] == 1
-    assert exchange["cancels"] == [(EXECUTION, "the job was cancelled")]
+    assert exchange["cancels"] == [(EXECUTION, CANCELLED_BY_OWNER)]
     assert out["rc"] == RC_INFRASTRUCTURE and out["timed_out"] is False
     assert out["log_tail"].startswith(crc.ABANDONED_MARKER)
     assert "the job was cancelled" in out["log_tail"]
     assert "provider_reference" not in out, "a given-up run must never read as an acceptance"
     # nothing was collected, so nothing is released: the objects stay like any uncollected run
+    assert exchange["bucket"].deleted == []
+
+
+def test_a_run_whose_job_was_handed_on_is_left_to_finish(exchange):
+    # RUN-4, 28 Oct (the cyclone): the job taken over, or its lease lapsed - not cancelled. The
+    # execution is NOT stopped: its result lands in the exchange for the job's next owner.
+    with abandonment_watch(_watch_after(2, HANDED_ON)):
+        out = crc.run_mesh_remote(exchange["workspace"], engine="snappy", timeout=2400,
+                                  operation_key=KEY)
+    assert exchange["triggers"] == 1 and exchange["cancels"] == []
+    assert out["rc"] == RC_INFRASTRUCTURE and out["log_tail"].startswith(crc.ABANDONED_MARKER)
     assert exchange["bucket"].deleted == []
 
 
@@ -254,7 +267,7 @@ def test_a_result_already_in_is_collected_not_cancelled(exchange):
     exchange["bucket"].objects[coords.result_object_key] = json.dumps(
         {"rc": 0, "timed_out": False}).encode()
     # still owned at the trigger; cancelled by the time the first poll would ask
-    with abandonment_watch(_watch_after(1, "the job was cancelled")):
+    with abandonment_watch(_watch_after(1, CANCELLED_BY_OWNER)):
         out = crc.run_mesh_remote(exchange["workspace"], engine="snappy", timeout=2400,
                                   operation_key=KEY)
     assert out["rc"] == 0 and out["provider_reference"] == OPERATION
@@ -288,7 +301,7 @@ def test_the_worker_deadline_cancels_the_execution_instead_of_leaving_it_running
 def test_a_cancel_that_does_not_land_never_changes_the_answer(exchange, monkeypatch):
     refused: list = []
     monkeypatch.setattr(crc, "cancel_execution", lambda *a, **k: refused.append(a) or False)
-    with abandonment_watch(_watch_after(1, "the job was cancelled")):
+    with abandonment_watch(_watch_after(1, CANCELLED_BY_OWNER)):
         out = crc.run_mesh_remote(exchange["workspace"], engine="snappy", timeout=2400,
                                   operation_key=KEY)
     assert len(refused) == 1
@@ -298,7 +311,7 @@ def test_a_cancel_that_does_not_land_never_changes_the_answer(exchange, monkeypa
 def test_a_collection_given_up_stops_waiting_without_a_cancel_it_cannot_name(exchange):
     # A replacement reading an earlier worker's run holds no execution reference of its own; it
     # stops waiting, and starts nothing.
-    with abandonment_watch(_watch_after(1, "the job was cancelled")):
+    with abandonment_watch(_watch_after(1, CANCELLED_BY_OWNER)):
         out = crc.collect_mesh_remote(exchange["workspace"], engine="snappy", timeout=2400,
                                       operation_key=KEY)
     assert exchange["triggers"] == 0 and exchange["cancels"] == []

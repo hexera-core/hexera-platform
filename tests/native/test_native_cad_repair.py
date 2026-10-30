@@ -583,7 +583,7 @@ def test_the_report_states_what_the_loop_did_and_why_it_stopped(tmp_path, monkey
     assert measured["stopped_because"]
     assert isinstance(measured["resolved"], bool)
     assert isinstance(measured["complete_scan"], bool)
-    assert measured["planner"] == "rules-v1"
+    assert measured["planner"] == "repair-v1"
     # EVERY ATTEMPT, KEPT OR NOT.
     assert report.operations, "the report lists no operations"
     for op in report.operations:

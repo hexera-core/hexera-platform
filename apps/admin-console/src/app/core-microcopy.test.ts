@@ -12,6 +12,11 @@ const sources = [
   "(admin)/jobs/[jobId]/why/page.tsx",
 ].map((path) => readFileSync(join(process.cwd(), "src/app", path), "utf8"));
 
+const repairDetail = readFileSync(
+  join(process.cwd(), "src/app/(admin)/repair/[jobId]/page.tsx"),
+  "utf8",
+);
+
 test("core operational pages omit redundant and implementation-oriented microcopy", () => {
   const copy = sources.join("\n");
   const lowValuePhrases = [
@@ -29,4 +34,9 @@ test("core operational pages omit redundant and implementation-oriented microcop
   for (const phrase of lowValuePhrases) {
     assert.equal(copy.includes(phrase), false, `remove or rewrite low-value copy: ${phrase}`);
   }
+});
+
+test("repair detail presents one CAD Repair System rather than internal repair modes", () => {
+  assert.match(repairDetail, /CAD Repair System/);
+  assert.equal(repairDetail.includes("<th>Mode</th>"), false);
 });

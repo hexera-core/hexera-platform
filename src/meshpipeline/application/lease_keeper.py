@@ -1,6 +1,6 @@
 # Responsibility: Keep a running job's lease while its worker is busy in one long step that the in-process beat cannot interrupt.
 # Owns: the keeper process beside a running job, when it renews on the job's behalf, and when it lets the lease lapse.
-# Boundaries: it renews the lease and nothing else - never the deadline, never the job's state; the claim, the fence and the beat stay persistence/lease.py's and pipeline_run's.
+# Boundaries: it renews the lease - and moves the deadline on progress, exactly as the beat does - and nothing else, never the job's state; the claim, the fence and the beat stay persistence/lease.py's and pipeline_run's.
 # Collaborates with: application/pipeline_run.py (starts it, marks the beat), persistence/lease.py (the renewal), sandbox/liveness.py.
 """A job is never lost to its own long step.
 
@@ -19,8 +19,16 @@ than two ticks, the keeper looks at the worker's process tree (sandbox/liveness)
 burning CPU, changing its memory, or its children are, the job is working, and the keeper renews
 the lease on its behalf. A worker that shows no sign of life for the stall window is stuck, and the
 keeper lets the lease lapse exactly as before - so a hung worker is still taken over, and a busy one
-never is. The keeper renews ONLY the lease: the pipeline deadline still moves on progress alone
-(application/pipeline_budget), so a step that never ends still meets it.
+never is. The pipeline deadline moves on progress alone (application/pipeline_budget), so a step
+that never ends still meets it; the keeper moves it on the same progress the beat would have seen.
+
+A JOB WHOSE MESH RUNS ELSEWHERE (28 Oct, the cyclone, job adf9412b): its worker waits on a VM or the
+Cloud Run mesh job and is rightly idle - no CPU, no memory change. Read by its CPU alone, a 7-hour
+remote mesh looked dead, and the job lost its lease minutes before its result came back. So the
+worker also marks every time it hears from its remote (its beacon written again), and every sign of
+progress (its output moved, or its processes worked - runtime/mesh_runner's `alive_at`): the keeper
+renews while the remote is heard within the stall window and moves the deadline on its progress. A
+remote that goes silent for the window (its machine gone) is still let go, as a stuck worker is.
 
 It ends when the run ends (its stdin is closed), when the worker process is gone (stdin reaches EOF
 and the parent changes), or when the lease is no longer this worker's.
@@ -49,6 +57,9 @@ ENABLED = True
 STALL_WINDOW_S = 900.0
 #: The renewal the keeper calls, as "module:function" - overridable for its own tests.
 DEFAULT_RENEW = "meshpipeline.application.lease_keeper:renew_in_database"
+#: The marks the worker touches (contracts/progress_clock): its remote mesher heard from, and progress.
+REMOTE_MARK = "remote"
+PROGRESS_MARK = "progress"
 
 
 def fresh_window(interval_s: float) -> float:
@@ -57,15 +68,20 @@ def fresh_window(interval_s: float) -> float:
     return 2.0 * float(interval_s) + 15.0
 
 
-def decide(*, beat_age_s: float | None, life_age_s: float, fresh_s: float, stall_s: float) -> str:
+def decide(*, beat_age_s: float | None, life_age_s: float, fresh_s: float, stall_s: float,
+           remote_age_s: float | None = None) -> str:
     """What the keeper does at one look:
     * "watch" - the in-process beat is running; nothing to do;
-    * "renew" - the beat is silent but the worker is working (a sign of life within the window);
-    * "hold"  - the beat is silent and the worker has shown no life for the window: it is stuck,
-      and the lease is left to lapse."""
+    * "renew" - the beat is silent but the job is working: the worker shows a sign of life within
+      the window, or the remote mesher it waits on was heard from within it (RUN-4: a worker waiting
+      on a VM or the Cloud Run mesh job is rightly idle - its CPU says nothing about the job);
+    * "hold"  - the beat is silent, the worker has shown no life and no remote has been heard for the
+      window: it is stuck (or its remote is gone), and the lease is left to lapse."""
     if beat_age_s is not None and beat_age_s <= fresh_s:
         return "watch"
     if life_age_s <= stall_s:
+        return "renew"
+    if remote_age_s is not None and remote_age_s <= stall_s:
         return "renew"
     return "hold"
 
@@ -85,6 +101,8 @@ class Keeper:
             pass
 
     def stop(self, *, wait_s: float = 5.0) -> None:
+        from meshpipeline.contracts import progress_clock
+        progress_clock.set_marks(remote=None, progress=None)
         try:
             if self.proc.stdin is not None:
                 self.proc.stdin.close()
@@ -98,7 +116,7 @@ class Keeper:
                 self.proc.wait(timeout=wait_s)
             except subprocess.TimeoutExpired:
                 pass
-        for p in (self.beat_path,):
+        for p in (self.beat_path, self.workdir / REMOTE_MARK, self.workdir / PROGRESS_MARK):
             try:
                 p.unlink()
             except OSError:
@@ -131,10 +149,14 @@ def start(ownership, *, interval_s: float, stall_s: float = STALL_WINDOW_S,
         workdir = Path(tempfile.mkdtemp(prefix="lease-keeper-"))
         beat = workdir / "beat"
         beat.touch()
+        remote, progress = workdir / REMOTE_MARK, workdir / PROGRESS_MARK
+        remote.touch()
+        progress.touch()
         cfg = {"ownership": _ownership_dict(ownership), "watch_pid": os.getpid(),
                "interval_s": float(interval_s), "stall_s": float(stall_s),
                "fresh_s": float(fresh_s if fresh_s is not None else fresh_window(interval_s)),
-               "beat_path": str(beat), "renew": renew}
+               "beat_path": str(beat), "remote_path": str(remote), "progress_path": str(progress),
+               "renew": renew}
         # the worker token travels on stdin, never on the command line where `ps` would show it
         proc = subprocess.Popen([sys.executable, "-m", "meshpipeline.application.lease_keeper"],
                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
@@ -143,6 +165,9 @@ def start(ownership, *, interval_s: float, stall_s: float = STALL_WINDOW_S,
             raise RuntimeError("the keeper's stdin did not open")
         proc.stdin.write((json.dumps(cfg) + "\n").encode())
         proc.stdin.flush()
+        # the remote's beacon and the job's progress, seen in this process, reach the keeper here
+        from meshpipeline.contracts import progress_clock
+        progress_clock.set_marks(remote=str(remote), progress=str(progress))
         return Keeper(proc=proc, beat_path=beat, workdir=workdir)
     except Exception as exc:  # noqa: BLE001 - the in-process beat still holds the lease
         logger.warning("lease keeper could not start for job %s (%s) - the in-process beat alone "
@@ -185,10 +210,14 @@ async def _renew_in_database(cfg: Mapping) -> bool:
                               if o.get("pipeline_deadline_at") else None),
         claim_epoch=int(o.get("claim_epoch") or 0),
         fence_ttl_seconds=int(o.get("fence_ttl_seconds") or 0))
+    extend = None
+    if cfg.get("extend_to") is not None:
+        from datetime import UTC
+        extend = datetime.fromtimestamp(float(cfg["extend_to"]), tz=UTC)
     engine = create_async_engine(provcfg.POSTGRES_DSN, poolclass=NullPool)
     try:
         async with AsyncSession(engine, expire_on_commit=False) as db:
-            ok = await LeaseRepository().heartbeat(db, own)
+            ok = await LeaseRepository().heartbeat(db, own, extend_deadline_to=extend)
             await db.commit()
         return bool(ok)
     finally:
@@ -215,6 +244,14 @@ def run(cfg: Mapping, stop: threading.Event, *, clock: Callable[[], float] = tim
     # the beat's age is measured on this process's monotonic clock, from when its mark last
     # CHANGED - never wall time against a file time, which a clock step (a VM's, WSL's) would skew
     seen_mark = _mark(beat)
+    # the remote mesher heard from, and the job's progress (contracts/progress_clock), the same way
+    remote_path = Path(cfg["remote_path"]) if cfg.get("remote_path") else None
+    progress_path = Path(cfg["progress_path"]) if cfg.get("progress_path") else None
+    seen_remote = _mark(remote_path) if remote_path else None
+    seen_progress = _mark(progress_path) if progress_path else None
+    last_remote: float | None = None
+    last_progress: float | None = None
+    from meshpipeline.application.pipeline_budget import PROGRESS_GRACE_S
     said = ""
     while not stop.wait(interval):
         if os.getppid() != watch_pid:
@@ -225,11 +262,24 @@ def run(cfg: Mapping, stop: threading.Event, *, clock: Callable[[], float] = tim
         mark = _mark(beat)
         if mark is not None and mark != seen_mark:
             seen_mark, last_beat = mark, now
+        if remote_path is not None:
+            m = _mark(remote_path)
+            if m is not None and m != seen_remote:
+                seen_remote, last_remote = m, now
+        if progress_path is not None:
+            m = _mark(progress_path)
+            if m is not None and m != seen_progress:
+                seen_progress, last_progress = m, now
         action = decide(beat_age_s=now - last_beat, life_age_s=now - last_life, fresh_s=fresh,
-                        stall_s=stall)
+                        stall_s=stall, remote_age_s=None if last_remote is None else now - last_remote)
         if action == "renew":
+            # PROGRESS MOVES THE DEADLINE ON, as the in-process beat does it (pipeline_budget): a
+            # job whose remote mesh is working for hours is not out of time
+            ask = dict(cfg)
+            if last_progress is not None and now - last_progress <= PROGRESS_GRACE_S:
+                ask["extend_to"] = time.time() - (now - last_progress) + PROGRESS_GRACE_S
             try:
-                owned = renew(cfg)
+                owned = renew(ask)
             except Exception as exc:  # noqa: BLE001 - a blip is tried again next look
                 logger.warning("lease keeper: renewal for job %s failed (%s) - trying again", job, exc)
                 continue
@@ -238,13 +288,19 @@ def run(cfg: Mapping, stop: threading.Event, *, clock: Callable[[], float] = tim
                              "worker owns it, or its pipeline deadline has passed) - stopping", job)
                 return "lost"
             if said != "renew":
-                logger.warning("lease keeper: job %s - the worker is busy in one long step (its own "
-                               "beat silent for %.0f s, its processes still working): renewing its "
-                               "lease for it", job, now - last_beat)
+                if now - last_life > stall and last_remote is not None:
+                    logger.warning("lease keeper: job %s - the worker waits on its remote mesh (its "
+                                   "own beat silent for %.0f s, the remote heard %.0f s ago): renewing "
+                                   "its lease for it", job, now - last_beat, now - last_remote)
+                else:
+                    logger.warning("lease keeper: job %s - the worker is busy in one long step (its "
+                                   "own beat silent for %.0f s, its processes still working): renewing "
+                                   "its lease for it", job, now - last_beat)
         elif action == "hold" and said != "hold":
             logger.error("lease keeper: job %s - no sign of life from the worker for %.0f s (no CPU, "
-                         "no memory change) and its beat is silent: the lease is left to lapse",
-                         job, now - last_life)
+                         "no memory change), no remote mesh heard from %s, and its beat is silent: the "
+                         "lease is left to lapse", job, now - last_life,
+                         "since it started" if last_remote is None else f"for {now - last_remote:.0f} s")
         said = action
     return "stopped"
 

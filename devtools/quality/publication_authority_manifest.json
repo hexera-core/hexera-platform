@@ -3074,6 +3074,19 @@
   "roots": []
  },
  {
+  "context": "cad/face_names.py::read_named_faces_guarded::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/face_names.py",
+  "qualname": "read_named_faces_guarded",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_NAMED_FACE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "cad/fea_assembly.py::joined_interfaces::check#1|NotAPublisher|not-a-publisher|",
   "path": "cad/fea_assembly.py",
   "qualname": "joined_interfaces",
@@ -3680,19 +3693,6 @@
   "roots": []
  },
  {
-  "context": "engines/cfmesh/solvability.py::_read_foam_labels::search#1|NotAPublisher|not-a-publisher|",
-  "path": "engines/cfmesh/solvability.py",
-  "qualname": "_read_foam_labels",
-  "semantic": "search",
-  "method": "search",
-  "ordinal": 1,
-  "receiver": "_FOAM_LIST_RE",
-  "authority": "NotAPublisher",
-  "lifecycle": "not-a-publisher",
-  "gated_required": false,
-  "roots": []
- },
- {
   "context": "engines/domain_extent_gate.py::parse_requested_extents::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/domain_extent_gate.py",
   "qualname": "parse_requested_extents",
@@ -3752,6 +3752,19 @@
   "method": "stage",
   "ordinal": 1,
   "receiver": "A",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/foam_labels.py::read_foam_labels::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/foam_labels.py",
+  "qualname": "read_foam_labels",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_COUNT",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -4549,19 +4562,6 @@
   "method": "search",
   "ordinal": 3,
   "receiver": "re",
-  "authority": "NotAPublisher",
-  "lifecycle": "not-a-publisher",
-  "gated_required": false,
-  "roots": []
- },
- {
-  "context": "engines/snappy/solvability.py::_read_foam_labels::search#1|NotAPublisher|not-a-publisher|",
-  "path": "engines/snappy/solvability.py",
-  "qualname": "_read_foam_labels",
-  "semantic": "search",
-  "method": "search",
-  "ordinal": 1,
-  "receiver": "_FOAM_LIST_RE",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

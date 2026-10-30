@@ -65,7 +65,8 @@ def test_a_failed_run_that_repaired_the_geometry_still_offers_it(live):
         f"the downloads are wrong or out of order: {out['links']}"
     # It must name what happened in the customer's terms. "Run ended - failed" is the mesh's
     # verdict; this panel is the only place the repair is mentioned at all.
-    assert "repair" in out["text"].lower(), f"the panel never mentions the repair: {out['text']}"
+    assert "CAD Repair System" in out["text"], \
+        f"the panel does not identify the system that repaired the file: {out['text']}"
 
 
 def test_a_run_with_nothing_repaired_draws_no_panel(live):

@@ -72,11 +72,15 @@ def test_no_fea_document_lifts_the_limits_without_end(small_ceilings):
     assert max(lim.max_archive_bytes, lim.max_total_uncompressed_bytes, lim.max_file_bytes) <= crc.FEA_RESULT_MAX_BYTES
 
 
-def test_a_flow_result_is_sized_exactly_as_before(monkeypatch):
+def test_a_flow_result_is_sized_by_what_the_mesher_measured(monkeypatch):
+    # RUN-7: a flow mesh is collected by its measurement too (a 107 M-cell cfMesh mesh, 22 GB raw,
+    # was lost to the cell-capped allowance); without one it is sized exactly as before
     monkeypatch.setattr(polcfg, "CELL_HARD_LIMIT", 8_000_000)
     doc = {"rc": 0, "quality": {"cells": 6_707_503}}
     with_bytes = {**doc, "returned_bytes": {"raw": 9 * 1024 ** 3, "largest": 3 * 1024 ** 3, "fea": False}}
-    assert crc.result_extraction_limits(with_bytes) == crc.result_extraction_limits(doc)
+    lim = crc.result_extraction_limits(with_bytes)
+    assert lim.max_total_uncompressed_bytes == int(9 * 1024 ** 3 * crc.RESULT_MARGIN)
+    assert lim.max_file_bytes == int(3 * 1024 ** 3 * crc.RESULT_MARGIN)
     assert crc.result_extraction_limits(doc).max_archive_bytes == max(
         8_000_000 * crc.RESULT_BYTES_PER_CELL, 6_707_503 * crc.RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL)
 
@@ -244,10 +248,14 @@ def test_an_fea_result_too_big_for_the_worker_is_refused_and_kept(tmp_path, monk
     assert crc.TOO_BIG_MARKER in got["log_tail"] and "kept" in got["log_tail"]
 
 
-def test_a_flow_result_is_not_measured_for_room(tmp_path, monkeypatch):
+def test_a_flow_result_is_measured_for_room_too(tmp_path, monkeypatch):
+    # RUN-7: its limits now follow what was built, so the worker's disk is asked about it as well
     import shutil
     monkeypatch.setattr(shutil, "disk_usage", lambda p: _usage(1))
-    assert crc.worker_room(_Bucket(10 ** 12), "out", {"quality": {"cells": 5}}, tmp_path) is None
+    got = crc.worker_room(_Bucket(10 ** 12), "out", {"quality": {"cells": 5}}, tmp_path)
+    assert got["rc"] == crc.RC_INFRASTRUCTURE and crc.TOO_BIG_MARKER in got["log_tail"]
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: _usage(10 ** 13))
+    assert crc.worker_room(_Bucket(10 ** 9), "out", {"quality": {"cells": 5}}, tmp_path) is None
 
 
 def test_the_user_reads_how_much_disk_it_needed():

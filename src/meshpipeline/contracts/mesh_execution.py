@@ -261,6 +261,15 @@ def abandonment_watch(check: Callable[[], str | None] | None) -> Iterator[None]:
         _abandon_watch.reset(token)
 
 
+#: WHY A WAIT WAS GIVEN UP, as the watch says it (application/native_submission). Only the first
+#: stops the remote run: a cancelled job's mesh is read by nobody. The second - the job taken over,
+#: or its lease lapsed - leaves the remote to finish, its result landing in the exchange for whoever
+#: owns the job next (RUN-4, 28 Oct: the cyclone's 7 hours were deleted while being sent back).
+CANCELLED_BY_OWNER = "the job was cancelled by its owner"
+HANDED_ON = ("the job is no longer this worker's to run (taken over, or its lease lapsed); its "
+             "remote run is left to finish for the job's next owner to collect")
+
+
 def abandonment_reason() -> str | None:
     """Why the run waiting on a remote mesh should give it up now - None to keep waiting.
 

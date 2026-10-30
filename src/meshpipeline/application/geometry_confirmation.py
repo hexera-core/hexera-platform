@@ -340,6 +340,10 @@ def fea_confirmation_message(body) -> str:
         gap_said = str(getattr(body, "gap_summary", "") or "").strip()
         if gap_said:
             parts.append(gap_said)
+        # PLAN-fea-19/20: the single pairs set on the stage, said so the chat and the brief know
+        pairs_said = str(getattr(body, "pairs_summary", "") or "").strip()
+        if pairs_said:
+            parts.append(pairs_said)
     # SHSTAGE-5: shell or solid, as settled at Proceed, and why
     mesh_as = str(getattr(body, "mesh_as_summary", "") or "").strip()
     if mesh_as:

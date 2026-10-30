@@ -1049,6 +1049,24 @@ th,td{border-color:var(--border)}
 .fea-conn{display:flex;flex-direction:column;gap:6px;margin:0 0 6px}
 .fea-conn-opt{display:flex;gap:6px;align-items:baseline;font-size:var(--fs-sm);line-height:1.45;cursor:pointer}
 .fea-conn-words{color:var(--text-faint)}
+/* each pair (PLAN-fea-19/20): what was measured, its type to pick, who keeps an overlap, the reason */
+.fea-pair{align-items:flex-start}
+.fea-pair-body{display:flex;flex-direction:column;gap:3px;min-width:0}
+.fea-pair-set{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.fea-pair-set select,.fea-pair-set input{font:inherit;font-size:var(--fs-sm);padding:1px 4px;
+  background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:var(--r-sm)}
+.fea-pair-reach{width:9em}
+.fea-pair-reach[hidden]{display:none}
+.fea-pair-why{color:var(--text-faint);font-size:var(--fs-xs);line-height:1.4}
+.fea-itf-row.gap .fea-spot-id{color:#b9a35f}
+/* an open bonded pair on the result (PLAN-fea-21): red, named, with the way on */
+.fe-open{margin:6px 0 8px;padding:8px 10px;border:1px solid var(--danger);border-radius:var(--r-md);
+  background:var(--danger-soft);color:var(--text);font-size:var(--fs-sm);line-height:1.5}
+.fe-open b{color:var(--danger)}
+.fe-open ul{margin:4px 0 0;padding-left:18px}
+.fe-pairs{margin:4px 0}
+.fe-pairs summary{cursor:pointer;color:var(--text-faint)}
+.fe-pair.off{color:var(--text-faint)}
 /* many hot spots: each a small mark without its number, until it is pointed at or chosen */
 .fea-spot.mark{min-width:0;width:9px;height:9px;padding:0;font-size:0;line-height:0;border-width:1.5px}
 .fea-spot.mark:hover,.fea-spot.mark.sel{width:auto;min-width:26px;height:22px;padding:0 4px;font-size:11px;line-height:22px;z-index:8}

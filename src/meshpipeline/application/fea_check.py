@@ -12,6 +12,8 @@
 # application/pipeline_run.py (reads the stored answer into the run).
 from __future__ import annotations
 
+from meshpipeline.cad import fea_pairs as FP
+
 #: The question the stage asks (design 3.1, Areen's words).
 QUESTION = "Is this your part and are the units right?"
 #: An assembly's one question (design 14), and its answers: bonded is the default.
@@ -343,7 +345,18 @@ def assembly_view(facts: dict | None) -> dict | None:
     label = {p["id"]: (p["name"] or p["id"]) for p in parts}
     raw_joins = rec.get("joins")
     joins: dict = raw_joins if isinstance(raw_joins, dict) else {}
+    for i, src in zip(interfaces, rec.get("interfaces") or [], strict=False):
+        if src.get("kind") == "gap" and src.get("reach_mm") is not None:
+            i["reach_mm"] = src.get("reach_mm")
+        if src.get("kind") == "overlap" and src.get("depth_mm") is not None:
+            i["depth_mm"] = src.get("depth_mm")
     return {"parts": parts, "interfaces": interfaces, "free_parts": list(rec.get("free_parts") or []),
+            # PLAN-fea-19/20: EVERY PAIR, each with its type to pick (its default under each answer of
+            # the whole-assembly question and the small-gap switch) and, where parts pass into each
+            # other, which part keeps the shared piece
+            "pairs": pair_rows(rec), "pair_types": [{"key": t, "label": FP.TYPE_LABELS[t], "words": FP.TYPE_WORDS[t]}
+                                                    for t in FP.TYPES],
+            "pair_note": PAIR_NOTE if rec.get("interfaces") else "",
             "notes": list(rec.get("notes") or []), "summary": ", ".join(words),
             # NOT MEASURED YET is not "nothing touches": the stage says which
             "measured": bool(rec),
@@ -358,7 +371,97 @@ def assembly_view(facts: dict | None) -> dict | None:
             "question": CONNECTION_QUESTION, "options": [dict(o) for o in CONNECTION_OPTIONS],
             "default": DEFAULT_CONNECTION,
             "overlap_note": ("Where parts pass into each other, a bonded mesh makes them one piece of material "
-                             "there; with contact, the solver starts with them overlapping." if over else "")}
+                             "there, and the smaller part keeps its full shape (the larger gives way); with contact, "
+                             "the solver starts with them overlapping." if over else "")}
+
+
+#: What the stage says under the pair list.
+PAIR_NOTE = ("Each pair follows the answer above unless you change it here. Off leaves the two parts unconnected "
+             "in the mesh.")
+
+
+def _volumes(rec: dict) -> dict[str, float]:
+    # the volume itself where the record has it (a share rounds small parts to 0), else the share
+    out: dict[str, float] = {}
+    for p in rec.get("parts") or []:
+        if isinstance(p, dict):
+            v = p.get("volume_mm3")
+            out[str(p.get("id"))] = float(v if v is not None else (p.get("volume_share") or 0.0))
+    return out
+
+
+def pair_rows(rec: dict | None) -> list[dict]:
+    """Every pair of the assembly record as the stage lists it (PLAN-fea-19/20): its parts, what was
+    measured (the gap, the facing area, how deep they pass into each other), its default type under
+    each answer ("bonded|on" = Bonded with small gaps joined, ...), the reason, and for an overlap
+    the part that keeps the shared piece and why."""
+    rec = rec if isinstance(rec, dict) else {}
+    itfs = [i for i in rec.get("interfaces") or [] if isinstance(i, dict)]
+    vols = _volumes(rec)
+    rule = FP.choose(itfs, connection=DEFAULT_CONNECTION, gap_joins=DEFAULT_GAP_JOINS, volume_of=vols)
+    out = []
+    for i, c in zip(itfs, rule, strict=False):
+        defaults = {f"{conn}|{'on' if on else 'off'}": FP.default_type(c["kind"], conn, on, i.get("gap_mm"))[0]
+                    for conn in ("bonded", "contact") for on in (True, False)}
+        whys = {k: FP.default_type(c["kind"], k.split("|")[0], k.endswith("on"), i.get("gap_mm"))[1] for k in defaults}
+        row = {"id": i.get("id"), "key": c["key"], "parts": c["parts"], "kind": c["kind"],
+               "gap_mm": i.get("gap_mm"), "gap_max_mm": i.get("gap_max_mm"), "reach_mm": i.get("reach_mm"),
+               "area_mm2": i.get("area_mm2"), "overlap_share": i.get("overlap_share"), "depth_mm": i.get("depth_mm"),
+               "type": c["type"], "defaults": defaults, "why": whys}
+        if c.get("keep"):
+            row.update(keep=c["keep"], keep_why=c["keep_why"])
+        out.append(row)
+    return out
+
+
+def pairs_answer(raw, asm: dict | None, *, connection: str, gap_joins: bool) -> dict[str, dict]:
+    """What the stage sent for single pairs, checked against the assembly's pairs, and only where it
+    differs from the rule under the confirmed answers: a pair left as the rule had it follows the rule
+    when the run stages it."""
+    rows = list((asm or {}).get("pairs") or [])
+    if not rows or not raw:
+        return {}
+    rule = [{"key": r["key"], "kind": r["kind"], "parts": r["parts"],
+             "type": r["defaults"].get(f"{connection}|{'on' if gap_joins else 'off'}", r["type"]),
+             **({"keep": r["keep"]} if r.get("keep") else {})} for r in rows]
+    return FP.changes_only(FP.clean_overrides(raw), rule)
+
+
+def pairs_summary(changes: dict[str, dict], asm: dict | None) -> str:
+    """The pairs the user set on the stage, in one plain sentence for the declaration ("" for none)."""
+    if not changes:
+        return ""
+    label = {p["id"]: (f"{p['id']} ({p['name']})" if p.get("name") else p["id"]) for p in (asm or {}).get("parts") or []}
+    said = []
+    for key, c in list(changes.items())[:8]:
+        a, b = key.split("|")
+        bits = []
+        if c.get("type"):
+            bits.append(FP.TYPE_LABELS[c["type"]])
+        if c.get("keep"):
+            bits.append(f"{label.get(c['keep'], c['keep'])} keeps the overlap")
+        if c.get("reach_mm"):
+            bits.append(f"reach {c['reach_mm']:g} mm")
+        said.append(f"{label.get(a, a)} and {label.get(b, b)}: {', '.join(bits)}")
+    more = f" and {len(changes) - 8} more" if len(changes) > 8 else ""
+    return "Set for single pairs: " + "; ".join(said) + more + "."
+
+
+def confirmed_pairs(session_id: str) -> dict[str, dict]:
+    """The single-pair choices confirmed on the stage (the stored confirmation's fea_pairs), checked;
+    {} when nothing says - every pair then follows the rule."""
+    import json
+
+    if not session_id:
+        return {}
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.contracts.object_storage import get_object_store
+
+    try:
+        record = json.loads(get_object_store().get_bytes(object_key=check_object_key(session_id, "confirmed.json")))
+    except Exception:  # noqa: BLE001 - unknown is the rule, never a refusal
+        return {}
+    return FP.clean_overrides(record.get("fea_pairs") or {}) if isinstance(record, dict) else {}
 
 
 def gap_words(a: str, b: str, gap_mm, *, line: bool = False) -> str:
@@ -502,6 +605,7 @@ def in_unit(record: dict | None, scale_to_m: float | None) -> dict | None:
 
 __all__ = ["TRY_ANYWAY", "has_solid", "warnings", "FOLD_BACK", "fold_back_message", "SELF_OVERLAP", "WAY_OUT_REPAIR", "WAY_OUT_REPAIR_PART", "self_overlap_message", "CONNECTION_OPTIONS", "CONNECTION_QUESTION", "DEFAULT_CONNECTION", "NOT_SOLID", "NOT_SOLID_REASONS",
            "QUESTION", "SHOWN_HOT_SPOTS", "GAP_JOIN_QUESTION", "DEFAULT_GAP_JOINS", "gap_words",
+           "PAIR_NOTE", "confirmed_pairs", "pair_rows", "pairs_answer", "pairs_summary",
            "gap_joins_answer", "confirmed_gap_joins", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL", "WAY_OUT_SOLID", "assembly_view",
            "blocker", "body_count", "clean_words", "confirmed_connection", "connection_answer", "fea_view",
            "hot_spot_words", "in_unit", "measure_view", "not_solid_message", "parts_words", "stage_route"]

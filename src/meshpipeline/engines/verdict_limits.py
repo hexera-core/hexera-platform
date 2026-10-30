@@ -268,6 +268,22 @@ def fea_limits(quality: Mapping) -> list[dict]:
                                "them is not resolved (on a gear, the contact stress at the tooth tips is not resolved); "
                                "remove or enlarge them in CAD for a clean mesh"),
                      "source": "docs/RULES.md PLAN-fea-12 (cad/fea_measure.cad_micro)"})
+    raw_asm = fea_m.get("assembly")
+    asm_q: Mapping = raw_asm if isinstance(raw_asm, Mapping) else {}
+    raw_check = asm_q.get("bonded_check")
+    check: Mapping = raw_check if isinstance(raw_check, Mapping) else {}
+    if check.get("checked") or asm_q.get("open_bonded") or ("checked" in check and check.get("checked") is None):
+        # PLAN-fea-21: A BONDED PAIR THAT IS OPEN - a face with no mesh node within the solver's reach of
+        # the other part - is not joined there: a concern naming the pair and the way on, never a clean
+        # pass; a check that could not run is not measured, never taken as closed
+        from meshpipeline.cad.fea_pairs import open_words
+
+        opened = [o for o in asm_q.get("open_bonded") or [] if isinstance(o, Mapping)]
+        rows.append({"key": "fea_open_bonded_pairs", "op": "empty", "limit": [],
+                     "measured": None if check.get("checked") is None and not opened else [open_words(o) for o in opened],
+                     "label": ("Bonded pairs left open - a face with no mesh node within the solver's reach of the other "
+                               "part, so the pair is not joined there"),
+                     "source": "docs/RULES.md PLAN-fea-21 (engines/fea_assembly_deck.open_joints)"})
     return rows
 
 

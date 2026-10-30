@@ -23,11 +23,13 @@ import asyncio
 import json
 import logging
 import math
+import os
 import shutil
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from meshpipeline.engines import bucket_files as BF
 from meshpipeline.engines import fea_ai as FA
 from meshpipeline.engines import fea_ladder as L
 from meshpipeline.engines import fea_plan as P
@@ -402,8 +404,16 @@ def gap_joins_of(state) -> bool:
     return True if said is None else bool(said)
 
 
+def pairs_of(state) -> dict:
+    """PLAN-fea-19/20: the user's choices for single pairs (state fea_pairs, by pair key), checked;
+    empty when the stage set none - every pair then follows the rule."""
+    from meshpipeline.cad import fea_pairs as FP
+
+    return FP.clean_overrides((state or {}).get("fea_pairs") or {})
+
+
 def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source_path: str = "",
-                     gap_joins: bool = True) -> dict:
+                     gap_joins: bool = True, pairs: dict | None = None) -> dict:
     """PLAN-fea-17: an assembly's record for the plan, and its staged file for the mesher. Every
     face is renamed Part_k_Face_j (on the record and on the surface the size field reads), each part
     gets its own base size, and the parts are staged as the connection asks (cad/fea_assembly.stage).
@@ -429,7 +439,7 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
     record.update(renamed)
     if len(surface.names) == len(global_names):
         surface.names = list(global_names)
-    sidecar = A.stage(shape, connection, ws, names=names, gap_joins=gap_joins)
+    sidecar = A.stage(shape, connection, ws, names=names, gap_joins=gap_joins, pairs=pairs)
     # each part's own size, read off the measured surface (millimetres): its faces' triangles
     bases = []
     for p in range(1, len(parts) + 1):
@@ -453,7 +463,10 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
                                # WHERE THE PARTS MEET, for the AI's joint suggestion (engines/fea_ai AI-fea-7)
                                "pair_list": [{"pair": i.get("id"), "kind": i.get("kind"), "parts": i.get("parts"),
                                               "area_mm2": i.get("area_mm2"), "at_mm": i.get("at_mm")}
-                                             for i in sidecar["interfaces"]]}
+                                             for i in sidecar["interfaces"]],
+                               # PLAN-fea-19/20: every pair's type and every overlap's owner, with the reason
+                               "joints": list(sidecar.get("joints") or []),
+                               "joint_counts": dict(sidecar.get("joint_counts") or {})}
     if sidecar.get("joins"):
         # PLAN-fea-18: how the joints were found, the small-gap joints, and the faces no gap sizing
         # should read (the gap a joint joins, a skin of no thickness)
@@ -464,6 +477,29 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
 def skin_words(skins: list[dict]) -> list[str]:
     from meshpipeline.cad.fea_assembly import skin_notes
     return skin_notes(skins)
+
+
+def open_pairs_decision(ws: Path) -> list[dict]:
+    """PLAN-fea-21's why-record entry for the delivered mesh: how many bonded pairs meshed apart were
+    checked and which are OPEN (no mesh node within the reach on a face) - [] for a single part or a
+    mesh with no tied pair."""
+    from meshpipeline.cad import fea_pairs as FP
+
+    try:
+        q = json.loads((ws / "quality.json").read_text())
+    except (OSError, ValueError):
+        return []
+    asm = ((q.get("fea") or {}).get("assembly") or {}) if isinstance(q, dict) else {}
+    checked = asm.get("bonded_check") or {}
+    if not checked.get("checked") and not asm.get("open_bonded"):
+        return []
+    opened = [o for o in asm.get("open_bonded") or [] if isinstance(o, dict)]
+    return [{"stage": "fea_check", "decided": "open bonded pairs", "value": len(opened), "rule": FP.OPEN_RULE,
+             "inputs": {"checked": checked.get("checked"), "closed": checked.get("closed"),
+                        "open": [o.get("pair") or o.get("name") for o in opened]},
+             "words": ("; ".join(FP.open_words(o) for o in opened[:6]) if opened
+                       else f"Every one of the {checked.get('checked')} tied bonded pair(s) has mesh nodes within its "
+                            "reach on every face.")}]
 
 
 def restage_tied(ws: Path, record: dict) -> dict:
@@ -481,9 +517,11 @@ def restage_tied(ws: Path, record: dict) -> dict:
         before = json.loads((ws / A.SIDECAR).read_text())
     except (OSError, ValueError):
         before = {}
-    sidecar = A.stage(shape, A.BONDED, ws, names=names, tie=True, gap_joins=before.get("gap_joins", True) is not False)
+    sidecar = A.stage(shape, A.BONDED, ws, names=names, tie=True, gap_joins=before.get("gap_joins", True) is not False,
+                      pairs=before.get("pair_choices") or None)
     plan = dict(record.get("assembly_plan") or {})
-    plan.update(mode=sidecar["mode"], pairs=len(sidecar["pairs"]), notes=list(sidecar["notes"]))
+    plan.update(mode=sidecar["mode"], pairs=len(sidecar["pairs"]), notes=list(sidecar["notes"]),
+                joints=list(sidecar.get("joints") or []), joint_counts=dict(sidecar.get("joint_counts") or {}))
     record["assembly_plan"] = plan
     return record
 
@@ -1082,19 +1120,42 @@ def _read_quality(ws: Path) -> dict:
         return {}
 
 
+#: The pass files linked rather than copied: the mesh and its solver files, which no step writes into
+#: once made - a later pass clears them (unlinks) before it meshes, and its result lands by replacing
+#: names (sandbox/safe_extract moves over). The records beside them (the plan, the quality) are
+#: rewritten in place by the next pass, so those are always copied.
+LINKED = ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.msh")
+
+
+def _same_file(src: Path, dest: Path) -> None:
+    """`dest` becomes `src`'s content: a hard link for the mesh files (no bytes copied - a 34 M-element
+    pass is about 37 GB of them, and the worker's disk then holds a pass and its copy once), else a
+    copy."""
+    dest.unlink(missing_ok=True)
+    if src.name in LINKED:
+        try:
+            os.link(src, dest)
+            return
+        except OSError:
+            pass
+    shutil.copy2(src, dest)
+
+
 def _keep_pass(ws: Path, n: int) -> None:
     d = ws / PASS_FOLDER.format(n=n)
     d.mkdir(exist_ok=True)
-    for name in DELIVERABLES:
+    # with the record of what this pass kept in the bucket and its stand-ins (RUN-7): a pass
+    # restored later delivers its own kept files, never the last pass's
+    for name in DELIVERABLES + BF.STAND_INS:
         if (ws / name).exists():
-            shutil.copy2(ws / name, d / name)
+            _same_file(ws / name, d / name)
 
 
 def _restore_pass(ws: Path, n: int) -> None:
     d = ws / PASS_FOLDER.format(n=n)
-    for name in DELIVERABLES:
+    for name in DELIVERABLES + BF.STAND_INS:
         if (d / name).exists():
-            shutil.copy2(d / name, ws / name)
+            _same_file(d / name, ws / name)
         else:
             (ws / name).unlink(missing_ok=True)      # the delivered pass did not write it
 
@@ -1109,6 +1170,7 @@ def _read_failure(ws: Path) -> dict:
 def _clear_outputs(ws: Path) -> None:
     for name in ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.msh", "quality.json", "fea_failure.json"):
         (ws / name).unlink(missing_ok=True)
+    BF.clear(ws)            # the last pass's record of kept files and its stand-ins (RUN-7)
 
 
 async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run) -> tuple[dict, dict, dict]:
@@ -1212,7 +1274,7 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
         result, machine, work = await _native(ws, machine, work, job_id, n, run)
         await run.fence("accept native mesh output")
         q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
-        made = bool(q) and (ws / "mesh.inp").exists()
+        made = bool(q) and BF.present(ws, "mesh.inp")
         run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
         facts = {**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or ""),
                                 killed=_killed(result)),
@@ -1304,7 +1366,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         connection = connection_of(state)
         try:
             record = await asyncio.to_thread(prepare_assembly, ws, record, surface, connection=connection,
-                                             source_path=source_path, gap_joins=gap_joins_of(state))
+                                             source_path=source_path, gap_joins=gap_joins_of(state),
+                                             pairs=pairs_of(state))
         except Exception as exc:  # noqa: BLE001 - recorded as the attempt's reason
             logger.exception("fea driver: the assembly could not be staged - job_id=%s", job_id)
             _refuse(ws, cause=FailureCause.NOT_BUILT.value, text=f"the assembly could not be staged ({exc})",
@@ -1332,6 +1395,11 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                    "pairs": asm.get("pairs"), "interfaces": asm.get("interfaces"),
                                    "tie_first": asm.get("tie_first")},
                         "words": " ".join(P.assembly_words(asm)[:2])}])
+        # PLAN-fea-19/20: each pair's type and each overlap's owner, with its reason
+        from meshpipeline.cad import fea_pairs as FP
+
+        _cite(job_id, FP.decisions(list(asm.get("joints") or []), connection=connection,
+                                   gap_joins=gap_joins_of(state)))
     if not record.get("faces") or not any("thickness_min_mm" in (r or {}) for r in record["faces"].values()):
         # PLAN-fea-3 cannot be planned on walls nobody measured: stop before meshing rather than
         # deliver a mesh whose walls were never held to the rule
@@ -1478,7 +1546,18 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                 "words": stall_lever["words"]}])
                 levers.append(stall_lever)
                 continue
-            if result.get("timed_out"):
+            if result.get("spinning"):
+                # LAD-fea-14: A 3D REFINEMENT THAT SPINS is the part's, not ours - gmsh kept inserting
+                # points and rejecting nearly all of them - so the pass is a fill that failed: no mesh
+                # came back, and the ladder goes on as after any failed fill (LAD-fea-2: HXT next)
+                from meshpipeline.engines.gmsh.gmsh_runner import spin_words
+                refine = (result.get("watchdog") or {}).get("refine") or {}
+                _cite(job_id, [{"stage": "fea_ladder", "decided": "spinning", "value": refine.get("iterations"),
+                                "rule": "LAD-fea-14", "inputs": {"pass": n, **refine},
+                                "words": (spin_words((refine.get("iterations"), refine.get("kept"),
+                                                      refine.get("rejected"))).capitalize()
+                                          + f", so pass {n} was stopped as a fill that failed.")}])
+            elif result.get("timed_out"):
                 # A GUARD TRIP is our infrastructure, never the part's: it pulls no lever and changes no
                 # plan. The attempt ends here; the run's own retry takes it again (D3: replayed once)
                 run.note_native_run(produced_usable_mesh=False)
@@ -1496,7 +1575,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 too_big = {**result["too_big_for_worker"], "pass": n}
                 break
             q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
-            made = bool(q) and (ws / "mesh.inp").exists()
+            made = bool(q) and BF.present(ws, "mesh.inp")
             run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
             # LAD-fea-7: killed by the job's memory limit (the kernel's SIGKILL on the mesher)
             killed = _killed(result)
@@ -1617,6 +1696,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     ok = best is not None
     if best is not None:
         _restore_pass(ws, best)
+        _cite(job_id, open_pairs_decision(ws))
     (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": best, "levers": levers}, indent=1))
     if not ok and passes:
         # THE LADDER RAN OUT on a mesh it built: every pass this plan allows was tried, so the same

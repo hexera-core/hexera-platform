@@ -117,6 +117,18 @@ def edge_census(mesh: ShellMesh) -> dict:
 #: itself, is a CAD sliver (a 0.002 mm edge where two kayak panels nearly meet; a 0.2 mm step meshed among 1.5 mm
 #: edges): its two ends become one node
 SHORT_SHARE = 0.2
+CORNER_GUARD = True
+#: a fold the corner guard finds is undone at the folded element alone, not its whole cluster (sh0083: undoing whole
+#: clusters kept 2,600 sliver edges and doubled its triangles); the last of FOLD_ROUNDS checks undoes whole clusters
+FOLD_LOCAL = True
+FOLD_ROUNDS = 6
+
+
+def _corners_turn(xyz: np.ndarray, conn: list[int], normal: np.ndarray) -> bool:
+    """Whether any corner of the element turns against `normal` (a corner Jacobian not positive)."""
+    p = xyz[conn]
+    k = len(conn)
+    return any(float(np.dot(np.cross(p[(j + 1) % k] - p[j], p[(j - 1) % k] - p[j]), normal)) <= 0.0 for j in range(k))
 
 
 def collapse_short(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int], t_face: list[int],
@@ -165,9 +177,11 @@ def collapse_short(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face
         else:
             parent[ra] = rb
     to = np.array([root(a) for a in range(n)], dtype=np.int64)
-    # a merge that would turn an element over (its normal against its own before) is undone, its whole cluster
-    for _ in range(3):
+    # a merge that would turn an element over (its normal against its own before) is undone, its whole cluster; a merge that only folds a corner in is undone at that element's own moved nodes, which puts
+    # the element back exactly as it was while the rest of its cluster still merges
+    for round_ in range(FOLD_ROUNDS):
         bad_roots: set[int] = set()
+        bad_nodes: set[int] = set()
         for conn, _f in elems:
             c = [int(to[a]) for a in conn]
             if c == conn:
@@ -175,12 +189,22 @@ def collapse_short(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face
             kept = [c[i] for i in range(len(c)) if c[i] != c[(i + 1) % len(c)]]
             if len(kept) < 3 or len(set(kept)) != len(kept):
                 continue
-            if float(np.dot(_normal(xyz, np.array(kept)), _normal(xyz, np.array(conn)))) <= 0.0:
+            before = _normal(xyz, np.array(conn))
+            if float(np.dot(_normal(xyz, np.array(kept)), before)) <= 0.0:
                 bad_roots |= {int(to[a]) for a in conn}
-        if not bad_roots:
+            elif CORNER_GUARD and _corners_turn(xyz, kept, before) and not _corners_turn(xyz, conn, before):
+                # a corner folded in (a quad can keep its normal with one corner turned back)
+                if FOLD_LOCAL and round_ < FOLD_ROUNDS - 1:
+                    bad_nodes |= {a for a in conn if int(to[a]) != a}
+                else:
+                    bad_roots |= {int(to[a]) for a in conn}
+        if not bad_roots and not bad_nodes:
             break
-        undo = np.isin(to, np.array(sorted(bad_roots), dtype=np.int64))
-        to[undo] = np.flatnonzero(undo)
+        if bad_roots:
+            undo = np.isin(to, np.array(sorted(bad_roots), dtype=np.int64))
+            to[undo] = np.flatnonzero(undo)
+        for a in sorted(bad_nodes):
+            to[a] = a
     merged = int((to != np.arange(n)).sum())
     if not merged:
         return quads, trias, list(q_face), list(t_face), 0
