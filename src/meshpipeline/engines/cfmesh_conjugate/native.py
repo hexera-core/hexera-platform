@@ -315,9 +315,7 @@ def _review_aids(ws: Path, *, bashrc: str, refused: bool = False, cells: int = 0
     """
     from meshpipeline.engines.cfmesh_conjugate.conjugate import FLUID_REGION
     from meshpipeline.engines.cfmesh_conjugate.foam_exec import export_volume_vtk
-    from meshpipeline.engines.cfmesh_conjugate.review_surface import build_region_msh
-
-    from meshpipeline.engines.cfmesh_conjugate.review_surface import REVIEW_MSH
+    from meshpipeline.engines.cfmesh_conjugate.review_surface import REVIEW_MSH, build_region_msh
 
     out: dict = {"volume": None, "surface": None, "groups": {}, "bbox": None, "why": ""}
     skip = refused and int(cells) > VOLUME_SKIP_ABOVE_CELLS
@@ -384,6 +382,8 @@ def _as_dict(report, plan: PL.ConjugatePlan) -> dict:
                      "avg_non_ortho": r.avg_non_ortho,
                      "skew_faces": int(r.skew_faces),
                      "small_determinant_cells": int(r.small_determinant_cells),
+                     "concave_cells": int(r.concave_cells),
+                     "low_quality_tet_faces": int(r.low_quality_tet_faces),
                      # WHERE the poor cells are, beside how many of them there are
                      "poor_sets": [dict(x) for x in (r.poor_sets or ())]}
             for r in (report.fluid, report.solid)

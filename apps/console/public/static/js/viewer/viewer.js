@@ -884,7 +884,8 @@ function initViewer(job,surf,uiCfg){
     // mesh's story, and buried among the quality rows they read as incidental.
     const SPAN=[['min_cell_m','Smallest cell'],['max_cell_m','Largest cell']];
     const FOLDED=['avg_non_ortho','skew_faces','skew_fraction','cell_size_ratio',
-                  'internal_faces','small_determinant_cells',
+                  'internal_faces','small_determinant_cells','concave_cells',
+                  'low_quality_tet_faces',
                   'near_wall_layers','near_wall_levels','near_wall_cell_m',
                   'interface_faces_fluid','interface_faces_solid'];
     const KNOWN=[...SIZE,...TYPES,...QUALITY,...SPAN].map(r=>r[0])
@@ -929,6 +930,18 @@ function initViewer(job,surf,uiCfg){
     if(has('max_aspect_ratio'))quality.push(row('max_aspect_ratio','Max aspect ratio',''));
     // CELLS A SOLVER CANNOT INTEGRATE OVER. checkMesh names these only when it finds some, so
     // the zero case says so rather than leaving a reader to wonder whether it was looked for.
+    /* THE TWO THE EXTENDED CHECKS FOUND. Both are shown as a share of the mesh as well as a
+       count, because that is the difference between a defect and a texture: 3,676,061 concave
+       cells out of 241,984,911 is 1.5% and is the staircase the octree cut, while 22 faces with a
+       bad tet decomposition out of 752,277,309 is a defect with a location. Neither can be drawn -
+       the concave set alone is 862 MB against a 400,000-triangle highlight budget - so the number
+       is the only place they appear. */
+    if(has('concave_cells'))quality.push(row('concave_cells','Concave cells','',
+      q.concave_cells===0?'None'
+        :(isNum(q.cells)&&q.cells>0?`${(100*q.concave_cells/q.cells).toPrecision(2)}% of cells`:'')));
+    if(has('low_quality_tet_faces'))quality.push(row('low_quality_tet_faces',
+      'Low-quality tet faces','',
+      q.low_quality_tet_faces===0?'None':'checkMesh calls this an error'));
     if(has('small_determinant_cells'))quality.push(row('small_determinant_cells',
       'Cells with small determinant','',
       q.small_determinant_cells===0?'None'

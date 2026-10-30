@@ -1070,6 +1070,13 @@ class RegionReport:
     #: Cells too flat for a solver to integrate over. checkMesh names these only when it finds
     #: them, so zero is the honest default rather than a missing reading.
     small_determinant_cells: int = 0
+    #: Cells checkMesh calls concave using face planes, and faces whose tet decomposition is of
+    #: low quality or negative volume. Both are answers to the EXTENDED geometry checks, so both
+    #: were always zero until `check_mesh` started passing `-allGeometry`; on the first customer
+    #: plate they are 944,302 and 0 on the coolant and 3,676,061 and 22 on the metal. The second
+    #: one is the only thing in either report checkMesh labels an Error.
+    concave_cells: int = 0
+    low_quality_tet_faces: int = 0
     #: WHERE THE POOR CELLS ARE, not how many: [{name, path, bytes}] per set checkMesh
     #: collected them into (foam_exec.POOR_SETS), kept under poor_cells/<region>/. The
     #: count has been carried since the readings were widened, and a count says a
@@ -1206,6 +1213,8 @@ def read_region(quality: dict, name: str) -> RegionReport:
         avg_non_ortho=quality.get("avg_non_ortho"),
         skew_faces=int(quality.get("skew_faces") or 0),
         small_determinant_cells=int(quality.get("small_determinant_cells") or 0),
+        concave_cells=int(quality.get("concave_cells") or 0),
+        low_quality_tet_faces=int(quality.get("low_quality_tet_faces") or 0),
         poor_sets=tuple(dict(x) for x in (quality.get("poor_sets") or ())),
     )
 

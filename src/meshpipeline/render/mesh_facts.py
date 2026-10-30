@@ -20,6 +20,15 @@ _INT_METRICS: Final[tuple[str, ...]] = (
     "regions", "skew_faces",
     # cells too flat for a solver to integrate over: the count behind "poor-quality cells"
     "small_determinant_cells",
+    # AND THE TWO THE EXTENDED CHECKS FOUND, which are the biggest quality findings on the first
+    # customer plate and could not be drawn. `conjugate_viewer.POOR_MAX_TRIANGLES` is 400,000 and
+    # the metal's concave-cell surface is 862 MB, so the highlight skips it - rightly, since
+    # 3,676,061 concave cells out of 241,984,911 is the staircase rather than a spot on it. Which
+    # is the argument for the number: the picture cannot carry it, so the panel must.
+    "concave_cells",
+    # 22 faces on that plate's metal region, and the only thing in either checkMesh report labelled
+    # an Error. A reading this small is exactly the kind that a summary rounds away.
+    "low_quality_tet_faces",
     # THE THIRD OF THE SIX READINGS, "number of boundary layers in the fluid". The conjugate
     # engine computes it, writes it to the manifest and the answer is a deliberate zero with the
     # reason attached (see cfmesh_conjugate/finalize.NEAR_WALL_LAYERS). The reason is that a prism

@@ -62,6 +62,23 @@ _CM = {
     # some, so an absent pattern means none - the same convention as skew_faces below.
     "small_determinant_cells": re.compile(
         r"small determinant[^\n]*number of cells:\s*(\d+)"),
+    # THE OTHER FOUR THE EXTENDED CHECKS PRINT. Patterns taken from the library's own strings
+    # rather than from a run, so a mesh that happens not to fail one of them cannot leave the
+    # pattern untested against its real wording:
+    #     ***Concave cells (using face planes) found, number of cells: 3676061
+    #     ***Faces with small interpolation weight (< 0.05) found, number of faces: 6
+    #     ***Faces with small volume ratio (< 0.01) found, number of faces: 3
+    #     ***Error in face tets: 22 faces with low quality or negative volume decomposition tets.
+    # Absent means none, the same convention as the determinant count above. The last one is the
+    # only line in either of this plate's two reports that checkMesh calls an Error, and until the
+    # flag above went in there was nothing to read it off.
+    "concave_cells": re.compile(r"Concave cells[^\n]*number of cells:\s*(\d+)"),
+    "low_weight_faces": re.compile(
+        r"small interpolation weight[^\n]*number of faces:\s*(\d+)"),
+    "low_vol_ratio_faces": re.compile(
+        r"small volume ratio[^\n]*number of faces:\s*(\d+)"),
+    "low_quality_tet_faces": re.compile(
+        r"Error in face tets:\s*(\d+) faces"),
     "max_non_ortho": re.compile(r"non-orthogonality Max:\s+([\d.]+)"),
     "avg_non_ortho": re.compile(r"non-orthogonality Max:\s+[\d.]+\s+average:\s+([\d.eE+-]+)"),
     # The meshed volume, which is how a mesh gets compared with the CAD it came from. A
@@ -76,7 +93,14 @@ _CM = {
     # worst value is not representative. Absent pattern ⇒ zero skewed faces.
     "skew_faces": re.compile(r"(\d+)\s+highly skew faces"),
 }
-_FATAL = (("negative volume", "negative-volume cells"),
+# "negative cell volume" AND NOT "negative volume", which is what this said. The extended geometry
+# checks print "faces with low quality or negative volume decomposition tets" - a poor tet
+# decomposition, not a negative cell - and the shorter marker matched it, so turning -allGeometry on
+# would have filed a fatal the mesh does not have on the customer plate's metal region. Read off the
+# library's own strings in the pinned 2412 image, the three things that mean an actually negative
+# cell all carry the longer phrase: "***Zero or negative cell volume detected.", "Zero or negative
+# cell volume detected for cell" and ", Number of negative volume cells:".
+_FATAL = (("negative cell volume", "negative-volume cells"),
           ("open cell", "open cells"),
           ("incorrectly oriented", "incorrectly oriented faces"),
           # checkMesh: "Total number of faces on empty patches is not divisible by the number of
@@ -211,7 +235,30 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
     # the same part took WITHOUT the fields, 9.8 us a cell. At that size the walk over every cell
     # and face is the cost and writing down what it found is lost in it.
     fields = f" -writeFields '{CHECKMESH_WRITE_FIELDS}'" if write_fields else ""
-    cmd = f"source {bashrc} >/dev/null 2>&1 && checkMesh -constant{_reg}{sets}{fields}"
+    # -allGeometry: THE CHECKS THE PARSER ALREADY HAS PATTERNS FOR. Without it checkMesh runs
+    # closedness, face area, cell volume, non-orthogonality, pyramids, skewness and coupled point
+    # location, and stops; the extended geometry checks - cell determinant, concave cells, face
+    # interpolation weights, volume ratio and the face tet decomposition - are behind this flag.
+    #
+    # MEASURED on the customer plate's coolant region, same mesh and same binary, within the hour:
+    # without the flag "Mesh OK." and zero poor-cell sets written; with it, 152,556 cells of small
+    # determinant and 944,302 concave cells. On the metal region it adds three more, one of them
+    # labelled Error: 22 faces with a low quality or negative volume tet decomposition, 6 faces of
+    # small interpolation weight and 3 of small volume ratio. So on this mesh the flag is the
+    # difference between every failure and none of them, and the engine was reporting Mesh OK.
+    #
+    # It is also why the highlight was empty. Five of POOR_SETS' sixteen names - concaveCells,
+    # underdeterminedCells, lowWeightFaces, lowVolRatioFaces, lowQualityTetFaces - are filled only
+    # by these checks, so `-writeSets vtk` had nothing to write and `_poor_surfaces` nothing to
+    # draw on a region where 944,302 cells had failed one.
+    #
+    # +32% on that region (767 s to 1,011 s). NOT -allTopology, which is the one that does not
+    # fit: its regionSplit and cell-shape walk over 241,984,911 cells was OOM-killed at 8,631 s
+    # against 251 GiB. Its one answer worth having - the piece count per region - is already read
+    # by `conjugate.read_region` from the summary line.
+    geom = " -allGeometry"
+    cmd = (f"source {bashrc} >/dev/null 2>&1 && "
+           f"checkMesh -constant{_reg}{geom}{sets}{fields}")
     # A MEASUREMENT THAT DID NOT FINISH IS NOT A BAD MESH. It used to raise out of here, which
     # discarded a mesh the mesher had already built - hours of work thrown away at the last step by
     # the step that was only ever supposed to describe it. Now it says so, and the manifest records
@@ -277,6 +324,9 @@ def parse_check_mesh(out: str) -> dict:
     q.setdefault("skew_faces", 0)
     q["skew_fraction"] = (q["skew_faces"] / q["faces"]) if q.get("faces") else 0.0
     q.setdefault("small_determinant_cells", 0)
+    for _k in ("concave_cells", "low_weight_faces", "low_vol_ratio_faces",
+               "low_quality_tet_faces"):
+        q.setdefault(_k, 0)
 
     # THE CELL TYPES AS ONE BLOCK, with the kinds that are absent left out rather than written as
     # zeroes. A reader wants "what is this mesh made of"; seven rows of which five say 0 answers

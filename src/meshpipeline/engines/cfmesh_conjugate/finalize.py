@@ -107,7 +107,13 @@ def _carry_mesh_wide(q: dict, rows: list[dict]) -> None:
     """
     if not rows:
         return
-    for key in ("faces", "points", "skew_faces", "small_determinant_cells"):
+    # CONCAVE CELLS AND THE TET-DECOMPOSITION FACES ADD like the rest: a concave cell in the metal
+    # and one in the coolant are two concave cells. Both only exist as readings since checkMesh
+    # started being asked the extended geometry questions (`-allGeometry`, foam_exec.check_mesh),
+    # and on this part they are the two biggest things it found - 4,620,363 concave cells across
+    # the pair, and 22 faces whose tet decomposition is the only Error in either report.
+    for key in ("faces", "points", "skew_faces", "small_determinant_cells",
+                "concave_cells", "low_quality_tet_faces"):
         total = sum(int(r.get(key) or 0) for r in rows)
         if total:
             q[key] = total
@@ -194,7 +200,9 @@ def quality_of(ws: Path, report: dict) -> dict:
                      # nothing to highlight. That is the worse way round: a reader who checks the
                      # number is told their mesh is clean.
                      "poor_sets": [dict(x) for x in (r.get("poor_sets") or ())],
-                     "small_determinant_cells": int(r.get("small_determinant_cells") or 0)})
+                     "small_determinant_cells": int(r.get("small_determinant_cells") or 0),
+                     "concave_cells": int(r.get("concave_cells") or 0),
+                     "low_quality_tet_faces": int(r.get("low_quality_tet_faces") or 0)})
 
     fluid = regions.get(FLUID_REGION) or {}
     plan = report.get("plan") or {}
