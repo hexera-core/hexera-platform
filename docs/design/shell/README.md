@@ -46,6 +46,10 @@ A sheet is a shell when both of these hold:
 
 Why per sheet and not per pair: a 2 mm sheet's 3 mm bend is only 5.7 mm wide. Judged alone, it reads as thick. Judged with its flanges, it is clearly a shell. The same goes for a flat-bar stiffener web, 8 mm thick and 50 mm deep.
 
+**The width of a split wall (SHELL-2b, 30 Oct, 12th helper).** A sheet's width is read on its CAD faces as one region: an edge two of its faces share is inside it, not its outline. Its mid-faces share no edge, so their outlines added up: a printed cone split lengthwise into strips read as wide as one strip and stayed solid. The same width decides whether a tapered pair is fitted at all (a strip of a wide wall is fitted). Failure map: the split printed cones (cone_taper_split, 2 cases) solid to shell; training sh0012's 5.4 mm duct body mixed to shell.
+
+**Brackets and frames (30 Oct, 12th helper).** The sealed set's "no shell found" is mostly brackets and frames. 38 generated brackets and frames (angle, gusseted, cast corner, strap, U, pocketed, flat-bar, angle and tube frames, T-slot extrusion; walls 2 to 8 mm) were judged against the plate rule (shell when span over about 10 walls, solid under 6, either between): 38 of 38 right on the code as it was. The call is not too strict; such brackets are thick. What was missing is the reason (SHELL-2c, section 1.4).
+
 ### 1.3 Every face gets a role (SHELL-2)
 
 | Role | What it is | Rule |
@@ -65,6 +69,8 @@ Rims become the mid-surface's free edges. Blends are bridged when the mid-faces 
 - **solid:** no shell sheet.
 
 The verdict is a recommendation. The user picks (section 7).
+
+**A solid body says why, in numbers (SHELL-2c, 30 Oct).** Its most plate-like wall (the pair closest to passing both rules) is named with its thickness, its span and width, each in walls: "no wall is thin against its size: its most plate-like wall is 8 mm thick and spans about 42 mm, only 5.3 times its thickness; a shell needs at least 10 times". A wall too narrow says so ("only 2.8 mm wide, 1.5 times its thickness; a shell needs at least 4 times (narrower, it is a bar or a beam)"). The record keeps it as `closest_wall`. The stage shows it (SHSTAGE-3b), and Auto meshes the part solid.
 
 ## 2. Mid-surface from the B-rep
 
@@ -158,6 +164,20 @@ The result is a conformal shell: shared nodes along every junction once meshed.
 
 - **An open edge bridged to the junction beside it (SHELL-13, 30 Oct).** After the join, an edge still open that runs alongside an edge of another mid-face of the body (a junction line, or another free edge) is joined to it by the ruled strip between the two: every one of 5 points of each edge within SHELL-3's reach of the other (half the other wall plus 2 walls), further apart than the sewing tolerance, the strip's middle in the material; the nearest such edge. The surface is kept only when it leaves fewer open edges. An extruded profile's curved (fitted) wall stopped 0.7 mm short of the corner of its two flat walls (fresh fr013: 1 open edge to 0); a funnel's cone (sh0011) went from 29 open edges to 2.
 - **Offsets carry their direction (SHELL-7, 30 Oct).** A snapped plate's record gives the direction its true mid-plane lies in (`offset_normal`, with `offset_mm`), so the mesh writes it per element (Nastran ZOFFS, Abaqus and CalculiX OFFSET, Ansys SECOFFSET).
+
+- **A grown face is one face where it can be (SHELL-14, 30 Oct, 12th helper).** A mid-face grown only along directions that do not close (a tube past its ends, a cone past its rims, a cap past its edge) is grown as one face on its own surface, not its own face plus a band each side. The bands' edges stayed in the joined surface half a wall from the junction, as slivers whose two long edges were nearly one: gmsh's 1D mesh "not a closed loop" (an equal tee, a 45 degree lateral, a mitred bend), and open edges where a curved cap meets a crease (a dome on a flange ring, a dished end, a nozzle on a torispherical head: 1 open edge each, now 0). Faces that close in a grown direction still grow as tiles (a torus).
+- **Slivers dropped (SHELL-16, 30 Oct).** After the join, a sewn face under a tenth of its wall wide is dropped and its neighbours sewn across it at 1.5 times its width (never past SHELL-12). Kept only when no edge opens and every face stays valid (a face a join handed back twice is counted once).
+- **No join holding more metal than the part (SHELL-17, 30 Oct).** On a shell body, a general join whose sewn faces times their walls hold over 1.10 times the body's volume, and 10% of it more than the straight join, is not used: it kept grown pieces that are no wall. A ring frame on a curved skin held 5.8 times the metal and a pipe saddle 1.27 (gmsh then failed their loops); with the straight join and SHELL-13 both mesh, 0 open edges, 1.01 and 1.00. A mixed body is left out: its mid-faces run on into its thick regions (a PVC tee's sockets, fresh fr017, 1.2 with every junction met).
+
+### 2.4.1 IGES and other loose surfaces (SHELL-15, 30 Oct, 12th helper)
+
+An IGES file is trimmed surfaces with no topology, read as loose faces in no solid; none was shelled (fresh-set IGES copies: 0 of 20). Now:
+
+1. **Analytic again (SHELL-15c).** A face whose surface is a plane, cylinder, cone, sphere or torus written as a surface of revolution or a B-spline is re-made on that surface (OCC's `GeomConvert_SurfToAnaSurf`, within the first sewing tolerance), its own edges kept. A bend written as a surface of revolution had its mid-face 1.1 mm off the middle of a 2 mm wall: its offset is no exact offset.
+2. **Sewn at a measured tolerance (SHELL-15).** First at a millionth of the part. Then each free edge's gap to the nearest other free edge, read as the farthest of 5 points along it (two edges that meet at a corner and part along their length are that far apart, not 0), times 1.5, never over a tenth of the narrowest face: a tolerance that reached across a rim would sew a wall's two sides together. Closed shells become solids, oriented.
+3. **Touching bodies (SHELL-15b).** Where sewing makes no valid solid or leaves faces in no body (a frame's tubes end to end, a duct and its insulation), the faces are read as the volumes they bound (OCC's volume maker): each volume whose largest faces' own normals point out of it is material.
+
+Results (OpenCASCADE IGES copies of the fresh set's 20 STEPs): the judge passed 0 of 20 before, 15 of 20 now (the STEPs: 19); 14 of 20 give the same verdicts, walls and open edges as their STEP. Still apart: bodies that touch (fr011's four tubes, one volume lost; fr014; fr015's duct and insulation read as four solid bodies) and the printed cones fr018 and fr019 (no body closes). On the training set's IGES copies, single bodies mostly match their STEP and touching multi-body assemblies mostly do not (state line).
 
 ### 2.5 Assemblies and mixed parts (PR 3)
 
