@@ -257,7 +257,32 @@ def _as_dict(report, plan: PL.ConjugatePlan) -> dict:
                  "narrowest_m": plan.narrowest_m,
                  "expect_fluid_volume_m3": plan.expect_fluid_volume_m3,
                  "expect_fluid_pieces": plan.expect_fluid_pieces,
-                 "ranks": int(getattr(plan, "ranks", 1) or 1)},
+                 "ranks": int(getattr(plan, "ranks", 1) or 1),
+                 # THE FINE SURFACES, because the near-wall reading is built from this block and
+                 # cannot find them anywhere else. finalize._near_wall takes the DEEPEST level of
+                 # plan["fine_surfaces"] over the coolant's own, and says why: "the thin passages
+                 # get more levels than the coolant as a whole, so the coolant's own level count
+                 # understates the resolution at the only wall that was hard to resolve". This
+                 # block never carried them, so that loop has never run and the reading has always
+                 # been the coolant's coarser one.
+                 #
+                 # MEASURED on the first customer plate, whose plan is levels 1 with a
+                 # fine_surfaces entry at levels 4 over the 98 um microchannels and a background
+                 # cell of 0.3521 mm:
+                 #
+                 #     published   near_wall_levels 1, near_wall_cell_m 176 um
+                 #     actual      near_wall_levels 4, near_wall_cell_m  22 um
+                 #
+                 # Eight times too coarse, and wrong in the direction that matters: 176 um against
+                 # a 98 um channel reads as a mesh that cannot resolve the thing it resolves. It is
+                 # one of the six readings the customer asked for.
+                 #
+                 # The zones travel for the same reason - they are the other half of how a
+                 # two-scale part was sized, and a reader of this report cannot otherwise tell a
+                 # plan that graded the walls from one that did not.
+                 "fine_surfaces": [dict(x) for x in (getattr(plan, "fine_surfaces", ()) or ())],
+                 "fine_zones": [dict(x) for x in (getattr(plan, "fine_zones", ()) or ())],
+                 "stretch_zones": [dict(x) for x in (getattr(plan, "stretch_zones", ()) or ())]},
     }
 
 

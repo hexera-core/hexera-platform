@@ -179,6 +179,21 @@ def quality_of(ws: Path, report: dict) -> dict:
                      "max_aspect_ratio": r.get("max_aspect_ratio"),
                      "avg_non_ortho": r.get("avg_non_ortho"),
                      "skew_faces": int(r.get("skew_faces") or 0),
+                     # WHERE the poor cells are, carried across so the reading below can find it.
+                     # `q["poor_cell_sets"]` reads `poor_sets` off these rows, and this key was
+                     # not on the list, so that reading has been [] on every run since it was
+                     # written - production included - while the data sat one dict away.
+                     # native.py:245 puts it on the region ("WHERE the poor cells are, beside how
+                     # many of them there are") and `r` IS that region dict; these rows name their
+                     # keys explicitly and this one was simply missing from the names.
+                     #
+                     # It is one of the six readings the first customer asked for on 2026-10-29,
+                     # as a "highlight of poor-quality cells". The DRAWABLE half never came
+                     # through here - viewer._poor_surfaces reads poor_cells/<region>/*.vtp off
+                     # the disk itself - so the highlight drew while the manifest said there was
+                     # nothing to highlight. That is the worse way round: a reader who checks the
+                     # number is told their mesh is clean.
+                     "poor_sets": [dict(x) for x in (r.get("poor_sets") or ())],
                      "small_determinant_cells": int(r.get("small_determinant_cells") or 0)})
 
     fluid = regions.get(FLUID_REGION) or {}
