@@ -68,9 +68,10 @@ def _mid_walls(record: dict) -> list[float]:
 def overlay(surface, record: dict, *, mm_per_unit: float, diag_mm: float) -> dict:
     """The sewn mid-surface as the stage draws it: triangles in mm, each with its face's wall."""
     from OCP.BRep import BRep_Tool
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.TopLoc import TopLoc_Location
     from OCP.TopoDS import TopoDS, TopoDS_Iterator
+
+    from meshpipeline.cad.occ_box import incremental_mesh
 
     mm = float(mm_per_unit)
     walls = _mid_walls(record)
@@ -80,7 +81,7 @@ def overlay(surface, record: dict, *, mm_per_unit: float, diag_mm: float) -> dic
         faces.append(TopoDS.Face_s(it.Value()))
         it.Next()
     if faces:
-        BRepMesh_IncrementalMesh(surface, max(CHORD_SHARE * diag_mm / mm, 1e-9), False, ANGLE_RAD, False)
+        incremental_mesh(surface, max(CHORD_SHARE * diag_mm / mm, 1e-9), ANGLE_RAD, relative=False, parallel=False)
     blocks, tris, tri_wall = [], [], []
     base = 0
     for i, face in enumerate(faces):
