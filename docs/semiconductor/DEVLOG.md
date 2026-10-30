@@ -2477,3 +2477,103 @@ The bench already has a big one of their plate, from before the fitted domain ex
 the cuboid. The domain measures 276,372 mm3 of a 750,015 mm3 box, share_of_box 0.3685 against a
 BOX_WORTH_KEEPING of 0.6, so the fitted skin will be used from now on and it is 2.71x less volume
 to fill. Most of those 269.9M solid cells are air.
+
+## 2026-10-30: their plate went all the way to the engine, and two things killed the turn on the way
+
+Their plate now reads correctly, end to end, on the real file through the page:
+
+| | |
+|---|---|
+| upload | 15,883,539 bytes, AP214, 6 solids, 9,226 faces |
+| split | 58 caps, 70 regions, 384.3 s |
+| coolant | 52,144.56 mm3 through 2 openings, plus 1,517.23 mm3 behind 1 |
+| pockets left out | 1, no leaks |
+| read as | copper cold plate with internal water channels, solid-assembly, internal |
+| openings | 3: inlet 109.36 mm2 d 11.8 mm, two outlets 50.27 mm2 d 8.0 mm |
+| confirmed | stored with their positions and diameters intact |
+| engine | cfmesh_conjugate |
+
+The three openings are the same faces, to three decimals, that I measured by hand off
+`candidate_caps` before any of this ran. The product and the hand measurement agree about what is
+on the part.
+
+### I overclaimed the gate fix and the record says so
+
+Yesterday's fix lets measured coolant beat the scout's confidence. I said this run proved it. It
+did not:
+
+| | |
+|---|---|
+| scout confidence, input_kind | 0.70 |
+| the naming's confidence | 0.93 |
+
+0.93 clears 0.70, so the ordinary comparison opened the gate on its own and the measured-coolant
+clause was never needed. The earlier run that produced 0.62 is the one the fix is for, and it is
+unit-tested on those numbers, but today's run is consistent with either path and proves neither. An
+adversarial read of the same code said the same thing independently, which is the only reason I
+caught it.
+
+### The API worker was killed for reading their CAD, and the log called it a death
+
+The turn straight after the customer presses Proceed, three runs out of three: the worker handling
+it is gone and the customer gets an empty reply. The log says
+
+    INFO:     Waiting for child process [10]
+    INFO:     Child process [10] died
+
+There was no crash. uvicorn 0.32.1's multi-worker supervisor pings each worker over a pipe every
+0.5 s and allows 5 s for an answer; answering needs the GIL, OCP does not release it while
+OpenCASCADE reads and tessellates, and a worker that cannot answer is SIGKILLed with the comment
+"process is hung, kill it".
+
+| | |
+|---|---|
+| uvicorn --workers 2, what we ship | SIGKILLed 11 to 15 s in, 3 of 3 |
+| uvicorn --workers 1, no supervisor | HTTP 200 in 44 s |
+| a plain python process | exit 0, same answer |
+
+faulthandler was armed for the two-worker run and printed nothing, which rules out every catchable
+fatal signal, and the container never ran out of memory: 596 MB peak of 15.48 GiB with 12.3 GB
+free. A ping nobody could answer is the only thing that fits all three rows.
+
+So `measure_file` runs in a child now, whose GIL is its own, on the one path that runs inside the
+API. This is not a new idea here: `fluid_volume.run_bounded` already does it for the split and says
+why, and the lease keeper's file opens with the same lesson from 25 October. `measure_file` was the
+one left inside. The loop's own lateness is the measure of it: `rank_in_time` has a 15 s budget and
+fired at 34 s before the change and at 17.5 s after, so the block went from 19 s to 2.5 s.
+
+IT IS NOT ALL OF IT. The worker still dies, now at 34 s instead of 15, so there is a second hold
+after the engine is confirmed and the ports are restored. Not found yet.
+
+### The naming gave up waiting and told nobody
+
+| | |
+|---|---|
+| the naming waited | 1,016 s (its soft limit 1,076 less a minute) |
+| the scout needed | 1,303.9 s |
+| so it named the preview at | 1,022.2 s |
+| and the customer saw | a finished check, 0 openings, no reason, for 5 min 16 s |
+
+`preview_facts` builds those facts with `openings: []` and `confidence: {"input_kind": 0.0}` on
+purpose and says so, "with no confidence in that". So the served proposal could not offer
+solid-assembly, had no mouths and gave no reason. `_wait_for_scout` recorded its give-up only when
+the stored record was missing or pending, never when it was a preview, which is the one case that
+reaches a customer. It records it now.
+
+I have not changed what that window serves. A record going out as `ready` while it says the part is
+still being measured is a contract between the check and the page, and whether Proceed should be
+offered on a preview is a product call, not a bug to fix quietly.
+
+### One thing I nearly broke
+
+MESH_THREADS is 8 and the geometry worker's container is held to 4 CPUs, so the pinned environment
+oversubscribes by two. Clamping it looked free. It is not: this module's own opening says thread
+count changes cfMesh's output, with 82.4 / 84.3 / 85.6 non-orthogonality on three identical runs,
+so clamping would make the same input give a different mesh and would put the machine back inside
+the pinned set. It stays as it is.
+
+OpenCASCADE's own pool is a separate matter: it sizes itself from the HOST and no environment
+variable reaches it, so inside that same 4-CPU container it launches 32 threads a job. The hook to
+pin it has existed in `fluid_volume.main` since it was written, reading `task["threads"]`, and
+nothing has ever set it. Whether setting it is worth anything is being measured, and the same run
+says whether thread count changes the split's answer, which decides whether it is safe at all.
