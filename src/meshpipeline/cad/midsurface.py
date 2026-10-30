@@ -2477,7 +2477,8 @@ JOIN_KEEP_SHARE = 0.01
 JOIN_TOL_WALLS = 0.5
 #: SHELL-17: a general join whose sewn faces x walls hold more than JOIN_METAL_MAX of the body's volume (VOLUME_BAND's
 #: top, the bound the record's own volume check holds a shell body to) AND more than JOIN_METAL_ADDED of it on top
-#: of what the straight join holds is not used (a mixed body's thick corners count twice in both joins alike)
+#: of what the straight join holds is not used - on a SHELL body, as the volume check: a mixed body's mid-faces run
+#: on into its thick regions (a PVC tee's sockets, fresh fr017: 1.2 x, every junction met)
 JOIN_METAL_MAX = VOLUME_BAND[1]
 JOIN_METAL_ADDED = 0.10
 
@@ -2910,6 +2911,7 @@ SEW_FIRST = 1e-6
 SEW_GAP_SLACK = 1.5
 SEW_CAP = 0.1
 SEW_EDGES_MAX = 4000
+SEW_GAP_SAMPLES = 5
 #: SHELL-15b: the largest faces of a volume that vote on whether it is material
 VOLUME_VOTERS = 12
 
@@ -2943,17 +2945,24 @@ def _sew(faces: list, tol: float):
 
 
 def _gaps(free: list, cap: float) -> list[float]:
-    """Each free edge's distance to the nearest OTHER free edge, those within `cap` (a real opening's rim has no
-    free edge that near: the wall's other rim is a wall away)."""
+    """Each free edge's GAP to the nearest OTHER free edge - the farthest of SEW_GAP_SAMPLES points along it from
+    that edge (two edges that meet at a corner but part along their length are that far apart, not 0) - those
+    within the cap (a real opening's rim has no free edge that near: the wall's other rim is a wall away)."""
     mids = [np.asarray(_edge_mid(e), float) for e in free]
     lens = [_length(e) for e in free]
+    pts = [[_vertex(p) for p in _edge_points(e, SEW_GAP_SAMPLES)] for e in free]
     out = []
-    for i, e in enumerate(free):
+    for i, _e in enumerate(free):
         best = float("inf")
         for j, f in enumerate(free):
             if j == i or np.linalg.norm(mids[j] - mids[i]) > min(best, cap) + 0.5 * (lens[i] + lens[j]):
                 continue
-            best = min(best, _dist(e, f))
+            far = 0.0
+            for v in pts[i]:
+                far = max(far, _dist(v, f))
+                if far >= best:
+                    break
+            best = min(best, far)
         if best <= cap:
             out.append(best)
     return out
@@ -3069,11 +3078,13 @@ def solidify(shape, mm: float) -> tuple[object, list[str]]:
                     continue
                 bad = True
         left += _map(sh, TopAbs_FACE).Extent()
-    if bad:
-        # SHELL-15b: a sewn shell that is no valid solid joined touching bodies: the volumes the faces bound instead
+    if bad or left:
+        # SHELL-15b: a sewn shell that is no valid solid, or faces left in no body, joined touching bodies (a duct and
+        # its insulation, a frame's tubes end to end): the volumes the faces bound instead, when they hold more faces
         vols = _volumes_of(loose, tol)
-        if vols and all(BRepCheck_Analyzer(v).IsValid() for v in vols):
-            n_in = sum(_map(v, TopAbs_FACE).Extent() for v in vols)
+        n_in = sum(_map(v, TopAbs_FACE).Extent() for v in vols)
+        n_made = sum(_map(v, TopAbs_FACE).Extent() for v in made)
+        if vols and n_in > n_made and all(BRepCheck_Analyzer(v).IsValid() for v in vols):
             return _compound(solids + vols), [
                 f"{len(loose)} loose face(s) (an IGES file's surfaces) make {len(vols)} solid(s), read as the volumes "
                 f"they bound at a measured {tol * mm:.3g} mm (SHELL-15b; {n_in} faces)."]
@@ -3430,7 +3441,8 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                 elif _max_tol(general[0]) > JOIN_TOL_WALLS * t_min:
                     notes.append(f"{body_names[b]}: a general join left a tolerance of {_max_tol(general[0]) * mm:.3g} "
                                  f"mm (over {JOIN_TOL_WALLS:g} of the thinnest wall) and was not used (SHELL-12).")
-                elif JOIN_METAL_MAX and _overfilled(general[1], straight[1], mine, _volume(sol)):
+                elif JOIN_METAL_MAX and bodies[b]["verdict"] == "shell" and _overfilled(general[1], straight[1], mine,
+                                                                                   _volume(sol)):
                     # SHELL-17: a join must not hold more metal than the part has: its sewn faces times their walls
                     # over JOIN_METAL_MAX of the body's volume, and JOIN_METAL_ADDED of it more than the straight join
                     # holds, kept grown pieces that are no wall (a ring frame on a curved skin held 5.8 times the
