@@ -144,6 +144,72 @@ def test_a_rebuilt_mesh_is_not_answered_from_the_old_index(polymesh):
         B.open_index(polymesh)
 
 
+def test_an_index_answers_without_the_mesh_it_was_built_from(polymesh):
+    """A DECLARED PROPERTY, not an accident. The index carries the boundary's own points and
+    connectivity, so it answers on a host the mesh was never copied to - which is the difference
+    between a detail window that works on a 137 GB workspace and one that needs the workspace.
+    The patch table has to survive, because `detail_at` reads it from the mesh."""
+    B.write_index(polymesh)
+    keep = (polymesh / "boundary").read_bytes()
+    before = B.open_index(polymesh).faces_near(NEAR_INLET, 1.0).size
+    for gone in ("faces", "points", "owner", "neighbour"):
+        if (polymesh / gone).is_file():
+            (polymesh / gone).unlink()
+    assert (polymesh / "boundary").read_bytes() == keep
+    assert B.open_index(polymesh).faces_near(NEAR_INLET, 1.0).size == before
+
+
+def _swap_boundary(polymesh, old: str, new: str) -> None:
+    """Change the boundary file's CONTENT while leaving its size and mtime alone.
+
+    Which is not a contrivance: it is what an archive restore does. `tar` and `scp -p` set mtime
+    from the archive, so an index and a boundary file that came from two different runs can land
+    on a host with a stamp that matches. The stamp catches an edited file; only the patch table
+    catches a swapped one.
+    """
+    import os
+
+    p = polymesh / "boundary"
+    was = p.stat()
+    text = p.read_text()
+    assert old in text, old
+    swapped = text.replace(old, new)
+    assert len(swapped) == len(text), "the swap has to keep the size for this to be the case tested"
+    p.write_text(swapped)
+    os.utime(p, ns=(was.st_atime_ns, was.st_mtime_ns))
+    assert p.stat().st_size == was.st_size and p.stat().st_mtime_ns == was.st_mtime_ns
+
+
+def test_a_boundary_that_describes_another_surface_is_refused(polymesh):
+    """With a stamp that matches, the patch table is the only guard left, so it is not optional.
+    `detail_at` keeps only the index faces whose patch the mesh's boundary names: a boundary that
+    disagrees does not error, it silently drops patches or hands one patch's faces back under
+    another patch's name."""
+    B.write_index(polymesh)
+    _swap_boundary(polymesh, "nFaces 12;", "nFaces 11;")
+    with pytest.raises(B.IndexUnavailable, match="the mesh's boundary"):
+        B.open_index(polymesh)
+
+
+def test_a_patch_renamed_under_a_matching_stamp_is_refused(polymesh):
+    B.write_index(polymesh)
+    _swap_boundary(polymesh, "    wall\n", "    wal2\n")
+    with pytest.raises(B.IndexUnavailable, match="no such patch"):
+        B.open_index(polymesh)
+
+
+def test_an_edited_boundary_is_caught_by_the_stamp_before_anything_else(polymesh):
+    """The ordinary case, for completeness: a file written in place changes size or mtime, and the
+    stamp is what refuses it."""
+    B.write_index(polymesh)
+    p = polymesh / "boundary"
+    text = p.read_text()
+    assert "nFaces 12;" in text
+    p.write_text(text.replace("nFaces 12;", "nFaces 9;"))     # one byte shorter, so the size moves
+    with pytest.raises(B.IndexUnavailable, match="changed since this index was written"):
+        B.open_index(polymesh)
+
+
 def test_an_index_from_a_version_this_does_not_know_is_refused_not_guessed(polymesh):
     B.write_index(polymesh)
     d = B.index_dir(polymesh)

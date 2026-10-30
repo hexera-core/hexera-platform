@@ -472,11 +472,39 @@ def open_index(polymesh) -> BoundaryIndex:
     # A REBUILT MESH IS NOT THE INDEXED ONE. The stamp is the same guard `detail_window._parsed`
     # puts in its cache key, for the same reason: a workspace rebuilt under one path would
     # otherwise be answered from a surface that no longer exists.
+    #
+    # A MESH THAT IS NOT THERE AT ALL IS ALLOWED, and is named here rather than falling out of a
+    # loop that happened to compare nothing. The index carries the boundary's own points and
+    # connectivity, so it answers without the mesh it was built from - which is how a detail
+    # window works on a host the 137 GB workspace was never copied to. What that costs is the
+    # stamp: with the files gone there is nothing to check the index against, so the patch table
+    # below is the one cross-check left and it is not optional.
     now = _source_stamp(Path(polymesh))
     was = meta.get("source") or {}
-    for name, seen in now.items():
-        if name in was and was[name] != seen:
+    for name, seen in was.items():
+        if name not in now:
+            continue
+        if now[name] != seen:
             raise IndexUnavailable(f"{d}: the mesh's {name} changed since this index was written")
+
+    # THE BOUNDARY FILE AND THE INDEX MUST DESCRIBE ONE SURFACE. `detail_at` reads the patch table
+    # from the mesh and keeps only the index's faces whose patch it names, so a boundary file that
+    # disagrees does not error - it silently drops patches, or returns a patch's faces under
+    # another patch's name. Cheap to check (the file is about 1 KB) and the only thing standing
+    # between a self-contained index and a surface it was not built from.
+    bnd = Path(polymesh) / "boundary"
+    if bnd.is_file():
+        from meshpipeline.engines.cfmesh_conjugate.polymesh_surface import read_boundary_patches
+        try:
+            live = {str(p["name"]): int(p["n_faces"]) for p in read_boundary_patches(Path(polymesh))}
+        except Exception as exc:  # noqa: BLE001 - an unreadable boundary is not a usable index
+            raise IndexUnavailable(f"{bnd}: unreadable ({exc})") from exc
+        for p in meta.get("patches") or ():
+            name, n = str(p["name"]), int(p["n_faces"])
+            if live.get(name) != n:
+                raise IndexUnavailable(
+                    f"{d}: the index has {name} at {n:,} faces and the mesh's boundary "
+                    f"has it at {live.get(name, 'no such patch')!r}")
 
     n_f = int(meta["n_faces"])
     n_p = int(meta["n_points"])
