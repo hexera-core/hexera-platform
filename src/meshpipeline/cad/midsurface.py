@@ -2912,6 +2912,8 @@ SEW_GAP_SLACK = 1.5
 SEW_CAP = 0.1
 SEW_EDGES_MAX = 4000
 SEW_GAP_SAMPLES = 5
+#: SHELL-15c: loose faces re-made on the analytic surface they lie on (within the first sewing tolerance)
+SEW_ANALYTIC = True
 #: SHELL-15b: the largest faces of a volume that vote on whether it is material
 VOLUME_VOTERS = 12
 
@@ -3025,6 +3027,53 @@ def _volumes_of(loose: list, tol: float) -> list:
     return out
 
 
+def _analytic_face(face, tol: float):
+    """SHELL-15c: a loose face whose surface is a plane, cylinder, cone, sphere or torus written in another form (an
+    IGES file's surface of revolution or B-spline) on that analytic surface within `tol`, its own edges kept; the
+    face itself when it is not one. A bend written as a surface of revolution had its mid-face 1.1 mm off the
+    middle of a 2 mm wall (its offset is no exact offset): as a cylinder it is the STEP's bend."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.Geom import (
+        Geom_ConicalSurface,
+        Geom_CylindricalSurface,
+        Geom_Plane,
+        Geom_SphericalSurface,
+        Geom_ToroidalSurface,
+    )
+    from OCP.GeomConvert import GeomConvert_SurfToAnaSurf
+    from OCP.ShapeFix import ShapeFix_Face
+    from OCP.TopoDS import TopoDS
+
+    surf = BRep_Tool.Surface_s(face)
+    analytic = (Geom_Plane, Geom_CylindricalSurface, Geom_ConicalSurface, Geom_SphericalSurface, Geom_ToroidalSurface)
+    if isinstance(surf, analytic):
+        return face
+    try:
+        conv = GeomConvert_SurfToAnaSurf(surf)
+        new = conv.ConvertToAnalytical(float(tol))
+    except Exception:  # noqa: BLE001 - the face as written
+        return face
+    if new is None or not isinstance(new, analytic) or conv.Gap() > tol:
+        return face
+    from OCP.BRepTools import BRepTools
+
+    mk = BRepBuilderAPI_MakeFace(new, BRepTools.OuterWire_s(face), True)
+    if not mk.IsDone():
+        return face
+    for w in _inner_wires(face):
+        mk.Add(w)
+    fix = ShapeFix_Face(mk.Face())
+    fix.Perform()
+    out = TopoDS.Face_s(fix.Face())
+    if face.Orientation() != out.Orientation():
+        out = TopoDS.Face_s(out.Reversed())
+    if not BRepCheck_Analyzer(out).IsValid() or abs(_area(out) - _area(face)) > 1e-4 * _area(face):
+        return face
+    return out
+
+
 def solidify(shape, mm: float) -> tuple[object, list[str]]:
     """SHELL-15: the shape with its loose faces (no solid holds them) sewn and every closed shell made a solid, and
     notes saying so; the shape itself when it has no loose face. An IGES copy of a STEP part then reads as the
@@ -3052,6 +3101,9 @@ def solidify(shape, mm: float) -> tuple[object, list[str]]:
             widths.append(w)
     cap = SEW_CAP * min(widths) if widths else SEW_FIRST * diag
     tol = min(SEW_FIRST * diag, cap)
+    if SEW_ANALYTIC:
+        # SHELL-15c: surfaces written in another form re-made as the planes, cylinders and cones they are
+        loose = [_analytic_face(f, tol) for f in loose]
     sewn = _sew(loose, tol)
     free = _free_edge_list(sewn)
     if free and len(free) <= SEW_EDGES_MAX:
