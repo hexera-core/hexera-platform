@@ -241,6 +241,42 @@ function initViewer(job,surf,uiCfg){
 
   /* one IMMUTABLE actor per patch - real polygon cells */
   const entries=[];let totalFaces=0;
+
+  /* ONE RAMP, AT THIS SCOPE, BECAUSE TWO THINGS COLOUR WITH IT. It used to live inside the
+     heatmap's closure, where the detail window could not see it - the same cross-closure mistake
+     `radiusNow` and `tanHalf` made, and it threw the same way, into the button's label.
+
+     It must also be reachable when the payload has NO metrics block, which is the case that
+     matters most: `quality_fields` refuses a mesh past 40 M faces and this plate's coolant side
+     alone is 235 M, so the heatmap's own closure returns before it defines anything. A cut of
+     that mesh still carries its own descriptors, measured by checkMesh, and colours itself from
+     them. The ramp cannot be behind that early return or the colours are unreachable on exactly
+     the meshes they were built for.
+
+     Calm below the bar, warm approaching it, red past it. The colours are computed here and
+     handed to the mapper as direct per-face RGB, and the legend is built from the SAME stops, so
+     the bar on screen is the bar in the colours. The console's original ramp, its calm blues
+     about 30% lighter (Areen, 2026-10-01): steel below, the wireframe blue through the calm
+     range, warming to amber and international orange at the bar, crimson past it. The colour is
+     the surface's own - nothing is drawn on top of the mesh. */
+  const _STOPS=[[0,[92,120,152]],[0.5,[142,178,218]],[0.8,[255,168,90]],[1.0,[255,88,0]]];
+  const _PAST=[168,31,25];
+  function rampOf(md){if(!md)return null;const lim=md.limit||1,lo=md.floor||0;
+    // a metric whose bar sits far above everything the mesh has (aspect ratio: checkMesh's
+    // 1000 against layers at 10 to 50) spans its colours over the mesh's own range instead,
+    // and the bar is drawn as a tick only when it falls inside that range
+    const open=md.scale_to>0&&lim>md.scale_to;
+    const hi=open?md.scale_to:Math.max(lim*1.3,md.max||0);
+    const span=open?(hi-lo):(lim-lo);
+    const pts=_STOPS.map(([f,c])=>[lo+f*span,c]).concat(open?[]:[[hi,_PAST]]);
+    const color=(v,out,o)=>{
+      if(!(v>lo)){out[o]=pts[0][1][0];out[o+1]=pts[0][1][1];out[o+2]=pts[0][1][2];return;}
+      let i=1;while(i<pts.length-1&&v>pts[i][0])i++;
+      const [a,ca]=pts[i-1],[b,cb]=pts[i],t=Math.min(1,Math.max(0,(v-a)/((b-a)||1)));
+      out[o]=ca[0]+(cb[0]-ca[0])*t;out[o+1]=ca[1]+(cb[1]-ca[1])*t;out[o+2]=ca[2]+(cb[2]-ca[2])*t;};
+    const pc=v=>(100*(v-lo)/((hi-lo)||1)).toFixed(1)+'%';
+    const css='linear-gradient(0deg,'+pts.map(([v,c])=>`rgb(${c}) ${pc(v)}`).join(',')+')';
+    return {color,hi,lo,open,css,limitPct:pc(lim)};}
   (surf.patches||[]).forEach((p,i)=>{
     let pts,polys,nCells;
     if(p.polys_b64){pts=b64f32(p.points_b64);polys=b64u32(p.polys_b64);
@@ -1117,9 +1153,12 @@ function initViewer(job,surf,uiCfg){
     const lbl=a.querySelector('span'),was=lbl.textContent;
     let shown=[];              // the detail's own actors
     let shownNames=[];         // and what each one is, so what was drawn can be read back
+    let shownPainted=0;        // how many of them carry the metric's colours rather than a tint
+    let shownMetric='';        // and which metric that is, so a test can tell grey from grey
     let hidden=[];             // the merged actors this turned off
     function clear(){
       shown.forEach(ac=>ren.removeActor(ac));shown=[];shownNames=[];
+      shownPainted=0;shownMetric='';
       hidden.forEach(en=>en.actor.setVisibility(true));hidden=[];
       a.removeAttribute('aria-pressed');lbl.textContent=was;rw.render();}
     /* HOW BIG A BALL. What the camera can see: half the view's height at this distance, so the
@@ -1150,6 +1189,7 @@ function initViewer(job,surf,uiCfg){
         const got=await res.json();
         if(!(got.patches||[]).length){lbl.textContent='no cells there';return;}
         entries.forEach(en=>{if(en.actor.getVisibility()){en.actor.setVisibility(false);hidden.push(en);}});
+        let painted=0,paintedLabel='',paintedMetric='';
         (got.patches||[]).forEach((p,i)=>{
           const pd=vtk.Common.DataModel.vtkPolyData.newInstance();
           pd.getPoints().setData(b64f32(p.points_b64),3);
@@ -1158,15 +1198,48 @@ function initViewer(job,surf,uiCfg){
           const ac=vtk.Rendering.Core.vtkActor.newInstance();ac.setMapper(mapper);
           const base=_PATCH_COLS[i%_PATCH_COLS.length],pr=ac.getProperty();
           pr.setColor(base[0],base[1],base[2]);
+          /* THE COLOURS A CUT CAN HAVE THAT THE MAIN SURFACE CANNOT. Nothing here is merged -
+             one delivered face is one polygon, in the order the route packed it - so a per-face
+             number is a per-polygon number and painting it is honest. On the drawn surface it
+             is not: the mesh is reduced to fit the triangle budget, one drawn face stands for
+             about sixteen delivered ones, and a colour on it was measured on none of them.
+             The values are checkMesh's own, and the bar comes with them: skewness is judged
+             against 20 here, checkMesh's bar for a BOUNDARY face, not the internal 4. */
+          const qb=p.quality_b64||{},qm=p.quality_metrics||{};
+          /* WHICH METRIC. The one the reader picked, when they have picked one. When they have
+             not - and on the meshes this exists for they CANNOT, because the payload carries no
+             metrics block to make controls out of - the first the cut brought, in the order the
+             route sends them. A colour nobody can reach is not a feature, and the button below
+             names which metric it is showing so neither case is a guess. */
+          const dm=(activeMetric&&qb[activeMetric])?activeMetric
+                   :['non_ortho','skewness','aspect_ratio'].find(k=>qb[k]&&qm[k]);
+          if(dm&&qb[dm]&&qm[dm]){
+            const v=b64f32(qb[dm]);
+            const rp=v.length===p.face_count?rampOf(qm[dm]):null;
+            if(rp){
+              const rgb=new Uint8Array(v.length*3);
+              for(let k=0;k<v.length;k++)rp.color(v[k],rgb,k*3);
+              pd.getCellData().setScalars(vtk.Common.Core.vtkDataArray.newInstance(
+                {name:'quality',values:rgb,numberOfComponents:3}));
+              mapper.setScalarModeToUseCellData();mapper.setColorModeToDirectScalars();
+              if(mapper.setInterpolateScalarsBeforeMapping)
+                mapper.setInterpolateScalarsBeforeMapping(false);
+              mapper.setScalarVisibility(true);
+              painted++;paintedLabel=qm[dm].label||dm;paintedMetric=dm;}}
           pr.setEdgeVisibility(true);pr.setEdgeColor(_EDGE[0],_EDGE[1],_EDGE[2]);pr.setLineWidth(1);
           pr.setAmbient(0.30);pr.setDiffuse(0.78);
           if(pr.setBackfaceCulling)pr.setBackfaceCulling(false);
           ren.addActor(ac);shown.push(ac);shownNames.push(String(p.name||''));});
         // SAID, NOT IMPLIED. A reader given 150,000 of 404,725 faces with no word about it reads
         // the gap as mesh that is not there.
-        lbl.textContent=got.truncated
+        // SAID, so a reader knows whether the colours they are looking at are the metric they
+        // picked or the flat palette. A cut of a mesh delivered before the fields were measured
+        // draws grey, and grey that is not named reads as a clean mesh.
+        shownPainted=painted;shownMetric=painted?paintedMetric:'';
+        const col=painted?` - ${paintedLabel}`:'';
+        lbl.textContent=(got.truncated
           ?`${got.faces_returned.toLocaleString()} of ${got.faces_in_range.toLocaleString()} faces - zoom in`
-          :`${got.faces_returned.toLocaleString()} cells, unmerged`;
+          :`${got.faces_returned.toLocaleString()} cells, unmerged`)+col;
         a.setAttribute('aria-pressed','true');
         rw.render();}
       catch(err){lbl.textContent='detail failed';console.warn('detail',err);}
@@ -1179,7 +1252,11 @@ function initViewer(job,surf,uiCfg){
        down to: which patches are drawn - a budget that drops a region drops it from here -
        and whether the merged surface this stands in front of is still hidden. */
     window._vdbg[job].detail=()=>({button:a,shown:shown.length,names:shownNames.slice(),
-                                   hidden:hidden.length,radius:radiusNow()});
+                                   hidden:hidden.length,radius:radiusNow(),
+                                   // whether what is on screen carries the METRIC'S colours or
+                                   // the flat per-patch tint: both are colours, and a test that
+                                   // only counted actors could not tell them apart
+                                   painted:shownPainted,metric:shownMetric});
   })();
 
   /* QUALITY HEATMAP - the boundary coloured by the quality of the cell behind each face.
@@ -1220,24 +1297,7 @@ function initViewer(job,surf,uiCfg){
     /* the console's original ramp, its calm blues about 30% lighter (Areen, 2026-10-01):
        steel below, the wireframe blue through the calm range, warming to amber and
        international orange at the bar, crimson past it. The colour is the surface's own - nothing is drawn on top of the mesh. */
-    const STOPS=[[0,[92,120,152]],[0.5,[142,178,218]],[0.8,[255,168,90]],[1.0,[255,88,0]]];
-    const PAST=[168,31,25];
-    function ramp(m){const md=qf.metrics[m],lim=md.limit||1,lo=md.floor||0;
-      // a metric whose bar sits far above everything the mesh has (aspect ratio: checkMesh's
-      // 1000 against layers at 10 to 50) spans its colours over the mesh's own range instead,
-      // and the bar is drawn as a tick only when it falls inside that range
-      const open=md.scale_to>0&&lim>md.scale_to;
-      const hi=open?md.scale_to:Math.max(lim*1.3,md.max||0);
-      const span=open?(hi-lo):(lim-lo);
-      const pts=STOPS.map(([f,c])=>[lo+f*span,c]).concat(open?[]:[[hi,PAST]]);
-      const color=(v,out,o)=>{
-        if(!(v>lo)){out[o]=pts[0][1][0];out[o+1]=pts[0][1][1];out[o+2]=pts[0][1][2];return;}
-        let i=1;while(i<pts.length-1&&v>pts[i][0])i++;
-        const [a,ca]=pts[i-1],[b,cb]=pts[i],t=Math.min(1,Math.max(0,(v-a)/((b-a)||1)));
-        out[o]=ca[0]+(cb[0]-ca[0])*t;out[o+1]=ca[1]+(cb[1]-ca[1])*t;out[o+2]=ca[2]+(cb[2]-ca[2])*t;};
-      const pc=v=>(100*(v-lo)/((hi-lo)||1)).toFixed(1)+'%';
-      const css='linear-gradient(0deg,'+pts.map(([v,c])=>`rgb(${c}) ${pc(v)}`).join(',')+')';
-      return {color,hi,lo,open,css,limitPct:pc(lim)};}
+    const ramp=m=>rampOf(qf.metrics[m]);
     function fmt(m,v){const u=qf.metrics[m].unit||'';return (u==='°'?v.toFixed(1):v.toFixed(2))+u;}
 
     /* PROBLEM AREAS. The faces over the bar, and those near it (80% of it and up), gathered into

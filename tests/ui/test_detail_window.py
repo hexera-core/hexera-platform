@@ -131,6 +131,7 @@ def _state(live, job: str = JOB) -> dict:
       const d = window._vdbg['__JOB__'].detail();
       const el = document.getElementById('v-detail-__JOB__');
       return {shown: d.shown, names: d.names, hidden: d.hidden, radius: d.radius,
+              painted: d.painted, metric: d.metric,
               hits: window.__detail.hits, urls: window.__detail.urls,
               label: el.querySelector('span').textContent,
               pressed: el.getAttribute('aria-pressed')};
@@ -249,3 +250,89 @@ def test_painting_a_metric_puts_the_merged_surface_back(live, tmp_path):
     assert painted["hidden"] == 0, painted
     assert painted["pressed"] is None and painted["label"] == "the cells here", painted
     assert_clean(live, "a metric painted over an open detail window")
+
+
+def _coloured_workspace(tmp_path):
+    """A delivered workspace with the index and checkMesh's own per-face numbers beside it.
+
+    This is what a mesh looks like after `native._boundary_indexes` has run: the boundary written
+    down once, and `checkMesh -writeFields` reduced to one value per boundary face. Without it a
+    cut has geometry and no colours, which is every mesh delivered before this existed.
+    """
+    from meshpipeline.render import boundary_index as B
+    from meshpipeline.render import boundary_quality as Q
+    from tests.foam_fixtures import write_quality_fields
+
+    ws = _workspace(tmp_path)
+    pm = ws / "constant" / "polyMesh"
+    B.write_index(pm)
+    write_quality_fields(pm.parent, cells=[11.0, 22.0, 33.0],
+                         per_face={"skewness": {"inlet": [0.11], "outlet": [0.22],
+                                                "wall": [0.3] * 12}})
+    Q.write_quality(pm)
+    return ws
+
+
+def test_a_cut_is_painted_with_the_metric_the_reader_picked(live, tmp_path):
+    """THE COLOURS A CUT CAN HAVE THAT THE MAIN SURFACE CANNOT.
+
+    Nothing in a cut is merged - one delivered face is one polygon, in the order the route packed
+    it - so a per-face number is a per-polygon number and painting it is honest. On the drawn
+    surface at this mesh size it is not: the mesh is reduced to fit the triangle budget, one drawn
+    face stands for about sixteen delivered ones, and a colour on it was measured on none of them.
+    """
+    workspace = _coloured_workspace(tmp_path)
+    cut = _cut(workspace)
+    assert all(q.get("quality_b64") for q in cut["patches"]), "the route sent no colours"
+    assert cut["patches"][0]["quality_metrics"]["skewness"]["limit"] == 20.0, (
+        "a cut's skewness is a BOUNDARY face's own and checkMesh allows it 20, not the "
+        "internal 4 the main surface uses")
+    _open(live, _surface(workspace), cut)
+
+    live.evaluate("window._vdbg['%s:heat'].set('non_ortho')" % JOB)
+    opened = _press(live)
+    assert opened["shown"] == PATCHES_PER_REGION, opened
+    assert opened["painted"] == PATCHES_PER_REGION, opened
+    assert opened["metric"] == "non_ortho", opened
+    assert opened["label"].endswith("non-orthogonality"), opened
+    assert_clean(live, "a painted detail window")
+
+    closed = _press(live)
+    assert closed["painted"] == 0 and closed["metric"] == "", closed
+
+
+def test_with_no_metric_picked_a_cut_shows_the_first_it_carries_and_names_it(live, tmp_path):
+    """A COLOUR NOBODY CAN REACH IS NOT A FEATURE, which is why this is the default and not the
+    flat tint.
+
+    The metric controls are built from the PAYLOAD's metrics block, and on the meshes this was
+    written for there is none: `quality_fields` refuses a mesh past 40 M faces and this plate's
+    coolant side alone is 235 M. So on exactly those meshes a reader has nothing to pick, and a
+    cut that waited to be told which metric to draw would never draw one. It takes the first the
+    cut brought instead, and the button says which, because the per-patch palette is also
+    colours and a reader who cannot tell them apart reads one as the other.
+    """
+    workspace = _coloured_workspace(tmp_path)
+    _open(live, _surface(workspace), _cut(workspace))
+    opened = _press(live)
+    assert opened["shown"] == PATCHES_PER_REGION, opened
+    assert opened["painted"] == PATCHES_PER_REGION, opened
+    assert opened["metric"] == "non_ortho", opened
+    assert opened["label"] == f"{FACES_PER_REGION} cells, unmerged - non-orthogonality", opened
+    assert_clean(live, "a cut painted with the metric it chose")
+
+
+def test_a_mesh_with_no_measured_fields_still_cuts_and_is_not_claimed_as_painted(live, tmp_path):
+    """Every mesh delivered before the fields were measured. The cut still works; it simply has
+    no colours, and the button does not claim a metric it is not showing."""
+    workspace = _workspace(tmp_path)          # no index, no quality
+    cut = _cut(workspace)
+    assert all("quality_b64" not in q for q in cut["patches"]), cut
+    _open(live, _surface(workspace), cut)
+
+    live.evaluate("window._vdbg['%s:heat'].set('non_ortho')" % JOB)
+    opened = _press(live)
+    assert opened["shown"] == PATCHES_PER_REGION, opened
+    assert opened["painted"] == 0, "it must not claim colours it was never sent"
+    assert opened["metric"] == "", opened
+    assert_clean(live, "a cut of a mesh with no measured fields")
