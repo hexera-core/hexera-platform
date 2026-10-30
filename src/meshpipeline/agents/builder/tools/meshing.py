@@ -197,11 +197,25 @@ def configure_mesh(ctx: BuilderToolContext, args: dict) -> dict:
         # The staged surface is metres because staging made it so; this says which conversion
         # produced it, so the engine measures physical size instead of bare numbers.
         from meshpipeline.cad.staging import staged_surface
-        result = R.configure_mesh(
-            workspace, geometry_file=gf, strategy=strategy, wall_patch=wall,
-            contract_patches=_contract_patches(workspace), args=args,
-            cell_budget=polcfg.CELL_HARD_LIMIT,
-            surface=staged_surface(ctx.geometry, Path(workspace) / gf))
+
+        def _render(rules_args: dict | None = None) -> dict:
+            # the AI plan (None), or the rules plan's arguments written the same way
+            a = args if rules_args is None else rules_args
+            g = gf if rules_args is None else STAGED_SURFACE
+            return R.configure_mesh(
+                workspace, geometry_file=g,
+                strategy=strategy if rules_args is None else {k: a[k] for k in _keys if k in a},
+                wall_patch=wall, contract_patches=_contract_patches(workspace), args=a,
+                cell_budget=polcfg.CELL_HARD_LIMIT,
+                surface=staged_surface(ctx.geometry, Path(workspace) / g))
+        result = _render()
+        if isinstance(result, dict) and result.get("success"):
+            # THE AI PLAN IS NEVER WORSE THAN THE RULES PLAN (AIG-2): planned over the cell limit
+            # where the rules plan is not, the rules plan is configured instead and the result says so
+            from meshpipeline.engines.plan_guard import keep_no_worse
+            result = keep_no_worse(engine=ename, workspace=Path(workspace), ai_strategy=strategy,
+                                   ai_result=result, render=_render,
+                                   limit=int(polcfg.CELL_HARD_LIMIT), job_id=ctx.job_id)
         if isinstance(result, dict) and result.get("success"):
             _sig_file.write_text(_sig)   # mark configured only on a real render
         return result
