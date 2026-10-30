@@ -208,6 +208,31 @@ The result is a conformal shell: shared nodes along every junction once meshed.
 6. **Growth:** 1.3 at most, as PLAN-fea-6. Held by grading fields from every finer face's edges and every refined arc, each growing up to the largest size in the part, never capped below it. gmsh's own spreading of edge sizes into a face is off: it carried a 2.5 mm bend strip's size over the whole of a 1.7 m flange (800,000 elements, over 20 minutes; now 50,000 in 25 s).
 7. **Junction lines:** always meshed with shared nodes. Both sides use the same seeds.
 
+**Sizes for modal accuracy (SHMESH-15, 30 Oct).** A free-free modal check of 14 corpus parts (CalculiX S4 shells against C3D10 solids of the CAD, modes 7 to 12) found the rules above too coarse: 5 parts were 10 to 23% too stiff. A grid study over the base divisions, the elements across, the curve sizes and a panel threshold (`~/shell_lab/modal/g1` to `g11`) showed that one thing matters: the elements across a wide face. The base divisions and the curve sizes changed nothing. 16 across everywhere put all 14 parts within 4.7%, for 2.3 times the elements. The rule kept:
+
+- **A panel gets 20 elements across.** A panel is a face at least 20 walls wide and at least a tenth of the size of its body's largest sheet. It bends across its own width in the part's first modes.
+- **Narrower faces keep 4 across.** These are bends, flanges and strips. They do not bend across in those modes.
+- **Result:** all 14 parts within 4.1% of the solid (the worst, sh0055, is 4% soft at every size: the shell model's own difference, not its mesh), for 1.1 times the elements.
+- **Why "a tenth of the body's largest sheet".** Without it, a corrugated roof sheet's 23 mm flanks (48 walls of 0.49 mm) were panels: 399,000 elements instead of 38,700. The 2 m sheet bends as a whole long before a flank bends across.
+
+**Mapped bends (SHMESH-16, 30 Oct).** A narrow curved strip with four sides is meshed as a mapped grid of quads (gmsh transfinite):
+
+- a bend, or a tube's rounded corner;
+- its two long sides alike within 5%, and its ends alike;
+- the long sides at least 1.5 times the ends;
+- under 20 walls across.
+
+Across, it keeps its planned size. Along, it takes the size of the faces beside it, at most 5 times the size across (Femap's aspect target). Its neighbours grade from its long sides at that size.
+
+**Every count is even.** With an odd count on a strip's side, Blossom left hundreds of triangles in the face next to it: 485 on one sheet-metal flange, 0 with even counts. A count another strip has already set is kept; a strip that cannot agree stays free. Flat strips are not mapped: a lone plate stretched 5 times along was 5 times too coarse (sh0086: 45 elements, 11% stiff).
+
+On the corpus, a floor-sized bend no longer fills its length with floor-sized elements:
+
+- sh0107's 400 tube corners: 1.5 million elements and over 20 minutes before, now 213,000 elements in 201 s;
+- the welded tube frames (sh0106, sh0109 to sh0113): 2 to 8 times fewer elements, and 2 to 6 times faster.
+
+**The sliver merge never folds a corner.** SHMESH-12's guard checked only each element's mean normal. A quad can keep its normal with one corner turned back, and 3 such quads made sh0021's mesh invalid once the panels were finer. A merge is now undone when any corner of an element turns against its old normal. Cost, still open: sh0083 keeps slivers the merge used to close, and 3.6% of its elements are past a Nastran limit (0.8% before).
+
 **Quality** (SHMESH-8, verdict by limits as VER-1..4).
 
 - **Blocker:** a valid mesh only. No inverted or zero-area element, a positive Jacobian at every corner, and consistent normals in each sheet.
@@ -233,7 +258,7 @@ The GEOMCHECK figures are as we read MSC's Quick Reference Guide; the warping co
 13. **Swaps:** a triangle past a limit swaps its longest edge with the triangle across it (same face, never a face's own edge) when both come out better.
 14. **Relax first:** before any quad is cut, a node inside a flat face (on no CAD edge) of an element past a limit moves to the middle of its neighbours when that leaves fewer of its elements past a limit and none turned over (a tie goes to the larger smallest angle). Nodes sharing no element move together; at most 6 passes. The middle of coplanar points stays in their plane, so the node stays on its face. This halves the cut quads on flat sheet parts.
 
-What was tried and dropped for the triangle share (29 Oct, 8th helper): Frontal-Delaunay-for-quads on flat faces only (better on some parts, worse on as many); QuadQS (3 to 5 times slower, no fewer triangles); gmsh's transfinite-automatic (maps wide faces from a narrow neighbour's count: 15 times the elements); mapping only floor-width four-sided strips (left skewed triangles at their ends); meshing a strip narrower than the floor as one compound with its neighbour (gmsh crashed on one part - a whole-process crash). gmsh's Laplace smoothing helped less than rule 14.
+What was tried and dropped for the triangle share (29 Oct, 8th helper): Frontal-Delaunay-for-quads on flat faces only (better on some parts, worse on as many); QuadQS (3 to 5 times slower, no fewer triangles); gmsh's transfinite-automatic (maps wide faces from a narrow neighbour's count: 15 times the elements); mapping only floor-width four-sided strips (left skewed triangles at their ends); meshing a strip narrower than the floor as one compound with its neighbour (gmsh crashed on one part - a whole-process crash). gmsh's Laplace smoothing helped less than rule 14. (30 Oct) Mapped flat strips (no stretch) did not help either: most flat strips have more than four sides.
 
 **Normals.** Every sheet's normals point one way. They point from face B toward face A of each pair, and outward on closed sections. Offsets and pressures in the user's solver then mean the same thing everywhere.
 

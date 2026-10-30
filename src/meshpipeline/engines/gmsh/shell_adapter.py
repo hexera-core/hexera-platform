@@ -39,6 +39,16 @@ FLIP_PAST = True
 #: SHMESH-12: merge the ends of sliver edges (under the floor and a fifth of their elements' longest edges)
 COLLAPSE_SHORT = True
 RESPLINE_MAX = 16
+#: SHMESH-16: narrow four-sided strips meshed as mapped grids, stretched along them up to STRETCH_MAX times their
+#: size across (Femap's aspect target: 5); a strip's opposite sides alike within STRIP_ALIKE, its long sides at
+#: least STRIP_LONG times its ends
+MAP_STRIPS = True
+STRETCH_MAX = 5.0
+MAP_FLAT = False
+STRETCH_FLAT = 1.0
+STRIP_ALIKE = 0.05
+STRIP_LONG = 1.5
+EVEN = True
 #: SHMESH-3/4 through gmsh's own curvature sizing: elements per full turn of every curve and curved face
 PER_TURN = 4 * plan_rules.CURVE_PER_QUARTER
 
@@ -71,6 +81,67 @@ def _arc_radius(gmsh, curve: int) -> float | None:
     lo, hi = gmsh.model.getParametrizationBounds(1, curve)
     k = gmsh.model.getCurvature(1, curve, [0.5 * (lo[0] + hi[0])])
     return 1.0 / float(k[0]) if len(k) and float(k[0]) > 0 else None
+
+
+def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float) -> dict[int, tuple[tuple[int, ...], float]]:
+    """SHMESH-16: every narrow four-sided strip (a bend, a flange, a strip between holes: its two long sides alike in
+    length, its two ends alike, the long sides at least STRIP_LONG times the ends) is meshed as a mapped grid of
+    quads - its planned size across it, and along it the size of the faces beside its long sides, at most
+    STRETCH_MAX times the size across. A floor-sized bend no longer fills its length with floor-sized elements, and
+    a mapped grid leaves no triangles. Returns {strip surface: (its long sides, the size along them)}. Counts are set once per curve: a
+    strip whose curve another strip has already counted differently stays free (meshed as before)."""
+    count: dict[int, int] = {}
+    out: dict[int, tuple[tuple[int, ...], float]] = {}
+    size_of = {t: rows[k]["size_mm"] / mm for t, k in tag_of.items()}
+    for t, k in sorted(tag_of.items()):
+        flat = gmsh.model.getType(2, t) == "Plane"
+        if (rows[k]["rule"] == "SHMESH-15" or (flat and not MAP_FLAT)
+                or len(gmsh.model.getBoundary([(2, t)], oriented=False)) != 4):
+            continue
+        sides = sorted({abs(c) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)})
+        if len(sides) != 4:
+            continue
+        ends = {c: {abs(p) for _d, p in gmsh.model.getBoundary([(1, c)], oriented=False)} for c in sides}
+        # the side sharing no corner with the first is its opposite; the other two face each other
+        opposite = [c for c in sides[1:] if not (ends[c] & ends[sides[0]])]
+        if len(opposite) != 1:
+            continue
+        a = (sides[0], opposite[0])
+        b = tuple(c for c in sides[1:] if c != opposite[0])
+        if ends[b[0]] & ends[b[1]]:
+            continue
+        la = tuple(float(gmsh.model.occ.getMass(1, c)) for c in a)
+        lb = tuple(float(gmsh.model.occ.getMass(1, c)) for c in b)
+        if abs(la[0] - la[1]) > STRIP_ALIKE * max(la) or abs(lb[0] - lb[1]) > STRIP_ALIKE * max(lb):
+            continue
+        if max(la) < max(lb):
+            a, b, la, lb = b, a, lb, la
+        if min(la) < STRIP_LONG * max(lb) or max(lb) * mm >= plan_rules.PANEL_WALLS * rows[k]["wall_mm"]:
+            continue
+        across = size_of[t]
+        beside = [size_of[s] for c in a for s in gmsh.model.getAdjacencies(1, c)[0] if s != t and s in size_of]
+        stretch = STRETCH_FLAT if flat else STRETCH_MAX
+        along = min([stretch * across] + beside)
+        along = max(along, across)
+        n_b = max(1, math.ceil(max(lb) / across - 1e-9))
+        n_a = max(1, math.ceil(max(la) / along - 1e-9))
+        n_a = count.get(a[0], count.get(a[1], n_a))
+        n_b = count.get(b[0], count.get(b[1], n_b))
+        if EVEN:
+            n_a, n_b = n_a + n_a % 2, n_b + n_b % 2
+        if any(count.get(c, n_a) != n_a for c in a) or any(count.get(c, n_b) != n_b for c in b):
+            continue
+        for c in a:
+            count[c] = n_a
+        for c in b:
+            count[c] = n_b
+        out[t] = (tuple(a), max(la) / n_a)
+    for c, n in sorted(count.items()):
+        gmsh.model.mesh.setTransfiniteCurve(c, n + 1)
+    for t in sorted(out):
+        gmsh.model.mesh.setTransfiniteSurface(t)
+        gmsh.model.mesh.setRecombine(2, t)
+    return out
 
 
 def _rebuild(brep: Path, owners: list[str], out: Path, change) -> list[str]:
@@ -328,11 +399,17 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             gmsh.model.mesh.field.setNumber(thr, "DistMax", (top - h0) / (plan_rules.GROWTH - 1.0))
             fields.append(thr)
 
-        # SHMESH-6: a face finer than the coarsest grades its neighbours from its own edges
+        # SHMESH-16: narrow four-sided strips (bends, flanges) are mapped, their elements stretched along them
+        mapped = _map_strips(gmsh, tag_of, rows, mm) if MAP_STRIPS else {}
+        # SHMESH-6: a face finer than the coarsest grades its neighbours from its own edges (a mapped strip's long
+        # sides from its size along them)
         rims: dict[float, list[int]] = {}
         for t, k in sorted(tag_of.items()):
+            long_sides, along = mapped.get(t, ((), 0.0))
             rims.setdefault(float(rows[k]["size_mm"]), []).extend(
-                abs(c) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False))
+                abs(c) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False) if abs(c) not in long_sides)
+            if long_sides:
+                rims.setdefault(float(f"{along * mm:.6g}"), []).extend(long_sides)
         for h, curves in sorted(rims.items()):
             grow(curves, h / mm)
         for t, k in sorted(tag_of.items()):

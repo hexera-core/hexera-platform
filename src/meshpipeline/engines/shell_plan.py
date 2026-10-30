@@ -15,6 +15,16 @@ from collections.abc import Mapping
 #: elements across every mid-face's narrowest width.
 BASE_DIVISIONS = 10
 MIN_ACROSS = 4
+#: SHMESH-15 (modal accuracy): a face at least PANEL_WALLS walls wide is a panel, which bends across its own width in
+#: the part's first modes, so it gets at least PANEL_ACROSS elements across. Measured on 14 corpus parts (free-free
+#: modes 7-12, CalculiX S4 shells against C3D10 solids of the CAD): 4 across left 5 parts 10-23% too stiff; 20
+#: across on panels (still 4 on narrower faces - bends, flanges, strips, which do not bend across in those modes)
+#: put every part within 4.1%, for 1.3 times the elements. 16 across everywhere did as well for 2.3 times them.
+PANEL_WALLS = 20.0
+PANEL_ACROSS = 20
+#: ... and at least 1/PANEL_SPAN of the size of its body's largest sheet: a corrugated roof sheet's 23 mm flanks
+#: are 48 walls wide, but the 2 m sheet bends as a whole in its first modes, long before a flank bends across
+PANEL_SPAN = 10.0
 #: SHMESH-2: no element smaller than FLOOR_WALLS times the wall - a shell finer than about half its wall is the
 #: wrong element there. A rule asking for less is held at the floor, and said so.
 FLOOR_WALLS = 0.5
@@ -29,10 +39,14 @@ def _r(v: float) -> float:
     return float(f"{float(v):.6g}")
 
 
-def base_size(*, wall: float, size: float, width: float) -> tuple[float, str]:
-    """SHMESH-1 and SHMESH-2: a sheet face's base element size (mm) and the rule that set it."""
+def base_size(*, wall: float, size: float, width: float, span: float | None = None) -> tuple[float, str]:
+    """SHMESH-1, SHMESH-15 and SHMESH-2: a sheet face's base element size (mm) and the rule that set it. `span`
+    (mm) is the size of the largest sheet of the face's body (its own sheet's size when not given)."""
     want = min(size / BASE_DIVISIONS, width / MIN_ACROSS)
     rule = "SHMESH-1"
+    span = size if span is None else max(span, size)
+    if width >= max(PANEL_WALLS * wall, span / PANEL_SPAN) and width / PANEL_ACROSS < want:
+        want, rule = width / PANEL_ACROSS, "SHMESH-15"
     if want < FLOOR_WALLS * wall:
         want, rule = FLOOR_WALLS * wall, "SHMESH-2"
     return want, rule
@@ -55,7 +69,10 @@ def face_plan(record: Mapping, mid_id: str, *, width: float, radii: list[float],
     pair = next(p for p in record["pairs"] if p["id"] == mid["pair"])
     wall = float(pair["thickness_mm"])
     size = float(pair.get("size_mm") or width)
-    h, rule = base_size(wall=wall, size=size, width=width)
+    pairs = {p["id"]: p for p in record["pairs"]}
+    span = max([float(pairs[m["pair"]].get("size_mm") or 0.0) for m in record["mids"]
+                if m.get("body") == mid.get("body") and m["pair"] in pairs] + [size])
+    h, rule = base_size(wall=wall, size=size, width=width, span=span)
     if bend is not None and bend > 0:
         hb, brule = curve_size(bend, wall=wall)
         if hb < h:
@@ -68,5 +85,5 @@ def face_plan(record: Mapping, mid_id: str, *, width: float, radii: list[float],
     return out
 
 
-__all__ = ["BASE_DIVISIONS", "CURVE_PER_QUARTER", "FLOOR_WALLS", "GROWTH", "MIN_ACROSS", "base_size",
-           "curve_size", "face_plan"]
+__all__ = ["BASE_DIVISIONS", "CURVE_PER_QUARTER", "FLOOR_WALLS", "GROWTH", "MIN_ACROSS", "PANEL_ACROSS", "PANEL_WALLS",
+           "base_size", "curve_size", "face_plan"]

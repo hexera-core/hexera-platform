@@ -119,6 +119,13 @@ def edge_census(mesh: ShellMesh) -> dict:
 SHORT_SHARE = 0.2
 
 
+def _corners_turn(xyz: np.ndarray, conn: list[int], normal: np.ndarray) -> bool:
+    """Whether any corner of the element turns against `normal` (a corner Jacobian not positive)."""
+    p = xyz[conn]
+    k = len(conn)
+    return any(float(np.dot(np.cross(p[(j + 1) % k] - p[j], p[(j - 1) % k] - p[j]), normal)) <= 0.0 for j in range(k))
+
+
 def collapse_short(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int], t_face: list[int],
                    limit: np.ndarray) -> tuple[np.ndarray, np.ndarray, list[int], list[int], int]:
     """SHMESH-12: merge the two ends of every element edge shorter than `limit[face]` (the smaller of its elements'
@@ -175,7 +182,10 @@ def collapse_short(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face
             kept = [c[i] for i in range(len(c)) if c[i] != c[(i + 1) % len(c)]]
             if len(kept) < 3 or len(set(kept)) != len(kept):
                 continue
-            if float(np.dot(_normal(xyz, np.array(kept)), _normal(xyz, np.array(conn)))) <= 0.0:
+            before = _normal(xyz, np.array(conn))
+            if float(np.dot(_normal(xyz, np.array(kept)), before)) <= 0.0 or (
+                    _corners_turn(xyz, kept, before) and not _corners_turn(xyz, conn, before)):
+                # turned over, or a corner folded in (a quad can keep its normal with one corner turned back)
                 bad_roots |= {int(to[a]) for a in conn}
         if not bad_roots:
             break
