@@ -217,7 +217,7 @@ def _run(ws: Path, state: dict, monkeypatch, source_path: str = ""):
 def external(monkeypatch, tmp_path):
     import meshpipeline.engines.snappy.layer_policy as LP
     import meshpipeline.engines.snappy.snappy_runner as R
-    w = types.SimpleNamespace(runs=[], fixed_case=False)
+    w = types.SimpleNamespace(runs=[], fixed_case=False, first=dict(_TIMEOUT))
 
     def _render(workspace, *, strategy, **_k):
         ws = Path(workspace)
@@ -229,7 +229,7 @@ def external(monkeypatch, tmp_path):
 
     def _run_native(*_a, **_k):
         w.runs.append(len(w.runs) + 1)
-        return dict(_TIMEOUT) if len(w.runs) == 1 else {"rc": 0, "timed_out": False}
+        return dict(w.first) if len(w.runs) == 1 else {"rc": 0, "timed_out": False}
 
     stubs = {
         "detect_symmetry_plane": lambda *_a, **_k: None,
@@ -298,6 +298,34 @@ def test_a_case_identical_to_the_one_that_timed_out_is_never_run_again(external)
                             "ran out of time") for n in pub.notes), pub.notes
     assert not any(n.startswith("Meshing pass 3") for n in pub.notes), \
         "the passes stop instead of burning another"
+
+
+_BRAKED = {"rc": -1, "timed_out": False, "oversize": {"stage": "castellated", "cells": 4_967_384,
+                                                      "budget": 2_000_000, "margin": 1.5, "ratio": 2.48}}
+
+
+def test_a_case_the_size_brake_stopped_that_no_re_plan_can_shrink_meshes_with_the_brake_released(
+        external):
+    """RUN-8: the JAXA JSM narrow-gap wing - its gap boxes price the case back to the same bytes on
+    every re-plan, so stopping it again could only end the run with no mesh (lab, 28 Oct)."""
+    from meshpipeline.engines import size_brake as SB
+    external.first = dict(_BRAKED)
+    external.fixed_case = True
+    ws, (ok, _value, _outcome), pub = external.go()
+    assert ok is True and external.runs == [1, 2], "the brake's unanswerable stop ended the run"
+    rec = json.loads((ws / SB.PLAN_CELLS_FILE).read_text())
+    assert rec.get(SB.BRAKE_RELEASED)
+    assert SB.case_budget(ws) is None, "the released case is braked again"
+    assert any("no re-plan makes it smaller" in n for n in pub.notes), pub.notes
+
+
+def test_a_case_the_size_brake_stopped_is_still_made_smaller_when_it_can_be(external):
+    external.first = dict(_BRAKED)
+    ws, (ok, _value, _outcome), pub = external.go()
+    assert ok is True and external.runs == [1, 2]
+    assert not (ws / "system" / "plan_cells.json").exists() or not json.loads(
+        (ws / "system" / "plan_cells.json").read_text()).get("brake_released")
+    assert json.loads((ws / ".last_plan.json").read_text())["max_cells"] < 6_000_000
 
 
 def test_a_pass_broken_where_its_layers_were_not_the_cause_is_followed_by_a_coarser_one(
