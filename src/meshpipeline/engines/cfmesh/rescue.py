@@ -103,10 +103,23 @@ OPTIMISE_SURFACE_ITERATIONS = 5
 OPTIMISE_LOOPS_MAX = 20
 OPTIMISE_LOOPS_MIN = 10
 OPTIMISE_CELL_LOOPS = 40_000_000
-#: The optimiser's SLOW rate, in cell-loops a second: half the slowest the experiments above read
-#: over their planned loops (0288: 56,000 over 20), for a loaded machine. Its guard is GUARD_FACTOR
-#: times the planned time at this rate.
-OPTIMISE_RATE = 25_000.0
+#: The optimiser's SLOW rate, in cell-loops a second. A loop's cost follows the tangled region, not
+#: the cells: on the dev-side meshes above, 0288 averaged 56,000 over its 20 loops, while the first
+#: loop of a heavily tangled one (vmr_0249, 288,000 bad faces) ran at 3,200. Its guard is
+#: GUARD_FACTOR times the planned time at this rate, never past what is left of the run's guard.
+OPTIMISE_RATE = 5_000.0
+#: THE OPTIMISER STOPS WHEN IT IS NOT UNTANGLING (TIME-7, measured, never the clock). It prints its
+#: bad faces as each untangling loop starts. On every dev-side mesh it untangled, or brought down to
+#: a handful, the count at its 3rd loop was under 3% of the 1st (vmr_0249: 288,087, 2,070, 161;
+#: vmr_0288: 7,184, 103, 169). One that is still at a tenth of it, and at least
+#: UNTANGLE_STALL_MIN_FACES, is not untangling: the full benchmark's microfluidics spiral read
+#: 52,518, 35,250, 52,544 at 6 minutes a loop. It is stopped there - its mesh is not kept - and the
+#: rescue goes on with the best mesh measured so far.
+UNTANGLE_CHECK_LOOP = 3
+UNTANGLE_STALL_SHARE = 0.10
+UNTANGLE_STALL_MIN_FACES = 1000
+#: How improveMeshQuality says an untangling loop starts.
+_BAD_FACES_AT_LOOP = re.compile(r"Iteration 0\. Number of bad faces is (\d+)")
 #: The least guard a rescue step gets (the optimiser's old least budget, 300 s).
 STEP_FLOOR_S = 300.0
 #: The boundary-layer optimiser's settings for the protective re-mesh (cfMesh's defaults:
@@ -122,6 +135,21 @@ SCRATCH = "_rescue"
 _POLYMESH = Path("constant") / "polyMesh"
 #: The name the protective re-mesh is recorded and kept under.
 REMESHED = "re-meshed protecting the layers"
+
+
+def untangle_stalled(log_text: str) -> str:
+    """Why the optimiser whose log reads `log_text` is not untangling ('' while it may be): its bad
+    faces at its UNTANGLE_CHECK_LOOP-th untangling loop are still at least UNTANGLE_STALL_SHARE of
+    its first loop's, and at least UNTANGLE_STALL_MIN_FACES. Read from the run's own count, so the
+    same mesh stops at the same loop on any machine."""
+    counts = [int(m.group(1)) for m in _BAD_FACES_AT_LOOP.finditer(str(log_text or ""))]
+    if len(counts) < UNTANGLE_CHECK_LOOP:
+        return ""
+    first, now = counts[0], counts[UNTANGLE_CHECK_LOOP - 1]
+    if first > 0 and now >= UNTANGLE_STALL_MIN_FACES and now >= UNTANGLE_STALL_SHARE * first:
+        return (f"it was not untangling: {first:,} bad faces at its first loop, {now:,} at loop "
+                f"{UNTANGLE_CHECK_LOOP}")
+    return ""
 
 
 def optimise_loops(cells: float | None) -> int:
@@ -337,11 +365,32 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
         budget = _guard(work)
         shutil.copytree(src_dir, ws / _POLYMESH)
         t = time.monotonic()
+        log = ws / "improveMeshQuality.log"
+        stalled: list[str] = []
+
+        def _watch() -> str:
+            # read from the run's own count, never the clock (TIME-7)
+            if not stalled:
+                try:
+                    why = untangle_stalled(log.read_text(errors="replace"))
+                except OSError:
+                    why = ""
+                if why:
+                    stalled.append(why)
+            return stalled[0] if stalled else ""
+
         rc = _run(run, ws, bashrc, env, f"improveMeshQuality {optimise_args(cells)}",
-                  "improveMeshQuality.log", budget)
+                  log.name, budget, watch=_watch)
         if rc == -1:
             shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
             _trip(name, budget, work)
+            return
+        if rc == RC_STOPPED:
+            # NOT UNTANGLING (TIME-7): stopped on its own count; what it left is not a candidate
+            shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
+            record["tried"].append({"step": name, "stopped": stalled[0] if stalled else "",
+                                    "seconds": round(time.monotonic() - t, 1),
+                                    "loops": optimise_loops(cells), "rule": TIME_REPAIR_WORK})
             return
         step = {"step": name, "rc": rc, "seconds": round(time.monotonic() - t, 1),
                 "loops": optimise_loops(cells), "rule": TIME_REPAIR_WORK}
@@ -459,14 +508,28 @@ def _brief(q: dict | None) -> dict:
     return {k: q.get(k) for k in ("cells", "max_non_ortho", "max_skewness", "skew_faces", "fatal")}
 
 
+#: _run's return code for a run its `watch` stopped (StoppedByWatch): not a trip, a measured stop.
+RC_STOPPED = -2
+
+
 def _run(runner, ws: Path, bashrc: str, env: dict, cmd: str, log_name: str,
-         timeout: float) -> int:
+         timeout: float, *, watch: Callable[[], str] | None = None) -> int:
+    """Run `cmd` in `ws` to `log_name`: its return code; -1 when its guard stopped it (or it was
+    stuck, or out of memory); RC_STOPPED when `watch` gave a reason to stop it (watched as the native
+    runs are, sandbox/safe_exec.run_guarded)."""
+    from meshpipeline.sandbox.safe_exec import StoppedByWatch
+    kw: dict[str, Any] = {}
+    if watch is not None:
+        from meshpipeline.contracts.native_time import STALL_WINDOW_S
+        kw = {"stall_s": STALL_WINDOW_S, "watch": watch}
     try:
         with (ws / log_name).open("w") as fh:
             proc = runner(["bash", "-lc", f"source {bashrc} >/dev/null 2>&1 && {cmd}"],
                           cwd=str(ws), env=env, stdout=fh, stderr=subprocess.STDOUT,
-                          timeout=max(1, int(timeout)))
+                          timeout=max(1, int(timeout)), **kw)
         return int(proc.returncode)
+    except StoppedByWatch:
+        return RC_STOPPED
     except subprocess.TimeoutExpired:
         return -1
 
