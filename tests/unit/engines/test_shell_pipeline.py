@@ -26,10 +26,16 @@ pytestmark = pytest.mark.skipif(not REQUIRE_CCX and not (CCX and Path(CCX).exist
 E, NU, RHO = 210000.0, 0.3, 7.85e-9
 
 
-def _record(row: dict) -> None:
+def _record(case: str, analysis: str, what: str, got: float, want: float, tol: float, q: dict, **extra) -> None:
+    """One row of the FEA accuracy lane's table (the same keys as test_fea_textbook's rows), with the shell extras."""
     if REPORT:
+        err = got / want - 1.0
+        row = {"suite": "shell_pipeline", "case": case, "analysis": analysis, "elements": int(q["elements"]),
+               "what": what, "got": float(got), "want": float(want), "error_pct": round(100 * err, 2),
+               "tolerance_pct": round(100 * tol, 1), "pass": bool(abs(err) <= tol and q["within_nastran"]),
+               "within_nastran": q["within_nastran"], **extra}
         with open(REPORT, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"suite": "shell_pipeline", **row}) + "\n")
+            fh.write(json.dumps(row) + "\n")
 
 
 def _shell(shape, ws: Path, name: str):
@@ -100,8 +106,7 @@ U
     uz = np.array([float(r[3]) for r in rows if len(r) == 4 and r[0].isdigit()])
     beam = P * L ** 3 / (3 * E * B * T ** 3 / 12)
     off = float(-uz.mean() / beam - 1.0)
-    _record({"case": "cantilever plate", "measured_mm": float(-uz.mean()), "theory_mm": beam, "off": off,
-             "elements": q["elements"], "within_nastran": q["within_nastran"]})
+    _record("shell cantilever plate", "static (S4)", "tip deflection (mm)", float(-uz.mean()), beam, 0.03, q)
     assert q["within_nastran"]
     # a plate strip 10 walls wide sits between the beam (E) and the wide plate (E / (1 - nu^2), 9% stiffer)
     assert -0.03 <= off <= 0.01, off
@@ -139,8 +144,7 @@ S
     kt = smax / (S * W / (W - 2 * R))
     heywood = 2.0 + (1.0 - 2 * R / W) ** 3
     off = float(kt / heywood - 1.0)
-    _record({"case": "plate with a hole", "measured_kt": float(kt), "theory_kt": heywood, "off": off,
-             "elements": q["elements"], "within_nastran": q["within_nastran"]})
+    _record("shell plate with a hole", "static (S4)", "Kt (Heywood)", float(kt), heywood, 0.06, q)
     assert q["within_nastran"]
     assert abs(off) <= 0.06, (kt, heywood)
 
@@ -180,8 +184,7 @@ U
     radial = np.array([np.dot(u[i][:2], xy[k] / np.linalg.norm(xy[k])) for k, i in enumerate(mid)])
     theory = r * (p * r / T) / E
     off = float(radial.mean() / theory - 1.0)
-    _record({"case": "pressurised cylinder", "measured_mm": float(radial.mean()), "theory_mm": theory, "off": off,
-             "elements": q["elements"], "within_nastran": q["within_nastran"]})
+    _record("shell pressurised cylinder", "static (S4)", "radial growth (mm)", float(radial.mean()), theory, 0.02, q)
     assert q["within_nastran"]
     assert abs(off) <= 0.02, off
 
@@ -231,7 +234,8 @@ def test_a_stiffened_panel_rings_at_the_solid_parts_frequencies(tmp_path):
     shell = _frequencies(dat)[6:12]
     solid = _solid_panel(tmp_path, tp, ts, h, n)[6:12]
     off = [float(a / b - 1.0) for a, b in zip(shell, solid, strict=True)]
-    _record({"case": "stiffened panel free-free modes 7-12", "shell_hz": shell, "solid_hz": solid, "off": off,
-             "elements": q["elements"], "within_nastran": q["within_nastran"]})
+    worst = max(range(4), key=lambda i: abs(off[i]))
+    _record("shell stiffened panel", "modal (S4 vs C3D10)", f"free-free mode {7 + worst} (Hz)", float(shell[worst]),
+            float(solid[worst]), 0.05, q, shell_hz=shell, solid_hz=solid)
     assert q["within_nastran"]
     assert max(abs(x) for x in off[:4]) <= 0.05, off
