@@ -349,6 +349,7 @@ jobs:
       - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           category: /language:python
+          upload: never
 
   # ONE IMAGE PER LANE. This used to be a single job that built api, then pipeline, then mesh, then
   # smoked all three - 9m43s of strictly serial work whose red X said "an image broke" without
@@ -612,6 +613,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
 
   ci-gate:
     name: hexera/ci-gate
