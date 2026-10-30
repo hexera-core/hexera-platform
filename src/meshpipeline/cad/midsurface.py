@@ -32,6 +32,7 @@ import logging
 import math
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -179,6 +180,36 @@ def width_of(shape) -> float:
     if per > 0:
         w = min(w, 4.0 * area / per)
     return float(w)
+
+
+def union_width(faces: list) -> float:
+    """SHELL-2b: the WIDTH of a set of CAD faces taken as one region, in its own units: as width_of, but its
+    perimeter counts only the edges on the set's own boundary - an edge two faces of the set share is inside it. A
+    printed wall split lengthwise into strips (an Inventor export: 6 strips of a 6 mm cyclone wall, each 11 mm
+    wide) is as wide as the wall, not as one strip."""
+    from OCP.Bnd import Bnd_OBB
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
+
+    if not faces:
+        return 0.0
+    comp = _compound(faces)
+    obb = Bnd_OBB()
+    BRepBndLib.AddOBB_s(comp, obb, True, True, False)
+    sides = sorted(2.0 * x for x in (obb.XHSize(), obb.YHSize(), obb.ZHSize()))
+    m = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(comp, TopAbs_EDGE, TopAbs_FACE, m)
+    per = 0.0
+    for i in range(1, m.Extent() + 1):
+        seen = TopTools_IndexedMapOfShape()
+        for f in m.FindFromIndex(i):
+            seen.Add(f)
+        if seen.Extent() == 1:
+            per += _length(m.FindKey(i))
+    area = sum(_area(f) for f in faces)
+    return float(min(sides[1], 4.0 * area / per)) if per > 0 else float(sides[1])
 
 
 def _full_turn(face) -> bool:
@@ -570,6 +601,8 @@ FIT_SAMPLES = 17
 #: a pair whose two faces are both narrower than four walls by this margin is not fitted (its mid-face would be
 #: rejected as narrower than four walls; the margin covers a mid-face a little wider than either face)
 FIT_WIDTH_SLACK = 1.5
+#: SHELL-2b: a pair's width judged over its whole wall (its sheet's CAD faces as one region)
+WALL_WIDTH = True
 FIT_ITERATIONS = 3
 FIT_EDGE_SAMPLES = 24
 
@@ -929,7 +962,7 @@ def wall_samples(mid, fa, fb) -> list[list[float]]:
     return out
 
 
-def fitted_mid(fa, fb, t_hint: float, fuzzy: float) -> tuple[list, float, float, float, str]:
+def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False) -> tuple[list, float, float, float, str]:
     """SHELL-9: the fitted mid-faces of faces fa, fb ([] when none can be made, with why), and the wall's thinnest,
     thickest and mean thickness over them (own units). `t_hint`: the wall as read by the pair test."""
     from OCP.Approx import Approx_IsoParametric
@@ -1004,7 +1037,8 @@ def fitted_mid(fa, fb, t_hint: float, fuzzy: float) -> tuple[list, float, float,
     # a fitted mid-face is itself a few walls wide (as a shell sheet is, SHELL-2): a narrower one is a local feature
     # of the wall beside it (a flat dimple 1.4 walls wide in a printed cylinder's side), which that wall's own
     # mid-face runs across when it is joined
-    if width_of(_compound(faces)) < hi / sp.SHELL_WIDTH_RATIO:
+    # ... unless its WALL is wide (SHELL-2b): a strip of a wall split lengthwise is one piece of a wide wall
+    if not wall_wide and width_of(_compound(faces)) < hi / sp.SHELL_WIDTH_RATIO:
         return [], 0.0, 0.0, 0.0, "it is narrower than four walls (a local feature of the wall beside it)"
     return faces, float(lo), float(hi), float(np.mean(read)), ""
 
@@ -1777,6 +1811,17 @@ def grow(face, reach: float, joined: list | None = None, *, remake: bool = True,
         lo_u, hi_u = max(lo_u, b[0]), min(hi_u, b[1])
     if not surf.IsVPeriodic():
         lo_v, hi_v = max(lo_v, b[2]), min(hi_v, b[3])
+    # SHELL-14: grown only along directions that do not close (a tube along its axis, a run past its ends) on its
+    # own surface, it is ONE face: tiles there leave the face's old end in it as an edge, and the join a sliver
+    # half a wall wide between that old end and the junction (an equal tee, a 45 degree lateral, a mitred bend:
+    # gmsh's "1D mesh not a closed loop")
+    if GROW_ONE_FACE and surf is own_surf and not any(
+            per and (lo != a0 or hi != a1) and (hi - lo) < per * (1.0 - 1e-9)
+            for per, lo, hi, a0, a1 in ((surf.UPeriod() if surf.IsUPeriodic() else None, lo_u, hi_u, u0, u1),
+                                        (surf.VPeriod() if surf.IsVPeriodic() else None, lo_v, hi_v, v0, v1))):
+        mk = BRepBuilderAPI_MakeFace(surf, lo_u, hi_u, lo_v, hi_v, 1e-7)
+        if mk.IsDone():
+            return _compound([mk.Face()])
     # as TILES - the face's own range and a band on each grown side - so no one face runs across a closed
     # surface's seam (the general fuse could not split a grown torus that did, and lost the whole mid-face)
     us = [lo_u, u0, u1, hi_u]
@@ -1794,6 +1839,12 @@ def grow(face, reach: float, joined: list | None = None, *, remake: bool = True,
                 tiles.append(mk.Face())
     return _compound(tiles) if tiles else None
 
+
+#: SHELL-16: drop sliver faces after the join
+SLIVERS = True
+
+#: SHELL-14: a face grown only along directions that do not close is grown as one face, not tiles
+GROW_ONE_FACE = True
 
 #: a surface that ends where its face does (a lofted B-spline wall, its offset) is carried on past its own ends by
 #: this share of the reach before the face is grown on it, so it can reach the wall it runs into
@@ -2424,6 +2475,21 @@ JOIN_KEEP_SHARE = 0.01
 #: general fuse can hand back vertices it widened to tens of millimetres to close a gap (a funnel's cone: 39 mm on
 #: 5 mm walls); their edges stand that far off their faces, gmsh cannot close such a face's loop, and the mesh fails.
 JOIN_TOL_WALLS = 0.5
+#: SHELL-17: a general join whose sewn faces x walls hold more than JOIN_METAL_MAX of the body's volume (VOLUME_BAND's
+#: top, the bound the record's own volume check holds a shell body to) AND more than JOIN_METAL_ADDED of it on top
+#: of what the straight join holds is not used - on a SHELL body, as the volume check: a mixed body's mid-faces run
+#: on into its thick regions (a PVC tee's sockets, fresh fr017: 1.2 x, every junction met)
+JOIN_METAL_MAX = VOLUME_BAND[1]
+JOIN_METAL_ADDED = 0.10
+
+
+def _overfilled(images: list[list], straight: list[list], mine: list, volume: float) -> bool:
+    """SHELL-17: does a join's surface hold more metal than the body has (see JOIN_METAL_MAX)?"""
+    if volume <= 0:
+        return False
+    held = sum(_area(f) * m.t for m, imgs in zip(mine, images, strict=True) for f in imgs)
+    base = sum(_area(f) * m.t for m, imgs in zip(mine, straight, strict=True) for f in imgs)
+    return held > JOIN_METAL_MAX * volume and held - base > JOIN_METAL_ADDED * volume
 #: SHELL-11: one general join may take at most JOIN_DEADLINE_S seconds. OpenCASCADE's general fuse cannot be
 #: stopped from inside (no time budget reaches its Perform), and on a cone meeting a ring (fr018) it ran past 40
 #: minutes; no join of the training corpus comes near it. Where the system can fork, the join runs in a child
@@ -2694,6 +2760,60 @@ def _join_straight(mine: list[_Mid], solid: _Solid, fuzzy: float, notes: list[st
     return fused, out
 
 
+#: SHELL-16: a sewn face narrower than SLIVER_WALLS of its wall (a strip a join cut off between two nearly
+#: coincident edges: 0.03 mm x 5 mm on a 2 mm duct) is dropped and its neighbours sewn across the gap it leaves,
+#: at SLIVER_SEW times its width - never wider than SHELL-12 allows
+SLIVER_WALLS = 0.1
+SLIVER_SEW = 1.5
+
+
+def drop_slivers(fused, images: list[list], walls: list[float]):
+    """SHELL-16: (fused, images, dropped) with every sewn face narrower than SLIVER_WALLS of its own wall (`walls`:
+    each mid-face's wall, own units) taken out and the rest sewn across the gaps they leave. gmsh's 1D mesh of
+    such a face is \"not a closed loop\" (fresh fr015, fr017): its two long edges are nearly one. Returns the input
+    with dropped 0 when there is none, or when the faces left do not sew."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    drop, keep, widest = [], [], 0.0
+    seen = TopTools_IndexedMapOfShape()
+    for i, imgs in enumerate(images):
+        for f in imgs:
+            if seen.Contains(f):
+                continue        # a face a join handed back twice (SHELL-4's note): once only
+            seen.Add(f)
+            try:
+                w = strip_width(f)
+            except Exception:  # noqa: BLE001 - a face whose width cannot be read stays
+                w = float("inf")
+            if w < SLIVER_WALLS * walls[i]:
+                drop.append(f)
+                widest = max(widest, w)
+            else:
+                keep.append((i, f))
+    if not drop or not keep:
+        return fused, images, 0
+    sw = BRepBuilderAPI_Sewing(max(SLIVER_SEW * widest, 1e-7))
+    for _i, f in keep:
+        sw.Add(f)
+    sw.Perform()
+    out = sw.SewedShape()
+    omap = _map(out, TopAbs_FACE)
+    new: list[list] = [[] for _ in images]
+    for i, f in keep:
+        g = sw.Modified(f) if sw.IsModified(f) else f
+        g = TopoDS.Face_s(g)
+        if omap.FindIndex(g) <= 0:
+            return fused, images, 0
+        new[i].append(g)
+    if sum(len(x) for x in new) != omap.Extent() or not all(BRepCheck_Analyzer(g).IsValid() for x in new for g in x):
+        return fused, images, 0
+    return out, new, len(drop)
+
+
 def _join_general(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float, fuzzy: float,
                   remake: bool = True, patch_alone: bool = True):
     """The general join (join_body) and one more sew of what it kept: (fused shape, each mid-face's faces)."""
@@ -2782,6 +2902,246 @@ def fallback_regions(sewn_rows: list[dict], faces: list, names: list[str], body_
     return out
 
 
+#: SHELL-15: faces outside every solid (an IGES file's trimmed surfaces, which carry no topology) are sewn into
+#: shells and the closed ones made solids. The sewing tolerance is MEASURED: first SEW_FIRST of the part's size;
+#: then the gaps the free edges left (each free edge to the nearest other free edge), times SEW_GAP_SLACK - and
+#: never more than SEW_CAP of the narrowest face (a rim, a wall's edge face: a tolerance that reaches across it
+#: would sew the wall's two sides together)
+SEW_FIRST = 1e-6
+SEW_GAP_SLACK = 1.5
+SEW_CAP = 0.1
+SEW_EDGES_MAX = 4000
+SEW_GAP_SAMPLES = 5
+#: SHELL-15b: the largest faces of a volume that vote on whether it is material
+VOLUME_VOTERS = 12
+
+
+def _free_edge_list(shape) -> list:
+    """The free edges of a shape (each on one face only), degenerate ones left out."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    m = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, m)
+    out = []
+    for i in range(1, m.Extent() + 1):
+        e = TopoDS.Edge_s(m.FindKey(i))
+        if m.FindFromIndex(i).Extent() == 1 and not BRep_Tool.Degenerated_s(e):
+            out.append(e)
+    return out
+
+
+def _sew(faces: list, tol: float):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+
+    sw = BRepBuilderAPI_Sewing(float(tol))
+    for f in faces:
+        sw.Add(f)
+    sw.Perform()
+    return sw.SewedShape()
+
+
+def _gaps(free: list, cap: float) -> list[float]:
+    """Each free edge's GAP to the nearest OTHER free edge - the farthest of SEW_GAP_SAMPLES points along it from
+    that edge (two edges that meet at a corner but part along their length are that far apart, not 0) - those
+    within the cap (a real opening's rim has no free edge that near: the wall's other rim is a wall away)."""
+    mids = [np.asarray(_edge_mid(e), float) for e in free]
+    lens = [_length(e) for e in free]
+    pts = [[_vertex(p) for p in _edge_points(e, SEW_GAP_SAMPLES)] for e in free]
+    out = []
+    for i, _e in enumerate(free):
+        best = float("inf")
+        for j, f in enumerate(free):
+            if j == i or np.linalg.norm(mids[j] - mids[i]) > min(best, cap) + 0.5 * (lens[i] + lens[j]):
+                continue
+            far = 0.0
+            for v in pts[i]:
+                far = max(far, _dist(v, f))
+                if far >= best:
+                    break
+            best = min(best, far)
+        if best <= cap:
+            out.append(best)
+    return out
+
+
+def _volumes_of(loose: list, tol: float) -> list:
+    """SHELL-15b: the solids a set of loose faces bounds, read by splitting space with them (OpenCASCADE's volume
+    maker) and keeping each closed volume whose faces' own normals point out of it - material, not a cavity. Bodies
+    that touch (a welded frame's tubes, end to end) stay apart: sewing alone pairs their coincident edges across
+    bodies and makes one invalid shell."""
+    from OCP.BOPAlgo import BOPAlgo_MakerVolume
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    mv = BOPAlgo_MakerVolume()
+    for f in loose:
+        mv.AddArgument(f)
+    mv.SetRunParallel(False)
+    mv.SetIntersect(True)
+    mv.SetFuzzyValue(float(tol))
+    mv.Perform()
+    if mv.HasErrors():
+        return []
+    origin: dict[int, Any] = {}
+    images = TopTools_IndexedMapOfShape()
+    for f in loose:
+        got = list(mv.Modified(f)) or ([] if mv.IsDeleted(f) else [f])
+        for g in got:
+            k = images.Add(g)
+            origin[k] = f
+    out = []
+    ex = TopExp_Explorer(mv.Shape(), TopAbs_SOLID)
+    while ex.More():
+        sol = TopoDS.Solid_s(ex.Current())
+        ex.Next()
+        # the largest faces vote, by area (a face two touching bodies share is one face of both, turned one way)
+        fs = []
+        fx = TopExp_Explorer(sol, TopAbs_FACE)
+        while fx.More():
+            g = TopoDS.Face_s(fx.Current())
+            fx.Next()
+            if images.FindIndex(g) > 0:
+                fs.append((_area(g), g))
+        fs.sort(key=lambda x: -x[0])
+        votes = 0.0
+        for a, g in fs[:VOLUME_VOTERS]:
+            o = origin[images.FindIndex(g)]
+            q = _inner_point(g)
+            n = _face_normal_at(g, q) if q is not None else None
+            if n is None:
+                continue
+            n_sol = -n if g.Orientation() == TopAbs_REVERSED else n
+            n_org = -n if o.Orientation() == TopAbs_REVERSED else n
+            # the face as it lies in the volume vs as the file wrote it (a copy of the same surface: same normal)
+            votes += a if float(np.dot(n_sol, n_org)) > 0 else -a
+        if votes > 0:
+            out.append(sol)
+    return out
+
+
+def solidify(shape, mm: float) -> tuple[object, list[str]]:
+    """SHELL-15: the shape with its loose faces (no solid holds them) sewn and every closed shell made a solid, and
+    notes saying so; the shape itself when it has no loose face. An IGES copy of a STEP part then reads as the
+    STEP does. Deterministic: faces in file order, tolerances from the faces' own gaps."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
+    from OCP.BRepLib import BRepLib
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SHELL
+    from OCP.TopoDS import TopoDS
+
+    fmap = _map(shape, TopAbs_FACE)
+    body_of, solids = _face_bodies(shape, fmap)
+    loose = [TopoDS.Face_s(fmap.FindKey(k + 1)) for k, b in enumerate(body_of) if b < 0]
+    if not loose:
+        return shape, []
+    lo, hi = _box(_compound(loose))
+    diag = float(np.linalg.norm(hi - lo))
+    widths = []
+    for f in loose:
+        try:
+            w = strip_width(f)
+        except Exception as exc:  # noqa: BLE001 - a face whose width cannot be read does not set the cap
+            logger.debug("shell: a loose face's width could not be read (%s)", exc)
+            continue
+        if w > 1e-9 * diag:
+            widths.append(w)
+    cap = SEW_CAP * min(widths) if widths else SEW_FIRST * diag
+    tol = min(SEW_FIRST * diag, cap)
+    sewn = _sew(loose, tol)
+    free = _free_edge_list(sewn)
+    if free and len(free) <= SEW_EDGES_MAX:
+        gaps = _gaps(free, cap)
+        want = min(SEW_GAP_SLACK * max(gaps), cap) if gaps else 0.0
+        if want > tol:
+            sewn2 = _sew(loose, want)
+            free2 = _free_edge_list(sewn2)
+            if len(free2) < len(free):
+                sewn, free, tol = sewn2, free2, want
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    shells = _map(sewn, TopAbs_SHELL)
+    made, left, bad = [], 0, False
+    for i in range(1, shells.Extent() + 1):
+        sh = TopoDS.Shell_s(shells.FindKey(i))
+        if not _free_edge_list(sh):
+            mk = BRepBuilderAPI_MakeSolid(sh)
+            if mk.IsDone():
+                s = mk.Solid()
+                BRepLib.OrientClosedSolid_s(s)
+                if BRepCheck_Analyzer(s).IsValid():
+                    made.append(s)
+                    continue
+                bad = True
+        left += _map(sh, TopAbs_FACE).Extent()
+    if bad or left:
+        # SHELL-15b: a sewn shell that is no valid solid, or faces left in no body, joined touching bodies (a duct and
+        # its insulation, a frame's tubes end to end): the volumes the faces bound instead, when they hold more faces
+        vols = _volumes_of(loose, tol)
+        n_in = sum(_map(v, TopAbs_FACE).Extent() for v in vols)
+        n_made = sum(_map(v, TopAbs_FACE).Extent() for v in made)
+        if vols and n_in > n_made and all(BRepCheck_Analyzer(v).IsValid() for v in vols):
+            return _compound(solids + vols), [
+                f"{len(loose)} loose face(s) (an IGES file's surfaces) make {len(vols)} solid(s), read as the volumes "
+                f"they bound at a measured {tol * mm:.3g} mm (SHELL-15b; {n_in} faces)."]
+    if not made:
+        return shape, [f"{len(loose)} loose face(s) (no solid holds them) were sewn at a measured {tol * mm:.3g} mm "
+                       "but closed no body; they are not shelled (SHELL-15)."]
+    in_made = _map(_compound(made), TopAbs_FACE)
+    rest = [f for f in _faces(sewn) if not in_made.Contains(f)]
+    note = (f"{len(loose)} loose face(s) (an IGES file's surfaces) sewn into {len(made)} solid(s) at a measured "
+            f"{tol * mm:.3g} mm (SHELL-15)")
+    if left:
+        note += f"; {left} face(s) closed no body and are not shelled"
+    return _compound(solids + made + rest), [note + "."]
+
+
+def _closest_wall(pairs: list, body_of: list[int], b: int) -> dict | None:
+    """SHELL-2c: of a body judged solid, the wall that came CLOSEST to being a shell - its thickness, its sheet's
+    span (the square root of its mid-surface area) and width, each in walls, against the rule (span at least
+    1 / SHELL_RATIO walls, width at least 1 / SHELL_WIDTH_RATIO walls). None when no two of its faces form a wall.
+    The user's reason, in numbers: a machined bracket 6 mm thick with 40 mm legs is 7 walls long, not 10."""
+    best, score = None, -1.0
+    for p in pairs:
+        if body_of[p.a] != b or not (p.even or p.tapered) or not p.size or not p.width or not p.thickness:
+            continue
+        span, wide = p.size / p.thickness, p.width / p.thickness
+        s = min(span * sp.SHELL_RATIO, wide * sp.SHELL_WIDTH_RATIO)
+        if s > score:
+            best, score = p, s
+    if best is None:
+        return None
+    return {"thickness_mm": _r(best.thickness), "span_mm": _r(best.size), "width_mm": _r(best.width),
+            "span_walls": round(best.size / best.thickness, 1), "width_walls": round(best.width / best.thickness, 1)}
+
+
+def _num(x: float) -> str:
+    """A length in plain digits, three significant (7000, 40100, 2.78 - never 7e+03)."""
+    return f"{float(f'{float(x):.3g}'):g}"
+
+
+def _solid_words(closest: dict | None) -> str:
+    """SHELL-2c: why a body stays solid, in plain words with its numbers."""
+    need_span, need_width = 1.0 / sp.SHELL_RATIO, 1.0 / sp.SHELL_WIDTH_RATIO
+    if closest is None:
+        return "no two of its faces run side by side across the metal, so it has no wall a shell could stand for"
+    t, span, width = closest["thickness_mm"], closest["span_mm"], closest["width_mm"]
+    if closest["span_walls"] < need_span:
+        return (f"its most plate-like wall is {_num(t)} mm thick and spans about {_num(span)} mm, only "
+                f"{closest['span_walls']:g} times its thickness; a shell needs at least {need_span:g} times")
+    if closest["width_walls"] >= need_width:
+        # its own numbers pass: the sheet it belongs to has a thicker wall that does not
+        return (f"its {_num(t)} mm walls belong to a sheet with thicker walls that are not thin against its "
+                f"{_num(span)} mm span")
+    return (f"its most plate-like wall is {_num(t)} mm thick but only {_num(width)} mm wide, "
+            f"{closest['width_walls']:g} times its thickness; a shell needs at least {need_width:g} times "
+            "(narrower, it is a bar or a beam)")
+
+
 def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tuple[dict, object]:
     """The shell record and the sewn mid-surface (a compound, the shape's own units) of an OpenCASCADE shape
     whose coordinates are `mm_per_unit` millimetres each. Never raises for a part it cannot shell: the record
@@ -2793,6 +3153,8 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
 
     started = time.time()
     mm = float(mm_per_unit)
+    # SHELL-15: an IGES file's loose surfaces sewn into solids first
+    shape, sew_notes = solidify(shape, mm)
     fmap = _map(shape, TopAbs_FACE)
     faces = _faces(shape)
     body_of, solids = _face_bodies(shape, fmap)
@@ -2804,7 +3166,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
         else:
             names = [f"Face_{k}" for k in range(1, len(faces) + 1)]
     body_names = [f"Part_{b + 1}" for b in range(len(solids))] or ["Part_1"]
-    notes: list[str] = []
+    notes: list[str] = list(sew_notes)
     surface, _f, kinds = fm._brep_surface(shape, mm)
     partners = sp.ray_partners(surface)
     diag_mm = float(surface.diag)
@@ -2833,6 +3195,22 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                 pair.why = f"a tapered wall, {lo:.3g} to {hi:.3g} mm"
         pairs.append(pair)
 
+    # SHELL-2b: each even or tapered pair's WALL - the pairs of one thickness whose faces meet (as a sheet, before
+    # any mid-face is made) - and that wall's width, its CAD faces taken as one region
+    neighbours = _neighbours(shape, fmap)
+    wall_width: dict[int, float] = {}
+    if WALL_WIDTH:
+        for group in sp.sheets(pairs, neighbours, body_of, need_mids=False):
+            if len(group) < 2:
+                continue
+            ks = sorted({k for i in group for k in (pairs[i].a, pairs[i].b)})
+            try:
+                w = union_width([faces[k] for k in ks])
+            except Exception as exc:  # noqa: BLE001 - the pairs are judged one by one, as before
+                logger.debug("shell: a wall's width could not be read (%s)", exc)
+                continue
+            for i in group:
+                wall_width[i] = w
     # the mid-faces of every even or tapered pair, and each pair's width and verdict (SHELL-2)
     mids: list[_Mid] = []
     for i, p in enumerate(pairs):
@@ -2852,11 +3230,13 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
             try:
                 # a fitted mid-face lies between its two faces: when both are far narrower than four of its
                 # walls, so is it - not fitted at all (17 x 17 midpoints each; a fan housing has hundreds)
+                wall_wide = wall_width.get(i, 0.0) >= t_u / sp.SHELL_WIDTH_RATIO
                 wide = FIT_WIDTH_SLACK * max(width_of(faces[p.a]), width_of(faces[p.b]))
-                if wide < t_u / sp.SHELL_WIDTH_RATIO:
+                if wide < t_u / sp.SHELL_WIDTH_RATIO and not wall_wide:
                     got, why_f = [], "it is narrower than four walls (a local feature of the wall beside it)"
                 else:
-                    got, lo_u, hi_u, mean_u, why_f = fitted_mid(faces[small], faces[big], t_u, 1e-4 * t_u)
+                    got, lo_u, hi_u, mean_u, why_f = fitted_mid(faces[small], faces[big], t_u, 1e-4 * t_u,
+                                                                wall_wide=wall_wide)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("shell: the fitted mid-face of %s/%s failed (%s)", names[p.a], names[p.b], exc)
                 got, why_f = [], "the faces could not be read"
@@ -2874,12 +3254,18 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
             if fitted:
                 m.fitted, m.t_min, m.t_max = True, lo_u, hi_u
             mids.append(m)
-    neighbours = _neighbours(shape, fmap)
     # SHELL-2: shell or solid, sheet by sheet
     for s_i, group in enumerate(sp.sheets(pairs, neighbours, body_of)):
         sheet_faces = [mids[k].face for i in group for k in pairs[i].mids]
         size = math.sqrt(sum(_area(f) for f in sheet_faces)) * mm
         width = width_of(_compound(sheet_faces)) * mm
+        if WALL_WIDTH and len(group) > 1:
+            # SHELL-2b: its mid-faces do not share edges, so their outlines add up; the CAD faces as one region do
+            try:
+                ks = sorted({k for i in group for k in (pairs[i].a, pairs[i].b)})
+                width = max(width, union_width([faces[k] for k in ks]) * mm)
+            except Exception:  # noqa: BLE001 - the mid-faces' width stands
+                pass
         t = max(pairs[i].thickness for i in group)
         shell = t <= sp.SHELL_RATIO * size and t <= sp.SHELL_WIDTH_RATIO * width
         for i in group:
@@ -2924,8 +3310,13 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
             verdict, why = "mixed", "thin walls and thick regions"
         else:
             verdict, why = "solid", "no wall is thin against its size"
+        closest = _closest_wall(pairs, body_of, b) if verdict == "solid" else None
+        if verdict == "solid":
+            why = f"{why}: {_solid_words(closest)}"
         row = {"body": body_names[b], "verdict": verdict, "why": why, "area_mm2": _r(area),
                "volume_mm3": _r(_volume(sol) * mm ** 3), "shell_area_share": _r(share)}
+        if closest is not None:
+            row["closest_wall"] = closest
         if verdict == "mixed":
             row["solid_regions"] = [{"faces": [names[k] for k in reg],
                                      "area_mm2": _r(sum(_area(faces[k]) for k in reg) * mm * mm)}
@@ -3050,6 +3441,14 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                 elif _max_tol(general[0]) > JOIN_TOL_WALLS * t_min:
                     notes.append(f"{body_names[b]}: a general join left a tolerance of {_max_tol(general[0]) * mm:.3g} "
                                  f"mm (over {JOIN_TOL_WALLS:g} of the thinnest wall) and was not used (SHELL-12).")
+                elif JOIN_METAL_MAX and bodies[b]["verdict"] == "shell" and _overfilled(general[1], straight[1], mine,
+                                                                                   _volume(sol)):
+                    # SHELL-17: a join must not hold more metal than the part has: its sewn faces times their walls
+                    # over JOIN_METAL_MAX of the body's volume, and JOIN_METAL_ADDED of it more than the straight join
+                    # holds, kept grown pieces that are no wall (a ring frame on a curved skin held 5.8 times the
+                    # metal; a saddle 1.27 - gmsh then could not close their loops)
+                    notes.append(f"{body_names[b]}: a general join held more metal than the body has and was not "
+                                 "used (SHELL-17).")
                 elif _unjoined(census_g) < _unjoined(census):
                     chosen, method, census = general, "general", census_g
                     ext_general = [list(m.extended) for m in mine]
@@ -3075,6 +3474,18 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                         mine[i].extended.append({"to": None, "area": _area(strip)})
                     notes.append(f"{body_names[b]}: {len(closed[2])} open edge(s) bridged to the junction beside them "
                                  "(SHELL-13).")
+        if SLIVERS:
+            try:
+                cut = drop_slivers(fused, images, [m.t for m in mine])
+            except Exception as exc:  # noqa: BLE001 - the join stands as made
+                logger.debug("shell: the slivers of %s could not be dropped (%s)", body_names[b], exc)
+                cut = (fused, images, 0)
+            if cut[2]:
+                census_s = census_of(cut[0], cut[1])
+                if census_s["open_edges"] <= census["open_edges"] and _max_tol(cut[0]) <= JOIN_TOL_WALLS * t_min:
+                    fused, images, census = cut[0], cut[1], census_s
+                    notes.append(f"{body_names[b]}: {cut[2]} sliver face(s) under a tenth of a wall wide dropped and "
+                                 "their neighbours sewn across them (SHELL-16).")
         census["body"] = body_names[b]
         census["join"] = method
         sewn_rows.append(census)

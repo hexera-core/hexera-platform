@@ -315,11 +315,13 @@ def _same_wall(p: Pair, q: Pair) -> bool:
     return a0 <= b1 * (1 + EVEN_SHARE) and b0 <= a1 * (1 + EVEN_SHARE)
 
 
-def sheets(pairs: list[Pair], neighbours: list[set[int]], body_of: list[int]) -> list[list[int]]:
+def sheets(pairs: list[Pair], neighbours: list[set[int]], body_of: list[int], *,
+           need_mids: bool = True) -> list[list[int]]:
     """The SHEETS (SHELL-2): groups of even or tapered pairs (indices into `pairs`, those with mid-faces) of one
     body and one thickness (within EVEN_SHARE; a tapered wall's span) whose faces are shared or meet at a CAD
-    edge. Deterministic: in pair order."""
-    live = [i for i, p in enumerate(pairs) if (p.even or p.tapered) and p.mids]
+    edge. With need_mids False, every even or tapered pair (before mid-faces are made: SHELL-2b's walls).
+    Deterministic: in pair order."""
+    live = [i for i, p in enumerate(pairs) if (p.even or p.tapered) and (p.mids or not need_mids)]
     parent = {i: i for i in live}
 
     def root(i: int) -> int:

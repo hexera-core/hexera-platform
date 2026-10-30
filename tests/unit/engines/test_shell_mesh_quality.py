@@ -282,3 +282,72 @@ def test_a_face_whose_boundary_gmsh_cannot_recover_is_re_made_as_a_b_spline(tmp_
     assert q["resplined_faces"] == 1 and q["valid"] and q["within_nastran"]
     assert any("SHMESH-11" in n for n in mesh.notes)
     assert np.hypot(mesh.xyz[:, 0], mesh.xyz[:, 1]) == pytest.approx(30.0, abs=1e-6)
+
+
+def test_a_face_whose_loop_gmsh_cannot_close_is_re_made_as_a_b_spline(tmp_path, monkeypatch):
+    # SHMESH-11c: the first 2D mesh stops on the cylinder ("the 1D mesh seems not to be forming a closed loop"); the
+    # face is re-made as a B-spline (no seam) and the part meshed again
+    import gmsh
+
+    from meshpipeline.engines.gmsh import shell_adapter as sa
+
+    real = gmsh.model.mesh.generate
+    real_get = gmsh.logger.get
+    calls = {"n": 0}
+
+    def generate(dim=3):
+        if dim == 2 and calls["n"] == 0:
+            calls["n"] += 1
+            raise Exception("The 1D mesh seems not to be forming a closed loop")
+        return real(dim)
+
+    monkeypatch.setattr(gmsh.model.mesh, "generate", generate)
+    monkeypatch.setattr(gmsh.logger, "get", lambda: real_get() + ["Info: Meshing surface 1 (Cylinder, Frontal-Delaunay)"])
+    mesh, applied = sa.mesh_shell(_cylinder_piece(tmp_path), _ring_record())
+    q = applied["quality"]
+    assert q["resplined_faces"] == 1 and q["valid"]
+    assert np.hypot(mesh.xyz[:, 0], mesh.xyz[:, 1]) == pytest.approx(30.0, abs=1e-6)
+
+
+def test_a_b_spline_face_whose_loop_gmsh_cannot_close_is_not_re_made_again(tmp_path, monkeypatch):
+    # SHMESH-11c: a face gmsh already reads as a B-spline is not re-made (it would fail the same way, again and again)
+    import gmsh
+
+    from meshpipeline.engines.gmsh import shell_adapter as sa
+
+    real_get = gmsh.logger.get
+
+    def generate(dim=3):
+        raise Exception("The 1D mesh seems not to be forming a closed loop")
+
+    monkeypatch.setattr(gmsh.model.mesh, "generate", generate)
+    monkeypatch.setattr(gmsh.model, "getType", lambda dim, tag: "BSpline surface")
+    monkeypatch.setattr(gmsh.logger, "get", lambda: real_get() + ["Info: Meshing surface 1 (BSpline surface, Frontal-Delaunay)"])
+    with pytest.raises(Exception, match="closed loop"):
+        sa.mesh_shell(_cylinder_piece(tmp_path), _ring_record())
+
+
+@pytest.mark.parametrize(("ratio", "angle"), [(1.0, 90.0), (0.5, 45.0)])
+def test_a_pipe_branch_meshes(tmp_path, ratio, angle):
+    # an equal tee and a 45 degree lateral (both failed: "1D mesh not a closed loop") mesh, every element valid
+    from OCP.BRepTools import BRepTools
+    from tests import shell_fixtures as sf
+
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.engines.gmsh import shell_adapter as sa
+
+    rec, surface = ms.extract(sf.pipe_branch(ratio=ratio, angle_deg=angle), mm_per_unit=1.0)
+    brep = tmp_path / "branch.brep"
+    BRepTools.Write_s(surface, str(brep))
+    mesh, applied = sa.mesh_shell(brep, rec)
+    assert applied["quality"]["valid"]
+    assert applied["quality"]["tria_share"] < 0.05
+
+
+def test_a_plan_past_the_element_cap_stops_before_gmsh_and_says_why(tmp_path, monkeypatch):
+    # SHMESH-20: a plan asking for more elements than a shell mesh is made of in the time allowed fails fast, in words
+    from meshpipeline.engines.gmsh import shell_adapter as sa
+
+    monkeypatch.setattr(sa, "PLANNED_MAX", 10.0)
+    with pytest.raises(ValueError, match="SHMESH-20"):
+        sa.mesh_shell(_cylinder_piece(tmp_path), _ring_record())
