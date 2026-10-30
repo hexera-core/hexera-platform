@@ -1491,7 +1491,10 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
     reports = {}
     for name in (FLUID_REGION, SOLID_REGION):
         t0 = time.monotonic()
-        quality = check_mesh(ws, bashrc=bashrc, region=name)
+        # write_fields: checkMesh writes down the per-cell numbers it has already worked out, so
+        # the viewer can colour a face with the measurement rather than a second implementation
+        # of it. +15.1% on this call, and its verdict is byte-identical (foam_exec.check_mesh).
+        quality = check_mesh(ws, bashrc=bashrc, region=name, write_fields=True)
         seconds[f"checkMesh:{name}"] = round(time.monotonic() - t0, 1)
         reports[name] = read_region(quality, name)
         polymesh = ws / "constant" / name / "polyMesh"

@@ -117,6 +117,26 @@ def _parsed(polymesh: str, _stamp: tuple):
     return points, sizes, flat, offs, centroids, first
 
 
+#: The bar each metric is judged against in a CUT, and where each one comes from. These travel in
+#: the response beside the values, not in the sidecar: a file that stored a bar would be a second
+#: opinion drifting from whoever is judging. They are not an engine's judgement either - the values
+#: came from checkMesh, so the bar that belongs with them is OpenFOAM's own.
+#:
+#: SKEWNESS IS 20 HERE AND 4 ON THE MAIN SURFACE, and that is not an inconsistency. checkMesh
+#: allows a BOUNDARY face 20 where an internal face gets 4, because a boundary skewness is a
+#: half-cell measurement; every value in a cut is a boundary face's own. Judging these against 4
+#: paints faces red that checkMesh passed, which is the failure this constant exists to prevent.
+QUALITY_BARS = {
+    # engines/openfoam_criteria MAX_NON_ORTHO: "65 deg is the standard meshQualityControls bar
+    # (maxNonOrtho 65): above it, gradient/laplacian discretisation degrades"
+    "non_ortho": 65.0,
+    # checkMesh's own boundary bar, the one face_quality records as `boundary_limit`
+    "skewness": 20.0,
+    # render.face_quality ASPECT_RATIO_LIMIT, which is checkMesh's
+    "aspect_ratio": 1000.0,
+}
+
+
 def _quality_getter(qual):
     """A callable that gathers one region's per-face quality for the faces finally sent, or None.
 
@@ -205,7 +225,10 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
     if not regions:
         raise DetailError("this job delivered no mesh boundary to look at")
 
-    hits: list[tuple[str, dict, "np.ndarray"]] = []
+    # (region, patch, the face ids kept, something that packs them, something that gathers their
+    # quality or None). Written out rather than annotated generically because the two branches
+    # below fill it from different readers and the assembly loop must not be able to tell.
+    hits: list[tuple] = []
     in_range = 0
     for region, polymesh in regions:
         rows = [p for p in read_boundary_patches(polymesh) if p["name"] not in skip_names]
@@ -347,6 +370,11 @@ def detail_response(job_id: str, cut: dict) -> dict:
             out["quality_b64"] = {m: base64.b64encode(v.astype("<f4").tobytes()).decode("ascii")
                                   for m, v in qual["values"].items()}
             out["quality_basis"] = dict(qual["basis"])
+            # THE BAR TRAVELS WITH THE VALUES, so a colour on screen has a stated line behind it.
+            # Without one a client can only invent a ramp, and then 18 deg and 68 deg are the
+            # same hue with nothing saying which side of anything they are on.
+            out["quality_limit"] = {m: QUALITY_BARS[m] for m in qual["values"]
+                                    if m in QUALITY_BARS}
         return out
 
     return {"job_id": job_id, "centre": cut["centre"], "radius": cut["radius"],

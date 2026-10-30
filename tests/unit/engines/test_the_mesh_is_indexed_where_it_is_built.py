@@ -106,6 +106,79 @@ def test_it_cannot_fail_the_run(two_regions, monkeypatch):
     assert "could not be listed" in out["why"]
 
 
+def test_the_quality_is_reduced_beside_the_index_and_the_raw_fields_cleared(two_regions):
+    """checkMesh's fields are an intermediate of this step: 116 MB for a 5.69 M-cell region
+    against 158 MB once reduced to the boundary, and nothing else reads them. They go as soon as
+    they have been read, so they never travel with the workspace."""
+    from meshpipeline.render import boundary_quality as Q
+    from tests.foam_fixtures import write_quality_fields
+
+    for name in ("fluid", "solid"):
+        pm = two_regions / "constant" / name / "polyMesh"
+        write_quality_fields(pm.parent, cells=[1.0, 2.0, 3.0],
+                             per_face={"skewness": {"inlet": [0.1], "outlet": [0.2],
+                                                    "wall": [0.3] * 12}})
+    before = sum(p.stat().st_size for p in (two_regions / "constant" / "fluid").glob("*")
+                 if p.is_file())
+    assert before > 0
+
+    out = N._boundary_indexes(two_regions)
+    for name, r in out["regions"].items():
+        assert r["quality"]["ok"] is True, (name, r["quality"])
+        assert r["quality"]["metrics"] == ["aspect_ratio", "non_ortho", "skewness"]
+        assert r["quality"]["basis"]["skewness"] == "patch"
+        assert r["quality"]["fields_cleared_bytes"] > 0
+        pm = two_regions / "constant" / name / "polyMesh"
+        assert Q.has_quality(pm)
+        for fname in Q.FIELD_FILES.values():
+            assert not (pm.parent / fname).exists(), f"{name}/{fname} was left behind"
+
+
+def test_losing_the_quality_does_not_lose_the_detail_window(two_regions):
+    """No checkMesh fields at all. The index is still written, the cut still comes back, and the
+    report says plainly that there are no colours rather than leaving an absence."""
+    out = N._boundary_indexes(two_regions)          # no fields were ever written
+    for name, r in out["regions"].items():
+        assert r["ok"] is True, name
+        assert r["quality"]["ok"] is False
+        assert "checkMesh wrote none of" in r["quality"]["why"]
+    cut = D.detail_at(two_regions, centre=(0.5, 0.5, 0.5), radius=1.0)
+    assert cut["faces_in_range"] > 0
+    assert all(q["quality"] is None for q in cut["patches"])
+
+
+def test_a_failed_reduce_leaves_the_fields_as_the_evidence(two_regions, monkeypatch):
+    from meshpipeline.render import boundary_quality as Q
+    from tests.foam_fixtures import write_quality_fields
+
+    pm = two_regions / "constant" / "fluid" / "polyMesh"
+    write_quality_fields(pm.parent, cells=[1.0, 2.0, 3.0],
+                         per_face={"skewness": {"wall": [0.3] * 12}})
+
+    def boom(*_a, **_k):
+        raise RuntimeError("the reduce went wrong")
+
+    monkeypatch.setattr("meshpipeline.render.boundary_quality.write_quality", boom)
+    out = N._boundary_indexes(two_regions)
+    assert out["regions"]["fluid"]["ok"] is True, "the index still lands"
+    assert out["regions"]["fluid"]["quality"]["ok"] is False
+    assert (pm.parent / Q.FIELD_FILES["skewness"]).is_file(), "the evidence was cleared away"
+
+
+def test_checkmesh_is_asked_to_write_the_fields_in_the_first_place(two_regions):
+    """The reduce has nothing to read unless the run that measured the mesh wrote it down. +15.1%
+    on that call, measured, with a byte-identical verdict."""
+    import inspect
+
+    from meshpipeline.engines.cfmesh_conjugate import conjugate as C
+    from meshpipeline.engines.cfmesh_conjugate import foam_exec as FE
+
+    assert "write_fields=True" in inspect.getsource(C), "the per-region call does not ask for them"
+    src = inspect.getsource(FE.check_mesh)
+    assert "-writeFields" in src and "CHECKMESH_WRITE_FIELDS" in src
+    assert "write_fields: bool = False" in inspect.getsource(FE), "it must be opt-in"
+
+
 def test_the_report_carries_it_under_its_own_key(two_regions, monkeypatch, tmp_path):
     """So a reader of a finished run can tell whether its detail window will work, without
     opening the workspace."""

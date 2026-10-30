@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 import meshpipeline.settings.runtime as rtcfg
+from meshpipeline.render.boundary_quality import CHECKMESH_WRITE_FIELDS
 from meshpipeline.sandbox.safe_exec import run_guarded
 
 logger = logging.getLogger(__name__)
@@ -153,7 +154,8 @@ def poor_sets(workspace, *, region: str = "") -> list[dict]:
 
 
 def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
-               timeout_s: float = CHECK_TIMEOUT_S, write_sets: bool = True) -> dict:
+               timeout_s: float = CHECK_TIMEOUT_S, write_sets: bool = True,
+               write_fields: bool = False) -> dict:
     ws = Path(workspace)
     # A measurement taken WHERE THE MESH WAS BUILT wins, because here it may be impossible:
     # on the Cloud Run path the mesh is built in a container that has checkMesh and read back
@@ -185,7 +187,25 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
     # million - so it is drawable at full resolution whatever the mesh's size, which a heatmap
     # over the whole boundary is not.
     sets = " -writeSets vtk" if write_sets else ""
-    cmd = f"source {bashrc} >/dev/null 2>&1 && checkMesh -constant{_reg}{sets}"
+    # -writeFields: THE NUMBER FOR EVERY CELL, not only the worst one. The viewer's per-face
+    # colours came from re-deriving these in numpy, which needs the whole mesh in memory - about
+    # 25.6 GB for this plate's coolant and 36.3 GB for its metal against a 16 GB worker, which is
+    # what render.face_quality's 40 M-face cap is. checkMesh has already walked every cell and
+    # every face by the time it prints its summary; this is the flag that makes it write down
+    # what it measured, and `render.boundary_quality` reduces that to one value per boundary face.
+    #
+    # THE NUMBERS ARE THE SAME ONES, which is the point: measured on the delivered coupon
+    # 2026-10-30, the fields' own maxima are checkMesh's own summary - nonOrthoAngle 16.88060
+    # against "Mesh non-orthogonality Max: 16.8806", skewness 0.69653 against "Max skewness =
+    # 0.696529", aspectRatio 1.20951 against "Max aspect ratio = 1.20951".
+    #
+    # WHAT IT COSTS, measured on that region (5,686,631 cells), two runs each: 42.13 and 42.04 s
+    # without, 48.46 and 48.40 s with, so +15.1%. Every verdict line is byte-identical - Mesh OK,
+    # all three maxima, the cell count - and the only new output is "Writing ..." lines, so the
+    # parser below sees exactly the measurement it saw before. Three fields and not the other
+    # twelve: cellVolume and minPyrVolume alone are 68 MB each here and nothing reads them.
+    fields = f" -writeFields '{CHECKMESH_WRITE_FIELDS}'" if write_fields else ""
+    cmd = f"source {bashrc} >/dev/null 2>&1 && checkMesh -constant{_reg}{sets}{fields}"
     # A MEASUREMENT THAT DID NOT FINISH IS NOT A BAD MESH. It used to raise out of here, which
     # discarded a mesh the mesher had already built - hours of work thrown away at the last step by
     # the step that was only ever supposed to describe it. Now it says so, and the manifest records

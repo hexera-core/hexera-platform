@@ -232,6 +232,7 @@ def _boundary_indexes(ws: Path) -> dict:
                 "buckets": int(meta["grid"]["n_buckets"]),
                 "bytes": int(sum(meta["bytes"].values())),
                 "seconds": round(time.monotonic() - t0, 1),
+                "quality": _boundary_quality(polymesh, region=name),
             }
         except Exception as exc:          # noqa: BLE001
             # NAMED, not absent. A region with no index is a region whose detail window will
@@ -241,6 +242,43 @@ def _boundary_indexes(ws: Path) -> dict:
             out["regions"][name or "mesh"] = {"ok": False, "why": str(exc),
                                               "seconds": round(time.monotonic() - t0, 1)}
     return out
+
+
+def _boundary_quality(polymesh: Path, *, region: str) -> dict:
+    """Reduce checkMesh's fields to one value per boundary face, and clear the fields away.
+
+    IT RUNS AFTER THE INDEX and is numbered against it, so it can only exist where one does.
+    Failing here costs the colours and nothing else: the detail window still opens, and a cut
+    without quality is a cut with no colour rather than a wrong one.
+
+    THE RAW FIELDS DO NOT TRAVEL. checkMesh writes them beside the polyMesh and they are large -
+    116 MB for a 5.69 M-cell region, so about 1.5 GB on this plate's coolant and 2.2 GB on its
+    metal - against 158 MB once reduced to the boundary. They are an intermediate of this step
+    and nothing else reads them, so they go as soon as they have been read. On failure they are
+    LEFT, because then they are the evidence of what went wrong.
+    """
+    from meshpipeline.render.boundary_quality import FIELD_FILES, write_quality
+
+    t0 = time.monotonic()
+    try:
+        meta = write_quality(polymesh, region=region)
+    except Exception as exc:              # noqa: BLE001
+        logger.warning("conjugate: no per-face quality for %s (non-fatal)", region, exc_info=True)
+        return {"ok": False, "why": str(exc), "seconds": round(time.monotonic() - t0, 1)}
+
+    cleared = 0
+    for fname in FIELD_FILES.values():
+        p = Path(polymesh).parent / fname
+        try:
+            if p.is_file():
+                cleared += p.stat().st_size
+                p.unlink()
+        except OSError:
+            logger.warning("conjugate: could not clear %s after reducing it", p, exc_info=True)
+    return {"ok": True, "metrics": sorted(meta["basis"]), "basis": dict(meta["basis"]),
+            "bytes": int(sum(meta["bytes"].values())), "fields_cleared_bytes": int(cleared),
+            "notes": dict(meta.get("notes") or {}),
+            "seconds": round(time.monotonic() - t0, 1)}
 
 
 def _patch_rows(polymesh: Path) -> list[dict]:

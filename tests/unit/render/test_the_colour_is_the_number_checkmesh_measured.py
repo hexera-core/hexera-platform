@@ -268,6 +268,26 @@ def test_the_route_sends_them_as_the_arrays_the_viewer_already_decodes(region):
             assert arr.size == q["face_count"], (q["name"], metric)
 
 
+def test_the_bar_travels_with_the_values_and_skewness_gets_the_boundary_one(region):
+    """Without a bar a client can only invent a ramp, and then 18 degrees and 68 degrees are the
+    same hue. And the bar for a cut's skewness is checkMesh's BOUNDARY bar, 20, not the internal
+    4 the main surface uses - every value in a cut is a boundary face's own, and judging them
+    against 4 paints faces red that checkMesh passed."""
+    from meshpipeline.render import detail_window as D
+
+    pm, _ = region
+    Q.write_quality(pm, region="fluid")
+    body = D.detail_response("a-job", _cut(region))
+    for q in body["patches"]:
+        assert q["quality_limit"] == {"non_ortho": 65.0, "skewness": 20.0,
+                                       "aspect_ratio": 1000.0}
+    # and it is the boundary bar precisely because the basis says so
+    assert D.QUALITY_BARS["skewness"] == 20.0
+    from meshpipeline.render.face_quality import INTERNAL_SKEW_LIMIT
+    assert INTERNAL_SKEW_LIMIT == 4.0, "the internal bar, which a cut must NOT use"
+    assert D.QUALITY_BARS["skewness"] != INTERNAL_SKEW_LIMIT
+
+
 def test_a_cut_with_no_quality_beside_it_simply_has_none(region):
     """A mesh delivered before any of this behaves exactly as it did, and the key is ABSENT
     rather than zero-filled: a number that was not measured is not a good one, and a client
