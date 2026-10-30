@@ -307,11 +307,15 @@ def test_plates_of_two_thicknesses_butted_in_line_become_one_flat_shell_with_an_
     offsets = {m["thickness_mm"]: m.get("offset_mm", 0.0) for m in _shell_mids(rec)}
     # the 3 mm plate lies on the 6 mm plate's mid-plane (z = 3); its own mid-plane is 1.5 mm below it
     assert offsets == pytest.approx({3.0: -1.5, 6.0: 0.0})
+    # ... along the 6 mm plate's normal (the mesh writes it as ZOFFS / OFFSET)
+    (moved,) = [m for m in _shell_mids(rec) if m.get("offset_mm")]
+    assert np.abs(moved["offset_normal"]) == pytest.approx([0.0, 0.0, 1.0])
     assert _sewn(rec)["open_edges"] == 0 and not rec["fallback_regions"]
     _all_checks(rec)
 
 
 def test_where_mid_faces_do_not_meet_the_region_is_meshed_solid_and_said_so(monkeypatch):
+    monkeypatch.setattr(ms, "CLOSE_STRIPS", False)   # the join itself under test, no SHELL-13 strips
     monkeypatch.setattr(ms, "snap_steps", lambda *_a, **_k: None)   # leave the butt step open
     rec, _ = ms.extract(sf.butt_step(6.0, 3.0), mm_per_unit=1.0)
     regions = rec["fallback_regions"]
@@ -339,6 +343,7 @@ def test_the_general_join_closes_what_the_straight_one_cannot(name):
 
 
 def test_each_join_alone_is_held_to_the_same_parts(monkeypatch):
+    monkeypatch.setattr(ms, "CLOSE_STRIPS", False)   # the join itself under test, no SHELL-13 strips
     # the straight join alone leaves the tube on its plate open; the general join closes it
     monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
     rec, _ = ms.extract(sf.tube_on_plate(), mm_per_unit=1.0)
@@ -356,6 +361,7 @@ def test_the_general_join_in_its_own_process_gives_the_same_record(monkeypatch):
 
 
 def test_a_general_join_past_its_deadline_is_stopped_and_the_straight_join_stands(monkeypatch):
+    monkeypatch.setattr(ms, "CLOSE_STRIPS", False)   # the join itself under test, no SHELL-13 strips
     import time as _time
 
     def slow(*_a, **_k):
@@ -382,8 +388,30 @@ def test_a_junction_stopped_short_is_still_open(monkeypatch):
     # be taken for an edge ending inside the other wall
     monkeypatch.setattr(ms, "extend", lambda *a, **k: None)
     monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
+    monkeypatch.setattr(ms, "CLOSE_STRIPS", False)
     rec, _ = ms.extract(sf.l_angle(5.0, 5.0), mm_per_unit=1.0)
     assert _sewn(rec)["open_edges"] >= 1
+
+
+def test_a_junction_stopped_short_is_bridged_to_the_edge_beside_it(monkeypatch):
+    # SHELL-13: the same L legs, stopped short of each other, are joined by the strip between their two edges
+    monkeypatch.setattr(ms, "extend", lambda *a, **k: None)
+    monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
+    rec, surface = ms.extract(sf.l_angle(5.0, 5.0), mm_per_unit=1.0)
+    assert _sewn(rec)["open_edges"] == 0
+    assert any("SHELL-13" in n for n in rec["notes"])
+    # the two legs (each 95 mm by 80, stopped at the other leg's inside face) and the strip across the corner (2.5 x sqrt 2 by 80)
+    assert _sewn_area(surface) == pytest.approx(80 * (95.0 + 95.0 + 2.5 * math.sqrt(2.0)), rel=1e-3)
+
+
+def test_a_pad_rounded_into_its_plate_is_linked_across_its_fillets():
+    # SHELL-6b: the plate's edges stop where the fillets start, 2 mm short of the pad's sides; the fillets round
+    # into the pad, so the edges are the pad's solid links, not open
+    rec, _ = ms.extract(sf.plate_with_filleted_pad(), mm_per_unit=1.0)
+    (body,) = rec["bodies"]
+    assert body["verdict"] == "mixed"
+    sewn = _sewn(rec)
+    assert sewn["open_edges"] == 0 and sewn["solid_link_edges"] == 4
 
 
 def test_a_spool_closes_at_both_plates():
@@ -525,6 +553,7 @@ def test_a_slit_narrower_than_the_open_step_is_a_real_cut():
 
 
 def test_a_general_join_that_loses_mid_faces_is_not_used(monkeypatch):
+    monkeypatch.setattr(ms, "CLOSE_STRIPS", False)   # the join itself under test, no SHELL-13 strips
     # a join that comes back without its mid-faces has no free edge left to count: it must not win on that
     real = ms.join_body
 
@@ -652,6 +681,22 @@ def test_a_tapered_plate_is_one_shell_carrying_its_thickness_range(t0, t1, lengt
     # short), and holds the plate's metal within 1%
     assert mid["area_mm2"] == pytest.approx(100.0 * math.hypot(length, 0.5 * (t1 - t0)), rel=5e-3)
     assert rec["bodies"][0]["mid_volume_ratio"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_a_tapered_wall_carries_readings_of_its_wall_over_its_mid_face():
+    # SHELL-9b: the mesh gives every node its own wall from these; on a wedge each reading is the wall there
+    t0, t1, length = 4.0, 8.0, 200.0
+    rec, _ = ms.extract(sf.wedge_plate(t0, t1, length), mm_per_unit=1.0)
+    (mid,) = _shell_mids(rec)
+    rows = np.asarray(mid["wall_samples_mm"])
+    assert len(rows) >= 50
+    c = math.cos(math.atan((t1 - t0) / length))
+    # the wall square to the mid-surface at x: (t0 + (t1 - t0) x / length) cos(turn), x read at the foot below
+    want = (t0 + (t1 - t0) * rows[:, 0] / length) * c
+    assert rows[:, 3] == pytest.approx(want, abs=0.02)
+    # an even wall carries none
+    flat, _ = ms.extract(sf.flat_plate(), mm_per_unit=1.0)
+    assert not any("wall_samples_mm" in m for m in flat["mids"])
 
 
 def test_a_wall_turned_past_the_taper_limit_stays_a_variable_wall():
