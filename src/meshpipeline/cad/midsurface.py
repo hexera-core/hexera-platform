@@ -332,16 +332,17 @@ class _QuickInside:
     def __init__(self, solid, deflection: float, tol: float):
         from OCP.BRep import BRep_Tool
         from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
-        from OCP.BRepMesh import BRepMesh_IncrementalMesh
         from OCP.TopLoc import TopLoc_Location
         from vtkmodules.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray
         from vtkmodules.vtkCommonCore import vtkPoints
         from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData, vtkStaticCellLocator
         from vtkmodules.vtkFiltersFlowPaths import vtkModifiedBSPTree
 
+        from meshpipeline.cad.occ_box import incremental_mesh
+
         self.ok = False
         copy = BRepBuilderAPI_Copy(solid, True, False).Shape()     # the body's own faces keep their meshes
-        BRepMesh_IncrementalMesh(copy, float(deflection), False, QUICK_ANGLE, False)
+        incremental_mesh(copy, float(deflection), QUICK_ANGLE, relative=False, parallel=False)
         xyz, tris, base = [], [], 0
         for f in _faces(copy):
             loc = TopLoc_Location()
@@ -2081,16 +2082,17 @@ def _inner_point(face):
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepClass import BRepClass_FaceClassifier
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.gp import gp_Pnt2d
     from OCP.TopAbs import TopAbs_IN
     from OCP.TopLoc import TopLoc_Location
+
+    from meshpipeline.cad.occ_box import incremental_mesh
 
     lo, hi = _box(face)
     size = float(np.linalg.norm(hi - lo)) or 1.0
     fallback = None
     for share in INNER_MESH_SHARES:
-        BRepMesh_IncrementalMesh(face, share * size, False, 0.5, False)
+        incremental_mesh(face, share * size, 0.5, relative=False, parallel=False)
         tri = BRep_Tool.Triangulation_s(face, TopLoc_Location())
         if tri is None or tri.NbTriangles() == 0 or not tri.HasUVNodes():
             continue
