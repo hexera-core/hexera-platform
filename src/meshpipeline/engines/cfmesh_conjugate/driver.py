@@ -189,7 +189,9 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # ONE manifold volume and cuts the regions out of it afterwards, and the easy manifold is the
     # cuboid round the part - every cell of air between the part and that cuboid is paid for at
     # the background size. Measured on the first customer cold plate: the cuboid is 846,543 mm3
-    # and metal plus coolant is 274,807 mm3, so 67.5% of a box-domain mesh's cells are air.
+    # and metal plus coolant is 274,807 mm3, 32.5% of it by volume - which is worth 19.8% in
+    # CELLS, not 67.5% (336,223,062 against 269,650,437 with only the block changed; see
+    # conjugate.OUTER_PATCH for the run).
     # Never fatal: no domain, or one not worth its faces, and the box stands exactly as before.
     from meshpipeline.engines.cfmesh_conjugate import conjugate as _C
 

@@ -122,7 +122,20 @@ BLOCK_FACES: tuple[str, ...] = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 #: the part rather than the cuboid round it (cad/fluid_volume.write_domain) there are no six faces
 #: to name - there is one surface, and the ports are cut out of it exactly as they are cut out of
 #: a block face today. Measured on the first customer cold plate: the cuboid is 846,543 mm3 and
-#: metal plus coolant is 274,807 mm3, so 67.5% of a box-domain mesh's cells are air.
+#: metal plus coolant is 274,807 mm3, which is 32.5% of it BY VOLUME.
+#: AND THE VOLUME SHARE IS NOT THE CELL SHARE, which is the mistake this comment used to make.
+#: Measured 2026-10-30 on that same customer plate, the same plan either way and only the block
+#: changed (ws_par182 against ws_fitted on the bench, 8 ranks, background cell 0.3521 mm, levels 1,
+#: 4 extra levels on the 98 um microchannels):
+#:
+#:     cuboid block, 12 triangles         336,223,062 cells
+#:     the part's own skin, 27,696         269,650,437 cells
+#:     so the air cost                     66,572,625 cells, 19.8%
+#:
+#: NOT 67.5%. The cuboid holds 2.71x the volume, and reasoning from that to cells is wrong by more
+#: than three times: cells gather on surfaces, and the air the cuboid adds sits at the background
+#: size where cells are cheapest. 19.8% is still worth taking, and meshing only the part is worth
+#: more than the cells, but the number to quote is 19.8%.
 OUTER_PATCH = "wall_outer"
 
 
@@ -136,8 +149,10 @@ def use_shell_domain(surface: dict | None) -> bool:
     that cuboid is paid for at the background size.
 
     MEASURED ON THE FIRST CUSTOMER COLD PLATE: the domain is 276,372 mm3 of a 750,015 mm3 box,
-    share_of_box 0.3685, which is 2.71x less volume to fill - and the comment beside OUTER_PATCH
-    puts the same thing in cells: 67.5% of a box-domain mesh's cells are air.
+    share_of_box 0.3685, which is 2.71x less volume to fill. IN CELLS IT IS WORTH FAR LESS THAN
+    THAT - 336,223,062 against 269,650,437 on the bench with only the block changed, so 19.8% -
+    and the comment beside OUTER_PATCH has the run. This docstring used to say the volume ratio
+    and the cell ratio were the same thing. They are not, and the difference is a factor of three.
 
     FALSE FOR EVERYTHING ELSE, deliberately. No domain, a domain that did not come out, or a part
     that fills its own box: the box stands exactly as it always has, which is the simpler surface

@@ -1845,11 +1845,17 @@ def surface_bounded(source, out_path, *, scale: float = 1.0, kind: str = "cad",
 #: is part. Above this share the cuboid costs little and is the simpler surface; below it, the
 #: part own skin is worth building.
 #:
-#: AND ON THAT ASSEMBLY IT IS NOT BUILT, because the boolean in `domain_solid` does not come off
-#: on it - the measurements are there. The mechanism works and is tested on the 2-channel cold
-#: plate fixture (7.04 mm3 of metal and 0.96 of coolant fuse to 8.00 as one closed piece), and
-#: `write_domain` refuses anything that is not one closed piece, so the engine keeps the cuboid.
-#: No part the engine has met has reached this threshold yet.
+#: AND ON THAT ASSEMBLY IT IS NOW BUILT. This used to say the boolean in `domain_solid` did not
+#: come off on it, and that no part the engine had met had reached this threshold. Both were true
+#: of the fuse; `_domain_from_split` builds the domain out of the split that already separated
+#: metal from coolant instead, and the split does come off.
+#:
+#: MEASURED IN A CUSTOMER RUN, 2026-10-30, job 7439e942 on ColdPlateAssembly_CLEAN.step through
+#: the page: `share_of_box` 0.3685 against BOX_WORTH_KEEPING 0.6, and the driver filled the part's
+#: own skin - 276,372 mm3 of a 750,015 mm3 box, 27,696 triangles, one solid `wall_outer` - in place
+#: of the twelve-triangle cuboid. The mechanism is still tested on the 2-channel fixture (7.04 mm3
+#: of metal and 0.96 of coolant fuse to 8.00 as one closed piece) and `write_domain` still refuses
+#: anything that is not one closed piece, so a part the split cannot close keeps the cuboid.
 BOX_WORTH_KEEPING = 0.6
 
 #: The tolerance the coolant own boundary faces are sewn back into a shell with. The faces come
