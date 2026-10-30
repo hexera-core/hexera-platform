@@ -1,0 +1,47 @@
+# Responsibility: Say whether this repository can accept a code-scanning (SARIF) upload right now.
+# Owns: the one probe, and the reading of its answer.
+# Boundaries: it decides nothing about findings; a lane still runs its scanner and still fails on
+# what the scanner finds. Only WHERE the findings go depends on this answer.
+
+# Code scanning on a private repository needs GitHub Advanced Security, which is a plan and
+# billing matter, not a CI one - it can lapse between two runs of the same commit (it did on
+# 2026-10-30). An upload against a repository without it fails the lane AFTER the scan has passed,
+# so a lane that uploads asks first. The probe needs `security-events: read` on the job.
+name: Is code scanning available
+description: Probe the code-scanning API once and report whether a SARIF upload would be accepted.
+
+outputs:
+  available:
+    description: "'true' when a SARIF upload would be accepted, 'false' when code scanning is off."
+    value: ${{ steps.probe.outputs.available }}
+
+runs:
+  using: composite
+  steps:
+    - id: probe
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPOSITORY: ${{ github.repository }}
+      run: |
+        set -uo pipefail
+        if answer=$(gh api "repos/${REPOSITORY}/code-scanning/analyses?per_page=1" 2>&1 >/dev/null); then
+          available=true
+        else
+          case "$answer" in
+            # The two refusals GitHub gives when the feature itself is off for this repository.
+            *"Advanced Security must be enabled"*|*"Code scanning is not enabled"*)
+              available=false
+              echo "::notice title=Code scanning unavailable::${answer} Findings stay in this job's log and artifacts, and the lane fails on them itself." ;;
+            # Enabled, with no analysis uploaded yet.
+            *"no analysis found"*)
+              available=true ;;
+            # Anything else (a missing grant, an API outage) is not evidence the feature is off.
+            # Keep uploading so the upload step reports the real problem instead of hiding it.
+            *)
+              available=true
+              echo "::warning title=Code-scanning probe inconclusive::${answer}" ;;
+          esac
+        fi
+        echo "Code scanning available: ${available}"
+        echo "available=${available}" >> "$GITHUB_OUTPUT"
