@@ -619,6 +619,16 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             # diagonal: it closes up, its edges zipped pairwise (SHMESH-12 on the cut)
             Q, T, q_face, t_face, again = shell_mesh.collapse_short(xyz / mm, Q, T, q_face, t_face, limit)
             merged += again
+            if again:
+                # the merge can leave a neighbouring quad past a limit (a corner pulled onto the merged node):
+                # SHMESH-10 once more on what it left
+                keep, cut, came = shell_quality.split_past_quads(xyz, Q)
+                if len(cut):
+                    qf = np.array(q_face, dtype=np.int64)
+                    T = np.vstack([T, cut])
+                    t_face = t_face + qf[came].tolist()
+                    Q, q_face = Q[keep], qf[keep].tolist()
+                    split += len(came) // 2
     flipped = 0
     if FLIP_PAST and len(T):
         # SHMESH-13: a triangle past a limit swaps its longest edge with its neighbour's when both come out better
