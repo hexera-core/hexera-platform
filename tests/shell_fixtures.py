@@ -451,3 +451,36 @@ def rounded_tube(w: float = 180.0, t: float = 1.0, r: float = 5.0, outer_r: floa
         return _fillet(b, _edges_where(b, lambda bb: bb[5] - bb[2] > 0.5 * dz), rad)
 
     return _unify(_cut(upright(0, 0, w, w, 0, length, ro), upright(t, t, w - 2 * t, w - 2 * t, -1, length + 2, r)))
+
+
+def pipe_branch(R: float = 40.0, ratio: float = 1.0, angle_deg: float = 90.0, t: float = 2.0, run: float = 240.0):
+    """A pipe branch: a run of outside radius R along z (centred on the origin) and a branch of radius
+    ratio x R leaving it at angle_deg to the run in the xz plane, both wall t, both bores cut through - an
+    equal tee at ratio 1, a lateral at 45 degrees. Every wall t, mid-cylinders R - t/2 and ratio x R - t/2."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    a = math.radians(angle_deg)
+    d = gp_Dir(math.sin(a), 0.0, math.cos(a))
+    r = ratio * R
+
+    def cyl(rad, length, base, axis):
+        return BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*base), axis), rad, length).Shape()
+
+    z = gp_Dir(0, 0, 1)
+    outer = _fuse(cyl(R, run, (0, 0, -run / 2), z), cyl(r, 120.0, (0, 0, 0), d))
+    return _cut(_cut(outer, cyl(R - t, run + 2, (0, 0, -run / 2 - 1), z)), cyl(r - t, 130.0, (0, 0, 0), d))
+
+
+def write_iges(shape, path: Path | str) -> Path:
+    """The shape as an IGES file of trimmed surfaces (OpenCASCADE's faces mode: no B-rep topology), as most CAD
+    systems write IGES."""
+    from OCP.IGESControl import IGESControl_Writer
+    from OCP.Interface import Interface_Static
+
+    Interface_Static.SetIVal_s("write.iges.brep.mode", 0)
+    w = IGESControl_Writer("MM", 0)
+    w.AddShape(shape)
+    w.ComputeModel()
+    w.Write(str(path))
+    return Path(path)
