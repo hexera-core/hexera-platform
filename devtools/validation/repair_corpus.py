@@ -24,6 +24,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import statistics
 import sys
 import tempfile
 import time
@@ -100,9 +101,11 @@ def _inspect(path: Path) -> dict:
     }
 
 
-# THE LLM PLANNER INSTRUMENT. Everything from here to `_one` is the planner side of this tool:
-# a reply cache wrapped AROUND the model seam (llm_plan is untouched), and the per-file pre-pass.
-# This tool owns the async edge, so `asyncio.run` is called here, once per file.
+# THE MODEL-DIRECTED PORTION'S INSTRUMENT. Everything from here to `_one` drives the
+# model-directed portion of the repair surface - NOT a second engine: it chooses from the same
+# operation catalogue, runs the same session and is judged by the same caps as the deterministic
+# portion. A reply cache wrapped AROUND the model seam (llm_plan is untouched), plus the per-file
+# pre-pass. This tool owns the async edge, so `asyncio.run` is called here, once per file.
 def _supported_keys() -> tuple[str, ...]:
     """The credential names the routing layer actually reads - one table, so this tool cannot
     disagree with the router about which providers exist."""
@@ -225,8 +228,10 @@ def _plan_row(plan) -> dict:
 
 
 def agreement(proposals: list[dict], operations: list[dict]) -> bool | None:
-    """Model's FIRST proposal == the rules planner's first attempted op and target; None if no
-    proposal or no attempt exists to compare."""
+    """The model-directed portion's FIRST proposal == the deterministic portion's first attempted
+    op and target; None if no proposal or no attempt exists to compare.
+
+    Only the first, because the model-directed portion plans once ahead of the loop."""
     if not proposals or not operations:
         return None
     a, b = proposals[0], operations[0]
@@ -234,7 +239,13 @@ def agreement(proposals: list[dict], operations: list[dict]) -> bool | None:
 
 
 def planner_summary(rows: list[dict], mode: str) -> dict:
-    """Aggregate planner evidence from the rows (pure; the printer and the tests share it)."""
+    """Aggregate the model-directed portion's evidence from the rows (pure; printer and tests
+    share it).
+
+    The `rules_only_*` / `live_*` key names are HISTORICAL and describe two passes of one repair
+    surface - deterministic-only, then deterministic plus model-directed - not two engines. They
+    are left as they are because sealed evidence bundles already carry them and renaming a key
+    would make an old bundle and a new one incomparable."""
     out: dict = {"mode": mode}
     planned = [r for r in rows if r.get("plan") is not None]
     if mode == "shadow":
@@ -352,6 +363,63 @@ def summarise_catalogue(rows: list[dict], catalogue: list[str] | None = None) ->
     return {"tally": tally, "never_exercised": never, "only_declined": only_declined}
 
 
+def _distribution(values: list[float]) -> dict:
+    return {"count": len(values), "min": min(values), "max": max(values),
+            "mean": statistics.fmean(values), "median": statistics.median(values)}
+
+
+def _count_value(counts: dict, key: str) -> float | None:
+    value = counts.get(key)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def cad_simplicity(rows: list[dict]) -> dict:
+    """Before/after topology deltas that say whether a kept repair simplified the CAD.
+
+    Defect yield says *what got fixed*. Simplicity says whether the written STEP became easier or
+    harder downstream: fewer faces/edges is usually good; a face explosion or solid-count change is
+    evidence a repair may be valid but costly.
+    """
+    deltas = {"face_delta": [], "edge_delta": [], "vertex_delta": [], "operations_kept": []}
+    measured = 0
+    more_faces = fewer_faces = solid_changed = 0
+    for row in rows:
+        before, after = row.get("counts_before") or {}, row.get("counts_after") or {}
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            continue
+        face_before, face_after = _count_value(before, "faces"), _count_value(after, "faces")
+        edge_before, edge_after = _count_value(before, "edges"), _count_value(after, "edges")
+        vertex_before = _count_value(before, "vertices")
+        vertex_after = _count_value(after, "vertices")
+        if face_before is None or face_after is None:
+            continue
+        measured += 1
+        face_delta = face_after - face_before
+        deltas["face_delta"].append(face_delta)
+        more_faces += int(face_delta > 0)
+        fewer_faces += int(face_delta < 0)
+        if edge_before is not None and edge_after is not None:
+            deltas["edge_delta"].append(edge_after - edge_before)
+        if vertex_before is not None and vertex_after is not None:
+            deltas["vertex_delta"].append(vertex_after - vertex_before)
+        solids_before = _count_value(before, "solids")
+        solids_after = _count_value(after, "solids")
+        if solids_before is not None and solids_after is not None:
+            solid_changed += int(solids_after != solids_before)
+        kept = _count_value(row, "operations_kept")
+        if kept is not None:
+            deltas["operations_kept"].append(kept)
+    return {
+        "files_measured": measured,
+        "files_with_more_faces": more_faces,
+        "files_with_fewer_faces": fewer_faces,
+        "solid_count_changed": solid_changed,
+        **{key: _distribution(values) for key, values in deltas.items() if values},
+    }
+
+
 def settings_operation_catalogue(bundle_dir: Path, stored_summary: dict | None = None
                                  ) -> list[str] | None:
     """The operation catalogue a sealed bundle RAN WITH, so verification recomputes against the
@@ -438,7 +506,8 @@ def corpus_summary(rows: list[dict], planner_mode: str = "off",
     }
     out = {"outcomes": outcomes, "repaired_by_code": repaired_by_code, "routes": routes,
            "stopped_because": stops, "catalogue": summarise_catalogue(rows, catalogue),
-           "refusals_by_reason": refusals_by_reason, "heals": heals}
+           "refusals_by_reason": refusals_by_reason, "heals": heals,
+           "cad_simplicity": cad_simplicity(rows)}
     if planner_mode != "off":
         out["planner"] = planner_summary(rows, planner_mode)
     return out
@@ -708,7 +777,9 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
     rows: list[dict] = []
     for path in files:
         if mode == "live":
-            # rules-only FIRST, into its own directory, so the live pass cannot overwrite it
+            # The SAME surface run twice, deterministic-only first and into its own directory so
+            # the second pass cannot overwrite it. Two passes to attribute a difference to the
+            # model direction, not two engines competing.
             rules_dir = scratch / "rules_only"
             rules_dir.mkdir(parents=True, exist_ok=True)
             rules_row = _one(path, rules_dir)
@@ -740,27 +811,27 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
 
 
 def _print_planner(summary: dict, cache: CachingRouter | None) -> None:
-    print(f"\n== llm planner ({summary['mode']}) ==")
+    print(f"\n== repair: model-directed portion ({summary['mode']}) ==")
     if cache is None:
-        print("  no model was available: the planner proposed nothing (declared off)")
+        print("  no model was available: nothing was directed (declared off)")
     else:
         print(f"  reply cache: {cache.hits} hit(s), {cache.misses} miss(es)")
     if summary["mode"] == "shadow":
         print(f"  coverage: {summary['coverage']}/{summary['files_planned']} file(s) with a proposal")
-        print(f"  agreement with the rules planner (first op+target): "
+        print(f"  agreement with the deterministic portion (first op+target): "
               f"{summary['agreed']}/{summary['compared']}")
         print(f"  declines={summary['declines']}  call_failures={summary['call_failures']}")
     else:
-        print(f"  defects repaired, rules-only: {summary['rules_only_total']} "
+        print(f"  defects repaired, deterministic only:      {summary['rules_only_total']} "
               f"{summary['rules_only_repaired']}")
-        print(f"  defects repaired, live:       {summary['live_total']} "
+        print(f"  defects repaired, with model direction:    {summary['live_total']} "
               f"{summary['live_repaired']}")
         for name, c in sorted(summary["llm_ops"].items()):
             print(f"  llm-planner {name:<20} kept={c['kept']:<4} "
                   f"rolled_back={c['rolled_back']:<4} declined={c['declined']:<4} "
                   f"failed={c['failed']}")
         if not summary["llm_ops"]:
-            print("  no llm-planner directive was attempted")
+            print("  no model-directed operation was attempted")
 
 
 def main() -> int:

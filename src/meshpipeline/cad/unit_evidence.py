@@ -64,8 +64,15 @@ def _step_evidence(path: Path) -> UnitEvidence:
     declared = found[0]
     unit = unit_of_scale(float(declared.metres or 0.0))
     if unit is None:
-        return UnitEvidence.unresolved(
-            f"unsupported length unit {declared.name.lower()!r} ({declared.metres:g} m)")
+        # A WELL-FORMED UNIT WE DO NOT CARRY (a foot, a micrometre, a yard): OpenCASCADE converts it by the
+        # file's own stated factor as it reads, so its output is true millimetres - the declaration is
+        # evidence like any other, never "no unit". (FEA hunt, 27 Oct: an AutoCAD export declaring
+        # CONVERSION_BASED_UNIT('FOOT', 304.8 mm) was told "the file does not say its unit", and the
+        # transfer was then undone as if OCC had applied metres: the assembly staged 1/305 of what OCC
+        # read, its walls 0.025 mm.)
+        return UnitEvidence(True, LengthUnit.millimetre,
+                            f"declared in the file as {declared.name.lower()} ({declared.metres:g} m), "
+                            "converted to millimetres as it is read")
     return UnitEvidence(True, unit, f"declared in the file as {declared.name.lower()}")
 
 

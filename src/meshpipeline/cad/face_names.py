@@ -150,13 +150,65 @@ def gmsh_faces(gmsh) -> tuple[list[tuple[int, np.ndarray, float]], Frame]:
     return out, frame_of(out)
 
 
+#: THE NAME READ RUNS IN A PROCESS OF ITS OWN (FEA hunt, 27 Oct): OCC's XDE reader died with a segmentation
+#: fault on two of 237 real assemblies (a CATIA V4 bench, a Creo assembly), and it took the whole staging -
+#: and with it the run - down with it. The names are a courtesy, so the read that crashes, hangs past this
+#: or runs out of memory costs the names only.
+NAMES_TIMEOUT_S = 900.0
+NAMES_MEMORY_MB = 8192
+#: the child's answer, on a line of its own (OCC writes its own chatter to stdout)
+_ANSWER = "FACE_NAMES "
+
+
+def read_named_faces_guarded(path: Path | str, *, timeout_s: float = NAMES_TIMEOUT_S,
+                             memory_mb: int = NAMES_MEMORY_MB) -> tuple[list[tuple[str, np.ndarray, float]], Frame]:
+    """read_named_faces in a process of its own (run_guarded): the same answer, or no names when the
+    reader crashes, hangs or runs out of memory - said in the log, never a stopped run."""
+    import subprocess
+    import sys
+
+    p = Path(path)
+    # the cheap checks here: most files name no face, and need no process at all
+    if p.suffix.lower() not in (".step", ".stp") or not _NAMED_FACE.search(p.read_bytes()):
+        return [], _NO_FRAME
+    from meshpipeline.sandbox.safe_exec import run_guarded
+
+    try:
+        proc = run_guarded([sys.executable, "-m", "meshpipeline.cad.face_names", str(p), str(int(memory_mb))],
+                           timeout=timeout_s, capture_output=True, text=True)
+    except subprocess.TimeoutExpired:
+        logger.warning("cad face names: %s not read - the reader took over %d s", p.name, int(timeout_s))
+        return [], _NO_FRAME
+    answer = [ln for ln in (proc.stdout or "").splitlines() if ln.startswith(_ANSWER)]
+    if proc.returncode != 0 or not answer:
+        logger.warning("cad face names: %s not read - the reader stopped (exit %s)", p.name, proc.returncode)
+        return [], _NO_FRAME
+    data = json.loads(answer[-1][len(_ANSWER):])
+    named = [(str(n), np.asarray(c, dtype=float), float(a)) for n, c, a in data["named"]]
+    return named, (np.asarray(data["frame"][0], dtype=float), float(data["frame"][1]))
+
+
+def _main(argv: list[str]) -> int:
+    """The guarded read's own process: prints read_named_faces' answer as one JSON line."""
+    import resource
+
+    if len(argv) > 1:
+        cap = int(argv[1]) * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+    named, frame = read_named_faces(argv[0])
+    print(_ANSWER + json.dumps({"named": [[n, [float(v) for v in c], float(a)] for n, c, a in named],
+                                "frame": [[float(v) for v in frame[0]], float(frame[1])]}), flush=True)
+    return 0
+
+
 def record_for_staging(gmsh, source: Path | str, workspace: Path | str) -> int:
     """Write RECORD for the B-rep just staged from ``source`` (the current gmsh model, in
-    metres): one entry per face the file names. Returns how many; 0 writes nothing."""
+    metres): one entry per face the file names. Returns how many; 0 writes nothing. The file is
+    read in a process of its own (read_named_faces_guarded)."""
     target = Path(workspace) / RECORD
     target.unlink(missing_ok=True)
     try:
-        named, named_frame = read_named_faces(source)
+        named, named_frame = read_named_faces_guarded(source)
         if not named:
             return 0
         faces, frame = gmsh_faces(gmsh)
@@ -187,3 +239,9 @@ def names_for_model(gmsh, workspace: Path | str) -> dict[int, str]:
              for r in rows if isinstance(r, dict) and r.get("name")]
     # both sides are this model in metres: one frame for both
     return match_faces(named, frame, faces, frame)
+
+
+if __name__ == "__main__":
+    import sys as _sys
+
+    _sys.exit(_main(_sys.argv[1:]))

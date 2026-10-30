@@ -55,7 +55,7 @@ def test_every_recommendation_declares_itself_as_shadow_and_names_its_advisor():
     # a reader acting on this is contradicting the payload; and a stored recommendation has to say
     # which advisor produced it or the corpus cannot tell a baseline from a model
     assert advice["shadow"] is True
-    assert advice["advisor"] == "rules-v1"
+    assert advice["advisor"] == "repair-v1"
 
 
 # WHEN IT ADVISES

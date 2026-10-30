@@ -250,8 +250,9 @@ def test_the_stage_record_names_every_face_by_its_part_and_finds_the_joint(tmp_p
 def test_a_fuse_that_fails_ties_the_parts_found_pair_by_pair_never_a_stop(tmp_path, monkeypatch):
     real = A.fuse
 
-    def fails_all_at_once(parts, *, fuzzy=0.0):
-        return A.Fused(error="the parts could not be fused") if len(parts) > 2 else real(parts, fuzzy=fuzzy)
+    def fails_all_at_once(parts, *, fuzzy=0.0, mm_per_unit=1.0):
+        return (A.Fused(error="the parts could not be fused") if len(parts) > 2
+                else real(parts, fuzzy=fuzzy, mm_per_unit=mm_per_unit))
 
     monkeypatch.setattr(A, "fuse", fails_all_at_once)
     three = fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(10, 0, 0, 10, 10, 10), fx._box(20, 0, 0, 10, 10, 10))

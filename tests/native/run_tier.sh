@@ -26,7 +26,7 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 MESH_IMAGE="${MESH_IMAGE:-meshpipeline-mesh:native}"
 
-usage() { echo "usage: run_tier.sh {smoke|all}" >&2; exit 2; }
+usage() { echo "usage: run_tier.sh {smoke|all|benchmark}" >&2; exit 2; }
 
 # Resolve the tier BEFORE any docker work. Building the mesh image costs minutes, so a typo'd,
 # missing, or over-supplied selector must fail here - having paid for an image only to be told the
@@ -39,9 +39,27 @@ usage() { echo "usage: run_tier.sh {smoke|all}" >&2; exit 2; }
 # (make test-native-terminal); it is EXCLUDED from these service-free tiers.
 [ "$#" -eq 1 ] || usage
 MODE="$1"
+# Only the benchmark tier gets a writable mount, and only for its evidence file: the point of that
+# tier is numbers somebody reads afterwards, and a container that keeps them to itself leaves a
+# green line as the entire result. The other tiers stay read-only throughout.
+EVIDENCE=()
 case "$MODE" in
-  smoke) SELECT=(-m native_smoke); TIMEOUT=600 ;;
-  all)   SELECT=(-m "not native_terminal"); TIMEOUT=3600 ;;
+  smoke) SELECT=(-m native_smoke); TARGETS=(/srv/tests/native); TIMEOUT=600 ;;
+  all)   SELECT=(-m "not native_terminal"); TARGETS=(/srv/tests/native); TIMEOUT=3600 ;;
+  benchmark)
+    SELECT=(-m native)
+    TARGETS=(/srv/tests/native/test_native_engine_execution.py
+             /srv/tests/native/test_native_engine_benchmark.py)
+    TIMEOUT=3600
+    EVIDENCE_DIR="${BENCHMARK_EVIDENCE_DIR:-$PWD/.benchmark-evidence}"
+    # World-writable because the image runs as uid 1000 and this directory is created by whoever
+    # ran make. On a host whose caller is not uid 1000, an owner-only directory means the engines
+    # run for minutes and the write at the end raises PermissionError - the one failure that costs
+    # the whole tier and reports nothing. Docker Desktop maps ownership and hides this; Linux does
+    # not. Same reason validate.sh chmods its own evidence directories.
+    mkdir -p "$EVIDENCE_DIR" && chmod 777 "$EVIDENCE_DIR"
+    EVIDENCE=(-v "$EVIDENCE_DIR:/srv/evidence" -e BENCHMARK_EVIDENCE_DIR=/srv/evidence)
+    ;;
   *) usage ;;
 esac
 
@@ -59,10 +77,12 @@ echo "── running native tier ($MODE) inside $MESH_IMAGE ──"
 docker run --rm \
   -e OMPI_ALLOW_RUN_AS_ROOT=1 -e OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1 \
   -v "$PWD/tests:/srv/tests:ro" \
+  -v "$PWD/devtools:/srv/devtools:ro" \
   -v "$PWD/pyproject.toml:/srv/pyproject.toml:ro" \
+  "${EVIDENCE[@]+"${EVIDENCE[@]}"}" \
   --entrypoint python "$MESH_IMAGE" \
   -m pytest -q -rs -p no:cacheprovider -c /srv/pyproject.toml \
   -o testpaths=/srv/tests/native -o cache_dir=/tmp/pytest_cache \
-  "${SELECT[@]}" /srv/tests/native
+  "${SELECT[@]}" "${TARGETS[@]}"
 
 echo "── native tier ($MODE): OK ──"

@@ -50,15 +50,84 @@ def quality_shortfalls(q: dict) -> list[dict]:
 
 # geometry staging + inspection
 
+#: THE STAGING RUNS IN A PROCESS OF ITS OWN (FEA hunt, 27 Oct): gmsh and OpenCASCADE are native code, and on real
+#: files they crashed the staging process itself - gmsh writing its own B-rep of an I-DEAS export, the surface
+#: picture, OCC's name readers - and with it the worker and the run. A crash or a hang here costs a retry
+#: without the optional parts (gmsh's B-rep, the face names), never the caller.
+STAGE_TIMEOUT_S = 4 * 3600
+#: what the staging process prints when it is done (gmsh and OCC write their own chatter to stdout)
+_STAGED = "GMSH_STAGED "
+#: ... and as it goes: a crash after the staged solid is written keeps it
+_STEP_DONE, _BREP_DONE = "GMSH_STAGED_STEP", "GMSH_STAGED_BREP"
+#: the ways a file is staged, each tried when the one before it crashed or hung: gmsh with everything, gmsh with
+#: the staged solid only, and OpenCASCADE alone writing the staged solid (gmsh's own STEP writer died on an
+#: I-DEAS export, FEA hunt 27 Oct)
+STAGE_MODES = ("full", "plain", "occ")
+_NEXT = {"full": "again without gmsh's B-rep, the face names or the picture",
+         "plain": "again with OpenCASCADE alone", "occ": "no further"}
+
+
+class StagingCrashed(RuntimeError):
+    """The CAD kernel stopped (crashed, hung) on this file every way it was staged."""
+
+
 def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Path:
     out_stl = Path(out_stl)
     ws = out_stl.parent
     ws.mkdir(parents=True, exist_ok=True)
-    staged_brep = ws / "geometry.step"
-
     factor = _metre_factor(prepared)
 
     import gmsh
+    if gmsh.isInitialized():
+        # the caller's own gmsh session: staged in it, as it always was
+        drawn = _stage_here(gmsh, geom_path, out_stl, factor, extras=True)
+    else:
+        drawn = _stage_guarded(geom_path, out_stl, factor)
+    if not drawn:
+        from meshpipeline.cad.cad_tessellate import tessellate_to_stl as _occ_tessellate
+        _occ_tessellate(geom_path, out_stl, prepared=prepared)
+    return out_stl
+
+
+def _stage_guarded(geom_path, out_stl: Path, factor: float, *, timeout_s: float = STAGE_TIMEOUT_S) -> bool:
+    """_stage_here in a process of its own (run_guarded); a crash or a hang is staged again without the
+    optional parts. Returns whether gmsh drew the surface picture."""
+    ws = out_stl.parent
+    why = ""
+    for mode in STAGE_MODES:
+        for f in ("geometry.step", "geometry.brep", out_stl.name):
+            (ws / f).unlink(missing_ok=True)
+        args = [sys.executable, "-m", "meshpipeline.engines.gmsh.gmsh_runner", "stage",
+                str(Path(geom_path).resolve()), str(out_stl.resolve()), repr(float(factor)), mode]
+        try:
+            proc = run_guarded(args, timeout=timeout_s, capture_output=True, text=True)
+        except subprocess.TimeoutExpired:
+            why = f"it ran past {int(timeout_s)} s"
+            logger.warning("gmsh staging: %s %s - staging it %s", Path(geom_path).name, why, _NEXT[mode])
+            continue
+        lines = (proc.stdout or "").splitlines()
+        said = [ln for ln in lines if ln.startswith(_STAGED)]
+        if proc.returncode == 0 and said and (ws / "geometry.step").exists():
+            return said[-1][len(_STAGED):].strip() == "drawn"
+        why = f"the CAD kernel stopped (exit {proc.returncode})"
+        if _STEP_DONE in lines and (ws / "geometry.step").exists():
+            # it stopped AFTER the staged solid was written: that is kept (a B-rep it was still writing is
+            # not), and the picture is drawn by the shared OCC tessellator
+            if _BREP_DONE not in lines:
+                (ws / "geometry.brep").unlink(missing_ok=True)
+            (ws / out_stl.name).unlink(missing_ok=True)
+            logger.warning("gmsh staging: %s - %s after the staged solid was written - kept", Path(geom_path).name, why)
+            return False
+        logger.warning("gmsh staging: %s - %s - staging it %s", Path(geom_path).name, why, _NEXT[mode])
+    raise StagingCrashed(f"the CAD file could not be staged: {why}")
+
+
+def _stage_here(gmsh, geom_path, out_stl: Path, factor: float, *, extras: bool, progress: bool = False) -> bool:
+    """Stage `geom_path` in metres in this process: geometry.step (the staged solid), and with `extras`
+    gmsh's own B-rep beside it, the file's face names and the surface picture. Returns whether gmsh drew
+    the picture (else the caller draws it with the shared OCC tessellator)."""
+    ws = out_stl.parent
+    staged_brep = ws / "geometry.step"
     _mine = not gmsh.isInitialized()
     if _mine:
         gmsh.initialize(interruptible=False)
@@ -79,9 +148,16 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
         gmsh.model.occ.synchronize()
         # the metre-normalised B-rep IS the staged geometry - the driver reads this, unscaled
         gmsh.write(str(staged_brep))
+        if progress:
+            print(_STEP_DONE, flush=True)
+        if not extras:
+            gmsh.model.remove()
+            return False
         # and gmsh's own B-rep file beside it: lossless, where the STEP round trip loses faces on
         # some parts (the FEA path reads this first - engines/fea_plan.STAGED_SOLIDS, PLAN-fea-15)
         gmsh.write(str(ws / "geometry.brep"))
+        if progress:
+            print(_BREP_DONE, flush=True)
         # gmsh's STEP writer drops the names a CAD file gives single faces: record them from the
         # upload, by where each face is, for the FEA deck to write beside Face_k
         from meshpipeline.cad.face_names import record_for_staging
@@ -106,10 +182,45 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
     finally:
         if _mine:
             gmsh.finalize()
-    if not drawn:
-        from meshpipeline.cad.cad_tessellate import tessellate_to_stl as _occ_tessellate
-        _occ_tessellate(geom_path, out_stl, prepared=prepared)
-    return out_stl
+    return drawn
+
+
+def _stage_occ(geom_path, out_stl: Path, factor: float) -> None:
+    """The staged solid written by OpenCASCADE alone (no gmsh): the file read, scaled to metres as gmsh would
+    scale it, written as geometry.step."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Pnt, gp_Trsf
+    from OCP.Interface import Interface_Static
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+
+    from meshpipeline.cad.scout import read_cad
+
+    shape = read_cad(Path(geom_path))
+    trsf = gp_Trsf()
+    # read_cad gives millimetres; gmsh's OCCScaling takes them by `factor` (metres per millimetre-unit read)
+    trsf.SetScale(gp_Pnt(0.0, 0.0, 0.0), float(factor))
+    scaled = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+    # written as gmsh writes it: the metre numbers under OCC's own millimetre label, so the driver reads them back as
+    # they are (engines/fea_plan.STAGED_SOLIDS)
+    Interface_Static.SetCVal_s("write.step.unit", "MM")
+    writer = STEPControl_Writer()
+    writer.Transfer(scaled, STEPControl_AsIs)
+    writer.Write(str(out_stl.parent / "geometry.step"))
+
+
+def _stage_main(argv: list[str]) -> int:
+    """The guarded staging's own process: stage <geom> <out_stl> <factor> <mode: full | plain | occ>."""
+    geom, out_stl, factor, mode = argv[0], Path(argv[1]), float(argv[2]), argv[3]
+    if mode == "occ":
+        _stage_occ(geom, out_stl, factor)
+        print(_STEP_DONE, flush=True)
+        print(_STAGED + "not drawn", flush=True)
+        return 0
+    import gmsh
+
+    drawn = _stage_here(gmsh, geom, out_stl, factor, extras=mode == "full", progress=True)
+    print(_STAGED + ("drawn" if drawn else "not drawn"), flush=True)
+    return 0
 
 
 def _metre_factor(prepared) -> float:
@@ -361,18 +472,99 @@ def _note_fea_threads(ws: Path) -> None:
         logger.debug("fea threads not noted")
 
 
+#: LAD-fea-14: gmsh's 3D refinement is SPINNING - inserting points and throwing nearly all of them
+#: away - when, past REFINE_SPIN_MIN_ITERATIONS, the points it rejected outnumber the nodes it kept
+#: REFINE_SPIN_RATIO times over, at two looks REFINE_SPIN_HOLD_S apart. A refinement that gets there
+#: keeps printing and burning CPU, so the stall watch never stops it: g_c0103 (a 9-part Inventor
+#: gripper mount, 1.4M elements planned) refined for 3.8 hours to the lab's limit, 9.3M iterations
+#: for 211k nodes kept and 8.9M rejected after 8 minutes; a healthy refinement rejects none
+#: (g_c0007: "It. 35000 - 35000 nodes created ... (nodes removed 0 0)"; lab, 27 Oct).
+REFINE_SPIN_MIN_ITERATIONS = 1_000_000
+REFINE_SPIN_RATIO = 10.0
+REFINE_SPIN_HOLD_S = 300.0
+#: how much of the log's end is read at each look
+_REFINE_TAIL_BYTES = 4096
+
+
+def refine_counts(text: str) -> tuple[int, int, int] | None:
+    """(iterations, nodes kept, points rejected) from the last line of gmsh's 3D refinement in
+    `text` ("It. N - M nodes created - worst tet radius R (nodes removed a b)"), else None."""
+    import re
+    found = re.findall(r"It\. (\d+) - (\d+) nodes created - worst tet radius [^(]*\(nodes removed (\d+) (\d+)\)",
+                       text or "")
+    if not found:
+        return None
+    it, kept, _a, rejected = (int(x) for x in found[-1])
+    return it, kept, rejected
+
+
+def spinning_now(counts: tuple[int, int, int] | None) -> bool:
+    """One look: past the iteration floor, with rejected points over REFINE_SPIN_RATIO x the kept ones."""
+    if counts is None:
+        return False
+    it, kept, rejected = counts
+    return it >= REFINE_SPIN_MIN_ITERATIONS and rejected > REFINE_SPIN_RATIO * max(kept, 1)
+
+
+class RefineSpin:
+    """LAD-fea-14: asked at every watchdog look (sandbox/safe_exec.run_watched `spinning`): True once
+    gmsh's 3D refinement has been spinning (spinning_now) for REFINE_SPIN_HOLD_S."""
+
+    def __init__(self, log_path: Path, *, hold_s: float = REFINE_SPIN_HOLD_S, clock=None) -> None:
+        import time
+        self.log_path = Path(log_path)
+        self.hold_s = float(hold_s)
+        self._clock = clock or time.monotonic
+        self._since: float | None = None
+        self.counts: tuple[int, int, int] | None = None
+
+    def _tail(self) -> str:
+        try:
+            with open(self.log_path, "rb") as fh:
+                size = fh.seek(0, 2)
+                fh.seek(max(0, size - _REFINE_TAIL_BYTES))
+                return fh.read().decode("utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    def __call__(self) -> bool:
+        counts = refine_counts(self._tail())
+        now = self._clock()
+        if counts is not None and self.counts is not None and counts[0] < self.counts[0]:
+            self._since = None          # a new refinement (the next volume, the next pass) starts afresh
+        if counts is not None:
+            self.counts = counts
+        if not spinning_now(counts):
+            self._since = None
+            return False
+        if self._since is None:
+            self._since = now
+        return now - self._since >= self.hold_s
+
+
+def spin_words(counts) -> str:
+    """The spin in plain words, for the why record."""
+    it, kept, rejected = (int(x or 0) for x in (counts or (0, 0, 0)))
+    return (f"gmsh's 3D refinement was spinning: after {it:,} iterations it had kept {kept:,} nodes and "
+            f"rejected {rejected:,} points")
+
+
 def _run_fea_watched(ws: Path, *, timeout: int) -> dict:
     """AN FEA MESH, WATCHED: stopped only after FEA_STALL_WINDOW_S with no progress, or at `timeout`
     (the hard ceiling). What the watchdog saw is returned (`watchdog`) for the why-record."""
     from meshpipeline.sandbox.safe_exec import run_watched
     _note_fea_threads(ws)
+    spin = RefineSpin(ws / FEA_LOG)
     # -u: its output reaches the log as it is written (the watchdog reads the log growing)
     w = run_watched([sys.executable, "-u", "-m", "meshpipeline.engines.gmsh.driver", str(ws)],
                     log_path=ws / FEA_LOG, hard_timeout=float(timeout), stall_s=stall_window(),
-                    progress_paths=(ws / "fea_stage.json",))
+                    progress_paths=(ws / "fea_stage.json",), spinning=spin)
     seen = {"stopped": w.stopped, "seconds": w.seconds, "longest_silence_s": w.longest_silence_s,
             "silence_at_stop_s": w.silence_at_stop_s, "stall_window_s": stall_window(),
             "ceiling_s": float(timeout), "cpu_s": w.cpu_s}
+    if w.stopped == "spinning" and spin.counts:
+        it, kept, rejected = spin.counts
+        seen["refine"] = {"iterations": it, "kept": kept, "rejected": rejected}
     if w.stopped == "memory":
         # THE MEMORY GUARD stopped it (sandbox/safe_exec.run_watched) before the kernel's OOM killer:
         # the same outcome RUN-3 answers (fea_driver._out_of_memory), one machine up
@@ -384,7 +576,10 @@ def _run_fea_watched(ws: Path, *, timeout: int) -> dict:
     else:
         out = describe_native_result(returncode=-1, args=None, stage="gmsh driver", output=w.tail,
                                      outcome=NativeOutcome.timed_out)
-        out["stalled"] = w.stopped == "stalled"
+        # a refinement that spins is stopped as the stall watch stops a silent one: the part's,
+        # never a reason to move the same plan to another machine (fea_driver RUN-5)
+        out["stalled"] = w.stopped in ("stalled", "spinning")
+        out["spinning"] = w.stopped == "spinning"
     out["watchdog"] = seen
     return out
 
@@ -466,7 +661,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
              internal_flow: bool = False, engine_params: dict | None = None,
              flow_topology: str = "") -> dict:
     ws = Path(workspace_dir)
-    if not (ws / "mesh.inp").exists():
+    # a big deck kept in the bucket is this result's deck all the same (engines/bucket_files, RUN-7)
+    from meshpipeline.engines.bucket_files import present
+    if not present(ws, "mesh.inp"):
         return {"success": False, "stdout": "", "stderr": "",
                 "output": _no_deck_reason(ws)}
     q = check_mesh(ws)
@@ -542,3 +739,8 @@ def _pin_gmsh(gmsh) -> None:
     from meshpipeline.engines.determinism import GMSH_RANDOM_SEED, GMSH_THREADS
     gmsh.option.setNumber("General.NumThreads", GMSH_THREADS)
     gmsh.option.setNumber("Mesh.RandomSeed", GMSH_RANDOM_SEED)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "stage":
+        sys.exit(_stage_main(sys.argv[2:]))

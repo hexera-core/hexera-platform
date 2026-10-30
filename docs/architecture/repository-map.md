@@ -31,12 +31,12 @@ composition root is the only place a concrete adapter is attached to it.
 | `api/` | the public HTTP and WebSocket boundary: `app.py`, the `v1/` routers, security and middleware | application, contracts |
 | `application/` | use cases that coordinate persistence, storage and dispatch for a job | contracts, persistence |
 | `pipeline/` | the LangGraph graph, its state and the data contract that governs it | agents, engines, contracts |
-| `agents/` | the model-driven roles, and the shared loop they all run through | contracts, engines |
+| `agents/` | the model-driven roles, and the shared loop they all run through - including the repair surface's model-directed portion (`agents/repair_review/`, whose name predates its contents) | contracts, engines |
 | `agent_tools/` | tools more than one agent uses; an agent's own tools stay in its package | contracts |
 | `prompts/` | the shipped prompt text, one directory per role | nothing |
 | `engines/` | the engine contract, the registry, and one directory per engine | contracts |
 | `sandbox/` | rendering and the confinement fence every artifact passes | contracts |
-| `cad/` | geometry inspection, unit evidence and staging | contracts |
+| `cad/` | geometry inspection, unit evidence, staging, and the repair surface's deterministic portion (`cad/repair/`) | contracts |
 | `persistence/` | the ORM models, repositories and the durable lease | contracts |
 | `adapters/` | concrete implementations of the contracts (Redis, object stores, providers, execution backends) | contracts |
 | `capture/` | training and diagnostic capture | contracts |

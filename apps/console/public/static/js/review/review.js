@@ -36,7 +36,7 @@ export function parkedCopy(review) {
   const groups = ((review || {}).groups || []).length;
   // THE SERVER'S WORDS (final_result._render_parked): the repairs it was sure of were kept, so
   // "stopped before changing anything" would be false on any run that kept one.
-  return `the repair is waiting on you: ${plural(open, "defect is", "defects are")} `
+  return `CAD Repair System is waiting on you: ${plural(open, "defect is", "defects are")} `
     + `waiting in ${plural(groups, "group", "groups")}. nothing was changed without you - your file `
     + "is as it was except for the repairs it was sure of.";
 }
@@ -221,7 +221,7 @@ export async function openReview(jobId, opts = {}) {
   root.className = "rv"; root.id = "rv-" + jobId;
   root.setAttribute("role", "dialog"); root.setAttribute("aria-label", "Review the unsure defects");
   root.innerHTML = `<header class="rv-head">
-      <b class="rv-title">Review before the repair runs</b>
+      <b class="rv-title">Review before CAD Repair System runs</b>
       <span class="rv-unanswered"></span>
       ${truncatedCopy(review) ? `<span class="rv-truncated">${esc(truncatedCopy(review))}</span>` : ""}
       <button type="button" class="rv-back">Back to the run</button>

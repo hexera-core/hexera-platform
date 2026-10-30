@@ -373,9 +373,10 @@ CONTRACT: tuple[ContractVar, ...] = (
 EVENT_TYPES: dict[str, str] = {
     "repair_review":      "training: a review proposal the model declined (op_id review:propose), "
                           "kept to see which defects the catalogue cannot answer",
-    "planner_shadow":     "training: what the LLM planner proposed beside what the rules planner did "
-                          "on the same part (op_id review:shadow); written once per shadow run, "
-                          "whichever way the repair ended",
+    "planner_shadow":     "training: optional model guidance beside CAD Repair System's executed "
+                          "plan on the same part (op_id "
+                          "review:shadow); written once per shadow run, whichever way the repair "
+                          "ended. The type name is historical - sealed corpora already carry it",
     "intake_turn":        "training: one intake conversation turn",
     "engine_provenance":  "qa: who chose the approved engine (user_direct | suggested_confirmed), "
                           "appended to the dispatched intake events by the approval in every "
@@ -467,6 +468,9 @@ STATE_FIELDS: dict[str, str] = {
                              "confirmed it on the stage (stored confirmation); '' for anything else",
     "fea_gap_joins":         "whether an FEA assembly's parts that face each other across a small gap are "
                              "joined there (PLAN-fea-18), as confirmed on the stage; True unless switched off",
+    "fea_pairs":             "an FEA assembly's single pairs as the user set them on the stage, by pair key "
+                             "(Part_1|Part_3): each pair's type (bonded / contact / off) and an overlap's owner "
+                             "(PLAN-fea-19/20); {} when every pair follows the rule",
     "flow_topology":         "internal/external flow regime DERIVED from the purpose - a neutral "
                              "fact read by the executor/runners, NOT an engine-native param",
     "leak_closing":          "the leak size the user confirmed on the stage (INS-8): every leak of the "

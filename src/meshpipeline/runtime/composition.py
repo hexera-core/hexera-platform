@@ -137,6 +137,11 @@ def install_adapters() -> None:
     geometry_check.set_scout_enqueuer(_enqueue_geometry_scout)
     geometry_check.set_naming_enqueuer(_enqueue_geometry_naming)
     mesh_execution.set_mesh_executor(build_mesh_executor())
+    # BIG RESULTS STAY IN THE EXCHANGE BUCKET (RUN-7): delivery streams them from there. Only a
+    # remote run keeps a file, so a local stack never calls these.
+    from meshpipeline.adapters.mesh_execution.gcs_exchange import kept_deleter, kept_reader
+    from meshpipeline.contracts import kept_objects
+    kept_objects.set_kept_objects(kept_reader, kept_deleter)
     # THE PRE-FLIGHT: the written case is held to the approved patches before any mesher starts,
     # so a name the case does not carry costs seconds and an internal error naming it - never a
     # whole run that ends as "quality".
