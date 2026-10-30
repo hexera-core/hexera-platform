@@ -1,0 +1,53 @@
+{
+  "findings": [
+    {
+      "rule": "py/clear-text-logging-sensitive-data",
+      "path": "src/meshpipeline/application/billing_service.py",
+      "fingerprint": "16516762526c1ad3:1",
+      "line": 337,
+      "message": "This expression logs [sensitive data (private)](1) as clear text."
+    },
+    {
+      "rule": "py/clear-text-storage-sensitive-data",
+      "path": "src/meshpipeline/application/maintenance/export.py",
+      "fingerprint": "470d38a402122c20:1",
+      "line": 193,
+      "message": "This expression stores [sensitive data (secret)](1) as clear text."
+    },
+    {
+      "rule": "py/incomplete-url-substring-sanitization",
+      "path": "tests/unit/dev/test_onboarding_contract.py",
+      "fingerprint": "5ff9be21f22d6447:1",
+      "line": 824,
+      "message": "The string [sdk.cloud.google.com](1) may be at an arbitrary position in the sanitized URL."
+    },
+    {
+      "rule": "py/incomplete-url-substring-sanitization",
+      "path": "tests/unit/dev/test_onboarding_contract.py",
+      "fingerprint": "e5d3ed85cf6e0b87:1",
+      "line": 202,
+      "message": "The string [cloud.google.com](1) may be at an arbitrary position in the sanitized URL."
+    },
+    {
+      "rule": "py/incomplete-url-substring-sanitization",
+      "path": "tests/unit/platform/test_object_store.py",
+      "fingerprint": "af6447ca499a47ab:1",
+      "line": 179,
+      "message": "The string [storage.example.com:9000](1) may be at an arbitrary position in the sanitized URL."
+    },
+    {
+      "rule": "py/overly-permissive-file",
+      "path": "tests/unit/dev/test_source_digest.py",
+      "fingerprint": "954ec0dc4a8e6865:1",
+      "line": 158,
+      "message": "Overly permissive mask in chmod sets file to world readable."
+    },
+    {
+      "rule": "py/weak-sensitive-data-hashing",
+      "path": "src/meshpipeline/persistence/repositories/capture_repository.py",
+      "fingerprint": "adc8fae0473e562f:1",
+      "line": 34,
+      "message": "[Sensitive data (password)](1) is used in a hashing algorithm (SHA256) that is insecure for password hashing, since it is not a computationally expensive hash function."
+    }
+  ]
+}
