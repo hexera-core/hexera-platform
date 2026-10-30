@@ -284,6 +284,33 @@ class CachingModelRouter:
         _log(job_id, {**entry, "source": source, "decision": _summary(result)})
         return result
 
+    def recorded(self, step: str, *, messages, tools, tool_choice, job_id: str = "",
+                 user_id: str = "") -> ModelRoundResult | None:
+        """THE SAVED ANSWER to this exact question, without asking the model - for a caller whose
+        model was busy, slow or failed, so the result does not depend on the AI being available.
+        Any mode but `off` (a `record` run keeps answers too); never across owners; only a usable,
+        replayable answer. None when nothing is saved (the caller then uses the rules' own plan)."""
+        if self._mode == "off" or not user_id:
+            return None
+        try:
+            model = str(self._model_of(step) or "")
+            key, ph, ih = decision_key(step=step, model=model, messages=messages, tools=tools,
+                                       tool_choice=tool_choice, owner=user_id)
+            rec = self._store.get(key)
+        except Exception:  # noqa: BLE001 - the record is an aid, never a dependency
+            logger.warning("decision cache: no saved answer could be read for a %s round", step,
+                           exc_info=True)
+            return None
+        if not (rec and isinstance(rec.get("result"), dict)):
+            return None
+        result = _from_record(rec["result"])
+        if not (_usable(result) and _replayable(result)):
+            return None
+        _log(job_id, {"step": step, "model": model, "prompt": ph, "inputs": ih, "key": key[:24],
+                      "at": round(time.time(), 1), "source": "record (the model was unavailable)",
+                      "decision": _summary(result)})
+        return result
+
     async def call_builder_model(self, messages, tools=None, tool_choice="auto", job_id="",
                                  user_id="", parallel_tool_calls=None, on_reasoning=None):
         return await self._round("builder", lambda: self._inner.call_builder_model(
@@ -322,5 +349,22 @@ class CachingModelRouter:
         return await self._inner.call_summarizer_model(messages=messages, job_id=job_id)
 
 
+def recorded_answer(step: str, *, messages, tools, tool_choice, job_id: str = "",
+                    user_id: str = "") -> ModelRoundResult | None:
+    """The saved answer to this exact question from the installed router's record (see
+    CachingModelRouter.recorded); None when the router keeps no record or nothing is saved."""
+    from meshpipeline.contracts import model_inference as mi
+    fn = getattr(getattr(mi, "_router", None), "recorded", None)
+    if not callable(fn):
+        return None
+    try:
+        out = fn(step, messages=messages, tools=tools, tool_choice=tool_choice, job_id=job_id,
+                 user_id=user_id)
+    except Exception:  # noqa: BLE001 - the record is an aid, never a dependency
+        logger.warning("decision cache: the saved answer could not be read", exc_info=True)
+        return None
+    return out if isinstance(out, ModelRoundResult) else None
+
+
 __all__ = ["AI_DECISION_CACHE", "CachingModelRouter", "KEY_VERSION", "MODES", "MemoryDecisions",
-           "ObjectStoreDecisions", "decision_key", "decisions_for", "prompt_hash"]
+           "ObjectStoreDecisions", "decision_key", "decisions_for", "prompt_hash", "recorded_answer"]

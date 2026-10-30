@@ -480,8 +480,10 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
         raise ValueError(f"a ground plane lies across z, so the flow cannot travel along "
                          f"{flow_axis} as well")
     m = (strategy or {}).get("domain_margin") or {}
-    up, dn = float(m.get("up", 2.0)), float(m.get("down", 4.0))
-    side, vert = float(m.get("side", 2.0)), float(m.get("vert", 2.0))
+    from meshpipeline.engines.snappy.planner import plan_float
+    m = m if isinstance(m, dict) else {}
+    up, dn = plan_float(m, "up", 2.0), plan_float(m, "down", 4.0)
+    side, vert = plan_float(m, "side", 2.0), plan_float(m, "vert", 2.0)
     # THE RULER the margins multiply. When the approved intent carries a reference length -
     # the unit the user quoted the far-field in, and the unit the extent gate judges the
     # delivered box in - the margins are multiples of THAT, so the number in the request is
@@ -739,10 +741,12 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # Each level is shifted up by `deficit` to undo the clamp's coarsening (see above).
     floor = min(_HARD_MAX_LEVEL, int(rec["surface_level"][0]) + deficit)
     ceil_ = min(_HARD_MAX_LEVEL, max(floor, int(rec.get("afford_level", floor)) + deficit))
+    from meshpipeline.engines.snappy.planner import plan_float, plan_int
     so = strategy.get("surface_level")
-    lvl = floor if not so else max(floor, min(int(so[-1]) + deficit, ceil_))
+    lvl = floor if not so else max(floor, min(plan_int(strategy, "surface_level", floor - deficit)
+                                              + deficit, ceil_))
     smin = smax = lvl
-    flevel = int(strategy.get("feature_level", rec["feature_level"]))
+    flevel = plan_int(strategy, "feature_level", int(rec["feature_level"]))
     flevel = min(_HARD_MAX_LEVEL, max(smax, min(flevel, int(rec["feature_level"])) + deficit))
     bands = rec["distance_bands"]
     if deficit:
@@ -825,8 +829,10 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # The thin-feature layer policy may LOCALLY override the count per class region
     # (layer_counts) and relax the termination knobs (layer_overrides); with neither given the
     # authored dict is byte-identical to the historical one - pinned by regression test.
-    n_layers = max(0, int(strategy.get("n_layers", 3)))
-    first_rel = float(strategy.get("first_layer_rel", 0.35))
+    n_layers = max(0, plan_int(strategy, "n_layers", 3))
+    first_rel = plan_float(strategy, "first_layer_rel", 0.35)
+    if first_rel <= 0.0:
+        first_rel = 0.35
     layer_counts = {str(k): max(0, int(v)) for k, v in (layer_counts or {}).items()}
 
     def _n_for(patch: str) -> int:

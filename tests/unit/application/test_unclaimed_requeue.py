@@ -10,6 +10,9 @@ import uuid
 
 import pytest
 
+# the crash path monkeypatches maintenance.cleanup by its dotted path: import it here so the patch
+# resolves whatever order the shard runs in (CI shard 2 failed on it after a reshuffle)
+import meshpipeline.application.maintenance.cleanup  # noqa: F401
 from meshpipeline.application import unclaimed_requeue as U
 
 
