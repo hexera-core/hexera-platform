@@ -2995,3 +2995,217 @@ checkMesh then wanting `renumberMesh`, which this repository has never run.
 
 The test now asserts the opposite of what it used to: the refuted wording must be absent from the
 row, and the row must name the fit and what stands in for it.
+
+
+### The plate and the chip both delivered, and the three things I had wrong about them
+
+2026-10-30. Both meshes are finished and every reading Corintis asked for is measured off the
+delivered files rather than derived from the plan.
+
+| | coolant | metal | chip |
+|---|---|---|---|
+| cells | 86,729,340 | 241,984,911 | 17,182,848 |
+| points | 104,147,331 | 268,310,145 | 17,611,962 |
+| faces | 277,233,795 | 752,277,309 | 51,976,388 |
+| boundary faces | 31,184,373 | 40,667,460 | 855,688 |
+| hexahedra | 85,764,097 | 238,012,719 | 17,182,848 |
+| polyhedra | 965,243 | 3,971,110 | 0 |
+| prisms | 0 | 0 | 0 |
+| other | 0 | 562 pyramids, 520 tetrahedra | 0 |
+| aspect ratio max | 1.68485 | 45.1 | 30.03 |
+| non-orthogonality max | 25.3732 | 79.1055 | 0 |
+| non-orthogonality average | 2.9625 | 3.72574 | 0 |
+| skewness max | 1.00606 | 2.20624 | 4.10368e-13 |
+| cell openness max | 2.03757e-16 | 3.4266e-16 | 2.10445e-16 |
+| cell volume min m3 | 4.48123e-15 | 5.70013e-16 | 8.74125e-15 |
+| cell volume max m3 | 3.10243e-11 | 3.52455e-11 | 1.49846e-11 |
+| face area min m2 | 2.7159e-10 | 7.11761e-11 | 1.24875e-10 |
+| face area max m2 | 1.17472e-07 | 1.46642e-07 | 1.49846e-07 |
+| total volume mm3 | 51,638 | 396,668 | 16,502 |
+
+The plate's chain, 8 ranks on mesh-bench:
+
+| stage | processes | wall |
+|---|---|---|
+| preparePar | 1 | 2 s |
+| cartesianMesh, stopAfter edgeExtraction | 8 | 3,105 s |
+| topoSet | 8 | 711 s |
+| splitMeshRegions -cellZonesOnly -overwrite | 8 | 1,600 s |
+| reconstructParMesh -region fluid | 1 | 1,167 s |
+| reconstructParMesh -region solid | 1 | 3,643 s |
+| checkMesh -allGeometry -writeFields, fluid | 1 | 1,011 s |
+| checkMesh -allGeometry -writeFields, solid | 1 | 2,738 s |
+
+The chip's, on the same box:
+
+| stage | wall | result |
+|---|---|---|
+| blockMesh | 89 s | 18,792,480 cells on a 560 x 658 x 51 grid |
+| topoSet | 183 s | 35 zones created |
+| subsetMesh chipCells -overwrite | 225 s | 17,182,848 kept, 1,609,632 air cells dropped |
+| checkMesh | 151 s | every zone exact |
+
+#### The interface is conformal, which was the thing that had to be true
+
+`fluid_to_solid` carries 31,165,075 faces and `solid_to_fluid` carries 31,165,075. Read off the two
+delivered boundary files, not inferred from the split. That is the whole case for meshing one volume
+and cutting it afterwards: the interface is internal at mesh time, so it cannot be anything but
+conformal, and here is the count on both sides saying so.
+
+#### The coolant is one circuit, and I had reported otherwise
+
+`checkMesh -allTopology` on the fluid region:
+
+| | regions | biggest | the rest |
+|---|---|---|---|
+| coolant | 93 | 86,728,268 cells | 92 pockets, 1,072 cells, 1 to 28 each |
+| metal | 20 | 241,984,319 cells | 19 pockets, 592 cells, 8 to 72 each |
+
+Both sets sum exactly to the region's cell count, so the numbers are the mesh's own.
+
+There is no second piece of any size on the coolant side. Before this I had told Rehaan twice that
+the extraction gave two pieces with a 0.5 mm gap between the circuit and the outlet, and he pushed
+on it twice because they should be joined. They are joined. What I was reading was the extraction,
+and the extraction's piece count moved when the unit it ran in moved. The delivered mesh is the
+only thing that settles it and it says one circuit.
+
+The 92 pockets are real and they are not flow passages. They are staircase crumbs where a channel
+wall is thinner than a cell, so a cell lands in the coolant on both sides of the wall and ends up
+touching the main body only at a point. A sealed two-cell pocket has no pressure reference, so this
+is a defect rather than a cosmetic count. Removing them is not a matter of deleting them: those
+cells have faces on the conformal interface, so dropping them from the fluid would leave the
+matching solid faces coupled to nothing and break the face-for-face match. The fix belongs before
+the split.
+
+#### Every outer face came out typed `empty`, and that cost one of the six readings
+
+The delivered boundary, as it came off the split:
+
+```
+xmin  { type empty; inGroups 1(empty); nFaces 4420; }
+```
+
+`empty` is OpenFOAM's word for a direction that has been collapsed. It is how a 2D case is
+declared. checkMesh believed it:
+
+```
+    Mesh has 0 geometric (non-empty/wedge) directions (0 0 0)
+    Max aspect ratio = -1 OK.
+  ***Number of edges not aligned with or perpendicular to non-empty directions: 2143073
+  ***Total number of faces on empty patches is not divisible by the number of cells in the mesh.
+```
+
+Three of the complaints and one of the six readings are that one word, repeated eleven times across
+two text files. "Max aspect ratio = -1 OK" is not a reading. It is checkMesh saying there are no
+solution directions to take a ratio along, and I would have shipped it as a number.
+
+The cause is mine, not the product's. `grep -rn "stopAfter\|workflowControls" src/` returns nothing,
+so nothing in the pipeline writes it: I put `workflowControls { stopAfter edgeExtraction; }` in the
+meshDict by hand to fit 328 M cells in the box, and cfMesh assigns the final patch types in a stage
+after that one. The same run through the full workflow at 182 M, ws_par247, has all six block faces
+typed `wall` from the identical code path.
+
+Retyped on the delivered mesh: the metal's outside to `wall`, the five faces where the coolant is
+cut open to `patch`. After that:
+
+```
+    Mesh has 3 geometric (non-empty/wedge) directions (1 1 1)
+    Mesh has 3 solution (non-empty) directions (1 1 1)
+    Max aspect ratio = 1.68485 OK.
+```
+
+The chip had the same defect from a different direction. `subsetMesh` types the patch it exposes
+`empty`, and the `foamDictionary ... -entry chip_exterior/type -set wall` that was meant to fix it
+failed with "Known entries are 2(FoamFile entry0)". A polyMesh boundary file is a LIST, so
+foamDictionary exposes the whole list as `entry0` and a patch is `entry0/<name>/type`. The run
+carried on past the failure and delivered the chip with its outer surface typed `empty`, which is
+why the first chip report also said aspect ratio -1.
+
+#### checkMesh cannot write its quality fields on one region of a coupled pair
+
+`checkMesh -constant -region fluid -writeFields` ran all its checks, printed a full report, and
+then died on the last thing it does:
+
+```
+--> FOAM FATAL ERROR: failed lookup of solid (objectRegistry w)
+    available objects of type polyMesh: 1(fluid)
+```
+
+`fluid_to_solid` is a `mappedWall` sampling region `solid`, and with `-region fluid` only the fluid
+is in the registry, so constructing a field with a boundary condition on that patch cannot resolve
+its neighbour. The report is complete and the fields are absent, which is a quiet way to lose them.
+Worked around by typing the interface `wall` for the duration of the check and restoring it from a
+saved copy in the same script, so a kill cannot leave it flipped.
+
+#### 30% of the metal region is air being modelled as copper
+
+| | mm3 |
+|---|---|
+| metal region as delivered | 396,668 |
+| real metal in the CAD | 276,372 |
+| coolant as delivered | 51,638 |
+| air inside the block, treated as copper | 120,296 |
+
+Fluid plus solid is 448,306 mm3 and the bounding box of the delivered mesh is 448,320 mm3, so the
+block is a filled box and every cell of it is accounted for. The part itself is 276,372 plus 51,638,
+which is 328,010, and the rest of the box is air.
+
+This is the shell-domain refusal showing up as a number. `write_domain` will not build the shell
+because the part has four rims it cannot seal, so the domain falls back to the coolant's bounding
+box, and everything in the box that is not coolant is assigned to the metal. It is the one defect
+here that changes a thermal answer rather than a quality statistic.
+
+#### reconstructParMesh, corrected
+
+The note I had said to use `-allRegions`. ws_par247's own logs say otherwise:
+
+| flag | how it ended | what it wrote |
+|---|---|---|
+| `-constant -region fluid` | End | constant/fluid, 17 GB |
+| `-constant -region solid` | End | constant/solid, 23 GB |
+| `-constant -regions '(fluid solid)'` | End | 39 GB of constant/polyMesh, neither region |
+| `-constant -allRegions` | last line "Read processor mesh: processor3", no End | nothing |
+
+So the delivered 182 M regions came from the two singular-region runs and `-allRegions` never
+finished even there. It means "every region in regionProperties", and `build()` writes
+`regionProperties` after the merge, so with no file it falls back to merging every mesh it finds,
+the pre-split block first. At 328 M the block alone is 328,714,251 cells, about 295 GiB against the
+box's 251. I ran it for over an hour, watched RSS climb past 107 GiB with nothing written, killed
+it, and switched to two `-region` runs, which took 1,167 s and 3,643 s and produced the deliverable.
+
+#### The chip's zones, against the roster predicted from the 4.8 M validation run
+
+| zone | cells | predicted |
+|---|---|---|
+| Substrate | 7,738,080 | exact |
+| Silicon_Pure | 2,292,558 | exact |
+| unspecified_gap | 1,853,184 | exact |
+| HBM_eff_mat | 1,198,848 | exact |
+| chip_solder_2_1 | 1,066,632 | exact |
+| HCF_25W_mK | 926,592 | exact |
+| Cu_Pure | 926,592 | exact |
+| mold_mat | 686,232 | exact |
+| Wafer_bond_mat | 455,322 | exact |
+| Air_gap | 38,808 | exact |
+| total | 17,182,848 | the mesh has 17,182,848 |
+
+25 source face zones, 281,402 faces. `AID_1` is present with 149,702 of them, which is the zone
+that went missing when the emitter read `size.z` instead of the `plane` tag, so that fix holds at
+full size.
+
+#### Open
+
+The 22 faces on the metal side with a low quality or negative volume decomposition tet. It is the
+only line in either report that checkMesh calls an Error.
+
+921,210 chip cells flagged for a determinant under 0.001, minimum 2.12691e-05. They are the
+micron-thick interlayers. Non-orthogonality on that mesh is 0 and skewness is 4e-13, so the
+interpolation error that usually accompanies a low determinant is not present, but the number is
+reported rather than explained away.
+
+The 92 and 19 pockets.
+
+Nothing has been solved on either mesh. checkMesh accepting the geometry is not the same as a
+solver running, and the test we set was a mesh that solves.
+
+The chip and the plate are two meshes, not one. Joining them needs the registration from Corintis.
