@@ -110,6 +110,8 @@ jobs:
     needs: [preflight]
     permissions:
       contents: read
+      # Read: the code-scanning probe. Write: zizmor's SARIF upload, when code scanning is on.
+      security-events: write
       actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -122,10 +124,15 @@ jobs:
       # (unpinned actions, injectable expressions, over-broad permissions). A workflow is code
       # that runs with a token, and nothing else in this repository reviews it.
       - uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2
+      - id: code-scanning
+        uses: ./.github/actions/code-scanning-available
+      # With code scanning on, zizmor's findings go to the Security tab as SARIF and its check
+      # gates them. With it off (no Advanced Security), zizmor prints them to this log as
+      # annotations and fails this job on any high-severity finding itself.
       - uses: zizmorcore/zizmor-action@70fb788f84895a7701f5643d103d587e460b5c99 # v0.6.3
         with:
-          advanced-security: false
-          annotations: true
+          advanced-security: ${{ steps.code-scanning.outputs.available == 'true' }}
+          annotations: ${{ steps.code-scanning.outputs.available != 'true' }}
           min-severity: high
 
   lint:
@@ -342,14 +349,39 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
+      - id: code-scanning
+        uses: ./.github/actions/code-scanning-available
       - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           languages: python
           queries: security-extended
+      # The analysis always runs. Only its upload depends on code scanning being available: an
+      # upload to a repository without Advanced Security fails the lane after a clean scan (and
+      # the database upload burns two minutes retrying), so neither is attempted then.
       - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           category: /language:python
-          upload: never
+          output: ${{ runner.temp }}/codeql-sarif
+          upload: ${{ steps.code-scanning.outputs.available == 'true' && 'always' || 'never' }}
+          upload-database: ${{ steps.code-scanning.outputs.available == 'true' }}
+      - name: Keep the SARIF
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: codeql-sarif-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/codeql-sarif
+          if-no-files-found: warn
+      # Every finding is printed here either way. When the SARIF was not uploaded, nothing else
+      # gates it, so this step fails the lane on high/critical (or error-level) findings - the
+      # same bar code scanning's own pull-request check applies.
+      - name: CodeQL findings
+        env:
+          SARIF_DIR: ${{ runner.temp }}/codeql-sarif
+          GATE: ${{ steps.code-scanning.outputs.available != 'true' }}
+        run: |
+          gate=()
+          [ "$GATE" = "true" ] && gate=(--gate)
+          python3 devtools/quality/sarif_findings.py --title CodeQL "${gate[@]}" "$SARIF_DIR"
 
   # ONE IMAGE PER LANE. This used to be a single job that built api, then pipeline, then mesh, then
   # smoked all three - 9m43s of strictly serial work whose red X said "an image broke" without
