@@ -2824,3 +2824,86 @@ going" and not "finishes and is worse", and a gate that decides which domain to 
 part deserves a completed comparison. What the measurement does say is that volume share is not
 the thing to decide it on, because the cell saving it predicts is off by a factor of three and the
 time cost does not appear in it at all.
+
+### I built the index and never called it, and three reviewers found that before I did
+
+I put a boundary index in `render/boundary_index.py`, wired `detail_window` to use it, measured it
+on the customer plate, and reported that the detail window now works at any size. Then I had the
+design for the next piece attacked from three angles, and all three opened with the same sentence:
+`write_index` has no caller in `src/`.
+
+    $ grep -rn "write_index" src/ --include=*.py
+    src/meshpipeline/render/boundary_index.py:259:def write_index(...)
+    src/meshpipeline/render/boundary_index.py:590:    "has_index", "index_dir", "open_index", "write_index"]
+
+Its own definition and its own `__all__`. Every index that existed, I had written by hand on the
+bench. In production the reader fell through to the parse on every mesh, and the parse refuses
+anything over 2,000,000 faces, so every detail request on this plate still refused. The mechanism
+to answer them sat one call away and nothing made the call.
+
+It is wired now, in `native._boundary_indexes`, beside the review aids and under their rule: built
+where the mesh is, recorded per region including when it failed, and unable to fail the run.
+
+WHAT I SHOULD HAVE DONE is run that grep myself. I measured the pass, I measured the query, I drove
+the route and the shipped page, and the one thing I did not check was whether anything in the
+product would ever reach it. Each of those measurements was real and none of them was the question.
+
+### What the review did to the heatmap design, which was worse than wrong
+
+The design was: compute the same per-face quality the viewer shows today, in the worker, reduce it
+to one value per boundary face, store it in the index, serve colours from an mmap. Three lenses,
+all three refuted, all three fatal, and on different grounds.
+
+**It is not a boundary pass.** `owner_cell_max` is a maximum over a cell's internal faces taken
+from both sides, so it needs owner, neighbour, every internal face's area vector and every cell's
+centre. The index gets away with 105 s and 623 MB precisely because it touches none of that: it
+counts past 221,872,725 internal records without parsing them and never opens `owner`. Priced on
+this mesh's own counts:
+
+| region | cells | faces | resident floor for the pass |
+|---|---|---|---|
+| fluid | 75,162,351 | 235,054,410 | 25.6 GB (36.1 GB at the rate the cap was measured at) |
+| solid | 107,107,563 | 332,328,927 | 36.3 GB (51.1 GB) |
+
+Against a 16 GB worker container and the 8 GiB that MAX_FACES_FOR_FIELDS was actually priced
+against. I was off by about 60x. And the parse alone exceeds it before a metric exists: `_body` is
+`read_bytes()` and `_read_faces` runs it twice, which is 18.2 GB of bytes objects on the fluid's
+9.1 GB faces file. There is no RLIMIT_AS on that path, so the failure is a kernel kill of the
+delivery, not a MemoryError the `except Exception` could swallow. A heatmap would cost the mesh.
+
+**The thin circuit makes it worse, not better.** I assumed a wall shell would be cheap. On this
+coolant 16.8% of fluid cells touch metal and `owner_cell_max` needs the one-ring, which is 32.0%.
+Those one-rings carry about 154M of the 567M faces, still 3.9x the cap. High surface-to-volume is
+the reason a shell is not a saving here.
+
+**The main surface cannot take a per-face array at all.** 13,181,685 delivered faces against
+DRAWN_MAX_TRIANGLES 800,000 means the payload is always reduced, and the client uses an array only
+when its length equals the drawn polygon count. A 13.2M array lands as silent grey, which reads
+exactly like a clean patch. Reduction is vertex clustering, not face grouping, so no face-to-
+triangle map exists to fix it with, and inventing one is the decision already on record against:
+"a colour on it was measured on none of the faces it stands for".
+
+**The detail cut is the one place it works.** `detail_at` returns unmerged delivered faces, one
+polygon per face, packed in the ids' own order, so `quality[idx]` gathered with the same ids lines
+up exactly. One value per delivered face is one value per drawn polygon there and nowhere else.
+
+**And the measurement should not be re-derived at all.** `checkMesh -writeAllFields` writes
+nonOrthoAngle, skewness, aspectRatio and cellShapes as volFields, in the process that already runs
+checkMesh per region and already holds the mesh. That route was already in this file at line 669 as
+"the cheaper route than re-deriving in numpy" and I walked past it.
+
+### Two defects in the index itself, one mine and one older
+
+`patch_of` was `np.zeros`. The pass reads the whole boundary span because one pass is cheaper than
+two, so a `skip_names` leaves a hole in the middle that is read and that no patch names - and at
+zero those faces came back under the FIRST patch's name. A reader who asked for the coolant being
+handed the metal, silently. It is a sentinel now, and `patch_slices` drops what no patch names.
+Latent only because nothing called `write_index`; the conjugate viewer passes
+`_SKIP = ("solid_to_fluid",)`, so wiring it would have made it live in the same commit.
+
+The older one: the detail route passes no `skip_names` while the main surface drops
+`solid_to_fluid`. A conjugate detail therefore draws both sides of the interface as two coincident
+face sets at the same coordinates. I saw 103 faces on each side come back from the route and
+reported it as the interface agreeing on both sides. It is agreement, and it is also two surfaces
+drawn on top of each other. Not introduced here and not fixed here, but it is the reason the main
+view skips one of them and the detail view should have a reason too.
