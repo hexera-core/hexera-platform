@@ -186,18 +186,9 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float) -> di
     count: dict[int, int] = {}
     out: dict[int, tuple[tuple[int, ...], float]] = {}
     size_of = {t: rows[k]["size_mm"] / mm for t, k in tag_of.items()}
-    # a strip narrower than the floor (its width 2 x area / perimeter): a SHELL-13 strip to a junction, 0.7 mm wide
-    # on a 2 mm wall. It is mapped one element across, flat or not, so its sides close up (SHMESH-12), and it never
-    # sets the size along its neighbours (it held a 490 mm wall's whole chain of strips to the floor along)
-    thin_of: dict[int, bool] = {}
-    for t, k in tag_of.items():
-        rim = sum(float(gmsh.model.occ.getMass(1, abs(c))) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False))
-        thin_of[t] = (2.0 * float(gmsh.model.occ.getMass(2, t)) / max(rim, 1e-300) * mm
-                      < plan_rules.FLOOR_WALLS * rows[k]["wall_mm"])
     for t, k in sorted(tag_of.items()):
         flat = gmsh.model.getType(2, t) == "Plane"
-        thin = thin_of[t]
-        if (rows[k]["rule"] == "SHMESH-15" or (flat and not MAP_FLAT and not thin)
+        if (rows[k]["rule"] == "SHMESH-15" or (flat and not MAP_FLAT)
                 or len(gmsh.model.getBoundary([(2, t)], oriented=False)) != 4):
             continue
         sides = sorted({abs(c) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)})
@@ -221,8 +212,7 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float) -> di
         if min(la) < STRIP_LONG * max(lb) or max(lb) * mm >= plan_rules.PANEL_WALLS * rows[k]["wall_mm"]:
             continue
         across = size_of[t]
-        beside = [size_of[s] for c in a for s in gmsh.model.getAdjacencies(1, c)[0]
-                  if s != t and s in size_of and not thin_of[s]]
+        beside = [size_of[s] for c in a for s in gmsh.model.getAdjacencies(1, c)[0] if s != t and s in size_of]
         stretch = STRETCH_FLAT if flat else STRETCH_MAX
         along = min([stretch * across] + beside)
         along = max(along, across)
@@ -232,10 +222,6 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float) -> di
         n_b = count.get(b[0], count.get(b[1], n_b))
         if EVEN:
             n_a, n_b = n_a + n_a % 2, n_b + n_b % 2
-        if thin:
-            # one element across: its sides under the floor close up (SHMESH-12), node to node, and the strip's two
-            # long sides become one line - the faces beside it meet there with matching nodes
-            n_b = 1
         if any(count.get(c, n_a) != n_a for c in a) or any(count.get(c, n_b) != n_b for c in b):
             continue
         for c in a:
