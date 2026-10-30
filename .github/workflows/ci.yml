@@ -126,6 +126,7 @@ jobs:
         with:
           advanced-security: false
           annotations: true
+          min-severity: high
 
   lint:
     name: Lint (ruff)
