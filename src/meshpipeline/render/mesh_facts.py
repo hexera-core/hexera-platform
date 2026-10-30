@@ -22,10 +22,13 @@ _INT_METRICS: Final[tuple[str, ...]] = (
     "small_determinant_cells",
     # THE THIRD OF THE SIX READINGS, "number of boundary layers in the fluid". The conjugate
     # engine computes it, writes it to the manifest and the answer is a deliberate zero with the
-    # reason attached (see cfmesh_conjugate/finalize.NEAR_WALL_LAYERS): a prism layer is a cell
-    # inserted on ONE side of a patch, and a conformal interface is the one thing the whole
-    # approach exists to guarantee. The graded levels and the cell size at the wall are what
-    # stands in its place, so all three travel together or none of them means anything.
+    # reason attached (see cfmesh_conjugate/finalize.NEAR_WALL_LAYERS). The reason is that a prism
+    # stack does not FIT across a passage this narrow - it takes the quality to checkMesh's bar and
+    # buys nothing, because across such a channel the cells across it ARE the near-wall resolution.
+    # It is NOT that layers would break conformality: that was measured on the coupon and all
+    # 14,477 interface faces stayed matched to 4e-18 m. The graded levels and the cell size at the
+    # wall are what stands in its place, so all three travel together or none of them means
+    # anything.
     "near_wall_layers", "near_wall_levels",
     # and the conformality itself, which is the number that says the interface is real: the same
     # face count on each side of it

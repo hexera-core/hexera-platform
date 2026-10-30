@@ -962,17 +962,24 @@ function initViewer(job,surf,uiCfg){
         `the delivered mesh spans ${Math.log2(q.cell_size_ratio).toFixed(1)} octree levels`));
 
     /* AT THE WALL - the third of the six readings the customer asked for by name, "number of
-       boundary layers in the fluid". The answer for a conjugate mesh is none, deliberately: a
-       prism layer is a cell inserted on ONE side of a patch and the interface is conformal
-       because both regions are the same cells from the same octree. A bare "0" reads as a
-       failure, so the reason and what stands in its place are on the row. Measured and written
-       to the manifest since the engine was built; it never reached a reader because the metric
-       filter in render/mesh_facts dropped it. */
+       boundary layers in the fluid". The answer on a microchannel conjugate mesh is none, and the
+       reason this used to give was MEASURED FALSE: it said an extruded layer would leave every
+       interface face without its partner. generateBoundaryLayers with optimiseLayer 0 kept all
+       14,477 interface faces identical on both sides to 4e-18 m, at 99.97% coverage. Layers do
+       not break conformality, and telling a customer they do is telling them something untrue
+       about their own mesh.
+       What actually rules them out is that a prism stack does not FIT: in a 98 um passage at an
+       affordable cell size the stack takes the quality to the bar (non-orthogonality 13.82 ->
+       64.95 against checkMesh's 65). Across a channel that narrow, across-the-channel IS
+       near-wall, which is why the cells-across row below is the real answer to their question.
+       A bare "0" reads as a failure, so the reason and what stands in its place are on the row.
+       Measured and written to the manifest since the engine was built; it never reached a reader
+       because the metric filter in render/mesh_facts dropped it. */
     const wall=[];
     if(has('near_wall_layers'))wall.push(row('near_wall_layers','Boundary layers','',
       q.near_wall_layers===0
-        ? 'none by design: an extruded layer sits on one side of a patch and would leave every '
-          +'interface face without its partner'
+        ? 'none: a prism stack does not fit across a passage this narrow without taking the cell '
+          +'quality to its limit, so the near-wall resolution is the cells across the channel'
         : ''));
     if(has('near_wall_cell_m'))wall.push(
       `<div class="mx-c mx-row mx-q" data-key="near_wall_cell_m"><div class="mx-k">Cell at the wall</div>`

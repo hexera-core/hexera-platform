@@ -2963,3 +2963,35 @@ coloured every face with some other face's number. It cost a 234-second rebuild.
 product can hit it - `native._boundary_indexes` writes the index and then the quality in the same
 pass, so they are always the same version - and it only bit me because I had built the index by
 hand hours before.
+
+### The reason I gave for having no boundary layers was false, and I shipped it to a customer panel
+
+| | |
+|---|---|
+| what the viewer told them | an extruded layer sits on one side of a patch and would leave every interface face without its partner |
+| what I measured | `generateBoundaryLayers` with `optimiseLayer 0`, 14,477 of 14,477 interface faces matched on both sides to 4e-18 m, 99.97% coverage |
+
+Layers do not break conformality. I had the measurement before I had the panel and I still wrote
+the old argument into it, in five places: both viewer copies, `render/mesh_facts`,
+`cfmesh_conjugate/finalize.NEAR_WALL_LAYERS`, and a test that asserted the wording was present.
+
+What actually rules layers out is the fit, and only in the thin passages:
+
+| | |
+|---|---|
+| non-orthogonality before the stack | 13.82 |
+| after | 64.95 |
+| checkMesh's bar | 65 |
+
+A prism stack does not go across a 98 um channel at a cell size I can pay for, and it buys nothing
+there, because across a channel that narrow the cells across it ARE the near-wall resolution. So
+the cells-across row is the real answer to the question they asked, not a consolation for an
+impossibility.
+
+The part that cost something: "by construction" reads as impossible, so it argued against the one
+run worth doing. The manifolds are 67% of the wetted area and a stack fits in them. That run needs
+two repairs I measured the same day, cfMesh's writer dropping the mappedWall coupling keys and
+checkMesh then wanting `renumberMesh`, which this repository has never run.
+
+The test now asserts the opposite of what it used to: the refuted wording must be absent from the
+row, and the row must name the fit and what stands in for it.

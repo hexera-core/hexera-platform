@@ -338,22 +338,34 @@ def _pieces_short(q: dict) -> list[str]:
 
 #: HOW MANY PRISM LAYERS A CONJUGATE MESH HAS, and the number is not a shortfall to be fixed.
 #:
-#: Corintis asked for "number of boundary layers in the fluid" (2026-10-29), and the answer for
-#: this engine is none, BY CONSTRUCTION. A conjugate interface is conformal because both regions
-#: are made of the same cells from the same octree: every face on the coolant side is the same
-#: face on the metal side. An extruded prism layer is a new cell inserted on ONE side of a patch,
-#: so a layer stack on `fluid_to_solid` would leave every one of its faces without a partner -
-#: which is the single property the whole split-after-meshing approach exists to guarantee.
+#: Corintis asked for "number of boundary layers in the fluid" (2026-10-29) and the answer for a
+#: microchannel part on this engine is none. The reason stated here until 2026-10-30 was that a
+#: layer stack on `fluid_to_solid` would leave every face without a partner, because an extruded
+#: prism is a cell inserted on ONE side of a patch and conformality is what the split-after-
+#: meshing approach exists to guarantee.
 #:
-#: cfMesh could not do it here anyway: `boundaryLayers.patchBoundaryLayers` names PATCHES, and at
-#: meshing time the coolant's wall is not a patch - it is interior to one manifold block, and the
-#: patch is created by `splitMeshRegions` afterwards. `generateBoundaryLayers -region fluid` would
-#: run on the delivered mesh and is exactly the thing that must not be run on it.
+#: THAT WAS MEASURED AND IT IS FALSE. `generateBoundaryLayers` with `optimiseLayer 0` on the
+#: coupon kept all 14,477 interface faces identical on BOTH sides to 4e-18 m, at 99.97% coverage.
+#: Layers do not break conformality. The argument was about the wrong thing, and because it read
+#: as "impossible" it also argued against the run that would be worth doing.
 #:
-#: WHAT THE MESH HAS INSTEAD is graded octree refinement toward the wall, which gives matched
-#: cells on both sides and is therefore the conformal equivalent: the cell at the wall is the
-#: background halved once per level. Those are the numbers below, and they are what a reader
-#: asking about near-wall resolution actually needs.
+#: WHAT ACTUALLY RULES THEM OUT IS THE FIT. A prism stack does not go across a 98 um passage at
+#: any affordable cell size: it takes the quality to checkMesh's own bar - non-orthogonality 13.82
+#: before, 64.95 after, against a limit of 65 - and it buys nothing, because across a channel that
+#: narrow the cells ACROSS the channel ARE the near-wall resolution. So the graded levels and the
+#: cell size at the wall below are not a substitute offered in place of an impossibility; they are
+#: the better answer to the question that was asked.
+#:
+#: AND IT IS PASSAGE-BY-PASSAGE, NOT ENGINE-WIDE. The manifolds are 67% of this part's wetted area
+#: and a stack fits in them, so layers on `coolant_coarse` alone are a worthwhile second run and
+#: would let the delivery report a real count. Two repairs stand in the way, both measured the same
+#: day: cfMesh's writer drops the mappedWall coupling keys, and checkMesh then flags upper-
+#: triangular ordering wanting `renumberMesh`, which this repository has never run.
+#:
+#: The mechanical obstacle is real and unchanged: `boundaryLayers.patchBoundaryLayers` names
+#: PATCHES, and at meshing time the coolant's wall is not a patch - it is interior to one manifold
+#: block, and the patch is created by `splitMeshRegions` afterwards. So layers here mean a second
+#: pass over the delivered mesh, not a key in the meshDict.
 NEAR_WALL_LAYERS = 0
 
 
@@ -389,8 +401,15 @@ def _resolution_short(plan: dict) -> list[str]:
         return []
     narrowest = float(plan.get("narrowest_m") or 0.0)
     where = f" ({narrowest * 1e6:.4g} um wide)" if narrowest > 0 else ""
-    return [f"the narrowest passage{where} has {asked} cells across it, where the flow rule asks "
-            f"for {PASSAGE_CELLS_ACROSS}"]
+    # "HAS" WAS THE WRONG VERB. `cells_across` is what the plan ASKED the octree for, and the
+    # octree delivers what fits: on a two-scale part the thin passages get the fine surface's
+    # levels, not this number, and a cell that straddles a level boundary gets neither. Saying the
+    # passage "has" it states a property of the delivered mesh from a number that was written
+    # before the mesh existed. The measured reading is min_cell_m, which foam_exec takes from
+    # checkMesh's own minimum cell volume - and the manifest already keys this one honestly, as
+    # `cells_across_asked`.
+    return [f"the plan asked for {asked} cells across the narrowest passage{where}, where the "
+            f"flow rule asks for {PASSAGE_CELLS_ACROSS}"]
 
 
 def finalize(workspace_dir, intake_patches: list, engine: str, domain: str = "",
