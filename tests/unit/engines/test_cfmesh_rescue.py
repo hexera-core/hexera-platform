@@ -1,6 +1,7 @@
 # Responsibility: Verify the near-edge rescue of a cfMesh mesh: when it triggers, the order of the levers, that the best
 # measured mesh is the one kept (the mesh as built included), that the clock never skips a step (it is a guard: a step
-# it stops is a guard trip), and that it leaves no scratch.
+# it stops is a guard trip), that each step's work is planned from the cells (TIME-7), that a trip with a valid mesh
+# in hand keeps it (TIME-8), and that it leaves no scratch.
 # No cfMesh binary runs: the runner and checkMesh are stand-ins that write and read a marker in the polyMesh.
 from __future__ import annotations
 
@@ -185,6 +186,104 @@ def test_a_step_its_guard_stops_is_a_guard_trip_and_the_rescue_stops(tmp_path):
     assert [(t["where"], t["step"]) for t in rec.guard_trips] == [("cfmesh.rescue", "optimised")]
     assert rec.time_limited == []
     assert "guard clock" in out["rescue"]["note"]
+
+
+def test_the_optimiser_loops_are_planned_from_the_cells():
+    # TIME-7: the optimiser's work is cells x loops, planned from the cells - the same mesh gets the
+    # same loops on any machine, never more than the rescue asked before, never under cfMesh's own
+    assert RS.optimise_loops(500_000) == RS.OPTIMISE_LOOPS_MAX
+    assert RS.optimise_loops(4_000_000) == RS.OPTIMISE_CELL_LOOPS // 4_000_000
+    assert RS.optimise_loops(5_900_000) == max(RS.OPTIMISE_LOOPS_MIN,
+                                               RS.OPTIMISE_CELL_LOOPS // 5_900_000)
+    assert RS.optimise_loops(50_000_000) == RS.OPTIMISE_LOOPS_MIN
+    assert RS.optimise_loops(None) == RS.OPTIMISE_LOOPS_MIN
+    for cells in (1e5, 1e6, 3e6, 6e6):
+        assert RS.OPTIMISE_LOOPS_MIN <= RS.optimise_loops(cells) <= RS.OPTIMISE_LOOPS_MAX
+    assert f"-nLoops {RS.optimise_loops(4_000_000)} " in RS.optimise_args(4_000_000)
+
+
+def test_each_step_runs_under_its_own_planned_guard(tmp_path):
+    # the run's whole guard is no step's clock: on the full benchmark the optimiser ran 2.5 hours
+    # into a 4-hour guard on a tangled 3.5 M cell mesh. Each step's subprocess timeout is its own
+    # guard - 3 x its planned work at the slow rate - within what is left of the run's
+    ws = _ws(tmp_path)
+    calls: list = []
+    q = dict(_BROKEN, cells=3_500_000)
+    _rescue(ws, q, dict(_NOT_FIXED), calls, left=14_400.0)
+    opt = RS.optimise_work(3_500_000, ceiling_s=14_400.0)
+    assert opt.amount == 3_500_000 * RS.optimise_loops(3_500_000)
+    assert calls[0]["timeout"] == opt.guard_seconds < 14_400
+    assert f"-nLoops {RS.optimise_loops(3_500_000)} " in calls[0]["cmd"]
+    # and a short run guard still bounds a step
+    short = RS.optimise_work(3_500_000, ceiling_s=120.0)
+    assert short.guard_seconds <= 120
+
+
+def test_a_trip_with_a_valid_mesh_in_hand_keeps_it(tmp_path):
+    # TIME-8: the mesh as built is valid (no fatal defect, only past 75 degrees). Its optimiser
+    # running past its guard no longer throws it away for a replay and "ran out of time": the run
+    # goes on to its checks with it, with a note, and the trip does not end the attempt
+    from meshpipeline.contracts.work_limits import TIME_KEEP_VALID, ends_attempt
+    from meshpipeline.engines import determinism as det
+    ws = _ws(tmp_path)
+    calls: list = []
+    valid = {"cells": 979_224, "max_non_ortho": 82.0, "fatal": [], "skew_faces": 3}
+    with det.recording() as rec:
+        out = _rescue(ws, dict(valid), dict(_NOT_FIXED), calls, optimise_rc=-1)
+    assert [c["cmd"].split("&& ")[-1].split()[0] for c in calls] == ["improveMeshQuality"]
+    assert out["rescue"]["guard_tripped"] == "optimised"
+    assert out["rescue"]["guard_kept"] == "as built" and out["rescue"]["kept"] == "as built"
+    assert out["max_non_ortho"] == 82.0 and out["fatal"] == []
+    assert (ws / "constant" / "polyMesh" / "owner").read_text() == "as built"
+    assert [t["rule"] for t in rec.guard_trips] == [TIME_KEEP_VALID]
+    assert not any(ends_attempt(t) for t in rec.guard_trips)
+    assert "is kept" in out["rescue"]["note"] and "run again" not in out["rescue"]["note"]
+
+
+def test_a_trip_in_the_re_mesh_keeps_the_optimised_mesh(tmp_path):
+    # the optimiser cleared the fatal defect but left the mesh past 75 degrees, so the re-mesh ran,
+    # and its guard stopped it: the optimised mesh, measured valid before it, is the one kept
+    from meshpipeline.contracts.work_limits import TIME_KEEP_VALID
+    from meshpipeline.engines import determinism as det
+    ws = _ws(tmp_path)
+    calls: list = []
+    table = {"optimised(as built)": {"cells": 979_224, "max_non_ortho": 79.1, "fatal": []}}
+    with det.recording() as rec:
+        out = _rescue(ws, dict(_BROKEN), table, calls, remesh_rc=-1)
+    assert [c["cmd"].split("&& ")[-1].split()[0] for c in calls] == [
+        "improveMeshQuality", "cartesianMesh"]
+    assert out["rescue"]["guard_tripped"] == RS.REMESHED
+    assert out["rescue"]["guard_kept"] == "optimised" and out["fatal"] == []
+    assert (ws / "constant" / "polyMesh" / "owner").read_text() == "optimised(as built)"
+    assert (ws / "system" / "meshDict").read_text() == _BASE_DICT, "the dict that built it"
+    assert [t["rule"] for t in rec.guard_trips] == [TIME_KEEP_VALID]
+    assert not (ws / RS.SCRATCH).exists()
+
+
+def test_a_trip_with_nothing_valid_still_ends_the_attempt():
+    # TIME-3 is unchanged when no valid mesh is in hand: the attempt is replayed
+    from meshpipeline.contracts.work_limits import (
+        TIME_JOB_GUARD,
+        TIME_KEEP_VALID,
+        TIME_TRIP,
+        TIME_WAIT,
+        ends_attempt,
+    )
+    assert ends_attempt({"where": "cfmesh.rescue", "rule": TIME_TRIP})
+    assert ends_attempt({"where": "builder", "rule": TIME_JOB_GUARD})
+    assert ends_attempt({"where": "snappy"})
+    assert not ends_attempt({"where": "engine_ladder", "rule": TIME_WAIT})
+    assert not ends_attempt({"where": "cfmesh.rescue", "rule": TIME_KEEP_VALID})
+    assert not ends_attempt(None)
+
+
+def test_the_executor_judges_an_attempt_whose_trip_kept_a_valid_mesh():
+    from meshpipeline.contracts.work_limits import TIME_KEEP_VALID, TIME_TRIP
+    from meshpipeline.pipeline.executor import _attempt_ending
+    kept = {"where": "cfmesh.rescue", "rule": TIME_KEEP_VALID, "kept": "as built"}
+    ending = {"where": "cfmesh.rescue", "rule": TIME_TRIP}
+    assert _attempt_ending([kept]) == []
+    assert _attempt_ending([kept, ending]) == [ending]
 
 
 def test_a_check_that_died_early_never_wins(tmp_path):

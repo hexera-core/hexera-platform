@@ -482,9 +482,9 @@ def _cite_run_guard(ctx: BuilderToolContext, engine: str, workspace, cap: int) -
 def _attempt_tripped(workspace) -> bool:
     """Whether a guard clock already stopped a run of the attempt in `workspace`."""
     from meshpipeline.contracts.mesh_execution import native_runs
-    from meshpipeline.contracts.work_limits import TIME_WAIT
+    from meshpipeline.contracts.work_limits import ends_attempt
     from meshpipeline.engines.determinism import guard_trips
-    if any(t.get("rule") != TIME_WAIT for t in guard_trips(workspace)):
+    if any(ends_attempt(t) for t in guard_trips(workspace)):
         return True
     launched = [r for r in (native_runs(workspace) or []) if not r.get("refused_before_launch")]
     return bool(launched and launched[-1].get("timed_out"))
@@ -496,8 +496,9 @@ def _guard_verdict(ctx: BuilderToolContext, engine: str, cap: int, broken: list[
     the builder as the end of its turn. Not a broken mesh and not "too fine": what the run was
     doing when the clock stopped it depends on how busy the machine was. A watched run (RUN-5)
     stopped as stuck - no sign of life for the stall window - is a trip too, and says so."""
+    from meshpipeline.contracts.work_limits import ends_attempt
     from meshpipeline.engines.determinism import guard_trips, note_guard_trip
-    if not guard_trips(ctx.workspace):
+    if not any(ends_attempt(t) for t in guard_trips(ctx.workspace)):
         note_guard_trip(engine, workspace=ctx.workspace, guard_s=float(cap),
                         stalled=(True if stalled else None),
                         repairing=("; ".join(broken) or None))

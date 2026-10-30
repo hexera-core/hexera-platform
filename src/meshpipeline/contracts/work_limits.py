@@ -53,9 +53,25 @@ TIME_WAIT = "TIME-4"
 TIME_JOB_GUARD = "TIME-5"
 #: Clocks that still decide, left for the CAD repair work (#201): inspection and repair.
 TIME_REPAIR_CLOCK = "TIME-6"
+#: A repair step on a finished mesh (the cfMesh rescue's optimiser and re-mesh) is planned work
+#: too: its passes are planned from the mesh's cells, and its guard follows from them.
+TIME_REPAIR_WORK = "TIME-7"
+#: A guard that trips once the attempt already holds a valid mesh keeps the best valid mesh
+#: measured so far, with a note: the attempt goes on to its checks, never to "ran out of time".
+TIME_KEEP_VALID = "TIME-8"
 
 TIME_RULES = (TIME_PLANNED_WORK, TIME_GUARD, TIME_TRIP, TIME_WAIT, TIME_JOB_GUARD,
-              TIME_REPAIR_CLOCK)
+              TIME_REPAIR_CLOCK, TIME_REPAIR_WORK, TIME_KEEP_VALID)
+
+#: The trips that do NOT end the attempt: a wait's guard is that step failing (TIME-4), and a trip
+#: once a valid mesh was already in hand keeps that mesh (TIME-8).
+NOT_ATTEMPT_ENDING = (TIME_WAIT, TIME_KEEP_VALID)
+
+
+def ends_attempt(trip: Mapping[str, Any] | None) -> bool:
+    """Whether a recorded guard trip ends the attempt it happened in (TIME-3): every trip except a
+    wait's (TIME-4) and one that kept a valid mesh (TIME-8)."""
+    return isinstance(trip, Mapping) and trip.get("rule") not in NOT_ATTEMPT_ENDING
 
 # #
 # the numbers
@@ -218,7 +234,8 @@ def _num(v: Any) -> float | None:
         return None
 
 
-__all__ = ["CEILINGS_S", "FILL_RATES", "FLOORS_S", "GUARD_FACTOR", "GUARD_REPLAYS", "PlannedWork",
-           "RAN_OUT_OF_TIME", "REPLAY", "TIME_GUARD", "TIME_JOB_GUARD", "TIME_PLANNED_WORK",
-           "TIME_REPAIR_CLOCK", "TIME_RULES", "TIME_TRIP", "TIME_WAIT", "after_trip",
-           "guard_for", "guard_seconds", "trip_words", "work_limit"]
+__all__ = ["CEILINGS_S", "FILL_RATES", "FLOORS_S", "GUARD_FACTOR", "GUARD_REPLAYS",
+           "NOT_ATTEMPT_ENDING", "PlannedWork", "RAN_OUT_OF_TIME", "REPLAY", "TIME_GUARD",
+           "TIME_JOB_GUARD", "TIME_KEEP_VALID", "TIME_PLANNED_WORK", "TIME_REPAIR_CLOCK",
+           "TIME_REPAIR_WORK", "TIME_RULES", "TIME_TRIP", "TIME_WAIT", "after_trip",
+           "ends_attempt", "guard_for", "guard_seconds", "trip_words", "work_limit"]

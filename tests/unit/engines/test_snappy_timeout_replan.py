@@ -166,6 +166,30 @@ def test_a_size_brake_stop_is_remembered_for_the_next_attempt(tmp_path):
     assert drv._sibling_timed_out_plan(a2) == over
 
 
+def test_a_pass_trip_after_a_sound_pass_keeps_that_mesh(tmp_path):
+    # TIME-8: an earlier pass of this attempt left a sound mesh aside; the next pass running past its
+    # guard no longer costs it - the trip does not end the attempt, and the passes end on that mesh
+    from meshpipeline.contracts.work_limits import TIME_KEEP_VALID, TIME_TRIP, ends_attempt, guard_for
+    from meshpipeline.engines import determinism as det
+    pm = tmp_path / "constant" / "polyMesh"
+    pm.mkdir(parents=True)
+    (pm / "owner").write_text("pass 1")
+    assert drv._keep_sound_mesh(tmp_path)
+    (pm / "owner").write_text("pass 2, stopped")
+    drv._trip_pass(tmp_path, guard_for("snappy", cells=2_000_000), 2)
+    trips = det.guard_trips(tmp_path)
+    assert [t["rule"] for t in trips] == [TIME_KEEP_VALID] and not ends_attempt(trips[0])
+    assert drv._end_passes(tmp_path, False, "job") is True
+    assert (pm / "owner").read_text() == "pass 1"
+    assert "valid mesh is kept" in drv._shortfall("", "", timed_out=True, minutes=80, repeat=True,
+                                                   kept_sound=True)
+    # with no sound pass aside, the trip ends the attempt as before (TIME-3)
+    other = tmp_path / "other"
+    (other / "constant" / "polyMesh").mkdir(parents=True)
+    drv._trip_pass(other, guard_for("snappy", cells=2_000_000), 1)
+    assert [t["rule"] for t in det.guard_trips(other)] == [TIME_TRIP]
+
+
 # the drivers, end to end, with the native toolchain stubbed at the engine seam
 
 class _Publish:

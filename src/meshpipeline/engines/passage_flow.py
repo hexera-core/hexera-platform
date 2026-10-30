@@ -586,7 +586,15 @@ def passage_flow_of_polymesh(workspace, quality: dict | None, *,
     """{"passage_flow": record} for the polyMesh under <workspace>/constant when the measure beside
     it put the narrowest wall under the floor; {} otherwise, or when anything is missing or the
     budget runs out - evidence never loses a finished mesh, and without it the floor is judged as
-    it always was."""
+    it always was.
+
+    Never read beside a mesh checkMesh found a FATAL defect in: that mesh fails its gate whatever
+    the flow does, and the reading only ever speaks to a valid mesh's floor. (Full benchmark, 29
+    Oct: a 19 M cell cfMesh mesh with negative-volume cells spent this reading's guard under load,
+    and the attempt was replayed and ran out of time, where the fatal defect alone moves the run
+    to the next engine.)"""
+    if (quality or {}).get("fatal"):
+        return {}
     local = (quality or {}).get("passage_cells_across_local") or {}
     p05 = _num(local.get("p05"))
     if p05 is None or p05 >= floor:
@@ -614,12 +622,17 @@ def passage_flow_of_polymesh(workspace, quality: dict | None, *,
         record = flow_evidence(pts, tris, port_of_tri, wall_of_tri=wall_of_tri, floor=floor,
                                deadline=deadline, wall_edges=edges[wall_of_edge])
     except EvidenceOverdue:
-        # PLANNED WORK (the voxel copy's fixed size); the clock is its guard. A reading past it
-        # is a guard trip (docs/RULES.md TIME-3): the attempt is replayed as an infrastructure
-        # failure, never judged "without the reading" because time ran out.
-        logger.warning("passage flow reading ran past its %.0f s guard", budget_s)
+        # PLANNED WORK (the voxel copy's fixed size); the clock is its guard. The mesh beside it is
+        # VALID (no fatal defect: see above), so a reading past its guard keeps that mesh: it goes
+        # on to its checks without the reading, as before the reading existed, and the trip is
+        # recorded as one that kept a valid mesh (docs/RULES.md TIME-8) - never a replay that can
+        # end as "ran out of time".
+        logger.warning("passage flow reading ran past its %.0f s guard - the valid mesh is "
+                       "checked without it (TIME-8)", budget_s)
+        from meshpipeline.contracts.work_limits import TIME_KEEP_VALID
         from meshpipeline.engines.determinism import note_guard_trip
-        note_guard_trip("passage.flow", guard_s=float(budget_s))
+        note_guard_trip("passage.flow", rule=TIME_KEEP_VALID, guard_s=float(budget_s),
+                        kept="the mesh, checked without the passage flow reading")
         return {}
     except Exception:  # noqa: BLE001 - evidence, not a verdict
         logger.warning("passage flow reading of the polyMesh failed", exc_info=True)

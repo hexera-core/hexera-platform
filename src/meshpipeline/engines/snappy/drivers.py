@@ -104,6 +104,11 @@ def _restore_sound_mesh(workspace: Path) -> bool:
         return False
 
 
+def _sound_kept(workspace: Path) -> bool:
+    """Whether an earlier pass's sound mesh is kept aside (_keep_sound_mesh)."""
+    return (Path(workspace) / _SOUND_KEEP / "0" / "owner").exists()
+
+
 def _drop_sound_mesh(workspace: Path) -> None:
     import shutil
     shutil.rmtree(Path(workspace) / _SOUND_KEEP, ignore_errors=True)
@@ -329,9 +334,18 @@ def pass_guard(budget_cells, *, job_id: str = "", attempt: int = 0, workspace=No
 
 
 def _trip_pass(workspace: Path, work, attempt: int) -> None:
+    """A pass its guard stopped, recorded as a guard trip. With an earlier pass's SOUND mesh kept
+    aside (_keep_sound_mesh) the passes end on that mesh (_end_passes puts it back) and the trip
+    does not end the attempt (TIME-8): a valid mesh is never lost to "ran out of time". With none,
+    the attempt is replayed as an infrastructure failure (TIME-3)."""
+    from meshpipeline.contracts.work_limits import TIME_KEEP_VALID, TIME_TRIP
     from meshpipeline.engines.determinism import note_guard_trip
-    note_guard_trip("snappy", workspace=workspace, step=f"pass {attempt}", **{
-        k: v for k, v in work.as_dict().items() if k in ("amount", "rate", "planned_s", "guard_s")})
+    kept = _sound_kept(workspace)
+    note_guard_trip("snappy", workspace=workspace, step=f"pass {attempt}",
+                    rule=(TIME_KEEP_VALID if kept else TIME_TRIP),
+                    kept=("an earlier sound pass" if kept else None), **{
+                        k: v for k, v in work.as_dict().items()
+                        if k in ("amount", "rate", "planned_s", "guard_s")})
 
 
 def _write_timed_out_plan(workspace: Path, strategy: dict) -> None:
@@ -437,10 +451,14 @@ def _mm(metres: float) -> str:
 
 
 def _shortfall(shape: str, reason: str, *, timed_out: bool, minutes: float,
-               repeat: bool, last: bool = False) -> str:
+               repeat: bool, last: bool = False, kept_sound: bool = False) -> str:
     """The rest of "Pass N ..." for a pass that did not produce a production-grade mesh, in
     plain words. A run its guard clock stopped says so - it is not "no cells, 0 faces", and it
-    is not a reason to plan a coarser mesh (TIME-3)."""
+    is not a reason to plan a coarser mesh (TIME-3). With an earlier pass's sound mesh in hand,
+    that mesh is the one kept (TIME-8)."""
+    if timed_out and kept_sound:
+        return (f"stopped by its guard clock after {minutes:.0f} min - an infrastructure stop, "
+                "not a result about the shape; the earlier pass's valid mesh is kept")
     if timed_out:
         return (f"stopped by its guard clock after {minutes:.0f} min - an infrastructure stop, "
                 "not a result about the shape; this attempt is run again as it was")
@@ -1271,8 +1289,9 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             production, reason, q, wall_faces = False, "", {}, 0
             _repeat_stop = True
         except PassGuardTripped:
-            logger.warning("snappy pass %d stopped by its guard clock - the passes stop; the "
-                           "attempt ends as an infrastructure failure - job_id=%s", attempt, job_id)
+            logger.warning("snappy pass %d stopped by its guard clock - the passes stop: an earlier "
+                           "sound pass is kept (TIME-8), else the attempt ends as an "
+                           "infrastructure failure - job_id=%s", attempt, job_id)
             production, reason, q, wall_faces = False, "", {}, 0
             _timed_out_now = _repeat_stop = True
             last_valid = False
@@ -1338,6 +1357,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             await publish.anote(f"Pass {attempt} "
                     + (f"fell short - {_shape}; {_esc_note}" if _esc_note else
                        _shortfall(_shape, reason, timed_out=_timed_out_now,
+                                  kept_sound=_sound_kept(workspace),
                                   minutes=_mesh_minutes, repeat=_repeat_stop,
                                   last=attempt == max_attempts)),
                     op_id=f"snappy:pass-outcome:{attempt}")
@@ -2394,8 +2414,9 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             production, reason, q, wall_faces = False, "", {}, 0
             _repeat_stop = True
         except PassGuardTripped:
-            logger.warning("internal pass %d stopped by its guard clock - the passes stop; the "
-                           "attempt ends as an infrastructure failure - job_id=%s", attempt, job_id)
+            logger.warning("internal pass %d stopped by its guard clock - the passes stop: an earlier "
+                           "sound pass is kept (TIME-8), else the attempt ends as an "
+                           "infrastructure failure - job_id=%s", attempt, job_id)
             production, reason, q, wall_faces = False, "", {}, 0
             _timed_out_now = _repeat_stop = True
             last_valid = False
@@ -2414,6 +2435,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         else:
             await publish.anote(f"Pass {attempt} "
                                 + _shortfall(_shape, reason, timed_out=_timed_out_now,
+                                             kept_sound=_sound_kept(workspace),
                                              minutes=_mesh_minutes, repeat=_repeat_stop,
                                              last=attempt == max_attempts),
                     op_id=f"internal:pass-outcome:{attempt}")

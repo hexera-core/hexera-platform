@@ -145,9 +145,10 @@ def _broken_mesh(workspace, before: tuple[int, int] | None) -> list[str]:
 def _attempt_ending(trips) -> list[dict]:
     """The guard trips that end an attempt (TIME-3, TIME-5). A wait's guard (TIME-4: the engine
     order, the intake recommendation, the geometry naming) is that step failing, not the
-    attempt."""
-    from meshpipeline.contracts.work_limits import TIME_WAIT
-    return [dict(t) for t in (trips or ()) if isinstance(t, dict) and t.get("rule") != TIME_WAIT]
+    attempt; a trip that kept a valid mesh already in hand (TIME-8) lets the attempt go on to its
+    checks with that mesh."""
+    from meshpipeline.contracts.work_limits import ends_attempt
+    return [dict(t) for t in (trips or ()) if isinstance(t, dict) and ends_attempt(t)]
 
 
 def _guard_trip(state, workspace) -> dict:
