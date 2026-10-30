@@ -366,7 +366,7 @@ def _probe_points(face) -> list:
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopoDS import TopoDS
 
-    out = []
+    out: list = []
     ex = TopExp_Explorer(face, TopAbs_VERTEX)
     while ex.More() and len(out) < 3:
         out.append(BRep_Tool.Pnt_s(TopoDS.Vertex_s(ex.Current())))
