@@ -2435,12 +2435,27 @@ candidate caps on their plate I took the 28 largest:
 | pairs within 1 mm of 53.500 mm | 13 |
 | best pair | 53.515 mm, off by 0.015 |
 | what that pair is | a 9,194 mm2 face against a 165 mm2 one |
-| the two faces a person would call the ports | 165.13 mm2 each, 35.102 mm apart |
 
 53.5 mm is a commonplace distance on a part 177.5 x 41.8 x 101.0 mm. The best match by separation
 pairs a large internal cap with a port, and a matcher built on position would have returned it
 with no sign that anything was wrong. The names in that file are in the Icepak model's own frame,
 around its own simplified manifold, and they cannot be put on this plate by geometry.
+
+AND I SHOULD NOT HAVE GUESSED WHICH FACES WERE THE PORTS. I wrote above that the two 165.13 mm2
+faces, 35.102 mm apart, were the ones a person would pick. The check has since run that plate to
+the end and found its own, off the inside-space map's mouths, and it chose neither of them:
+
+| opening | role | area | at (mm) | diameter |
+|---|---|---|---|---|
+| inlet | inlet | 109.36 mm2 | 65.92, 33.45, 75.41 | 11.8 mm |
+| outlet_1 | outlet | 50.27 mm2 | 99.88, 54.68, 43.31 | 8.0 mm |
+| outlet_2 | outlet | 50.27 mm2 | 89.34, 54.68, 77.39 | 8.0 mm |
+
+Those three are in my own cap measurement to three decimals - 109.359, 50.265, 50.265 mm2 at the
+same coordinates - so the hand measurement and the product agree about what is there. Only my
+reading of which ones mattered was wrong. The real inlet-to-outlet separations are 51.326 mm and
+31.672 mm, so the nearest is 2.174 mm off the file's 53.500 and it is not even among the thirteen
+pairs that come within 1 mm of it. The conclusion stands and is stronger than when I guessed.
 
 The door I would have had to open is already shut, and shut for the right reason: `_joined_assembly`
 refuses a file whose format has a check mode of its own, with "a MODEL is not a part that failed to
