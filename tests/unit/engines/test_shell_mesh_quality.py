@@ -351,3 +351,22 @@ def test_a_plan_past_the_element_cap_stops_before_gmsh_and_says_why(tmp_path, mo
     monkeypatch.setattr(sa, "PLANNED_MAX", 10.0)
     with pytest.raises(ValueError, match="SHMESH-20"):
         sa.mesh_shell(_cylinder_piece(tmp_path), _ring_record())
+
+
+def test_a_mesh_that_hangs_is_stopped_at_the_deadline_and_says_why(tmp_path, monkeypatch):
+    # SHMESH-21: gmsh stuck in one 2D mesh (no way back to Python) is stopped by the clock, in words
+    import time
+
+    import gmsh
+
+    from meshpipeline.engines.gmsh import shell_adapter as sa
+
+    def generate(dim=3):
+        time.sleep(30)
+
+    monkeypatch.setattr(gmsh.model.mesh, "generate", generate)
+    monkeypatch.setattr(sa, "MESH_DEADLINE_S", 2.0)
+    started = time.monotonic()
+    with pytest.raises(ValueError, match="SHMESH-21"):
+        sa.mesh_shell(_cylinder_piece(tmp_path), _ring_record())
+    assert time.monotonic() - started < 15.0
