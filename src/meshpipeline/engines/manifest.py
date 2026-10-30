@@ -14,6 +14,44 @@ from meshpipeline.contracts.mesh_units import validate_completed_mesh_unit
 logger = logging.getLogger(__name__)
 
 
+def renderable_entities(manifest) -> list[str]:
+    """The entities a review session will be able to draw, off the manifest this run wrote.
+
+    `patches` (patch_entities) is the review surface's own map: a name with a non-empty list of
+    gmsh entity tags is a physical group that was written into mesh.msh, and a name with an empty
+    one is a boundary the mesh HAS that this engine's review surface does not carry. snappy's far
+    field is the standing example - it lives in the blockMesh boundary, never in the triSurface
+    the review msh is built from - so "has faces" is not the same question as "can be shown", and
+    an obligation that named every delivered patch could never be discharged on an external run.
+
+    WHAT THIS CANNOT TELL YOU, said plainly because an obligation built on it inherits it: these
+    names come from the EXPORT, so a patch the export dropped is simply absent here and the
+    obligation shrinks with it. Total loss is still caught - no renderable entity means no patch
+    target, and discovery coming up empty refuses the review - but partial loss is not. Closing
+    that needs the engine to declare which of its delivered boundaries the review surface is
+    supposed to carry, and none of them declares it today. The engines whose entities are
+    REGIONS have an independent count to compare against (checkMesh's per-region rows) and
+    cfmesh_conjugate uses it; the body-patch engines have no such second reading.
+    """
+    patches = (manifest or {}).get("patches") or {}
+    if not isinstance(patches, dict):
+        return []
+    names = sorted(str(name) for name, tags in patches.items()
+                   if isinstance(name, str) and name.strip() and tags)
+    # NEVER MORE THAN THE RENDERER WILL ADVERTISE. sandbox.render_adapter.expand_patch_targets
+    # stops at MAX_PATCHES, so on a generated 2,000-part board discovery offers 512 targets and
+    # no more. An obligation naming all 2,000 could not be met by any session: every such review
+    # would end EXPECTED_TARGET_MISSING on a mesh that is fine. The truncation is the same one
+    # the renderer makes - its patch_names() is sorted and expand_patch_targets takes them in
+    # order - so these are exactly the ids it will offer.
+    from meshpipeline.sandbox.render_adapter import MAX_PATCHES
+    if len(names) > MAX_PATCHES:
+        logger.info("manifest: %d renderable entities, naming the %d the renderer will offer",
+                    len(names), MAX_PATCHES)
+        names = names[:MAX_PATCHES]
+    return names
+
+
 def _patch_face_counts(workspace: Path) -> dict:
     """nFaces per boundary patch, off the mesh that was DELIVERED.
 

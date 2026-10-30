@@ -27,6 +27,32 @@ class InspectionTargetRef:
     target_id: str
 
 
+#: HOW MANY NAMED TARGETS OF ONE KIND A REVIEW CAN AFFORD TO INSPECT, from the view budget:
+#:
+#:      sandbox.review_session.MAX_IMAGES_PER_SESSION        64
+#:      the opening view                                     -1
+#:      the declared interior cuts (3 on the conjugate plate,
+#:      at most 4 on a snap-grid board: results.HOT_PARTS+1)  -4
+#:                                                           ---
+#:      left for the reviewer                                 59
+#:
+#: An inspection is one image (toggle_patch), and two when the reviewer frames it first with the
+#: go_to_coordinates line the prompt hands it per patch (agents/reviewer/context, PATCH VIEWS) -
+#: which is what the prompt steers, and framing is NOT an inspection on its own. So a floor of k
+#: costs about 2k of those 59. A floor that eats the budget leaves nothing to look twice with,
+#: and a review that cannot look twice at what it found is not a review, so the floor is held to
+#: roughly a third of it: 19 images, about 10 targets.
+#:
+#: WHAT THAT BUYS, against the entity counts actually delivered. cfMesh and snappy render the
+#: body's own named patches (1 to 3 in every roster on the box); the two placed-parts engines
+#: render one entity per region, and their delivered jobs are 2 regions (snappy_multiregion
+#: bb5c9179) and 9 (snap-grid f8542f71); the conjugate engine is always 2. Every one of those is
+#: under the floor, so every real job is held to EXACT coverage. Only the stress cases - a
+#: 19-solid assembly, a generated 2,000-part board - sample, and they sample 10 where the
+#: kind-only obligation they had asked for 1.
+PATCH_INSPECTION_FLOOR = 10
+
+
 @dataclass(frozen=True)
 class TargetObligation:
 
@@ -34,11 +60,41 @@ class TargetObligation:
     exact_ids: tuple[str, ...] = ()
     min_count: int = 0
     provenance: str = ""
+    #: Of `exact_ids`, how many must carry a usable INSPECTION. 0 (the default) means all of
+    #: them, which is what every obligation meant before this field existed.
+    #:
+    #: THE TWO CONSUMERS OF AN OBLIGATION COST DIFFERENT THINGS, and that is the whole reason
+    #: this exists. eligibility.missing_target_obligations compares the named ids against what
+    #: the session discovered: a set comparison, before the model is asked, costing nothing -
+    #: and it is the check that catches an entity the mesh HAS and the review surface LOST,
+    #: which is the shape job 575f76e6 came back in. eligibility._check_obligation demands an
+    #: actual inspection per id, costing an image each out of a budget of 64.
+    #:
+    #: Naming every entity and demanding every inspection ties the cheap check to the expensive
+    #: one: it is why the four flow engines were left on a kind-only obligation asking for ONE
+    #: patch of any kind, because exact coverage of a 2,000-part board is not payable. Split,
+    #: both can be right - every entity is named, so none can go missing unnoticed, and the
+    #: inspection floor is what the budget affords (PATCH_INSPECTION_FLOOR, above).
+    inspect_at_least: int = 0
 
     def required_count(self) -> int:
+        """How many of this kind must be PRODUCED. Unchanged, and read by discovery."""
         if self.exact_ids:
             return len(self.exact_ids)
         return max(self.min_count, 1)
+
+    def required_inspections(self) -> int:
+        """How many must be INSPECTED - never more than there are, never fewer than one."""
+        if not self.exact_ids:
+            return max(self.min_count, 1)
+        if self.inspect_at_least <= 0:
+            return len(self.exact_ids)
+        return max(1, min(self.inspect_at_least, len(self.exact_ids)))
+
+    @property
+    def samples(self) -> bool:
+        """Whether the reviewer may choose WHICH of the named ids to inspect."""
+        return self.required_inspections() < len(self.exact_ids)
 
 
 # typed evidence records

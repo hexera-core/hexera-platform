@@ -96,7 +96,10 @@ def _region_names(manifest) -> list[str]:
 
 
 def _target_obligations(manifest, engine_params, purpose):
-    from meshpipeline.contracts.evidence_ledger import TargetObligation
+    from meshpipeline.contracts.evidence_ledger import (
+        PATCH_INSPECTION_FLOOR,
+        TargetObligation,
+    )
     m = manifest or {}
 
     # ONE PATCH IS NOT EVERY PATCH, AND ON A TWO-BODY MESH IT IS HALF THE MESH.
@@ -114,8 +117,13 @@ def _target_obligations(manifest, engine_params, purpose):
     # eligibility.missing_target_obligations refuses before the model is asked.
     regions = _region_names(m)
     if regions:
+        # inspect_at_least is the shared floor (TargetObligation.PATCH_INSPECTION_FLOOR), which
+        # on two regions is two: this engine is already under it and nothing about it changes.
+        # Passed rather than left at 0 so one rule covers every engine and the conjugate case is
+        # not a second, quieter rule that happens to agree.
         obs = [TargetObligation(
             kind=TargetKind.PATCH, exact_ids=tuple(f"patch:{r}" for r in regions),
+            inspect_at_least=PATCH_INSPECTION_FLOOR,
             provenance="each delivered region's own boundary - the coolant's and the metal's")]
     else:
         # No measured region rows: a manifest this engine did not write, or a fixture. Fall back

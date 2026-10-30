@@ -42,16 +42,21 @@ class TestObligationAwareCorrections:
 
 class TestTheDeficitReadsAsAnOrder:
     def test_uninspected_target_message_is_imperative_and_names_the_tool(self):
+        # THE REAL TYPE, not a stand-in with four attributes. The stand-in was written when
+        # TargetObligation had exactly those four; it has since grown required_inspections()
+        # and `samples`, which decide whether this message is the per-id order below or the
+        # sampled one, and a duck that does not have them can only report an AttributeError
+        # from inside the thing it is meant to be testing.
         from meshpipeline.agents.reviewer.eligibility import _check_obligation
-        from meshpipeline.contracts.evidence_ledger import EvidenceLedger, TargetKind
+        from meshpipeline.contracts.evidence_ledger import (
+            EvidenceLedger,
+            TargetKind,
+            TargetObligation,
+        )
 
-        class Obligation:
-            kind = TargetKind.REGION
-            exact_ids = ("slice_x_centre",)
-            min_count = 1
-            provenance = "authored inspection regions"
-
-        reasons = _check_obligation(Obligation(), EvidenceLedger())
+        obligation = TargetObligation(kind=TargetKind.REGION, exact_ids=("slice_x_centre",),
+                                      min_count=1, provenance="authored inspection regions")
+        reasons = _check_obligation(obligation, EvidenceLedger())
         assert len(reasons) == 1
         msg = reasons[0]
         # the old phrasing ("has no usable inspection") was read by a reviewer as "this region

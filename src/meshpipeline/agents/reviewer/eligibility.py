@@ -281,23 +281,37 @@ def _check_obligation(o, ledger: EvidenceLedger) -> list[str]:
     reasons: list[str] = []
     prov = f" ({o.provenance})" if o.provenance else ""
     if o.exact_ids:
-        for tid in o.exact_ids:
-            if ledger.usable_inspection_of_target(InspectionTargetRef(o.kind, tid)) is None:
-                # Worded as an order, not a state: a reviewer once parsed "target X has no
-                # usable inspection" as "X is not available", declared the review impossible
-                # and stalled out on a production-grade mesh. The region is always inspectable.
-                # The TOOL'S OWN ARGUMENT, which is the bare entity name: inspect_region
-                # takes 'across_the_flow', never 'region:across_the_flow'. Naming the prefixed
-                # id here read as the argument to type and could only be refused. Patches are
-                # named too, now that an engine can oblige exact patch ids (cfmesh_conjugate
-                # obliges one per region).
-                entity = tid.split(":", 1)[-1]
-                how = ("the slice tool with region" if o.kind is TargetKind.REGION
-                       else "toggle_patch on")
-                reasons.append(
-                    f"required {o.kind.value} '{tid}' has not been inspected in this session. "
-                    f"It IS available - inspect it now ({how} '{entity}'), then cite the t- id "
-                    f"that inspection returns{prov}")
+        # The TOOL'S OWN ARGUMENT, which is the bare entity name: inspect_region takes
+        # 'across_the_flow', never 'region:across_the_flow'. Naming the prefixed id read as the
+        # argument to type and could only be refused. Patches are named too, now that an engine
+        # can oblige exact patch ids.
+        how = ("the slice tool with region" if o.kind is TargetKind.REGION else "toggle_patch on")
+        waiting = [tid for tid in o.exact_ids
+                   if ledger.usable_inspection_of_target(InspectionTargetRef(o.kind, tid)) is None]
+        done = len(o.exact_ids) - len(waiting)
+        need = o.required_inspections()
+        if done >= need:
+            return reasons
+        if o.samples:
+            # A SAMPLE, SO THE SHORTFALL IS A NUMBER AND NOT A ROSTER. Listing 1,990 outstanding
+            # ids would be the correction message, and the reviewer would read it as an order to
+            # inspect all of them. It is told how many more and given a few names to start from;
+            # TargetObligation.PATCH_INSPECTION_FLOOR says why the floor is where it is.
+            offer = ", ".join(t.split(":", 1)[-1] for t in waiting[:8])
+            reasons.append(
+                f"{done} of the {len(o.exact_ids)} {o.kind.value} target(s) on this mesh have "
+                f"been inspected and {need} are required. They ARE available - inspect "
+                f"{need - done} more with {how} one of them, for example {offer}, then cite the "
+                f"t- id each inspection returns{prov}")
+            return reasons
+        for tid in waiting:
+            # Worded as an order, not a state: a reviewer once parsed "target X has no
+            # usable inspection" as "X is not available", declared the review impossible
+            # and stalled out on a production-grade mesh. The region is always inspectable.
+            reasons.append(
+                f"required {o.kind.value} '{tid}' has not been inspected in this session. "
+                f"It IS available - inspect it now ({how} '{tid.split(':', 1)[-1]}'), then cite "
+                f"the t- id that inspection returns{prov}")
         return reasons
     have = len(ledger.usable_inspections_of_kind(o.kind))
     need = max(o.min_count, 1)

@@ -2081,6 +2081,10 @@ reviews with no verdict on meshes that passed every gate, which is the failure t
 already paid for twice. The right answer for those is a floor that is neither 1 nor N, and I do
 not have the measurement to pick it. It is written down here rather than guessed at.
 
+(Corrected in "The patch floor was one, and I said N was not payable", below. The arithmetic
+holds and the conclusion did not follow from it: the obligation feeds two checks and only one of
+them costs images.)
+
 THE WAIVER, AND WHICH HALF OF IT IS DANGEROUS. `base.expected_target_obligations` dropped every
 REGION obligation when `manifest["mesh_paths"]["volume"]` was falsy. That clause reads a CLAIM, a
 string; the render session advertises region targets off the resolved FILE. Two authorities, and
@@ -2610,3 +2614,102 @@ not explain anything: capping the threads moves neither number. The spread is re
 that thread count does not change what the split finds here: identical caps, passages and regions
 in both arms. That is worth having, because it is the opposite of what this module records about
 cfMesh, whose thread count does change its output.
+### The patch floor was one, and I said N was not payable. It was the wrong question
+
+I left the kind-only PATCH obligation on cfmesh, snappy, snappy_multiregion and snapgrid in the
+entry above, with the reason that exact coverage of a 2,000-part board is not payable against a
+64-image session. That is true and it is not the question. An obligation feeds two checks, and
+they cost completely different things.
+
+| check | what it asks | what it costs |
+|---|---|---|
+| `eligibility.missing_target_obligations` | is every named target among the ones discovery found | a set comparison, before the model is asked. Nothing |
+| `eligibility._check_obligation` | has every named target been inspected | one image each, out of 64 |
+
+The first is the check that catches an entity the mesh HAS and the review surface LOST, which is
+the whole shape of 575f76e6. It is free at any N. The second is the expensive one. They read the
+same `exact_ids`, so naming every entity priced the free check at the expensive one's rate, and
+the only way out was to name nothing and ask for one of any kind.
+
+`TargetObligation.inspect_at_least` splits them. Every entity is named, so none can go missing
+unnoticed; the inspection floor is what the budget affords.
+
+WHAT THE RENDERABLE ENTITIES ACTUALLY ARE, which I had not read before writing that paragraph:
+
+| engine | one renderable entity per | built by |
+|---|---|---|
+| cfmesh | named solid in the staged triSurface, i.e. the body's own patches | `read_stl_solids` → `build_review_msh` |
+| snappy | the same, body only: the far field is in the blockMesh boundary, never in the triSurface | `review_surface_is_body_only` |
+| snappy_multiregion | REGION | `constant/triSurface/<region>.stl` |
+| snapgrid | placed PART | the named solids in `input.stl` |
+| cfmesh_conjugate | REGION | `review_surface.build_region_msh` |
+
+So two of the four are small by construction and two are one-per-body. The counts that have
+actually been delivered:
+
+| | entities | source |
+|---|---|---|
+| cfMesh / snappy | 1 to 3 | every patch roster in the tree: body + farfield, inlet + outlet + wall, sym + farfield + car_wall |
+| snappy_multiregion | 2 | job bb5c9179, plate + derived air. 19-solid as1 is a stress fixture |
+| snapgrid | 9 | job f8542f71, set_top_box.ecxml. 2,000 is a generated board |
+| cfmesh_conjugate | 2 | always |
+
+THE BUDGET, read off the code rather than guessed:
+
+    MAX_IMAGES_PER_SESSION                                   64
+    the opening view                                         -1
+    the declared interior cuts (3 on the conjugate plate,
+    at most 4 on a board: results.HOT_PARTS + 1)             -4
+                                                            ---
+    left for the reviewer                                    59
+
+An inspection is one image (`toggle_patch`) and two when the reviewer frames it first with the
+`go_to_coordinates` line the prompt hands it per patch, which is what the prompt steers and what
+`_check_obligation` already says is not an inspection on its own. So a floor of k costs about 2k
+of those 59. A floor that eats the budget leaves nothing to look twice with, and a review that
+cannot look twice at what it found is not a review. A third of 59 is 19 images, about ten
+targets.
+
+**PATCH_INSPECTION_FLOOR = 10**, and `inspect_at_least = min(N, 10)`. Against the counts above
+that is exact coverage on every job that has ever been delivered - 1, 2, 3 and 9 are all under
+it - and a sample only on the two stress cases, where it is ten instead of one.
+
+THE CAP IT HAS TO RESPECT, which the first version did not. `expand_patch_targets` stops at
+`MAX_PATCHES = 512`, so on the generated 2,000-part board discovery offers 512 targets and no
+more. Naming all 2,000 would have ended every such review as EXPECTED_TARGET_MISSING on a mesh
+that is fine - the free check is only free if it names things that can be produced. The
+truncation is the renderer's own: `patch_names()` is sorted and `expand_patch_targets` takes them
+in order, so the first 512 sorted names are exactly the ids it will offer, which a test
+re-derives from both sides rather than asserting.
+
+WHAT A SAMPLED OBLIGATION SAYS WHEN IT IS NOT MET. Not the roster. Listing 1,990 outstanding ids
+would BE the correction message and the reviewer would read it as an order to inspect all of
+them. It gets the two counts, how many more are needed, and eight names to start from.
+
+THE RESIDUAL, and it is the same shape as the one this closes. The names come from
+`manifest["patches"]`, which is the review surface's own map, so for the two body-patch engines
+the production check reads the export - the thing that fails. Total loss is still caught (no
+renderable entity means no patch target, and empty discovery refuses the review); partial loss is
+not. The region engines have a second, independent reading in checkMesh's per-region rows, and
+cfmesh_conjugate uses it; cfMesh and snappy have none, because they deliberately render a SUBSET
+of the delivered boundary and nothing declares which subset. `patch_face_counts` is the
+independent authority and naming every patch with faces would oblige snappy's far field, which no
+session can show. Closing it needs the engine to declare which of its delivered boundaries its
+review surface is supposed to carry. None of them declares it today.
+
+Also noted and not fixed: PATCH VIEWS writes one `go_to_coordinates` line per patch into the
+system prompt, so the 2,000-part board puts 2,000 of them there. That is a prompt-size defect,
+not an obligation one, and it is upstream of everything here.
+
+tests/unit/agents/reviewer/test_the_patch_floor_is_what_the_budget_affords.py, 56 tests: the
+arithmetic, every delivered count held to exact coverage, the two stress counts sampling at ten,
+the free check still refusing a lost entity at N=300, the cap agreeing with the renderer on both
+sides, and the correction message that must not become a roster.
+`test_obligation_corrections` had a four-attribute stand-in for `TargetObligation` and now uses
+the real one, because the stand-in could only report an AttributeError from inside the thing it
+was testing.
+
+The end-to-end check was already there and I had not looked: test_reviewer_assurance_matrix
+drives the whole review loop per engine over manifests that carry real `patches` maps, so
+snappy, cfMesh and snappy_multiregion now run it with NAMED patch obligations - every entity
+named, every one inspected, verdict PASS - where they used to run it with the kind-only one.

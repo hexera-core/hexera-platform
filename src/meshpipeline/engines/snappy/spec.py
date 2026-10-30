@@ -98,9 +98,52 @@ def _review_renderer():
 # spec declares the KINDS it can be held to; the renderer enumerates the instances.
 
 
+def _patch_obligation(manifest):
+    """Every renderable boundary this run published, with the inspection floor the budget affords.
+
+    IT USED TO BE `TargetObligation(kind=PATCH)` - kind-only, min_count falling through to one -
+    under a provenance string reading "every renderable boundary patch". One inspection of one
+    entity discharged it, whatever the mesh had. That is how a conjugate review passed with its
+    coolant boundary absent from the file (job 575f76e6), and the same hole is open on every
+    engine that carries the same obligation.
+
+    The fix is not exact coverage of everything: these engines render one entity per placed part
+    or per region, and a generated 2,000-part board would need an inspection budget that does not
+    exist. The two checks an obligation feeds cost different things, so they are named at
+    different strengths - every entity named, because discovery compares the names for free, and
+    PATCH_INSPECTION_FLOOR inspections demanded, because those cost an image each. See
+    TargetObligation.inspect_at_least for the arithmetic and what it buys on the real counts.
+    """
+    from meshpipeline.contracts.evidence_ledger import (
+        PATCH_INSPECTION_FLOOR,
+        TargetObligation,
+    )
+    from meshpipeline.engines.manifest import renderable_entities
+
+    names = renderable_entities(manifest)
+    if not names:
+        # A manifest this engine did not write, or one whose review surface carried nothing. The
+        # kind-only floor is the honest statement there: discovery finding no patch target at all
+        # already refuses the review, so this never stands in for a roster it could not read.
+        return TargetObligation(kind=TargetKind.PATCH,
+                                provenance="a renderable boundary (the manifest names none)")
+    # The provenance is quoted back in every correction message, so it has to say which of the
+    # two strengths is being asked for. "every renderable boundary" beside "10 are required"
+    # reads as a contradiction and the reviewer has to resolve it.
+    provenance = (f"every renderable boundary this mesh published ({len(names)})"
+                  if len(names) <= PATCH_INSPECTION_FLOOR else
+                  f"{len(names)} renderable boundaries, of which the view budget affords "
+                  f"{PATCH_INSPECTION_FLOOR}")
+    return TargetObligation(
+        kind=TargetKind.PATCH,
+        exact_ids=tuple(f"patch:{n}" for n in names),
+        inspect_at_least=PATCH_INSPECTION_FLOOR,
+        provenance=provenance)
+
+
 def _target_obligations(manifest, engine_params, purpose):
     from meshpipeline.contracts.evidence_ledger import TargetObligation
-    obs = [TargetObligation(kind=TargetKind.PATCH, provenance="every renderable boundary patch")]
+    obs = [_patch_obligation(manifest)]
     regions = (manifest or {}).get("inspection_regions") or []
     names = [r.get("name") for r in regions if isinstance(r, dict) and r.get("name")]
     if names:
