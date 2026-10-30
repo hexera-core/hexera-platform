@@ -495,6 +495,64 @@ def internal_band_cells(max_cell: float, wall_cell: float, band_radius: float, *
     return max_cell, level * 1.001
 
 
+def _feature_volume(f: dict) -> float:
+    """The volume (m^3) one builder refinement (objectRefinements) covers; 0 for a line or a
+    feature that does not read."""
+    import math
+    try:
+        typ = str(f.get("type", "box")).strip().lower()
+        if typ == "box":
+            return abs(float(f["lengthX"]) * float(f["lengthY"]) * float(f["lengthZ"]))
+        if typ == "sphere":
+            return 4.0 / 3.0 * math.pi * abs(float(f["radius"])) ** 3
+        if typ == "cone":
+            h = math.dist([float(v) for v in f["p0"]], [float(v) for v in f["p1"]])
+            r0, r1 = abs(float(f["radius0"])), abs(float(f["radius1"]))
+            return math.pi * h * (r0 * r0 + r0 * r1 + r1 * r1) / 3.0
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+    return 0.0
+
+
+def octree_cell(max_cell: float, cell: float) -> float:
+    """The cell cfMesh actually makes where `cell` is asked: it halves the background (max_cell)
+    while a cell is larger than the size asked, so it lands on the first level at or under it. A
+    wall asked at 0.121 mm under a 0.543 mm background is meshed at 0.068 mm - 5.6 times the cells
+    of the size asked (the carotid tube of the aiguard lab, 32.7 M cells)."""
+    import math
+    if not (max_cell > 0.0 and cell > 0.0) or cell >= max_cell:
+        return cell
+    return max_cell / 2.0 ** math.ceil(math.log2(max_cell / cell) - 1e-9)
+
+
+def _planned_total(*, base: float | None, narrow: list, wall_cell: float, max_cell: float,
+                   features: list, cell_floor: float = 0.0) -> float | None:
+    """The cells a rendered case plans: `base` (the background, the wall band and the layers, at
+    the octree levels cfMesh lands on) plus the narrow-passage boxes and the builder's own
+    refinements, each at its whole volume over its cell (gap_sizing.box_cost(whole_box=True): cfMesh
+    refines every cell inside an objectRefinement). None when there is no base to add to."""
+    if base is None or not (base == base) or base < 0.0:
+        return None
+    from meshpipeline.engines.gap_sizing import box_cost
+    total = float(base) + box_cost(narrow or [], wall_cell, whole_box=True)
+    for f in features or []:
+        if not isinstance(f, dict) or f.get("cellSize") is None:
+            continue
+        try:
+            c = octree_cell(max_cell, max(float(f["cellSize"]), float(cell_floor or 0.0)))
+        except (TypeError, ValueError):
+            continue
+        if c > 0.0:
+            total += _feature_volume(f) / c ** 3
+    return total
+
+
+def planned_cells_of(configured: dict) -> int | None:
+    """EngineSpec.planned_cells for cfMesh: the planned cells a configure_mesh result carries."""
+    v = (configured or {}).get("planned_cells") if isinstance(configured, dict) else None
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
+
+
 def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                        patches: list, body_bbox, L: float,
                        domain_min, domain_max, strategy: dict | None = None,
@@ -601,6 +659,8 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     _narrow: list = []
     _narrow_note = ""
     _gap = None
+    _base: float | None = None           # the internal fill without the boxes, when costed
+    _planned_base: float | None = None   # ...and at the octree levels cfMesh lands on (AIG-2)
     if passage_field is not None and _caps:
         from meshpipeline.engines import gap_sizing as GS
         from meshpipeline.engines.passage import narrow_passage_regions
@@ -631,13 +691,17 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             return boxes
         import meshpipeline.settings.policy as _pol
         _limit = int(cell_budget) if cell_budget else int(_pol.CELL_HARD_LIMIT)
-        _base = None
         if _areas is not None:
             _thick_m = float(_caps.get("refinement_thickness") or 0.0)
             _base = (GS.fill_cells(_areas, passage_field[1], max_cell)
                      + GS.fill_cells(_areas, passage_field[1], wall_cell,
                                      depth=_thick_m or None)
                      + _n_layers * float(sum(_areas)) / wall_cell ** 2)
+            _eff = octree_cell(max_cell, wall_cell)
+            _planned_base = (GS.fill_cells(_areas, passage_field[1], max_cell)
+                             + GS.fill_cells(_areas, passage_field[1], _eff,
+                                             depth=_thick_m or None)
+                             + _n_layers * float(sum(_areas)) / _eff ** 2)
         # costed as cfMesh refines a box: EVERY cell inside it (objectRefinements), never only
         # the passage the wall points bound - priced at its fluid, a valve cage adapter's boxes
         # read 2.3 M and cartesianMesh made 20.2 M cells (lab, 2026-10-21)
@@ -667,6 +731,19 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                      "lengthZ": b["max"][2] - b["min"][2]} for i, b in enumerate(_narrow)]))
     if _blocks:
         dict_parts.append("objectRefinements\n{\n" + "\n".join(_blocks) + "\n}\n")
+
+    # THE CELLS THIS CASE PLANS (AIG-2: an AI plan is compared with the rules plan on it): the
+    # external run plan's model, or the internal fill the gap plan costs (background + wall band +
+    # layers), each at the octree level cfMesh lands on, plus every refinement box at its whole
+    # volume, as cfMesh refines one
+    if plan is not None:
+        _planned_base = estimate_cells(volume=vol, max_cell=max_cell,
+                                       wall_cell=octree_cell(max_cell, wall_cell),
+                                       wall_area=wall_area,
+                                       n_layers=max(0, int(strategy.get("n_layers", 0))))
+    _planned = _planned_total(
+        base=_planned_base, narrow=_narrow, wall_cell=wall_cell, max_cell=max_cell,
+        features=strategy.get("features") or [], cell_floor=_floor)
 
     n_layers = max(0, int(strategy.get("n_layers", 0)))
     if n_layers > 0:
@@ -731,6 +808,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     return {"max_cell_size": round(max_cell, 6), "wall_cell_size": round(wall_cell, 6),
             "n_layers": n_layers, "features": len(strategy.get("features") or []),
             "est_background_cells": est_bg,
+            **({"planned_cells": int(_planned)} if _planned else {}),
             **({"run_plan": {k: v for k, v in plan.items() if k != "wall_cell"}} if plan else {}),
             "passage_caps": {k: round(v, 6) for k, v in _caps.items()} or None,
             "narrow_regions": [{"cell_size": round(b["cell_needed_m"], 6),

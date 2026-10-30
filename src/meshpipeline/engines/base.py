@@ -1088,6 +1088,10 @@ class EngineSpec:
     # vocabulary (cfMesh reads SIZES, snappy reads LEVELS/bands). Keeps measure_scales
     # engine-agnostic: it measures the body, the ENGINE phrases the recommendation.
     _load_recommend: Callable[[], Callable | None] = lambda: None
+    # THE PLANNED CELL COUNT of a configured case: reads the engine's own estimate out of what its
+    # configure_mesh returned (an int), or None when it planned none. The AI plan is compared with
+    # the rules plan on it (engines/plan_guard.py, AIG-2). None -> no estimate, nothing compared.
+    _load_planned_cells: Callable[[], Callable | None] = lambda: None
     # REVIEW RUBRIC - the engine's MESH-CLASS review axes (ReviewAxis tuple): what THIS
     # mesh class can fail at, phrased as interpretation-needing concerns (not thresholds
     # - those are criteria.py). The reviewer runtime unions these with the user-declared
@@ -1126,6 +1130,20 @@ class EngineSpec:
     def validate_authoring(self, strategy: dict) -> list:
         _v = self._load_authoring_validate()
         return list(_v(strategy)) if _v else []
+
+    def planned_cells(self, configured: dict) -> int | None:
+        """The cells the case configure_mesh just wrote plans to make (the engine's own estimate),
+        or None when it has none or it does not read as a cell count."""
+        _p = self._load_planned_cells()
+        if not _p:
+            return None
+        try:
+            v = _p(configured)
+        except Exception:  # noqa: BLE001 - an estimate that cannot be read is no estimate
+            return None
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v <= 0                 or v == float("inf"):
+            return None
+        return int(v)
 
     def recommend_authoring(self, analysis: dict, *, fidelity: str = "") -> dict:
         from meshpipeline.pipeline.enums import authoring_tier
