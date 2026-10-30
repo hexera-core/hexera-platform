@@ -24,14 +24,20 @@ import logging
 from functools import lru_cache
 from pathlib import Path
 
+from meshpipeline.render.boundary_index import IndexUnavailable, open_index
+
 logger = logging.getLogger(__name__)
 
-#: How many faces a region's boundary may hold before this will not read it. The read is the whole
-#: boundary - points, the face stream and the patch table - because a face's position is not known
-#: until its points are, so there is no way to seek to a neighbourhood. Measured on the delivered
-#: coupon: 349,656 faces on the coolant and 375,594 on the metal. The customer plate's coolant side
-#: is 13,022,400, which is the case this refuses and says so about rather than reading 400 MB
-#: inside an API process.
+#: How many faces a region's boundary may hold before this will not PARSE it. The parse is the
+#: whole boundary - points, the face stream and the patch table - because a face's position is not
+#: known until its points are, so there is no way to seek to a neighbourhood. Measured on the
+#: delivered coupon: 349,656 faces on the coolant and 375,594 on the metal. The customer plate's
+#: coolant side is 13,022,400, which is the case this refuses and says so about rather than reading
+#: 400 MB inside an API process.
+#:
+#: IT ONLY APPLIES WHEN THERE IS NO INDEX. `render.boundary_index` works out where every face is
+#: once, in the worker, and writes it down; with that beside the mesh a ball becomes the buckets it
+#: touches and nothing else is read, so the cost is the window's and the cap has nothing to guard.
 MAX_SOURCE_FACES = 2_000_000
 #: How many faces come back. A detail view is a few cell widths across, so this is a backstop for
 #: a radius asked carelessly, not a budget anyone should meet.
@@ -110,6 +116,20 @@ def _parsed(polymesh: str, _stamp: tuple):
     return points, sizes, flat, offs, centroids, first
 
 
+def _packer(points, sizes, flat, offs):
+    """`_pack` bound to one region's arrays.
+
+    Both paths below hand the assembly loop the SAME callable - this, or a BoundaryIndex's own
+    `pack` - so the loop that shares out the budget and names the patches does not know or care
+    which of the two found the faces. Keeping that one loop is the point: it is where the
+    "every patch keeps at least one face" rule lives, and a second copy of it for the indexed
+    path is a second place for a conjugate detail to lose one of its two sides.
+    """
+    def pack(idx):
+        return _pack(points, sizes, flat, offs, idx)
+    return pack
+
+
 def _pack(points, sizes, flat, offs, idx):
     """The two buffers polymesh_surface.boundary_surface writes, for the faces `idx` names.
 
@@ -162,6 +182,29 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
     in_range = 0
     for region, polymesh in regions:
         rows = [p for p in read_boundary_patches(polymesh) if p["name"] not in skip_names]
+        if not rows:
+            continue
+
+        # AN INDEX MEANS NOTHING IS PARSED, so the cap below has nothing to guard. It was written
+        # once in the worker on this mesh; `open_index` refuses it if the mesh has changed since,
+        # and this then falls through to the parse exactly as it did before there was an index.
+        index = None
+        try:
+            index = open_index(polymesh)
+        except IndexUnavailable as exc:
+            logger.debug("detail: no boundary index at %s (%s)", polymesh, exc)
+        if index is not None:
+            # THE INDEX HOLDS EVERY PATCH, including any `skip_names` asked this call to leave
+            # out - it is written once and read by callers that want different things - so the
+            # skipping happens here rather than being baked into the file.
+            want = {str(p["name"]) for p in rows}
+            for p, mine in index.patch_slices(index.faces_near(c, r)):
+                if str(p["name"]) not in want:
+                    continue
+                in_range += int(mine.size)
+                hits.append((region, p, mine, index.pack))
+            continue
+
         total = sum(int(p["n_faces"]) for p in rows)
         if total > MAX_SOURCE_FACES:
             # NAMED, not skipped in silence. A reader who asked to see the coolant and was given
@@ -169,8 +212,6 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
             raise DetailError(
                 f"the {region or 'mesh'} boundary is {total:,} faces and this reads at most "
                 f"{MAX_SOURCE_FACES:,} at once, so its detail is not available")
-        if not rows:
-            continue
         owner = polymesh / "owner"
         stat = owner.stat() if owner.is_file() else (polymesh / "boundary").stat()
         parsed = _parsed(str(polymesh), (stat.st_size, int(stat.st_mtime_ns)))
@@ -188,7 +229,7 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
             if not idx.size:
                 continue
             in_range += int(idx.size)
-            hits.append((region, p, idx, (points, sizes, flat, offs)))
+            hits.append((region, p, idx, _packer(points, sizes, flat, offs)))
 
     # THE BUDGET IS SHARED OUT, NOT EATEN FIRST-COME. Measured on the delivered coupon, 2026-10-29,
     # before this: a 4 mm window held 684,660 faces in range across both regions, the cap of
@@ -206,14 +247,13 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
     shares = _share_out(MAX_RETURN_FACES, counts)
     out: list[dict] = []
     returned = 0
-    for (region, p, idx, arrays), keep, here in zip(hits, shares, counts):
+    for (region, p, idx, pack), keep, here in zip(hits, shares, counts):
         if keep <= 0:
             continue
         if keep < idx.size:
             idx = idx[np.unique(np.linspace(0, idx.size - 1, keep).round().astype(np.int64))]
         returned += int(idx.size)
-        points, sizes, flat, offs = arrays
-        pts_b, polys_b = _pack(points, sizes, flat, offs, idx)
+        pts_b, polys_b = pack(idx)
         out.append({
             "name": f"{region}/{p['name']}" if region else str(p["name"]),
             "type": str(p["type"]),
