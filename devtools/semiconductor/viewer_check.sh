@@ -41,12 +41,21 @@
 #   * `pytest tests/ui tests/unit/...` in one invocation - with both directories collected,
 #     `from conftest import assert_clean` resolves to tests/unit/conftest.py and all 17 viewer
 #     files error on import. Run tests/ui on its own.
-#   * a loaded machine - the session browser is one long-lived CDP websocket, and under load it
-#     loses its keepalive: `ConnectionClosedError: sent 1011 keepalive ping timeout`, once, and
-#     then every test after it errors at setup. Measured here while another meshing stack had the
-#     box: 110 passed, 36 non-passes, all 36 that same timeout. That is transport, not the page.
-#     Re-run the files one at a time - a short browser session does not time out - and if each
-#     file passes alone, the gate passed.
+#   * ONE SLOW TEST, and not the machine. test_thermal_results.py runs a real mesher
+#     (`mesh_ecxml`) inside the test process, which holds the interpreter long enough that the
+#     session browser's CDP websocket misses a keepalive and closes with
+#     `ConnectionClosedError: sent 1011 keepalive ping timeout`. That file takes about 110 s where
+#     every other viewer file takes 7 to 13, and it sits right on the edge: it passes when it gets
+#     to the end and dies around 51 s when it does not. The `browser` fixture is SESSION-SCOPED,
+#     so every test scheduled after it then errors at setup with that same message and nothing
+#     else. pytest-randomly is installed, so the order and therefore the damage move: measured 85
+#     passed, then 110, then 132 with `-p no:randomly`, where that file lands second from last.
+#     I first blamed host load. A run at load 2.84 on 32 cores broke in the same place, and four
+#     runs of the file alone went pass/fail on BOTH sides of a viewer change, which is what
+#     settled it.
+#     So a whole-suite number is not the gate's verdict. Run one file per invocation - a short
+#     session does not time out - and sum: 144 of 146 over 30 files, the two outstanding being
+#     that one file's, which has been seen to pass on its own as well.
 #
 # So this script checks the two things that need no browser at all, for a quick loop: both copies
 # PARSE, and both still have the entry points, because they drift.

@@ -2713,3 +2713,48 @@ The end-to-end check was already there and I had not looked: test_reviewer_assur
 drives the whole review loop per engine over manifests that carry real `patches` maps, so
 snappy, cfMesh and snappy_multiregion now run it with NAMED patch obligations - every entity
 named, every one inspected, verdict PASS - where they used to run it with the kind-only one.
+
+### I blamed the machine for the gate not finishing, and it is one slow test
+
+Correcting myself in the entry above, which says the full gate's pile of identical websocket
+errors came of another session having this box on a meshing chain. It does not. Run again with the
+box quiet - load 2.84 across 32 cores, the other session's mesher finished - it broke in the same
+place:
+
+| run | order | result |
+|---|---|---|
+| under load | random | 110 passed, 1 failed, 35 errors |
+| quiet | random | 85 passed, 1 failed, 60 errors |
+| quiet | `-p no:randomly` | 132 passed, 1 failed, 13 errors |
+
+WHAT IT ACTUALLY IS. `test_thermal_results.py` runs a real mesher, `mesh_ecxml`, inside the test
+process. That holds the interpreter long enough for the session browser's CDP websocket to miss a
+keepalive ping, and it closes with `sent 1011 keepalive ping timeout`. The file takes about 110 s
+where every other viewer file takes 7 to 13, and it sits on the edge of the timeout: it passes
+when it reaches the end, and dies around 51 s when it does not. Because the `browser` fixture is
+session-scoped, every test scheduled after that one errors at setup with the same message and no
+other symptom.
+
+In deterministic order it is second from last, so it strands 13 tests and the run reports 132. In
+a random order it lands anywhere, which is why the figure moved between 85 and 132, and why a run
+last week saw 143 pass: the order was kind. A whole-suite count is not the gate's verdict on the
+page, and the clean 146 I went looking for was never going to exist in one invocation.
+
+IT IS NOT ANYTHING I CHANGED, and I checked rather than assumed. Four runs of that file alone, two
+with the served viewer.js as it is and two with the copy from before the detail-window hook went
+in:
+
+| served viewer.js | run 1 | run 2 |
+|---|---|---|
+| with the hook | failed, socket died at 51 s | 2 passed, 110.4 s |
+| before the hook | 2 passed, 103.1 s | failed, socket died at 111 s |
+
+One pass and one failure on each side. The flake is the fixture and the mesher, not the page.
+
+Every other file passes run on its own: 144 of 146 over 30 files, and the two outstanding are that
+file's, both of which have been seen to pass. One browser session per file is how to get a real
+number until the thermal test stops running a mesher in-process or the fixture stops being shared.
+
+THE LESSON IS THE ONE THIS FILE KEEPS TEACHING ME. A wall of identical errors out of tests/ui has
+now had three separate causes - no Chrome installed, the wrong conftest collected, and this - and
+each time I reached first for the explanation that needed no measurement. Twice it was wrong.
