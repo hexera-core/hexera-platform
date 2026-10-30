@@ -340,6 +340,10 @@ def fea_confirmation_message(body) -> str:
         gap_said = str(getattr(body, "gap_summary", "") or "").strip()
         if gap_said:
             parts.append(gap_said)
+        # PLAN-fea-19/20: the single pairs set on the stage, said so the chat and the brief know
+        pairs_said = str(getattr(body, "pairs_summary", "") or "").strip()
+        if pairs_said:
+            parts.append(pairs_said)
     clean = str(getattr(body, "clean_summary", "") or "").strip().rstrip(".")
     if clean:
         parts.append(f"Clean check: {clean}.")

@@ -298,7 +298,7 @@ def _captured_watched(args, *, timeout, stall_s: float, progress_paths, poll_s: 
 @dataclass(frozen=True)
 class Watched:
     """How a watched process ended: its return code, why it stopped (``ok`` / ``stalled`` /
-    ``ceiling``), how long it ran, the longest stretch with no sign of life, and its log's tail.
+    ``spinning`` / ``ceiling`` / ``memory``), how long it ran, the longest stretch with no sign of life, and its log's tail.
     `cpu_s` is the CPU time its process tree was seen to use (0.0 where that cannot be read)."""
     returncode: int
     stopped: str
@@ -310,13 +310,17 @@ class Watched:
 
 
 def run_watched(args, *, log_path, hard_timeout: float, stall_s: float, progress_paths=(),
-                poll_s: float = 10.0, **kwargs) -> Watched:
+                poll_s: float = 10.0, spinning=None, **kwargs) -> Watched:
     """Run `args` with its output streamed to `log_path`, killed ONLY when it has shown no sign of
     life for `stall_s` seconds, or at `hard_timeout` (the infrastructure's ceiling). A sign of life is
     new output in the log, a change to any of `progress_paths` (a stage file), or its process tree
     burning CPU or changing its memory (sandbox/liveness) - gmsh meshes a big assembly's curves for
     long stretches without printing a line. A slow process that is still working is never stopped
-    early (Areen, 24 Oct: no guessed time limits)."""
+    early (Areen, 24 Oct: no guessed time limits).
+
+    `spinning`, when given, is asked at every look whether the run is busy without getting anywhere
+    (a callable returning True): output and CPU are then no sign of progress, and the run is stopped
+    as ``spinning`` (gmsh's 3D refinement rejecting the points it inserts, gmsh_runner.RefineSpin)."""
     import time as _time
 
     from meshpipeline.sandbox.liveness import LivenessWatch
@@ -349,6 +353,8 @@ def run_watched(args, *, log_path, hard_timeout: float, stall_s: float, progress
                 stopped = "memory"
             elif now - last >= stall_s:
                 stopped = "stalled"
+            elif spinning is not None and _asked(spinning):
+                stopped = "spinning"
             elif now - t0 >= hard_timeout:
                 stopped = "ceiling"
             if stopped != "ok":
@@ -366,6 +372,13 @@ def run_watched(args, *, log_path, hard_timeout: float, stall_s: float, progress
     return Watched(returncode=int(proc.returncode if proc.returncode is not None else -9), stopped=stopped,
                    seconds=round(end - t0, 1), longest_silence_s=round(longest, 1),
                    silence_at_stop_s=round(end - last, 1), tail=tail, cpu_s=round(watch.cpu_s, 1))
+
+
+def _asked(check) -> bool:
+    try:
+        return bool(check())
+    except Exception:  # noqa: BLE001 - a look that fails is no sign either way
+        return False
 
 
 def _kill_process_group(proc: subprocess.Popen) -> None:

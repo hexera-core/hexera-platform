@@ -2347,6 +2347,10 @@ def _regions(faces: list[int], neighbours: list[set[int]]) -> list[list[int]]:
 FALLBACK_WALLS = 3.0
 #: a join's sewn faces must hold the body's mid-faces' own area to within this share (SHELL-3)
 JOIN_KEEP_SHARE = 0.01
+#: SHELL-12: ... and leave no edge or vertex with a tolerance over JOIN_TOL_WALLS of the body's thinnest wall. The
+#: general fuse can hand back vertices it widened to tens of millimetres to close a gap (a funnel's cone: 39 mm on
+#: 5 mm walls); their edges stand that far off their faces, gmsh cannot close such a face's loop, and the mesh fails.
+JOIN_TOL_WALLS = 0.5
 #: SHELL-11: one general join may take at most JOIN_DEADLINE_S seconds. OpenCASCADE's general fuse cannot be
 #: stopped from inside (no time budget reaches its Perform), and on a cone meeting a ring (fr018) it ran past 40
 #: minutes; no join of the training corpus comes near it. Where the system can fork, the join runs in a child
@@ -2865,6 +2869,9 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                 if kept < (1.0 - JOIN_KEEP_SHARE) * core:
                     notes.append(f"{body_names[b]}: a general join lost {100 * (1 - kept / core):.0f}% of the "
                                  "mid-faces' area and was not used.")
+                elif _max_tol(general[0]) > JOIN_TOL_WALLS * t_min:
+                    notes.append(f"{body_names[b]}: a general join left a tolerance of {_max_tol(general[0]) * mm:.3g} "
+                                 f"mm (over {JOIN_TOL_WALLS:g} of the thinnest wall) and was not used (SHELL-12).")
                 elif census_g["open_edges"] < census["open_edges"]:
                     chosen, method, census = general, "general", census_g
                     ext_general = [list(m.extended) for m in mine]

@@ -143,6 +143,8 @@ def faces_words(acc: Mapping) -> str:
 
 def facts(workspace) -> dict:
     """The measured facts of the FEA mesh in `workspace`, {} when it holds no FEA mesh."""
+    # a solver file kept in the bucket is part of the mesh all the same (engines/bucket_files, RUN-7)
+    from meshpipeline.engines.bucket_files import present
     ws = Path(workspace)
     q = _read(ws / "quality.json")
     fea = _m(q.get("fea"))
@@ -159,12 +161,12 @@ def facts(workspace) -> dict:
     acc = _m(q.get("fea_faces")) or face_accounting(q, plan)
     per_file = [
         {"solver": "CalculiX / Abaqus", "file": "mesh.inp", "element": "C3D10",
-         "present": (ws / "mesh.inp").exists(), "elements": cells or None, "named_faces": inp_faces},
+         "present": present(ws, "mesh.inp"), "elements": cells or None, "named_faces": inp_faces},
         {"solver": "Nastran", "file": "mesh.bdf", "element": "CTETRA (10-node)",
-         "present": (ws / "mesh.bdf").exists(), "elements": nastran.get("elements"),
+         "present": present(ws, "mesh.bdf"), "elements": nastran.get("elements"),
          "named_faces": nastran.get("faces")},
         {"solver": "Ansys MAPDL", "file": "mesh.cdb", "element": "SOLID187",
-         "present": (ws / "mesh.cdb").exists(), "elements": ansys.get("elements"),
+         "present": present(ws, "mesh.cdb"), "elements": ansys.get("elements"),
          "named_faces": ansys.get("faces")},
     ]
     aside = _m(q.get("fea_set_aside"))

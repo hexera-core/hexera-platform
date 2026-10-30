@@ -94,7 +94,23 @@ def test_directives_are_proposed_before_the_rules_planner():
 
     assert [v.op for v in result.verdicts] == ["directed_op"]
     assert directed.calls == 1 and rules.calls == 0
-    assert result.planner_label == "directed-v1"
+    assert result.planner_label == "repair-v1"
+
+
+def test_one_repair_planner_handles_runs_with_or_without_directives():
+    from meshpipeline.cad.repair.directives import RepairPlanner
+    from meshpipeline.cad.repair.plan import RunHistory
+
+    directed, rules = _Op("directed_op"), _Op("rules_op")
+    automatic = RepairPlanner((), _Fallback(rules), ops=(directed, rules))
+    assisted = RepairPlanner([_directive()], _Fallback(rules), ops=(directed, rules))
+
+    automatic_choice = automatic.propose((_defect(),), RunHistory(), shape=None)
+    assisted_choice = assisted.propose((_defect(),), RunHistory(), shape=None)
+
+    assert automatic_choice is not None and automatic_choice.op.name == "rules_op"
+    assert assisted_choice is not None and assisted_choice.op.name == "directed_op"
+    assert automatic.label == assisted.label == "repair-v1"
 
 
 def test_an_unplayable_directive_is_recorded_not_skipped_silently():
@@ -322,7 +338,7 @@ def test_repair_step_file_reserves_the_judgement_codes_only_when_review_is_on(
     import meshpipeline.cad.repair.caps as caps
     import meshpipeline.cad.repair.loop as loop
     from meshpipeline.cad.repair.conservative import repair_step_file
-    from meshpipeline.cad.repair.plan import RulesPlanner
+    from meshpipeline.cad.repair.directives import RepairPlanner
 
     monkeypatch.setattr(rcfg, "CAD_REPAIR_ENABLED", True)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_REVIEW_ENABLED", review)
@@ -338,9 +354,10 @@ def test_repair_step_file_reserves_the_judgement_codes_only_when_review_is_on(
     for directives in ((), (_directive(source="llm-planner", item_id=""),)):
         with pytest.raises(_Captured):
             repair_step_file(tmp_path / "in.step", tmp_path / "out.step", directives=directives)
-    rules, directed = seen
-    assert isinstance(rules, RulesPlanner) and rules._reserved == expected
-    assert isinstance(directed, DirectedPlanner) and directed._reserved == expected
+    automatic, directed = seen
+    assert isinstance(automatic, RepairPlanner) and automatic._reserved == expected
+    assert isinstance(directed, RepairPlanner) and directed._reserved == expected
+    assert automatic._fallback._reserved == expected
     assert directed._fallback._reserved == expected
 
 

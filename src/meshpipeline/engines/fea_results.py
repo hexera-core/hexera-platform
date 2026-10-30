@@ -106,11 +106,30 @@ def assembly_block(asm: Mapping) -> dict | None:
     words = {"bonded": "Bonded (welded or glued): one conformal mesh - the parts share their nodes where they touch.",
              "contact": "Contact: each part meshed on its own, with a named contact pair wherever two parts touch.",
              "tie": "Bonded, tied: each part meshed on its own and tied where they touch (the parts could not be "
-                    "fused into one mesh)."}.get(mode, "")
+                    "fused into one mesh, or a pair is set not to be bonded)."}.get(mode, "")
+    from meshpipeline.cad import fea_pairs as FP
+
+    # PLAN-fea-19/20: every pair's type and every overlap's owner, as the run joined them
+    pairs = [{"key": c.get("key"), "parts": c.get("parts"), "kind": c.get("kind"), "type": c.get("type"),
+              "source": c.get("source"), "words": FP.pair_words(c)} for c in asm.get("pairs") or []
+             if isinstance(c, Mapping) and len(c.get("parts") or []) == 2]
+    raw_counts = asm.get("joint_counts")
+    counts: Mapping = raw_counts if isinstance(raw_counts, Mapping) else {}
+    if any(counts.get(t) for t in FP.TYPES):
+        words += (f" Pairs: {counts.get(FP.BONDED, 0)} bonded, {counts.get(FP.CONTACT, 0)} contact, "
+                  f"{counts.get(FP.OFF, 0)} off" + (f" ({counts['edited']} set on the stage)." if counts.get("edited")
+                                                     else "."))
+    # PLAN-fea-21: AN OPEN BONDED PAIR, named in red with the way on - never a quiet pass
+    opened = [{"name": o.get("name"), "pair": o.get("pair"), "parts": o.get("parts"), "words": FP.open_words(o)}
+              for o in asm.get("open_bonded") or [] if isinstance(o, Mapping)]
+    raw_check = asm.get("bonded_check")
+    check: Mapping = raw_check if isinstance(raw_check, Mapping) else {}
     return {"connection": asm.get("connection"), "mode": mode, "words": words,
             "parts": [{"id": p.get("id"), "name": p.get("name") or "", "elements": p.get("elements")}
                       for p in asm.get("parts") or []],
-            "joints": joints, "absorbed": list(asm.get("absorbed") or []), "notes": list(asm.get("notes") or [])}
+            "joints": joints, "pairs": pairs, "open_bonded": opened,
+            "bonded_check": ({"checked": check.get("checked"), "closed": check.get("closed")} if check else None),
+            "absorbed": list(asm.get("absorbed") or []), "notes": list(asm.get("notes") or [])}
 
 
 def safety_net_block(ftw: Mapping) -> dict | None:
@@ -132,8 +151,14 @@ FEA_VIEW_MISSING = ("The 3D view could not be built for this mesh, so it is not 
 FILE_MISSING = "This solver file isn't available for this mesh; the other files are complete."
 
 
+def _present(ws: Path, name: str) -> bool:
+    from meshpipeline.engines.bucket_files import present
+    return present(ws, name)
+
+
 def _ready(ws: Path, line: dict) -> dict:
-    ready = (ws / line["file"]).exists()
+    from meshpipeline.engines.bucket_files import present
+    ready = present(ws, line["file"])      # a big file kept in the bucket is ready (RUN-7)
     return {**line, "file_ready": ready, **({} if ready else {"file_note": FILE_MISSING})}
 
 
@@ -251,7 +276,7 @@ def results(workspace) -> dict | None:
         "hot_spots": spots,
         "faces": faces,
         "download": {"words": "The full download holds:",
-                     "contains": [{"file": f, "words": w} for f, w in CONTAINS if (ws / f).exists()],
+                     "contains": [{"file": f, "words": w} for f, w in CONTAINS if _present(ws, f)],
                      "later": SAME_NUMBERS},
         # PASS / WARNINGS / FAIL PER SOLVER, by each solver's own published checks
         # (engines/fea_solvers.py), with its file and whether that solver has really run it

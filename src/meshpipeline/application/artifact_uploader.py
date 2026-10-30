@@ -13,6 +13,7 @@ import os
 import tarfile
 import tempfile
 import uuid
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
@@ -60,6 +61,30 @@ class _Planned:
     content_type: str
     local_path: Path
     required: bool
+    #: RUN-7: an artifact streamed from the files a big result kept in its exchange bucket - the
+    #: bytes, made on demand, and their length when it is known - instead of a local file
+    chunks: Callable[[], Iterator[bytes]] | None = None
+    expect_bytes: int | None = None
+
+
+def _opener():
+    from meshpipeline.contracts.kept_objects import kept_reader
+    return kept_reader()
+
+
+def _kept_raw(k) -> Callable[[], Iterator[bytes]]:
+    from meshpipeline.engines.bucket_files import raw_chunks
+    return lambda: raw_chunks(k, _opener())
+
+
+def release_kept(workspace: Path) -> int:
+    """Delete the exchange copies of the files this delivery streamed from the bucket (RUN-7)."""
+    from meshpipeline.contracts.kept_objects import kept_deleter
+    from meshpipeline.engines.bucket_files import kept, release
+    deleter = kept_deleter()
+    if deleter is None or not kept(workspace):
+        return 0
+    return release(workspace, deleter)
 
 
 @dataclass
@@ -107,6 +132,45 @@ def _verify_integrity(stored, local_path: Path) -> str | None:
     return None
 
 
+def _upload_streamed(store, p: _Planned, *, scratch_dir: Path):
+    """RUN-7: upload a streamed artifact. A store that streams (adapters/object_storage/minio) takes
+    the bytes straight from the exchange bucket; one that does not is given a file written here
+    first - a local stack, whose results are never big enough to be kept."""
+    assert p.chunks is not None
+    stream = getattr(store, "upload_stream", None)
+    if callable(stream):
+        return stream(chunks=p.chunks(), object_key=p.object_key, content_type=p.content_type)
+    fd, name = tempfile.mkstemp(prefix="stream_", dir=str(scratch_dir))
+    tmp = Path(name)
+    try:
+        md5 = hashlib.md5()  # noqa: S324 - an integrity record of the bytes sent, not a secret
+        with os.fdopen(fd, "wb") as fh:
+            for chunk in p.chunks():
+                fh.write(chunk)
+                md5.update(chunk)
+        stored = store.upload_file(local_path=tmp, object_key=p.object_key,
+                                   content_type=p.content_type)
+        from meshpipeline.contracts.object_storage import StoredObject
+        return StoredObject(object_key=stored.object_key, size_bytes=stored.size_bytes,
+                            content_type=stored.content_type, checksum=md5.hexdigest())
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _verify_streamed(store, stored, p: _Planned) -> str | None:
+    """A streamed artifact's integrity: the bytes sent are the length the record says (when it
+    says), and the store holds that many - read back from the store, not assumed."""
+    if p.expect_bytes is not None and stored.size_bytes != p.expect_bytes:
+        return f"size mismatch (expected {p.expect_bytes}, sent {stored.size_bytes})"
+    try:
+        held = store.stat_object(object_key=stored.object_key)
+    except Exception as exc:  # noqa: BLE001
+        return f"the stored object cannot be read back ({type(exc).__name__})"
+    if int(held.size_bytes) != int(stored.size_bytes):
+        return f"size mismatch (sent {stored.size_bytes}, stored {held.size_bytes})"
+    return None
+
+
 class BundleContractError(RequiredArtifactDeliveryError):
     pass
 
@@ -139,7 +203,8 @@ def resolve_engine(workspace: Path, declared_engine: str):
         raise BundleContractError(
             f"manifest engine {mode!r} disagrees with the execution's engine {spec.name!r}")
 
-    if not (workspace / spec.deliverable.marker).exists():
+    from meshpipeline.engines.bucket_files import present
+    if not ((workspace / spec.deliverable.marker).exists() or present(workspace, spec.deliverable.marker)):
         raise BundleContractError(
             f"{spec.name}: declared marker {spec.deliverable.marker} is absent")
     return spec
@@ -151,6 +216,11 @@ def _member_ok(workspace: Path, member) -> str:
         return f"{rel}: declared path is not workspace-relative"
     target = workspace / rel
     if not target.exists():
+        # a big file kept in the exchange bucket is part of the result (RUN-7): its record says
+        # how big it is, and an empty one is refused when the record is read
+        from meshpipeline.engines.bucket_files import kept
+        if member.kind != "dir" and Path(rel).as_posix() in kept(workspace):
+            return ""
         return f"{rel}: missing"
     resolved, root = target.resolve(), workspace.resolve()
     if not str(resolved).startswith(str(root)):
@@ -177,19 +247,27 @@ def verify_workspace_contract(workspace: Path, spec) -> None:
 
 
 def verify_archive(path: Path, spec) -> None:
-    d = spec.deliverable
     if not path.exists() or path.stat().st_size == 0:
         raise BundleContractError(f"{spec.name}: archive is empty")
     with tarfile.open(path) as tf:
         names = tf.getnames()
         for ti in tf.getmembers():
-            if ti.name.startswith("/") or ".." in Path(ti.name).parts:
-                raise BundleContractError(f"{spec.name}: archive member escapes root: {ti.name}")
             if ti.issym() or ti.islnk():
                 raise BundleContractError(f"{spec.name}: archive contains a link: {ti.name}")
-            if not ti.name.startswith(f"{d.prefix}/"):
-                raise BundleContractError(
-                    f"{spec.name}: archive member outside the declared prefix: {ti.name}")
+    verify_names(names, spec)
+
+
+def verify_names(names: list[str], spec) -> None:
+    """The bundle's member names against the engine's declaration: inside its prefix, none escaping
+    it, every required member and the marker there. (A streamed bundle - RUN-7 - is checked here
+    before it is sent: its entries are only ever regular files and directories.)"""
+    d = spec.deliverable
+    for name in names:
+        if name.startswith("/") or ".." in Path(name).parts:
+            raise BundleContractError(f"{spec.name}: archive member escapes root: {name}")
+        if not name.startswith(f"{d.prefix}/"):
+            raise BundleContractError(
+                f"{spec.name}: archive member outside the declared prefix: {name}")
     present = set(names)
     missing = [m.path for m in d.members if m.required
                and f"{d.prefix}/{m.path}" not in present]
@@ -240,12 +318,20 @@ def fea_export_plan(job_id: uuid.UUID, workspace: Path) -> list[_Planned]:
     if not (workspace / "fea_plan.json").exists():
         return []
     from meshpipeline.artifact_keys import export_key
+    from meshpipeline.engines.bucket_files import kept
+    held = kept(workspace)
     out = []
     for logical, file_name, _label in EXPORT_ARTIFACTS:
         src = workspace / file_name
         if src.exists() and src.stat().st_size > 0:
             out.append(_Planned(ArtifactType.mesh, logical, export_key(str(job_id), file_name),
                                 "text/plain", src, required=False))
+        elif file_name in held:
+            # kept in the exchange bucket (RUN-7): streamed from there, never through this disk
+            k = held[file_name]
+            out.append(_Planned(ArtifactType.mesh, logical, export_key(str(job_id), file_name),
+                                "text/plain", src, required=False, chunks=_kept_raw(k),
+                                expect_bytes=k.bytes))
     return out
 
 
@@ -262,11 +348,21 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
     mesh_path = workspace / SURFACE_MSH
     if not (mesh_path.exists() and mesh_path.stat().st_size > 0):
         mesh_path = workspace / "mesh.msh"
+    from meshpipeline.engines.bucket_files import kept
+    held = kept(workspace)
     if mesh_path.exists() and mesh_path.stat().st_size > 0:
         from meshpipeline.artifact_keys import mesh_artifact_key
         plan.append(_Planned(ArtifactType.mesh, ArtifactType.mesh.value,
                              mesh_artifact_key(str(job_id)),
                              "application/octet-stream", mesh_path, required=False))
+    elif mesh_path.name in held:
+        # gmsh's mesh of a big FEA result stayed in the exchange bucket (RUN-7): streamed from there
+        from meshpipeline.artifact_keys import mesh_artifact_key
+        k = held[mesh_path.name]
+        plan.append(_Planned(ArtifactType.mesh, ArtifactType.mesh.value,
+                             mesh_artifact_key(str(job_id)),
+                             "application/octet-stream", mesh_path, required=False,
+                             chunks=_kept_raw(k), expect_bytes=k.bytes))
 
     plan.extend(fea_export_plan(job_id, workspace))
 
@@ -278,26 +374,50 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
     verify_workspace_contract(workspace, spec)
     _recipe = spec.deliverable
 
-    _fd, _tmpname = tempfile.mkstemp(prefix="bundle_", suffix=".tar.gz", dir=str(workspace))
-    os.close(_fd)
-    _tmp = Path(_tmpname)
-    # DETERMINISTIC bundle: gzip mtime=0 and normalised tar entries (mtime/uid/gid/names),
-    # so the SAME content yields the SAME checksum across rebuilds. Otherwise a same-attempt
-    # retry would look like different content and trip the conflict guard.
-    def _norm(ti: tarfile.TarInfo) -> tarfile.TarInfo:
-        ti.mtime = 0
-        ti.uid = ti.gid = 0
-        ti.uname = ti.gname = ""
-        return ti
+    _bundle: _Planned | None = None
+    _members = [m.path for m in _recipe.members]
+    if any(Path(r).as_posix() in held or any(k.startswith(f"{Path(r).as_posix()}/") for k in held)
+           for r in _members):
+        # A BIG RESULT (RUN-7): some members stayed in the exchange bucket. The bundle is streamed
+        # into the store - each kept member's object passed through as it is stored, the rest
+        # packed here - one .tar.gz any gzip reader reads, and not a byte of it on this disk
+        from meshpipeline.engines.bucket_files import bundle_chunks, bundle_entries
+        _entries = bundle_entries(workspace, _members, _recipe.prefix)
+        _links = [name for name, _p, _k in _entries if _p is not None and _p.is_symlink()]
+        if _links:
+            raise BundleContractError(f"{spec.name}: archive contains a link: {_links[0]}")
+        verify_names([name for name, _p, _k in _entries], spec)
+        _bundle = _Planned(ArtifactType.mesh_bundle, ArtifactType.mesh_bundle.value,
+                           f"jobs/{job_id}/{_recipe.bundle}", "application/gzip",
+                           workspace / _recipe.bundle,
+                           required=is_required_class(spec.name, ArtifactType.mesh_bundle.value),
+                           chunks=lambda: bundle_chunks(_entries, _opener()))
+    else:
+        _fd, _tmpname = tempfile.mkstemp(prefix="bundle_", suffix=".tar.gz", dir=str(workspace))
+        os.close(_fd)
+        _tmp = Path(_tmpname)
+        # DETERMINISTIC bundle: gzip mtime=0 and normalised tar entries (mtime/uid/gid/names),
+        # so the SAME content yields the SAME checksum across rebuilds. Otherwise a same-attempt
+        # retry would look like different content and trip the conflict guard.
+        def _norm(ti: tarfile.TarInfo) -> tarfile.TarInfo:
+            ti.mtime = 0
+            ti.uid = ti.gid = 0
+            ti.uname = ti.gname = ""
+            return ti
 
-    with gzip.GzipFile(filename="", fileobj=open(_tmp, "wb"), mode="wb", mtime=0) as _gz:  # noqa: SIM115
-        with tarfile.open(fileobj=_gz, mode="w") as _ctar:
-            for _rel in sorted(m.path for m in _recipe.members):
-                _cp = workspace / _rel
-                if _cp.exists():          # optional members ship when present
-                    _ctar.add(_cp, arcname=f"{_recipe.prefix}/{_rel}", filter=_norm)
-    verify_archive(_tmp, spec)
-    scratch.append(_tmp)
+        with gzip.GzipFile(filename="", fileobj=open(_tmp, "wb"), mode="wb", mtime=0) as _gz:  # noqa: SIM115
+            with tarfile.open(fileobj=_gz, mode="w") as _ctar:
+                for _rel in sorted(_members):
+                    _cp = workspace / _rel
+                    if _cp.exists():          # optional members ship when present
+                        _ctar.add(_cp, arcname=f"{_recipe.prefix}/{_rel}", filter=_norm)
+        verify_archive(_tmp, spec)
+        scratch.append(_tmp)
+        _bundle = _Planned(ArtifactType.mesh_bundle, ArtifactType.mesh_bundle.value,
+                           f"jobs/{job_id}/{_recipe.bundle}",
+                           "application/gzip", _tmp,
+                           required=is_required_class(spec.name,
+                                                      ArtifactType.mesh_bundle.value))
 
     # The VIEWER payload, rendered here because this process owns the engine workspace. The API
     # has no workspace in a hosted deployment, so anything it needs to show must become durable
@@ -331,11 +451,7 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
                          "application/json", _vpath,
                          required=is_required_class(spec.name, VIEWER_LOGICAL_KEY,
                                                     "structural" if _fea else "")))
-    plan.append(_Planned(ArtifactType.mesh_bundle, ArtifactType.mesh_bundle.value,
-                         f"jobs/{job_id}/{_recipe.bundle}",
-                         "application/gzip", _tmp,
-                         required=is_required_class(spec.name,
-                                                    ArtifactType.mesh_bundle.value)))
+    plan.append(_bundle)
     return plan
 
 
@@ -375,7 +491,8 @@ async def upload_job_artifacts(db, job_id: uuid.UUID, workspace: Path, *,
 
         for p in plan:
             # 1: local source must be a regular file (never follow a symlink out of the workspace).
-            if not (p.local_path.is_file() and not p.local_path.is_symlink()):
+            # A streamed one (RUN-7) has none: its bytes come from the exchange bucket.
+            if p.chunks is None and not (p.local_path.is_file() and not p.local_path.is_symlink()):
                 _msg = f"required source missing for {p.artifact_type.value}: {p.local_path}"
                 if p.required:
                     raise RequiredArtifactDeliveryError(_msg)
@@ -384,8 +501,9 @@ async def upload_job_artifacts(db, job_id: uuid.UUID, workspace: Path, *,
 
             # 2: upload. A required upload failure aborts delivery (no orphan - nothing was stored).
             try:
-                stored = store.upload_file(local_path=p.local_path, object_key=p.object_key,
-                                           content_type=p.content_type)
+                stored = (_upload_streamed(store, p, scratch_dir=workspace) if p.chunks is not None
+                          else store.upload_file(local_path=p.local_path, object_key=p.object_key,
+                                                 content_type=p.content_type))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("artifact_uploader: upload failed for %s key=%s: %s",
                                p.artifact_type.value, p.object_key, exc)
@@ -399,7 +517,8 @@ async def upload_job_artifacts(db, job_id: uuid.UUID, workspace: Path, *,
 
             # 3: integrity - the stored bytes must match the local file (size always; checksum when
             # the store reports an md5-shaped one). A corrupt/truncated object is NOT ready.
-            _bad = _verify_integrity(stored, p.local_path)
+            _bad = (_verify_streamed(store, stored, p) if p.chunks is not None
+                    else _verify_integrity(stored, p.local_path))
             if _bad:
                 logger.warning("artifact_uploader: integrity check failed for %s key=%s: %s",
                                p.artifact_type.value, p.object_key, _bad)
@@ -553,6 +672,9 @@ async def deliver_succeeded_run(session_factory, *, job_id: str, owner_id: str, 
                     raise RuntimeError(
                         "delivery report missing a required artifact despite normal return")
                 delivered = report.delivered
+                # the run's big files kept in the exchange bucket are in the artifact store now,
+                # committed: their exchange copies go (RUN-7; the bucket's lifecycle backs this up)
+                release_kept(_Path(workspace))
                 # Delivery succeeds at most once per run, so the announcement is ONE operation
                 # however many upload attempts preceded it.
                 publish(job_id).note(

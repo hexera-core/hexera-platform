@@ -39,7 +39,7 @@ def test_replayed_sew_then_rules_leaves_nothing_behind(tmp_path):
 
     assert directed.operations[0]["name"] == first["name"]
     measured = {m.name: m.value for m in directed.measurements}
-    assert measured["planner"] == "directed-v1"
+    assert measured["planner"] == "repair-v1"
     assert measured["operations_kept"] >= 1
     assert len(directed.entities) == len(plain.entities)
 

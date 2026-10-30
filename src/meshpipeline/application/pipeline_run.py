@@ -760,6 +760,9 @@ async def _run_async(req: JobRequest) -> dict:
         initial_state["fea_connection"] = await asyncio.to_thread(confirmed_connection, str(session_id or ""))
         from meshpipeline.application.fea_check import confirmed_gap_joins
         initial_state["fea_gap_joins"] = await asyncio.to_thread(confirmed_gap_joins, str(session_id or ""))
+        # PLAN-fea-19/20: the single pairs the user set on the stage (each pair's type, an overlap's owner)
+        from meshpipeline.application.fea_check import confirmed_pairs
+        initial_state["fea_pairs"] = await asyncio.to_thread(confirmed_pairs, str(session_id or ""))
 
         initial_state["repair_directives"] = list(req.repair_directives)
 

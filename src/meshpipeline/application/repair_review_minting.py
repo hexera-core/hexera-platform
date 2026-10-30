@@ -3,13 +3,14 @@
 # Boundaries: PURE MINTING. It reads a shape and a report and returns dicts; it opens no session,
 #             writes no row and calls no model. The terminal path persists what the node mints.
 # Collaborates with: cad/repair/triage.py (split), cad/repair/spotlight.py (the camera),
-#                    cad/repair/plan.py (what the rules planner would try), pipeline/repair_attempt.py.
+#                    cad/repair/directives.py (what the system would try), pipeline/repair_attempt.py.
 from __future__ import annotations
 
 import logging
 
+from meshpipeline.cad.repair.directives import RepairPlanner
 from meshpipeline.cad.repair.localize import EntityDefect
-from meshpipeline.cad.repair.plan import RulesPlanner, RunHistory
+from meshpipeline.cad.repair.plan import RunHistory
 from meshpipeline.cad.repair.spotlight import camera_for
 from meshpipeline.cad.repair.triage import DefectSplit, defect_from_entity
 
@@ -54,19 +55,20 @@ def _tried(defect: EntityDefect, operations) -> list[str]:
 
 
 def _proposal(shape, defect: EntityDefect, tried: list[str]) -> dict | None:
-    """What the RULES planner would try next on this defect alone, or None. Provenance only."""
+    """What CAD Repair System would try next on this defect alone, or None. Provenance only."""
     if not defect.fingerprint:
         return None
     try:
         history = RunHistory()
         for name in tried:
             history.mark_ineffective(defect.fingerprint, name)
-        candidate = RulesPlanner().propose([defect], history, shape=shape)
+        planner = RepairPlanner(())
+        candidate = planner.propose([defect], history, shape=shape)
     except Exception:  # noqa: BLE001 - a proposal is a convenience, never a reason to lose an item
         return None
     if candidate is None:
         return None
-    return {"source": "rules", "planner": RulesPlanner.label, "op": candidate.op.name,
+    return {"source": "cad-repair-system", "planner": planner.label, "op": candidate.op.name,
             "defect_code": candidate.defect_code.value,
             "targets": [t.fingerprint for t in candidate.targets]}
 
