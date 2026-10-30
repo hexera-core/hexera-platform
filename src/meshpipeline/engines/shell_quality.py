@@ -45,6 +45,8 @@ LIMITS = (
 )
 #: the triangle share a quad-dominant mesh should keep under (a note past it)
 TRIA_SHARE = 0.05
+#: SHMESH-14b: the relaxation also tries where each quad round a node would make it a parallelogram
+RELAX_PARALLELOGRAM = True
 #: NASTRAN'S OWN LIMITS (SHMESH-8): the MSC Nastran GEOMCHECK defaults, past which the solver itself warns (MSC
 #: Nastran Quick Reference Guide, GEOMCHECK). Every delivered element is held inside these; the tighter Femap /
 #: industry targets above are notes. Q4_WARP is Nastran's warping coefficient 2H / (D1 + D2) held at 0.05, as
@@ -74,12 +76,17 @@ def nastran_past(mesh: ShellMesh) -> np.ndarray:
     return out
 
 
+#: the mesh-making steps hold every element a hair inside each limit (a relative MARGIN), so that a quad made at
+#: exactly the limit (taper 0.5) never reads past it once its corners are numbered the other way round (sh0039)
+MARGIN = 1e-9
+
+
 def _quad_past(q: dict[str, np.ndarray]) -> np.ndarray:
     """(quads,) bool: the quad is past one of Nastran's own quad limits (or not valid)."""
     out = q["min_jacobian"] <= 0
     for shape, key, op, limit, _card in NASTRAN_LIMITS:
         if shape == "quad":
-            out = out | ((q[key] < limit) if op == ">=" else (q[key] > limit))
+            out = out | ((q[key] < limit * (1 + MARGIN)) if op == ">=" else (q[key] > limit * (1 - MARGIN)))
     return out
 
 
@@ -87,7 +94,7 @@ def _tria_past(t: dict[str, np.ndarray]) -> np.ndarray:
     out = t["min_jacobian"] <= 0
     for shape, key, op, limit, _card in NASTRAN_LIMITS:
         if shape == "tria":
-            out = out | ((t[key] < limit) if op == ">=" else (t[key] > limit))
+            out = out | ((t[key] < limit * (1 + MARGIN)) if op == ">=" else (t[key] > limit * (1 - MARGIN)))
     return out
 
 
@@ -128,7 +135,8 @@ def _past_count(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray) -> tuple[
 
 
 def relax_past(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, movable: np.ndarray, *,
-               rounds: int = 6) -> tuple[np.ndarray, int]:
+               rounds: int = 6, weights: tuple[int, int] = (1, 16), parallelogram: bool | None = None
+               ) -> tuple[np.ndarray, int]:
     """SHMESH-14: every movable node (inside a flat face, on no CAD edge) of an element past one of Nastran's own
     limits moves to the middle of its edge neighbours when its elements come out better: fewer past a limit, none
     turned over, and (on a tie) a larger smallest corner angle. The middle of coplanar neighbours lies in their
@@ -160,9 +168,11 @@ def relax_past(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, movable: n
     lo, hi = np.minimum(ea, eb), np.maximum(ea, eb)
     edges = np.unique(np.stack([lo, hi], axis=1), axis=0) if len(ea) else np.zeros((0, 2), dtype=np.int64)
 
-    def judge(ids: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Per element of `ids`: past a limit (or turned over), its smallest corner angle, turned over."""
+    def judge(ids: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Per element of `ids`: past a limit (or turned over), its smallest corner angle, turned over, and (quads)
+        past a limit with no cut into two triangles inside the triangle limits."""
         past = np.zeros(len(ids), dtype=bool)
+        hard = np.zeros(len(ids), dtype=bool)
         least = np.full(len(ids), 180.0)
         flip = np.zeros(len(ids), dtype=bool)
         isq = ids < nq
@@ -171,12 +181,25 @@ def relax_past(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, movable: n
             past[isq] = _quad_past(m)
             least[isq] = m["min_angle_quad"]
             flip[isq] = m["min_jacobian"] <= 0
+            qi = np.flatnonzero(isq)[past[isq]]
+            if len(qi):
+                q = elem[ids[qi]]
+                fails = [_tria_past(tria_measures(X, c.reshape(-1, 3))).reshape(-1, 2).any(axis=1)
+                         for c in (np.stack([q[:, [0, 1, 2]], q[:, [0, 2, 3]]], axis=1),
+                                   np.stack([q[:, [0, 1, 3]], q[:, [1, 2, 3]]], axis=1))]
+                hard[qi] = fails[0] & fails[1]
         if (~isq).any():
             m = tria_measures(X, elem[ids[~isq], :3])
             past[~isq] = _tria_past(m)
             least[~isq] = m["min_angle_tria"]
             flip[~isq] = m["min_jacobian"] <= 0
-        return past, least, flip
+        return past, least, flip, hard
+
+    def weigh(ids: np.ndarray, hard: np.ndarray) -> np.ndarray:
+        """Each element's weight when past a limit: weights[1] for a triangle; for a quad weights[0], or weights[1]
+        when no cut can mend it and quads weigh less than triangles (before the cut)."""
+        wq = np.where(hard & (weights[0] < weights[1]), weights[1], weights[0])
+        return np.where(ids < nq, wq, weights[1])
 
     moves = 0
     for _ in range(rounds):
@@ -206,9 +229,12 @@ def relax_past(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, movable: n
             counts = start[S + 1] - start[S]
             ids = np.concatenate([owner[start[v]:start[v + 1]] for v in taken])
             who = np.repeat(np.arange(len(S)), counts)
-            p0, l0, _f0 = judge(ids)
+            # a triangle past a limit stays past; a quad past one is cut into two triangles that mostly are not:
+            # a move never trades a quad for a triangle (one past triangle outweighs every quad round a node)
+            # (a quad no cut can mend counts as a triangle)
+            p0, l0, _f0, h0 = judge(ids)
             before_past = np.zeros(len(S), dtype=np.int64)
-            np.add.at(before_past, who, p0.astype(np.int64))
+            np.add.at(before_past, who, p0.astype(np.int64) * weigh(ids, h0))
             before_least = np.full(len(S), 180.0)
             np.minimum.at(before_least, who, l0)
             # the neighbours' middle of every node in S
@@ -227,18 +253,45 @@ def relax_past(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, movable: n
                 np.add.at(cnt, ib, 1.0)
             go = (cnt > 0) & (before_past > 0)
             old = X[S].copy()
-            X[S[go]] = acc[go] / cnt[go, None]
-            p1, l1, f1 = judge(ids)
-            after_past = np.zeros(len(S), dtype=np.int64)
-            np.add.at(after_past, who, p1.astype(np.int64))
-            after_least = np.full(len(S), 180.0)
-            np.minimum.at(after_least, who, l1)
-            after_flip = np.zeros(len(S), dtype=bool)
-            np.logical_or.at(after_flip, who, f1)
-            better = go & ~after_flip & ((after_past < before_past) |
-                                         ((after_past == before_past) & (after_least > before_least + 1e-9)))
-            X[S[~better]] = old[~better]
-            changed += int(better.sum())
+            mean = np.where(cnt[:, None] > 0, acc / np.maximum(cnt, 1.0)[:, None], old)
+            cands = [mean]
+            if (RELAX_PARALLELOGRAM if parallelogram is None else parallelogram) and nq:
+                # SHMESH-14b: where each quad round the node would make it a parallelogram (b + d - c, b and d its
+                # neighbours in the quad, c across), averaged; and half-way to each - the middle alone left
+                # tapered quads tapered
+                iso = np.zeros((len(S), 3))
+                icnt = np.zeros(len(S))
+                for j in range(4):
+                    at = np.isin(quads[:, j], S)
+                    if at.any():
+                        qq = quads[at]
+                        ii = np.array([pos[int(v)] for v in qq[:, j]], dtype=np.int64)
+                        np.add.at(iso, ii, X[qq[:, (j + 1) % 4]] + X[qq[:, (j + 3) % 4]] - X[qq[:, (j + 2) % 4]])
+                        np.add.at(icnt, ii, 1.0)
+                iso = np.where(icnt[:, None] > 0, iso / np.maximum(icnt, 1.0)[:, None], mean)
+                cands += [iso, 0.5 * (old + mean), 0.5 * (old + iso), 0.5 * (mean + iso)]
+            best = old.copy()
+            best_past = before_past.copy()
+            best_least = before_least.copy()
+            moved = np.zeros(len(S), dtype=bool)
+            for cand in cands:
+                X[S[go]] = cand[go]
+                p1, l1, f1, h1 = judge(ids)
+                after_past = np.zeros(len(S), dtype=np.int64)
+                np.add.at(after_past, who, p1.astype(np.int64) * weigh(ids, h1))
+                after_least = np.full(len(S), 180.0)
+                np.minimum.at(after_least, who, l1)
+                after_flip = np.zeros(len(S), dtype=bool)
+                np.logical_or.at(after_flip, who, f1)
+                better = go & ~after_flip & ((after_past < best_past) |
+                                             ((after_past == best_past) & (after_least > best_least + 1e-9)))
+                best[better] = cand[better]
+                best_past[better] = after_past[better]
+                best_least[better] = after_least[better]
+                moved |= better
+                X[S] = old
+            X[S] = best
+            changed += int(moved.sum())
         moves += changed
         if not changed:
             break
@@ -299,6 +352,257 @@ def flip_past_trias(xyz: np.ndarray, trias: np.ndarray, t_face: list[int], *, ro
         if not changed:
             break
     return T, swaps
+
+
+def _cycle(a: tuple[int, ...], b: tuple[int, ...]) -> list[int] | None:
+    """The outline (in their turning sense) of two elements that share exactly one edge, run opposite ways by the
+    two; None when they share no edge, more than one, run it the same way, or the outline is not one simple loop."""
+    da = [(a[i], a[(i + 1) % len(a)]) for i in range(len(a))]
+    db = [(b[i], b[(i + 1) % len(b)]) for i in range(len(b))]
+    sa = {(min(u, v), max(u, v)) for u, v in da}
+    shared = [e for e in ((min(u, v), max(u, v)) for u, v in db) if e in sa]
+    if len(shared) != 1:
+        return None
+    s = shared[0]
+    rest = [(u, v) for u, v in da + db if (min(u, v), max(u, v)) != s]
+    if sum(1 for u, v in da if (min(u, v), max(u, v)) == s and (u, v) in db) or len(rest) != len(da) + len(db) - 2:
+        return None
+    nxt: dict[int, int] = {}
+    for u, v in rest:
+        if u in nxt:
+            return None
+        nxt[u] = v
+    start = rest[0][0]
+    loop = [start]
+    while True:
+        nv = nxt.get(loop[-1])
+        if nv is None:
+            return None
+        if nv == start:
+            break
+        if nv in loop:
+            return None
+        loop.append(nv)
+    return loop if len(loop) == len(rest) else None
+
+
+def _good_quad(xyz: np.ndarray, q: list[int], normal: np.ndarray) -> float | None:
+    """The quad's smallest corner angle when it is valid, inside every Nastran quad limit and turns along `normal`;
+    else None."""
+    m = quad_measures(xyz, np.array([q], dtype=np.int64))
+    if bool(_quad_past(m)[0]):
+        return None
+    p = xyz[q]
+    if float(np.dot(np.cross(p[2] - p[0], p[3] - p[1]), normal)) <= 0:
+        return None
+    return float(m["min_angle_quad"][0])
+
+
+def _turns_along(xyz: np.ndarray, t: list[int], normal: np.ndarray) -> bool:
+    p = xyz[t]
+    return float(np.dot(np.cross(p[1] - p[0], p[2] - p[0]), normal)) > 0
+
+
+def walk_trias(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int], t_face: list[int], *,
+               depth: int = 8, targets: int = 6) -> tuple[np.ndarray, np.ndarray, list[int], list[int], int]:
+    """SHMESH-18: a triangle is walked through the quads of its face to the nearest other triangle of that face and
+    the two become one quad. Each step re-cuts the triangle and the quad ahead (a pentagon) into a quad and a
+    triangle that touches the next element of the path; the last step joins the two triangles. A walk is kept only
+    when every quad it leaves is valid, turns as the face does and is inside every one of Nastran's own quad limits;
+    the path's outline (and every face's own edges, and every node) stays as it was. Paths of at most `depth` quads,
+    the `targets` nearest triangles tried; triangles in number order. Deterministic.
+
+    Returns (quads, triangles, their faces, how many pairs of triangles became quads)."""
+    elems: dict[int, tuple[int, ...]] = {}
+    face: dict[int, int] = {}
+    for i, c in enumerate(quads.tolist()):
+        elems[i] = tuple(c)
+        face[i] = q_face[i]
+    base = len(elems)
+    for i, c in enumerate(trias.tolist()):
+        elems[base + i] = tuple(c)
+        face[base + i] = t_face[i]
+    users: dict[tuple[int, int], set[int]] = {}
+
+    def edges(c: tuple[int, ...]):
+        return [(min(c[i], c[(i + 1) % len(c)]), max(c[i], c[(i + 1) % len(c)])) for i in range(len(c))]
+
+    sides: dict[int, list[tuple[int, int]]] = {}
+    for e, c in elems.items():
+        sides[e] = edges(c)
+        for k in sides[e]:
+            users.setdefault(k, set()).add(e)
+
+    def across(e: int) -> list[tuple[int, tuple[int, int]]]:
+        out = []
+        for k in sides[e]:
+            u = users[k]
+            if len(u) == 2:
+                o = min(u - {e}) if len(u - {e}) == 1 else None
+                if o is not None and face[o] == face[e]:
+                    out.append((o, k))
+        return sorted(out)
+
+    def remove(e: int) -> None:
+        for k in sides.pop(e):
+            users[k].discard(e)
+        del elems[e]
+
+    nxt_id = [base + len(trias)]
+
+    def add(c: tuple[int, ...], f: int) -> int:
+        e = nxt_id[0]
+        nxt_id[0] += 1
+        elems[e] = c
+        face[e] = f
+        sides[e] = edges(c)
+        for k in sides[e]:
+            users.setdefault(k, set()).add(e)
+        return e
+
+    def _n(c: tuple[int, ...]) -> np.ndarray:
+        p = xyz[list(c)]
+        return np.cross(p[2] - p[0], p[3] - p[1]) if len(c) == 4 else np.cross(p[1] - p[0], p[2] - p[0])
+
+    def simulate(tri: tuple[int, ...], path: list[int], goal: int):
+        """The quads that replace the path and the two triangles, or None."""
+        if not path:
+            loop = _cycle(tri, elems[goal])
+            if loop is None or len(loop) != 4:
+                return None
+            return [loop] if _good_quad(xyz, loop, _n(elems[goal])) is not None else None
+        q = elems[path[0]]
+        normal = _n(q)
+        loop = _cycle(tri, q)
+        if loop is None or len(loop) != 5:
+            return None
+        ahead = elems[path[1]] if len(path) > 1 else elems[goal]
+        e_next = set(edges(q)) & set(edges(ahead))
+        if len(e_next) != 1:
+            return None
+        u, v = next(iter(e_next))
+        options = []
+        for i in range(5):
+            t = [loop[i - 1], loop[i], loop[(i + 1) % 5]]
+            if not ({u, v} <= set(t) and ({u, v} == {t[0], t[1]} or {u, v} == {t[1], t[2]})):
+                continue
+            quad = [loop[(i + 1) % 5], loop[(i + 2) % 5], loop[(i + 3) % 5], loop[(i + 4) % 5]]
+            if not _turns_along(xyz, t, normal):
+                continue
+            g = _good_quad(xyz, quad, normal)
+            if g is not None:
+                options.append((-round(g, 9), i, quad, tuple(t)))
+        for _g, _i, quad, tt in sorted(options):
+            rest = simulate(tt, path[1:], goal)
+            if rest is not None:
+                return [quad] + rest
+        return None
+
+    walked = 0
+    for start in range(base, base + len(trias)):
+        if start not in elems:
+            continue
+        f0 = face[start]
+        c0 = elems[start]
+        # breadth first through the face's quads to its nearest triangles
+        parent = {start: -1}
+        level = [start]
+        found: list[int] = []
+        for _d in range(depth + 1):
+            nxt_level = []
+            for e in level:
+                for o, _k in across(e):
+                    if o in parent:
+                        continue
+                    parent[o] = e
+                    if len(elems[o]) == 3:
+                        found.append(o)
+                    else:
+                        nxt_level.append(o)
+            if len(found) >= targets or not nxt_level:
+                break
+            level = nxt_level
+        for goal in found[:targets]:
+            path = []
+            e = parent[goal]
+            while e != start:
+                path.append(e)
+                e = parent[e]
+            path.reverse()
+            got = simulate(c0, path, goal)
+            if got is None:
+                continue
+            for e in [start, goal] + path:
+                remove(e)
+            for qd in got:
+                add(tuple(qd), f0)
+            walked += 1
+            break
+    Q = [(e, c) for e, c in sorted(elems.items()) if len(c) == 4]
+    T = [(e, c) for e, c in sorted(elems.items()) if len(c) == 3]
+    return (np.array([c for _e, c in Q], dtype=np.int64).reshape(-1, 4),
+            np.array([c for _e, c in T], dtype=np.int64).reshape(-1, 3),
+            [face[e] for e, _c in Q], [face[e] for e, _c in T], walked)
+
+
+def pair_trias(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, t_face: list[int]
+               ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """SHMESH-17: two triangles of one face across an edge that is theirs alone become one quad when that quad is
+    valid and inside every one of Nastran's own quad limits. Pairs are taken best first (the larger smallest corner
+    angle, then the lower triangle numbers), each triangle once. Deterministic.
+
+    Returns (the new quads (k, 4) in the first triangle's turning sense, the indices of the triangles kept, the
+    triangle each new quad's face comes from)."""
+    none = np.zeros((0, 4), dtype=np.int64), np.arange(len(trias)), np.zeros(0, dtype=np.int64)
+    if len(trias) < 2:
+        return none
+    users: dict[tuple[int, int], list[int]] = {}
+    for i, c in enumerate(quads.tolist()):
+        for k in range(4):
+            a, b = c[k], c[(k + 1) % 4]
+            users.setdefault((min(a, b), max(a, b)), []).append(-1 - i)
+    for i, c in enumerate(trias.tolist()):
+        for k in range(3):
+            a, b = c[k], c[(k + 1) % 3]
+            users.setdefault((min(a, b), max(a, b)), []).append(i)
+    cand_q, cand_t = [], []
+    for i, c in enumerate(trias.tolist()):
+        for k in range(3):
+            a, b, p = c[k], c[(k + 1) % 3], c[(k + 2) % 3]        # i runs a -> b, p opposite
+            u = users[(min(a, b), max(a, b))]
+            if len(u) != 2 or min(u) < 0:
+                continue
+            j = u[0] if u[1] == i else u[1]
+            if j <= i or t_face[j] != t_face[i]:
+                continue
+            rest = [x for x in trias[j].tolist() if x not in (a, b)]
+            if len(rest) != 1:
+                continue
+            cand_q.append([a, rest[0], b, p])                     # a -> s -> b -> p keeps i's turning sense
+            cand_t.append((i, j))
+    if not cand_q:
+        return none
+    Q = np.array(cand_q, dtype=np.int64)
+    m = quad_measures(xyz, Q)
+    ok = ~_quad_past(m)
+    # the quad must turn the way both its triangles do
+    n_q = np.cross(xyz[Q[:, 2]] - xyz[Q[:, 0]], xyz[Q[:, 3]] - xyz[Q[:, 1]])
+    for col in (0, 1):
+        t = trias[np.array([ct[col] for ct in cand_t])]
+        n_t = np.cross(xyz[t[:, 1]] - xyz[t[:, 0]], xyz[t[:, 2]] - xyz[t[:, 0]])
+        ok &= np.einsum("mi,mi->m", n_q, n_t) > 0
+    order = sorted(np.flatnonzero(ok).tolist(), key=lambda r: (-round(float(m["min_angle_quad"][r]), 9), cand_t[r]))
+    used: set[int] = set()
+    new_q, came = [], []
+    for r in order:
+        i, j = cand_t[r]
+        if i in used or j in used:
+            continue
+        used |= {i, j}
+        new_q.append(cand_q[r])
+        came.append(i)
+    keep = np.array([i for i in range(len(trias)) if i not in used], dtype=np.int64)
+    return np.array(new_q, dtype=np.int64).reshape(-1, 4), keep, np.array(came, dtype=np.int64)
 
 
 def _unit(v: np.ndarray) -> np.ndarray:

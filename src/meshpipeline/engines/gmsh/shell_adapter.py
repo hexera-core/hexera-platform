@@ -39,6 +39,18 @@ FLIP_PAST = True
 #: SHMESH-12: merge the ends of sliver edges (under the floor and a fifth of their elements' longest edges)
 COLLAPSE_SHORT = True
 RESPLINE_MAX = 16
+#: SHMESH-17: two triangles of a face that together make a quad inside Nastran's own limits are joined into it
+PAIR_TRIAS = True
+#: SHMESH-18: a triangle walked through at most WALK_DEPTH quads of its face to meet another (0: off)
+WALK_DEPTH = 6
+#: SHMESH-19: every face's boundary given an even number of segments before the 2D mesh (Blossom's condition)
+EVEN_FACES = True
+#: at most GROW_GROUPS grading sizes; past that, sizes taken down to steps of GROW_STEP (a quarter octave)
+GROW_GROUPS = 48
+GROW_STEP = 2.0 ** 0.25
+#: how closely gmsh integrates the size field along a curve to place its nodes: gmsh's own 1e-9 kept a ship's 1D mesh
+#: (24,000 curves, sh0048) going for over 30 minutes; 1e-3 places nodes to a thousandth (counts within 0.2%)
+LC_PRECISION = 1e-3
 #: SHMESH-16: narrow four-sided strips meshed as mapped grids, stretched along them up to STRETCH_MAX times their
 #: size across (Femap's aspect target: 5); a strip's opposite sides alike within STRIP_ALIKE, its long sides at
 #: least STRIP_LONG times its ends
@@ -72,6 +84,72 @@ def _generate(gmsh, tag_of: dict[int, int]) -> None:
         if m and int(m.group(1)) in tag_of:
             raise _Periodic(tag_of[int(m.group(1))]) from exc
         raise
+
+
+def _even_faces(gmsh, tag_of: dict[int, int], fixed: set[int], floor: dict[int, float]) -> int:
+    """SHMESH-19: Blossom can pair every triangle of a face into quads only when the face's boundary has an even
+    number of segments; with an odd number gmsh fell back and left hundreds of triangles (sh0019: 687 on one plate).
+    After the 1D mesh, each face with an odd count gets one segment more on one of its own free curves (a rim no
+    other face meshes), the most evenly divided one (a hole's circle before a graded edge), the longest count on a
+    tie; a face with no free curve takes it on a curve it shares with one other odd face, which evens both. Curves
+    in `fixed` (already set: mapped strips) are left, and so is a curve whose segments would come out under the floor
+    of a face it bounds (`floor`, per surface; a 0.7 mm spline cut in 3 left slivers). The most evenly divided means
+    to a tenth; then the most segments (the smallest change).
+    The 1D mesh is then cleared, so the caller meshes again.
+    Returns how many curves were given a segment more."""
+    gmsh.model.mesh.generate(1)
+    seg: dict[int, int] = {}
+    spread: dict[int, float] = {}
+    length: dict[int, float] = {}
+    for _d, c in gmsh.model.getEntities(1):
+        _t, _tags, nodes = gmsh.model.mesh.getElements(1, c)
+        conn = np.concatenate([np.asarray(x, dtype=np.int64) for x in nodes]).reshape(-1, 2) if nodes else np.zeros((0, 2), dtype=np.int64)
+        seg[c] = len(conn)
+        if len(conn):
+            tags, xyz, _p = gmsh.model.mesh.getNodes(1, c, includeBoundary=True)
+            at = {int(t): i for i, t in enumerate(tags)}
+            p = np.asarray(xyz, dtype=float).reshape(-1, 3)
+            ln = np.array([np.linalg.norm(p[at[int(a)]] - p[at[int(b)]]) for a, b in conn])
+            spread[c] = round(float(ln.max() / max(ln.min(), 1e-300)), 1)
+            length[c] = float(ln.sum())
+    faces_of: dict[int, list[int]] = {}
+    bound: dict[int, list[int]] = {}
+    for t in sorted(tag_of):
+        bound[t] = sorted(abs(c) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False))
+        for c in bound[t]:
+            faces_of.setdefault(c, []).append(t)
+    odd = {t for t in bound if sum(seg.get(c, 0) for c in bound[t]) % 2}
+    bumped: set[int] = set()
+
+    def ok(c: int) -> bool:
+        return (c not in fixed and c not in bumped and seg.get(c, 0) > 0
+                and length[c] / (seg[c] + 1) >= max(floor.get(t, 0.0) for t in faces_of.get(c, [])))
+
+    for t in sorted(odd):
+        if t not in odd:
+            continue
+        free = [c for c in bound[t] if ok(c) and faces_of.get(c) == [t]]
+        if not free:
+            continue
+        c = min(free, key=lambda c: (spread.get(c, 1.0), -seg[c], c))
+        bumped.add(c)
+        odd.discard(t)
+    for t in sorted(odd):
+        if t not in odd:
+            continue
+        shared = [c for c in bound[t] if ok(c) and len(faces_of.get(c, [])) == 2
+                  and [o for o in faces_of[c] if o != t][0] in odd]
+        if not shared:
+            continue
+        c = min(shared, key=lambda c: (spread.get(c, 1.0), -seg[c], c))
+        bumped.add(c)
+        odd -= set(faces_of[c])
+    for c in sorted(bumped):
+        gmsh.model.mesh.setTransfiniteCurve(c, seg[c] + 2)
+    if bumped:
+        # (clearing only the curves given a segment more left their end nodes behind: gmsh found open loops)
+        gmsh.model.mesh.clear()
+    return len(bumped)
 
 
 def _arc_radius(gmsh, curve: int) -> float | None:
@@ -343,6 +421,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         gmsh.option.setNumber("Mesh.MeshSizeMin", plan_rules.FLOOR_WALLS * min(walls) / mm)
         gmsh.option.setNumber("Mesh.MeshSizeMax", max(r["size_mm"] for r in rows) / mm)
         gmsh.option.setNumber("Mesh.Smoothing", 5)
+        gmsh.option.setNumber("Mesh.LcIntegrationPrecision", LC_PRECISION)
         gmsh.model.add("shell")
         gmsh.model.occ.importShapes(str(brep), highestDimOnly=False)
         gmsh.model.occ.synchronize()
@@ -410,30 +489,49 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 abs(c) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False) if abs(c) not in long_sides)
             if long_sides:
                 rims.setdefault(float(f"{along * mm:.6g}"), []).extend(long_sides)
-        for h, curves in sorted(rims.items()):
-            grow(curves, h / mm)
+        # one field per size, not per face: gmsh reads every field of the Min at every point it sizes, and a ship's
+        # 5,392 faces made 5,392 constant fields (sh0048: its 1D mesh alone ran past 30 minutes). The same sizes.
+        const_by: dict[float, list[int]] = {}
+        arcs_by: dict[float, list[int]] = {}
         for t, k in sorted(tag_of.items()):
-            fid = gmsh.model.mesh.field.add("Constant")
-            gmsh.model.mesh.field.setNumber(fid, "VIn", rows[k]["size_mm"] / mm)
-            gmsh.model.mesh.field.setNumbers(fid, "SurfacesList", [t])
-            gmsh.model.mesh.field.setNumber(fid, "IncludeBoundary", 1)
-            fields.append(fid)
+            const_by.setdefault(float(rows[k]["size_mm"]), []).append(t)
             if "curve_mm" in rows[k]:
                 # SHMESH-3: each arc of the face refined to its OWN radius's size, then grown; its straight edges
                 # and wider arcs keep the face's size (one small hole no longer refines the whole rim)
-                by_size: dict[float, list[int]] = {}
                 for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False):
                     r = _arc_radius(gmsh, abs(c))
                     if r is None:
                         continue
                     h0, _rule = plan_rules.curve_size(r * mm, wall=rows[k]["wall_mm"])
                     if h0 < rows[k]["size_mm"]:
-                        by_size.setdefault(float(f"{h0:.6g}"), []).append(abs(c))
-                for h0_mm, arcs in sorted(by_size.items()):
-                    grow(arcs, h0_mm / mm)
-        mn = gmsh.model.mesh.field.add("Min")
+                        arcs_by.setdefault(float(f"{h0:.6g}"), []).append(abs(c))
+        for h_mm, surfs in sorted(const_by.items()):
+            fid = gmsh.model.mesh.field.add("Constant")
+            gmsh.model.mesh.field.setNumber(fid, "VIn", h_mm / mm)
+            gmsh.model.mesh.field.setNumbers(fid, "SurfacesList", surfs)
+            gmsh.model.mesh.field.setNumber(fid, "IncludeBoundary", 1)
+            fields.append(fid)
+        grading: dict[float, list[int]] = {}
+        for h, curves in list(rims.items()) + list(arcs_by.items()):
+            grading.setdefault(h, []).extend(curves)
+        if len(grading) > GROW_GROUPS:
+            # gmsh reads every grading field at every point it sizes: a ship's 221 of them held its 1D mesh past 30
+            # minutes. Past GROW_GROUPS sizes, each size is taken down to its step of GROW_STEP (finer, never coarser)
+            binned: dict[float, list[int]] = {}
+            for h, curves in grading.items():
+                b = float(f"{GROW_STEP ** math.floor(math.log(h) / math.log(GROW_STEP) + 1e-9):.6g}")
+                binned.setdefault(b, []).extend(curves)
+            grading = binned
+        for h, curves in sorted(grading.items()):
+            grow(curves, h / mm)
+        mn =gmsh.model.mesh.field.add("Min")
         gmsh.model.mesh.field.setNumbers(mn, "FieldsList", fields)
         gmsh.model.mesh.field.setAsBackgroundMesh(mn)
+        evened = 0
+        if EVEN_FACES:
+            fixed = {abs(c) for t in mapped for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)}
+            evened = _even_faces(gmsh, tag_of, fixed, {t: plan_rules.FLOOR_WALLS * rows[k]["wall_mm"] / mm
+                                                       for t, k in tag_of.items()})
         _generate(gmsh, tag_of)
         node_tags, coords, _p = gmsh.model.mesh.getNodes()
         tags = np.asarray(node_tags, dtype=np.int64)
@@ -475,7 +573,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         Q, T, q_face, t_face, merged = shell_mesh.collapse_short(xyz / mm, Q, T, q_face, t_face, limit)
     relaxed = 0
     if RELAX_ROUNDS:
-        xyz, relaxed = shell_quality.relax_past(xyz, Q, T, movable, rounds=RELAX_ROUNDS)
+        # the neighbours' middle first; then also where each quad round a node would be a parallelogram (SHMESH-14b),
+        # for what the middle left past a limit (tried at once, the parallelogram moves mended a quad and left a
+        # sliver triangle beside it that the middle had mended)
+        xyz, relaxed = shell_quality.relax_past(xyz, Q, T, movable, rounds=RELAX_ROUNDS, parallelogram=False)
+        if shell_quality.RELAX_PARALLELOGRAM:
+            xyz, again = shell_quality.relax_past(xyz, Q, T, movable, rounds=RELAX_ROUNDS, parallelogram=True)
+            relaxed += again
     split = 0
     if SPLIT_PAST:
         # SHMESH-10: a quad past Nastran's own limits becomes two triangles
@@ -495,6 +599,25 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     if FLIP_PAST and len(T):
         # SHMESH-13: a triangle past a limit swaps its longest edge with its neighbour's when both come out better
         T, flipped = shell_quality.flip_past_trias(xyz, T, t_face)
+    if RELAX_ROUNDS and split and len(T):
+        # SHMESH-14 once more, after the cut, for the triangles it left past a limit; no quad may come out past one
+        # (a quad past a limit outweighs every triangle round a node)
+        xyz, again = shell_quality.relax_past(xyz, Q, T, movable, rounds=RELAX_ROUNDS, weights=(64, 1))
+        relaxed += again
+    paired = 0
+    if PAIR_TRIAS and len(T) > 1:
+        # SHMESH-17: two triangles of a face that make a quad inside Nastran's limits become that quad
+        new_q, kept, came = shell_quality.pair_trias(xyz, Q, T, t_face)
+        if len(new_q):
+            tf = np.array(t_face, dtype=np.int64)
+            Q = np.vstack([Q, new_q])
+            q_face = q_face + tf[came].tolist()
+            T, t_face = T[kept], tf[kept].tolist()
+            paired = len(new_q)
+    walked = 0
+    if WALK_DEPTH and len(T) > 1:
+        # SHMESH-18: a triangle walked through its face's quads to the nearest other triangle, the two made one quad
+        Q, T, q_face, t_face, walked = shell_quality.walk_trias(xyz, Q, T, q_face, t_face, depth=WALK_DEPTH)
     # keep only the nodes the elements use, renumbered in order
     used = np.unique(np.concatenate([Q.ravel(), T.ravel()]))
     remap = np.full(len(xyz), -1, dtype=np.int64)
@@ -528,6 +651,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     quality["relaxed_nodes"] = relaxed
     quality["merged_nodes"] = merged
     quality["flipped"] = flipped
+    quality["paired"] = paired
+    quality["walked"] = walked
+    quality["evened_curves"] = evened
     quality["sliver_faces"] = slivers
     if slivers:
         mesh.notes.append(f"{slivers} sewn face(s) under a fifth of the floor across (CAD slivers) carry no "
