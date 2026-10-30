@@ -431,6 +431,22 @@ class BoundaryIndex:
         return int(self.meta["n_faces"])
 
     @property
+    def offs(self):
+        """Where each face's corners start in `conn`, derived on first use and kept.
+
+        It is the one thing about an index that cannot be memory-mapped: a running total has to
+        be walked. Deriving it when something actually needs it keeps `open_index` free, which
+        matters because a request opens the index several times and only one of those ever packs.
+        """
+        import numpy as np
+
+        got = self._a.get("offs")
+        if got is None:
+            got = np.concatenate(([0], np.cumsum(np.asarray(self._a["sizes"], dtype=np.int64))))
+            self._a["offs"] = got
+        return got
+
+    @property
     def patches(self) -> list[dict]:
         return list(self.meta.get("patches") or ())
 
@@ -508,7 +524,7 @@ class BoundaryIndex:
         pts = self._a["points"]
         if not ids.size:
             return b"", b""
-        offs = self._a["offs"]
+        offs = self.offs
         take = np.concatenate([np.arange(offs[i], offs[i + 1]) for i in ids])
         mine = conn[take].astype(np.int64)
         sz = sizes[ids].astype(np.int64)
@@ -581,17 +597,25 @@ def open_index(polymesh) -> BoundaryIndex:
     def mm(name, dtype, shape):
         return np.memmap(d / name, dtype=dtype, mode="r", shape=shape)
 
-    sizes = mm("sizes.u8", np.uint8, (n_f,))
-    offs = np.concatenate(([0], np.cumsum(np.asarray(sizes, dtype=np.int64))))
+    # NOTHING IS READ HERE, and that is the point. Every array below is a memmap, so opening an
+    # index costs a handful of stat calls whatever the mesh's size. The one thing that was not
+    # was the offsets: `cumsum` materialised the whole uint8 sizes array and walked it. Measured
+    # on the customer plate's 13,181,685-face coolant side, 2026-10-30: `open_index` cost
+    # 0.136 s, of which 57% was that one cumsum - and a single detail request opens the index
+    # FOUR times, once per region in `detail_at` and once more inside each `open_quality`. That
+    # was 0.55 s of a 0.78 s request spent recomputing the same thing four times.
+    # `BoundaryIndex.offs` derives it on first use instead, and only `pack` ever asks for it.
+    #
+    # The connectivity's length comes off the file rather than from the sizes' sum, for the same
+    # reason: it is a uint32 each, so the file's own size says how many there are.
     arrays = {
         "points": mm("points.f32", np.float32, (n_p, 3)),
-        "sizes": sizes,
-        "conn": mm("conn.u32", np.uint32, (int(offs[-1]),)),
+        "sizes": mm("sizes.u8", np.uint8, (n_f,)),
+        "conn": mm("conn.u32", np.uint32, ((d / "conn.u32").stat().st_size // 4,)),
         "centroids": mm("centroids.f32", np.float32, (n_f, 3)),
         "patch_of": mm("patch_of.u16", np.uint16, (n_f,)),
         "bucket_face": mm("bucket_face.u32", np.uint32, (n_f,)),
         "bucket_start": mm("bucket_start.i64", np.int64, (nb + 1,)),
-        "offs": offs,
     }
     return BoundaryIndex(d, meta, arrays)
 
