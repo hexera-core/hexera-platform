@@ -40,8 +40,8 @@ class _Shot:
 # ------------------------------------------------------------------------------ merging ----
 def test_the_model_names_the_stickers_and_the_code_keeps_the_positions():
     vision = {"part": "pipe elbow", "flow": "internal", "input_kind": "body-surface", "confidence": 0.9,
-              "openings": [{"id": 2, "name": "inlet", "role": "inlet", "confidence": 0.8},
-                           {"id": 1, "name": "outlet", "role": "outlet", "confidence": 0.8}]}
+              "openings": [{"id": 2, "name": "inlet", "role": "inlet", "confidence": 0.9},
+                           {"id": 1, "name": "outlet", "role": "outlet", "confidence": 0.9}]}
     p = gc._merge(_facts(), vision)
     by_id = {o["id"]: o for o in p["openings"]}
     assert by_id[2]["role"] == "inlet" and by_id[2]["centroid_mm"] == [1197.1, 867.2, 0.0]
@@ -57,12 +57,15 @@ def test_a_sticker_the_model_invents_is_ignored():
     assert [o["name"] for o in p["openings"]] == ["inlet", "outlet"]
 
 
-def test_the_kind_follows_whoever_is_surer():
+def test_the_kind_follows_the_model_only_when_it_is_clearly_surer():
     facts = _facts()
     unsure = {"part": "x", "flow": "external", "input_kind": "solid-body", "confidence": 0.3, "openings": []}
     assert gc._merge(facts, unsure)["input_kind"] == "body-surface"      # the code was surer (0.9)
     sure = dict(unsure, confidence=0.95)
-    assert gc._merge(facts, sure)["input_kind"] == "solid-body"
+    assert gc._merge(facts, sure)["input_kind"] == "body-surface"        # 0.95 is not 0.15 above 0.9
+    facts["confidence"]["input_kind"] = 0.7
+    p = gc._merge(facts, sure)
+    assert (p["input_kind"], p["flow"]) == ("solid-body", "external")
 
 
 def test_without_the_model_the_codes_names_stand_and_the_user_is_told():
@@ -465,7 +468,8 @@ def test_where_the_nose_sits_in_a_named_picture_becomes_the_flow_direction():
 
 def test_the_users_stated_direction_wins_over_the_nose():
     top = _View("top", (0.0, 0.0, -1.0), up=(0.0, 1.0, 0.0))
-    a = gc._flow_from_nose({"nose_view": "top", "nose_side": "left", "flow_axis": "+y"}, [top])
+    a = gc._flow_from_nose({"nose_view": "top", "nose_side": "left", "flow_axis": "+y"}, [top],
+                           "a car, the air flows along +y")
     assert a["flow_axis"] == "+y" and a["flow_from"] == "the user's words"
     a = gc._flow_from_nose({"nose_view": "top", "nose_side": "left", "flow_axis": "unknown"}, [top])
     assert a["flow_axis"] == "+x" and a["flow_from"] == "the nose"

@@ -1015,10 +1015,28 @@ async def _run_async(req: JobRequest) -> dict:
         # reviewer's notes - the notes shown, labelled, deciding nothing. Both None in shadow.
         from meshpipeline.application.final_result import (
             measured_verdict_caveat,
+            recorded_review_verdict,
             reviewer_notes_caveat,
         )
         _verdict_caveat = measured_verdict_caveat(_run_outcome)
         _notes_caveat = reviewer_notes_caveat(_run_outcome)
+        try:
+            # the why record says when the recorded review verdict is the measured one (VER-6) and
+            # which reviewer points a measurement settled (VER-7)
+            from meshpipeline.contracts import decision_record as _dr
+            _recorded = recorded_review_verdict(_run_outcome)
+            if _recorded != str(_run_outcome.reviewer_verdict or ""):
+                _dr.cite(job_id, stage="review_record", decided="recorded review verdict",
+                         value=_recorded, rule="VER-6",
+                         inputs={"model_verdict": str(_run_outcome.reviewer_verdict or "")},
+                         alternatives=[str(_run_outcome.reviewer_verdict or "")],
+                         words="the measured limits decided this run; the review's own call is a note")
+            for _s in (_notes_caveat or {}).get("settled") or []:
+                _dr.cite(job_id, stage="review_record", decided=f"reviewer point {_s.get('axis_key')}",
+                         value="settled", rule="VER-7", inputs={"by": _s.get("settled_by")},
+                         words=f"the measurement settles it: {_s.get('settled_by')}")
+        except Exception:  # noqa: BLE001 - a record never touches a verdict
+            jlog.debug("review record: why entries not kept", exc_info=True)
         verdict, api_failure = _run_outcome.reviewer_verdict, _run_outcome.api_failure
 
         retry_count = _run_outcome.retry_count
@@ -1238,7 +1256,9 @@ async def _run_async(req: JobRequest) -> dict:
                 fidelity_policy_version=req.fidelity_policy_version,
                 approved_snapshot_id=str(final_state.get("approved_snapshot_id", "") or ""),
                 executor_success=bool(final_state.get("executor_success", False)),
-                reviewer_verdict=str(final_state.get("reviewer_verdict", "") or ""),
+                # VER-6: once the measured limits decide, the recorded review verdict is theirs;
+                # the model's own call rides beside its notes
+                reviewer_verdict=recorded_review_verdict(_run_outcome),
                 # A MESH THE MEASURED LIMITS REFUSED is told as the check it failed (row, measured,
                 # limit), never as "could not be stored for download"
                 failed_gate=(MEASURED_LIMITS_GATE if _limits_failed

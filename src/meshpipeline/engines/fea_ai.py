@@ -23,7 +23,8 @@ The rules turn it into sizes (AI-fea-n, docs/RULES.md):
   AI-fea-4  a budget the user named lowers the element limit, never raises it.
   AI-fea-5  THE MINIMUMS HOLD after every choice: 2 through every wall, 4 per quarter-turn of every
             round, the corner cap, valid elements, the element, memory and time limits, the gates.
-  AI-fea-6  no answer, a wrong answer or no AI: the rules' own plan, said in one line.
+  AI-fea-6  no answer, a wrong answer or a busy AI: the decision saved for this same question, else the
+            rules' own plan, said in one line (and in the why record).
   AI-fea-7  a joint suggestion is shown for the user to confirm, never applied.
   AI-fea-8  after a failed pass the AI may pick one lever from the ones the ladder allows there.
 """
@@ -546,12 +547,14 @@ def decisions(ai: Mapping | None) -> list[dict]:
 
     if ai.get("status") != "used":
         return [{"stage": "fea_ai", "decided": "rules only", "value": ai.get("status"), "rule": "AI-fea-6",
-                 "inputs": {"note": ai.get("note"), "dropped": ai.get("dropped") or []},
+                 "inputs": {"note": ai.get("note"), "dropped": ai.get("dropped") or [],
+                            "saved": ai.get("source") or ""},
                  "words": str(ai.get("note") or "The rules' own plan.")}]
     d = ai.get("decision") or {}
     out = [{"stage": "fea_ai", "decided": "analysis", "value": d.get("analysis"), "rule": "AI-fea-1",
             "source": SOURCE_AI_LEVER, "inputs": {"key": ai.get("key"), "matters": d.get("matters"),
-                                                 "dropped": ai.get("dropped") or []},
+                                                 "dropped": ai.get("dropped") or [],
+                                                 "from": ai.get("source") or "model"},
             "words": str(d.get("matters") or "")}]
     for a in ai.get("applied") or []:
         out.append({"stage": "fea_ai", "decided": f"{a['choice']} {a['id']}", "value": bool(a.get("done")),
@@ -587,12 +590,25 @@ def _args_of(round_result, tool: str) -> str | None:
 MIN_WAIT_S = 20.0
 
 
+def _choice(tool: dict) -> dict:
+    return {"type": "function", "function": {"name": tool["function"]["name"]}}
+
+
 async def _ask(messages: list[dict], tool: dict, *, job_id: str, user_id: str, wait_s: float = TIMEOUT_S):
     from meshpipeline.contracts import model_inference as llm_router
 
     return await asyncio.wait_for(llm_router.call_builder_model(
-        messages, tools=[tool], tool_choice={"type": "function", "function": {"name": tool["function"]["name"]}},
+        messages, tools=[tool], tool_choice=_choice(tool),
         job_id=job_id, user_id=user_id), timeout=min(TIMEOUT_S, float(wait_s)))
+
+
+def _saved(messages: list[dict], tool: dict, *, job_id: str, user_id: str):
+    """AI-fea-6: the decision saved for this same question (the AI decision cache, keyed by what the
+    model is shown and the owner), so a busy, slow or failed AI gives the same plan as an available
+    one. None when nothing is saved."""
+    from meshpipeline.contracts.decision_cache import recorded_answer
+    return recorded_answer("builder", messages=messages, tools=[tool], tool_choice=_choice(tool),
+                           job_id=job_id, user_id=user_id)
 
 
 def _account(run, round_result) -> None:
@@ -615,37 +631,55 @@ async def decide(record: Mapping, state: Mapping, zone_list: list[dict], *, diag
     the most the attempt can give the model, after the meshing it still has to do."""
     if not (FEA_AI if enabled is None else enabled):
         return section(None, [], status="off", note="")
-    if wait_s < MIN_WAIT_S:
-        return section(None, [], status="no_time",
-                       note="The AI was not asked (the attempt had no time to spare); this is the rules' own mesh.")
     b = brief(record, state, zone_list, diag_m=diag_m, limit=limit)
     msgs = messages_for(b)
     tool = decision_tool(with_notes="user_notes" in b)
     key = _key(msgs, tool)
+    user_id = str((state or {}).get("user_id") or "")
+
+    def _without_the_model(status: str, why: str, problems: list[str] | None = None) -> dict:
+        """AI-fea-6: the AI did not give a usable decision just now - its SAVED decision for this
+        same question when there is one (the result never depends on the AI being available), else
+        the rules' own plan; either way the plan says which."""
+        rr_saved = _saved(msgs, tool, job_id=job_id, user_id=user_id)
+        args_saved = _args_of(rr_saved, TOOL_DECISION) if rr_saved is not None else None
+        if args_saved is not None:
+            saved, saved_problems = validate(args_saved, b)
+            if saved is not None:
+                logger.info("fea ai: %s - the saved decision for this part is used - job_id=%s", why, job_id)
+                out = section(saved, [], status="used", key=key, problems=saved_problems,
+                              note=f"The AI was not available just now ({why}); its saved decision for this "
+                                   "same part and these same words was used.")
+                out["source"] = "saved"
+                return out
+        logger.warning("fea ai: no decision (%s) and none saved - the rules' own plan - job_id=%s", why, job_id)
+        out = section(None, [], status=status, key=key, problems=problems,
+                      note=f"The AI's choices were not used ({why}); nothing was saved for this part, so this "
+                           "is the rules' own mesh.")
+        out["source"] = "rules (nothing saved)"
+        return out
+
+    if wait_s < MIN_WAIT_S:
+        return _without_the_model("no_time", "the attempt had no time to spare")
     from meshpipeline.contracts import execution_guard as _fence
 
     # FENCE: a fenced worker must not spend provider budget on a part a newer generation owns
     await _fence.assert_still_owner("fea ai decision")
     try:
-        rr = await _ask(msgs, tool, job_id=job_id, user_id=str((state or {}).get("user_id") or ""), wait_s=wait_s)
+        rr = await _ask(msgs, tool, job_id=job_id, user_id=user_id, wait_s=wait_s)
     except StaleExecutionPublish:
         raise
     except Exception as exc:  # noqa: BLE001 - AI-fea-6: the AI never fails a run
-        logger.warning("fea ai: no decision (%s) - the rules' own plan - job_id=%s", type(exc).__name__, job_id)
-        return section(None, [], status="failed", key=key,
-                       note=f"The AI's choices were not used ({type(exc).__name__}); this is the rules' own mesh.")
+        return _without_the_model("failed", type(exc).__name__)
     _account(run, rr)
     if getattr(rr, "failure_marker", ""):
-        return section(None, [], status="failed", key=key,
-                       note=f"The AI's choices were not used ({rr.failure_marker}); this is the rules' own mesh.")
+        return _without_the_model("failed", str(rr.failure_marker))
     args = _args_of(rr, TOOL_DECISION)
     if args is None:
-        return section(None, [], status="invalid", key=key,
-                       note="The AI's choices were not used (it gave no decision); this is the rules' own mesh.")
+        return _without_the_model("invalid", "it gave no decision")
     decision, problems = validate(args, b)
     if decision is None:
-        return section(None, [], status="invalid", key=key, problems=problems,
-                       note=f"The AI's choices were not used ({problems[0]}); this is the rules' own mesh.")
+        return _without_the_model("invalid", problems[0], problems)
     return section(decision, [], status="used", key=key, problems=problems)
 
 
@@ -665,12 +699,18 @@ async def choose_lever(options: list[dict], facts: Mapping, *, ai: Mapping | Non
     msgs = [{"role": "system", "content": LEVER_SYSTEM},
             {"role": "user", "content": json.dumps(shown, sort_keys=True, separators=(",", ":"), default=str)}]
     tool = lever_tool(ids)
+    user_id = str((state or {}).get("user_id") or "")
     try:
-        rr = await _ask(msgs, tool, job_id=job_id, user_id=str((state or {}).get("user_id") or ""), wait_s=wait_s)
+        rr = await _ask(msgs, tool, job_id=job_id, user_id=user_id, wait_s=wait_s)
     except StaleExecutionPublish:
         raise
     except Exception as exc:  # noqa: BLE001 - AI-fea-6
-        return default, {"status": "failed", "note": type(exc).__name__, "picked": default["lever"]}
+        rr = _saved(msgs, tool, job_id=job_id, user_id=user_id)
+        if rr is None:
+            return default, {"status": "failed", "note": type(exc).__name__, "picked": default["lever"],
+                             "source": "rules (nothing saved)"}
+    if getattr(rr, "failure_marker", ""):
+        rr = _saved(msgs, tool, job_id=job_id, user_id=user_id) or rr
     _account(run, rr)
     try:
         raw = json.loads(_args_of(rr, TOOL_LEVER) or "")

@@ -586,6 +586,7 @@ INVENTORY: list[Group] = [
 
     Group("Mesh toolchain", vars=[
         EnvVar("VMTK_BIN", "vmtk", help="vmtk runs as an isolated subprocess: its conda VTK cannot coexist with the app's"),
+        EnvVar("BUILDER_AI", "on", exposure="internal", help="on | off: cfMesh, VMTK, gmsh (CFD) and snappy multi-region attempts are built by the builder model, and by the rules plan whenever it gives no mesh (engines/rules_plan.py, AIG-1); off = the rules plan only"),
         EnvVar("FEA_AI", "on", exposure="internal", help="on | off: the FEA builder asks the builder model for its judgement calls (zone priority, small features, the user's budget), which the rules make exact (engines/fea_ai.py); off = the rules' own plan"),
     ]),
 

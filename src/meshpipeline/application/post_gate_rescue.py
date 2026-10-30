@@ -17,7 +17,8 @@ completed; in memory on a MemorySaver run), and delivered:
     mesh whose review did not conclude, saying so (final_result.review_inconclusive_caveat);
   - with a verdict already in hand (the crash came after the review): as that verdict says.
 Never rescued: a run whose executor did not pass, a mesh a gate failed, a mesh the reviewer
-REJECTED (a rebuild was under way), a dispute (the engineer's flags need a judgement), and a fence
+REJECTED while the review still decides (a rebuild was under way; once the measured limits decide,
+VER-5, the rejection is a note and the mesh is rescued), a dispute (the engineer's flags need a judgement), and a fence
 refusal or a drain (another owner, or a hand-back, decides those)."""
 from __future__ import annotations
 
@@ -46,7 +47,13 @@ def rescue(state: dict | None, exc: BaseException) -> dict | None:
     if state.get("executor_success") is not True or state.get("executor_failed_gate"):
         return None
     verdict = str(state.get("reviewer_verdict") or "").strip().upper()
-    if verdict == "FAIL" or state.get("reviewer_rebuild_required") or state.get("user_dispute"):
+    if state.get("user_dispute"):
+        return None
+    # A review FAIL blocks the rescue only while the review decides (a rebuild was under way). Once
+    # the measured limits decide (VER-5) the review is a note and no rebuild follows it, so the mesh
+    # the gates passed is delivered as the limits say.
+    from meshpipeline.application.final_result import limits_decide
+    if not limits_decide() and (verdict == "FAIL" or state.get("reviewer_rebuild_required")):
         return None
     out = dict(state)
     if not verdict:

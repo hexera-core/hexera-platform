@@ -113,17 +113,19 @@ on:
         required: false
         default: false
         type: boolean
-      # THE REPAIR LOOP IS A SETTING, AND THIS IS WHERE IT IS CHOSEN. Ticking it exports
+      # THE REPAIR LOOP IS A SETTING, AND THIS IS WHERE DEVELOPMENT CHOOSES IT. Ticking it exports
       # CAD_REPAIR_ENABLED, CAD_REPAIR_REVIEW_ENABLED, CAD_REPAIR_FILL_PLANAR_HOLES,
       # CAD_REPAIR_FILL_NONPLANAR_HOLES and CAD_REPAIR_HEAL_SELF_INTERSECTIONS for the run:
       # the API service gets them as environment, and the worker fleet gets them as template
       # metadata that its startup script appends to the worker env. Unticked exports NOTHING, so the
-      # scripts leave all five settings at their shipped defaults. It is declarative, like every other API setting: redeploying the app
+      # scripts leave all five settings at their shipped defaults. Production releases enable the
+      # core loop and review below, but keep the three geometry-invention switches explicit. It is
+      # declarative, like every other API setting: redeploying the app
       # unticked drops the flags from an environment that had them, which is the point - the
       # workflow, not a hand-edit in the cloud, decides. The fleet only picks the change up when
       # `fleet` is ticked too, because an instance template is immutable.
       cad_repair:
-        description: "cad_repair - enable the conservative CAD repair loop, its planar and non-planar hole filling, the self-intersection heal AND the repair review on the targeted environment (unticked leaves all five at their shipped defaults)"
+        description: "cad_repair - in development, enable the CAD Repair System plus its explicit geometry-invention capabilities (production releases enable the bounded core and review automatically)"
         required: false
         default: false
         type: boolean
@@ -135,13 +137,13 @@ on:
         required: false
         default: true
         type: boolean
-      # THE POSTURE OF REPAIR'S MODEL-DIRECTED PORTION, chosen here like cad_repair. "off" exports
-      # nothing, so the API and fleet keep the shipped default (repair's deterministic portion
-      # alone). "shadow" asks the model and records beside that portion without acting; "live" lets
-      # its directives act inside the same repair caps. Declarative: a redeploy
+      # OPTIONAL MODEL GUIDANCE INSIDE CAD REPAIR SYSTEM, chosen here like cad_repair. "off" exports
+      # nothing, so the API and fleet use the bounded fallback. "shadow" records guidance beside
+      # the executed plan without acting; "live" lets it enter the same planner and repair caps.
+      # Declarative: a redeploy
       # left at "off" drops the flag from an environment that had it. Only meaningful with cad_repair.
       llm_planner:
-        description: "llm_planner - the posture of the CAD repair surface's model-directed portion on the targeted environment: off (its deterministic portion alone), shadow (recorded, never acted on) or live"
+        description: "llm_planner - optional model guidance inside CAD Repair System: off, shadow (recorded only), or live (handled by the same planner and repair caps)"
         required: false
         default: "off"
         type: choice
@@ -222,6 +224,10 @@ jobs:
       admin_domain: ${{ steps.pick.outputs.admin_domain }}
       billing_export_table: ${{ steps.pick.outputs.billing_export_table }}
       worker_env_uri: ${{ steps.pick.outputs.worker_env_uri }}
+      # THE VERDICT BY MEASURED LIMITS (docs/RULES.md VER): 'true' on shared dev and every personal
+      # environment, unstated on prod (its shipped default, off, stays in force) until dev has run
+      # with it. It reaches the workers as template metadata, so a fleet deploy applies it.
+      verdict_by_limits: ${{ steps.pick.outputs.verdict_by_limits }}
       outreach_enabled: ${{ steps.pick.outputs.outreach_enabled }}
       outreach_worker_job: ${{ steps.pick.outputs.outreach_worker_job }}
       outreach_db_host: ${{ steps.pick.outputs.outreach_db_host }}
@@ -549,6 +555,8 @@ jobs:
               # the settings inventory's own output. It carries policy, model routing and limits and
               # no credential; endpoints and secrets are injected onto the instance at boot.
               echo "worker_env_uri=gs://${_did}-transfer-${_num}/worker.env"
+              # the measured limits decide pass, concerns or fail; the AI review only adds notes
+              echo "verdict_by_limits=true"
               # THE OBJECT STORE. Every field is pinned EXCEPT the access id, and the exception is
               # the point.
               #
@@ -705,6 +713,8 @@ jobs:
               # hand. It carries policy, model routing and limits, never a credential: the object
               # and instance metadata are both readable by anyone who can describe the instance.
               echo "worker_env_uri=gs://dev-transfer-224734058693/worker.env"
+              # the measured limits decide pass, concerns or fail; the AI review only adds notes
+              echo "verdict_by_limits=true"
               # THE OBJECT STORE DEV ALREADY OWNS. Everything below RESTATES live configuration -
               # the bucket, the HMAC key and the secret container all exist and the worker fleet
               # has been reading exactly these values out of worker.env all along. Only the API
@@ -1421,17 +1431,16 @@ jobs:
       # CREDIT_GATE_ENABLED=false. Non-secret settings only: create-api-service.sh refuses any
       # secret-bearing name here. Shared dev and prod (no slug) never read one.
       API_EXTRA_ENV: ${{ github.event.inputs.slug != '' && vars[format('API_EXTRA_ENV_{0}', github.event.inputs.slug)] || '' }}
-      # The CAD repair loop and its review, switched on only by the `cad_repair` input. Unticked, both
-      # expand to the empty string, which every consumer treats as "not stated" (`-z`), so the
-      # shipped defaults stay in force.
-      CAD_REPAIR_ENABLED: ${{ inputs.cad_repair && 'true' || '' }}
+      # Production releases ship the bounded core repair loop; development environments retain the
+      # explicit cad_repair opt-in. The geometry-invention flags below remain opt-in everywhere.
+      CAD_REPAIR_ENABLED: ${{ (needs.target.outputs.deployment_id == 'prod' || inputs.cad_repair) && 'true' || '' }}
       # THE REVIEW IS STATED EITHER WAY once repair is on, and this is the one flag here that
       # cannot ride the "empty means not stated" convention. Unticking it is a POSITIVE choice -
       # the autonomous posture - and an empty value does not express it: an environment whose
       # saved worker.env already carries CAD_REPAIR_REVIEW_ENABLED=true would keep parking
       # repairs for a person while the API dropped the flag, so the tick would appear to do
-      # nothing. Unticked `cad_repair` still leaves it empty, like its siblings.
-      CAD_REPAIR_REVIEW_ENABLED: ${{ inputs.cad_repair && (inputs.cad_repair_review && 'true' || 'false') || '' }}
+      # nothing. Production defaults to review-on; development keeps the autonomous override.
+      CAD_REPAIR_REVIEW_ENABLED: ${{ needs.target.outputs.deployment_id == 'prod' && 'true' || inputs.cad_repair && (inputs.cad_repair_review && 'true' || 'false') || '' }}
       # Planar hole filling rides the same tick. What protects a through-hole is the paired-rim
       # guard (both ends of a missing passage, any cross-section, refuse filling for the run); the
       # session caps only bound the size and volume drift of a fill that is kept.
@@ -1441,6 +1450,8 @@ jobs:
       CAD_REPAIR_HEAL_SELF_INTERSECTIONS: ${{ inputs.cad_repair && 'true' || '' }}
       # The planner posture, stated only when it is not "off"; empty means "not stated".
       CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || '' }}
+      # The verdict by measured limits, per target (the `target` job): 'true' on dev, empty on prod.
+      VERDICT_BY_LIMITS: ${{ needs.target.outputs.verdict_by_limits }}
     steps:
       # A SHALLOW CHECKOUT IS ENOUGH HERE, unlike release's. Nothing in this job reads history:
       # lib.sh derives the image tag from `rev-parse --short=12 HEAD` plus a `diff --quiet HEAD`

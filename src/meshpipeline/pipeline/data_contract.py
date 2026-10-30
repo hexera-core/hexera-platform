@@ -373,8 +373,8 @@ CONTRACT: tuple[ContractVar, ...] = (
 EVENT_TYPES: dict[str, str] = {
     "repair_review":      "training: a review proposal the model declined (op_id review:propose), "
                           "kept to see which defects the catalogue cannot answer",
-    "planner_shadow":     "training: what the repair surface's model-directed portion proposed "
-                          "beside what its deterministic portion did on the same part (op_id "
+    "planner_shadow":     "training: optional model guidance beside CAD Repair System's executed "
+                          "plan on the same part (op_id "
                           "review:shadow); written once per shadow run, whichever way the repair "
                           "ended. The type name is historical - sealed corpora already carry it",
     "intake_turn":        "training: one intake conversation turn",

@@ -31,7 +31,6 @@ export default async function DashboardLayout({ children }: { children: React.Re
         <Sidebar
           credits={credits ? `${credits.balance}` : "--"}
           email={ownerId}
-          repairPoc={process.env.CAD_REPAIR_POC === "true"}
           signOut={<SignOutButton />}
         />
         <main className="main">{children}</main>

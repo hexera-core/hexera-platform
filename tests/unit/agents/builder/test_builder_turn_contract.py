@@ -254,18 +254,33 @@ def test_an_engine_that_declares_a_build_driver_takes_the_driver_path(tmp_path, 
     assert out["retry_count"] == 1
 
 
-def test_9_a_provider_failure_becomes_an_api_failure_patch(tmp_path, monkeypatch):
+def test_9_a_provider_failure_is_built_by_the_rules_plan_never_an_api_failure(tmp_path, monkeypatch):
+    # AIG-1: the AI builder is down - the same attempt is built by the rules plan, no retry, no failure
+    probe = _Probe()
+    rules_calls = []
+
+    async def _down(messages, workspace, **kw):
+        probe.loop_calls += 1
+        if kw.get("provider_call") is not None:
+            rules_calls.append(type(kw["provider_call"]).__name__)
+            return "Submitted by the rules plan.", list(messages)
+        raise RuntimeError("[API_FAILURE] openai: 500")
+    out = _run(_state(tmp_path), probe, loop=_down, monkeypatch=monkeypatch)
+    assert probe.loop_calls == 2 and rules_calls == ["RulesBuilder"]
+    assert "api_failure" not in out
+    assert "executor_success" not in out, "a provider failure claimed execution truth"
+    assert out["openfoam_workspace"] and out["builder_deadline_epoch"], (
+        "the failure exit dropped a carried field")
+
+
+def test_9b_an_engine_without_a_rules_plan_still_reports_the_api_failure(tmp_path, monkeypatch):
     probe = _Probe()
 
     async def _down(messages, workspace, **kw):
         probe.loop_calls += 1
         raise RuntimeError("[API_FAILURE] openai: 500")
-    out = _run(_state(tmp_path), probe, loop=_down, monkeypatch=monkeypatch)
-    assert probe.loop_calls == 1
-    assert out["api_failure"] == "openai: 500"
-    assert "executor_success" not in out, "a provider failure claimed execution truth"
-    assert out["openfoam_workspace"] and out["builder_deadline_epoch"], (
-        "the failure exit dropped a carried field")
+    out = _run(_state(tmp_path, engine="snappy"), probe, loop=_down, monkeypatch=monkeypatch)
+    assert probe.loop_calls == 1 and out["api_failure"] == "openai: 500"
 
 
 def test_10_a_tool_failure_inside_the_loop_does_not_end_the_turn_as_a_failure(tmp_path,
@@ -287,7 +302,8 @@ def test_7_a_timeout_is_not_authored_but_still_reports_the_workspace(tmp_path, m
         probe.loop_calls += 1
         raise TimeoutError()
     out = _run(_state(tmp_path), probe, loop=_slow, monkeypatch=monkeypatch)
-    assert probe.loop_calls == 1
+    # the AI ran out of time, then the rules plan was given the attempt (and, here, ran out too)
+    assert probe.loop_calls == 2
     assert out["openfoam_workspace"] and "api_failure" not in out
 
 
@@ -384,7 +400,7 @@ def test_16_every_exit_carries_the_same_common_state(scenario, tmp_path, monkeyp
     elif scenario == "api_failure":
         async def _down(messages, workspace, **kw):
             raise RuntimeError("[API_FAILURE] provider down")
-        out = _run(state, probe, loop=_down, monkeypatch=monkeypatch)
+        out = _run({**state, "engine": "snappy"}, probe, loop=_down, monkeypatch=monkeypatch)
     else:
         out = _run(state, probe, monkeypatch=monkeypatch)
     for field in ("retry_count", "openfoam_workspace", "request_txt", "review_brief_txt",

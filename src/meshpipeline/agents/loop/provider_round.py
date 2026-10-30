@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -20,7 +21,18 @@ from meshpipeline.agents.loop.tracing import (
     round_end,
 )
 from meshpipeline.contracts.agent_loop import LoopExit
+from meshpipeline.contracts.event_stream import StaleExecutionPublish
+from meshpipeline.contracts.execution_guard import StaleWorkerFenced
 from meshpipeline.contracts.model_inference import ModelRoundResult
+
+logger = logging.getLogger(__name__)
+
+#: Never turned into a failed round: the ownership fences end an execution on purpose.
+_NEVER_SWALLOWED: tuple[type[BaseException], ...] = (StaleExecutionPublish, StaleWorkerFenced)
+#: The marker of a provider call that raised instead of answering. Role-agnostic on purpose (the
+#: round does not know its role) and in the router's own wrapped form; "transient" makes it a
+#: retryable provider failure (errors.classify_api_failure -> PROVIDER_TRANSIENT).
+ROUND_RAISED_MARKER = "<<API_FAILURE:provider_round_transient>>"
 
 
 @dataclass(frozen=True)
@@ -89,6 +101,22 @@ class ProviderRound:
         except TimeoutError:
             await self._ended(rid, t0, None, phase="failed")
             return RoundEnded(exit=LoopExit.deadline_exhausted)
+        except _NEVER_SWALLOWED:
+            raise
+        except Exception as exc:  # noqa: BLE001 - defence in depth behind the router
+            # The router answers every failure with a marker; a provider call that RAISES anyway
+            # (a stand-in, a new route, a bug) is still a failed provider round, never a crashed
+            # agent node - the run's own provider-failure handling takes it from here.
+            logger.error("provider round %d raised instead of answering (job_id=%s): %s: %s",
+                         round_no, self.job_id, type(exc).__name__, str(exc)[:300],
+                         exc_info=True)
+            try:
+                await self._ended(rid, t0, None, phase="failed")
+            except _NEVER_SWALLOWED:
+                raise
+            except Exception:  # noqa: BLE001 - tracing never costs the round its outcome
+                pass
+            return RoundEnded(exit=LoopExit.provider_failed, failure_marker=ROUND_RAISED_MARKER)
         acct.record_round(result)
         if result.failure_marker:
             # A genuine provider failure - the ONLY thing that may be reported as provider-down.

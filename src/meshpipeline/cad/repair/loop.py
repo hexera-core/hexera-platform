@@ -13,11 +13,11 @@ from dataclasses import dataclass, field, replace
 import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair.contracts import DefectSeverity
 
-# The ONE list of sources whose directive may answer a held defect, shared with DirectedPlanner so
+# The ONE list of sources whose directive may answer a held defect, shared with RepairPlanner so
 # the planner's permission and the session's exemption cannot drift apart.
-from meshpipeline.cad.repair.directives import HELD_ANSWERING_SOURCES
+from meshpipeline.cad.repair.directives import HELD_ANSWERING_SOURCES, RepairPlanner
 from meshpipeline.cad.repair.localize import analyzer_only
-from meshpipeline.cad.repair.plan import RulesPlanner, RunHistory
+from meshpipeline.cad.repair.plan import RunHistory
 from meshpipeline.cad.repair.session import HEAL_OP, OpVerdict, RepairSession
 
 logger = logging.getLogger(__name__)
@@ -158,7 +158,7 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
     planner runs dry: `resolved` if nothing at error severity is left, `no_candidate` if something
     is. A sound part still produces zero verdicts, because the planner proposes nothing for it.
     """
-    chosen = planner if planner is not None else RulesPlanner()
+    chosen = planner if planner is not None else RepairPlanner(())
     limits = budget if budget is not None else LoopBudget.from_settings()
     # THE CLOCK STARTS BEFORE THE SESSION EXISTS, so the face scan's slice of the budget is a
     # slice of what this run actually has left - including the first scan - and not of a fresh
@@ -208,7 +208,7 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
 
         # WHAT THIS PROPOSAL IS ALLOWED TO ANSWER. A directive from the engineer being asked (or a
         # replay of an operation this upload already kept) may aim at a held defect - that is
-        # DirectedPlanner's HELD_ANSWERING_SOURCES - so the session must not then roll the result
+        # RepairPlanner's HELD_ANSWERING_SOURCES - so the session must not then roll the result
         # back for touching the very entity the answer was about. The exemption is only what this
         # directive aims at, never every hold on the part.
         answered_held = (
@@ -248,8 +248,8 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
             continue
 
         # THE FEEDBACK. Without this the same failing pair is proposed until the budget runs out,
-        # and nothing in the run has learned anything. Consumed only within this run: the
-        # model-directed portion plans ahead of the loop and never sees this ledger fill.
+        # and nothing in the run has learned anything. Consumed only within this run: model
+        # guidance is prepared ahead of the loop and never sees this ledger fill.
         history.mark_ineffective(candidate.defect_fingerprint, candidate.op.name)
         consecutive_misses += 1
         if consecutive_misses >= limits.stall_limit:
