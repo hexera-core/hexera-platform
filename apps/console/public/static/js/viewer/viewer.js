@@ -345,7 +345,13 @@ function initViewer(job,surf,uiCfg){
   function frameCam(all){
     const pb=all?null:partBounds();
     if(fitAllBtn)fitAllBtn.hidden=!(all||pb);
-    if(pb)ren.resetCamera(pb);else ren.resetCamera();
+    if(pb){ren.resetCamera(pb);
+      // resetCamera fits the part's sphere to the view's HEIGHT: in a canvas narrower than it is tall
+      // the part ran off both sides (dev-areen 2026-10-30, job c92c4240). Step back by the shortfall.
+      const s=apiRW.getSize&&apiRW.getSize();
+      if(s&&s[0]>0&&s[1]>s[0]){const k=s[1]/s[0];
+        if(cam.getParallelProjection())cam.setParallelScale(cam.getParallelScale()*k);else cam.dolly(1/k);}}
+    else ren.resetCamera();
     ren.resetCameraClippingRange();}
   frameCam();rw.render();
   const diag=Math.max(Math.hypot(_bs[1]-_bs[0],_bs[3]-_bs[2],_bs[5]-_bs[4]),1e-9);
