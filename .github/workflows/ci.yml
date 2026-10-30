@@ -129,7 +129,7 @@ jobs:
       # With code scanning on, zizmor's findings go to the Security tab as SARIF and its check
       # gates them. With it off (no Advanced Security), zizmor prints them to this log as
       # annotations and fails this job on any high-severity finding itself.
-      - uses: zizmorcore/zizmor-action@70fb788f84895a7701f5643d103d587e460b5c99 # v0.6.3
+      - uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
         with:
           advanced-security: ${{ steps.code-scanning.outputs.available == 'true' }}
           annotations: ${{ steps.code-scanning.outputs.available != 'true' }}
