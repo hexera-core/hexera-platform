@@ -25,6 +25,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from meshpipeline.render.boundary_index import IndexUnavailable, open_index
+from meshpipeline.render.boundary_quality import QualityUnavailable, open_quality
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,32 @@ def _parsed(polymesh: str, _stamp: tuple):
     return points, sizes, flat, offs, centroids, first
 
 
+def _quality_getter(qual):
+    """A callable that gathers one region's per-face quality for the faces finally sent, or None.
+
+    It is a callable rather than the arrays themselves because the budget below cuts `idx` down
+    after the faces are chosen, and these have to describe what is actually sent.
+    """
+    if qual is None:
+        return None
+
+    def get(idx):
+        vals = {}
+        for metric in qual.metrics:
+            got = qual.values(metric, idx)
+            if got is not None:
+                vals[metric] = got
+        if not vals:
+            return None
+        # THE BASIS TRAVELS WITH THE VALUES. It is not the same for all three - a boundary face's
+        # skewness is its own and checkMesh allows it 20 where an internal face gets 4, while
+        # non-orthogonality and aspect ratio are the owner cell's - so anything that draws these
+        # against one bar paints faces red that checkMesh called fine.
+        return {"basis": {m: qual.basis(m) for m in vals}, "values": vals}
+
+    return get
+
+
 def _packer(points, sizes, flat, offs):
     """`_pack` bound to one region's arrays.
 
@@ -194,6 +221,16 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
         except IndexUnavailable as exc:
             logger.debug("detail: no boundary index at %s (%s)", polymesh, exc)
         if index is not None:
+            # A CUT IS THE ONE PLACE A PER-FACE NUMBER IS ALSO A PER-DRAWN-POLYGON NUMBER. Nothing
+            # here is merged: one delivered face is one polygon, packed in the ids' own order, so
+            # `values(metric, ids)` gathered with those same ids lines up exactly. The main view
+            # is reduced at this size and cannot take these arrays at all - there one drawn face
+            # stands for several delivered ones, and a colour on it was measured on none of them.
+            qual = None
+            try:
+                qual = open_quality(polymesh)
+            except QualityUnavailable as exc:
+                logger.debug("detail: no per-face quality at %s (%s)", polymesh, exc)
             # THE INDEX HOLDS EVERY PATCH, including any `skip_names` asked this call to leave
             # out - it is written once and read by callers that want different things - so the
             # skipping happens here rather than being baked into the file.
@@ -202,7 +239,7 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
                 if str(p["name"]) not in want:
                     continue
                 in_range += int(mine.size)
-                hits.append((region, p, mine, index.pack))
+                hits.append((region, p, mine, index.pack, _quality_getter(qual)))
             continue
 
         total = sum(int(p["n_faces"]) for p in rows)
@@ -229,7 +266,10 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
             if not idx.size:
                 continue
             in_range += int(idx.size)
-            hits.append((region, p, idx, _packer(points, sizes, flat, offs)))
+            # NO COLOURS ON THIS PATH, and not because they would be wrong: the per-face quality
+            # is numbered against a boundary index, and this branch is the one taken when there
+            # is no index. A mesh delivered before any of this behaves exactly as it did.
+            hits.append((region, p, idx, _packer(points, sizes, flat, offs), None))
 
     # THE BUDGET IS SHARED OUT, NOT EATEN FIRST-COME. Measured on the delivered coupon, 2026-10-29,
     # before this: a 4 mm window held 684,660 faces in range across both regions, the cap of
@@ -247,17 +287,22 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
     shares = _share_out(MAX_RETURN_FACES, counts)
     out: list[dict] = []
     returned = 0
-    for (region, p, idx, pack), keep, here in zip(hits, shares, counts):
+    for (region, p, idx, pack, qget), keep, here in zip(hits, shares, counts):
         if keep <= 0:
             continue
         if keep < idx.size:
             idx = idx[np.unique(np.linspace(0, idx.size - 1, keep).round().astype(np.int64))]
         returned += int(idx.size)
         pts_b, polys_b = pack(idx)
+        # AFTER the budget has cut `idx` down, never before. The arrays have to describe the faces
+        # that are actually being sent, and a window that was truncated sends a sample of them.
+        qvals = qget(idx) if qget else None
         out.append({
             "name": f"{region}/{p['name']}" if region else str(p["name"]),
             "type": str(p["type"]),
             "face_count": int(idx.size),
+            # one entry per face in `polys`, in the same order, or absent
+            "quality": qvals,
             # WHAT THIS PATCH ACTUALLY HAS THERE, so a client drawing a truncated window can say
             # "1 face in 5 of the coolant" rather than leaving a reader to assume it is all of it.
             "faces_in_range": int(here),
@@ -286,16 +331,28 @@ def detail_response(job_id: str, cut: dict) -> dict:
     """
     import base64
 
+    def one(q: dict) -> dict:
+        out = {"name": q["name"], "type": q["type"], "face_count": q["face_count"],
+               # how much of this patch is in the window, so a truncated answer can say
+               # what fraction of each side it is showing rather than only that it cut
+               "faces_in_range": q["faces_in_range"],
+               "points_b64": base64.b64encode(q["points"]).decode("ascii"),
+               "polys_b64": base64.b64encode(q["polys"]).decode("ascii")}
+        qual = q.get("quality")
+        if qual:
+            # float32 per face, in the polys' own order, exactly as the viewer already decodes the
+            # main surface's arrays. ABSENT rather than zero-filled when a metric was not measured:
+            # a quality number that was not taken is not a good one, and a client handed zeros
+            # paints a clean mesh.
+            out["quality_b64"] = {m: base64.b64encode(v.astype("<f4").tobytes()).decode("ascii")
+                                  for m, v in qual["values"].items()}
+            out["quality_basis"] = dict(qual["basis"])
+        return out
+
     return {"job_id": job_id, "centre": cut["centre"], "radius": cut["radius"],
             "faces_in_range": cut["faces_in_range"], "faces_returned": cut["faces_returned"],
             "truncated": cut["truncated"],
-            "patches": [{"name": q["name"], "type": q["type"], "face_count": q["face_count"],
-                         # how much of this patch is in the window, so a truncated answer can say
-                         # what fraction of each side it is showing rather than only that it cut
-                         "faces_in_range": q["faces_in_range"],
-                         "points_b64": base64.b64encode(q["points"]).decode("ascii"),
-                         "polys_b64": base64.b64encode(q["polys"]).decode("ascii")}
-                        for q in cut["patches"]]}
+            "patches": [one(q) for q in cut["patches"]]}
 
 
 def _share_out(budget: int, counts: list[int]) -> list[int]:

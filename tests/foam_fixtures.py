@@ -88,3 +88,49 @@ def write_row_of_hexes(polymesh: Path, *, shear_last_y: float = 0.0,
             for name, ptype, start, n in patches]
     _foam(polymesh / "boundary", "polyBoundaryMesh", "boundary", len(patches), body)
     return {"n_wall": n_wall}
+
+
+#: The three shapes checkMesh's boundaryField actually takes, measured on the delivered coupon
+#: 2026-10-30. Every one of its fields is a volScalarField whose internalField is one value per
+#: CELL; they differ only here, and the difference is the whole contract:
+#:   nonOrthoAngle   calculated, `value uniform 0`        a true statement, not a measurement
+#:   skewness        calculated, nonuniform List<scalar>  one value per face of the patch
+#:   aspectRatio     zeroGradient                         i.e. the owner cell's own value
+CHECKMESH_FIELDS = ("nonOrthoAngle", "skewness", "aspectRatio")
+
+
+def write_quality_fields(region_dir, *, cells, per_face=None, uniform=None,
+                         zero_gradient=("aspectRatio",), patches=("inlet", "outlet", "wall"),
+                         names=CHECKMESH_FIELDS):
+    """Write checkMesh -writeFields output by hand, in those three shapes.
+
+    `cells` is the internal field, one value per cell. `per_face` is {field: {patch: [...]}} for
+    the nonuniform case, `uniform` is {field: {patch: value}}, and a field named in
+    `zero_gradient` gets every patch with no values at all.
+    """
+    region_dir = Path(region_dir)
+    region_dir.mkdir(parents=True, exist_ok=True)
+    per_face = per_face or {}
+    uniform = uniform or {}
+    for name in names:
+        out = ["FoamFile", "{", "    version     2.0;", "    format      ascii;",
+               "    class       volScalarField;", f"    object      {name};", "}",
+               "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //", "",
+               "dimensions      [0 0 0 0 0 0 0];", "",
+               "internalField   nonuniform List<scalar> ", str(len(cells)), "("]
+        out += [repr(float(v)) for v in cells]
+        out += [")", ";", "", "boundaryField", "{"]
+        for patch, vals in (per_face.get(name) or {}).items():
+            out += [f"    {patch}", "    {", "        type            calculated;",
+                    "        value           nonuniform List<scalar> ", str(len(vals)), "("]
+            out += [repr(float(v)) for v in vals]
+            out += [")", ";", "    }"]
+        for patch, val in (uniform.get(name) or {}).items():
+            out += [f"    {patch}", "    {", "        type            calculated;",
+                    f"        value           uniform {float(val)};", "    }"]
+        if name in zero_gradient:
+            for patch in patches:
+                out += [f"    {patch}", "    {", "        type            zeroGradient;", "    }"]
+        out += ["}", "", "// *********************************************************** //"]
+        (region_dir / name).write_text("\n".join(out) + "\n")
+    return region_dir
