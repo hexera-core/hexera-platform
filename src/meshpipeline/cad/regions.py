@@ -212,7 +212,12 @@ def facts_for_file_bounded(path, *, budget_s: float = REGIONS_CHILD_BUDGET_S) ->
     import tempfile
 
     if not path:
-        return {}
+        # NOT {}: no upload still answers "I looked and there are no regions", which is what
+        # `regions_for_file("")` has always returned (CadRegions().as_facts(): region_count 0,
+        # region_names []). An empty dict is a different statement - "nothing was read" - and a
+        # caller that reads `region_count` to mean "this file names nothing" gets None instead of
+        # 0. Returning the real zero facts is both the cheap path and the existing contract.
+        return regions_for_file(path).as_facts()
     src = Path(path)
     with tempfile.TemporaryDirectory(prefix="cad_regions_") as tmp:
         spec, out = Path(tmp) / "task.json", Path(tmp) / "answer.json"

@@ -54,10 +54,18 @@ def test_the_child_reads_the_same_regions_as_the_caller_would(tmp_path):
     assert there == here, (there, here)
 
 
-def test_no_file_is_an_empty_answer_not_a_child(tmp_path):
-    """The cheap case must not pay for a process."""
-    assert facts_for_file_bounded("") == {}
-    assert facts_for_file_bounded(None) == {}
+def test_no_file_still_answers_with_the_zero_facts_and_spawns_nothing(tmp_path):
+    """The cheap case must not pay for a process AND must not change the answer.
+
+    I wrote this test asserting `== {}` first, which is what my own shortcut returned, and the
+    existing suite caught it: `test_a_session_with_no_upload_supplies_nothing_and_raises_nothing`
+    reads `region_count` and expects 0. An empty dict says "nothing was read"; the zero facts say
+    "I looked and it names nothing". Those are different statements and only the second is true.
+    """
+    zero = regions_for_file("").as_facts()
+    assert zero["region_count"] == 0
+    assert facts_for_file_bounded("") == zero
+    assert facts_for_file_bounded(None) == zero
 
 
 def test_running_out_of_time_says_nothing_and_does_not_raise(tmp_path):
