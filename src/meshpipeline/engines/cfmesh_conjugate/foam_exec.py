@@ -204,6 +204,12 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "",
     # all three maxima, the cell count - and the only new output is "Writing ..." lines, so the
     # parser below sees exactly the measurement it saw before. Three fields and not the other
     # twelve: cellVolume and minPyrVolume alone are 68 MB each here and nothing reads them.
+    #
+    # +15.1% IS AN UPPER BOUND, NOT A CONSTANT, and a small region is where it is worst. On the
+    # customer plate's 182 M-cell mesh the same call took 652 s over 75,162,351 cells and 878 s
+    # over 107,107,563 - 8.7 and 8.2 us a cell - against the 654.3 s a 66,764,096-cell region of
+    # the same part took WITHOUT the fields, 9.8 us a cell. At that size the walk over every cell
+    # and face is the cost and writing down what it found is lost in it.
     fields = f" -writeFields '{CHECKMESH_WRITE_FIELDS}'" if write_fields else ""
     cmd = f"source {bashrc} >/dev/null 2>&1 && checkMesh -constant{_reg}{sets}{fields}"
     # A MEASUREMENT THAT DID NOT FINISH IS NOT A BAD MESH. It used to raise out of here, which

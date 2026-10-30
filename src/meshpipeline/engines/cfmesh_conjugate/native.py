@@ -251,11 +251,23 @@ def _boundary_quality(polymesh: Path, *, region: str) -> dict:
     Failing here costs the colours and nothing else: the detail window still opens, and a cut
     without quality is a cut with no colour rather than a wrong one.
 
-    THE RAW FIELDS DO NOT TRAVEL. checkMesh writes them beside the polyMesh and they are large -
-    116 MB for a 5.69 M-cell region, so about 1.5 GB on this plate's coolant and 2.2 GB on its
-    metal - against 158 MB once reduced to the boundary. They are an intermediate of this step
-    and nothing else reads them, so they go as soon as they have been read. On failure they are
-    LEFT, because then they are the evidence of what went wrong.
+    THE RAW FIELDS DO NOT TRAVEL. checkMesh writes them beside the polyMesh and they are large.
+    Measured on the customer plate's 182,269,914-cell mesh, 2026-10-30, both regions end to end:
+
+        region   cells         checkMesh   fields written   reduced   reduce
+        fluid     75,162,351      652 s         1.80 GB     158.2 MB    34.9 s
+        solid    107,107,563      878 s         2.45 GB     160.9 MB    59.9 s
+
+    So 4.25 GB becomes 319 MB, and only the 319 MB is of any use to anything downstream. They are
+    this step's intermediate and nothing else reads them, so they go as soon as they have been
+    read. On failure they are LEFT, because then they are the evidence of what went wrong.
+
+    THE REDUCED FIGURES ARE CHECKMESH'S OWN, which is the check that the reduction is right: on
+    that mesh the boundary's skewness maxima came out 0.70451 and 0.69126 against checkMesh's
+    "Max skewness = 0.704509" and "= 0.69126", and the solid's aspect ratio 2.09807 against its
+    "Max aspect ratio = 2.09807". Non-orthogonality comes out LOWER than the whole-mesh figure
+    (15.70 against 18.72, 15.54 against 22.36) and must: it is the owner cell's value over the
+    cells that touch the boundary, which are a subset of the mesh.
     """
     from meshpipeline.render.boundary_quality import FIELD_FILES, write_quality
 

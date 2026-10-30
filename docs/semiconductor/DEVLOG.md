@@ -2907,3 +2907,59 @@ face sets at the same coordinates. I saw 103 faces on each side come back from t
 reported it as the interface agreeing on both sides. It is agreement, and it is also two surfaces
 drawn on top of each other. Not introduced here and not fixed here, but it is the reason the main
 view skips one of them and the detail view should have a reason too.
+
+### The colour chain, measured end to end on the 182 million cell mesh
+
+| region | cells | checkMesh + fields | fields written | index | reduce | reduced |
+|---|---|---|---|---|---|---|
+| fluid | 75,162,351 | 652 s | 1.80 GB | 106.5 s / 622.9 MB | 34.9 s | 158.2 MB |
+| solid | 107,107,563 | 878 s | 2.45 GB | 127.9 s / 633.6 MB | 59.9 s | 160.9 MB |
+
+So 4.25 GB of per-cell numbers become 319 MB of per-boundary-face numbers, and only the 319 MB
+is any use downstream. The whole chain is about 32 minutes on a mesh that took 4.9 hours to build.
+
+THE REDUCED FIGURES ARE CHECKMESH'S OWN, which is the check that the reduction is right:
+
+| | reduced max | checkMesh said |
+|---|---|---|
+| fluid skewness | 0.70451 | Max skewness = 0.704509 |
+| solid skewness | 0.69126 | Max skewness = 0.69126 |
+| solid aspect ratio | 2.09807 | Max aspect ratio = 2.09807 |
+| fluid non-orthogonality | 15.70370 | Mesh non-orthogonality Max: 18.7226 |
+| solid non-orthogonality | 15.54370 | Mesh non-orthogonality Max: 22.3609 |
+
+Exact where the metric belongs to a face, and LOWER where it belongs to a cell - which it must
+be, because the cells that touch the boundary are a subset of the mesh. A boundary reduction that
+reproduced the whole-mesh non-orthogonality would mean the worst cell in the part happened to sit
+against a wall, and it would be worth checking rather than believing.
+
+### +15.1% was an upper bound and I nearly wrote it down as a constant
+
+The entry above measured `-writeFields` at +15.1% on a 5,686,631-cell region and I put that figure
+in `foam_exec.check_mesh` as the cost of the flag. At the size that matters it is much less:
+
+| region | cells | fields | per cell |
+|---|---|---|---|
+| ws_par300 fluid | 66,764,096 | no | 9.8 us |
+| ws_par247 fluid | 75,162,351 | yes | 8.7 us |
+| ws_par247 solid | 107,107,563 | yes | 8.2 us |
+
+Not a controlled A/B - different meshes - but enough to say the flag is not a 15% tax at 100 M
+cells. checkMesh walks every cell and every face before it prints a summary either way; writing
+down what it found is lost in that walk once the walk is big. A small region is where the write
+costs most, which is the opposite of where I would have guessed, and it is why the comment now
+carries both numbers instead of the convenient one.
+
+### The version guard earned itself the same day
+
+`INDEX_VERSION` went 1 to 2 this morning when the staleness stamp changed. The 182 M mesh's index
+had been built that morning at version 1, and the reduce refused it:
+
+    IndexUnavailable: .../boundaryIndex: index version 1, this reads 2
+
+Which is the whole point: the quality arrays are numbered against the index's face numbering, and
+reading version 1 arrays under version 2 rules would have produced a file that looked right and
+coloured every face with some other face's number. It cost a 234-second rebuild. Nothing in the
+product can hit it - `native._boundary_indexes` writes the index and then the quality in the same
+pass, so they are always the same version - and it only bit me because I had built the index by
+hand hours before.
