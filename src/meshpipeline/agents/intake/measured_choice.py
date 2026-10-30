@@ -93,12 +93,12 @@ def own_format_engines(engines: Iterable[str], source_format: str) -> list[str]:
 
 def rank(*, path: str, purpose: str, input_kind: str, form: str, engines: Sequence[str],
          patches: Sequence[Mapping] = (), said: str = "", region_count: int | None = None,
-         source_format: str = "", coolant_inside: bool | None = None):
+         source_format: str = "", coolant_inside: bool | None = None, in_child: bool = False):
     """The recommendation for this upload and case, or None when nothing can be ranked (no flow,
     no engine that takes the file). An unmeasurable file is still ranked, on its flow alone, and
     its reasons say how little that is. An engine that reads the upload's own format itself ranks
     first (fitness.recommend); the format is the staged file's, unless the caller states it."""
-    from meshpipeline.cad.shape_traits import ShapeTraits, measure_file
+    from meshpipeline.cad.shape_traits import ShapeTraits, measure_file, measure_file_bounded
     from meshpipeline.engines.capability import flow_of
     from meshpipeline.engines.fitness import brief_facts, recommend
 
@@ -108,8 +108,21 @@ def rank(*, path: str, purpose: str, input_kind: str, form: str, engines: Sequen
     able = able_engines(engines, purpose, input_kind, form)
     if not able:
         return None
-    traits = measure_file(path, flow=flow, input_kind=input_kind, patches=list(patches)) if path \
-        else ShapeTraits(flow=flow, input_kind=input_kind, notes=("no file to measure",))
+    # IN A CHILD WHEN THE CALLER IS THE API, because reading CAD holds the GIL and a worker that
+    # cannot answer uvicorn's ping within 5 s is SIGKILLed; shape_traits.measure_file_bounded
+    # carries the measurement. Measured on the first customer assembly: the worker was killed
+    # 11-15 s into the turn after Proceed, three runs out of three, and the same request against
+    # one worker answered 200 in 44 s. In the geometry worker, where nothing is pinging, the
+    # measurement stays in process and keeps its cache.
+    if not path:
+        traits = ShapeTraits(flow=flow, input_kind=input_kind, notes=("no file to measure",))
+    elif in_child:
+        traits = measure_file_bounded(path, flow=flow, input_kind=input_kind,
+                                      patches=list(patches))
+        if traits is None:
+            return None
+    else:
+        traits = measure_file(path, flow=flow, input_kind=input_kind, patches=list(patches))
     if not traits.form and form:
         traits = ShapeTraits.from_dict({**traits.as_dict(), "form": form})
     brief = brief_facts(request_txt=said, patches=list(patches), region_count=region_count,
@@ -122,7 +135,10 @@ async def rank_in_time(*, timeout_s: float = MEASURE_WAIT_S, **kw):
     """`rank` off the event loop, waited for at most `timeout_s`; None when it is not ready (the
     measurement keeps going and is cached for the next turn) or fails."""
     try:
-        return await asyncio.wait_for(asyncio.to_thread(rank, **kw), timeout=timeout_s)
+        # in_child: this is the path that runs inside the API, where holding the GIL gets the
+        # worker killed (shape_traits.measure_file_bounded carries the whole account).
+        return await asyncio.wait_for(asyncio.to_thread(rank, in_child=True, **kw),
+                                      timeout=timeout_s)
     except TimeoutError:
         logger.info("Intake: the geometry is still being measured - no engine recommendation "
                     "this turn")

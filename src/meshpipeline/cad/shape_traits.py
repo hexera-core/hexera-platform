@@ -573,6 +573,101 @@ def _read_binary_stl(path: Path) -> np.ndarray:
     return np.asarray(read_stl_triangles(path), dtype=float).reshape(-1, 3, 3)
 
 
+#: How long a bounded measurement may take before the child is killed and the caller carries on
+#: without traits. Shorter than the caller's own patience on purpose: `measured_choice.rank_in_time`
+#: waits MEASURE_WAIT_S for the whole recommendation, and a child still running past that is work
+#: nobody is waiting for any more.
+MEASURE_CHILD_BUDGET_S = 120.0
+
+
+def _child(task: dict) -> dict:
+    """Measure one file, for `measure_file_bounded` to run in a process of its own."""
+    from pathlib import Path as _P
+    try:
+        traits = measure_file(
+            _P(task["path"]), flow=task.get("flow") or "", input_kind=task.get("input_kind") or "",
+            patches=list(task.get("patches") or ()),
+            surface_unit_to_m=task.get("surface_unit_to_m"),
+            flow_axis=task.get("flow_axis") or "",
+            workdir=_P(task["workdir"]) if task.get("workdir") else None)
+    except Exception as exc:                 # noqa: BLE001 - the reason travels, not the crash
+        return {"error": f"{type(exc).__name__}: {exc}"[:300]}
+    return {"traits": traits.as_dict()}
+
+
+def measure_file_bounded(path, *, budget_s: float = MEASURE_CHILD_BUDGET_S,
+                         **kw) -> ShapeTraits | None:
+    """`measure_file` IN A PROCESS OF ITS OWN, or None with the reason logged.
+
+    THE API WORKER IS KILLED IF THIS RUNS IN IT. Reading a CAD file means OpenCASCADE's import and
+    tessellation, and OCP does not release the GIL while it works, so the whole interpreter stops
+    for as long as the read takes - `asyncio.to_thread` moves the work off the event loop but not
+    off the GIL. uvicorn's multi-worker supervisor pings each worker over a pipe every 0.5 s and
+    gives it 5 s to answer (supervisors/multiprocess.py: `is_alive` is `process.is_alive() and
+    self.ping(timeout=5)`); a worker that cannot answer is SIGKILLed with the comment "process is
+    hung, kill it" and logged as `Child process [pid] died`. The worker did not die. It was killed
+    for being busy, and SIGKILL leaves no traceback, which is why the log shows a death with no
+    cause.
+
+    MEASURED END TO END on the first customer assembly, 2026-10-30 - ColdPlateAssembly_CLEAN.step,
+    15,883,539 bytes, 6 solids, 9,226 faces - on the turn straight after the customer presses
+    Proceed:
+
+        uvicorn --workers 2 (what we ship)   the worker is SIGKILLed 11-15 s into the turn, three
+                                             runs out of three; the customer gets an empty reply
+        uvicorn --workers 1 (no supervisor)  HTTP 200 in 44 s, the turn completes
+        a plain python process               exit 0, the same answer
+
+    faulthandler was armed for the two-worker run and printed nothing, which rules out every
+    catchable fatal signal; the container was not out of memory (596 MB peak of 15.48 GiB, 12.3 GB
+    free) and was never OOMKilled. A ping that cannot be answered fits all three rows.
+
+    So the read happens in a child, whose GIL is its own. `fluid_volume.run_bounded` is the same
+    decision for the same reason, in its own words: "a split that takes too long (thread on
+    thread) or brings OpenCASCADE down leaves the caller standing".
+
+    None is not a failure. Traits are advice - `measured_choice.rank_in_time` already carries on
+    without them and says so in the turn - and the engine the intake proposes comes from its own
+    tool call either way, which is why the 44 s run still chose cfmesh_conjugate with `rank`
+    timed out.
+    """
+    import json
+    import subprocess  # noqa: S404 - our own module, run with our own interpreter
+    import sys
+    import tempfile
+
+    p = Path(path)
+    task = {"path": str(p), **{k: v for k, v in kw.items() if k != "workdir"}}
+    if kw.get("workdir"):
+        task["workdir"] = str(kw["workdir"])
+    task["patches"] = [dict(x) for x in (kw.get("patches") or ()) if isinstance(x, Mapping)]
+    with tempfile.TemporaryDirectory(prefix="shape_traits_") as tmp:
+        spec, out = Path(tmp) / "task.json", Path(tmp) / "answer.json"
+        spec.write_text(json.dumps(task, default=str))
+        try:
+            done = subprocess.run(  # noqa: S603
+                [sys.executable, "-m", "meshpipeline.cad.shape_traits", str(spec), str(out)],
+                timeout=budget_s, capture_output=True, check=False)
+        except subprocess.TimeoutExpired:
+            logger.info("shape traits: measuring %s ran past %.0f s; the turn carries on without "
+                        "traits", p.name, budget_s)
+            return None
+        if not out.exists():
+            tail = (done.stderr or b"").decode("utf-8", "replace").strip()[-600:]
+            logger.warning("shape traits: measuring %s exited %d with no answer%s", p.name,
+                           done.returncode, f"; stderr: {tail}" if tail else "")
+            return None
+        try:
+            answer = json.loads(out.read_text())
+        except ValueError:
+            logger.warning("shape traits: measuring %s gave no readable answer", p.name)
+            return None
+    if answer.get("error"):
+        logger.warning("shape traits: %s could not be measured (%s)", p.name, answer["error"])
+        return None
+    return ShapeTraits.from_dict(answer.get("traits"))
+
+
 def measure_file(path, *, flow: str = "", input_kind: str = "", patches: Sequence[Mapping] = (),
                  surface_unit_to_m: float | None = None, flow_axis: str = "",
                  workdir: Path | None = None) -> ShapeTraits:
@@ -625,6 +720,30 @@ def measure_file(path, *, flow: str = "", input_kind: str = "", patches: Sequenc
     return traits
 
 
-__all__ = ["FEATURE_DEG", "GAP_MAX_LEVELS", "KNIFE_DEG", "RAY_SAMPLES", "TRAITS_VERSION", "ShapeTraits",
+__all__ = ["FEATURE_DEG", "GAP_MAX_LEVELS", "KNIFE_DEG", "MEASURE_CHILD_BUDGET_S", "RAY_SAMPLES",
+           "TRAITS_VERSION", "ShapeTraits",
            "gap_rule_cells", "measure",
-           "measure_file", "port_hydraulic_diameters", "read_triangles"]
+           "measure_file", "measure_file_bounded", "port_hydraulic_diameters", "read_triangles"]
+
+
+def main(argv: list[str]) -> int:
+    """Measure the file one task names, for `measure_file_bounded`. Pins OpenCASCADE's thread pool
+    to the CPUs this job may use when the task says so: the pool sizes itself from the HOST's core
+    count and no environment variable reaches it."""
+    import json
+
+    task = json.loads(Path(argv[0]).read_text())
+    threads = int(task.get("threads") or 0)
+    if threads > 0:
+        try:
+            from OCP.OSD import OSD_ThreadPool
+            OSD_ThreadPool.DefaultPool_s(threads)
+        except Exception:                    # noqa: BLE001 - a thread cap is never the failure
+            pass
+    Path(argv[1]).write_text(json.dumps(_child(task), default=str))
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    raise SystemExit(main(sys.argv[1:]))
