@@ -75,9 +75,10 @@ PER_TURN = 4 * plan_rules.CURVE_PER_QUARTER
 class _Periodic(Exception):
     """gmsh could not mesh sewn face `face` (0-based, in the surface's own order) as a periodic surface."""
 
-    def __init__(self, face: int) -> None:
+    def __init__(self, face: int, *, kin: bool = False) -> None:
         super().__init__(f"face {face}")
         self.face = face
+        self.kin = kin      # re-make every sewn face on the same surface with it (SHMESH-11b)
 
 
 def _generate(gmsh, tag_of: dict[int, int]) -> None:
@@ -96,7 +97,7 @@ def _generate(gmsh, tag_of: dict[int, int]) -> None:
         if RESPLINE_UNRECOVERED and "recover" in str(exc).lower():
             at = [int(x) for line in gmsh.logger.get() for x in re.findall(r"Meshing surface (\d+)", line)]
             if at and at[-1] in tag_of and gmsh.model.getType(2, at[-1]) not in ("BSplineSurface", "BezierSurface"):
-                raise _Periodic(tag_of[at[-1]]) from exc
+                raise _Periodic(tag_of[at[-1]], kin=True) from exc
         raise
 
 
@@ -308,19 +309,69 @@ def split_closed(brep: Path, owners: list[str], out: Path) -> list[str]:
     return _rebuild(brep, owners, out, cut)
 
 
-def respline(brep: Path, owners: list[str], face: int, out: Path) -> list[str]:
-    """SHMESH-11: sewn face `face` re-made as a B-spline surface (exactly the same surface, without its period)."""
+def respline(brep: Path, owners: list[str], face: int, out: Path, *, kin: bool = False) -> tuple[list[str], int]:
+    """SHMESH-11: sewn face `face` re-made as a B-spline surface (exactly the same surface, without its period);
+    with `kin`, every sewn face that lies on the same surface too (SHMESH-11b: a hull cylinder's four slotted halves
+    each stopped gmsh in turn, a whole mesh each). Returns (the owners, how many faces were re-made)."""
+    from OCP.BRep import BRep_Builder, BRep_Tool
     from OCP.BRepBuilderAPI import BRepBuilderAPI_NurbsConvert
+    from OCP.BRepTools import BRepTools
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+    from OCP.gp import gp_Pnt
+    from OCP.TopoDS import TopoDS_Shape
 
     from meshpipeline.cad import midsurface as ms
 
+    def _on(surf, p, tol):
+        pr = GeomAPI_ProjectPointOnSurf(gp_Pnt(float(p[0]), float(p[1]), float(p[2])), surf)
+        return pr.NbPoints() > 0 and pr.LowerDistance() <= tol
+
+    picked = {face}
+    if kin:
+        shape = TopoDS_Shape()
+        BRepTools.Read_s(shape, str(brep), BRep_Builder())
+        faces = ms._faces(shape)
+        base = faces[face]
+        kind = _surface_type(base)
+        surf = BRep_Tool.Surface_s(base)
+        tol = max(1e-6, 1e-6 * float(np.linalg.norm(np.subtract(*ms._box(base)))))
+        for k, f in enumerate(faces):
+            if k in picked or _surface_type(f) != kind:
+                continue
+            # on the same surface: points read inside the face lie on the failed face's surface
+            pts = [ms._np(q) for q in _probe_points(f)]
+            if pts and all(_on(surf, p, tol) for p in pts):
+                picked.add(k)
+
     def convert(k, f):
-        if k != face:
+        if k not in picked:
             return None
         nc = BRepBuilderAPI_NurbsConvert(f, True)
         return ms._faces(nc.Shape())
 
-    return _rebuild(brep, owners, out, convert)
+    return _rebuild(brep, owners, out, convert), len(picked)
+
+
+def _surface_type(face):
+    """The face's surface type (OpenCASCADE GeomAbs)."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+
+    return BRepAdaptor_Surface(face).GetType()
+
+
+def _probe_points(face) -> list:
+    """Three points of the face: its centre of mass laid on it, and two of its vertices."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    out = []
+    ex = TopExp_Explorer(face, TopAbs_VERTEX)
+    while ex.More() and len(out) < 3:
+        out.append(BRep_Tool.Pnt_s(TopoDS.Vertex_s(ex.Current())))
+        ex.Next()
+    return out
 
 
 def _faces_and_facts(brep: Path, mm: float):
@@ -396,9 +447,9 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 if resplined >= RESPLINE_MAX:
                     raise ValueError(f"gmsh could not mesh {resplined + 1} periodic faces") from p
                 nxt = Path(tmp) / f"respline_{resplined}.brep"
-                owners = respline(Path(brep), owners, p.face, nxt)
+                owners, made = respline(Path(brep), owners, p.face, nxt, kin=p.kin)
                 brep = nxt
-                resplined += 1
+                resplined += made
                 continue
             applied["quality"]["resplined_faces"] = resplined
             if resplined:

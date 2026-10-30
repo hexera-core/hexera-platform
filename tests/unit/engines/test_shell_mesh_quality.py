@@ -100,7 +100,8 @@ def test_a_face_re_made_as_a_b_spline_keeps_its_area_and_owner(tmp_path):
     faces = [f for f in ms._faces(piece) if BRepAdaptor_Surface(f).GetType() == GeomAbs_Cylinder]
     brep = _write(ms._compound(faces), tmp_path / "piece.brep")
     area = sum(ms._area(f) for f in faces)
-    owners = sa.respline(brep, ["Mid_1"], 0, tmp_path / "spline.brep")
+    owners, made = sa.respline(brep, ["Mid_1"], 0, tmp_path / "spline.brep")
+    assert made == 1
     from OCP.BRep import BRep_Builder
     from OCP.BRepTools import BRepTools
     from OCP.TopoDS import TopoDS_Shape
