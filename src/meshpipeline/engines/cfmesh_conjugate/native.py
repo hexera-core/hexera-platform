@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 
 from meshpipeline.engines.cfmesh_conjugate import plan as PL
@@ -133,6 +134,10 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     body["review"] = _review_aids(ws, bashrc=bashrc, refused=bool(report.problems),
                                   cells=int(report.fluid.cells + report.solid.cells))
     _write_report(ws, body)
+    # THE BOUNDARY INDEX, for the same reason and with the same rule: built where the mesh is,
+    # and never able to fail the run.
+    body["boundary_index"] = _boundary_indexes(ws)
+    _write_report(ws, body)
     tail = (f"fluid {report.fluid.cells:,} cells, solid {report.solid.cells:,}, interface "
             f"{report.interface_faces_fluid:,} faces both sides")
     if report.problems:
@@ -155,6 +160,94 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
 #: ... the way the region slices actually materialise is by the volume being THERE." A 10M-cell
 #: refusal exports in seconds and a reviewer may yet be asked about it; a 300M one cannot.
 VOLUME_SKIP_ABOVE_CELLS = 40_000_000
+
+
+#: Above this many boundary faces on one region, the index is not built. It is a ceiling on a
+#: pass that is otherwise proportional and cheap - measured 2026-10-30 on the 182,269,914-cell
+#: customer plate, 105 s and 623 MB for the fluid's 13,181,685 faces and 126 s and 634 MB for the
+#: solid's 13,407,661 - so this sits far above anything seen and exists to stop a pathological
+#: boundary from spending a mesh job's remaining time, not to express a judgement about size.
+INDEX_SKIP_ABOVE_FACES = 120_000_000
+
+
+def _boundary_indexes(ws: Path) -> dict:
+    """An index of each delivered region's boundary, so a reader can zoom in on a mesh of any size.
+
+    WHY IT EXISTS. `render.detail_window` cuts one neighbourhood out of a delivered boundary at
+    full resolution, for a reader who has zoomed past what the merged drawing can show. Without an
+    index it has to parse the WHOLE boundary to find that neighbourhood - a face's position is not
+    known until its points are - so it refuses anything over MAX_SOURCE_FACES, 2,000,000 faces.
+    This plate delivers 13,181,685 on the coolant side alone. The mesh the detail window was
+    written for is the mesh it will not open.
+
+    WHY HERE. The index is that parse, done once and written down, and it belongs in the process
+    that already has the mesh and the memory for it. Measured on the customer plate, 2026-10-30:
+    105 s and 623 MB for the fluid side, 126 s and 634 MB for the solid, under 4% of the mesh on
+    disk - against a parse that would have cost about 303 s and read a 2.7 GB points file whole
+    inside an API process every time somebody clicked.
+
+    THE REGIONS ARE THE ONES THE READER WILL ASK ABOUT, taken from `delivered_regions` rather than
+    from this engine's own idea of its regions, so the set written is the set looked for. That
+    function also knows to leave out the pre-split block at constant/polyMesh, which carries both
+    regions' face counts added together and was never delivered.
+
+    NO `skip_names`. One index serves every caller, and callers want different things: the main
+    surface drops `solid_to_fluid` and a detail cut does not. Faces are named at read time.
+
+    NON-FATAL, like the aids above it: a mesh is never lost over a way of looking at it.
+    """
+    from meshpipeline.render.boundary_index import write_index
+    from meshpipeline.render.detail_window import delivered_regions
+
+    out: dict = {"regions": {}}
+    try:
+        regions = delivered_regions(ws)
+    except Exception as exc:              # noqa: BLE001
+        logger.warning("conjugate: could not list delivered regions for the index (non-fatal)",
+                       exc_info=True)
+        out["why"] = f"the delivered regions could not be listed: {exc}"
+        return out
+    if not regions:
+        out["why"] = "no delivered region has a boundary to index"
+        return out
+
+    for name, polymesh in regions:
+        t0 = time.monotonic()
+        try:
+            declared = sum(int(p["n_faces"]) for p in _patch_rows(polymesh))
+            if declared > INDEX_SKIP_ABOVE_FACES:
+                out["regions"][name or "mesh"] = {
+                    "ok": False,
+                    "why": (f"{declared:,} boundary faces is over the {INDEX_SKIP_ABOVE_FACES:,} "
+                            "this will index in a mesh job"),
+                }
+                logger.warning("conjugate: boundary index skipped for %s - %s faces", name,
+                               format(declared, ","))
+                continue
+            meta = write_index(polymesh, region=name)
+            out["regions"][name or "mesh"] = {
+                "ok": True,
+                "faces": int(meta["n_faces"]),
+                "points": int(meta["n_points"]),
+                "buckets": int(meta["grid"]["n_buckets"]),
+                "bytes": int(sum(meta["bytes"].values())),
+                "seconds": round(time.monotonic() - t0, 1),
+            }
+        except Exception as exc:          # noqa: BLE001
+            # NAMED, not absent. A region with no index is a region whose detail window will
+            # refuse, and a reader of this report should be able to see which one and why.
+            logger.warning("conjugate: the boundary index failed for %s (non-fatal)", name,
+                           exc_info=True)
+            out["regions"][name or "mesh"] = {"ok": False, "why": str(exc),
+                                              "seconds": round(time.monotonic() - t0, 1)}
+    return out
+
+
+def _patch_rows(polymesh: Path) -> list[dict]:
+    """This region's boundary patch table, for the size check above."""
+    from meshpipeline.engines.cfmesh_conjugate.polymesh_surface import read_boundary_patches
+
+    return read_boundary_patches(polymesh)
 
 
 def _review_aids(ws: Path, *, bashrc: str, refused: bool = False, cells: int = 0) -> dict:

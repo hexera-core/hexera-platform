@@ -29,6 +29,7 @@ produced it; this file knows where faces are and nothing about whether they are 
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -38,7 +39,9 @@ logger = logging.getLogger(__name__)
 
 #: The sidecar's own version. A reader that finds a number it does not know ignores the index and
 #: lets its caller fall back, rather than reading arrays whose meaning may have moved.
-INDEX_VERSION = 1
+#: 2: the source stamp is size and a hash of the boundary, not mtime, so an index survives being
+#: shipped. See `_source_stamp`.
+INDEX_VERSION = 2
 
 #: The sidecar's directory name, inside the region's polyMesh beside the mesh it describes. It goes
 #: under the polyMesh on purpose: a mesh and its index travel together or not at all, and a stale
@@ -56,6 +59,10 @@ MAX_BUCKETS = 4_000_000
 #: How much of a file is parsed at a time. Big enough that per-chunk overhead disappears, small
 #: enough that two of them beside the arrays is not what runs a worker out of memory.
 CHUNK_BYTES = 64 * 1024 * 1024
+
+#: The patch id for a face no patch names. uint16's top value, so it cannot collide with a real
+#: patch index; `write_index` refuses a mesh with that many patches rather than wrap round.
+NO_PATCH = 0xFFFF
 
 _HEADER_ASCII_RE = re.compile(rb"format\s+ascii\s*;")
 #: A face record's corner COUNT - the integer immediately before its bracket. Matching only this,
@@ -299,7 +306,15 @@ def write_index(polymesh, *, region: str = "", skip_names: tuple[str, ...] = ())
     del points
     lconn = local.astype(np.uint32)
 
-    patch_of = np.zeros(n_faces, dtype=np.uint16)
+    # A SENTINEL, NOT ZERO. The span read above runs from the first boundary face to the last,
+    # and a `skip_names` can leave a hole in the middle of it - those faces are read because one
+    # pass is cheaper than two, and no patch names them. Initialised to zero they would come back
+    # under the FIRST patch's name, which is the quiet version of the failure this is meant to
+    # prevent: a reader who asked for the coolant being handed the metal. Latent until a caller
+    # passes skip_names, which the conjugate viewer's own `_SKIP = ("solid_to_fluid",)` does.
+    if len(rows) >= NO_PATCH:
+        raise IndexUnavailable(f"{pm}: {len(rows)} patches, more than this index can number")
+    patch_of = np.full(n_faces, NO_PATCH, dtype=np.uint16)
     patches = []
     for pid, p in enumerate(rows):
         f0 = int(p["start_face"]) - first
@@ -347,14 +362,60 @@ def write_index(polymesh, *, region: str = "", skip_names: tuple[str, ...] = ())
 
 
 def _source_stamp(polymesh: Path) -> dict:
-    """What the indexed mesh looked like, so a rebuilt one is not answered from a stale index."""
-    st = {}
-    for name in ("faces", "points", "boundary"):
+    """What the indexed mesh looked like, so a rebuilt one is not answered from a stale index.
+
+    NOT MTIME, and that is the whole point of this function's shape. `detail_window._parsed` keys
+    its cache on (size, mtime_ns) and is right to: the file it reads is local and was never moved.
+    An index is meant to TRAVEL - it answers without the mesh, so it gets shipped to hosts the
+    workspace was never copied to - and mtime does not survive the trip. Measured 2026-10-30: the
+    boundary file came out of `tar -cpzf` / `tar -xpzf` with its seconds intact and its nanoseconds
+    zeroed, so a stamp on mtime_ns refused an index that had just been shipped correctly. A guard
+    that fires on the legitimate case is worse than none, because the next person turns it off.
+
+    So: SIZE for the big files, because hashing a 9.1 GB `faces` is not something to do on every
+    open, and SIZE PLUS CONTENT for `boundary`, which is about 1 KB and is the thing that actually
+    says which surface this is.
+    """
+    st: dict = {}
+    for name in ("faces", "points"):
         p = Path(polymesh) / name
         if p.is_file():
-            s = p.stat()
-            st[name] = {"size": int(s.st_size), "mtime_ns": int(s.st_mtime_ns)}
+            st[name] = {"size": int(p.stat().st_size), "ends": _ends_digest(p)}
+    b = Path(polymesh) / "boundary"
+    if b.is_file():
+        data = b.read_bytes()
+        st["boundary"] = {"size": len(data),
+                          "sha256": hashlib.sha256(data).hexdigest()}
     return st
+
+
+#: How much of each end of a big file goes into its digest. Two seeks and 2 MB, whatever the file.
+STAMP_SAMPLE_BYTES = 1024 * 1024
+
+
+def _ends_digest(path: Path) -> str:
+    """A digest of a big file's first and last megabyte, with its size already beside it.
+
+    SIZE ALONE IS NOT ENOUGH and that is not hypothetical. Rewriting the test mesh with one cell
+    stretched moves the points and leaves `points` at exactly the same byte count, because
+    "(3 0 0)" and "(4 0 0)" are the same length - so a size-only stamp answered a changed mesh
+    from the old index, and the index's centroids described geometry that was gone.
+
+    A FULL HASH IS NOT AFFORDABLE on the files this guards: `faces` is 9.1 GB on the customer
+    plate's fluid side and `points` is 2.7 GB, and `open_index` runs per request. So this is a
+    CHANGE DETECTOR, not a proof: a rebuild moves the coordinates, and the coordinates live at
+    both ends of the file as much as the middle. It would miss a mesh altered only in its middle
+    at identical length, which is not a thing a mesher does, and the boundary's own full hash
+    beside it still has to match.
+    """
+    h = hashlib.sha256()
+    size = path.stat().st_size
+    with path.open("rb") as fh:
+        h.update(fh.read(STAMP_SAMPLE_BYTES))
+        if size > 2 * STAMP_SAMPLE_BYTES:
+            fh.seek(-STAMP_SAMPLE_BYTES, 2)
+            h.update(fh.read(STAMP_SAMPLE_BYTES))
+    return h.hexdigest()
 
 
 class BoundaryIndex:
@@ -412,7 +473,14 @@ class BoundaryIndex:
         return cand[keep]
 
     def patch_slices(self, face_ids):
-        """`face_ids` split by the patch each came from, as [(patch meta, ids), ...]."""
+        """`face_ids` split by the patch each came from, as [(patch meta, ids), ...].
+
+        A FACE NO PATCH NAMES IS LEFT OUT, not assigned to the nearest one. Those are the faces
+        inside a `skip_names` hole, read by the one pass that covers the whole boundary span and
+        carrying NO_PATCH; no patch index can equal it, so they fall out of the loop below. That
+        is the point: this is the step that turns a face id into a name a reader is shown, and
+        the one thing it must never do is give a face the wrong patch's name.
+        """
         import numpy as np
 
         ids = np.asarray(face_ids, dtype=np.int64)

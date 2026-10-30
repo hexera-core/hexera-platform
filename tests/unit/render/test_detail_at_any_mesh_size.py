@@ -180,34 +180,66 @@ def _swap_boundary(polymesh, old: str, new: str) -> None:
     assert p.stat().st_size == was.st_size and p.stat().st_mtime_ns == was.st_mtime_ns
 
 
-def test_a_boundary_that_describes_another_surface_is_refused(polymesh):
-    """With a stamp that matches, the patch table is the only guard left, so it is not optional.
-    `detail_at` keeps only the index faces whose patch the mesh's boundary names: a boundary that
-    disagrees does not error, it silently drops patches or hands one patch's faces back under
-    another patch's name."""
+@pytest.mark.parametrize("old,new", [("nFaces 12;", "nFaces 11;"),   # the same patch, resized
+                                      ("    wall\n", "    wal2\n")])  # a patch renamed
+def test_a_boundary_that_describes_another_surface_is_refused(polymesh, old, new):
+    """Swapped under a matching size and mtime, which is what an archive restore looks like.
+
+    `detail_at` keeps only the index faces whose patch the mesh's boundary names, so a boundary
+    describing another surface does not error: it silently drops patches, or hands one patch's
+    faces back under another patch's name. Which guard catches it is not the point and this does
+    not assert it - the boundary's hash normally gets there first, and the patch table below is
+    the second line.
+    """
     B.write_index(polymesh)
-    _swap_boundary(polymesh, "nFaces 12;", "nFaces 11;")
-    with pytest.raises(B.IndexUnavailable, match="the mesh's boundary"):
+    _swap_boundary(polymesh, old, new)
+    with pytest.raises(B.IndexUnavailable):
         B.open_index(polymesh)
 
 
-def test_a_patch_renamed_under_a_matching_stamp_is_refused(polymesh):
+def test_the_patch_table_catches_it_even_with_the_hash_gone(polymesh):
+    """The second line on its own. Two checks on one invariant is not waste here: the hash says
+    "not this file" and the patch table says "not this surface", and it is the second sentence
+    that names what is actually wrong."""
     B.write_index(polymesh)
+    d = B.index_dir(polymesh)
+    meta = json.loads((d / "meta.json").read_text())
+    meta["source"].pop("boundary", None)          # an index that never stamped the boundary
+    (d / "meta.json").write_text(json.dumps(meta))
     _swap_boundary(polymesh, "    wall\n", "    wal2\n")
     with pytest.raises(B.IndexUnavailable, match="no such patch"):
         B.open_index(polymesh)
 
 
-def test_an_edited_boundary_is_caught_by_the_stamp_before_anything_else(polymesh):
-    """The ordinary case, for completeness: a file written in place changes size or mtime, and the
-    stamp is what refuses it."""
+def test_an_edited_boundary_is_caught_by_the_stamp(polymesh):
     B.write_index(polymesh)
     p = polymesh / "boundary"
     text = p.read_text()
     assert "nFaces 12;" in text
-    p.write_text(text.replace("nFaces 12;", "nFaces 9;"))     # one byte shorter, so the size moves
+    p.write_text(text.replace("nFaces 12;", "nFaces 9;"))
     with pytest.raises(B.IndexUnavailable, match="changed since this index was written"):
         B.open_index(polymesh)
+
+
+def test_the_stamp_survives_an_archive_round_trip(polymesh, tmp_path):
+    """THE CASE THAT BROKE IT. Measured 2026-10-30: tar kept the boundary's mtime seconds and
+    zeroed its nanoseconds, so a stamp on mtime_ns refused an index that had just been shipped
+    correctly. Shipping is what an index is FOR, so this is the case that decides the stamp."""
+    import subprocess
+
+    B.write_index(polymesh)
+    before = B.open_index(polymesh).faces_near(NEAR_INLET, 1.0).size
+
+    tar = tmp_path / "shipped.tgz"
+    subprocess.run(["tar", "-cpzf", str(tar), "-C", str(polymesh),
+                    "boundary", B.INDEX_DIRNAME], check=True)
+    landed = tmp_path / "elsewhere" / "constant" / "polyMesh"
+    landed.mkdir(parents=True)
+    subprocess.run(["tar", "-xpzf", str(tar), "-C", str(landed)], check=True)
+
+    assert not (landed / "faces").exists(), "the mesh did not travel, only the index"
+    assert B.has_index(landed), "a shipped index has to open where it lands"
+    assert B.open_index(landed).faces_near(NEAR_INLET, 1.0).size == before
 
 
 def test_an_index_from_a_version_this_does_not_know_is_refused_not_guessed(polymesh):
@@ -299,6 +331,35 @@ def _same_surface(pts_a, polys_a, pts_b, polys_b) -> bool:
             at += k + 1
         return sorted(out)
     return faces(pts_a, polys_a) == faces(pts_b, polys_b)
+
+
+def test_a_skipped_patch_does_not_come_back_under_another_patchs_name(polymesh):
+    """THE QUIET FAILURE THIS IS MEANT TO PREVENT: a reader who asked for the coolant being
+    handed the metal.
+
+    The one pass covers the whole boundary span, first face to last, because one pass is cheaper
+    than two - so a `skip_names` leaves a hole in the middle that is READ and that no patch
+    names. With `patch_of` initialised to zero those faces carried patch 0 and came back under
+    the first patch's name. The conjugate viewer passes `_SKIP = ("solid_to_fluid",)`, so this is
+    not hypothetical the moment anything writes an index for it.
+    """
+    meta = B.write_index(polymesh, skip_names=("outlet",))
+    assert [p["name"] for p in meta["patches"]] == ["inlet", "wall"]
+    # the span still covers the skipped patch's face - it sits between the two that are kept
+    assert meta["n_faces"] == 14
+
+    idx = B.open_index(polymesh)
+    everything = idx.faces_near((1.5, 0.5, 0.5), 99.0)
+    named = {p["name"]: n.size for p, n in idx.patch_slices(everything)}
+    assert sum(named.values()) == everything.size - 1, "the skipped face is named by nobody"
+    assert named == {"inlet": 1, "wall": 12}
+
+
+def test_more_patches_than_the_numbering_holds_is_refused(polymesh, monkeypatch):
+    """Rather than wrapping round onto a real patch's id."""
+    monkeypatch.setattr(B, "NO_PATCH", 2)        # a mesh of 3 patches is now one too many
+    with pytest.raises(B.IndexUnavailable, match="more than this index can number"):
+        B.write_index(polymesh)
 
 
 def test_the_sidecar_is_a_fraction_of_the_mesh_it_indexes(polymesh):
