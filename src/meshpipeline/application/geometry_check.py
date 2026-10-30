@@ -1915,10 +1915,36 @@ def _wait_for_scout(session_id: str) -> dict | None:
         if stored is not None and stored.get("status") != STATUS_PENDING and not is_preview(stored):
             return stored
         if time.time() >= deadline:
+            from meshpipeline.engines.determinism import note_time_limit
             if stored is None or stored.get("status") == STATUS_PENDING:
-                from meshpipeline.engines.determinism import note_time_limit
                 note_time_limit("geometry_check.naming", "the naming stopped waiting for the scout",
                                 budget_s=float(wait_s))
+            else:
+                # GIVING UP ON A PREVIEW WAS THE ONE CASE THAT SAID NOTHING, and it is the case
+                # that reaches a customer. `determinism` exists to record "every time a wall clock
+                # changed a decision"; this clock changes which facts the whole naming is built
+                # from, and the record went out with no sign of it.
+                #
+                # MEASURED on the first customer assembly, 2026-10-30 (ColdPlateAssembly_CLEAN.step,
+                # 15,883,539 bytes, 6 solids, 9,226 faces), session fb5e5589:
+                #
+                #     naming waited      1,016 s (its own soft limit 1,076 less a minute)
+                #     the scout needed   1,303.9 s (reading 34.6, measuring 711.1, then openings)
+                #     so the naming      named the PREVIEW and stored it as ready at 1,022.2 s
+                #     the customer saw   a finished check, 0 openings, no reason, for 5 min 16 s
+                #
+                # The preview's facts carry `confidence: {"input_kind": 0.0}` and `openings: []` by
+                # construction (preview_facts), so the proposal that went out said solid-body with
+                # no mouths, and `_kinds_on_offer` could not offer solid-assembly. The scout's full
+                # reading - 3 openings, 52,144.56 mm3 of coolant - landed afterwards and
+                # `merged_onto_full` put it under the naming, which is why the record is right now
+                # and was wrong then. None of that was recoverable from the stored record: the only
+                # trace was the stale note preview_facts leaves behind.
+                note_time_limit(
+                    "geometry_check.naming",
+                    "the naming stopped waiting and named the preview: the proposal is built from "
+                    "the quick drawing, with no openings and no confidence in its kind",
+                    budget_s=float(wait_s))
             return stored
         time.sleep(2.0)
 
