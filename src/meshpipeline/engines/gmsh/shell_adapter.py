@@ -728,8 +728,9 @@ def _projector(facts: list[dict], on_face: np.ndarray, mm: float):
 
 
 #: SHELL-9b: a node's wall is read from the WALL_NEAREST wall readings of its mid-face nearest it (a plane through
-#: them, so a wall that varies evenly - a taper, a draft - is read exactly), kept within their thinnest and thickest
-WALL_NEAREST = 8
+#: them, the nearer weighing more, so a wall that varies evenly - a taper, a draft - is read exactly), kept within
+#: their thinnest and thickest. The 8 nearest were all one row of a narrow strip's readings: no slope along it
+WALL_NEAREST = 24
 #: a mid-face's wall varies when its thickest reading is more than WALL_VARIES thicker than its thinnest
 WALL_VARIES = 0.01
 
@@ -743,8 +744,13 @@ def _wall_at(points: np.ndarray, samples: np.ndarray) -> np.ndarray:
     for i, p in enumerate(points):
         d = np.linalg.norm(xyz - p, axis=1)
         near = np.argsort(d, kind="stable")[:k]
-        A = np.column_stack([np.ones(k), xyz[near] - p])
-        coef, *_rest = np.linalg.lstsq(A, w[near], rcond=1e-9)
+        rel = xyz[near] - p
+        # the readings lie on a surface: fit over its two widest directions there (a 3D fit is near-singular)
+        _u, sv, vt = np.linalg.svd(rel - rel.mean(axis=0), full_matrices=False)
+        A = np.column_stack([np.ones(k), rel @ vt[:2].T])
+        # nearer readings weigh more (a wall that varies unevenly is read locally)
+        wt = 1.0 / (d[near] + float(np.median(d[near])) + 1e-300)
+        coef, *_rest = np.linalg.lstsq(A * wt[:, None], w[near] * wt, rcond=1e-6)
         out[i] = coef[0]
     return np.clip(out, float(w.min()), float(w.max()))
 
