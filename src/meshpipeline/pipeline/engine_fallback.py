@@ -267,6 +267,22 @@ _NO_LAYERS = re.compile(
 _LAYER_COUNT = re.compile(
     r"\b(\d{1,2})\s*(?:x\s*)?(?:prism|boundary|inflation|near[\s-]wall|wall|surface)[\s-]+layers?\b",
     re.I)
+#: ASKING TO BE TOLD THE NUMBER IS NOT ASKING FOR LAYERS. "number of boundary layers in the fluid"
+#: is a question about the mesh we delivered, and reading it as a specification is not the harmless
+#: false positive the note below used to claim. Measured on the first real customer's own words
+#: (Corintis, 2026-10-29, "...quality metrics to know if the mesh is of good quality, number of
+#: boundary layers in the fluid, min and max cell sizes..."): layer_request came back
+#: requested=True, plan_requirements returned ('prism_layers',), review_delivery labelled a mesh
+#: that passed every gate "no prism layers measured on the wall", and fitness.NO_LAYERS_VALUE
+#: scaled the conjugate engine's measured success rate by 0.7 - demoting the only engine that can
+#: mesh that part, because the customer asked to see a figure.
+#:
+#: A COUNT STILL WINS. "4 boundary layers" is a specification and _LAYER_COUNT catches it above
+#: before this is consulted, so asking for a number and asking for four of them stay different
+#: things.
+_LAYER_REPORT = re.compile(
+    r"\b(?:(?:number|count|quantity|amount)\s+of|how\s+many)\s+"
+    r"(?:prism|boundary|inflation|near[\s-]wall|wall|surface)[\s-]+layers?\b", re.I)
 #: Any other way a brief asks for near-wall resolution. Deliberately wide: a false "yes" only turns
 #: an automatic switch into a question, while a false "no" could drop layers silently.
 _LAYER_WORDS = re.compile(
@@ -287,6 +303,10 @@ def layer_request(request_txt: str, review_brief_txt: str = "") -> LayerRequest:
     if counts:
         return LayerRequest(True, max(counts))
     if _NO_LAYERS.findall(text) and not _LAYER_WORDS.findall(_NO_LAYERS.sub(" ", text)):
+        return LayerRequest(False)
+    # the same shape as the clause above: the phrase is cut out and what is LEFT is asked again,
+    # so "number of boundary layers, and use 3 prism layers" is still a specification
+    if _LAYER_REPORT.findall(text) and not _LAYER_WORDS.findall(_LAYER_REPORT.sub(" ", text)):
         return LayerRequest(False)
     return LayerRequest(bool(_LAYER_WORDS.findall(text)))
 
