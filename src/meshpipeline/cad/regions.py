@@ -178,6 +178,70 @@ def regions_for_session(session_id: str, jobs_dir) -> CadRegions:
     return regions_for_file(staged[0])
 
 
+#: How long reading a file's regions may take in a child before it is killed and the caller carries
+#: on without them. Generous because it is not on anybody's critical path: the verdict this feeds
+#: is the same verdict without it.
+REGIONS_CHILD_BUDGET_S = 120.0
+
+
+def facts_for_file_bounded(path, *, budget_s: float = REGIONS_CHILD_BUDGET_S) -> dict:
+    """`regions_for_file(path).as_facts()` IN A PROCESS OF ITS OWN; {} with the reason logged.
+
+    THE API WORKER IS KILLED IF THIS RUNS IN IT. This reads the file with the XDE reader, which is
+    OpenCASCADE, and OCP does not release the GIL while it works. uvicorn's multi-worker supervisor
+    pings each worker over a pipe every 0.5 s and allows 5 s to answer
+    (supervisors/multiprocess.py); a worker that cannot answer is SIGKILLed with the comment
+    "process is hung, kill it" and then logged as `Child process [pid] died`, which reads like a
+    crash and is not one. cad/shape_traits.measure_file_bounded carries the full measurement of
+    that, including the three-row A/B against --workers 1.
+
+    MEASURED on the first customer assembly, 2026-10-30, on the turn that submits the requirements
+    (ColdPlateAssembly_CLEAN.step, 15,883,539 bytes, 6 solids, 9,226 faces):
+
+        engine confirmed                      00:40:49
+        preview_selected_admission answered   00:41:34   <- 45 s, and this read is why
+
+    Forty-five seconds with the GIL held is nine ping deadlines. `_geometry_facts` is the caller,
+    and its own comment already allows this to say nothing: "Never fatal and never blocking: no
+    file, or a file this cannot describe, simply says nothing and the verdict is what it always
+    was." So {} is a normal answer here, not a failure, which is what makes a child safe.
+    """
+    import json
+    import subprocess  # noqa: S404 - our own module, run with our own interpreter
+    import sys
+    import tempfile
+
+    if not path:
+        return {}
+    src = Path(path)
+    with tempfile.TemporaryDirectory(prefix="cad_regions_") as tmp:
+        spec, out = Path(tmp) / "task.json", Path(tmp) / "answer.json"
+        spec.write_text(json.dumps({"path": str(src)}))
+        try:
+            done = subprocess.run(  # noqa: S603
+                [sys.executable, "-m", "meshpipeline.cad.regions", str(spec), str(out)],
+                timeout=budget_s, capture_output=True, check=False)
+        except subprocess.TimeoutExpired:
+            logger.info("cad regions: reading %s ran past %.0f s; the verdict is made without "
+                        "them", src.name, budget_s)
+            return {}
+        if not out.exists():
+            tail = (done.stderr or b"").decode("utf-8", "replace").strip()[-600:]
+            logger.warning("cad regions: reading %s exited %d with no answer%s", src.name,
+                           done.returncode, f"; stderr: {tail}" if tail else "")
+            return {}
+        try:
+            answer = json.loads(out.read_text())
+        except ValueError:
+            logger.warning("cad regions: reading %s gave no readable answer", src.name)
+            return {}
+    if answer.get("error"):
+        logger.debug("cad regions: %s could not be read (%s)", src.name, answer["error"])
+        return {}
+    facts = answer.get("facts")
+    return facts if isinstance(facts, dict) else {}
+
+
 def regions_for_file(path) -> CadRegions:
     """What the file at `path` distinguishes (cached); nothing for no file."""
     if not path:
@@ -193,3 +257,23 @@ def regions_for_file(path) -> CadRegions:
             _CACHE.pop(next(iter(_CACHE)))
         _CACHE[key] = regions_of(p)
     return _CACHE[key]
+
+
+def main(argv: list[str]) -> int:
+    """Read one file's regions, for `facts_for_file_bounded`."""
+    import json
+
+    task = json.loads(Path(argv[0]).read_text())
+    try:
+        facts = regions_for_file(task["path"]).as_facts()
+    except Exception as exc:                 # noqa: BLE001 - the reason travels, not the crash
+        answer = {"error": f"{type(exc).__name__}: {exc}"[:300]}
+    else:
+        answer = {"facts": facts}
+    Path(argv[1]).write_text(json.dumps(answer, default=str))
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    raise SystemExit(main(sys.argv[1:]))

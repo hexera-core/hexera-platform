@@ -220,10 +220,14 @@ class IntakeToolExecutor:
         # nothing is told the system cannot do what they asked - when the missing part is theirs.
         # Never fatal and never blocking: no file, or a file this cannot describe, simply says
         # nothing and the verdict is what it always was.
+        # IN A CHILD: this runs inside the API, and the XDE read holds the GIL long enough that
+        # uvicorn's supervisor SIGKILLs the worker for missing its ping. Measured on the first
+        # customer assembly: 45 s inside preview_selected_admission, which is nine ping deadlines.
+        # cad/regions.facts_for_file_bounded carries the account.
         try:
-            from meshpipeline.cad.regions import regions_for_file
+            from meshpipeline.cad.regions import facts_for_file_bounded
 
-            return regions_for_file(self._staged_upload()).as_facts()
+            return facts_for_file_bounded(self._staged_upload())
         except Exception as exc:
             logger.debug("Intake: geometry regions unavailable (%s)", exc)
             return {}
