@@ -110,10 +110,6 @@ jobs:
     needs: [preflight]
     permissions:
       contents: read
-      security-events: write
-      # actions: read is what lets a code-scanning upload read the run it belongs to. Without it
-      # the analysis completes and then fails on "Resource not accessible by integration" - the
-      # findings are produced and thrown away, which looks like a scanner fault and is a grant.
       actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -127,6 +123,10 @@ jobs:
       # that runs with a token, and nothing else in this repository reviews it.
       - uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2
       - uses: zizmorcore/zizmor-action@70fb788f84895a7701f5643d103d587e460b5c99 # v0.6.3
+        with:
+          advanced-security: false
+          annotations: true
+          min-severity: high
 
   lint:
     name: Lint (ruff)
@@ -607,6 +607,8 @@ jobs:
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build

@@ -37,12 +37,14 @@ def cameras(monkeypatch):
     return seen
 
 
-def test_an_item_carries_the_full_review_field_set_and_a_rules_proposal(cameras):
+def test_an_item_carries_the_full_review_field_set_and_a_system_proposal(cameras):
     items, dropped = _mint([_entity("open_shell", "edge", 8, "eb", boundary_edges=4)])
     item = items[0]
     assert dropped == 0
     assert item["group_key"] == "open_shell:sew_faces"
-    assert item["proposal"]["op"] == "sew_faces" and item["proposal"]["source"] == "rules"
+    assert item["proposal"]["op"] == "sew_faces"
+    assert item["proposal"]["source"] == "cad-repair-system"
+    assert item["proposal"]["planner"] == "repair-v1"
     assert (item["defect_code"], item["severity"], item["entity_type"], item["entity_index"],
             item["fingerprint"], item["origin"], item["pairing_key"]) == (
         "open_shell", "error", "edge", 8, "eb", "survivor", "")

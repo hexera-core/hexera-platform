@@ -129,8 +129,8 @@ def _outcomes(state, operations, refusals, *, discarded: bool = False,
               directives=None, discarded_reason: str = "") -> list[dict]:
     """What became of each directive this run was given. Never raises; empty when review is off.
 
-    `directives` is what the kernel was handed (the state's, plus the live LLM planner's); it
-    defaults to the state's own.
+    `directives` is what the system handed its planner, including state and optional model
+    guidance; it defaults to the state's own.
     """
     if directives is None:
         directives = state.get("repair_directives") or ()
@@ -245,8 +245,8 @@ def _shadow_row(job_id: str, plan, outcome: str, *, operations=(), stopped_becau
                 resolved=None, refusals=()) -> None:
     """THE ONE SHADOW WRITER, called from every exit of the node past the pre-pass.
 
-    A shadow run's whole value is the pairing of what the model-directed portion proposed with
-    what the deterministic portion did on the same part, so it is logged once whichever way the
+    A shadow run pairs optional model guidance with CAD Repair System's executed plan on the same
+    part, so it is logged once whichever way the
     loop ended; `not_executed` says the loop never produced a verdict. A no-op when there is no
     shadow plan. Never raises.
     """
@@ -305,9 +305,9 @@ async def node_repair_attempt(state: PipelineState) -> dict:
     # same place and re-derives the repair, which is why the derived identity is deterministic.
     destination = source.with_name(f"{source.stem}-repaired{source.suffix}")
 
-    # THE LLM PLANNER, if the deployment runs one. OFF TOUCHES NOTHING. SHADOW asks and only
-    # records; LIVE hands the proposals to the kernel AFTER the engineer's and the replay's, which
-    # keep their place. The kernel judges an LLM directive exactly like any other.
+    # OPTIONAL MODEL GUIDANCE. OFF TOUCHES NOTHING. SHADOW asks and only records; LIVE adds its
+    # proposals after the engineer's and replay directives, which keep their place. All of them
+    # enter the same RepairPlanner and the kernel judges each directive exactly the same way.
     posture = _posture()
     directives = tuple(state.get("repair_directives") or ())
     shadow_plan = None

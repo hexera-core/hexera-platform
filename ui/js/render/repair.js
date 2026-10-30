@@ -49,8 +49,8 @@ export function openRepairPanel(job, anchorEl, data) {
   // and the outcome message above has already explained why.
   const repaired = files.some((f) => f.type === "repaired_cad");
   const headline = repaired
-    ? "Your CAD was repaired"
-    : "What the inspection found in your CAD";
+    ? "CAD Repair System repaired your CAD"
+    : "What CAD Repair System found in your CAD";
   const line = repaired
     ? "We fixed the geometry in your upload and this is the result. Your original file is "
       + "unchanged - the repair is a new file, and the report says what was done to it."
