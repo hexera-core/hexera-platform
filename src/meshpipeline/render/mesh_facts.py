@@ -226,12 +226,26 @@ def parts(manifest: dict | None, *, rendered: tuple[str, ...] = (),
         cells = _as_int(r.get("cells"))
         if cells is not None:
             nmeta["cells"] = cells
+        # WHICH DRAWN SURFACES ARE THIS REGION'S. A multi-region engine draws "<region>/<patch>"
+        # because its regions own identically named block faces, so a region's own surfaces are
+        # exactly the ones under its prefix. Without this the test was `name in rendered_set` -
+        # is a drawn surface called "fluid" - which is never true on the engine that has regions,
+        # so every region was listed un-renderable and the inspector said the case ships no
+        # geometry for it. "Show me the coolant on its own" is the question a reader of a
+        # conjugate mesh always asks, and the roster offered it and could not answer it.
+        #
+        # A POOR-CELL SET IS NOT CLAIMED HERE. It wears the same prefix so the two regions' sets
+        # stay apart, but it is a part in its own right below; binding it to the region would
+        # take it out of `rendered` for that loop and the sixth reading with it.
+        mine = [s for s in rendered if s not in poor_set and s.startswith(f"{name}/")]
+        if mine:
+            nmeta["drawn_as"] = mine
         encloses = name in enclosing_set
         if encloses:
             nmeta["encloses_domain"] = True
         out.append(_part(f"{REGION}:{name}", name, REGION, "quality.regions",
                          visibility=HIDDEN if encloses else VISIBLE,
-                         renderable=name in rendered_set, metadata=nmeta))
+                         renderable=name in rendered_set or bool(mine), metadata=nmeta))
     if n_regions:
         for i in range(n_regions):
             rmeta: dict[str, Any] = {"index": i}
@@ -278,8 +292,15 @@ def parts(manifest: dict | None, *, rendered: tuple[str, ...] = (),
     # the user cannot move out of the way (an engine's region surface the manifest never listed)
     if list_drawn:
         named = {p["metadata"].get("name") for p in out if p["renderable"]}
-        # a surface already bound to a declared patch above is that patch, not a second part
-        bound = {s for p in out for s in (p["metadata"].get("drawn_as") or ())}
+        # a surface already bound to a declared patch above is that patch, not a second part.
+        # A BOUNDARY'S CLAIM ONLY. A region also names the surfaces that draw it, and that is a
+        # different relationship: the declared `ymin` and the drawn `solid/ymin` are one part
+        # under two names, while the metal region merely contains its six sides and the coolant
+        # contains its interface. Counting a region's claim here deleted `fluid/fluid_to_solid`
+        # from the roster - the one surface on a conjugate mesh that matters most and the one the
+        # manifest can never declare, because it does not exist until the block is cut.
+        bound = {s for p in out if p["kind"] == BOUNDARY
+                 for s in (p["metadata"].get("drawn_as") or ())}
         for n in rendered:
             if not isinstance(n, str) or not n or n in named or n in bound:
                 continue

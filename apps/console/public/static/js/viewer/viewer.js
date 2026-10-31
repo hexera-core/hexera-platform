@@ -504,6 +504,19 @@ function initViewer(job,surf,uiCfg){
                 base:en?en.actor.getProperty().getColor().slice():null};});
     let sel=null,isolated=false;
 
+    /* ISOLATE MEANS SHOW THIS AND NOTHING ELSE, so whatever draws the isolated part comes back
+       even when it opened hidden. An actor's visibility is decided by the state of the part that
+       DRAWS it, not by the state of the part that was picked: on a conjugate mesh the metal
+       region is drawn by six surfaces that all wrap the coolant and so all open hidden -
+       correctly, or the first sight of the mesh is six grey rectangles. Isolating the metal used
+       to leave an empty viewport, because the only state un-hidden was the region's own and the
+       region paints nothing itself. */
+    function unhide(id){
+      const p=parts.find(x=>x.id===id);if(!p)return;
+      st[id].hidden=false;
+      parts.forEach(x=>{if(x.renderable&&x.entities.some(e=>p.entities.indexOf(e)>=0))
+                          st[x.id].hidden=false;});}
+
     // Re-frame on what is VISIBLE. Without this, hiding the enclosing outer
     // boundary leaves the body a speck inside a fit computed for the whole box.
     // The zoom clamp runs on every camera change, so it would drag resetCamera()
@@ -598,8 +611,7 @@ function initViewer(job,surf,uiCfg){
         el.onclick=()=>{
           if(a==='hide'){const s=st[sel];s.hidden=!s.hidden;
                          if(s.hidden&&isolated)isolated=false;paint();refit();}
-          if(a==='iso'){isolated=!isolated;
-                        if(isolated)st[sel].hidden=false;paint();refit();}
+          if(a==='iso'){isolated=!isolated;if(isolated)unhide(sel);paint();refit();}
           if(a==='hl'){sel=null;isolated=false;paint();}
         };});
     }
@@ -618,15 +630,20 @@ function initViewer(job,surf,uiCfg){
           <span class="nm">${esc(p.label)}</span>
           <span class="v-bnd-vis"></span>
           <span class="fc">${stat?Number(stat).toLocaleString():''}</span>`;
+        /* PICKING ANOTHER PART WHILE ISOLATED re-isolates on it, so it has to be
+           unhidden the same way the Isolate button does it - that is how a reader goes from
+           the coolant to the metal, and it is the path that was landing on an empty view. */
         c.onclick=()=>{sel=(sel===p.id)?null:p.id;
-                       if(!sel||!p.renderable)isolated=false;paint();};
+                       if(!sel||!p.renderable)isolated=false;
+                       else if(isolated)unhide(sel);
+                       paint();};
         g.appendChild(c);});
       chips.appendChild(g);});
 
     // THE THERMAL TABLE shows a part alone (or the whole model again) through the same state
     partsApi={isolate:(entity)=>{
       const p=entity?parts.find(x=>x.renderable&&x.entity===entity):null;
-      if(p){sel=p.id;isolated=true;st[p.id].hidden=false;}else{sel=null;isolated=false;}
+      if(p){sel=p.id;isolated=true;unhide(p.id);}else{sel=null;isolated=false;}
       paint();refit();},
       repaint:()=>{paint();refit();}};
     bRest.onclick=()=>{sel=null;isolated=false;
