@@ -326,8 +326,14 @@ def quality_of(ws: Path, report: dict) -> dict:
     if skew:
         q["max_skewness"] = max(skew)
     _carry_mesh_wide(q, rows)
+    # AND WHETHER CHECKMESH SAID SO, which this did not ask. `report["ok"]` is whether the native
+    # run had problems and `fatal` is _FATAL's four markers; neither is checkMesh's own verdict.
+    # Each region's is carried in its row and was never read, so a region that failed two checks
+    # was published as mesh_ok: true. Dormant until `check_mesh` started passing -allGeometry,
+    # because before that both of the customer plate's regions printed "Mesh OK." anyway.
     q["mesh_ok"] = (bool(report.get("ok")) and not fatal and not missing and not undeclared
-                    and not blank and q["interface_ok"])
+                    and not blank and q["interface_ok"]
+                    and all(bool(r.get("mesh_ok")) for r in rows))
     return q
 
 
