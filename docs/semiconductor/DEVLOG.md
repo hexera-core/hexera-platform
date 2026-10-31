@@ -3339,3 +3339,121 @@ So 22 um across a 100 um channel instead of 16.5 um. x and z were never scaled, 
 mesh's 16.5 um was real and this is a genuine step back on the axis the customer cares about. It
 buys a mesh in the right coordinates, cut from the right solid, with its ports named, and one
 that can be measured.
+
+### Correction: the mesher's cost is the refinement, not the cell count
+
+I wrote above that the optimisation "does not settle" and that the bad-face count "keeps rising".
+That was the 16.6 M probe. The 269.9 M run did the opposite, and a 336 M run had already finished
+the full workflow in 40 minutes before I wrote it.
+
+| | ws_par300 | ws_shell (this run) |
+|---|---|---|
+| cells | 336,223,062 | 269,911,312 |
+| workflowControls | none, full workflow | none, full workflow |
+| fine surface | no fluid_fine entry | fluid_fine at 4 levels |
+| stretch | 3 | 6 |
+| every bad-face line in the log | 0, 0, 0, 0, 0, 0 | 1,358 rising to 9,264, then falling to 5,571 |
+| cartesianMesh | 1,744.7 s execution, 2,374 s clock | 14,593 s and still in the last loop |
+
+Every one of ws_par300's six bad-face lines reads "Iteration 0. Number of bad faces is 0". It
+walked every stage and left each smoothing loop on the spot because there was nothing to fix. So
+the 12.5 h I extrapolated from the 16.6 M probe measures the refinement band and the stretch, not
+the cell count. 336 M cells with nothing to fix is forty minutes.
+
+The two logs have the same stage list, line for line, which is how I placed this run:
+
+| stage | ws_par300 line | ws_shell line |
+|---|---|---|
+| Starting creating layer cells | 169 | 327 |
+| Mapping vertices onto surface | 200 | 364 |
+| Starting smoothing the mesh | 213 | 377 |
+| Starting untangling the mesh | 214 | 378 |
+| Finished renumbering the mesh | 223 | not yet |
+| End | 226 | not yet |
+
+This run's bad faces went 1,358, 1,824, 2,098, 3,753, 2,839, 4,221 through five bounded sub-loops
+to a peak of 9,264, then 9,143, 7,399, 6,688, 5,778, 5,777, 5,777, 5,571. It converged. The
+"keeps rising" sentence above is true of the probe and false of the production run, and the
+difference is that the probe was stopped while a sub-loop was still climbing.
+
+### Numbers I had been quoting that are wrong
+
+Six parallel investigations, adversarial verification on the top two claims from each. 38 levers
+proposed, 12 verified, 7 survived, 5 refuted.
+
+| I had been saying | measured | where |
+|---|---|---|
+| reconstruction 3.6 h | 1.0 to 1.1 h | 3.56 h was the superseded all-serial chain at 336.7 M. The current chain parallelises topoSet and the split and merges per region: 4,810 s at 328.7 M, being reconstruct_fluid 1,167 s and reconstruct_solid 3,643 s |
+| checkMesh 1,050 B/cell | about 955 B/cell | the 1,050 is one OOM whose own Exec line carries `-allGeometry -allTopology -writeFields`. `foam_exec.py:259` passes only `-allGeometry`. The same 241,984,911-cell region without those flags finished, rc=0 in 2,738 s |
+| cfMesh 909 B/cell | 644 measured on this run | the engine's own constant is `PEAK_BYTES_PER_CELL = 748.1` at `budget.py:164` |
+| reconstructParMesh twice per region | once per region, two calls total | `conjugate.py:933-934` |
+| the split runs after the reconstruct | before it, and already 8-way | `topoSet.log:17` and `splitMeshRegions.log:17` both read `nProcs : 8` |
+| CPUS_ALL_REGIONS 20 used of 32 | 28 used of 32 | four vCPU of global headroom, not twelve |
+| /scratch is local disk | 600 GB pd-standard, ROTA=1, 67.2 MB/s measured | which is why a second instance running one region's tail is a net loss |
+
+Two structural facts I did not have.
+
+The revert runs AFTER the smoothing loop, not before it. The order inside `optimiseFinalMesh` is
+optimizeMeshFV, optimizeLowQualityFaces, optimizeBoundaryLayer, untangleMeshFV, then
+`if (modSurfacePtr_)` revertGeometryModification. So no early exit ever returns physical
+coordinates, which closes the door I was still hoping was open. And with anisotropicSources present
+the whole optimiser runs twice, because projectSurfaceAfterBackScaling calls optimiseFinalMesh
+again; pass 2 skips the revert because the revert nulls modSurfacePtr_. The iteration counts are
+compiled-in immediates, optimizeMeshFV(5,10,50,2) and untangleMeshFV(10,50,2,false), and no
+meshDict key reaches them, so bounding the loop means forking cfMesh.
+
+The smoother is single-threaded. `conjugate.py:1008` is `return max(1, int(c) // n)` for OpenMP
+threads a rank, so 8 ranks on 8 cores gives each rank one thread. Both run logs print
+"OMP threads a rank 1". That limit was put in to cure the predecessor's thread oversubscription and
+the side effect was never noticed. A box with more cores than ranks gets real threads with no code
+change, and that is the only lever on the board that touches the stage holding most of the clock.
+
+### The 22 um regression was bought with a ceiling that does not exist
+
+I chose h=0.000352056 over the delivered h=0.000264042 because serial checkMesh at about 485 M
+cells would want 330 GB against 251 GiB. That ceiling came from the OOM above, and the OOM was
+caused by flags the pipeline does not pass. I used the crash without reading its own command line.
+
+| | |
+|---|---|
+| measured peak, pipeline wide | 257,691,721,728 bytes over 269,902,486 cells, 955 B/cell |
+| 485 M cells at that rate | 463 GB |
+| cheapest box that holds it | m4-megamem-56, 56 vCPU, 744 GiB, us-east1-d, $4.4237/h |
+| whole chain there | about $44 to $61 |
+
+It also fixes the single-thread smoother, since 56 cores over 8 ranks is 7 threads a rank, so the
+1.8x bigger mesh may well run faster than the coarse one is running now.
+
+Friction, stated so nobody rediscovers it: CPUS_ALL_REGIONS has to go from 32 to at least 84, and
+M4_CPUS in us-east1 is absent, so both need a quota request. Stopping all three e2 runners frees
+20 vCPU and does not reach it. M4 takes Hyperdisk only, so the 600 GB pd-standard scratch disk has
+to be snapshot restored rather than re-attached. m3-ultramem-32 at 976 GiB needs no regional
+request at all, but Ice Lake is not faster per core than the Cascade Lake already here, so M3 is
+worth buying for RAM and never for clock.
+
+The free measurement nobody has taken: there is no recorded peak RSS for any checkMesh run without
+`-allTopology`. Every RAM line in the bench logs is a post-exit `free -g`, and
+ws_plate/conjugate_report.json records "peak_rss_bytes": 0, so the only hard bound is rc=0 under
+251 GiB over 242 M cells, which permits anything from 50 to 1,000 B/cell. One `/usr/bin/time -v` on
+the next `-allGeometry` run sets the machine size and could halve the hourly rate.
+
+### Refuted, so they are not tried again
+
+Pre-scaling the STL in y and dropping anisotropicSources: the scale direction is inverted against
+cfMesh's measured convention, so as written it multiplies the meshing space 7.92x in y, to about
+2.1e9 cells and 1.3 to 1.9 TB.
+
+`meshQualitySettings { faceFlatness }`: findBadFaces clears the set, calls the dictionary-aware
+pass, then re-runs checkFaceFlatness at a compiled 0.8 and checkCellPartTetrahedra at compiled
+VSMALL into the same accumulated set. Maximum achievable reduction is zero faces, and 8,842 of the
+9,264 at the peak were exactly the hardcoded flatness set.
+
+Parallelising topoSet and splitMeshRegions: already the production path and already running.
+
+scaleY 6 to 4 keeping the level-4 band: the claimed saving needs the post-projection bad-face count
+to go from 1,358 to exactly 0, but 641 of those are flatness below 0.8 and a uniform affine stretch
+cannot make a face non-planar.
+
+`redistributePar -reconstruct -region` is installed in openfoam2412 and is the only candidate that
+attacks the serial merge, but whether reconstruct mode streams per rank or gathers onto the master
+is unestablished. It must never be pointed at ws_shell or ws_plate until that is known.
