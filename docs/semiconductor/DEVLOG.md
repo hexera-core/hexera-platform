@@ -3209,3 +3209,133 @@ Nothing has been solved on either mesh. checkMesh accepting the geometry is not 
 solver running, and the test we set was a mesh that solves.
 
 The chip and the plate are two meshes, not one. Joining them needs the registration from Corintis.
+
+## 2026-10-31: the plate I delivered was never in physical coordinates
+
+| | what I said yesterday | what it is |
+|---|---|---|
+| the y extent | the domain was truncated 9.97 mm | the mesh is in cfMesh's anisotropic working space |
+| why | only 73.2% of the box was meshed | all of it was meshed, then never scaled back |
+| the metal | a box holding 120,296 mm3 of air | a box, and the air figure was computed three ways and none of them was the one I wrote |
+| the fitted skin | 6.2x slower to mesh 19.8% fewer cells | the two runs differ in the domain, the refinement and the stretch |
+
+### The mesh is in the wrong space, not short of one
+
+`system/meshDict` carries an anisotropicSources box with scaleY 6 over the microchannel band and
+`workflowControls { stopAfter edgeExtraction; }`. cfMesh applies an anisotropic source by
+modifying the geometry: it scales the surface, meshes in that scaled space, and reverts the mesh
+points later. Stopping after edgeExtraction stops before the revert.
+
+Scaling about the box's minimum y corner, b0 = 0.0275281779 - 0.0119680208/2 = 0.0215441675:
+
+| | input | y' under the transform | the delivered mesh |
+|---|---|---|---|
+| block.stl ymin | 0.0216101781 | 0.0215551693 | 0.0215552 |
+| block.stl ymax | 0.0586811788 | 0.0487078281 | 0.0487078 |
+
+Seven figures at both ends, and the floor is BELOW the input block's own floor, which a
+truncation cannot do and this transform does exactly. Two more that say the same thing:
+
+| | true | scaled | delivered |
+|---|---|---|---|
+| coolant surface y range | 0.0216102 .. 0.0586812 | 0.0215552 .. 0.0487078 | domain is 0.0215552 .. 0.0487078 |
+| coolant surface area | 60,410.4651 mm2 | 25,654.7841 mm2 | interface 57,672.5321 mm2 |
+| fluid max aspect ratio | 6:1 was asked for | | 1.68485 |
+
+The interface area is the true one, so topoSet tagged the split with the unscaled fluid.stl
+against a scaled mesh. The cells called coolant are not the cells the coolant occupies. The
+aspect ratio is the other half of the same fact: scaleY 6 asks for cells six times taller in y,
+and 1.68 is what a cube looks like in a squashed world.
+
+### Which stage brings it back, measured rather than read
+
+`stopAfter projectSurfaceAfterBackScaling` is not a legal value. The step table is
+templateGeneration, surfaceTopology, surfaceProjection, patchAssignment, edgeExtraction,
+boundaryLayerGeneration, meshOptimisation, boundaryLayerRefinement, so the revert is folded
+inside one of them and the dictionary cannot name it. Three runs of the same geometry at 16.6 M
+cells, differing only in that line:
+
+| stopAfter | y range | patch type | wall clock |
+|---|---|---|---|
+| edgeExtraction | 0.0201061 .. 0.051972 | empty | 239 s |
+| boundaryLayerGeneration | 0.0201061 .. 0.051972 | empty | 249 s |
+| none | 0.0201080 .. 0.0619522 | wall | 2,769 s |
+
+domain.stl's own range is 0.0201102 .. 0.0619462. Only the third is the part. So the back-scaling
+is inside meshOptimisation, nothing earlier reaches it, and the `empty` patch types and the
+missing optimisation were the same omission wearing three faces. rc=0 on all three.
+
+The optimisation does not settle. After the back-scale the bad-face count goes 10,550, 9,746,
+11,483, 12,142, 12,523 and keeps rising, because the cells in the band are now 6:1 and the
+optimiser's warpage test does not like them. It terminates anyway: 2,769 s and rc=0. 12,523 bad
+faces out of 48 M is 0.026%, against the delivered mesh's 4,620,363 concave cells.
+
+### The comparison that condemned the fitted skin was not controlled
+
+On 2026-10-30 I wrote "both runs on 8 ranks, 0.3521 mm background, 1 level, only the block
+changed" and concluded 6.2x the time for 19.8% fewer cells. The two runs:
+
+| | ws_par300 (box) | ws_fitted (skin) |
+|---|---|---|
+| workflowControls | none | none |
+| fine surface | no fluid_fine entry | fluid_fine at 4 levels |
+| stretch | 3 | 6 |
+| cells | 336,223,062 | 269,650,437 |
+| cartesianMesh | 2,399.6 s, 0 bad faces | 14,823.5 s, killed at iteration 2 |
+
+Three things changed, not one. The 6.2x is what a level-4 refinement band and a 6:1 stretch cost
+in the optimiser, measured on my own probe at 11.6x between the same two workflows on the same
+surface. The skin was condemned for the refinement's bill.
+
+I am not claiming the skin is free. I am claiming the number I used to reject it measured
+something else, and the run that would settle it never finished.
+
+### The ports exist and nobody had named them
+
+The coolant touches the shell in exactly two places and nowhere else: 100.3644 mm2 at under
+0.1 um, then nothing until 1 mm. Two discs, 50.1822 mm2 each, 8 mm across, normal to +x at
+(89.340 54.681 77.388) and (99.882 54.681 43.306) mm. Growing each disc on the shell until its
+area stops changing gives 61 facets and 50.1822 mm2 per port, which is the coolant's own figure
+for the same disc measured from the other surface.
+
+Two wrong measurements before that one, both of which looked like they worked. Shell facet
+centroid to the nearest coolant vertex found 4 facets and 0.0158 mm2, because the coolant's
+vertices near a port sit on the rim and not across the disc. Shell facet centroid to a dense
+sampling of the coolant surface found no gap at all, because the shell's triangles at a port are
+larger than the port and a facet can cover the disc with its centre a centimetre away. The
+distance has to run from the coolant to the shell, with real point-to-triangle distance.
+
+The delivered mesh's two mouths are both called `ymax`, because the bounding box cut both bores
+through the middle and they landed on the same face of it. `conjugate_report.json` carries
+`"ports": null` and `"patch_names": {}`.
+
+### A region was in the viewer's roster and could not be picked
+
+`renderable` was `name in rendered_set`, which asks whether a drawn surface is called "fluid".
+They are called "fluid/xmin" and "fluid/fluid_to_solid", because the region prefix exists so the
+coolant's ymin and the metal's ymin cannot replace one another. So the test was never true on the
+one engine that has regions, and "show me the coolant on its own" was listed and dead.
+
+Two more fell out of fixing it. Teaching a region its surfaces put them in the set that
+suppresses a drawn surface's own row, and `fluid_to_solid` vanished from the roster, which is the
+one surface on a conjugate mesh that matters most and the one no manifest can declare. And
+Isolate only un-hid the row that was clicked, while an actor's visibility is decided by the part
+that DRAWS it, so isolating the metal gave an empty viewport.
+
+### What is running
+
+ws_shell: the part shell with its two ports as named solids, ws_plate's coolant surfaces,
+maxCellSize 0.000352056, levels 1 and 4, scaleY 6, no workflowControls, 8 ranks.
+
+The cell size is the one regression and it is chosen on a measurement. Cells go as h^-2.038 on
+this part, which fits probe_edge's 16,186,600 at 0.0014 to ws_fitted's 269,650,437 at
+0.000352056 within a percent, so the delivered 0.000264042 would give about 485 M. That fits the
+700 M limit and does not fit what has to happen next: checkMesh is serial and costs about 1,050
+bytes a cell, which is how the kernel came to kill it at 254 GB on the delivered 242 M-cell metal
+region. 485 M would want about 330 GB of it against 251 GiB. 269.65 M splits to about 175 M metal
+cells and 184 GB.
+
+So 22 um across a 100 um channel instead of 16.5 um. x and z were never scaled, so the delivered
+mesh's 16.5 um was real and this is a genuine step back on the axis the customer cares about. It
+buys a mesh in the right coordinates, cut from the right solid, with its ports named, and one
+that can be measured.
