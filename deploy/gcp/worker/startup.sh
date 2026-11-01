@@ -79,6 +79,7 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "cad-repair-fill-planar-holes:CAD_REPAIR_FILL_PLANAR_HOLES" \
             "cad-repair-fill-nonplanar-holes:CAD_REPAIR_FILL_NONPLANAR_HOLES" \
             "cad-repair-heal-self-intersections:CAD_REPAIR_HEAL_SELF_INTERSECTIONS" \
+            "cad-repair-fix-small-faces:CAD_REPAIR_FIX_SMALL_FACES" \
             "cad-repair-llm-planner:CAD_REPAIR_LLM_PLANNER" \
             "verdict-by-limits:VERDICT_BY_LIMITS"; do
   value="$(md "${pair%%:*}" || true)"

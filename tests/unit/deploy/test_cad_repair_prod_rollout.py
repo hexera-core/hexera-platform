@@ -24,5 +24,6 @@ def test_production_default_does_not_enable_geometry_invention_flags():
         "CAD_REPAIR_FILL_PLANAR_HOLES",
         "CAD_REPAIR_FILL_NONPLANAR_HOLES",
         "CAD_REPAIR_HEAL_SELF_INTERSECTIONS",
+        "CAD_REPAIR_FIX_SMALL_FACES",
     ):
         assert f"{name}: ${{{{ inputs.cad_repair && 'true' || '' }}}}" in WORKFLOW

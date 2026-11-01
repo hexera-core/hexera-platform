@@ -1448,6 +1448,7 @@ jobs:
       # The other two geometry-adding flags ride the same tick: the non-planar fill and the heal.
       CAD_REPAIR_FILL_NONPLANAR_HOLES: ${{ inputs.cad_repair && 'true' || '' }}
       CAD_REPAIR_HEAL_SELF_INTERSECTIONS: ${{ inputs.cad_repair && 'true' || '' }}
+      CAD_REPAIR_FIX_SMALL_FACES: ${{ inputs.cad_repair && 'true' || '' }}
       # The planner posture, stated only when it is not "off"; empty means "not stated".
       CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || '' }}
       # The verdict by measured limits, per target (the `target` job): 'true' on dev, empty on prod.
