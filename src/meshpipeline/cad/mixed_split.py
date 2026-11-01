@@ -45,9 +45,6 @@ SLAB_SLACK = 0.02
 LEFT_OVER_MAX = 0.02
 #: MIXED-3: the split must hold the body's metal within this band (the shell check's own)
 VOLUME_BAND = ms.VOLUME_BAND
-#: MIXED-2: a trimmed piece of mid-face narrower than this many walls is left to the solid region's own cut (it would
-#: be a strip of shell between two cuts)
-MIN_WALLS = 1.0
 
 
 @dataclass
@@ -213,10 +210,9 @@ def _split(body, kept, thick_faces, scale: float, out: Split) -> None:
             continue
         k = min(range(len(kept)), key=lambda i: (ms._dist(ms._vertex(q), kept[i][0]), i))
         t = kept[k][1]
-        if ms.width_of(p) < MIN_WALLS * t:
-            out.notes.append(f"a strip of wall {ms.width_of(p) * scale:.3g} mm wide between cuts is left to the "
-                             "solid's cut faces")
-            continue
+        # every piece is kept, however narrow: the sewn surface holds junction strips half a wall wide (a stiffener's
+        # mid-face carried down to the plate's mid-plane), and dropping them parted a stiffened panel's stiffeners
+        # from its plate
         out.shell_faces.append(p)
         out.shell_from.append(k)
         out.shell_volume += ms._area(p) * t
