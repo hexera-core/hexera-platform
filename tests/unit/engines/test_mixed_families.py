@@ -114,8 +114,18 @@ def _vm_at(frd: str, at, normal, wall: float) -> float:
     at, nrm = np.asarray(at, float), np.asarray(normal, float)
     off = (x - at) @ nrm
     ok = np.flatnonzero(np.abs(off) <= 0.05 * wall)
-    k = ok[int(np.argmin(np.linalg.norm((x[ok] - at) - np.outer(off[ok], nrm), axis=1)))]
-    sx, sy, sz, sxy, syz, szx = st[int(ids[k])]
+    r = (x[ok] - at) - np.outer(off[ok], nrm)
+    d = np.linalg.norm(r, axis=1)
+    # the stress AT the point: a plane through each component's nodal values on the face round it (the nearest
+    # few elements of either mesh), read there - the nearest node of a 5 mm shell mesh sat 2.5 mm off, where the
+    # bending moment of a loaded leg is 5% different
+    near = np.argsort(d)[: max(12, int(np.sum(d <= 2.5 * np.sort(d)[min(6, len(d) - 1)])))]
+    e1 = np.cross(nrm, [1.0, 0, 0] if abs(nrm[0]) < 0.9 else [0, 1.0, 0])
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(nrm, e1)
+    a = np.column_stack([np.ones(len(near)), r[near] @ e1, r[near] @ e2])
+    s = np.array([st[int(ids[ok[k]])] for k in near.tolist()])
+    sx, sy, sz, sxy, syz, szx = np.linalg.lstsq(a, s, rcond=None)[0][0]
     return float(np.sqrt(0.5 * ((sx - sy) ** 2 + (sy - sz) ** 2 + (sz - sx) ** 2) + 3 * (sxy ** 2 + syz ** 2 + szx ** 2)))
 
 
