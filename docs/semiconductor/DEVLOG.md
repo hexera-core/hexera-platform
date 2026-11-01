@@ -3457,3 +3457,77 @@ cannot make a face non-planar.
 `redistributePar -reconstruct -region` is installed in openfoam2412 and is the only candidate that
 attacks the serial merge, but whether reconstruct mode streams per rank or gathers onto the master
 is unestablished. It must never be pointed at ws_shell or ws_plate until that is known.
+
+
+## 2026-11-01: how much of the mesher is left, read off a run that finished
+
+ws_par300 is the only run of this geometry that ever printed End. Its log is 226 lines, so it is
+the whole skeleton of a complete cartesianMesh. Lining the live ws_shell run up against it at
+06:44Z:
+
+| stage | par300 line | ws_shell line | state |
+|---|---|---|---|
+| optimiseFinalMesh #1 | 190-198 | 348-362 | done |
+| back-scale, revertGeometryModification | 198 | 362 | done |
+| projectSurfaceAfterBackScaling: remap, surface opt | 200-209 | 364-371 | done |
+| optimiseFinalMesh #2, optimizeMeshFV | 213-217 | 377-2138 | done, about 8 h |
+| optimiseFinalMesh #2, optimizeLowQualityFaces | 218 | 2139-2167 | iteration 8 of 10 |
+| optimiseFinalMesh #2, optimizeBoundaryLayer and untangleMeshFV | 219-221 | not reached | last step |
+| End | 226 | | |
+
+There is no third pass. optimiseFinalMesh runs exactly twice, because meshOptimisation's step body
+is `{ optimiseFinalMesh(); projectSurfaceAfterBackScaling(); }` and projectSurfaceAfterBackScaling
+calls optimiseFinalMesh once more. Two blocks, and only two, appear in every log I have, including
+the ones that reached End.
+
+### The call site, so the caps are not guesses
+
+Read off `cartesianMeshGenerator::optimiseFinalMesh` in
+`/usr/lib/openfoam/openfoam2412/platforms/linux64GccDPInt32Opt/lib/libmeshLibrary.so`, image
+`mesh:ff752ca1df02`:
+
+| call | arguments |
+|---|---|
+| optimizeSurface | octree |
+| optimizeMeshFV | 5, 10, 50, 2 |
+| optimizeLowQualityFaces | 10 |
+| optimizeBoundaryLayer | false |
+| untangleMeshFV | 10, 50, 2, false |
+| revertGeometryModification | only if modSurfacePtr_ is set |
+
+The loop the run is in is capped at ten iterations, indices 0 through 9, and exits early only on
+zero bad faces. It is on 9. No meshDict key reaches any of these numbers.
+
+### Two things I had wrong yesterday
+
+The back-scale is not at line 2137. It is at the end of optimiseFinalMesh #1, which in ws_shell is
+line 362. Everything from line 377 on has already been in physical coordinates. The jump from 0 bad
+faces at line 361 to 1,358 at line 392 is the back-scale arriving, not a new test.
+
+The loop at line 2139 is optimizeLowQualityFaces, not a second optimiser pass. It asks
+checkFaceDotProduct, which is why it reads 343,868 where the loop above it ended at 28. Those are
+two different questions put to the same mesh, not the mesh getting 12,000 times worse.
+
+### Per-iteration cost at 269,911,312 cells
+
+| loop | bad faces it works on | seconds per iteration |
+|---|---|---|
+| optimizeMeshFV's untangle, lines 378-2137, 173 iterations | 28 to 9,264 | about 170 |
+| optimizeLowQualityFaces, lines 2139 on | 343,868 to 473,282 | 6,700 |
+
+Iterations 6, 7 and 8 took 6,737 s, 6,737 s and 6,690 s, from the log's mtime. The 170 s is derived:
+ranks at 91,336 s elapsed, minus about 56,600 s for the nine optimizeLowQualityFaces iterations,
+minus ws_par300's 2,374 s of pre-optimiser work and the refinement band on top of it, leaves about
+28,800 s for 173 iterations. Same finding as yesterday in a second place: the cost tracks the
+bad-face count, not the cell count.
+
+### Where the other runs died
+
+| run | cells | died at | in |
+|---|---|---|---|
+| ws_fitted | 269,650,437 | line 785 | optimizeMeshFV, cycle 8 |
+| ws_par182 | 279,621,370 | line 1839 | optimizeLowQualityFaces, iteration 1 |
+| ws_shell | 269,911,312 | still running | optimizeLowQualityFaces, iteration 9 |
+
+ws_par182 stopped at 359,520 bad faces on the same loop with the same signature. ws_shell is the
+furthest any run of this geometry has reached.
