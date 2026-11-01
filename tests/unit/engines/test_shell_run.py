@@ -72,8 +72,9 @@ def test_the_shell_is_meshed_and_written_for_every_solver(tmp_path, tjoint):
 def test_a_part_with_no_thin_wall_makes_no_shell_and_says_why(tmp_path):
     ws = _stage(sf.chunky_block(), tmp_path / "block")
     rec = shell_run.run(ws, ws / "geometry.step", mm_per_unit=FD.staged_mm_per_unit(ws / "geometry.step"))
-    assert rec["made"] is False and rec["why"] == "no wall of the part is thin enough to be a shell"
-    assert rec["words"].startswith("No shell mesh was made: no wall of the part is thin enough")
+    # SHSTAGE-6b: the reason in the measured numbers (the block is 50 x 40 x 30 mm)
+    assert rec["made"] is False and rec["why"].startswith("its most plate-like wall is 30 mm thick"), rec["why"]
+    assert rec["words"].startswith("No shell mesh was made: its most plate-like wall is 30 mm thick")
     assert not (ws / "shell.bdf").exists()
 
 
@@ -124,3 +125,20 @@ def test_the_downloads_offer_the_shell_files_nastran_first():
     assert files.index("shell.bdf") < files.index("mesh.inp")
     members = {m.path for m in get_spec("gmsh").deliverable.members}
     assert set(shell_run.FILES) | {shell_run.RECORD} <= members
+
+
+def test_a_part_with_no_shell_says_why_in_numbers():
+    # SHSTAGE-6b: the extraction's measured reason, not a fixed sentence
+    from meshpipeline.engines import shell_run as sr
+
+    rec = {"bodies": [{"verdict": "solid", "why": "no wall is thin against its size: its most plate-like wall is 60 mm "
+                       "thick and spans about 11 mm, only 0.2 times its thickness; a shell needs at least 10 times"}]}
+    why = sr.no_shell_why(rec)
+    assert why.startswith("its most plate-like wall is 60 mm thick")
+    assert "60 mm" in sr.words({"made": False, "why": why})
+    assert sr.no_shell_why({"bodies": []}) == sr.NO_WALL_WHY
+    two = {"bodies": [{"verdict": "solid", "why": "no wall is thin against its size: a"},
+                      {"verdict": "solid", "why": "no wall is thin against its size: a"},
+                      {"verdict": "shell", "why": "every wall is thin against its size"},
+                      {"verdict": "solid", "why": "the mid-surface extraction ran past 780 s and was stopped"}]}
+    assert sr.no_shell_why(two) == "a; the mid-surface extraction ran past 780 s and was stopped"

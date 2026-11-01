@@ -32,6 +32,29 @@ def _verdicts(record: dict) -> dict[str, int]:
     return out
 
 
+#: what a shell run with no shell says when the extraction gave no measured reason
+NO_WALL_WHY = "no wall of the part is thin enough to be a shell"
+
+
+def no_shell_why(record: dict) -> str:
+    """SHSTAGE-6b: why no shell was made, in numbers when the extraction measured them (cad/midsurface SHELL-2c:
+    "its most plate-like wall is 60 mm thick and spans about 11 mm, ..."; SHELL-18: "... used its 540 s work
+    budget ..."): each solid body's reason, the same reason told once, at most three."""
+    whys: list[str] = []
+    for b in record.get("bodies") or []:
+        w = str(b.get("why") or "").strip()
+        if str(b.get("verdict") or "solid") != "solid" or not w:
+            continue
+        w = w.split(": ", 1)[1].strip() if w.startswith("no wall is thin against its size: ") else w
+        if w not in whys:
+            whys.append(w)
+    if not whys:
+        return NO_WALL_WHY
+    if len(whys) == 1:
+        return whys[0]
+    return "; ".join(whys[:3]) + ("; and more" if len(whys) > 3 else "")
+
+
 def words(rec: dict) -> str:
     """What the shell run made, in plain words, for the decision record and the result."""
     if not rec.get("made"):
@@ -68,7 +91,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
                    solid_bodies=int(verdicts.get("solid", 0)) + sum(len(b.get("solid_regions") or [])
                                                                     for b in record.get("bodies") or []))
         if not record.get("surface_faces"):
-            rec["why"] = "no wall of the part is thin enough to be a shell"
+            rec["why"] = no_shell_why(record)
         else:
             t1 = time.time()
             mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit)
