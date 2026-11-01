@@ -48,7 +48,7 @@ def _mixed(shape, ws: Path):
     rec: dict = {}
     m = mr.build(step, ws / "mixed", mm_per_unit=1.0, rec=rec)
     mm.write_inp(ws / "mixed_mesh.inp", m, units="mm",
-                 materials={i: MAT for i in range(1, len(set(m.shell.part)) + 1)})
+                 materials=dict.fromkeys(range(1, len(set(m.shell.part)) + 1), MAT))
     xyz = np.vstack([m.shell.xyz, m.solid.xyz])
     return (ws / "mixed_mesh.inp").read_text(), xyz, set(range(1, len(m.shell.xyz) + 1)), m
 
