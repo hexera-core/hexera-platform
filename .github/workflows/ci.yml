@@ -216,7 +216,10 @@ jobs:
     # 35, not 25 (30 Oct): tests/unit/application/test_geometry_check.py alone runs 9 minutes on these
     # runners, and the size partition can put it beside test_fea_joins (5) and test_repair_corpus_catalogue
     # (5): that shard ran past 25 three times on the shell branches, cancelled at 82-87% with every test green.
-    timeout-minutes: 35
+    # 45, not 35 (1 Nov): two new test files reshuffled the bins and put test_mesh_fidelity_optional (9 min),
+    # test_geometry_unit_suggestion (6), test_policy_versions (6) and test_readiness (5) in one shard: cancelled
+    # at 71% twice, every test green.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
