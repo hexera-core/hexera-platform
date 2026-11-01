@@ -269,7 +269,7 @@ jobs:
           FEA_ACCURACY_REQUIRE_CCX: "1"
           FEA_ACCURACY_REPORT: fea_accuracy.jsonl
           MIXED_ACCURACY_FAMILIES: "1"
-        run: python -m pytest -q -p no:cacheprovider -rs tests/unit/engines/test_mixed_families.py
+        run: python -m pytest -q -x -p no:cacheprovider -rs --tb=short tests/unit/engines/test_mixed_families.py; rc=$?; grep mixed fea_accuracy.jsonl || true; exit $rc
       - name: The table
         if: ${{ !cancelled() }}
         env:
