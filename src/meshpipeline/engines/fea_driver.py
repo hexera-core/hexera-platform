@@ -859,6 +859,32 @@ def planned_work(plan: dict, *, rate: float | None = None, cls: str = "", ceilin
             "planned_s": planned_s, "ceiling_s": int(ceiling_s), "stall_window_s": int(stall_window())}
 
 
+#: LAD-fea-15: A PASS'S BUDGET IS SIZED FROM ITS ESTIMATE - this many times its planned time at the part's
+#: slow fill rate (PLAN-fea-13), never under BUDGET_FLOOR_S, never over the machine's wall. Calibrated on the
+#: corpus (docs/RULES.md LAD-fea-15): the slowest valid pass of every corpus run took 12.3 times its planned
+#: time at the fastest rate, so no pass that ever built a mesh is cut by it. A pass past it is the part's
+#: slowness, not ours: the ladder goes on (a 20-hour wall let one surface grind for hours, 1 Nov).
+BUDGET_FACTOR = 15.0
+BUDGET_FLOOR_S = 3600.0
+
+
+def pass_work(plan: dict, *, rate: float, cls: str, machine: dict | None) -> dict:
+    """planned_work with LAD-fea-15's budget as its ceiling: `budget` is True when the budget, not the
+    machine's wall, is what stops the pass."""
+    wall = ceiling_for(None, machine)
+    planned = planned_seconds(plan, rate)
+    budget = min(wall, max(BUDGET_FLOOR_S, BUDGET_FACTOR * planned)) if planned else wall
+    work = planned_work(plan, rate=rate, cls=cls, ceiling_s=budget)
+    work["budget"] = bool(budget < wall)
+    return work
+
+
+def budget_words(work: dict, n: int, surface: int | None) -> str:
+    where = f", meshing surface {surface}" if surface is not None else ""
+    return (f"Pass {n} was still working{where} when the {int(work['ceiling_s']) // 60} minutes its size allows ran "
+            "out, so it was stopped and the next way to mesh it is tried (LAD-fea-15).")
+
+
 def watchdog_words(trip: dict) -> str:
     """What the watchdog saw, in plain words, for the why record and the refusal."""
     seen = trip.get("watchdog") or {}
@@ -1450,17 +1476,18 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                                             "wall_s": ceiling_for(run)},
                                 "words": machine["words"]}])
             MM.write(ws, machine)
-            # NO GUESSED TIME LIMIT (PLAN-fea-13): watched for progress, stopped only when stuck or at the
-            # hard ceiling of the machine it runs on
-            work = planned_work(plan, rate=rate, cls=cls, ceiling_s=ceiling_for(run, machine))
+            # PLAN-fea-13 / LAD-fea-15: watched for progress, and given the time its estimate allows (BUDGET_FACTOR
+            # times its planned time, at least BUDGET_FLOOR_S, at most the machine's wall)
+            work = pass_work(plan, rate=rate, cls=cls, machine=machine)
             _cite(job_id, [{"stage": "fea_time", "decided": "watchdog", "value": work["stall_window_s"],
                             "rule": "PLAN-fea-13",
                             "inputs": {k: work[k] for k in ("amount", "rate", "class", "planned_s", "ceiling_s",
                                                              "stall_window_s")} | {"pass": n},
-                            "words": (f"Pass {n}: about {int(work['amount'] or 0):,} elements. The mesher runs until "
-                                      f"it is done; it is stopped only if it makes no progress for "
-                                      f"{work['stall_window_s'] // 60} minutes, or at the hard limit of "
-                                      f"{work['ceiling_s'] // 60} minutes.")}])
+                            "words": (f"Pass {n}: about {int(work['amount'] or 0):,} elements. It is stopped if it makes "
+                                      f"no progress for {work['stall_window_s'] // 60} minutes, or after "
+                                      f"{work['ceiling_s'] // 60} minutes"
+                                      + (" - the time its size allows; past that the next way to mesh it is tried."
+                                         if work.get("budget") else ", the hard limit of the machine."))}])
             await run.fence("start native mesh")
             # THE LIVE LINE (contracts/narration): what was decided and why, where it runs, and the
             # mesher's own stages as it reports them. This path used to say nothing here, so a run
@@ -1477,9 +1504,10 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                     # RUN-3: OUT OF MEMORY -> THE SAME PLAN ONE MACHINE UP (no lever, no coarsening, no
                     # re-plan), sized from the peak seen when there is one, up to the largest machine
                     moved, rule, decided = MM.step_up(machine, measured_gib=_peak_gib(result)), "RUN-3", "step up"
-                elif result.get("timed_out") and not result.get("stalled"):
+                elif result.get("timed_out") and not result.get("stalled") and not work.get("budget"):
                     # RUN-5: STILL WORKING AT THE CLOUD RUN WALL -> THE SAME PLAN ON A VM, which has no
-                    # wall (nothing coarsened, no lever); on a VM already there is nowhere to move
+                    # wall (nothing coarsened, no lever); on a VM already there is nowhere to move. A pass
+                    # stopped by its own budget (LAD-fea-15) is not moved: it would only grind on elsewhere
                     moved, rule, decided = MM.off_the_wall(machine), "RUN-5", "off the wall"
                 else:
                     break
@@ -1487,7 +1515,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                     break
                 machine = moved
                 MM.write(ws, machine)
-                work = {**work, "ceiling_s": int(ceiling_for(run, machine))}
+                work = pass_work(plan, rate=rate, cls=cls, machine=machine)
                 _cite(job_id, [{"stage": "fea_machine", "decided": decided, "value": machine["machine"],
                                 "rule": rule, "inputs": {"pass": n, "from": machine.get("stepped_from"),
                                                          "need_gib": machine["need_gib"]},
@@ -1506,8 +1534,18 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 _cite(job_id, [{"stage": "fea_machine", "decided": "not run", "value": machine.get("where"),
                                 "rule": "RUN-4", "inputs": unrun, "words": not_run_words(unrun).capitalize() + "."}])
                 break
-            stuck_on = L.stalled_surface(str(result.get("log_tail") or "")) if result.get("stalled") else None
+            # LAD-fea-15: THE PASS'S OWN BUDGET RAN OUT (the time its estimate allows, not the machine's wall):
+            # the part's slowness, not ours - the pass is a fill that failed, and the ladder goes on (a surface
+            # stage that ran over: LAD-fea-8 first; then the other 3D algorithm; at the end the last rung)
+            spent = bool(result.get("timed_out") and not result.get("stalled") and work.get("budget"))
+            stuck_on = (L.stalled_surface(str(result.get("log_tail") or ""))
+                        if result.get("stalled") or spent else None)
             stall_lever = L.surface_stall_lever(stuck_on, levers, n=n) if stuck_on is not None else None
+            if spent:
+                _cite(job_id, [{"stage": "fea_time", "decided": "budget spent", "value": work["ceiling_s"],
+                                "rule": "LAD-fea-15", "inputs": {"pass": n, "planned_s": work.get("planned_s"),
+                                                                 "budget_s": work["ceiling_s"], "surface": stuck_on},
+                                "words": budget_words(work, n, stuck_on)}])
             if result.get("timed_out") and stall_lever is not None:
                 # LAD-fea-8: A SURFACE STAGE THAT STALLED is the part's, not ours - gmsh's own switch to
                 # MeshAdapt on one face ran past the watchdog - so the next pass meshes the surfaces without it
@@ -1531,6 +1569,9 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                 "words": (spin_words((refine.get("iterations"), refine.get("kept"),
                                                       refine.get("rejected"))).capitalize()
                                           + f", so pass {n} was stopped as a fill that failed.")}])
+            elif spent:
+                # LAD-fea-15: read on as a fill that failed (no mesh came back): the ladder's levers, then the rung
+                pass
             elif result.get("timed_out"):
                 # A GUARD TRIP is our infrastructure, never the part's: it pulls no lever and changes no
                 # plan. The attempt ends here; the run's own retry takes it again (D3: replayed once)

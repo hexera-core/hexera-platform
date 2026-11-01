@@ -49,6 +49,8 @@ SICN_FLOOR = 0.1
 GENTLE_GROWTH = 1.2
 OPTIMISE_PASSES = 3
 TIGHTEN = 0.8
+#: LAD-fea-6: a failure naming more than this share of the part's surfaces is not localised to them
+LOCAL_SHARE = 0.25
 
 
 def growth(levers: list[dict]) -> float:
@@ -75,7 +77,10 @@ def tightened(levers: list[dict]) -> dict[str, float]:
 
 def mesh_settings(levers: list[dict]) -> dict:
     names = {lv["lever"] for lv in levers}
-    remesh = sorted(_remeshed(levers))
+    # LAD-fea-8: a surface the surface stage stalled (or ran out of time) on is never put on MeshAdapt again
+    stuck = {int(lv["inputs"]["surface"]) for lv in levers
+             if lv["lever"] == SURFACE_STALL and (lv.get("inputs") or {}).get("surface") is not None}
+    remesh = sorted(_remeshed(levers) - stuck)
     return {"algorithm3d": "hxt" if "LAD-fea-2" in names else "delaunay",
             "optimise_passes": OPTIMISE_PASSES if "LAD-fea-1" in names else 1,
             **({"remesh_surfaces": remesh} if remesh else {}),
@@ -163,6 +168,7 @@ def pass_facts(n: int, rc, q: Mapping, plan: Mapping, log: str = "", killed: boo
             "per_quarter_min": (rules.get("hot_spots") or {}).get("min_per_quarter_turn"),
             "bad_surfaces": [] if valid else failed_surfaces(q if built else {}, log),
             "bad_faces": [] if valid else failed_faces(q if built else {}, log),
+            "surfaces_total": int((plan.get("measure") or {}).get("faces") or 0),
             # LAD-fea-7: the mesher was killed by the job's memory limit
             "out_of_memory": bool(killed and not built)}
 
@@ -184,8 +190,15 @@ def lever_options(facts: Mapping, levers: list[dict], plan: Mapping) -> list[dic
     if facts.get("out_of_memory"):
         # LAD-fea-7: no lever builds this plan in less memory
         return []
-    # LAD-fea-6: the surfaces this pass went wrong on that no lever has re-meshed yet
-    fresh = sorted(set(facts.get("bad_surfaces") or []) - _remeshed(levers))
+    # LAD-fea-6: the surfaces this pass went wrong on that no lever has re-meshed yet - ONLY THE ONES THAT
+    # FAILED: a failure that names more than LOCAL_SHARE of the part's surfaces (a fill that names a whole
+    # volume's boundary) is not on those surfaces, and switching them all to MeshAdapt only makes every face
+    # slow (1 Nov: all 441 faces of a 640 mm part, MeshAdapt grinding on its largest face for hours)
+    bad = set(facts.get("bad_surfaces") or [])
+    total = int(facts.get("surfaces_total") or 0)
+    if total and len(bad) > LOCAL_SHARE * total:
+        bad = set()
+    fresh = sorted(bad - _remeshed(levers))
     other = (f" The surface(s) it went wrong on ({_listed(fresh)}) are meshed with gmsh's MeshAdapt "
              "(LAD-fea-6).") if fresh else ""
     hxt = {"lever": "LAD-fea-2", "inputs": {"rc": facts["rc"], "surfaces": fresh}, "surfaces": fresh,
