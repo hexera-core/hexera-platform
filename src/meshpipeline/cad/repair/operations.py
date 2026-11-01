@@ -540,9 +540,9 @@ class FixSmallFaces:
                     "faces_targeted": len(targets)})
 
         diagonal = _diagonal(shape)
-        # THE DETECTION SCALE - see the class docstring. Never below the requested tolerance, and
-        # proportional to the part past that, because a sliver is sliver-sized relative to the part.
-        precision = max(float(tolerance_mm), diagonal * rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO)
+        # The fixer's precision is a removal width, not a whole-body movement allowance. Scaling
+        # it by the part diagonal turns a conservative 0.1 mm sweep into millimetres on a vehicle.
+        precision = float(tolerance_mm)
         fixer = ShapeFix_FixSmallFace()
         fixer.Init(shape)
         fixer.SetPrecision(precision)

@@ -365,6 +365,10 @@ class RepairSession:
         before_names = {(d.fingerprint, d.code.value) for d in previous}
         before_geometry = {key for d in previous if (key := _geometric_defect_key(d)) is not None}
         added = set(outcome.added)
+        errors = (DefectSeverity.error, DefectSeverity.fatal)
+        improved_to_warnings = (any(d.severity in errors for d in previous)
+                                and not any(d.severity in errors for d in found)
+                                and len(found) < len(previous))
         for defect in found:
             if (defect.fingerprint, defect.code.value) in before_names:
                 continue
@@ -372,6 +376,13 @@ class RepairSession:
             if geometric_key is not None and geometric_key in before_geometry:
                 continue
             if defect.severity not in _HELD_AGAINST:
+                continue
+            if defect.severity is DefectSeverity.warning and improved_to_warnings:
+                # A broad kernel repair can split a face while removing the invalid topology that
+                # made the body unusable. Keep that strict severity improvement and let the next
+                # iteration clean its bounded warnings. The finding count must also fall, so
+                # clearing one error cannot excuse a warning explosion. Any surviving or newly
+                # introduced error disables this allowance.
                 continue
             if defect.fingerprint in added and defect.severity is DefectSeverity.warning:
                 # GEOMETRY THE OPERATION SAID IT WAS ADDING. A sliver warning on a patch face is

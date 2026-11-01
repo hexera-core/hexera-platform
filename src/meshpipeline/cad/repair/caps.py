@@ -152,9 +152,13 @@ def cumulative_refusal(original: Measure, current: Measure, *,
         return (f"the run's own measurement could not be taken ({', '.join(unmeasured)} is not "
                 "finite), so the result cannot be approved")
 
-    if current.max_tolerance_mm > rcfg.CAD_REPAIR_MAX_TOLERANCE_MM:
+    # An upload can already exceed our tolerance policy. Repair may improve that body, but it may
+    # not use an existing bad tolerance as permission to widen it further. Sound uploads retain
+    # the configured absolute cap; out-of-policy uploads retain their measured starting ceiling.
+    tolerance_ceiling = max(rcfg.CAD_REPAIR_MAX_TOLERANCE_MM, original.max_tolerance_mm)
+    if current.max_tolerance_mm > tolerance_ceiling:
         return (f"the run left a tolerance of {current.max_tolerance_mm:.4f} mm, over the "
-                f"{rcfg.CAD_REPAIR_MAX_TOLERANCE_MM} mm cap - the kernel agreed to stop "
+                f"{tolerance_ceiling} mm ceiling - the kernel agreed to stop "
                 "complaining rather than fixing the geometry")
 
     if original.diagonal_mm > 0:

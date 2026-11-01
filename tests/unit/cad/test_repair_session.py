@@ -215,6 +215,38 @@ def test_an_operation_that_introduced_a_new_defect_is_rolled_back():
     assert verdict.status == ROLLED_BACK and verdict.reason == "new_defect"
 
 
+def test_removing_an_error_may_leave_new_warnings_for_later_cleanup():
+    target = _defect(DefectCode.self_intersection, fingerprint="wire:target",
+                     severity=DefectSeverity.error, kind="wire")
+    old_warning_a = _defect(fingerprint="edge:old-a", index=4)
+    old_warning_b = _defect(fingerprint="edge:old-b", index=5)
+    warning_a = _defect(DefectCode.small_face, fingerprint="face:new-a",
+                        severity=DefectSeverity.warning, kind="face", index=2)
+    warning_b = _defect(DefectCode.small_edge, fingerprint="edge:new-b",
+                        severity=DefectSeverity.warning, index=3)
+    op = _Op(outcome=OpOutcome(shape="fixed"))
+    session = _session(scans=[((target, old_warning_a, old_warning_b), True),
+                              ((warning_a, warning_b), True)])
+
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+
+    assert verdict.status == KEPT, verdict.reason
+
+
+def test_removing_one_error_does_not_excuse_a_warning_explosion():
+    target = _defect(DefectCode.self_intersection, fingerprint="wire:target",
+                     severity=DefectSeverity.error, kind="wire")
+    warnings = tuple(_defect(DefectCode.small_face, fingerprint=f"face:new-{i}",
+                             severity=DefectSeverity.warning, kind="face", index=i + 2)
+                     for i in range(2))
+    op = _Op(outcome=OpOutcome(shape="fixed"))
+    session = _session(scans=[((target,), True), (warnings, True)])
+
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+
+    assert verdict.status == ROLLED_BACK and verdict.reason == "new_defect"
+
+
 def test_a_persisting_warning_renamed_by_a_kernel_rebuild_is_not_a_new_defect():
     box = {"bbox_min": [10.0, 20.0, 30.0], "bbox_max": [11.0, 20.0, 30.0]}
     target = _defect(DefectCode.open_shell, fingerprint="edge:rim", severity=DefectSeverity.error)

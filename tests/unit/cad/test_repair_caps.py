@@ -82,6 +82,24 @@ def test_a_tolerance_over_the_cap_is_refused():
     assert "tolerance" in reason
 
 
+def test_an_upload_already_over_the_tolerance_cap_may_be_improved_without_worsening_it():
+    original = _changed(max_tolerance_mm=5.0)
+    current = _changed(max_tolerance_mm=5.0)
+
+    assert cumulative_refusal(original, current, declared_area_mm2=0.0,
+                              declared_volume_mm3=0.0) == ""
+
+
+def test_an_upload_already_over_the_tolerance_cap_may_not_increase_it():
+    original = _changed(max_tolerance_mm=5.0)
+    current = _changed(max_tolerance_mm=5.01)
+
+    reason = cumulative_refusal(original, current, declared_area_mm2=0.0,
+                                declared_volume_mm3=0.0)
+
+    assert "tolerance" in reason
+
+
 def test_a_part_whose_overall_size_moved_past_the_deviation_cap_is_refused():
     reason = cumulative_refusal(_SOUND, _changed(diagonal_mm=201.0),
                                 declared_area_mm2=0.0, declared_volume_mm3=0.0)
