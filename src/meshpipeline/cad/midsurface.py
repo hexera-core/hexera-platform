@@ -3239,7 +3239,8 @@ def _with_voids(made: list) -> list:
     """SHELL-15h: the solids sewn from loose faces, each one that lies inside another (a point of its skin inside it,
     its box inside its box) put into that one as a void - a closed box with a sealed cavity is one body with two
     shells, as its STEP is, not a box and a solid block the size of the cavity (a 147 cm3 part read as 221 + 74).
-    Deterministic: the largest first; a void goes into the smallest solid holding it."""
+    Deterministic: the largest first; a void goes into the smallest solid holding it. Each solid's volume is read
+    once (SHELL-15h2): read again for every pair, 45 solids cost 4261 volume reads, 66 s of a 1946-face IGES file."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.BRepClass3d import BRepClass3d_SolidClassifier
@@ -3247,7 +3248,8 @@ def _with_voids(made: list) -> list:
     from OCP.TopAbs import TopAbs_IN, TopAbs_SHELL
     from OCP.TopoDS import TopoDS
 
-    order = sorted(range(len(made)), key=lambda k: (-_volume(made[k]), k))
+    vol = [_volume(m) for m in made]
+    order = sorted(range(len(made)), key=lambda k: (-vol[k], k))
     boxes = [_box(m) for m in made]
     host: dict[int, int] = {}
     for i in order:
@@ -3255,11 +3257,11 @@ def _with_voids(made: list) -> list:
         if q is None:
             continue
         lo, hi = boxes[i]
-        holders = [j for j in order if j != i and _volume(made[j]) > _volume(made[i])
+        holders = [j for j in order if j != i and vol[j] > vol[i]
                    and bool(np.all(boxes[j][0] <= lo)) and bool(np.all(hi <= boxes[j][1]))
                    and BRepClass3d_SolidClassifier(made[j], gp_Pnt(*map(float, q)), 1e-7).State() == TopAbs_IN]
         if holders:
-            host[i] = min(holders, key=lambda j: (_volume(made[j]), j))
+            host[i] = min(holders, key=lambda j: (vol[j], j))
     if not host:
         return made
     out = []
@@ -3277,8 +3279,8 @@ def _with_voids(made: list) -> list:
                 shell = TopoDS.Shell_s(sh.FindKey(n))
                 mk.Add(shell if k == j else TopoDS.Shell_s(shell.Reversed()))   # a void's skin faces into it
         sol = mk.Solid()
-        want = _volume(made[j]) - sum(_volume(made[i]) for i in voids)
-        ok = want > 0 and abs(_volume(sol) - want) <= 1e-6 * _volume(made[j]) and BRepCheck_Analyzer(sol).IsValid()
+        want = vol[j] - sum(vol[i] for i in voids)
+        ok = want > 0 and abs(_volume(sol) - want) <= 1e-6 * vol[j] and BRepCheck_Analyzer(sol).IsValid()
         out.append(sol if ok else made[j])
         if not ok:
             out += [made[i] for i in voids]
