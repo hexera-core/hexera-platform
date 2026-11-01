@@ -90,9 +90,10 @@ def boundary_triangles(tets: np.ndarray, on: np.ndarray) -> np.ndarray:
             cs = (int(row[a]), int(row[b]), int(row[c]))
             if not (on[cs[0]] and on[cs[1]] and on[cs[2]]):
                 continue
-            key = tuple(sorted(cs))
-            tri = [cs[0], cs[1], cs[2], int(row[_MID[tuple(sorted((a, b)))]]), int(row[_MID[tuple(sorted((b, c)))]]),
-                   int(row[_MID[tuple(sorted((a, c)))]])]
+            s0, s1, s2 = sorted(cs)
+            key = (s0, s1, s2)
+            tri = [cs[0], cs[1], cs[2], int(row[_MID[(min(a, b), max(a, b))]]), int(row[_MID[(min(b, c), max(b, c))]]),
+                   int(row[_MID[(min(a, c), max(a, c))]])]
             seen[key] = None if key in seen else tri          # an inner face is met twice
     return np.array([t for t in seen.values() if t is not None], dtype=np.int64).reshape(-1, 6)
 
@@ -272,14 +273,14 @@ def join(shell: ShellMesh, solid: SolidPart, cut_faces: list, *, part: str,
         near = {int(i): fx[k] for k, i in enumerate(fid.tolist()) if keep[k]}
         ta = ml.section_ties(row_a, near, face_area)
         p_in = all_xyz[lk.inner]
-        k = len(lk.on_face)
+        n_row = len(lk.on_face)
         row_b = ml.Row([n + 1 for n in lk.inner], p_in, lk.closed)
-        depth = ml.OVERLAP_WALLS * lk.wall
-        reach = float(np.hypot(BAND_SHARE * depth, 0.5 * lk.wall)) * 1.05 + 1e-6
+        d_in = ml.OVERLAP_WALLS * lk.wall
+        reach = float(np.hypot(BAND_SHARE * d_in, 0.5 * lk.wall)) * 1.05 + 1e-6
         keep = _within(solid.xyz, p_in, reach, lk.closed)
         near_b = {base + int(j) + 1: solid.xyz[j] for j in np.flatnonzero(keep).tolist()}
-        tb = ml.band_ties(row_b, lk.inward, lk.normal, np.full(k, lk.wall), near_b, depth=depth,
-                          half_band=BAND_SHARE * depth)
+        tb = ml.band_ties(row_b, lk.inward, lk.normal, np.full(n_row, lk.wall), near_b, depth=d_in,
+                          half_band=BAND_SHARE * d_in)
         missing += (len(lk.on_face) - len({t.node for t in ta})) + (len(lk.inner) - len({t.node for t in tb}))
         ties += ta + tb
     if missing:
