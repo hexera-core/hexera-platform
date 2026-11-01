@@ -212,12 +212,78 @@ Results (OpenCASCADE IGES copies of the fresh set's 20 STEPs): the judge passed 
     - T-joint in bending, web shell into a solid plate: 4.6% off the all-solid T (1.6% off the all-shell T,
       which is itself 6.3% softer than all-solid: its junction has no corner metal);
     - T-joint, plate shell under a solid web: 4.0% off the all-solid T.
-  - Nastran (RBE3 / RBE2 on the same node choice) and Ansys (CE) follow in PR 3, with the mixed-part mesher.
+  - Nastran and Ansys, and the mixed-part mesher: PR 3, section 2.6 (the same ties as MPC and CE).
 - **The solid region gets at least 2 quadratic elements through the thickness** at the link, so its face can carry the linear stress through the wall that a moment puts on it.
 - **Proved in CalculiX, in the accuracy lane (PR 2):**
   - a cantilever plate, half shell and half solid, tip load: the tip deflection within 2% of the pure-shell model and of beam theory (PL³/3EI);
   - a T-joint under bending (the stiffener shell, the plate solid, and the other way round), against the all-solid mesh;
   - a plate with a solid boss, against the all-solid mesh.
+
+### 2.6 Mixed parts: shell where thin, solid where thick (PR 3, MIXED-1..6, SHLINK-4, placeholders)
+
+A part that is mostly thin walls with some thick regions (a boss, a pad, a mounting block, a flange, cast corners)
+was meshed fully solid. Now its thin walls are shelled, only its thick regions stay solid, and the two are joined so
+loads and moments pass. Code: `cad/mixed_split.py`, `engines/mixed_links.py`, `engines/mixed_mesh.py`,
+`engines/mixed_run.py`.
+
+**What industry does.** Femap, HyperMesh, ANSA and Abaqus all mesh such parts mixed and join shell to solid with a
+constraint that carries moment: Abaqus `*SHELL TO SOLID COUPLING` (each shell edge node spread over the solid face
+nodes within half a wall of it), Nastran RBE3 or RSSCON, Ansys shell-solid assembly contact (MPC). Each says the
+same thing about where the joint goes: away from the junction, where the wall's stress is a plate's again. The 3D
+stress near a junction dies out within about one wall (Saint-Venant); one to two walls is the usual choice.
+
+**MIXED-1, the thick core.** Each shell wall's slab (its sewn mid-face thickened to its wall, half each side, 2%
+over) is taken from the body. What is left and holds a face the extraction called thick or solid is a thick core.
+What is left and holds none is junction metal a shell model leaves out (fillets, the corner of an L); over 2% of
+the body's volume of it means a wall was missed, and the split is not used.
+
+**MIXED-2, the cut.** Each core is grown CUT_WALLS = 2 of the thickest wall running into it, in every direction (OCC's
+3D offset), and the body's metal inside the grown core is the solid region. Inside a wall the grown core's side is
+the wall's own cross-section, square to it: a straight edge's offset is a plane, a boss's circle a cylinder of
+radius r + 2t, a tube's end a plane across the tube. Each mid-face is trimmed by the same grown core, so the shell
+edge lies on the cut face, along the wall's middle. No list of shapes: a distance from the thick region.
+
+**MIXED-3, accounted for.** The solid region's volume plus each trimmed mid-face's area times its wall must hold the
+body's volume within the shell check's band (0.85 to 1.10). On the seven generated parts: 1.000 to 1.016.
+
+**SHLINK-4, the join.** CalculiX takes no shell rotation in an `*EQUATION`: tied that way (each shell edge node's
+rotation to the least-squares rigid motion of the cut face, the RBE3 / Abaqus form) a half-shell, half-solid
+cantilever was still a hinge (tip 10^8 times too far), with or without a moment put on the nodes to make CalculiX
+knot them. So the join is the form CalculiX solves, written the same in every solver (SHLINK-1's idea, carried to
+tetrahedra):
+- the shell runs one wall on past the cut face into the solid (one row of overlap quads, group `SHLINK_overlap`);
+- its row on the cut face is tied, translations only, to the cut face's nodes; its inner row to the solid's nodes
+  in a band round it (half a wall each way along the shell, inside the wall);
+- each tie is the weighted least-squares LINEAR field through those nodes read at the shell node (weights: the
+  node's area share times the row's hat function). A plain weighted mean is linear-exact only where its weights
+  centre on the node: at a row's end node it sat a third of an element inward, and the in-plane bend of a
+  cantilever crossed short (21% stiff). The linear fit reads any linear field exactly (a unit test holds it).
+
+The moment crosses as the couple of the two rows, a wall apart, each spread over the wall's whole section.
+Measured on a 2 mm, 200 x 20 cantilever, half C3D10 and half S4, against the all-solid C3D10 model: out-of-plane
+bend 0.03% (pure shell 0.2%), in-plane bend 0.2%, tension 0.1%; the same with one tetrahedron through the wall.
+The solid side keeps the FEA path's own rule of at least two quadratic elements through every wall (PLAN-fea-3),
+so the stub of wall in the solid region is meshed as any wall is.
+
+Per solver: CalculiX and Abaqus `*EQUATION`, Nastran MPC (set 1; the deck says "add MPC = 1"), Ansys CE. The solid
+region is C3D10 / CTETRA (10 nodes) / SOLID187 in the same deck as the shells, numbered after them. Only CalculiX
+solves for real; the others are read back and labelled "not yet tested in the real solver" as every deck is.
+
+**MIXED-4, Auto.** Auto recommends Mixed when the part is one body the shell check calls mixed, its mid-surfaces meet
+everywhere (no open edge), and its thin walls hold at least half its metal. Under that, the joins cost more than
+the shell saves, and the part is meshed solid. Several bodies are meshed solid in this version.
+
+**MIXED-6, the words.** "Thin walls meshed as shell (78% of the part, 2 mm thick); 3 thick regions kept solid and
+joined to them."
+
+**The solid region's mesh** is the FEA path's own: the region is staged in metres and measured, planned and meshed by
+`fea_driver.measure_staged` / `choose_plan` and `gmsh/fea_adapter.mesh` (no AI pass and no ladder in this version).
+
+**Proof (in progress).** CalculiX, one thread, against a fine all-solid C3D10 model: the cantilever strip in a block
+against beam theory, and six generated families (a plate with a thick boss, an L bracket with a thick pad, a box
+with thick corners, a stiffened panel with a thick mount, a tube with a thick flange, a casting with ribs and a
+block) for static displacement, stress away from the junction and modes 7 to 12; the results are filled in here
+when the lab runs finish.
 
 ## 3. Meshing (PR 2)
 
