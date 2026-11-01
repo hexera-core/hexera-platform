@@ -32,7 +32,6 @@ import logging
 import math
 import time
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -2496,6 +2495,46 @@ def _overfilled(images: list[list], straight: list[list], mine: list, volume: fl
 #: process and is stopped at the deadline; the straight join then stands, and the record says so.
 JOIN_DEADLINE_S = 300.0
 
+#: SHELL-18, THE EXTRACTION'S WORK BUDGET: an extraction plans its work against EXTRACT_BUDGET_S seconds. The stages
+#: before the joins check the clock as they go and give up, with the reason in words, when the budget is spent; each
+#: general join gets at most what is left of it (less JOIN_RESERVE_S kept for the checks after it), and none is
+#: started with under JOIN_MIN_S left - the straight join then stands, and the record says so. Where the system can
+#: fork, the whole extraction also runs in a child stopped at EXTRACT_DEADLINE_S (one OpenCASCADE call cannot be
+#: stopped from inside). A part that runs out is meshed solid and told why - never a wait with no end. An
+#: open-hardware part ran past 30 minutes.
+#: SHELL-18c: the clock is the machine's, so the budget must sit far above any part that finishes: at 540 / 780 s,
+#: on a lab VM eight at once (as slow as a worker), five training parts that shell in 290-410 s on a laptop ran out
+#: and were thrown back solid whole; the old heads take up to 1244 s there (sh0105). Past the budget while joining, a
+#: body keeps its straight join (no check there).
+EXTRACT_BUDGET_S = 1500.0
+EXTRACT_DEADLINE_S = 1800.0
+JOIN_RESERVE_S = 60.0
+JOIN_MIN_S = 30.0
+
+
+class OutOfBudget(RuntimeError):
+    """SHELL-18: the extraction spent its work budget before it could finish (the message says where)."""
+
+
+def _budget_words(where: str, seconds: float) -> str:
+    return (f"the mid-surface extraction used its {seconds:.0f} s work budget while {where}, so it was stopped; "
+            "the part has more walls than can be shelled in that time")
+
+
+class _Clock:
+    """SHELL-18: the extraction's budget, read by its stages (budget <= 0: unbounded)."""
+
+    def __init__(self, budget_s: float | None) -> None:
+        self.started = time.monotonic()
+        self.budget = EXTRACT_BUDGET_S if budget_s is None else float(budget_s)
+
+    def left(self) -> float:
+        return float("inf") if self.budget <= 0 else self.budget - (time.monotonic() - self.started)
+
+    def check(self, where: str) -> None:
+        if self.left() < 0:
+            raise OutOfBudget(_budget_words(where, self.budget))
+
 
 def _join_general_bounded(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float, fuzzy: float,
                           remake: bool, patch_alone: bool, deadline_s: float | None = None):
@@ -2914,6 +2953,8 @@ SEW_EDGES_MAX = 4000
 SEW_GAP_SAMPLES = 5
 #: SHELL-15c: loose faces re-made on the analytic surface they lie on (within the first sewing tolerance)
 SEW_ANALYTIC = True
+#: SHELL-15g: an analytic re-make that reads invalid is made again with its wires reversed before it is judged
+SEW_ANALYTIC_MEND = True
 #: SHELL-15b: the largest faces of a volume that vote on whether it is material
 VOLUME_VOTERS = 12
 
@@ -2970,6 +3011,12 @@ def _gaps(free: list, cap: float) -> list[float]:
     return out
 
 
+#: SHELL-15d: the volumes read from loose faces each own their faces (no face shared by two bodies)
+SEW_OWN_FACES = True
+#: SHELL-15e: a face made from two of the file's faces (touching bodies) does not vote on material or cavity
+SEW_SHARED_SKIP = True
+
+
 def _volumes_of(loose: list, tol: float) -> list:
     """SHELL-15b: the solids a set of loose faces bounds, read by splitting space with them (OpenCASCADE's volume
     maker) and keeping each closed volume whose faces' own normals point out of it - material, not a cavity. Bodies
@@ -2990,13 +3037,13 @@ def _volumes_of(loose: list, tol: float) -> list:
     mv.Perform()
     if mv.HasErrors():
         return []
-    origin: dict[int, Any] = {}
+    origin: dict[int, list] = {}
     images = TopTools_IndexedMapOfShape()
     for f in loose:
         got = list(mv.Modified(f)) or ([] if mv.IsDeleted(f) else [f])
         for g in got:
             k = images.Add(g)
-            origin[k] = f
+            origin.setdefault(k, []).append(f)
     out = []
     ex = TopExp_Explorer(mv.Shape(), TopAbs_SOLID)
     while ex.More():
@@ -3012,8 +3059,12 @@ def _volumes_of(loose: list, tol: float) -> list:
                 fs.append((_area(g), g))
         fs.sort(key=lambda x: -x[0])
         votes = 0.0
+        # SHELL-15e: a face that came from two of the file's faces (two touching bodies' coincident sides: a duct and
+        # its insulation) is turned one way in one body and the other in the other: it does not vote, the next
+        # largest faces do (it once out-voted a duct wall's other faces, and the wall was read as a cavity)
+        fs = [(a, g) for a, g in fs if len(origin[images.FindIndex(g)]) == 1 or not SEW_SHARED_SKIP]
         for a, g in fs[:VOLUME_VOTERS]:
-            o = origin[images.FindIndex(g)]
+            o = origin[images.FindIndex(g)][0]
             q = _inner_point(g)
             n = _face_normal_at(g, q) if q is not None else None
             if n is None:
@@ -3024,6 +3075,14 @@ def _volumes_of(loose: list, tol: float) -> list:
             votes += a if float(np.dot(n_sol, n_org)) > 0 else -a
         if votes > 0:
             out.append(sol)
+    if SEW_OWN_FACES and len(out) > 1:
+        # SHELL-15d: the volume maker hands touching bodies ONE face where they meet, held by both; a STEP file's
+        # bodies each have their own. A face held by two bodies is read as one body's only, and the other loses a
+        # side of its walls (a bent duct: 52 faces read as 35, both bodies "solid", walls of 250 mm). Each volume is
+        # copied, so each owns its faces, as in the STEP.
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+
+        out = [TopoDS.Solid_s(BRepBuilderAPI_Copy(v, True, False).Shape()) for v in out]
     return out
 
 
@@ -3067,11 +3126,384 @@ def _analytic_face(face, tol: float):
     fix = ShapeFix_Face(mk.Face())
     fix.Perform()
     out = TopoDS.Face_s(fix.Face())
-    if face.Orientation() != out.Orientation():
-        out = TopoDS.Face_s(out.Reversed())
+    if not BRepCheck_Analyzer(out).IsValid() and SEW_ANALYTIC_MEND:
+        # SHELL-15g: the analytic surface can run the other way round from the surface of revolution it replaces, so
+        # the file's wire turns against it and the face reads invalid (13 of a sheet-metal part's 26 bends; its
+        # spheres and tori too): made again with its wires reversed, the area still checked below (a general mend
+        # made the complement instead: a torus face of 62 mm2 came back as 1747)
+        mk = BRepBuilderAPI_MakeFace(new, TopoDS.Wire_s(BRepTools.OuterWire_s(face).Reversed()), True)
+        if mk.IsDone():
+            for w in _inner_wires(face):
+                mk.Add(TopoDS.Wire_s(w.Reversed()))
+            fix = ShapeFix_Face(mk.Face())
+            fix.Perform()
+            out = TopoDS.Face_s(fix.Face())
+    # SHELL-15g: the material side as the file wrote it, read from the two surfaces' normals at one point of the
+    # face (the analytic surface may run the other way round: a sphere made from a surface of revolution)
+    out = TopoDS.Face_s(out.Oriented(face.Orientation()))
+    if SEW_ANALYTIC_MEND:
+        from OCP.TopAbs import TopAbs_REVERSED
+
+        q = _inner_point(face)
+        n0, n1 = (_face_normal_at(face, q), _face_normal_at(out, q)) if q is not None else (None, None)
+        if n0 is not None and n1 is not None:
+            s0 = -1.0 if face.Orientation() == TopAbs_REVERSED else 1.0
+            s1 = -1.0 if out.Orientation() == TopAbs_REVERSED else 1.0
+            if float(np.dot(s0 * n0, s1 * n1)) < 0:
+                out = TopoDS.Face_s(out.Reversed())
     if not BRepCheck_Analyzer(out).IsValid() or abs(_area(out) - _area(face)) > 1e-4 * _area(face):
         return face
+    if SEW_ANALYTIC_MEND and not _meshes(out):
+        # SHELL-15g: a re-made face that the tessellator cannot mesh (a sphere whose wire now crosses its seam) has no
+        # triangles, so no ray finds it and its wall goes unpaired: the face as the file wrote it
+        return face
     return out
+
+
+def _meshes(face) -> bool:
+    """SHELL-15g: a copy of the face meshes to at least one triangle (the face itself keeps no mesh)."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+    from OCP.TopLoc import TopLoc_Location
+
+    from meshpipeline.cad.occ_box import incremental_mesh
+
+    copy = BRepBuilderAPI_Copy(face, True, False).Shape()
+    lo, hi = _box(copy)
+    incremental_mesh(copy, 0.05 * float(np.linalg.norm(hi - lo)) or 1e-3, 0.5, relative=False, parallel=False)
+    tri = BRep_Tool.Triangulation_s(_faces(copy)[0], TopLoc_Location())
+    return tri is not None and tri.NbTriangles() > 0
+
+
+#: SHELL-15f: faces whose seam was written as two free edges are split across their closed direction
+SEW_SELF_SEAMS = True
+#: SHELL-15f: two free edges of one face are its seam when their ends and middles lie within the sewing tolerance (or
+#: this share of the cap, if larger)
+SEW_SEAM_SHARE = 0.1
+
+
+def _split_self_seams(sewn, free: list, tol: float) -> list | None:
+    """SHELL-15f: the faces of `sewn`, each face that holds two of the free edges lying on each other (its seam, written
+    twice) split in two across its closed direction; None when no face does."""
+    from OCP.ShapeUpgrade import ShapeUpgrade_ShapeDivideClosed
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
+
+    owners = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(sewn, TopAbs_EDGE, TopAbs_FACE, owners)
+    by_face: dict[int, list] = {}
+    fmap = _map(sewn, TopAbs_FACE)
+    for e in free:
+        if not owners.Contains(e):
+            continue
+        fs = owners.FindFromKey(e)
+        if fs.Size() != 1:
+            continue
+        by_face.setdefault(fmap.FindIndex(fs.First()), []).append(e)
+    marked = TopTools_IndexedMapOfShape()
+    for k, es in sorted(by_face.items()):
+        pts = [np.array([_ends(e)[0], _edge_mid(e), _ends(e)[1]]) for e in es]
+        for i in range(len(es)):
+            for j in range(i + 1, len(es)):
+                a, b = pts[i], pts[j]
+                same = (np.linalg.norm(a - b, axis=1).max() <= tol or
+                        np.linalg.norm(a - b[::-1], axis=1).max() <= tol)
+                if same:
+                    marked.Add(fmap.FindKey(k))
+    if not marked.Extent():
+        return None
+    out = []
+    for f in _faces(sewn):
+        if marked.Contains(f):
+            d = ShapeUpgrade_ShapeDivideClosed(f)
+            d.SetNbSplitPoints(1)
+            d.Perform()
+            got = _faces(d.Result())
+            out += got if len(got) > 1 else [f]
+        else:
+            out.append(f)
+    return out
+
+
+#: SHELL-15h: a closed shell sewn inside another is the other's inner void, not a body of its own
+SEW_VOIDS = True
+
+
+def _with_voids(made: list) -> list:
+    """SHELL-15h: the solids sewn from loose faces, each one that lies inside another (a point of its skin inside it,
+    its box inside its box) put into that one as a void - a closed box with a sealed cavity is one body with two
+    shells, as its STEP is, not a box and a solid block the size of the cavity (a 147 cm3 part read as 221 + 74).
+    Deterministic: the largest first; a void goes into the smallest solid holding it."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_IN, TopAbs_SHELL
+    from OCP.TopoDS import TopoDS
+
+    order = sorted(range(len(made)), key=lambda k: (-_volume(made[k]), k))
+    boxes = [_box(m) for m in made]
+    host: dict[int, int] = {}
+    for i in order:
+        q = _inner_point(_faces(made[i])[0])
+        if q is None:
+            continue
+        lo, hi = boxes[i]
+        holders = [j for j in order if j != i and _volume(made[j]) > _volume(made[i])
+                   and bool(np.all(boxes[j][0] <= lo)) and bool(np.all(hi <= boxes[j][1]))
+                   and BRepClass3d_SolidClassifier(made[j], gp_Pnt(*map(float, q)), 1e-7).State() == TopAbs_IN]
+        if holders:
+            host[i] = min(holders, key=lambda j: (_volume(made[j]), j))
+    if not host:
+        return made
+    out = []
+    for j in range(len(made)):
+        if j in host:
+            continue
+        voids = [i for i in order if host.get(i) == j]
+        if not voids:
+            out.append(made[j])
+            continue
+        mk = BRepBuilderAPI_MakeSolid()
+        for k in [j] + voids:
+            sh = _map(made[k], TopAbs_SHELL)
+            for n in range(1, sh.Extent() + 1):
+                shell = TopoDS.Shell_s(sh.FindKey(n))
+                mk.Add(shell if k == j else TopoDS.Shell_s(shell.Reversed()))   # a void's skin faces into it
+        sol = mk.Solid()
+        want = _volume(made[j]) - sum(_volume(made[i]) for i in voids)
+        ok = want > 0 and abs(_volume(sol) - want) <= 1e-6 * _volume(made[j]) and BRepCheck_Analyzer(sol).IsValid()
+        out.append(sol if ok else made[j])
+        if not ok:
+            out += [made[i] for i in voids]
+    return out
+
+
+#: SHELL-15i: loose faces of bodies that lie on each other along edges are told apart by the angles round each edge
+SEW_BY_ANGLE = True
+#: SHELL-15i: two faces leave an edge at one angle (they lie on each other) within this many radians
+ANGLE_SAME = 1e-4
+#: SHELL-15i: the wedges round an edge are read this share of the faces' box diagonal off the edge
+ANGLE_PROBE = 1e-3
+#: SHELL-15i: at most this many edges held by more than two faces are read (past it, the sewing as it came stands)
+ANGLE_EDGES_MAX = 2000
+#: SHELL-15i: fixed ray directions (none along an axis, so no ray runs along a CAD face) for the inside test
+_RAYS = ((0.5773, 0.5774, 0.5772), (-0.3011, 0.8123, 0.4994), (0.7071, -0.1903, -0.6810))
+
+
+def _into_face(edge, face, t: float):
+    """SHELL-15i: the unit direction from the edge (at its parameter t) into the face; None when it cannot be read."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Pnt, gp_Pnt2d, gp_Vec, gp_Vec2d
+    from OCP.TopAbs import TopAbs_IN
+
+    pc = BRep_Tool.CurveOnSurface_s(edge, face, 0.0, 0.0)
+    if pc is None:
+        return None
+    uv, duv = gp_Pnt2d(), gp_Vec2d()
+    pc.D1(t, uv, duv)
+    if duv.Magnitude() < 1e-14:
+        return None
+    perp = np.array([-duv.Y(), duv.X()]) / duv.Magnitude()
+    u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
+    span = max(u1 - u0, v1 - v0)
+    span = span if math.isfinite(span) and span > 0 else 1.0
+    srf = BRepAdaptor_Surface(face, False)
+    tol = BRep_Tool.Tolerance_s(face)
+    for h in (1e-4, 1e-3, 1e-2):
+        for s in (1.0, -1.0):
+            q = gp_Pnt2d(uv.X() + s * h * span * perp[0], uv.Y() + s * h * span * perp[1])
+            if BRepClass_FaceClassifier(face, q, tol).State() == TopAbs_IN:
+                p, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
+                srf.D1(uv.X(), uv.Y(), p, du, dv)
+                d = s * (perp[0] * np.array([du.X(), du.Y(), du.Z()]) + perp[1] * np.array([dv.X(), dv.Y(), dv.Z()]))
+                n = float(np.linalg.norm(d))
+                return d / n if n > 0 else None
+    return None
+
+
+def _odd_inside(inter, q) -> bool | None:
+    """SHELL-15i: is q inside material - an odd number of the file's faces (loaded in `inter`, an
+    IntCurvesFace_ShapeIntersector) crossed by a ray from it, the most of three rays? Each body is closed, so the
+    count is odd inside one body; None when no ray could be cast."""
+    from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
+
+    votes = []
+    for d in _RAYS:
+        inter.Perform(gp_Lin(gp_Pnt(*map(float, q)), gp_Dir(*d)), 0.0, 1e300)
+        if inter.IsDone():
+            votes.append(inter.NbPnt() % 2 == 1)
+    return None if not votes else 2 * sum(votes) > len(votes)
+
+
+def _groups_by_angle(loose: list, tol: float, probe: float) -> list[list] | None:
+    """SHELL-15i: the loose faces, sewn letting an edge hold more than two faces, in one group per body; None when
+    no edge holds more than two or some edge cannot be read. Round an edge held by more than two faces, the faces
+    are taken in the order of the angle at which they leave it:
+    - each leaving at its own angle (bodies touching along the edge): the two faces either side of each wedge of
+      material (read by rays: inside one body) are one body's;
+    - two clusters of two faces lying on each other (one body lying on another along the edge - a short tube on a
+      longer one): each body holds one face of each cluster. The two faces of a cluster are in different bodies;
+      the bodies are two-coloured by that and each edge's faces of one colour joined.
+    Any other edge, and an edge whose wedges do not give each face one side of material, is not read (None)."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    from OCP.gp import gp_Pnt, gp_Vec
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    sw = BRepBuilderAPI_Sewing(float(tol), True, True, True, True)
+    for f in loose:
+        sw.Add(f)
+    sw.Perform()
+    sewn = sw.SewedShape()
+    fmap = _map(sewn, TopAbs_FACE)
+    faces = [TopoDS.Face_s(fmap.FindKey(k)) for k in range(1, fmap.Extent() + 1)]
+    owners = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(sewn, TopAbs_EDGE, TopAbs_FACE, owners)
+    parent = list(range(len(faces)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def join(a: int, b: int) -> None:
+        a, b = find(a), find(b)
+        if a != b:
+            parent[max(a, b)] = min(a, b)
+
+    from OCP.IntCurvesFace import IntCurvesFace_ShapeIntersector
+
+    inter = IntCurvesFace_ShapeIntersector()
+    inter.Load(_compound(loose), 1e-9)
+    crowded, twins = 0, []
+    for i in range(1, owners.Extent() + 1):
+        ids = sorted({fmap.FindIndex(f) - 1 for f in owners.FindFromIndex(i)})
+        if len(ids) == 2:
+            join(*ids)
+        if len(ids) <= 2:
+            continue
+        crowded += 1
+        if crowded > ANGLE_EDGES_MAX:
+            return None
+        e = TopoDS.Edge_s(owners.FindKey(i))
+        c = BRepAdaptor_Curve(e)
+        tm = 0.5 * (c.FirstParameter() + c.LastParameter())
+        p, v = gp_Pnt(), gp_Vec()
+        c.D1(tm, p, v)
+        if v.Magnitude() < 1e-14:
+            return None
+        t = np.array([v.X(), v.Y(), v.Z()]) / v.Magnitude()
+        at = np.array([p.X(), p.Y(), p.Z()])
+        e1 = np.cross(t, [1.0, 0.0, 0.0] if abs(t[0]) < 0.9 else [0.0, 1.0, 0.0])
+        e1 /= np.linalg.norm(e1)
+        e2 = np.cross(t, e1)
+        ang = []
+        for k in ids:
+            d = _into_face(e, faces[k], tm)
+            if d is None:
+                return None
+            d = d - float(d @ t) * t
+            ang.append((math.atan2(float(d @ e2), float(d @ e1)) % (2 * math.pi), k))
+        ang.sort()
+        clusters = [[ang[0]]]
+        for a in ang[1:]:
+            if a[0] - clusters[-1][-1][0] < ANGLE_SAME:
+                clusters[-1].append(a)
+            else:
+                clusters.append([a])
+        if len(clusters) > 1 and ang[0][0] + 2 * math.pi - clusters[-1][-1][0] < ANGLE_SAME:
+            clusters[0] = clusters.pop() + clusters[0]
+        if any(len(cl) > 1 for cl in clusters):
+            if len(clusters) == 2 and all(len(cl) == 2 for cl in clusters):
+                twins.append(([k for _a, k in clusters[0]], [k for _a, k in clusters[1]]))
+                continue
+            return None
+        n = len(ang)
+        used: set[int] = set()
+        for j in range(n):
+            a0, a1 = ang[j][0], ang[(j + 1) % n][0] + (2 * math.pi if j == n - 1 else 0.0)
+            m = 0.5 * (a0 + a1)
+            inside = _odd_inside(inter, at + probe * (math.cos(m) * e1 + math.sin(m) * e2))
+            if inside is None:
+                return None
+            if inside:
+                x, y = ang[j][1], ang[(j + 1) % n][1]
+                if x in used or y in used:
+                    return None
+                used |= {x, y}
+                join(x, y)
+        if len(used) != n:
+            return None
+    if not crowded:
+        return None
+    if twins:
+        apart: dict[int, set[int]] = {}
+        for pair in twins:
+            for x, y in pair:
+                rx, ry = find(x), find(y)
+                if rx == ry:
+                    return None
+                apart.setdefault(rx, set()).add(ry)
+                apart.setdefault(ry, set()).add(rx)
+        colour: dict[int, int] = {}
+        for r0 in sorted(apart):
+            if r0 in colour:
+                continue
+            colour[r0] = 0
+            todo = [r0]
+            while todo:
+                r = todo.pop()
+                for s in sorted(apart[r]):
+                    if s not in colour:
+                        colour[s] = 1 - colour[r]
+                        todo.append(s)
+                    elif colour[s] == colour[r]:
+                        return None
+        for ca, cb in twins:
+            for x in ca:
+                join(x, next(k for k in cb if colour[find(k)] == colour[find(x)]))
+    out: dict[int, list] = {}
+    for k in range(len(faces)):
+        out.setdefault(find(k), []).append(faces[k])
+    return [out[r] for r in sorted(out)]
+
+
+def _solids_by_angle(loose: list, tol: float, probe: float) -> list | None:
+    """SHELL-15i: one valid solid per group of _groups_by_angle, each sewn alone from copies of its faces (so each
+    body owns its faces, SHELL-15d); None unless every group closes into one."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy, BRepBuilderAPI_MakeSolid
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepLib import BRepLib
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopoDS import TopoDS
+
+    groups = _groups_by_angle(loose, tol, probe)
+    if not groups or len(groups) < 2:
+        return None
+    made = []
+    for g in groups:
+        sewn = _sew([TopoDS.Face_s(BRepBuilderAPI_Copy(f, True, False).Shape()) for f in g], tol)
+        shells = _map(sewn, TopAbs_SHELL)
+        if shells.Extent() != 1 or _free_edge_list(sewn):
+            return None
+        mk = BRepBuilderAPI_MakeSolid(TopoDS.Shell_s(shells.FindKey(1)))
+        if not mk.IsDone():
+            return None
+        s = mk.Solid()
+        BRepLib.OrientClosedSolid_s(s)
+        if not BRepCheck_Analyzer(s).IsValid() or _volume(s) <= 0:
+            return None
+        made.append(s)
+    return made
 
 
 def solidify(shape, mm: float) -> tuple[object, list[str]]:
@@ -3114,6 +3546,32 @@ def solidify(shape, mm: float) -> tuple[object, list[str]]:
             free2 = _free_edge_list(sewn2)
             if len(free2) < len(free):
                 sewn, free, tol = sewn2, free2, want
+    if free and SEW_SELF_SEAMS:
+        # SHELL-15f: a closed face (a bend's cylinder, a ring) whose seam the file wrote as two edges of its one wire:
+        # sewing never joins a face to itself, so both stay free and the body never closes (a sheet-metal part with
+        # 129 faces: 2 free edges, gap 0). Such a face is split in two across its closed direction; the seam is then
+        # an edge between two faces and is sewn. Only those faces: the others keep their names.
+        split = _split_self_seams(sewn, free, max(tol, SEW_SEAM_SHARE * cap))
+        if split is not None:
+            sewn3 = _sew(split, tol)
+            free3 = _free_edge_list(sewn3)
+            if len(free3) < len(free):
+                sewn, free, loose = sewn3, free3, split
+    if SEW_BY_ANGLE:
+        # SHELL-15i: bodies lying on each other along edges (a frame's short tube on a longer one): sewing pairs
+        # their edges as the faces come - one closed shell that is no valid solid, or one valid solid made of both
+        # tubes' faces, by file order alone. The volume maker merges what they share. The faces are told apart by
+        # the angles round each edge held by more than two of them, and each body is sewn alone
+        try:
+            by_angle = _solids_by_angle(loose, tol, ANGLE_PROBE * diag)
+        except Exception as exc:  # noqa: BLE001 - the sewing as it came stands
+            logger.debug("shell: the faces round crowded edges could not be read (%s)", exc)
+            by_angle = None
+        if by_angle:
+            return _compound(solids + by_angle), [
+                f"{len(loose)} loose face(s) (an IGES file's surfaces) make {len(by_angle)} solid(s) that lie on each "
+                f"other along edges, told apart by the angles round those edges, sewn at a measured {tol * mm:.3g} mm "
+                "(SHELL-15i)."]
     from OCP.BRepCheck import BRepCheck_Analyzer
 
     shells = _map(sewn, TopAbs_SHELL)
@@ -3143,6 +3601,8 @@ def solidify(shape, mm: float) -> tuple[object, list[str]]:
     if not made:
         return shape, [f"{len(loose)} loose face(s) (no solid holds them) were sewn at a measured {tol * mm:.3g} mm "
                        "but closed no body; they are not shelled (SHELL-15)."]
+    if SEW_VOIDS and len(made) > 1:
+        made = _with_voids(made)
     in_made = _map(_compound(made), TopAbs_FACE)
     rest = [f for f in _faces(sewn) if not in_made.Contains(f)]
     note = (f"{len(loose)} loose face(s) (an IGES file's surfaces) sewn into {len(made)} solid(s) at a measured "
@@ -3194,7 +3654,8 @@ def _solid_words(closest: dict | None) -> str:
             "(narrower, it is a bar or a beam)")
 
 
-def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tuple[dict, object]:
+def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
+            budget_s: float | None = None) -> tuple[dict, object]:
     """The shell record and the sewn mid-surface (a compound, the shape's own units) of an OpenCASCADE shape
     whose coordinates are `mm_per_unit` millimetres each. Never raises for a part it cannot shell: the record
     says what was not shelled and why."""
@@ -3204,6 +3665,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
     from meshpipeline.cad import fea_measure as fm
 
     started = time.time()
+    clock = _Clock(budget_s)
     mm = float(mm_per_unit)
     # SHELL-15: an IGES file's loose surfaces sewn into solids first
     shape, sew_notes = solidify(shape, mm)
@@ -3228,6 +3690,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
     for (a, b), rays in partners.items():
         if body_of[a] != body_of[b] or body_of[a] < 0:
             continue
+        clock.check("reading the wall pairs")
         small, big = (a, b) if _area(faces[a]) <= _area(faces[b]) else (b, a)
         try:
             ok, t, spread, why = sp.even_wall(faces[small], faces[big], mm)
@@ -3268,6 +3731,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
     for i, p in enumerate(pairs):
         if not p.even and not p.tapered:
             continue
+        clock.check("making the mid-faces")
         t_u = p.thickness / mm
         got = []
         if p.even:
@@ -3386,6 +3850,8 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
         mine = [m for m in mids if m.body == b and pairs[m.pair].shell]
         if not mine:
             continue
+        # SHELL-18c: no check here - out of budget while joining, a body keeps its straight join (no general join is
+        # started, below) instead of the whole part being thrown back solid
         t_min = min(m.t for m in mine)
         fuzzy = min(max(SEW_SHARE * t_min, SEW_TOL_FACTOR * max(_max_tol(m.original) for m in mine)),
                     SEW_SHARE_MAX * t_min)
@@ -3472,11 +3938,16 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None) -> tup
                                           for q in (np.asarray(x, float) / mm for x in census.get("open_at_mm", []))
                                           for m in walls):
                         continue
+                left = clock.left() - JOIN_RESERVE_S
+                if left < JOIN_MIN_S:
+                    notes.append(f"{body_names[b]}: the work budget ({clock.budget:.0f} s) left no time for the general "
+                                 "join; the straight join stands (SHELL-18).")
+                    break
                 for m in mine:
                     m.extended = []
                 try:
                     general = _join_general_bounded(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy, remake=remake,
-                                                    patch_alone=alone)
+                                                    patch_alone=alone, deadline_s=min(JOIN_DEADLINE_S, left))
                     census_g = census_of(*general)
                 except TimeoutError as exc:
                     notes.append(f"{body_names[b]}: {exc} (SHELL-11); the joins already made stand.")
@@ -3635,26 +4106,149 @@ def solid_record(shape, why: str) -> dict:
             "seconds": 0.0}
 
 
-def extract_file(path: Path | str, out_dir: Path | str | None = None, *, mm_per_unit: float) -> dict:
+def extract_file(path: Path | str, out_dir: Path | str | None = None, *, mm_per_unit: float,
+                 budget_s: float | None = None, deadline_s: float | None = None) -> dict:
     """Read a STEP, IGES or BREP file, extract its mid-surface, and (when `out_dir` is given) write
-    shell.json and midsurface.brep there."""
+    shell.json and midsurface.brep there. SHELL-18: the work runs in a new Python process that reads the file itself,
+    stopped after `deadline_s` s (EXTRACT_DEADLINE_S; <= 0: here, unbounded); a part stopped is meshed solid, told
+    why."""
+    import tempfile
+
+    limit = EXTRACT_DEADLINE_S if deadline_s is None else float(deadline_s)
+    if limit <= 0:
+        return extract_path(str(path), None if out_dir is None else str(out_dir), mm_per_unit, budget_s)
+    with tempfile.TemporaryDirectory(prefix="shell_x_") as tmp:
+        out = Path(out_dir) if out_dir is not None else Path(tmp)
+        status, got = run_bounded(EXTRACT_ENTRY, {"path": str(path), "out_dir": str(out), "mm_per_unit": mm_per_unit,
+                                                  "budget_s": budget_s}, limit)
+        if status == "ok" and isinstance(got, dict):
+            return got
+        from meshpipeline.cad.scout import read_cad
+
+        why = (f"the mid-surface extraction ran past {limit:.0f} s and was stopped" if status == "timeout"
+               else f"the mid-surface could not be extracted ({str(got).split(':')[0]})")
+        logger.warning("shell: %s; the part is meshed solid", why)
+        record = solid_record(read_cad(Path(path)), why)
+        _write(record, _compound([]), out_dir)
+        return record
+
+
+def extract_path(path: str, out_dir: str | None, mm_per_unit: float, budget_s: float | None) -> dict:
+    """SHELL-18: read the file and extract it here (the work of extract_file's bounded child)."""
     from meshpipeline.cad.scout import read_cad
 
-    shape = read_cad(Path(path))
+    return _extract_and_write(read_cad(Path(path)), out_dir, mm_per_unit=mm_per_unit, budget_s=budget_s)
+
+
+#: SHELL-18d: what the bounded child runs
+EXTRACT_ENTRY = "meshpipeline.cad.midsurface:extract_path"
+
+_CHILD = """
+import importlib, json, os, sys
+mod, fn = sys.argv[1].split(":")
+with open(sys.argv[2]) as fh:
+    kw = json.load(fh)
+try:
+    out = {"status": "ok", "value": getattr(importlib.import_module(mod), fn)(**kw)}
+except BaseException as exc:
+    out = {"status": "error", "value": type(exc).__name__ + ": " + str(exc)}
+with open(sys.argv[3] + ".part", "w") as fh:
+    json.dump(out, fh)
+os.replace(sys.argv[3] + ".part", sys.argv[3])
+"""
+
+
+def _write(record: dict, surface, out_dir) -> None:
+    if out_dir is None:
+        return
+    from OCP.BRepTools import BRepTools
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    BRepTools.Write_s(surface, str(out / SURFACE_FILE))
+    (out / RECORD_FILE).write_text(json.dumps(record, indent=1, sort_keys=True))
+
+
+def _extract_and_write(shape, out_dir, *, mm_per_unit: float, budget_s: float | None) -> dict:
     try:
-        record, surface = extract(shape, mm_per_unit=mm_per_unit)
+        record, surface = extract(shape, mm_per_unit=mm_per_unit, budget_s=budget_s)
+    except OutOfBudget as exc:  # SHELL-18: told in numbers, the solid mesh delivered
+        logger.warning("shell: %s; the part is meshed solid", exc)
+        record, surface = solid_record(shape, str(exc)), _compound([])
     except Exception as exc:  # noqa: BLE001 - SHELL-6: never fail; the whole part is meshed solid and told so
         logger.warning("shell: the extraction failed (%s); the part is meshed solid", exc)
         record, surface = solid_record(shape, f"the mid-surface could not be extracted ({type(exc).__name__})"), \
             _compound([])
-    if out_dir is not None:
-        from OCP.BRepTools import BRepTools
-
-        out = Path(out_dir)
-        out.mkdir(parents=True, exist_ok=True)
-        BRepTools.Write_s(surface, str(out / SURFACE_FILE))
-        (out / RECORD_FILE).write_text(json.dumps(record, indent=1, sort_keys=True))
+    _write(record, surface, out_dir)
     return record
+
+
+def run_bounded(entry: str, kwargs: dict, deadline_s: float) -> tuple[str, object]:
+    """SHELL-18d: `entry` ("module:function") called with `kwargs` (JSON) in a NEW Python process, stopped after
+    `deadline_s` s with every process it forked (SHELL-18b). Returns ("ok", what it returned, through JSON),
+    ("error", "Type: message") or ("timeout", None).
+
+    A new process, not a fork: a fork copies the caller's threads' locks but not its threads, and OpenCASCADE's
+    thread pool, once a parallel call has started it, then waits in the child for workers that are not there (a test
+    process that had meshed in parallel hung a 2 s extraction until the deadline, twice). The child reads the file
+    itself; it gets the caller's import path."""
+    import os
+    import subprocess
+    import sys
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="shell_run_") as tmp:
+        args, res = os.path.join(tmp, "args.json"), os.path.join(tmp, "result.json")
+        with open(args, "w") as fh:
+            json.dump(kwargs, fh)
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join([p for p in sys.path if p] +
+                                            ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+        proc = subprocess.Popen([sys.executable, "-c", _CHILD, entry, args, res], env=env,
+                                stdin=subprocess.DEVNULL)
+        try:
+            proc.wait(timeout=deadline_s)
+        except subprocess.TimeoutExpired:
+            for pid in _descendants(proc.pid):
+                try:
+                    os.kill(pid, 9)
+                except OSError:
+                    pass
+            proc.kill()
+            proc.wait()
+            return "timeout", None
+        try:
+            with open(res) as fh:
+                got = json.load(fh)
+        except (OSError, ValueError):
+            return "error", f"ChildExit: the extraction process ended ({proc.returncode}) without a result"
+        return str(got["status"]), got["value"]
+
+
+def _descendants(pid: int) -> list[int]:
+    """SHELL-18b: every process forked under `pid`, children first, read from /proc (Linux, where fork is used);
+    an empty list where /proc cannot be read."""
+    import os
+
+    out: list[int] = []
+    todo = [pid]
+    while todo:
+        p = todo.pop()
+        try:
+            tids = os.listdir(f"/proc/{p}/task")
+        except OSError:
+            continue
+        for tid in tids:
+            try:
+                with open(f"/proc/{p}/task/{tid}/children") as fh:
+                    kids = [int(x) for x in fh.read().split()]
+            except (OSError, ValueError):
+                continue
+            for k in kids:
+                if k not in out:
+                    out.append(k)
+                    todo.append(k)
+    return out
 
 
 __all__ = ["RECORD_FILE", "SURFACE_FILE", "VERSION", "extract", "extract_file", "mid_faces", "width_of"]

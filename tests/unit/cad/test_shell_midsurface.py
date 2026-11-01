@@ -344,7 +344,8 @@ def test_a_part_the_extraction_cannot_read_is_meshed_solid_whole(tmp_path, monke
 
     path = sf.write_step(sf.flat_plate(), tmp_path / "plate.step")
     monkeypatch.setattr(ms, "extract", broken)
-    rec = ms.extract_file(path, tmp_path / "out", mm_per_unit=1.0)
+    # in this process (deadline 0): the bounded child runs the same fallback, where a patch cannot reach
+    rec = ms.extract_file(path, tmp_path / "out", mm_per_unit=1.0, deadline_s=0.0)
     assert [b["verdict"] for b in rec["bodies"]] == ["solid"] and rec["complete"] is False
     assert (tmp_path / "out" / ms.RECORD_FILE).exists()
 
@@ -868,3 +869,205 @@ def test_a_wall_split_into_strips_is_as_wide_as_the_wall():
     assert len(top) == 1 and len(front) == 1
     assert ms.union_width(top + front) == pytest.approx(60.0, rel=1e-6)
     assert ms.width_of(ms._compound(top + front)) < 50.0
+
+
+def test_touching_iges_bodies_each_own_their_faces(tmp_path):
+    # SHELL-15d/15e: a 2 mm plate with a 10 mm layer on it (a duct wall and its insulation), two bodies touching face
+    # to face. Read from IGES, the volume maker makes their shared side one face of both; each body must own its own,
+    # as in the STEP, or the plate loses a side and its wall (and the vote on which volumes are material)
+    from tests.fea_fixtures import _box
+
+    comp = ms._compound([_box(0, 0, 0, 100, 60, 2), _box(0, 0, 2, 100, 60, 10)])
+    step = ms.extract_file(sf.write_step(comp, tmp_path / "p.step"), tmp_path / "s", mm_per_unit=1.0)
+    iges = ms.extract_file(sf.write_iges(comp, tmp_path / "p.igs"), tmp_path / "i", mm_per_unit=1.0)
+    assert sorted(b["verdict"] for b in iges["bodies"]) == sorted(b["verdict"] for b in step["bodies"])
+    assert len(iges["faces"]) == len(step["faces"]) == 12
+    walls = sorted({round(p["thickness_mm"], 3) for p in step["pairs"] if p["shell"]})
+    assert sorted({round(p["thickness_mm"], 3) for p in iges["pairs"] if p["shell"]}) == walls == [2.0]
+
+
+def test_an_extraction_past_its_work_budget_fails_fast_in_words(tmp_path):
+    # SHELL-18: the stages check the clock; a part out of budget is meshed solid, told why in numbers
+    path = sf.write_step(sf.tube_on_plate(), tmp_path / "p.step")
+    rec = ms.extract_file(path, tmp_path / "o", mm_per_unit=1.0, budget_s=1e-6)
+    assert [b["verdict"] for b in rec["bodies"]] == ["solid"]
+    assert "work budget" in rec["bodies"][0]["why"] and rec["surface_faces"] == []
+    assert json.loads((tmp_path / "o" / ms.RECORD_FILE).read_text())["bodies"][0]["why"] == rec["bodies"][0]["why"]
+
+
+def test_a_general_join_gets_only_what_is_left_of_the_budget(monkeypatch):
+    # SHELL-18: with under JOIN_MIN_S left after the reserve, no general join starts; the straight join stands
+    monkeypatch.setattr(ms, "CLOSE_STRIPS", False)
+    monkeypatch.setattr(ms, "JOIN_RESERVE_S", 1e9)
+    rec, _ = ms.extract(sf.tube_on_plate(), mm_per_unit=1.0)
+    assert rec["sewn"][0]["join"] == "straight"
+    assert any("SHELL-18" in n for n in rec["notes"])
+
+
+def test_an_extraction_past_its_deadline_is_stopped_and_the_part_meshed_solid(monkeypatch, tmp_path):
+    # SHELL-18: one OpenCASCADE call cannot be stopped from inside: the whole extraction runs in a child process,
+    # stopped at the deadline; the record says so and the solid mesh is delivered
+    import time as _time
+
+    seen = {}
+
+    def stopped(entry, kwargs, deadline_s):
+        seen.update(entry=entry, deadline=deadline_s, **kwargs)
+        return "timeout", None
+
+    real = ms.run_bounded
+    monkeypatch.setattr(ms, "run_bounded", stopped)
+    path = sf.write_step(sf.flat_plate(2.0), tmp_path / "p.step")
+    rec = ms.extract_file(path, tmp_path / "o", mm_per_unit=1.0, deadline_s=1.0)
+    assert seen["entry"] == ms.EXTRACT_ENTRY and seen["deadline"] == 1.0 and seen["path"] == str(path)
+    assert rec["bodies"][0]["verdict"] == "solid" and "ran past 1 s" in rec["bodies"][0]["why"]
+    assert (tmp_path / "o" / ms.RECORD_FILE).exists() and (tmp_path / "o" / ms.SURFACE_FILE).exists()
+    t0 = _time.time()
+    assert real("tests.shell_fixtures:sleep_for", {"seconds": 60.0}, 1.0) == ("timeout", None)
+    assert _time.time() - t0 < 30.0
+    status, why = real("tests.shell_fixtures:sleep_for", {"seconds": -1.0}, 60.0)
+    assert status == "error" and why.startswith("ValueError")
+
+
+def test_a_stopped_extraction_takes_its_general_join_with_it(tmp_path):
+    # SHELL-18b: the extraction stopped at its deadline while a general join (its own fork) runs: the join is
+    # stopped too, not left running orphaned
+    import time as _time
+
+    pid_file = tmp_path / "join.pid"
+    assert ms.run_bounded("tests.shell_fixtures:fork_and_sleep", {"pid_file": str(pid_file)}, 5.0) == ("timeout", None)
+    pid = int(pid_file.read_text())
+    gone = False
+    for _ in range(50):
+        try:
+            with open(f"/proc/{pid}/stat") as fh:
+                gone = fh.read().split(")")[-1].split()[0] == "Z"
+        except OSError:
+            gone = True
+        if gone:
+            break
+        _time.sleep(0.1)
+    assert gone
+
+
+def test_the_bounded_extraction_runs_after_a_parallel_mesh_in_the_same_process(tmp_path):
+    # SHELL-18d: a fork of a process whose OpenCASCADE thread pool had started (a parallel mesh) hung a 2 s extraction
+    # until its deadline: the bounded extraction runs in a new process, not a fork
+    import time as _time
+
+    from meshpipeline.cad.occ_box import incremental_mesh
+
+    incremental_mesh(sf.tube_on_plate(), 0.5, 0.3, relative=False, parallel=True)
+    path = sf.write_step(sf.flat_plate(2.0), tmp_path / "p.step")
+    t0 = _time.time()
+    rec = ms.extract_file(path, tmp_path / "o", mm_per_unit=1.0, deadline_s=120.0)
+    assert _time.time() - t0 < 60.0
+    assert rec["bodies"][0]["verdict"] == "shell"
+
+
+def test_the_bounded_extraction_writes_what_the_unbounded_one_does(tmp_path):
+    # the child runs the general join in a child of its own (it must not be a daemon, which may have none)
+    path = sf.write_step(sf.tube_on_plate(), tmp_path / "p.step")
+    a = ms.extract_file(path, tmp_path / "a", mm_per_unit=1.0)
+    b = ms.extract_file(path, tmp_path / "b", mm_per_unit=1.0, deadline_s=0.0)
+    assert a["sewn"][0]["join"] == "general"
+    for r in (a, b):
+        r.pop("seconds", None)
+    assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+    assert (tmp_path / "a" / ms.SURFACE_FILE).read_bytes() == (tmp_path / "b" / ms.SURFACE_FILE).read_bytes()
+
+
+def test_an_iges_box_with_a_sealed_cavity_is_one_body(tmp_path):
+    # SHELL-15h: two closed shells, one inside the other, are one solid with a void (as in the STEP), not a box and a
+    # solid block the size of the cavity
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from tests.fea_fixtures import _box
+
+    part = BRepAlgoAPI_Cut(_box(0, 0, 0, 100, 60, 40), _box(2, 2, 2, 96, 56, 36)).Shape()
+    step = ms.extract_file(sf.write_step(part, tmp_path / "p.step"), tmp_path / "s", mm_per_unit=1.0)
+    iges = ms.extract_file(sf.write_iges(part, tmp_path / "p.igs"), tmp_path / "i", mm_per_unit=1.0)
+    assert len(iges["bodies"]) == len(step["bodies"]) == 1
+    assert iges["bodies"][0]["volume_mm3"] == pytest.approx(step["bodies"][0]["volume_mm3"], rel=1e-6)
+    assert iges["bodies"][0]["verdict"] == step["bodies"][0]["verdict"] == "shell"
+
+
+def test_an_iges_dome_reads_as_its_step(tmp_path):
+    # SHELL-15g: a sphere written as a surface of revolution is re-made as a sphere the right way round (or kept as
+    # written when the re-made face would not mesh): the same verdict and wall as the STEP
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeSphere
+    from OCP.gp import gp_Pnt
+
+    ball = BRepAlgoAPI_Cut(BRepPrimAPI_MakeSphere(60.0).Shape(), BRepPrimAPI_MakeSphere(58.0).Shape()).Shape()
+    dome = BRepAlgoAPI_Cut(ball, BRepPrimAPI_MakeBox(gp_Pnt(-100, -100, -100), 200, 200, 100).Shape()).Shape()
+    step = ms.extract_file(sf.write_step(dome, tmp_path / "p.step"), tmp_path / "s", mm_per_unit=1.0)
+    iges = ms.extract_file(sf.write_iges(dome, tmp_path / "p.igs"), tmp_path / "i", mm_per_unit=1.0)
+    assert [b["verdict"] for b in iges["bodies"]] == [b["verdict"] for b in step["bodies"]] == ["shell"]
+    assert sorted({round(p["thickness_mm"], 3) for p in iges["pairs"] if p["shell"]}) == [2.0]
+
+
+def test_a_seam_written_as_two_edges_is_split_and_sewn():
+    # SHELL-15f: a closed face whose seam is two separate edges of its wire: sewing leaves both free; the face split
+    # across its closed direction sews shut
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    cyl = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 20.0, 50.0).Shape()
+    side = [f for f in ms._faces(cyl) if "Cylindrical" in type(BRep_Tool.Surface_s(f)).__name__][0]
+    wire = BRepBuilderAPI_MakeWire()
+    ex = TopExp_Explorer(ms._outer_wire(side), TopAbs_EDGE)
+    while ex.More():                                       # every edge made anew from its curve: the seam twice
+        e = TopoDS.Edge_s(ex.Current())
+        ex.Next()
+        ad = BRepAdaptor_Curve(e)
+        ne = BRepBuilderAPI_MakeEdge(ad.Curve().Curve(), ad.FirstParameter(), ad.LastParameter()).Edge()
+        wire.Add(TopoDS.Edge_s(ne.Oriented(e.Orientation())))
+    from OCP.ShapeFix import ShapeFix_Face
+
+    fix = ShapeFix_Face(BRepBuilderAPI_MakeFace(BRep_Tool.Surface_s(side), wire.Wire(), True).Face())
+    fix.Perform()                                          # its curves on the surface, as an IGES reader gives them
+    face = fix.Face()
+    em = ms._map(face, TopAbs_EDGE)
+    seam = [e for e in (TopoDS.Edge_s(em.FindKey(i)) for i in range(1, em.Extent() + 1)) if abs(float(np.ptp([ms._ends(e)[0][2], ms._ends(e)[1][2]])) - 50.0) < 1e-6]
+    assert len(seam) == 2                                  # the seam, twice: each a free edge of the one face
+    split = ms._split_self_seams(ms._compound([face]), seam, 1e-4)
+    assert split is not None and len(split) == 2
+    assert sum(ms._area(f) for f in split) == pytest.approx(ms._area(face), rel=1e-9)
+    caps = [f for f in ms._faces(cyl) if f is not side and "Plane" in type(BRep_Tool.Surface_s(f)).__name__]
+    assert not ms._free_edge_list(ms._sew(split + caps, 1e-4))
+
+
+def test_iges_bodies_lying_on_each_other_along_edges_are_told_apart(tmp_path):
+    # SHELL-15i: a frame whose short tube lies on a longer one over its length (both from x = 0): sewing pairs their
+    # edges as the faces come (in one order one valid solid made of both tubes' faces). Told apart by the angles
+    # round each edge, the two tubes come back as two solids of their own volumes in any face order, as in the STEP
+    from OCP.TopAbs import TopAbs_SOLID
+
+    long_, short = sf.box_section(60, 40, 3, 300), sf.box_section(60, 40, 3, 100)
+    comp = ms._compound([long_, short])
+    want = sorted(round(ms._volume(s), 1) for s in (long_, short))
+    faces = ms._faces(comp)
+    for order in (faces, faces[::-1], faces[0::2] + faces[1::2]):
+        shape, notes = ms.solidify(ms._compound(order), 1.0)
+        sols = ms._map(shape, TopAbs_SOLID)
+        assert sols.Extent() == 2 and any("SHELL-15i" in n for n in notes)
+        assert sorted(round(ms._volume(sols.FindKey(i)), 1) for i in (1, 2)) == want
+    step = ms.extract_file(sf.write_step(comp, tmp_path / "p.step"), tmp_path / "s", mm_per_unit=1.0)
+    iges = ms.extract_file(sf.write_iges(comp, tmp_path / "p.igs"), tmp_path / "i", mm_per_unit=1.0)
+    assert sorted(b["verdict"] for b in iges["bodies"]) == sorted(b["verdict"] for b in step["bodies"])
+    assert sorted(round(b["volume_mm3"]) for b in iges["bodies"]) == sorted(round(b["volume_mm3"]) for b in step["bodies"])
+
+
+def test_bodies_touching_face_to_face_are_not_read_by_angle():
+    # SHELL-15i reads only edges where each face leaves at its own angle, or two pairs lie on each other; boxes side by
+    # side (a shared face) are left to the volume maker (SHELL-15b)
+    from tests.fea_fixtures import _box
+
+    loose = ms._faces(ms._compound([_box(0, 0, 0, 100, 60, 3), _box(100, 0, 0, 100, 60, 3)]))
+    assert ms._solids_by_angle(loose, 1e-4, 0.1) is None

@@ -609,6 +609,136 @@ def pair_trias(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, t_face: li
     return np.array(new_q, dtype=np.int64).reshape(-1, 4), keep, np.array(came, dtype=np.int64)
 
 
+#: SHMESH-22: a cap is a triangle past a limit whose widest corner is at least this open (its apex near its longest
+#: edge); the element it is absorbed into must face the same way within CAP_NORMAL_DEG
+CAP_MIN_DEG = 120.0
+CAP_NORMAL_DEG = 5.0
+
+
+def _splits(poly: list[int]) -> list[list[list[int]]]:
+    """The ways to cut a polygon of 4 or 5 corners (in order) into a quad and the rest, or into triangles: lists of
+    elements, each in the polygon's turning sense, in a fixed order."""
+    n = len(poly)
+    r = [poly[k:] + poly[:k] for k in range(n)]
+    if n == 4:
+        return [[poly], [r[0][:3], [r[0][0], r[0][2], r[0][3]]], [r[1][:3], [r[1][0], r[1][2], r[1][3]]]]
+    out = [[c[:4], [c[3], c[4], c[0]]] for c in r]                       # a quad and a triangle
+    out += [[c[:3], [c[0], c[2], c[3]], [c[0], c[3], c[4]]] for c in r]   # three triangles, fanned from a corner
+    return out
+
+
+def _elem_normal(xyz: np.ndarray, c: list[int]) -> np.ndarray:
+    p = xyz[c]
+    if len(c) == 4:
+        return np.cross(p[2] - p[0], p[3] - p[1])
+    return np.cross(p[1] - p[0], p[2] - p[0])
+
+
+def _past_one(xyz: np.ndarray, c: list[int]) -> bool:
+    a = np.array([c], dtype=np.int64)
+    return bool(_quad_past(quad_measures(xyz, a))[0]) if len(c) == 4 else bool(_tria_past(tria_measures(xyz, a))[0])
+
+
+def _least_angle(xyz: np.ndarray, c: list[int]) -> float:
+    return float(_angles(xyz[np.array([c])])[0].min())
+
+
+def absorb_caps(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int], t_face: list[int],
+                face_wall: np.ndarray, *, rounds: int = 4):
+    """SHMESH-22: a cap - a triangle past one of Nastran's limits whose apex lies near its longest edge (its widest
+    corner over CAP_MIN_DEG) - left once every other step is done. Its three corners are on CAD edges (a face's
+    corner that closes almost flat, two edges that run close): no node of it can move and no swap inside its face
+    mends it. So the longest edge goes:
+    - across an edge that only it and one other element hold (inside its face, or a seam between two faces of the
+      same wall facing the same way within CAP_NORMAL_DEG): the cap and that element are taken as one polygon (the
+      element with the apex added between the edge's ends) and cut again into the fewest elements all inside
+      Nastran's limits (a quad and a triangle, or two triangles; the largest smallest corner first), on the other
+      element's face. The seam then runs through the apex: off its curve by the cap's height, under a tenth of the
+      edge;
+    - on a free edge, its two other edges held by one more element each: the cap is dropped, and the free edge
+      runs through the apex (the area lost is the cap's, a sliver).
+    Never across a junction edge (three or more elements). Deterministic: caps in number order, `rounds` passes.
+
+    Returns (quads, trias, q_face, t_face, how many caps went)."""
+    Q = [list(map(int, c)) for c in quads.tolist()]
+    T = [list(map(int, c)) for c in trias.tolist()]
+    qf, tf = list(q_face), list(t_face)
+    gone_total = 0
+    for _ in range(rounds):
+        if not T:
+            break
+        tm = tria_measures(xyz, np.array(T, dtype=np.int64))
+        caps = np.flatnonzero(_tria_past(tm) & (tm["max_angle_tria"] >= CAP_MIN_DEG)).tolist()
+        if not caps:
+            break
+        conn = Q + T
+        face = qf + tf
+        users: dict[tuple[int, int], list[int]] = {}
+        for k, c in enumerate(conn):
+            for i in range(len(c)):
+                a, b = c[i], c[(i + 1) % len(c)]
+                users.setdefault((min(a, b), max(a, b)), []).append(k)
+        dead: set[int] = set()
+        new: list[tuple[list[int], int]] = []
+        for i in caps:
+            ki = len(Q) + i
+            if ki in dead:
+                continue
+            c = T[i]
+            L = [float(np.linalg.norm(xyz[c[k]] - xyz[c[(k + 1) % 3]])) for k in range(3)]
+            k = int(np.argmax(L))
+            a, b, p = c[k], c[(k + 1) % 3], c[(k + 2) % 3]           # the cap runs a -> b -> p
+            others = [u for u in users[(min(a, b), max(a, b))] if u != ki]
+            if not others:
+                side = [users[(min(x, y), max(x, y))] for x, y in ((b, p), (p, a))]
+                if all(len(u) == 2 and not (set(u) & dead) for u in side):
+                    dead.add(ki)
+                continue
+            if len(others) != 1 or others[0] in dead:
+                continue
+            ke = others[0]
+            e = conn[ke]
+            if p in e or abs(float(face_wall[face[ke]]) - float(face_wall[face[ki]])) > 1e-9 * max(
+                    1.0, float(face_wall[face[ki]])):
+                continue
+            # the faces are not yet turned alike: an element of another face may run a -> b; it is read the other
+            # way round (b -> a, the cap's turning sense) and its new elements turned back to its own sense
+            back = any(e[m] == a and e[(m + 1) % len(e)] == b for m in range(len(e)))
+            if back:
+                e = e[::-1]
+            n_c, n_e = _elem_normal(xyz, c), _elem_normal(xyz, e)
+            cosv = float(n_c @ n_e) / max(float(np.linalg.norm(n_c) * np.linalg.norm(n_e)), 1e-300)
+            if cosv < np.cos(np.radians(CAP_NORMAL_DEG)):
+                continue
+            # the element now runs b -> a: the apex goes between them
+            j = next((m for m in range(len(e)) if e[m] == b and e[(m + 1) % len(e)] == a), None)
+            if j is None:
+                continue
+            poly = e[:j + 1] + [p] + e[j + 1:]
+            best = None
+            for cut in _splits(poly):
+                if any(_past_one(xyz, el) or float(_elem_normal(xyz, el) @ n_e) <= 0 for el in cut):
+                    continue
+                key = (len(cut), -min(_least_angle(xyz, el) for el in cut))
+                if best is None or key < best[0]:
+                    best = (key, cut)
+            if best is None:
+                continue
+            dead |= {ki, ke}
+            new += [(el[::-1] if back else el, face[ke]) for el in best[1]]
+        if not dead:
+            break
+        gone_total += sum(1 for k in dead if k >= len(Q))
+        keep_q = [k for k in range(len(Q)) if k not in dead]
+        keep_t = [k for k in range(len(T)) if len(Q) + k not in dead]
+        Q, qf, T, tf = ([Q[k] for k in keep_q] + [el for el, _f in new if len(el) == 4],
+                        [qf[k] for k in keep_q] + [f for el, f in new if len(el) == 4],
+                        [T[k] for k in keep_t] + [el for el, _f in new if len(el) == 3],
+                        [tf[k] for k in keep_t] + [f for el, f in new if len(el) == 3])
+    return (np.array(Q, dtype=np.int64).reshape(-1, 4), np.array(T, dtype=np.int64).reshape(-1, 3), qf, tf,
+            gone_total)
+
+
 def _unit(v: np.ndarray) -> np.ndarray:
     return v / np.maximum(np.linalg.norm(v, axis=-1, keepdims=True), 1e-300)
 
@@ -727,4 +857,4 @@ def element_angle_deg(radius: float, size: float) -> float:
 
 
 __all__ = ["LIMITS", "NASTRAN_LIMITS", "TRIA_SHARE", "measure", "nastran_past", "quad_measures",
-           "flip_past_trias", "split_past_quads", "tria_measures"]
+           "absorb_caps", "flip_past_trias", "split_past_quads", "tria_measures"]

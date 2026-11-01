@@ -123,3 +123,63 @@ def test_a_sliver_merge_that_folds_a_quad_corner_is_undone_and_nothing_folds():
         assert (sq.quad_measures(xyz, Q)["min_jacobian"] > 0).all()
     if len(T):
         assert (sq.tria_measures(xyz, T)["min_jacobian"] > 0).all()
+
+
+def _cap_on_quad():
+    # a unit quad 0 1 2 3 (face 0) and, below its bottom edge 0 -> 1, a cap 1 -> 0 -> 4 whose apex 4 lies 0.02 under
+    # that edge's middle (face 1: a seam between two faces of one wall); the widest corner is about 175 deg
+    xyz = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0.5, -0.02, 0]], dtype=float)
+    return xyz, np.array([[0, 1, 2, 3]], dtype=np.int64), np.array([[1, 0, 4]], dtype=np.int64)
+
+
+def _area(xyz, Q, T):
+    a = sum(0.5 * np.linalg.norm(np.cross(xyz[t[1]] - xyz[t[0]], xyz[t[2]] - xyz[t[0]])) for t in T.tolist())
+    return a + sum(0.5 * np.linalg.norm(np.cross(xyz[q[2]] - xyz[q[0]], xyz[q[3]] - xyz[q[1]])) for q in Q.tolist())
+
+
+def test_a_cap_is_taken_into_the_quad_across_its_longest_edge():
+    # SHMESH-22: the cap and the quad as one pentagon, cut again inside every Nastran limit, on the quad's face
+    xyz, Q, T = _cap_on_quad()
+    assert sq._tria_past(sq.tria_measures(xyz, T)).all()
+    Q2, T2, qf, tf, n = sq.absorb_caps(xyz, Q, T, [0], [1], np.array([2.0, 2.0]))
+    assert n == 1 and len(Q2) + len(T2) == 2
+    assert not len(Q2) or not sq._quad_past(sq.quad_measures(xyz, Q2)).any()
+    assert not len(T2) or not sq._tria_past(sq.tria_measures(xyz, T2)).any()
+    assert set(qf + tf) == {0}
+    assert abs(_area(xyz, Q2, T2) - (1.0 + 0.5 * 0.02)) < 1e-9
+    assert not len(Q2) or _normals_up(xyz, Q2)
+
+
+def test_a_cap_is_read_against_a_quad_turned_the_other_way():
+    # before the faces are turned alike, the quad may run 0 -> 3 -> 2 -> 1; its new elements keep its own sense
+    xyz, Q, T = _cap_on_quad()
+    Q = Q[:, ::-1].copy()
+    Q2, T2, _qf, _tf, n = sq.absorb_caps(xyz, Q, T, [0], [1], np.array([2.0, 2.0]))
+    assert n == 1
+    assert not len(Q2) or not _normals_up(xyz, Q2)
+
+
+def test_a_cap_is_not_taken_across_walls_of_two_thicknesses_or_a_junction():
+    xyz, Q, T = _cap_on_quad()
+    _q, T2, _qf, _tf, n = sq.absorb_caps(xyz, Q, T, [0], [1], np.array([2.0, 3.0]))
+    assert n == 0 and len(T2) == 1
+    xyz2 = np.vstack([xyz, [[0.5, 0.0, 1.0]]])               # a third element on the edge 0-1: a junction
+    T3 = np.vstack([T, [[0, 1, 5]]])
+    _q, T4, _qf, _tf, n = sq.absorb_caps(xyz2, Q, T3, [0], [1, 2], np.array([2.0, 2.0, 2.0]))
+    assert n == 0 and len(T4) == 2
+
+
+def test_a_cap_on_a_free_edge_is_dropped_and_the_edge_runs_through_its_apex():
+    # the cap 0 -> 1 -> 2 on the free edge 0-1, its apex 2 just above it; its other edges held by a quad and a triangle
+    xyz = np.array([[0, 0, 0], [1, 0, 0], [0.5, 0.02, 0], [0, 1, 0], [1, 1, 0]], dtype=float)
+    Q = np.array([[0, 2, 4, 3]], dtype=np.int64)
+    T = np.array([[0, 1, 2], [2, 1, 4]], dtype=np.int64)
+    Q2, T2, _qf, _tf, n = sq.absorb_caps(xyz, Q, T, [0], [0, 0], np.array([2.0]))
+    assert n == 1 and T2.tolist() == [[2, 1, 4]] and Q2.tolist() == [[0, 2, 4, 3]]
+
+
+def test_caps_are_absorbed_the_same_way_every_time():
+    xyz, Q, T = _cap_on_quad()
+    a = sq.absorb_caps(xyz, Q, T, [0], [1], np.array([2.0, 2.0]))
+    b = sq.absorb_caps(xyz, Q, T, [0], [1], np.array([2.0, 2.0]))
+    assert a[0].tolist() == b[0].tolist() and a[1].tolist() == b[1].tolist() and a[2:] == b[2:]
