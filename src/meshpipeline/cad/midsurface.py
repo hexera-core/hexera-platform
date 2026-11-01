@@ -3126,6 +3126,7 @@ def _analytic_face(face, tol: float):
     fix = ShapeFix_Face(mk.Face())
     fix.Perform()
     out = TopoDS.Face_s(fix.Face())
+    mended = False
     if not BRepCheck_Analyzer(out).IsValid() and SEW_ANALYTIC_MEND:
         # SHELL-15g: the analytic surface can run the other way round from the surface of revolution it replaces, so
         # the file's wire turns against it and the face reads invalid (13 of a sheet-metal part's 26 bends; its
@@ -3138,10 +3139,14 @@ def _analytic_face(face, tol: float):
             fix = ShapeFix_Face(mk.Face())
             fix.Perform()
             out = TopoDS.Face_s(fix.Face())
-    # SHELL-15g: the material side as the file wrote it, read from the two surfaces' normals at one point of the
-    # face (the analytic surface may run the other way round: a sphere made from a surface of revolution)
+            mended = True
     out = TopoDS.Face_s(out.Oriented(face.Orientation()))
-    if SEW_ANALYTIC_MEND:
+    if mended:
+        # SHELL-15g: a face made again with its wires reversed takes its material side from the two surfaces'
+        # normals at one point of it (the analytic surface runs the other way round: a sphere made from a surface
+        # of revolution). SHELL-15g2: ONLY such a face - a face that re-made as it was keeps the file's orientation.
+        # Turning every face by its normals turned 468 of a frame's 880 faces (sh0104, all re-made as planes and
+        # cylinders), so the volumes' votes flipped and 51 of its 86 bodies were read as cavities
         from OCP.TopAbs import TopAbs_REVERSED
 
         q = _inner_point(face)
@@ -3153,7 +3158,7 @@ def _analytic_face(face, tol: float):
                 out = TopoDS.Face_s(out.Reversed())
     if not BRepCheck_Analyzer(out).IsValid() or abs(_area(out) - _area(face)) > 1e-4 * _area(face):
         return face
-    if SEW_ANALYTIC_MEND and not _meshes(out):
+    if mended and not _meshes(out):
         # SHELL-15g: a re-made face that the tessellator cannot mesh (a sphere whose wire now crosses its seam) has no
         # triangles, so no ray finds it and its wall goes unpaired: the face as the file wrote it
         return face
