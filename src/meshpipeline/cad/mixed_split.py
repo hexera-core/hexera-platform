@@ -203,17 +203,23 @@ def _split(body, kept, thick_faces, scale: float, out: Split) -> None:
     out.solid = solid[0] if len(solid) == 1 else ms._compound(solid)
     out.cores = len(cores)
     out.solid_volume = sum(ms._volume(s) for s in solid)
-    # the trimmed mid-faces: each sewn shell face less the grown cores
-    for k, (f, t, _o) in enumerate(kept):
-        pieces = ms._faces(_bop("cut", f, [zone]))
-        for p in pieces:
-            if ms.width_of(p) < MIN_WALLS * t:
-                out.notes.append(f"a strip of wall {ms.width_of(p) * scale:.3g} mm wide between cuts is left to the "
-                                 "solid's cut faces")
-                continue
-            out.shell_faces.append(p)
-            out.shell_from.append(k)
-            out.shell_volume += ms._area(p) * t
+    # the trimmed mid-faces: the sewn surface less the grown cores, cut as ONE shape so the faces keep the edges they
+    # share (cut face by face, an L bracket's two legs came back with an edge each where they meet: the shell mesh
+    # hinged there, a seventh free mode); each piece is owned by the sewn face it lies on
+    pieces = ms._faces(_bop("cut", ms._compound([f for f, _t, _o in kept]), [zone]))
+    for p in pieces:
+        q = ms._inner_point(p)
+        if q is None:
+            continue
+        k = min(range(len(kept)), key=lambda i: (ms._dist(ms._vertex(q), kept[i][0]), i))
+        t = kept[k][1]
+        if ms.width_of(p) < MIN_WALLS * t:
+            out.notes.append(f"a strip of wall {ms.width_of(p) * scale:.3g} mm wide between cuts is left to the "
+                             "solid's cut faces")
+            continue
+        out.shell_faces.append(p)
+        out.shell_from.append(k)
+        out.shell_volume += ms._area(p) * t
     # the cut faces: the solid's faces inside the body (no point of theirs on the body's own skin)
     skin = ms._compound(ms._faces(body))
     for f in ms._faces(out.solid):

@@ -151,3 +151,28 @@ def test_the_join_ties_every_link_node_and_the_decks_carry_it(boss_split, tmp_pa
     assert bdf.count("\nMPC*") == len(joined.ties) and bdf.count("\nCTETRA") == len(solid.tets)
     cdb = (tmp_path / "mixed.cdb").read_text()
     assert cdb.count("\nCE,NEXT") == len(joined.ties) and cdb.rstrip().endswith("FINISH") and "ET,2,187" in cdb
+
+
+def test_trimmed_mid_faces_keep_the_edges_they_share():
+    """An L bracket with a thick pad: its two legs, trimmed at the pad, still meet on ONE edge (cut face by face, each
+    came back with its own edge there, and the shell hinged)."""
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+    from tests.fea_fixtures import _box, _fuse
+
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import mixed_split as mx
+
+    shape = _fuse(_fuse(_box(0, 0, 0, 100, 60, 3), _box(0, 0, 0, 3, 60, 80)), _box(70, 0, 3, 30, 60, 12))
+    rec, surface = ms.extract(shape, mm_per_unit=1.0)
+    mids = {m["id"]: m for m in rec["mids"]}
+    kept = [(f, float(mids[o]["thickness_mm"]), 0.0) for f, o in zip(ms._faces(surface), rec["surface_faces"],
+                                                                     strict=True)]
+    faces = ms._faces(shape)
+    thick = [faces[k] for k, r in enumerate(rec["faces"]) if r["role"] in ("thick", "solid")]
+    sp = mx.split_body(mx._solids(shape)[0], kept, thick, scale=1.0)
+    assert sp.ok, sp.why
+    shared = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(ms._compound(sp.shell_faces), TopAbs_EDGE, TopAbs_FACE, shared)
+    assert any(shared.FindFromIndex(i).Size() == 2 for i in range(1, shared.Extent() + 1))
