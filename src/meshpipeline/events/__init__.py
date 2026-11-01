@@ -9,7 +9,7 @@ from typing import Any, Final
 
 # the pipeline stages a user sees, in order
 STAGES: Final[tuple[str, ...]] = (
-    "intake", "engine_select", "geometry_admission", "builder",
+    "intake", "engine_select", "repair", "geometry_admission", "builder",
     "executor", "classifier", "reviewer", "outcome",
 )
 

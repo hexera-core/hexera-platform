@@ -616,6 +616,9 @@ export const Stage = {
     if(agent==='engine_select'){RunLine.model.engine(text,this.now());RunLine.draw();
       const m=/^Mesh engine:\s*(.+)$/.exec(String(text||'').trim());
       if(m&&!warn){n.lead=m[1];this.sum(n);this.paint(n);return;}}
+    // the repair check's one line ("Your part needed no repair", "Repaired 3 defects: ...") is the
+    // lane's own row, in sight when it is folded; a warning still marks the lane
+    if(agent==='repair'){n.lead=String(text||'').trim();this.sum(n);this.paint(n);return;}
     this.bump(n);const r=document.createElement('div');r.className='row';
     r.innerHTML=`<div class="e-info${warn?' warn':''}">${esc(text)}</div>`;n.body.appendChild(r);this.scroll(n);this.paint(n);},
   // `action` arrives already in plain words - the tool roster is named on the backend,

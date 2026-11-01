@@ -5109,6 +5109,36 @@
   ]
  },
  {
+  "context": "pipeline/repair_words.py::aopen::stage#1|ExecutionEventPublisher|execution-owned|pipeline/repair_words.py::execution_publisher",
+  "path": "pipeline/repair_words.py",
+  "qualname": "aopen",
+  "semantic": "stage",
+  "method": "astage",
+  "ordinal": 1,
+  "receiver": "_pub",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/repair_words.py::execution_publisher"
+  ]
+ },
+ {
+  "context": "pipeline/repair_words.py::asay::note#1|ExecutionEventPublisher|execution-owned|pipeline/repair_words.py::execution_publisher",
+  "path": "pipeline/repair_words.py",
+  "qualname": "asay",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 1,
+  "receiver": "_pub",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/repair_words.py::execution_publisher"
+  ]
+ },
+ {
   "context": "render/face_quality.py::_body::search#1|NotAPublisher|not-a-publisher|",
   "path": "render/face_quality.py",
   "qualname": "_body",
