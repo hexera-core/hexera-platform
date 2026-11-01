@@ -100,6 +100,16 @@ def test_an_upload_already_over_the_tolerance_cap_may_not_increase_it():
     assert "tolerance" in reason
 
 
+def test_a_zero_tolerance_cap_remains_an_absolute_refusal(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_TOLERANCE_MM", 0.0)
+    original = _changed(max_tolerance_mm=5.0)
+
+    reason = cumulative_refusal(original, original, declared_area_mm2=0.0,
+                                declared_volume_mm3=0.0)
+
+    assert "tolerance" in reason
+
+
 def test_a_part_whose_overall_size_moved_past_the_deviation_cap_is_refused():
     reason = cumulative_refusal(_SOUND, _changed(diagonal_mm=201.0),
                                 declared_area_mm2=0.0, declared_volume_mm3=0.0)
