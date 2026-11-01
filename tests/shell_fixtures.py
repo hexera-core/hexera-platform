@@ -484,3 +484,27 @@ def write_iges(shape, path: Path | str) -> Path:
     w.ComputeModel()
     w.Write(str(path))
     return Path(path)
+
+
+def sleep_for(seconds: float) -> None:
+    """SHELL-18 tests: a bounded child's work that takes `seconds` (negative: raises ValueError)."""
+    import time
+
+    if seconds < 0:
+        raise ValueError("no negative time")
+    time.sleep(seconds)
+
+
+def fork_and_sleep(pid_file: str) -> None:
+    """SHELL-18b tests: a bounded child that forks a process of its own (as a general join does), writes the fork's
+    pid, and sleeps."""
+    import multiprocessing as mp
+    import os
+    import time
+
+    def join() -> None:
+        Path(pid_file).write_text(str(os.getpid()))
+        time.sleep(120.0)
+
+    mp.get_context("fork").Process(target=join, daemon=True).start()
+    time.sleep(120.0)
