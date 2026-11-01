@@ -4148,6 +4148,7 @@ import importlib, json, os, sys
 mod, fn = sys.argv[1].split(":")
 with open(sys.argv[2]) as fh:
     kw = json.load(fh)
+sys.path[:0] = [p for p in kw.pop("_import_path") if p not in sys.path]
 try:
     out = {"status": "ok", "value": getattr(importlib.import_module(mod), fn)(**kw)}
 except BaseException as exc:
@@ -4191,7 +4192,7 @@ def run_bounded(entry: str, kwargs: dict, deadline_s: float) -> tuple[str, objec
     A new process, not a fork: a fork copies the caller's threads' locks but not its threads, and OpenCASCADE's
     thread pool, once a parallel call has started it, then waits in the child for workers that are not there (a test
     process that had meshed in parallel hung a 2 s extraction until the deadline, twice). The child reads the file
-    itself; it gets the caller's import path."""
+    itself; it gets the caller's import path (in its arguments file)."""
     import os
     import subprocess
     import sys
@@ -4200,12 +4201,8 @@ def run_bounded(entry: str, kwargs: dict, deadline_s: float) -> tuple[str, objec
     with tempfile.TemporaryDirectory(prefix="shell_run_") as tmp:
         args, res = os.path.join(tmp, "args.json"), os.path.join(tmp, "result.json")
         with open(args, "w") as fh:
-            json.dump(kwargs, fh)
-        env = dict(os.environ)
-        env["PYTHONPATH"] = os.pathsep.join([p for p in sys.path if p] +
-                                            ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
-        proc = subprocess.Popen([sys.executable, "-c", _CHILD, entry, args, res], env=env,
-                                stdin=subprocess.DEVNULL)
+            json.dump({**kwargs, "_import_path": [p for p in sys.path if p]}, fh)
+        proc = subprocess.Popen([sys.executable, "-c", _CHILD, entry, args, res], stdin=subprocess.DEVNULL)
         try:
             proc.wait(timeout=deadline_s)
         except subprocess.TimeoutExpired:
