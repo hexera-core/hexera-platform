@@ -46,6 +46,15 @@ HEAL_OP = "heal_self_intersections"
 _HELD_AGAINST = (DefectSeverity.warning, DefectSeverity.error, DefectSeverity.fatal)
 
 
+def _geometric_defect_key(defect) -> tuple | None:
+    """Name a finding by its measured geometry when a kernel rebuild renames its entity."""
+    location = defect.location or {}
+    low, high = location.get("bbox_min"), location.get("bbox_max")
+    if not low or not high:
+        return None
+    return (defect.code, defect.severity, defect.entity_type, tuple(low), tuple(high))
+
+
 @dataclass(frozen=True, slots=True)
 class OpVerdict:
     """What happened when one operation was tried, kept or not."""
@@ -354,9 +363,13 @@ class RepairSession:
                 return "target_remains"
 
         before_names = {(d.fingerprint, d.code.value) for d in previous}
+        before_geometry = {key for d in previous if (key := _geometric_defect_key(d)) is not None}
         added = set(outcome.added)
         for defect in found:
             if (defect.fingerprint, defect.code.value) in before_names:
+                continue
+            geometric_key = _geometric_defect_key(defect)
+            if geometric_key is not None and geometric_key in before_geometry:
                 continue
             if defect.severity not in _HELD_AGAINST:
                 continue
