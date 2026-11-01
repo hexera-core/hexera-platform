@@ -84,19 +84,19 @@ header{height:48px;padding:0 16px;gap:12px;background:var(--background);color:va
 /* Chat. */
 /* the speaker is a label, not a bubble ornament: a small name in sentence case, with a
    steel dot for the agent */
-.im .who{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;
+.im .who{display:flex;align-items:center;gap:8px;font-size:var(--fs-sm);font-weight:600;
   letter-spacing:0;text-transform:none;color:var(--text-muted);margin-bottom:6px}
 .im.assistant .who::before{content:'';width:6px;height:6px;border-radius:50%;
   background:var(--steel);flex:none}
 .im.user .who{color:var(--text-faint)}
-.im.assistant .txt{color:var(--text-bright);font-size:14.5px;line-height:1.72;letter-spacing:-.003em;max-width:76ch}
+.im.assistant .txt{color:var(--text-bright);font-size:var(--fs-base);line-height:1.72;letter-spacing:-.003em;max-width:76ch}
 .im.assistant .txt strong{color:var(--text);font-weight:650}
 /* The user speaks on the right, the agent runs full width on the left - the
    layout every chat client uses, so the turn-taking is readable at a glance.
    Only the geometry changes here; the panel keeps its own surface and rules. */
 .im.user{align-items:flex-end}
 .im.user .who{justify-content:flex-end;margin-right:2px}
-.im.user .bub{background:var(--surface-2);color:var(--text);font-size:14.5px;line-height:1.65;
+.im.user .bub{background:var(--surface-2);color:var(--text);font-size:var(--fs-base);line-height:1.65;
   border:1px solid var(--border);
   border-radius:12px 12px 4px 12px;padding:10px 16px;max-width:72%;width:fit-content}
 /* One code chip, everywhere. The base rule still carried a light-mode fill, so
@@ -158,14 +158,28 @@ th,td{border-color:var(--border)}
 .req-card .rc-ck.bad .ic{background:var(--danger-soft);color:var(--danger)}
 .req-card .rc-ck.bad{color:var(--text)}
 .req-card .rc-d{color:var(--text-faint);font-size:var(--fs-sm)}
-.req-card .rc-note{margin:2px 16px 6px;padding:6px 10px;border-left:2px solid var(--divider);
-  color:var(--text);font-size:var(--fs-md);white-space:pre-wrap;overflow-wrap:anywhere}
-.req-card .rc-notes-box{padding:4px 16px 6px}
-.req-card .rc-notes-in{width:100%;box-sizing:border-box;min-height:64px;resize:vertical;padding:8px 10px;
-  font:inherit;font-size:var(--fs-md);color:var(--text);background:transparent;border:1px solid var(--border);
-  border-radius:6px}
-.req-card .rc-notes-act{display:flex;align-items:center;gap:10px;margin-top:6px}
-.req-card .rc-notes-msg{color:var(--text-faint);font-size:var(--fs-sm)}
+/* the user's own notes: a short list, then one quiet line that grows as it is used */
+.req-card .rc-notes-list{margin:0;padding:0 16px 2px;list-style:none}
+.req-card .rc-note{position:relative;padding:3px 0 3px 14px;color:var(--text);font-size:var(--fs-md);
+  line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
+.req-card .rc-note::before{content:'';position:absolute;left:2px;top:.72em;width:4px;height:4px;
+  border-radius:50%;background:var(--steel-muted)}
+.req-card .rc-notes-box{padding:6px 16px 4px}
+.req-card .rc-notes-row{display:flex;align-items:flex-end;gap:8px}
+.req-card .rc-notes-in{flex:1;min-width:0;box-sizing:border-box;height:34px;min-height:34px;max-height:240px;
+  resize:none;overflow-y:auto;padding:7px 10px;font:var(--fs-md)/1.45 var(--sans);color:var(--text);
+  background:var(--surface-2);border:1px solid transparent;border-radius:var(--r-md);
+  transition:border-color .12s,background .12s,min-height .16s cubic-bezier(.25,1,.5,1)}
+.req-card .rc-notes-in::placeholder{color:var(--text-faint)}
+.req-card .rc-notes-in:hover{border-color:var(--border)}
+.req-card .rc-notes-in:focus{outline:none;min-height:64px;border-color:var(--accent-line);background:var(--surface-1)}
+.req-card .rc-notes-add{flex:none;height:34px;padding:0 12px;border:1px solid var(--border);border-radius:var(--r-md);
+  background:var(--surface-2);color:var(--text);font:500 var(--fs-sm)/1 var(--sans);cursor:pointer;
+  transition:background .12s,border-color .12s,opacity .12s}
+.req-card .rc-notes-add:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-raised)}
+.req-card .rc-notes-add:disabled{opacity:.45;cursor:default}
+.req-card .rc-notes-msg{display:block;margin-top:4px;color:var(--danger);font-size:var(--fs-sm)}
+.req-card .rc-notes-msg:empty{display:none}
 .req-card .rc-ck code{font-family:var(--mono);font-size:.9em;color:var(--steel-bright)}
 
 /* the engine choice under the one engine question: every engine that can take the file, its fit
@@ -201,8 +215,8 @@ th,td{border-color:var(--border)}
 }
 
 /* ----------------------------------------------------------------- run ---- */
-.proc{border:1px solid var(--border);border-radius:10px;background:var(--surface-1);box-shadow:none}
-.proc-head{padding:12px 16px;gap:10px;background:transparent;border-bottom:1px solid var(--divider);color:var(--text)}
+/* The run itself - its rows, what Hexera says, the live line and the status line above the
+   composer - is styled in timeline.css. What stays here is shared with other surfaces. */
 /* /
    WORKING MARK - one indicator for the whole app.
 
@@ -218,154 +232,25 @@ th,td{border-color:var(--border)}
 .sp-arm{fill:none;stroke:var(--accent);stroke-width:2.0;stroke-linecap:butt;
   stroke-dasharray:17.59 5.03}
 .sp-hd{fill:var(--accent);stroke:none}
-/* landed: the ring closes, stops turning, and takes the success colour.
-   The base rule filled this element with --ink for its old dot state, which
-   under a dark theme is a near-white tile behind the mark. */
-.proc.done .proc-orb{animation:none;transform:none;background:none;border:0}
-.proc.done .sp-arm{stroke:var(--ok);stroke-dasharray:none}
-.proc.done .sp-hd{fill:var(--ok)}
-/* ...and the verdict's colour when the run did not pass: a failed run's header was green */
-.proc.done.r-fail .sp-arm{stroke:var(--danger)}
-.proc.done.r-fail .sp-hd{fill:var(--danger)}
-.proc.done.r-concerns .sp-arm{stroke:var(--warn)}
-.proc.done.r-concerns .sp-hd{fill:var(--warn)}
-.proc.done.r-cancelled .sp-arm{stroke:var(--text-faint)}
-.proc.done.r-cancelled .sp-hd{fill:var(--text-faint)}
-.proc-orb{width:15px;height:15px;border:0;border-radius:0;background:none}
-.proc-title{font:600 var(--fs-base)/1.3 var(--sans);letter-spacing:-.005em;text-transform:none;color:var(--text)}
-.proc-sub{font:var(--fs-sm)/1 var(--sans);color:var(--text-faint)}
-.proc-clock{font:500 var(--fs-sm)/1 var(--sans);font-variant-numeric:tabular-nums;color:var(--text-muted)}
-.proc-cancel{height:28px;padding:0 10px;border-radius:var(--r-md);font:500 var(--fs-sm)/1 var(--sans)}
+.proc-orb{border:0;border-radius:0;background:none}
+/* landed: the ring closes, stops turning, and takes the verdict's colour */
+.run-status.done .proc-orb{animation:none;transform:none}
+.run-status.done .sp-arm{stroke:var(--ok);stroke-dasharray:none}
+.run-status.done .sp-hd{fill:var(--ok)}
+.run-status.done.r-fail .sp-arm{stroke:var(--danger)}
+.run-status.done.r-fail .sp-hd{fill:var(--danger)}
+.run-status.done.r-concerns .sp-arm{stroke:var(--warn)}
+.run-status.done.r-concerns .sp-hd{fill:var(--warn)}
 
-/* the lanes: a hairline spine, a small round mark per stage, the stage name, its count and time */
-.tl{padding:8px 16px 12px}
-.tl-node{padding-left:28px;padding-bottom:2px;border-bottom:none}
-.tl-node::before{left:7px;top:24px;bottom:0;width:1px;background:var(--divider)}
-.tl-dot{left:0;top:6px;width:15px;height:15px;border-radius:50%;
-  background:var(--surface-1);border:1.5px solid var(--border-strong)}
-.tl-dot.active{border-color:var(--accent);background:var(--surface-1)}
-.tl-dot.active::after{width:5px;height:5px;border-radius:50%;background:var(--accent)}
-.tl-dot.done{border-color:transparent;background:var(--ok-soft)}
-.tl-dot.done::after{content:'✓';color:var(--ok);font-size:9px;font-weight:700}
-/* a tick is earned (Stage.markOf): a lane that failed, was sent back, warned or built nothing
-   says so in its mark, in the verdict's colours */
-.tl-dot.bad{border-color:transparent;background:var(--danger-soft)}
-.tl-dot.bad::after{content:'✕';color:var(--danger);font-size:9px;font-weight:700}
-.tl-dot.back{border-color:transparent;background:var(--warn-soft)}
-.tl-dot.back::after{content:'↺';color:var(--warn);font-size:10px;font-weight:700}
-.tl-dot.warn{border-color:transparent;background:var(--warn-soft)}
-.tl-dot.warn::after{content:'!';color:var(--warn);font-size:9px;font-weight:700}
-.tl-dot.nomesh,.tl-dot.ended{border-color:var(--border-strong);background:var(--surface-2)}
-.tl-dot.nomesh::after,.tl-dot.ended::after{content:'–';color:var(--text-faint);font-size:9px;font-weight:700}
-.tl-name{gap:8px;padding:4px 0}
-.tl-name .nm{font:500 var(--fs-md)/1.5 var(--sans);letter-spacing:0;color:var(--text)}
-.tl-name:hover .nm{color:var(--text-bright)}
-.tl-name .ct,.tl-name .dur{font:var(--fs-sm)/1 var(--sans);font-variant-numeric:tabular-nums;color:var(--text-faint)}
-/* the fold mark is drawn, not typed: a small chevron that turns when the lane opens */
-.tl-chev{display:grid;place-items:center;width:14px;height:14px;margin-left:6px;font-size:0;color:var(--text-faint)}
-.tl-chev::before{content:'';width:5px;height:5px;margin-top:-3px;border-right:1.5px solid currentColor;
-  border-bottom:1.5px solid currentColor;transform:rotate(45deg)}
-.tl-name:hover .tl-chev{color:var(--text-muted)}
-.tl-body,.tl-inner{background:transparent}
-.tl-body{margin:4px 0 10px}
-.tl-inner{max-height:300px;padding-right:8px;padding-left:1px;overflow-x:hidden}
-
-.row{padding:2px 0}
-.e-check{gap:10px;font-size:var(--fs-md);line-height:1.55;color:var(--text-muted)}
-.e-check .ic{width:16px;height:16px;margin-top:2px;border-radius:50%;background:var(--ok-soft);
-  color:var(--ok);font-size:9px;line-height:16px}
-.e-check.bad .ic{background:var(--danger-soft);color:var(--danger)}
-.e-info{font:var(--fs-sm)/1.55 var(--sans);letter-spacing:0;color:var(--text-faint)}
-.e-info::before{color:var(--text-faint)}
-.e-info.warn{color:var(--warn)}
-.e-info.warn::before{color:var(--warn)}
-.e-tool{gap:8px;padding:1px 0;font:var(--fs-sm)/1.55 var(--sans);color:var(--text-muted)}
-.e-tool .tag{padding:0 6px;border:0;border-radius:var(--r-sm);background:var(--surface-2);
-  color:var(--text-faint);font:500 11px/1.6 var(--sans);letter-spacing:0;text-transform:none}
-.e-tool .call{color:var(--text);word-break:break-word}
-.e-tool .tres{color:var(--text-faint);font-size:11px}
-.e-tool.bad .tag{background:var(--warn-soft);color:var(--warn)}
-.e-detail{margin-left:16px;border-left:1px solid var(--divider);color:var(--text-faint);
-  font:11px/1.5 var(--mono);max-height:80px}
-.e-mcp{padding:6px 10px;border:0;border-radius:var(--r-md);background:var(--steel-soft);
-  color:var(--steel-bright);font:var(--fs-sm)/1.4 var(--sans)}
-.e-mcp .lbl{color:var(--steel-bright);font-weight:600;letter-spacing:0}
-.e-mcp .q{color:var(--text)}
-.e-mcp .hid{color:var(--text-faint);font-style:normal}
-.e-edit{border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface-2)}
-.e-edit-h{padding:7px 11px;background:transparent;border-bottom:0;font:var(--fs-sm)/1.4 var(--sans)}
-.e-edit-h .ic{border-radius:50%;background:var(--ok)}
-.e-edit .fname{color:var(--text);font:500 var(--fs-sm)/1.4 var(--mono)}
-.e-edit .act,.e-edit .badge{color:var(--text-faint);font-size:11px;font-weight:400}
-
-/* the agent's reasoning: quoted, not styled like a system message */
-.e-think{margin:8px 0;padding:2px 0 2px 12px;border:0;border-left:2px solid var(--steel-muted);
-  border-radius:0;background:transparent}
-.e-think .lbl{margin-bottom:4px;color:var(--steel-bright);font:500 var(--fs-sm)/1.4 var(--sans);
-  letter-spacing:0;text-transform:none}
-/* the completed line carries MEASURED values - "8.4s", "1,276 tokens" - so it is set as data */
-.e-think .lbl.measured{font-variant-numeric:tabular-nums}
-.e-think .lbl::before{display:none}
-.e-think .body{color:var(--text-muted);font-size:var(--fs-sm);line-height:1.65;font-style:normal}
-/* an agent's thinking: a live beat while it runs, a measured line when it lands */
-.e-think.active .lbl::after{content:'';display:inline-block;width:4px;height:4px;
-  margin-left:6px;border-radius:50%;background:var(--accent);
-  animation:demo-pulse 1.2s ease-in-out infinite}
-.e-think .body:empty{display:none}
-/* The live beat an agent's "thinking" card breathes with while it runs. Named for the
-   pulsing marker it was written for; `.e-think.active` is the surface that uses it now. */
-@keyframes demo-pulse{0%,100%{opacity:1}50%{opacity:.25}}
-/* the APPLICATION's own conclusion - stated, not quoted */
-.e-rat{margin:8px 0;padding:2px 0 2px 12px;border-left:2px solid var(--steel)}
-.e-rat .rat-c{color:var(--text);font-size:var(--fs-md);line-height:1.6}
-.e-rat .rat-w{color:var(--text-muted);font-size:var(--fs-sm);line-height:1.6;margin-top:3px}
-
-/* the reviewer's pictures: a small grid under its steps, three to a row, enlarged on click.
-   The newest one fades in; past three rows the grid scrolls on its own. */
-.e-shots{margin:10px 0 2px;max-width:432px}
-.e-shots-h{display:flex;align-items:baseline;gap:6px;margin-bottom:6px;
-  color:var(--text-faint);font:var(--fs-sm)/1.4 var(--sans)}
-.e-shots-n{font-variant-numeric:tabular-nums}
-.e-shots-n::before{content:'·';margin-right:6px}
-.e-shots-n:empty{display:none}
-.e-shots-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;
-  max-height:356px;overflow-y:auto;padding-right:2px}
-.e-shot{display:block;aspect-ratio:4/3;padding:0;overflow:hidden;cursor:zoom-in;
-  border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface-2);
-  transition:border-color .15s;animation:shot-in .35s cubic-bezier(.22,.61,.36,1)}
-.e-shot:hover{border-color:var(--border-strong)}
-.e-shot img{display:block;width:100%;height:100%;object-fit:cover;object-position:center}
-@keyframes shot-in{from{opacity:0;transform:scale(.94)}to{opacity:1;transform:none}}
-
-.tl-att{margin:14px 0 6px;padding-top:12px;border-top:1px solid var(--divider);
-  color:var(--text-muted);font:600 var(--fs-sm)/1.3 var(--sans);letter-spacing:0;text-transform:none}
-/* the verdict: a small stamp with a dot - the word itself stays as the run wrote it */
-.tl-verd{gap:10px}
-.tl-verd .pill,.v-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 8px 4px 7px;
+/* the verdict stamp the viewer shares with the run's result row (timeline.css .tl-verd) */
+.v-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 8px 4px 7px;
   border:0;border-radius:var(--r-sm);background:var(--ok-soft);color:var(--ok);
-  font:600 11px/1 var(--sans);letter-spacing:.04em}
-.tl-verd .pill::before,.v-pill::before{content:'';width:6px;height:6px;border-radius:50%;
+  font:600 var(--fs-xs)/1 var(--sans);letter-spacing:.04em}
+.v-pill::before{content:'';width:6px;height:6px;border-radius:50%;
   background:currentColor;flex:none}
-.tl-verd .pill.fail,.v-pill.fail{background:var(--danger-soft);color:var(--danger)}
-.tl-verd .pill.cancelled{background:var(--surface-2);color:var(--text-faint)}
-.tl-verd .pill.concerns,.v-pill.concerns{background:var(--warn-soft);color:var(--warn)}
+.v-pill.fail{background:var(--danger-soft);color:var(--danger)}
+.v-pill.concerns{background:var(--warn-soft);color:var(--warn)}
 .v-concern-list{margin:6px 0 4px 18px;padding:0;color:var(--warn)}
-.tl-verd .mt{color:var(--text-faint);font:var(--fs-sm)/1 var(--sans)}
-
-/* mesh progress: elapsed against a real bound - orange while running, green once it lands */
-.meshbar{margin:8px 0 6px;padding:10px 12px;border:1px solid var(--divider);border-radius:var(--r-md);
-  background:transparent}
-.mb-top{margin-bottom:8px}
-.mb-lbl{color:var(--text-muted);font:var(--fs-sm)/1 var(--sans);letter-spacing:0}
-.mb-num{color:var(--text);font:500 var(--fs-sm)/1 var(--sans);font-variant-numeric:tabular-nums}
-.mb-track{height:4px;border:0;border-radius:2px;background:var(--surface-2)}
-.mb-fill{border-radius:2px;background:var(--accent)}
-.mb-fill.over{background:var(--warn)}
-.meshbar.done{opacity:1}
-.meshbar.done .mb-fill{background:var(--ok)}
-/* a run that ended while its mesher ran: the bar stops where it was, in no verdict's colour */
-.meshbar.stopped .mb-fill{background:var(--text-faint)}
-.mb-sub{margin-top:6px;color:var(--text-faint);font:var(--fs-sm)/1.4 var(--sans);letter-spacing:0}
 
 /* --------------------------------------------------------------- viewer ---- */
 .viewer{margin:16px 0;overflow:hidden;border:1px solid var(--border);border-radius:10px;
@@ -1116,17 +1001,12 @@ th,td{border-color:var(--border)}
   .oc-fact dt{margin-top:4px}
 }
 /* ---------------------------------------------------------------- polish ---- */
-/* the run header holds a sub-line only when it has something the live line does not say */
-.proc-sub:empty{display:none}
-.proc-sub:empty+.proc-clock{margin-left:auto}
-.proc-title{white-space:nowrap}
 .v-bar b.v-title{white-space:nowrap}
 /* a narrow screen: the live line keeps its mark, words, time and toggle on one row, the words wrap */
 @media(max-width:560px){
   .gp-head{flex-wrap:nowrap;align-items:flex-start}
   .gp-now{flex:1 1 0;min-width:0}
   .gp-time,.gp-toggle{flex:none}
-  .proc-head{flex-wrap:wrap}
   #empty{padding-top:10vh}
 }
 
@@ -1145,25 +1025,53 @@ th,td{border-color:var(--border)}
 .rp-keys{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px;margin:0}
 .rp-keys div{min-width:0}
 .rp-keys dt{font-size:var(--fs-xs);color:var(--text-faint);margin-bottom:3px}
-.rp-keys dd{margin:0;font:500 var(--fs-xl)/1.2 var(--sans);color:var(--text-bright,var(--text));font-variant-numeric:tabular-nums;white-space:nowrap}
+.rp-keys dd{margin:0;font:500 var(--fs-xl)/1.2 var(--sans);color:var(--text-bright,var(--text));font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .rp-keys dd small{margin-left:4px;font:400 var(--fs-sm)/1 var(--sans);color:var(--text-faint)}
 .rp-keys .bad dd{color:var(--warn)}
 .rp-head .v-row{margin-top:-4px}
 .rp-head .v-status{margin-top:0;font-size:var(--fs-xs)}
+/* a delivered mesh's own line is the verdict's tooltip; the line shows only for news (an error) */
+.rp-head .v-row.rp-quiet{display:none}
 
-/* downloads: one list. The bundle is the one filled row; every other file is a quiet row. */
-.v-sec.v-dl{gap:2px}
-.v-dl .v-dlbtn{height:34px;padding:0 10px;border-color:transparent;background:transparent;justify-content:flex-start;gap:10px}
+/* THE PANEL NEVER SCROLLS SIDEWAYS: every row may shrink, long names end in an ellipsis */
+.v-bar{overflow-x:hidden;min-width:0}
+.v-bar>*{min-width:0;max-width:100%}
+
+/* downloads: ONE button. It opens a short menu - Everything first, then each file by its short
+   name and size, then the Mesh report - in the panel's flow, so it can never hang off the edge. */
+.v-sec.v-dl{gap:4px}
+.rp-dltrig{display:flex;align-items:center;gap:10px;width:100%;min-width:0;height:38px;padding:0 12px;
+  border:1px solid var(--accent);border-radius:var(--r-md);background:var(--accent);color:var(--accent-ink);
+  font:600 var(--fs-md)/1 var(--sans);cursor:pointer;transition:background .12s,border-color .12s}
+.rp-dltrig:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+.rp-dltrig:focus-visible{outline:2px solid var(--accent-line);outline-offset:2px}
+.rp-dltrig>svg{flex:none;width:14px;height:14px}
+.v-bar .rp-dltrig b{color:inherit;font-weight:600}
+.rp-dltrig span{margin-left:auto;opacity:.7;font:500 var(--fs-sm)/1 var(--sans);font-variant-numeric:tabular-nums}
+.rp-dlcaret{flex:none;width:6px;height:6px;margin:-3px 2px 0 0;border-right:1.6px solid currentColor;
+  border-bottom:1.6px solid currentColor;transform:rotate(45deg);transition:transform .16s cubic-bezier(.25,1,.5,1)}
+.rp-dltrig span+.rp-dlcaret{margin-left:4px}
+.rp-dltrig b+.rp-dlcaret{margin-left:auto}
+.rp-dltrig[aria-expanded="true"] .rp-dlcaret{margin-top:3px;transform:rotate(-135deg)}
+.rp-dlmenu{display:flex;flex-direction:column;gap:1px;min-width:0;padding:4px;
+  border:1px solid var(--divider);border-radius:var(--r-md);animation:rise .16s ease}
+.rp-dlmenu[hidden]{display:none}
+.v-dl .v-dlbtn{min-width:0;height:32px;padding:0 8px;border-color:transparent;background:transparent;
+  justify-content:flex-start;gap:9px}
 .v-dl .v-dlbtn:hover{background:var(--hover);border-color:transparent}
 .v-dl .v-dlbtn>svg{flex:none;width:14px;height:14px;color:var(--text-faint)}
-.v-dl .rp-dl b::before{display:none}
-.v-dl .v-dlbtn b{flex:none;overflow:visible}
-.v-dl .v-dlbtn em{flex:1 1 auto;font-style:normal;color:var(--text-faint);font-size:var(--fs-sm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-.v-dl .v-dlbtn span{margin-left:auto;padding-left:6px}
-.v-dl .v-dlbtn.primary{height:38px;margin-bottom:6px;background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
-.v-dl .v-dlbtn.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
-.v-dl .v-dlbtn.primary>svg,.v-dl .v-dlbtn.primary em,.v-dl .v-dlbtn.primary span{color:var(--accent-ink);opacity:.75}
+.v-dl .v-dlbtn b::before{display:none}
+.v-dl .v-dlbtn b{display:block;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.v-dl .v-dlbtn.rp-all b{font-weight:600}
+.v-dl .v-dlbtn.rp-all>svg{color:var(--accent)}
+.v-dl .v-dlbtn em{flex:none;font-style:normal;color:var(--text-faint);font-size:var(--fs-xs);white-space:nowrap}
+.v-dl .v-dlbtn em.rp-tag{padding:1px 5px;border-radius:var(--r-sm);background:var(--surface-2)}
+.v-dl .v-dlbtn span{flex:none;margin-left:auto;padding-left:6px;white-space:nowrap}
 .v-dl .rp-report>svg{color:var(--steel-bright)}
+/* a plain list of downloads (the CAD repair panel) still leads with one filled row */
+.v-dl .v-dlbtn.primary{height:38px;margin-bottom:4px;background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.v-dl .v-dlbtn.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+.v-dl .v-dlbtn.primary span{color:var(--accent-ink);opacity:.75}
 
 /* Notes and Hot spots: each one folded list, grouped by kind */
 .rp-lists{display:flex;flex-direction:column;gap:8px}

@@ -181,7 +181,7 @@
    sign-out control all visible, and scrolls sideways rather than truncating. The recent runs and
    the hide switch drop out: /runs lists every run, and there is no column to hide. */
 @media (max-width:860px){
-  .shell,.shell--hidden{grid-template-columns:1fr;grid-template-rows:auto 1fr}
+  .shell,.shell--hidden{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr}
   .sidebar,.shell--hidden .sidebar{display:flex;position:static;height:auto;flex-direction:row;
     flex-wrap:wrap;align-items:center;align-content:flex-start;gap:.5rem .75rem;padding:.6rem .9rem;
     border-right:0;border-bottom:1px solid var(--border)}

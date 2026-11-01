@@ -1,7 +1,8 @@
-// Responsibility: Turn a mesh run's events into one live line at the top of the run card - the step
+// Responsibility: Turn a mesh run's events into one live line at the foot of the run - the step
 // running now in plain words (the engine chosen and why, the plan, meshing on the cloud mesher and
-// what the mesher says it is doing, checking quality, the AI review), its time, the steps done
-// ticked with their times, a note when a step runs long, and how the run ended.
+// what the mesher says it is doing, checking quality, the AI review), its time and a note when a
+// step runs long. The model also keeps the steps done and how the run ended; the page shows those
+// as the run's own rows (render/stage.js), so the line draws only the step running now.
 // Boundaries: a model the stage renderer feeds (render/stage.js); it draws through the geometry
 // check's line (render/check_progress.js), so the two read alike. It reads no prose to decide
 // anything: an event's TYPE and lane say what happened; a note is only ever shown as it was said.
@@ -198,8 +199,9 @@ export function createRunLine() {
   const api = {
     model,
     attach(el) { host = el; },
-    // the commentary stays in view after the run ends, so the line still says why it went the way it did
-    draw() { if (host && host.isConnected) line.show(host, { ...model.view(), said: model.said() }, { pinned: true, id: "run-progress" }); },
+    // the step running now, and nothing else: what Hexera said is chat text in the run itself
+    // (Stage.narrate), and the steps done are the run's own rows, so the line lists neither
+    draw() { if (host && host.isConnected) line.show(host, model.view(), { pinned: true, bare: true, id: "run-progress" }); },
     reset() { model.reset(); line.reset(); host = null; },
   };
   return api;

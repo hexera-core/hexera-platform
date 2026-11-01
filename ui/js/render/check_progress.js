@@ -49,7 +49,8 @@ export function progressHtml(p, opts = {}) {
   const live = !!p.live && !opts.offline && !opts.ended;
   const time = state === "done" ? "" : (opts.elapsed != null && (state === "running" || state === "queued")
     ? durationWords(opts.elapsed) : "");
-  const toggle = done || state === "failed"
+  // a BARE line (the run's) is the step running now and nothing else: its steps are rows of their own
+  const toggle = !opts.bare && (done || state === "failed")
     ? `<button type="button" class="gp-toggle" aria-expanded="${opts.open ? "true" : "false"}">`
       + `${state === "done" ? "Details" : `${done} done`}<span class="gp-chev" aria-hidden="true"></span></button>`
     : "";
@@ -72,7 +73,7 @@ export function progressHtml(p, opts = {}) {
     + `<span class="gp-time num" aria-hidden="true">${esc(time)}</span>${toggle}</div>`
     + (note ? `<div class="gp-note">${esc(note)}</div>` : "")
     + body
-    + `<ol class="gp-steps"${opts.open ? "" : " hidden"}>${stepsHtml(p)}</ol></div>`;
+    + (opts.bare ? "" : `<ol class="gp-steps"${opts.open ? "" : " hidden"}>${stepsHtml(p)}</ol>`) + "</div>";
 }
 
 /* what a re-draw is for: a change a person can see. The running step's seconds move on every
@@ -125,7 +126,7 @@ export function createCheckProgress() {
      *  watch has stopped. A line the conversation dropped (a new run cleared it) is left dropped. */
     show(col, p, opts = {}) {
       if (opts.retry) retry = opts.retry;
-      flags = { offline: !!opts.offline, ended: !!opts.ended };
+      flags = { offline: !!opts.offline, ended: !!opts.ended, bare: !!opts.bare };
       const wasSettled = !!(last && SETTLED.includes(last.state));
       if (p) { last = p; got = Date.now(); }
       if (!last || !col) return;

@@ -78,7 +78,9 @@ export const Stage = {
   // list now comes from the capability response through `setSupportedCopy`, and until that
   // arrives the copy stays format-neutral rather than guessing.
   mount(){document.getElementById('stage').innerHTML='<div class="scroll"><div class="chat-col" id="cc"><div id="empty"><p id="empty-lead">Upload geometry to begin.</p><p id="empty-formats"></p><p class="empty-sub">Hexera will guide you through the simulation setup.</p></div></div></div>';
-    this.nodes={};this.proc=null;this.tl=null;this._briefEl=null;this._briefSig='';
+    // the last run's status line above the composer belonged to that run
+    document.getElementById('run-status')?.remove();
+    this.nodes={};this.proc=null;this.tl=null;this.bar=null;this._said=new Set();this._briefEl=null;this._briefSig='';
     // A NEW RUN STARTS CLEAN. The attempt the last run ended on, the attempts that built and a
     // mesh bar a run left open when it ended mid-mesh all belonged to that run: kept, the next
     // run's "Attempt 1" header went missing and its mesh bar never appeared (the old, detached
@@ -92,6 +94,9 @@ export const Stage = {
   setSupportedCopy(text){const el=document.getElementById('empty-formats');
     if(el)el.innerHTML=text?String(text).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])):'';},
   col(){return document.getElementById('cc');},
+  // the run's step model as the live line reads it - the steps done live on the page as the run's
+  // own rows, so this is how the ui tier reads the model's words for them
+  runView(){return RunLine.model.view();},
   scrollBottom(){const s=document.querySelector('#stage .scroll');if(s)s.scrollTop=s.scrollHeight;},
   clearEmpty(){document.getElementById('empty')?.remove();},
   // There is ONE assistant identity in this product and it is Hexera - the same
@@ -148,11 +153,13 @@ export const Stage = {
         +`<span>${esc(c.label)}${c.detail?` <span class="rc-d">${esc(c.detail)}</span>`:''}</span></div>`;}).join('');
     // THE USER'S OWN NOTES, exactly as typed (a pasted spec keeps its lines), and the box that adds
     // one. Guidance for the mesh, never a check: the plan above is what is approved.
-    const notes=(b.user_notes||[]).map(n=>`<div class="rc-note">${esc(n.text)}</div>`).join('');
-    const box=addNote?`<div class="rc-notes-box"><textarea class="rc-notes-in" rows="3" maxlength="20000"
-        placeholder="Anything specific about this simulation? Paste a spec if you have one."></textarea>
-        <div class="rc-notes-act"><button type="button" class="rc-notes-add">Add note</button>
-        <span class="rc-notes-msg" role="status"></span></div></div>`:'';
+    // A short list, then one quiet line that grows as it is used: Enter adds, Shift+Enter starts a line.
+    const items=(b.user_notes||[]).map(n=>`<li class="rc-note">${esc(n.text)}</li>`).join('');
+    const notes=items?`<ul class="rc-notes-list">${items}</ul>`:'';
+    const box=addNote?`<div class="rc-notes-box"><div class="rc-notes-row"><textarea class="rc-notes-in" rows="1" maxlength="20000"
+        aria-label="Add a note" placeholder="Add a note, or paste a spec…"></textarea>
+        <button type="button" class="rc-notes-add" disabled>Add</button></div>
+        <span class="rc-notes-msg" role="status"></span></div>`:'';
     const html=`<div class="who">Hexera · your request, as understood</div>
       <div class="req-card${(b.checks||[]).every(c=>c.status==='pass')?' ok':''}">
         ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
@@ -165,12 +172,20 @@ export const Stage = {
       const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
       this.col().appendChild(g);this._briefEl=g;}
     const add=this._briefEl.querySelector('.rc-notes-add');
-    if(add)add.onclick=async()=>{
-      const inp=this._briefEl.querySelector('.rc-notes-in'),msg=this._briefEl.querySelector('.rc-notes-msg');
-      const text=inp.value;if(!text.trim())return;
-      add.disabled=true;msg.textContent='';
-      try{this._briefSig='';await addNote(text);}
-      catch(e){add.disabled=false;msg.textContent=(e&&e.message)||'The note was not saved.';}};
+    const inp=this._briefEl.querySelector('.rc-notes-in');
+    if(add&&inp){
+      const msg=this._briefEl.querySelector('.rc-notes-msg');
+      // the box is one line until it holds more: it grows with what is typed or pasted
+      const fit=()=>{inp.style.height='';if(inp.value)inp.style.height=Math.min(inp.scrollHeight+2,240)+'px';
+        add.disabled=!inp.value.trim();};
+      inp.addEventListener('input',fit);
+      const send=async()=>{
+        const text=inp.value;if(!text.trim()||add.dataset.busy)return;
+        add.dataset.busy='1';add.disabled=true;msg.textContent='';
+        try{this._briefSig='';await addNote(text);}
+        catch(e){delete add.dataset.busy;add.disabled=false;msg.textContent=(e&&e.message)||'The note was not saved.';}};
+      add.onclick=send;
+      inp.addEventListener('keydown',(e)=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send();}});}
     this.scrollBottom();},
 
   /* THE ENGINE CHOICE, under the one engine question. Every engine that can take the uploaded file,
@@ -345,18 +360,17 @@ export const Stage = {
     if(d&&d.fea){fol(()=>followClean(g,d.fea));if(d.fea.assembly)fol(()=>followAssembly(g,d.fea.assembly));}
     if(d&&d.fea&&d.fea.measure)fol(()=>followMeasure(g,d.fea.measure,p,null));},
 
+  /* THE RUN RUNS IN THE CHAT. No card around it and no box inside it: the steps are small muted
+     rows in the conversation, in the order they happened, each folding its own detail away; what
+     Hexera says as it decides is plain chat text between them; the step running now is the last
+     line. The run's clock and its Cancel are one slim line above the composer (`_statusBar`). */
   ensureProc(){if(this.proc)return;this.clearEmpty();
     const p=document.createElement('div');p.className='proc';
-    p.innerHTML=`<div class="proc-head"><svg class="proc-orb" viewBox="0 0 24 24" aria-hidden="true"><circle class="sp-arm" cx="12" cy="12" r="7.2"/><path class="sp-hd" d="M19.20 8.16L22.40 14.56L16.00 14.56Z"/><path class="sp-hd" d="M4.80 15.84L1.60 9.44L8.00 9.44Z"/></svg>
-      <span class="proc-title">Generating mesh</span>
-      <span class="proc-sub" id="proc-sub"></span>
-      <span class="proc-clock" id="proc-clock">0:00</span>
-      <button class="proc-cancel" id="proc-cancel" type="button" hidden>Cancel run</button></div>
-      <div class="proc-live" id="proc-live"></div>
-      <div class="tl" id="tl"></div>`;
+    p.innerHTML=`<div class="tl" id="tl"></div><div class="proc-live" id="proc-live"></div>`;
     this.col().appendChild(p);this.proc=p;this.tl=p.querySelector('#tl');
+    this.bar=this._statusBar(p);
     RunLine.attach(p.querySelector('#proc-live'));RunLine.draw();
-    p.querySelector('#proc-cancel').onclick=()=>onCancel();
+    this.bar.querySelector('#proc-cancel').onclick=()=>onCancel();
     this.t0=Date.now();
     // one ticker drives every live duration - the run's total and the active stage's
     clearInterval(this._tick);
@@ -377,12 +391,27 @@ export const Stage = {
   // means a worker has it and the sub-line empties: the live line under the header says what is
   // running, so a filler word there only repeated it. A finished run is left alone.
   waiting(text){if(!this.proc||this.proc.classList.contains('done'))return;
-    const s=this.proc.querySelector('#proc-sub');if(!s)return;
+    const s=this.bar&&this.bar.querySelector('#proc-sub');if(!s)return;
     s.textContent=text||'';
     RunLine.model.waiting(text);RunLine.draw();},
   // The Cancel control is shown ONLY for a run this page is attached to live. A replayed run
-  // renders the same card, and a control that could stop nothing must not be on it.
-  showCancel(){const b=this.proc?.querySelector('#proc-cancel');if(b)b.hidden=false;},
+  // renders the same line, and a control that could stop nothing must not be on it.
+  showCancel(){const b=this.bar?.querySelector('#proc-cancel');if(b)b.hidden=false;},
+  /* THE RUN'S STATUS LINE: the working mark, what the run is doing in two words, the wait when there
+     is one, the clock and Cancel. One slim line above the composer, out of the conversation; a page
+     with no composer keeps it at the top of the run. Gone once the run has ended: the result row
+     and the closing message say how it went and how long it took. */
+  _statusBar(proc){
+    document.getElementById('run-status')?.remove();
+    const b=document.createElement('div');b.className='run-status';b.id='run-status';
+    b.setAttribute('role','status');
+    b.innerHTML=`<svg class="proc-orb" viewBox="0 0 24 24" aria-hidden="true"><circle class="sp-arm" cx="12" cy="12" r="7.2"/><path class="sp-hd" d="M19.20 8.16L22.40 14.56L16.00 14.56Z"/><path class="sp-hd" d="M4.80 15.84L1.60 9.44L8.00 9.44Z"/></svg>`
+      +`<span class="proc-title">Generating mesh</span><span class="proc-sub" id="proc-sub"></span>`
+      +`<span class="proc-clock" id="proc-clock">0:00</span>`
+      +`<button class="proc-cancel" id="proc-cancel" type="button" hidden>Cancel run</button>`;
+    const bar=document.getElementById('input-bar');
+    if(bar)bar.prepend(b);else proc.prepend(b);
+    return b;},
 
   // THE RUN'S CLOCK IS THE SERVER'S. It counts from when the job was created, not from when this
   // page opened it - a reload, or a run opened from a link, used to start it again at 0:00 - and it
@@ -393,7 +422,7 @@ export const Stage = {
     if(this.finished&&!(t1>0))return;
     if(t0>0)this.t0=Math.min(t0,Date.now());
     if(t1>0)this.finished=true;
-    const c=this.proc&&this.proc.querySelector('.proc-clock');
+    const c=this.bar&&this.bar.querySelector('.proc-clock');
     if(c&&this.t0)c.textContent=fmtDur((t1>0?t1:Date.now())-this.t0);},
   // WHEN, BY THE SERVER'S CLOCK. Every event says when it happened; a lane opens and closes at
   // those times, so a replayed run's stages last as long as they did - not the instant the replay
@@ -432,6 +461,10 @@ export const Stage = {
     RunLine.model.meshStage(label,this.now());RunLine.draw();},
   // THE RUN'S NARRATION: what it is doing now and what it decided, in plain words, on the line
   narrate(agent,ev){if(!ev||!ev.text)return;
+    // WHAT HEXERA DECIDED, said as it decides: plain chat text in the run, where it happened, once
+    if(ev.kind==='say'){this.ensureProc();const t=String(ev.text).trim();this._said=this._said||new Set();
+      if(t&&!this._said.has(t)){this._said.add(t);const p=document.createElement('p');p.className='tl-say';
+        p.textContent=t;this.tl.appendChild(p);this.scrollBottom();}}
     const m=this.meshBar;
     if(m&&ev.kind!=='say'&&!/^Still /.test(ev.text)){m.narrated=true;
       const l=m.el.querySelector('.mb-lbl');if(l)l.textContent=String(ev.text);}
@@ -464,16 +497,23 @@ export const Stage = {
     if(sub)sub.textContent=`finished in ${fmtDur(el)}`;
     const num=m.el.querySelector('.mb-num');
     if(num&&cells)num.textContent=`${fmtDur(el)} · ${cells}`;
+    // the lane's row says what was built, folded or not
+    const b=this.nodes.builder;if(b&&cells){b.lead=String(cells);this.sum(b);}
     this.meshBar=null;
     RunLine.model.meshed(cells,this.now());RunLine.draw();},
   node(agent){this.ensureProc();
     if(this.nodes[agent])return this.nodes[agent];
+    // ONE SMALL ROW PER STEP: its mark, its name, a muted word on what it did, its time - and its
+    // detail folded under it, open while the step runs and folded once it is done
     const n=document.createElement('div');n.className='tl-node open';
-    n.innerHTML=`<div class="tl-dot active"></div>
-      <div class="tl-name"><span class="nm">${esc(laneLabel(agent))}</span><span class="ct"></span>
-        <span class="dur"></span><span class="tl-chev">∨</span></div>
-      <div class="tl-body"><div class="tl-inner"></div></div>`;
-    n.querySelector('.tl-name').onclick=()=>n.classList.toggle('open');
+    n.innerHTML=`<div class="tl-name" role="button" tabindex="0" aria-expanded="true"><span class="tl-dot active"></span>`
+      +`<span class="nm">${esc(laneLabel(agent))}</span><span class="ct"></span>`
+      +`<span class="dur"></span><span class="tl-chev" aria-hidden="true"></span></div>`
+      +`<div class="tl-body"><div class="tl-inner"></div></div>`;
+    const head=n.querySelector('.tl-name');
+    const fold=()=>{const open=n.classList.toggle('open');head.setAttribute('aria-expanded',open?'true':'false');};
+    head.onclick=fold;
+    head.onkeydown=(e)=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();e.stopPropagation();fold();}};
     this.tl.appendChild(n);
     this.nodes[agent]={el:n,body:n.querySelector('.tl-inner'),dot:n.querySelector('.tl-dot'),
                        ct:n.querySelector('.ct'),dur:n.querySelector('.dur'),
@@ -483,7 +523,8 @@ export const Stage = {
     RunLine.model.lane(agent,this.now());RunLine.draw();
     return this.nodes[agent];},
   done(a){const n=this.nodes[a];if(n&&!n.tEnd){n.dot.classList.remove('active');
-    n.el.classList.remove('open');n.tEnd=Math.max(n.t0,this.now());
+    n.el.classList.remove('open');n.el.querySelector('.tl-name').setAttribute('aria-expanded','false');
+    n.tEnd=Math.max(n.t0,this.now());
     if(n.dur)n.dur.textContent=fmtDur(n.tEnd-n.t0);this.paint(n);}},
   /* THE LANE'S MARK SAYS HOW IT ENDED. A tick is earned: it used to be every closed lane's, so a
      review that failed the mesh and sent it back for a rebuild closed with a green tick beside its
@@ -509,8 +550,15 @@ export const Stage = {
     n.dot.classList.add(m);n.dot.title=MARKS[m];
     n.dot.setAttribute('role','img');n.dot.setAttribute('aria-label',MARKS[m]);},
   stage(agent){Object.keys(this.nodes).forEach(k=>{if(k!==agent)this.done(k);});this.node(agent);},
-  bump(n){n.count++;n.ct.textContent=n.count+(n.count===1?' step':' steps');},
-  scroll(n){n.body.scrollTop=n.body.scrollHeight;this.scrollBottom();},
+  bump(n){n.count++;this.sum(n);},
+  /* THE ROW'S MUTED WORDS: what the step did, never a bare count of rows. The engine and why, the
+     cells built, the verdict - then its tool calls, or its checks. */
+  sum(n){const bits=[];
+    if(n.lead)bits.push(n.lead);
+    if(n.calls)bits.push(n.calls+(n.calls===1?' tool call':' tool calls'));
+    else if(n.checks)bits.push(n.failed?`${n.failed} of ${n.checks} checks failed`:`${n.checks} check${n.checks===1?'':'s'} passed`);
+    n.ct.textContent=bits.join(' · ');n.ct.title=n.ct.textContent;},
+  scroll(n){n.el.classList.add('has-body');this.scrollBottom();},
   // A REBUILD starts the stages over. Appending attempt 2's checks under attempt 1's
   // produced "Mesh validation · 16 steps" - three attempts smeared into one lane.
   // Each retry re-opens the stages and marks which attempt they belong to.
@@ -547,11 +595,13 @@ export const Stage = {
   // and a rebuild that follows rewords it as the request it was.
   verdict(agent,ok,text){this.info(agent,text,!ok);const n=this.node(agent);
     n.verdict=ok?'PASS':'FAIL';n.verdictRow=n.body.lastElementChild;this.paint(n);
+    n.lead=ok?'passed':'asked for changes';this.sum(n);
     RunLine.model.verdict(ok,this.now());RunLine.draw();},
 
   // a passed/failed CHECK - the evidence the user is owed. The STATEMENT comes from
   // the engine (GateSpec.proves); the UI never translates an internal key.
-  check(agent,text,ok){const n=this.node(agent);this.bump(n);
+  check(agent,text,ok){const n=this.node(agent);
+    n.checks=(n.checks||0)+1;if(!ok)n.failed=(n.failed||0)+1;this.bump(n);
     if(!ok)n.worst=2;     // a failed check is never under a ticked lane
     const r=document.createElement('div');r.className='row';
     r.innerHTML=`<div class="e-check${ok?'':' bad'}"><span class="ic">${ok?'✓':'✕'}</span>`
@@ -559,15 +609,19 @@ export const Stage = {
     n.body.appendChild(r);this.scroll(n);this.paint(n);},
   // `tone` is the note's own (info | warn | error): an error marks its lane failed, a warning
   // marks it warned. A caller that names no tone is read by `warn` alone, as before.
-  info(agent,text,warn,tone){const n=this.node(agent);this.bump(n);const r=document.createElement('div');r.className='row';
-    // the engine lane's own sentence ("Mesh engine: cfMesh - ...") is the line's engine step, as said
-    if(agent==='engine_select'){RunLine.model.engine(text,this.now());RunLine.draw();}
+  info(agent,text,warn,tone){const n=this.node(agent);
     n.worst=Math.max(n.worst||0,tone==='error'?2:warn?1:0);
+    // the engine lane's own sentence ("Mesh engine: cfMesh - ...") is the line's engine step, as said,
+    // and the lane's own row: "Engine selection · cfMesh - it did best in our lab…", nothing folded
+    if(agent==='engine_select'){RunLine.model.engine(text,this.now());RunLine.draw();
+      const m=/^Mesh engine:\s*(.+)$/.exec(String(text||'').trim());
+      if(m&&!warn){n.lead=m[1];this.sum(n);this.paint(n);return;}}
+    this.bump(n);const r=document.createElement('div');r.className='row';
     r.innerHTML=`<div class="e-info${warn?' warn':''}">${esc(text)}</div>`;n.body.appendChild(r);this.scroll(n);this.paint(n);},
   // `action` arrives already in plain words - the tool roster is named on the backend,
   // beside the tools themselves. The UI does not know what a tool is called.
   tool(agent,action,detail){const n=this.node(agent);this.bump(n);const r=document.createElement('div');r.className='row';
-    r.innerHTML=`<div class="e-tool"><span class="tag">step</span><span class="call">${esc(action)}</span></div>`;
+    r.innerHTML=`<div class="e-tool"><span class="call">${esc(action)}</span></div>`;
     n.body.appendChild(r);
     if(detail){const d=document.createElement('div');d.className='e-detail';d.textContent=detail;n.body.appendChild(d);}
     this.scroll(n);},
@@ -600,24 +654,24 @@ export const Stage = {
     if(!card){
       card=document.createElement('div');card.className='row';
       card.innerHTML='<div class="e-think"><div class="lbl"></div><div class="body"></div></div>';
-      n.body.appendChild(card);n.think[id]=card;this.bump(n);
+      n.body.appendChild(card);n.think[id]=card;n.count++;
     }
-    // Three distinct states, and a fourth for a caller that declared none:
-    //   started   -> "Thinking…"        (live, still running, marker pulses)
-    //   completed -> "Thinking · 8.4s"  (measured values only, never invented)
-    //   failed    -> "Thinking interrupted"
-    //   no phase  -> "Thinking"         (prose with no lifecycle; claims nothing)
+    // THINKING READS AS PLAIN WORDS in the step's folded detail: the thought itself, muted. Its
+    // header is a live "Thinking…" while it runs and "Thinking interrupted" if it broke off; a
+    // finished thought needs no header, and no timings or token counts reach the page. A finished
+    // thought with nothing a person can read (a JSON draft, no text) is not drawn at all.
     const head=reasoningHeader(ev);
-    card.querySelector('.lbl').textContent=head.text;
-    // a terminal line is a statement about what happened, not a section label
-    card.querySelector('.lbl').classList.toggle('measured',head.measured);
+    const failed=ev.phase==='failed';
+    const lbl=card.querySelector('.lbl');
+    lbl.textContent=head.running?'Thinking…':failed?'Thinking interrupted':'';
     // only an explicitly RUNNING card pulses; a phaseless one is static
     card.querySelector('.e-think').classList.toggle('active',head.running);
     const body=card.querySelector('.body');
     const said=plainReasoning(ev.content);
     if(said){body.textContent=said;body.style.display='';}
     else{body.textContent='';body.style.display='none';}
-    this.scroll(n);},
+    card.hidden=!said&&!head.running&&!failed;
+    if(!card.hidden)this.scroll(n);},
 
   // TOOLS - the backend supplies the words. In safe mode that is an approved public
   // label and nothing else; in raw mode the real name, arguments and result come
@@ -627,12 +681,14 @@ export const Stage = {
   // arguments, results and JSON drafts). A call shows its name in words; its arguments and its
   // result stay out of the page; a reasoning text that is a JSON draft shows only its header.
   toolCall(agent,ev){
-    const n=this.node(agent);this.bump(n);
+    const n=this.node(agent);
     n.tools=n.tools||{};
     if(ev.id&&n.tools[ev.id])return;                 // replay: one card per call
+    n.calls=(n.calls||0)+1;this.bump(n);
     const r=document.createElement('div');r.className='row';
     const blocked=ev.status==='blocked';
-    r.innerHTML=`<div class="e-tool${blocked?' bad':''}"><span class="tag">${blocked?'blocked':'tool call'}</span>`
+    // a call is its name in words, no chip; only a blocked one says so
+    r.innerHTML=`<div class="e-tool${blocked?' bad':''}">${blocked?'<span class="tag">blocked</span>':''}`
       +`<span class="call">${esc(toolWords(ev))}</span></div>`;
     n.body.appendChild(r);
     if(ev.id)n.tools[ev.id]={el:r};
@@ -650,7 +706,7 @@ export const Stage = {
         m.textContent=' · '+bits.join(' · ');t.el.querySelector('.e-tool').appendChild(m);}
     }else if(!t){
       this.bump(n);const r=document.createElement('div');r.className='row';
-      r.innerHTML=`<div class="e-tool${ev.status==='success'?'':' bad'}"><span class="tag">result</span>`
+      r.innerHTML=`<div class="e-tool${ev.status==='success'?'':' bad'}">`
         +`<span class="call">${esc(toolWords(ev))}</span>`
         +(bits.length?`<span class="tres"> · ${esc(bits.join(' · '))}</span>`:'')+`</div>`;
       n.body.appendChild(r);
@@ -671,9 +727,9 @@ export const Stage = {
     r.innerHTML=`<div class="e-rat"><div class="rat-c">${esc(ev.conclusion||'')}</div>`
       +(ev.because?`<div class="rat-w">${esc(ev.because)}</div>`:'')+`</div>`;
     n.body.appendChild(r);this.scroll(n);},
-  // THE REVIEWER'S PICTURES: one small grid under the reviewer's steps, three to a row, filled as
-  // the pictures arrive. It sits outside the scrolling step list, so a picture is never pushed out
-  // of sight by the steps that follow it; past a few rows the grid scrolls on its own.
+  // THE REVIEWER'S PICTURES: small thumbnails in a row under the review's own row, in sight whether
+  // the review is folded or not; a click opens one large. They wrap with the column - nothing here
+  // scrolls on its own.
   screenshot(b64){const n=this.node('reviewer');
     // a live event can arrive twice; the same render must not stack up. A PNG's last bytes hold
     // its final data checksum, so two different renders of the same size are still told apart.
@@ -682,19 +738,15 @@ export const Stage = {
     if(n.shots.has(k))return;
     n.shots.add(k);
     if(!n.gallery){const g=document.createElement('div');g.className='e-shots';
-      g.innerHTML='<div class="e-shots-h">Pictures<span class="e-shots-n"></span></div><div class="e-shots-grid"></div>';
-      n.el.querySelector('.tl-body').appendChild(g);
-      n.gallery={count:g.querySelector('.e-shots-n'),grid:g.querySelector('.e-shots-grid')};}
-    const {grid,count}=n.gallery;
-    // follow the newest picture only when the reader is not looking further up the grid
-    const follow=grid.scrollHeight-grid.scrollTop-grid.clientHeight<8;
+      g.innerHTML='<div class="e-shots-grid"></div>';
+      n.el.appendChild(g);
+      n.gallery={grid:g.querySelector('.e-shots-grid')};}
+    const {grid}=n.gallery;
     const b=document.createElement('button');b.type='button';b.className='e-shot';
     b.setAttribute('aria-label',`Enlarge picture ${n.shots.size}`);
     const im=document.createElement('img');im.alt='';im.src='data:image/png;base64,'+s;
     b.onclick=()=>openLightbox(im.src);
     b.appendChild(im);grid.appendChild(b);
-    count.textContent=String(n.shots.size);
-    if(follow)grid.scrollTop=grid.scrollHeight;
     this.scrollBottom();},
   final(data){
     // ONE ENDING PER RUN: two status polls in flight can both see the job end, and a second
@@ -729,23 +781,30 @@ export const Stage = {
     lanes.forEach(n=>this.paint(n));
     this.clock(data.createdAt,data.endedAt);
     if(!this.finished){this.finished=true;
-      const c=this.proc&&this.proc.querySelector('.proc-clock');if(c&&this.t0)c.textContent=fmtDur(Date.now()-this.t0);}
+      const c=this.bar&&this.bar.querySelector('.proc-clock');if(c&&this.t0)c.textContent=fmtDur(Date.now()-this.t0);}
     // HOW MANY ATTEMPTS, as the timeline counted them: only one that ran a mesher counts
     const opened=this._att!=null||this._built.size>0;
     const att=attemptsLabel(opened,this._built.size,data.attempts);
-    if(this.proc){this.proc.classList.add('done','r-'+outcome);   // the header's mark takes the verdict's colour
-      // ONE STATEMENT OF THE ENDING: the title says it; the live line under it gives the time
-      this.proc.querySelector('.proc-title').textContent=concerns?'Mesh ready, with concerns':notes?'Mesh ready, with notes':data.pass?'Mesh ready':cancelled?'Run cancelled':'Run failed';
-      this.proc.querySelector('#proc-sub').textContent='';
-      const cb=this.proc.querySelector('#proc-cancel');if(cb)cb.hidden=true;}
-    // verdict row in the timeline. A cancelled run has no verdict: nobody judged a mesh.
-    if(this.proc){const n=this.node('result');const v=document.createElement('div');v.className='tl-verd';
+    const title=concerns?'Mesh ready, with concerns':notes?'Mesh ready, with notes':data.pass?'Mesh ready':cancelled?'Run cancelled':'Run failed';
+    if(this.proc)this.proc.classList.add('done','r-'+outcome);   // the marks take the verdict's colour
+    // THE STATUS LINE ENDS WITH THE RUN: the result row below says how it went and how long it took
+    if(this.bar){this.bar.classList.add('done','r-'+outcome);
+      this.bar.querySelector('.proc-title').textContent=title;
+      this.bar.querySelector('#proc-sub').textContent='';
+      const cb=this.bar.querySelector('#proc-cancel');if(cb)cb.hidden=true;}
+    // ...and so does the live line: the run is no longer doing anything
+    const liveLine=this.proc&&this.proc.querySelector('#proc-live');if(liveLine)liveLine.hidden=true;
+    // THE RESULT ROW: the verdict stamp on the row itself, how many attempts, the whole run's time.
+    // A cancelled run has no verdict: nobody judged a mesh.
+    if(this.proc){const n=this.node('result');const v=document.createElement('span');v.className='tl-verd';
       const pill=concerns?'DELIVERED WITH CONCERNS':notes?'PASSED, WITH NOTES':data.pass?'PASS':cancelled?'CANCELLED':'FAIL';
       v.innerHTML=`<span class="pill${concerns||notes?' concerns':data.pass?'':cancelled?' cancelled':' fail'}">${pill}</span><span class="mt">${esc(att)}</span>`;
       if(cancelled&&data.cancelReason){const r=document.createElement('span');r.className='mt';r.textContent=`reason: ${data.cancelReason}`;v.appendChild(r);}
       // the result lane's mark is the verdict's: never a tick beside a FAIL
       n.mark={pass:'done',notes:'warn',concerns:'warn',cancelled:'ended',fail:'bad'}[outcome];
-      n.body.appendChild(v);this.done('result');}
+      n.el.querySelector('.nm').after(v);n.el.classList.add('tl-result');this.done('result');
+      const t0=Date.parse(data.createdAt||''),t1=Date.parse(data.endedAt||'');
+      n.dur.textContent=t0>0&&t1>=t0?fmtDur(t1-t0):this.t0?fmtDur(this.now()-this.t0):'';}
     if(opened)data={...data,attempts:this._built.size};    // the viewer says the same number
 
     // FINAL RESULT - one turn in the SAME conversation that took the request, so the

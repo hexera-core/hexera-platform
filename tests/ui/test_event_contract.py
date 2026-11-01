@@ -130,17 +130,17 @@ def test_the_browser_can_render_everything_the_backend_publishes(live, event_voc
         "a stage the UI has no word for must degrade to English, not require a UI release"
 
 
-def test_a_tool_call_is_labelled_tool_call_and_reasoning_fills_one_card(live):
-    # What the label SAYS, read off the rendered page rather than the source. A stylesheet can
-    # uppercase the tag, so the text a user sees is not always the text the template holds; the
-    # console sets its labels in sentence case, so it reads "tool call".
+def test_a_tool_call_is_its_name_in_words_and_reasoning_fills_one_card(live):
+    # Areen 2026-11-01: no "tool call" chips, no token counts, no timings on a thought. A call is
+    # its name in words; the step's row counts the calls ("2 tool calls"); a thought is its words.
     out = live.evaluate("""(async () => {
       const { Stage } = await import('/static/js/render/stage.js');
       Stage.mount();                       // a clean stage, in the page's own #stage element
       Stage.toolCall('builder', {id:'c1', tool_name:'write_case_file', status:'started'});
-      const tag = document.querySelector('.e-tool .tag');
-      const shown = getComputedStyle(tag).textTransform === 'uppercase'
-                    ? tag.textContent.toUpperCase() : tag.textContent;
+      Stage.toolCall('builder', {id:'c2', tool_name:'blocked_tool', status:'blocked'});
+      const chips = [...document.querySelectorAll('.e-tool .tag')].map(t => t.textContent);
+      const shown = document.querySelector('.e-tool .call').textContent;
+      const count = document.querySelector('#tl .tl-node .ct').textContent;
 
       // reasoning: three deltas against ONE id must leave ONE card holding the latest text
       Stage.reasoning('builder', {id:'r1', phase:'started', content:'Checking '});
@@ -148,10 +148,13 @@ def test_a_tool_call_is_labelled_tool_call_and_reasoning_fills_one_card(live):
       Stage.reasoning('builder', {id:'r1', phase:'completed', content:'Checking the budget.',
                                   duration_ms:8400});
       const cards = document.querySelectorAll('.e-think');
-      return {shown, cards: cards.length,
+      return {shown, chips, count, cards: cards.length, lane: document.getElementById('tl').innerText,
               body: cards.length ? cards[cards.length-1].querySelector('.body').textContent : ''};
     })()""")
-    assert out["shown"] == "tool call", f"a tool call is labelled {out['shown']!r}"
+    assert out["shown"] == "Write case file", out
+    assert out["chips"] == ["blocked"], "only a blocked call carries a mark"
+    assert out["count"] == "2 tool calls", out
+    assert "tokens" not in out["lane"] and "8.4s" not in out["lane"] and "Thinking" not in out["lane"], out
     assert out["cards"] == 1, f"streamed reasoning drew {out['cards']} cards instead of filling one"
     assert out["body"] == "Checking the budget."
 
