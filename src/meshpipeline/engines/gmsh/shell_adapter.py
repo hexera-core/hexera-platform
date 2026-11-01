@@ -64,6 +64,8 @@ MESH_DEADLINE_S = 900.0
 PAIR_TRIAS = True
 #: SHMESH-18: a triangle walked through at most WALK_DEPTH quads of its face to meet another (0: off)
 WALK_DEPTH = 6
+#: SHMESH-22: a cap triangle past a limit taken into the element across its longest edge, or dropped from a free edge
+ABSORB_CAPS = True
 #: SHMESH-19: every face's boundary given an even number of segments before the 2D mesh (Blossom's condition)
 EVEN_FACES = True
 #: at most GROW_GROUPS grading sizes; past that, sizes taken down to steps of GROW_STEP (a quarter octave)
@@ -816,6 +818,12 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     if WALK_DEPTH and len(T) > 1:
         # SHMESH-18: a triangle walked through its face's quads to the nearest other triangle, the two made one quad
         Q, T, q_face, t_face, walked = shell_quality.walk_trias(xyz, Q, T, q_face, t_face, depth=WALK_DEPTH)
+    capped = 0
+    if ABSORB_CAPS and len(T):
+        # SHMESH-22: a cap left past a limit (all its corners on CAD edges) taken into the element across its longest
+        # edge and cut again inside the limits, or dropped from a free edge
+        face_wall = np.array([float(r["wall_mm"]) for r in rows])
+        Q, T, q_face, t_face, capped = shell_quality.absorb_caps(xyz, Q, T, q_face, t_face, face_wall)
     # keep only the nodes the elements use, renumbered in order
     used = np.unique(np.concatenate([Q.ravel(), T.ravel()]))
     remap = np.full(len(xyz), -1, dtype=np.int64)
@@ -855,6 +863,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     quality["flipped"] = flipped
     quality["paired"] = paired
     quality["walked"] = walked
+    quality["caps_absorbed"] = capped
     quality["evened_curves"] = evened
     quality["sliver_faces"] = slivers
     if slivers:
@@ -863,6 +872,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     if merged:
         mesh.notes.append(f"{merged} node(s) at the ends of sliver edges (under the floor, a fifth of their elements' longest) "
                           "were merged (SHMESH-12).")
+    if capped:
+        mesh.notes.append(f"{capped} flat triangle(s) with every corner on a CAD edge were taken into the element "
+                          "beside them, or dropped from a free edge (SHMESH-22).")
     if split:
         mesh.notes.append(f"{split} quad(s) past Nastran's own limits were cut into two triangles each (SHMESH-10).")
     floored = [r["face"] for r in rows if r["floored"]]
