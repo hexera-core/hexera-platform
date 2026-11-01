@@ -179,6 +179,37 @@ An IGES file is trimmed surfaces with no topology, read as loose faces in no sol
 
 Results (OpenCASCADE IGES copies of the fresh set's 20 STEPs): the judge passed 0 of 20 before, 15 of 20 now (the STEPs: 19); 14 of 20 give the same verdicts, walls and open edges as their STEP. Still apart: bodies that touch (fr011's four tubes, one volume lost; fr014; fr015's duct and insulation read as four solid bodies) and the printed cones fr018 and fr019 (no body closes). On the training set's IGES copies, single bodies mostly match their STEP and touching multi-body assemblies mostly do not (state line).
 
+More IGES rules (30 Oct, 13th helper):
+
+4. **Each body owns its faces (SHELL-15d).** The volume maker hands two touching bodies ONE face where they meet. A face is read as one body's only, so the other lost a side of its walls: a bent duct's 52 faces read as 35, both bodies "solid" with 250 mm walls. Each volume is now copied, so each owns its faces, as in the STEP.
+5. **A shared face does not vote (SHELL-15e).** A face made from two of the file's faces (a duct's outside and its insulation's inside) is turned one way in one body and the other way in the other. It no longer votes on "material or cavity"; the next largest faces do.
+6. **A seam written twice (SHELL-15f).** A closed face (a bend's cylinder) whose seam the file wrote as two edges of its one wire: sewing never joins a face to itself, both stayed free and the body never closed (a sheet-metal part with 129 faces: 2 free edges, gap 0). Only such a face is split in two across its closed direction; the seam is then sewn.
+7. **Re-made the right way round (SHELL-15g).** The analytic surface can run the other way from the surface of revolution it replaces; the file's wire then turns against it and the face reads invalid, so it was kept as written (13 of a part's 26 bends, its spheres and tori). It is made again with its wires reversed (a general mend made the complement: a 62 mm2 torus face came back as 1,747). The material side is read from the two surfaces' normals. A re-made face that will not tessellate (a sphere whose wire now crosses its seam) is kept as written: with no triangles, no ray found it and its wall went unpaired.
+8. **Voids (SHELL-15h).** A closed shell sewn inside another is that one's inner void (a closed box with a sealed cavity: one body, two shells, as in the STEP), not a second body the size of the cavity. Checked: the volume must come out as the outer less the voids.
+
+9. **Bodies lying on each other along edges (SHELL-15i, 1 Nov, 14th helper).** A frame whose short tube lies on a longer one over its length (sh0102): sewing pairs the edges where four faces meet as the faces come, so it made one closed shell that is no valid solid - and, in another face order, one valid solid made of both tubes' faces. The faces are now sewn letting an edge hold more than two, and taken round each such edge in the order of the angle at which they leave it:
+   - each face at its own angle (bodies touching along the edge): the two faces either side of each wedge of material are one body's. A wedge is material when a ray from a point in it crosses an odd number of the file's faces (the most of three rays);
+   - two pairs of faces lying on each other (one body on another): each body holds one face of each pair. The two faces of a pair are in different bodies; the bodies are two-coloured by that.
+
+   Each group of faces is then sewn alone and must close into one valid solid, or nothing changes. sh0102's IGES copy now reads as its STEP: two tubes, 394058 and 1105222 mm3 (STEP 394058 and 1105220).
+
+Still open: bodies that touch over PART of a face (sh0013's duct and its insulation). There an edge of one body lies inside a face of the other, so the faces round it are neither each at their own angle nor in two pairs (one edge of sh0013 has six faces in four clusters: 2, 1, 1, 2). Reading them needs the larger face split along the other body's edge first.
+
+### 2.4.2 The work budget (SHELL-18, 30 Oct, 13th helper)
+
+An open-hardware part ran its extraction past 30 minutes. The extraction now plans its work against a work budget (1500 s; first 540 s, see SHELL-18c below):
+- the stages before the joins check the clock as they go and stop, in words, when it is spent ("the mid-surface extraction used its 540 s work budget while making the mid-faces ...");
+- each general join gets at most what is left (less 60 s kept for the checks after it), and none starts with under 30 s left: the straight join then stands and the notes say so;
+- the whole extraction runs in a child process stopped at 1800 s (first 780 s; see SHELL-18c below), because one OpenCASCADE call cannot be stopped from inside.
+
+A part out of time is meshed solid, told why: never a wait with no end. The child must not be a daemon: a daemon may not fork, and the general joins (SHELL-11) fork. The first try made it one, every general join failed quietly, and the training set fell from 61 to 48 passes; a test now holds a general join inside the bounded extraction.
+
+When the deadline stops the extraction, the general join it forked is stopped with it (SHELL-18b): killed alone, the join would run on, orphaned, holding a core and its memory until its OpenCASCADE call ends. Its processes are read from /proc and killed first.
+
+Two corrections from the 14th helper's lab-VM sweep (1 Nov):
+- **SHELL-18c, the budget sits far above any part that finishes.** The clock is the machine's. At 540 / 780 s, on a lab VM running eight at once (about as slow per part as a worker), five training parts that shell in 290-410 s on a laptop (sh0020, sh0021, sh0049, sh0083, sh0105) ran out and were thrown back solid whole. On that VM the code before these rules takes up to 1244 s (sh0105). The budget is now 1500 s and the hard stop 1800 s; and running out while joining no longer throws the part back: a body keeps its straight join, as when a general join is skipped.
+- **SHELL-18d, a new process, not a fork.** A fork copies the caller's locks but not its threads. Once a parallel OpenCASCADE call has started its thread pool (the intake and stage meshes run parallel), a forked child waits for pool workers that are not there: in a long test run a 2 s extraction hung to the deadline, twice. The bounded extraction now starts a new Python process that reads the file itself, with the caller's import path; a test holds it after a parallel mesh.
+
 ### 2.5 Assemblies and mixed parts (PR 3)
 
 **Bonded plates in different bodies:**
