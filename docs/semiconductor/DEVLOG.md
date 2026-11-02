@@ -3767,3 +3767,47 @@ Out of memory: Killed process 543991 (checkMesh) total-vm:321105692kB, anon-rss:
 ```
 
 254 GB on 241,984,911 cells, 1,050 B/cell, against 141,651 MB for 201,781,747 cells without the flag.
+
+### The coolant is one circuit, and it is the refinement band that did it
+
+Every run's coolant, each from its own checkMesh log:
+
+| run | maxCellSize | refinement | coolant cells | pieces | second piece |
+|---|---|---|---|---|---|
+| the 1.85M run | | | 364,105 | 226 | 98,044 |
+| measure | | | 22,062,782 | 19 | 133,257 |
+| ws_par300 | 352 um | 1 level on fluid.stl | 66,764,096 | 5 | |
+| ws_par247 | 558 um | 3 levels on fluid.stl | 75,162,351 | 13 | 2,196,556 |
+| ws_plate | 264 um | 1 level, plus fluid_fine 4 and scaleY 6 | 86,729,340 | 93 | 2 |
+| ws_shell | 352 um | 1 level, plus fluid_fine 4 and scaleY 6 | 68,750,147 | 2 | 1 |
+
+The two runs without the fluid_fine band are the two with a severed branch. ws_par247 lost 2,196,556
+cells, 2.9% of its coolant, into a second piece. Both runs with the band are one circuit: ws_plate
+86,728,268 of 86,729,340 with 92 specks totalling about a thousand cells behind it, ws_shell
+68,750,146 of 68,750,147 with one orphan cell, id 60421988.
+
+More cells did not fix it. ws_par247 has 75.2M coolant cells against ws_shell's 68.75M and is thirteen
+pieces against two. The band fixed it.
+
+ws_shell is the cleanest coolant of the six by an order of magnitude.
+
+### There was never a memory argument for 22 um
+
+I dropped 16.5 um to 22 um on a checkMesh memory ceiling. I have now measured checkMesh at 702 B/cell
+on the metal, and I have also noticed that the two dicts differ only in maxCellSize while both put four
+extra levels on fluid_fine, so the fine cell is maxCellSize/16 either way and the cell count does not
+go as h^-3:
+
+| run | maxCellSize | fine cell | total cells | metal region |
+|---|---|---|---|---|
+| ws_plate | 264.042 um | 16.5 um | 328,714,251 | 241,984,911 |
+| ws_shell | 352.056 um | 22 um | 270,531,894 | 201,781,747 |
+
+16.5 um is 1.22x the cells, not the 2.37x I assumed. Its metal region wants about 170 GB of checkMesh
+against 251 GiB, and ws_plate/checkMesh2_solid.log is the proof it fits: 241,984,911 cells,
+`-allGeometry -writeFields`, ended `End`. A 16.5 um mesh of this part has already been built and
+checked on this box.
+
+So 16.5 um costs time, not a bigger box. ws_shell took 38.7 h at 270M, so about 50 h at 328M. The
+m4-megamem-56 and the quota request are still the answer for resolving below the fluid_fine band, and
+they are not needed to get 16.5 um on this part.
