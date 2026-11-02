@@ -41,13 +41,13 @@ def _family(name: str):
                            "probes": {"pad top": top, "leg middle": _bb(35, 45, 25, 35, -1, t + 1)},
                            "stress": ([40.0, 30.0, t], [0, 0, 1], t)}
     if name == "box_corners":
-        X, Y, Z, c = 100.0, 80.0, 60.0, 12.0
+        X, Y, Z, c = 70.0, 60.0, 40.0, 10.0
         shape = fuse(_cut(_box(0, 0, 0, X, Y, Z), _box(t, t, t, X - 2 * t, Y - 2 * t, Z)),
                      *[_box(x, y, 0, c, c, Z) for x in (0, X - c) for y in (0, Y - c)])
         top = _bb(X - c - .01, X + .01, Y - c - .01, Y + .01, Z - .01, Z + .01)
         return shape, {"fix": _bb(-1, X + 1, -1, Y + 1, -.01, .01), "load": top, "force": (-800.0, 0.0, 0.0),
-                           "probes": {"column top": top, "wall middle": _bb(45, 55, -1, t + 1, 25, 35)},
-                           "stress": ([50.0, 0.0, 45.0], [0, -1, 0], t)}
+                           "probes": {"column top": top, "wall middle": _bb(30, 40, -1, t + 1, 15, 25)},
+                           "stress": ([35.0, 0.0, 30.0], [0, -1, 0], t)}
     if name == "stiff_panel_mount":
         shape = fuse(_box(0, 0, 0, 160, 100, t), _box(0, 25 - t / 2, t, 160, t, 25), _box(0, 75 - t / 2, t, 160, t, 25),
                      _box(60, 40, t, 40, 20, 20))
@@ -56,21 +56,20 @@ def _family(name: str):
                            "probes": {"mount top": top, "plate": _bb(25, 35, 45, 55, -1, t + 1)},
                            "stress": ([40.0, 50.0, 0.0], [0, 0, -1], t)}
     if name == "tube_flange":
-        ro, fl, rf, length = 30.0, 12.0, 60.0, 150.0
+        ro, fl, rf, length = 25.0, 9.0, 40.0, 120.0
         shape = _fuse(_cut(_cyl(0, 0, 0, rf, fl), _cyl(0, 0, -.5, ro - t, fl + 1)),
                       _cut(_cyl(0, 0, fl, ro, length), _cyl(0, 0, fl - 1, ro - t, length + 2)))
         end = _bb(-ro - 1, ro + 1, -ro - 1, ro + 1, fl + length - .01, fl + length + .01)
         return shape, {"fix": _bb(-rf - 1, rf + 1, -rf - 1, rf + 1, -.01, .01), "load": end, "force": (600.0, 0.0, 0.0),
-                           "probes": {"tube end": end, "tube middle": _bb(-ro - 1, -ro + t + 1, -5, 5, fl + 70, fl + 80)},
-                           "stress": ([-ro, 0.0, fl + 60.0], [-1, 0, 0], t)}
+                           "probes": {"tube end": end, "tube middle": _bb(-ro - 1, -ro + t + 1, -5, 5, fl + 55, fl + 65)},
+                           "stress": ([-ro, 0.0, fl + 50.0], [-1, 0, 0], t)}
     if name == "casting_ribs_block":
-        t = 4.0
-        shape = fuse(_box(0, 0, 0, 150, 100, t), *[_box(0, y - t / 2, t, 110, t, 25) for y in (20, 50, 80)],
-                     _box(110, 0, t, 40, 100, 30))
-        top = _bb(109.9, 150.1, -1, 101, t + 29.99, t + 30.01)
-        return shape, {"fix": _bb(-.01, .01, -1, 101, -1, 40), "load": top, "force": (0.0, 300.0, -2000.0),
-                           "probes": {"block top": top, "plate": _bb(50, 60, 30, 40, -1, t + 1)},
-                           "stress": ([45.0, 35.0, 0.0], [0, 0, -1], t)}
+        shape = fuse(_box(0, 0, 0, 120, 80, t), *[_box(0, y - t / 2, t, 90, t, 20) for y in (16, 40, 64)],
+                     _box(90, 0, t, 30, 80, 20))
+        top = _bb(89.9, 120.1, -1, 81, t + 19.99, t + 20.01)
+        return shape, {"fix": _bb(-.01, .01, -1, 81, -1, 40), "load": top, "force": (0.0, 300.0, -1500.0),
+                           "probes": {"block top": top, "plate": _bb(40, 50, 23, 33, -1, t + 1)},
+                           "stress": ([35.0, 28.0, 0.0], [0, 0, -1], t)}
     raise KeyError(name)
 
 
