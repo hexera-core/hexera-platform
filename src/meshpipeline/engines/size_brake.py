@@ -81,6 +81,33 @@ def background_cells(workspace) -> int:
     return sum(int(a) * int(b) * int(c) for a, b, c in _HEX_BLOCK.findall(text))
 
 
+#: The plan record's flag for a case the brake no longer stops (release_brake).
+BRAKE_RELEASED = "brake_released"
+#: The rule behind both: the brake measures what the case was priced at, and never stops a run its
+#: re-plan cannot make smaller.
+BRAKE_RULE = "RUN-8"
+
+
+def release_brake(workspace, why: str) -> bool:
+    """THE BRAKE ONLY STOPS WHAT IT CAN MAKE SMALLER (RUN-8). After a pass the brake stopped, the
+    re-plan is meant to author a smaller case; when it authors the SAME case byte for byte (nothing
+    left to cut: the gap boxes, the background mesh or the budget's own floor price it back in),
+    stopping it again could only end the run with no mesh. That case runs once more with the brake
+    released - its size is said in the run, never refused for it. Returns whether the case's plan
+    record now says so."""
+    import json
+    p = Path(workspace) / PLAN_CELLS_FILE
+    try:
+        rec = json.loads(p.read_text()) if p.exists() else {}
+        rec = rec if isinstance(rec, dict) else {}
+        rec[BRAKE_RELEASED] = str(why or "the re-plan authored the same case")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(rec))
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def case_budget(workspace) -> int | None:
     """The cell budget the brake measures a case against: its plan's (PLAN_CELLS_FILE), else
     maxGlobalCells in its snappyHexMeshDict; None when neither can be read. Never the castellation
@@ -95,11 +122,18 @@ def case_budget(workspace) -> int | None:
     refinement, was stopped and could only be stopped again on every re-plan. And whether it was
     stopped at all depended on timing - the watch looks every 10 s, so a fast run on 4 ranks finished
     first and passed while the same case on 8 oversubscribed ranks was stopped - a size brake must
-    give the same answer on every machine."""
+    give the same answer on every machine.
+
+    THE CELLS THE CASE WAS PRICED AT (RUN-8): the plan's record carries the cells the gap boxes
+    between an external body's parts raised snappy's ceiling by (snappy_runner.render_snappy_case),
+    and a case whose brake was RELEASED (release_brake) has no budget at all - None, no brake."""
     import json
     budget: int | None = None
     try:
-        v = int((json.loads((Path(workspace) / PLAN_CELLS_FILE).read_text()) or {}).get("plan_cells") or 0)
+        rec = json.loads((Path(workspace) / PLAN_CELLS_FILE).read_text()) or {}
+        if isinstance(rec, dict) and rec.get(BRAKE_RELEASED):
+            return None
+        v = int(rec.get("plan_cells") or 0)
         if v > 0:
             budget = v
     except (OSError, ValueError, TypeError, AttributeError):
@@ -174,6 +208,6 @@ def scaled_budget_factor(tripped: dict) -> float:
     return max(SIZE_BRAKE_STEP, min(0.9, SIZE_BRAKE_TARGET * budget / cells))
 
 
-__all__ = ["SIZE_BRAKE_STEP", "PLAN_CELLS_FILE", "CFMESH_COUNTS", "SIZE_BRAKE_MARGIN",
-           "SIZE_BRAKE_LAYER_MARGIN", "SIZE_BRAKE_TARGET", "SNAPPY_COUNTS", "SizeBrake",
-           "background_cells", "case_budget", "scaled_budget_factor"]
+__all__ = ["BRAKE_RELEASED", "BRAKE_RULE", "SIZE_BRAKE_STEP", "PLAN_CELLS_FILE", "CFMESH_COUNTS",
+           "SIZE_BRAKE_MARGIN", "SIZE_BRAKE_LAYER_MARGIN", "SIZE_BRAKE_TARGET", "SNAPPY_COUNTS",
+           "SizeBrake", "background_cells", "case_budget", "release_brake", "scaled_budget_factor"]

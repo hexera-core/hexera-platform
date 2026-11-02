@@ -210,7 +210,8 @@ _BOUNDARY_INTERNAL = """FoamFile{ version 2.0; format ascii; class polyBoundaryM
 # on a production worker thread; it replaces the external mesher and nothing else. It publishes
 # nothing, touches no fence, no Redis and no claim state, and returns the driver's own result
 # shape so parsing, judging, attempt selection and `last_valid` all stay real.
-def _install_native_double(monkeypatch, native: list, *, internal: bool = False) -> None:
+def _install_native_double(monkeypatch, native: list, *, internal: bool = False,
+                           braked_first: bool = False) -> None:
     import threading
 
     from meshpipeline.engines.snappy import snappy_runner as R
@@ -219,6 +220,14 @@ def _install_native_double(monkeypatch, native: list, *, internal: bool = False)
         ws = Path(workspace)
         system = ws / "system"
         authored = sorted(p.name for p in system.glob("*")) if system.is_dir() else []
+        if braked_first and not native:
+            # the SIZE BRAKE's stop, as engines/snappy/native returns it: snappyHexMesh's own
+            # castellated count read far past the case's budget, the run stopped, no mesh kept
+            native.append({"workspace": str(ws), "timeout": timeout, "authored": authored,
+                           "braked": True, "own": fence.current_ownership()})
+            return {"rc": -1, "timed_out": False,
+                    "oversize": {"stage": "castellated", "cells": 9_900_000, "budget": 6_438_491,
+                                 "margin": 1.5, "ratio": 1.54}}
         native.append({
             "workspace": str(ws),
             "timeout": timeout,
@@ -427,9 +436,27 @@ def _install_narrow_passage_double(monkeypatch) -> None:
     monkeypatch.setattr(D, "_narrow_passage_boxes", narrow_passage_boxes)
 
 
+# The gap reading between an external body's parts, answering "yes, the gaps need boxes that cost
+# this many cells" (RUN-8). The real reading measures the staged surface (cad/shape_traits
+# .body_gap_field) and prices the boxes (snappy_runner._plan_body_gaps); the double's half model is
+# one body, so only a stand-in raises the ceiling - to the same 6.44M whatever the plan's budget,
+# as the JAXA JSM narrow-gap wing's did, so no re-plan can make the case smaller.
+def _install_gap_ceiling_double(monkeypatch) -> None:
+    import types
+
+    from meshpipeline.engines.snappy import drivers as D
+    from meshpipeline.engines.snappy import snappy_runner as R
+
+    monkeypatch.setattr(D, "_body_gap_field", lambda _surface: ("gap field",))
+    monkeypatch.setattr(R, "_plan_body_gaps",
+                        lambda _field, *, budget, **_k: (types.SimpleNamespace(regions=[], spots=[]),
+                                                         max(int(budget), 6_438_491)))
+
+
 async def _run(monkeypatch, tmp_path, *, body=_full_span_cube, native_double=None,
                internal=False, tessellate_fail=False, unbindable_patches=False,
-               thin_feature=False, domain_refused=False, narrow_passage=False):
+               thin_feature=False, domain_refused=False, narrow_passage=False,
+               brake_released=False):
     from meshpipeline.runtime.composition import install_adapters
     install_adapters()
 
@@ -449,9 +476,12 @@ async def _run(monkeypatch, tmp_path, *, body=_full_span_cube, native_double=Non
     if native_double is None:
         _count_native(monkeypatch, native)
     else:
-        _install_native_double(monkeypatch, native, internal=internal)
+        _install_native_double(monkeypatch, native, internal=internal,
+                               braked_first=brake_released)
         _install_quality_double(monkeypatch, skewed=native_double)
         _install_provider_double(monkeypatch, rounds)
+    if brake_released:
+        _install_gap_ceiling_double(monkeypatch)
     if internal:
         _install_tessellate_double(monkeypatch, tessellate, fail=tessellate_fail)
     if internal and thin_feature:
@@ -519,7 +549,8 @@ def _canonical(rec: dict, *, accepted: bool) -> str:
                          ("internal:passes-exhausted", "note#3"),
                          ("internal:thin-feature:", "note#7"),
                          ("internal:narrow-passage:", "note#8"),
-                         ("snappy:preflight-replan:", "note#7")):
+                         ("snappy:preflight-replan:", "note#7"),
+                         ("snappy:brake-released:", "note#8")):
         if op.startswith(prefix):
             return f"{fn}::{name}"
     if op.startswith(("snappy:pass-outcome:", "internal:pass-outcome:")):
@@ -1141,6 +1172,12 @@ async def internal_narrow_passage(monkeypatch, tmp_path):
 
 
 @pytest.fixture()
+async def brake_released(monkeypatch, tmp_path):
+    return await _run(monkeypatch, tmp_path, body=_half_model, native_double=False,
+                      brake_released=True)
+
+
+@pytest.fixture()
 async def internal_exhausted(monkeypatch, tmp_path):
     return await _run(monkeypatch, tmp_path, native_double=True, internal=True)
 
@@ -1200,6 +1237,23 @@ async def test_a_narrow_passage_is_disclosed_once_at_its_own_site(internal_narro
     recs = [r for r in _driver_records(seen)
             if r["method"] == "note" and r["op_id"].startswith("internal:narrow-passage:")]
     assert [r["op_id"] for r in recs] == ["internal:narrow-passage:1"], recs
+
+
+async def test_a_brake_stop_no_re_plan_can_shrink_is_released_and_said_once(brake_released):
+    """RUN-8: pass 1 is stopped by the size brake; the gap boxes price pass 2 back to the very same
+    case, so the driver releases the brake and meshes it (it used to stop there with no mesh)."""
+    _job_id, seen, _built, native, _marks, _rounds, _tess = brake_released
+    assert [bool(n.get("braked")) for n in native] == [True, False], \
+        "the released case was not meshed exactly once after the brake's stop"
+    recs = [r for r in _driver_records(seen)
+            if r["method"] == "note" and r["op_id"].startswith("snappy:brake-released:")]
+    assert [r["op_id"] for r in recs] == ["snappy:brake-released:2"], recs
+    assert _owned_counts(seen, accepted=True).get("_build_snappy_deterministic::note#8") == 1
+    import json as _json
+
+    from meshpipeline.engines import size_brake as SB
+    rec = _json.loads((Path(native[1]["workspace"]) / SB.PLAN_CELLS_FILE).read_text())
+    assert rec.get(SB.BRAKE_RELEASED), rec
 
 
 async def test_the_internal_union_reaches_all_ten_sites_and_no_external_one(
