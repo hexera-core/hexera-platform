@@ -46,6 +46,11 @@ WRAP_GRID_CUBES = 32_000_000
 #: The wrap distance spans at least this many cubes: the skin is drawn from the exact distance, and
 #: below 2.5 cubes the grid cannot tell a gap of 2r from a wall.
 WRAP_CUBES_PER_R = 2.5
+#: ...but where a passage asks for a smaller r than that grid allows (the narrowest way to the
+#: openings, or a flood that no longer reaches one), r may come down to one cube: the skin still comes
+#: from the exact distance, and the flood still finds a way through a passage wider than r and a cube
+#: (the small vessels of a coronary tree, 150 mm across, on a grid of 0.3 mm cubes).
+MIN_CUBES_PER_R = 1.0
 #: The wrap distance from the part's own size: the diagonal of the surface over this - about half
 #: the wall cell a standard plan puts on a part (a gap narrower than a wall cell or so is closed).
 WRAP_DIAG_SHARE = 500.0
@@ -221,10 +226,11 @@ class WrapGrid:
         return np.ravel_multi_index(q.T, self.shape)
 
 
-def grid_for(lo, hi, r: float, *, cubes: int = WRAP_GRID_CUBES) -> tuple[WrapGrid, float]:
+def grid_for(lo, hi, r: float, *, cubes: int = WRAP_GRID_CUBES,
+             per_r: float = WRAP_CUBES_PER_R) -> tuple[WrapGrid, float]:
     """The wrap's grid round the box lo..hi for a wrap distance r: cubes of r / 2.5, a border of
-    r + 4 cubes all round, never more than `cubes` cubes. Returns (grid, r) - r grown with the
-    cube when the cap holds the grid coarser than r asks for."""
+    r + 4 cubes all round, never more than `cubes` cubes. Returns (grid, r) - r grown to `per_r`
+    cubes when the cap holds the grid coarser than r asks for."""
     lo, hi = np.asarray(lo, dtype=np.float64), np.asarray(hi, dtype=np.float64)
     size = np.maximum(hi - lo, 1e-12)
     h = float(r) / WRAP_CUBES_PER_R
@@ -234,7 +240,7 @@ def grid_for(lo, hi, r: float, *, cubes: int = WRAP_GRID_CUBES) -> tuple[WrapGri
         if float(np.prod(n)) <= cubes:
             break
         h *= (float(np.prod(n)) / cubes) ** (1.0 / 3.0) * 1.01
-        r = max(r, WRAP_CUBES_PER_R * h)
+        r = max(r, per_r * h)
     pad = r + 4.0 * h
     shape = tuple(int(v) for v in np.ceil((size + 2.0 * pad) / h) + 1)
     return WrapGrid(origin=lo - pad, h=h, shape=shape), float(r)  # type: ignore[arg-type]
@@ -274,8 +280,9 @@ def wrap_surface(T: np.ndarray, labels: np.ndarray, *, flow: str, seed=None,
     how = "rule" if not distance else "given"
     tries: list[dict] = []
     bottleneck = None
+    per_r = WRAP_CUBES_PER_R
     for attempt in range(WRAP_RETRIES + 1):
-        grid, r = grid_for(lo, hi, r, cubes=cubes)
+        grid, r = grid_for(lo, hi, r, cubes=cubes, per_r=per_r)
         field_ = _Field(T, grid)
         if internal and attempt == 0 and not distance:
             # the narrowest way the flow takes to every opening, read on this first grid
@@ -283,8 +290,8 @@ def wrap_surface(T: np.ndarray, labels: np.ndarray, *, flow: str, seed=None,
             if bottleneck is not None:
                 r_pass = wrap_distance(diag, bottleneck=bottleneck)
                 if r_pass < r * 0.999:
-                    r = r_pass
-                    grid, r = grid_for(lo, hi, r, cubes=cubes)
+                    r, per_r = r_pass, MIN_CUBES_PER_R
+                    grid, r = grid_for(lo, hi, r, cubes=cubes, per_r=per_r)
                     field_ = _Field(T, grid)
         reached, why = field_.flood(r, seed=seed if internal else None, labels=labels, ports=ports)
         row = {"distance_m": r, "cube_m": grid.h, "cubes": grid.n, "reached": reached,
@@ -309,9 +316,10 @@ def wrap_surface(T: np.ndarray, labels: np.ndarray, *, flow: str, seed=None,
         if reached:
             break
         if not internal or attempt == WRAP_RETRIES or (
-                r * WRAP_SHRINK < WRAP_CUBES_PER_R * grid.h * 0.99 and grid.n >= cubes * 0.9):
+                r * WRAP_SHRINK < MIN_CUBES_PER_R * grid.h * 0.99 and grid.n >= cubes * 0.9):
             raise WrapError(why or "the wrap could not keep every opening reachable")
         r *= WRAP_SHRINK
+        per_r = MIN_CUBES_PER_R
     verts, faces = field_.skin(r)
     verts, faces = _oriented(verts, faces, field_, internal=internal)
     target = _skin_target(verts, faces, r)
