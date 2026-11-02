@@ -60,8 +60,9 @@ def _enqueue_geometry_scout(**kwargs) -> None:
 
 def _enqueue_geometry_naming(**kwargs) -> None:
     from meshpipeline.adapters.pipeline_execution.celery import name_geometry
-    from meshpipeline.application.geometry_check import naming_limits_for
-    soft, hard = naming_limits_for(str(kwargs.get("session_id") or ""))
+    from meshpipeline.application.geometry_check import naming_task_limits
+    # the naming's own limits, plus the FEA sizing that runs after the stage is shown (PLAN-fea-22)
+    soft, hard = naming_task_limits(str(kwargs.get("session_id") or ""))
     name_geometry.apply_async(kwargs=kwargs, task_id=f"geometry-naming-{kwargs.get('session_id', '')}",
                               soft_time_limit=soft, time_limit=hard)
 

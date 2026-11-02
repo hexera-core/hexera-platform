@@ -471,6 +471,11 @@ STATE_FIELDS: dict[str, str] = {
     "fea_pairs":             "an FEA assembly's single pairs as the user set them on the stage, by pair key "
                              "(Part_1|Part_3): each pair's type (bonded / contact / off) and an overlap's owner "
                              "(PLAN-fea-19/20); {} when every pair follows the rule",
+    "fea_plan_choice":       "PLAN-fea-22's size choice as confirmed on the stage: 'quicker' (sized to the standard "
+                             "mesh job) or 'full' (the full-rules mesh); '' when none was picked - the run takes the "
+                             "recommended one itself, and says so",
+    "fea_plans_object":      "PLAN-fea-22: where the stage kept the plans it made (engines/fea_plan_options.PLANS_FILE); "
+                             "the run reuses them when made for its staged solid and code",
     "flow_topology":         "internal/external flow regime DERIVED from the purpose - a neutral "
                              "fact read by the executor/runners, NOT an engine-native param",
     "up_axis":               "which way is up in the file, as confirmed on the stage (+z, -y, ...): the "

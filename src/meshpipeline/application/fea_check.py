@@ -305,7 +305,134 @@ def fea_view(facts: dict | None) -> dict:
     asm = None if blocked else assembly_view(facts)
     if asm is not None:
         out["assembly"] = asm
+    plan = None if blocked else plan_view(facts)
+    if plan is not None:
+        out["plan"] = plan
     return out
+
+
+#: PLAN-fea-22: THE SIZE CHOICE as the stage asks it - the full-rules mesh or a quicker one (application facts
+#: key, engines/fea_plan_options); the full-rules mesh is made when nothing was picked.
+PLAN_FACT_KEY = "fea_plan"
+PLAN_QUESTION = "Which mesh?"
+PLAN_FULL, PLAN_QUICKER = "full", "quicker"
+
+
+def _elements_words(n: int, at_least: bool = False) -> str:
+    said = f"{n / 1e6:.1f} million" if n >= 1_000_000 else f"{n:,}"
+    return f"{'at least' if at_least else 'about'} {said} elements"
+
+
+def _time_words(minutes, usual=None) -> str:
+    """A mesh's time: what it usually takes and its upper end (Areen, 28 Oct)."""
+    from meshpipeline.engines.fea_plan_options import minutes_words
+    try:
+        m = int(minutes)
+    except (TypeError, ValueError):
+        return ""
+    try:
+        u = int(usual) if usual is not None else None
+    except (TypeError, ValueError):
+        u = None
+    return minutes_words(u, m)
+
+
+#: said once under the times: a pass the ladder repeats takes longer than one pass
+RETRY_WORDS = "A retry can take longer."
+
+
+def _machine_words(row: dict) -> str:
+    if row.get("standard"):
+        return "the standard machine"
+    gib = row.get("memory_gib")
+    return f"a {gib:g} GiB machine" if isinstance(gib, (int, float)) and gib else "a bigger machine"
+
+
+def _option(row: dict, key: str, recommended: str) -> dict:
+    label = "Full rules" if key == PLAN_FULL else "Quicker"
+    bits = [_elements_words(int(row.get("elements") or 0), bool(row.get("at_least"))), _machine_words(row),
+            _time_words(row.get("minutes"), row.get("usual_minutes"))]
+    words = " · ".join(b for b in bits if b)
+    if key == PLAN_QUICKER and row.get("short_zones"):
+        words += f" · {int(row['short_zones'])} zones coarser than their rules"
+    return {"key": key, "label": label, "words": words, "recommended": key == recommended,
+            "short": list(row.get("short") or [])[:6], "short_kinds": list(row.get("short_kinds") or [])}
+
+
+def plan_view(facts: dict | None) -> dict | None:
+    """PLAN-fea-22, the size choice as the stage shows it: "sizing" while the check plans the mesh, then the two
+    meshes with the one the evidence recommends (preselected) and why - or, when the full-rules mesh fits the
+    standard machine, that there is nothing to choose; "not sized" when the check could not plan it in time
+    (the run sizes it and takes the recommended mesh itself - it never waits for the user). None before the check
+    started sizing it."""
+    got = (facts or {}).get(PLAN_FACT_KEY)
+    if not isinstance(got, dict):
+        return None
+    if got.get("sizing"):
+        return {"state": "sizing", "words": ("Sizing the mesh... You can go on: if it is not ready by then, the run "
+                                                 "takes the recommended mesh itself.")}
+    if not got.get("sized"):
+        return {"state": "not_sized", "words": (got.get("why") or "The mesh is sized when it runs") + ": "
+                "the run sizes it and takes the recommended mesh, without waiting for you."}
+    full = got.get("full") or {}
+    rec = PLAN_QUICKER if got.get("recommended") == PLAN_QUICKER else PLAN_FULL
+    options = [_option(full, PLAN_FULL, rec)]
+    if got.get("choice") and isinstance(got.get("quicker"), dict):
+        options.append(_option(got["quicker"], PLAN_QUICKER, rec))
+    out: dict = {"state": "sized", "choice": len(options) > 1, "recommended": rec,
+                 "why": " ".join(w for w in (str(got.get("why") or ""), RETRY_WORDS) if w),
+                 "question": PLAN_QUESTION, "options": options}
+    if len(options) == 1:
+        out["words"] = (f"{_elements_words(int(full.get('elements') or 0), bool(full.get('at_least')))} on "
+                        f"{_machine_words(full)}, {_time_words(full.get('minutes'), full.get('usual_minutes'))}. "
+                        f"{RETRY_WORDS}")
+    return out
+
+
+def plan_answer(value, facts: dict | None) -> str:
+    """The size choice the stage sent, checked against what the check offered: "full" or "quicker" when there
+    was a choice (the recommended one when the stage sent neither), "" when there was none to make."""
+    view = plan_view(facts)
+    if not view or not view.get("choice"):
+        return ""
+    v = str(value or "").strip().lower()
+    return v if v in (PLAN_FULL, PLAN_QUICKER) else str(view.get("recommended") or PLAN_FULL)
+
+
+def plan_words(answer: str, facts: dict | None) -> str:
+    """The size choice in the declaration's words."""
+    view = plan_view(facts) or {}
+    opt = next((o for o in view.get("options") or [] if o["key"] == answer), None)
+    if not opt:
+        return ""
+    return f"Mesh: {opt['label'].lower()} ({opt['words']})."
+
+
+def plans_object_key(session_id: str) -> str:
+    """Where the check keeps the plans its sizing made (engines/fea_plan_options.PLANS_FILE); "" without a session."""
+    if not session_id:
+        return ""
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.engines.fea_plan_options import PLANS_FILE
+    return check_object_key(session_id, PLANS_FILE)
+
+
+def confirmed_plan_choice(session_id: str) -> str:
+    """PLAN-fea-22: the size choice confirmed on the stage (the stored confirmation's fea_plan): "quicker" or
+    "full"; "" when nothing was picked (the run then takes the recommended mesh itself, and says so)."""
+    import json
+
+    if not session_id:
+        return ""
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.contracts.object_storage import get_object_store
+
+    try:
+        record = json.loads(get_object_store().get_bytes(object_key=check_object_key(session_id, "confirmed.json")))
+    except Exception:  # noqa: BLE001 - unknown is the full-rules mesh, never a refusal
+        return ""
+    v = str((record or {}).get("fea_plan") or "").strip().lower() if isinstance(record, dict) else ""
+    return v if v in (PLAN_FULL, PLAN_QUICKER) else ""
 
 
 def assembly_view(facts: dict | None) -> dict | None:

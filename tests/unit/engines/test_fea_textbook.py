@@ -5,6 +5,10 @@
 | Case | Analysis | Closed form | Tolerance |
 |---|---|---|---|
 | plate with a hole, d/W = 0.2 | static | Heywood net-section Kt = 2 + (1 - d/W)^3 = 2.512 | 3% |
+| the same plate with ribs, meshed QUICKER (PLAN-fea-22: their capped corners coarsened) | static | the same Kt at the hole | 3% |
+| the same plate, its ribs' tops rounded, meshed QUICKER (rounds and capped corners coarsened) | static | the same Kt at the hole | 3% |
+| stepped round bar, D = 60, d = 40, shoulder fillet r = 5 (a quarter), full rules and QUICKER (its convex rounds coarsened) | static | Kt = 1.878 (converged axisymmetric reference; the Pilkey fit gives 1.750, 7% low) | 3% |
+| the U-grooved bar with rounded ends, meshed QUICKER (its end rounds coarsened) | static | the groove's Kt = 2.193 | 3% |
 | cantilever, L/h = 15, tip displacement | static | Timoshenko stiffness 1 / (L^3/3EI + L/kGA) | 1% |
 | thick-walled cylinder, b/a = 2, internal pressure | static | Lame hoop stress at the bore p (a^2+b^2)/(b^2-a^2) | 3% |
 | round bar with a U-groove, D = 50, d = 40, r = 5 (a quarter, symmetry) | static | Kt = 2.193 (converged axisymmetric reference; the published fits' 2.05-2.06 are about 6% low) | 3% |
@@ -91,6 +95,25 @@ def _torus(major, minor, z):
 
 
 PLATE = {"L": 200.0, "W": 100.0, "t": 5.0, "d": 20.0}
+#: PLAN-fea-22'S EVIDENCE: four 2 mm ribs on the plate near its held end (16 capped sharp corners at their roots),
+#: and the quicker mesh's cap as a share of the full-rules estimate - low enough that the corners are coarsened,
+#: high enough that nothing else is (the plan records it: the case checks it)
+RIBS = {"n": 4, "x0": 8.0, "pitch": 9.0, "w": 4.0, "h": 2.0, "share": 0.6}
+#: the ribs' tops rounded (PLAN-fea-7 rounds, coarsened first by the quicker mesh)
+RIB_ROUND = 1.0
+#: THE STEPPED SHAFT (a quarter, symmetry): d = 40 for half its length, D = 60 for the rest, the shoulder filleted
+#: r = 5, the shoulder's outer edge and both ends rounded 2 mm (rounds kept for their shape). Kt is the largest axial
+#: stress over the small section's mean axial stress. No closed form exists; the Pilkey fit for a shoulder fillet in
+#: tension (chart 3.4: h/r = 2, 2h/D = 1/3) gives 1.750, and a fine 2D axisymmetric CalculiX model of the same
+#: shoulder (devtools/fea_reference/shoulder_axisymmetric.py: 0.2 / 0.1 / 0.05 / 0.025 mm at the fillet: 1.8790 / 1.8785 /
+#: 1.8780 / 1.8780) converges on 1.878 - the fit is 7% low, as the groove's are, so the converged value is the reference.
+SHAFT = {"D": 60.0, "d": 40.0, "r": 5.0, "L": 160.0, "round": 2.0, "kt": 1.878}
+#: THE QUICKER MESH'S CAP in the textbook cases, as a share of the part's full-rules estimate: the lowest share (in
+#: steps of 0.05, searched on the lab, 28 Oct) at which the quicker mesh still coarsens only rounds, relief and capped
+#: corners - so each case coarsens its low-stress zones as far as PLAN-fea-22 ever recommends; the case checks that
+#: the plan coarsened something, and nothing else
+QUICKER_SHARE = {"plate_hole_quicker": RIBS["share"], "plate_hole_rounds_quicker": 0.7, "shaft_fillet_quicker": 0.8,
+                 "groove_quicker": 0.85}
 CANT = {"L": 300.0, "h": 20.0}
 LAME = {"a": 50.0, "b": 100.0, "h": 20.0, "p": 10e6}
 #: THE GROOVE'S REFERENCE. No closed form exists for a U-groove; the published fits give 2.06
@@ -111,10 +134,95 @@ CORNER = {"a": 50.0}
 PAIRS = {"pair_off_carries_nothing": {"Part_1|Part_3": {"type": "off"}}}
 
 
+def _round_edges(shape, radius, pick):
+    """`shape` with the straight edges whose two ends (a, b) pass `pick` rounded to `radius`."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    mk = BRepFilletAPI_MakeFillet(shape)
+    ex = TopExp_Explorer(shape, TopAbs_EDGE)
+    while ex.More():
+        e = TopoDS.Edge_s(ex.Current())
+        a, b = (BRep_Tool.Pnt_s(v) for v in (TopExp.FirstVertex_s(e), TopExp.LastVertex_s(e)))
+        if pick((a.X(), a.Y(), a.Z()), (b.X(), b.Y(), b.Z())):
+            mk.Add(radius, e)
+        ex.Next()
+    mk.Build()
+    return mk.Shape()
+
+
+def _round_circles(shape, picks):
+    """`shape` with each circular edge of radius R at height z rounded to r, for (R, z, r) in `picks`."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+    from OCP.GeomAbs import GeomAbs_Circle
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    mk = BRepFilletAPI_MakeFillet(shape)
+    ex = TopExp_Explorer(shape, TopAbs_EDGE)
+    seen = set()
+    while ex.More():
+        e = TopoDS.Edge_s(ex.Current())
+        c = BRepAdaptor_Curve(e)
+        if c.GetType() == GeomAbs_Circle:
+            circ = c.Circle()
+            for big_r, z, r in picks:
+                key = (round(circ.Radius(), 6), round(circ.Location().Z(), 6))
+                if abs(circ.Radius() - big_r) < 1e-6 and abs(circ.Location().Z() - z) < 1e-6 and key not in seen:
+                    seen.add(key)
+                    mk.Add(r, e)
+        ex.Next()
+    mk.Build()
+    return mk.Shape()
+
+
+def _shaft():
+    """A QUARTER of the stepped shaft (SHAFT): d up to half its length, D after, the shoulder filleted r, its outer
+    edge and both ends rounded."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+    half = SHAFT["L"] / 2
+    shaft = BRepAlgoAPI_Fuse(_cyl(SHAFT["d"] / 2, half + 1.0), _cyl(SHAFT["D"] / 2, half, z=half)).Shape()
+    from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+    u = ShapeUpgrade_UnifySameDomain(shaft, True, True, True)
+    u.Build()
+    shaft = _round_circles(u.Shape(), [(SHAFT["d"] / 2, half, SHAFT["r"])])
+    shaft = _round_circles(shaft, [(SHAFT["D"] / 2, half, SHAFT["round"]), (SHAFT["d"] / 2, 0.0, SHAFT["round"]),
+                                   (SHAFT["D"] / 2, SHAFT["L"], SHAFT["round"])])
+    return _common(shaft, _box(0, 0, -1, SHAFT["D"], SHAFT["D"], SHAFT["L"] + 2))
+
+
 def _shape(case: str):
     if case == "plate_hole":
         return _cut(_box(0, 0, 0, PLATE["L"], PLATE["W"], PLATE["t"]),
                     _cyl(PLATE["d"] / 2, PLATE["t"] + 2, PLATE["L"] / 2, PLATE["W"] / 2, -1))
+    if case == "plate_hole_quicker":
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+        plate = _box(0, 0, 0, PLATE["L"], PLATE["W"], PLATE["t"])
+        for k in range(int(RIBS["n"])):
+            rib = _box(RIBS["x0"] + k * RIBS["pitch"], 0.1 * PLATE["W"], PLATE["t"], RIBS["w"], 0.8 * PLATE["W"], RIBS["h"])
+            plate = BRepAlgoAPI_Fuse(plate, rib).Shape()
+        return _cut(plate, _cyl(PLATE["d"] / 2, PLATE["t"] + RIBS["h"] + 2, PLATE["L"] / 2, PLATE["W"] / 2, -1))
+    if case == "plate_hole_rounds_quicker":
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+        plate = _box(0, 0, 0, PLATE["L"], PLATE["W"], PLATE["t"])
+        for k in range(int(RIBS["n"])):
+            x0 = RIBS["x0"] + k * RIBS["pitch"]
+            rib = _box(x0, 0.1 * PLATE["W"], PLATE["t"], RIBS["w"], 0.8 * PLATE["W"], RIBS["h"])
+            rib = _round_edges(rib, RIB_ROUND, lambda a, b: min(a[2], b[2]) > PLATE["t"] + RIBS["h"] - 1e-6
+                               and abs(a[1] - b[1]) > 1.0)
+            plate = BRepAlgoAPI_Fuse(plate, rib).Shape()
+        return _cut(plate, _cyl(PLATE["d"] / 2, PLATE["t"] + RIBS["h"] + 2, PLATE["L"] / 2, PLATE["W"] / 2, -1))
+    if case in ("shaft_fillet", "shaft_fillet_quicker"):
+        return _shaft()
+    if case == "groove_quicker":
+        bar = _cut(_cyl(GROOVE["D"] / 2, GROOVE["L"]), _torus(GROOVE["D"] / 2, GROOVE["r"], GROOVE["L"] / 2))
+        bar = _round_circles(bar, [(GROOVE["D"] / 2, 0.0, SHAFT["round"]), (GROOVE["D"] / 2, GROOVE["L"], SHAFT["round"])])
+        return _common(bar, _box(0, 0, -1, GROOVE["D"], GROOVE["D"], GROOVE["L"] + 2))
     if case == "cantilever":
         return _box(0, 0, 0, CANT["L"], CANT["h"], CANT["h"])
     if case == "lame":
@@ -187,6 +295,15 @@ def _mesh(case: str, ws: Path, monkeypatch) -> dict:
         run_cartesian_mesh=lambda w, timeout: {"rc": fea_adapter.mesh(w)}))
     state = {"purpose": "structural", **({"fea_connection": CONNECTION[case]} if case in CONNECTION else {}),
              **({"fea_pairs": PAIRS[case]} if case in PAIRS else {})}
+    if case in QUICKER_SHARE:
+        # PLAN-fea-22: THE QUICKER MESH, its cap set to a share of this part's full-rules estimate (QUICKER_SHARE)
+        from meshpipeline.engines import fea_plan as P
+        from meshpipeline.engines import fea_plan_options as PO
+        record, surface, diag_m = FD.measure_staged(ws)
+        full = FD.choose_plan(record, surface, diag_m)["estimate"]["elements"]
+        share = QUICKER_SHARE[case]
+        monkeypatch.setattr(PO, "standard_elements", lambda: int(share * full / P.LIMIT_AIM))
+        state["fea_plan_choice"] = "quicker"
     ok, marker, _o = asyncio.run(FD.drive(ws, state, job_id=f"acc-{case}", publish=None, run=_Run()))
     assert ok, f"the driver did not mesh {case}: {marker}"
     return json.loads((ws / "quality.json").read_text())
@@ -308,6 +425,147 @@ S
     smax = max(st[0] for st in _frd_stress(frd).values())
     net = gross * PLATE["W"] / (PLATE["W"] - PLATE["d"])
     return smax / net, 2.0 + (1 - PLATE["d"] / PLATE["W"]) ** 3, "net-section Kt"
+
+
+def _plate_quicker(ws, q):
+    """The ribbed plate meshed quicker: only the ribs' capped corners were coarsened (the plan says), and the hole
+    reads the plate's Kt - the stress at the ribs' sharp corners never settles, so the peak is read round the hole."""
+    plan = json.loads((ws / "fea_plan.json").read_text())
+    assert sorted({z["kind"] for z in plan["zones"] if z.get("short")}) == ["corner"], plan.get("resolution_short")
+    deck, nodes, nsets = _deck(ws)
+    fixed = _face(nodes, nsets, lambda p: abs(p[0]) < 1e-9)
+    load = _face(nodes, nsets, lambda p: abs(p[0] - PLATE["L"] * 1e-3) < 1e-9)
+    ids = nsets[fixed]
+    a = _pick(nodes, ids, lambda p: p[1] + p[2])
+    b = _pick(nodes, ids, lambda p: -p[1] + p[2])
+    c = _pick(nodes, ids, lambda p: p[1] - p[2])
+    gross = 1.0e6
+    _dat, frd = _solve(ws, "ktq", deck, _material("STEEL", 0.0) + f"""*NSET, NSET=PA
+{a}
+*NSET, NSET=PB
+{b}
+*NSET, NSET=PC
+{c}
+*BOUNDARY
+{fixed}, 1, 1, 0.0
+PA, 2, 3, 0.0
+PB, 3, 3, 0.0
+PC, 2, 2, 0.0
+*STEP
+*STATIC, SOLVER=ITERATIVE CHOLESKY
+*DSLOAD
+{load}, P, {-gross:.6e}
+*NODE FILE
+S
+*END STEP
+""")
+    centre = np.array([PLATE["L"] / 2, PLATE["W"] / 2]) * 1e-3
+    near = {n for n, p in nodes.items() if np.linalg.norm(p[:2] - centre) <= PLATE["d"] * 1e-3}
+    smax = max(st[0] for n, st in _frd_stress(frd).items() if n in near)
+    net = gross * PLATE["W"] / (PLATE["W"] - PLATE["d"])
+    return smax / net, 2.0 + (1 - PLATE["d"] / PLATE["W"]) ** 3, "net-section Kt at the hole, quicker mesh"
+
+
+def _quicker_kinds(ws) -> list[str]:
+    """What the quicker mesh coarsened (the plan's short zones): checked to be the low-stress kinds only."""
+    from meshpipeline.engines import fea_plan_options as PO
+    plan = json.loads((ws / "fea_plan.json").read_text())
+    kinds = sorted({z["kind"] for z in plan["zones"] if z.get("short")})
+    assert kinds and set(kinds) <= PO.LOW_STRESS, plan.get("resolution_short")
+    return kinds
+
+
+def _plate_rounds_quicker(ws, q):
+    """The ribbed plate, its ribs' tops rounded, meshed quicker: its rounds and capped corners coarsened (the plan
+    says), and the hole reads the plate's Kt."""
+    _quicker_kinds(ws)
+    return _plate_quicker_read(ws, "ktr")
+
+
+def _plate_quicker_read(ws, job):
+    deck, nodes, nsets = _deck(ws)
+    fixed = _face(nodes, nsets, lambda p: abs(p[0]) < 1e-9)
+    load = _face(nodes, nsets, lambda p: abs(p[0] - PLATE["L"] * 1e-3) < 1e-9)
+    ids = nsets[fixed]
+    a = _pick(nodes, ids, lambda p: p[1] + p[2])
+    b = _pick(nodes, ids, lambda p: -p[1] + p[2])
+    c = _pick(nodes, ids, lambda p: p[1] - p[2])
+    gross = 1.0e6
+    _dat, frd = _solve(ws, job, deck, _material("STEEL", 0.0) + f"""*NSET, NSET=PA
+{a}
+*NSET, NSET=PB
+{b}
+*NSET, NSET=PC
+{c}
+*BOUNDARY
+{fixed}, 1, 1, 0.0
+PA, 2, 3, 0.0
+PB, 3, 3, 0.0
+PC, 2, 2, 0.0
+*STEP
+*STATIC, SOLVER=ITERATIVE CHOLESKY
+*DSLOAD
+{load}, P, {-gross:.6e}
+*NODE FILE
+S
+*END STEP
+""")
+    centre = np.array([PLATE["L"] / 2, PLATE["W"] / 2]) * 1e-3
+    near = {n for n, p in nodes.items() if np.linalg.norm(p[:2] - centre) <= PLATE["d"] * 1e-3}
+    smax = max(st[0] for n, st in _frd_stress(frd).items() if n in near)
+    net = gross * PLATE["W"] / (PLATE["W"] - PLATE["d"])
+    return smax / net, 2.0 + (1 - PLATE["d"] / PLATE["W"]) ** 3, "net-section Kt at the hole, quicker mesh"
+
+
+def _axial_bar(ws, job: str, length: float, end_radius: float, net_radius: float, near_z: float, reach: float):
+    """A quarter round bar pulled along z by 1 MPa on its flat top end, held axially on its flat bottom end and on
+    its two symmetry planes: the largest axial stress within `reach` (m) of z = `near_z` over the mean axial stress
+    in the section of radius `net_radius` (the flat end's force over it)."""
+    deck, nodes, nsets = _deck(ws)
+    L = length * 1e-3
+    bot = _face(nodes, nsets, lambda x: abs(x[2]) < 1e-9)
+    top = _face(nodes, nsets, lambda x: abs(x[2] - L) < 1e-9)
+    sx = _face(nodes, nsets, lambda x: abs(x[0]) < 1e-9)
+    sy = _face(nodes, nsets, lambda x: abs(x[1]) < 1e-9)
+    gross = 1.0e6
+    _dat, frd = _solve(ws, job, deck, _material("STEEL", 0.3) + f"""*BOUNDARY
+{bot}, 3, 3, 0.0
+{sx}, 1, 1, 0.0
+{sy}, 2, 2, 0.0
+*STEP
+*STATIC, SOLVER=ITERATIVE CHOLESKY
+*DSLOAD
+{top}, P, {-gross:.6e}
+*NODE FILE
+S
+*END STEP
+""")
+    near = {n for n, p in nodes.items() if abs(p[2] - near_z * 1e-3) <= reach}
+    smax = max(st[2] for n, st in _frd_stress(frd).items() if n in near)
+    return smax / (gross * (end_radius / net_radius) ** 2)
+
+
+def _shaft_read(ws, q, job):
+    got = _axial_bar(ws, job, SHAFT["L"], SHAFT["D"] / 2 - SHAFT["round"], SHAFT["d"] / 2, SHAFT["L"] / 2,
+                     2 * SHAFT["r"] * 1e-3)
+    return got, SHAFT["kt"], "shoulder fillet Kt (converged axisymmetric reference)"
+
+
+def _shaft_full(ws, q):
+    return _shaft_read(ws, q, "shaft")
+
+
+def _shaft_quicker(ws, q):
+    _quicker_kinds(ws)
+    got, want, what = _shaft_read(ws, q, "shaftq")
+    return got, want, what + ", quicker mesh"
+
+
+def _groove_quicker(ws, q):
+    _quicker_kinds(ws)
+    got = _axial_bar(ws, "grooveq", GROOVE["L"], GROOVE["D"] / 2 - SHAFT["round"], GROOVE["D"] / 2 - GROOVE["r"],
+                     GROOVE["L"] / 2, 2 * GROOVE["r"] * 1e-3)
+    return got, GROOVE["kt"], "net-section Kt (converged axisymmetric reference), quicker mesh"
 
 
 def _cantilever(ws, q):
@@ -639,6 +897,11 @@ def _contact_compression(ws, q):
 
 CASES = {
     "plate_hole": ("static", _plate, 0.03),
+    "plate_hole_quicker": ("static", _plate_quicker, 0.03),
+    "plate_hole_rounds_quicker": ("static", _plate_rounds_quicker, 0.03),
+    "shaft_fillet": ("static", _shaft_full, 0.03),
+    "shaft_fillet_quicker": ("static", _shaft_quicker, 0.03),
+    "groove_quicker": ("static", _groove_quicker, 0.03),
     "cantilever": ("static", _cantilever, 0.01),
     "lame": ("static", _lame, 0.03),
     "groove": ("static", _groove, 0.03),

@@ -347,6 +347,93 @@ def pairs_of(state) -> dict:
     return FP.clean_overrides((state or {}).get("fea_pairs") or {})
 
 
+def kept_plans(state) -> dict | None:
+    """PLAN-fea-22: the plans the stage made for this part (engines/fea_plan_options.PLANS_FILE), read from where the
+    check kept them (state fea_plans_object); None when there are none or they cannot be read."""
+    key = str((state or {}).get("fea_plans_object") or "")
+    if not key:
+        return None
+    import tempfile
+    try:
+        from meshpipeline.contracts.object_storage import get_object_store
+        with tempfile.TemporaryDirectory(prefix="fea_plans_") as tmp:
+            dest = Path(tmp) / "plans.json"
+            get_object_store().download_file(object_key=key, destination=dest)
+            got = json.loads(dest.read_text())
+    except Exception:  # noqa: BLE001 - none kept is the run planning it itself
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def size_choice(state, record: dict, surface, diag_m: float, *, levers, ceiling_s, ai, kept: dict | None,
+                key: str) -> tuple[dict, dict]:
+    """PLAN-fea-22, SETTLED BEFORE THE RUN - IT NEVER WAITS (Areen, 28 Oct): the plan of the mesh the user picked on
+    the stage; with nothing picked (the stage had not sized it yet, or no answer came), the RECOMMENDED one, decided
+    here from the run's own plans by the stage's own rule (fea_plan_options.decide) and said. The stage's kept plans
+    are reused when they were made for this staged solid and this code, and the AI changed nothing in them. Returns
+    (the plan, the why record's entry)."""
+    from meshpipeline.engines import fea_plan_options as PO
+
+    pick = str((state or {}).get("fea_plan_choice") or "").strip().lower()
+    unchanged, applied = _ai_changes_nothing(record, ai, diag_m)
+    reuse = kept if (unchanged and not levers) else None
+
+    def plan_of(which: str) -> dict:
+        got = PO.kept_plan(reuse, key, which)
+        if got is not None:
+            if _used(ai) is not None:
+                got = {**got, "ai": {**(ai or {}), "applied": applied}}      # said, though it changed no size
+            return _restate(record, got)
+        cap = PO.standard_elements() if which == PO.QUICKER else None
+        return choose_plan(record, surface, diag_m, levers=levers, ceiling_s=ceiling_s, ai=ai, cap=cap)
+
+    reused = bool(PO.kept_plan(reuse, key, PO.FULL) or PO.kept_plan(reuse, key, PO.QUICKER))
+    if pick in (PO.FULL, PO.QUICKER):
+        plan = plan_of(pick)
+        words = ("You picked the quicker mesh: it is sized to the standard machine, the low-stress zones coarsened "
+                 "first." if pick == PO.QUICKER else "You picked the full-rules mesh: every zone at its rule size.")
+        entry = {"stage": "fea_plan", "decided": "size choice", "value": pick, "rule": "PLAN-fea-22",
+                 "inputs": {"picked": True, "reused_stage_plan": reused}, "words": words}
+        return plan, entry
+    full = plan_of(PO.FULL)
+    out, qplan = PO.decide(record, full, lambda: plan_of(PO.QUICKER))
+    if not out["choice"]:
+        return full, {}
+    rec = out["recommended"]
+    plan = qplan if (rec == PO.QUICKER and qplan is not None) else full
+    words = (f"No size was picked before the run started, so the run took the recommended mesh, the "
+             f"{'quicker' if rec == PO.QUICKER else 'full-rules'} one: {out['why']}")
+    entry = {"stage": "fea_plan", "decided": "size choice", "value": rec, "rule": "PLAN-fea-22",
+             "inputs": {"picked": False, "recommended": rec, "reused_stage_plan": reused,
+                        "full_elements": out["full"]["elements"],
+                        "quicker_elements": (out["quicker"] or {}).get("elements")},
+             "words": words}
+    return plan, entry
+
+
+def _ai_changes_nothing(record: dict, ai: dict | None, diag_m: float) -> tuple[bool, list[dict]]:
+    """Whether the AI's decision leaves the plan exactly as the rules make it (no zone size or reach changed, no
+    budget, no micro detail kept) - the stage planned without it, so only then are its plans this run's. Returns
+    (unchanged, the AI's rows as the rules applied them)."""
+    used = _used(ai)
+    if used is None:
+        return True, []
+    plain = P.zones(record)
+    zl, applied = FA.apply_zones(plain, used, record, diag_m=diag_m)
+    same = (FA.budget_limit(element_limit(record)[0], used)[1] == "" and not FA.refines(used)
+            and [(z.get("id"), z.get("size_m"), z.get("reach_m")) for z in zl]
+            == [(z.get("id"), z.get("size_m"), z.get("reach_m")) for z in plain])
+    return same, applied
+
+
+def plan_cap_of(state) -> int | None:
+    """PLAN-fea-22: the element cap the user's size choice puts on the plan (state fea_plan_choice): the standard
+    mesh job's when they picked the quicker mesh, else None - the full-rules mesh, on the machine it needs."""
+    from meshpipeline.engines import fea_plan_options as PO
+    said = str((state or {}).get("fea_plan_choice") or "").strip().lower()
+    return PO.standard_elements() if said == PO.QUICKER else None
+
+
 def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source_path: str = "",
                      gap_joins: bool = True, pairs: dict | None = None) -> dict:
     """PLAN-fea-17: an assembly's record for the plan, and its staged file for the mesher. Every
@@ -542,7 +629,7 @@ FLOOR_STEPS = 14
 #: PLAN-fea-8: THE ORDER A PLAN OVER ITS LIMIT IS COARSENED IN, kind by kind - the low-stress bulk first,
 #: the stress raisers last (27 Oct): rounds (sized for their shape only), capped sharp corners (their
 #: stress never settles), walls and the parts' own sizes, then holes, fillets and notches.
-COARSEN_ORDER: tuple[tuple[str, ...], ...] = (("round",), ("corner",), ("wall", "wall_spot", "part"),
+COARSEN_ORDER: tuple[tuple[str, ...], ...] = (("round", "relief"), ("corner",), ("wall", "wall_spot", "part"),
                                               ("hole", "fillet", "notch"))
 
 
@@ -677,7 +764,7 @@ def _with_ai(plan: dict) -> dict:
 
 
 def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
-                ceiling_s: float | None = None, ai: dict | None = None) -> dict:
+                ceiling_s: float | None = None, ai: dict | None = None, cap: int | None = None) -> dict:
     """PLAN-fea-8, NEVER A STOP BEFORE MESHING (Areen, 21 Oct): the rules' own plan when it fits under
     the limit; else the finest zones coarsened until it fits, never past what keeps elements valid,
     what that leaves short named (resolution_short); else - every zone at its validity minimum and
@@ -688,6 +775,11 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
     mine, said = FA.budget_limit(limit, _used(ai))
     if said:
         limit, why = mine, said
+    if cap is not None and int(cap) < limit:
+        # PLAN-fea-22: THE QUICKER MESH THE USER PICKED - sized to the standard mesh job, the low-stress zones
+        # coarsened first (COARSEN_ORDER)
+        limit, why = int(cap), (f"the quicker mesh you picked: what the standard machine holds "
+                                f"({MESH_JOB_MEMORY_GIB:g} GiB)")
     plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai)
     if not plan["fits"] and FA.refines(_used(ai)):
         # AI-fea-5: THE AI'S REFINEMENTS NEVER COST THE RULES' OWN ZONES. Over the limit, they are
@@ -778,6 +870,11 @@ def _restate(record: dict, plan: dict) -> dict:
 #: built at 165 a second, now 1,539): the slowest of each class was simple 1,779, moderate 1,243,
 #: complex 1,539 elements a second. Each rate sits under its class's slowest with margin.
 FILL_RATES: dict[str, float] = {"simple": 1500.0, "moderate": 1100.0, "complex": 1000.0}
+#: PLAN-fea-22: WHAT A RUN USUALLY TAKES - elements per second of the WHOLE run (check, plan, mesher, decks), the
+#: median of the single-pass runs of each class on the lab (28 Oct, 21 runs of 2-16M elements at the size of the
+#: machine their plan names: simple 1,650, moderate 2,490, complex 1,929), said beside the slow rate's upper end. A
+#: pass the ladder repeats takes longer; the stage says so.
+FEA_USUAL_FILL_RATES: dict[str, float] = {"simple": 1650.0, "moderate": 2400.0, "complex": 1900.0}
 #: the class boundaries (CAD faces, hot spots); any micro detail makes a part complex
 SIMPLE_FACES, SIMPLE_SPOTS = 40, 20
 COMPLEX_FACES, COMPLEX_SPOTS = 200, 100
@@ -980,6 +1077,24 @@ def _killed(result: dict) -> bool:
 def _out_of_memory(result: dict) -> bool:
     """Killed for memory, with nothing built."""
     return bool(_killed(result) and result.get("rc") not in (0, 4))
+
+
+def memory_measured(result: dict, plan: dict) -> dict | None:
+    """PLAN-fea-16: the pass's measured mesher peak against the model ({peak_gib, elements, bytes_per_element,
+    model_bytes_per_element, margin, predicted_gib}); None when the pass measured none."""
+    peak = _peak_gib(result)
+    q = result.get("remote_quality") or result.get("quality") or {}
+    try:
+        cells = int((q or {}).get("cells") or 0)
+    except (TypeError, ValueError):
+        cells = 0
+    if not peak or cells <= 0:
+        return None
+    per = max(0.0, (peak * 1024.0 - MEMORY_BASE_MB) * 1024.0 * 1024.0 / cells)
+    return {"peak_gib": round(peak, 2), "elements": cells, "bytes_per_element": round(per),
+            "model_bytes_per_element": BYTES_PER_ELEMENT, "margin": MEMORY_MARGIN,
+            "planned_elements": int((plan.get("estimate") or {}).get("elements") or 0),
+            "predicted_gib": round(memory_need(float(cells))[0], 2)}
 
 
 def _peak_gib(result: dict) -> float | None:
@@ -1464,6 +1579,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         outcome = run.outcome(produced_deliverable=False, failure_marker=NO_SOURCE)
         return False, NO_SOURCE, outcome
 
+    # PLAN-fea-22: what the stage's kept plans must have been made for (read before anything restages the solid)
+    from meshpipeline.engines import fea_plan_options as PO
+    try:
+        plans_key = PO.plans_key(ws, connection=connection_of(state), gap_joins=gap_joins_of(state))
+    except Exception:  # noqa: BLE001 - no key is planning it here
+        plans_key = ""
+    kept = await asyncio.to_thread(kept_plans, state) if plans_key else None
+
     try:
         made = await asyncio.to_thread(solids_from_shells, ws)
         if made:
@@ -1578,8 +1701,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             if n == n0 + 1:
                 # PLAN-fea-8: the rules' own plan, coarsened to fit under the limit when it must - never a
                 # stop before meshing
-                plan = await asyncio.to_thread(choose_plan, record, surface, diag_m, levers=levers,
-                                               ceiling_s=ceiling_for(run), ai=ai)
+                # PLAN-fea-22: the size the user picked on the stage, else the recommended one - never a wait
+                plan, said = await asyncio.to_thread(size_choice, state, record, surface, diag_m, levers=levers,
+                                                     ceiling_s=ceiling_for(run), ai=ai, kept=kept, key=plans_key)
+                if said:
+                    _cite(job_id, [said])
+                    # said in the plan's own words too: the result screen and the report show them
+                    plan["words"] = [*(plan.get("words") or []), said["words"]]
+                    plan["size_choice"] = said["inputs"] | {"value": said["value"]}
                 chosen = {"limit": plan["limit"], "zone_floor_m": plan.get("zone_floor_m"),
                           "zone_floors": plan.get("zone_floors_m"), "coarsened": plan.get("coarsened")}
                 first_plan = plan
@@ -1677,6 +1806,16 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                 "words": machine["words"]}])
                 _clear_outputs(ws)
             native_s = round(time.monotonic() - native_t0, 1)
+            measured = memory_measured(result, plan)
+            if measured:
+                # PLAN-fea-16: THE MARGIN IS LEARNED FROM MEASURED PEAKS - every pass records its mesher's peak per
+                # element against the model's, the evidence the cautious margin is revisited on (Areen, 28 Oct)
+                _cite(job_id, [{"stage": "fea_machine", "decided": "memory measured", "value": measured["peak_gib"],
+                                "rule": "PLAN-fea-16", "inputs": {"pass": n, **measured},
+                                "words": (f"The mesher's peak was {measured['peak_gib']:.1f} GiB, "
+                                          f"{measured['bytes_per_element']:,.0f} bytes an element "
+                                          f"(the model plans {BYTES_PER_ELEMENT:,.0f}, with {MEMORY_MARGIN:g} times "
+                                          "to spare).")}])
             await run.fence("accept native mesh output")
             if not_run(result):
                 # RUN-4: OUR SIDE NEVER RAN THIS PASS (its machine could not be started, its result never
@@ -1902,6 +2041,6 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["connection_of", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
+__all__ = ["FEA_USUAL_FILL_RATES", "kept_plans", "memory_measured", "size_choice", "connection_of", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
            "complexity", "element_limit", "fill_rate", "watchdog_words", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "NOT_RUN", "NOT_RUN_GATE", "not_run", "not_run_words", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]
