@@ -153,6 +153,8 @@ def select_declared_openings(candidates: list, declared: list) -> list:
     the flange annulus around it. Deterministic: ports in name order, hinted ports first.
     A port no face can satisfy refuses with the measured face list - the geometry and the
     words disagree, and only the user can settle that."""
+    from meshpipeline.engines.port_binding import LOCATED_RATIO_HI, LOCATED_RATIO_LO
+
     remaining: dict = {}
     for cand in candidates:
         opening = cand[3] if len(cand) > 3 else None
@@ -188,7 +190,14 @@ def select_declared_openings(candidates: list, declared: list) -> list:
         # band, or None when the declared size fits by no measure
         declared_area = float(port["area_m2"])
         errs = []
-        if _band_ok(area, declared_area):
+        # BY LOCATION FIRST, THE SIZE AS A CHECK - the binder's own rule (engines/port_binding,
+        # LOCATED_RATIO_*): a port that says where it is binds the face there when its size is
+        # within 2x; the 25% band is for binding by size alone. Held to 25% with a hint, a port
+        # whose stated size was a quarter off skipped the face its hint sat on and took the nearest
+        # face that matched the number - a wall 2 m away (s_duct_001, job 0a5ffe8e).
+        located = bool(port.get("near_m")) and (
+            LOCATED_RATIO_LO <= area / declared_area <= LOCATED_RATIO_HI)
+        if _band_ok(area, declared_area) or located:
             errs.append(abs(area / declared_area - 1.0))
         if (opening is not None and opening.get("area_m2")
                 and _shape_agrees(opening, port)):
@@ -866,6 +875,21 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         is_open = (i in opening_faces) if opening_faces is not None \
             else (BRepAdaptor_Surface(f).GetType() == GeomAbs_Plane)
         (open_idx if is_open else wall_idx).append(i)
+    if opening_faces is None and open_idx:
+        # A FLAT PIECE OF THE WALL is no opening, however well its size matches a declared port: the
+        # top and bottom of a square exit section blend into the round-to-square transition along an
+        # edge, and with a declared size off by a quarter they out-scored the real end faces and were
+        # opened as the ports (s_duct_001, job 0a5ffe8e: the mesh filled a different region). Only a
+        # single-wire face can be one: a ring's metal is never the flow's wall run on.
+        from meshpipeline.cad.flat_cut import edge_faces, is_wall_flat
+        neighbours = edge_faces(shape)
+        flat_walls = [i for i in open_idx
+                      if len(_wires_of(faces[i])) == 1 and is_wall_flat(faces[i], neighbours)]
+        if flat_walls:
+            logger.info("tessellate_internal: %d flat face(s) run on into the wall and are wall, not "
+                        "openings: %s", len(flat_walls), flat_walls)
+            wall_idx.extend(flat_walls)
+            open_idx = [i for i in open_idx if i not in flat_walls]
 
     if (declared_ports and opening_faces is None
             and len(open_idx) > len(declared_ports) >= 2):

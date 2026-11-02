@@ -54,6 +54,29 @@ class TestTheBoxDuctCase:
         chosen = select_declared_openings(BOX_FACES, declared)
         assert sorted(chosen) == [0, 1]    # b falls through to the other 0.0040 face
 
+    def test_a_hinted_port_whose_size_is_off_binds_the_face_at_its_hint(self):
+        # by location first, the size as a check within 2x (engines/port_binding's own rule): a
+        # stated size 50% too big no longer makes the port skip the face its hint sits on
+        declared = [{"name": "inlet", "area_m2": 0.0060, "near_m": (0.0, 0.04, 0.025)},
+                    {"name": "outlet", "area_m2": 0.0040, "near_m": (0.4, 0.04, 0.025)}]
+        assert sorted(select_declared_openings(BOX_FACES, declared)) == [0, 1]
+
+    def test_a_hinted_port_is_not_pulled_to_a_far_face_that_matches_its_number(self):
+        # s_duct_001 (job 0a5ffe8e): the round inlet (58,870 mm2) declared as "367 mm round"
+        # (105,786 mm2) at its own centre; held to 25%, the port skipped the face it named and took
+        # the exit section's top wall (99,376 mm2) two metres away
+        faces = [(1, 0.058870, (0.0, 0.0, 0.0)),            # the round inlet
+                 (13, 0.099376, (2.0108, 0.0, 0.2410)),     # the exit section's bottom wall
+                 (15, 0.105966, (2.1352, 0.0, 0.3735))]     # the rectangular outlet
+        declared = [{"name": "inlet", "area_m2": 0.105786, "near_m": (0.0, 0.0, 0.0)},
+                    {"name": "outlet", "area_m2": 0.084100, "near_m": (2.1352, 0.0, 0.3735)}]
+        assert sorted(select_declared_openings(faces, declared)) == [1, 15]
+
+    def test_a_hint_still_refuses_a_face_whose_size_is_off_by_more_than_2x(self):
+        declared = [{"name": "inlet", "area_m2": 0.0200, "near_m": (0.0, 0.04, 0.025)}]
+        # the 0.0040 end is 5x off: the hint falls to the nearest face its size can be
+        assert select_declared_openings(BOX_FACES, declared) != [0]
+
     def test_selection_is_deterministic_regardless_of_input_order(self):
         a = select_declared_openings(BOX_FACES, DECLARED)
         b = select_declared_openings(list(reversed(BOX_FACES)), list(reversed(DECLARED)))
