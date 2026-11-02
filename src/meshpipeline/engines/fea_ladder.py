@@ -245,7 +245,7 @@ def lever_options(facts: Mapping, levers: list[dict], plan: Mapping) -> list[dic
         if switched and SURFACE_STALL not in pulled:
             said = (f" gmsh switched surface(s) {_listed(switched)} to MeshAdapt by itself there, so the next pass keeps "
                     "its first mesh of every face instead (LAD-fea-8).")
-            rest = [{**o, "no_switch": switched, "words": o["words"] + said} for o in rest]
+            rest = [{**o, "no_switch": switched, "words": str(o["words"]) + said} for o in rest]
         way = _other_way(fresh, facts)
         if order[0]["lever"] in pulled:
             # the fixed ladder's own choice was pulled already: the other way leads (LAD-fea-6), and
