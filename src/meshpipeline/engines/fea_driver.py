@@ -1237,7 +1237,7 @@ def _rung_error(result: dict) -> str:
 
 
 async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, passes: list[dict], *,
-                     job_id: str, run, publish=None) -> tuple[dict, list[dict]]:
+                     job_id: str, run, publish=None, crossing: dict | None = None) -> tuple[dict, list[dict]]:
     """LAD-fea-9: at most fea_tetwild.MAX_RUNG_PASSES passes - an assembly's parts the failed passes
     named first, then every part - each on the plan the last round of gmsh passes started from (the other
     parts meshed as that pass meshed them), plus fTetWild's settings (engines/fea_tetwild.params).
@@ -1261,7 +1261,7 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
             plan["assembly"] = dict(record["assembly_plan"])          # as staged now (PLAN-fea-17)
         settings = TW.params(plan, record, diag_m, parts)
         plan["mesh"] = {**(plan.get("mesh") or {}), "engine": TW.ENGINE, "ftetwild": settings}
-        said = L.rung_words(parts, rung)
+        said = L.rung_words(parts, rung, crossing=crossing)
         plan["words"] = [*(plan.get("words") or []), said]
         _cite(job_id, [{"stage": "fea_ladder", "decided": "last rung", "value": TW.ENGINE, "rule": "LAD-fea-9",
                         "inputs": {"pass": n, "rung": rung, "parts": parts, "per_part": settings["per_part"],
@@ -1435,6 +1435,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         record_remark(ws, ai["decision"]["notes_remark"], by="fea_ai")
     levers: list[dict] = []
     passes: list[dict] = []
+    crossing_found: dict | None = None
     tripped: dict | None = None
     too_big: dict | None = None
     unrun: dict | None = None
@@ -1655,6 +1656,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 # LAD-fea-16: A FILL THAT FAILED ON A PART WHOSE CAD FACES CROSS - located before meshing - is not
                 # sent round gmsh's algorithm swaps (job bc3d4271, 1 Nov: 29 minutes, then every face on MeshAdapt);
                 # the ladder ends here and the last rung meshes it (LAD-fea-9; a bonded assembly is tied first)
+                crossing_found = found
                 _cite(job_id, [{"stage": "fea_ladder", "decided": "crossing faces", "value": "last rung",
                                 "rule": "LAD-fea-16", "inputs": {"pass": n, **found},
                                 "words": crossing_words(found, n)}])
@@ -1706,7 +1708,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         # still without one, the other parts as the tie meshed them. Never for our infrastructure (a
         # guard trip, a worker too small) or a plan out of memory on the largest machine (LAD-fea-7)
         record, ran = await _last_rung(ws, record, diag_m, first_plan, passes, job_id=job_id, run=run,
-                                       publish=publish)
+                                       publish=publish, crossing=crossing_found)
         passes.extend(ran)
         if ran and ran[-1].get("not_run") and not any(f["valid"] for f in ran):
             last = ran[-1]

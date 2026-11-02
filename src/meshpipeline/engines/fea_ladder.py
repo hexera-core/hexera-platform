@@ -286,13 +286,19 @@ def _other_way(fresh: list[int], facts: Mapping) -> dict | None:
                       "with gmsh's MeshAdapt instead of the default.")}
 
 
-def rung_words(parts: list[int] | None, rung: int) -> str:
+def rung_words(parts: list[int] | None, rung: int, crossing: Mapping | None = None) -> str:
     """LAD-fea-9's line in the plan's words: which parts fTetWild meshes, and why."""
     who = ("the part" if parts is None else
            ("part " if len(parts) == 1 else "parts ") + ", ".join(f"Part_{p}" for p in parts[:8])
            + (", ..." if len(parts) > 8 else ""))
     if parts is None and rung > 1:
         who = "every part"
+    if crossing:
+        # LAD-fea-16: straight here, because the CAD's faces cross - not because every gmsh option was tried
+        where = f" ({', '.join(crossing['faces'][:6])})" if crossing.get("faces") else ""
+        return (f"The fill failed where {crossing.get('by') or 'a check'} had found faces of the CAD crossing each "
+                f"other{where}; no gmsh algorithm can mend that, so fTetWild meshes {who} - the last rung (LAD-fea-16, "
+                "LAD-fea-9). Its surface follows the CAD within its envelope; the faces keep their names.")
     return (f"No gmsh option built a valid mesh (Delaunay, HXT, MeshAdapt on the surfaces that failed"
             f"{', the tie' if parts is not None or rung > 1 else ''}), so fTetWild meshes {who} - the last "
             "rung (LAD-fea-9). Its surface follows the CAD within its envelope; the faces keep their names.")
