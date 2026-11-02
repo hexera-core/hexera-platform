@@ -84,6 +84,44 @@ def _solid(shape, ws: Path):
     return "\n".join(lines) + "\n", sp.xyz, set(), sp
 
 
+#: the lab's converged reference (too big for a CI runner): MIXED_TRUTH_WALLS=k also solves a uniform quadratic
+#: tetrahedral mesh of wall / k everywhere (24 elements a turn on curves) and tables each reading against it
+TRUTH_WALLS = float(os.environ.get("MIXED_TRUTH_WALLS", "0") or 0)
+
+
+def _truth(shape, ws: Path, h: float):
+    """A uniform C3D10 mesh of size `h` everywhere (gmsh, one thread): the converged all-solid reference."""
+    import gmsh
+    from tests import fea_fixtures as fx
+
+    from meshpipeline.engines.gmsh.abaqus_deck import from_gmsh
+    from meshpipeline.engines.mixed_mesh import SolidPart
+
+    step = fx.write_step(shape, ws / "truth.step")
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.option.setNumber("General.NumThreads", 1)
+        gmsh.model.occ.importShapes(str(step))
+        gmsh.model.occ.synchronize()
+        gmsh.option.setNumber("Mesh.MeshSizeMax", h)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 24)
+        gmsh.option.setNumber("Mesh.ElementOrder", 2)
+        gmsh.option.setNumber("Mesh.HighOrderOptimize", 0)
+        gmsh.option.setNumber("Mesh.RandomSeed", 1)
+        gmsh.model.mesh.generate(3)
+        sm = from_gmsh(gmsh, [t for _d, t in gmsh.model.getEntities(3)], by_tag=True)
+    finally:
+        gmsh.finalize()
+    new = {int(t): k + 1 for k, t in enumerate(sm.node_ids)}
+    sp = SolidPart(xyz=np.asarray(sm.xyz, float), tets=np.vectorize(new.get)(sm.elements).astype(np.int64))
+    lines = ["*NODE, NSET=NALL"] + [f"{k + 1}, {x:.12g}, {y:.12g}, {z:.12g}" for k, (x, y, z) in enumerate(sp.xyz.tolist())]
+    lines.append("*ELEMENT, TYPE=C3D10, ELSET=SO")
+    lines += [f"{k + 1}, " + ", ".join(str(int(v)) for v in row) for k, row in enumerate(sp.tets)]
+    lines += ["*MATERIAL, NAME=MAT_1", *MAT, "*SOLID SECTION, ELSET=SO, MATERIAL=MAT_1"]
+    return "\n".join(lines) + "\n", sp.xyz, set(), sp
+
+
 def _ids(name, ids):
     ids = [int(v) for v in ids]
     return [f"*NSET, NSET={name}"] + [", ".join(map(str, ids[i:i + 16])) for i in range(0, len(ids), 16)]
@@ -127,10 +165,24 @@ def _modes(ws, job, model) -> list[float]:
     return f
 
 
+def _truth_modes(ws, case, truth, fm, fs, n_mixed) -> None:
+    ft = _modes(ws, "truth_m", truth)
+    for label, f in (("mixed", fm), ("all-solid", fs)):
+        for k, (a, b) in enumerate(zip(f[6:], ft[6:], strict=True), start=7):
+            _record(case, "modal", f"mode {k}, {label} vs converged truth", a, b, 0.05, n_mixed,
+                    truth_elements=_n(truth))
+
+
 @pytest.fixture(scope="module")
 def cantilever(tmp_path_factory):
     ws = tmp_path_factory.mktemp("mixed_cantilever")
     return ws, _mixed(_cantilever(), ws), _solid(_cantilever(), ws / "solid")
+
+
+@pytest.fixture(scope="module")
+def cantilever_truth(cantilever):
+    """The strip in its block as a uniform C3D10 mesh of T / MIXED_TRUTH_WALLS (None when not asked for)."""
+    return _truth(_cantilever(), cantilever[0], T / TRUTH_WALLS) if TRUTH_WALLS else None
 
 
 def _tip(xyz):
@@ -141,7 +193,7 @@ def _back(xyz):
     return np.abs(xyz[:, 0] + BLK) < 1e-6
 
 
-def test_a_shell_strip_built_into_a_solid_block_bends_as_beam_theory_says(cantilever):
+def test_a_shell_strip_built_into_a_solid_block_bends_as_beam_theory_says(cantilever, cantilever_truth):
     ws, mixed, solid = cantilever
     assert mixed[3].counts["links"] == 1 and len(mixed[3].solid.tets) < len(solid[3].tets)
     beam = P * L ** 3 / (3 * E * B * T ** 3 / 12)
@@ -150,13 +202,18 @@ def test_a_shell_strip_built_into_a_solid_block_bends_as_beam_theory_says(cantil
     _record("mixed_cantilever_block", "static", "tip deflection vs all-solid", got, ref, 0.03, _n(mixed),
             solid_elements=_n(solid))
     _record("mixed_cantilever_block", "static", "tip deflection vs PL^3/3EI", got, beam, 0.06, _n(mixed))
+    if cantilever_truth is not None:
+        tru = _static(ws, "truth_z", cantilever_truth, _back, _tip, (0.0, 0.0, P), _tip)[2]
+        for label, g in (("mixed", got), ("all-solid", ref)):
+            _record("mixed_cantilever_block", "static", f"tip deflection, {label} vs converged truth", g, tru, 0.05,
+                    _n(mixed), truth_elements=_n(cantilever_truth))
     assert got == pytest.approx(ref, rel=0.03)
     # the strip is ten walls wide: between beam theory (E) and a plate strip (E / (1 - nu^2)); built into a block
     # that gives a little at the root
     assert beam * (1 - NU ** 2) * 0.98 <= got <= beam * 1.06
 
 
-def test_the_join_carries_the_in_plane_moment_and_the_twist(cantilever):
+def test_the_join_carries_the_in_plane_moment_and_the_twist(cantilever, cantilever_truth):
     ws, mixed, solid = cantilever
     for k, force in (("y", (0.0, 50.0, 0.0)), ("x", (500.0, 0.0, 0.0))):
         got = _static(ws, f"mixed_{k}", mixed, _back, _tip, force, _tip)
@@ -164,12 +221,20 @@ def test_the_join_carries_the_in_plane_moment_and_the_twist(cantilever):
         d = 1 if k == "y" else 0
         _record("mixed_cantilever_block", "static", "tip in-plane bend vs all-solid" if k == "y"
                 else "tip stretch vs all-solid", got[d], ref[d], 0.03, _n(mixed))
+        if cantilever_truth is not None:
+            tru = _static(ws, f"truth_{k}", cantilever_truth, _back, _tip, force, _tip)
+            for label, g in (("mixed", got), ("all-solid", ref)):
+                _record("mixed_cantilever_block", "static", ("tip in-plane bend" if k == "y" else "tip stretch")
+                        + f", {label} vs converged truth", g[d], tru[d], 0.05, _n(mixed),
+                        truth_elements=_n(cantilever_truth))
         assert got[d] == pytest.approx(ref[d], rel=0.03)
 
 
-def test_the_mixed_cantilever_has_six_rigid_modes_and_the_solid_s_elastic_ones(cantilever):
+def test_the_mixed_cantilever_has_six_rigid_modes_and_the_solid_s_elastic_ones(cantilever, cantilever_truth):
     ws, mixed, solid = cantilever
     fm, fs = _modes(ws, "mixed_m", mixed), _modes(ws, "solid_m", solid)
+    if cantilever_truth is not None:
+        _truth_modes(ws, "mixed_cantilever_block", cantilever_truth, fm, fs, _n(mixed))
     assert max(fm[:6]) < 1e-3 * fm[6]                  # no mechanism in the join
     for k, (a, b) in enumerate(zip(fm[6:], fs[6:], strict=True), start=7):
         _record("mixed_cantilever_block", "modal", f"mode {k} vs all-solid", a, b, 0.05, _n(mixed))
@@ -184,6 +249,9 @@ def test_a_plate_with_a_thick_boss_matches_the_solid(tmp_path):
     assert m.counts["links"] == 1 and m.links[0].closed
     assert m.shell.n_elements + len(m.solid.tets) < 0.5 * len(solid[3].tets)
     fm, fs = _modes(tmp_path, "mixed_m", mixed), _modes(tmp_path, "solid_m", solid)
+    truth = _truth(_plate_boss(), tmp_path, 3.0 / TRUTH_WALLS) if TRUTH_WALLS else None
+    if truth is not None:
+        _truth_modes(tmp_path, "mixed_plate_boss", truth, fm, fs, _n(mixed))
     assert max(fm[:6]) < 1e-3 * fm[6]
     for k, (a, b) in enumerate(zip(fm[6:], fs[6:], strict=True), start=7):
         _record("mixed_plate_boss", "modal", f"mode {k} vs all-solid", a, b, 0.05, _n(mixed), solid_elements=_n(solid))
@@ -200,5 +268,11 @@ def test_a_plate_with_a_thick_boss_matches_the_solid(tmp_path):
     ref = _static(tmp_path, "solid_s", solid, edge, top, (300.0, 0.0, -600.0), top)
     _record("mixed_plate_boss", "static", "boss top z vs all-solid", got[2], ref[2], 0.05, _n(mixed))
     _record("mixed_plate_boss", "static", "boss top x vs all-solid", got[0], ref[0], 0.05, _n(mixed))
+    if truth is not None:
+        tru = _static(tmp_path, "truth_s", truth, edge, top, (300.0, 0.0, -600.0), top)
+        for label, g in (("mixed", got), ("all-solid", ref)):
+            for d, ax in ((2, "z"), (0, "x")):
+                _record("mixed_plate_boss", "static", f"boss top {ax}, {label} vs converged truth", g[d], tru[d], 0.05,
+                        _n(mixed), truth_elements=_n(truth))
     assert got[2] == pytest.approx(ref[2], rel=0.05)
     assert got[0] == pytest.approx(ref[0], rel=0.05)

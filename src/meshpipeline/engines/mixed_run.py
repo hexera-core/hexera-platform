@@ -180,7 +180,9 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict):
         raise _Stop(why or "the part is not one body of thin walls and thick regions")
     if any(int(r.get("open_edges") or 0) for r in record.get("sewn") or []):
         raise _Stop(why)
-    shape = read_cad(step)
+    # the shape the record speaks of: an IGES file's loose surfaces sewn into its solid as the extraction sewed them
+    # (SHELL-15; read raw, an IGES frame had no solid to split and the run stopped on an empty list)
+    shape = ms.solidify(read_cad(step), float(mm_per_unit))[0]
     surf = TopoDS_Shape()
     BRepTools.Read_s(surf, str(out / ms.SURFACE_FILE), BRep_Builder())
     mids = {m["id"]: m for m in record["mids"]}
@@ -188,7 +190,10 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict):
             for f, o in zip(ms._faces(surf), record["surface_faces"], strict=True)]
     faces = ms._faces(shape)
     thick = [faces[k] for k, r in enumerate(record["faces"]) if r["role"] in ("thick", "solid")]
-    split = mx.split_body(mx._solids(shape)[0], kept, thick, scale=mm_per_unit)
+    solids = mx._solids(shape)
+    if len(solids) != 1:
+        raise _Stop(f"the part reads as {len(solids)} solids, not one closed body")
+    split = mx.split_body(solids[0], kept, thick, scale=mm_per_unit)
     rec["split"] = {"cores": split.cores, "cut_mm": [round(d, 4) for d in split.cut_distance],
                     "solid_share": round(split.solid_volume / split.body_volume, 4) if split.body_volume else None,
                     "notes": split.notes}

@@ -44,6 +44,8 @@ SLAB_SLACK = 0.02
 #: slabs missed - the split is not used. 5%, not 2% (2 Nov): a box with 4 mm walls has 3% of its metal in the corners
 #: of its L junctions round the bottom, which a shell model leaves out (MIXED-3's volume band still holds the whole)
 LEFT_OVER_MAX = 0.05
+#: MIXED-1b: a thick core is at least this share of the thinnest wall thick (twice its volume over its area)
+CORE_MIN_WALLS = 0.5
 #: MIXED-3: the split must hold the body's metal within this band (the shell check's own)
 VOLUME_BAND = ms.VOLUME_BAND
 
@@ -121,35 +123,234 @@ def _bop(kind: str, a, tools: list, fuzzy: float = 0.0):
     return op.Shape()
 
 
-def grown(core, dist: float):
-    """The core grown `dist` in every direction (OCC's offset by join, rounded at its edges).
+def _pt(p) -> tuple[float, float, float]:
+    return (p.X(), p.Y(), p.Z())
 
-    NOT YET REPEATABLE on every core (open, 2 Nov): on a block with flat sides OCC's offset hands back the same faces
-    with their edges written in a different order run to run (it orders by memory address; not threads - one thread
-    changes nothing), so the solid region's tetrahedra differ by about 0.5% (a stiffened panel's mount: 20,421 and
-    20,321). A boss and a cantilever's block repeat byte for byte. Sweeping only the core's inner faces (simple
-    offsets and Booleans, which do repeat) was tried and dropped: it swallowed a box's corner walls, emptied a
-    flanged tube's shell and made an L bracket 7.5% soft."""
+
+def _edge_key(edge) -> tuple:
+    """An edge's key from its geometry alone, exact (no rounding): its end points, sorted, and its curve's middle
+    point - the same edge made in any order has the same key."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.TopExp import TopExp
+
+    ends = tuple(sorted(_pt(BRep_Tool.Pnt_s(v)) for v in (TopExp.FirstVertex_s(edge), TopExp.LastVertex_s(edge))
+                        if not v.IsNull()))
+    if BRep_Tool.Degenerated_s(edge):
+        return (ends, ())
+    c = BRepAdaptor_Curve(edge)
+    return (ends, _pt(c.Value(0.5 * (c.FirstParameter() + c.LastParameter()))))
+
+
+def _children(shape) -> list:
+    """A shape's own children as stored (orientation and location relative to it)."""
+    from OCP.TopoDS import TopoDS_Iterator
+
+    it, out = TopoDS_Iterator(shape, False, False), []
+    while it.More():
+        out.append(it.Value())
+        it.Next()
+    return out
+
+
+def _canonical_wire(wire, b):
+    """The wire's edges in their connected order, started at the edge with the least key (a closed wire is a cycle:
+    only where it starts was left to the order OCC made it in)."""
+    from OCP.TopAbs import TopAbs_REVERSED
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS, TopoDS_Wire
+
+    edges = [TopoDS.Edge_s(e) for e in _children(wire)]
+    keys = [(_edge_key(e), int(e.Orientation() == TopAbs_REVERSED)) for e in edges]
+    left = sorted(range(len(edges)), key=lambda i: keys[i])
+    order = [left.pop(0)] if left else []
+    while left:
+        end = TopExp.LastVertex_s(edges[order[-1]], True)
+        nxt = [i for i in left if TopExp.FirstVertex_s(edges[i], True).IsSame(end)]
+        if not nxt:                       # not one chain (a wire OCC left unordered): the keys' order, whole
+            order = sorted(range(len(edges)), key=lambda i: keys[i])
+            break
+        order.append(nxt[0])              # `left` is in key order: of several next edges, the least key
+        left.remove(nxt[0])
+    nw = TopoDS_Wire()
+    b.MakeWire(nw)
+    for i in order:
+        b.Add(nw, edges[i])
+    nw.Closed(wire.Closed())
+    nw.Orientation(wire.Orientation())
+    nw.Location(wire.Location())
+    return nw, tuple(keys[i] for i in order)
+
+
+def canonical(shape):
+    """MIXED-2b: the same shape with its solids, shells, faces, wires and edges in an order read from their geometry
+    alone (exact keys: the end and middle points of edges), so a shape OCC hands back with the same faces in a
+    different order run to run becomes the same shape, byte for byte, and every Boolean and mesh made from it
+    repeats. The faces, edges, surfaces and curves are OCC's own, untouched: only their order changes."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_COMPOUND, TopAbs_FACE, TopAbs_FORWARD, TopAbs_SHELL, TopAbs_SOLID, TopAbs_WIRE
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shell, TopoDS_Solid
+
+    b = BRep_Builder()
+
+    def face(f):
+        f = TopoDS.Face_s(f)
+        outer = BRepTools.OuterWire_s(f)
+        wires = []
+        for w in _children(f):
+            if w.ShapeType() != TopAbs_WIRE:
+                return (), f              # a face holding more than wires is left as it is
+            nw, k = _canonical_wire(TopoDS.Wire_s(w), b)
+            wires.append((0 if w.IsSame(outer) else 1, k, nw))
+        wires.sort(key=lambda r: (r[0], r[1]))
+        # an empty copy keeps the face's surface, tolerance, orientation and location; its wires go in as stored
+        # (relative to the face), so it is added to with its own orientation and location set aside
+        nf = f.EmptyCopied()
+        ori, loc = nf.Orientation(), nf.Location()
+        nf.Orientation(TopAbs_FORWARD)
+        nf.Location(TopLoc_Location())
+        for _o, _k, nw in wires:
+            b.Add(nf, nw)
+        nf.Orientation(ori)
+        nf.Location(loc)
+        # two faces with the same boundary (two halves of a sphere on one circle) told apart by the surface's point
+        # at the middle of the face's parameters
+        from OCP.BRepAdaptor import BRepAdaptor_Surface
+
+        u0, u1, v0, v1 = BRepTools.UVBounds_s(f)
+        mid = _pt(BRepAdaptor_Surface(f).Value(0.5 * (u0 + u1), 0.5 * (v0 + v1)))
+        return (tuple(k for _o, k, _w in wires), mid), nf
+
+    def holder(s):
+        kind = s.ShapeType()
+        made = {TopAbs_SHELL: TopoDS_Shell, TopAbs_SOLID: TopoDS_Solid, TopAbs_COMPOUND: TopoDS_Compound}[kind]()
+        {TopAbs_SHELL: b.MakeShell, TopAbs_SOLID: b.MakeSolid, TopAbs_COMPOUND: b.MakeCompound}[kind](made)
+        parts = []
+        for c in _children(s):
+            t = c.ShapeType()
+            if t == TopAbs_FACE:
+                parts.append(face(c))
+            elif t in (TopAbs_SHELL, TopAbs_SOLID, TopAbs_COMPOUND):
+                parts.append(holder(c))
+            else:
+                return (), s              # holds an edge or a vertex of its own: left as it is
+        parts.sort(key=lambda r: r[0])
+        for _k, p in parts:
+            b.Add(made, p)
+        made.Closed(s.Closed())
+        made.Orientation(s.Orientation())
+        made.Location(s.Location())
+        return tuple(k for k, _p in parts), made
+
+    if shape.ShapeType() not in (TopAbs_SHELL, TopAbs_SOLID, TopAbs_COMPOUND):
+        return shape
+    return holder(shape)[1]
+
+
+def grown(core, dist: float):
+    """The core grown `dist` in every direction (OCC's offset by join, rounded at its edges), in canonical order.
+
+    MIXED-2b, REPEATABLE (2 Nov): on a block with flat sides OCC's offset hands back the same faces, surfaces and
+    curves (the same records, bit for bit) in a different order run to run (it orders by memory address; not
+    threads - one thread changes nothing), and the solid region's tetrahedra differed by about 0.5% (a stiffened
+    panel's mount: 20,421 and 20,321). canonical() puts them in an order read from their geometry, so the grown core,
+    every Boolean on it and both meshes repeat byte for byte. (Sweeping only the core's inner faces, which repeats
+    too, was tried and dropped: it swallowed a box's corner walls, emptied a flanged tube's shell and made an L
+    bracket 7.5% soft.)"""
     from OCP.BRepOffset import BRepOffset_Skin
     from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffsetShape
-    from OCP.GeomAbs import GeomAbs_Arc
+    from OCP.GeomAbs import GeomAbs_Arc, GeomAbs_Intersection
     from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 
     # the core comes out of a Boolean with its faces cut where the slabs met them: one face per surface first (the
     # offset of a corner column cut into four faces per side came back with no solid)
     u = ShapeUpgrade_UnifySameDomain(core, True, True, True)
     u.Build()
-    for shape in (u.Shape(), core):
+
+    # MIXED-2c: OCC's offset as it was; then with its complete intersection (inter=True), when that gives no solid;
+    # then of the core with its concave faces tighter than the growth taken out (OCC's defeaturing extends their
+    # neighbours to the sharp corner). A concave round tighter than the growth (a boss's 2 mm foot round grown
+    # 4 mm) turns inside out in the plain offset, which hands back no solid; the complete intersection trims it (the
+    # rounded boss: 40,963 mm3 grown from 19,043), and where it cannot (a whole round along an L's inside corner),
+    # the round is taken out first - grown that far, it is inside the grown core anyway (a point within d of the
+    # round is within d + r (1 - 1/sqrt 2) of the faces it rounds). The plain offset is tried first, so every core
+    # it grew grows as before. Last, the faces' offsets met at sharp edges (join by intersection), not rounded: where
+    # a wall leaves a face of the core its cut is the same plane, d off; only round the core's edges and corners does
+    # the solid reach further (d / sin(half the edge's angle) at an edge) - a little more solid, never less (a 12 mm
+    # block with a half-hole notch grew no other way: 18,543 mm3 from 1,119)
+    def tries():
+        for inter in (False, True):
+            for shape in (u.Shape(), core):
+                yield shape, inter, GeomAbs_Arc
+        tight = _tight_concave(u.Shape(), dist)
+        cut = _defeatured(u.Shape(), tight) if tight else None
+        if cut is not None:
+            yield cut, False, GeomAbs_Arc
+            yield cut, True, GeomAbs_Arc
+        for inter in (False, True):
+            for shape in (u.Shape(), core):
+                yield shape, inter, GeomAbs_Intersection
+
+    for shape, inter, join in tries():
         mk = BRepOffsetAPI_MakeOffsetShape()
-        mk.PerformByJoin(shape, float(dist), 1e-6 * max(dist, 1.0), BRepOffset_Skin, False, False, GeomAbs_Arc)
+        try:
+            mk.PerformByJoin(shape, float(dist), 1e-6 * max(dist, 1.0), BRepOffset_Skin, inter, False, join)
+        except Exception as exc:  # noqa: BLE001 - OCC raises on some offsets: the next way is tried
+            logger.debug("mixed: an offset raised (%s)", exc)
+            continue
         if not mk.IsDone():
             continue
         out = _solids(mk.Shape())
         vol = sum(ms._volume(s) for s in out)
         # an offset outward holds more than the core; one turned inside out or empty is no growth
         if out and vol > ms._volume(core):
-            return out[0] if len(out) == 1 else ms._compound(out)
+            return canonical(out[0] if len(out) == 1 else ms._compound(out))
     raise ValueError("a thick core could not be grown")
+
+
+def _tight_concave(shape, dist: float) -> list:
+    """The shape's faces that curve INTO the material (concave, seen from outside) more tightly than `dist`: at the
+    middle of each curved face, a principal curvature towards its outward normal over 1 / dist (OCC signs a
+    surface's curvature against its own normal; a reversed face's outward normal is the other way)."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.BRepTools import BRepTools
+    from OCP.GeomAbs import GeomAbs_Plane
+    from OCP.TopAbs import TopAbs_REVERSED
+
+    out = []
+    for f in ms._faces(shape):
+        s = BRepAdaptor_Surface(f)
+        if s.GetType() == GeomAbs_Plane:
+            continue
+        u0, u1, v0, v1 = BRepTools.UVBounds_s(f)
+        p = BRepLProp_SLProps(s, 0.5 * (u0 + u1), 0.5 * (v0 + v1), 2, 1e-9)
+        if not p.IsCurvatureDefined():
+            continue
+        sign = -1.0 if f.Orientation() == TopAbs_REVERSED else 1.0
+        if max(sign * p.MaxCurvature(), sign * p.MinCurvature()) > 1.0 / dist:
+            out.append(f)
+    return out
+
+
+def _defeatured(shape, faces: list):
+    """The shape with `faces` taken out by OCC's defeaturing, one thread; None when it cannot."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Defeaturing
+
+    df = BRepAlgoAPI_Defeaturing()
+    df.SetShape(shape)
+    for f in faces:
+        df.AddFaceToRemove(f)
+    df.SetRunParallel(False)
+    try:
+        df.Build()
+    except Exception as exc:  # noqa: BLE001 - no defeatured core: no more ways
+        logger.debug("mixed: defeaturing raised (%s)", exc)
+        return None
+    got = _solids(df.Shape()) if df.IsDone() else []
+    return got[0] if len(got) == 1 and len(ms._faces(got[0])) < len(ms._faces(shape)) else None
 
 
 def _near(shape, p: np.ndarray, tol: float) -> bool:
@@ -180,10 +381,14 @@ def _split(body, kept, thick_faces, scale: float, out: Split) -> None:
     marks = [p for p in (ms._inner_point(f) for f in thick_faces) if p is not None]
     cores, dropped = [], 0.0
     for piece in left:
-        if any(_near(piece, p, tol) for p in marks):
+        vol = ms._volume(piece)
+        # MIXED-1b: a piece thinner than half the thinnest wall (twice its volume over its area: a slab's own
+        # thickness) is no thick region but a rim the slabs left - the 0.6 mm ring round each hole of a 4 mm plate
+        # whose bores were read thick; grown it crashed OCC's offset. It is left-over metal as a junction's is
+        if any(_near(piece, p, tol) for p in marks) and 2.0 * vol >= CORE_MIN_WALLS * t_min * ms._area(piece):
             cores.append(piece)
         else:
-            dropped += ms._volume(piece)
+            dropped += vol
     out.dropped_volume = dropped
     if not cores:
         out.why = "no thick region is left once the shell walls are taken out"

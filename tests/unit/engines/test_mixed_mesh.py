@@ -176,3 +176,119 @@ def test_trimmed_mid_faces_keep_the_edges_they_share():
     shared = TopTools_IndexedDataMapOfShapeListOfShape()
     TopExp.MapShapesAndAncestors_s(ms._compound(sp.shell_faces), TopAbs_EDGE, TopAbs_FACE, shared)
     assert any(shared.FindFromIndex(i).Size() == 2 for i in range(1, shared.Extent() + 1))
+
+
+def _brep_text(shape) -> str:
+    import os
+    import tempfile
+
+    from OCP.BRepTools import BRepTools
+
+    fd, path = tempfile.mkstemp(suffix=".brep")
+    os.close(fd)
+    try:
+        BRepTools.Clean_s(shape)
+        BRepTools.Write_s(shape, path)
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    finally:
+        os.unlink(path)
+
+
+def test_canonical_order_is_read_from_the_geometry_not_from_the_order_it_was_built_in():
+    """MIXED-2b: the same solid with its faces (and their wires' edges) stored in another order comes out of
+    canonical() byte for byte the same, and is the same solid."""
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS, TopoDS_Shell, TopoDS_Solid
+    from tests.fea_fixtures import _box, _cyl, _fuse
+
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import mixed_split as mx
+
+    shape = mx._solids(_fuse(_box(0, 0, 0, 30, 20, 4), _cyl(15, 10, 4, 5, 8)))[0]
+
+    def reordered(solid):
+        b = BRep_Builder()
+        out, shell = TopoDS_Solid(), TopoDS_Shell()
+        b.MakeSolid(out)
+        b.MakeShell(shell)
+        old = TopoDS.Shell_s(mx._children(solid)[0])
+        for f in reversed(mx._children(old)):
+            b.Add(shell, f)
+        shell.Closed(True)
+        b.Add(out, shell)
+        return out
+
+    a, b = mx.canonical(shape), mx.canonical(reordered(shape))
+    assert _brep_text(a) == _brep_text(b)
+    assert _brep_text(reordered(shape)) != _brep_text(shape)
+    assert ms._volume(a) == pytest.approx(ms._volume(shape), rel=1e-12)
+    assert len(ms._faces(a)) == len(ms._faces(shape))
+
+
+def _same_records(text: str) -> str:
+    """A B-rep text with each edge's continuity record (the two faces it joins smoothly, "4 G1 s1 l1 s2 l2") naming
+    its two faces in one order: OCC writes that pair in the order it met the faces, which no mesh reads."""
+    out = []
+    for ln in text.splitlines():
+        r = ln.split()
+        if len(r) == 6 and r[0] == "4":
+            ln = " ".join([r[0], r[1], *sorted([" ".join(r[2:4]), " ".join(r[4:6])])])
+        out.append(ln)
+    return "\n".join(out)
+
+
+def test_a_flat_sided_core_grows_the_same_every_time():
+    """MIXED-2b: a stiffened panel's mount, less its walls' slabs, grown 6 mm: OCC's offset hands back its faces in a
+    different order call to call (four calls, four different files); grown() the same every time."""
+    from tests.fea_fixtures import _box, _fuse
+
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import mixed_split as mx
+
+    t = 3.0
+    shape = _fuse(_fuse(_fuse(_box(0, 0, 0, 160, 100, t), _box(0, 25 - t / 2, t, 160, t, 25)),
+                        _box(0, 75 - t / 2, t, 160, t, 25)), _box(60, 40, t, 40, 20, 20))
+    rec, surface = ms.extract(shape, mm_per_unit=1.0)
+    mids = {m["id"]: m for m in rec["mids"]}
+    kept = [(f, float(mids[o]["thickness_mm"])) for f, o in zip(ms._faces(surface), rec["surface_faces"], strict=True)]
+    left = mx._solids(mx._bop("cut", mx._solids(shape)[0], [mx.slab(f, 0.5 * w * 1.02) for f, w in kept]))
+    core = max(left, key=ms._volume)
+    assert len({_same_records(_brep_text(mx.grown(core, 6.0))) for _ in range(4)}) == 1
+
+
+def _filleted(shape, pick, r: float):
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    mk = BRepFilletAPI_MakeFillet(shape)
+    ex = TopExp_Explorer(shape, TopAbs_EDGE)
+    while ex.More():
+        e = TopoDS.Edge_s(ex.Current())
+        c = BRepAdaptor_Curve(e)
+        if pick(c.Value(0.5 * (c.FirstParameter() + c.LastParameter()))):
+            mk.Add(r, e)
+        ex.Next()
+    mk.Build()
+    return mk.Shape()
+
+
+def test_cores_with_rounds_tighter_than_the_growth_still_grow():
+    """MIXED-2c: concave 2 mm rounds grown 4 mm turn inside out in OCC's plain offset (no solid). A boss's foot round
+    cut by the plate's slab grows by the complete intersection; a whole round along an L's inside corner by taking
+    the round out first."""
+    from tests.fea_fixtures import _box, _cut, _fuse
+
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import mixed_split as mx
+
+    body = _filleted(_fuse(_box(0, 0, 0, 60, 60, 2), _box(24, 24, 2, 12, 12, 10)),
+                     lambda p: abs(p.Z() - 2) < 1e-6 and 23 < p.X() < 37 and 23 < p.Y() < 37, 2.0)
+    boss = mx._solids(_cut(body, _box(-1, -1, -1, 62, 62, 3.02)))[0]
+    ell = mx._solids(_filleted(_fuse(_box(0, 0, 0, 30, 20, 5), _box(0, 0, 0, 5, 20, 30)),
+                               lambda p: abs(p.X() - 5) < 1e-6 and abs(p.Z() - 5) < 1e-6, 2.0))[0]
+    for core in (boss, ell):
+        assert ms._volume(mx.grown(core, 4.0)) > 2.5 * ms._volume(core)

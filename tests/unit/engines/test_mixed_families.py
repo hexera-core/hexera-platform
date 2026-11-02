@@ -21,7 +21,27 @@ TOL, STRESS = 0.05, 0.10
 
 
 def _bb(x0, x1, y0, y1, z0, z1):
-    return lambda p: (p[:, 0] >= x0) & (p[:, 0] <= x1) & (p[:, 1] >= y0) & (p[:, 1] <= y1) & (p[:, 2] >= z0) & (p[:, 2] <= z1)
+    def inside(p):
+        return (p[:, 0] >= x0) & (p[:, 0] <= x1) & (p[:, 1] >= y0) & (p[:, 1] <= y1) & (p[:, 2] >= z0) & (p[:, 2] <= z1)
+
+    inside.centre = np.array([0.5 * (x0 + x1), 0.5 * (y0 + y1), 0.5 * (z0 + z1)])
+    return inside
+
+
+def _fit_at(pts: np.ndarray, vals: np.ndarray, at: np.ndarray, weights: np.ndarray | None = None) -> np.ndarray:
+    """The field AT `at`: a least-squares linear fit of the nodal values over the directions the points span (a line
+    of nodes is fitted along the line only), read at `at`. A plain mean of the nodes in a probe is the field where
+    the NODES are, which a shell mesh and a tetrahedral mesh place differently: on the flanged tube's middle box, where
+    the tube's deflection rises 25% along the box, the mixed mesh's four nodes sat 3 mm above the middle on average
+    (+5.5% read) while its deflection there was the solid's within 0.4%."""
+    q = pts - at
+    if len(q) < 2:
+        return vals.mean(axis=0)
+    _u, sv, vt = np.linalg.svd(q - q.mean(axis=0), full_matrices=False)
+    dirs = [vt[k] for k in range(len(sv)) if sv[0] > 0 and sv[k] >= 0.2 * sv[0]][: max(0, len(q) - 1)]
+    a = np.column_stack([np.ones(len(q))] + [q @ v for v in dirs])
+    w = np.ones(len(q)) if weights is None else weights
+    return np.linalg.lstsq(a * w[:, None], vals * w[:, None], rcond=None)[0][0]
 
 
 def _family(name: str):
@@ -47,8 +67,10 @@ def _family(name: str):
                      *[_box(x, y, 0, c, c, Z) for x in (0, X - c) for y in (0, Y - c)])
         top = _bb(X - c - .01, X + .01, Y - c - .01, Y + .01, Z - .01, Z + .01)
         return shape, {"fix": _bb(-1, X + 1, -1, Y + 1, -.01, .01), "load": top, "force": (-800.0, 0.0, 0.0),
-                           "probes": {"column top": top, "wall middle": _bb(30, 40, -1, t + 1, 15, 25)},
-                           "stress": ([35.0, 0.0, 30.0], [0, -1, 0], t)}
+                           # the back wall, between the loaded column and its neighbour (five walls from each, four
+                           # from the bottom): the front wall barely moves under this push (0.0002 mm, 0.3 MPa)
+                           "probes": {"column top": top, "back wall middle": _bb(30, 40, Y - t - 1, Y + 1, 17, 27)},
+                           "stress": ([35.0, Y, 22.0], [0, 1, 0], t)}
     if name == "stiff_panel_mount":
         shape = fuse(_box(0, 0, 0, 160, 100, t), _box(0, 25 - t / 2, t, 160, t, 25), _box(0, 75 - t / 2, t, 160, t, 25),
                      _box(60, 40, t, 40, 20, 20))
@@ -92,8 +114,10 @@ def _static(ws: Path, job: str, model, spec) -> tuple[dict, float]:
     out: dict = {}
     for i, (k, _ids) in enumerate(probes.items()):
         block = dat.lower().split(f"displacements (vx,vy,vz) for set p{i} ", 1)[1].split("displacements", 1)[0]
-        rows = [ln.split() for ln in block.splitlines()[1:]]
-        out[k] = np.array([[float(v) for v in r[1:4]] for r in rows if len(r) == 4 and r[0].isdigit()]).mean(axis=0)
+        rows = [r for r in (ln.split() for ln in block.splitlines()[1:]) if len(r) == 4 and r[0].isdigit()]
+        u = np.array([[float(v) for v in r[1:4]] for r in rows])
+        at = getattr(spec["probes"][k], "centre", None)
+        out[k] = u.mean(axis=0) if at is None else _fit_at(xyz[[int(r[0]) - 1 for r in rows]], u, at)
     return out, _vm_at((ws / f"{job}.frd").read_text(), *spec["stress"])
 
 
@@ -116,26 +140,32 @@ def _vm_at(frd: str, at, normal, wall: float) -> float:
     ok = np.flatnonzero(np.abs(off) <= 0.05 * wall)
     r = (x[ok] - at) - np.outer(off[ok], nrm)
     d = np.linalg.norm(r, axis=1)
-    # the stress AT the point: a plane through each component's nodal values on the face round it (the nearest
-    # few elements of either mesh), read there - the nearest node of a 5 mm shell mesh sat 2.5 mm off, where the
-    # bending moment of a loaded leg is 5% different
-    near = np.argsort(d)[: max(12, int(np.sum(d <= 2.5 * np.sort(d)[min(6, len(d) - 1)])))]
-    e1 = np.cross(nrm, [1.0, 0, 0] if abs(nrm[0]) < 0.9 else [0, 1.0, 0])
-    e1 /= np.linalg.norm(e1)
-    e2 = np.cross(nrm, e1)
-    a = np.column_stack([np.ones(len(near)), r[near] @ e1, r[near] @ e2])
+    # the stress AT the point: a linear fit through each component's nodal values on the face round it, read there
+    # (the nearest node of a 5 mm shell mesh sat 2.5 mm off, where the bending moment of a loaded leg is 5%
+    # different). The face round it is the nodes within three of the mesh's own node spacings there, weighted to
+    # the nearest: a fixed count of nodes reached 44 mm along a curved shell wall - the band keeps one line of
+    # nodes on a 15-degree faceted tube - into the flange's junction stress, and read the flanged tube 16% low
+    first = np.argsort(d)[:12]
+    p = r[first]
+    spacing = float(np.median(np.sort(np.linalg.norm(p[:, None, :] - p[None, :, :], axis=2), axis=1)[:, 1]))
+    near = np.flatnonzero(d <= 3.0 * spacing)
+    if len(near) < 4:
+        near = np.argsort(d)[:4]
     s = np.array([st[int(ids[ok[k]])] for k in near.tolist()])
-    sx, sy, sz, sxy, syz, szx = np.linalg.lstsq(a, s, rcond=None)[0][0]
+    w = np.exp(-(d[near] / (1.5 * spacing)) ** 2)
+    sx, sy, sz, sxy, syz, szx = _fit_at(r[near], s, np.zeros(3), w)
     return float(np.sqrt(0.5 * ((sx - sy) ** 2 + (sy - sz) ** 2 + (sz - sx) ** 2) + 3 * (sxy ** 2 + syz ** 2 + szx ** 2)))
 
 
-#: KNOWN OPEN (2 Nov, CI run 41376678380), kept in the table and run every time, not yet within the gate:
+#: KNOWN OPEN (2 Nov), kept in the table and run every time, not yet within the gate. The flanged tube is closed: its
+#: -15.7% stress and +5.5% middle were the READINGS (a fixed count of nodes along one line of a faceted wall reached
+#: into the flange's junction; four probe nodes sat 3 mm above the box's middle), not the mesh - read at the point,
+#: stress +2.8%, middle -0.7%, end -0.4%. Both modes below are as far from a converged all-solid mesh (wall / 3) as
+#: from the product's own, unchanged by a shell mesh twice as fine (-0.7%) or a cut 3 walls in (0.0%): the shell
+#: idealisation of a 4 mm box with 12 mm corner columns and of 20 mm by 3 mm ribs, not the mesh or the join
 OPEN = {
-    "tube_flange": "mid-tube displacement +5.5% and the stress read on the curved wall -15.7% (beam theory 8.55 MPa, "
-                   "all-solid 8.50, mixed 7.16); tube end -0.4%, modes within 3.5%",
-    "casting_ribs_block": "mode 12 -5.4% (modes 7 to 11 within 2.2%, statics within 4.4%)",
-    "box_corners": "mode 11 -5.3% (the rest within 3.6%, column top +0.2%); the wall probe sits where the column push "
-                   "barely reaches (0.0002 mm, 0.3 MPa), so its +33% / +16% says little - a better probe is owed",
+    "casting_ribs_block": "mode 12 -5.4% (modes 7 to 11 within 2.2%, statics within 3.7%)",
+    "box_corners": "mode 11 -5.3% (the rest within 3.6%, column top +0.2%)",
 }
 
 
@@ -161,6 +191,21 @@ def test_a_mixed_family_matches_its_all_solid_mesh(name, tmp_path):
     fm, fs = tb._modes(tmp_path, "mixed_m", mixed), tb._modes(tmp_path, "solid_m", solid)
     for k, (a, b) in enumerate(zip(fm[6:], fs[6:], strict=True), start=7):
         tb._record(f"mixed_{name}", "modal", f"mode {k} vs all-solid", a, b, TOL, n_mixed)
+    if tb.TRUTH_WALLS:                                  # the lab's converged reference, both models against it
+        truth = tb._truth(shape, tmp_path, spec["stress"][2] / tb.TRUTH_WALLS)
+        n_truth = tb._n(truth)
+        tru, vm_tru = _static(tmp_path, "truth_s", truth, spec)
+        ft = tb._modes(tmp_path, "truth_m", truth)
+        for label, g, v, f in (("mixed", got, vm, fm), ("all-solid", ref, vm_ref, fs)):
+            for k in spec["probes"]:
+                d = int(np.argmax(np.abs(tru[k])))
+                tb._record(f"mixed_{name}", "static", f"{k} displacement, {label} vs converged truth", g[k][d],
+                           tru[k][d], TOL, n_mixed, truth_elements=n_truth)
+            tb._record(f"mixed_{name}", "static", f"von Mises on the wall, {label} vs converged truth", v, vm_tru,
+                       TOL, n_mixed, truth_elements=n_truth)
+            for k, (a, b) in enumerate(zip(f[6:], ft[6:], strict=True), start=7):
+                tb._record(f"mixed_{name}", "modal", f"mode {k}, {label} vs converged truth", a, b, TOL, n_mixed,
+                           truth_elements=n_truth)
     assert max(fm[:6]) < 1e-3 * fm[6], fm[:7]          # no mechanism in the joins
     assert n_mixed < n_solid
     for k, e in errs:
