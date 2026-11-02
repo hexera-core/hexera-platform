@@ -247,6 +247,26 @@ def _take_back(store, object_key: str, *, ours: bytes, earlier: bytes | None, se
         logger.warning("geometry check: could not take back the stored confirmation - session_id=%s", session_id)
 
 
+def check_still_running(session_id: str, stored: dict | None) -> bool:
+    """Whether the stored check is still at work, read as the stage reads it: through its time box,
+    with the naming request and the worker's record (geometry_progress.still_checking). A marker
+    or record that cannot be read counts as none, so a broken store never holds Proceed for good."""
+    if not stored:
+        return False
+    from meshpipeline.application.geometry_check import RETRY_NAMING, limits_of, naming_requested, time_boxed
+    from meshpipeline.application.geometry_progress import progress_view, read_progress, still_checking
+
+    try:
+        requested = naming_requested(session_id)
+    except Exception:  # noqa: BLE001 - unreadable marker: "not asked yet", as the read path says
+        requested = None
+    progress = read_progress(session_id)
+    reported = time_boxed(stored, requested, progress=progress) or stored
+    view = progress_view(reported, requested, progress, scout_limit_s=limits_of(stored)[0],
+                         naming_limit_s=limits_of(requested, RETRY_NAMING)[0])
+    return still_checking(view, reported, progress)
+
+
 @router.get("/{session_id}/check")
 async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                     organization_id: str = Depends(org_dep)) -> dict:
@@ -365,6 +385,10 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                                         naming_limit_s=limits_of(requested, RETRY_NAMING)[0],
                                         confirmed=confirmed is not None,
                                         fea=payload.get("route") == fea_check.STAGE_FEA)
+    # PROCEED WAITS FOR THE CHECK: every Proceed on the stage and the card stays off while this is
+    # true, and the confirm below refuses one that comes before it is false
+    from meshpipeline.application.geometry_progress import still_checking
+    payload["checking"] = still_checking(payload["progress"], payload, progress)
     return payload
 
 
@@ -525,6 +549,16 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     session = await _owned_session(session_id, owner_id, organization_id)
     if session.job_id is not None:
         raise HTTPException(409, "This session has already been dispatched")
+    # PROCEED WAITS FOR THE CHECK, here as on the stage: a confirm that comes while the check is
+    # still at work (its scout, a preview still measured, the naming - an FEA part's walls, hot
+    # spots and joints) is refused with the reason. A check that fails or runs out of time is
+    # reported failed by its time box, and Proceed is open again with the way on.
+    from meshpipeline.application.geometry_check import check_object_key as _check_key
+    from meshpipeline.application.geometry_progress import STILL_CHECKING
+
+    _at_work = await asyncio.to_thread(_read_json, _check_key(str(session_id), "scout.json"))
+    if await asyncio.to_thread(check_still_running, str(session_id), _at_work):
+        raise HTTPException(409, STILL_CHECKING)
     # TWO OPENINGS WITH ONE NAME ARE NAMED APART, not refused: the check itself named five discarded
     # stickers "not_an_opening" and the stage then refused Proceed until the user renamed stickers
     # they were throwing away. Stickers marked not an opening never become patches, so their names

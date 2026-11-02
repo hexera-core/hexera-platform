@@ -157,3 +157,39 @@ export function createCheckProgress() {
 }
 
 export const CheckProgress = createCheckProgress();
+
+/* PROCEED WAITS FOR THE CHECK (Areen, 27 Oct). While the served check says `checking` - queued, a
+   step running, a preview still measured, the naming (an FEA part's walls, hot spots and joints) -
+   every Proceed on the page (the stage's, the card's, a thermal model's "Mesh this model") is off,
+   with the reason beside it; the next poll that says the check ended turns it back on. A check
+   that fails or times out is served as ended, so the way on is never shut. The server refuses an
+   early confirm too: this is the courtesy, not the guard. */
+export const WAIT_FOR_CHECK = "Waiting for the check to finish";
+const PROCEED = ".gc-proceed, .tm-mesh";
+const BUSY = ["Confirming…", "Sending…", "Sent"];
+
+/** Turn every Proceed under `root` off while `d.checking`, and back on once it is not. Returns
+ *  how many buttons are held. */
+export function gateProceed(root, d) {
+  if (!root || !root.querySelectorAll) return 0;
+  const wait = !!(d && d.checking);
+  let held = 0;
+  root.querySelectorAll(PROCEED).forEach((btn) => {
+    if (BUSY.includes(btn.textContent)) return;      // a confirm on its way, or one already sent
+    const hint = btn.parentElement && btn.parentElement.querySelector(".gc-hint, .tm-hint");
+    if (wait) {
+      held += 1;
+      if (btn.dataset.waiting === "1" && btn.disabled) return;
+      btn.dataset.waiting = "1"; btn.disabled = true; btn.title = WAIT_FOR_CHECK;
+      if (hint && hint.textContent !== WAIT_FOR_CHECK) { btn.dataset.hintWas = hint.textContent; hint.textContent = WAIT_FOR_CHECK; }
+    } else if (btn.dataset.waiting === "1") {
+      delete btn.dataset.waiting; btn.removeAttribute("title");
+      // a part the full reading stopped (an FEA surface, not a solid) keeps its own Proceed off
+      const scope = btn.closest(".fea-form, .gc-form, .req-card, .gc-panel");
+      btn.disabled = !!(scope && scope.querySelector(".fea-blocked"));
+      if (hint && hint.textContent === WAIT_FOR_CHECK) hint.textContent = btn.dataset.hintWas || "";
+      delete btn.dataset.hintWas;
+    }
+  });
+  return held;
+}

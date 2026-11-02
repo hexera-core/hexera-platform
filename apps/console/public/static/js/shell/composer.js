@@ -34,6 +34,8 @@ let deps = {
   geometryCard() {},
   // the check's live line in the conversation (render/check_progress.js), fed by the poll
   checkProgress() {},
+  // every Proceed on the page off while the served check says `checking` (render/check_progress.js)
+  gateProceed() {},
   // the open engine question's choice (every engine that can take the file, with its fit), and
   // the function that sends the user's pick
   engineChoice() {},
@@ -213,7 +215,7 @@ function safeUpdate(stage, d) {
 async function watchGeometryCheck(sessionId) {
   // THE STAGE OPENS AS SOON AS THE PART IS MEASURED, with the measuring step's own labels under
   // a banner that says what is happening, and takes the model's labels when they arrive. The
-  // user is already turning the part while the model thinks - and can proceed without it.
+  // user is already turning the part while the model thinks; Proceed opens once the check is done.
   let stage = null, stageFailed = false, told = "";
   // THE WAY ON when a step gave up: the scout when the part was never measured, the naming when
   // it was. The watch goes on, so the fresh result lands where the old one would have.
@@ -275,6 +277,7 @@ async function watchGeometryCheck(sessionId) {
       }
       _checkState = "over";
       releaseHold();                               // nothing to wait for any more
+      deps.gateProceed(d);                         // nor for Proceed
       return;
     }
     if (status === "failed" && !stage) {
@@ -300,6 +303,7 @@ async function watchGeometryCheck(sessionId) {
       // or runs the naming again from the stage, so the watch goes on
       safeUpdate(stage, d); _checkState = "ready";
       if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
+      deps.gateProceed(d);                       // the check ended: Proceed is the way on
       if (!d.retry) return;
     } else if (status === "scouted") {
       // THE STAGE OPENS ONCE THE PURPOSE IS KNOWN (`route`: what the user said the mesh is for):
@@ -325,8 +329,11 @@ async function watchGeometryCheck(sessionId) {
         if (stage) safeUpdate(stage, d); else if (!readySeen) await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
       }
       readySeen = true;
+      deps.gateProceed(d);
       if (!waitingFull) return;
     }
+    // PROCEED WAITS FOR THE CHECK: after whatever this poll drew, every Proceed follows `checking`
+    if (d) deps.gateProceed(d);
     await new Promise((r) => setTimeout(r, CHECK_POLL_MS));
   }
   // the watch gave up: the line says so and stops, instead of counting up for good

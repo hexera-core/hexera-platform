@@ -17,7 +17,7 @@ import { addNote, getJob } from "./api/endpoints.js";
 import { dispatch, resultSurface } from "./core/events.js";
 import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCopy }
   from "./core/state.js";
-import { CheckProgress } from "./render/check_progress.js";
+import { CheckProgress, gateProceed } from "./render/check_progress.js";
 import { Notice } from "./render/notice.js";
 import { openRepairPanel } from "./render/repair.js";
 import { Stage, closeLightbox, openLightbox, setCancelHandler, setResultHandler }
@@ -215,6 +215,8 @@ configureComposer({
   geometryCard: (d) => Stage.geometryCheckUpdate(d),
   // the check's live line, in the conversation while the part is checked
   checkProgress: (p, opts) => CheckProgress.show(Stage.col(), p, opts),
+  // every Proceed on the page stays off while the check is still at work
+  gateProceed: (d) => gateProceed(document, d),
 });
 
 configureDispute({
