@@ -148,7 +148,7 @@ def test_the_loop_leaves_a_missing_wall_alone_and_says_why(tmp_path):
 
     assert [d for d in result.defects if d.code is DefectCode.open_shell]
     assert not result.resolved
-    assert result.stopped_because in ("no_candidate", "stalled", "op_budget")
+    assert result.stopped_because in ("no_candidate", "stalled")
     # NOTHING WAS LIDDED. A patch here would be a different part handed back to the customer.
     assert not any(v.kept for v in result.verdicts), _attempts(result)
     # Every attempt was rolled back, so the shape is byte-identical - which also catches a silent

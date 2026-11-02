@@ -1,9 +1,10 @@
 # Responsibility: Drive the repair - ask the planner for one operation, have the session try it,
-#                 and stop when the part is sound or the budget is spent.
-# Owns: the budget, the stop reasons, and the record of the whole run.
+#                 and stop when the part is sound or no safe progress remains.
+# Owns: stall detection, the stop reasons, and the record of the whole run.
 # Boundaries: it chooses nothing and judges nothing. It reads no file and writes none.
 # Collaborates with: cad/repair/plan.py (what to try), cad/repair/session.py (trying it),
-#                    settings/cad_repair.py (the budget), cad/repair/conservative.py (its caller).
+#                    settings/cad_repair.py (stall and scan limits),
+#                    cad/repair/conservative.py (its caller).
 from __future__ import annotations
 
 import logging
@@ -28,10 +29,6 @@ logger = logging.getLogger(__name__)
 RESOLVED = "resolved"
 #: The planner has nothing left to try - every pair tried, or nothing claims what is left.
 NO_CANDIDATE = "no_candidate"
-#: `CAD_REPAIR_MAX_OPS` attempts made.
-OP_BUDGET = "op_budget"
-#: `CAD_REPAIR_TIMEOUT_S` spent on the WHOLE loop.
-TIME_BUDGET = "time_budget"
 #: `CAD_REPAIR_STALL_LIMIT` consecutive attempts were not kept.
 STALLED = "stalled"
 #: The defect scan hit its own budget, so the list is partial and no absence can be claimed.
@@ -42,7 +39,11 @@ _ERRORS = (DefectSeverity.error, DefectSeverity.fatal)
 
 @dataclass(frozen=True, slots=True)
 class LoopBudget:
-    """How much a run may spend. Read from settings unless a caller says otherwise."""
+    """Compatibility container for loop and scan settings.
+
+    `max_ops` and `timeout_s` no longer terminate the repair loop. `timeout_s` only bounds the
+    optional face analyzer through `remaining_s`; `stall_limit` stops repeated failed work.
+    """
 
     max_ops: int
     stall_limit: int
@@ -59,10 +60,9 @@ class LoopBudget:
 class RepairRun:
     """What a whole run did, and why it stopped.
 
-    `stopped_because` IS NOT A DETAIL. "No error defect remains" and "I ran out of operations"
-    produce the same shape and mean opposite things to a reviewer, to the corpus, and to a model
-    being scored. Code downstream must be able to tell them apart, so the reason travels with the
-    result rather than being guessed from the defect list.
+    `stopped_because` IS NOT A DETAIL. An incomplete scan may contain no errors without proving
+    the shape is sound. The reason therefore travels with the result rather than being guessed
+    from the defect list.
     """
 
     shape: object
@@ -162,8 +162,8 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
         reserved: frozenset = frozenset()) -> RepairRun:
     """Repair `shape` by trying one operation at a time, and report everything that happened.
 
-    `session` and `clock` are injectable so the driver's budget arithmetic can be tested without
-    a kernel and without waiting.
+    `session` and `clock` are injectable so scan-time accounting can be tested without a kernel
+    and without waiting.
 
     WHY THE PLANNER DECIDES WHETHER THERE IS WORK, rather than a blanket severity test on the
     defect list. A warning-only run must still reach operations such as `fix_small_edges`; a sound
@@ -173,9 +173,8 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
     """
     chosen = planner if planner is not None else RepairPlanner(())
     limits = budget if budget is not None else LoopBudget.from_settings()
-    # THE CLOCK STARTS BEFORE THE SESSION EXISTS, so the face scan's slice of the budget is a
-    # slice of what this run actually has left - including the first scan - and not of a fresh
-    # allowance every time the session re-inspects.
+    # THE CLOCK STARTS BEFORE THE SESSION EXISTS, so the optional face analyzer's slice includes
+    # the initial scan rather than resetting on each re-inspection.
     started = clock()
 
     def remaining() -> float:
@@ -206,15 +205,6 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
     entered_with_errors = _errors_remain(work)
     consecutive_misses = 0
     while True:
-        if len(work.log) >= limits.max_ops:
-            stopped = _terminal(work, OP_BUDGET)
-            break
-        if clock() - started >= limits.timeout_s:
-            # THE WHOLE LOOP, not one operation. Applied per operation, a six-operation run could
-            # spend six times a job's allowance before admission has judged the original at all.
-            stopped = _terminal(work, TIME_BUDGET)
-            break
-
         candidate = chosen.propose(work.defects(), history, shape=work.shape)
         if candidate is None:
             stopped = _terminal(work, NO_CANDIDATE)
@@ -260,8 +250,7 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
             # shells a sew would have fixed were never proposed. Recorded against the AIM
             # (operation + target set) so the planner cannot re-propose it from a sibling finding
             # on the same tangle; a run of nothing-but-declines still terminates, because every
-            # decline bans its aim (the planner runs dry, `no_candidate`) and the log it joins
-            # still counts against `max_ops`.
+            # decline bans its aim and the finite planner runs dry as `no_candidate`.
             history.mark_declined(candidate.op.name,
                                   (t.fingerprint for t in candidate.targets))
             continue
