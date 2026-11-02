@@ -30,8 +30,8 @@ def test_the_envelope_is_ftetwilds_default_unless_a_wall_is_thinner():
     assert TW.envelope_m(0.1, None) == pytest.approx(1e-4)
     # a 0.5 mm wall: never more than a tenth of it
     assert TW.envelope_m(0.1, 0.0005) == pytest.approx(5e-5)
-    # a 1 micron film: never below the floor share of the diagonal
-    assert TW.envelope_m(0.1, 1e-6) == pytest.approx(TW.EPS_FLOOR_SHARE * 0.1)
+    # a 1 micron film: held under half of it, never below the minimum share of the diagonal (LAD-fea-17)
+    assert TW.envelope_m(0.1, 1e-6) == pytest.approx(TW.EPS_MIN_SHARE * 0.1)
 
 
 def test_a_single_part_is_meshed_whole_at_its_base_size():
@@ -42,7 +42,9 @@ def test_a_single_part_is_meshed_whole_at_its_base_size():
     assert w["edge_length_m"] == pytest.approx(0.012)
     assert w["epsilon_m"] == pytest.approx(min(1e-3 * 0.12, 0.1 * 0.004))
     assert w["tessellation_m"] == pytest.approx(0.5 * w["epsilon_m"])
-    assert p["threads"] == 1 and p["rule"] == "LAD-fea-9" and p["version"].startswith("fTetWild ")
+    assert w["zone_floor_m"] == pytest.approx(TW.ZONE_FLOOR_EPS * w["epsilon_m"])
+    assert p["rule"] == "LAD-fea-9" and p["size_rule"] == "LAD-fea-17" and p["version"].startswith("fTetWild ")
+    assert p["max_its"] == TW.MAX_ITS and p["stop_energy"] == TW.STOP_ENERGY
 
 
 def test_an_assembly_part_gets_its_own_base_diagonal_and_walls():

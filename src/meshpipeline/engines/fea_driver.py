@@ -1195,7 +1195,8 @@ async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run,
         result = await _relayed_mesh(publish, ws, seq=900 + n, timeout=work["ceiling_s"])
         if _out_of_memory(result):
             moved, rule, decided = MM.step_up(machine, measured_gib=_peak_gib(result)), "RUN-3", "step up"
-        elif result.get("timed_out") and not result.get("stalled"):
+        elif result.get("timed_out") and not result.get("stalled") and not work.get("budget"):
+            # (a pass its own budget stopped - LAD-fea-18's rung - is not moved: it would only grind on elsewhere)
             moved, rule, decided = MM.off_the_wall(machine), "RUN-5", "off the wall"
         else:
             return result, machine, work
@@ -1203,7 +1204,7 @@ async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run,
             return result, machine, work
         machine = moved
         MM.write(ws, machine)
-        work = {**work, "ceiling_s": int(ceiling_for(run, machine))}
+        work = {**work, "ceiling_s": int(min(ceiling_for(run, machine), work.get("budget_ceiling_s") or math.inf))}
         _cite(job_id, [{"stage": "fea_machine", "decided": decided, "value": machine["machine"], "rule": rule,
                         "inputs": {"pass": n, "from": machine.get("stepped_from"), "need_gib": machine["need_gib"]},
                         "words": machine["words"]}])
@@ -1259,7 +1260,17 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
         plan = copy.deepcopy(first_plan)
         if record.get("assembly_plan"):
             plan["assembly"] = dict(record["assembly_plan"])          # as staged now (PLAN-fea-17)
-        settings = TW.params(plan, record, diag_m, parts)
+        # LAD-fea-17: the rung's own sizes (the envelope from the real walls - never a crossing face's reading)
+        settings = TW.params(plan, record, diag_m, parts, crossing=crossing)
+        # RUN-6: gmsh's model for the parts gmsh holds, fTetWild's own measured model for the parts it builds
+        elements = float((plan.get("estimate") or {}).get("elements") or 0)
+        process_gib, files_gib = memory_need(elements)
+        machine = TW.rung_machine(elements, process_gib, files_gib, margin=MEMORY_MARGIN)
+        # LAD-fea-18: THE RUNG'S TIME, sized from the part (its estimate at fTetWild's measured rate on the
+        # machine's cores), within the machine's wall; the pass's own backstop a margin past it
+        timed = TW.rung_budget(elements, cpus=int(machine.get("cpus") or TW.CLOUD_RUN_CPUS),
+                               wall_s=ceiling_for(run, machine))
+        settings["budget_s"] = timed["budget_s"]
         plan["mesh"] = {**(plan.get("mesh") or {}), "engine": TW.ENGINE, "ftetwild": settings}
         said = L.rung_words(parts, rung, crossing=crossing)
         plan["words"] = [*(plan.get("words") or []), said]
@@ -1267,20 +1278,22 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
                         "inputs": {"pass": n, "rung": rung, "parts": parts, "per_part": settings["per_part"],
                                    "version": settings["version"], "threads": settings["threads"]},
                         "words": said}])
+        _cite(job_id, [{"stage": "fea_ladder", "decided": "rung sizes", "value": TW.SIZE_RULE, "rule": TW.SIZE_RULE,
+                        "inputs": {"pass": n, "per_part": settings["per_part"], "basis": settings["basis"]},
+                        "words": TW.size_words(settings)}])
+        _cite(job_id, [{"stage": "fea_time", "decided": "rung budget", "value": timed["budget_s"],
+                        "rule": TW.TIME_RULE, "inputs": {"pass": n, **timed}, "words": TW.budget_words(timed)}])
         write_plan(ws, plan)
         run.note_authoring()
         _clear_outputs(ws)
         note_native_pass(ws, n)
         note_native_payload(ws, [p for p in PAYLOAD if (ws / p).exists()])
-        # RUN-6: gmsh's model for the parts gmsh holds, fTetWild's own measured model for the parts it builds
-        elements = float((plan.get("estimate") or {}).get("elements") or 0)
-        process_gib, files_gib = memory_need(elements)
-        machine = TW.rung_machine(elements, process_gib, files_gib, margin=MEMORY_MARGIN)
         _cite(job_id, [{"stage": "fea_machine", "decided": machine["where"], "value": machine["machine"],
                         "rule": TW.MEMORY_RULE, "inputs": {"pass": n, **machine["ftetwild"]},
                         "words": machine["words"]}])
         MM.write(ws, machine)
-        work = planned_work(plan, ceiling_s=ceiling_for(run, machine))
+        work = planned_work(plan, ceiling_s=min(ceiling_for(run, machine), timed["ceiling_s"]))
+        work.update(budget=timed["ceiling_s"] < ceiling_for(run, machine), budget_ceiling_s=timed["ceiling_s"])
         await run.fence("start native mesh")
         t0 = time.monotonic()
         from meshpipeline.contracts import narration as _N
@@ -1315,7 +1328,9 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
                                   f"fTetWild's pass {n} built no valid mesh ({facts.get('rung_error')}).")}])
         if made:
             _keep_pass(ws, n)
-        if facts["valid"] or parts is None or result.get("timed_out"):
+        # LAD-fea-18: a rung pass out of its time is not followed by another (it would only spend more)
+        if (facts["valid"] or parts is None or result.get("timed_out")
+                or TW.OUT_OF_TIME in str(facts.get("rung_error") or "")):
             break
     if not any(f["valid"] for f in ran) and gm and (ws / PASS_FOLDER.format(n=gm[-1]["pass"])).exists():
         # the rung built nothing valid either: the workspace is the last gmsh pass's again, as it was

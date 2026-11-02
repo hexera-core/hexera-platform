@@ -39,6 +39,11 @@ STAGES: dict[str, tuple[str, str]] = {
     "patches":      ("export",  "Naming the boundaries"),
     "checking":     ("check",   "Checking the cells"),
     "returning":    ("export",  "Sending the finished mesh back"),
+    # the FEA ladder's last rung (engines/fea_tetwild): its fill, its improvement rounds, its face names
+    "ftetwild":           ("fill",   "Filling the volume a second way"),
+    "ftetwild_improving": ("check",  "Improving the elements, round by round"),
+    "ftetwild_sizing":    ("refine", "Refining the elements to the sizes asked for"),
+    "ftetwild_faces":     ("export", "Naming the faces after your CAD"),
 }
 #: A stage key this table does not know still narrates - as plain meshing, never as its raw label.
 UNKNOWN_STAGE = ("fill", "Meshing your part")

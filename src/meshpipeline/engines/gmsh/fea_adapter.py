@@ -31,10 +31,16 @@ ALGORITHMS_3D = {"delaunay": 1, "hxt": 10}
 STAGE_FILE = "fea_stage.json"
 
 
-def note_stage(ws: Path, key: str, label: str) -> None:
+def note_stage(ws: Path, key: str, label: str, *, n: int | None = None, of: int | None = None,
+               unit: str = "") -> None:
+    """The mesher's step for the live line (engines/mesher_stage); `n` of `of` `unit` a count that moves
+    within the step (LAD-fea-18: fTetWild's improvement rounds)."""
     import time
+    step: dict = {"key": key, "label": label, "at": round(time.time(), 1)}
+    if n is not None:
+        step.update(n=int(n), **({"of": int(of)} if of else {}), **({"unit": unit} if unit else {}))
     try:
-        (Path(ws) / STAGE_FILE).write_text(json.dumps({"key": key, "label": label, "at": round(time.time(), 1)}))
+        (Path(ws) / STAGE_FILE).write_text(json.dumps(step))
     except OSError:
         pass
 
