@@ -566,6 +566,9 @@ def sewn_bodies(shape, surface: ff.Surface, mm: float) -> tuple[np.ndarray, int]
             ks = sorted({sewn_faces.FindIndex(f) for f in e2f.FindFromIndex(i)} - {0})
             if len(ks) != 2:
                 continue                                  # a free edge, or several parts meeting at one
+            if root(ks[0]) == root(ks[1]):
+                continue                                  # joined already: this edge changes nothing (and
+                                                          # its normals, read on the exact faces, are slow)
             dot = _edge_normals_dot(TopoDS.Edge_s(e2f.FindKey(i)), [sewn_faces.FindKey(k) for k in ks])
             if dot is not None and dot < back_to_back:
                 continue                                  # two parts lying against each other: a contact
