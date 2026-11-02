@@ -1444,7 +1444,7 @@ async def node_intake(state: PipelineState) -> dict:
             len(_requirements.request_txt), len(_requirements.review_brief_txt), job_id)
         return turn.completed_patch(_ctx, _record, _requirements, _exec_state.user_notes)
 
-    if (not _turn_moved_the_summary(_exec_state)
+    if (_ctx.approval is not None and not _turn_moved_the_summary(_exec_state)
             and ap.revivable(_ctx.approval, user_msg_count=_ctx.user_msg_count)):
         # THE SUMMARY STANDS AGAIN: this turn's message withdrew it as a change, yet the turn
         # changed nothing - the intake answered and submitted nothing new - so the user's next
