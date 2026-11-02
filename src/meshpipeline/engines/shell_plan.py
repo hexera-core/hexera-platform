@@ -39,13 +39,15 @@ def _r(v: float) -> float:
     return float(f"{float(v):.6g}")
 
 
-def base_size(*, wall: float, size: float, width: float, span: float | None = None) -> tuple[float, str]:
+def base_size(*, wall: float, size: float, width: float, span: float | None = None,
+              panel_walls: float = PANEL_WALLS) -> tuple[float, str]:
     """SHMESH-1, SHMESH-15 and SHMESH-2: a sheet face's base element size (mm) and the rule that set it. `span`
-    (mm) is the size of the largest sheet of the face's body (its own sheet's size when not given)."""
+    (mm) is the size of the largest sheet of the face's body (its own sheet's size when not given); `panel_walls`
+    the width, in walls, from which a face is a panel (a mixed part's record lowers it, engines/mixed_run)."""
     want = min(size / BASE_DIVISIONS, width / MIN_ACROSS)
     rule = "SHMESH-1"
     span = size if span is None else max(span, size)
-    if width >= max(PANEL_WALLS * wall, span / PANEL_SPAN) and width / PANEL_ACROSS < want:
+    if width >= max(panel_walls * wall, span / PANEL_SPAN) and width / PANEL_ACROSS < want:
         want, rule = width / PANEL_ACROSS, "SHMESH-15"
     if want < FLOOR_WALLS * wall:
         want, rule = FLOOR_WALLS * wall, "SHMESH-2"
@@ -76,7 +78,8 @@ def face_plan(record: Mapping, mid_id: str, *, width: float, radii: list[float],
     pairs = {p["id"]: p for p in record["pairs"]}
     span = max([float(pairs[m["pair"]].get("size_mm") or 0.0) for m in record["mids"]
                 if m.get("body") == mid.get("body") and m["pair"] in pairs] + [size])
-    h, rule = base_size(wall=wall, size=size, width=width, span=span)
+    h, rule = base_size(wall=wall, size=size, width=width, span=span,
+                        panel_walls=float(record.get("panel_walls", PANEL_WALLS)))
     if bend is not None and bend > 0:
         hb, brule = curve_size(bend, wall=wall)
         if hb < h:

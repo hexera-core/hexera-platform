@@ -42,6 +42,12 @@ FOLDER = "_mixed"
 FILES = ("mixed.bdf", "mixed.inp", "mixed_abaqus.inp", "mixed.cdb")
 #: MIXED-4: the least share of the part's metal its thin walls must hold for Auto to recommend Mixed
 MIXED_AUTO_SHARE = 0.5
+#: MIXED-7: in a mixed part every shell wall at least a tenth of its body's largest sheet wide is a panel
+#: (engines/shell_plan SHMESH-15, PANEL_ACROSS elements across), however few walls wide it is. A thick region
+#: stiffens the wall round it, so its free modes bend between the region and the wall's edges, in half-waves a
+#: fraction of the wall's width: a 2 mm plate 18 walls wide round a boss (just short of a panel) was meshed 7 across
+#: and its modes 7-12 came out up to 6.8% stiff of a converged solid mesh
+MIXED_PANEL_WALLS = 0.0
 MIXED = "mixed"
 WHY = "Thin walls meshed as shell ({share}% of the part, {thin}); {n} thick region{s} kept solid and joined to them."
 WHY_LOW = ("Only {share}% of this part is thin wall; the rest is thick, so a shell-and-solid mesh saves little. "
@@ -201,6 +207,7 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict):
         raise _Stop(split.why)
     rec2 = copy.deepcopy(record)
     rec2["surface_faces"] = [record["surface_faces"][k] for k in split.shell_from]
+    rec2["panel_walls"] = MIXED_PANEL_WALLS
     BRepTools.Write_s(ms._compound(split.shell_faces), str(out / "shell_trimmed.brep"))
     t1 = time.time()
     shell, applied = sa.mesh_shell(out / "shell_trimmed.brep", rec2, mm_per_unit=mm_per_unit)

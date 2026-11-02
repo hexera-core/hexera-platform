@@ -292,3 +292,16 @@ def test_cores_with_rounds_tighter_than_the_growth_still_grow():
                                lambda p: abs(p.X() - 5) < 1e-6 and abs(p.Z() - 5) < 1e-6, 2.0))[0]
     for core in (boss, ell):
         assert ms._volume(mx.grown(core, 4.0)) > 2.5 * ms._volume(core)
+
+
+def test_a_mixed_part_s_walls_are_panels_however_few_walls_wide():
+    """MIXED-7: an 18-wall-wide 2 mm plate is no panel to the shell plan (4 across by its width, a tenth of its
+    size); in a mixed part's record it is, 20 across."""
+    from meshpipeline.engines import shell_plan as sp
+
+    rec = {"mids": [{"id": "Mid_1", "pair": "P1", "body": "Part_1"}],
+           "pairs": [{"id": "P1", "thickness_mm": 2.0, "size_mm": 84.0}]}
+    plain = sp.face_plan(rec, "Mid_1", width=37.0, radii=[])
+    mixed = sp.face_plan({**rec, "panel_walls": mr.MIXED_PANEL_WALLS}, "Mid_1", width=37.0, radii=[])
+    assert plain["rule"] == "SHMESH-1" and plain["size_mm"] == pytest.approx(8.4)
+    assert mixed["rule"] == "SHMESH-15" and mixed["size_mm"] == pytest.approx(37.0 / sp.PANEL_ACROSS)
