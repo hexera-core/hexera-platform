@@ -304,6 +304,22 @@ def fea_limits(quality: Mapping) -> list[dict]:
                      "label": ("Bonded pairs left open - a face with no mesh node within the solver's reach of the other "
                                "part, so the pair is not joined there"),
                      "source": "docs/RULES.md PLAN-fea-21 (engines/fea_assembly_deck.open_joints)"})
+    slivers = aside.get("ftetwild_slivers")
+    if isinstance(slivers, Mapping) and slivers.get("elements"):
+        # LAD-fea-12: the last rung's slivers on the surface, each named - part, face, SICN, place - and NEVER a
+        # clean pass: the row is always missed (one entry per sliver, never empty), so the verdict is "with
+        # concerns" (VER-2). A bad element hidden from the user is worse than a failure (coordinator, 27 Oct)
+        named = [f"{x.get('part')} {x.get('face')}, SICN {float(x.get('sicn') or 0.0):.2g}, at "
+                 f"({', '.join(f'{float(v):g}' for v in x.get('at_mm') or [])}) mm"
+                 for x in slivers.get("slivers") or [] if isinstance(x, Mapping)]
+        named += ["(unnamed)"] * max(0, int(slivers["elements"]) - len(named))
+        rows.append({"key": "fea_ftetwild_slivers", "op": "empty", "limit": [], "measured": named,
+                     "label": (f"{int(slivers['elements'])} near-flat element(s) left by the last-resort mesher "
+                               f"(fTetWild) on the surface, SICN under {5e-5:g}, set aside from the quality floor - "
+                               "a solver accepts them (none is inverted), but stress right at them is not resolved; "
+                               "they sit at CAD details far smaller than the mesh - remove or enlarge those details "
+                               "in CAD for a clean mesh"),
+                     "source": "docs/RULES.md LAD-fea-12 (engines/fea_tetwild.mesh_into)"})
     return rows
 
 

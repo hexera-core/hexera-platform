@@ -60,7 +60,11 @@ CAD_DEFECT_GATE = "fea_cad_defect"
 #: stops at cad/fea_measure.MAX_RAY_TRIANGLES for speed; the plan cannot hold an unmeasured wall).
 MAX_RAY_TRIANGLES = 5_000_000
 #: What the remote mesher receives besides the plan: the solid and the facts the deck reads.
-PAYLOAD = (*P.STAGED_SOLIDS, "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json", "assembly.brep", "assembly.json")
+PAYLOAD = (*P.STAGED_SOLIDS, "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json", "assembly.brep", "assembly.json",
+           # LAD-fea-11: the parts an earlier pass meshed, kept for this one
+           "fea_kept_parts.msh", "fea_kept_parts.json")
+#: LAD-fea-11's files (engines/gmsh/fea_adapter.KEEP_MSH / KEEP_JSON)
+KEPT_FILES = ("fea_kept_parts.msh", "fea_kept_parts.json")
 #: Where each pass's deliverables are kept until the best one is chosen.
 PASS_FOLDER = "_fea_pass_{n}"  # noqa: S105 - a folder name, not a secret
 #: every file a pass writes that the delivery reads: the solver files ride with their mesh, so the
@@ -1130,6 +1134,52 @@ def _read_failure(ws: Path) -> dict:
         return {}
 
 
+def _drop_kept(ws: Path) -> None:
+    """LAD-fea-11: no pass reads parts kept under another staging or plan series."""
+    for name in KEPT_FILES:
+        (ws / name).unlink(missing_ok=True)
+
+
+def _kept_after(ws: Path, n: int, job_id: str) -> dict | None:
+    """LAD-fea-11: what the pass just run kept - the parts it filled while others failed - for the passes after
+    it (they mesh only the parts that failed, and keep the rest as they are); None when it kept nothing."""
+    from meshpipeline.engines.gmsh.fea_adapter import KEEP_JSON, KEEP_RULE
+
+    try:
+        meta = json.loads((ws / KEEP_JSON).read_text())
+    except (OSError, ValueError):
+        return None
+    if not meta.get("kept_volumes"):
+        return None
+    failed = list(meta.get("failed_parts") or [])
+    _cite(job_id, [{"stage": "fea_ladder", "decided": "keep the parts that meshed", "value": len(meta["kept_volumes"]),
+                    "rule": KEEP_RULE, "inputs": {"pass": n, "failed_parts": failed[:20],
+                                                  "kept_parts": len(meta.get("kept_parts") or [])},
+                    "words": (f"Pass {n} meshed {len(meta['kept_volumes'])} part volume(s) and could not fill "
+                              f"{', '.join(failed[:6]) or 'some'}; the next passes mesh only "
+                              f"{'that part' if len(failed) == 1 else 'those parts'} and keep the rest as they are.")}])
+    return {"rule": KEEP_RULE, "from_pass": int(n)}
+
+
+def _not_kept(ws: Path, bodies: int) -> list[int] | None:
+    """LAD-fea-11: the parts (k of Part_k, 1..bodies) the latest kept file does not keep - those that still
+    failed and those the last gmsh pass's fill never reached (it stops at its first failure); None when there
+    is no kept file."""
+    from meshpipeline.engines.gmsh.fea_adapter import KEEP_JSON
+
+    try:
+        meta = json.loads((ws / KEEP_JSON).read_text())
+    except (OSError, ValueError):
+        return None
+    kept: set[int] = set()
+    for p in meta.get("kept_parts") or []:
+        try:
+            kept.add(int(str(p).rsplit("_", 1)[-1]))
+        except ValueError:
+            continue
+    return [k for k in range(1, int(bodies) + 1) if k not in kept]
+
+
 def _clear_outputs(ws: Path) -> None:
     for name in ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.msh", "quality.json", "fea_failure.json"):
         (ws / name).unlink(missing_ok=True)
@@ -1188,7 +1238,8 @@ def _rung_error(result: dict) -> str:
 
 
 async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, passes: list[dict], *,
-                     job_id: str, run, publish=None) -> tuple[dict, list[dict]]:
+                     job_id: str, run, publish=None,
+                     kept: dict | None = None) -> tuple[dict, list[dict]]:
     """LAD-fea-9: at most fea_tetwild.MAX_RUNG_PASSES passes - an assembly's parts the failed passes
     named first, then every part - each on the plan the last round of gmsh passes started from (the other
     parts meshed as that pass meshed them), plus fTetWild's settings (engines/fea_tetwild.params).
@@ -1202,16 +1253,28 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
     if (record.get("assembly_plan") or {}).get("mode") == "bonded":
         # the rung meshes a part on its own: a fused assembly is staged apart and tied first (PLAN-fea-17)
         record = await asyncio.to_thread(restage_tied, ws, record)
+        kept = None
+    if kept is None:
+        _drop_kept(ws)
     gm = [p for p in passes if p.get("engine") != TW.ENGINE]
     ran: list[dict] = []
     for rung in range(1, TW.MAX_RUNG_PASSES + 1):
         parts = TW.rung_parts(record, gm, rung)
+        if rung == 1 and kept is not None and int(record.get("bodies") or 1) > 1:
+            # LAD-fea-11: every part not kept goes to fTetWild, each with its own settings - the parts that STILL
+            # failed, and the parts the last gmsh pass never reached (gmsh has had its passes: tried again here, one
+            # that fails would send every part to fTetWild on the whole assembly's settings, the kept ones too). A
+            # part a later gmsh pass did fill is kept as gmsh filled it
+            rest = _not_kept(ws, int(record.get("bodies") or 1))
+            parts = rest if rest else parts
         n = len(passes) + len(ran) + 1
         plan = copy.deepcopy(first_plan)
         if record.get("assembly_plan"):
             plan["assembly"] = dict(record["assembly_plan"])          # as staged now (PLAN-fea-17)
         settings = TW.params(plan, record, diag_m, parts)
-        plan["mesh"] = {**(plan.get("mesh") or {}), "engine": TW.ENGINE, "ftetwild": settings}
+        plan["mesh"] = {**(plan.get("mesh") or {}), "engine": TW.ENGINE, "ftetwild": settings,
+                        # LAD-fea-11: the other parts as an earlier pass meshed them (its first rung pass)
+                        **({"keep": kept} if kept is not None and rung == 1 else {})}
         said = L.rung_words(parts, rung)
         plan["words"] = [*(plan.get("words") or []), said]
         _cite(job_id, [{"stage": "fea_ladder", "decided": "last rung", "value": TW.ENGINE, "rule": "LAD-fea-9",
@@ -1393,6 +1456,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     chosen: dict = {}
     first_plan: dict = {}
     n0 = 0
+    kept: dict | None = None
     while True:
         for n in range(n0 + 1, n0 + L.MAX_PASSES + 1):
             await _N.astep(publish, "plan", f"Planning the mesh · {_N.pass_words(n - n0, L.MAX_PASSES)}"
@@ -1426,6 +1490,11 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 plan = _restate(record, plan)
             if n == n0 + 1:
                 _cite(job_id, plan["decisions"])
+            if kept is not None:
+                # LAD-fea-11: only the parts that failed are meshed; the rest as the pass before kept them
+                plan["mesh"] = {**(plan.get("mesh") or {}), "keep": kept}
+            else:
+                _drop_kept(ws)
             write_plan(ws, plan)
             run.note_authoring()
             _clear_outputs(ws)
@@ -1566,6 +1635,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 if said:
                     passes[-1]["bad_faces"] = passes[-1].get("bad_faces") or said.get("bad_faces") or []
                     passes[-1]["bad_surfaces"] = passes[-1].get("bad_surfaces") or said.get("bad_surfaces") or []
+                # LAD-fea-11: the parts this pass did fill are kept for the passes after it
+                kept = _kept_after(ws, n, job_id) or kept
             if ((record.get("assembly_plan") or {}).get("mode") == "bonded" and not passes[-1].get("valid")
                     and (_fused_fill_failed(result, passes[-1]) if not made else _fused_joints_invalid(q))):
                 # PLAN-fea-17 AT ONCE: the fill could not build the FUSED bonded parts (a volume left
@@ -1610,6 +1681,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             # slivers it cannot fill): the parts are meshed apart and tied where they meet - still
             # bonded, never a stop. Not after a memory kill: that ends the attempt (LAD-fea-7)
             record = await asyncio.to_thread(restage_tied, ws, record)
+            kept = None
+            _drop_kept(ws)
             _cite(job_id, [{"stage": "fea_ladder", "decided": "tied", "value": "tie", "rule": "PLAN-fea-17",
                             "inputs": {"passes": len(passes)},
                             "words": ("No pass built the bonded parts as one mesh, so each part is meshed on its "
@@ -1625,7 +1698,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         # still without one, the other parts as the tie meshed them. Never for our infrastructure (a
         # guard trip, a worker too small) or a plan out of memory on the largest machine (LAD-fea-7)
         record, ran = await _last_rung(ws, record, diag_m, first_plan, passes, job_id=job_id, run=run,
-                                       publish=publish)
+                                       publish=publish, kept=kept)
         passes.extend(ran)
         if ran and ran[-1].get("not_run") and not any(f["valid"] for f in ran):
             last = ran[-1]

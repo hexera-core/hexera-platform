@@ -378,6 +378,62 @@ def orient(xyz: np.ndarray, tets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return t, np.abs(vol)
 
 
+#: LAD-fea-12: a tetrahedron whose volume is under this share of its longest edge cubed is all but flat (a regular
+#: one has 0.118). On ox_mc_lid's Part_239 that is SICN about 5e-5 and under, the worst element the quality record
+#: (four decimals) still reads as above 0; the flattest, 3e-16, gmsh measured inside out.
+FLAT_SHARE = 1e-6
+FLAT_RULE = "LAD-fea-12"
+#: ...and a sliver still under this SICN after the peel, with a face on the surface, is set aside from the floor and
+#: named (the gmsh adapter's DEGENERATE_SICN: the record would read it as 0.0)
+SLIVER_SICN = 5e-5
+
+
+def _odd_edges(tris: np.ndarray) -> int:
+    """How many edges of the boundary triangles are not the edge of exactly two of them."""
+    e = np.sort(np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]]), axis=1)
+    _u, count = np.unique(e, axis=0, return_counts=True)
+    return int((count != 2).sum())
+
+
+def peel_flat(xyz: np.ndarray, tets: np.ndarray) -> tuple[np.ndarray, int, int]:
+    """LAD-fea-12: fTetWild's flat slivers ON THE SURFACE taken off. fTetWild can leave a tetrahedron with no
+    volume lying on the part's surface, two or three of its faces outside (Part_239 of ox_mc_lid: ten of them in
+    one 50-micron spot, the flattest measured inside out). Such a sliver holds no material: it is dropped, one at a
+    time, flattest first, whenever the surface without it has no more edges off two triangles than it had (fTetWild's
+    own surface can have a few already), and again while dropping one lays bare another. A flat one inside the part
+    is left for the gate.
+    `tets` oriented (orient). Returns (the tets kept, how many were dropped, how many flat ones are left)."""
+    t = np.asarray(tets, dtype=np.int64)
+    edges = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
+
+    def flat(tt):
+        a, b, c, d = (xyz[tt[:, i]] for i in range(4))
+        vol = np.abs(np.einsum("ij,ij->i", np.cross(b - a, c - a), d - a)) / 6.0
+        lmax = np.max([np.linalg.norm(xyz[tt[:, i]] - xyz[tt[:, j]], axis=1) for i, j in edges], axis=0)
+        rel = vol / np.maximum(lmax, 1e-300) ** 3
+        idx = np.where(rel < FLAT_SHARE)[0]
+        return idx[np.argsort(rel[idx], kind="stable")]
+
+    dropped = 0
+    while True:
+        cand = flat(t)
+        if not len(cand):
+            return t, dropped, 0
+        surface = boundary(t)
+        outside = {tuple(sorted(f)) for f in surface.tolist()}
+        odd = _odd_edges(surface)
+        took = False
+        for i in cand.tolist():
+            if sum(tuple(sorted(t[i, list(c)].tolist())) in outside for c in TET_FACES) < 2:
+                continue
+            rest = np.delete(t, i, axis=0)
+            if _odd_edges(boundary(rest)) <= odd:
+                t, dropped, took = rest, dropped + 1, True
+                break
+        if not took:
+            return t, dropped, int(len(cand))
+
+
 def boundary(tets: np.ndarray) -> np.ndarray:
     """The triangles that are the face of one tetrahedron only, oriented outward, in a fixed order."""
     f = np.concatenate([tets[:, list(c)] for c in TET_FACES])
@@ -751,7 +807,8 @@ def run_parts(jobs: list[dict], workers: int) -> list[dict]:
 
 
 def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *, volume_index: Mapping[int, int],
-              surface_tag_of: Mapping[int, int], names: list[str], order: int = 2, workers: int = 1) -> dict:
+              surface_tag_of: Mapping[int, int], names: list[str], order: int = 2, workers: int = 1,
+              model_scale: float = 1.0) -> dict:
     """fTetWild's mesh of each of `volumes` (gmsh volume tags of the staged model), written INTO that
     model: its nodes on the volume, its 10-node tetrahedra in the volume, each boundary triangle (6-node)
     on the CAD surface it is nearest to. `volume_index`: gmsh volume tag -> 0-based solid index (MapShapes
@@ -763,7 +820,9 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
     settings = (plan.get("mesh") or {}).get("ftetwild") or {}
     per = settings.get("per_part") or {}
     shape, fmap, _smap, own = cad_faces(staged)
-    scale = frame_scale(gmsh, shape)
+    # the reader's unit to the mesh's: a model built `model_scale` times its metres whose mesh is back in metres
+    # (MESH-4, LAD-fea-11) takes fTetWild's parts in metres too
+    scale = frame_scale(gmsh, shape) / float(model_scale or 1.0)
     jobs, meta = [], []
     from meshpipeline.cad.fea_assembly import part_of_face
 
@@ -794,10 +853,16 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
     out_parts = []
     worst_dev = 0.0
     eps_max = 0.0
+    aside_tags: list[int] = []
+    aside_slivers: list[dict] = []
     moved_all: list[str] = []
     lost_all: list[str] = []
     for m, r in zip(meta, results, strict=True):
         tets, _vol = orient(r["xyz"], r["tets"])
+        tets, peeled, flat_left = peel_flat(r["xyz"], tets)
+        if peeled:
+            print(f"[FTETWILD] {m['key']}: {peeled} flat sliver(s) on the surface taken off ({FLAT_RULE})",
+                  file=sys.stderr)
         tris = boundary(tets)
         if order > 1:
             xyz10, tet10, tri6 = quadratic(r["xyz"], tets, tris)
@@ -834,6 +899,26 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
         etags = elem_next + np.arange(len(tet10), dtype=np.int64)
         elem_next += len(tet10)
         gmsh.model.mesh.addElementsByType(m["volume"], tet_type, etags.tolist(), tags[tet10].ravel().tolist())
+        # LAD-fea-12: the slivers the peel could not take off (a face on the surface, the rest inside) - set aside
+        # from the floor and named, as a detail too small for the mesh (PLAN-fea-12); a flat one wholly inside is
+        # left for the gate
+        q = np.asarray(gmsh.model.mesh.getElementQualities(etags.tolist(), "minSICN"), dtype=float)
+        thin = np.where(q < SLIVER_SICN)[0]
+        if len(thin):
+            outside = {tuple(sorted(f)): j for j, f in enumerate(tris.tolist())}
+            onface = []
+            for i in thin.tolist():
+                out_faces = [outside[k] for c in TET_FACES if (k := tuple(sorted(tets[i, list(c)].tolist()))) in outside]
+                if out_faces:
+                    onface.append(i)
+                    # each one named: its part, the CAD face its outside face lies on, its SICN and where
+                    aside_slivers.append({"part": m["key"], "face": names[int(tri_face[out_faces[0]])],
+                                          "sicn": float(f"{q[i]:.3g}"),
+                                          "at_mm": np.round(r["xyz"][tets[i]].mean(axis=0) * 1000.0, 3).tolist()})
+            aside_tags += [int(etags[i]) for i in onface]
+            if onface:
+                print(f"[FTETWILD] {m['key']}: {len(onface)} sliver(s) on the surface under SICN {SLIVER_SICN:g} set aside "
+                      f"({FLAT_RULE})", file=sys.stderr)
         for k in m["faces"]:
             sel = tri_face == k
             if not sel.any():
@@ -848,6 +933,8 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
                           "cad_to_mesh_mm": _sig(float(cdist.max(initial=0.0)) * 1e3),
                           "sizing_field": m["sized"],
                           "faces": len(m["faces"]), "moved_faces": moved, "lost_faces": lost,
+                          **({"flat_slivers_dropped": peeled, "flat_rule": FLAT_RULE} if peeled else {}),
+                          **({"flat_inside": flat_left} if flat_left else {}),
                           "command": r.get("command")})
         worst_dev = max(worst_dev, dev)
         eps_max = max(eps_max, m["eps"] + m["deflection"])
@@ -857,7 +944,10 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
             "parts": [p["part"] for p in out_parts], "per_part": out_parts,
             "epsilon_mm": _sig(eps_max * 1e3), "deviation_mm": _sig(worst_dev * 1e3),
             "moved_faces": moved_all, "lost_faces": lost_all,
-            "tied": bool(settings.get("tied"))}
+            "tied": bool(settings.get("tied")),
+            # LAD-fea-12: the slivers set aside (the adapter holds the floor without them, the delivery names them)
+            **({"set_aside": {"rule": FLAT_RULE, "elements": len(aside_tags), "slivers": aside_slivers,
+                              "tags": aside_tags}} if aside_tags else {})}
     info["words"] = words(info)
     print(f"{RUNG_LINE} meshed {', '.join(str(p['part']) for p in out_parts)}: "
           + ", ".join(f"{p['part']} {p['elements']} elements in {p['fTetWild_s']} s, within {p['deviation_mm']} mm"
@@ -866,5 +956,6 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
 
 
 __all__ = ["BIN_PATH", "COMMIT", "ENGINE", "MAX_RUNG_PASSES", "Nearest", "VERSION", "binary", "boundary",
-           "closest_on_triangles", "envelope_m", "failed_parts", "mesh_into", "orient", "params", "quadratic",
-           "rung_parts", "run_part", "sizing_grid", "split_long", "tessellate", "words"]
+           "closest_on_triangles", "envelope_m", "failed_parts", "FLAT_RULE", "FLAT_SHARE", "mesh_into", "orient",
+           "params", "peel_flat", "quadratic", "SLIVER_SICN", "rung_parts", "run_part", "sizing_grid", "split_long", "tessellate",
+           "words"]
