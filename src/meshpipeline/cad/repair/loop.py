@@ -17,6 +17,7 @@ from meshpipeline.cad.repair.contracts import DefectSeverity
 # the planner's permission and the session's exemption cannot drift apart.
 from meshpipeline.cad.repair.directives import HELD_ANSWERING_SOURCES, RepairPlanner
 from meshpipeline.cad.repair.localize import analyzer_only
+from meshpipeline.cad.repair.operations import FixSmallFaces
 from meshpipeline.cad.repair.plan import RunHistory
 from meshpipeline.cad.repair.session import HEAL_OP, OpVerdict, RepairSession
 
@@ -128,6 +129,13 @@ def _analyzer_heal(candidate, session: RepairSession) -> bool:
     )
 
 
+def _enabled_sliver_sweep(candidate, session: RepairSession) -> bool:
+    """Allow the deployment-controlled sweep once after an error-led repair."""
+    return (bool(rcfg.CAD_REPAIR_FIX_SMALL_FACES)
+            and candidate.op.name == FixSmallFaces.name
+            and not any(verdict.op == FixSmallFaces.name for verdict in session.log))
+
+
 def _terminal(session: RepairSession, fallback: str) -> str:
     """What to call a finished run. ONE place, so no break path can disagree with another.
 
@@ -212,7 +220,8 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
             stopped = _terminal(work, NO_CANDIDATE)
             break
         if (entered_with_errors and not _errors_remain(work) and not _abandoned(work)
-                and not _analyzer_heal(candidate, work)):
+                and not _analyzer_heal(candidate, work)
+                and not _enabled_sliver_sweep(candidate, work)):
             stopped = RESOLVED
             break
 

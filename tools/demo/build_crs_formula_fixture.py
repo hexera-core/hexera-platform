@@ -23,6 +23,7 @@ FORMULA_OPENINGS = (
     FaceSelector("floor_panel_starboard", (1497.5, 58.8, 495.3), 4891.3),
     FaceSelector("floor_panel_port", (505.9, 48.8, -495.4), 6072.4),
     FaceSelector("diffuser_floor_tab", (2761.7, 53.8, -477.1), 269.0),
+    FaceSelector("rear_wing_starboard_panel", (2986.2, 115.1, 470.0), 89790.5),
 )
 
 
@@ -151,7 +152,7 @@ def build_fixture(source: Path, output: Path, manifest: Path, *,
 
 def build_formula_fixture(source: Path, output: Path, manifest: Path) -> None:
     build_fixture(source, output, manifest, selectors=FORMULA_OPENINGS,
-                  remove_prior_demo_solid=True, vehicle="Formula 1000 CFD body")
+                  vehicle="Formula 1000 CFD body")
 
 
 def main() -> int:

@@ -174,6 +174,34 @@ def test_an_error_repair_stops_before_preexisting_warning_cleanup():
     assert [d.fingerprint for d in result.defects] == ["edge:warning"]
 
 
+def test_an_enabled_sliver_sweep_runs_once_after_error_repair(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FIX_SMALL_FACES", True)
+    error = _defect(fingerprint="edge:error")
+    warning = _defect(fingerprint="edge:warning", severity=DefectSeverity.warning, index=2)
+    repair, sweep = _Op(), _Op()
+    repair.name = "fix_error"
+    sweep.name = "fix_small_faces"
+
+    class _ErrorThenSweep:
+        label = "error-then-sweep"
+
+        def propose(self, defects, history, *, shape):
+            for defect in defects:
+                op = repair if defect.severity is DefectSeverity.error else sweep
+                if not history.was_ineffective(defect.fingerprint, op.name):
+                    return Candidate(op=op, targets=op.targets_for(defect),
+                                     defect_code=defect.code,
+                                     defect_fingerprint=defect.fingerprint)
+            return None
+
+    result = run(None, planner=_ErrorThenSweep(),
+                 session=_session([((error, warning), True), ((warning,), True), ((), True)]),
+                 tolerance_mm=0.01)
+
+    assert result.stopped_because == RESOLVED and result.resolved
+    assert [verdict.op for verdict in result.verdicts] == ["fix_error", "fix_small_faces"]
+
+
 def test_a_truncated_scan_is_never_reported_as_resolved():
     # A walk that stopped at its budget has a short list because it stopped, not because the part
     # is sound. Calling that resolved is how a repairable defect gets delivered as a clean bill.

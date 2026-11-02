@@ -247,6 +247,23 @@ def test_removing_one_error_does_not_excuse_a_warning_explosion():
     assert verdict.status == ROLLED_BACK and verdict.reason == "new_defect"
 
 
+def test_a_sliver_sweep_may_rename_warnings_only_when_the_total_falls():
+    target = _defect(DefectCode.small_face, fingerprint="face:sliver", kind="face")
+    old_a = _defect(fingerprint="edge:old-a", index=2)
+    old_b = _defect(fingerprint="edge:old-b", index=3)
+    renamed = _defect(fingerprint="edge:renamed", index=4)
+    op = _Op(outcome=OpOutcome(
+        shape="fixed",
+        mapping=EntityMapping(moved={}, gone=frozenset({"face:sliver"}), basis="kernel"),
+    ))
+    op.name = "fix_small_faces"
+    session = _session(scans=[((target, old_a, old_b), True), ((renamed,), True)])
+
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+
+    assert verdict.status == KEPT, verdict.reason
+
+
 def test_a_persisting_warning_renamed_by_a_kernel_rebuild_is_not_a_new_defect():
     box = {"bbox_min": [10.0, 20.0, 30.0], "bbox_max": [11.0, 20.0, 30.0]}
     target = _defect(DefectCode.open_shell, fingerprint="edge:rim", severity=DefectSeverity.error)
