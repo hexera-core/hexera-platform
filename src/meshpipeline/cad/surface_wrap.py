@@ -61,6 +61,11 @@ LAST_CUBES_PER_R = 0.5
 WRAP_GRADED_CUBES = 128_000_000
 #: A pocket of free space holding fewer cubes is grid noise: not read for its winding number.
 MIN_POCKET_CUBES = 8
+#: An opening narrower than this many cubes of the finest grid the wrap could draw (its equivalent
+#: diameter) is below the wrap's resolution: when its vessel cannot be kept open, the opening is put
+#: where the vessel still is - the wrap's faces nearest the drawn opening, as much area as it has -
+#: and the delivery says how far it moved. A wider opening that cannot be reached stops the rung.
+SMALL_OPENING_CUBES = 6.0
 #: At most this many pockets are read for their winding number (the largest first).
 MAX_POCKETS = 2000
 #: The wrap distance from the part's own size: the diagonal of the surface over this - about half
@@ -326,20 +331,31 @@ def wrap_surface(T: np.ndarray, labels: np.ndarray, *, flow: str, seed=None,
     verts, faces = field_.skin(r)
     verts, faces = _oriented(verts, faces, field_, internal=internal)
     target = _skin_target(verts, faces, r)
-    if len(faces) > target * 1.2:
-        v2, f2 = _decimate(verts, faces, target)
+    # the coarsening is kept only closed; a coarsening that opened the skin is tried again a step
+    # gentler (1.6 and 2.5 times the triangles), and only when every step opens it is the full skin
+    # kept (and then never past MAX_SKIN_TRIANGLES x 2.5: the engines read every triangle)
+    for t in (target, int(target * 1.6), int(target * 2.5)):
+        if len(faces) <= t * 1.2:
+            break
+        v2, f2 = _decimate(verts, faces, t)
         try:
             _check_closed(v2, f2)
             verts, faces = v2, f2
+            break
         except WrapError:
-            logger.info("cfd wrap: the coarsened skin was not closed - the full skin is kept")
+            logger.info("cfd wrap: the skin coarsened to %d triangles was not closed", t)
     _check_closed(verts, faces)
     named = _names(verts, faces, field_, labels)
+    moved: list[dict] = []
+    if internal and field_.moved:
+        named, moved = _place_moved(verts, faces, named, T, labels, field_.moved)
     if internal:
         missing = [p for p in ports if not np.any(named == p)]
         if missing:
             raise WrapError("the wrapped surface lost the opening(s) " + ", ".join(missing))
     report = _measure(verts, faces, named, field_, r, labels)
+    if moved:
+        report["openings_moved"] = moved
     report.update({"distance_rule": RULE_DISTANCE, "flow": flow, "distance_m": r, "distance_from": how,
                    "cube_m": grid.h, "grid": list(grid.shape), "tries": tries,
                    "diag_m": diag,
@@ -376,6 +392,8 @@ class _Field:
         self.d = approx.copy()
         self._band_m = 0.0
         self.fluid: np.ndarray = np.zeros(grid.shape, dtype=bool)
+        self.lost: list[str] = []
+        self.moved: list[str] = []
 
     def exact_band(self, upto: float) -> None:
         """Exact distances for every centre the wall's EDT puts within `upto` (+ 2 cubes)."""
@@ -492,6 +510,7 @@ class _Field:
             flat = comp.reshape(-1)
             probes = {p: self.grid.index_of(self._probes(labels, p, r + 1.5 * self.grid.h)) for p in ports}
             lost = [p for p in ports if not flat[probes[p]].any()]
+            self.lost = lost
             if lost:
                 return False, (f"at a wrap distance of {r * 1000:.3g} mm the flow no longer reaches "
                                f"the opening(s) {', '.join(lost)}")
@@ -531,15 +550,24 @@ class _Field:
         return self.grid.origin + ijk * self.grid.h
 
     def _cut_off(self, fluid: np.ndarray, seed, probes: dict, r: float) -> list[str]:
-        """The openings whose fluid, grown back by r, is not the seed's connected space."""
+        """The openings left in a DEAD END: the fluid grown back by r may be several separate
+        passages (a phantom with two inputs, a tube bank's two sides) - cfMesh meshes them side by
+        side, and the run's passage count holds the rest to that (SW-11) - but every passage must
+        hold a way through, two openings at least. The openings alone in their passage, or in none
+        (they reach only space the fluid does not hold), are returned."""
         from scipy import ndimage
         grown = ndimage.distance_transform_edt(~fluid) * self.grid.h <= r + 1e-12
         lab, _n = ndimage.label(grown)
-        k = int(lab.reshape(-1)[self.grid.index_of(np.asarray(seed, dtype=np.float64))[0]])
-        if k == 0:
-            k = int(np.bincount(lab.reshape(-1)[fluid.reshape(-1)]).argmax())
         flat = lab.reshape(-1)
-        return [p for p, q in probes.items() if not np.any(flat[q] == k)]
+        where: dict[str, int] = {}
+        for p, q in probes.items():
+            ids = flat[q]
+            ids = ids[ids > 0]
+            where[p] = int(np.bincount(ids).argmax()) if len(ids) else 0
+        count: dict[int, int] = {}
+        for k in where.values():
+            count[k] = count.get(k, 0) + 1
+        return [p for p, k in where.items() if k == 0 or count[k] < 2]
 
     def skin(self, r: float) -> tuple[np.ndarray, np.ndarray]:
         """The skin: the zero level of the distance to the wrapped fluid's edge. The fluid side's
@@ -617,11 +645,33 @@ def _internal_fluid(T, labels, seed, ports, lo, hi, diag, r, *, cubes: int, give
          the narrowest way to the openings;
       2. the same distance, every pocket the boundary encloses (overlapping shells merged);
       3. both again at 0.6 of the distance, then 0.36, down to half a grid cube;
-      4. all of that once more on the GRADED grid (up to WRAP_GRADED_CUBES).
+      4. all of that once more on the GRADED grid (up to WRAP_GRADED_CUBES);
+      5. a staged boundary left OPEN (the flood got out to the open air): both again at twice, four
+         and eight times the distance, never past the diagonal over WRAP_MAX_DIAG_SHARE.
     Returns (grid, field, r, bottleneck, tries); raises WrapError naming the openings cut off."""
     tries: list[dict] = []
     bottleneck = None
-    last_why = ""
+    whys: list[str] = []
+    areas = _port_areas(T, labels, ports)
+    best: list = []                      # [n lost, grid, field, r, lost] - the fewest small losses
+
+    def attempt(field_, grid, rr):
+        for union in (False, True):
+            field_.lost = []
+            reached, why = field_.flood(rr, seed=seed, labels=labels, ports=ports, union=union)
+            lost = list(field_.lost)
+            small = all(_small_opening(areas.get(q, 0.0), grid.h) for q in lost)
+            if not reached and lost and small and len(lost) < len(ports) \
+                    and (not best or len(lost) < best[0]):
+                best[:] = [len(lost), grid, field_, rr, lost, union]
+            tries.append({"distance_m": rr, "cube_m": grid.h, "cubes": grid.n, "reached": reached,
+                          "fluid": "enclosed pockets" if union else "joined to the seed",
+                          **({"why": why} if why else {})})
+            if reached:
+                return True
+            whys.append(why)
+        return False
+
     for cap in (cubes, max(cubes, WRAP_GRADED_CUBES)):
         if cap != cubes and tries and tries[-1].get("cubes", 0) >= WRAP_GRADED_CUBES * 0.9:
             break
@@ -637,22 +687,87 @@ def _internal_fluid(T, labels, seed, ports, lo, hi, diag, r, *, cubes: int, give
                 rr, per_r = r_pass, MIN_CUBES_PER_R
                 grid, rr = grid_for(lo, hi, rr, cubes=cap, per_r=per_r)
                 field_ = _Field(T, grid)
+        leaked = False
         while True:
-            for union in (False, True):
-                reached, why = field_.flood(rr, seed=seed, labels=labels, ports=ports, union=union)
-                tries.append({"distance_m": rr, "cube_m": grid.h, "cubes": grid.n, "reached": reached,
-                              "fluid": "enclosed pockets" if union else "joined to the seed",
-                              **({"why": why} if why else {})})
-                if reached:
-                    return grid, field_, rr, bottleneck, tries
-                last_why = why
+            if attempt(field_, grid, rr):
+                return grid, field_, rr, bottleneck, tries
+            leaked = leaked or any("open air" in w or "no space inside" in w for w in whys[-2:])
+            if leaked:
+                break                      # a smaller wrap only lets more out: step 5
             floor = LAST_CUBES_PER_R * grid.h
             if rr <= floor * 1.001:
                 break
             rr = max(rr * WRAP_SHRINK, floor)
+        if leaked:
+            for k in (1, 2, 3):
+                r_k = r * (2 ** k)
+                if r_k > diag / WRAP_MAX_DIAG_SHARE:
+                    break
+                grid, rr = grid_for(lo, hi, r_k, cubes=cubes)
+                field_ = _Field(T, grid)
+                if attempt(field_, grid, rr):
+                    return grid, field_, rr, bottleneck, tries
+            break
         if cap >= WRAP_GRADED_CUBES:
             break
-    raise WrapError(last_why or "the wrap could not keep every opening reachable")
+    if best:
+        # ONLY OPENINGS BELOW THE WRAP'S RESOLUTION WERE CUT OFF: the best such try stands, its fluid
+        # drawn again, and the lost openings are put where their vessels still are (wrap_surface)
+        _n, grid, field_, rr, lost, union = best
+        field_.lost = []
+        field_.flood(rr, seed=seed, labels=labels, ports=ports, union=union)
+        kept = [q for q in ports if q not in lost]
+        if union and kept:
+            probes = {q: grid.index_of(field_._probes(labels, q, rr + 1.5 * grid.h)) for q in kept}
+            cut = field_._cut_off(field_.fluid, seed, probes, rr)
+            if cut:
+                raise WrapError(f"the opening(s) {', '.join(cut)} are joined to the rest of the flow "
+                                f"only through ways narrower than {2000.0 * rr:.3g} mm")
+        field_.moved = list(lost)
+        tries.append({"distance_m": rr, "cube_m": grid.h, "cubes": grid.n, "reached": True,
+                      "fluid": "enclosed pockets" if union else "joined to the seed",
+                      "openings_below_resolution": lost})
+        return grid, field_, rr, bottleneck, tries
+    raise WrapError((whys[-1] if whys else "") or "the wrap could not keep every opening reachable")
+
+
+def _place_moved(V, F, named, T, labels, lost) -> tuple[np.ndarray, list[dict]]:
+    """Each lost opening put on the wrap: the wall faces nearest the drawn opening's centre, taken
+    nearest first until they hold the drawn opening's area. Returns (names, what moved and how far)."""
+    named = named.copy()
+    C = V[F].mean(axis=1)
+    A = np.linalg.norm(np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]]), axis=1) / 2.0
+    out = []
+    for q in lost:
+        t = T[labels == q]
+        if not len(t):
+            continue
+        ta = np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1) / 2.0
+        centre = (t.mean(axis=1) * ta[:, None]).sum(axis=0) / max(float(ta.sum()), 1e-300)
+        wall = np.flatnonzero(named == "wall")
+        if not len(wall):
+            continue
+        dist = np.linalg.norm(C[wall] - centre, axis=1)
+        order = wall[np.argsort(dist, kind="stable")]
+        take = order[: max(1, int(np.searchsorted(np.cumsum(A[order]), float(ta.sum())) + 1))]
+        named[take] = q
+        out.append({"opening": str(q), "moved_m": float(np.min(dist)),
+                    "centre_m": [round(float(v), 6) for v in C[take].mean(axis=0)],
+                    "area_m2": float(A[take].sum()), "drawn_area_m2": float(ta.sum())})
+    return named, out
+
+
+def _port_areas(T, labels, ports) -> dict:
+    out = {}
+    for q in ports:
+        t = T[labels == q]
+        out[q] = float(np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1).sum() / 2.0)
+    return out
+
+
+def _small_opening(area: float, h: float) -> bool:
+    """An opening whose equivalent diameter is under SMALL_OPENING_CUBES cubes."""
+    return 2.0 * float(np.sqrt(max(area, 0.0) / np.pi)) < SMALL_OPENING_CUBES * h
 
 
 def _contour(phi: np.ndarray, grid: WrapGrid) -> tuple[np.ndarray, np.ndarray]:
