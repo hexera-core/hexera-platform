@@ -291,9 +291,9 @@ thin-wall point, von Mises on a wall away from every junction, free-free modes 7
 | stiffened panel with a thick mount | 25,987 / 167,056 | +0.2%, -0.3% | -2.3% | -2.2 to +0.1% |
 | casting with ribs and a block | 30,892 / 127,221 | -1.4%, -1.5% | -4.4% | -2.2 to 0.0%; mode 12 -5.4% (open) |
 | tube with a thick flange | 27,630 / 113,227 | end -0.4%; middle +5.5% (open) | -15.7% (open) | +0.0 to +3.5% |
-| box with thick corners | | the split refused it at the old 2% junction-metal limit; rerun at 5% | | |
+| box with thick corners | 44,794 / 63,586 | column top +0.2%; wall probe barely loaded (open) | (open) | -3.6 to -1.3%; mode 11 -5.3% (open) |
 
-Six rigid-body modes at zero on every mixed model: no mechanism in the joins. Open: the flanged tube (the stress on its
+Six rigid-body modes at zero on every mixed model: no mechanism in the joins. Open: the box (its wall probe sits where the load barely reaches; mode 11), the flanged tube (the stress on its
 curved wall reads 7.16 MPa where beam theory and the solid give 8.55 and 8.50; the mid-tube displacement +5.5%), the
 casting's 12th mode, the box, a converged (finer than two elements through the wall) all-solid truth, and the
 training-set parts and repeat runs on a lab machine. Bugs the families found and fixed: mid-faces trimmed one by

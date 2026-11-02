@@ -134,6 +134,8 @@ OPEN = {
     "tube_flange": "mid-tube displacement +5.5% and the stress read on the curved wall -15.7% (beam theory 8.55 MPa, "
                    "all-solid 8.50, mixed 7.16); tube end -0.4%, modes within 3.5%",
     "casting_ribs_block": "mode 12 -5.4% (modes 7 to 11 within 2.2%, statics within 4.4%)",
+    "box_corners": "mode 11 -5.3% (the rest within 3.6%, column top +0.2%); the wall probe sits where the column push "
+                   "barely reaches (0.0002 mm, 0.3 MPa), so its +33% / +16% says little - a better probe is owed",
 }
 
 
