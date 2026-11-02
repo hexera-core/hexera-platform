@@ -284,3 +284,67 @@ def test_a_nose_from_the_pictures_says_where_it_came_from_and_how_sure_it_is():
 def test_a_shape_too_small_to_read_says_so():
     assert fr.read_flow(np.zeros((2, 3, 3)), _facts()) == {
         "read": False, "reason": "the skin is too small or too large to read quickly"}
+
+
+# ------------------------------------------------------------------- a vehicle on its wheels ----
+def _wheel(x: float, y: float, r: float = 0.33, w: float = 0.25) -> np.ndarray:
+    """A tyre: a closed cylinder across y, standing on z = 0."""
+    w_ = _revolved([(0.0, 0.0), (0.0, r), (w, r), (w, 0.0)], axis=1)
+    w_[..., 0] += x
+    w_[..., 1] += y - w / 2
+    w_[..., 2] += r
+    return w_
+
+
+def _road_car(nose_drop: bool = True) -> np.ndarray:
+    """A 4.8 m car body standing clear of the floor on four tyres: a long low bonnet at +x when
+    nose_drop, else a box with ends alike (a bus)."""
+    if nose_drop:
+        side = [(0.0, 0.3), (0.0, 1.05), (0.4, 1.1), (1.2, 1.4), (2.6, 1.4), (3.5, 0.95), (4.8, 0.75), (4.8, 0.3)]
+    else:
+        side = [(0.0, 0.3), (0.0, 1.4), (4.8, 1.4), (4.8, 0.3)]
+    body = _loft(side, side, 1.9)
+    body[..., 1] -= 0.95
+    wheels = [_wheel(x, y) for x in (1.1, 3.9) for y in (-0.8, 0.8)]
+    return np.concatenate([body, *wheels])
+
+
+def test_a_car_on_its_wheels_stands_on_the_ground_and_flows_from_its_nose():
+    facts = _facts(flow="external", kind="solid-body", openings=())
+    reading = _read(_road_car(), facts)
+    wheels = reading["vehicle"]
+    assert wheels["supports"] == 4 and wheels["axis"] == "x" and wheels["nose"] == "+x"
+    assert facts["grounded"] is True and "wheels" in " ".join(facts["notes"])
+    axis, said = axis_from_reading(facts["flow_axis_reading"], "+z")
+    assert axis == "-x" and said["confidence"] == fr.CONF_VEHICLE_NOSE
+    out = external_defaults({**facts, "size_mm": [4800.0, 1900.0, 1400.0]}, None)
+    # surer than the longest side, said as a guess to confirm on the picture
+    assert out["flow_axis"] == "-x" and out["grounded"] and out["flow_axis_confidence"] == 0.55
+    assert "lower one" in out["flow_axis_from"]
+
+
+def test_a_vehicle_with_ends_alike_gets_its_length_and_no_sign():
+    facts = _facts(flow="external", kind="solid-body", openings=())
+    reading = _read(_road_car(nose_drop=False), facts)
+    assert reading["vehicle"]["nose"] is None and facts["grounded"] is True
+    axis, said = axis_from_reading(facts["flow_axis_reading"], "+z")
+    assert axis == "+x" and said["confidence"] == fr.CONF_VEHICLE_AXIS and "for you to say" in said["reason"]
+
+
+def test_a_body_on_one_flat_underside_or_floating_is_no_vehicle():
+    floating = _car()
+    floating[..., 2] += 0.5
+    assert fr.on_wheels(fr.read_skin(floating)) is None              # one patch at its lowest plane
+    wing = _loft([(0.0, 0.0), (0.5, 0.05), (1.0, 0.0), (0.5, -0.02)], [(0.0, 0.0), (0.5, 0.05), (1.0, 0.0), (0.5, -0.02)], 3.0)
+    assert fr.on_wheels(fr.read_skin(wing)) is None
+
+
+def test_a_vehicle_read_as_a_passage_is_on_the_ground_once_the_flow_goes_round_it():
+    # DrivAerML's car came out of the scout as a passage: the vehicle reading still says it stands on
+    # its wheels, and only a body in a flow reads that (the proposal's external defaults)
+    facts = _facts(flow="internal", kind="fluid-domain", openings=())
+    fr.apply_reading(facts, {"read": True, "vehicle": {"supports": 4, "spread": 0.5, "axis": "x", "nose": None},
+                             "direction": []})
+    assert facts["grounded"] is True and facts["flow"] == "internal"
+    from meshpipeline.contracts.unit_plausibility import INTERNAL_PASSAGE, shape_kind
+    assert shape_kind("internal", [4.8, 1.9, 1.4], grounded=True) is INTERNAL_PASSAGE
