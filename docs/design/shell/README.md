@@ -279,32 +279,63 @@ joined to them."
 **The solid region's mesh** is the FEA path's own: the region is staged in metres and measured, planned and meshed by
 `fea_driver.measure_staged` / `choose_plan` and `gmsh/fea_adapter.mesh` (no AI pass and no ladder in this version).
 
-**Proof (2 Nov, CI's accuracy lane, CalculiX on GitHub's runners).** Mixed against the FEA path's own all-solid
-C3D10 mesh of the same part (two quadratic elements through every wall), static displacement at the load and at a
-thin-wall point, von Mises on a wall away from every junction, free-free modes 7 to 12; tolerance 5% (stress 10%):
+**MIXED-1b, rims are no cores.** A left-over piece thinner than half the thinnest wall (twice its volume over its
+area) is a rim the slabs left, not a thick region: a 4 mm plate whose hole bores were read thick left a 0.6 mm ring
+round each hole, and growing those crashed OCC. It counts as left-over metal, as a junction's does.
+
+**MIXED-2b, repeatable.** OCC's offset hands back the same faces, surfaces and curves (bit for bit, as sets) in a
+different order each run (it orders by memory address). `canonical()` stores the grown core's solids, shells,
+faces, wires and edges again in an order read from exact geometric keys (an edge's end points and middle point; a
+face's edges and the surface point at its parameters' middle), so every Boolean on it and both meshes repeat.
+
+**MIXED-2c, cores that grow.** A concave round tighter than the growth turns inside out in OCC's plain offset (no
+solid). The core is then grown with the offset's complete intersection; then with its tight concave faces taken out
+by OCC's defeaturing (grown that far the round is inside the grown core anyway); last with sharp joins, which reach
+a little further round the core's edges, never less far. The plain offset is tried first, so every core it grew
+grows as before.
+
+**MIXED-7, mixed walls are panels.** A thick region stiffens the wall round it, so the wall's free modes bend in
+half-waves a fraction of its width. In a mixed part every shell wall at least a tenth of its body's largest sheet
+wide gets SHMESH-15's 20 elements across, however few walls wide it is: a 2 mm plate 18 walls wide round a boss
+was meshed 7 across and its modes 7-12 came out up to 6.8% stiff of a converged solid; as a panel, within 0.9%.
+
+(The casting's wall / 3 truth ran past CalculiX's one-hour limit on one thread; its truth is wall / 2.5, 254,288
+elements, which the product's all-solid mesh matches within 0.6% on every mode and 0.1% on the statics.)
+
+**Proof (2 Nov, lab VM, CalculiX 2.21 on one thread).** The CI accuracy lane's parts against a CONVERGED all-solid
+truth: a uniform C3D10 mesh of wall / 3 everywhere (24 a turn on curves; `MIXED_TRUTH_WALLS=3`, too big for a
+runner). The product's own all-solid mesh is within 0.25% of it on every mode, so CI's comparison against it holds.
+Static displacements and stress are read AT the probe point (a weighted linear fit over the directions the nodes
+span, within three local node spacings), and each load is shared so it acts at the loaded face's middle (equal
+nodal shares put it where a graded mesh's nodes are: the casting's all-solid mesh put the block's load 8.7 mm
+nearer the clamp and read 11% stiff); modes 7-12 free-free:
 
 | part | elements, mixed / all-solid | displacements | stress | modes 7-12 |
 |---|---|---|---|---|
-| cantilever strip in a block | 9,096 / 55,600 | tip -2.5% (beam theory -2.3%); in-plane -1.6%; stretch 0.0% | | +0.8 to +3.4% |
-| plate with a thick boss | 10,137 / 55,276 | -3.1%, -3.5% | | +2.6 to +3.7% |
-| L bracket with a thick pad | 18,643 / 67,691 | -1.7%, -4.4% | +0.6% | 0.0 to +2.5% |
-| stiffened panel with a thick mount | 25,987 / 167,056 | +0.2%, -0.3% | -2.3% | -2.2 to +0.1% |
-| casting with ribs and a block | 30,892 / 127,221 | -1.4%, -1.5% | -4.4% | -2.2 to 0.0%; mode 12 -5.4% (open) |
-| tube with a thick flange | 27,630 / 113,227 | end -0.4%; middle +5.5% (open) | -15.7% (open) | +0.0 to +3.5% |
-| box with thick corners | 44,794 / 63,586 | column top +0.2%; wall probe barely loaded (open) | (open) | -3.6 to -1.3%; mode 11 -5.3% (open) |
+| cantilever strip in a block | 13,367 / 55,600 | tip -0.2%; in-plane -1.2%; stretch -0.2% | | -0.1 to +0.7% |
+| plate with a thick boss | 13,320 / 55,276 | -0.2%, -0.4% | | +0.1 to +0.8% |
+| L bracket with a thick pad | 22,279 / 67,691 | +0.9%, +1.0% | +0.1% | -1.2 to -0.6% |
+| stiffened panel with a thick mount | 33,179 / 167,056 | +0.2%, +0.1% | +0.6% | -2.7 to -0.7% |
+| tube with a thick flange | 31,038 / 113,227 | end -2.2%, middle -3.1% | -0.7% | +0.2 to +0.5% |
+| casting with ribs and a block (truth wall / 2.5) | 36,249 / 127,221 | -0.6%, +0.2% | -3.3% | -3.1 to -0.2%; mode 12 -6.8% (open) |
+| box with thick corners | 45,954 / 63,586 | column top -1.4%; back wall +23.2% (open) | +3.0% | -4.0 to -1.4%; mode 11 -5.5% (open) |
 
-Six rigid-body modes at zero on every mixed model: no mechanism in the joins. Open: the box (its wall probe sits where the load barely reaches; mode 11), the flanged tube (the stress on its
-curved wall reads 7.16 MPa where beam theory and the solid give 8.55 and 8.50; the mid-tube displacement +5.5%), the
-casting's 12th mode, the box, a converged (finer than two elements through the wall) all-solid truth, and the
-training-set parts and repeat runs on a lab machine. Bugs the families found and fixed: mid-faces trimmed one by
-one lost their shared edges (an L bracket hinged at its corner); half-wall junction strips were dropped (a stiffened
-panel's stiffeners came loose); a node two link rows share was tied twice (CalculiX stops).
+The flanged tube's old -15.7% stress and +5.5% middle were the readings, not the mesh: the stress was a plane fit
+through a fixed count of nodes, and on a 15-degree faceted wall the band keeps one line of nodes, so it reached
+44 mm along the wall into the flange's junction (7.16 MPa; the shell node beside the point read 8.56, beam theory
+8.55); the middle was the mean of four nodes sitting 3 mm above the box's middle, where the deflection rises 2.5%
+a millimetre. Read at the point, the tube is within 3.1% everywhere.
 
-**Repeatability.** A plate with a boss and the cantilever's block give byte-identical decks run to run. A
-flat-sided core does not yet: OCC's 3D offset (MIXED-2) hands back the same faces with their edges in a different
-order each run (by memory address, not threads), and the solid region's mesh differs by about 0.5%. Sweeping the
-core's inner faces instead (simple offsets and Booleans, which repeat) was tried and dropped: it swallowed a box's
-corner walls, emptied a flanged tube's shell and made the L bracket 7.5% soft.
+Open, explained: the box and the casting's 12th mode. Both are as far from the converged truth as from the product's
+own solid mesh, and are unchanged by a shell mesh twice as fine (-0.7%) or a cut 3 walls in (0.0%): the shell
+idealisation itself. The box's 4 mm walls are 10 walls tall: a shell wall bends from the bottom's mid-plane, 2 mm
+lower than the solid wall's inner corner, so it is (38 / 36)^3 = 1.18 times as flexible out of plane - the back
+wall's +23.2%. The casting's ribs are 20 mm by 3 mm (6.7 walls tall), the same thick-shell regime. Keeping the junction metal solid as well (grown 2 walls) made 140,094 tetrahedra, more than the whole
+all-solid mesh (63,586): such a box gains nothing from a mixed mesh.
+
+Training parts that mix (sh0004/12/23/24/25/28/52/53/58/59/88/89) and the failure map's 20 "mixed" cases, against the
+product's all-solid mesh (modes 7-12) and run twice (decks hashed): see the PR. Repeat: every mixed deck made is
+byte-identical in two processes - the 7 accuracy parts and the training parts that mix.
 
 ## 3. Meshing (PR 2)
 

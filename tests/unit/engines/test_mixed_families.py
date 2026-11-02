@@ -96,6 +96,24 @@ def _family(name: str):
     raise KeyError(name)
 
 
+def _shares(pts: np.ndarray, centre: np.ndarray | None) -> np.ndarray:
+    """Each load node's share of the force: equal shares, corrected as little as can be so the force acts at the
+    loaded face's middle (`centre`), over the directions the nodes span. Equal shares put it where the NODES are,
+    which each mesh grades differently: the casting's all-solid mesh, fine by its ribs, put the block's load 8.7 mm
+    nearer the clamp than the block's middle, and read 11% stiff of a uniform mesh."""
+    n = len(pts)
+    w0 = np.full(n, 1.0 / n)
+    if centre is None or n < 3:
+        return w0
+    q = pts - centre
+    _u, sv, vt = np.linalg.svd(q - q.mean(axis=0), full_matrices=False)
+    dirs = [vt[k] for k in range(len(sv)) if sv[0] > 0 and sv[k] >= 0.2 * sv[0]][: n - 1]
+    c = np.vstack([np.ones(n)] + [q @ v for v in dirs])
+    want = np.zeros(len(c))
+    want[0] = 1.0
+    return w0 + c.T @ np.linalg.solve(c @ c.T, want - c @ w0)
+
+
 def _static(ws: Path, job: str, model, spec) -> tuple[dict, float]:
     deck, xyz, shell_nodes, _m = model
     fix, load = np.flatnonzero(spec["fix"](xyz)) + 1, np.flatnonzero(spec["load"](xyz)) + 1
@@ -105,9 +123,11 @@ def _static(ws: Path, job: str, model, spec) -> tuple[dict, float]:
     for i, ids in enumerate(probes.values()):
         lines += tb._ids(f"P{i}", ids)
     f = spec["force"]
+    share = _shares(xyz[load - 1], getattr(spec["load"], "centre", None))
     lines += (["*BOUNDARY", "FIX, 1, 3"] + [f"{i}, 4, 6" for i in fix.tolist() if i in shell_nodes]
               + ["*STEP", "*STATIC", "*CLOAD"]
-              + [f"{i}, {d + 1}, {f[d] / len(load):.9g}" for i in load.tolist() for d in range(3) if f[d]]
+              + [f"{i}, {d + 1}, {f[d] * w:.9g}" for i, w in zip(load.tolist(), share.tolist(), strict=True)
+                 for d in range(3) if f[d]]
               + [f"*NODE PRINT, NSET=P{i}\nU" for i in range(len(probes))]
               + ["*NODE FILE, OUTPUT=3D", "U", "*EL FILE, OUTPUT=3D", "S", "*END STEP"])
     dat = tb._run(ws, job, deck + "\n".join(lines) + "\n")
@@ -162,10 +182,12 @@ def _vm_at(frd: str, at, normal, wall: float) -> float:
 #: into the flange's junction; four probe nodes sat 3 mm above the box's middle), not the mesh - read at the point,
 #: stress +2.8%, middle -0.7%, end -0.4%. Both modes below are as far from a converged all-solid mesh (wall / 3) as
 #: from the product's own, unchanged by a shell mesh twice as fine (-0.7%) or a cut 3 walls in (0.0%): the shell
-#: idealisation of a 4 mm box with 12 mm corner columns and of 20 mm by 3 mm ribs, not the mesh or the join
+#: idealisation of a 4 mm box 10 walls tall and of 20 mm by 3 mm ribs, not the mesh or the join
 OPEN = {
-    "casting_ribs_block": "mode 12 -5.4% (modes 7 to 11 within 2.2%, statics within 3.7%)",
-    "box_corners": "mode 11 -5.3% (the rest within 3.6%, column top +0.2%)",
+    "casting_ribs_block": "mode 12 -6.2% (modes 7 to 11 within 2.8%, statics within 3.3%)",
+    "box_corners": "back wall +23% and mode 11 -5.4% (the rest within 3.8%, column top -0.6%, stress +3.0%): its 4 mm "
+                   "walls are 10 walls tall, and a shell wall bends from the bottom's mid-plane, 2 mm below the solid "
+                   "wall's inner corner - (38 / 36)^3 = 1.18 times as flexible",
 }
 
 
