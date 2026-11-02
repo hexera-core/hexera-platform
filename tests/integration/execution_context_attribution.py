@@ -201,9 +201,9 @@ def assert_measurement_sound(result: dict) -> None:
     # snappy driver's mesh plan (scenarios snappy-driver:accept and snappy-driver:internal-accept)
     # and the mesher's own stage, relayed while it runs (scenario snappy-driver:accept) - 73. Two
     # more came with the run's Repair check step: the lane the inspection opens and the line the
-    # attempt says (scenario repair-check:surface-file) - so 75 is the calibrated denominator.
-    if result["target_total"] != 75:
-        problems.append(f"the manifest holds {result['target_total']} execution contexts, not 75")
+    # attempt says (scenario repair-check:surface-file) - 75. One more came with the size brake's release (RUN-8): the external driver's note that a case the brake stopped, and no re-plan can make smaller, is meshed at the size it needs (scenario snappy-driver:brake-released) - so 76 is the calibrated denominator.
+    if result["target_total"] != 76:
+        problems.append(f"the manifest holds {result['target_total']} execution contexts, not 76")
     if problems:
         raise AttributionUnsound("; ".join(problems))
 

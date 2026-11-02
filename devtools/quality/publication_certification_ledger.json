@@ -1,7 +1,7 @@
 {
  "purpose": "Every execution-owned publication context in the current tree, and the executed scenario that proved it. Derived from the publication manifest and the behavioural certification run; the manifest remains the authority for WHICH contexts exist.",
- "denominator": 75,
- "proven": 75,
+ "denominator": 76,
+ "proven": 76,
  "unproven": 0,
  "historical_reconciliation": {
   "historical_execution_rows": 63,
@@ -26,7 +26,7 @@
     "reason": "published through the factory parameter from the terminal pipeline_run publisher; not execution-owned and intentionally ungated"
    }
   ],
-  "new_since_reconciliation": 14
+  "new_since_reconciliation": 15
  },
  "rows": [
   {
@@ -703,6 +703,15 @@
    "mapping_reason": "the run's Repair check step: one plain line on what the repair check found and did",
    "status": "proven",
    "proof_scenario": "repair-check:surface-file"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::note#8",
+   "historical_alias": "",
+   "historical_id": "",
+   "mapping": "new",
+   "mapping_reason": "the driver tells the user that a pass the size brake stopped, which no re-plan can make smaller (the gap boxes price it back to the same case), is meshed at the size it needs with the brake released (RUN-8) - instead of the run ending with no mesh",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:brake-released"
   }
  ]
 }
