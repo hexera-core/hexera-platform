@@ -130,10 +130,23 @@ def balanced_quality() -> tuple[str, int, int, float, str]:
 
     So the bars are split: the snap keeps the tet check (1e-13, the "strict" value), and the layer
     stage uses the relaxed set from its first iteration (nRelaxedIter 0) with the tet check off
-    there only. maxNonOrtho stays 65 in both, the bar the reviewer judges. Measured (production
-    image, product path): Camaro valid on the first pass, 2.39 of 3 layers (was invalid three
-    times); F1 wing 2.53 (2.52 with the old bars), skewed faces 34 -> 27."""
-    return "1e-13", 65, 0, 0.5, " minTetQuality -1e30;"
+    there only. Measured (production image, product path): Camaro valid on the first pass, 2.39 of
+    3 layers (was invalid three times); F1 wing 2.53 (2.52 with the old bars), skewed faces 34 -> 27.
+
+    THE LAYER STAGE'S NON-ORTHOGONALITY IS THE LIMIT THE MESH IS HELD TO (LAYER_MAX_NON_ORTHO). The
+    snap keeps 65; the layer stage used 65 too, stricter than the 70 the verdict holds a snappy mesh
+    to (engines/verdict_limits, VER-2). The Camaro on shared dev (2 Nov): 88% of its layer cells were
+    in place after the first layer iteration, and the 65 bar took back 4,726 faces' worth at the
+    car's concave corners - wheel rims, the grille - ending at 79.7% coverage, under the 80% limit,
+    on a mesh whose cells passed every other limit. At 70: 82.3%, worst non-orthogonality 69.99, the
+    same skewed faces (432 -> 434) - every figure inside the limits the delivery is judged by."""
+    return "1e-13", LAYER_MAX_NON_ORTHO, 0, 0.5, " minTetQuality -1e30;"
+
+
+#: The "balanced" layer stage's maxNonOrtho: the production limit the verdict holds a snappy mesh to
+#: (engines/verdict_limits PRODUCTION_LIMITS, max_non_ortho <= 70) - never a stricter bar than the
+#: delivery is judged by, which only throws away layers the delivery would have kept.
+LAYER_MAX_NON_ORTHO = 70
 
 
 def layer_min_vol(finest_cell_m: float, *, n_layers: int, min_thickness_rel: float) -> float:
