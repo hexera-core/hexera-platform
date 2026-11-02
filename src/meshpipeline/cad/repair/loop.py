@@ -120,6 +120,14 @@ def _abandoned(session: RepairSession) -> bool:
     return any(d.fingerprint in tried for d in _judged(session))
 
 
+def _analyzer_heal(candidate, session: RepairSession) -> bool:
+    """Is this the one optional operation an error-led run may still attempt?"""
+    return candidate.op.name == HEAL_OP and any(
+        analyzer_only(d) and d.fingerprint == candidate.defect_fingerprint
+        for d in session.defects()
+    )
+
+
 def _terminal(session: RepairSession, fallback: str) -> str:
     """What to call a finished run. ONE place, so no break path can disagree with another.
 
@@ -203,6 +211,10 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
         if candidate is None:
             stopped = _terminal(work, NO_CANDIDATE)
             break
+        if (entered_with_errors and not _errors_remain(work) and not _abandoned(work)
+                and not _analyzer_heal(candidate, work)):
+            stopped = RESOLVED
+            break
 
         # WHAT THIS PROPOSAL IS ALLOWED TO ANSWER. A directive from the engineer being asked (or a
         # replay of an operation this upload already kept) may aim at a held defect - that is
@@ -228,9 +240,6 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
                 # The re-scan after a kept operation was cut short, so the progress rule passed on
                 # a partial list. Nothing further can be judged against it.
                 stopped = SCAN_INCOMPLETE
-                break
-            if entered_with_errors and not _errors_remain(work) and not _abandoned(work):
-                stopped = RESOLVED
                 break
             continue
 
