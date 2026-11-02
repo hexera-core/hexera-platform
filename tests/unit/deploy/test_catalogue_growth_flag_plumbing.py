@@ -26,3 +26,8 @@ def test_personal_repair_deploys_get_the_mixed_defect_operation_budget():
     assert "OPT_IN_DROPPABLE+=(CAD_REPAIR_MAX_OPS)" in api
     assert 'WORKER_METADATA+=("cad-repair-max-ops=${CAD_REPAIR_MAX_OPS}")' in fleet
     assert '"cad-repair-max-ops:CAD_REPAIR_MAX_OPS"' in boot
+    assert "CAD_REPAIR_TIMEOUT_S: ${{ inputs.cad_repair && '420' || '' }}" in wf
+    assert 'API_ENV_PAIRS+=("CAD_REPAIR_TIMEOUT_S=${CAD_REPAIR_TIMEOUT_S}")' in api
+    assert "OPT_IN_DROPPABLE+=(CAD_REPAIR_TIMEOUT_S)" in api
+    assert 'WORKER_METADATA+=("cad-repair-timeout-s=${CAD_REPAIR_TIMEOUT_S}")' in fleet
+    assert '"cad-repair-timeout-s:CAD_REPAIR_TIMEOUT_S"' in boot
