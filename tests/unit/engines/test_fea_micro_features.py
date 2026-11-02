@@ -229,3 +229,38 @@ def test_a_face_gmsh_switched_to_meshadapt_by_itself_keeps_its_first_mesh_next_p
     # once is enough: the next failure names no new switched face
     again = L.next_lever({**L.pass_facts(2, 1, {}, PLAN), "switched": [78]}, [lever], PLAN)
     assert again is None or "no_switch" not in again
+
+
+_AFTER_OPENMP = """
+import gmsh
+from meshpipeline.engines.gmsh import fea_parallel2d as P2D
+gmsh.initialize(interruptible=False)
+gmsh.option.setNumber("General.Terminal", 0)
+gmsh.option.setNumber("General.NumThreads", 4)
+gmsh.option.setNumber("Mesh.MaxNumThreads3D", 4)
+gmsh.option.setNumber("Mesh.Algorithm3D", 10)
+gmsh.model.occ.addBox(0, 0, 0, 40, 20, 6)
+for x in (8, 20, 32):
+    gmsh.model.occ.cut([(3, 1)], [(3, gmsh.model.occ.addCylinder(x, 10, -1, 0, 0, 8, 3))])
+gmsh.model.occ.synchronize()
+gmsh.option.setNumber("Mesh.MeshSizeMax", 1.0)
+gmsh.model.mesh.generate(3)
+gmsh.model.mesh.optimize("")
+gmsh.model.mesh.clear()
+P2D.mesh_surfaces(gmsh, 3)
+print("DONE", len(gmsh.model.mesh.getNodes()[0]))
+gmsh.finalize()
+"""
+
+
+def test_the_surface_workers_never_hang_after_gmsh_used_its_threads():
+    """MESH-23: a pass meshed again in the same process (MESH-4, MESH-9) forks its surface workers after gmsh's
+    OpenMP threads have run - GNU libgomp's pool does not survive fork(), and a worker that started a team of
+    threads hung (lab, 1 Nov). Run in its own process, so a hang fails the test instead of the suite."""
+    import subprocess
+    import sys
+
+    pytest.importorskip("gmsh")
+    done = subprocess.run([sys.executable, "-c", _AFTER_OPENMP], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stderr[-2000:]
+    assert "DONE" in done.stdout

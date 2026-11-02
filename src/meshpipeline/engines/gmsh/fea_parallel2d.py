@@ -126,7 +126,13 @@ def mesh_blocks(gmsh, cut: list[list[int]]) -> dict[int, str]:
     seen = [e for e in everything if gmsh.model.getVisibility(*e)]
     only = gmsh.option.getNumber("Mesh.MeshOnlyVisible")
     renumber = gmsh.option.getNumber("Mesh.Renumber")
+    threads = gmsh.option.getNumber("General.NumThreads")
     gmsh.option.setNumber("Mesh.MeshOnlyVisible", 1)
+    # NO OpenMP TEAM WHILE THE BLOCKS ARE MESHED: GNU libgomp's thread pool does not survive fork(), so a forked
+    # worker whose parent had already run a parallel region (a 3D fill, the optimiser - a pass meshed again in
+    # the same process) hung in its first team of more than one thread (lab, 1 Nov). The surfaces are meshed on
+    # one thread anyway (Mesh.MaxNumThreads2D = 1); one process does the same, so the mesh is the same.
+    gmsh.option.setNumber("General.NumThreads", 1)
     # no renumbering of the whole model after every block: numbers are set once, after the last (_put_back or
     # the caller) - the mesh of each entity, in its order, is all that is kept
     gmsh.option.setNumber("Mesh.Renumber", 0)
@@ -148,6 +154,7 @@ def mesh_blocks(gmsh, cut: list[list[int]]) -> dict[int, str]:
         gmsh.model.setVisibility(seen, 1)
         gmsh.option.setNumber("Mesh.MeshOnlyVisible", only)
         gmsh.option.setNumber("Mesh.Renumber", renumber)
+        gmsh.option.setNumber("General.NumThreads", threads)
     return errors
 
 
