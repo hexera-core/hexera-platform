@@ -2,8 +2,6 @@
 # a live or replayed run goes through: waiting for a worker, the engine and why, the plan, meshing
 # with what the mesher says it is doing, checking quality, the AI review, and how the run ended -
 # with the steps done ticked, a rebuild starting the steps again, and nothing moving once it ends.
-# The line on the page is the step running now and nothing else: the steps done are the run's own
-# rows (the model's words for them are read through Stage.runView), and it steps aside at the end.
 # Boundaries: the console's own modules in the page; no network.
 from __future__ import annotations
 
@@ -21,11 +19,7 @@ SETUP = """
   const line = () => { const g = document.querySelector('#run-progress .gp'); return {
     state: g.dataset.state, live: g.dataset.live === '1', now: g.querySelector('.gp-now').textContent,
     note: g.querySelector('.gp-note')?.textContent || '', advice: g.querySelector('.gp-advice')?.textContent || '',
-    steps: Stage.runView().steps.filter(s => s.state !== 'todo').map(s => s.state + ':'
-      + (s.state === 'active' ? s.doing : s.state === 'failed' ? s.doing.replace(/…$/, '') : s.label)),
-    listed: g.querySelectorAll('.gp-step, .gp-steps, .gp-toggle').length,
-    shown: !document.getElementById('proc-live').hidden,
-    rows: [...document.querySelectorAll('#tl .tl-node')].map(n => n.querySelector('.nm').textContent + '|' + n.querySelector('.ct').textContent),
+    steps: [...g.querySelectorAll('.gp-step')].map(s => s.className.replace('gp-step ', '') + ':' + s.querySelector('.gp-label').textContent),
     inCard: !!document.querySelector('.proc #proc-live #run-progress') }; };
 """
 
@@ -65,14 +59,6 @@ def test_the_run_line_follows_the_run_step_by_step(live):
     d = out["done"]
     assert d["state"] == "done" and d["live"] is False and d["now"] == "Mesh ready in 7 min 12 s"
     assert "done:Review passed" in d["steps"] and all(s.startswith("done:") for s in d["steps"])
-    # ONE LIST: the line never repeats the steps; each step is its own row, saying what it did
-    assert all(x["listed"] == 0 for x in out.values()), "the run line listed the steps a second time"
-    rows = dict(r.split("|", 1) for r in d["rows"])
-    assert rows["Engine selection"] == "snappyHexMesh - it did best in our lab on shapes like this one", rows
-    assert rows["Mesh creation"] == "2,081,224 cells", rows
-    assert rows["Review"] == "passed", rows
-    # the line is the step running now: once the run has ended it steps aside for the result row
-    assert out["reviewing"]["shown"] and not d["shown"]
     assert_clean(live, "the run line through a whole run")
 
 

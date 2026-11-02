@@ -1,4 +1,4 @@
-# Responsibility: Verify the run shows its Repair check step: labelled "Repair check", between Engine selection and Mesh creation, its one line on the row in sight when folded, and the live line naming it while it runs.
+# Responsibility: Verify the run shows its Repair check step: labelled "Repair check", between Engine selection and Mesh creation, its one line on the row inside the run card, in sight when folded, and the live line naming it while it runs.
 # Boundaries: the console's own modules in the page, fed through the one event dispatch; no network. It reads the DOM, never pixels.
 from __future__ import annotations
 
@@ -33,7 +33,8 @@ PLAY = """
 
 def _play(live, line: str, tone: str = "info") -> dict:
     return live.evaluate("(async () => {" + PLAY.replace("__LINE__", json.dumps(line)).replace("__TONE__", tone) + """
-      return {label: laneLabel('repair'), checking, rows: rows()};
+      return {label: laneLabel('repair'), checking, rows: rows(),
+              inCard: !!document.querySelector('.proc .proc-head .proc-title') && !!document.querySelector('.proc #tl .tl-node')};
     })()""", timeout=60)
 
 
@@ -41,11 +42,13 @@ def test_the_repair_check_sits_between_engine_selection_and_mesh_creation(live):
     out = _play(live, "Repaired 3 defects: closed 2 gaps, flipped 1 face")
     assert out["label"] == "Repair check"
     assert [r["name"] for r in out["rows"]] == ["Engine selection", "Repair check", "Mesh creation"], out
+    # the steps sit inside the run's own card, under its "Generating mesh" header
+    assert out["inCard"], out
     repair = out["rows"][1]
     # its one line is the row's own words, in sight with the step folded - not hidden in the fold
     assert repair["said"] == "Repaired 3 defects: closed 2 gaps, flipped 1 face", repair
     assert not repair["open"] and repair["body"] == 0 and "done" in repair["mark"], repair
-    # while it runs, the live line at the foot of the run says what it is doing
+    # while it runs, the live line under the run card's header says what it is doing
     assert out["checking"] == "Checking your part for repair…", out
     assert_clean(live, "the run with a repair check")
 

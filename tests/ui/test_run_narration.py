@@ -15,8 +15,7 @@ SETUP = """
   const ev = (e) => { cur = dispatch(e, Stage, cur); };
   const line = () => { const g = document.querySelector('#run-progress .gp'); return {
     now: g.querySelector('.gp-now').textContent, note: g.querySelector('.gp-note')?.textContent || '',
-    said: [...document.querySelectorAll('#tl .tl-say')].map(p => p.textContent),
-    inLine: g.querySelectorAll('.gp-say').length,
+    said: [...g.querySelectorAll('.gp-say')].map(p => p.textContent),
     icon: (g.querySelector('.gp-mark svg')?.getAttribute('class') || ''), live: g.dataset.live === '1',
     text: g.textContent }; };
 """
@@ -41,9 +40,7 @@ def test_the_run_says_what_it_decided_and_what_it_is_doing(live):
       Stage.final({pass:true, createdAt:'2026-10-28T10:00:00Z', endedAt:'2026-10-28T10:40:00Z', attempts:1});
       return {planning, machine, filling, beat, done: line()};
     })()""", timeout=60)
-    # what Hexera says is plain chat text in the run, once, where it was said - not inside the live line
     assert out["planning"]["said"] == ["The 26 fillets and 3 holes carry the stress, so they get the finest cells."]
-    assert all(x["inLine"] == 0 for x in out.values())
     assert out["planning"]["icon"].startswith("wi wi-plan")
     assert out["machine"]["now"] == "Meshing on a large machine (256 GB)…"
     f = out["filling"]
