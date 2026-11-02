@@ -136,6 +136,9 @@ class ConfirmIn(BaseModel):
     fea_connection: str = ""
     #: SET BY THE SERVER for an FEA assembly, from the stored check: its parts, in plain words.
     parts_summary: str = ""
+    #: SET BY THE SERVER for an FEA assembly: where its parts meet, in the stage's own words
+    #: (application/fea_check.joints_words), so the chat counts the joints the stage counted.
+    joints_summary: str = ""
     #: PLAN-fea-18: the stage's switch for the small-gap joins (on unless the user switched it off);
     #: read into the run from the stored confirmation (application/fea_check.confirmed_gap_joins).
     fea_gap_joins: bool | None = None
@@ -302,6 +305,12 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     if payload["route"] == fea_check.STAGE_FEA:
         # the part, its unit and size (the proposal), its bodies and the clean check - no flow form
         payload["fea"] = await asyncio.to_thread(fea_check.fea_view, payload.get("facts"))
+        # ...and NO OPENINGS: a solid part for structural analysis has no inlet or outlet, so the
+        # scout's flow openings (read before the purpose was known) are not served on its check
+        # (the dry run's stud punch carried 18, the knuckle 7). Stored as they were, for a user who
+        # turns the part to CFD.
+        if isinstance(payload.get("proposal"), dict):
+            payload["proposal"] = fea_check.without_flow_openings(payload["proposal"])
     if payload.get("check_mode") != THERMAL_CHECK:
         # the generic form's fields; a thermal model is served as its `thermal` view instead
         payload["fields"] = form_spec()
@@ -618,6 +627,7 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         body = body.model_copy(update={
             "fea_connection": connection,
             "parts_summary": fea_check.parts_words(asm) if asm else "",
+            "joints_summary": fea_check.joints_words(asm.get("interfaces")) if asm else "",
             "fea_pairs": pair_changes or None,
             "pairs_summary": fea_check.pairs_summary(pair_changes, asm),
             "fea_gap_joins": gap_on if gaps else None,

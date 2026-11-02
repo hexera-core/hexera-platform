@@ -166,3 +166,29 @@ def test_the_repair_lane_sits_between_engine_selection_and_mesh_creation():
     stages = list(E.STAGES)
     assert stages.index("engine_select") < stages.index("repair") < stages.index("builder")
     assert E.note("repair", "Your part needed no repair").wire()["stage"] == "repair"
+
+
+# THE SAME WORD AS THE STAGE (demo dry run, 2 Nov: the stud punch's stage said "The geometry is clean",
+# its run "Found 42 defects; repair is off here" - for 36 tiny edges and 6 sliver faces, warnings only)
+
+_TINY = {"code": "small_edge", "severity": "warning", "entity": "edge:235", "region": "unknown",
+         "message": "This edge is far shorter than the part's scale", "measurements": {}, "location": {}}
+_SLIVER = {"code": "small_face", "severity": "warning", "entity": "face:135", "region": "unknown",
+           "message": "This face is a sliver relative to the part", "measurements": {}, "location": {}}
+
+
+def test_a_clean_part_with_only_small_details_is_called_clean_not_defective(tmp_path):
+    details = ([dict(_TINY, entity=f"edge:{k}") for k in range(36)]
+               + [dict(_SLIVER, entity=f"face:{k}") for k in range(6)])
+    state = _state(tmp_path, *details, repair_status="clean")
+    off = {"repair_attempt": {"attempted": False, "outcome": "off", "route": ""}}
+    line = W.repair_check_words(state, off)
+    assert "defect" not in line and line.startswith("Your part is clean and needed no repair")
+    assert "36 tiny edges and 6 sliver faces" in line and line.endswith("meshing your original file")
+
+
+def test_a_real_defect_is_still_said_as_one(tmp_path):
+    state = _state(tmp_path, _GAP, _TINY, repair_status="repairable")
+    off = {"repair_attempt": {"attempted": False, "outcome": "off", "route": ""}}
+    assert W.repair_check_words(state, off) == \
+        "Found 2 defects; repair is off here, so meshing your original file"
