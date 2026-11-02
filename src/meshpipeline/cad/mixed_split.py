@@ -40,9 +40,10 @@ logger = logging.getLogger(__name__)
 CUT_WALLS = 2.0
 #: MIXED-1: a wall's slab reaches this share of a wall past each of its faces (the faces are the slab's to take)
 SLAB_SLACK = 0.02
-#: MIXED-1: a left-over piece holding no thick face but more than this share of the body's volume is a wall the
-#: slabs missed - the split is not used
-LEFT_OVER_MAX = 0.02
+#: MIXED-1: left-over pieces holding no thick face, together more than this share of the body's volume, are walls the
+#: slabs missed - the split is not used. 5%, not 2% (2 Nov): a box with 4 mm walls has 3% of its metal in the corners
+#: of its L junctions round the bottom, which a shell model leaves out (MIXED-3's volume band still holds the whole)
+LEFT_OVER_MAX = 0.05
 #: MIXED-3: the split must hold the body's metal within this band (the shell check's own)
 VOLUME_BAND = ms.VOLUME_BAND
 
