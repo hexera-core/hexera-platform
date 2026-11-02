@@ -756,10 +756,10 @@ export const Stage = {
     // verdict row in the timeline. A cancelled run has no verdict: nobody judged a mesh.
     if(this.proc){const n=this.node('result');const v=document.createElement('div');v.className='tl-verd';
       const pill=concerns?'DELIVERED WITH CONCERNS':notes?'PASSED, WITH NOTES':data.pass?'PASS':cancelled?'CANCELLED':'FAIL';
-      v.innerHTML=`<span class="pill${concerns||notes?' concerns':data.pass?'':cancelled?' cancelled':' fail'}">${pill}</span><span class="mt">${esc(att)}</span>`;
+      v.innerHTML=`<span class="pill${concerns?' concerns':notes?' notes':data.pass?'':cancelled?' cancelled':' fail'}">${pill}</span><span class="mt">${esc(att)}</span>`;
       if(cancelled&&data.cancelReason){const r=document.createElement('span');r.className='mt';r.textContent=`reason: ${data.cancelReason}`;v.appendChild(r);}
       // the result lane's mark is the verdict's: never a tick beside a FAIL
-      n.mark={pass:'done',notes:'warn',concerns:'warn',cancelled:'ended',fail:'bad'}[outcome];
+      n.mark={pass:'done',notes:'done',concerns:'warn',cancelled:'ended',fail:'bad'}[outcome];
       n.body.appendChild(v);this.done('result');}
     if(opened)data={...data,attempts:this._built.size};    // the viewer says the same number
 
