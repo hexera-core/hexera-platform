@@ -11,12 +11,15 @@ licenses, see `requirements/runtime.txt` and the `Dockerfile`, and are not vendo
 - **Licence:** Mozilla Public License 2.0 (its `LICENSE.MPL2` is installed beside the binary at
   `/opt/ftetwild/LICENSE.MPL2` in the mesh image).
 - **What we ship:** the `FloatTetwild_bin` command-line program, built in the `ftetwild-build` stage
-  of the `Dockerfile` from commit `8118f810478e0e65a7bf2d8cecdc5e203a876e97`, with two one-line source
-  changes that make it repeatable: the shuffle of the input triangles (fTetWild's
-  `src/TriangleInsertion.cpp`) and geogram's `random_shuffle` (`basic/algorithm.h`) are seeded by a
-  constant instead of `std::random_device`. MPL-2.0 is file-level copyleft: those modified files stay
-  under MPL-2.0 and their source (upstream plus the two `sed` lines in the `Dockerfile`) is what we
-  would provide with any distribution of the binary. Today the binary runs only inside our cloud mesh
+  of the `Dockerfile` from commit `8118f810478e0e65a7bf2d8cecdc5e203a876e97`, with small source
+  changes, each applied and checked by `deploy/docker/ftetwild_patch.sh`: the shuffle of the input
+  triangles (fTetWild's `src/TriangleInsertion.cpp`) and geogram's `random_shuffle` (`basic/algorithm.h`)
+  are seeded by a constant instead of `std::random_device`; the tets the TBB threads gather for a
+  triangle are sorted (`src/TriangleInsertion.cpp`) and the vertex smoothing's parallel sets use a fixed
+  threshold (`src/VertexSmoothing.cpp`), so the mesh is the same on any thread count; and a stop file
+  (`<output>.stop`) ends the optimisation and sizing-field rounds (`src/MeshImprovement.cpp`). MPL-2.0 is
+  file-level copyleft: those modified files stay under MPL-2.0 and their source (upstream plus that
+  script) is what we would provide with any distribution of the binary. Today the binary runs only inside our cloud mesh
   runner and is not distributed.
 - **Its build dependencies, statically linked:** geogram (BSD-3-Clause), libigl (MPL-2.0), Eigen
   (MPL-2.0), oneTBB (Apache-2.0), fmt (MIT), spdlog (MIT), CLI11 (BSD-3-Clause), nlohmann-style json
