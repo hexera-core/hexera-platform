@@ -13,10 +13,12 @@ over) is taken from the body. What is left and holds a face the extraction calle
 block, a flange, a casting's lump) is a thick core. What is left and holds none is the metal of a junction between
 shell walls (a fillet, a corner a shell model leaves out) and is not kept - as in a shell-only part.
 
-MIXED-2, THE CUT: each core is grown CUT_WALLS of the thickest wall that runs into it, in every direction (a 3D
-offset), and the body's metal inside the grown core is the solid region. Inside a wall the grown core's side is
-the wall's cross-section, square to it (a straight edge's offset is a plane, a boss's circle a cylinder, a tube's
-end a plane across it): the cut is made where the wall's stress is a plate's again. A wall's stress is
+MIXED-2, THE CUT: each core is grown CUT_WALLS of the thickest wall that runs into it: each of its faces inside the
+body (where a wall's slab was taken off it - the wall's own cross-section) is swept that far along its outward
+normal, and the body's metal in the core and its sweeps is the solid region. Inside a wall the sweep's far side is
+the wall's cross-section again, square to it (a straight end a plane, a boss's circle a cylinder of radius r + 2t,
+a tube's end a plane across it); at a square pad's corner the cut stays square. The cut is made where the wall's
+stress is a plate's again. A wall's stress is
 three-dimensional only about one wall from a junction (Saint-Venant; Abaqus' shell-to-solid coupling spreads
 each shell node over half a wall either side); two walls keeps the join out of it. Each shell mid-face is trimmed by
 the same grown core, so its edge lies on the cut face, along the wall's middle.
@@ -120,28 +122,59 @@ def _bop(kind: str, a, tools: list, fuzzy: float = 0.0):
     return op.Shape()
 
 
-def grown(core, dist: float):
-    """The core grown `dist` in every direction (OCC's offset by join, rounded at its edges)."""
-    from OCP.BRepOffset import BRepOffset_Skin
-    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffsetShape
-    from OCP.GeomAbs import GeomAbs_Arc
-    from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+def sweep(face, dist: float, away_from):
+    """The solid a face sweeps moved `dist` along its normal, on the side away from the solid `away_from` (OCC's
+    simple offset, its side walls ruled along the normal)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.BRepOffset import BRepOffset_MakeSimpleOffset
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_IN
+    from OCP.TopoDS import TopoDS
 
-    # the core comes out of a Boolean with its faces cut where the slabs met them: one face per surface first (the
-    # offset of a corner column cut into four faces per side came back with no solid)
-    u = ShapeUpgrade_UnifySameDomain(core, True, True, True)
-    u.Build()
-    for shape in (u.Shape(), core):
-        mk = BRepOffsetAPI_MakeOffsetShape()
-        mk.PerformByJoin(shape, float(dist), 1e-6 * max(dist, 1.0), BRepOffset_Skin, False, False, GeomAbs_Arc)
+    p = ms._inner_point(face)
+    if p is None:
+        raise ValueError("a face of a thick core has no inner point")
+    # a copy: swept as itself, the core's own face became a wall of the sweep, and the fuse of the two came back empty
+    face = TopoDS.Face_s(BRepBuilderAPI_Copy(face, True, False).Shape())
+    for d in (dist, -dist):
+        mk = BRepOffset_MakeSimpleOffset(face, d)
+        mk.SetBuildSolidFlag(True)
+        mk.Perform()
         if not mk.IsDone():
             continue
-        out = _solids(mk.Shape())
-        vol = sum(ms._volume(s) for s in out)
-        # an offset outward holds more than the core; one turned inside out or empty is no growth
-        if out and vol > ms._volume(core):
-            return out[0] if len(out) == 1 else ms._compound(out)
-    raise ValueError("a thick core could not be grown")
+        out = mk.GetResultShape()
+        from OCP.TopAbs import TopAbs_REVERSED
+
+        n = np.asarray(ms._face_normal_at(face, p), float)
+        if face.Orientation() == TopAbs_REVERSED:      # the offset goes along the face's own (oriented) normal
+            n = -n
+        q = gp_Pnt(*map(float, p + 0.5 * d * n))
+        # the sweep must go out of the core; the offset's solid can come out turned inside out
+        if BRepClass3d_SolidClassifier(away_from, q, 1e-7).State() == TopAbs_IN:
+            continue
+        if BRepClass3d_SolidClassifier(out, q, 1e-7).State() != TopAbs_IN:
+            out = out.Reversed()
+        return out
+    raise ValueError("a face of a thick core could not be swept")
+
+
+def grown(core, body, dist: float, tol: float):
+    """MIXED-2: the core grown `dist` into the walls that run into it - each face of the core inside the body (where a
+    wall's slab was taken off it: the wall's cross-section) swept `dist` along its outward normal, fused with the
+    core. Only OCC's simple offset and Booleans, which repeat exactly: OCC's offset of the whole solid (rounded at its
+    edges) handed back the same grown core with its faces' edges written differently run to run, and the mesh of the
+    solid region differed (a stiffened panel's: 20,421 and 20,321 tetrahedra)."""
+    skin = ms._compound(ms._faces(body))
+    sweeps = []
+    for f in ms._faces(core):
+        p = ms._inner_point(f)
+        if p is None or _near(skin, p, tol):
+            continue
+        sweeps.append(sweep(f, dist, core))
+    if not sweeps:
+        raise ValueError("a thick core has no face inside the body to grow from")
+    return _bop("fuse", core, sweeps)
 
 
 def _near(shape, p: np.ndarray, tol: float) -> bool:
@@ -191,7 +224,7 @@ def _split(body, kept, thick_faces, scale: float, out: Split) -> None:
         d = CUT_WALLS * (max(walls) if walls else t_min)
         out.cut_distance.append(d * scale)
         out.core_volumes.append(ms._volume(core) * scale ** 3)
-        regions.append(grown(core, d))
+        regions.append(grown(core, body, d, tol))
     zone = regions[0] if len(regions) == 1 else _bop("fuse", regions[0], regions[1:])
     solid = _solids(_bop("common", body, [zone]))
     if not solid:
