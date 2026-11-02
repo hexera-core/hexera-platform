@@ -21,6 +21,9 @@ REQUIRED = {
     "a cancel beats the worker's claim": (
         "test_claim_sees_cancel_postgres",
         "test_a_cancel_that_lands_after_the_workers_first_read_stops_the_delivery"),
+    "a deliverable over 2 GiB is recorded": (
+        "test_artifact_concurrency_postgres",
+        "test_a_deliverable_over_2_gib_is_recorded_at_its_true_size"),
 }
 
 #: The ONLY skips a correctly provisioned run may contain. Both are genuinely optional inputs a
