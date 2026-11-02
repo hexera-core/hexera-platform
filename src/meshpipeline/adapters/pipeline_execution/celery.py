@@ -72,10 +72,17 @@ def held_for_update(request, kwargs: dict) -> dict | None:
                                                    headers={platform_contract.HEADER: seen}))
 
 
+# THE GEOMETRY TASKS ACK LATE TOO, for the pipeline task's reason (above). dev-areen, 2 Nov, six uploads at
+# once on one worker's two check slots: acked early, each running check freed its prefetch slot at start,
+# so the worker reserved the next two checks and sat on them - out of the queue list (the console's line
+# could only say "Waiting to start…", never "Queued behind N"), out of the demand the autoscaler reads, and
+# out of reach of any machine it would add. Acked late, the two running checks hold the two slots and the
+# rest wait in the list, where they are counted, said and taken by the next free slot on any machine.
 @celery_app.task(
     name="worker.tasks.scout_geometry",
     bind=False,
     max_retries=0,
+    acks_late=True,
     # the application's numbers: the API reads a check through a time box built from them
     soft_time_limit=SCOUT_SOFT_LIMIT_S,
     time_limit=SCOUT_HARD_LIMIT_S,
@@ -85,14 +92,18 @@ def scout_geometry(**kwargs) -> dict:
     # toolchain the API image does not carry. It runs on the `geometry_checks` queue (celery_app.py
     # task_routes), which every worker drains from a slot of its own, so an upload is drawn while a
     # mesh job runs beside it rather than after it.
+    from meshpipeline.adapters.pipeline_execution.geometry_running import running
     from meshpipeline.application.geometry_check import run_geometry_check
-    return run_geometry_check(**kwargs)
+    # COUNTED WHILE IT RUNS (geometry_running): the fleet's demand sees checks in flight, not only queued
+    with running(_task_id(scout_geometry, f"geometry-check-{kwargs.get('session_id', '')}")):
+        return run_geometry_check(**kwargs)
 
 
 @celery_app.task(
     name="worker.tasks.name_geometry",
     bind=False,
     max_retries=0,
+    acks_late=True,
     soft_time_limit=NAMING_SOFT_LIMIT_S,
     time_limit=NAMING_HARD_LIMIT_S,
 )
@@ -100,8 +111,15 @@ def name_geometry(**kwargs) -> dict:
     # THE NAMING runs once the user has said what the part is: the pictures the scout stored and
     # the user's words go to the vision model together. Same queue as the scout - the user is
     # waiting on this one too.
+    from meshpipeline.adapters.pipeline_execution.geometry_running import running
     from meshpipeline.application.geometry_check import run_geometry_naming
-    return run_geometry_naming(**kwargs)
+    with running(_task_id(name_geometry, f"geometry-naming-{kwargs.get('session_id', '')}")):
+        return run_geometry_naming(**kwargs)
+
+
+def _task_id(task, fallback: str) -> str:
+    request = getattr(task, "request", None)
+    return str(getattr(request, "id", None) or fallback)
 
 
 async def launch(db, job_id: str, payload: dict) -> None:
