@@ -351,10 +351,11 @@ nearer the clamp and read 11% stiff); modes 7-12 free-free:
 | cantilever strip in a block | 13,367 / 55,600 | tip -0.2%; in-plane -1.2%; stretch -0.2% | | -0.1 to +0.7% |
 | plate with a thick boss | 13,320 / 55,276 | -0.2%, -0.4% | | +0.1 to +0.8% |
 | L bracket with a thick pad | 22,279 / 67,691 | +0.9%, +1.0% | +0.1% | -1.2 to -0.6% |
-| stiffened panel with a thick mount | 33,179 / 167,056 | +0.2%, +0.1% | +0.6% | -2.7 to -0.7% |
+| stiffened panel with a thick mount | 33,179 / 167,056 | +0.2%, +0.1% | +0.6% | -2.7 to -0.7% (before MIXED-8; now meshed solid, walls 7.8 to 8.3) |
 | tube with a thick flange | 31,038 / 113,227 | end -2.2%, middle -3.1% | -0.7% | +0.2 to +0.5% |
-| casting with ribs and a block (truth wall / 2.5) | 36,249 / 127,221 | -0.6%, +0.2% | -3.3% | -3.1 to -0.2%; mode 12 -6.8% (open) |
-| box with thick corners | 45,954 / 63,586 | column top -1.4%; back wall +23.2% (open) | +3.0% | -4.0 to -1.4%; mode 11 -5.5% (open) |
+| casting with ribs and a block (truth wall / 2.5) | 36,249 / 127,221 | -0.6%, +0.2% | -3.3% | -3.1 to -0.2%; mode 12 -6.8% (open) (before MIXED-8; now meshed solid, walls 3.5 to 6.7) |
+| box with thick corners | 45,954 / 63,586 | column top -1.4%; back wall +23.2% (open) | +3.0% | -4.0 to -1.4%; mode 11 -5.5% (open) (before MIXED-8; now meshed solid, walls 4.9 to 6.7) |
+| plate with a lip too thick for shells and a block (MIXED-8: lip kept solid; truth wall / 2, 209,256) | 55,127 / 206,155 | block -0.2%, plate -0.2%, lip top -0.2% | -0.2% | -0.8 to +0.4% |
 
 The flanged tube's old -15.7% stress and +5.5% middle were the readings, not the mesh: the stress was a plane fit
 through a fixed count of nodes, and on a 15-degree faceted wall the band keeps one line of nodes, so it reached
@@ -362,7 +363,7 @@ through a fixed count of nodes, and on a 15-degree faceted wall the band keeps o
 8.55); the middle was the mean of four nodes sitting 3 mm above the box's middle, where the deflection rises 2.5%
 a millimetre. Read at the point, the tube is within 3.1% everywhere.
 
-Open, explained: the box and the casting's 12th mode. Both are as far from the converged truth as from the product's
+Closed by MIXED-8 (both now meshed solid), as it was explained: the box and the casting's 12th mode. Both are as far from the converged truth as from the product's
 own solid mesh, and are unchanged by a shell mesh twice as fine (-0.7%) or a cut 3 walls in (0.0%): the shell
 idealisation itself. The box's 4 mm walls are 10 walls tall: a shell wall bends from the bottom's mid-plane, 2 mm
 lower than the solid wall's inner corner, so it is (38 / 36)^3 = 1.18 times as flexible out of plane - the back
