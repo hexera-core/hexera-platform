@@ -237,7 +237,12 @@ def _no_mesh_cause(state, workspace, cause: str, facts: dict) -> tuple[str, dict
         return FailureCause.NOT_BUILT.value, {**facts, "deterministic": deterministic}
     last = launched[-1]
     if last.get("timed_out"):
-        return FailureCause.ENGINE_TIMED_OUT.value, facts
+        # a native run stopped at its guard is a guard trip wherever it is read (TIME-3): it
+        # carries the `guard` fact, so the graph replays it and the user reads "ran out of time"
+        # on our side - never "ask for less detail" (dev-areen, 2 Nov)
+        guard = facts.get("guard") or {"where": str(state.get("engine") or "the mesher"),
+                                        "native_run": True}
+        return FailureCause.ENGINE_TIMED_OUT.value, {**facts, "guard": guard}
     if last.get("never_started"):
         return FailureCause.RUN_INFRASTRUCTURE.value, facts
     if last.get("uncollected"):
