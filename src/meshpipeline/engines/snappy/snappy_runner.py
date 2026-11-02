@@ -138,15 +138,20 @@ def balanced_quality() -> tuple[str, int, int, float, str]:
     to (engines/verdict_limits, VER-2). The Camaro on shared dev (2 Nov): 88% of its layer cells were
     in place after the first layer iteration, and the 65 bar took back 4,726 faces' worth at the
     car's concave corners - wheel rims, the grille - ending at 79.7% coverage, under the 80% limit,
-    on a mesh whose cells passed every other limit. At 70: 82.3%, worst non-orthogonality 69.99, the
-    same skewed faces (432 -> 434) - every figure inside the limits the delivery is judged by."""
+    on a mesh whose cells passed every other limit. The layer bar is checked on the layer cells as
+    they are added, and the finished mesh reads a little past it (65 delivered 66.35 on the product
+    path; 70 delivered 70.11, past the limit) - so the bar sits LAYER_NON_ORTHO_MARGIN under the
+    limit. Layer-only replays on the job's snapped mesh: 65 -> 79.72%, 67 -> 80.96%, 68 -> 81.48%,
+    70 -> 82.29% of the layer cells."""
     return "1e-13", LAYER_MAX_NON_ORTHO, 0, 0.5, " minTetQuality -1e30;"
 
 
 #: The "balanced" layer stage's maxNonOrtho: the production limit the verdict holds a snappy mesh to
-#: (engines/verdict_limits PRODUCTION_LIMITS, max_non_ortho <= 70) - never a stricter bar than the
-#: delivery is judged by, which only throws away layers the delivery would have kept.
-LAYER_MAX_NON_ORTHO = 70
+#: (engines/verdict_limits PRODUCTION_LIMITS, max_non_ortho <= 70) less LAYER_NON_ORTHO_MARGIN - not
+#: the snap's stricter 65, which only throws away layers the delivery would have kept, and not the
+#: limit itself, which the finished mesh reads just past.
+LAYER_NON_ORTHO_MARGIN = 2
+LAYER_MAX_NON_ORTHO = 70 - LAYER_NON_ORTHO_MARGIN
 
 
 def layer_min_vol(finest_cell_m: float, *, n_layers: int, min_thickness_rel: float) -> float:

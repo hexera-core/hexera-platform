@@ -308,7 +308,7 @@ GOLDEN_SNAPPY_DICT = (
     'meshQualityControls { maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewness 4; maxConcave 80;\n'
     '  minVol 1e-13; minTetQuality 1e-13; minArea -1; minTwist 0.02; minDeterminant 0.001;\n'
     '  minFaceWeight 0.02; minVolRatio 0.01; minTriangleTwist -1; nSmoothScale 4; errorReduction 0.75;\n'
-    '  relaxed { maxNonOrtho 70; maxInternalSkewness 4; minTetQuality -1e30; } }\n'
+    '  relaxed { maxNonOrtho 68; maxInternalSkewness 4; minTetQuality -1e30; } }\n'
     'mergeTolerance 1e-6; debug 0;\n')
 
 
