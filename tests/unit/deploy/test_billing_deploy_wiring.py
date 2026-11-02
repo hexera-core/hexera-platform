@@ -45,3 +45,12 @@ def test_the_admin_credential_is_bound_to_the_api_where_it_is_stated():
     # The admin console's Billing page reads /admin/billing, which answers 404 while the API holds
     # no ADMIN_API_KEY. Before this holder was carried, it held none in any environment.
     assert '"ADMIN_API_KEY:ADMIN_API_KEY_SECRET"' in API.read_text(encoding="utf-8")
+
+
+def test_prod_signup_is_pinned_open_while_billing_is_not_configured():
+    # Until Stripe is ready, production signups must not depend on a payment-provider variable.
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert (
+        "CONSOLE_SIGNUP_ENABLED: ${{ "
+        "needs.target.outputs.deployment_id == 'prod' && 'true' || '' }}"
+    ) in text

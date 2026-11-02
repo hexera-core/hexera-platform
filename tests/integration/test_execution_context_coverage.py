@@ -231,7 +231,9 @@ async def run_committed_scenarios(mp, tmp, jobs: list, seen: list | None = None,
                      ("internal-narrow-passage", {"internal": True, "native_double": False,
                                                   "narrow_passage": True}),
                      ("domain-preflight", {"body": S._half_model, "native_double": False,
-                                         "domain_refused": True})):
+                                         "domain_refused": True}),
+                     ("brake-released", {"body": S._half_model, "native_double": False,
+                                         "brake_released": True})):
         jobs.append((await step(f"snappy-driver:{name}",
                                 S._run(mp, tmp / f"snappy-{name}", **kw)))[0])
 

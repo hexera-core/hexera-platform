@@ -348,6 +348,27 @@ def _trip_pass(workspace: Path, work, attempt: int) -> None:
                         if k in ("amount", "rate", "planned_s", "guard_s")})
 
 
+def _release_size_brake(workspace: Path, oversize: dict, *, attempt: int, job_id: str) -> bool:
+    """RUN-8: the pass after a size-brake stop authored the very case the brake stopped, so the brake
+    could only stop it again and end the run with no mesh. Release it for this case (its plan record
+    says so - engines/size_brake.release_brake), and record why. Returns whether it was released."""
+    from meshpipeline.engines.size_brake import BRAKE_RULE, release_brake
+    cells, budget = oversize.get("cells"), oversize.get("budget")
+    why = (f"the re-plan after the size brake (the {oversize.get('stage') or 'mesh'} count at {cells} "
+           f"cells, budget {budget}) authored the same case - nothing left to make smaller")
+    if not release_brake(workspace, why):
+        return False
+    logger.warning("snappy pass %d: %s - meshing it with the size brake released (%s) job_id=%s",
+                   attempt, why, BRAKE_RULE, job_id)
+    try:
+        from meshpipeline.contracts import decision_record as _dr
+        _dr.cite(str(job_id or ""), stage="size_brake", decided="released", value=cells, rule=BRAKE_RULE,
+                 inputs={"pass": attempt, "budget": budget, "ratio": oversize.get("ratio")}, words=why)
+    except Exception:  # noqa: BLE001 - the why record never stops a mesh
+        logger.debug("RUN-8 not cited", exc_info=True)
+    return True
+
+
 def _write_timed_out_plan(workspace: Path, strategy: dict) -> None:
     import json as _json
 
@@ -1040,6 +1061,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     _timeout_ref: dict | None = _sibling_timed_out_plan(workspace)
     _timeout_case: dict[str, bytes] | None = None
     rec: dict | None = None                            # the recommendation the pass planned with
+    _brake_released = False                            # RUN-8: released at most once a build
 
     for attempt in range(1, max_attempts + 1):
         _timed_out_now, _repeat_stop, _mesh_minutes = False, False, 0.0
@@ -1205,7 +1227,18 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                    where=f"external pass {attempt}")
             # ... and the same for a case that just ran out of time
             if _repeats_timed_out_case(workspace, _timeout_case):
-                raise TimedOutCaseRepeats(f"external pass {attempt}")
+                if (_timeout_ref or {}).get("_why") != "oversize" or _brake_released:
+                    raise TimedOutCaseRepeats(f"external pass {attempt}")
+                # ... but a case the SIZE BRAKE stopped is no clock's: when its re-plan can make it
+                # no smaller, stopping it again only ends the run with no mesh (RUN-8) - it runs once
+                # more, the brake released, and its size is said
+                _brake_released = _release_size_brake(
+                    workspace, (_timeout_ref or {}).get("_oversize") or {}, attempt=attempt, job_id=job_id)
+                if not _brake_released:
+                    raise TimedOutCaseRepeats(f"external pass {attempt}")
+                await publish.anote(f"Meshing pass {attempt}: the last pass was stopped as bigger than "
+                                    "its plan, and no re-plan makes it smaller - meshing it at the size "
+                                    "it needs", op_id=f"snappy:brake-released:{attempt}")
             await publish.anote("Carving the body out of the background mesh - refinement level "
                             f"{summary['surface_level']}, {summary['n_layers']} boundary layers"
                             + _sealed_note(_cavities)
