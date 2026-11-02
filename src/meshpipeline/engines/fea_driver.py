@@ -1585,7 +1585,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         plans_key = PO.plans_key(ws, connection=connection_of(state), gap_joins=gap_joins_of(state))
     except Exception:  # noqa: BLE001 - no key is planning it here
         plans_key = ""
-    kept = await asyncio.to_thread(kept_plans, state) if plans_key else None
+    stage_plans = await asyncio.to_thread(kept_plans, state) if plans_key else None
 
     try:
         made = await asyncio.to_thread(solids_from_shells, ws)
@@ -1703,7 +1703,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 # stop before meshing
                 # PLAN-fea-22: the size the user picked on the stage, else the recommended one - never a wait
                 plan, said = await asyncio.to_thread(size_choice, state, record, surface, diag_m, levers=levers,
-                                                     ceiling_s=ceiling_for(run), ai=ai, kept=kept, key=plans_key)
+                                                     ceiling_s=ceiling_for(run), ai=ai, kept=stage_plans,
+                                                     key=plans_key)
                 if said:
                     _cite(job_id, [said])
                     # said in the plan's own words too: the result screen and the report show them
