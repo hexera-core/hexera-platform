@@ -278,3 +278,46 @@ def test_a_surface_with_a_hole_keeps_every_face_counted():
     cad = F.join([open_box, inner])
     skin = F.outer_skin(cad, 0.05)
     assert skin is not None and skin(cad.centroids()).all()
+
+
+def test_a_body_seated_into_the_ground_is_not_missed_under_the_floor(tmp_path):
+    # AhmedML run 1 (e2e, 2 Nov): the body stands 50 mm up with no stilts; the ground contact seats it 8.6 mm
+    # into the floor, so its bottom face (a quarter of its area) lies under the floor and the floor has a hole
+    # where the body stands. That is the fluid's whole side of the body: a sound mesh, never a rebuild.
+    ws = tmp_path / "ws"
+    _write_cad(ws / "input.stl", bounds=(0, 1, 0, 0.4, 0.05, 0.35))
+    floor = 0.0586
+    body = pv.Box(bounds=(0, 1, 0, 0.4, floor, 0.35), level=10, quads=True).compute_normals(
+        cell_normals=True, point_normals=False, auto_orient_normals=True)
+    nz = np.asarray(body.cell_data["Normals"])[:, 2]
+    walls = body.extract_cells(np.flatnonzero(nz > -0.9)).extract_surface(algorithm="dataset_surface").flip_faces()
+    plane = pv.Plane(center=(0.5, 0.2, floor), direction=(0, 0, 1), i_size=11, j_size=10.4,
+                     i_resolution=220, j_resolution=208).triangulate()
+    cc = plane.cell_centers().points
+    hole = (cc[:, 0] > 0) & (cc[:, 0] < 1) & (cc[:, 1] > 0) & (cc[:, 1] < 0.4)
+    ground = plane.extract_cells(np.flatnonzero(~hole)).extract_surface(algorithm="dataset_surface")
+    top = pv.Box(bounds=(-5, 6, -5, 5.4, floor, 5.5), level=2, quads=True).compute_normals(
+        cell_normals=True, point_normals=False, auto_orient_normals=True)
+    tz = np.asarray(top.cell_data["Normals"])[:, 2]
+    farfield = top.extract_cells(np.flatnonzero(tz > -0.9)).extract_surface(algorithm="dataset_surface")
+    _write_boundary(ws, {"body": walls, "ground": ground, "farfield": farfield})
+    rec = F.measure(ws, intake_patches=[{"name": "body", "type": "wall"}, {"name": "ground", "type": "wall"},
+                                        {"name": "farfield", "type": "farfield"}], flow="external")
+    assert rec["verdicts"]["cad_to_mesh"] == F.PASS, rec["surface"]
+    assert rec["surface"]["cad_to_mesh"]["cad_missed_share"] < F.CAD_MISSED_CONCERN
+
+
+def test_a_body_missing_its_top_above_the_floor_is_still_refused(tmp_path):
+    # the cut forgives only the CAD on the floor's side: a mesh that lost the top half of the body is refused
+    ws = tmp_path / "ws"
+    _write_cad(ws / "input.stl", bounds=(0, 1, 0, 0.4, 0.05, 0.35))
+    floor = 0.0586
+    body = pv.Box(bounds=(0, 1, 0, 0.4, floor, 0.2), level=10, quads=True).compute_normals(
+        cell_normals=True, point_normals=False, auto_orient_normals=True)
+    nz = np.asarray(body.cell_data["Normals"])[:, 2]
+    walls = body.extract_cells(np.flatnonzero(nz > -0.9)).extract_surface(algorithm="dataset_surface").flip_faces()
+    top = pv.Box(bounds=(-5, 6, -5, 5.4, floor, 5.5), level=2, quads=True).extract_surface(algorithm="dataset_surface")
+    _write_boundary(ws, {"body": walls, "farfield": top})
+    rec = F.measure(ws, intake_patches=[{"name": "body", "type": "wall"}, {"name": "farfield", "type": "farfield"}],
+                    flow="external")
+    assert rec["verdicts"]["cad_to_mesh"] == F.REBUILD, rec["surface"]

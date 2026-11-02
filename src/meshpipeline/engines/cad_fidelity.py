@@ -451,9 +451,15 @@ def surface_distance(mesh_wall: Surface, mesh_all: Surface, cad: Surface, *, box
             "wall_off_share": _q(float(w[r > 1.0].sum() / max(w.sum(), 1e-300)), 5)}
     if mesh_all.n and cad.n:
         c, a = _area_samples(cad, rng)
+        lo = hi = None
         if box is not None:
+            # ONLY THE CAD ON THE FLUID'S SIDE OF THE CUT IS HELD: a body on the ground is seated into the
+            # floor (the ground contact) and a half model is cut on its symmetry plane, so the CAD under the
+            # floor, or past the plane, was never the fluid's to mesh. The pad only absorbs rounding: a pad
+            # of 1% of the domain (0.27 m on an Ahmed body's) counted a bottom face seated 8.6 mm into the
+            # floor as missed and refused a sound mesh (AhmedML run 1, e2e 2 Nov)
             lo, hi = np.asarray(box[0], dtype=float), np.asarray(box[1], dtype=float)
-            pad = 0.01 * float(np.linalg.norm(hi - lo))
+            pad = 1e-6 * float(np.linalg.norm(hi - lo))
             inside = np.all((c >= lo - pad) & (c <= hi + pad), axis=1)
             c, a = c[inside], a[inside]
         hidden = None
@@ -469,6 +475,13 @@ def surface_distance(mesh_wall: Surface, mesh_all: Surface, cad: Surface, *, box
             h = mesh_all.cell_size[near]
             missed = (d > MISS_CELLS * h) & (d > MISS_FLOOR_OF_DIAG * diag)
             w = a[i]
+            if lo is not None:
+                # CAD ON THE CUT ITSELF - within the miss distance of the floor or a symmetry plane - is where the
+                # body meets that plane: the mesh has the plane there, never a wall, so it is not a miss
+                gap = np.minimum(c[i] - lo, hi - c[i]).min(axis=1)
+                on_cut = gap <= MISS_CELLS * h
+                missed = missed & ~on_cut
+                w = np.where(on_cut, 0.0, w)
             out["cad_to_mesh"] = {
                 "samples": int(len(i)),
                 "p95_cells": _q(np.percentile(d / np.maximum(h, 1e-300), 95)),
