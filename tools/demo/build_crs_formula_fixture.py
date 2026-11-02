@@ -20,9 +20,9 @@ class FaceSelector:
 
 
 FORMULA_OPENINGS = (
-    FaceSelector("rear_body_end", (3287.5, 300.692, 0.0), 3178.069),
-    FaceSelector("upper_body_side", (1103.0, 594.722, 185.704), 2906.152),
-    FaceSelector("right_floor_edge", (2156.0, 53.8, 475.0), 1020.0),
+    FaceSelector("floor_panel_starboard", (1497.5, 58.8, 495.3), 4891.3),
+    FaceSelector("floor_panel_port", (505.9, 48.8, -495.4), 6072.4),
+    FaceSelector("diffuser_floor_tab", (2761.7, 53.8, -477.1), 269.0),
 )
 
 

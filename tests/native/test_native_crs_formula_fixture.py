@@ -73,5 +73,50 @@ def test_formula_profile_creates_three_localized_open_shell_errors(tmp_path):
     assert written["vehicle"] == "Formula 1000 CFD body"
     assert written["removed_prior_demo_solid"] is True
     assert [d["name"] for d in written["defects"]] == [
-        "rear_body_end", "upper_body_side", "right_floor_edge",
+        "floor_panel_starboard", "floor_panel_port", "diffuser_floor_tab",
     ]
+
+
+def test_formula_profile_repairs_all_three_errors_inside_the_shipped_operation_budget(
+        tmp_path, monkeypatch):
+    baseline = os.getenv("CRS_FORMULA_BASELINE", "")
+    if not baseline:
+        pytest.skip("set CRS_FORMULA_BASELINE to exercise the downloaded Formula source")
+
+    from tools.demo.build_crs_formula_fixture import build_formula_fixture
+
+    import meshpipeline.settings.cad_repair as rcfg
+    from meshpipeline.cad.repair.brep import _read_shape
+    from meshpipeline.cad.repair.caps import cumulative_refusal, measure, sanity_refusal
+    from meshpipeline.cad.repair.conservative import repair_step_file
+
+    for name, value in (
+        ("CAD_REPAIR_ENABLED", True),
+        ("CAD_REPAIR_FILL_PLANAR_HOLES", True),
+        ("CAD_REPAIR_FIX_SMALL_FACES", False),
+        ("CAD_REPAIR_HEAL_SELF_INTERSECTIONS", False),
+        ("CAD_REPAIR_REVIEW_ENABLED", False),
+        ("CAD_REPAIR_MAX_OPS", 6),
+        ("CAD_REPAIR_STALL_LIMIT", 2),
+        ("CAD_REPAIR_TIMEOUT_S", 120.0),
+    ):
+        monkeypatch.setattr(rcfg, name, value)
+
+    source = tmp_path / "formula-broken.step"
+    repaired = tmp_path / "formula-repaired.step"
+    build_formula_fixture(Path(baseline), source, tmp_path / "formula-broken.json")
+    before = measure(_read_shape(source))
+
+    report = repair_step_file(source, repaired)
+
+    kept = [operation for operation in report.operations if operation["status"] == "kept"]
+    assert [operation["name"] for operation in kept] == ["fill_planar_hole"] * 3
+    assert len(report.operations) <= 6
+    defects, complete = _scan(repaired)
+    assert complete
+    assert not [d for d in defects if d.severity is DefectSeverity.error]
+    after = measure(_read_shape(repaired))
+    declared_area = sum(operation["evidence"]["area_delta_mm2"] for operation in kept)
+    assert sanity_refusal(before, after) == ""
+    assert cumulative_refusal(before, after, declared_area_mm2=declared_area,
+                              declared_volume_mm3=0.0) == ""
