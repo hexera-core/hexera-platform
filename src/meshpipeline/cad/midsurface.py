@@ -3158,9 +3158,11 @@ def _analytic_face(face, tol: float):
                 out = TopoDS.Face_s(out.Reversed())
     if not BRepCheck_Analyzer(out).IsValid() or abs(_area(out) - _area(face)) > 1e-4 * _area(face):
         return face
-    if mended and not _meshes(out):
+    if not _meshes(out):
         # SHELL-15g: a re-made face that the tessellator cannot mesh (a sphere whose wire now crosses its seam) has no
-        # triangles, so no ray finds it and its wall goes unpaired: the face as the file wrote it
+        # triangles, so no ray finds it and its wall goes unpaired: the face as the file wrote it. SHELL-15g3: EVERY
+        # re-made face, not only one made with reversed wires - two spheres of a dome re-made with their own wires
+        # (sh0076's IGES copy) had no triangles, and its 1.5 mm walls lost two pairs (shell -> mixed)
         return face
     return out
 
