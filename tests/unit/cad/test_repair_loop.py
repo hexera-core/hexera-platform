@@ -158,6 +158,22 @@ def test_a_warning_present_all_along_does_not_stop_the_run_being_resolved():
     assert result.stopped_because == RESOLVED and result.resolved
 
 
+def test_an_error_repair_stops_before_preexisting_warning_cleanup():
+    # A run entered the mutation path to clear an ERROR. Once that error is gone, warnings remain
+    # evidence for the report; they must not trigger broader optional cleanup that can invalidate
+    # the sound repair. Warning-only runs still exercise their dedicated operations.
+    error = _defect(fingerprint="edge:error")
+    warning = _defect(fingerprint="edge:warning", severity=DefectSeverity.warning, index=2)
+    op = _Op()
+    result = run(None, planner=_Planner(op),
+                 session=_session([((error, warning), True), ((warning,), True)]),
+                 tolerance_mm=0.01)
+
+    assert result.stopped_because == RESOLVED and result.resolved
+    assert len(result.verdicts) == 1 and result.verdicts[0].kept
+    assert [d.fingerprint for d in result.defects] == ["edge:warning"]
+
+
 def test_a_truncated_scan_is_never_reported_as_resolved():
     # A walk that stopped at its budget has a short list because it stopped, not because the part
     # is sound. Calling that resolved is how a repairable defect gets delivered as a clean bill.

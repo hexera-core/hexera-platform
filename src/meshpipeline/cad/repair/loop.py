@@ -149,14 +149,11 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
     `session` and `clock` are injectable so the driver's budget arithmetic can be tested without
     a kernel and without waiting.
 
-    WHY THE PLANNER DECIDES WHETHER THERE IS WORK, rather than a severity test on the defect list.
-    An earlier version stopped as `resolved` the moment no ERROR-severity defect remained - which
-    made `fix_small_edges` unreachable on the very fixture that proves it works, because a sliver
-    edge is reported as a WARNING. Yet a sliver is exactly what breaks a mesher: it forces cells
-    orders of magnitude smaller than the part. So the loop runs while the planner still has
-    something it is willing to try, and severity decides only what the STOP IS CALLED when the
-    planner runs dry: `resolved` if nothing at error severity is left, `no_candidate` if something
-    is. A sound part still produces zero verdicts, because the planner proposes nothing for it.
+    WHY THE PLANNER DECIDES WHETHER THERE IS WORK, rather than a blanket severity test on the
+    defect list. A warning-only run must still reach operations such as `fix_small_edges`; a sound
+    part must produce zero verdicts. An error-led run is narrower: once its errors are cleared, its
+    pre-existing warnings remain report evidence instead of expanding the mutation scope after the
+    required repair already succeeded.
     """
     chosen = planner if planner is not None else RepairPlanner(())
     limits = budget if budget is not None else LoopBudget.from_settings()
@@ -190,6 +187,7 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
                          complete_scan=False, planner_label=getattr(chosen, "label", ""),
                          original=original, final=original)
 
+    entered_with_errors = _errors_remain(work)
     consecutive_misses = 0
     while True:
         if len(work.log) >= limits.max_ops:
@@ -230,6 +228,9 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
                 # The re-scan after a kept operation was cut short, so the progress rule passed on
                 # a partial list. Nothing further can be judged against it.
                 stopped = SCAN_INCOMPLETE
+                break
+            if entered_with_errors and not _errors_remain(work) and not _abandoned(work):
+                stopped = RESOLVED
                 break
             continue
 
