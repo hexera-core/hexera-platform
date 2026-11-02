@@ -550,6 +550,10 @@ WORKER_METADATA=(
   || WORKER_METADATA+=("cad-repair-heal-self-intersections=${CAD_REPAIR_HEAL_SELF_INTERSECTIONS}")
 [ -z "${CAD_REPAIR_FIX_SMALL_FACES:-}" ] \
   || WORKER_METADATA+=("cad-repair-fix-small-faces=${CAD_REPAIR_FIX_SMALL_FACES}")
+[ -z "${CAD_REPAIR_MAX_OPS:-}" ] \
+  || WORKER_METADATA+=("cad-repair-max-ops=${CAD_REPAIR_MAX_OPS}")
+[ -z "${CAD_REPAIR_TIMEOUT_S:-}" ] \
+  || WORKER_METADATA+=("cad-repair-timeout-s=${CAD_REPAIR_TIMEOUT_S}")
 [ -z "${CAD_REPAIR_LLM_PLANNER:-}" ] \
   || WORKER_METADATA+=("cad-repair-llm-planner=${CAD_REPAIR_LLM_PLANNER}")
 # The verdict by measured limits (docs/RULES.md VER), only when the target states it (dev does,
