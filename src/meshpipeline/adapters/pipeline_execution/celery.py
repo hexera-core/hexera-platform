@@ -72,10 +72,17 @@ def held_for_update(request, kwargs: dict) -> dict | None:
                                                    headers={platform_contract.HEADER: seen}))
 
 
+# THE GEOMETRY TASKS ACK LATE TOO, for the pipeline task's reason (above). dev-areen, 2 Nov, six uploads at
+# once on one worker's two check slots: acked early, each running check freed its prefetch slot at start,
+# so the worker reserved the next two checks and sat on them - out of the queue list (the console's line
+# could only say "Waiting to start…", never "Queued behind N"), out of the demand the autoscaler reads, and
+# out of reach of any machine it would add. Acked late, the two running checks hold the two slots and the
+# rest wait in the list, where they are counted, said and taken by the next free slot on any machine.
 @celery_app.task(
     name="worker.tasks.scout_geometry",
     bind=False,
     max_retries=0,
+    acks_late=True,
     # the application's numbers: the API reads a check through a time box built from them
     soft_time_limit=SCOUT_SOFT_LIMIT_S,
     time_limit=SCOUT_HARD_LIMIT_S,
@@ -96,6 +103,7 @@ def scout_geometry(**kwargs) -> dict:
     name="worker.tasks.name_geometry",
     bind=False,
     max_retries=0,
+    acks_late=True,
     soft_time_limit=NAMING_SOFT_LIMIT_S,
     time_limit=NAMING_HARD_LIMIT_S,
 )
