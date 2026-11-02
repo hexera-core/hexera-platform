@@ -523,6 +523,10 @@ INVENTORY: list[Group] = [
                help="when an engine cannot mesh a shape, move the run to the next engine that "
                     "delivers the same approved mesh (never a user-named engine); off = every "
                     "run stays on its first engine and a failure only offers the next one"),
+        EnvVar("CFD_WRAP_ENABLED", "true", kind="bool",
+               help="when every engine failed on a flow case's surface as drawn, mesh a wrapped copy "
+                    "of it once (closed, clean, within a measured distance of the CAD; LAD-cfd-5); "
+                    "off = such a run ends with no mesh"),
         EnvVar("MESH_SCRIPT_SCAN_ENABLED", "true", kind="bool"),
         EnvVar("RUN_PYTHON_REQUIRE_SANDBOX", "true", kind="bool", help="refuse to run generated Python outside the seccomp/Landlock jail"),
         EnvVar("CELL_HARD_LIMIT", "8000000", kind="int", help="compute-feasibility cap on mesh size: the only cell-count gate"),

@@ -152,10 +152,21 @@ def build_viewer_payload(workspace: Path) -> dict[str, Any]:
     surface = _build_surface_payload(ws)
     if surface is None:
         raise ViewerPayloadError("no renderable surface in the workspace")
-    return {
+    payload = {
         "engine": str(manifest.get("mesh_mode", "") or ""),
         "mesh_available": True,
         "surface": surface,
         "quality": _quality_block(manifest),
         "review": _last_review(ws),
     }
+    # a mesh built on the CFD wrap (LAD-cfd-7): how far the wrap lies from the CAD, and where it
+    # bridged - for the mesh report; absent for every other mesh
+    from meshpipeline.pipeline.cfd_wrap import read_report
+    wrap = read_report(ws)
+    if wrap:
+        payload["wrap"] = {k: wrap.get(k) for k in (
+            "words", "distance_m", "cube_m", "max_m", "p95_m", "max_on_cad_m", "p95_on_cad_m",
+            "bridged_spots", "spots", "bridged_area_m2", "skin_area_m2", "cad_to_skin_max_m",
+            "cad_to_skin_p95_m", "smoothed_faces", "dry_faces", "patches", "route", "rule")
+            if wrap.get(k) is not None}
+    return payload
