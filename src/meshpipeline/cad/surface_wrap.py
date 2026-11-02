@@ -71,13 +71,13 @@ BRIDGE_CUBES = 1.5
 MIN_PIECE_CUBES = 8
 #: The spots listed by name and place (the widest first); the rest are counted.
 MAX_SPOTS = 20
-#: The skin is coarsened (VTK's quadric decimation, volume kept) to about the triangles of edge r
-#: its area holds - the wrap cannot place a detail finer than r anyway - never fewer than
+#: The skin is coarsened (VTK's quadric decimation, volume kept) to about the triangles of edge
+#: SKIN_EDGE_SHARE x r its area holds - the wrap cannot place a detail finer than r anyway - never fewer than
 #: MIN_SKIN_TRIANGLES, never more than MAX_SKIN_TRIANGLES; a coarsening that would leave it open is
 #: not kept. The drawn skin has a few triangles per grid cube, so it is several times finer.
-MAX_SKIN_TRIANGLES = 1_000_000
+MAX_SKIN_TRIANGLES = 600_000
 MIN_SKIN_TRIANGLES = 20_000
-SKIN_EDGE_SHARE = 0.5
+SKIN_EDGE_SHARE = 0.7
 
 #: Where the wrap's own records live, beside the run's surface (the run's workspace).
 WRAP_REQUEST_FILE = "cfd_wrap.json"
