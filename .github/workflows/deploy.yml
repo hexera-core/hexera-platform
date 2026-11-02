@@ -1449,10 +1449,6 @@ jobs:
       CAD_REPAIR_FILL_NONPLANAR_HOLES: ${{ inputs.cad_repair && 'true' || '' }}
       CAD_REPAIR_HEAL_SELF_INTERSECTIONS: ${{ inputs.cad_repair && 'true' || '' }}
       CAD_REPAIR_FIX_SMALL_FACES: ${{ inputs.cad_repair && 'true' || '' }}
-      # The explicit development opt-in carries enough room for a mixed defect case. Production
-      # retains the shipped six-operation default unless a release changes it deliberately.
-      CAD_REPAIR_MAX_OPS: ${{ inputs.cad_repair && '12' || '' }}
-      CAD_REPAIR_TIMEOUT_S: ${{ inputs.cad_repair && '420' || '' }}
       # The planner posture, stated only when it is not "off"; empty means "not stated".
       CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || '' }}
       # The verdict by measured limits, per target (the `target` job): 'true' on dev, empty on prod.
