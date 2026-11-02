@@ -432,8 +432,10 @@ async def node_executor(state: PipelineState) -> dict:
                         evaluate_domain_extents,
                     )
                     try:
+                        from meshpipeline.engines.ground_plane import floor_of as _floor_of
                         _v = evaluate_domain_extents(_typed_req, _typed_ruler, mesh_manifest,
-                                                     flow_axis=state.get("flow_axis"))
+                                                     flow_axis=state.get("flow_axis"),
+                                                     floor=_floor_of(state.get("up_axis")))
                     except Exception:  # noqa: BLE001
                         logger.exception("Executor: typed extent evaluation crashed - "
                                          "job_id=%s", job_id)

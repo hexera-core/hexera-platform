@@ -33,7 +33,14 @@ from meshpipeline.engines.domain_extent_gate import (
     extent_gate_for_request as check_domain_extents,  # noqa: F401  (engine-adapter seam; cross-engine-neutral case-level gate)
 )
 from meshpipeline.engines.ground_contact import GroundContact, measure_contact
-from meshpipeline.engines.ground_plane import VERTICAL_AXIS, ground_patch_name, is_ground
+from meshpipeline.engines.ground_plane import (
+    DEFAULT_FLOOR,
+    VERTICAL_AXIS,
+    from_up_frame,
+    ground_patch_name,
+    is_ground,
+    to_up_frame,
+)
 from meshpipeline.engines.manifest import (  # noqa: F401
     _patch_face_counts,
     write_manifest,
@@ -433,7 +440,8 @@ def axis_roles(analysis: dict, symmetry: dict | None = None) -> tuple[int, int, 
     return stream, vert, span
 
 
-def _lay_floor(dmin: list, bmin, contact: GroundContact | None = None) -> None:
+def _lay_floor(dmin: list, bmin, contact: GroundContact | None = None, *,
+               dmax: list | None = None, bmax=None, floor: tuple[int, str] = DEFAULT_FLOOR) -> None:
     """A body ON THE GROUND stands on the box's floor: the z-min face moves up to the body's
     lowest point, with no gap under it. A clearance would leave a sliver of fluid under the body
     that no mesher resolves; the other margins are untouched.
@@ -443,9 +451,18 @@ def _lay_floor(dmin: list, bmin, contact: GroundContact | None = None) -> None:
     stands its buildings on the ground. A body that meets the floor at points or along lines -
     wheels, a rounded nose - has the floor raised a measured few millimetres into it, so the
     contact is a small flat patch instead of a wedge of fluid that closes to nothing. Without a
-    measured contact the floor goes at the lowest point, as it always has."""
-    dmin[VERTICAL_AXIS] = (float(contact.floor_z) if contact is not None
-                           else float(bmin[VERTICAL_AXIS]))
+    measured contact the floor goes at the lowest point, as it always has.
+
+    The floor is the box face under the body for the up axis the user confirmed (INS-9,
+    ground_plane.floor_of): z-min on a +z-up file, y-min on +y up, y-max on -y up. The contact
+    is measured in that up frame, so its heights read along the up axis."""
+    ax, side = int(floor[0]), floor[1]
+    if side == "min":
+        dmin[ax] = float(contact.floor_z) if contact is not None else float(bmin[ax])
+    else:
+        if dmax is None or bmax is None:
+            raise ValueError("a floor on the max side of the box needs the box's max")
+        dmax[ax] = -float(contact.floor_z) if contact is not None else float(bmax[ax])
 
 
 #: The feature-edge file the renderer writes for the line where a raised floor cuts the body.
@@ -463,10 +480,21 @@ def _contact_line_emesh(contact: GroundContact) -> str:
             + f"{len(contact.line_points)}\n(\n{pts})\n{len(contact.line_edges)}\n(\n{edges})\n")
 
 
-def measure_ground_contact(workspace, geometry_file: str = "input.stl") -> GroundContact:
+def measure_ground_contact(workspace, geometry_file: str = "input.stl",
+                           floor: tuple[int, str] = DEFAULT_FLOOR) -> GroundContact:
     """How the staged body meets the ground: read its triangles and measure (metres in, as
-    every surface staged into a workspace is)."""
-    return measure_contact(read_stl_triangles(Path(workspace) / geometry_file))
+    every surface staged into a workspace is). Measured with the up axis as z (INS-9): its
+    heights are along the up axis, and its contact line is given back in the file's frame."""
+    import dataclasses
+
+    tris = read_stl_triangles(Path(workspace) / geometry_file)
+    if tuple(floor) == DEFAULT_FLOOR:
+        return measure_contact(tris)
+    c = measure_contact(to_up_frame(tris, floor))
+    if not c.line_points:
+        return c
+    pts = tuple((float(p[0]), float(p[1]), float(p[2])) for p in from_up_frame(c.line_points, floor))
+    return dataclasses.replace(c, line_points=pts)
 
 
 def domain_from_strategy(analysis: dict, strategy: dict | None = None,
@@ -474,11 +502,12 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
                          flow_axis: str | None = None,
                          ruler_m: float | None = None,
                          ground: bool = False,
-                         contact: GroundContact | None = None) -> tuple[list, list]:
+                         contact: GroundContact | None = None,
+                         floor: tuple[int, str] = DEFAULT_FLOOR) -> tuple[list, list]:
     bmin, bmax, L = analysis["bbox_min"], analysis["bbox_max"], analysis["L"]
-    if ground and flow_axis and flow_axis.strip().lower()[-1:] == "xyz"[VERTICAL_AXIS]:
-        raise ValueError(f"a ground plane lies across z, so the flow cannot travel along "
-                         f"{flow_axis} as well")
+    if ground and flow_axis and flow_axis.strip().lower()[-1:] == "xyz"[int(floor[0])]:
+        raise ValueError(f"a ground plane lies across {'xyz'[int(floor[0])]}, so the flow cannot "
+                         f"travel along {flow_axis} as well")
     m = (strategy or {}).get("domain_margin") or {}
     from meshpipeline.engines.snappy.planner import plan_float
     m = m if isinstance(m, dict) else {}
@@ -521,7 +550,7 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
             else:
                 dmax[axx] = symmetry["pos"]
         if ground:
-            _lay_floor(dmin, bmin, contact)
+            _lay_floor(dmin, bmin, contact, dmax=dmax, bmax=bmax, floor=floor)
         return dmin, dmax
 
     roles = axis_roles(analysis, symmetry)
@@ -565,7 +594,7 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
         else:
             dmax[ax] = symmetry["pos"]
     if ground:
-        _lay_floor(dmin, bmin, contact)
+        _lay_floor(dmin, bmin, contact, dmax=dmax, bmax=bmax, floor=floor)
     return dmin, dmax
 
 
@@ -692,7 +721,8 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                        outside_points: list | None = None,
                        wake: WakeRequest | None = None,
                        contact: GroundContact | None = None,
-                       gap_field: tuple | None = None) -> dict:
+                       gap_field: tuple | None = None,
+                       ground_floor: tuple[int, str] = DEFAULT_FLOOR) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     rec = recommendation
@@ -808,10 +838,10 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
         _claims.append((symmetry["name"], "symmetryPlane",
                         _BOX_FACES[(symmetry["axis"], symmetry["side"])]))
     if ground:
-        _floor = _BOX_FACES[(VERTICAL_AXIS, "min")]
+        _floor = _BOX_FACES[(int(ground_floor[0]), ground_floor[1])]     # INS-9: under the confirmed up axis
         if any(face == _floor for _, _, face in _claims):
             raise ValueError(f"the ground plane '{ground}' and a symmetry plane both claim the "
-                             "box's z-min face")
+                             f"box's {'xyz'[int(ground_floor[0])]}-{ground_floor[1]} face")
         _claims.append((ground, "wall", _floor))
     _ff = "".join(f for f in _ALL_BOX_FACES if f not in {face for _, _, face in _claims})
     _boundary = ("boundary (" + " ".join(
@@ -891,7 +921,7 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                           domain_min=domain_min, domain_max=domain_max,
                           flow_axis=wake.flow_axis, base_cell=base_actual, surface_level=smax,
                           budget_cells=max_cells, knobs=wake.knobs, ruler_m=wake.ruler_m,
-                          grounded=bool(ground),
+                          grounded=bool(ground), floor=ground_floor,
                           # what the body itself costs, so the wake never starves the wall's
                           # refinement of the budget snappyHexMesh stops refining at
                           body_cells=castellated_estimate(
@@ -1025,6 +1055,9 @@ mergeTolerance 1e-6; debug 0;
     if ground:
         _floor_rec: dict = {"patch": ground,
                             "floor_z": round(float(domain_min[VERTICAL_AXIS]), 6)}
+        _fax, _fside = int(ground_floor[0]), ground_floor[1]
+        out["ground_floor"] = {"axis": _fax, "side": _fside,
+                               "at": round(float((domain_min if _fside == "min" else domain_max)[_fax]), 6)}
         if contact is not None:
             _floor_rec.update({"contact": contact.kind,
                                "penetration_m": round(float(contact.penetration_m), 6),

@@ -133,6 +133,7 @@ class PipelineState(TypedDict):
     executor_failure_facts: dict       # the plain facts the user's sentence is built from
     geometry_unsuitable_reason: str    # node_geometry_admission's reject reason (unmeshable input)
     flow_topology:      str            # "internal"/"external"/"" - DERIVED from purpose (neutral fact, NOT an engine_param)
+    up_axis:            str            # INS-9: which way is up, as confirmed on the stage ("+z", "-y", ...); "" = +z
     leak_closing:       dict | None    # INS-8: {"close_up_to_m", "rule"} as confirmed on the stage; None = the surface as drawn
     fea_connection:     str            # an FEA assembly: "bonded" | "contact", as confirmed on the stage ("" otherwise)
     fea_gap_joins:      bool           # an FEA assembly: parts across a small gap joined there (PLAN-fea-18); True unless switched off

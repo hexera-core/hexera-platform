@@ -132,7 +132,7 @@ class TestIntakeValidation:
 
     def test_a_ground_under_a_flow_along_z_is_refused(self):
         errs = _submission(flow_axis="-z")
-        assert any("cannot also travel along z" in e for e in errs), errs
+        assert any("runs into the ground" in e and "up in this file is +z" in e for e in errs), errs
 
     def test_the_ground_is_declared_once(self):
         errs = _submission(patches=[{"name": "car", "type": "wall"},
@@ -598,7 +598,7 @@ class TestTheDriver:
         assert ok is False and "render" not in seen
         errors = [(a, k) for name, a, k in pub.calls if name == "aerror"]
         assert errors and errors[0][1]["op_id"] == "snappy:ground-unusable"
-        assert "horizontal axis" in errors[0][0][0]
+        assert "into the ground" in errors[0][0][0]
 
     def test_a_refused_setup_is_recorded_for_the_closing_message(self, driver, tmp_path):
         # job dce77409: the refusal was only said on the live line, and the run closed on "the
@@ -611,9 +611,9 @@ class TestTheDriver:
         rec = read_refusal(tmp_path)
         assert rec is not None and rec.cause == FailureCause.NOT_BUILT.value
         assert rec.facts["setup"] is True and rec.facts["deterministic"] is True
-        assert "horizontal axis" in rec.facts["reason"]
+        assert "into the ground" in rec.facts["reason"]
         what, next_step = describe(rec.cause, rec.facts, engine="snappyHexMesh")
-        assert "horizontal axis" in what and "your geometry was not the problem" in what
+        assert "into the ground" in what and "your geometry was not the problem" in what
         assert "from your file" not in what and "notes above" not in what
         assert "stop the same way" in next_step
 

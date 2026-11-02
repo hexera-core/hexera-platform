@@ -186,17 +186,6 @@ def axis_from_reading(readings, up_axis: str = DEFAULT_UP) -> tuple[str | None, 
     return None, {}
 
 
-#: WHY A GROUNDED PART DRAWN ANOTHER WAY UP IS MESHED FREE IN THE FLOW. The mesher lays the ground
-#: under the file's lowest z (engines/ground_plane.VERTICAL_AXIS); on a car drawn upside down that
-#: is its roof. Until the ground follows the up axis, the part is meshed without one - never with
-#: the ground on its roof - and the user is told how to get it.
-GROUND_NEEDS_Z_UP = (
-    "The part stands on the ground, but this file is drawn with {up} up, and the ground plane can "
-    "only be laid under the file's lowest z, which on this file is not under the part. So it is "
-    "meshed free in the flow: every far-field face is open, and no ground patch is declared. Tell "
-    "the user this, and that re-exporting the file with +z up lets it stand on the ground.")
-
-
 def external_declaration(body) -> list[str]:
     """The sentences the intake reads for a body in a flow, from what the user confirmed."""
     axis = getattr(body, "flow_axis", None) or ""
@@ -214,17 +203,17 @@ def external_declaration(body) -> list[str]:
     up = up_or_default(getattr(body, "up_axis", None))
     if not getattr(body, "grounded", False):
         lines.append("The part is free in the flow; every far-field face is open.")
-    elif up != DEFAULT_UP:
-        lines.append(GROUND_NEEDS_Z_UP.format(up=up))
     else:
-        lines.append("The part stands on the ground: the floor of the far-field box, at the part's "
-                     "lowest z, is a wall patch named ground, which the domain builds - it is not a "
-                     "region of the geometry.")
+        # INS-9: the floor follows the confirmed up axis - a Y-up file stands on the ground too
+        lines.append(f"The part stands on the ground. Up in this file is {up}: the floor of the "
+                     f"far-field box, under the part's lowest point along {up}, is a wall patch "
+                     "named ground, which the domain builds - it is not a region of the geometry. "
+                     f"The flow runs along the ground, so never along the {up[-1]} axis.")
     return lines
 
 
 __all__ = ["AXES", "DEFAULT_EXTENTS", "LONGEST_SIDE_CONFIDENCE", "axis_from_reading", "DEFAULT_UP", "EXTERNAL_KEYS", "FIELD_KEYS", "FIELDS",
-           "GROUND_NEEDS_Z_UP", "INPUT_KIND_OPTIONS", "GeometryField", "UP_AXES", "axis_of_longest_side",
+           "INPUT_KIND_OPTIONS", "GeometryField", "UP_AXES", "axis_of_longest_side",
            "external_declaration", "external_defaults", "form_spec", "length_along",
            "length_of_another_axis", "same_length", "up_or_default"]
 _ = field  # dataclasses.field is imported for future registry entries with defaults

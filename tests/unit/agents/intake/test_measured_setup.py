@@ -106,3 +106,17 @@ async def test_the_submit_step_says_it_and_saves_nothing(monkeypatch):
     out = await tool._do_submit_requirements(args)
     assert out.accepted is False and "whole body" in out.content
     assert tool.state.submit_rejections == 1
+
+
+
+def test_the_ground_follows_the_confirmed_up_axis():
+    # INS-9: the same turbine drawn Y-up stands on y = 0. With +y confirmed up its base is the
+    # floor, so ground + symmetry there is the ground taken for a cut; with +z (or nothing)
+    # confirmed, y-min is a side, where a half model's cut can be, and nothing is said.
+    lo, hi = TURBINE
+    y_up = ([lo[0], lo[2], -hi[1]], [hi[0], hi[2], -lo[1]])
+    args = _ext(("turbine", "wall"), ("ground", "wall"), ("farfield", "farfield"), ("symmetry", "symmetry"))
+    errs = ms.setup_errors(args, _facts(y_up), {"up_axis": "+y"})
+    assert len(errs) == 1 and "the bottom it stands on" in errs[0]
+    assert ms.setup_errors(args, _facts(y_up), {"up_axis": "+z"}) == []
+    assert ms.setup_errors(args, _facts(y_up), {}) == []

@@ -22,8 +22,6 @@ from __future__ import annotations
 #: A box side lies on the plane through the origin when it is this close to it, as a share of the
 #: part's longest side - the engine's own tolerance (snappy_runner.detect_symmetry_plane tol_frac).
 ON_PLANE = 0.005
-#: The vertical axis the engine lays the ground on (engines/ground_plane.VERTICAL_AXIS).
-VERTICAL = 2
 #: A reference length this far from the part's longest side, either way, is asked about. A wing's
 #: chord is a tenth to a fiftieth of its span; a slip between millimetres and metres is a thousand.
 REFERENCE_TOO_FAR = 100.0
@@ -57,7 +55,7 @@ def _patches(args: dict) -> list[dict]:
     return [p for p in (args.get("patches") or []) if isinstance(p, dict)]
 
 
-def _symmetry_errors(args: dict, facts: dict) -> list[str]:
+def _symmetry_errors(args: dict, facts: dict, up_axis: str = "") -> list[str]:
     sym = [p for p in _patches(args) if (p.get("type") or "").strip() == "symmetry"]
     # two symmetry patches are a swept slab (both end caps), which the engine reads on its own terms
     if len(sym) != 1 or str(args.get("dimensionality") or "3D").upper() != "3D":
@@ -73,10 +71,12 @@ def _symmetry_errors(args: dict, facts: dict) -> list[str]:
             "symmetry plane is laid. The engine would refuse this setup after the user approved it. "
             f"Tell the user, drop {name!r} and mesh the whole body (wall + farfield), unless they "
             "upload a half model cut on such a plane."]
-    from meshpipeline.engines.ground_plane import ground_patch_name
+    from meshpipeline.engines.ground_plane import floor_of, ground_patch_name
 
     ground = ground_patch_name(_patches(args))
-    if ground and all(k == VERTICAL and side == "min" for k, side in sides):
+    # the floor is the box side under the up axis the user confirmed (INS-9); none confirmed is +z up
+    floor = floor_of(up_axis)
+    if ground and all((k, side) == tuple(floor) for k, side in sides):
         return [
             f"patches declare both the ground {ground!r} and the symmetry plane {name!r}, but the "
             "only side of the measured part on a plane through the origin is the bottom it stands "
@@ -113,7 +113,9 @@ def setup_errors(args: dict, facts: dict | None, confirmed: dict | None) -> list
     can carry it - or when nothing was measured or confirmed (then nothing is said)."""
     if str(args.get("purpose") or "") != "external_cfd":
         return []
-    return _symmetry_errors(args, facts or {}) + _reference_errors(args, confirmed or {})
+    confirmed = confirmed or {}
+    up = str(confirmed.get("up_axis") or "") if isinstance(confirmed, dict) else ""
+    return _symmetry_errors(args, facts or {}, up) + _reference_errors(args, confirmed)
 
 
 __all__ = ["half_model_sides", "setup_errors"]

@@ -473,6 +473,8 @@ STATE_FIELDS: dict[str, str] = {
                              "(PLAN-fea-19/20); {} when every pair follows the rule",
     "flow_topology":         "internal/external flow regime DERIVED from the purpose - a neutral "
                              "fact read by the executor/runners, NOT an engine-native param",
+    "up_axis":               "which way is up in the file, as confirmed on the stage (+z, -y, ...): the "
+                             "ground is laid under it (INS-9); '' = +z up",
     "leak_closing":          "the leak size the user confirmed on the stage (INS-8): every leak of the "
                              "surface up to it is closed for the mesh by each route's staging; None = as drawn",
     "requested_extents":     "typed per-direction far-field multiples the user stated (contract)",
