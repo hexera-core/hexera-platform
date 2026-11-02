@@ -185,19 +185,14 @@ def select_declared_openings(candidates: list, declared: list) -> list:
     all_faces = dict(remaining)
     filled = {i: _filled(i, o) for i, (_a, _c, o) in remaining.items()}
 
-    def _size_err(idx, area, opening, port):
+    def _size_err(idx, area, opening, port, located: bool = False):
         # the smallest relative disagreement any admissible measure achieves inside the
-        # band, or None when the declared size fits by no measure
+        # band, or None when the declared size fits by no measure. `located`: the port's hint
+        # is being read, and its face's own area may be anything within 2x (LOCATED_RATIO_*)
         declared_area = float(port["area_m2"])
         errs = []
-        # BY LOCATION FIRST, THE SIZE AS A CHECK - the binder's own rule (engines/port_binding,
-        # LOCATED_RATIO_*): a port that says where it is binds the face there when its size is
-        # within 2x; the 25% band is for binding by size alone. Held to 25% with a hint, a port
-        # whose stated size was a quarter off skipped the face its hint sat on and took the nearest
-        # face that matched the number - a wall 2 m away (s_duct_001, job 0a5ffe8e).
-        located = bool(port.get("near_m")) and (
-            LOCATED_RATIO_LO <= area / declared_area <= LOCATED_RATIO_HI)
-        if _band_ok(area, declared_area) or located:
+        if _band_ok(area, declared_area) or (
+                located and LOCATED_RATIO_LO <= area / declared_area <= LOCATED_RATIO_HI):
             errs.append(abs(area / declared_area - 1.0))
         if (opening is not None and opening.get("area_m2")
                 and _shape_agrees(opening, port)):
@@ -207,14 +202,11 @@ def select_declared_openings(candidates: list, declared: list) -> list:
                     errs.append(abs(measure / declared_area - 1.0))
         return min(errs) if errs else None
 
-    hinted = sorted((p for p in declared if p.get("near_m")), key=lambda p: str(p.get("name")))
-    sized = sorted((p for p in declared if not p.get("near_m")),
-                   key=lambda p: str(p.get("name")))
-    for port in hinted + sized:
+    def _best(port, located: bool):
         best = None
         for idx, (area, cen, opening) in remaining.items():
             if port.get("area_m2"):
-                err = _size_err(idx, area, opening, port)
+                err = _size_err(idx, area, opening, port, located)
                 if err is None:
                     continue
                 err_bucket = int(err / _SIZE_ERR_QUANTUM)
@@ -228,6 +220,26 @@ def select_declared_openings(candidates: list, declared: list) -> list:
                 score = (0, err_bucket, tie_area, idx)
             if best is None or score < best[0]:
                 best = (score, idx)
+        return best
+
+    hinted = sorted((p for p in declared if p.get("near_m")), key=lambda p: str(p.get("name")))
+    sized = sorted((p for p in declared if not p.get("near_m")),
+                   key=lambda p: str(p.get("name")))
+    for port in hinted + sized:
+        best = _best(port, located=False)
+        if port.get("near_m") and port.get("area_m2"):
+            # BY LOCATION FIRST, THE SIZE AS A CHECK - the binder's own rule (engines/port_binding,
+            # LOCATED_RATIO_*): a port that says where it is binds the face THERE when the face is
+            # within 2x of its stated size. Held to 25% alone, a port whose size was a quarter off
+            # skipped the face its hint sat on and took the nearest face that matched the number -
+            # a wall 2 m away (s_duct_001, job 0a5ffe8e). A face inside the 25% band still wins
+            # when it sits at the hint as well (half the port's size): of a concentric ring stack
+            # the ring that matches the size, not a smaller one a micrometre nearer.
+            loose = _best(port, located=True)
+            reach = 0.5 * math.sqrt(4.0 * float(port["area_m2"]) / math.pi)
+            if loose is not None and (best is None or best[0][0] * _DIST_QUANTUM_M
+                                      > loose[0][0] * _DIST_QUANTUM_M + reach):
+                best = loose
         if best is None:
             rows = []
             for i, (a, c, opening) in sorted(remaining.items()):
