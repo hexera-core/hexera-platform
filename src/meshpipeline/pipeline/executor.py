@@ -358,8 +358,10 @@ async def node_executor(state: PipelineState) -> dict:
             if not ok and _rp.is_note_gate(key):
                 _noted.append((key, _fb))
 
-        _gates_ok, _gate_key, _gate_feedback = run_gates(
-            _spec.gates, _ctx, on_result=_report_gate)
+        # off the event loop: a gate may measure the mesh for a minute (engines/cad_fidelity),
+        # and the worker's drain and cancellation checks must keep running meanwhile
+        _gates_ok, _gate_key, _gate_feedback = await asyncio.to_thread(
+            lambda: run_gates(_spec.gates, _ctx, on_result=_report_gate))
         for _key, _ok in _gate_results:
             if not _ok and _rp.is_note_gate(_key):
                 # A NOTE, NOT A FAILED CHECK (LAD-cfd-3/4): never shown as a failed check - the

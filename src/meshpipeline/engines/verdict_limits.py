@@ -86,6 +86,11 @@ PRODUCTION_LIMITS: tuple[Limit, ...] = (
           source="the executor's measured requirement checks (requirement_caveats)"),
     Limit("size_concerns", "A believable size for what it is", "<=", 0, _ALL,
           source="contracts/unit_plausibility (the delivered body's size against what it is)"),
+    Limit("cad_fidelity_concerns", "Follows the CAD it was built from (measures missed)", "<=", 0,
+          ("snappy", "cfmesh", "gmsh"), topologies=_CFD,
+          source="engines/cad_fidelity.py (wall within a cell of the CAD, the CAD reached, the "
+                 "volume and each opening against the CAD; a mesh that is not the part is "
+                 "refused by its gate, VER-4)"),
 )
 
 
@@ -116,9 +121,24 @@ def _passage(quality: Mapping) -> tuple[float | None, float | None]:
     return v.cells_across, v.floor
 
 
+def _cad_fidelity_concerns(quality: Mapping) -> int | None:
+    """How many of the CAD fidelity measures missed their bar (engines/cad_fidelity.py); None when
+    the check did not run or could not measure."""
+    from meshpipeline.engines.cad_fidelity import CONCERN, REBUILD, RECORD_KEY, UNMEASURED
+    rec = quality.get(RECORD_KEY)
+    if not isinstance(rec, Mapping) or rec.get("verdict") in (None, UNMEASURED):
+        return None
+    verdicts = rec.get("verdicts")
+    if not isinstance(verdicts, Mapping):
+        return None
+    return sum(1 for v in verdicts.values() if v in (CONCERN, REBUILD))
+
+
 def _measured(key: str, quality: Mapping, facts: Mapping) -> Any:
     if key == "layers_short":
         return _layers_short(quality)
+    if key == "cad_fidelity_concerns":
+        return _cad_fidelity_concerns(quality)
     if key in ("requirement_near_misses", "size_concerns"):
         return facts.get(key)
     return quality.get(key)

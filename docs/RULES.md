@@ -130,6 +130,7 @@ so a fleet deploy applies it). Prod keeps the default until dev has run with it.
 | Cells across the narrowest passage | snappy, cfMesh, gmsh, VMTK | internal flow | at least the resolution floor (12) | the resolution floor's own reading; narrow side passages it set aside are listed here |
 | Stated requirements met | every engine | every flow | no near-miss | the executor's measured requirement checks (`requirement_caveats`) |
 | A believable size for what it is | every engine | every flow | no size concern | the unit-plausibility check on the delivered body |
+| Follows the CAD it was built from | snappy, cfMesh, gmsh | external and internal flow | no measure missed | `engines/cad_fidelity.py`: the share of the mesh's wall more than one cell off the CAD (2%), the share of the CAD more than two local cells from the mesh (1%), the volume against the CAD's (3% internal, 5% an external body), each opening against its confirmed area (0.9 to 1.1); a measure that could not be read is unmeasured. A mesh past the rebuild bars is refused by the `cad_fidelity` gate (VER-4) |
 | The engine's own declared advisory lists | snap-grid | every flow | empty | `engines/snapgrid/criteria.py` (thin layers short, resolution short) |
 | Worst scaled Jacobian, over the whole curved element | every FEA adapter (gmsh today) | a mesh built from an FEA plan | at least 0.2 for straight (4-node) tetrahedra; at least 0.01 for curved (10-node) ones | Cubit/Verdict's acceptable range for straight tetrahedra. A curved element's figure reads its curving as well as its shape, and none of the version-1 solvers checks it (they check validity), so a curved mesh is noted only under 0.01 (Areen, 22 Oct) |
 | Worst Jacobian ratio across an element's nodes | every FEA adapter | a mesh built from an FEA plan | at most 30 | Ansys MAPDL's corner-node warning |
@@ -151,12 +152,12 @@ version in the same PR.
 | Way the mesh is the wrong problem | Measured by | Today |
 |---|---|---|
 | The wrong side of the body was meshed | `port_areas`, `region_contract` | gates |
-| Part of the confirmed geometry is missing | `file_fidelity` | gate (snap-grid); CAD fidelity checks to come (#225) |
+| Part of the confirmed geometry is missing | `file_fidelity`, `cad_fidelity` | gate (snap-grid; snappy, cfMesh and gmsh flow meshes: over 8% of the CAD more than two local cells from the mesh, or the volume over 25% off) |
 | The wrong scale | the believable-size row of VER-2 | a concern, not a failure |
 | The flow setup contradicts what was confirmed | `domain_extent`, `port_areas` | gates |
 | A boundary contradicts what was confirmed | `patch_contract`, `boundary_types`, `port_areas` | gates |
 | No flow path from inlet to outlet | none yet | no measured check: a review claim is a note, and the shadow log lists it |
-| The meshed surface differs from the CAD | `file_fidelity` | gate (snap-grid); CAD fidelity checks to come (#225) |
+| The meshed surface differs from the CAD | `file_fidelity`, `cad_fidelity` | gate (snap-grid; snappy, cfMesh and gmsh flow meshes: over 15% of the wall more than one cell off the CAD with its 95th percentile over two cells). `CAD_FIDELITY_RETRY_ENABLED=false` makes every miss a concern only |
 | Disconnected junk regions | `regions_split` (multi-region); the regions row of VER-2 | gate; a concern on one-region engines |
 | A stated requirement is absent | the requirement rows of VER-2 | a concern |
 

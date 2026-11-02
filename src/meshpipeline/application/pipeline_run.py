@@ -1040,6 +1040,14 @@ async def _run_async(req: JobRequest) -> dict:
                          words=f"the measurement settles it: {_s.get('settled_by')}")
         except Exception:  # noqa: BLE001 - a record never touches a verdict
             jlog.debug("review record: why entries not kept", exc_info=True)
+        # and how closely the mesh follows the CAD (engines/cad_fidelity.py): a concern is said beside
+        # the delivered mesh, and every number travels in the result record
+        from meshpipeline.application.final_result import (
+            cad_fidelity_caveat,
+            cad_fidelity_record,
+        )
+        _fidelity_caveat = cad_fidelity_caveat(_run_outcome)
+        _fidelity = cad_fidelity_record(_run_outcome, size_caveat=_scale_caveat)
         verdict, api_failure = _run_outcome.reviewer_verdict, _run_outcome.api_failure
 
         retry_count = _run_outcome.retry_count
@@ -1272,6 +1280,7 @@ async def _run_async(req: JobRequest) -> dict:
                 # THE FALLBACK LADDER'S ACCOUNT: which engines ran, why the run moved, and - when
                 # no mesh came out - the one offer the user can accept in a sentence
                 repair_lineage=dict(final_state.get("repair_lineage") or {}),
+                cad_fidelity=_fidelity,
                 engine_ladder=_ladder_record(
                     final_state, succeeded=final_status == JobStatus.succeeded,
                     system_failure=bool(api_failure) or _timed_out, jlog=jlog),
@@ -1280,6 +1289,7 @@ async def _run_async(req: JobRequest) -> dict:
                                      + ([_review_caveat] if _review_caveat else [])
                                      + ([_narrow_caveat] if _narrow_caveat else [])
                                      + ([_scale_caveat] if _scale_caveat else [])
+                                     + ([_fidelity_caveat] if _fidelity_caveat else [])
                                      + ([_verdict_caveat] if _verdict_caveat else [])
                                      + ([_notes_caveat] if _notes_caveat else [])),
                 review_blocking=list(_review_blocking),
