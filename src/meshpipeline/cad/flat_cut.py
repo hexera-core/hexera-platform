@@ -6,7 +6,10 @@
 #             staging's opening faces).
 from __future__ import annotations
 
+import logging
 import math
+
+logger = logging.getLogger(__name__)
 
 #: A wall RUNS ON across a rim edge when the neighbouring face meets this face tangentially there
 #: (their outward normals within ~20 degrees) ...
@@ -126,6 +129,7 @@ def runs_on_share(face, faces_of_edge) -> float:
             length = float(GCPnts_AbscissaPoint.Length_s(curve))
             mid = curve.Value(0.5 * (curve.FirstParameter() + curve.LastParameter()))
         except Exception:  # noqa: BLE001 - a degenerate edge carries no rim length
+            logger.debug("flat_cut: an edge without a measurable length is skipped", exc_info=True)
             continue
         if not (length > 0.0 and math.isfinite(length)):
             continue
@@ -145,9 +149,9 @@ def runs_on_share(face, faces_of_edge) -> float:
             n_other = _normal_at(other, mid)
             if n_other is None or sum(a * b for a, b in zip(n_here, n_other)) < TANGENT_COS:
                 continue
-            hit = next((m for f, m in means if f.IsSame(other)), False)
-            mean = _mean_normal(other) if hit is False else hit
-            if hit is False:
+            known = [m for f, m in means if f.IsSame(other)]
+            mean = known[0] if known else _mean_normal(other)
+            if not known:
                 means.append((other, mean))
             ref = _unit(own) if own is not None else n_here
             if mean is not None and sum(a * b for a, b in zip(ref, mean)) < RUNS_ON_MEAN_COS:
