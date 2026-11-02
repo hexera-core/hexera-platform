@@ -92,19 +92,53 @@ export function keyNumbersHtml(list) {
     + `<dd${x.title ? ` title="${attr(x.title)}"` : ""}>${esc(x.v)}${x.sub ? `<small>${esc(x.sub)}</small>` : ""}</dd></div>`).join("")}</dl>`;
 }
 
-/** The downloads: Everything (the one bundle) first, then each file, then the Mesh report. */
+/** A file's label in two parts: its short name, and the caveat the server adds after a dash
+ *  ("Nastran bulk data (.bdf) - not yet tested in the real solver") - shown as a small tag and a
+ *  tooltip, never as label text. */
+export function fileLabel(label) {
+  const t = String(label || "").trim();
+  const dash = t.indexOf(" - ");
+  const name = dash > 0 ? t.slice(0, dash) : t;
+  const note = dash > 0 ? t.slice(dash + 3).trim() : "";
+  const tag = !note ? "" : /^not yet tested/i.test(note) ? "untested" : /not yet tested/i.test(note) ? "partly tested" : "note";
+  return { name, note, tag };
+}
+
+/** The downloads: ONE "Download" button that opens a short menu - Everything (the one bundle)
+ *  first, then each file by its short name and size, then the Mesh report. ParaView and a thermal
+ *  model's files join the same menu when the mesh is read (viewer.js, thermal_results.js). */
 export function downloadsHtml(job, files = []) {
   const list = files.filter((f) => f && f.type !== "video");
   const bundle = list.filter((f) => f.type === "mesh_bundle");
   const rest = list.filter((f) => f.type !== "mesh_bundle");
-  const row = (f, main) => `<a class="v-dlbtn rp-dl${main ? " primary" : ""}" href="${attr(f.url || "#")}"${downloadAttrs(job, f)}`
-    + ` download target="_blank" rel="noopener"${main ? ` title="${attr(f.label || "")}"` : ""}>`
-    + `${main ? ICON.down : ICON.file}<b>${esc(main ? "Everything" : (f.label || f.type))}</b>`
-    + (main ? `<em>case folder, solver files, report</em>` : "")
-    + `<span>${fmtBytes(f.size)}</span></a>`;
-  return bundle.map((f) => row(f, true)).join("") + rest.map((f) => row(f, false)).join("")
-    + `<a class="v-dlbtn rp-dl rp-report" href="#" id="v-report-${attr(job)}" title="Every limit, place, hot spot and check, as a page you can print">`
-    + `${ICON.report}<b>Mesh report</b><em>every limit, hot spot and place</em><span>HTML</span></a>`;
+  const row = (f, main) => {
+    const l = fileLabel(main ? "" : (f.label || f.type));
+    const title = main ? (f.label ? `${f.label}: case folder, solver files, report` : "Case folder, solver files, report") : (l.note || l.name);
+    return `<a class="v-dlbtn rp-dl${main ? " rp-all" : ""}" role="menuitem" href="${attr(f.url || "#")}"${downloadAttrs(job, f)}`
+      + ` download target="_blank" rel="noopener" title="${attr(title)}">`
+      + `${main ? ICON.down : ICON.file}<b>${esc(main ? "Everything" : l.name)}</b>`
+      + (l.tag ? `<em class="rp-tag">${esc(l.tag)}</em>` : "")
+      + `<span>${fmtBytes(f.size)}</span></a>`;
+  };
+  const all = bundle[0];
+  return `<button type="button" class="rp-dltrig" id="v-dltrig-${attr(job)}" aria-haspopup="menu" aria-expanded="false"`
+    + ` aria-controls="v-dlmenu-${attr(job)}">${ICON.down}<b>Download</b>`
+    + (all ? `<span>${fmtBytes(all.size)}</span>` : "") + `<i class="rp-dlcaret" aria-hidden="true"></i></button>`
+    + `<div class="rp-dlmenu" id="v-dlmenu-${attr(job)}" role="menu" hidden>`
+    + bundle.map((f) => row(f, true)).join("") + rest.map((f) => row(f, false)).join("")
+    + `<a class="v-dlbtn rp-dl rp-report" role="menuitem" href="#" id="v-report-${attr(job)}" title="Every limit, place, hot spot and check, as a page you can print">`
+    + `${ICON.report}<b>Mesh report</b><span>HTML</span></a></div>`;
+}
+
+/** The Download button opens and closes its menu; Escape or a click elsewhere closes it. */
+export function bindDownloadMenu(root) {
+  const trig = root && root.querySelector(".rp-dltrig"), menu = root && root.querySelector(".rp-dlmenu");
+  if (!trig || !menu || trig.__menu) return;
+  trig.__menu = true;
+  const set = (open) => { menu.hidden = !open; trig.setAttribute("aria-expanded", open ? "true" : "false"); };
+  trig.addEventListener("click", (e) => { e.stopPropagation(); set(menu.hidden); });
+  document.addEventListener("click", (e) => { if (!menu.hidden && !menu.contains(e.target) && e.target !== trig) set(false); });
+  root.addEventListener("keydown", (e) => { if (e.key === "Escape" && !menu.hidden) { set(false); trig.focus(); } });
 }
 
 /* A NOTE as a title and a short why. The server's words carry a list of places ("measured (1, 2, 3) mm,

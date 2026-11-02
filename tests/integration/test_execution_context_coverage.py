@@ -267,6 +267,21 @@ async def run_committed_scenarios(mp, tmp, jobs: list, seen: list | None = None,
                                      lambda j: {**N._VMTK, "job_id": str(j),
                                                 "geometry": geometry})))["job_id"])
 
+    # The Repair check step: the inspection opens its lane and the attempt says its one line,
+    # the two nodes run back to back under one claim, as the graph runs them.
+    from meshpipeline.pipeline.repair_attempt import node_repair_attempt
+    from meshpipeline.pipeline.repair_inspect import node_repair_inspect
+
+    async def _repair_check(state):
+        return await node_repair_attempt({**state, **await node_repair_inspect(state)})
+
+    (tmp / "repair").mkdir(parents=True, exist_ok=True)
+    surface = N._self_intersecting_geometry(tmp / "repair")
+    jobs.append((await step("repair-check:surface-file",
+                            N._owned(mp, nodes, _repair_check,
+                                     lambda j: {**N._VMTK, "job_id": str(j),
+                                                "geometry": surface})))["job_id"])
+
     # The infra-retry node's user-facing note, through the same execution-owned boundary a real
     # replay uses. The backoff is zeroed for certification only - the wait is policy, not what
     # this scenario proves.

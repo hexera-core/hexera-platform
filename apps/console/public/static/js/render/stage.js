@@ -148,11 +148,13 @@ export const Stage = {
         +`<span>${esc(c.label)}${c.detail?` <span class="rc-d">${esc(c.detail)}</span>`:''}</span></div>`;}).join('');
     // THE USER'S OWN NOTES, exactly as typed (a pasted spec keeps its lines), and the box that adds
     // one. Guidance for the mesh, never a check: the plan above is what is approved.
-    const notes=(b.user_notes||[]).map(n=>`<div class="rc-note">${esc(n.text)}</div>`).join('');
-    const box=addNote?`<div class="rc-notes-box"><textarea class="rc-notes-in" rows="3" maxlength="20000"
-        placeholder="Anything specific about this simulation? Paste a spec if you have one."></textarea>
-        <div class="rc-notes-act"><button type="button" class="rc-notes-add">Add note</button>
-        <span class="rc-notes-msg" role="status"></span></div></div>`:'';
+    // A short list, then one quiet line that grows as it is used: Enter adds, Shift+Enter starts a line.
+    const items=(b.user_notes||[]).map(n=>`<li class="rc-note">${esc(n.text)}</li>`).join('');
+    const notes=items?`<ul class="rc-notes-list">${items}</ul>`:'';
+    const box=addNote?`<div class="rc-notes-box"><div class="rc-notes-row"><textarea class="rc-notes-in" rows="1" maxlength="20000"
+        aria-label="Add a note" placeholder="Add a note, or paste a spec…"></textarea>
+        <button type="button" class="rc-notes-add" disabled>Add</button></div>
+        <span class="rc-notes-msg" role="status"></span></div>`:'';
     const html=`<div class="who">Hexera · your request, as understood</div>
       <div class="req-card${(b.checks||[]).every(c=>c.status==='pass')?' ok':''}">
         ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
@@ -165,12 +167,20 @@ export const Stage = {
       const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
       this.col().appendChild(g);this._briefEl=g;}
     const add=this._briefEl.querySelector('.rc-notes-add');
-    if(add)add.onclick=async()=>{
-      const inp=this._briefEl.querySelector('.rc-notes-in'),msg=this._briefEl.querySelector('.rc-notes-msg');
-      const text=inp.value;if(!text.trim())return;
-      add.disabled=true;msg.textContent='';
-      try{this._briefSig='';await addNote(text);}
-      catch(e){add.disabled=false;msg.textContent=(e&&e.message)||'The note was not saved.';}};
+    const inp=this._briefEl.querySelector('.rc-notes-in');
+    if(add&&inp){
+      const msg=this._briefEl.querySelector('.rc-notes-msg');
+      // the box is one line until it holds more: it grows with what is typed or pasted
+      const fit=()=>{inp.style.height='';if(inp.value)inp.style.height=Math.min(inp.scrollHeight+2,240)+'px';
+        add.disabled=!inp.value.trim();};
+      inp.addEventListener('input',fit);
+      const send=async()=>{
+        const text=inp.value;if(!text.trim()||add.dataset.busy)return;
+        add.dataset.busy='1';add.disabled=true;msg.textContent='';
+        try{this._briefSig='';await addNote(text);}
+        catch(e){delete add.dataset.busy;add.disabled=false;msg.textContent=(e&&e.message)||'The note was not saved.';}};
+      add.onclick=send;
+      inp.addEventListener('keydown',(e)=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send();}});}
     this.scrollBottom();},
 
   /* THE ENGINE CHOICE, under the one engine question. Every engine that can take the uploaded file,
@@ -559,10 +569,15 @@ export const Stage = {
     n.body.appendChild(r);this.scroll(n);this.paint(n);},
   // `tone` is the note's own (info | warn | error): an error marks its lane failed, a warning
   // marks it warned. A caller that names no tone is read by `warn` alone, as before.
-  info(agent,text,warn,tone){const n=this.node(agent);this.bump(n);const r=document.createElement('div');r.className='row';
+  info(agent,text,warn,tone){const n=this.node(agent);
+    n.worst=Math.max(n.worst||0,tone==='error'?2:warn?1:0);
+    // the repair check's one line ("Your part needed no repair", "Repaired 3 defects: ...") sits on
+    // the lane's own row beside its name, in sight when the lane is folded; a warning marks it "!"
+    if(agent==='repair'){const t=String(text||'').trim();n.ct.textContent=t;n.ct.title=t;
+      n.ct.classList.add('said');this.paint(n);this.scrollBottom();return;}
+    this.bump(n);const r=document.createElement('div');r.className='row';
     // the engine lane's own sentence ("Mesh engine: cfMesh - ...") is the line's engine step, as said
     if(agent==='engine_select'){RunLine.model.engine(text,this.now());RunLine.draw();}
-    n.worst=Math.max(n.worst||0,tone==='error'?2:warn?1:0);
     r.innerHTML=`<div class="e-info${warn?' warn':''}">${esc(text)}</div>`;n.body.appendChild(r);this.scroll(n);this.paint(n);},
   // `action` arrives already in plain words - the tool roster is named on the backend,
   // beside the tools themselves. The UI does not know what a tool is called.

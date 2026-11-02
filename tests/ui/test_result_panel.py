@@ -141,3 +141,88 @@ def test_a_cfd_figure_past_its_limit_is_a_note_as_the_report_says(live, tmp_path
     shown = live.evaluate("document.querySelector('#v-keys-rp-cfd-over').innerText")
     assert "65.01°" in shown, shown
     assert_clean(live, "the CFD result screen with a figure past its limit")
+
+
+LONG_FILES = [
+    {"id": "", "type": "mesh_bundle", "label": "Everything: .inp deck + solver files (.tar.gz)", "size": 24_400_000, "url": "#"},
+    {"id": "", "type": "mesh", "label": "CAD inspection report (.json)", "size": 1100, "url": "#"},
+    {"id": "", "type": "mesh", "label": "CalculiX / Abaqus deck (.inp) - solved in CalculiX; Abaqus not yet tested in the real solver",
+     "size": 20_200_000, "url": "#"},
+    {"id": "", "type": "mesh", "label": "Nastran bulk data (.bdf) - not yet tested in the real solver", "size": 30_600_000, "url": "#"},
+    {"id": "", "type": "mesh", "label": "Ansys MAPDL archive (.cdb) - not yet tested in the real solver", "size": 37_500_000, "url": "#"},
+]
+
+
+def test_downloads_are_one_button_that_opens_a_menu_of_short_names(live, tmp_path):
+    # Areen 2026-11-01: "make the downloads a Download that when clicked is a dropdown"; a caveat is
+    # a small tag and a tooltip, never label text
+    surf = _payload(tmp_path, shear=0.0)
+    surf["fea"] = _fea_payload()["surface"]["fea"]
+    _open(live, "rp-dl", surf, {"metrics": {"pass": True}, "files": LONG_FILES, "notes": [],
+                                "createdAt": "2026-10-29T10:00:00Z", "endedAt": "2026-10-29T10:03:20Z"})
+    read = """(() => { const v = document.getElementById('viewer-rp-dl');
+      const t = v.querySelector('.rp-dltrig'), m = v.querySelector('.rp-dlmenu');
+      return {trig: t.innerText.replace(/\\s+/g, ' ').trim(), expanded: t.getAttribute('aria-expanded'), open: !m.hidden,
+              rows: [...m.querySelectorAll('.v-dlbtn')].map(a => [a.querySelector('b').textContent,
+                (a.querySelector('em') || {}).textContent || '', a.title]),
+              hint: !!v.querySelector('.tr-hint'), status: getComputedStyle(v.querySelector('.rp-head .v-row')).display,
+              headTitle: v.querySelector('.rp-head').title,
+              facts: (document.getElementById('v-facts-rp-dl').innerText || '').includes('Cells')}; })()"""
+    live.wait_for("document.querySelector('#viewer-rp-dl .rp-head').title", timeout=30, what="the mesh to be read")
+    closed = live.evaluate(read)
+    assert closed["trig"].startswith("Download") and "MB" in closed["trig"], closed
+    assert closed["expanded"] == "false" and not closed["open"], "the menu starts closed"
+    live.evaluate("document.querySelector('#viewer-rp-dl .rp-dltrig').click()")
+    opened = live.evaluate(read)
+    assert opened["expanded"] == "true" and opened["open"], opened
+    names = [r[0] for r in opened["rows"]]
+    assert names[:5] == ["Everything", "CAD inspection report (.json)", "CalculiX / Abaqus deck (.inp)",
+                         "Nastran bulk data (.bdf)", "Ansys MAPDL archive (.cdb)"], names
+    assert "Mesh report" in names
+    tags = {r[0]: (r[1], r[2]) for r in opened["rows"]}
+    assert tags["Nastran bulk data (.bdf)"] == ("untested", "not yet tested in the real solver"), tags
+    assert tags["CalculiX / Abaqus deck (.inp)"][0] == "partly tested", tags
+    assert tags["CAD inspection report (.json)"][0] == "", tags
+    # nothing said twice: no "every limit... is in the Mesh report" line, the long delivered-mesh
+    # line is the verdict's tooltip, and the cell count is not repeated under the key numbers
+    assert not opened["hint"] and opened["status"] == "none" and opened["headTitle"], opened
+    assert not opened["facts"], "the delivered-mesh block repeats the cell count"
+    # Escape and a click elsewhere close it
+    live.evaluate("document.querySelector('#viewer-rp-dl .rp-dlmenu a').dispatchEvent("
+                  "new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))")
+    assert not live.evaluate(read)["open"]
+    live.evaluate("document.querySelector('#viewer-rp-dl .rp-dltrig').click(); document.body.click()")
+    assert not live.evaluate(read)["open"]
+    assert_clean(live, "the download menu")
+
+
+@pytest.mark.parametrize("width", [360, 768, 1440])
+def test_the_result_panel_never_scrolls_sideways(live, tmp_path, width):
+    # dev-areen 2026-11-01: the panel scrolled right - the long file names would not shrink
+    surf = _payload(tmp_path, shear=0.0)
+    fea = _fea_payload()["surface"]["fea"]
+    for h in fea["hot_spots"]:
+        h["faces"], h["at_m"] = ["wall"], [0.5, 0.5, 1.0]
+    surf["fea"] = fea
+    live._send("Emulation.setDeviceMetricsOverride", {"width": width, "height": 900, "deviceScaleFactor": 1,
+                                                       "mobile": width < 600})
+    try:
+        job = f"rp-w{width}"
+        _open(live, job, surf, {"metrics": {"pass": True}, "files": LONG_FILES, "withNotes": NOTES, "notes": [],
+                                "createdAt": "2026-10-29T10:00:00Z", "endedAt": "2026-10-29T10:03:20Z"})
+        out = live.evaluate(f"""(() => {{
+          const v = document.getElementById('viewer-{job}'), bar = v.querySelector('.v-bar');
+          v.querySelector('.rp-dltrig').click();
+          v.querySelectorAll('details.rp-drop').forEach(d => {{ d.open = true; }});
+          const doc = document.scrollingElement, edge = bar.getBoundingClientRect().right + 1;
+          const wide = [...bar.querySelectorAll('*')].filter(e => e.getClientRects().length
+                                                             && e.getBoundingClientRect().right > edge)
+                                                   .map(e => String(e.className || e.tagName));
+          return {{bar: [bar.scrollWidth, bar.clientWidth], page: [doc.scrollWidth, doc.clientWidth],
+                   wide: wide.slice(0, 8)}};
+        }})()""")
+    finally:
+        live._send("Emulation.clearDeviceMetricsOverride", {})
+    assert out["bar"][0] <= out["bar"][1], out
+    assert out["page"][0] <= out["page"][1], out
+    assert out["wide"] == [], out
