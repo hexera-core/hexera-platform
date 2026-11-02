@@ -1496,7 +1496,10 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
     kept: list[int] = []
     kept_tiny: dict = {}
     if meta is not None and same_scale:
-        kept = [v for v in meta["kept_volumes"] if v in set(vols)]
+        # LAD-fea-13: a kept part the refinement after the rung makes finer is meshed again in this pass
+        again = {int(v) for q in ((run.get("keep") or {}).get("remesh_parts") or [])
+                 for v in (part_volumes or {}).get(f"Part_{int(q)}") or []}
+        kept = [v for v in meta["kept_volumes"] if v in set(vols) and v not in again]
         if kept:
             kept = load_kept(gmsh, ws, kept)
             mine = {abs(int(t)) for v in kept for _d, t in gmsh.model.getBoundary([(3, int(v))], oriented=False)}

@@ -1187,13 +1187,16 @@ def _clear_outputs(ws: Path) -> None:
 
 
 async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run,
-                  publish=None) -> tuple[dict, dict, dict]:
+                  publish=None, *, escalate: bool = True) -> tuple[dict, dict, dict]:
     """One native pass on `machine`: RUN-3 (out of memory: one machine up) and RUN-5 (still working at
-    the Cloud Run wall: a VM) as every pass. Returns (the result, the machine it ran on, its work)."""
+    the Cloud Run wall: a VM) as every pass - but a pass that need not escalate (`escalate` False: LAD-fea-13's
+    refinement, a mesh already in hand) ends where it stops. Returns (the result, the machine it ran on, its work)."""
     from meshpipeline.contracts import mesh_machine as MM
 
     while True:
         result = await _relayed_mesh(publish, ws, seq=900 + n, timeout=work["ceiling_s"])
+        if not escalate:
+            return result, machine, work
         if _out_of_memory(result):
             moved, rule, decided = MM.step_up(machine, measured_gib=_peak_gib(result)), "RUN-3", "step up"
         elif result.get("timed_out") and not result.get("stalled"):
@@ -1331,11 +1334,122 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
             _keep_pass(ws, n)
         if facts["valid"] or parts is None or result.get("timed_out"):
             break
+    last = ran[-1] if ran else None
+    if last is not None and last["valid"] and last["short"] and not first_plan.get("coarsened"):
+        # LAD-fea-13: THE RUNG'S MESH IS SHORT OF A RULE (a wall under 2 elements, a hot spot under its count) and no
+        # pass is left for LAD-fea-3: one pass more, on the parts whose zones fell short only, those zones 20%
+        # finer and held through fTetWild's sizing grid; every other part's run is the one before. The better of
+        # the two is delivered, the rung's own when the refinement is no better (or runs out of memory or time)
+        refined = await _rung_refine(ws, record, diag_m, first_plan, passes, ran, last, job_id=job_id, run=run,
+                                     kept=kept if last.get("rung") == 1 else None, publish=publish)
+        if refined is not None:
+            ran.append(refined)
     if not any(f["valid"] for f in ran) and gm and (ws / PASS_FOLDER.format(n=gm[-1]["pass"])).exists():
         # the rung built nothing valid either: the workspace is the last gmsh pass's again, as it was
         # before the rung, so the exhausted ladder is told from that pass's measures
         _restore_pass(ws, int(gm[-1]["pass"]))
     return record, ran
+
+
+#: LAD-fea-13: the refinement after the rung takes at most this many times the rung's own pass, never less than
+#: the floor - a mesh is already in hand (g_c0109: a 20-minute part ran past 2 hours refined, 10-micron walls)
+REFINE_TIME_SHARE = 2.0
+REFINE_TIME_FLOOR_S = 600.0
+
+
+async def _rung_refine(ws: Path, record: dict, diag_m: float, first_plan: dict, passes: list[dict],
+                       ran: list[dict], last: dict, *, job_id: str, run, kept: dict | None = None,
+                       publish=None) -> dict | None:
+    """LAD-fea-13: one refinement pass after the rung's valid but short pass `last`. None when no short zone is on
+    a part fTetWild meshed (a gmsh part's zone is not this pass's to change)."""
+    import copy
+
+    from meshpipeline.contracts import mesh_machine as MM
+    from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
+    from meshpipeline.engines import fea_tetwild as TW
+
+    parts = last.get("parts")
+    q_last = _read_quality(ws)
+    walls = (((q_last.get("fea") or {}).get("rules") or {}).get("through_wall") or {}).get("short") or []
+    targets = TW.refine_targets(first_plan, list(last["short"]), list(walls), parts)
+    if not targets["ftetwild"] and not targets["gmsh"]:
+        return None
+    n = len(passes) + len(ran) + 1
+    plan = copy.deepcopy(first_plan)
+    if record.get("assembly_plan"):
+        plan["assembly"] = dict(record["assembly_plan"])
+    # gmsh's parts made finer the LAD-fea-3 way: their own short zone entries in the plan
+    plan["zones"] = TW.tighten_zones(list(plan.get("zones") or []), targets["gmsh"], L.TIGHTEN)
+    settings = TW.params(plan, record, diag_m, parts)
+    settings["refine"] = {"rule": TW.REFINE_RULE, "factor": L.TIGHTEN, "parts": targets["ftetwild"],
+                          "gmsh_parts": targets["gmsh"], "after_pass": last["pass"]}
+    again = sorted(int(k.split("_")[1]) for k in targets["gmsh"])
+    plan["mesh"] = {**(plan.get("mesh") or {}), "engine": TW.ENGINE, "ftetwild": settings,
+                    # LAD-fea-11: the gmsh parts as the rung's first pass had them - but the ones made finer here
+                    **({"keep": {**kept, "remesh_parts": again}} if kept is not None else {})}
+    every = {**targets["ftetwild"], **targets["gmsh"]}
+    zones = sorted({z for zs in every.values() for z in zs})
+    said = (f"The last rung's mesh (pass {last['pass']}) fell short of {len(set(last['short']))} zone rule(s) and no "
+            f"pass was left to make them finer, so one more pass re-meshes {', '.join(sorted(every))} only, with "
+            f"{', '.join(zones[:8])}{', ...' if len(zones) > 8 else ''} {int(round((1 - L.TIGHTEN) * 100))}% finer (on "
+            "fTetWild's parts, held through its sizing grid); the better of the two is delivered (LAD-fea-13).")
+    plan["words"] = [*(plan.get("words") or []), said]
+    _cite(job_id, [{"stage": "fea_ladder", "decided": "rung refinement", "value": TW.ENGINE, "rule": TW.REFINE_RULE,
+                    "inputs": {"pass": n, "after_pass": last["pass"], "short": sorted(set(last["short"])),
+                               "through_wall_min": last.get("through_wall_min"), "parts": targets},
+                    "words": said}])
+    write_plan(ws, plan)
+    run.note_authoring()
+    _clear_outputs(ws)
+    note_native_pass(ws, n)
+    note_native_payload(ws, [p for p in PAYLOAD if (ws / p).exists()])
+    # RUN-6: the refined parts hold more elements than before - the rung's measured mesh, doubled, at the least
+    elements = max(float((plan.get("estimate") or {}).get("elements") or 0), 2.0 * float(last.get("cells") or 0))
+    process_gib, files_gib = memory_need(elements)
+    machine = TW.rung_machine(elements, process_gib, files_gib, margin=MEMORY_MARGIN)
+    MM.write(ws, machine)
+    # a mesh is in hand: the refinement may take at most REFINE_TIME_SHARE times the rung's own pass (never less
+    # than REFINE_TIME_FLOOR_S), on its machine, and ends there - never a bigger machine, never longer
+    budget = max(REFINE_TIME_FLOOR_S, REFINE_TIME_SHARE * float(last.get("native_s") or 0.0))
+    work = planned_work(plan, ceiling_s=min(ceiling_for(run, machine), budget))
+    await run.fence("start native mesh")
+    t0 = time.monotonic()
+    result, machine, work = await _native(ws, machine, work, job_id, n, run, publish=publish, escalate=False)
+    await run.fence("accept native mesh output")
+    q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
+    made = bool(q) and (ws / "mesh.inp").exists()
+    run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
+    facts = {**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or ""), killed=_killed(result)),
+             "budget_s": round(budget, 1),
+             "native_s": round(time.monotonic() - t0, 1), "engine": TW.ENGINE, "rung": last.get("rung"),
+             "parts": parts, "refine": {"after_pass": last["pass"], "parts": targets},
+             "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}}
+    if result.get("timed_out"):
+        facts["timed_out"] = True
+    if not facts["valid"]:
+        facts["rung_error"] = ("the refinement ran past its time budget" if result.get("timed_out")
+                               else _rung_error(result))
+    better = L.refined_better(facts, last)
+    # the better of the two is the one delivered (LAD-fea-5 alone would weigh the worst element first)
+    if better:
+        last["deliverable"] = False
+    else:
+        facts["deliverable"] = False
+    if made:
+        _keep_pass(ws, n)
+    _keep_pass_log(ws, n)
+    _cite(job_id, [{"stage": "fea_ladder", "decided": "rung refinement kept", "value": better,
+                    "rule": TW.REFINE_RULE,
+                    "inputs": {"pass": n, "valid": facts["valid"], "short": sorted(set(facts["short"])),
+                               "through_wall_min": facts.get("through_wall_min"),
+                               "before": {"pass": last["pass"], "short": sorted(set(last["short"])),
+                                          "through_wall_min": last.get("through_wall_min")},
+                               "error": facts.get("rung_error")},
+                    "words": (f"The refinement pass {n} is better than pass {last['pass']} and is delivered." if better
+                              else f"The refinement pass {n} is no better than pass {last['pass']}"
+                              + (f" ({facts.get('rung_error')})" if not facts["valid"] else "")
+                              + f", so pass {last['pass']} is delivered, its short walls named.")}])
+    return facts
 
 
 async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublisher,
