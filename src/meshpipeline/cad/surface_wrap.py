@@ -71,7 +71,7 @@ BRIDGE_CUBES = 1.5
 MIN_PIECE_CUBES = 8
 #: The spots listed by name and place (the widest first); the rest are counted.
 MAX_SPOTS = 20
-#: The skin is coarsened (VTK's quadric decimation, volume kept) to about the triangles of edge
+#: The skin is coarsened (VTK's topology-preserving decimation) to about the triangles of edge
 #: SKIN_EDGE_SHARE x r its area holds - the wrap cannot place a detail finer than r anyway - never fewer than
 #: MIN_SKIN_TRIANGLES, never more than MAX_SKIN_TRIANGLES; a coarsening that would leave it open is
 #: not kept. The drawn skin has a few triangles per grid cube, so it is several times finer.
@@ -644,10 +644,14 @@ def _decimate(V: np.ndarray, F: np.ndarray, target: int) -> tuple[np.ndarray, np
     import vtk
     from vtk.util import numpy_support as ns
     pd = _polydata(V, F)
-    dec = vtk.vtkQuadricDecimation()
+    # VTK's topology-preserving decimation: it never splits the surface or opens it (its quadric
+    # decimation left open and shared edges on a pipe's wrap, lab 2 Nov)
+    dec = vtk.vtkDecimatePro()
     dec.SetInputData(pd)
     dec.SetTargetReduction(max(0.0, min(0.95, 1.0 - target / max(len(F), 1))))
-    dec.VolumePreservationOn()
+    dec.PreserveTopologyOn()
+    dec.SplittingOff()
+    dec.BoundaryVertexDeletionOff()
     dec.Update()
     out = dec.GetOutput()
     V2 = ns.vtk_to_numpy(out.GetPoints().GetData()).astype(np.float64)
