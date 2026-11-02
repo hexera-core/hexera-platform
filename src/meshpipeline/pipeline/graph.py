@@ -152,7 +152,12 @@ async def node_review_retry(state: PipelineState) -> dict:
 
 def route_after_builder(
     state: PipelineState,
-) -> Literal["node_executor", "node_failure_handler", "node_infra_retry", "__end__"]:
+) -> Literal["node_executor", "node_failure_handler", "node_infra_retry", "node_cfd_wrap", "__end__"]:
+    if state.get("builder_stop") and _wrap.wanted(state):
+        # THE RUN'S TIME RAN OUT before a mesh: the wrap rung brings its own (LAD-cfd-5)
+        logger.warning("route_after_builder: the run's time ran out with no mesh → node_cfd_wrap "
+                       "(LAD-cfd-5) - job_id=%s", state.get("job_id"))
+        return "node_cfd_wrap"
     if state.get("builder_stop"):
         # The builder built nothing on purpose: another attempt provably cannot change the outcome
         # (a review's retry wrote exactly the case that review rejected). The verdict already
@@ -269,10 +274,15 @@ def route_after_executor(
         return "node_reviewer"
 
     if _wrap.tried(state):
-        # THE WRAP RUNG IS THE LAST (LAD-cfd-5): a failure on the wrapped surface ends the run -
-        # on an earlier sound mesh when there is one, else on the failure
-        logger.warning("route_after_executor: the wrapped surface did not mesh either → END - "
-                       "job_id=%s", state.get("job_id"))
+        # THE WRAP RUNG IS THE LAST (LAD-cfd-5): a failure on the wrapped surface moves to the
+        # rung's next engine on the same skin; with none left the run ends - on an earlier sound
+        # mesh when there is one, else on the failure
+        if _wrap.next_step(state):
+            logger.warning("route_after_executor: the wrapped surface did not mesh on %s → the "
+                           "rung's next engine - job_id=%s", state.get("engine"), state.get("job_id"))
+            return "node_cfd_wrap"
+        logger.warning("route_after_executor: the wrapped surface did not mesh on any engine → END "
+                       "- job_id=%s", state.get("job_id"))
         return _sound_or_end(state)
 
     # RETRY ONLY WHAT A RETRY CAN FIX. Some failures are decided by inputs the next attempt
@@ -572,7 +582,7 @@ def build_graph(checkpointer):
         "node_builder",
         route_after_builder,
         {"node_executor": "node_executor", "node_failure_handler": "node_failure_handler",
-         "node_infra_retry": "node_infra_retry", END: END},
+         "node_infra_retry": "node_infra_retry", "node_cfd_wrap": "node_cfd_wrap", END: END},
     )
     b.add_edge("node_infra_retry", "node_builder")
     b.add_conditional_edges(

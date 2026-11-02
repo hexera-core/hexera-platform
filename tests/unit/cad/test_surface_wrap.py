@@ -130,3 +130,28 @@ def test_the_body_is_wrapped_in_place_on_the_rung(tmp_path):
     saved = json.loads((tmp_path / sw.WRAP_REPORT_FILE).read_text())
     assert saved["words"].startswith("meshed on a wrapped surface")
     assert len(read_stl_triangles(tmp_path / "input.stl")) == rep["skin_triangles"]
+
+
+
+def _tube(axis, length=0.3, r=0.02, n=40, port_lo="", port_hi=""):
+    """A closed cylinder along z (axis 2) or x (axis 0), centred at the origin, its lids named."""
+    T, L = _pipe(r=r, length=length, n=n)
+    if axis == 0:
+        T = T[:, :, [2, 1, 0]]
+        T = T[:, ::-1]                          # the swap mirrors: keep every face turned out
+    L = np.where(L == "inlet", port_lo or "wall", np.where(L == "outlet", port_hi or "wall", L))
+    return T, np.asarray(L, dtype=object)
+
+
+def test_overlapping_shells_merge_into_one_fluid():
+    # two vessels drawn THROUGH each other (a cross): from the point inside the first, its own
+    # walls hide the second vessel's openings - the pockets the boundary encloses are one fluid
+    Ta, La = _tube(2, port_lo="inlet", port_hi="outlet_1")
+    Tb, Lb = _tube(0, port_lo="outlet_2", port_hi="outlet_3")
+    T, L = np.concatenate([Ta, Tb]), np.concatenate([La, Lb])
+    res = sw.wrap_surface(T, L, flow="internal", seed=(0.0, 0.0, 0.1),
+                          ports=("inlet", "outlet_1", "outlet_2", "outlet_3"), cubes=CUBES)
+    assert {"inlet", "outlet_1", "outlet_2", "outlet_3"} <= set(res.labels.tolist())
+    assert any(t.get("fluid") == "enclosed pockets" and t["reached"] for t in res.report["tries"])
+    one, _two, many = sw.edge_counts(res.faces)
+    assert one == 0 and many == 0

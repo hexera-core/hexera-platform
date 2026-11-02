@@ -32,7 +32,8 @@ def _flow(monkeypatch):
     monkeypatch.setattr(cw, "flow_of_state", lambda s: {"external_aero": "external",
                                                        "internal_flow": "internal"}.get(
                                                            s.get("purpose"), ""))
-    monkeypatch.setattr(cw, "wrap_engine", lambda s: "" if s.get("engine") == "nowrap" else "snappy")
+    monkeypatch.setattr(cw, "rung_steps", lambda s: [] if s.get("engine") == "nowrap"
+                        else ["snappy", "cfmesh", "gmsh"])
 
 
 def test_a_run_that_would_end_with_no_mesh_goes_to_the_wrap():
@@ -51,10 +52,11 @@ def test_a_failure_that_is_not_the_geometrys_gets_no_wrap(cause):
 
 
 def test_the_rung_runs_once():
-    st = _failed(cfd_wrap={"tried": True, "engine": "snappy"})
+    st = _failed(cfd_wrap={"tried": True, "engine": "gmsh", "steps": ["snappy", "gmsh"], "step": 1})
     assert route_after_executor(st) == "__end__"
-    # ...and a failure on it ends the run even with attempts left
-    st = _failed(cfd_wrap={"tried": True, "engine": "snappy"}, retry_count=1)
+    # ...and a failure on its last step ends the run even with attempts left
+    st = _failed(cfd_wrap={"tried": True, "engine": "gmsh", "steps": ["snappy", "gmsh"], "step": 1},
+                 retry_count=1)
     assert route_after_executor(st) == "__end__"
 
 
@@ -67,9 +69,50 @@ def test_switched_off_dispute_and_no_engine_end_as_before(monkeypatch):
     assert route_after_executor(_failed()) == "__end__"
 
 
-def test_too_little_time_left_is_a_guard_clock():
-    st = _failed(pipeline_deadline_epoch=time.time() + 5)
-    assert cw.why_not(st) == "too little time left for the wrap rung"
+def test_the_rung_brings_its_own_time(monkeypatch):
+    # a run whose time ran out (the builder stopped on it) still reaches the rung, and the rung
+    # starts with CFD_WRAP_TIME_S ahead of it
+    import meshpipeline.pipeline.engine_select as es
+    import meshpipeline.settings.policy as pol
+    from meshpipeline.agents.builder.attempt import STOPPED_TIME_SPENT
+    from meshpipeline.pipeline.graph import route_after_builder
+
+    async def _quiet(*a, **k):
+        return None
+    monkeypatch.setattr(es, "_publish", _quiet)
+    st = _failed(pipeline_deadline_epoch=time.time() + 5, builder_stop=STOPPED_TIME_SPENT,
+                 executor_failure_cause="engine_timed_out")
+    assert cw.why_not(st) == ""
+    assert route_after_builder(st) == "node_cfd_wrap"
+    out = asyncio.run(cw.node_cfd_wrap(st))
+    assert out["pipeline_deadline_epoch"] >= time.time() + pol.CFD_WRAP_TIME_S - 60
+    assert out["builder_stop"] == ""
+
+
+def test_a_failed_step_hands_the_skin_to_the_next_engine(monkeypatch):
+    import meshpipeline.pipeline.engine_select as es
+
+    async def _quiet(*a, **k):
+        return None
+    monkeypatch.setattr(es, "_publish", _quiet)
+    st = _failed()
+    st.update(asyncio.run(cw.node_cfd_wrap(st)))
+    assert st["engine"] == "snappy" and st[cw.STATE_KEY]["step"] == 0
+    st.update({"executor_success": False, "executor_failure_cause": "mesh_quality",
+               "executor_failure_facts": {"fatal": ["negative-volume cells"], "meshers_started": 1}})
+    assert route_after_executor(st) == "node_cfd_wrap"
+    st.update(asyncio.run(cw.node_cfd_wrap(st)))
+    assert st["engine"] == "cfmesh" and st[cw.STATE_KEY]["done"][0]["engine"] == "snappy"
+    assert route_after_executor(st) == "node_cfd_wrap"
+    st.update(asyncio.run(cw.node_cfd_wrap(st)))
+    assert st["engine"] == "gmsh" and st[cw.STATE_KEY]["degraded"]
+    # the last step failing ends the run
+    assert route_after_executor(st) == "__end__"
+    # ...and a failure that is ours never moves along the rung
+    st2 = dict(st)
+    st2[cw.STATE_KEY] = {**st[cw.STATE_KEY], "step": 0}
+    st2["executor_failure_cause"] = "run_infrastructure"
+    assert route_after_executor(st2) == "__end__"
 
 
 def test_a_setup_the_engines_cannot_build_gets_no_wrap():
@@ -91,6 +134,7 @@ def test_the_node_starts_one_fresh_attempt_on_the_wrap_engine(monkeypatch):
     st = _failed(geometry_unsuitable_reason="x")
     out = asyncio.run(cw.node_cfd_wrap(st))
     assert out["engine"] == "snappy" and out["builder_mode"] == "initial"
+    assert out[cw.STATE_KEY]["steps"] == ["snappy", "cfmesh", "gmsh"]
     assert out["geometry_unsuitable_reason"] == ""
     rec = out[cw.STATE_KEY]
     assert rec["tried"] and rec["rule"] == "LAD-cfd-5" and rec["after"] == ["cfmesh"]

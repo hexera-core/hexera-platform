@@ -176,6 +176,7 @@ ENGINE_FALLBACK_ENABLED: bool = optional_env("ENGINE_FALLBACK_ENABLED", "true").
 # the CFD ladder's last rung (pipeline/cfd_wrap.py, LAD-cfd-5): a flow run whose engines all failed
 # on the surface as drawn meshes a wrapped copy of it once
 CFD_WRAP_ENABLED: bool = optional_env("CFD_WRAP_ENABLED", "true").lower() == "true"
+CFD_WRAP_TIME_S: int = int(optional_env("CFD_WRAP_TIME_S", "7200"))
 # THE VERDICT BY MEASURED LIMITS (docs/RULES.md VER-1..4, engines/verdict_limits.py). Off = SHADOW:
 # the review-led verdict still decides, and the limits verdict is worked out beside it, logged and
 # written into the run's why record so the two can be compared. On = the measured limits decide

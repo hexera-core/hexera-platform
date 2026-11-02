@@ -37,10 +37,12 @@ STATE_KEY = "cfd_wrap"
 RULE_RUNG = "LAD-cfd-5"
 RULE_DISTANCE = "LAD-cfd-6"
 RULE_REPORT = "LAD-cfd-7"
-#: The engines that mesh a wrapped surface: the two flow engines that build body-fitted hex-dominant
-#: meshes with layers from any closed surface. VMTK needs a tube and gmsh's remesh is the step that
-#: fails on a dirty surface, so neither is a wrap engine.
+#: The engines that mesh a wrapped surface, in the rung's own order: the two flow engines that build
+#: body-fitted hex-dominant meshes with layers from any closed surface, then gmsh's tetrahedra
+#: filled straight against the skin's own triangles (no remesh, no layers: the DEGRADED step that
+#: cannot realistically fail on a closed, manifold, smooth skin). VMTK needs a tube.
 WRAP_ENGINES = ("snappy", "cfmesh")
+DEGRADED_ENGINE = "gmsh"
 #: The flows the rung serves.
 WRAP_FLOWS = ("external", "internal")
 #: The caveat kind a delivery carries when its mesh was built on the wrapped surface.
@@ -78,7 +80,9 @@ def why_not(state: Mapping, *, now: float | None = None) -> str:
         return "the last attempt did not fail"
     if state.get("user_dispute"):
         return "a dispute rebuild keeps the mesh it disputes"
-    if state.get("api_failure") or state.get("builder_stop"):
+    if state.get("api_failure"):
+        return "the run stopped on our side, not on the geometry"
+    if state.get("builder_stop") and not _time_spent(state):
         return "the run stopped on our side, not on the geometry"
     flow = flow_of_state(state)
     if flow not in WRAP_FLOWS:
@@ -93,17 +97,19 @@ def why_not(state: Mapping, *, now: float | None = None) -> str:
     from meshpipeline.pipeline import engine_fallback as lad
     if lad.refused_by_design(state):
         return "the engines refuse this kind of file by design: a wrap changes nothing about that"
-    engine = wrap_engine(state)
-    if not engine:
+    if not rung_steps(state):
         return "no flow engine that meshes a wrapped surface takes this request"
-    clock = time.time() if now is None else now
-    left, need = lad.remaining_seconds(state, now=clock), lad.rung_seconds(engine)
-    if left < need:
-        from meshpipeline.engines.determinism import note_time_limit
-        note_time_limit("cfd_wrap", f"no wrap rung on {engine}: too little time left",
-                        left_s=left, needed_s=need)
-        return "too little time left for the wrap rung"
+    # NO TIME CHECK: the rung brings its own time (CFD_WRAP_TIME_S, reserved for it), so a run whose
+    # earlier attempts ran out of time still reaches it (LAD-cfd-5)
     return ""
+
+
+def _time_spent(state: Mapping) -> bool:
+    try:
+        from meshpipeline.agents.builder.attempt import STOPPED_TIME_SPENT
+    except Exception:  # noqa: BLE001 - an unreadable stop is not a time-out
+        return False
+    return str(state.get("builder_stop") or "") == STOPPED_TIME_SPENT
 
 
 def wanted(state: Mapping) -> bool:
@@ -117,18 +123,43 @@ def wanted(state: Mapping) -> bool:
     return not why
 
 
-def wrap_engine(state: Mapping) -> str:
-    """The engine that meshes the wrapped surface: the user's own when they named snappyHexMesh or
-    cfMesh (never swapped), else the first of the two in the run's ranked order (ENG-5) that admits
-    the whole approved request ('' when none does)."""
+def rung_steps(state: Mapping) -> list[str]:
+    """THE RUNG'S ENGINES, in order (LAD-cfd-5): the user's own first when they named snappyHexMesh
+    or cfMesh; then the two in the run's ranked order (ENG-5); then gmsh's tetrahedra against the
+    skin as it is (the degraded step) - each only when it admits the whole approved request. Inside
+    the rung the next engine takes over when one fails on the wrapped surface, and the delivery
+    says so: the skin is clean, so the engine is the only thing left to change."""
     from meshpipeline.pipeline import engine_fallback as lad
-    if not lad.may_switch_on_its_own(state):
-        approved = lad.approved_engine(state)
-        return approved if approved in WRAP_ENGINES else ""
-    for name in lad.able_engines(state):
-        if name in WRAP_ENGINES:
-            return name
-    return ""
+    able = list(lad.able_engines(state))
+    out: list[str] = []
+    approved = lad.approved_engine(state)
+    if not lad.may_switch_on_its_own(state) and approved in WRAP_ENGINES:
+        out.append(approved)
+    for name in [*able, *WRAP_ENGINES]:
+        if name in WRAP_ENGINES and name not in out and (name in able or name == approved):
+            out.append(name)
+    if DEGRADED_ENGINE in able and DEGRADED_ENGINE not in out:
+        out.append(DEGRADED_ENGINE)
+    return out
+
+
+def wrap_engine(state: Mapping) -> str:
+    """The engine of the rung's step now due ('' when none is)."""
+    steps = record(state).get("steps") or rung_steps(state)
+    step = int(record(state).get("step", -1)) + 1
+    return str(steps[step]) if 0 <= step < len(steps) else ""
+
+
+def next_step(state: Mapping) -> bool:
+    """On the rung, the step that just failed leaves another engine to try on the same skin -
+    unless the failure was ours (the service), which another engine does not change."""
+    rec = record(state)
+    if not rec.get("tried") or state.get("executor_success") or state.get("api_failure"):
+        return False
+    if str(state.get("executor_failure_cause") or "") in _NOT_THE_GEOMETRY:
+        return False
+    steps = list(rec.get("steps") or [])
+    return int(rec.get("step", 0)) + 1 < len(steps)
 
 
 def _failed_engines(state: Mapping) -> list[str]:
@@ -159,9 +190,12 @@ async def node_cfd_wrap(state) -> dict:
     from meshpipeline.pipeline.engine_select import _publish
 
     job_id = str(state.get("job_id", "") or "unknown")
-    engine = wrap_engine(state)
-    if not engine:                                     # the route asked first
+    prev = record(state)
+    steps = list(prev.get("steps") or rung_steps(state))
+    step = int(prev.get("step", -1)) + 1 if prev.get("tried") else 0
+    if step >= len(steps):                             # the route asked first
         return {}
+    engine = steps[step]
     failure = lad.classify(state)
     ladder = lad.with_attempt(state, failure)
     attempt = int(state.get("retry_count", 0) or 0) + 1
@@ -171,9 +205,16 @@ async def node_cfd_wrap(state) -> dict:
                                  why="every engine failed on the surface as drawn: the wrap rung",
                                  changes=("meshed on a wrapped surface",))
     failed = failure.as_dict() if failure is not None else {}
+    done = [dict(d) for d in (prev.get("done") or [])]
+    if prev.get("tried"):
+        done.append({"engine": prev.get("engine"), "reason": failed.get("reason"),
+                     "cause": failed.get("cause")})
     rec: dict[str, Any] = {"tried": True, "rule": RULE_RUNG, "engine": engine, "attempt": attempt,
-           "flow": flow_of_state(state), "after": _failed_engines(state),
-           "failure": failed}
+           "flow": flow_of_state(state),
+           "after": prev.get("after") if prev.get("tried") else _failed_engines(state),
+           "failure": prev.get("failure") if prev.get("tried") else failed,
+           "steps": steps, "step": step, "done": done,
+           "degraded": engine == DEGRADED_ENGINE}
     try:
         from meshpipeline.contracts import decision_record as dr
         dr.cite(job_id, stage="engine_ladder", decided="wrap rung", value=engine, rule=RULE_RUNG,
@@ -185,8 +226,18 @@ async def node_cfd_wrap(state) -> dict:
         logger.debug("cfd wrap: rung not recorded", exc_info=True)
     logger.warning("node_cfd_wrap: every engine failed on the surface as drawn - attempt %d meshes "
                    "a wrapped surface with %s - job_id=%s", attempt, engine, job_id)
-    await _publish(job_id, opening_note(state, engine), f"cfd-wrap:{attempt}")
+    note = (opening_note(state, engine) if step == 0 else
+            step_note(str(prev.get("engine") or ""), engine, failed.get("reason") or ""))
+    await _publish(job_id, note, f"cfd-wrap:{attempt}")
+    # THE RUNG'S OWN TIME (LAD-cfd-5): every step starts with at least CFD_WRAP_TIME_S ahead of it,
+    # whatever the earlier attempts spent - a run that timed out still gets its last rung
+    import meshpipeline.settings.policy as polcfg
+    ahead = time.time() + float(polcfg.CFD_WRAP_TIME_S)
+    deadlines = {k: max(float(state.get(k) or 0.0), ahead)
+                 for k in ("pipeline_deadline_epoch", "builder_deadline_epoch") if state.get(k)}
     return {
+        **deadlines,
+        "builder_stop": "",
         "engine": engine,
         "engine_params": resolve_engine_params(engine, dict(state.get("engine_params") or {})),
         "builder_mode": "initial",
@@ -207,6 +258,18 @@ async def node_cfd_wrap(state) -> dict:
 
 
 # ----------------------------------------------------------------- the request, the report --
+def step_note(frm: str, to: str, reason: str) -> str:
+    """What the user reads when the next engine takes over the wrapped surface."""
+    from meshpipeline.pipeline import engine_fallback as lad
+    why = f" ({reason})" if reason else ""
+    if to == DEGRADED_ENGINE:
+        return (f"{lad.engine_label(frm)} could not mesh the wrapped surface either{why}. Last step: "
+                f"{lad.engine_label(to)} fills the same wrapped surface with tetrahedra, without wall "
+                "layers - a degraded mesh, said as one beside it.")
+    return (f"{lad.engine_label(frm)} could not mesh the wrapped surface{why}. Trying "
+            f"{lad.engine_label(to)} on the same wrapped surface.")
+
+
 def write_request(workspace: Path, state: Mapping) -> bool:
     """The wrap request beside the run's surface (cad/surface_wrap.WRAP_REQUEST_FILE), for every
     staging route to read; removed when the run is not on the rung. True when one was written."""
@@ -268,6 +331,8 @@ def caveat_of(wrap: Mapping | None, *, executor_success: bool, failed_gate: str)
             "patches", "words")
     return {"kind": WRAPPED_SURFACE, "rule": RULE_REPORT, "engine": wrap.get("engine"),
             "after": list(wrap.get("after") or []),
+            "done": [dict(d) for d in (wrap.get("done") or []) if isinstance(d, Mapping)],
+            "degraded": bool(wrap.get("degraded")),
             "reason": str((wrap.get("failure") or {}).get("reason") or ""),
             **{k: rep.get(k) for k in keep if rep.get(k) is not None}}
 
@@ -305,6 +370,15 @@ def caveat_lines(c: Mapping) -> list[str]:
     if more > 0:
         lines.append(f"    ...and {more} more bridged spot{'s' if more != 1 else ''}, listed in the "
                      "mesh report.")
+    for d in c.get("done") or []:
+        if isinstance(d, Mapping) and d.get("engine"):
+            lines.append(f"    {lad.engine_label(str(d['engine']))} could not mesh the wrapped surface"
+                         + (f" ({d.get('reason')})" if d.get("reason") else "") + "; "
+                         + f"{lad.engine_label(str(c.get('engine') or ''))} took over.")
+    if c.get("degraded"):
+        lines.append("    DEGRADED: this is a tetrahedral mesh without wall layers, the rung's last "
+                     "step. Use it for a first look; near-wall results (shear, heat transfer) need "
+                     "the layered mesh a fixed CAD gives.")
     lines.append("    Every face of the wrap is named after the nearest face of your CAD, so your "
                  "boundaries keep their names.")
     return lines
@@ -315,7 +389,8 @@ WRAPPED_SURFACE_CLOSING = (
     "your exact surface, close the gaps and remove the crossing faces in the CAD, then run it again.")
 
 
-__all__ = ["RULE_DISTANCE", "RULE_REPORT", "RULE_RUNG", "STATE_KEY", "WRAPPED_SURFACE",
-           "WRAPPED_SURFACE_CLOSING", "WRAP_ENGINES", "caveat_lines", "caveat_of", "delivered",
-           "node_cfd_wrap", "opening_note", "read_report", "read_request", "record", "tried",
-           "wanted", "why_not", "wrap_engine", "write_request"]
+__all__ = ["DEGRADED_ENGINE", "RULE_DISTANCE", "RULE_REPORT", "RULE_RUNG", "STATE_KEY",
+           "WRAPPED_SURFACE", "WRAPPED_SURFACE_CLOSING", "WRAP_ENGINES", "caveat_lines", "caveat_of",
+           "delivered", "next_step", "node_cfd_wrap", "opening_note", "read_report", "read_request",
+           "record", "rung_steps", "step_note", "tried", "wanted", "why_not", "wrap_engine",
+           "write_request"]

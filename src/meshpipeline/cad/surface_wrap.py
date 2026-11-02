@@ -51,6 +51,18 @@ WRAP_CUBES_PER_R = 2.5
 #: from the exact distance, and the flood still finds a way through a passage wider than r and a cube
 #: (the small vessels of a coronary tree, 150 mm across, on a grid of 0.3 mm cubes).
 MIN_CUBES_PER_R = 1.0
+#: The last tries for flow through a part, when no grid cube of the cap can keep a small vessel
+#: open: r down to half a cube (the flood still finds cube centres along a vessel 2.5 cubes wide).
+LAST_CUBES_PER_R = 0.5
+#: Flow through a part whose openings the wrap still cannot reach on the capped grid is drawn once
+#: more on a grid this many times finer by volume (the GRADED try: the vessels and holes the
+#: openings need), never past WRAP_GRADED_CUBES. Past that, an opening still cut off is said, with
+#: the width of the narrowest way to it.
+WRAP_GRADED_CUBES = 128_000_000
+#: A pocket of free space holding fewer cubes is grid noise: not read for its winding number.
+MIN_POCKET_CUBES = 8
+#: At most this many pockets are read for their winding number (the largest first).
+MAX_POCKETS = 2000
 #: The wrap distance from the part's own size: the diagonal of the surface over this - about half
 #: the wall cell a standard plan puts on a part (a gap narrower than a wall cell or so is closed).
 WRAP_DIAG_SHARE = 500.0
@@ -281,26 +293,22 @@ def wrap_surface(T: np.ndarray, labels: np.ndarray, *, flow: str, seed=None,
     tries: list[dict] = []
     bottleneck = None
     per_r = WRAP_CUBES_PER_R
+    if internal:
+        grid, field_, r, bottleneck, tries = _internal_fluid(T, labels, seed, ports, lo, hi, diag, r,
+                                                             cubes=cubes, given=bool(distance))
     for attempt in range(WRAP_RETRIES + 1):
+        if internal:
+            break
         grid, r = grid_for(lo, hi, r, cubes=cubes, per_r=per_r)
         field_ = _Field(T, grid)
-        if internal and attempt == 0 and not distance:
-            # the narrowest way the flow takes to every opening, read on this first grid
-            bottleneck = field_.bottleneck(seed, labels, ports)
-            if bottleneck is not None:
-                r_pass = wrap_distance(diag, bottleneck=bottleneck)
-                if r_pass < r * 0.999:
-                    r, per_r = r_pass, MIN_CUBES_PER_R
-                    grid, r = grid_for(lo, hi, r, cubes=cubes, per_r=per_r)
-                    field_ = _Field(T, grid)
-        reached, why = field_.flood(r, seed=seed if internal else None, labels=labels, ports=ports)
+        reached, why = field_.flood(r, seed=None, labels=labels, ports=ports)
         row = {"distance_m": r, "cube_m": grid.h, "cubes": grid.n, "reached": reached,
                **({"why": why} if why else {})}
         tries.append(row)
-        if reached and not internal:
+        if reached:
             # FLOW ROUND A BODY MUST STAY OUTSIDE IT: when the flood went in through a gap wider
-            # than 2r, the body's own skin is wetted on both sides. Most of it wetted so is a body
-            # whose inside the flow reached: the wrap closes twice as wide a gap and tries again
+            # than 2r, the space a wider wrap seals off is reached. Most of the body reached so is
+            # a body whose inside the flow reached: the wrap closes twice as wide a gap and tries again
             share = field_.inside_reached_share(r, min(INSIDE_PROBE * r, diag / WRAP_MAX_DIAG_SHARE))
             row["inside_reached_share"] = round(share, 4)
             if share > INSIDE_REACHED_SHARE and attempt < WRAP_RETRIES \
@@ -313,13 +321,8 @@ def wrap_surface(T: np.ndarray, labels: np.ndarray, *, flow: str, seed=None,
                 raise WrapError(f"the flow reaches the inside of the body through an opening wider "
                                 f"than {2000.0 * r:.3g} mm ({share:.0%} of the body), so a wrap would "
                                 "mesh the body hollow")
-        if reached:
             break
-        if not internal or attempt == WRAP_RETRIES or (
-                r * WRAP_SHRINK < MIN_CUBES_PER_R * grid.h * 0.99 and grid.n >= cubes * 0.9):
-            raise WrapError(why or "the wrap could not keep every opening reachable")
-        r *= WRAP_SHRINK
-        per_r = MIN_CUBES_PER_R
+        raise WrapError(why or "the flow round the body found no free space")
     verts, faces = field_.skin(r)
     verts, faces = _oriented(verts, faces, field_, internal=internal)
     target = _skin_target(verts, faces, r)
@@ -371,7 +374,6 @@ class _Field:
         self.approx = approx
         self.sd = SurfaceDistance(T, spacing=h)
         self.d = approx.copy()
-        self.near_tri = np.full(grid.shape, -1, dtype=np.int64)
         self._band_m = 0.0
 
     def exact_band(self, upto: float) -> None:
@@ -383,9 +385,8 @@ class _Field:
                              & (self.approx.reshape(-1) > self._band_m + 2.0 * h
                                 if self._band_m > 0 else True))
         if len(sel):
-            d, t = self.sd.query(self.grid.centres(sel))
+            d, _t = self.sd.query(self.grid.centres(sel))
             self.d.reshape(-1)[sel] = d.astype(np.float32)
-            self.near_tri.reshape(-1)[sel] = t
         self._band_m = upto
 
     def _probes(self, labels, port: str, off: float) -> np.ndarray:
@@ -462,23 +463,81 @@ class _Field:
         return all(flat[self.grid.index_of(self._probes(labels, p, t + 1.5 * self.grid.h))].any()
                    for p in ports)
 
-    def flood(self, r: float, *, seed, labels, ports) -> tuple[bool, str]:
+    def flood(self, r: float, *, seed, labels, ports, union: bool = False) -> tuple[bool, str]:
         """The fluid side at wrap distance r: the free space the flow reaches. Internal flow must
-        still reach every opening (else the passage would be closed)."""
+        still reach every opening (else the passage would be closed).
+
+        `union` (flow through a part only): the fluid is not only the free space joined to the point
+        inside the flow, but every pocket of free space the staged boundary ENCLOSES - its
+        generalised winding number at the pocket's deepest point at least one half - so shells that
+        overlap (two vessels drawn through each other, a self-overlapping lumen) no longer wall the
+        flow off: their pockets are all fluid, and growing the fluid back by r merges them across the
+        faces between them. The staged boundary's own topology no longer decides. The fluid must then
+        still be ONE connected space holding the point inside the flow and every opening."""
         self.r = r
         self.exact_band(r)
-        comp, why = self._component(self.d > r, seed)
-        if comp is None:
+        free = self.d > r
+        comp, why = self._component(free, seed)
+        if comp is None and not (union and seed is not None):
             return False, why
+        if union and seed is not None:
+            comp = self._enclosed_pockets(free, comp)
+            if comp is None:
+                return False, "no space inside the staged boundary is enclosed by it"
         self.fluid = comp
+        self.mode = "union" if union else "seed"
         if seed is not None:
             flat = comp.reshape(-1)
-            lost = [p for p in ports
-                    if not flat[self.grid.index_of(self._probes(labels, p, r + 1.5 * self.grid.h))].any()]
+            probes = {p: self.grid.index_of(self._probes(labels, p, r + 1.5 * self.grid.h)) for p in ports}
+            lost = [p for p in ports if not flat[probes[p]].any()]
             if lost:
                 return False, (f"at a wrap distance of {r * 1000:.3g} mm the flow no longer reaches "
                                f"the opening(s) {', '.join(lost)}")
+            if union:
+                cut = self._cut_off(comp, seed, probes, r)
+                if cut:
+                    return False, (f"at a wrap distance of {r * 1000:.3g} mm the opening(s) "
+                                   f"{', '.join(cut)} are joined to the rest of the flow only "
+                                   f"through holes narrower than {2000.0 * r:.3g} mm")
         return True, ""
+
+    def _enclosed_pockets(self, free: np.ndarray, seed_comp) -> np.ndarray | None:
+        """Every pocket of free space the boundary encloses (|winding number| >= 1/2 at its deepest
+        point), with the seed's own pocket always among them."""
+        from scipy import ndimage
+
+        from meshpipeline.cad.internal_surface import _winding
+        lab, n = ndimage.label(free)
+        if n == 0:
+            return seed_comp
+        sizes = np.bincount(lab.reshape(-1))
+        sizes[0] = 0
+        ids = np.flatnonzero(sizes >= MIN_POCKET_CUBES)
+        ids = ids[np.argsort(-sizes[ids], kind="stable")][:MAX_POCKETS]
+        if not len(ids):
+            return seed_comp
+        pos = ndimage.maximum_position(self.d, lab, index=ids.tolist())
+        P = self.origin_points(np.asarray(pos, dtype=np.float64).reshape(-1, 3))
+        w = np.asarray(_winding(self.T, P)).reshape(-1)
+        keep = ids[np.abs(w) >= 0.5]
+        out = np.isin(lab, keep)
+        if seed_comp is not None:
+            out |= seed_comp
+        return out if out.any() else None
+
+    def origin_points(self, ijk: np.ndarray) -> np.ndarray:
+        return self.grid.origin + ijk * self.grid.h
+
+    def _cut_off(self, fluid: np.ndarray, seed, probes: dict, r: float) -> list[str]:
+        """The openings whose fluid, grown back by r, is not the seed's connected space."""
+        from scipy import ndimage
+        grown = ndimage.distance_transform_edt(~fluid) * self.grid.h <= r + 1e-12
+        lab, _n = ndimage.label(grown)
+        k = int(lab.reshape(-1)[self.grid.index_of(np.asarray(seed, dtype=np.float64))[0]])
+        if k == 0:
+            k = int(np.bincount(lab.reshape(-1)[fluid.reshape(-1)]).argmax())
+        flat = lab.reshape(-1)
+        return [p for p, q in probes.items() if not np.any(flat[q] == k)]
 
     def skin(self, r: float) -> tuple[np.ndarray, np.ndarray]:
         """The skin: the zero level of the distance to the wrapped fluid's edge. The fluid side's
@@ -547,6 +606,51 @@ class _Field:
         a = flat[self.grid.index_of(c + off * n)]
         b = flat[self.grid.index_of(c - off * n)]
         return np.flatnonzero(ok & a & b)
+
+
+def _internal_fluid(T, labels, seed, ports, lo, hi, diag, r, *, cubes: int, given: bool):
+    """FLOW THROUGH A PART: the fluid side, tried in a fixed order until every opening is reached
+    in one connected fluid (LAD-cfd-6):
+      1. the free space joined to the point inside the flow, at the rule's distance - narrowed to
+         the narrowest way to the openings;
+      2. the same distance, every pocket the boundary encloses (overlapping shells merged);
+      3. both again at 0.6 of the distance, then 0.36, down to half a grid cube;
+      4. all of that once more on the GRADED grid (up to WRAP_GRADED_CUBES).
+    Returns (grid, field, r, bottleneck, tries); raises WrapError naming the openings cut off."""
+    tries: list[dict] = []
+    bottleneck = None
+    last_why = ""
+    for cap in (cubes, max(cubes, WRAP_GRADED_CUBES)):
+        if cap != cubes and tries and tries[-1].get("cubes", 0) >= WRAP_GRADED_CUBES * 0.9:
+            break
+        rr = r
+        per_r = WRAP_CUBES_PER_R
+        grid, rr = grid_for(lo, hi, rr, cubes=cap, per_r=per_r)
+        field_ = _Field(T, grid)
+        if not given and bottleneck is None:
+            bottleneck = field_.bottleneck(seed, labels, ports)
+        if bottleneck is not None:
+            r_pass = wrap_distance(diag, bottleneck=bottleneck)
+            if r_pass < rr * 0.999:
+                rr, per_r = r_pass, MIN_CUBES_PER_R
+                grid, rr = grid_for(lo, hi, rr, cubes=cap, per_r=per_r)
+                field_ = _Field(T, grid)
+        while True:
+            for union in (False, True):
+                reached, why = field_.flood(rr, seed=seed, labels=labels, ports=ports, union=union)
+                tries.append({"distance_m": rr, "cube_m": grid.h, "cubes": grid.n, "reached": reached,
+                              "fluid": "enclosed pockets" if union else "joined to the seed",
+                              **({"why": why} if why else {})})
+                if reached:
+                    return grid, field_, rr, bottleneck, tries
+                last_why = why
+            floor = LAST_CUBES_PER_R * grid.h
+            if rr <= floor * 1.001:
+                break
+            rr = max(rr * WRAP_SHRINK, floor)
+        if cap >= WRAP_GRADED_CUBES:
+            break
+    raise WrapError(last_why or "the wrap could not keep every opening reachable")
 
 
 def _contour(phi: np.ndarray, grid: WrapGrid) -> tuple[np.ndarray, np.ndarray]:
