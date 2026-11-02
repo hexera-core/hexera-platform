@@ -673,8 +673,8 @@ def surface_mesh(gmsh, surfaces: set[int], remesh: set[int], workers: int = 0) -
     if workers >= 1:
         from meshpipeline.engines.gmsh import fea_parallel2d as P2D
         done = P2D.mesh_surfaces(gmsh, workers)
-        print(f"[GMSH-FEA] {done['surfaces']} surfaces meshed one by one on {done['workers']} process(es), the "
-              f"same mesh on any number ({P2D.RULE})", file=sys.stderr)
+        print(f"[GMSH-FEA] {done['surfaces']} surfaces meshed in {done['blocks']} fixed blocks on {done['workers']} "
+              f"process(es), the same mesh on any number ({P2D.RULE})", file=sys.stderr)
     else:
         gmsh.model.mesh.generate(2)
     empty = _empty_surfaces(gmsh, surfaces)

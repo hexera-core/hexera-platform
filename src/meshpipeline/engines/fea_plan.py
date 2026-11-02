@@ -282,8 +282,10 @@ def round_walls(record: Mapping) -> list[dict]:
 
 
 #: PLAN-fea-26: a plan whose base size is more than this many times its finest zone is said to be slow to mesh
-#: before it meshes (calibrated on the corpus runs: docs/RULES.md PLAN-fea-26)
-SLOW_RATIO = 1000.0
+#: before it meshes. Calibrated on the 240 corpus parts planned on main beside their corpus run (docs/RULES.md
+#: PLAN-fea-26): under 100 to 1 the median part meshed at 0.5 ms an element; 100-300, 2.2 ms; over 300, 15-25 ms
+#: (and 3 of 3 failed)
+SLOW_RATIO = 300.0
 
 
 def slow_ratio(zone_list: list[dict], base_m: float) -> dict | None:

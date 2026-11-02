@@ -80,12 +80,14 @@ def mesh_settings(levers: list[dict]) -> dict:
     # LAD-fea-8: a surface the surface stage stalled (or ran out of time) on is never put on MeshAdapt again
     stuck = {int(lv["inputs"]["surface"]) for lv in levers
              if lv["lever"] == SURFACE_STALL and (lv.get("inputs") or {}).get("surface") is not None}
+    stuck |= {int(s) for lv in levers for s in lv.get("no_switch") or []}
     remesh = sorted(_remeshed(levers) - stuck)
+    no_switch = SURFACE_STALL in names or any(lv.get("no_switch") for lv in levers)
     return {"algorithm3d": "hxt" if "LAD-fea-2" in names else "delaunay",
             "optimise_passes": OPTIMISE_PASSES if "LAD-fea-1" in names else 1,
             **({"remesh_surfaces": remesh} if remesh else {}),
             # LAD-fea-8: the surface stage keeps gmsh's own first mesh of every face (no switch to MeshAdapt)
-            **({"surface_switch": False} if SURFACE_STALL in names else {})}
+            **({"surface_switch": False} if no_switch else {})}
 
 
 #: LAD-fea-8: the lever a surface stage that stalled pulls
@@ -121,6 +123,22 @@ def surface_stall_lever(surface: int, levers: list[dict], *, n: int) -> dict | N
                       "and drops its repeated triangles (MESH-5).")}
 
 
+def switched_surfaces(log: str) -> list[int]:
+    """LAD-fea-8: the surfaces gmsh switched to MeshAdapt BY ITSELF in a pass (its default failed there and
+    Mesh.AlgorithmSwitchOnFailure took over): a "Meshing surface N (..., MeshAdapt)" line after one for the same N
+    on another algorithm (the surface workers' lines interleave, MESH-23, so not necessarily the next line)."""
+    import re
+
+    out: set[int] = set()
+    first: dict[int, str] = {}
+    for m in re.finditer(r"Meshing surface (\d+) \([^,()]*, ([^)]+)\)", log or ""):
+        s, algo = int(m.group(1)), m.group(2).strip()
+        if algo == "MeshAdapt" and first.get(s, "MeshAdapt") != "MeshAdapt":
+            out.add(s)
+        first.setdefault(s, algo)
+    return sorted(out)
+
+
 def failed_surfaces(q: Mapping, log: str = "") -> list[int]:
     """The surfaces a pass went wrong on: the invalid elements' (quality.json), else the ones the
     failed fill named (the adapter's BAD SURFACES line in its output)."""
@@ -144,6 +162,10 @@ def failed_faces(q: Mapping, log: str = "") -> list[str]:
         if line.startswith(BAD_FACES):
             return sorted(x.strip() for x in line[len(BAD_FACES):].split(",") if x.strip())
     return []
+
+
+def _no_switched(levers: list[dict]) -> set[int]:
+    return {int(s) for lv in levers for s in lv.get("no_switch") or []}
 
 
 def _remeshed(levers: list[dict]) -> set[int]:
@@ -216,6 +238,14 @@ def lever_options(facts: Mapping, levers: list[dict], plan: Mapping) -> list[dic
                                     "uses gmsh's other 3D algorithm (HXT)." + other)}
             order = [gentle, hxt]
         rest = [o for o in order if o["lever"] not in pulled]
+        # LAD-fea-8, RIDING ALONG: the faces gmsh switched to MeshAdapt by itself in this failed pass keep gmsh's
+        # first mesh next time (no switch), the pass after a failure is never the same grind again (1 Nov: a skin
+        # face of a 640 mm part spent 13 minutes in MeshAdapt on every pass, and the fill failed each time)
+        switched = sorted(set(facts.get("switched") or []) - _no_switched(levers))
+        if switched and SURFACE_STALL not in pulled:
+            said = (f" gmsh switched surface(s) {_listed(switched)} to MeshAdapt by itself there, so the next pass keeps "
+                    "its first mesh of every face instead (LAD-fea-8).")
+            rest = [{**o, "no_switch": switched, "words": o["words"] + said} for o in rest]
         way = _other_way(fresh, facts)
         if order[0]["lever"] in pulled:
             # the fixed ladder's own choice was pulled already: the other way leads (LAD-fea-6), and

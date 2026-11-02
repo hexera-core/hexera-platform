@@ -861,10 +861,10 @@ def planned_work(plan: dict, *, rate: float | None = None, cls: str = "", ceilin
 
 #: LAD-fea-15: A PASS'S BUDGET IS SIZED FROM ITS ESTIMATE - this many times its planned time at the part's
 #: slow fill rate (PLAN-fea-13), never under BUDGET_FLOOR_S, never over the machine's wall. Calibrated on the
-#: corpus (docs/RULES.md LAD-fea-15): the slowest valid pass of every corpus run took 12.3 times its planned
-#: time at the fastest rate, so no pass that ever built a mesh is cut by it. A pass past it is the part's
+#: corpus (docs/RULES.md LAD-fea-15): on this code, the slowest pass that built a mesh took under 3 times its
+#: planned time at the fastest rate (1,500 a second), so no such pass is cut by it. A pass past it is the part's
 #: slowness, not ours: the ladder goes on (a 20-hour wall let one surface grind for hours, 1 Nov).
-BUDGET_FACTOR = 15.0
+BUDGET_FACTOR = 5.0
 BUDGET_FLOOR_S = 3600.0
 
 
@@ -1598,6 +1598,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                           killed=killed), "native_s": native_s,
                            # RUN-4: where it ran, and why
                            "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}})
+            if not passes[-1].get("valid"):
+                # LAD-fea-8 riding along: the faces gmsh switched to MeshAdapt by itself in this failed pass
+                try:
+                    switched = L.switched_surfaces((ws / "gmshfea.log").read_text(errors="replace"))
+                except OSError:
+                    switched = []
+                if switched:
+                    passes[-1]["switched"] = switched
             _keep_pass_log(ws, n)
             if made:
                 _keep_pass(ws, n)

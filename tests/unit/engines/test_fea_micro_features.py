@@ -96,8 +96,9 @@ def test_the_plan_says_what_it_set_aside_and_warns_when_it_will_be_slow():
     assert any(w.startswith("Slow to mesh") for w in plan["words"])
     holeless = _record()
     holeless["hot_spots"] = [h for h in holeless["hot_spots"] if h["id"] != "H3"]
+    holeless["faces"]["Face_5"]["thickness_min_mm"] = 1.0
     plan0 = P.finish(holeless, P.zones(holeless), hist, diag_m=0.64, limit=8_000_000)
-    assert "slow" not in plan0                       # 64 mm over the 0.15 mm fin: 427 to 1
+    assert "slow" not in plan0                       # 64 mm over a 1 mm wall's 0.5 mm elements: 128 to 1
     slow = P.slow_ratio([{"id": "W1", "size_m": 1e-5}], 0.064)
     assert slow and slow["ratio"] == pytest.approx(6400) and slow["zone"] == "W1"
     plan2 = P.finish(rec, [*zs, {"id": "W99", "kind": "wall", "faces": ["Face_5"], "size_m": 1e-5, "reach_m": 0.0,
@@ -212,3 +213,19 @@ def test_the_groups_are_decided_by_the_curve_mesh_alone():
         assert sorted(s for g in a for s in g) == surfaces
     finally:
         gmsh.finalize()
+
+
+def test_a_face_gmsh_switched_to_meshadapt_by_itself_keeps_its_first_mesh_next_pass():
+    log = ("Info    : [ 20%] Meshing surface 77 (BSpline surface, Frontal-Delaunay)\n"
+           "Info    : [ 20%] Meshing surface 78 (BSpline surface, Frontal-Delaunay)\n"
+           "Info    : [ 30%] Meshing surface 91 (Plane, Frontal-Delaunay)\n"        # another worker, interleaved
+           "Info    : [ 20%] Meshing surface 78 (BSpline surface, MeshAdapt)\n"
+           "Info    : [ 40%] Meshing surface 120 (Plane, MeshAdapt)\n")             # a LAD-fea-6 surface: MeshAdapt from the start
+    assert L.switched_surfaces(log) == [78]
+    facts = {**L.pass_facts(1, 1, {}, PLAN), "switched": [78]}
+    lever = L.next_lever(facts, [], PLAN)
+    assert lever["lever"] == "LAD-fea-2" and lever["no_switch"] == [78] and "LAD-fea-8" in lever["words"]
+    assert L.mesh_settings([lever])["surface_switch"] is False
+    # once is enough: the next failure names no new switched face
+    again = L.next_lever({**L.pass_facts(2, 1, {}, PLAN), "switched": [78]}, [lever], PLAN)
+    assert again is None or "no_switch" not in again
