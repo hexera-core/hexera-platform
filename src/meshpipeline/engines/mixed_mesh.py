@@ -282,7 +282,10 @@ def join(shell: ShellMesh, solid: SolidPart, cut_faces: list, *, part: str,
         tb = ml.band_ties(row_b, lk.inward, lk.normal, np.full(n_row, lk.wall), near_b, depth=d_in,
                           half_band=BAND_SHARE * d_in)
         missing += (len(lk.on_face) - len({t.node for t in ta})) + (len(lk.inner) - len({t.node for t in tb}))
-        ties += ta + tb
+        # a node two rows share (a rib meeting the plate on the cut face) is tied once, by the first row: a solver
+        # takes a freedom as the dependent side of one equation only (CalculiX stops on the second)
+        done = {(t.node, t.dof) for t in ties}
+        ties += [t for t in ta + tb if (t.node, t.dof) not in done]
     if missing:
         notes.append(f"{missing} link node(s) found no solid node to tie to")
     q = np.array(quads, dtype=np.int64).reshape(-1, 4)
