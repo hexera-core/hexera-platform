@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import meshpipeline.settings.policy as polcfg
-from meshpipeline.agents.builder.tool_context import BuilderToolContext
+from meshpipeline.agents.builder.tool_context import HANDS_OFF, BuilderToolContext
 
 #: THE staged surface every engine analyses. A DERIVED workspace artefact - written upstream by the
 #: engine's own tessellator - not the source geometry and not an identity. It carries no unit,
@@ -473,6 +473,7 @@ def _stalled_verdict(ctx: BuilderToolContext, broken: list[str], log_tail) -> di
     if ctx.broken_mesh_moves_to:
         nxt = engine_label(ctx.broken_mesh_moves_to) or ctx.broken_mesh_moves_to
         out["moves_on_to"] = ctx.broken_mesh_moves_to
+        out[HANDS_OFF] = True
         out["guidance"] = (f"Not valid: the mesher ran out of time still repairing broken cells "
                            f"({what}) - more time does not mend that. Do NOT run_mesh again and do "
                            f"NOT reconfigure - end your turn now. The run moves on to {nxt}, "
@@ -524,6 +525,7 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
         # the same names - the job ends as an internal error either way if it is not fixed.
         _mine = not res.get("internal_defect")
         return {"success": False, "rc": res.get("rc"), "patch_contract_mismatch": True,
+                **({} if _mine else {HANDS_OFF: True}),
                 "mismatch": res.get("case_contract_mismatch"),
                 "guidance": ("Nothing was meshed: your spec does not build the approved patches "
                              "exactly - " + "; ".join(res.get("case_contract_mismatch") or [])
@@ -552,7 +554,7 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
                 builder_text=f"[MESH_OVER_SIZE] {_words}",
                 facts={"over_size_by_rule": True, "estimated_cells": int(_o.get("cells") or 0),
                        "cell_limit": int(_o.get("budget") or 0), "meshers_started": 1}).write(workspace)
-            return {"success": False, "oversize": dict(_o),
+            return {"success": False, "oversize": dict(_o), HANDS_OFF: True,
                     "guidance": (f"Not meshed: {_words}. This engine's own passage sizing asks for "
                                  "that, so a coarser size does not change it. Do NOT run_mesh again and "
                                  "do NOT reconfigure - end your turn now; the run moves on to another "
@@ -579,7 +581,7 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
             builder_text=f"[VMTK_LAYERS_NOT_CONVERGING] {_words}",
             facts={"layers_not_converging": True, "retangled": int(_l.get("retangled") or 0),
                    "meshers_started": 1}).write(workspace)
-        return {"success": False, "layers_not_converging": _l,
+        return {"success": False, "layers_not_converging": _l, HANDS_OFF: True,
                 "guidance": (f"Not meshed: {_words}. Do NOT run_mesh again and do NOT reconfigure - "
                              "end your turn now; the run moves on to the next engine, which builds the "
                              "layers the plan asks for."),
@@ -654,6 +656,7 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
         from meshpipeline.engines.registry import engine_label
         nxt = engine_label(ctx.broken_mesh_moves_to) or ctx.broken_mesh_moves_to
         out["moves_on_to"] = ctx.broken_mesh_moves_to
+        out[HANDS_OFF] = True
         out["guidance"] = (f"Not valid ({', '.join(str(x) for x in fatal)}): this engine's mesh "
                            f"of this shape is broken. Do NOT run_mesh again and do NOT reconfigure "
                            f"- end your turn now. The run moves on to {nxt}, which builds the "

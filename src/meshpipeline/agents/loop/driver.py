@@ -24,6 +24,10 @@ class ToolOutcome:
     accepted: bool = True
     terminal: bool = False
     payload: Any = None
+    #: THE AGENT'S WORK IS OVER WITH NOTHING SUBMITTED (a builder engine handing the run on to the
+    #: next engine): the loop ends after this call as the driver's own stop (policy_abort). No
+    #: further round is asked of the model - its words cannot end a turn the runner keeps nudging.
+    ends_loop: bool = False
 
 
 @dataclass(frozen=True)
