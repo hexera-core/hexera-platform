@@ -10,9 +10,11 @@ from meshpipeline.cad.repair.identity import EntityRef
 from meshpipeline.cad.repair.localize import EntityDefect
 from meshpipeline.cad.repair.loop import (
     NO_CANDIDATE,
+    OP_BUDGET,
     RESOLVED,
     SCAN_INCOMPLETE,
     STALLED,
+    TIME_BUDGET,
     LoopBudget,
     run,
 )
@@ -223,7 +225,8 @@ def test_a_scan_truncated_after_an_operation_is_never_reported_as_resolved():
 
 
 def test_a_run_that_clears_the_last_defect_on_its_last_operation_is_resolved():
-    # A low legacy max_ops value must not relabel a sound result as unfinished.
+    # The budget is spent exactly as the part becomes sound. Labelling that op_budget would be
+    # recorded downstream as "the repair did not finish".
     result = run(None, planner=_Planner(_Op()),
                  session=_session([((_defect(),), True), ((), True)]),
                  budget=LoopBudget(max_ops=1, stall_limit=99, timeout_s=120.0), tolerance_mm=0.01)
@@ -310,15 +313,15 @@ def test_an_error_the_planner_cannot_address_stops_the_run_as_no_candidate():
     assert result.verdicts == ()
 
 
-def test_the_operation_count_does_not_stop_a_run_before_stall_detection():
+def test_the_operation_budget_stops_a_run_that_keeps_finding_work():
     op = _Op()
     result = run(None, planner=_Tireless(op),
                  session=_session([((_defect(),), True)]),
-                 budget=LoopBudget(max_ops=1, stall_limit=2, timeout_s=120.0),
+                 budget=LoopBudget(max_ops=3, stall_limit=99, timeout_s=120.0),
                  tolerance_mm=0.01)
 
-    assert result.stopped_because == STALLED
-    assert len(result.verdicts) == 2
+    assert result.stopped_because == OP_BUDGET
+    assert len(result.verdicts) == 3
 
 
 def test_consecutive_rollbacks_stop_the_run_as_stalled():
@@ -393,16 +396,17 @@ def test_a_decline_spends_no_stall_budget_and_the_next_defect_is_still_reached()
     assert result.stopped_because == NO_CANDIDATE
 
 
-def test_the_soft_time_budget_does_not_truncate_a_run_before_stall_detection():
+def test_the_time_budget_covers_the_whole_loop_not_one_operation():
+    # CHANGED MEANING, DELIBERATELY. CAD_REPAIR_TIMEOUT_S used to bound one repair; a loop that
+    # applied it per operation could spend six times a job's allowance.
     ticks = iter([0.0, 10.0, 200.0, 300.0, 400.0])
     op = _Op()
     result = run(None, planner=_Tireless(op),
                  session=_session([((_defect(),), True)]),
-                 budget=LoopBudget(max_ops=99, stall_limit=2, timeout_s=1.0),
+                 budget=LoopBudget(max_ops=99, stall_limit=99, timeout_s=120.0),
                  tolerance_mm=0.01, clock=lambda: next(ticks))
 
-    assert result.stopped_because == STALLED
-    assert len(result.verdicts) == 2
+    assert result.stopped_because == TIME_BUDGET
 
 
 def test_the_budget_reads_the_settings_by_default(monkeypatch):
@@ -438,12 +442,12 @@ def test_the_run_records_every_attempt_kept_or_not():
     # more, arguably - so the log is of attempts, not of successes.
     op = _Op()
     result = run(None, planner=_Tireless(op), session=_session([((_defect(),), True)]),
-                 budget=LoopBudget(max_ops=1, stall_limit=2, timeout_s=120.0),
+                 budget=LoopBudget(max_ops=2, stall_limit=99, timeout_s=120.0),
                  tolerance_mm=0.01)
 
     payload = result.to_dict()
     assert len(payload["operations"]) == 2
-    assert payload["stopped_because"] == STALLED
+    assert payload["stopped_because"] == OP_BUDGET
     assert payload["planner"] == "tireless"
     assert payload["resolved"] is False
 
