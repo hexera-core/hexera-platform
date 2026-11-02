@@ -375,6 +375,7 @@ class _Field:
         self.sd = SurfaceDistance(T, spacing=h)
         self.d = approx.copy()
         self._band_m = 0.0
+        self.fluid: np.ndarray = np.zeros(grid.shape, dtype=bool)
 
     def exact_band(self, upto: float) -> None:
         """Exact distances for every centre the wall's EDT puts within `upto` (+ 2 cubes)."""
@@ -484,6 +485,7 @@ class _Field:
             comp = self._enclosed_pockets(free, comp)
             if comp is None:
                 return False, "no space inside the staged boundary is enclosed by it"
+        assert comp is not None
         self.fluid = comp
         self.mode = "union" if union else "seed"
         if seed is not None:
