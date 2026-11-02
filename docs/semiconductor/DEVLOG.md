@@ -3531,3 +3531,239 @@ bad-face count, not the cell count.
 
 ws_par182 stopped at 359,520 bad faces on the same loop with the same signature. ws_shell is the
 furthest any run of this geometry has reached.
+
+## 2026-11-02: the remesh landed, the truncation is gone, and checkMesh cannot measure it
+
+### What came out
+
+| | cells | points | faces | boundary faces |
+|---|---|---|---|---|
+| coolant | 68,750,147 | 78,499,051 | 215,694,696 | 14,699,776 |
+| metal | 201,781,747 | 214,111,212 | 617,933,169 | 15,311,386 |
+| both | 270,531,894 | | | |
+
+The mesher took 139,230.5 s, 38.7 h, `ExecutionTime = 137983 s  ClockTime = 138476 s`, ratio 1.004,
+which is the single-thread finding showing up in the run's own output again. Peak 23.22 GB for one
+rank of eight, 688 B/cell against the engine's built-in 748.1. The final untangle ran 152 iterations
+and took bad faces from 2,219 down to 331 warped faces, 0.0001% of the mesh.
+
+270,531,894 is the real total. I had been quoting 269,911,312 off a mesher log line all week.
+`boxToCell` selects every cell and it selected 270,531,894, and the two regions sum to exactly that.
+
+### The four tail stages, run by hand after the chain's 24 h budget expired mid-mesher
+
+| stage | seconds | peak RAM | outcome |
+|---|---|---|---|
+| topoSet | 523 | 125,125 MB | coolant 68,750,147, metal 201,781,747 |
+| splitMeshRegions | 1,180 | 215,399 MB | rc=0 |
+| reconstructParMesh coolant | 760 | 53,616 MB | 15 GB |
+| reconstructParMesh metal | 2,223 | 145,046 MB | 43 GB |
+
+topoSet at 400 B/cell is a number nobody had. The plate's chain logged `RAM 0 / 251 GiB` for the
+same stage, which was a sampling artifact.
+
+### The truncation is fixed, and I had been checking it against the wrong file
+
+| | x | y | z |
+|---|---|---|---|
+| block.stl | -0.0615765 .. 0.1159235 | 0.0201102 .. 0.0619462 | -0.0085904 .. 0.0924096 |
+| fluid.stl | -0.0595813 .. 0.1106298 | 0.0216102 .. 0.0586812 | -0.0065912 .. 0.0904096 |
+| mesh, coolant | -0.0596102 .. 0.1106150 | 0.0215651 .. 0.0586800 | -0.0066780 .. 0.0904972 |
+| mesh, metal | -0.0617298 .. 0.1161080 | 0.0201102 .. 0.0619476 | -0.0087897 .. 0.0926083 |
+| the condemned delivery | | 0.0215552 .. 0.0487078 | |
+
+The coolant stopped 9.97 mm short of the top of fluid.stl. It now stops 1.2 um short. The metal's
+lower y is 0.0201102 against block.stl's own 0.0201102, equal to seven figures. Every face of both
+regions envelopes its own surface within a few cells, which is what a cartesian mesh of that surface
+should do.
+
+There is no `domain.stl` in this workspace. The surfaces are block.stl, fluid.stl and fluid_fine.stl.
+The range I have been calling domain.stl's, 0.0201102 .. 0.0619462, is block.stl's, and block is
+1.5 mm taller than the coolant at the bottom and 3.3 mm at the top. So the check I had written would
+have failed a perfect mesh: the coolant was never meant to reach the block's box. The right pairing
+is coolant against fluid.stl and metal against block.stl, and both pass.
+
+### The interface
+
+| patch | region | type | faces |
+|---|---|---|---|
+| fluid_to_solid | coolant | mappedWall | 14,696,207 |
+| solid_to_fluid | metal | mappedWall | 14,696,207 |
+| port_a | coolant | wall | 1,794 |
+| port_b | coolant | wall | 1,775 |
+| wall_outer | metal | wall | 615,176 |
+| port_a | metal | wall | 3 |
+
+Equal face counts on both sides, each sampling the other with `nearestPatchFace`. Both ports survived
+the split into the coolant. Three faces of port_a landed in the metal, 3 out of 615,176.
+
+### Two docker traps cost me two attempts at the tail
+
+The container `shellrun` had the chain's `python3` as its entrypoint. Resuming the chain let that
+python exit and the container went with it, four seconds before my `docker exec`. Each stage gets its
+own `docker run` now.
+
+Then topoSet spent 92 s computing `fluidCells` correctly, 68,750,147 cells, and could not write it:
+
+```
+Failed writing set ".../processor0/constant/polyMesh/sets/fluidCells"
+cellSet fluidCells now size 68750147
+```
+
+`docker inspect shellrun` reports `User=0:0`, so I took the image to run as root. That 0:0 is on the
+container. Whoever created `shellrun` passed `--user 0:0` explicitly. The image's own default user is
+uid 1000, which can read the mesher's root-owned 755 directories and not write to them. A two-second
+write probe in front of the stages now turns that from eight minutes into seconds.
+
+### The checkMesh fatal is -allGeometry, not the field write
+
+The entry above on 2026-10-30 blames this on "constructing a field with a boundary condition on that
+patch". That is wrong. I bisected it on a 33,408-cell two-region reproducer at /scratch/bench/tiny
+where checkMesh runs in 50 to 440 ms:
+
+| flags, with -constant -region fluid | rc |
+|---|---|
+| none | 0 |
+| -writeSets vtk | 0 |
+| -writeFields '(nonOrthoAngle skewness aspectRatio)' | 0 |
+| -allTopology | 0 |
+| -writeSets vtk -writeFields '(...)' | 0 |
+| -allGeometry | 1 |
+| -allGeometry -writeFields '(...)' | 1 |
+| -allGeometry -writeSets vtk | 1 |
+| -allGeometry -writeSets vtk -writeFields '(...)' | 1 |
+| -allGeometry -allTopology -writeFields '(...)' | 1 |
+
+`-allGeometry` is necessary and sufficient. `-writeSets`, `-writeFields` and `-allTopology` are each
+neither, in any combination, and with any surface format. The Corintis flag from 2026-10-29 is
+innocent. The same matrix holds for `-region solid`, and the same base mesh run with no `-region` and
+the full flag set exits 0.
+
+`FOAM_ABORT=1` names the caller:
+
+```
+#3 Foam::mappedPatchBase::upToDate() const in .../libmeshTools.so
+#4 ? in .../platforms/linux64GccDPInt32Opt/bin/checkMesh
+```
+
+checkGeometry.C's last `if (allGeometry)` block walks the boundary, tests `isA<cyclicAMIPolyPatch>`
+and then `isA<mappedPatchBase>`, and calls `AMI()` on anything that matches. `AMI()` is a header
+inline, so it folds into checkMesh's own code, which is why frame #4 is the binary. It calls
+`upToDate()`, which resolves `sampleRegion` through `lookupObject<polyMesh>`. Under `-region fluid`
+only the fluid mesh is registered, so the lookup for `solid` throws at objectRegistryTemplates.C:628.
+
+It is the last thing in the geometry section, after `Face volume ratio check OK.` and before the
+verdict line. A control with the same mappedWall pointed at its own region exits 0 and prints the AMI
+weights there instead. So every check has run and every poor-cell set is on disk by the time it dies.
+The name in the error is the case-directory basename, which is why the old logs say `w`, `plate`,
+`case` and `ws_shell`.
+
+The registry is the problem, not the disk. The sampled region's polyMesh was present in every failing
+run.
+
+### The clean runs on the plate were not a control
+
+ws_plate/checkMesh2_fluid.log and checkMesh2_solid.log ended cleanly with `-allGeometry -writeFields`,
+which looks like proof the flag is harmless. Both region boundary files were rewritten at
+Oct 30 19:33:29, between the clean 18:29 run and the fatal 20:17 one, and the pre-rewrite bytes exist
+nowhere: boundary.asdelivered and boundary.mapped are both 14:05 snapshots and both already carry
+mappedWall. The retype-to-wall workaround recorded in the 10-30 entry is what those clean runs were
+measuring. I used that pair as a controlled A/B for several hours. It is not one.
+
+One claim in that workaround needs correcting too. "So a kill cannot leave it flipped" is not true of
+a python `finally`, which does not run on SIGKILL, and ws_plate/checkMesh_solid.log is a SIGKILL on
+this exact step.
+
+### The gate was already always false
+
+`foam_exec.py` never reads the return code. `grep -n "returncode\|proc\." ` over the module returns
+one line, 274, `raw = proc.stdout + proc.stderr`. And parse_check_mesh:313 is
+
+```python
+q: dict = {"mesh_ok": "Mesh OK" in out}
+```
+
+I ran the repo's own parser over the real ws_shell fatal log and over ws_plate/checkMesh2_solid.log,
+which exited 0:
+
+| | ws_shell, rc=1 fatal | ws_plate, rc=0, "Failed 5 mesh checks" |
+|---|---|---|
+| mesh_ok | False | False |
+| fatal | [] | [] |
+| cells | 68,750,147 | 241,984,911 |
+| keys returned | 33 | 33 |
+
+Indistinguishable. Both give every metric and both say the mesh is not OK. The second column is the
+part that matters more than the fatal: under `-allGeometry` these meshes never print `Mesh OK` at all.
+ws_chip's two clean logs read "Failed 1 mesh checks", the plate's read "Failed 2" and "Failed 5", and
+the repo's own fixture in tests/unit/engines/test_everything_checkmesh_measured_is_kept.py ends
+"Failed 1 mesh checks." So `mesh_ok` has been False on every conjugate mesh this engine has ever
+built, fatal or not, and fixing the fatal alone would not change that.
+
+Two fixes were tried on the reproducer and both have a hole:
+
+`-allRegions` instead of `-region <r>` exits 0, checks both regions in one pass, writes the three
+fields where boundary_quality.py:99 looks for them, and turns the fatal into the reading you actually
+want, `AMI: Patch source sum(weights) min:1 max:1 average:1`, which is proof the interface is
+conformal. But parse_check_mesh is a first-match flat regex over the whole log and conjugate.py:1553
+calls check_mesh once per region, so one log holding both regions gets the coolant's numbers reported
+for the metal as well. Measured: cells came back `['3000','30408']` in the log and the parser took the
+first. Adopting it means collapsing the caller to one call and cutting the log on the
+`Create mesh <name> for time =` lines. The AMI build is also unmeasured at 14,696,207 faces.
+
+Retyping the interface to `wall` for the duration works on the reproducer, both regions, full flag
+set, rc=0. It mutates the delivered mesh's boundary file, and a kill between the retype and the
+restore leaves a conjugate mesh whose interface is a plain wall, which is the one failure mode worth
+less than an unmeasured mesh.
+
+Dropping `-allGeometry` is not an option. On the plate it is the difference between 152,556
+under-determined cells plus 944,302 concave cells and the words "Mesh OK."
+
+### What checkMesh said about this mesh
+
+Both logs are complete above the fatal, so the readings stand.
+
+| | coolant | metal |
+|---|---|---|
+| cells | 68,750,147 | 201,781,747 |
+| hexahedra | 67,340,145 | 198,454,794 |
+| polyhedra | 1,409,011 | 3,325,056 |
+| disconnected regions | 2 | 1 |
+| max aspect ratio | 35.9009 | 49.044 |
+| max non-orthogonality | 83.564, average 8.7496 | 84.1473, average 5.30408 |
+| severely non-orthogonal faces | 51,813 | 126,896 |
+| max skewness | 5.41982, 23 faces | 6.78209, 56 faces |
+| face tet errors | 11 | 20 |
+| min flatness | 0.699625, average 0.999766 | 0.424596, average 0.999933 |
+| min determinant | 0, average 0.270083 | 0, average 0.636985 |
+| under-determined cells | 1,607 | 9,473 |
+| concave cells | 216,786 | 133,388 |
+| low interpolation weight faces | 2,706 | 43 |
+| low volume ratio faces | 166 | none |
+| total volume, m3 | 5.24994e-05 | 0.000223794 |
+
+The coolant has two disconnected regions and the second one is a single cell:
+
+```
+  <<Writing region 0 with 68750146 cells to cellSet region0
+  <<Writing region 1 with 1 cells to cellSet region1
+```
+
+One orphan coolant cell with no face shared with the rest of the coolant. The metal is one piece.
+
+### The number that sizes the next box
+
+| region | cells | checkMesh seconds | peak RSS |
+|---|---|---|---|
+| coolant | 68,750,147 | 648 | 53,888 MB |
+| metal | 201,781,747 | 1,857 | 141,651 MB |
+
+702 B/cell on the metal, with `-allGeometry -writeSets vtk -writeFields`. The Oct 30 OOM that pushed
+the resolution from 16.5 um to 22 um is in dmesg and it was `-allTopology`, which the pipeline never
+passes:
+
+```
+Out of memory: Killed process 543991 (checkMesh) total-vm:321105692kB, anon-rss:254012412kB
+```
+
+254 GB on 241,984,911 cells, 1,050 B/cell, against 141,651 MB for 201,781,747 cells without the flag.
