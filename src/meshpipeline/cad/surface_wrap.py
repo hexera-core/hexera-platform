@@ -663,7 +663,12 @@ def _internal_fluid(T, labels, seed, ports, lo, hi, diag, r, *, cubes: int, give
             small = all(_small_opening(areas.get(q, 0.0), grid.h) for q in lost)
             if not reached and lost and small and len(lost) < len(ports) \
                     and (not best or len(lost) < best[0]):
-                best[:] = [len(lost), grid, field_, rr, lost, union]
+                # a candidate only when the openings it keeps are each in a passage with a way
+                # through (the same test a full reach passes)
+                kept = [q for q in ports if q not in lost]
+                probes = {q: grid.index_of(field_._probes(labels, q, rr + 1.5 * grid.h)) for q in kept}
+                if not field_._cut_off(field_.fluid, seed, probes, rr):
+                    best[:] = [len(lost), grid, field_, rr, lost, union]
             tries.append({"distance_m": rr, "cube_m": grid.h, "cubes": grid.n, "reached": reached,
                           "fluid": "enclosed pockets" if union else "joined to the seed",
                           **({"why": why} if why else {})})
