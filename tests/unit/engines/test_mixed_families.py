@@ -41,7 +41,8 @@ def _family(name: str):
                            "probes": {"pad top": top, "leg middle": _bb(35, 45, 25, 35, -1, t + 1)},
                            "stress": ([40.0, 30.0, t], [0, 0, 1], t)}
     if name == "box_corners":
-        X, Y, Z, c = 70.0, 60.0, 40.0, 10.0
+        # 4 mm walls: the all-solid mesh of 3 mm ones ran a CI runner (8 GB) out of memory
+        t, X, Y, Z, c = 4.0, 70.0, 60.0, 40.0, 12.0
         shape = fuse(_cut(_box(0, 0, 0, X, Y, Z), _box(t, t, t, X - 2 * t, Y - 2 * t, Z)),
                      *[_box(x, y, 0, c, c, Z) for x in (0, X - c) for y in (0, Y - c)])
         top = _bb(X - c - .01, X + .01, Y - c - .01, Y + .01, Z - .01, Z + .01)
