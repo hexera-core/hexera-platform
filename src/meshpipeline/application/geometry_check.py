@@ -522,6 +522,16 @@ def _run_scout(session_id: str, owner_id: str, source: dict, interpretation: dic
 PREVIEW_RUNNING, PREVIEW_KEPT = "running", "kept"
 
 
+def scout_still_running(session_id: str) -> bool:
+    """The session's scout has not landed its full reading yet (nothing stored, still pending, or only the
+    preview): a naming started now could only wait for it (the naming queue's yield reads this)."""
+    try:
+        stored = read_check(session_id)
+    except Exception:  # noqa: BLE001 - the store unread: the naming runs as it always did
+        return False
+    return stored is None or stored.get("status") == STATUS_PENDING or is_preview(stored)
+
+
 def is_preview(stored: dict | None) -> bool:
     """Whether the stored check is a preview the scout is still measuring."""
     return bool(stored) and (stored or {}).get("preview") == PREVIEW_RUNNING
