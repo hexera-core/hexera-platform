@@ -57,9 +57,12 @@ WRAP_PASSAGE_SHARE = 0.15
 #: by this factor and the wrap is drawn again, at most WRAP_RETRIES times.
 WRAP_SHRINK = 0.6
 WRAP_RETRIES = 3
-#: Flow round a body: when more than this share of the body's surface is wetted on both sides, the
-#: flow went inside the body through a gap, and the wrap is drawn again closing gaps twice as wide,
-#: never wider than the diagonal over WRAP_MAX_DIAG_SHARE.
+#: Flow round a body must stay outside it. The space a wrap of INSIDE_PROBE times the distance seals
+#: off from the open air, that the flow at the distance still reaches, is the body's inside reached
+#: through a gap; when it is more than INSIDE_REACHED_SHARE of the body at that wider wrap, the wrap
+#: is drawn again closing gaps twice as wide, never wider than the diagonal over WRAP_MAX_DIAG_SHARE.
+#: A sheet the flow wets on both sides seals nothing off, so it is never taken for a hollow body.
+INSIDE_PROBE = 4.0
 INSIDE_REACHED_SHARE = 0.25
 WRAP_MAX_DIAG_SHARE = 60.0
 #: A point of the skin farther than this many cubes from the original lies across a gap it bridged.
@@ -68,9 +71,13 @@ BRIDGE_CUBES = 1.5
 MIN_PIECE_CUBES = 8
 #: The spots listed by name and place (the widest first); the rest are counted.
 MAX_SPOTS = 20
-#: The skin's triangles are at most this many; a finer skin is coarsened to it (VTK's quadric
-#: decimation, which keeps the surface closed and every point on it).
-MAX_SKIN_TRIANGLES = 3_000_000
+#: The skin is coarsened (VTK's quadric decimation, volume kept) to about the triangles of edge r
+#: its area holds - the wrap cannot place a detail finer than r anyway - never fewer than
+#: MIN_SKIN_TRIANGLES, never more than MAX_SKIN_TRIANGLES; a coarsening that would leave it open is
+#: not kept. The drawn skin has a few triangles per grid cube, so it is several times finer.
+MAX_SKIN_TRIANGLES = 1_000_000
+MIN_SKIN_TRIANGLES = 20_000
+SKIN_EDGE_SHARE = 0.5
 
 #: Where the wrap's own records live, beside the run's surface (the run's workspace).
 WRAP_REQUEST_FILE = "cfd_wrap.json"
@@ -287,18 +294,18 @@ def wrap_surface(T: np.ndarray, labels: np.ndarray, *, flow: str, seed=None,
             # FLOW ROUND A BODY MUST STAY OUTSIDE IT: when the flood went in through a gap wider
             # than 2r, the body's own skin is wetted on both sides. Most of it wetted so is a body
             # whose inside the flow reached: the wrap closes twice as wide a gap and tries again
-            share = field_.both_sides_share(r)
-            row["both_sides_share"] = round(share, 4)
+            share = field_.inside_reached_share(r, min(INSIDE_PROBE * r, diag / WRAP_MAX_DIAG_SHARE))
+            row["inside_reached_share"] = round(share, 4)
             if share > INSIDE_REACHED_SHARE and attempt < WRAP_RETRIES \
                     and 2.0 * r <= diag / WRAP_MAX_DIAG_SHARE:
-                row["why"] = (f"the flow reached the inside of the body ({share:.0%} of its surface "
-                              "wetted on both sides)")
+                row["why"] = (f"the flow reached the inside of the body ({share:.0%} of it, at a "
+                              "wider wrap)")
                 r *= 2.0
                 continue
             if share > INSIDE_REACHED_SHARE:
                 raise WrapError(f"the flow reaches the inside of the body through an opening wider "
-                                f"than {2000.0 * r:.3g} mm ({share:.0%} of its surface is wetted on "
-                                "both sides), so a wrap would mesh the body hollow")
+                                f"than {2000.0 * r:.3g} mm ({share:.0%} of the body), so a wrap would "
+                                "mesh the body hollow")
         if reached:
             break
         if not internal or attempt == WRAP_RETRIES or (
@@ -307,8 +314,9 @@ def wrap_surface(T: np.ndarray, labels: np.ndarray, *, flow: str, seed=None,
         r *= WRAP_SHRINK
     verts, faces = field_.skin(r)
     verts, faces = _oriented(verts, faces, field_, internal=internal)
-    if len(faces) > MAX_SKIN_TRIANGLES:
-        v2, f2 = _decimate(verts, faces, MAX_SKIN_TRIANGLES)
+    target = _skin_target(verts, faces, r)
+    if len(faces) > target * 1.2:
+        v2, f2 = _decimate(verts, faces, target)
         try:
             _check_closed(v2, f2)
             verts, faces = v2, f2
@@ -325,6 +333,9 @@ def wrap_surface(T: np.ndarray, labels: np.ndarray, *, flow: str, seed=None,
                    "cube_m": grid.h, "grid": list(grid.shape), "tries": tries,
                    "diag_m": diag,
                    **({"bottleneck_m": bottleneck} if bottleneck is not None else {})})
+    import hashlib
+    report["skin_sha256"] = hashlib.sha256(np.ascontiguousarray(verts, dtype=np.float64).tobytes()
+                                           + np.ascontiguousarray(faces, dtype=np.int64).tobytes()).hexdigest()
     inside, seed_in = field_.inside_points(seed) if internal else (None, False)
     return WrapResult(verts=verts, faces=faces, labels=named, report=report, inside=inside,
                       seed_in_fluid=seed_in)
@@ -498,12 +509,22 @@ class _Field:
         k = int(self.grid.index_of(np.asarray(seed, dtype=np.float64))[0])
         return deep, bool(self.fluid.reshape(-1)[k])
 
-    def both_sides_share(self, r: float) -> float:
-        """The share of the surface's area the flow wets on both sides."""
-        T = self.T
-        a = np.linalg.norm(np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]), axis=1)
-        tot = float(a.sum())
-        return float(a[self._sheet_faces(r)].sum()) / tot if tot > 0 else 0.0
+    def inside_reached_share(self, r: float, R: float) -> float:
+        """Of the body as a wrap at R reads it (all the space it does not reach from the border),
+        the share that is space the wrap at R seals off but the flow at r reaches: the body's
+        inside, reached through gaps between 2r and 2R wide."""
+        from scipy import ndimage
+        if R <= r:
+            return 0.0
+        free_R = self.d > R
+        lab, _n = ndimage.label(free_R)
+        border = np.unique(np.concatenate([
+            lab[0].ravel(), lab[-1].ravel(), lab[:, 0].ravel(), lab[:, -1].ravel(),
+            lab[:, :, 0].ravel(), lab[:, :, -1].ravel()]))
+        outside_R = np.isin(lab, border[border > 0])
+        sealed = free_R & ~outside_R & self.fluid
+        body_R = int(np.count_nonzero(~outside_R))
+        return float(np.count_nonzero(sealed)) / body_R if body_R else 0.0
 
     def _sheet_faces(self, r: float) -> np.ndarray:
         """The faces the flow wets on BOTH sides: a point just off each side is on the fluid side."""
@@ -609,6 +630,14 @@ def _oriented(V: np.ndarray, F: np.ndarray, fld: _Field, *, internal: bool) -> t
     remap = np.full(len(V), -1, dtype=np.int64)
     remap[used] = np.arange(len(used))
     return V[used], remap[F]
+
+
+def _skin_target(V: np.ndarray, F: np.ndarray, r: float) -> int:
+    """About the triangles of edge r the skin's area holds (an equilateral triangle of edge r is
+    sqrt(3)/4 r^2), within MIN_SKIN_TRIANGLES..MAX_SKIN_TRIANGLES."""
+    area = float(np.linalg.norm(np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]]), axis=1).sum()) / 2.0
+    n = int(area / (np.sqrt(3.0) / 4.0 * (SKIN_EDGE_SHARE * r) ** 2)) if r > 0 else MAX_SKIN_TRIANGLES
+    return max(MIN_SKIN_TRIANGLES, min(MAX_SKIN_TRIANGLES, n))
 
 
 def _decimate(V: np.ndarray, F: np.ndarray, target: int) -> tuple[np.ndarray, np.ndarray]:

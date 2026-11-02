@@ -170,14 +170,15 @@ async def node_cfd_wrap(state) -> dict:
         ladder = lad.with_switch(ladder, attempt=attempt, frm=frm, to=engine, failure=failure,
                                  why="every engine failed on the surface as drawn: the wrap rung",
                                  changes=("meshed on a wrapped surface",))
-    rec = {"tried": True, "rule": RULE_RUNG, "engine": engine, "attempt": attempt,
+    failed = failure.as_dict() if failure is not None else {}
+    rec: dict[str, Any] = {"tried": True, "rule": RULE_RUNG, "engine": engine, "attempt": attempt,
            "flow": flow_of_state(state), "after": _failed_engines(state),
-           "failure": failure.as_dict() if failure is not None else {}}
+           "failure": failed}
     try:
         from meshpipeline.contracts import decision_record as dr
         dr.cite(job_id, stage="engine_ladder", decided="wrap rung", value=engine, rule=RULE_RUNG,
                 inputs={"attempt": attempt, "failed_engines": rec["after"],
-                        "failure": rec["failure"].get("cause")},
+                        "failure": failed.get("cause")},
                 words=(f"every engine failed on the surface as drawn; attempt {attempt} meshes a "
                        f"wrapped copy of it with {engine}"))
     except Exception:  # noqa: BLE001 - a record never changes the rung

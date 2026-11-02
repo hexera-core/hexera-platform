@@ -3022,9 +3022,9 @@
   ]
  },
  {
-  "context": "cad/cad_tessellate.py::tessellate_internal::error#1|NotAPublisher|not-a-publisher|",
+  "context": "cad/cad_tessellate.py::_tessellate_internal::error#1|NotAPublisher|not-a-publisher|",
   "path": "cad/cad_tessellate.py",
-  "qualname": "tessellate_internal",
+  "qualname": "_tessellate_internal",
   "semantic": "error",
   "method": "error",
   "ordinal": 1,
@@ -3035,9 +3035,9 @@
   "roots": []
  },
  {
-  "context": "cad/cad_tessellate.py::tessellate_internal::error#2|NotAPublisher|not-a-publisher|",
+  "context": "cad/cad_tessellate.py::_tessellate_internal::error#2|NotAPublisher|not-a-publisher|",
   "path": "cad/cad_tessellate.py",
-  "qualname": "tessellate_internal",
+  "qualname": "_tessellate_internal",
   "semantic": "error",
   "method": "error",
   "ordinal": 2,
@@ -3048,9 +3048,9 @@
   "roots": []
  },
  {
-  "context": "cad/cad_tessellate.py::tessellate_internal::error#3|NotAPublisher|not-a-publisher|",
+  "context": "cad/cad_tessellate.py::_tessellate_internal::error#3|NotAPublisher|not-a-publisher|",
   "path": "cad/cad_tessellate.py",
-  "qualname": "tessellate_internal",
+  "qualname": "_tessellate_internal",
   "semantic": "error",
   "method": "error",
   "ordinal": 3,
@@ -3061,9 +3061,9 @@
   "roots": []
  },
  {
-  "context": "cad/cad_tessellate.py::tessellate_internal._less_other_solids::error#1|NotAPublisher|not-a-publisher|",
+  "context": "cad/cad_tessellate.py::_tessellate_internal._less_other_solids::error#1|NotAPublisher|not-a-publisher|",
   "path": "cad/cad_tessellate.py",
-  "qualname": "tessellate_internal._less_other_solids",
+  "qualname": "_tessellate_internal._less_other_solids",
   "semantic": "error",
   "method": "error",
   "ordinal": 1,
@@ -3074,9 +3074,9 @@
   "roots": []
  },
  {
-  "context": "cad/cad_tessellate.py::tessellate_internal._mouth_caps::error#1|NotAPublisher|not-a-publisher|",
+  "context": "cad/cad_tessellate.py::_tessellate_internal._mouth_caps::error#1|NotAPublisher|not-a-publisher|",
   "path": "cad/cad_tessellate.py",
-  "qualname": "tessellate_internal._mouth_caps",
+  "qualname": "_tessellate_internal._mouth_caps",
   "semantic": "error",
   "method": "error",
   "ordinal": 1,
