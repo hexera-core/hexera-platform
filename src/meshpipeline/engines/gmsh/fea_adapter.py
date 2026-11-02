@@ -252,12 +252,13 @@ def single_skin_notes(ws: Path) -> tuple[dict[int, int], list[str], list[dict]]:
 
 def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[int]] | None = None,
                 part_volumes: dict[str, list[int]] | None = None,
-                whole: set[tuple[int, int]] | None = None) -> int | None:
+                whole: set[tuple[int, int]] | None = None, short: dict | None = None) -> int | None:
     """The plan's zones as gmsh fields; returns the background field (None when no zone binds).
     face_tags: an assembly's face names (Part_k_Face_j) -> the surface tags carrying each; a single
     part's Face_k is surface k. part_volumes: an assembly's Part_k -> the volume tags carrying it
     (the part's base size holds through those volumes, PLAN-fea-17). whole: the CAD entities a MESH-9
-    compound meshes (a field that can size one of them is never restricted)."""
+    compound meshes (a field that can size one of them is never restricted). short: MESH-24's sized
+    short edges (engines/gmsh/fea_short.plan_short), each a field of its own."""
     from meshpipeline.engines.fea_size_field import group_zones
 
     def tags_of(name: str) -> list[int]:
@@ -352,6 +353,12 @@ def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[
             ids.append(th)
             bounds.append({"field": th, "dim": dim, "tags": list(src), "size": size, "reach": reach,
                            "dist_max": reach + (base - size) / max(g1, 1e-6), "sampling": int(n_s)})
+    if short and short.get("edges"):
+        from meshpipeline.engines.gmsh import fea_short as SHORT
+
+        s_ids, s_bounds = SHORT.fields(gmsh, short, base, g1 + 1.0)
+        ids += s_ids
+        bounds += s_bounds
     if not ids:
         return None
     ids = reach_restricted(gmsh, ids, bounds, base, whole=whole) if whole else reach_restricted(gmsh, ids, bounds, base)
@@ -1291,8 +1298,20 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
         micro = micro_curves_one_segment(gmsh, skip={t for d, t in whole or () if d == 1})
         if micro:
             print(f"[GMSH-FEA] micro curve(s) {micro[:20]} meshed as one segment each (MESH-4)", file=sys.stderr)
+    # MESH-24: A CAD EDGE FAR SHORTER THAN THE ELEMENTS BESIDE IT gets elements of its own length there (not on
+    # the fTetWild rung's build, which sizes from the plan alone); nothing short: no field, the same mesh
+    short: dict = {}
+    if rung is None:
+        from meshpipeline.engines.gmsh import fea_short as SHORT
+
+        short = SHORT.plan_short(gmsh, sized, face_tags=face_tags,
+                                 skip={t for d, t in whole or () if d == 1} | set(micro),
+                                 skip_faces={t for d, t in whole or () if d == 2})
+        if short.get("edges"):
+            print(f"[GMSH-FEA] {len(short['edges'])} short CAD edge(s) or narrow face(s) sized at their own size "
+                  f"({SHORT.RULE}; {short.get('left', 0)} left as drawn by the budget)", file=sys.stderr)
     note_stage(ws, "sizing", "setting the element sizes")
-    bg = size_fields(gmsh, sized, surfaces, face_tags, part_volumes, whole=whole)
+    bg = size_fields(gmsh, sized, surfaces, face_tags, part_volumes, whole=whole, short=short)
     if bg is not None:
         gmsh.model.mesh.field.setAsBackgroundMesh(bg)
     remesh = {int(s) for s in run.get("remesh_surfaces") or []}
@@ -1359,10 +1378,19 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
         return {"vols": all_vols, "surfaces": all_surfaces, "face_tags": face_tags, "surface_tag": surface_tag,
                 "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro,
                 "repeated_triangles": repeated, "rung_volumes": rung_vols, "gmsh_volumes": sorted(vols),
-                **({"tiny": merges} if TINY.active(merges) else {})}
+                **({"tiny": merges} if TINY.active(merges) else {}),
+            **({"short": short} if short.get("edges") else {})}
     return {"vols": vols, "surfaces": surfaces, "face_tags": face_tags, "surface_tag": surface_tag,
             "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro,
-            "repeated_triangles": repeated, **({"tiny": merges} if TINY.active(merges) else {})}
+            "repeated_triangles": repeated, **({"tiny": merges} if TINY.active(merges) else {}),
+            **({"short": short} if short.get("edges") else {})}
+
+
+def _short_record(short: dict, scale: float) -> dict:
+    """quality.json's MESH-24 record (engines/gmsh/fea_short.record)."""
+    from meshpipeline.engines.gmsh import fea_short as SHORT
+
+    return SHORT.record(short, scale)
 
 
 def _tiny_failed(exc: FillFailed, whole: set[tuple[int, int]] | None) -> FillFailed:
@@ -1669,6 +1697,8 @@ def _mesh(workspace) -> int:
             **({"fea_mesh_scale": "mm", "fea_mesh_scale_rule": MM_SCALE_RULE,
                 "fea_micro_curves_one_segment": len(built.get("micro_curves") or [])}
                if scale != 1.0 else {}),
+            # MESH-24: the short edges and narrow faces sized at their own size
+            **({"fea_short_edges": _short_record(built["short"], scale)} if built.get("short") else {}),
             # MESH-9: the tiny faces meshed as part of a neighbour, and into which named face each went
             **({"fea_tiny": tiny_out} if tiny_out else {}),
             "fea_bad_surfaces": traced,

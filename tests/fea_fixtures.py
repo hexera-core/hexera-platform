@@ -563,3 +563,20 @@ def off_and_bonded_blocks(size: float = 100.0):
     meeting along a line are joined too, PLAN-fea-18)."""
     return _compound(_box(0, 0, 0, size, size, size), _box(size, 0, 0, size, size, size),
                      _box(0, size, 0, 0.9 * size, size, size))
+
+
+def runout_block(short: float = 0.02):
+    """A 20 x 10 mm prism, 10 mm high, whose outline has one side `short` mm long (a corner cut off at a
+    slant): two CAD edges that short at its top and bottom, each between two faces of normal size, with
+    three edges at each end - the edge a fillet leaves where it runs out just before a corner (MESH-24)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    s = short / 2 ** 0.5
+    poly = BRepBuilderAPI_MakePolygon()
+    for x, y in ((0, 0), (20, 0), (20, 10 - s), (20 - s, 10), (0, 10)):
+        poly.Add(gp_Pnt(x, y, 0))
+    poly.Close()
+    face = BRepBuilderAPI_MakeFace(poly.Wire()).Face()
+    return BRepPrimAPI_MakePrism(face, gp_Vec(0, 0, 10)).Shape()

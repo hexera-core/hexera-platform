@@ -35,6 +35,25 @@ def _mesh_on_disk(engine: str, workspace) -> bool:
         return False
 
 
+def _fea_past_limits(q) -> list[str] | None:
+    """The FEA rows (VER-2) a mesh's quality record misses, read exactly as the verdict and the result
+    screen read them (engines/verdict_limits.fea_limits, contracts/decision_record.limit_met), so the
+    live quality line never calls a mesh good that the verdict then lists. None for a record that is
+    not an FEA plan's (a CFD mesh keeps its own line)."""
+    if not isinstance(q, dict):
+        return None
+    try:
+        from meshpipeline.contracts.decision_record import limit_met
+        from meshpipeline.engines.verdict_limits import fea_limits
+        rows = fea_limits(q)
+    except Exception:  # noqa: BLE001 - the line is said from the older reading, never a run failed
+        return None
+    if not rows:
+        return None
+    return [str(r.get("label") or r.get("key")) for r in rows
+            if limit_met(r.get("measured"), str(r.get("op")), r.get("limit")) is False]
+
+
 def _case_contract_refusal(workspace, job_id: str):
     """The patch-contract launch check's recorded refusal (engines/case_contract.py), as the one
     pre-flight record the executor reports - gate patch_contract, cause contract_mismatch, its
@@ -409,7 +428,7 @@ async def node_executor(state: PipelineState) -> dict:
                     _q = json.loads((Path(workspace) / "quality.json").read_text())
                 except Exception:  # noqa: BLE001 - a line not said, never a run failed
                     _q = None
-            _line = _N.quality_line(_q)
+            _line = _N.quality_line(_q, past_limits=_fea_past_limits(_q))
             if _line:
                 await _N.asay(_pub, _line, op_id=f"quality:{_manifest_stamp(workspace)}")
             _domain_check_failed = False
