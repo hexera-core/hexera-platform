@@ -279,11 +279,32 @@ joined to them."
 **The solid region's mesh** is the FEA path's own: the region is staged in metres and measured, planned and meshed by
 `fea_driver.measure_staged` / `choose_plan` and `gmsh/fea_adapter.mesh` (no AI pass and no ladder in this version).
 
-**Proof (in progress).** CalculiX, one thread, against a fine all-solid C3D10 model: the cantilever strip in a block
-against beam theory, and six generated families (a plate with a thick boss, an L bracket with a thick pad, a box
-with thick corners, a stiffened panel with a thick mount, a tube with a thick flange, a casting with ribs and a
-block) for static displacement, stress away from the junction and modes 7 to 12; the results are filled in here
-when the lab runs finish.
+**Proof (2 Nov, CI's accuracy lane, CalculiX on GitHub's runners).** Mixed against the FEA path's own all-solid
+C3D10 mesh of the same part (two quadratic elements through every wall), static displacement at the load and at a
+thin-wall point, von Mises on a wall away from every junction, free-free modes 7 to 12; tolerance 5% (stress 10%):
+
+| part | elements, mixed / all-solid | displacements | stress | modes 7-12 |
+|---|---|---|---|---|
+| cantilever strip in a block | 9,096 / 55,600 | tip -2.5% (beam theory -2.3%); in-plane -1.6%; stretch 0.0% | | +0.8 to +3.4% |
+| plate with a thick boss | 10,137 / 55,276 | -3.1%, -3.5% | | +2.6 to +3.7% |
+| L bracket with a thick pad | 18,643 / 67,691 | -1.7%, -4.4% | +0.6% | 0.0 to +2.5% |
+| stiffened panel with a thick mount | 25,987 / 167,056 | +0.2%, -0.3% | -2.3% | -2.2 to +0.1% |
+| casting with ribs and a block | 30,892 / 127,221 | -1.4%, -1.5% | -4.4% | -2.2 to 0.0%; mode 12 -5.4% (open) |
+| tube with a thick flange | 27,630 / 113,227 | end -0.4%; middle +5.5% (open) | -15.7% (open) | +0.0 to +3.5% |
+| box with thick corners | | the split refused it at the old 2% junction-metal limit; rerun at 5% | | |
+
+Six rigid-body modes at zero on every mixed model: no mechanism in the joins. Open: the flanged tube (the stress on its
+curved wall reads 7.16 MPa where beam theory and the solid give 8.55 and 8.50; the mid-tube displacement +5.5%), the
+casting's 12th mode, the box, a converged (finer than two elements through the wall) all-solid truth, and the
+training-set parts and repeat runs on a lab machine. Bugs the families found and fixed: mid-faces trimmed one by
+one lost their shared edges (an L bracket hinged at its corner); half-wall junction strips were dropped (a stiffened
+panel's stiffeners came loose); a node two link rows share was tied twice (CalculiX stops).
+
+**Repeatability.** A plate with a boss and the cantilever's block give byte-identical decks run to run. A
+flat-sided core does not yet: OCC's 3D offset (MIXED-2) hands back the same faces with their edges in a different
+order each run (by memory address, not threads), and the solid region's mesh differs by about 0.5%. Sweeping the
+core's inner faces instead (simple offsets and Booleans, which repeat) was tried and dropped: it swallowed a box's
+corner walls, emptied a flanged tube's shell and made the L bracket 7.5% soft.
 
 ## 3. Meshing (PR 2)
 
