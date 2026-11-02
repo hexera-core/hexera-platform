@@ -693,6 +693,26 @@ def free_wire_containing(shape, edge_index: int):
     return None
 
 
+def _top_level_child_containing(shape, sub_shape):
+    """Return the compound child that owns `sub_shape`, or `shape` when it is not an assembly."""
+    from OCP.TopAbs import TopAbs_COMPOUND, TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS_Iterator
+
+    if shape.ShapeType() != TopAbs_COMPOUND:
+        return shape
+    children = TopoDS_Iterator(shape)
+    while children.More():
+        child = children.Value()
+        edges = TopExp_Explorer(child, TopAbs_EDGE)
+        while edges.More():
+            if edges.Current().IsSame(sub_shape):
+                return child
+            edges.Next()
+        children.Next()
+    return None
+
+
 class SewFaces:
     """Join coincident face boundaries into a shell, for a body with NO SOLID TO LOSE.
 
@@ -859,6 +879,12 @@ class FillPlanarHole:
         if not targets:
             return OpOutcome(shape=shape, evidence={"declined": "no loop was named"})
 
+        target_edge = sub_shape(shape, "edge", targets[0].entity_index)
+        owner = (_top_level_child_containing(shape, target_edge)
+                 if target_edge is not None else None)
+        if owner is None:
+            return OpOutcome(shape=shape, evidence={"declined": "the named edge has no body"})
+
         wire = free_wire_containing(shape, targets[0].entity_index)
         if wire is None:
             return OpOutcome(shape=shape,
@@ -882,7 +908,7 @@ class FillPlanarHole:
 
         sewing = BRepBuilderAPI_Sewing(tolerance_mm)
         sewing.SetNonManifoldMode(False)
-        sewing.Add(shape)
+        sewing.Add(owner)
         sewing.Add(patch)
         sewing.Perform()
         sewn = sewing.SewedShape()
@@ -892,10 +918,16 @@ class FillPlanarHole:
         promoted = _as_solid_if_closed(sewn)
         quantum = quantum_for(diagonal)
         patch_fingerprint = fingerprint_of("face", box_of(patch), quantum=quantum)
-        mapping = mapping_from_sewing(sewing, targets, shape_before=shape,
-                                      diagonal_mm=diagonal)
+        if owner.IsSame(shape):
+            result = promoted
+            mapping = mapping_from_sewing(sewing, targets, shape_before=shape,
+                                          diagonal_mm=diagonal)
+        else:
+            result, context = splice(shape, [(owner, promoted)])
+            mapping = mapping_from_context(context, targets, shape_before=shape,
+                                           diagonal_mm=diagonal)
         return OpOutcome(
-            shape=promoted, mapping=mapping,
+            shape=result, mapping=mapping,
             added=(patch_fingerprint,) if patch_fingerprint else (),
             # DECLARED, so the cumulative cap compares against `original + this` instead of
             # allowing 75% of unexplained area. Volume is NOT declared: whether the shell closed
