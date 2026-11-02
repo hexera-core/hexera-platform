@@ -56,6 +56,19 @@ def body_count(facts: dict | None) -> int | None:
         return None
 
 
+def sewn_body_count(facts: dict | None) -> int | None:
+    """How many bodies a file of loose surfaces sews into (cad/fea_measure.sewn_bodies), when it has no
+    solids to count; None otherwise."""
+    from meshpipeline.cad.fea_measure import FACT_KEY
+
+    rec = (facts or {}).get(FACT_KEY)
+    try:
+        n = rec.get("bodies_sewn") if isinstance(rec, dict) else None
+        return int(n) if n is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def piece_count(facts: dict | None) -> int | None:
     """How many separate pieces the clean check found (cad/validity: its connected bodies) - more
     than the solids when one solid is made of pieces that pass into each other, as a turbine blade
@@ -301,6 +314,9 @@ def fea_view(facts: dict | None) -> dict:
     out = {"question": QUESTION, "bodies": body_count(facts), "pieces": piece_count(facts),
            "clean": clean, "clean_summary": said, "single_part_only": blocked, "blocked_kind": kind, "way_out": way_out,
            "can_proceed": not blocked, "warnings": found, "measure": measure_view(facts)}
+    sewn = sewn_body_count(facts)
+    if sewn is not None:
+        out["bodies_sewn"] = sewn
     # several closed solids: an assembly, with its one question (a surface that is no solid stops first)
     asm = None if blocked else assembly_view(facts)
     if asm is not None:
@@ -572,7 +588,8 @@ def measure_view(facts: dict | None) -> dict | None:
     return {"measured": True, "basis": rec.get("basis"), "thickness_min_mm": thick.get("min_mm"),
             "thickness_face": thick.get("face"), "thickness_at_mm": thick.get("at_mm"),
             "hot_spots": shown, "counts": counts, "more": max(0, sum(counts.values()) - len(shown)),
-            "summary": hot_spot_words(counts), "notes": list(rec.get("notes") or [])}
+            "summary": hot_spot_words(counts), "notes": list(rec.get("notes") or []),
+            "contacts": int(rec.get("contact_count") or 0)}
 
 
 def hot_spot_words(counts: dict[str, int]) -> str:
@@ -607,5 +624,5 @@ __all__ = ["TRY_ANYWAY", "has_solid", "warnings", "FOLD_BACK", "fold_back_messag
            "QUESTION", "SHOWN_HOT_SPOTS", "GAP_JOIN_QUESTION", "DEFAULT_GAP_JOINS", "gap_words",
            "PAIR_NOTE", "confirmed_pairs", "pair_rows", "pairs_answer", "pairs_summary",
            "gap_joins_answer", "confirmed_gap_joins", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL", "WAY_OUT_SOLID", "assembly_view",
-           "blocker", "body_count", "clean_words", "confirmed_connection", "connection_answer", "fea_view",
+           "blocker", "body_count", "sewn_body_count", "clean_words", "confirmed_connection", "connection_answer", "fea_view",
            "hot_spot_words", "in_unit", "measure_view", "not_solid_message", "parts_words", "stage_route"]

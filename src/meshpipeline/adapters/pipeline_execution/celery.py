@@ -85,8 +85,11 @@ def scout_geometry(**kwargs) -> dict:
     # toolchain the API image does not carry. It runs on the `geometry_checks` queue (celery_app.py
     # task_routes), which every worker drains from a slot of its own, so an upload is drawn while a
     # mesh job runs beside it rather than after it.
+    from meshpipeline.adapters.pipeline_execution.geometry_running import running
     from meshpipeline.application.geometry_check import run_geometry_check
-    return run_geometry_check(**kwargs)
+    # COUNTED WHILE IT RUNS (geometry_running): the fleet's demand sees checks in flight, not only queued
+    with running(_task_id(scout_geometry, f"geometry-check-{kwargs.get('session_id', '')}")):
+        return run_geometry_check(**kwargs)
 
 
 @celery_app.task(
@@ -100,8 +103,15 @@ def name_geometry(**kwargs) -> dict:
     # THE NAMING runs once the user has said what the part is: the pictures the scout stored and
     # the user's words go to the vision model together. Same queue as the scout - the user is
     # waiting on this one too.
+    from meshpipeline.adapters.pipeline_execution.geometry_running import running
     from meshpipeline.application.geometry_check import run_geometry_naming
-    return run_geometry_naming(**kwargs)
+    with running(_task_id(name_geometry, f"geometry-naming-{kwargs.get('session_id', '')}")):
+        return run_geometry_naming(**kwargs)
+
+
+def _task_id(task, fallback: str) -> str:
+    request = getattr(task, "request", None)
+    return str(getattr(request, "id", None) or fallback)
 
 
 async def launch(db, job_id: str, payload: dict) -> None:

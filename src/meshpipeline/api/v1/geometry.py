@@ -360,12 +360,30 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     # THE LIVE LINE the chat shows while the part is checked: the step running now, the steps
     # done with their times, a note when one runs long, and the way on when one fails - held to
     # this check's own limits (sized to its file)
+    # WHERE A WAITING CHECK STANDS (contracts/geometry_check.queue_state): "queued behind 2 other checks", or
+    # checking once a worker has it - asked only while a task of this check may still be waiting
+    queue = await asyncio.to_thread(_queue_of, str(session_id), reported, requested)
     payload["progress"] = progress_view(reported, requested, progress,
                                         scout_limit_s=limits_of(stored)[0],
                                         naming_limit_s=limits_of(requested, RETRY_NAMING)[0],
                                         confirmed=confirmed is not None,
-                                        fea=payload.get("route") == fea_check.STAGE_FEA)
+                                        fea=payload.get("route") == fea_check.STAGE_FEA,
+                                        queue=queue)
     return payload
+
+
+def _queue_of(session_id: str, reported: dict | None, requested: dict | None) -> dict:
+    """The queue's word on this session's scout and naming tasks (their ids are the session's: runtime/
+    composition), for the tasks that may still be waiting."""
+    from meshpipeline.contracts.geometry_check import queue_state
+
+    out: dict = {}
+    status = str((reported or {}).get("status") or "")
+    if status == "pending":
+        out["scout"] = queue_state(f"geometry-check-{session_id}")
+    if requested and not requested.get("withdrawn") and status in ("scouted", "pending"):
+        out["naming"] = queue_state(f"geometry-naming-{session_id}")
+    return {k: v for k, v in out.items() if v is not None}
 
 
 def unit_needed(session) -> bool:

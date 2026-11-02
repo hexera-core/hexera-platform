@@ -585,3 +585,28 @@ def _r(v) -> list[float]:
 
 def _r1(x: float) -> float:
     return float(f"{float(x):.6g}")
+
+
+# ------------------------------------------------------------------- beside the scout ----
+def canonical_task(uploaded, canonical) -> dict:
+    """What a child needs to judge `canonical` exactly as check_canonical would (cad/beside)."""
+    return {"uploaded": str(uploaded), "path": str(canonical.path), "kind": canonical.kind.value,
+            "source_format": canonical.source_format}
+
+
+def _child_verdict(task: dict) -> dict:
+    from types import SimpleNamespace
+
+    from meshpipeline.contracts.intake_formats import GeometryKind
+
+    canonical = SimpleNamespace(path=Path(task["path"]), kind=GeometryKind(task["kind"]),
+                                source_format=task["source_format"])
+    return dict(check_canonical(Path(task["uploaded"]), canonical).as_dict())
+
+
+if __name__ == "__main__":  # pragma: no cover - the child process (cad/beside)
+    import sys
+
+    from meshpipeline.cad.beside import child_main
+
+    raise SystemExit(child_main(sys.argv[1:], _child_verdict))

@@ -35,6 +35,9 @@ _VARS = {
     "REDIS_URL": "redis://10.108.144.235:6379/0", "QUEUE_NAME": "simulation_jobs",
     # every queue the publisher measures - the scaling queue and the geometry-check queue
     "QUEUE_NAMES": "simulation_jobs,geometry_checks",
+    "GEOMETRY_QUEUE_NAME": "geometry_checks",
+    "GEOMETRY_SLOTS_PER_INSTANCE": "2",
+    "JOBS_PER_INSTANCE": "1",
     # a personal environment's keyspace; the publisher counts running jobs' fences under it
     "REDIS_KEY_PREFIX": "dev-amp:",
     "WORKER_MIG_ZONE": "us-central1-a",
