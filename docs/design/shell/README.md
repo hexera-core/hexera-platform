@@ -299,6 +299,42 @@ half-waves a fraction of its width. In a mixed part every shell wall at least a 
 wide gets SHMESH-15's 20 elements across, however few walls wide it is: a 2 mm plate 18 walls wide round a boss
 was meshed 7 across and its modes 7-12 came out up to 6.8% stiff of a converged solid; as a panel, within 0.9%.
 
+**MIXED-8, walls too thick for shells stay solid (2 Nov, Areen's call).** The box and the casting were outside 5%
+however fine the shell or wherever the cut: shell theory itself, on walls too short for their thickness. So each
+shell wall is measured: its REACH is the farthest any point of it lies from its nearest support - a joint (an edge
+where another wall meets it at an angle; a sheet's bend running on into its flange is no joint), a free edge the
+body's metal goes on past (a thick region), or a stretch of the wall with metal past its faces (the wall running
+through a corner column). A wall is a shell only if it reaches at least 10 of its walls (`REACH_WALLS`); fewer, and
+it is kept solid with the thick regions (its mid-face marks it as a core), the rest still shell. If the walls left
+as shell hold under half the part's metal (MIXED-4's share), or none is left, the part is meshed solid, said so:
+"Walls too thick for shells: 5 of its 5 thin walls reach less than 10 times their thickness from the nearest joint or
+thick region (the shortest, 4 mm thick, reaches 19.8 mm: 4.9 times). ..."
+
+Why 10, and why the reach. 10 is the shell check's own 1/10 (SHELL-2: Mindlin shells hold to t / L of about 1/10;
+plate texts put the thin / thick plate line at a span of 8 to 10 thicknesses). SHELL-2 reads L as the square root of
+the whole sheet's area, which called the box's five walls one sheet 30 walls across. The reach is the length a wall
+really bends over, and where the idealisation's error sits: a shell wall bends from the middle of its joint, half
+the other wall's thickness from where the solid wall starts to bend, and the 3D stress round a joint reaches about a
+wall into it - both a fixed length, so a share of the reach that grows as the reach shortens. The accuracy table
+says the same: every part that read within 5% of a converged solid has all its walls at 11 walls or more (L
+bracket 11 and 25, plate with a boss 26, tube 40, strip 99; failure-map plates 23 to 51); the two outside have walls
+of 3.5 to 6.7 (box 4.9 to 6.7, back wall +23%; casting 3.5 to 6.7, mode 12 -6.8%). Not fitted to a part: the line is
+the shell check's own.
+
+What it costs. The stiffened panel's 3 mm walls reach 7.8 (plate, from its stiffeners) to 8.3 walls (the 25 mm
+stiffeners), so it is meshed solid too, though it read within 3% mixed - even pushed sideways at a stiffener's tip,
+where a short wall's bend is worst (+3.0%; its plate +0.5%). The rule is cautious there: it costs that panel the
+smaller mesh (33,179 elements against 167,056), never accuracy. Training part sh0025 (a tray: 3 mm side walls
+reaching 2 to 3 walls, a 4 mm one 9) had read within 3.2% on its free modes, which its floor carries; the rule keeps
+the floor as shell and the walls solid, but the core grown round those walls does not grow (OCC's offset), so it is
+meshed solid with both reasons said. sh0052 keeps one 5 mm flange solid (5.3 walls) and still mixes, modes within
+1.2% (0.8% before). A plate with a lip too thick for shells (`plate_lip_block` in the accuracy lane: 2 mm, the 12 mm
+lip kept solid with the block) reads within 0.3% on its statics.
+
+Code: `cad/mixed_split.wall_reach` (a fixed grid over each mid-face, exact distances to points along the supports:
+deterministic), `engines/mixed_run.too_thick` / `reach_of` / `kept_solid`. `recommend(record, reach)` reads MIXED-8
+when it is given the reach; the stage (#377) measures it with `reach_of` before offering Mixed.
+
 (The casting's wall / 3 truth ran past CalculiX's one-hour limit on one thread; its truth is wall / 2.5, 254,288
 elements, which the product's all-solid mesh matches within 0.6% on every mode and 0.1% on the statics.)
 

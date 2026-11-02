@@ -305,3 +305,113 @@ def test_a_mixed_part_s_walls_are_panels_however_few_walls_wide():
     mixed = sp.face_plan({**rec, "panel_walls": mr.MIXED_PANEL_WALLS}, "Mid_1", width=37.0, radii=[])
     assert plain["rule"] == "SHMESH-1" and plain["size_mm"] == pytest.approx(8.4)
     assert mixed["rule"] == "SHMESH-15" and mixed["size_mm"] == pytest.approx(37.0 / sp.PANEL_ACROSS)
+
+
+def _reach(shape):
+    """The extraction's record and each shell wall's MIXED-8 reach, mm (in process)."""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import mixed_split as mx
+
+    rec, surface = ms.extract(shape, mm_per_unit=1.0)
+    return rec, surface, mr.reach_of(rec, mx._solids(shape)[0], surface, 1.0)
+
+
+def _plate_lip_block():
+    """A 2 mm plate 150 x 100 with a thick block on it and a 2 mm lip 12 tall along one edge (an L joint)."""
+    from tests.fea_fixtures import _box, _fuse
+
+    return _fuse(_fuse(_box(0, 0, 0, 150, 100, 2), _box(65, 40, 2, 20, 20, 15)), _box(148, 0, 2, 2, 100, 12))
+
+
+@pytest.mark.parametrize("name,lo,hi", [("box_corners", 17.0, 31.0), ("l_bracket_pad", 30.0, 80.0),
+                                        ("tube_flange", 115.0, 121.0), ("stiff_panel_mount", 22.0, 28.0)])
+def test_a_wall_s_reach_is_the_length_it_bends_over_from_its_joints(name, lo, hi):
+    """MIXED-8: the farthest any point of a wall lies from its nearest joint or thick region. The box's side walls
+    reach half the 36 or 46 mm between its corner columns, its bottom half the 52 mm between its side walls; the L
+    bracket's leg runs 77 mm from the corner to its free end and its plate 33 mm between the corner and the pad; the
+    tube 120 mm from its flange (the seam holds nothing); the stiffened panel's stiffeners 25 mm from the plate."""
+    from tests.unit.engines import test_mixed_families as fam
+
+    rec, _s, reach = _reach(fam._family(name)[0])
+    shell = {m["id"]: m for m in rec["mids"] if m.get("shell")}
+    assert set(reach) == set(shell)
+    assert all(lo - 1e-9 <= r <= hi for r in reach.values()), reach
+    if name == "box_corners":
+        assert sorted(round(r) for r in reach.values()) == [20, 20, 25, 25, 27]
+    if name == "l_bracket_pad":
+        assert sorted(round(r) for r in reach.values()) == [33, 76]
+
+
+@pytest.mark.parametrize("name", ["box_corners", "casting_ribs_block", "stiff_panel_mount"])
+def test_parts_whose_walls_are_too_thick_for_shells_are_meshed_solid(name, tmp_path):
+    """MIXED-8: the box (4 mm walls reaching 5 to 6.7 walls: its back wall read +23% mixed), the casting (3 mm ribs
+    reaching 6.7 walls: a mode -6.8%) and the stiffened panel (3 mm, 7.8 to 8.3 walls) stop before any meshing, and
+    say why in plain words."""
+    from tests import fea_fixtures as fx
+    from tests.unit.engines import test_mixed_families as fam
+
+    step = fx.write_step(fam._family(name)[0], tmp_path / "part.step")
+    rec: dict = {}
+    with pytest.raises(mr._Stop) as stop:
+        mr.build(step, tmp_path / "mixed", mm_per_unit=1.0, rec=rec)
+    assert str(stop.value).startswith("Walls too thick for shells: ")
+    assert rec["recommended"] is False and rec["recommend_why"] == str(stop.value)
+    assert rec["too_thick"] and "split" not in rec
+    assert not (tmp_path / "mixed" / "shell_trimmed.brep").exists()
+
+
+def test_a_wall_too_thick_for_shells_is_kept_solid_and_the_rest_still_shell():
+    """MIXED-8: the 12 mm lip of a 2 mm plate reaches 6 walls from its corner (12 mm above the plate); it is kept solid with the block
+    (two solid regions), and the plate, reaching far past 10 walls, is still shell, cut two walls in from both."""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import mixed_split as mx
+
+    shape = _plate_lip_block()
+    rec, surface, reach = _reach(shape)
+    bad, share, stop = mr.too_thick(rec, reach)
+    assert len(bad) == 1 and stop == "" and share > mr.MIXED_AUTO_SHARE
+    lip = {m["id"]: m for m in rec["mids"]}[bad[0]]
+    assert reach[bad[0]] == pytest.approx(12.0, abs=1.0) and lip["thickness_mm"] == pytest.approx(2.0)
+    ok, why = mr.recommend(rec, reach)
+    assert ok and why.endswith(" 1 wall too thick for shells (under 10 times its thickness from a joint) kept solid "
+                               "with them.")
+    kept = [(f, float({m["id"]: m for m in rec["mids"]}[o]["thickness_mm"]), 0.0)
+            for f, o in zip(ms._faces(surface), rec["surface_faces"], strict=True)]
+    faces = ms._faces(shape)
+    thick = [faces[k] for k, r in enumerate(rec["faces"]) if r["role"] in ("thick", "solid")]
+    order, walls, marks = mr.kept_solid(rec, kept, thick, bad)
+    assert len(walls) == len(kept) - sum(o in bad for o in rec["surface_faces"]) and len(marks) > len(thick)
+    sp = mx.split_body(mx._solids(shape)[0], walls, marks, scale=1.0)
+    assert sp.ok, sp.why
+    assert sp.cores == 2
+    # the lip (2 x 12 x 100) and the block are in the solid; no shell face is left on the lip
+    assert sp.solid_volume > 20 * 20 * 15 + 2 * 12 * 100
+    assert all(rec["surface_faces"][order[k]] not in bad for k in sp.shell_from)
+    assert (sp.solid_volume + sp.shell_volume) / sp.body_volume == pytest.approx(1.0, abs=0.02)
+    # with nothing too thick, the split's input is as it was
+    assert mr.kept_solid(rec, kept, thick, []) == (list(range(len(kept))), kept, thick)
+
+
+def test_too_thick_words_and_shares():
+    """MIXED-8 on a record: one of two walls too thick, the other holding enough of the part, stays mixed; both too
+    thick, the part is solid with the shortest wall named."""
+    rec = {"bodies": [{"body": "Part_1", "verdict": "mixed", "volume_mm3": 1000.0, "mid_volume_ratio": 0.8,
+                       "solid_regions": [{"faces": ["Face_7"]}]}],
+           "sewn": [{"open_edges": 0}],
+           "mids": [{"id": "Mid_1", "thickness_mm": 2.0, "shell": True, "area_mm2": 350.0},
+                    {"id": "Mid_2", "thickness_mm": 2.0, "shell": True, "area_mm2": 50.0},
+                    {"id": "Mid_3", "thickness_mm": 9.0, "shell": False, "area_mm2": 10.0}]}
+    assert mr.recommend(rec, {"Mid_1": 60.0, "Mid_2": 30.0})[0]
+    bad, share, stop = mr.too_thick(rec, {"Mid_1": 60.0, "Mid_2": 12.0})
+    assert bad == ["Mid_2"] and share == pytest.approx(0.7) and stop == ""
+    assert mr.recommend(rec, {"Mid_1": 60.0, "Mid_2": 12.0}) == (True, (
+        "Thin walls meshed as shell (70% of the part, 2 mm thick); 1 thick region kept solid and joined to them. 1 wall "
+        "too thick for shells (under 10 times its thickness from a joint) kept solid with them."))
+    bad, share, stop = mr.too_thick(rec, {"Mid_1": 15.0, "Mid_2": 12.0})
+    assert bad == ["Mid_2", "Mid_1"] and share == 0.0
+    assert stop == ("Walls too thick for shells: 2 of its 2 thin walls reach less than 10 times their thickness from "
+                    "the nearest joint or thick region (the shortest, 2 mm thick, reaches 12 mm: 6.0 times). A shell "
+                    "that short bends too much at its joint, so the part is meshed as a solid.")
+    assert mr.recommend(rec, {"Mid_1": 15.0, "Mid_2": 12.0}) == (False, stop)
+    # without the reach, MIXED-8 is not read (the record alone says nothing of it)
+    assert mr.recommend(rec)[0]

@@ -3,7 +3,10 @@
 # with ribs running into a block): the mixed mesh against the FEA path's own all-solid mesh of the same part, for
 # a static load through the thick region (displacement at the load and at a thin-wall point, von Mises on a wall
 # away from every junction) and free-free modes 7 to 12, with the element counts. (The cantilever in a block and
-# the plate with a boss are in test_mixed_textbook.py.)
+# the plate with a boss are in test_mixed_textbook.py.) The box, the stiffened panel and the casting have walls too
+# thick for shells (MIXED-8: they reach 3.5 to 8.3 walls from their joints) and are meshed solid, which
+# test_mixed_mesh.py holds; they stay here as shapes, and a plate with a lip too thick for shells (kept solid, the
+# rest mixed) is solved in their place.
 # Boundaries: needs CalculiX and MIXED_ACCURACY_FAMILIES=1 (CI's "Mixed accuracy" job; about half an hour). mm, N, MPa.
 from __future__ import annotations
 
@@ -86,6 +89,15 @@ def _family(name: str):
         return shape, {"fix": _bb(-rf - 1, rf + 1, -rf - 1, rf + 1, -.01, .01), "load": end, "force": (600.0, 0.0, 0.0),
                            "probes": {"tube end": end, "tube middle": _bb(-ro - 1, -ro + t + 1, -5, 5, fl + 55, fl + 65)},
                            "stress": ([-ro, 0.0, fl + 50.0], [-1, 0, 0], t)}
+    if name == "plate_lip_block":
+        # MIXED-8: the 12 mm lip of the 2 mm plate is too thick for shells (6 walls from its corner): kept solid with
+        # the block, the plate shelled; clamped at x = 0, pushed through the block
+        shape = fuse(_box(0, 0, 0, 150, 100, 2), _box(65, 40, 2, 20, 20, 15), _box(148, 0, 2, 2, 100, 12))
+        top = _bb(64.9, 85.1, 39.9, 60.1, 16.99, 17.01)
+        return shape, {"fix": _bb(-.01, .01, -1, 101, -1, 3), "load": top, "force": (0.0, 100.0, -200.0),
+                           "probes": {"block top": top, "plate": _bb(105, 115, 45, 55, -1, 3),
+                                      "lip top": _bb(147.9, 150.1, 45, 55, 13.99, 14.01)},
+                           "stress": ([35.0, 50.0, 0.0], [0, 0, -1], 2.0)}
     if name == "casting_ribs_block":
         shape = fuse(_box(0, 0, 0, 120, 80, t), *[_box(0, y - t / 2, t, 90, t, 20) for y in (16, 40, 64)],
                      _box(90, 0, t, 30, 80, 20))
@@ -177,23 +189,12 @@ def _vm_at(frd: str, at, normal, wall: float) -> float:
     return float(np.sqrt(0.5 * ((sx - sy) ** 2 + (sy - sz) ** 2 + (sz - sx) ** 2) + 3 * (sxy ** 2 + syz ** 2 + szx ** 2)))
 
 
-#: KNOWN OPEN (2 Nov), kept in the table and run every time, not yet within the gate. The flanged tube is closed: its
-#: -15.7% stress and +5.5% middle were the READINGS (a fixed count of nodes along one line of a faceted wall reached
-#: into the flange's junction; four probe nodes sat 3 mm above the box's middle), not the mesh - read at the point,
-#: stress +2.8%, middle -0.7%, end -0.4%. Both modes below are as far from a converged all-solid mesh (wall / 3) as
-#: from the product's own, unchanged by a shell mesh twice as fine (-0.7%) or a cut 3 walls in (0.0%): the shell
-#: idealisation of a 4 mm box 10 walls tall and of 20 mm by 3 mm ribs, not the mesh or the join
-OPEN = {
-    "casting_ribs_block": "mode 12 -6.2% (modes 7 to 11 within 2.8%, statics within 3.3%)",
-    "box_corners": "back wall +23% and mode 11 -5.4% (the rest within 3.8%, column top -0.6%, stress +3.0%): its 4 mm "
-                   "walls are 10 walls tall, and a shell wall bends from the bottom's mid-plane, 2 mm below the solid "
-                   "wall's inner corner - (38 / 36)^3 = 1.18 times as flexible",
-}
-
-
-@pytest.mark.parametrize("name", [pytest.param(n, marks=pytest.mark.xfail(reason=OPEN[n], strict=False)) if n in OPEN
-                                  else n for n in ("l_bracket_pad", "box_corners", "stiff_panel_mount", "tube_flange",
-                                                   "casting_ribs_block")])
+#: Closed 2 Nov by MIXED-8, no longer mixed: the box (back wall +23%, mode 11 -5.4%: its 4 mm walls reach 5 to 6.7
+#: walls from their joints, and a shell wall bends from the bottom's mid-plane, 2 mm below the solid wall's inner
+#: corner) and the casting (mode 12 -6.2%: 3 mm ribs reaching 6.7 walls) - the shell idealisation, not the mesh or the
+#: join (a shell mesh twice as fine moved them 0.7%, a cut 3 walls in 0.0%). The stiffened panel (7.8 to 8.3 walls)
+#: goes solid with them. test_mixed_mesh.py holds all three to the all-solid route.
+@pytest.mark.parametrize("name", ["l_bracket_pad", "tube_flange", "plate_lip_block"])
 def test_a_mixed_family_matches_its_all_solid_mesh(name, tmp_path):
     shape, spec = _family(name)
     mixed = tb._mixed(shape, tmp_path)

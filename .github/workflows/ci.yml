@@ -272,7 +272,7 @@ jobs:
         run: |
           # one family per process (a runner has 8 GB), its rows and the memory printed as each ends
           rc=0
-          for n in l_bracket_pad box_corners stiff_panel_mount tube_flange casting_ribs_block; do
+          for n in l_bracket_pad tube_flange plate_lip_block; do
             python -m pytest -q -p no:cacheprovider -rs --tb=short tests/unit/engines/test_mixed_families.py -k "$n" || rc=1
             grep "mixed_$n" fea_accuracy.jsonl || true
             free -m | head -2

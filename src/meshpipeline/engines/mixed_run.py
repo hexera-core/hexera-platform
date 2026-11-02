@@ -24,6 +24,15 @@ MIXED-5, THE RUN: the split (MIXED-1..3) must hold; the shell mesh must be valid
 
 MIXED-6, THE WORDS: "Thin walls meshed as shell (78% of the part, 2 mm thick); 3 thick regions kept solid and
 joined to them."
+
+MIXED-8, WALLS TOO THICK FOR SHELLS: a shell wall is meshed as shell only where shell theory holds - its farthest
+point at least cad/mixed_split.REACH_WALLS (10) of its walls from its nearest joint or thick region (wall_reach). A
+shell wall bends from the middle of its joint, half the other wall's thickness from where the solid wall starts to
+bend, and the 3D stress round a joint reaches about a wall into it; over a short reach both are a large share of the
+length the wall bends over. A wall that reaches less is kept solid with the thick regions; when the walls left hold
+under MIXED_AUTO_SHARE of the part's metal, the part is meshed solid: "Walls too thick for shells: ...". Measured
+(2 Nov, against a converged solid): a 4 mm box reaching 5 to 6.7 walls read its back wall +23%, a casting's 3 mm
+ribs reaching 6.7 walls a mode -6.8%; the L bracket's plate, reaching 11 walls, +0.9%.
 """
 from __future__ import annotations
 
@@ -54,6 +63,16 @@ WHY_LOW = ("Only {share}% of this part is thin wall; the rest is thick, so a she
            "It is meshed as a solid.")
 WHY_OPEN = "Its mid-surfaces do not meet at {n} place{s}, so the shell would have gaps. It is meshed as a solid."
 WHY_BODIES = "It has {n} bodies; a shell-and-solid mesh is made for one body for now. It is meshed as a solid."
+#: MIXED-8 in words: too little shell is left once the walls too thick for shells are kept solid
+WHY_THICK = ("Walls too thick for shells: {n} of its {m} thin walls reach less than {k:g} times their thickness from "
+             "the nearest joint or thick region (the shortest, {t} thick, reaches {r}: {x:.1f} times). A shell that "
+             "short bends too much at its joint, so the part is meshed as a solid.")
+#: MIXED-8 in words, when enough shell is left: those walls are kept solid with the thick regions
+WHY_KEPT = " {n} wall{s} too thick for shells (under {k:g} times {its} thickness from a joint) kept solid with them."
+#: MIXED-8 in words, when the walls kept solid leave a split that cannot be made
+WHY_THICK_SPLIT = ("Walls too thick for shells: {n} of its {m} thin walls reach less than {k:g} times their thickness "
+                   "from the nearest joint or thick region, and with them kept solid the rest could not be cut apart "
+                   "({why}). It is meshed as a solid.")
 
 
 def _mm(v: float) -> str:
@@ -69,9 +88,33 @@ def thin_share(record: dict) -> float:
     return max(0.0, min(1.0, held / vol)) if vol > 0 else 0.0
 
 
-def recommend(record: dict) -> tuple[bool, str]:
-    """MIXED-4 / MIXED-6: (Auto recommends Mixed, the reason in plain words). False with "" when the part is not
-    mixed at all (the shell / solid rules speak for it)."""
+def too_thick(record: dict, reach: dict) -> tuple[list[str], float, str]:
+    """MIXED-8: (the shell walls too thick for shells, the share of the part's metal the other shell walls hold, the
+    stop in words - "" when enough shell is left). `reach`: each wall's reach in mm (reach_of). A wall is a shell
+    where shell theory holds: reaching at least REACH_WALLS of its walls from its nearest joint or thick region
+    (cad/mixed_split.wall_reach). Too thick, it is kept solid with the thick regions; when the walls left as shell
+    hold under MIXED_AUTO_SHARE of the part (or none is left), the part is meshed solid."""
+    from meshpipeline.cad import mixed_split as mx
+
+    shell = [m for m in record.get("mids") or [] if m.get("shell") and m["id"] in reach]
+    bad = sorted((m for m in shell if float(reach[m["id"]]) < mx.REACH_WALLS * float(m["thickness_mm"])),
+                 key=lambda m: (float(reach[m["id"]]) / float(m["thickness_mm"]), m["id"]))
+    metal = {m["id"]: float(m.get("area_mm2") or 0.0) * float(m["thickness_mm"]) for m in shell}
+    held = sum(metal.values())
+    left = held - sum(metal[m["id"]] for m in bad)
+    share = thin_share(record) * (left / held) if held > 0 else 0.0
+    if not bad or (share >= MIXED_AUTO_SHARE and left > 0):
+        return [m["id"] for m in bad], share, ""
+    w = bad[0]
+    t, r = float(w["thickness_mm"]), float(reach[w["id"]])
+    return [m["id"] for m in bad], share, WHY_THICK.format(n=len(bad), m=len(shell), k=mx.REACH_WALLS, t=_mm(t),
+                                                           r=_mm(r), x=r / t)
+
+
+def recommend(record: dict, reach: dict | None = None) -> tuple[bool, str]:
+    """MIXED-4 / MIXED-6 / MIXED-8: (Auto recommends Mixed, the reason in plain words). False with "" when the part is
+    not mixed at all (the shell / solid rules speak for it). `reach`: each shell wall's reach in mm (reach_of); MIXED-8
+    is read only when it is given."""
     bodies = record.get("bodies") or []
     verdicts = [str(b.get("verdict") or "solid") for b in bodies]
     if MIXED not in verdicts:
@@ -82,14 +125,53 @@ def recommend(record: dict) -> tuple[bool, str]:
     if opened:
         return False, WHY_OPEN.format(n=opened, s="" if opened == 1 else "s")
     share = thin_share(record)
+    bad: list[str] = []
+    if reach is not None:
+        # walls too thick for shells said first: the reason the user can see in the part
+        bad, kept_share, stop = too_thick(record, reach)
+        if stop:
+            return False, stop
+        share = kept_share if bad else share
     pct = max(0, min(100, int(round(100 * share))))
     if share < MIXED_AUTO_SHARE:
         return False, WHY_LOW.format(share=pct)
-    walls = sorted({float(m["thickness_mm"]) for m in record.get("mids") or [] if m.get("shell")})
+    walls = sorted({float(m["thickness_mm"]) for m in record.get("mids") or [] if m.get("shell") and m.get("id") not in bad})
     thin = (f"{_mm(walls[0])} thick" if len(walls) == 1 or walls[-1] - walls[0] <= 0.02 * walls[-1]
             else f"{_mm(walls[0])} to {_mm(walls[-1])} thick") if walls else "thin"
     n = len(bodies[0].get("solid_regions") or []) or 1
-    return True, WHY.format(share=pct, thin=thin, n=n, s="" if n == 1 else "s")
+    said = WHY.format(share=pct, thin=thin, n=n, s="" if n == 1 else "s")
+    if bad:
+        from meshpipeline.cad import mixed_split as mx
+
+        said += WHY_KEPT.format(n=len(bad), s="" if len(bad) == 1 else "s", k=mx.REACH_WALLS,
+                                its="its" if len(bad) == 1 else "their")
+    return True, said
+
+
+def kept_solid(record: dict, kept: list, thick: list, bad: list[str]) -> tuple[list[int], list, list]:
+    """MIXED-8: the split's input with the walls too thick for shells (`bad`, mid ids) kept solid: (the sewn faces
+    still shell, by index; those faces as cad/mixed_split takes them; the faces that mark thick regions - the thick
+    faces and the too-thick walls' own mid-faces, which lie in their metal). With none too thick, as it was."""
+    owners = record["surface_faces"]
+    order = [k for k, o in enumerate(owners) if o not in bad]
+    return order, [kept[k] for k in order], list(thick) + [kept[k][0] for k, o in enumerate(owners) if o in bad]
+
+
+def reach_of(record: dict, body, surface, mm_per_unit: float) -> dict:
+    """MIXED-8: each shell wall's reach in mm, {mid id: mm} (cad/mixed_split.wall_reach): `body` the part's one solid,
+    `surface` the extraction's sewn mid-surface (cad/midsurface SURFACE_FILE), both in the part's own units."""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import mixed_split as mx
+
+    mids = {m["id"]: m for m in record.get("mids") or []}
+    faces = ms._faces(surface)
+    owners = list(record.get("surface_faces") or [])
+    if not faces or len(faces) != len(owners):
+        return {}
+    walls = [float(mids[o]["thickness_mm"]) / mm_per_unit for o in owners]
+    offsets = [float(mids[o].get("offset_mm", 0.0)) / mm_per_unit for o in owners]
+    got = mx.wall_reach(faces, owners, walls, body, offsets)
+    return {o: float(r) * mm_per_unit for o, r in sorted(got.items())}
 
 
 def words(rec: dict) -> str:
@@ -101,6 +183,9 @@ def words(rec: dict) -> str:
             f"{int(c.get('solid_elements', 0)):,} quadratic tetrahedra in {rec.get('regions', 1)} thick "
             f"region{'s' if rec.get('regions', 1) != 1 else ''}, joined by {int(c.get('links', 0))} moment-carrying "
             "link(s). Files: Nastran .bdf, CalculiX and Abaqus .inp, Ansys .cdb.")
+    n = len(rec.get("too_thick") or [])
+    if n:
+        said += f" {n} wall{'' if n == 1 else 's'} too thick for shells {'is' if n == 1 else 'are'} in the solid part."
     return said
 
 
@@ -199,14 +284,27 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict):
     solids = mx._solids(shape)
     if len(solids) != 1:
         raise _Stop(f"the part reads as {len(solids)} solids, not one closed body")
-    split = mx.split_body(solids[0], kept, thick, scale=mm_per_unit)
+    # MIXED-8: the walls too thick for shells are kept solid, as thick regions (their mid-faces mark them); with
+    # too little shell left, the part is meshed solid
+    t1 = time.time()
+    reach = reach_of(record, solids[0], surf, mm_per_unit)
+    bad, _share, stop = too_thick(record, reach)
+    ok, why = recommend(record, reach)
+    rec.update(reach_s=round(time.time() - t1, 1), recommended=ok, recommend_why=why, too_thick=bad,
+               reach_mm={o: round(r, 4) for o, r in reach.items()})
+    if stop:
+        raise _Stop(stop)
+    order, shell_walls, marks = kept_solid(record, kept, thick, bad)
+    split = mx.split_body(solids[0], shell_walls, marks, scale=mm_per_unit)
     rec["split"] = {"cores": split.cores, "cut_mm": [round(d, 4) for d in split.cut_distance],
                     "solid_share": round(split.solid_volume / split.body_volume, 4) if split.body_volume else None,
                     "notes": split.notes}
     if not split.ok:
+        if bad:
+            raise _Stop(WHY_THICK_SPLIT.format(n=len(bad), m=len(reach), k=mx.REACH_WALLS, why=split.why))
         raise _Stop(split.why)
     rec2 = copy.deepcopy(record)
-    rec2["surface_faces"] = [record["surface_faces"][k] for k in split.shell_from]
+    rec2["surface_faces"] = [record["surface_faces"][order[k]] for k in split.shell_from]
     rec2["panel_walls"] = MIXED_PANEL_WALLS
     BRepTools.Write_s(ms._compound(split.shell_faces), str(out / "shell_trimmed.brep"))
     t1 = time.time()
@@ -261,7 +359,8 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if rec.get("made") else 1
 
 
-__all__ = ["FILES", "MIXED_AUTO_SHARE", "RECORD", "main", "read", "recommend", "run", "thin_share", "words"]
+__all__ = ["FILES", "MIXED_AUTO_SHARE", "RECORD", "main", "reach_of", "read", "recommend", "run", "thin_share", "too_thick",
+           "words"]
 
 if __name__ == "__main__":
     raise SystemExit(main())

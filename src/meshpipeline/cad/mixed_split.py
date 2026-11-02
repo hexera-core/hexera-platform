@@ -48,6 +48,16 @@ LEFT_OVER_MAX = 0.05
 CORE_MIN_WALLS = 0.5
 #: MIXED-3: the split must hold the body's metal within this band (the shell check's own)
 VOLUME_BAND = ms.VOLUME_BAND
+#: MIXED-8: a shell wall is a shell only where shell theory holds: its farthest point at least REACH_WALLS of its
+#: walls from the nearest junction or thick region (wall_reach). The 1/10 the shell check already holds a sheet to
+#: (cad/shell_pairs SHELL_RATIO), read on the length the wall bends over rather than on the square root of its whole
+#: sheet's area, which called a 4 mm box's five walls one sheet 30 walls across
+REACH_WALLS = 10.0
+#: MIXED-8: two faces meeting at an edge within TANGENT_DEG are one wall running on (a sheet's bend into its flange),
+#: not a junction: they share no metal, and a shell model makes no error there
+TANGENT_DEG = 10.0
+#: MIXED-8: points read over each face, per side (the face's size over its wall, within these)
+REACH_GRID = (8, 60)
 
 
 @dataclass
@@ -357,6 +367,170 @@ def _near(shape, p: np.ndarray, tol: float) -> bool:
     return ms._dist(ms._vertex(p), shape) <= tol
 
 
+def _normal_at(edge, face):
+    """The face's unit normal at the edge's middle, or None."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+
+    c = BRepAdaptor_Curve(edge)
+    try:
+        n = ms._face_normal_at(face, np.array(_pt(c.Value(0.5 * (c.FirstParameter() + c.LastParameter())))))
+    except Exception:  # noqa: BLE001 - no normal there: the edge is taken as a junction
+        return None
+    return None if n is None else np.asarray(n, float)
+
+
+def _edge_points(edge, step: float, cap: int = 4000) -> np.ndarray:
+    """Points along the edge, about `step` apart (both ends included, at most `cap`)."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+
+    c = BRepAdaptor_Curve(edge)
+    a, b = c.FirstParameter(), c.LastParameter()
+    n = int(min(cap, max(2, np.ceil(ms._length(edge) / max(step, 1e-12)) + 1)))
+    return np.array([_pt(c.Value(a + (b - a) * k / (n - 1))) for k in range(n)])
+
+
+def _face_points(face, wall: float) -> tuple[np.ndarray, np.ndarray]:
+    """Points of the face and its unit normals there, on a grid over its parameters (REACH_GRID per side, about a
+    wall apart), kept where they lie in the face; the face's inner point when none does."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.BRepTools import BRepTools
+    from OCP.BRepTopAdaptor import BRepTopAdaptor_FClass2d
+    from OCP.gp import gp_Pnt2d
+    from OCP.TopAbs import TopAbs_IN
+
+    lo, hi = ms._box(face)
+    n = int(min(REACH_GRID[1], max(REACH_GRID[0], np.ceil(float(np.linalg.norm(hi - lo)) / max(wall, 1e-12)))))
+    u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
+    s, cls = BRepAdaptor_Surface(face), BRepTopAdaptor_FClass2d(face, 1e-9)
+    pts: list = []
+    nrm: list = []
+    for i in range(n):
+        u = u0 + (u1 - u0) * (i + 0.5) / n
+        for j in range(n):
+            v = v0 + (v1 - v0) * (j + 0.5) / n
+            if cls.Perform(gp_Pnt2d(u, v)) != TopAbs_IN:
+                continue
+            pr = BRepLProp_SLProps(s, u, v, 1, 1e-9)
+            pts.append(_pt(s.Value(u, v)))
+            nv = pr.Normal() if pr.IsNormalDefined() else None
+            nrm.append((nv.X(), nv.Y(), nv.Z()) if nv is not None else (0.0, 0.0, 0.0))
+    if not pts:
+        p = ms._inner_point(face)
+        if p is not None:
+            pts.append(tuple(float(x) for x in p))
+            nn = ms._face_normal_at(face, np.asarray(p, float))
+            nrm.append(tuple(float(x) for x in nn) if nn is not None else (0.0, 0.0, 0.0))
+    return np.array(pts, dtype=float).reshape(-1, 3), np.array(nrm, dtype=float).reshape(-1, 3)
+
+
+def _metal_past(edge, face, inside, wall: float) -> bool:
+    """Does the body's metal go on past the free edge, in the face's own surface (cad/midsurface OPEN_STEP of the
+    wall out, at the edge's quarter points)?"""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    c = BRepAdaptor_Curve(edge)
+    a, b = c.FirstParameter(), c.LastParameter()
+    for frac in (0.25, 0.5, 0.75):
+        q, v = gp_Pnt(), gp_Vec()
+        c.D1(a + (b - a) * frac, q, v)
+        p = np.array([q.X(), q.Y(), q.Z()])
+        tan = np.array([v.X(), v.Y(), v.Z()])
+        n = ms._face_normal_at(face, p)
+        if n is None or not np.linalg.norm(tan):
+            continue
+        d = np.cross(np.asarray(n, float), tan)
+        if not np.linalg.norm(d):
+            continue
+        d = d / np.linalg.norm(d)
+        # the side away from the face: the one whose point a hair off lies farther from it
+        step = 0.01 * wall
+        if ms._dist(ms._vertex(p + step * d), face) < ms._dist(ms._vertex(p - step * d), face):
+            d = -d
+        if inside.strictly_inside(p + ms.OPEN_STEP * wall * d):
+            return True
+    return False
+
+
+def wall_reach(faces: list, owners: list, walls: list[float], body, offsets: list[float] | None = None) -> dict:
+    """MIXED-8: how far each shell wall reaches from what holds it, in the faces' units: {owner: reach}. `faces`: the
+    sewn mid-faces; `owners[k]`, `walls[k]`, `offsets[k]`: face k's wall (the record's mid id), its thickness and
+    the face's distance from the wall's true middle (SHELL-7); `body`: the solid.
+
+    A wall's REACH is the farthest any point of it lies from its nearest SUPPORT, where the wall is held:
+    - a junction: an edge where another wall meets it at an angle (three faces or more, or two not tangent within
+      TANGENT_DEG). A sheet's bend running on into its flange is no junction;
+    - a free edge the body's metal goes on past (the extraction's own test of a solid link, cad/midsurface
+      OPEN_STEP of the wall past it: a thick region, or a thicker wall the edge runs into). A rim, with the outside
+      past it, holds nothing;
+    - a point of the wall with metal past either of its faces (OPEN_STEP of the wall past the face): the wall runs
+      through a thick region there (a box's wall through its corner column) or another wall's junction.
+    A wall nothing holds reaches without end (inf). Deterministic: a fixed grid over each face, exact distances to
+    points along the supports (half the thinnest wall apart)."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
+    from scipy.spatial import cKDTree
+
+    if not faces:
+        return {}
+    offsets = list(offsets) if offsets is not None else [0.0] * len(faces)
+    fmap = TopTools_IndexedMapOfShape()
+    for f in faces:
+        fmap.Add(f)
+    e2f = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(ms._compound(faces), TopAbs_EDGE, TopAbs_FACE, e2f)
+    t_min = min(walls)
+    inside = ms._Solid(body, 1e-6 * t_min, t_min) if body is not None else None
+    cos_t = float(np.cos(np.radians(TANGENT_DEG)))
+    support = []
+    for i in range(1, e2f.Extent() + 1):
+        edge = TopoDS.Edge_s(e2f.FindKey(i))
+        if BRep_Tool.Degenerated_s(edge):
+            continue
+        idx: list[int] = []
+        for f in e2f.FindFromIndex(i):
+            k = fmap.FindIndex(f) - 1
+            if k >= 0 and k not in idx:
+                idx.append(k)
+        if not idx:
+            continue
+        wall = max(walls[k] for k in idx)
+        if len(idx) >= 3:
+            held = True
+        elif len(idx) == 2:
+            na, nb = (_normal_at(edge, TopoDS.Face_s(faces[k])) for k in idx)
+            held = na is None or nb is None or abs(float(na @ nb)) < cos_t
+        else:
+            # a seam (a tube's, the same face on both sides) holds nothing; a free edge holds where the body's
+            # metal goes on past it (read at its quarter points)
+            face = TopoDS.Face_s(faces[idx[0]])
+            held = inside is not None and not BRep_Tool.IsClosed_s(edge, face) and _metal_past(edge, face, inside, wall)
+        if held:
+            support.append(_edge_points(edge, 0.5 * t_min))
+    free = []
+    for k, f in enumerate(faces):
+        pts, nrm = _face_points(f, walls[k])
+        if inside is not None and len(pts):
+            past = (0.5 + ms.OPEN_STEP) * walls[k] + abs(offsets[k])
+            on = np.array([bool(np.any(n)) and (inside.strictly_inside(p + past * n)
+                                                or inside.strictly_inside(p - past * n))
+                           for p, n in zip(pts, nrm, strict=True)], dtype=bool)
+            if on.any():
+                support.append(pts[on])
+            pts = pts[~on]
+        free.append(pts)
+    tree = cKDTree(np.vstack(support)) if support else None
+    out: dict = {}
+    for k, pts in enumerate(free):
+        r = 0.0 if not len(pts) else float("inf") if tree is None else float(tree.query(pts)[0].max())
+        out[owners[k]] = max(out.get(owners[k], 0.0), r)
+    return out
+
+
 def split_body(body, kept: list[tuple[object, float, float]], thick_faces: list, *, scale: float) -> Split:
     """MIXED-1..3 on one solid `body` (its own units; `scale` mm per unit). `kept`: the body's sewn shell mid-faces,
     each (face, wall, offset: the face's distance from its wall's true middle, SHELL-7), units of the body.
@@ -448,4 +622,4 @@ def _split(body, kept, thick_faces, scale: float, out: Split) -> None:
     out.ok = True
 
 
-__all__ = ["CUT_WALLS", "Split", "grown", "slab", "split_body"]
+__all__ = ["CUT_WALLS", "REACH_WALLS", "Split", "grown", "slab", "split_body", "wall_reach"]
