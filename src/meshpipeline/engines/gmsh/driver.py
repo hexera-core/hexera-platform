@@ -622,9 +622,36 @@ def _load_fluid_boundary_as_is(gmsh, path: Path) -> None:
     gmsh.model.mesh.removeDuplicateNodes()
     gmsh.model.mesh.createTopology()
     surfaces = [t for _, t in gmsh.model.getEntities(2)]
-    loop = gmsh.model.geo.addSurfaceLoop(surfaces)
-    gmsh.model.geo.addVolume([loop])
+    # one volume per closed shell: the skin may hold several separate passages (surface_wrap keeps
+    # each that has a way through), and one loop round two shells is not a volume
+    for shell in _shells(gmsh, surfaces):
+        loop = gmsh.model.geo.addSurfaceLoop(shell)
+        gmsh.model.geo.addVolume([loop])
     gmsh.model.geo.synchronize()
+
+
+def _shells(gmsh, surfaces: list[int]) -> list[list[int]]:
+    """The surfaces grouped into connected shells (surfaces sharing a curve are one shell)."""
+    parent = {s: s for s in surfaces}
+
+    def find(s):
+        while parent[s] != s:
+            parent[s] = parent[parent[s]]
+            s = parent[s]
+        return s
+
+    by_curve: dict[int, int] = {}
+    for s in surfaces:
+        for _dim, c in gmsh.model.getBoundary([(2, s)], oriented=False):
+            c = abs(int(c))
+            if c in by_curve:
+                parent[find(s)] = find(by_curve[c])
+            else:
+                by_curve[c] = s
+    groups: dict[int, list[int]] = {}
+    for s in surfaces:
+        groups.setdefault(find(s), []).append(s)
+    return list(groups.values())
 
 
 def _classify_as_is(gmsh, stl_path: str) -> list[int]:

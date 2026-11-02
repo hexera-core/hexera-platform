@@ -138,7 +138,9 @@ def rung_steps(state: Mapping) -> list[str]:
     for name in [*able, *WRAP_ENGINES]:
         if name in WRAP_ENGINES and name not in out and (name in able or name == approved):
             out.append(name)
-    if DEGRADED_ENGINE in able and DEGRADED_ENGINE not in out:
+    # the degraded step meshes every closed shell of the skin (one volume each), so the passage
+    # count that holds the engines above to one job does not hold it back
+    if DEGRADED_ENGINE in lad._admitting(state) and DEGRADED_ENGINE not in out:
         out.append(DEGRADED_ENGINE)
     return out
 
