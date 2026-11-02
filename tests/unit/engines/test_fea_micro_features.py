@@ -264,3 +264,15 @@ def test_the_surface_workers_never_hang_after_gmsh_used_its_threads():
     done = subprocess.run([sys.executable, "-c", _AFTER_OPENMP], capture_output=True, text=True, timeout=300)
     assert done.returncode == 0, done.stderr[-2000:]
     assert "DONE" in done.stdout
+
+
+def test_crossing_faces_are_read_from_the_geometry_check_or_the_repair_inspection():
+    assert FD.crossing_located({"suspects": [{"kind": "self_overlap", "confirmed": False, "faces": ["Face_1"]}]}, {}) is None
+    got = FD.crossing_located({"suspects": [{"kind": "self_overlap", "confirmed": True, "faces": ["Face_71", "Face_74"]},
+                                            {"kind": "fold", "confirmed": True, "faces": ["Face_9"]}]}, {})
+    assert got["faces"] == ["Face_71", "Face_74"] and got["by"] == "the geometry check"
+    state = {"repair_report": {"report": {"defects": [{"code": "self_intersection", "count": 3},
+                                                      {"code": "small_edge", "count": 9}]}}}
+    got = FD.crossing_located({}, state)
+    assert got["repair_self_intersections"] == 3 and got["by"] == "the repair inspection"
+    assert "LAD-fea-16" in FD.crossing_words(got, 1)

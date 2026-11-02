@@ -303,6 +303,29 @@ def defect_at_failure(record: dict, passes: list[dict]) -> dict | None:
     return {"faces": hit, "suspects": sus, "confirmed": any(s.get("confirmed") for s in sus)}
 
 
+def crossing_located(record: dict, state: dict | None) -> dict | None:
+    """LAD-fea-16: faces of the CAD already located as crossing each other, before meshing - the geometry
+    check's self-overlap confirmed by its two independent measures (cad/suspect_defects), or the repair
+    inspection's self-intersection (pipeline/repair_inspect, cad/repair). None when neither found one."""
+    faces = sorted({str(f) for s in record.get("suspects") or []
+                    if s.get("kind") == "self_overlap" and s.get("confirmed") for f in s.get("faces") or []})
+    report = (((state or {}).get("repair_report") or {}).get("report") or {})
+    crossing = sum(int(d.get("count") or 1) for d in report.get("defects") or []
+                   if str(d.get("code")) == "self_intersection")
+    if not faces and not crossing:
+        return None
+    return {"faces": faces, "repair_self_intersections": crossing,
+            "by": " and ".join(w for w, on in (("the geometry check", bool(faces)),
+                                              ("the repair inspection", bool(crossing))) if on)}
+
+
+def crossing_words(found: dict, n: int) -> str:
+    where = f" ({', '.join(found['faces'][:6])}{', ...' if len(found['faces']) > 6 else ''})" if found["faces"] else ""
+    return (f"Pass {n}'s fill failed, and {found['by']} had already found faces of the CAD crossing each other{where}. "
+            "Another gmsh algorithm cannot mend a crossing in the CAD, so the part goes straight to fTetWild, which "
+            "meshes through it (LAD-fea-16, LAD-fea-9).")
+
+
 def suspect_note(record: dict) -> str:
     """The note a delivered mesh carries when a check flagged a spot (MESH-1)."""
     from meshpipeline.cad import suspect_defects as SD
@@ -1626,6 +1649,15 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 _cite(job_id, [{"stage": "fea_ladder", "decided": "tie now", "value": "fused fill failed",
                                 "rule": "PLAN-fea-17", "inputs": {"pass": n},
                                 "words": "The fused parts could not be filled as one, so the parts are tied now."}])
+                break
+            found = crossing_located(record, state) if not passes[-1].get("built") else None
+            if found and not passes[-1].get("out_of_memory") and L.lever_options(passes[-1], levers, plan):
+                # LAD-fea-16: A FILL THAT FAILED ON A PART WHOSE CAD FACES CROSS - located before meshing - is not
+                # sent round gmsh's algorithm swaps (job bc3d4271, 1 Nov: 29 minutes, then every face on MeshAdapt);
+                # the ladder ends here and the last rung meshes it (LAD-fea-9; a bonded assembly is tied first)
+                _cite(job_id, [{"stage": "fea_ladder", "decided": "crossing faces", "value": "last rung",
+                                "rule": "LAD-fea-16", "inputs": {"pass": n, **found},
+                                "words": crossing_words(found, n)}])
                 break
             # AI-fea-8: the AI may pick among the levers this failure allows; the ladder's own first else
             lever, picked = await FA.choose_lever(L.lever_options(passes[-1], levers, plan), passes[-1], ai=ai,

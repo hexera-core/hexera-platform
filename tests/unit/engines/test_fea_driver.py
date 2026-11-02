@@ -251,6 +251,30 @@ def test_a_pass_past_its_budget_goes_on_down_the_ladder(tmp_path, monkeypatch):
     assert not any(e["rule"] == "RUN-5" for e in cited)
 
 
+def test_a_failed_fill_on_crossing_cad_faces_goes_straight_to_the_last_rung(tmp_path, monkeypatch):
+    """LAD-fea-16: the fill failed, and the CAD's faces were already located as crossing each other - no
+    gmsh algorithm swap (LAD-fea-2, LAD-fea-6) is spent on it: one gmsh pass, then the last rung."""
+    from meshpipeline.engines import runtime
+
+    ws = _stage(fx.plate_with_hole(), tmp_path / "crossing")
+    calls: list[int] = []
+
+    def _run(w, timeout):
+        calls.append(timeout)
+        return {"rc": 1}                                   # no mesh came back from the fill
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=_run))
+    monkeypatch.setattr(FD, "crossing_located", lambda _r, _s: {"faces": ["Face_3", "Face_5"],
+                                                                "repair_self_intersections": 0,
+                                                                "by": "the geometry check"})
+    asyncio.run(FD.drive(ws, {}, job_id="t-crossing", publish=None, run=_Run()))
+    cited = dr.cited_for("t-crossing")
+    crossing = [e for e in cited if e["rule"] == "LAD-fea-16"]
+    assert crossing and "Face_3" in crossing[0]["words"] and "fTetWild" in crossing[0]["words"]
+    assert not any(e["decided"] == "lever" and e["rule"] in ("LAD-fea-1", "LAD-fea-2", "LAD-fea-6") for e in cited)
+    assert any(e["rule"] == "LAD-fea-9" for e in cited)    # the last rung was tried next
+    assert len([c for c in calls if c]) >= 1
+
+
 def test_a_plan_planned_past_the_cloud_run_wall_starts_on_a_vm(tmp_path, monkeypatch):
     """RUN-5 before meshing: a plan whose planned time passes the Cloud Run job's wall never wastes a
     first run there - it starts on a VM with the VM's ceiling."""
