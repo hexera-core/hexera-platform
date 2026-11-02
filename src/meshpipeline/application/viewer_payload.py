@@ -167,6 +167,7 @@ def build_viewer_payload(workspace: Path) -> dict[str, Any]:
         payload["wrap"] = {k: wrap.get(k) for k in (
             "words", "distance_m", "cube_m", "max_m", "p95_m", "max_on_cad_m", "p95_on_cad_m",
             "bridged_spots", "spots", "bridged_area_m2", "skin_area_m2", "cad_to_skin_max_m",
-            "cad_to_skin_p95_m", "smoothed_faces", "dry_faces", "patches", "route", "rule")
+            "cad_to_skin_p95_m", "smoothed_faces", "dry_faces", "patches", "route", "rule",
+            "openings_moved")
             if wrap.get(k) is not None}
     return payload

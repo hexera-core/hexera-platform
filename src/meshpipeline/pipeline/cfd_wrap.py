@@ -328,7 +328,7 @@ def caveat_of(wrap: Mapping | None, *, executor_success: bool, failed_gate: str)
         return None
     keep = ("distance_m", "cube_m", "max_m", "p95_m", "max_on_cad_m", "p95_on_cad_m",
             "bridged_spots", "spots", "cad_to_skin_max_m", "smoothed_faces", "dry_faces",
-            "patches", "words")
+            "patches", "words", "openings_moved")
     return {"kind": WRAPPED_SURFACE, "rule": RULE_REPORT, "engine": wrap.get("engine"),
             "after": list(wrap.get("after") or []),
             "done": [dict(d) for d in (wrap.get("done") or []) if isinstance(d, Mapping)],
@@ -370,6 +370,11 @@ def caveat_lines(c: Mapping) -> list[str]:
     if more > 0:
         lines.append(f"    ...and {more} more bridged spot{'s' if more != 1 else ''}, listed in the "
                      "mesh report.")
+    for m in c.get("openings_moved") or []:
+        if isinstance(m, Mapping) and m.get("opening"):
+            lines.append(f"    {m['opening']}: its vessel narrows below what the wrap can draw, so the "
+                         f"opening is placed where the vessel still is, {_mm(m.get('moved_m'))} from "
+                         "where it is drawn.")
     for d in c.get("done") or []:
         if isinstance(d, Mapping) and d.get("engine"):
             lines.append(f"    {lad.engine_label(str(d['engine']))} could not mesh the wrapped surface"
