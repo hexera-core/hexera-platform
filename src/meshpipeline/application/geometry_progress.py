@@ -53,18 +53,12 @@ _FEA_DOING = {OPENINGS: "reading the surface", NAMING: "measuring the walls and 
 
 #: What the line says while the part is shown but still being measured, and once its full
 #: reading did not finish and the quick drawing stands.
-PREVIEW_NOTE = ("Your part is shown beside this chat - you can check it now; its openings and the clean "
-                "check follow, and Proceed opens once they are ready.")
-PREVIEW_NOTE_FEA = ("Your part is shown beside this chat - you can check its size and unit now; the clean "
-                    "check follows, and Proceed opens once it is ready.")
+PREVIEW_NOTE = ("Your part is shown beside this chat - you can check it and press Proceed now; "
+                "its openings and the clean check follow when they are ready.")
+PREVIEW_NOTE_FEA = ("Your part is shown beside this chat - you can check its size and unit and press "
+                    "Proceed now; the clean check follows when it is ready.")
 KEPT_NOTE = ("The full check did not finish, so the part is shown from a quick drawing - check its size "
              "and unit and press Proceed.")
-
-#: PROCEED WAITS FOR THE CHECK (Areen, 27 Oct): what the disabled Proceed says beside it, and what
-#: the confirm route answers a confirm that comes while the check is still at work.
-WAIT_FOR_CHECK = "Waiting for the check to finish"
-STILL_CHECKING = ("The geometry check is still running. Wait for it to finish, then press Proceed - "
-                  "if it fails or takes too long, you can go on from there.")
 
 #: After this long with no worker on the scout, the line says it is waiting to start; after the
 #: second, why. Production always has a worker on the queue; a dev stack may not.
@@ -522,26 +516,6 @@ def progress_view(stored: dict | None, requested: dict | None, progress: dict | 
     return view
 
 
-def still_checking(view: dict | None, reported: dict | None = None, progress: dict | None = None,
-                   now: float | None = None) -> bool:
-    """WHETHER PROCEED MUST STILL WAIT: the check is at work - queued, a step running (the scout, a
-    preview still being measured, the naming: an FEA part's walls, hot spots and joints) - or a
-    naming landed on a preview whose full reading is still beating. `view` is progress_view's line
-    for the check as `reported` (through its time box); `progress` the worker's record. False once
-    it is done, failed, unsupported, waiting on the user's answer, or confirmed: a check that fails
-    or runs out of time is reported failed by the time box, so the wait always ends with a way on."""
-    if not view:
-        return False
-    if view.get("state") in ("queued", "running"):
-        return True
-    rep = reported or {}
-    if rep.get("status") == "ready" and rep.get("named_on_preview") and rep.get("confirmed") is None:
-        scout = (progress or {}).get("scout")
-        return beating(scout if isinstance(scout, dict) else None,
-                       time.time() if now is None else now) is True
-    return False
-
-
 def _this_attempt(scout: dict, written_at: float) -> bool:
     """Whether the worker's record belongs to the pending scout as stored: it names the marker it
     started from, or - when it could not read one - began after the marker was written."""
@@ -626,5 +600,4 @@ def _failed(view: dict, stored: dict, key: str, step: dict, suffix: str, fea: bo
 
 __all__ = ["BEAT_EVERY_S", "BEAT_STALE_S", "MEASURING", "NAMING", "OPENINGS", "PICTURES", "QUEUED", "READING", "SCOUT_STEPS", "Tracker",
            "beating", "duration_words", "is_fea", "mark", "note_work", "progress_key", "progress_view", "read_progress",
-           "skin_triangles", "soft_limit_s", "still_checking", "track", "untrack", "STILL_CHECKING",
-           "WAIT_FOR_CHECK"]
+           "skin_triangles", "soft_limit_s", "track", "untrack"]
