@@ -18,6 +18,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -34,13 +35,14 @@ def read_solids(path: Path) -> dict[str, np.ndarray]:
     """Every named solid of an ASCII STL as an (n, 3, 3) array; a name written as several solids
     (a wall in two pieces) is one entry."""
     solids: dict[str, list] = {}
-    name, cur = "wall", []
+    name = "wall"
+    cur: list[list[float]] = []
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
             s = line.strip()
             if s.startswith("endsolid"):
                 if cur:
-                    solids.setdefault(name, []).append(np.asarray(cur, float).reshape(-1, 3, 3))
+                    solids.setdefault(name, []).append(np.asarray(cur, dtype=np.float64).reshape(-1, 3, 3))
                 cur = []
             elif s.startswith("solid"):
                 name, cur = (s[5:].strip() or "wall"), []
@@ -296,7 +298,7 @@ def export_gmsh(mesh, path: Path) -> dict:
             "points": int(len(pts)), "reoriented": int(flipped)}
 
 
-def build(ws: Path, spec: dict, rung: dict) -> tuple[object, dict]:
+def build(ws: Path, spec: dict, rung: dict) -> tuple[Any, dict]:
     import netgen.meshing as ngm
     from netgen.meshing import MeshingParameters, MeshingStep
     from netgen.stl import STLGeometry

@@ -99,7 +99,7 @@ def retype_walls(polymesh: Path, walls: list[str]) -> list[str]:
     (the boundary_types gate holds them to it). Returns the patches changed."""
     b = polymesh / "boundary"
     text = b.read_text()
-    changed = []
+    changed: list[str] = []
     for w in walls:
         pat = re.compile(r"(^\s*" + re.escape(w) + r"\s*\n\s*\{[^}]*?)\btype\s+\w+\s*;", re.M)
         new, n = pat.subn(r"\1type            wall;", text)
