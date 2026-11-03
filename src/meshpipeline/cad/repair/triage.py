@@ -331,6 +331,28 @@ def recommend(*, repair_status: str = "", report: Mapping | None = None,
     judgement = [e for e in entities if e.get("code") in _NEEDS_JUDGEMENT]
     judgement_codes = {c for c in codes if c in _NEEDS_JUDGEMENT}
     if judgement_codes and not review:
+        intersections = [e for e in entities
+                         if e.get("code") == DefectCode.self_intersection.value]
+        located_invalidity = any(e.get("code") == DefectCode.invalid_brep.value
+                                 for e in entities)
+        wire_invalidity = (
+            judgement_codes <= {DefectCode.self_intersection.value,
+                                DefectCode.small_face.value}
+            and bool(intersections)
+            and all(e.get("kernel_status") in ("SelfIntersectingWire", "IntersectingWires")
+                    for e in intersections)
+            and located_invalidity
+            and (DefectCode.small_face.value not in judgement_codes
+                 or rcfg.CAD_REPAIR_FIX_SMALL_FACES)
+        )
+        if wire_invalidity:
+            return Recommendation(
+                route=ROUTE_CONSERVATIVE_REPAIR, confidence=0.7,
+                reasons=("the invalid topology and wire intersection are located, so the bounded "
+                         "global repair can be measured before any sliver cleanup",),
+                evidence=evidence, profile=RepairProfile.conservative.value,
+                targets=_targets(entities))
+
         # A SLIVER-ONLY FILE IS NO LONGER A PERSON'S BY DEFAULT. `small_face` sat with the
         # judgement codes because "a very small face is usually intentional - a chamfer, a logo".
         # On a labelled defect corpus that reasoning sent every Boolean sliver to manual cleanup

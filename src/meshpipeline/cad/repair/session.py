@@ -46,6 +46,15 @@ HEAL_OP = "heal_self_intersections"
 _HELD_AGAINST = (DefectSeverity.warning, DefectSeverity.error, DefectSeverity.fatal)
 
 
+def _geometric_defect_key(defect) -> tuple | None:
+    """Name a finding by its measured geometry when a kernel rebuild renames its entity."""
+    location = defect.location or {}
+    low, high = location.get("bbox_min"), location.get("bbox_max")
+    if not low or not high:
+        return None
+    return (defect.code, defect.severity, defect.entity_type, tuple(low), tuple(high))
+
+
 @dataclass(frozen=True, slots=True)
 class OpVerdict:
     """What happened when one operation was tried, kept or not."""
@@ -298,7 +307,8 @@ class RepairSession:
             previous = tuple(d for d in previous if not analyzer_only(d))
 
         basis = self._basis(outcome, targets)
-        reason = self._progress_refusal(outcome, targets, defect_code, previous, found)
+        reason = self._progress_refusal(
+            outcome, targets, defect_code, previous, found, op_name=op.name)
         if reason:
             self.shape, self._defects, self.complete_scan = snapshot
             return self._record(OpVerdict(
@@ -334,7 +344,8 @@ class RepairSession:
         names = {ref.fingerprint for ref in targets}
         return any(d.fingerprint in names and d.code.value == wanted for d in self.defects())
 
-    def _progress_refusal(self, outcome, targets, defect_code, previous, found) -> str:
+    def _progress_refusal(self, outcome, targets, defect_code, previous, found, *,
+                           op_name: str) -> str:
         """"" if this operation made progress, otherwise why it did not.
 
         PROGRESS IS ABOUT THE DEFECT, NOT THE ENTITY. A hole patch leaves the rim edges exactly
@@ -354,11 +365,30 @@ class RepairSession:
                 return "target_remains"
 
         before_names = {(d.fingerprint, d.code.value) for d in previous}
+        before_geometry = {key for d in previous if (key := _geometric_defect_key(d)) is not None}
         added = set(outcome.added)
+        errors = (DefectSeverity.error, DefectSeverity.fatal)
+        fewer_non_error_findings = (not any(d.severity in errors for d in found)
+                                    and len(found) < len(previous))
+        improved_to_warnings = (any(d.severity in errors for d in previous)
+                                and fewer_non_error_findings)
+        bounded_sliver_reduction = (op_name == "fix_small_faces"
+                                    and fewer_non_error_findings)
         for defect in found:
             if (defect.fingerprint, defect.code.value) in before_names:
                 continue
+            geometric_key = _geometric_defect_key(defect)
+            if geometric_key is not None and geometric_key in before_geometry:
+                continue
             if defect.severity not in _HELD_AGAINST:
+                continue
+            if (defect.severity is DefectSeverity.warning
+                    and (improved_to_warnings or bounded_sliver_reduction)):
+                # A broad kernel repair can split a face while removing the invalid topology that
+                # made the body unusable; the bounded sliver sweep can likewise rename neighbouring
+                # warning geometry while reducing the total. The finding count must fall, so
+                # neither path can excuse a warning explosion. Any surviving or newly introduced
+                # error disables this allowance.
                 continue
             if defect.fingerprint in added and defect.severity is DefectSeverity.warning:
                 # GEOMETRY THE OPERATION SAID IT WAS ADDING. A sliver warning on a patch face is

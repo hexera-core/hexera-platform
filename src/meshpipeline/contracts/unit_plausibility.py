@@ -80,7 +80,9 @@ _KINDS: tuple[tuple[str, str, float, float], ...] = (
     (r"\bwings?\b|airfoil|aerofoil", "a wing", 0.05, 100.0),
     (r"\bcars?\b|vehicle|automobile|\btrucks?\b|\blorry\b|\bbus\b|\bahmed\b|drivaer|windsor|notchback|"
      r"fastback|squareback", "a car", 0.1, 25.0),
-    (r"buildings?|skyscraper|\bcity\b|urban|\bstreets?\b|\btown\b|stadium|\bbridge\b", "a building", 2.0, 5000.0),
+    # a building as a word of its own: never the verb in "the mesh-building steps" or "rebuilding",
+    # which made a 63.9 cm stud punch "far too small for a building" (PR #393 real-path test, 3 Nov)
+    (r"(?<![\w-])buildings?\b|skyscraper|\bcity\b|urban|\bstreets?\b|\btown\b|stadium|\bbridge\b", "a building", 2.0, 5000.0),
     (r"\bships?\b|\bhull\b|\bboat\b|\byacht\b|submarine|\btanker\b|\bferry\b", "a ship", 0.3, 500.0),
     (r"motor ?bike|motorcycle|bicycle|\bcyclist\b", "a bike", 0.2, 4.0),
     (r"\bpipes?\b|\belbow|\btee\b|\bwye\b|reducer|fitting|\bvalves?\b|\bducts?\b|manifold|nozzle|venturi|"

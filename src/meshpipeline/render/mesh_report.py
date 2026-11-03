@@ -132,14 +132,12 @@ def _key_numbers(payload: Mapping) -> list[tuple[str, str]]:
 def _units(payload: Mapping) -> str:
     # the FEA block's own sentence (engines/fea_results), else the one authority's unit (contracts/mesh_units):
     # every delivered mesh is written in it
-    from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
+    from meshpipeline.contracts.mesh_units import export_units_words
     fea = _m(_m(payload.get("surface")).get("fea"))
     words = str(_m(fea["units"] if "units" in fea else None).get("words") or "")
     if words:
         return words
-    unit = COMPLETED_MESH_UNIT.value
-    return (f"Lengths in the files are in {'metres' if unit == 'm' else unit}. Use consistent units in your "
-            "solver (for example N, m, Pa).")
+    return export_units_words()
 
 
 def _fea_limits(fea: Mapping) -> str:

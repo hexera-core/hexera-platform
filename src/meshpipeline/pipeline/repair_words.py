@@ -53,21 +53,73 @@ def _inner(report: Mapping) -> Mapping:
     return nested if isinstance(nested, Mapping) else report
 
 
+def _counted(report: Mapping | None, keep) -> dict[str, int]:
+    """The inspection's findings whose severity `keep` accepts, by defect code: its located
+    entities, else its defect counts."""
+    inner = _inner(dict(report or {}))
+    out: dict[str, int] = {}
+    entities = [e for e in (inner.get("entities") or ()) if isinstance(e, Mapping)]
+    if entities:
+        for e in entities:
+            if keep(str(e.get("severity", ""))):
+                code = str(e.get("code") or "")
+                out[code] = out.get(code, 0) + 1
+        return out
+    for d in inner.get("defects") or ():
+        if isinstance(d, Mapping) and keep(str(d.get("severity", ""))):
+            try:
+                n = max(int(d.get("count", 1) or 1), 1)
+            except (TypeError, ValueError):
+                n = 1
+            code = str(d.get("code") or "")
+            out[code] = out.get(code, 0) + n
+    return out
+
+
 def found_count(report: Mapping | None) -> int:
     """How many defects the inspection recorded: its located entities, else its defect counts.
     `info` remarks are not defects."""
-    inner = _inner(dict(report or {}))
-    entities = [e for e in (inner.get("entities") or ()) if isinstance(e, Mapping)]
-    if entities:
-        return sum(1 for e in entities if str(e.get("severity", "")) != "info")
-    total = 0
-    for d in inner.get("defects") or ():
-        if isinstance(d, Mapping) and str(d.get("severity", "")) != "info":
-            try:
-                total += max(int(d.get("count", 1) or 1), 1)
-            except (TypeError, ValueError):
-                total += 1
-    return total
+    return sum(_counted(report, lambda s: s != "info").values())
+
+
+def _small_details(report: Mapping | None) -> dict[str, int]:
+    """The findings that are only WARNINGS - a tiny edge, a sliver face: details that may force small
+    cells, not a part that is broken."""
+    return _counted(report, lambda s: s == "warning")
+
+
+#: What a warning-only finding is, in the words a user knows it by (singular, plural).
+_DETAIL_WORDS = {"small_edge": ("tiny edge", "tiny edges"), "small_face": ("sliver face", "sliver faces")}
+
+
+def _details_words(details: dict[str, int]) -> str:
+    """'36 tiny edges and 6 sliver faces'."""
+    parts = []
+    other = 0
+    for code, n in details.items():
+        if code in _DETAIL_WORDS:
+            parts.append(_plural(n, "{n} " + _DETAIL_WORDS[code][0], "{n} " + _DETAIL_WORDS[code][1]))
+        else:
+            other += n
+    if other:
+        parts.append(_plural(other, "{n} other small detail", "{n} other small details"))
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def clean_with_details(state: Mapping, report: Mapping) -> str:
+    """THE SAME WORD AS THE STAGE. The inspection called the part clean and found only small CAD
+    details (warnings, never errors): the line says the part is clean - as the geometry check told
+    the user - and names the details, never "Found 42 defects" (the stud punch of the 2 Nov dry run:
+    "The geometry is clean" on the stage, "Found 42 defects; repair is off here" on the run, for 36
+    tiny edges and 6 sliver faces). '' when the inspection found more than details."""
+    if str(state.get("repair_status") or "") != "clean":
+        return ""
+    total = found_count(report)
+    details = _small_details(report)
+    if not total or sum(details.values()) != total:
+        return ""
+    return (f"Your part is clean and needed no repair; it has {_details_words(details)}, "
+            f"which may need small cells there - {_ORIGINAL}")
 
 
 def _judgement_count(report: Mapping) -> int:
@@ -152,6 +204,9 @@ def repair_check_words(state: Mapping, out: Mapping) -> str | None:
         return f"The repair check could not finish; {_ORIGINAL}"
     if ((status == "clean" and not found) or route == "mesh_as_is") and not review:
         return "Your part needed no repair"
+    details_only = clean_with_details(state, report)
+    if details_only and not review:
+        return details_only
     if suffix in (".igs", ".iges") and outcome in ("format", "off", "not_autonomous"):
         return _with_review(f"IGES files are not repaired yet; {_ORIGINAL}")
     if outcome == "format":
