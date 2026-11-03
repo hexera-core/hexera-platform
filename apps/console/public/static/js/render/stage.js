@@ -225,6 +225,8 @@ export const Stage = {
      vision model, not for people - and the form is the same one the stage shows. One card per
      session, replaced if the check is shown again. */
   geometryCheck(d,confirm){
+    // the card follows the analysis the user chose: geometryCheckUpdate re-draws it as another kind
+    this._gcConfirm=confirm;this._gcKind=d&&d.thermal?'thermal':d&&d.fea?'fea':'flow';
     if(d&&d.thermal)return this.thermalCheck(d,confirm);
     if(d&&d.fea)return this.feaCheck(d,confirm);
     const p=d.proposal||{},pics=d.pictures||[];
@@ -346,6 +348,9 @@ export const Stage = {
 
   geometryCheckUpdate(d){
     const g=this._gcEl,p=this._gcP;if(!g||!p||g.querySelector('.gc-done'))return;
+    // AN FEA PART NEVER KEEPS THE FLOW CARD: a check served for another analysis re-draws the card
+    if(d&&(d.route||d.thermal)&&this._gcConfirm&&(d.thermal?'thermal':d.fea?'fea':'flow')!==this._gcKind)
+      return this.geometryCheck(d,this._gcConfirm);
     const q=(d&&d.proposal)||{};
     if(d&&d.proposal)this._gcServed=servedProposal(this._gcServed,d.proposal);
     followUnit(g,p,q.unit,q.unit_basis);followSuggestion(g,p,q.unit_suggestion);
