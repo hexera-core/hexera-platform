@@ -26,8 +26,9 @@
 #             build:  make test-container-smoke  (supplies APP_VERSION from the product authority)
 #
 #   mesh-toolchain  the STABLE native floor for the mesh runner: OpenFOAM 2412 (apt, pinned to
-#             an exact package version), vmtk (conda, isolated), the gmsh runtime libs, and
-#             fTetWild (built from a pinned commit in `ftetwild-build`, FEA's last rung).
+#             an exact package version), vmtk (conda, isolated), the gmsh runtime libs,
+#             fTetWild (built from a pinned commit in `ftetwild-build`, FEA's last rung), and
+#             Netgen (pip wheels by hash, isolated in /opt/netgen-env: the internal-flow engine).
 #             Slow, ~2 GB, and the only layer that needs the ESI package repository - which is
 #             served by SourceForge mirrors and is the least reliable thing in this build.
 #             The `mesh` target builds it automatically - it is not a separate artefact and
@@ -35,7 +36,7 @@
 #             build (optional, to prewarm the cache):  make mesh-toolchain
 #
 #   mesh      the off-box mesh runner (Cloud Run mesh job). Runs OpenFOAM (cfMesh/snappy),
-#             vmtk, and OCC tessellation. No db/redis/LLM.
+#             vmtk, Netgen, and OCC tessellation. No db/redis/LLM.
 #             build:  make mesh-image      (supplies APP_VERSION from the product authority)
 #
 # SELF-CONTAINED. This file is everything needed to build every image: no private registry, no

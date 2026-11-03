@@ -269,7 +269,24 @@ def tool_versions(engine: str, *, foam_version: str = "") -> dict[str, Any]:
         out["gmsh"] = _version("gmsh")
     if engine == "vmtk":
         out["vtk"] = _version("vtk")
+    if engine == "netgen":
+        out["netgen"] = _netgen_version()
     return {k: v for k, v in out.items() if v}
+
+
+def _netgen_version() -> str | None:
+    """Netgen's version, read from its own interpreter (engines/netgen/runner.py): it is not in ours."""
+    try:
+        import subprocess
+
+        from meshpipeline.engines.netgen.runner import available, netgen_python
+        if not available():
+            return None
+        p = subprocess.run([netgen_python(), "-c", "from netgen import config; print(config.version)"],
+                           capture_output=True, text=True, timeout=60)
+        return p.stdout.strip() or None
+    except Exception:  # noqa: BLE001 - a version is context, never a requirement
+        return None
 
 
 def _meshpipeline_version() -> str | None:

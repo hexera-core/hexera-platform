@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import meshpipeline.settings.runtime as rtcfg
+from meshpipeline.cad.fluid_passages import MAX_PASSAGES
 from meshpipeline.contracts.review_evidence import TargetKind
 from meshpipeline.engines.base import (
     Deliverable,
@@ -146,9 +147,12 @@ SPEC = EngineSpec(
         ),
         capabilities=(MeshCapability("body-surface", "fluid-volume", topologies=("internal",)),
                       MeshCapability("fluid-domain", "fluid-volume", topologies=("internal",))),
+        # SEVERAL PASSAGES IN ONE FILL: Netgen meshes every closed piece of the staged boundary in one
+        # volume (a left and a right carotid tree), each its own region with its own openings, and the
+        # solvability check pins one pressure per region (engines/netgen/solvability.py)
         accepts=(FlowSupport("internal", ("cad",),
                              designed_for="internal passages of any shape: manifolds, vessel "
-                                          "trees, transitions"),),
+                                          "trees, transitions", max_passages=MAX_PASSAGES),),
         # a tetrahedral filler: after the hex meshers and VMTK on the internal ladder
         ladder_rank=35,
         home_turf=HOME_TURF,

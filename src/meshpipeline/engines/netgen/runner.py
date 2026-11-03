@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import shutil
 import subprocess
@@ -32,7 +31,7 @@ from meshpipeline.engines.manifest import write_manifest  # noqa: F401
 from meshpipeline.engines.netgen.solvability import check_solvability  # noqa: F401  (engine-adapter seam)
 from meshpipeline.engines.netgen.staging import FLUID_BOUNDARY, stage_declared  # noqa: F401
 from meshpipeline.render.review_artifacts import build_review_msh  # noqa: F401
-from meshpipeline.sandbox.safe_exec import run_guarded
+from meshpipeline.sandbox.safe_exec import run_guarded, scrubbed_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +44,9 @@ REPORT_FILE = "netgen_report.json"
 QUALITY_FILE = "mesh_quality.json"
 TIMING_FILE = "mesh_timing.json"
 LOG_FILE = "log.netgen"
-#: the interpreter that has netgen (the mesh image's isolated env, Dockerfile); overridable
-NETGEN_PYTHON = os.environ.get("NETGEN_PYTHON", "/opt/netgen-env/bin/python")
+#: the interpreter that has netgen (the mesh image's isolated env, Dockerfile), else the
+#: netgen-python shim on PATH
+NETGEN_PYTHON = "/opt/netgen-env/bin/python"
 SCRIPT = Path(__file__).with_name("netgen_mesh.py")
 #: the passage measure's budget: a tetrahedral wall carries more faces than a hex mesher's, and the
 #: default budget abandoned the carotid's measure at 31 s
@@ -224,7 +224,7 @@ def _run_netgen_local(workspace, *, timeout: int = 3600, bashrc: str = _DEFAULT_
         try:
             with (ws / LOG_FILE).open("a") as fh:
                 proc = run_guarded([netgen_python(), str(SCRIPT), str(ws), str(k)], cwd=str(ws),
-                                   env={**os.environ, "OMP_NUM_THREADS": "1"}, stdout=fh,
+                                   env=scrubbed_subprocess_env({"OMP_NUM_THREADS": "1"}), stdout=fh,
                                    stderr=subprocess.STDOUT, timeout=max(30, int(left)),
                                    stall_s=STALL_WINDOW_S)
             rc = proc.returncode
@@ -259,6 +259,10 @@ def _run_netgen_local(workspace, *, timeout: int = 3600, bashrc: str = _DEFAULT_
         record["rungs"].append(entry)
         log_lines.append(f"[netgen] rung {k} ({rung.get('name')}): {entry.get('why') or 'failed'}")
         if timed_out or oom is not None:
+            break
+        if rc == 3:
+            # the surface itself could not be named (an opening's rim is no edge at any edge angle
+            # tried): every rung meshes the same surface, so none is started
             break
         shutil.rmtree(ws / "constant" / "polyMesh", ignore_errors=True)
     timing["netgen_s"] = round(sum(r.get("mesh_s", 0) for r in record["rungs"]), 1)

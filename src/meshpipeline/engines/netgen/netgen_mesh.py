@@ -115,6 +115,9 @@ def point_triangle_distance(p: np.ndarray, tri: np.ndarray) -> np.ndarray:
     return np.min(np.linalg.norm(cands - p[:, None, :], axis=2), axis=1)
 
 
+#: the lower edge angles the surface is meshed again at when an opening's rim was not kept as an
+#: edge (build): Netgen's default is 30 degrees
+EDGE_ANGLE_STEPS = (15.0, 8.0)
 #: the most sample points spread over the staged triangles for naming (the spacing widens to fit)
 SAMPLES_MAX = 3_000_000
 
@@ -159,11 +162,21 @@ def name_faces(mesh, tris: np.ndarray, labels: np.ndarray, names: list[str]) -> 
     # (a bend's wall read 8% inlet/outlet). The exact distance then picks among the candidates.
     edge = np.linalg.norm(pts[tri3[:, 1]] - pts[tri3[:, 0]], axis=1)
     sp, owner = sample_triangles(tris, float(np.median(edge)) if len(edge) else 1.0)
-    k = min(16, len(sp))
+    k = min(48, len(sp))
     _d, cand = cKDTree(sp).query(cen, k=k)
     cand = owner[np.asarray(cand).reshape(len(cen), k)]
     dist = np.stack([point_triangle_distance(cen, tris[cand[:, c]]) for c in range(k)], axis=1)
-    lab = labels[cand[np.arange(len(cen)), np.argmin(dist, axis=1)]]
+    # ...and the FACING: an element next to an opening's rim is about as close to the wall's rim
+    # slivers as to the lid it lies on (an annulus's ring lid read 13% wall); the staged triangle it
+    # lies on also faces the way it does, so a triangle turned away from the element is penalised by
+    # up to the element's own size
+    en = np.cross(pts[tri3[:, 1]] - pts[tri3[:, 0]], pts[tri3[:, 2]] - pts[tri3[:, 0]])
+    en /= np.maximum(np.linalg.norm(en, axis=1, keepdims=True), 1e-300)
+    tn = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+    tn /= np.maximum(np.linalg.norm(tn, axis=1, keepdims=True), 1e-300)
+    facing = np.abs(np.einsum("ij,ikj->ik", en, tn[cand]))
+    score = dist + edge[:, None] * (1.0 - facing)
+    lab = labels[cand[np.arange(len(cen)), np.argmin(score, axis=1)]]
     out: dict = {"faces": {}, "mixed": []}
     for f in sorted(set(fi.tolist())):
         m = fi == f
@@ -272,9 +285,25 @@ def build(ws: Path, spec: dict, rung: dict) -> tuple[object, dict]:
     size_file = ws / "netgen_size.txt"
     if size_file.exists() and rung.get("size_file", True):
         kw["meshsizefilename"] = str(size_file)
-    mp = MeshingParameters(**kw)
-    mesh = geo.GenerateMesh(mp=mp)
-    naming = name_faces(mesh, tris, labels, names)
+    # EVERY OPENING'S RIM AN EDGE: Netgen splits the STL into faces at edges sharper than yangle;
+    # an opening whose lid meets the wall at a shallower angle (a flared mouth, a ring lid on a
+    # chamfer) shares a face with the wall and cannot be named. The surface is meshed again with a
+    # lower edge angle until every face lies on one staged patch - before any volume is built.
+    naming: dict = {}
+    for _ in range(len(EDGE_ANGLE_STEPS) + 1):
+        mp = MeshingParameters(**kw)
+        mesh = geo.GenerateMesh(mp=mp)
+        naming = name_faces(mesh, tris, labels, names)
+        naming["edge_angle"] = kw["yangle"]
+        if not naming["mixed"]:
+            break
+        lower = [a for a in EDGE_ANGLE_STEPS if a < kw["yangle"]]
+        if not lower:
+            break
+        kw["yangle"], kw["contyangle"] = lower[0], min(kw["contyangle"], lower[0] * 0.66)
+        geo = STLGeometry(str(plain))
+    if naming["mixed"] and not spec.get("allow_mixed_faces"):
+        return mesh, {"naming": naming, "walls": [], "ports": [], "unnamed": True}
     walls = [n for n in names if n in set(spec.get("walls") or ["wall"])]
     ports = [n for n in names if n not in walls]
     layers = []
