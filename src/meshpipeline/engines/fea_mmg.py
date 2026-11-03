@@ -16,6 +16,11 @@ WHAT IS FIXED, AND WHY (never guessed):
   that, triangle by triangle, and keeps the gmsh mesh when it is not so.
 * THE SIZES STAY. -optim keeps the local size the mesh has (the plan's zones, its through-wall count),
   with no gradation of its own (-hgrad -1).
+* ONLY AROUND THE FLAGGED ELEMENTS, CAVITY BY CAVITY. Every element further than RINGS layers of shared
+  corners from a flagged one is required, so mmg cannot touch it; each group of free elements is then
+  replaced only when what mmg made of it is better (the rule below) and fills the same volume. Run over a
+  whole volume, mmg improves its own quality measure and leaves the worst element worse on most parts
+  (lab, 2 Nov: 23 of 24 volumes) - so it is never trusted with more than the cavities it can improve.
 * ONLY WHERE IT IS NEEDED. A volume is handed to MMG only when one of its straight elements would be
   noted on a delivered quadratic mesh: aspect over 20, a dihedral angle under 5 or over 170 degrees,
   or a scaled Jacobian under 0.01 (engines/fea_quality.LIMITS, limits_for(2)). A part with no such
