@@ -77,7 +77,7 @@ jobs:
           # `target_ref` input a one-line change instead of a twelve-job one.
           echo "ref=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
         with:
           ref: ${{ steps.checkout-ref.outputs.ref }}
           fetch-depth: 0
@@ -116,7 +116,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -142,7 +142,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -156,7 +156,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -171,7 +171,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -217,7 +217,7 @@ jobs:
     # timed out twice on it with no unit test changed - runner speed, not a hang.
     timeout-minutes: 35
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -243,7 +243,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 45
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -293,7 +293,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 25
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -311,7 +311,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -347,7 +347,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 45
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -586,7 +586,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -614,7 +614,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -632,7 +632,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false

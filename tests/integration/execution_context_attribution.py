@@ -200,10 +200,15 @@ def assert_measurement_sound(result: dict) -> None:
     # snappy-driver:internal-narrow-passage) - 70. Three more came with the run's live line: each
     # snappy driver's mesh plan (scenarios snappy-driver:accept and snappy-driver:internal-accept)
     # and the mesher's own stage, relayed while it runs (scenario snappy-driver:accept) - 73. Two
-    # more came with the run's Repair check step: the lane the inspection opens and the line the
-    # attempt says (scenario repair-check:surface-file) - 75. One more came with the size brake's release (RUN-8): the external driver's note that a case the brake stopped, and no re-plan can make smaller, is meshed at the size it needs (scenario snappy-driver:brake-released) - so 76 is the calibrated denominator.
-    if result["target_total"] != 76:
-        problems.append(f"the manifest holds {result['target_total']} execution contexts, not 76")
+    # more came with D3 (docs/RULES.md TIME-3): the executor's report of a guard trip (scenario
+    # pipeline-executor:guard-trip) and the guard replay's note (scenario guard-replay:same-attempt)
+    # - 75. Two more came with the run's Repair check step: the lane the inspection opens and the
+    # line the attempt says (scenario repair-check:surface-file) - 77. One more came with the size
+    # brake's release (RUN-8): the external driver's note that a case the brake stopped, and no
+    # re-plan can make smaller, is meshed at the size it needs (scenario snappy-driver:brake-released)
+    # - so 78 is the calibrated denominator.
+    if result["target_total"] != 78:
+        problems.append(f"the manifest holds {result['target_total']} execution contexts, not 78")
     if problems:
         raise AttributionUnsound("; ".join(problems))
 

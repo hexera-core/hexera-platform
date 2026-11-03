@@ -1,0 +1,6 @@
+# Runner labels actionlint does not know: the Blacksmith machines CI and deploys run on (#398).
+self-hosted-runner:
+  labels:
+    - blacksmith-4vcpu-ubuntu-2404
+    - blacksmith-8vcpu-ubuntu-2404
+    - blacksmith-16vcpu-ubuntu-2404

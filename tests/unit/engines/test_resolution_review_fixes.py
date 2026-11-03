@@ -73,16 +73,16 @@ class TestSoundPassKept:
         assert d._end_passes(tmp_path, False, "j") is False
 
 
-def test_the_after_switch_rung_reads_the_earlier_clock():
+def test_the_after_switch_rung_reads_no_clock():
     st = {"engine": "snappy", "retry_count": 1, "engine_ladder": {"switches": [{"to": "snappy"}]},
           "resolution_ladder": {"rung": 0, "switched": True},
           "requirement_caveats": [{"kind": rp.RESOLUTION_SHORT, "cells_across": 8.0,
                                    "floor": 12.0, "cells": 1_000_000, "cell_limit": 8_000_000}],
           "pipeline_deadline_epoch": 100_000.0, "builder_deadline_epoch": 1000.0}
-    ok, why = rp.rung_after_switch(st, attempts_ceiling=3, attempt_seconds=3600, now=0.0)
-    assert not ok and "time" in why
+    # docs/RULES.md TIME-1: neither deadline decides; both are guards only (TIME-5)
+    assert rp.rung_after_switch(st, attempts_ceiling=3, attempt_seconds=3600, now=0.0) == (True, "")
     st["builder_deadline_epoch"] = 50_000.0
-    assert rp.rung_after_switch(st, attempts_ceiling=3, attempt_seconds=3600, now=0.0)[0]
+    assert rp.rung_after_switch(st, attempts_ceiling=3, attempt_seconds=3600, now=0.0) == (True, "")
 
 
 class TestVmtk:
