@@ -511,12 +511,19 @@ def confirmed_gap_joins(session_id: str) -> bool:
     return gap_joins_answer(record.get("fea_gap_joins"))
 
 
-#: What a flow check proposes that an FEA part has none of: its openings and how they were found.
-FLOW_ONLY_KEYS = ("openings", "openings_reason", "seed_point_m", "seed_point_mm")
+#: What a flow check proposes that an FEA part has none of: its openings and how they were found,
+#: which way the fluid goes, the far-field box, the ground, the point inside the flow - and the
+#: scout's notes, which are its reading of the part as a flow ("the flow is proposed along +x",
+#: "opening 6 is the inlet").
+FLOW_ONLY_KEYS = ("openings", "openings_reason", "seed_point_m", "seed_point_mm", "flow", "flow_axis",
+                  "flow_axis_confidence", "flow_axis_from", "flow_axis_guessed", "flow_question",
+                  "grounded", "reference_length_mm", "extents", "inside", "notes")
 
 
 def without_flow_openings(proposal: dict) -> dict:
-    """The check's proposal as an FEA stage serves it: the same, with no openings to confirm."""
+    """The check's proposal as an FEA stage serves it: the part, its size, unit and up axis - with
+    no openings to confirm and no flow, far field or ground (FLOW_ONLY_KEYS). The card follows
+    the analysis the user chose."""
     out = {k: v for k, v in (proposal or {}).items() if k not in FLOW_ONLY_KEYS}
     out["openings"] = []
     return out

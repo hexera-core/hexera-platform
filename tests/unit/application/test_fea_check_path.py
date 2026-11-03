@@ -129,4 +129,14 @@ def test_an_fea_check_serves_no_flow_openings():
     assert served["openings"] == [] and "openings_reason" not in served and "seed_point_mm" not in served
     assert served["part"] == stored["part"] and served["size_mm"] == stored["size_mm"]
     assert stored["openings"], "the stored proposal was changed"
+    # NO FLOW AT ALL: the card follows the analysis the user chose (Areen, shared dev, 3 Nov: an FEA
+    # shaft-impeller's card said "the fluid flows around the part", "+x", the far field, the ground)
+    flowish = {**stored, "flow": "external", "flow_axis": "+x", "flow_axis_guessed": True, "grounded": True,
+               "reference_length_mm": 500.0, "extents": {"upstream": 5}, "up_axis": "+z",
+               "notes": ["The flow is proposed along +x"]}
+    served = fea_check.without_flow_openings(flowish)
+    assert not set(served) & (set(fea_check.FLOW_ONLY_KEYS) - {"openings"})
+    assert served["up_axis"] == "+z" and served["unit"] == "mm"
+    src = inspect.getsource(geo.get_check)
+    assert 'payload["route"] != fea_check.STAGE_FEA' in src, "an FEA check must not serve the flow form"
     assert "fea_check.without_flow_openings(payload[\"proposal\"])" in inspect.getsource(geo)

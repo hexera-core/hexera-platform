@@ -311,8 +311,9 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         # turns the part to CFD.
         if isinstance(payload.get("proposal"), dict):
             payload["proposal"] = fea_check.without_flow_openings(payload["proposal"])
-    if payload.get("check_mode") != THERMAL_CHECK:
-        # the generic form's fields; a thermal model is served as its `thermal` view instead
+    if payload.get("check_mode") != THERMAL_CHECK and payload["route"] != fea_check.STAGE_FEA:
+        # the generic form's fields; a thermal model is served as its `thermal` view instead, an
+        # FEA part as its `fea` view (no flow, far field or ground to fill in)
         payload["fields"] = form_spec()
     payload.setdefault("named", payload.get("status") == "ready")
     payload["naming_requested"] = naming_pending(requested)
