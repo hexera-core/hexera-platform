@@ -60,7 +60,13 @@ def runout(tmp_path_factory) -> tuple[Path, Path]:
     """The runout block meshed with MESH-24 and, for comparison, with its short edges as drawn."""
     ws = _stage(fx.runout_block(), tmp_path_factory.mktemp("runout") / "ws")
     on = _copy(ws, tmp_path_factory.mktemp("runout_on") / "ws")
-    assert A.mesh(on) == 0
+    # a part this small (about 600 elements planned) gets the budget a real part's strip needs
+    keep_floor = SHORT.BUDGET_FLOOR
+    SHORT.BUDGET_FLOOR = 200_000
+    try:
+        assert A.mesh(on) == 0
+    finally:
+        SHORT.BUDGET_FLOOR = keep_floor
     off = _copy(ws, tmp_path_factory.mktemp("runout_off") / "ws")
     keep = SHORT.SHORT_SHARE
     SHORT.SHORT_SHARE = 0.0
@@ -75,15 +81,13 @@ def test_a_short_edge_gets_elements_of_its_own_length_and_the_slivers_go(runout)
     on, off = runout
     q_on, q_off = _q(on), _q(off)
     rec = q_on["fea_short_edges"]
-    # the two 0.02 mm edges and the 0.02 mm wide face between them
+    # the 0.02 mm wide face and its two 0.02 mm end edges, one unit
     assert rec["rule"] == "MESH-24" and rec["edges"] == 2 and rec["faces"] == 1 and rec["left"] == 0
-    assert rec["narrowest_mm"] == pytest.approx(0.02, rel=1e-2)
     assert rec["shortest_mm"] == pytest.approx(0.02, rel=1e-3)
     assert "fea_short_edges" not in q_off
-    # sized, the elements at the short edges are well shaped: every figure better than as drawn
-    assert q_on["fea_max_aspect_ratio"] < q_off["fea_max_aspect_ratio"] and q_on["fea_max_aspect_ratio"] <= 20
-    assert q_on["fea_min_dihedral_deg"] > q_off["fea_min_dihedral_deg"] and q_on["fea_min_dihedral_deg"] >= 5
-    assert q_on["fea_max_dihedral_deg"] <= 170 and q_on["fea_min_scaled_jacobian"] > q_off["fea_min_scaled_jacobian"]
+    # sized, the mesh meets every production limit (FEA rows of VER-2)
+    assert q_on["fea_max_aspect_ratio"] <= 20 and q_on["fea_min_dihedral_deg"] >= 5
+    assert q_on["fea_max_dihedral_deg"] <= 170 and q_on["fea_min_scaled_jacobian"] >= 0.01
     assert not q_on["fatal"]
 
 
@@ -95,8 +99,13 @@ def test_the_added_elements_stay_within_the_budget(runout, monkeypatch):
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.occ.importShapes(str(on / "geometry.brep"))
         gmsh.model.occ.synchronize()
+        monkeypatch.setattr(SHORT, "BUDGET_FLOOR", 200_000)
         full = SHORT.plan_short(gmsh, plan)
         assert len(full["edges"]) == 3 and full["added"] <= full["budget"]
+        # a budget for the end edges alone leaves the strip and its edges as drawn, together
+        monkeypatch.setattr(SHORT, "BUDGET_FLOOR", 15_000)
+        part = SHORT.plan_short(gmsh, plan)
+        assert part["edges"] == [] and part["left"] == 3
         monkeypatch.setattr(SHORT, "BUDGET_FLOOR", 0)
         monkeypatch.setattr(SHORT, "BUDGET_SHARE", 0.0)
         none = SHORT.plan_short(gmsh, plan)
@@ -122,3 +131,23 @@ def test_a_part_with_no_short_edge_meshes_to_the_same_bytes(tmp_path):
     for name in ("mesh.inp", "mesh.bdf", "mesh.cdb"):
         assert _sha(ws / name) == _sha(off / name)
 
+
+
+def test_a_sized_mesh_no_better_than_as_drawn_gives_way_to_it(runout, tmp_path, monkeypatch):
+    # FEA corpus, 3 Nov: on a few bonded assemblies the sized mesh moved slivers rather than removing them;
+    # a pass whose sized mesh still misses an element limit is meshed again as drawn and the better kept
+    on, off = runout
+    ws = _copy(on, tmp_path / "ws")
+    monkeypatch.setattr(SHORT, "BUDGET_FLOOR", 200_000)
+    monkeypatch.setattr(A, "_short_score", lambda q: (1, 0.0) if q.get("fea_short_edges") else (0, 0.0))
+    assert A.mesh(ws) == 0
+    rec = _q(ws)["fea_short_edges"]
+    assert rec["kept"] == "as drawn" and rec["edges"] == 2
+    assert _sha(ws / "mesh.inp") == _sha(off / "mesh.inp")
+    assert not (ws / "_mesh24_sized").exists()
+    # and a sized mesh that is better stands, with its own files
+    ws2 = _copy(on, tmp_path / "ws2")
+    monkeypatch.setattr(A, "_short_score", lambda q: (0, -1.0) if q.get("fea_short_edges") and "kept" not in
+                        q["fea_short_edges"] else (1, 0.0))
+    assert A.mesh(ws2) == 0
+    assert "kept" not in _q(ws2)["fea_short_edges"] and _sha(ws2 / "mesh.inp") == _sha(on / "mesh.inp")

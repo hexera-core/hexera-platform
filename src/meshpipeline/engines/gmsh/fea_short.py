@@ -23,8 +23,9 @@ Ansys and Abaqus resolve such an edge by meshing it at its own length (a local e
 * Each gets a gmsh Distance field on itself and a Threshold: SIZE_PER_LENGTH times its length within its own
   length of it, then growing at the plan's rate (as every zone of the plan grows) to the base size. The
   triangles at its end nodes are then about as long as they are wide, and so are the tetrahedra on them.
+* A narrow face and the short edges that bound it are ONE unit: sized together or left together.
 * THE BUDGET: the elements those fields add are estimated from the plan's own element density (per_h3);
-  should all of them come to more than BUDGET_SHARE of the plan's estimate (and BUDGET_FLOOR elements), the
+  should all of them come to more than BUDGET_SHARE of the plan's estimate (and BUDGET_FLOOR elements: a part of 18,000 elements was taken to 262,000 by a floor of 200,000 on the FEA corpus, 3 Nov), the
   shortest edges against their neighbours' size are sized first, until the budget is used - the record says
   how many were left as drawn.
 
@@ -34,6 +35,7 @@ field - the same mesh, to the byte.
 from __future__ import annotations
 
 import math
+from typing import Any
 
 #: MESH-24: an edge shorter than this share of the smallest planned element beside it is short (an aspect
 #: of about 1 / SHORT_SHARE pinned to its end nodes; the production limit is 20)
@@ -46,7 +48,7 @@ DEGENERATE_SHARE = 1e-6
 #: the added elements may come to this share of the plan's estimate...
 BUDGET_SHARE = 0.25
 #: ...and never fewer than this many elements in all
-BUDGET_FLOOR = 200_000
+BUDGET_FLOOR = 25_000
 #: the rule
 RULE = "MESH-24"
 
@@ -139,7 +141,7 @@ def plan_short(gmsh, plan: dict, *, face_tags: dict[str, list[int]] | None = Non
     if not cand:
         return empty
     floor = local_floor(gmsh, plan, sorted({(2, f) for _w, _e, fs in cand.values() for f in fs}), tags_of)
-    rows = []
+    rows: list[dict[str, Any]] = []
     for (d, t), (feature, extent, faces) in sorted(cand.items()):
         local = min(floor.get((2, f), base) for f in faces)
         if feature >= SHORT_SHARE * local:
@@ -151,13 +153,29 @@ def plan_short(gmsh, plan: dict, *, face_tags: dict[str, list[int]] | None = Non
         return empty
     est = float((plan.get("estimate") or {}).get("elements") or 0.0)
     budget = max(BUDGET_FLOOR, BUDGET_SHARE * est)
+    # ONE UNIT a narrow face and the short edges that bound it: sized together or left together (an end edge
+    # sized without its strip grades the strip's own slivers into worse ones: the runout block, 2 Nov)
+    narrow = {int(r["tag"]) for r in rows if r["dim"] == 2}
+    unit_of: dict[tuple[int, int], int] = {}
+    for r in rows:
+        if r["dim"] == 1:
+            owners = sorted(f for f in narrow if r["tag"] in {abs(int(t)) for _d, t in gmsh.model.getBoundary(
+                [(2, f)], oriented=False, combined=False)})
+            if owners:
+                unit_of[(1, int(r["tag"]))] = owners[0]
+    units: dict[tuple[int, int], list[dict]] = {}
+    for r in rows:
+        dt = (int(r["dim"]), int(r["tag"]))
+        key = (2, unit_of[dt]) if dt in unit_of else dt
+        units.setdefault(key, []).append(r)
     kept, used = [], 0.0
     # the smallest against their neighbours' size first (the worst slivers), then by entity
-    for r in sorted(rows, key=lambda r: (r["feature_m"] / r["local_m"], r["dim"], r["tag"])):
-        if used + r["added"] > budget:
+    for _key, rs in sorted(units.items(), key=lambda kv: (min(r["feature_m"] / r["local_m"] for r in kv[1]), kv[0])):
+        cost = sum(r["added"] for r in rs)
+        if used + cost > budget:
             continue
-        kept.append(r)
-        used += r["added"]
+        kept += rs
+        used += cost
     kept.sort(key=lambda r: (r["dim"], r["tag"]))
     return {"edges": kept, "left": len(rows) - len(kept), "budget": int(budget), "added": int(used)}
 
