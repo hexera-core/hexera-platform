@@ -23,6 +23,8 @@ _FOAM_TOOLS = {
     "snappy_multiregion": ["blockMesh", "snappyHexMesh", "splitMeshRegions", "checkMesh"],
     # the snap-grid mesher writes its polyMesh itself; OpenFOAM only splits and checks it
     "snapgrid": ["splitMeshRegions", "checkMesh"],
+    # Netgen meshes in its own interpreter (test below); OpenFOAM converts and checks the result
+    "netgen": ["gmshToFoam", "checkMesh", "foamToVTK"],
 }
 _ALL_FOAM_TOOLS = sorted({t for tools in _FOAM_TOOLS.values() for t in tools})
 
@@ -33,7 +35,7 @@ def _foam(cmd: str, timeout: int = 60) -> subprocess.CompletedProcess:
 
 
 def test_dispatch_registry_resolves_every_supported_engine(canonical_provenance):
-    expected = {"cfmesh", "snappy", "snappy_multiregion", "gmsh", "vmtk", "snapgrid"}
+    expected = {"cfmesh", "snappy", "snappy_multiregion", "gmsh", "vmtk", "snapgrid", "netgen"}
     assert set(engine_names()) == expected
     runners = engine_runners()
     assert set(runners) == expected
@@ -100,3 +102,16 @@ def test_ftetwild_is_installed_and_meshes_a_box_the_same_way_twice(tmp_path):
         assert (vol > 0).all() and vol.sum() == pytest.approx(0.05 ** 3, rel=1e-3)
         digests.append(hashlib.sha256(r["xyz"].tobytes() + r["tets"].tobytes()).hexdigest())
     assert digests[0] == digests[1]
+
+
+def test_netgen_env_is_installed_and_imports():
+    """The Netgen CFD engine's isolated interpreter (Dockerfile, requirements/netgen.txt): present,
+    and it imports netgen's STL mesher and scipy (engines/netgen/netgen_mesh.py needs both)."""
+    from meshpipeline.engines.netgen import runner as NG
+
+    assert NG.available(), f"{NG.netgen_python()} is not in the mesh image"
+    p = subprocess.run([NG.netgen_python(), "-c",
+                        "import netgen.meshing, netgen.stl, scipy.spatial; from netgen import config; "
+                        "print(config.version)"], capture_output=True, text=True, timeout=120)
+    assert p.returncode == 0, p.stderr
+    assert "6.2.2608" in p.stdout

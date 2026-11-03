@@ -417,6 +417,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgmp10 libgom
     && ln -s /opt/ftetwild/bin/fTetWild /usr/local/bin/fTetWild \
     && fTetWild --help >/dev/null
 
+# NETGEN (ISOLATED), the internal-flow tetrahedra + prism-layer CFD engine (engines/netgen/).
+# netgen-mesher (LGPL-2.1) ships its own OpenCASCADE (netgen-occt) and numpy 2, which cannot share
+# an interpreter with the app's pinned OCP/vtk/numpy - so, like vmtk, it lives in its own venv on the
+# image's pinned Python and is reached ONLY as a subprocess (engines/netgen/runner.py runs
+# engines/netgen/netgen_mesh.py under /opt/netgen-env/bin/python). Every wheel is installed by hash
+# (requirements/netgen.txt); the import smoke fails the build if the env cannot mesh. Last in this
+# stage so a change to it never rebuilds OpenFOAM, vmtk or fTetWild.
+COPY requirements/netgen.txt /tmp/netgen.txt
+RUN python3 -m venv /opt/netgen-env \
+    && /opt/netgen-env/bin/pip install --no-cache-dir --only-binary=:all: --require-hashes \
+         -r /tmp/netgen.txt \
+    && rm -f /tmp/netgen.txt \
+    && /opt/netgen-env/bin/python -c "import netgen.meshing, netgen.stl, scipy.spatial; from netgen import config; print('netgen', config.version)" \
+    && printf '#!/bin/sh\nexec /opt/netgen-env/bin/python "$@"\n' > /usr/local/bin/netgen-python \
+    && chmod 755 /usr/local/bin/netgen-python
+
 
 FROM base AS runtime-base
 # The application layers for the api and pipeline targets. The `mesh` target applies the SAME
