@@ -531,6 +531,42 @@ def test_filling_patches_a_small_planar_hole_and_the_patch_area_matches_its_decl
     assert outcome.added, "the patch face is new geometry and must be reported as added"
 
 
+def test_filling_an_assembly_body_preserves_the_other_solids(tmp_path, _filling_on, monkeypatch):
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Trsf, gp_Vec
+    from OCP.TopoDS import TopoDS_Compound
+
+    import meshpipeline.settings.cad_repair as rcfg
+    from meshpipeline.cad.repair.caps import measure
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.localize import localize_scan
+    from meshpipeline.cad.repair.operations import FillPlanarHole
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_HOLE_SPAN_RATIO", 1.0)
+    open_body = _read(write_open_shell_step(tmp_path / "open.step"))
+    sound_body = _read(write_step(tmp_path / "sound.step", "MM"))
+    move = gp_Trsf()
+    move.SetTranslation(gp_Vec(30.0, 0.0, 0.0))
+    sound_body = BRepBuilderAPI_Transform(sound_body, move, True).Shape()
+
+    builder = BRep_Builder()
+    assembly = TopoDS_Compound()
+    builder.MakeCompound(assembly)
+    builder.Add(assembly, open_body)
+    builder.Add(assembly, sound_body)
+
+    found, complete = localize_scan(assembly)
+    assert complete
+    defect = next(d for d in found if d.code is DefectCode.open_shell)
+    op = FillPlanarHole()
+    outcome = op.apply(assembly, op.targets_for(defect), tolerance_mm=0.01)
+
+    assert not outcome.evidence.get("declined")
+    assert measure(assembly).solids == 1
+    assert measure(outcome.shape).solids == 2, "patching one body dropped the sound solid"
+
+
 def test_filling_declines_a_missing_wall_rather_than_lidding_it(tmp_path, _filling_on):
     # NOT A CONTRIVED CAP. The open-shell fixture is a box with one whole face gone, so its opening
     # spans 14.142 mm against a 17.321 mm diagonal - a ratio of 0.8165, over the 0.75 cap. That is
