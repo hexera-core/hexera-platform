@@ -1463,9 +1463,12 @@ jobs:
       CAD_REPAIR_MAX_OPS: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && '12' || '' }}
       CAD_REPAIR_TIMEOUT_S: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && '420' || '' }}
       # The planner posture, stated only when it is not "off"; empty means "not stated". Shared dev
-      # records model guidance in shadow unless a dispatch chose shadow or live explicitly. A push
-      # carries no input at all, so the empty value falls through to the shared-dev default.
-      CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || needs.target.outputs.deployment_id == 'dev' && 'shadow' || '' }}
+      # runs the planner LIVE, so model guidance enters the same planner, caps and measurements as
+      # the rule planner's own directives - a push carries no input at all, so the empty value
+      # falls through to this default. The guidance is bounded, not trusted: the posture fails
+      # closed on a typo, a call that times out or returns nothing leaves the rule planner's choice
+      # standing, and every directive still answers to the session caps and the progress rule.
+      CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || needs.target.outputs.deployment_id == 'dev' && 'live' || '' }}
       # The verdict by measured limits, per target (the `target` job): 'true' on dev, empty on prod.
       VERDICT_BY_LIMITS: ${{ needs.target.outputs.verdict_by_limits }}
     steps:
