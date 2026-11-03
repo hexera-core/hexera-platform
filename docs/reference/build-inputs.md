@@ -41,6 +41,7 @@ implied away.
 | Python build toolchain | pip/setuptools/wheel exact pins | same | `Dockerfile` |
 | Application wheel | built from the committed tree | Gate C provenance | `Dockerfile` |
 | fTetWild (FEA's last rung, mesh image only) | wildmeshing/fTetWild commit `8118f810…` fetched by full SHA; each dependency its CMake fetches (CLI11, Eigen, fmt, geogram, json, libigl, predicates, spdlog, oneTBB) checked against a reviewed full commit SHA after the configure step, and the set of them checked too | Git object identity (`ARG FTETWILD_COMMIT`, `ARG FTETWILD_DEPS`) | `Dockerfile` (`ftetwild-build`) |
+| MMG (FEA quality post-pass, mesh image only) | MmgTools/mmg v5.8.0 commit `4d8232c8…` fetched by full SHA and checked after checkout; no optional dependency, so nothing else is fetched | Git object identity (`ARG MMG_COMMIT`) | `Dockerfile` (`mmg-build`) |
 
 Ecosystems the repository does not use, Node/npm, git submodules, cloned dependencies, have no
 locks because they have no acquisitions. The reproducibility guard derives this from the tree, so

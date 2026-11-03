@@ -1491,6 +1491,18 @@ def _mesh(workspace) -> int:
         note_stage(ws, "optimising", "improving the elements")
         for _ in range(int(run.get("optimise_passes") or 1) if meshed else 0):
             gmsh.model.mesh.optimize("Netgen")
+        # MESH-mmg-1: MMG improves the inside of a volume that still holds an element the limits would
+        # note, its surface frozen - kept only when better, before the elements are curved
+        mmg: dict = {}
+        if meshed and not rung:
+            from meshpipeline.engines import fea_mmg
+
+            try:
+                mmg = fea_mmg.improve(gmsh, vols)
+            except Exception as exc:  # noqa: BLE001 - a post-pass that cannot run leaves the gmsh mesh
+                mmg = {"rule": fea_mmg.RULE, "ran": False, "why": f"{type(exc).__name__}: {exc}"[:300]}
+            if fea_mmg.words(mmg):
+                print(f"[GMSH-FEA] {fea_mmg.words(mmg)}", file=sys.stderr)
         order = int((plan.get("element") or {}).get("order") or 2)
         settled: dict = {"straightened": 0, "set_aside": [], "cusp_places_m": [], "cusp_elements": 0,
                          "micro_used": [], "micro_elements": 0}
@@ -1671,6 +1683,8 @@ def _mesh(workspace) -> int:
                if scale != 1.0 else {}),
             # MESH-9: the tiny faces meshed as part of a neighbour, and into which named face each went
             **({"fea_tiny": tiny_out} if tiny_out else {}),
+            # MESH-mmg-1: what the MMG post-pass did, volume by volume
+            **({"fea_mmg": mmg} if mmg else {}),
             "fea_bad_surfaces": traced,
             "fea_bad_faces": face_names_of(traced, face_tags),
             # PLAN-fea-17: the invalid elements' surfaces that are FUSED INTERFACES (a bonded assembly)

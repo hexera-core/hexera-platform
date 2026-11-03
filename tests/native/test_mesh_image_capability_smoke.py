@@ -100,3 +100,36 @@ def test_ftetwild_is_installed_and_meshes_a_box_the_same_way_twice(tmp_path):
         assert (vol > 0).all() and vol.sum() == pytest.approx(0.05 ** 3, rel=1e-3)
         digests.append(hashlib.sha256(r["xyz"].tobytes() + r["tets"].tobytes()).hexdigest())
     assert digests[0] == digests[1]
+
+
+def test_mmg3d_is_installed_and_improves_a_box_the_same_way_twice(tmp_path):
+    """The FEA quality post-pass (MESH-mmg-1): the pinned mmg3d build is on PATH, links its libraries,
+    keeps a box's surface exactly as it went in, and gives the same mesh twice (engines/fea_mmg.py)."""
+    import hashlib
+
+    import gmsh
+
+    from meshpipeline.engines import fea_mmg as MM
+
+    exe = MM.binary()
+    assert exe, "mmg3d is not on PATH in the mesh image"
+    gmsh.initialize(interruptible=False)
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.occ.addBox(0, 0, 0, 0.05, 0.05, 0.05)
+        gmsh.model.occ.synchronize()
+        gmsh.option.setNumber("Mesh.MeshSizeMax", 0.01)
+        gmsh.model.mesh.generate(3)
+        ntags, xyz, tets, tris, refs = MM._volume_arrays(gmsh, 1)
+    finally:
+        gmsh.finalize()
+    digests = []
+    for k in range(2):
+        work = tmp_path / f"run{k}"
+        work.mkdir()
+        out = MM.remesh(xyz, tris, refs, tets, exe=exe, timeout=120, workdir=work)
+        assert out["ok"], out["why"]
+        fig = MM.worst(out["xyz"], out["tets"])
+        assert fig["invalid"] == 0
+        digests.append(hashlib.sha256(out["xyz"].tobytes() + out["tets"].tobytes()).hexdigest())
+    assert digests[0] == digests[1]
