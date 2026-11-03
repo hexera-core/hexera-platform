@@ -26,4 +26,3 @@ src/meshpipeline/engines/vmtk/gates.py::arg-type::Argument "manifest_patches" to
 src/meshpipeline/pipeline/executor.py::attr-defined::"MeshEngine" has no attribute "check_domain_extents"
 src/meshpipeline/pipeline/executor.py::attr-defined::"MeshEngine" has no attribute "check_solvability"
 src/meshpipeline/pipeline/executor.py::call-arg::Too many arguments for "to_thread"
-src/meshpipeline/does_not_exist.py::attr-defined::whatever

@@ -1,7 +1,7 @@
 # Responsibility: Run a Netgen plan where the mesh is built (the mesh image), walk its ladder, and deliver an OpenFOAM case measured the way every polyMesh engine is measured; and give the pipeline the engine's runtime names.
 # Owns: the native run (netgen_mesh.py under the netgen interpreter, gmshToFoam, the wall retype, checkMesh, the passage measure, the layer census, the volume export), its time and its record.
-# Boundaries: no plan is chosen here (engines/netgen/plan.py), nothing is staged here (engines/netgen/staging.py); the OpenFOAM-family finalize, quality reading and solvability are cfMesh's, reused by name.
-# Collaborates with: engines/dispatch.py (_run_netgen_local), engines/netgen/adapter.py (forwards here), engines/cfmesh/finalize.py (calls back by name: check_mesh, write_manifest, read_stl_solids, inspect_stl, export_volume_vtk, build_review_msh, review_geometry_stls).
+# Boundaries: no plan is chosen here (engines/netgen/plan.py), nothing is staged here (engines/netgen/staging.py); the OpenFOAM-family finalize, quality reading and solvability are the bundle's engine-local copies of cfMesh's.
+# Collaborates with: engines/dispatch.py (_run_netgen_local), engines/netgen/adapter.py (forwards here), engines/netgen/finalize.py (cfMesh's, engine-local; calls back by name: check_mesh, write_manifest, read_stl_solids, inspect_stl, export_volume_vtk, build_review_msh, review_geometry_stls).
 from __future__ import annotations
 
 import json
@@ -14,20 +14,20 @@ from pathlib import Path
 
 from meshpipeline.cad.cad_tessellate import tessellate_to_stl as _cad_tessellate_to_stl
 
-# THE ENGINE'S DECLARED NAMESPACE (as in engines/cfmesh/cfmesh_runner.py): cfMesh's finalize resolves
+# THE ENGINE'S DECLARED NAMESPACE (as in engines/cfmesh/cfmesh_runner.py): the finalize resolves
 # these by name off the engine it is handed, so each import below is used at run time.
 from meshpipeline.cad.stl_io import inspect_stl, read_stl_solids  # noqa: F401
-from meshpipeline.engines.cfmesh.finalize import finalize as _openfoam_finalize
-from meshpipeline.engines.cfmesh.foam_exec import (  # noqa: F401
+from meshpipeline.engines.domain_extent_gate import (  # noqa: F401  (engine-adapter seam)
+    extent_gate_for_request as check_domain_extents,
+)
+from meshpipeline.engines.manifest import write_manifest  # noqa: F401
+from meshpipeline.engines.netgen.finalize import finalize  # noqa: F401  (engine-adapter seam)
+from meshpipeline.engines.netgen.foam_exec import (  # noqa: F401
     _DEFAULT_BASHRC,
     _foam_env,
     check_mesh,
     export_volume_vtk,
 )
-from meshpipeline.engines.domain_extent_gate import (  # noqa: F401  (engine-adapter seam)
-    extent_gate_for_request as check_domain_extents,
-)
-from meshpipeline.engines.manifest import write_manifest  # noqa: F401
 from meshpipeline.engines.netgen.solvability import check_solvability  # noqa: F401  (engine-adapter seam)
 from meshpipeline.engines.netgen.staging import FLUID_BOUNDARY, stage_declared  # noqa: F401
 from meshpipeline.render.review_artifacts import build_review_msh  # noqa: F401
@@ -54,19 +54,6 @@ PASSAGE_BUDGET_S = 600.0
 #: what an attempt needs for its last rung to still be worth starting
 RUNG_MIN_SECONDS = 60
 _POLYMESH = ("points", "faces", "owner", "neighbour", "boundary")
-
-
-def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str = "",
-             internal_flow: bool = False, engine_params: dict | None = None,
-             flow_topology: str = "") -> dict:
-    """cfMesh's OpenFOAM-family finalize (the delivery check, the quality record, the manifest),
-    which calls back into this module by name - its words said under this engine's name."""
-    out = _openfoam_finalize(workspace_dir, intake_patches, engine, domain, internal_flow,
-                             engine_params, flow_topology)
-    for k in ("output", "stdout"):
-        if isinstance(out.get(k), str):
-            out[k] = out[k].replace("[CFMESH]", "[NETGEN]")
-    return out
 
 
 def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None):
@@ -156,7 +143,7 @@ def _measure(ws: Path, *, bashrc: str, walls: list[str], layers: int, timing: di
     except Exception:  # noqa: BLE001 - evidence, not a verdict
         logger.warning("netgen: passage measure failed; omitted", exc_info=True)
     try:
-        from meshpipeline.engines.cfmesh.finalize import census_quality
+        from meshpipeline.engines.netgen.finalize import census_quality
         from meshpipeline.engines.workspace_facts import contract_patches
         t = time.monotonic()
         cq = census_quality(ws, contract_patches(ws))

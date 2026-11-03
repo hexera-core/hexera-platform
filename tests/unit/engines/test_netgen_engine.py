@@ -158,7 +158,7 @@ _BOUNDARY = """FoamFile
 
 
 def test_walls_are_typed_wall_and_an_empty_default_patch_goes(tmp_path: Path):
-    from meshpipeline.engines.cfmesh.deliverable import boundary_foam_types
+    from meshpipeline.engines.netgen.deliverable import boundary_foam_types
     from meshpipeline.engines.netgen.runner import _drop_empty_default, retype_walls
     pm = tmp_path / "constant" / "polyMesh"
     pm.mkdir(parents=True)

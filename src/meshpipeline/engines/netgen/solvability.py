@@ -1,5 +1,5 @@
 # Responsibility: Decide whether a Netgen polyMesh is solvable: checkMesh's fatal classes, then the FV pressure-Poisson operator solved with PCG + AMG, one reference pressure per connected passage.
-# Boundaries: cfMesh's solve, reused; what this adds is the passage count read off the mesh itself - Netgen meshes every separate passage of a staged boundary in one fill (a left and a right carotid tree), where cfMesh meshes each as its own case and records them in passages.json.
+# Boundaries: cfMesh's solve (the engine-local copy, engines/netgen/fv_solve.py); what this adds is the passage count read off the mesh itself - Netgen meshes every separate passage of a staged boundary in one fill (a left and a right carotid tree), where cfMesh meshes each as its own case and records them in passages.json.
 from __future__ import annotations
 
 import logging
@@ -47,8 +47,8 @@ def passages_of(owner: np.ndarray, neigh: np.ndarray, n_cells: int, pm: Path) ->
 
 
 def check_solvability(workspace, metrics_out: dict | None = None) -> tuple[bool, str]:
-    from meshpipeline.engines.cfmesh import solvability as S
-    from meshpipeline.engines.cfmesh.foam_exec import check_mesh
+    from meshpipeline.engines.netgen import fv_solve as S
+    from meshpipeline.engines.netgen.foam_exec import check_mesh
     if metrics_out is None:
         metrics_out = {}
     metrics_out.update({"n_cells": None, "iters": None, "residual": None, "info": None})

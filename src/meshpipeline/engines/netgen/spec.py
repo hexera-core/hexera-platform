@@ -56,7 +56,7 @@ def _criteria():
 
 
 def _workspace_scaffold():
-    from meshpipeline.engines.cfmesh.case_scaffold import write_case_skeleton
+    from meshpipeline.engines.netgen.case_scaffold import write_case_skeleton
     return write_case_skeleton
 
 
@@ -66,7 +66,7 @@ def _review_renderer():
 
 
 def _viewer_surface():
-    from meshpipeline.engines.cfmesh.viewer import polymesh_viewer
+    from meshpipeline.engines.netgen.viewer import polymesh_viewer
     return polymesh_viewer
 
 
