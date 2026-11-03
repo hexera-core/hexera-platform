@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import meshpipeline.settings.env as env
+from meshpipeline.settings import inventory as _inventory
 from meshpipeline.settings.env import (
     ConfigurationError,
     load_prompt,
@@ -72,6 +73,10 @@ MAX_CONCURRENT_JOBS: int        = int(optional_env("MAX_CONCURRENT_JOBS", "20"))
 # the grant without a code change. What a credit is WORTH is deliberately not decided here or
 # anywhere else yet - see the design's decision 8.
 SIGNUP_GRANT_CREDITS: int = int(optional_env("SIGNUP_GRANT_CREDITS", "100"))
+# WHICH ADDRESSES GET AN ACCOUNT BUT NOT THE FREE GRANT: disposable inboxes, by domain. Read by
+# application/signup_claims.py. The default list lives in the catalogue beside the declaration.
+SIGNUP_GRANT_WITHHELD_DOMAINS: str = optional_env("SIGNUP_GRANT_WITHHELD_DOMAINS",
+                                                  _inventory.DEFAULT_WITHHELD_DOMAINS)
 # WHAT ONE SUCCEEDED JOB COSTS, in whole credits: a flat admission charge plus the mesh's own
 # wall-clock minutes. Two parts because the two costs are real and different - every job pays for
 # the fixed work of intake, review and artifact handling, and a long mesh additionally pays for the

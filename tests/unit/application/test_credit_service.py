@@ -101,20 +101,74 @@ async def test_the_balance_is_read_through_the_ledger(ledger):
     assert await credit_service.balance(None, organization_id=org) == 100
 
 
+@pytest.fixture
+def claims(monkeypatch):
+    """The once-per-mailbox claim table, as a set of normalised mailboxes."""
+    claimed: set[str] = set()
+
+    async def claim(db, email):
+        digest = credit_service.signup_claims.claim_digest(email)
+        if digest in claimed:
+            return False
+        claimed.add(digest)
+        return True
+
+    monkeypatch.setattr(credit_service.signup_claims, "claim", claim)
+    return claimed
+
+
 @pytest.mark.asyncio
-async def test_the_signup_grant_honours_the_configured_amount(ledger, monkeypatch):
+async def test_the_signup_grant_honours_the_configured_amount(ledger, claims, monkeypatch):
     monkeypatch.setattr(polcfg, "SIGNUP_GRANT_CREDITS", 250)
     org = uuid.uuid4()
-    assert await credit_service.grant_signup_credits(None, organization_id=org) == 250
+    assert await credit_service.grant_signup_credits(
+        None, organization_id=org, email="a@example.com") == 250
     assert ledger.entries[0]["amount"] == 250
 
 
 @pytest.mark.asyncio
-async def test_a_configured_zero_disables_the_signup_grant(ledger, monkeypatch):
+async def test_a_configured_zero_disables_the_signup_grant(ledger, claims, monkeypatch):
     monkeypatch.setattr(polcfg, "SIGNUP_GRANT_CREDITS", 0)
     org = uuid.uuid4()
-    assert await credit_service.grant_signup_credits(None, organization_id=org) == 0
+    assert await credit_service.grant_signup_credits(
+        None, organization_id=org, email="a@example.com") == 0
     assert ledger.entries == []
+    assert claims == set(), "a disabled grant still spent the mailbox's one claim"
+
+
+@pytest.mark.asyncio
+async def test_one_mailbox_gets_one_grant_across_organisations_and_aliases(ledger, claims):
+    # The farming shapes: a second account for the same inbox, a +tag alias, a dotted Gmail
+    # spelling, and re-signing up after erasing the first account. Each still gets an account;
+    # none gets the credits a second time.
+    first = await credit_service.grant_signup_credits(
+        None, organization_id=uuid.uuid4(), email="jane.doe@gmail.com")
+    again = [await credit_service.grant_signup_credits(None, organization_id=uuid.uuid4(),
+                                                       email=address)
+             for address in ("janedoe+1@gmail.com", "Jane.Doe@googlemail.com",
+                             "jane.doe@gmail.com")]
+    assert first == polcfg.SIGNUP_GRANT_CREDITS
+    assert again == [0, 0, 0]
+    assert len(ledger.entries) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_disposable_inbox_gets_an_account_but_no_grant(ledger, claims):
+    assert await credit_service.grant_signup_credits(
+        None, organization_id=uuid.uuid4(), email="bot@mailinator.com") == 0
+    assert await credit_service.grant_signup_credits(
+        None, organization_id=uuid.uuid4(), email="bot@eu.mailinator.com") == 0
+    assert ledger.entries == []
+
+
+@pytest.mark.asyncio
+async def test_the_signup_grant_has_a_deterministic_ledger_id(ledger, claims):
+    # A replay of the SAME organisation's grant is a no-op in the ledger itself, independent of
+    # the claim row: the entry id is derived from the organisation.
+    org = uuid.uuid4()
+    await credit_service.grant_signup_credits(None, organization_id=org, email="a@example.com")
+    assert ledger.entries[0]["id"] == credit_service._signup_grant_entry_id(org)
+    assert credit_service._signup_grant_entry_id(org) == credit_service._signup_grant_entry_id(org)
 
 
 def test_the_spending_surface_is_exactly_debit_and_refund():

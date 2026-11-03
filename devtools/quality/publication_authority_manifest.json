@@ -1703,6 +1703,19 @@
   "roots": []
  },
  {
+  "context": "application/audit.py::record::error#1|NotAPublisher|not-a-publisher|",
+  "path": "application/audit.py",
+  "qualname": "record",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/dispute_operation.py::dispatch_or_record_failure::error#1|NotAPublisher|not-a-publisher|",
   "path": "application/dispute_operation.py",
   "qualname": "dispatch_or_record_failure",

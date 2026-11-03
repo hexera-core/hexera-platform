@@ -1,4 +1,5 @@
-# Responsibility: Verify a token becomes exactly one account, once, with exactly one grant.
+# Responsibility: Verify a token becomes exactly one account, once, and that its organisation and single grant
+#                 wait for a verified address.
 from __future__ import annotations
 
 import uuid
@@ -34,11 +35,25 @@ class _Fakes:
     async def get_by_email(self, db, email):
         return next((u for u in self.users if u.email == email.strip().lower()), None)
 
-    async def create_user(self, db, *, email, name, firebase_uid):
+    async def create_user(self, db, *, email, name, firebase_uid, pending_organization_name=None):
         row = _Row(id=uuid.uuid4(), email=email.strip().lower(), name=name,
-                   firebase_uid=firebase_uid, email_verified_at=None, last_login_at=None)
+                   firebase_uid=firebase_uid, email_verified_at=None, last_login_at=None,
+                   pending_organization_name=pending_organization_name)
         self.users.append(row)
         return row
+
+    async def lock(self, db, user_id):
+        return None
+
+    async def clear_pending_organization_name(self, db, *, user_id):
+        next(u for u in self.users if u.id == user_id).pending_organization_name = None
+
+    async def repoint_unverified(self, db, *, user_id, from_uid, to_uid):
+        user = next((u for u in self.users if u.id == user_id), None)
+        if user is None or user.firebase_uid != from_uid or user.email_verified_at is not None:
+            return False
+        user.firebase_uid = to_uid
+        return True
 
     async def attach_firebase_uid(self, db, *, user_id, firebase_uid):
         user = next((u for u in self.users if u.id == user_id), None)
@@ -85,6 +100,9 @@ def fakes(monkeypatch):
         create = staticmethod(f.create_user)
         attach_firebase_uid = staticmethod(f.attach_firebase_uid)
         record_login = staticmethod(f.record_login)
+        lock = staticmethod(f.lock)
+        clear_pending_organization_name = staticmethod(f.clear_pending_organization_name)
+        repoint_unverified = staticmethod(f.repoint_unverified)
 
     class _OrgRepo:
         create = staticmethod(f.create_org)
@@ -93,7 +111,7 @@ def fakes(monkeypatch):
         create = staticmethod(f.create_membership)
         organization_id_for_email = staticmethod(f.organization_id_for_email)
 
-    async def fake_grant(db, *, organization_id):
+    async def fake_grant(db, *, organization_id, email):
         f.grants.append(organization_id)
         return polcfg.SIGNUP_GRANT_CREDITS
 
@@ -223,7 +241,8 @@ async def test_a_concurrent_first_sign_in_yields_one_organisation(fakes, monkeyp
     real_create = fakes.create_user
     state = {"raised": False}
 
-    async def create_then_lose_the_race(db, *, email, name, firebase_uid):
+    async def create_then_lose_the_race(db, *, email, name, firebase_uid,
+                                        pending_organization_name=None):
         if not state["raised"]:
             state["raised"] = True
             # Stand in for the winner having already inserted this uid.
@@ -241,6 +260,8 @@ async def test_a_concurrent_first_sign_in_yields_one_organisation(fakes, monkeyp
         create = staticmethod(create_then_lose_the_race)
         attach_firebase_uid = staticmethod(fakes.attach_firebase_uid)
         record_login = staticmethod(fakes.record_login)
+        lock = staticmethod(fakes.lock)
+        clear_pending_organization_name = staticmethod(fakes.clear_pending_organization_name)
 
     class _Session:
         async def rollback(self):
@@ -332,14 +353,70 @@ async def test_the_same_uid_on_an_already_linked_row_still_signs_in(fakes):
     assert account.organization_id == str(org.id)
 
 
-async def test_provisioning_a_brand_new_account_is_not_gated_on_verification(fakes):
-    # Spec section 4 deliberately permits an unverified address to sign in. The distinction is
-    # that a NEW account has no victim: nothing pre-existing is handed over, and the grant is
-    # for the account this token just created. Only LINKING needs the mailbox proven.
-    account = await account_service.resolve_or_provision(None, _token(verified=False))
+async def test_an_unverified_new_account_gets_a_user_and_nothing_else(fakes):
+    # THE BOT DEFENCE. Anyone can mint Identity Platform accounts against the public web key; an
+    # account whose address is unproven is a users row and no more - no organisation, so no
+    # ledger, no grant and no admission. A script registering addresses in a loop gets nothing.
+    account = await account_service.resolve_or_provision(
+        None, _token(verified=False), organization_name="Acme")
+    assert len(fakes.users) == 1
+    assert fakes.orgs == [] and fakes.memberships == [] and fakes.grants == []
+    assert account.provisioned is False
+    assert account.organization_id == ""
+    assert fakes.users[0].pending_organization_name == "Acme"
+
+
+async def test_verifying_the_address_provisions_the_organisation_and_its_one_grant(fakes):
+    await account_service.resolve_or_provision(
+        None, _token(verified=False), organization_name="Acme")
+    account = await account_service.resolve_or_provision(None, _token(verified=True))
+    assert len(fakes.orgs) == 1 and len(fakes.memberships) == 1
+    assert fakes.orgs[0].name == "Acme", "the name typed at sign-up was lost on verification"
+    assert fakes.grants == [fakes.orgs[0].id]
     assert account.provisioned is True
-    assert account.email_verified is False
-    assert len(fakes.users) == 1 and fakes.grants == [fakes.orgs[0].id]
+    assert account.organization_id == str(fakes.orgs[0].id)
+    assert fakes.users[0].pending_organization_name is None
+
+    again = await account_service.resolve_or_provision(None, _token(verified=True))
+    assert len(fakes.orgs) == 1 and fakes.grants == [fakes.orgs[0].id]
+    assert again.provisioned is False
+
+
+async def test_closing_signup_stops_a_pending_account_from_being_provisioned(fakes, monkeypatch):
+    await account_service.resolve_or_provision(None, _token(verified=False))
+    monkeypatch.setattr(polcfg, "CONSOLE_SIGNUP_ENABLED", False)
+    account = await account_service.resolve_or_provision(None, _token(verified=True))
+    assert fakes.orgs == [] and account.organization_id == ""
+
+
+async def test_a_verified_token_replaces_an_unverified_squatter_for_the_same_address(fakes):
+    # Somebody registered the victim's address and never verified it. The real owner, proving
+    # the mailbox, must not be locked out of signing up by that stranger's row.
+    await account_service.resolve_or_provision(
+        None, _token(uid="uid-squatter", email="victim@example.com", verified=False))
+    account = await account_service.resolve_or_provision(
+        None, _token(uid="uid-owner", email="victim@example.com", verified=True))
+    assert len(fakes.users) == 1
+    assert fakes.users[0].firebase_uid == "uid-owner"
+    assert account.provisioned is True and len(fakes.orgs) == 1
+
+
+async def test_a_verified_row_is_never_replaced_by_another_uid(fakes):
+    await account_service.resolve_or_provision(
+        None, _token(uid="uid-owner", email="person@example.com", verified=True))
+    with pytest.raises(account_service.LinkRefused):
+        await account_service.resolve_or_provision(
+            None, _token(uid="uid-other", email="person@example.com", verified=True))
+    assert fakes.users[0].firebase_uid == "uid-owner"
+
+
+async def test_an_unverified_token_never_replaces_a_squatter_either(fakes):
+    await account_service.resolve_or_provision(
+        None, _token(uid="uid-first", email="person@example.com", verified=False))
+    with pytest.raises(account_service.LinkRefused):
+        await account_service.resolve_or_provision(
+            None, _token(uid="uid-second", email="person@example.com", verified=False))
+    assert fakes.users[0].firebase_uid == "uid-first"
 
 
 async def test_two_uids_differing_only_in_case_get_different_slugs(fakes):

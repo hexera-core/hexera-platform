@@ -18,11 +18,13 @@ from meshpipeline.persistence.repositories.job_repository import JobRepository
 from meshpipeline.persistence.repositories.organization_repository import (
     OrganizationRepository,
 )
+from meshpipeline.persistence.repositories.user_repository import UserRepository
 
 log = logging.getLogger(__name__)
 
 organization_repo = OrganizationRepository()
 job_repo = JobRepository()
+user_repo = UserRepository()
 
 #: THE SUBSCRIPTION STATES THAT STILL PAY FOR OVERAGE. `past_due` is in on purpose: the provider is
 #: retrying the card on its own dunning schedule, and billing_service deliberately keeps serving
@@ -54,10 +56,18 @@ async def admit(db: AsyncSession, *, owner_id: str, organization_id: str) -> str
     """Refuse a job this tenant cannot pay for; otherwise return the plan whose limits apply."""
     organization = await _organization(db, organization_id)
     if organization is None:
-        # NO ORGANISATION, NO LEDGER. Every account provisioned since 0003 has one, so this is the
-        # owner-only posture 0004's backfill left behind or a dev deployment with no tenancy. There
-        # is nothing to debit at the job's end either (metering_service skips it), so there is
-        # nothing to protect by refusing here.
+        # A SIGNED-UP PERSON WITH NO ORGANISATION IS WAITING ON EMAIL VERIFICATION (0018): the
+        # organisation and its grant are created only once the address is proven. Admitting them
+        # here would turn the unverified window into an unlimited free tier - nothing would be
+        # debited at the job's end either - so they are refused until they verify.
+        if await user_repo.get_by_email(db, owner_id) is not None:
+            log.info("refused a job for an account that has no organisation yet")
+            raise OutOfCredits(
+                "Verify your email address to start runs. Your free credits are added as soon "
+                "as it is verified.")
+        # NO ORGANISATION, NO LEDGER, AND NO ACCOUNT ROW: the owner-only posture 0004's backfill
+        # left behind or a dev deployment with no tenancy. There is nothing to debit at the job's
+        # end either (metering_service skips it), so there is nothing to protect by refusing here.
         return ""
 
     plan = paying_plan(organization)

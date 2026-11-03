@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from meshpipeline.api.v1 import (
+    account,
     admin_billing,
     admin_ops,
     admin_repair,
@@ -34,6 +35,8 @@ router.include_router(ws.router,         prefix="/ws",         tags=["stream"])
 router.include_router(chat.router,       prefix="/chat",       tags=["chat"])
 router.include_router(credits.router,    prefix="/credits",    tags=["credits"])
 router.include_router(organization.router, prefix="/organization", tags=["organization"])
+# THE DATA-SUBJECT ROUTES: export and erasure of the caller's own account (privacy_service).
+router.include_router(account.router,    prefix="/account",    tags=["account"])
 router.include_router(api_keys.router,   prefix="/api-keys",   tags=["api-keys"])
 router.include_router(geometry.router,   prefix="/geometry",   tags=["geometry"])
 router.include_router(billing.router,    prefix="/billing",    tags=["billing"])

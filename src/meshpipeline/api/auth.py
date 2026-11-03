@@ -11,7 +11,7 @@ from typing import Annotated
 from fastapi import APIRouter, Body, Header, HTTPException
 
 import meshpipeline.settings.policy as polcfg
-from meshpipeline.application import account_service
+from meshpipeline.application import account_service, audit
 from meshpipeline.contracts import firebase_token
 from meshpipeline.persistence.session import get_db
 
@@ -52,6 +52,7 @@ async def create_session(
         # is a live credential, and the third would put an address into the log of every failed
         # attempt - including attempts by people who do not have an account here.
         logger.info("sign-in refused: token did not verify")
+        audit.record("auth.session", outcome="refused", detail={"cause": "invalid_token"})
         raise HTTPException(status_code=401, detail=REFUSAL) from None
 
     try:
@@ -64,15 +65,22 @@ async def create_session(
         # not proven it owns; answering it differently - a distinct status, a distinct message,
         # even a distinct latency profile - would turn this endpoint into an oracle for which
         # addresses hold accounts here. The cause is in the log, not in the response.
+        audit.record("auth.session", outcome="refused", detail={"cause": "link_refused"})
         raise HTTPException(status_code=401, detail=REFUSAL) from None
     except account_service.SignupDisabled:
         # 403, not 401, and the one refusal that says something. A user can act on "this
         # deployment is not open"; it discloses no account existence, because it is the answer
         # for every unrecognised token alike.
+        audit.record("auth.session", outcome="refused", detail={"cause": "signup_disabled"})
         raise HTTPException(
             status_code=403,
             detail="This deployment is not accepting new accounts") from None
 
+    audit.record("auth.session", actor=account.user_id,
+                 organization_id=account.organization_id,
+                 # "verified", not "email_verified": the scrubber redacts any key naming email.
+                 detail={"verified": account.email_verified,
+                         "provisioned": account.provisioned})
     return {
         "user_id": account.user_id,
         "owner_id": account.owner_id,

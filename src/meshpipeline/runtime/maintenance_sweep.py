@@ -13,7 +13,7 @@ from meshpipeline.application.maintenance import cleanup as _cleanup
 from meshpipeline.application.maintenance import reconcile as _reconcile
 
 _CLI_DOC = ("One-shot maintenance sweep: reap stalled jobs, purge expired uploads, reconcile "
-            "orphaned objects, then exit.")
+            "orphaned objects, finish account erasures, then exit.")
 
 #: WHAT THE HOSTED SCHEDULE RUNS, in order, each named by the Celery task it stands in for.
 #:
@@ -34,6 +34,7 @@ HOSTED_STEPS: tuple[tuple[str, Callable[[], dict]], ...] = (
     ("tasks.cleanup.reap_stalled_jobs", lambda: _cleanup.reap_stalled_jobs()),
     ("tasks.cleanup.purge_expired_geometry_sources", lambda: _cleanup.purge_expired_geometry_sources()),
     ("tasks.cleanup.reconcile_orphan_artifacts", lambda: _reconcile.reconcile_orphan_artifacts()),
+    ("tasks.cleanup.sweep_account_erasures", lambda: _cleanup.sweep_account_erasures()),
 )
 
 #: Beat entries this job does NOT run, each with where it runs instead - or why nowhere hosted.
