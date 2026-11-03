@@ -103,7 +103,7 @@ def test_the_same_mesh_back_is_not_kept_and_the_model_is_untouched(tmp_path):
         finally:
             M.TRIGGER_SJ = old
         assert rec["ran"] and rec["tried"] == 1 and rec["kept"] == 0
-        assert rec["volumes"][0]["why"] == "no better"
+        assert rec["volumes"][0]["why"] == "no cavity came back better"
         after = gmsh.model.mesh.getElementsByType(4)
         assert np.array_equal(before[0], after[0]) and np.array_equal(before[1], after[1])
     finally:
