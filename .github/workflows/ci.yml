@@ -26,7 +26,10 @@ permissions:
 on:
   push:
     branches: [main]
+  # A draft runs nothing (see preflight). ready_for_review is listed because it is not a default
+  # activity type: without it, leaving draft would not start CI until the next push.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   # Weekly, because a dependency advisory lands on nobody's commit: CodeQL and the dependency
   # audit go stale against a repository that simply was not touched that week.
   schedule:
@@ -58,7 +61,10 @@ env:
 jobs:
   preflight:
     name: Preflight
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # A DRAFT PULL REQUEST RUNS NO CI, to save Actions spend. Every lane needs this job, so
+    # skipping it here skips them all; ci-gate is the one job that has to be told separately.
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       checkout_ref: ${{ steps.checkout-ref.outputs.ref }}
@@ -77,7 +83,7 @@ jobs:
           # `target_ref` input a one-line change instead of a twelve-job one.
           echo "ref=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
-      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.checkout-ref.outputs.ref }}
           fetch-depth: 0
@@ -113,10 +119,10 @@ jobs:
       # Read: the code-scanning probe. Write: zizmor's SARIF upload, when code scanning is on.
       security-events: write
       actions: read
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -139,10 +145,10 @@ jobs:
     name: Lint (ruff)
     needs: [preflight]
     if: needs.preflight.outputs.run_python == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -153,10 +159,10 @@ jobs:
     name: Typecheck (mypy ratchet)
     needs: [preflight]
     if: needs.preflight.outputs.run_python == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -168,10 +174,10 @@ jobs:
     name: Repository contracts
     needs: [preflight]
     if: needs.preflight.outputs.run_python == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -209,7 +215,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     # A sixth of the work, and the old 40 was already generous for the whole of it. Six, not four: the
     # partition is by file size, so any change to a test file reshuffles it, and at four the heaviest
     # shard runs near 20 min, so leave cleanup and runner-variance headroom (#320 crossed it twice).
@@ -217,7 +223,7 @@ jobs:
     # timed out twice on it with no unit test changed - runner speed, not a hang.
     timeout-minutes: 35
     steps:
-      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -240,10 +246,10 @@ jobs:
     name: FEA accuracy (CalculiX)
     needs: [preflight]
     if: needs.preflight.outputs.run_python == 'true' && needs.preflight.outputs.full_ci == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -290,10 +296,10 @@ jobs:
     name: Architecture and provider contracts
     needs: [preflight]
     if: needs.preflight.outputs.run_python == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -308,10 +314,10 @@ jobs:
     name: Dependency audit
     needs: [preflight]
     if: needs.preflight.outputs.run_python == 'true' && needs.preflight.outputs.full_ci == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -344,10 +350,10 @@ jobs:
       # findings are produced and thrown away, which looks like a scanner fault and is a grant.
       actions: read
     if: needs.preflight.outputs.run_python == 'true' && needs.preflight.outputs.full_ci == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -583,10 +589,10 @@ jobs:
     # the union legible, and refusing to look at it would replace a real failure with silence. The
     # shard's own red X still fails the gate on its own.
     if: ${{ !cancelled() && needs.preflight.outputs.run_images == 'true' && needs.preflight.outputs.full_ci == 'true' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -611,10 +617,10 @@ jobs:
     name: UI in a real browser
     needs: [preflight]
     if: needs.preflight.outputs.run_python == 'true' && needs.preflight.outputs.full_ci == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -629,10 +635,10 @@ jobs:
     name: Workspace (pnpm)
     needs: [preflight]
     if: needs.preflight.outputs.run_web == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7 # v1 (v7.0.1)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
@@ -672,9 +678,9 @@ jobs:
       - web
     # `always()` would also fire for a run the concurrency group cancelled, posting a red required
     # check nobody is waiting on. `!cancelled()` still runs the gate when a lane genuinely fails,
-    # which is the entire point of it.
-    if: ${{ !cancelled() }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # which is the entire point of it. A skipped preflight is a draft, which has no verdict to give.
+    if: ${{ !cancelled() && needs.preflight.result != 'skipped' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Verify every selected lane
