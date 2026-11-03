@@ -414,6 +414,29 @@ for secret_name in ${WORKER_SECRET_NAMES[@]+"${WORKER_SECRET_NAMES[@]}"}; do
   fi
 done
 
+# 2a) THE SETTINGS OBJECT THE FLEET READS ON EVERY BOOT. startup.sh fetches WORKER_ENV_URI with
+#    the instance's own credential before it starts anything, so without this binding every
+#    instance boots, 403s on that one object, and exits - while the group reports a RUNNING VM and
+#    the rollout simply times out, which is the least informative way for this to fail. The bucket
+#    is created above with a comment claiming the object "is readable by the fleet's identity";
+#    this is what makes that true. dev-areen, dev-areen2 and dev-pranav all carry this binding,
+#    added by hand after each of them hit the same wall; dev-rehaan did not, and its first fleet
+#    deploy failed with "no VM moved any closer for 2405s" (2026-11-03).
+#    objectViewer, not objectUser: the fleet READS this object and must never rewrite it.
+if [ -n "${WORKER_ENV_URI:-}" ]; then
+  _we_bucket="${WORKER_ENV_URI#gs://}"; _we_bucket="${_we_bucket%%/*}"
+  if gc storage buckets add-iam-policy-binding "gs://${_we_bucket}" \
+       --member "serviceAccount:${WORKER_SA_EMAIL}" --role roles/storage.objectViewer >/dev/null; then
+    log "gs://${_we_bucket} += roles/storage.objectViewer -> ${WORKER_SA_EMAIL}"
+  else
+    warn "could not let ${WORKER_SA_EMAIL} read ${WORKER_ENV_URI}, which every instance fetches at
+       boot. The fleet will roll onto instances that exit immediately and the rollout will time out
+       rather than name this; the command is:
+         gcloud storage buckets add-iam-policy-binding gs://${_we_bucket} --project ${GCP_PROJECT_ID} \\
+           --member serviceAccount:${WORKER_SA_EMAIL} --role roles/storage.objectViewer"
+  fi
+fi
+
 # 2b) THE MESH EXECUTOR'S CALLER. The worker hands every mesh to the environment's Cloud Run job:
 #    it uploads the workspace to the exchange bucket and starts the job with an override naming it.
 #    apply-iam.sh grants that caller only when MESH_INVOKER is set, and no deploy sets it, so a

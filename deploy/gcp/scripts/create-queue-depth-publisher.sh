@@ -308,7 +308,7 @@ if ! gc compute instance-groups managed describe "${WORKER_MIG}" \
   warn "managed instance group ${WORKER_MIG} does not exist yet, so there is nothing to attach the
        autoscaling policy to. The publisher and its schedule ARE in place and the metric is being
        written. Create the fleet, then reconcile this stage again to attach the policy:
-         DEPLOY_COMPONENTS=workers  (this deploy, stage 17 - or tick `workers`)
+         DEPLOY_COMPONENTS=workers  (this deploy, stage 17 - or tick the workers box)
          DEPLOY_COMPONENTS=queue    (a later run, once the group exists)"
   log "autoscaler      deferred - ${WORKER_MIG} not created yet"
   exit 0
