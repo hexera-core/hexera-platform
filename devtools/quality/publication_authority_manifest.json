@@ -4333,6 +4333,21 @@
   ]
  },
  {
+  "context": "engines/snappy/drivers.py::_build_snappy_deterministic::note#8|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_build_snappy_deterministic",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 8,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::parameter"
+  ]
+ },
+ {
   "context": "engines/snappy/drivers.py::_build_snappy_deterministic::plan#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
   "path": "engines/snappy/drivers.py",
   "qualname": "_build_snappy_deterministic",
@@ -5106,6 +5121,36 @@
   "gated_required": true,
   "roots": [
    "pipeline/graph.py::execution_publisher"
+  ]
+ },
+ {
+  "context": "pipeline/repair_words.py::aopen::stage#1|ExecutionEventPublisher|execution-owned|pipeline/repair_words.py::execution_publisher",
+  "path": "pipeline/repair_words.py",
+  "qualname": "aopen",
+  "semantic": "stage",
+  "method": "astage",
+  "ordinal": 1,
+  "receiver": "_pub",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/repair_words.py::execution_publisher"
+  ]
+ },
+ {
+  "context": "pipeline/repair_words.py::asay::note#1|ExecutionEventPublisher|execution-owned|pipeline/repair_words.py::execution_publisher",
+  "path": "pipeline/repair_words.py",
+  "qualname": "asay",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 1,
+  "receiver": "_pub",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/repair_words.py::execution_publisher"
   ]
  },
  {

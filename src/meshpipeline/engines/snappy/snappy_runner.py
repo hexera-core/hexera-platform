@@ -912,6 +912,7 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # and the run says so. No field (one body, or none read) authors the historical dict.
     _gap = None
     _gap_geom = _gap_refine = ""
+    _planned_cells = max_cells          # the plan's budget before the gap boxes price themselves in
     if gap_field is not None:
         _gap, max_cells = _plan_body_gaps(
             gap_field, wall_cell=base_actual / (2 ** smax), budget=max_cells,
@@ -943,8 +944,20 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # the PLAN's own budget - the planner's, kept through every re-plan of the pass (the driver
     # carries it as _plan_cells): the brake measures every pass against what was asked for, never
     # against a budget a previous trip already cut
-    (ws / PLAN_CELLS_FILE).write_text(json.dumps(
-        {"plan_cells": int(strategy.get("_plan_cells") or max_cells)}))
+    #
+    # ... PLUS WHAT THE GAP BOXES WERE PRICED AT (RUN-8). The boxes above raise snappy's own ceiling
+    # to pay for 13 cells across every gap between the body's parts - cells the plan asks for on
+    # purpose. Measured against the planner's budget alone, the brake read that paid-for mesh as a
+    # runaway: a slotted wing (JAXA JSM narrow gap: a 2M plan raised to 6.44M for its gaps) was
+    # stopped at 4.97M castellated cells, "2.5 times its budget", though it meshed production-grade
+    # at 6.24M without the brake - and no re-plan could shrink it (the boxes price themselves back
+    # in), so no mesh came out at all. A plan the boxes did not raise keeps exactly its old record.
+    _plan_rec: dict = {"plan_cells": int(strategy.get("_plan_cells") or _planned_cells)}
+    if max_cells > _planned_cells:
+        _gap_cells = int(max_cells - _planned_cells)
+        _plan_rec = {"plan_cells": _plan_rec["plan_cells"] + _gap_cells,
+                     "planned_cells": _plan_rec["plan_cells"], "gap_cells": _gap_cells}
+    (ws / PLAN_CELLS_FILE).write_text(json.dumps(_plan_rec))
     if cast_cells != max_cells and _final:
         logger.info("render_snappy_case: the finished mesh is estimated at %.3g cells with its layers, "
                     "%.1f times the %d budget - castellation budget %d", _final, _final / max_cells,

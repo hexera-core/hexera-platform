@@ -18,7 +18,7 @@ import { fmtBytes } from "./format.js";
 /** Stage lanes, in the order the pipeline runs them. Presentation only - a stage the UI has
  *  no word for still renders, via `laneLabel`. */
 const LANE_LABELS = {
-  intake: "Requirements", engine_select: "Engine selection",
+  intake: "Requirements", engine_select: "Engine selection", repair: "Repair check",
   geometry_admission: "Input validation", builder: "Mesh creation",
   executor: "Mesh validation", classifier: "Diagnostics",
   reviewer: "Review", outcome: "Outcome", result: "Result",

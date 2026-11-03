@@ -49,15 +49,20 @@ QD_SCHEDULER="${QUEUE_DEPTH_SCHEDULER_JOB:-${DEPLOYMENT_ID}-queue-depth}"
 #
 # Empty prefix - shared dev, production, a local stack - leaves this exactly `simulation_jobs`.
 QUEUE_NAME="${QUEUE_NAME:-${REDIS_KEY_PREFIX:-}simulation_jobs}"
-# THE GEOMETRY-CHECK QUEUE RIDES ALONG. celery_app.py routes the scout and the naming to
-# `geometry_checks`, and every worker instance drains it from a slot of its own (worker/startup.sh).
+# THE GEOMETRY-CHECK QUEUE COUNTS TOWARDS DEMAND. celery_app.py routes the scout and the naming to
+# `geometry_checks`, and every worker instance drains it from slots of its own (worker/startup.sh).
 # Its depth is published as a second series of the same metric - the `task_id` label tells the two
-# apart - so a backlog of checks is visible where the fleet's backlog is. THE AUTOSCALER STILL
-# READS QUEUE_NAME ALONE (the filter in step 7): a check is seconds of work and an instance takes
-# minutes to arrive, so a fleet sized on that queue would add machines to a backlog that had
-# already drained. Under the same prefix, for the reason given above.
+# apart - and its queued + running checks count towards the demand on QUEUE_NAME's series, which is
+# the one the autoscaler's filter names (step 7): a check takes minutes on a shared-dev worker, two
+# at a time an instance, and a fleet that counted none of them left uploads waiting on two slots
+# (1 Nov). Under the same prefix, for the reason given above.
 GEOMETRY_QUEUE_NAME="${GEOMETRY_QUEUE_NAME:-${REDIS_KEY_PREFIX:-}geometry_checks}"
 QUEUE_NAMES="${QUEUE_NAME},${GEOMETRY_QUEUE_NAME}"
+# The check slots one instance carries - the geometry container's --concurrency in worker/startup.sh
+# (tests/unit/deploy/test_geometry_check_queue.py holds the two equal) - and the jobs one instance is
+# worth to the autoscaler, so the checks' instances are said in the demand's own unit.
+GEOMETRY_SLOTS_PER_INSTANCE="${GEOMETRY_SLOTS_PER_INSTANCE:-2}"
+JOBS_PER_INSTANCE="${WORKER_JOBS_PER_INSTANCE:-1}"
 # THE METRIC THE AUTOSCALER READS IS DEMAND, NOT DEPTH. `queue_depth` counts jobs WAITING, so a
 # fleet sized on it shrinks to its floor the moment a burst drains - deleting whichever VMs it
 # likes, including the ones running jobs. Shared dev, 2026-09-29: three scale-ins to 1 in two hours
@@ -134,6 +139,7 @@ PY
 log "program: ${PROGRAM#"${REPO_ROOT}/"} (${QUEUE_DEPTH_PROGRAM_BYTES} bytes, sha256 ${QUEUE_DEPTH_PROGRAM_SHA256:0:12})"
 
 export QUEUE_DEPTH_PROGRAM_B64 QD_SA_EMAIL APP_IMAGE QUEUE_NAME QUEUE_NAMES
+export GEOMETRY_QUEUE_NAME GEOMETRY_SLOTS_PER_INSTANCE JOBS_PER_INSTANCE
 export QUEUE_DEPTH_SA_EMAIL="${QD_SA_EMAIL}"
 export CLOUDRUN_QUEUE_DEPTH_JOB="${QD_JOB}"
 export VPC_NETWORK="${VPC_NETWORK:-default}"

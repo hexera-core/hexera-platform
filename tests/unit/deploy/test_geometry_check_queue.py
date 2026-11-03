@@ -202,3 +202,89 @@ def test_one_connection_measures_every_queue(monkeypatch):
     assert mod.queue_depths("redis://broker", ["a", "b"]) == {"a": 2, "b": 0}
     assert calls == ["a", "b", "close"]
     assert mod.queue_depth("redis://broker", "a") == 2
+
+
+# the checks count towards the fleet's demand (1 Nov)
+#
+# Shared dev, 1 Nov: two checks ran at a time and the autoscaler never heard of them - its demand counted the
+# simulation queue alone - so uploads waited on two slots however long the line grew, and a fleet at zero
+# would never have woken for one.
+
+
+def test_the_demand_is_the_larger_of_the_jobs_and_the_instances_the_checks_need(monkeypatch):
+    mod = _load_publisher(monkeypatch, {"QUEUE_NAME": "simulation_jobs"})
+    # nothing but checks: five checks at two slots an instance need three instances
+    assert mod.demand(0, 0, 3, 2, slots=2, jobs_per_instance=1) == 3
+    # a running mesh job and two running checks share one machine: the larger, never the sum
+    assert mod.demand(0, 1, 0, 2, slots=2, jobs_per_instance=1) == 1
+    assert mod.demand(2, 1, 1, 0, slots=2, jobs_per_instance=1) == 3
+    # said in the autoscaler's unit: an instance worth two jobs needs demand 2 for each instance of checks
+    assert mod.demand(0, 0, 1, 0, slots=2, jobs_per_instance=2) == 2
+    assert mod.demand(0, 0, 0, 0) == 0
+
+
+def test_the_running_checks_are_counted_from_the_key_every_running_check_keeps(monkeypatch):
+    from meshpipeline.adapters.pipeline_execution import geometry_running as gr
+
+    mod = _load_publisher(monkeypatch, {"QUEUE_NAME": "simulation_jobs"})
+    # restated in the publisher (it may import nothing of the application): the two must agree
+    assert gr.RUNNING_CHECK_KEY_TEMPLATE.format(task_id="*") == mod.RUNNING_CHECK_KEY_PATTERN
+
+    class _Client:
+        def scan_iter(self, match, count):
+            import fnmatch
+            keys = ["dev-x:fleet:geometry-running:geometry-check-a", "dev-x:fleet:geometry-running:geometry-naming-a",
+                    "fleet:geometry-running:other-env", "dev-x:fleet:consumers:geometry_checks:n1"]
+            return iter([k for k in keys if fnmatch.fnmatchcase(k, match.replace("\\", ""))])
+    assert mod.running_checks(_Client(), "dev-x:") == 2
+    assert gr.count_running(_Client(), "dev-x:") == 2
+
+
+def test_the_publisher_is_told_the_check_slots_the_fleet_actually_runs():
+    geo = _container_block("hexera-geometry-worker")
+    slots = int(re.search(r"--concurrency (\d+)", geo).group(1))
+    script = (REPO / "deploy" / "gcp" / "scripts" / "create-queue-depth-publisher.sh").read_text(encoding="utf-8")
+    assert f'GEOMETRY_SLOTS_PER_INSTANCE="${{GEOMETRY_SLOTS_PER_INSTANCE:-{slots}}}"' in script
+    manifest = (REPO / "deploy" / "gcp" / "cloud-run" / "queue-depth-job.yaml").read_text(encoding="utf-8")
+    for var in ("GEOMETRY_QUEUE_NAME", "GEOMETRY_SLOTS_PER_INSTANCE", "JOBS_PER_INSTANCE"):
+        assert f"- name: {var}" in manifest and f"${{{var}}}" in manifest
+        assert var in script
+
+
+def test_a_geometry_task_is_marked_running_while_it_runs_and_unmarked_after():
+    from meshpipeline.adapters.pipeline_execution import geometry_running as gr
+
+    class _Client:
+        def __init__(self):
+            self.keys: dict = {}
+
+        def set(self, key, value, ex=None):
+            self.keys[key] = ex
+
+        def delete(self, key):
+            self.keys.pop(key, None)
+    client = _Client()
+    with gr.running("geometry-check-s1", client_factory=lambda: client, prefix="dev-x:"):
+        assert client.keys == {"dev-x:fleet:geometry-running:geometry-check-s1": gr.RUNNING_TTL_S}
+    assert client.keys == {}
+
+
+def test_a_queued_check_is_found_in_the_queue_with_the_number_ahead_of_it():
+    import json as _json
+
+    from meshpipeline.adapters.pipeline_execution import geometry_running as gr
+
+    class _Client:
+        # the Redis transport pushes on the left: the right end is taken first
+        items = [_json.dumps({"headers": {"id": t}}) for t in ("c", "mine", "b", "a")]
+
+        def exists(self, key):
+            return 0
+
+        def llen(self, key):
+            return len(self.items)
+
+        def lrange(self, key, start, end):
+            return self.items[start:]
+    assert gr.queue_state("mine", client_factory=_Client, prefix="") == {"ahead": 2}
+    assert gr.queue_state("gone", client_factory=_Client, prefix="") is None

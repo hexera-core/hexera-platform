@@ -9,13 +9,14 @@ import { createCheckProgress, durationWords } from "./check_progress.js";
 
 const STEPS = [
   ["engine", "Choosing the mesh engine…", "Chose the mesh engine"],
+  ["repair", "Checking your part for repair…", "Checked your part"],
   ["plan", "Planning the mesh…", "Planned the mesh"],
   ["mesh", "Meshing on the cloud mesher…", "Meshed"],
   ["quality", "Checking quality…", "Checked quality"],
   ["review", "Reviewing the mesh against your brief…", "Reviewed"],
 ];
 /* which lane opening starts which step */
-const LANE_STEP = { engine_select: "engine", builder: "plan", executor: "quality", classifier: "quality",
+const LANE_STEP = { engine_select: "engine", repair: "repair", builder: "plan", executor: "quality", classifier: "quality",
                     reviewer: "review" };
 /* a step this long with no word from the run gets a note: it is still running, and the page will move */
 const QUIET_NOTE_MS = 10 * 60 * 1000;
@@ -47,11 +48,12 @@ export function createRunProgress(now = () => Date.now()) {
     s.state = "done"; s.seconds = Math.max(0, (at - s.t0) / 1000);
   }
   /** `key` starts now: every step before it that was open is done, and any it skipped is done too
-   *  (a pinned engine opens no engine lane; an engine without a planner sends no plan). */
+   *  (a pinned engine opens no engine lane; an engine without a planner sends no plan) - except the
+   *  repair check: a run that never opened it (no part on disk, a re-review) did not check one. */
   function start(key, at) {
     const i = idx(key);
     steps.forEach((s, j) => {
-      if (j < i) { if (s.state === "active") finish(s, at); else if (s.state === "todo") s.state = "done"; }
+      if (j < i) { if (s.state === "active") finish(s, at); else if (s.state === "todo" && s.key !== "repair") s.state = "done"; }
       // a step run again (a second meshing pass) makes the steps after it to do again
       else if (j > i && s.state !== "todo") Object.assign(s, { state: "todo", seconds: null, t0: null, label: STEPS[j][2] });
     });
@@ -116,12 +118,12 @@ export function createRunProgress(now = () => Date.now()) {
       s.label = ok ? "Review passed" : "Review asked for changes";
       finish(s, at);
     },
-    /** a rebuild: the plan, the mesh and the checks run again; the engine stands */
+    /** a rebuild: the plan, the mesh and the checks run again; the engine and the repair check stand */
     attempt(n, at) {
       touch(at);
       if (!(n > attempt)) return;
       attempt = n;
-      steps.forEach((s) => { if (s.key !== "engine") Object.assign(s, { state: "todo", seconds: null, t0: null, label: STEPS[idx(s.key)][2] }); });
+      steps.forEach((s) => { if (s.key !== "engine" && s.key !== "repair") Object.assign(s, { state: "todo", seconds: null, t0: null, label: STEPS[idx(s.key)][2] }); });
       meshInfo = null;
     },
     final(data, at) {

@@ -177,10 +177,10 @@ docker run -d --name hexera-worker --restart always --stop-timeout 75 --hostname
 # part... in a few seconds". This container consumes ONLY `geometry_checks` (celery_app.py
 # task_routes), so a check always has a slot a mesh job cannot occupy. Same image, same settings,
 # same mounts. Two slots, because two uploads arriving together is ordinary and a check is light
-# enough that the instance carries both beside a running job. NOT counted by the autoscaler: a new
-# instance takes minutes to arrive and a check takes seconds to drain, so the slots here are the
-# capacity lever, not the fleet's size (create-queue-depth-publisher.sh publishes this queue's
-# depth beside the fleet's, and scales on the fleet's alone).
+# enough that the instance carries both beside a running job. COUNTED by the autoscaler (1 Nov): the
+# demand it reads is the larger of the simulation queue's jobs and the instances the queued + running
+# checks need at two slots each (queue_depth_publisher.demand - its GEOMETRY_SLOTS_PER_INSTANCE is this
+# --concurrency, held equal by tests/unit/deploy/test_geometry_check_queue.py).
 docker rm -f hexera-geometry-worker >/dev/null 2>&1 || true
 docker run -d --name hexera-geometry-worker --restart always --stop-timeout 30 --hostname "${WORKER_HOSTNAME}" \
   "${HEALTH_FLAGS[@]}" \

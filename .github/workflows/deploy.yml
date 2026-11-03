@@ -1424,6 +1424,9 @@ jobs:
       STRIPE_PRICE_EXTRA_CREDITS: ${{ github.event.inputs.slug == '' && vars.STRIPE_PRICE_EXTRA_CREDITS || '' }}
       EXTRA_CREDITS_AMOUNT: ${{ github.event.inputs.slug == '' && vars.EXTRA_CREDITS_AMOUNT || '' }}
       CONSOLE_BASE_URL: ${{ github.event.inputs.slug == '' && vars.CONSOLE_BASE_URL || '' }}
+      # TEMPORARY: production signup stays open while Stripe is not ready. The API owns this gate,
+      # and pinning it here keeps a missing payment-provider setup from closing account creation.
+      CONSOLE_SIGNUP_ENABLED: ${{ needs.target.outputs.deployment_id == 'prod' && 'true' || '' }}
       # A PERSONAL ENVIRONMENT'S OWN API SETTINGS, stated on purpose so a deploy keeps them. The API
       # service's environment is declarative (create-api-service.sh): a flag set on the live service
       # by hand made the next deploy of that environment refuse to run. Repository variable

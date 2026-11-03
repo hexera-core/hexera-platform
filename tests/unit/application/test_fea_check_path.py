@@ -80,7 +80,7 @@ def test_the_naming_step_asks_no_model_for_an_fea_part(monkeypatch):
         "input_kind": "solid-body", "flow": "external", "openings": [], "size_mm": [300.0, 20.0, 20.0],
         "notes": [], "solids": 1, "scale_to_m": 0.001, "unit_assumed": False}, "snapshots": []}
     landed: dict = {}
-    monkeypatch.setattr(gc, "_wait_for_scout", lambda sid: stored)
+    monkeypatch.setattr(gc, "_wait_for_scout", lambda sid, **_k: stored)
     monkeypatch.setattr(gc, "store_status", lambda sid, status, step, **kw: landed.update(status=status, **kw) or landed)
     monkeypatch.setattr(gc, "_name_with_vision", lambda *a, **k: (_ for _ in ()).throw(AssertionError("asked")))
     out = gc._name(session_id="s1", owner_id="o", purpose_text="stress testing", interpretation=None)

@@ -176,7 +176,10 @@
 /* the one overlay a button opens */
 .v-ov{position:absolute;z-index:10;width:300px;max-width:calc(100% - 16px);max-height:calc(100% - 72px);
   overflow-y:auto;overscroll-behavior:contain;border:1px solid var(--overlay-line);border-radius:12px;
-  background:var(--overlay-bg);box-shadow:var(--shadow-2);color:var(--text);font:var(--fs-md)/1.4 var(--sans);
+  /* see-through, so the mesh under an open menu stays visible; the blur keeps the text readable */
+  background:color-mix(in srgb,var(--overlay-bg) 62%,transparent);
+  -webkit-backdrop-filter:blur(6px) saturate(1.1);backdrop-filter:blur(6px) saturate(1.1);
+  box-shadow:var(--shadow-2);color:var(--text);font:var(--fs-md)/1.4 var(--sans);
   animation:v-ov-in .18s cubic-bezier(.16,1,.3,1)}
 .v-ov[hidden]{display:none}
 .v-ov-parts{width:340px}
