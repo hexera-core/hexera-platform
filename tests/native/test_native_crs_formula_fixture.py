@@ -22,7 +22,12 @@ def _scan(path: Path, *, face_scan_s: float = 0.0):
 
 
 def test_builder_removes_the_face_selected_by_geometry_after_step_round_trip(tmp_path):
-    from tools.demo.build_crs_formula_fixture import FaceSelector, build_fixture
+    fixture_builder = pytest.importorskip(
+        "tools.demo.build_crs_formula_fixture",
+        reason="the release image intentionally does not ship repository demo tooling",
+    )
+    FaceSelector = fixture_builder.FaceSelector
+    build_fixture = fixture_builder.build_fixture
 
     source = write_step(tmp_path / "box.step", "MM")
     output = tmp_path / "broken.step"
