@@ -155,3 +155,21 @@ def test_overlapping_shells_merge_into_one_fluid():
     assert any(t.get("fluid") == "enclosed pockets" and t["reached"] for t in res.report["tries"])
     one, _two, many = sw.edge_counts(res.faces)
     assert one == 0 and many == 0
+
+
+def test_an_opening_the_wrap_cannot_keep_is_placed_not_refused():
+    # a hair-thin vessel (0.4 mm across, far below any grid the wrap can draw) beside the main pipe:
+    # no wrap distance keeps it, so the wrap delivers the pipe with that opening placed on its wall
+    # nearest where it is drawn, and says so - the run is never ended on it
+    T, L = _pipe()
+    Tb, Lb = _tube(2, length=0.1, r=0.0002, n=12, port_lo="wall", port_hi="outlet_2")
+    Tb = Tb + np.array([0.03, 0.0, 0.0])
+    T, L = np.concatenate([T, Tb]), np.concatenate([L, Lb])
+    res = sw.wrap_surface(T, L, flow="internal", seed=(0.0, 0.0, 0.0),
+                          ports=("inlet", "outlet", "outlet_2"), cubes=CUBES)
+    assert {"inlet", "outlet", "outlet_2"} <= set(res.labels.tolist())
+    moved = res.report.get("openings_moved") or []
+    assert [m["opening"] for m in moved] == ["outlet_2"]
+    assert moved[0]["moved_m"] < 0.03
+    one, _two, many = sw.edge_counts(res.faces)
+    assert one == 0 and many == 0

@@ -374,9 +374,11 @@ def caveat_lines(c: Mapping) -> list[str]:
                      "mesh report.")
     for m in c.get("openings_moved") or []:
         if isinstance(m, Mapping) and m.get("opening"):
-            lines.append(f"    {m['opening']}: its vessel narrows below what the wrap can draw, so the "
-                         f"opening is placed where the vessel still is, {_mm(m.get('moved_m'))} from "
-                         "where it is drawn.")
+            lines.append(f"    CONCERN - {m['opening']}: no wrap distance tried kept the way to this "
+                         "opening open (it narrows below what the wrap can draw, or leads only into a "
+                         "dead end), so the opening is placed on the wrap's wall nearest where it is "
+                         f"drawn, {_mm(m.get('moved_m'))} from it, with the same area. Check the flow "
+                         "there before trusting results near it.")
     for d in c.get("done") or []:
         if isinstance(d, Mapping) and d.get("engine"):
             lines.append(f"    {lad.engine_label(str(d['engine']))} could not mesh the wrapped surface"
