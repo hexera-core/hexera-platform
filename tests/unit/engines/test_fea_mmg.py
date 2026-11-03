@@ -183,3 +183,68 @@ def test_the_binary_is_found_where_the_image_installs_it(monkeypatch, tmp_path):
     assert M.binary() == str(exe)                         # the image's /opt/mmg/bin/mmg3d_O3
     monkeypatch.setattr(shutil, "which", lambda n: f"/usr/local/bin/{n}")
     assert M.binary() == "/usr/local/bin/mmg3d_O3"        # PATH first
+
+
+def _box_arrays(gmsh, size=0.2):
+    _box_model(gmsh, size=size)
+    return M._volume_arrays(gmsh, 1)
+
+
+def _moved(xyz, tets, tris, free, delta):
+    """A stand-in for mmg's answer: the same elements, one inside corner of the free region moved."""
+    on_b = np.zeros(len(xyz), dtype=bool)
+    on_b[np.unique(tris)] = True
+    in_req = np.zeros(len(xyz), dtype=bool)
+    in_req[tets[~free].ravel()] = True
+    cand = np.flatnonzero(~on_b & ~in_req & np.isin(np.arange(len(xyz)), tets[free].ravel()))
+    assert len(cand), "no inside corner only free elements use"
+    i = int(cand[0])
+    xyz2 = xyz.copy()
+    xyz2[i] += delta
+    vmap = np.arange(len(xyz))
+    vmap[i] = -1                                   # a corner mmg made
+    bmap = np.where(on_b, np.arange(len(xyz)), -1)
+    return i, {"ok": True, "xyz": xyz2, "tets": tets.copy(), "boundary_map": bmap, "vertex_map": vmap}
+
+
+def test_splice_keeps_a_cavity_that_came_back_worse_as_it_was():
+    gmsh = pytest.importorskip("gmsh")
+    try:
+        ntags, xyz, tets, tris, refs = _box_arrays(gmsh)
+        seed = np.zeros(len(tets), dtype=bool)
+        seed[len(tets) // 2] = True
+        free = M.around(tets, seed, 2)
+        i, out = _moved(xyz, tets, tris, free, np.array([0.0, 0.0, 0.0]))
+        # move the corner almost onto a neighbour: its elements come back far worse
+        nb = tets[(tets == i).any(axis=1)][0]
+        j = int(next(n for n in nb if n != i))
+        out["xyz"][i] = xyz[i] + 0.98 * (xyz[j] - xyz[i])
+        got = M.splice(xyz, tets, free, out)
+        assert got["ok"] and got["cavities"] >= 1 and got["improved"] == 0
+        back = {tuple(sorted(t)) for t in got["xyz"][got["tets"]].round(12).reshape(len(got["tets"]), -1).tolist()}
+        want = {tuple(sorted(t)) for t in xyz[tets].round(12).reshape(len(tets), -1).tolist()}
+        assert back == want                        # every element exactly as it went in
+    finally:
+        gmsh.finalize()
+
+
+def test_splice_takes_a_better_cavity_and_leaves_the_required_elements(monkeypatch):
+    gmsh = pytest.importorskip("gmsh")
+    try:
+        ntags, xyz, tets, tris, refs = _box_arrays(gmsh)
+        seed = np.zeros(len(tets), dtype=bool)
+        seed[len(tets) // 2] = True
+        free = M.around(tets, seed, 1)
+        i, out = _moved(xyz, tets, tris, free, np.array([1e-4, 0.0, 0.0]))
+        monkeypatch.setattr(M, "better", lambda _b, _a, **_k: (True, "better"))
+        got = M.splice(xyz, tets, free, out)
+        assert got["ok"] and got["improved"] == got["cavities"] >= 1
+        final = got["xyz"][got["tets"]]
+        assert any(np.allclose(p, out["xyz"][i]) for p in final.reshape(-1, 3))   # the moved corner is in
+        req = {tuple(sorted(map(tuple, t))) for t in xyz[tets[~free]].round(12).tolist()}
+        have = {tuple(sorted(map(tuple, t))) for t in final.round(12).tolist()}
+        assert req <= have                         # the required elements came back as they were
+        assert len(got["tets"]) == len(tets)
+        assert int((got["boundary_map"] >= 0).sum()) == len(np.unique(tris))
+    finally:
+        gmsh.finalize()
