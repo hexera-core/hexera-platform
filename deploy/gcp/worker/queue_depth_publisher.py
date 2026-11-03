@@ -24,14 +24,11 @@ names the deployment and the queue. The autoscaler reads it with
 work one instance can carry - the arithmetic the per-instance arrangement could
 not do.
 
-WHICH QUEUES. QUEUE_NAME is the queue the fleet is SIZED on - the simulation
-queue, where one queued job is one instance's worth of work. QUEUE_NAMES lists
-every queue one run measures, one series each, told apart by the `task_id` label:
-the geometry-check queue rides along so a backlog of checks is visible on the same
-metric, but the autoscaler's filter names QUEUE_NAME alone. A check is seconds of
-work and an instance takes minutes to arrive, so a fleet sized on that queue would
-add machines to a backlog that had already drained; every instance carries slots
-for it instead (deploy/gcp/worker/startup.sh).
+WHICH QUEUES. QUEUE_NAME is the queue whose series the autoscaler's filter names -
+the simulation queue, where one queued job is one instance's worth of work. QUEUE_NAMES
+lists every queue one run measures, one series each, told apart by the `task_id` label.
+The geometry-check queue's depth is one of them, and its checks count towards the
+DEMAND published on QUEUE_NAME's series (GEOMETRY CHECKS COUNT TOO, below).
 
 WHAT THE VALUE MEANS. The length of the Redis list Celery routes a queue's
 tasks to: work QUEUED, not work in flight. A task a worker has already picked up
@@ -50,6 +47,18 @@ job, kept alive by the owner's heartbeat and gone within one lease of the owner
 going away (src/meshpipeline/persistence/lease.py) - so a VM whose worker died
 stops being counted without anyone having to notice. The depth series stays
 exactly as it was: the admin console charts it, and it still means "queued".
+
+GEOMETRY CHECKS COUNT TOO (1 Nov). The check used to ride along as a depth series only, on the
+argument that a check is seconds of work and an instance minutes away. Measured on shared dev it was
+three to ten minutes of work a check, two at a time per instance, and a fleet that counted none of it
+left a backlog of uploads waiting on two slots - and a fleet at zero would never have woken for one. So
+the demand the autoscaler reads is now the larger of what each queue needs: the simulation queue's
+queued + running jobs, and the instances the geometry checks need - their queued + running count
+(one key per running check, adapters/pipeline_execution/geometry_running.py) over the check slots
+every instance carries (GEOMETRY_SLOTS_PER_INSTANCE, deploy/gcp/worker/startup.sh), in jobs'
+units (JOBS_PER_INSTANCE, the autoscaler's single-instance assignment). The larger, not the sum: every
+instance carries its simulation slot and its check slots side by side, so a running mesh job and two
+running checks share one machine.
 
 WHY IT FAILS LOUDLY. The old exporter swallowed every error because it ran in a
 loop beside a worker and the next tick would try again. This runs once per
@@ -99,6 +108,35 @@ REDIS_KEY_PREFIX = os.environ.get("REDIS_KEY_PREFIX", "")
 QUEUE_NAME = os.environ.get("QUEUE_NAME", "simulation_jobs")
 
 
+#: The geometry-check queue (celery_app.py task_routes), under the deployment's prefix: its queued checks and
+#: its running ones count towards demand (see the module text). Empty: no checks counted.
+GEOMETRY_QUEUE_NAME = os.environ.get("GEOMETRY_QUEUE_NAME", "")
+#: How many checks one instance runs at once (the geometry container's --concurrency in startup.sh), and how
+#: many simulation jobs one instance is worth to the autoscaler (its single-instance assignment).
+GEOMETRY_SLOTS_PER_INSTANCE = max(1, int(os.environ.get("GEOMETRY_SLOTS_PER_INSTANCE", "2") or 2))
+JOBS_PER_INSTANCE = max(1, int(os.environ.get("JOBS_PER_INSTANCE", "1") or 1))
+#: One key per RUNNING check, kept alive by the check's own worker - restated from
+#: src/meshpipeline/adapters/pipeline_execution/geometry_running.py (this program may import nothing of the
+#: application); tests/unit/deploy/test_geometry_check_queue.py holds the two together.
+RUNNING_CHECK_KEY_PATTERN = "fleet:geometry-running:*"
+
+
+def demand(sim_queued: int, sim_running: int, geo_queued: int = 0, geo_running: int = 0, *,
+           slots: int | None = None, jobs_per_instance: int | None = None) -> int:
+    """What the fleet must carry, in jobs: the simulation queue's queued + running, or the instances the
+    geometry checks need (queued + running over the slots one instance has), whichever is more."""
+    slots = max(1, int(slots if slots is not None else GEOMETRY_SLOTS_PER_INSTANCE))
+    per = max(1, int(jobs_per_instance if jobs_per_instance is not None else JOBS_PER_INSTANCE))
+    checks = max(0, int(geo_queued)) + max(0, int(geo_running))
+    instances_for_checks = -(-checks // slots)
+    return max(max(0, int(sim_queued)) + max(0, int(sim_running)), instances_for_checks * per)
+
+
+def running_checks(client, prefix: str = "") -> int:
+    """How many geometry checks are running right now: one key per running check (SCAN, never KEYS)."""
+    return len(set(client.scan_iter(match=_glob_escape(prefix) + RUNNING_CHECK_KEY_PATTERN, count=500)))
+
+
 def _queues(scaling_queue: str, listed: str) -> list[str]:
     # The scaling queue FIRST and ALWAYS, whatever the list says: a QUEUE_NAMES that forgot it must
     # not silence the one series the autoscaler reads. Ordered and de-duplicated after that.
@@ -109,10 +147,8 @@ def _queues(scaling_queue: str, listed: str) -> list[str]:
 #: Every queue this run measures, comma-separated in the environment: QUEUE_NAME and whatever
 #: rides along with it - the geometry-check queue, whose backlog is worth seeing where the fleet's
 #: is. One series each, told apart by the `task_id` label below; the autoscaler's filter names
-#: QUEUE_NAME's and reads nothing else, because a check is seconds of work and an instance takes
-#: minutes to arrive - a fleet sized on that queue would add machines to a backlog that had already
-#: drained (deploy/gcp/worker/startup.sh gives every instance slots for it instead). Unset, this
-#: is QUEUE_NAME alone: exactly what the publisher did before the second queue existed.
+#: QUEUE_NAME's, whose DEMAND counts the geometry checks too (demand()). Unset, this is QUEUE_NAME
+#: alone: exactly what the publisher did before the second queue existed.
 QUEUE_NAMES = _queues(QUEUE_NAME, os.environ.get("QUEUE_NAMES", ""))
 
 #: The `generic_task` labels that IDENTIFY the series. The autoscaler's filter has to select
@@ -326,6 +362,12 @@ def observe(redis_url: str, queues: list[str] | None = None, prefix: str | None 
     def _work(client) -> dict:
         depths = {queue: int(client.llen(queue)) for queue in queues}
         running = running_jobs(client, prefix)
+        checks = 0
+        if GEOMETRY_QUEUE_NAME:
+            try:
+                checks = running_checks(client, prefix)
+            except Exception as exc:  # noqa: BLE001 - the simulation demand still publishes
+                logger.warning("could not count the running geometry checks (%s: %s)", type(exc).__name__, exc)
         consumers: dict[str, int] | None = None
         stranded: list[dict] = []
         try:
@@ -334,7 +376,8 @@ def observe(redis_url: str, queues: list[str] | None = None, prefix: str | None 
         except Exception as exc:  # noqa: BLE001 - see the docstring
             logger.warning("could not check the queues' consumers (%s: %s) - depths still published",
                            type(exc).__name__, exc)
-        return {"depths": depths, "running": running, "consumers": consumers, "stranded": stranded}
+        return {"depths": depths, "running": running, "checks_running": checks, "consumers": consumers,
+                "stranded": stranded}
     return _on_one_connection(redis_url, _work)
 
 
@@ -388,9 +431,10 @@ def build_time_series(depths: dict[str, int], *, project_id: str, namespace: str
 
 
 def build_demand_series(queued: int, running: int, *, queue: str, project_id: str,
-                        namespace: str, location: str, end_time: str) -> dict:
+                        namespace: str, location: str, end_time: str, value: int | None = None) -> dict:
     # The same resource labels as the scaling queue's depth series - the autoscaler's filter names
-    # them exactly as before - under the demand metric type, valued queued + running.
+    # them exactly as before - under the demand metric type, valued queued + running (or `value`: the
+    # demand with the geometry checks counted, see demand()).
     return {
         "metric": {"type": DEMAND_METRIC_TYPE},
         "resource": {
@@ -407,13 +451,14 @@ def build_demand_series(queued: int, running: int, *, queue: str, project_id: st
         "valueType": "DOUBLE",
         "points": [{
             "interval": {"endTime": end_time},
-            "value": {"doubleValue": float(int(queued) + int(running))},
+            "value": {"doubleValue": float(int(queued) + int(running) if value is None else int(value))},
         }],
     }
 
 
 def publish(depths: dict[str, int], *, project_id: str, namespace: str, location: str,
-            running: int | None = None, consumers: dict[str, int] | None = None) -> None:
+            running: int | None = None, consumers: dict[str, int] | None = None,
+            checks_running: int = 0) -> None:
     # ONE write for every series: the same timestamp on each, and one request where a request per
     # series would multiply the chance of two writes to one series arriving out of order.
     now = datetime.datetime.now(datetime.UTC).replace(microsecond=0)
@@ -421,9 +466,11 @@ def publish(depths: dict[str, int], *, project_id: str, namespace: str, location
     series = build_time_series(depths, project_id=project_id, namespace=namespace,
                                location=location, end_time=end_time)
     if running is not None:
+        geo_queued = depths.get(GEOMETRY_QUEUE_NAME, 0) if GEOMETRY_QUEUE_NAME else 0
         series.append(build_demand_series(
             depths.get(QUEUE_NAME, 0), running, queue=QUEUE_NAME, project_id=project_id,
-            namespace=namespace, location=location, end_time=end_time))
+            namespace=namespace, location=location, end_time=end_time,
+            value=demand(depths.get(QUEUE_NAME, 0), running, geo_queued, checks_running)))
     if consumers is not None:
         series.extend(build_consumer_series(consumers, project_id=project_id, namespace=namespace,
                                             location=location, end_time=end_time))
@@ -467,16 +514,19 @@ def main() -> None:
 
     seen = observe(redis_url)
     depths, running, consumers = seen["depths"], seen["running"], seen["consumers"]
+    checks = int(seen.get("checks_running") or 0)
     publish(depths, project_id=project_id, namespace=namespace, location=location,
-            running=running, consumers=consumers)
+            running=running, consumers=consumers, checks_running=checks)
     report_stranded(seen["stranded"], namespace=namespace)
     for queue, depth in depths.items():
         logger.info("queue_depth=%d published for %s/%s (queue %s, %s live consumer(s))", depth,
                     namespace, location, queue,
                     "?" if consumers is None else consumers.get(queue, 0))
-    logger.info("worker_demand=%d published for %s/%s (queue %s: %d queued + %d running)",
-                depths.get(QUEUE_NAME, 0) + running, namespace, location, QUEUE_NAME,
-                depths.get(QUEUE_NAME, 0), running)
+    geo_queued = depths.get(GEOMETRY_QUEUE_NAME, 0) if GEOMETRY_QUEUE_NAME else 0
+    logger.info("worker_demand=%d published for %s/%s (queue %s: %d queued + %d running; geometry checks: "
+                "%d queued + %d running over %d slots an instance)",
+                demand(depths.get(QUEUE_NAME, 0), running, geo_queued, checks), namespace, location, QUEUE_NAME,
+                depths.get(QUEUE_NAME, 0), running, geo_queued, checks, GEOMETRY_SLOTS_PER_INSTANCE)
 
 
 if __name__ == "__main__":

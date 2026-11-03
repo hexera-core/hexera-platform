@@ -705,6 +705,24 @@
    "proof_scenario": "guard-replay:same-attempt"
   },
   {
+   "canonical_id": "pipeline/repair_words.py::aopen::stage#1",
+   "historical_alias": "",
+   "historical_id": "",
+   "mapping": "new",
+   "mapping_reason": "the run's Repair check step: the lane opens as the inspection starts",
+   "status": "proven",
+   "proof_scenario": "repair-check:surface-file"
+  },
+  {
+   "canonical_id": "pipeline/repair_words.py::asay::note#1",
+   "historical_alias": "",
+   "historical_id": "",
+   "mapping": "new",
+   "mapping_reason": "the run's Repair check step: one plain line on what the repair check found and did",
+   "status": "proven",
+   "proof_scenario": "repair-check:surface-file"
+  },
+  {
    "canonical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::note#8",
    "historical_alias": "",
    "historical_id": "",

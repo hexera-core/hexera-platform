@@ -83,9 +83,13 @@ def _derived_source(original, repaired_path: Path):
         local_path=repaired_path)
 
 
-def _declined(reason: str, *, route: str = "", detail: dict | None = None) -> dict:
-    """Nothing was changed, and the run says why. Never an error: the gate judges the original."""
-    record = {"attempted": False, "reason": reason, "route": route}
+def _declined(reason: str, *, outcome: str, route: str = "", detail: dict | None = None) -> dict:
+    """Nothing was changed, and the run says why. Never an error: the gate judges the original.
+
+    `outcome` is the same why as a closed word (no_report, off, not_autonomous, no_geometry,
+    format, triage, timeout, unavailable, refused, failed, not_promoted): the run's Repair check
+    line (pipeline/repair_words.py) is read from it, never from the reason's prose."""
+    record = {"attempted": False, "reason": reason, "outcome": outcome, "route": route}
     if detail:
         record["detail"] = detail
     return {"repair_attempt": record}
@@ -265,7 +269,19 @@ def _shadow_row(job_id: str, plan, outcome: str, *, operations=(), stopped_becau
 
 
 async def node_repair_attempt(state: PipelineState) -> dict:
-    """Repair the geometry if the evidence supports it, and hand on whichever file should be meshed."""
+    """Repair the geometry if the evidence supports it, and hand on whichever file should be meshed.
+
+    THE RUN SAYS WHAT HAPPENED. Whichever way the attempt ended, the Repair check lane the
+    inspection opened gets its one line (pipeline/repair_words.py), read from what was recorded."""
+    from meshpipeline.pipeline import repair_words
+
+    out = await _attempt(state)
+    await repair_words.asay(str(state.get("job_id", "unknown")),
+                            repair_words.repair_check_words(state, out))
+    return out
+
+
+async def _attempt(state: PipelineState) -> dict:
     import asyncio
 
     from meshpipeline.cad.repair.triage import ROUTE_CONSERVATIVE_REPAIR, recommend
@@ -274,19 +290,21 @@ async def node_repair_attempt(state: PipelineState) -> dict:
     job_id = state.get("job_id", "unknown")
     report = dict(state.get("repair_report") or {})
     if not report:
-        return _declined("this run carries no inspection to act on")
+        return _declined("this run carries no inspection to act on", outcome="no_report")
     if not rcfg.CAD_REPAIR_ENABLED:
-        return _declined("CAD repair is switched off in this deployment")
+        return _declined("CAD repair is switched off in this deployment", outcome="off")
     if not rcfg.CAD_REPAIR_AUTONOMOUS:
-        return _declined("automatic repair is switched off; the report stands for an operator")
+        return _declined("automatic repair is switched off; the report stands for an operator",
+                         outcome="not_autonomous")
 
     original = _materialized(state)
     if original is None or not original.path or not Path(original.path).exists():
-        return _declined("there is no materialised geometry to repair")
+        return _declined("there is no materialised geometry to repair", outcome="no_geometry")
 
     source = Path(original.path)
     if source.suffix.lower() not in _REPAIRABLE_SUFFIXES:
-        return _declined(f"the bounded repair does not rewrite {source.suffix.lower()} files")
+        return _declined(f"the bounded repair does not rewrite {source.suffix.lower()} files",
+                         outcome="format")
 
     engine = str(state.get("engine", "") or "")
     advice = recommend(repair_status=str(state.get("repair_status", "") or ""),
@@ -295,7 +313,7 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         # Triage declined to recommend an automatic repair: abstained, or routed this to a person
         # or to the customer. Either way it is not ours to attempt.
         # A DIRECTED RE-RUN STILL ANSWERS EVERY DIRECTIVE: none was tried, so each is not_reached.
-        return {**_declined(f"triage routed this to {advice.route}", route=advice.route,
+        return {**_declined(f"triage routed this to {advice.route}", outcome="triage", route=advice.route,
                             detail={"reasons": list(advice.reasons),
                                     "abstain_reason": advice.abstain_reason}),
                 **_not_reached(state, job_id, advice.route)}
@@ -341,12 +359,13 @@ async def node_repair_attempt(state: PipelineState) -> dict:
                         "is meshed", budget_s=float(rcfg.CAD_REPAIR_TIMEOUT_S))
         _shadow_row(job_id, shadow_plan, "not_executed")
         return {**_declined(f"the repair exceeded {rcfg.CAD_REPAIR_TIMEOUT_S:.0f}s",
-                            route=advice.route), **await _triage_only(report, source),
+                            outcome="timeout", route=advice.route), **await _triage_only(report, source),
                 **_not_reached(state, job_id, advice.route, directives)}
     except RepairUnavailable as exc:
         # OUR limitation, never a verdict on the file.
         _shadow_row(job_id, shadow_plan, "not_executed")
-        return {**_declined(f"the repair could not run here: {exc}", route=advice.route),
+        return {**_declined(f"the repair could not run here: {exc}", outcome="unavailable",
+                            route=advice.route),
                 **await _triage_only(report, source),
                 **_not_reached(state, job_id, advice.route, directives)}
     except RepairRefused as exc:
@@ -382,14 +401,15 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         minted = await asyncio.to_thread(
             _mint, report=report, measured=dict(exc.measurements), source=source,
             survivors_path=None)
-        return {**_declined(f"the repair was refused: {exc}", route=advice.route,
+        return {**_declined(f"the repair was refused: {exc}", outcome="refused", route=advice.route,
                             detail={"measurements": exc.measurements}),
                 **minted, **_outcome_state(outcomes)}
     except Exception as exc:  # noqa: BLE001 - a repair that breaks is never the file's fault
         _shadow_row(job_id, shadow_plan, "not_executed")
         logger.warning("node_repair_attempt: the repair failed (%s) - continuing on the original "
                        "- job_id=%s", type(exc).__name__, job_id)
-        return {**_declined(f"the repair failed: {type(exc).__name__}", route=advice.route),
+        return {**_declined(f"the repair failed: {type(exc).__name__}", outcome="failed",
+                            route=advice.route),
                 **await _triage_only(report, source),
                 **_not_reached(state, job_id, advice.route, directives)}
 
@@ -419,7 +439,8 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         _shadow_row(job_id, shadow_plan, "not_executed")
         # THE RUN STAYS ON THE ORIGINAL, so only what a person decides is minted: the repair's
         # survivors describe a file nobody will mesh.
-        return {**_declined(f"the repaired geometry was not promoted: {exc}", route=advice.route),
+        return {**_declined(f"the repaired geometry was not promoted: {exc}", outcome="not_promoted",
+                            route=advice.route),
                 **await _triage_only(report, source),
                 **_not_promoted(state, job_id, advice.route, directives, repair_report, str(exc))}
     except Exception as exc:  # noqa: BLE001
@@ -427,7 +448,7 @@ async def node_repair_attempt(state: PipelineState) -> dict:
                        "continuing on the original - job_id=%s", type(exc).__name__, exc, job_id)
         _shadow_row(job_id, shadow_plan, "not_executed")
         return {**_declined(f"the repaired file could not be adopted: {type(exc).__name__}",
-                            route=advice.route),
+                            outcome="not_promoted", route=advice.route),
                 **await _triage_only(report, source),
                 **_not_promoted(state, job_id, advice.route, directives, repair_report,
                                 type(exc).__name__)}

@@ -63,6 +63,38 @@ KEPT_NOTE = ("The full check did not finish, so the part is shown from a quick d
 #: After this long with no worker on the scout, the line says it is waiting to start; after the
 #: second, why. Production always has a worker on the queue; a dev stack may not.
 WAITING_AFTER_S, WAITING_NOTE_AFTER_S = 10.0, 60.0
+#: WHAT THE LINE SAYS WHILE A CHECK WAITS, from the queue itself (application/geometry_check.queue_state): the
+#: line used to say "No worker is free yet" whenever no step had been recorded for a minute - on shared dev
+#: (1 Nov) while the check was already running, or queued behind two others on the worker's two slots.
+CHECKING = "Checking your geometry…"
+WAITING_SLOT_NOTE = "Waiting for a free slot - checks run a few at a time, and more machines start when it is busy."
+
+
+def queued_words(ahead: int) -> str:
+    """"Queued behind 2 other checks" / "Next in line…"."""
+    n = max(0, int(ahead))
+    if n == 0:
+        return "Next in line…"
+    return f"Queued behind {n} other check{'s' if n != 1 else ''}"
+
+
+def _waiting_words(view: dict, queue: dict | None, waited: float, fallback: str) -> None:
+    """The waiting line said from the queue: queued behind N checks, or checking (the task is running though
+    its first step is not recorded yet), or - when the queue cannot say - waiting, without blaming a worker."""
+    q = queue if isinstance(queue, dict) else {}
+    if q.get("running"):
+        view["current"] = CHECKING
+        view["state"] = "running"
+        return
+    if q.get("ahead") is not None:
+        view["current"] = queued_words(int(q["ahead"]))
+        view["queue"] = {"ahead": int(q["ahead"])}
+        if waited >= WAITING_NOTE_AFTER_S:
+            view["note"] = WAITING_SLOT_NOTE
+        return
+    view["current"] = fallback
+    if waited >= WAITING_NOTE_AFTER_S:
+        view["note"] = WAITING_SLOT_NOTE
 #: A step past its soft limit gets a "still working" note; past this many soft limits, a note that
 #: it is far slower than it should be and when it stops by itself.
 VERY_SLOW_FACTOR = 3.0
@@ -406,7 +438,8 @@ def duration_words(seconds: float) -> str:
 
 def progress_view(stored: dict | None, requested: dict | None, progress: dict | None,
                   now: float | None = None, *, scout_limit_s: float, naming_limit_s: float,
-                  confirmed: bool = False, fea: bool | None = None) -> dict | None:
+                  confirmed: bool = False, fea: bool | None = None,
+                  queue: dict | None = None) -> dict | None:
     """THE LIVE LINE, as the chat shows it, from the check as reported (through its time box), the
     naming request and the worker's record. Pure. `state` is one of queued, running, waiting (on
     the user's answer), done, failed or unsupported; `live` says whether the mark animates - never
@@ -415,8 +448,10 @@ def progress_view(stored: dict | None, requested: dict | None, progress: dict | 
     (as `current`), `reason` and `advice`. `scout_limit_s` / `naming_limit_s` are the worker's own
     limits, after which a step stops by itself. A check the user has `confirmed` is done whatever
     the naming did: the user went on without it. `fea` says the part is on the FEA path (its steps
-    are said in FEA words); None works it out from the check. None when there is no check, or it
-    is off."""
+    are said in FEA words); None works it out from the check. `queue` is what the queue says of the
+    check's tasks ({"scout": {...}, "naming": {...}}, each {"ahead": N} while it waits, {"running": True}
+    once a worker has it - application/geometry_check.queue_state), so a waiting line says how many checks
+    are ahead of it, never that no worker is free. None when there is no check, or it is off."""
     if not stored:
         return None
     at = time.time() if now is None else now
@@ -455,8 +490,10 @@ def progress_view(stored: dict | None, requested: dict | None, progress: dict | 
                     reason=_plain_reason(str(stored.get("reason") or "")),
                     advice="Carry on in the chat - I'll ask about the part there.", can_retry=False)
         return view
+    queues = queue if isinstance(queue, dict) else {}
     if status == "pending":
-        return _scouting(view, by_key, scout, scout_steps, work, thermal, at, written_at, scout_limit_s, fea)
+        return _scouting(view, by_key, scout, scout_steps, work, thermal, at, written_at, scout_limit_s, fea,
+                         queue=queues.get("scout"))
     if status == "failed" and stored.get("step") != "naming":
         return _scout_failed(view, stored, by_key, scout, scout_steps, suffix, fea)
     if status not in ("scouted", "ready", "failed"):
@@ -502,10 +539,12 @@ def progress_view(stored: dict | None, requested: dict | None, progress: dict | 
     if naming is None:
         waited = max(0.0, at - asked_at) if asked_at else 0.0
         nm["seconds"] = _round(waited)
-        view.update(state="running", live=True, elapsed_s=_round(waited),
-                    current=nm["doing"] if waited < WAITING_AFTER_S else "Waiting to start naming…")
-        if waited >= WAITING_NOTE_AFTER_S:
-            view["note"] = "No worker is free yet. This can take a few minutes when it's busy."
+        view.update(state="running", live=True, elapsed_s=_round(waited), current=nm["doing"])
+        if waited >= WAITING_AFTER_S:
+            _waiting_words(view, queues.get("naming"), waited, "Waiting to start naming…")
+            view["state"] = "running"
+            if view["current"] == CHECKING:
+                view["current"] = nm["doing"]
         return view
     picked = float(naming.get("picked_at") or at)
     started = (naming_steps.get(NAMING) or {}).get("at")
@@ -525,16 +564,16 @@ def _this_attempt(scout: dict, written_at: float) -> bool:
     return float(scout.get("picked_at") or 0.0) >= written_at - 1.0
 
 
-def _scouting(view, by_key, scout, scout_steps, work, thermal, at, written_at, scout_limit_s, fea=False) -> dict:
-    """The scout is still running - or no worker has picked it up yet."""
+def _scouting(view, by_key, scout, scout_steps, work, thermal, at, written_at, scout_limit_s, fea=False,
+              queue: dict | None = None) -> dict:
+    """The scout is still running - or no worker has picked it up yet (and then the queue says where it is)."""
     queued = by_key[QUEUED]
     if scout is None:
         waited = max(0.0, at - written_at) if written_at else 0.0
         queued.update(state="active", seconds=_round(waited))
-        view.update(state="queued", live=True, elapsed_s=_round(waited),
-                    current="Waiting to start…" if waited >= WAITING_AFTER_S else queued["doing"])
-        if waited >= WAITING_NOTE_AFTER_S:
-            view["note"] = "No worker is free yet. This can take a few minutes when it's busy."
+        view.update(state="queued", live=True, elapsed_s=_round(waited), current=queued["doing"])
+        if waited >= WAITING_AFTER_S or (queue or {}).get("running"):
+            _waiting_words(view, queue, waited, "Waiting to start…")
         return view
     queued["state"] = "done"
     active = scout.get("current") if scout.get("current") in by_key else READING
@@ -598,6 +637,7 @@ def _failed(view: dict, stored: dict, key: str, step: dict, suffix: str, fea: bo
     return view
 
 
-__all__ = ["BEAT_EVERY_S", "BEAT_STALE_S", "MEASURING", "NAMING", "OPENINGS", "PICTURES", "QUEUED", "READING", "SCOUT_STEPS", "Tracker",
-           "beating", "duration_words", "is_fea", "mark", "note_work", "progress_key", "progress_view", "read_progress",
+__all__ = ["BEAT_EVERY_S", "BEAT_STALE_S", "CHECKING", "MEASURING", "NAMING", "OPENINGS", "PICTURES", "QUEUED", "READING", "SCOUT_STEPS", "Tracker",
+           "beating", "duration_words", "is_fea", "mark", "note_work", "progress_key", "progress_view", "queued_words",
+           "read_progress",
            "skin_triangles", "soft_limit_s", "track", "untrack"]

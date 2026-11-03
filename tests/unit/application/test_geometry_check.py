@@ -405,9 +405,9 @@ def test_a_naming_that_finds_no_scout_in_time_marks_its_request_withdrawn(monkey
                           f"sessions/{sid}/geometry_check/naming.json": json.dumps({"requested_at": 1.0, "purpose_text": "a pipe"}).encode()})
     monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
     monkeypatch.setattr(gc, "NAMING_WAIT_S", 0.0)
-    # the wait is also sized to the file (naming_limits_for); without this the test waited the
-    # real 540 s of a small file's limit
-    monkeypatch.setattr(gc, "naming_limits_for", lambda _sid: (0, 0))
+    # the wait is the larger of NAMING_WAIT_S and the naming's own soft limit less a minute: both at nothing,
+    # or this test sleeps nine minutes (it did, and pushed its CI shard past its 25-minute limit)
+    monkeypatch.setattr(gc, "naming_limits_for", lambda sid: (60, 120))
     result = gc.run_geometry_naming(session_id=sid, owner_id="o1", purpose_text="a pipe")
     assert result == {"status": "pending", "named": False}
     marker = json.loads(store.objects[f"sessions/{sid}/geometry_check/naming.json"])

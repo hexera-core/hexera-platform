@@ -42,7 +42,8 @@ def test_a_check_no_worker_has_picked_up_says_it_is_starting_then_waiting_then_w
     later = _view(_pending(), now=T0 + 15)
     assert later["current"] == "Waiting to start…" and later["note"] == ""
     long = _view(_pending(), now=T0 + 90)
-    assert "No worker is free yet" in long["note"] and long["elapsed_s"] == 90.0
+    # never "No worker is free yet" (1 Nov: said while the check ran, or waited behind two others)
+    assert long["note"] == gp.WAITING_SLOT_NOTE and long["elapsed_s"] == 90.0
 
 
 def test_a_record_left_by_an_earlier_attempt_is_not_read_as_this_one():

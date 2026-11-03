@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import math
@@ -281,6 +282,20 @@ def start_scout(session_id: str, owner_id: str, *, source: dict, interpretation:
     never raises, because the upload (or the retry) stands whatever the queue does."""
     from meshpipeline.contracts.geometry_check import enqueue_scout
 
+    # THE SAME BYTES, CHECKED BEFORE BY THE SAME OWNER (application/geometry_reuse): the check is answered
+    # at once from the earlier one and nothing is queued - a re-upload never waits behind other checks
+    try:
+        from meshpipeline.application.geometry_reuse import reuse_scout
+
+        reused = reuse_scout(session_id, owner_id, source, interpretation)
+        if reused is not None:
+            write_status(session_id, STATUS_SCOUTED, **reused)
+            logger.info("geometry check answered from an earlier check of the same file (from the %s) - "
+                        "session_id=%s", where, session_id)
+            return True
+    except Exception as exc:  # noqa: BLE001 - checked as usual
+        logger.info("geometry check: no earlier check reused (%s) - session_id=%s", type(exc).__name__, session_id)
+
     marked = False
     try:
         # the limits this check runs under, sized to the file: the task is queued with the same
@@ -492,6 +507,11 @@ def _run_scout(session_id: str, owner_id: str, source: dict, interpretation: dic
     # stage never waits on a `pending` nothing will replace
     stored = store_status(session_id, result.pop("status"), RETRY_SCOUT, **result)
     tracker.finish(ok=stored.get("status") == STATUS_SCOUTED)
+    if stored.get("status") == STATUS_SCOUTED and not stored.get("preview") and not stored.get("reused_from"):
+        from meshpipeline.application.geometry_reuse import remember_scout
+
+        remember_scout(session_id, owner_id, {k: v for k, v in stored.items() if k not in _STAMPED_KEYS},
+                       interpretation)
     logger.info("geometry scout %s - session=%s in %.1fs", stored.get("reason") or stored["status"],
                 session_id, result["seconds"])
     return stored
@@ -696,27 +716,47 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
                            f"is a {suffix or 'nameless'} file, so the intake will ask about its openings")
     interp_ref = GeometryInterpretationRef.from_payload(interpretation) if interpretation else None
 
+    # THE SAME BYTES, CHECKED BEFORE (application/geometry_reuse): an upload whose digest an earlier check
+    # of this owner's already read, under the same unit, is answered from that check - its skin and
+    # pictures copied under this session - in seconds instead of minutes
+    from meshpipeline.application.geometry_reuse import reuse_scout
+
+    gp.mark(gp.READING)
+    reused = reuse_scout(session_id, owner_id, source, interpretation)
+    if reused is not None:
+        logger.info("geometry check: the same file was checked before (session %s) - reused, session=%s",
+                    (reused.get("reused_from") or {}).get("session_id"), session_id)
+        _publish_validity(session_id, ref, (reused.get("facts") or {}).get("validity") or {})
+        return {**reused, "status": STATUS_SCOUTED}
+
     # The workspace lives exactly as long as the check. The worker runs for weeks; every upload,
     # skin and picture left behind in /tmp would stay there until the disk was full.
-    with tempfile.TemporaryDirectory(prefix=f"geometry_check_{session_id[:8]}_") as tmp:
+    with tempfile.TemporaryDirectory(prefix=f"geometry_check_{session_id[:8]}_") as tmp,             contextlib.ExitStack() as children:
         work = Path(tmp)
         # the same canonical form the job materialiser hands the engines (cad/ingest) - except a
         # thermal model, which the check reads as its PLACED parts: each part where the file puts
         # it, under its own name and colour, in milliseconds and without joining anything (the
         # joined form, when an engine needs it, is built for the run)
-        gp.mark(gp.READING)
         fetched = _fetch(ref, work)
         try:
             canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
         except IngestError as exc:
             raise _Unsupported(str(exc)) from exc
         local_path = canonical.path
+        # THE CLEAN CHECK BESIDE THE SCOUT (cad/beside): it reads only the file, so it runs in a child
+        # process on another core while the scout reads the part, and is collected where the scout
+        # used to compute it - the same verdict, without the wait (30 s of a landing gear's 82 s)
+        early_verdict = _start_clean_verdict(fetched, canonical, work)
+        if early_verdict is not None:
+            children.callback(early_verdict.close)      # a scout that stops takes its children with it
         # A WHOLE THERMAL MODEL (ECXML) IS SHOWN AS ONE: the file names every part, its material
         # and power, the fans, the vents and the room air, so nothing is pictured, named, turned
         # upright, measured from triangles or given an opening role - the thermal view is built
         # from the file instead
         thermal_sidecar = _thermal_sidecar(canonical.path)
         if thermal_sidecar is not None and check_mode_of(canonical.source_format) == THERMAL_CHECK:
+            if early_verdict is not None:
+                early_verdict.close()
             return _scout_thermal(session_id, ref, fetched, canonical, thermal_sidecar)
         placed = bool(canonical.physics.get("placed_parts"))
 
@@ -737,7 +777,8 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         facts.update(canonical.facts())
         facts.setdefault("notes", []).extend(n for n in canonical.notes if n not in facts["notes"])
         # whether the upload is CLEAN (cad/validity): the contract a mesh is promised on
-        facts["validity"] = clean_verdict(fetched, canonical)
+        facts["validity"] = clean_verdict(fetched, canonical, started=early_verdict)
+        _publish_validity(session_id, ref, facts["validity"])
         # THE PART'S NAME FROM THE FILE (cad/part_name): a STEP's own product name, else the upload's
         # file name - what every stage shows when no model names the part (an FEA part never asks one)
         from meshpipeline.cad.part_name import part_name
@@ -799,11 +840,59 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
     return result
 
 
-def clean_verdict(uploaded: Path, canonical) -> dict:
+def _start_clean_verdict(uploaded: Path, canonical, work: Path):
+    """The clean check, started in a child process beside the scout (cad/beside); None when it cannot
+    be (the scout then judges the file itself, as before)."""
+    try:
+        from meshpipeline.cad.beside import Beside
+        from meshpipeline.cad.validity import canonical_task
+
+        handle = Beside("meshpipeline.cad.validity", canonical_task(uploaded, canonical), work / "clean_check",
+                        name="clean_check")
+        return handle if handle.proc is not None else None
+    except Exception as exc:  # noqa: BLE001 - judged in-process instead
+        logger.info("geometry check: the clean check could not start beside the scout (%s)", type(exc).__name__)
+        return None
+
+
+#: THE CLEAN VERDICT, PUBLISHED THE MOMENT IT IS KNOWN: an FEA naming waiting for the scout reads it to begin
+#: the slow half of its measurement (the suspected defects' Boolean check) before the scout has landed.
+EARLY_VALIDITY = "validity.json"
+
+
+def _publish_validity(session_id: str, ref, verdict: dict) -> None:
+    try:
+        _store_json(check_object_key(session_id, EARLY_VALIDITY), {"sha256": ref.sha256, "validity": verdict})
+    except Exception as exc:  # noqa: BLE001 - a courtesy to the naming; the scout carries the verdict anyway
+        logger.info("geometry check: the early clean verdict was not stored (%s)", type(exc).__name__)
+
+
+def early_validity(session_id: str, sha256: str) -> dict | None:
+    """The clean verdict the scout published for this upload (`sha256`), before it landed; None until then."""
+    from meshpipeline.contracts.object_storage import ObjectNotFound, get_object_store
+
+    try:
+        got = json.loads(get_object_store().get_bytes(object_key=check_object_key(session_id, EARLY_VALIDITY)))
+    except ObjectNotFound:
+        return None
+    except Exception:  # noqa: BLE001 - unreadable is not yet
+        return None
+    if not isinstance(got, dict) or got.get("sha256") != sha256 or not isinstance(got.get("validity"), dict):
+        return None
+    return got["validity"]
+
+
+def clean_verdict(uploaded: Path, canonical, started=None) -> dict:
     """THE CLEAN CONTRACT on the upload (cad/validity): clean yes or no, and every reason with
     where on the part it is. A file this calls clean is one the product promises to mesh, so a
     clean file that then fails is a product bug, never the user's. It informs and never refuses:
-    a file that is not clean still goes on, with the reasons said. Never fails the scout."""
+    a file that is not clean still goes on, with the reasons said. Never fails the scout.
+    `started` is the same check begun beside the scout (_start_clean_verdict): its answer stands
+    when it gave one; else the file is judged here."""
+    if started is not None:
+        answer = started.result()
+        if isinstance(answer, dict) and "clean" in answer and "error" not in answer:
+            return answer
     try:
         from meshpipeline.cad.validity import check_canonical
 
@@ -1116,7 +1205,7 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref, on_skin=None) ->
     `on_skin(skin, seed)` is told the moment the part's skin is drawn - before it is measured -
     with what reading the file already said (the unit, the solids)."""
     from meshpipeline.application import geometry_progress as gp
-    from meshpipeline.cad.fluid_volume_check import read_fluid_volume, wants_fluid_volume
+    from meshpipeline.cad.fluid_volume_check import wants_fluid_volume
     from meshpipeline.cad.normalise import occ_scale_transform
     from meshpipeline.cad.scout import count_solids, read_cad, scout_cad, write_view_stl
 
@@ -1141,6 +1230,27 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref, on_skin=None) ->
     # searched for them
     declared = {"declared_openings": True} if _thermal_sidecar(local_path) is not None else {}
     facts = scout_cad(local_path, prepared=prepared, shape=shape, **declared).as_dict()
+    # THE FLUID INSIDE THE PARTS, begun now beside the rest (cad/beside): the same child the reading
+    # below waits for, so it works while the skin's holes are found
+    early_fluid = None
+    if not declared and wants_fluid_volume(facts):
+        from meshpipeline.cad.fluid_volume_check import start_fluid_volume
+        early_fluid = start_fluid_volume(local_path, work=work, kind="cad",
+                                         scale=occ_scale_transform(prepared).ScaleFactor())
+    try:
+        return _scout_exact_rest(facts, skin, local_path, work, interp_ref, prepared, unit_note, scale_to_m,
+                                 declared, early_fluid)
+    finally:
+        if early_fluid is not None:
+            early_fluid.close()
+
+
+def _scout_exact_rest(facts: dict, skin: Path, local_path: Path, work: Path, interp_ref, prepared, unit_note,
+                      scale_to_m: float, declared: dict, early_fluid) -> tuple[dict, Path]:
+    from meshpipeline.application import geometry_progress as gp
+    from meshpipeline.cad.fluid_volume_check import read_fluid_volume, wants_fluid_volume
+    from meshpipeline.cad.normalise import occ_scale_transform
+
     facts["read_as"] = "cad"
     facts["unit_assumed"] = bool(unit_note)
     facts["scale_to_m"] = scale_to_m
@@ -1157,7 +1267,7 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref, on_skin=None) ->
         # (cad/fluid_volume_check): its openings are what the user confirms, not every flat face
         if wants_fluid_volume(facts):
             read_fluid_volume(facts, local_path, work=work, kind="cad",
-                              scale=occ_scale_transform(prepared).ScaleFactor())
+                              scale=occ_scale_transform(prepared).ScaleFactor(), started=early_fluid)
         read_whole_shape(facts, skin)
     return facts, skin
 
@@ -1598,12 +1708,34 @@ def run_geometry_naming(*, session_id: str, owner_id: str, purpose_text: str,
 
 
 def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: dict | None) -> dict:
+    started = time.time()
+    # AN FEA PART IS MEASURED WHILE THE SCOUT STILL RUNS (_EarlyFea): the wait below used to be idle
+    early: list[_EarlyFea] = []
+
+    def begin_early(seen: dict | None) -> None:
+        # only while the scout is still measuring the part it has already shown (the preview names
+        # the upload); a scout that has landed is measured from straight away, as before
+        if not early and is_preview(seen):
+            got = _start_early_fea(session_id, seen, purpose_text, interpretation)
+            if got is not None:
+                early.append(got)
+
+    try:
+        return _name_after_wait(session_id=session_id, owner_id=owner_id, purpose_text=purpose_text,
+                                interpretation=interpretation, started=started,
+                                stored=_wait_for_scout(session_id, on_poll=begin_early),
+                                early=early[0] if early else None)
+    finally:
+        for e in early:
+            e.stop()
+
+
+def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, interpretation: dict | None,
+                     started: float, stored: dict | None, early) -> dict:
     from meshpipeline.application import geometry_progress as gp
     from meshpipeline.contracts.geometry_source import GeometryInterpretationRef
     from meshpipeline.contracts.object_storage import get_object_store
 
-    started = time.time()
-    stored = _wait_for_scout(session_id)
     if stored is None or stored.get("status") not in (STATUS_SCOUTED, STATUS_READY):
         status = (stored or {}).get("status") or "missing"
         if status in (STATUS_PENDING, "missing"):
@@ -1647,7 +1779,7 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
         # the stress hot spots (FEA build step 3)
         from meshpipeline.cad.fea_measure import FACT_KEY
 
-        facts[FACT_KEY] = fea_measurements(stored, facts, interpretation)
+        facts[FACT_KEY] = fea_measurements(stored, facts, interpretation, early=early, owner_id=owner_id)
         proposal = _proposal(facts, {})
         result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
         result.update(named=True, facts=facts, vision={}, proposal=proposal,
@@ -1749,55 +1881,57 @@ class _TooBig(ValueError):
     """A file past FEA_MEASURE_MAX_MB."""
 
 
-def fea_measurements(stored: dict, facts: dict, interpretation: dict | None) -> dict:
+def fea_measurements(stored: dict, facts: dict, interpretation: dict | None, early=None,
+                     owner_id: str = "") -> dict:
     """THE FEA MEASUREMENT of the stored check's upload (cad/fea_measure): bodies, the wall under
     every face and the hot spots, in millimetres under the facts' unit (`scale_to_m` says which;
     application/fea_check.in_unit re-reads it in another). A CAD file is read on its faces, in the
     coordinates the scout read it in; a triangle file on its triangles. Never fails the naming: a
-    part it cannot measure says why, and the plan sizes from what the check has."""
-    from meshpipeline.cad.fea_measure import VERSION, measure_cad, measure_triangles
+    part it cannot measure says why, and the plan sizes from what the check has.
+
+    Nothing is measured twice: `early` is the same measurement begun while the naming waited for the
+    scout (_EarlyFea), used when it was made from this very upload and unit; and a measurement of the
+    same bytes, unit and clean verdict this owner already has (application/geometry_reuse, keyed on the
+    upload's digest) is reused whole."""
+    from meshpipeline.application import geometry_reuse as reuse
+    from meshpipeline.cad.fea_measure import VERSION, measure_triangles
 
     scale = float(facts.get("scale_to_m") or 0.001)
     started = time.time()
+    validity = facts.get("validity")
+    key = None
     try:
         from meshpipeline.cad.ingest import canonicalise
-        from meshpipeline.cad.normalise import occ_scale_transform
-        from meshpipeline.cad.scout import read_cad
         from meshpipeline.cad.scout_mesh import read_triangles
         from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
         from meshpipeline.contracts.intake_formats import GeometryKind
 
         ref = GeometrySourceRef.from_payload(stored["source"])
+        key = reuse.fea_key(ref.sha256, interpretation, scale, validity)
+        known = reuse.known_fea(owner_id, ref.sha256, key) if owner_id else None
+        if known is not None:
+            if early is not None:
+                early.stop()
+            logger.info("geometry check: FEA measurement reused from an earlier check of the same file")
+            return known
         interp_ref = GeometryInterpretationRef.from_payload(interpretation) if interpretation else None
-        with tempfile.TemporaryDirectory(prefix="fea_measure_") as tmp:
-            work = Path(tmp)
-            fetched = _fetch(ref, work)
-            size_mb = fetched.stat().st_size / 1e6
-            if size_mb > FEA_MEASURE_MAX_MB:
-                raise _TooBig(f"the file is {size_mb:.0f} MB, over the {FEA_MEASURE_MAX_MB:.0f} MB measured "
-                              "for a single part")
-            canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
-            if canonical.kind is GeometryKind.cad:
-                # the scout's own reading: the confirmed unit when there is one, else the file's
-                prepared, _note = _prepared_coordinates(canonical.path, interp_ref, ref)
-                mm_per_unit = 1000.0 * float(occ_scale_transform(prepared).ScaleFactor())
-                shape = read_cad(canonical.path)
-                record = measure_cad(shape, mm_per_unit=mm_per_unit)
-                if int(record.get("bodies") or 0) > 1:
-                    # AN ASSEMBLY: its parts, where they touch or pass into each other, and every
-                    # face named Part_k_Face_j - the names the delivered files use
-                    from meshpipeline.cad.fea_assembly import measure_assembly
-                    record = measure_assembly(shape, record, source=canonical.path, mm_per_unit=mm_per_unit)
-                # MESH-1: WHERE THE CAD MAY BE BROKEN, for the stage to WARN about (never a stop): the
-                # folds the measurement found and the crossings the clean check found, each confirmed
-                # only when a second, independent measure agrees (cad/suspect_defects)
-                try:
-                    from meshpipeline.cad import suspect_defects as SD
-                    record["suspects"] = SD.find(shape, record, validity=facts.get("validity"))
-                except Exception as exc:  # noqa: BLE001 - no suspects measured is no warning
-                    logger.warning("geometry check: suspected defects not measured (%s)", type(exc).__name__)
-            else:
-                record = measure_triangles(read_triangles(canonical.path) * scale * 1000.0)
+        record = None
+        if early is not None and early.serves(ref, interpretation):
+            try:
+                record = early.record(validity)
+            except _NotEarly:
+                record = None
+        if record is None:
+            with tempfile.TemporaryDirectory(prefix="fea_measure_") as tmp:
+                work = Path(tmp)
+                fetched = _fetch(ref, work)
+                _too_big(fetched)
+                canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
+                if canonical.kind is GeometryKind.cad:
+                    shape, record = _fea_measure_cad(canonical.path, interp_ref, ref)
+                    record["suspects"] = _fea_suspects(shape, record, validity)
+                else:
+                    record = measure_triangles(read_triangles(canonical.path) * scale * 1000.0)
         record.update(measured=True, scale_to_m=scale)
     except Exception as exc:  # noqa: BLE001 - the measurement informs the plan; the check still lands
         logger.warning("geometry check: the FEA measurement did not run (%s: %s)", type(exc).__name__,
@@ -1805,20 +1939,172 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None) -> 
         reason = str(exc) if isinstance(exc, _TooBig) else f"the part could not be measured ({type(exc).__name__})"
         record = {"version": VERSION, "measured": False, "reason": reason, "scale_to_m": scale,
                   "seconds": round(time.time() - started, 2)}
+        key = None
     logger.info("geometry check: FEA measurement %s in %.1fs - %d hot spot(s)",
                 "done" if record.get("measured") else "skipped", time.time() - started,
                 len(record.get("hot_spots") or []))
+    if key is not None and owner_id and record.get("measured"):
+        reuse.remember_fea(owner_id, str(stored["source"].get("sha256") or ""), key, record,
+                           session_id=str(stored.get("session_id") or ""))
     return record
 
 
-def _wait_for_scout(session_id: str) -> dict | None:
+def _too_big(fetched: Path) -> None:
+    size_mb = fetched.stat().st_size / 1e6
+    if size_mb > FEA_MEASURE_MAX_MB:
+        raise _TooBig(f"the file is {size_mb:.0f} MB, over the {FEA_MEASURE_MAX_MB:.0f} MB measured "
+                      "for a single part")
+
+
+def _fea_measure_cad(path: Path, interp_ref, ref):
+    """(the shape, its FEA record) for a CAD file - everything but the suspected defects, which read the
+    clean verdict (_fea_suspects)."""
+    from meshpipeline.cad.fea_measure import measure_cad
+    from meshpipeline.cad.normalise import occ_scale_transform
+    from meshpipeline.cad.scout import read_cad
+
+    # the scout's own reading: the confirmed unit when there is one, else the file's
+    prepared, _note = _prepared_coordinates(path, interp_ref, ref)
+    mm_per_unit = 1000.0 * float(occ_scale_transform(prepared).ScaleFactor())
+    shape = read_cad(path)
+    record = measure_cad(shape, mm_per_unit=mm_per_unit)
+    if int(record.get("bodies") or 0) > 1:
+        # AN ASSEMBLY: its parts, where they touch or pass into each other, and every
+        # face named Part_k_Face_j - the names the delivered files use
+        from meshpipeline.cad.fea_assembly import measure_assembly
+        record = measure_assembly(shape, record, source=path, mm_per_unit=mm_per_unit)
+    return shape, record
+
+
+def _fea_suspects(shape, record: dict, validity) -> list:
+    """MESH-1: WHERE THE CAD MAY BE BROKEN, for the stage to WARN about (never a stop): the folds the
+    measurement found and the crossings the clean check found, each confirmed only when a second,
+    independent measure agrees (cad/suspect_defects). Never raises."""
+    try:
+        from meshpipeline.cad import suspect_defects as SD
+        return SD.find(shape, record, validity=validity)
+    except Exception as exc:  # noqa: BLE001 - no suspects measured is no warning
+        logger.warning("geometry check: suspected defects not measured (%s)", type(exc).__name__)
+        return []
+
+
+def _same_json(a, b) -> bool:
+    return json.dumps(jsonable(a), sort_keys=True) == json.dumps(jsonable(b), sort_keys=True)
+
+
+class _EarlyFea:
+    """AN FEA PART'S MEASUREMENT, BEGUN WHILE THE NAMING WAITS FOR THE SCOUT (1 Nov). The naming used to
+    sleep until the scout had landed and only then measure: a landing gear's 186 s after its 82 s. What it
+    measures needs only the upload and the unit (the walls, the hot spots, the assembly) and - for the
+    suspected defects - the clean verdict, which the scout publishes the moment it has it (EARLY_VALIDITY).
+    So both start as soon as they can, in a thread of the naming's own task, and the naming collects them
+    once the scout lands. Each is used only when it was made from exactly what the naming would have used
+    (the same upload digest, the same unit, the same clean verdict); otherwise it is measured as before.
+    A CAD file only: a triangle file is quick to measure and needs the scout's unit."""
+
+    def __init__(self, session_id: str, source: dict, interpretation: dict | None):
+        import threading
+
+        self.session_id = session_id
+        self.sha256 = str(source.get("sha256") or "")
+        self.interpretation = json.loads(json.dumps(jsonable(interpretation))) if interpretation else None
+        self._source = dict(source)
+        self._done = threading.Event()
+        self._stop = threading.Event()
+        self._shape = None
+        self._record: dict | None = None
+        self._error: BaseException | None = None
+        self._suspects: list | None = None
+        self._suspects_for: object = None
+        self._thread = threading.Thread(target=self._run, name=f"fea-early-{session_id[:8]}", daemon=True)
+        self._thread.start()
+
+    def serves(self, ref, interpretation: dict | None) -> bool:
+        same = json.loads(json.dumps(jsonable(interpretation))) if interpretation else None
+        return ref.sha256 == self.sha256 and same == self.interpretation
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        try:
+            from meshpipeline.cad.ingest import canonicalise
+            from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
+            from meshpipeline.contracts.intake_formats import GeometryKind
+
+            ref = GeometrySourceRef.from_payload(self._source)
+            interp_ref = GeometryInterpretationRef.from_payload(self.interpretation) if self.interpretation else None
+            with tempfile.TemporaryDirectory(prefix="fea_measure_") as tmp:
+                work = Path(tmp)
+                fetched = _fetch(ref, work)
+                _too_big(fetched)
+                canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
+                if canonical.kind is not GeometryKind.cad:
+                    raise _NotEarly("a triangle file is measured once the scout lands")
+                self._shape, self._record = _fea_measure_cad(canonical.path, interp_ref, ref)
+            # THE SUSPECTED DEFECTS, as soon as the clean verdict is known
+            while True:
+                validity = early_validity(self.session_id, self.sha256)
+                if validity is not None:
+                    self._suspects = _fea_suspects(self._shape, self._record, validity)
+                    self._suspects_for = validity
+                    break
+                if self._stop.wait(2.0):
+                    break
+        except BaseException as exc:  # noqa: BLE001 - said where the naming would have said it
+            self._error = exc
+        finally:
+            self._done.set()
+
+    def record(self, validity) -> dict:
+        """The record the naming would have measured, with `validity`'s suspects. Raises what measuring
+        raised (the naming says it the same way); _NotEarly when nothing was measured early."""
+        self.stop()                 # no more waiting for a verdict: the scout has landed with its own
+        self._done.wait()
+        if isinstance(self._error, _NotEarly) or (self._error is None and self._record is None):
+            raise _NotEarly("not measured early")
+        if self._error is not None:
+            raise self._error
+        record = dict(self._record or {})
+        if self._suspects is not None and _same_json(self._suspects_for, validity):
+            record["suspects"] = self._suspects
+        else:
+            record["suspects"] = _fea_suspects(self._shape, record, validity)
+        return record
+
+
+class _NotEarly(RuntimeError):
+    """The early measurement does not apply; the naming measures as before."""
+
+
+def _start_early_fea(session_id: str, stored: dict | None, purpose_text: str,
+                     interpretation: dict | None) -> _EarlyFea | None:
+    """Begin an FEA part's measurement while the scout still runs: once the stored check names the
+    upload (the preview carries its source) and the user's words send the part to stress analysis, and
+    only for an exact CAD upload (STEP, IGES)."""
+    try:
+        if not stored or not isinstance(stored.get("source"), dict) or not _is_fea(purpose_text):
+            return None
+        suffix = str(stored["source"].get("suffix_hint") or "").lower()
+        if suffix not in (".step", ".stp", ".iges", ".igs"):
+            return None
+        return _EarlyFea(session_id, stored["source"], interpretation)
+    except Exception as exc:  # noqa: BLE001 - measured after the scout, as before
+        logger.info("geometry check: the FEA measurement could not start early (%s)", type(exc).__name__)
+        return None
+
+
+def _wait_for_scout(session_id: str, on_poll=None) -> dict | None:
     """The stored scout, once it is no longer pending. The user's first answer can land while the
-    worker is still drawing; the naming waits rather than answering from nothing."""
+    worker is still drawing; the naming waits rather than answering from nothing. `on_poll(stored)`
+    is told every record seen while waiting (the FEA measurement begins on the preview's)."""
     # as long as this naming's own soft limit allows (sized to the file), less a minute to land
     wait_s = max(NAMING_WAIT_S, float(naming_limits_for(session_id)[0] - 60))
     deadline = time.time() + wait_s
     while True:
         stored = read_check(session_id)
+        if on_poll is not None:
+            on_poll(stored)
         # A PREVIEW is not the measured part: the scout is still at work on it, so the naming waits
         # for the full reading - and names the preview only if that does not come in time
         if stored is not None and stored.get("status") != STATUS_PENDING and not is_preview(stored):

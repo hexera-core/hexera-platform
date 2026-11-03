@@ -20,7 +20,6 @@ export function feaResultsHtml(job, f) {
       ${f.view_note ? `<div class="tr-sum fe-view-note" role="note">${esc(f.view_note)}</div>` : ""}
       ${assemblyHtml(f.assembly)}
       ${f.faces_short ? `<div class="tr-sum fe-faces-short">${esc(f.faces_short)}</div>` : ""}
-      <div class="tr-hint">Every limit, place, pair and solver check is in the Mesh report.</div>
     </div>`;
 }
 
