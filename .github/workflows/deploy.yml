@@ -180,7 +180,7 @@ jobs:
   # GitHub environment it runs under - which is what applies the environment's protection rules.
   target:
     name: Resolve the deployment target
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       environment: ${{ steps.pick.outputs.environment }}
       deployment_id: ${{ steps.pick.outputs.deployment_id }}
@@ -954,7 +954,7 @@ jobs:
   # main already validated. Tagging something else is the case this refuses to ship.
   await-ci:
     name: Wait for CI on this commit
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 75
     permissions:
       contents: read
@@ -1281,7 +1281,7 @@ jobs:
     #
     # A STANDARD RUNNER, not the heavy one. This job builds nothing and tests nothing: it reads a
     # JSON record, talks to gcloud, and waits on Google. The heavy label exists for image builds.
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # id-token lives here and in release, and nowhere else: these are the only jobs that exchange
     # an OIDC token for Google credentials, and a workflow-wide grant would let the target-selection
     # job mint one too.
@@ -1462,7 +1462,7 @@ jobs:
       # release.json - all of which a depth-1 clone answers. It refuses to deploy a record built
       # from a different commit, which is the assertion that makes handing the record across a job
       # boundary safe.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7  # v1 (v4.3.1)
         with:
           persist-credentials: false
 
@@ -1601,7 +1601,7 @@ jobs:
     name: Edge address for DNS
     needs: [target, provision]
     if: needs.provision.outputs.edge_ip != ''
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Surface the edge address for DNS
@@ -1676,7 +1676,7 @@ jobs:
     name: Verify the deployed console
     needs: [provision]
     if: needs.provision.outputs.console_url != ''
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - name: / redirects, /sign-in renders, /api/internal/health 200, /readyz 401, stream upgrade 403
@@ -1787,7 +1787,7 @@ jobs:
     name: Verify the admin console is private
     needs: [target, provision]
     if: needs.provision.outputs.admin_url != ''
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
       id-token: write
@@ -1851,7 +1851,7 @@ jobs:
     # `always()` would also fire for a run the concurrency group cancelled. `!cancelled()` still
     # runs the gate when a job genuinely fails, which is the entire point of it.
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Verify every deploy job
