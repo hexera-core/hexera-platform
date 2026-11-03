@@ -1,7 +1,7 @@
 {
  "purpose": "Every execution-owned publication context in the current tree, and the executed scenario that proved it. Derived from the publication manifest and the behavioural certification run; the manifest remains the authority for WHICH contexts exist.",
- "denominator": 76,
- "proven": 76,
+ "denominator": 78,
+ "proven": 78,
  "unproven": 0,
  "historical_reconciliation": {
   "historical_execution_rows": 63,
@@ -26,7 +26,7 @@
     "reason": "published through the factory parameter from the terminal pipeline_run publisher; not execution-owned and intentionally ungated"
    }
   ],
-  "new_since_reconciliation": 15
+  "new_since_reconciliation": 17
  },
  "rows": [
   {
