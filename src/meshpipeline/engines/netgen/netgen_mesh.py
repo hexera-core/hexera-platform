@@ -49,6 +49,41 @@ def read_solids(path: Path) -> dict[str, np.ndarray]:
     return {k: np.concatenate(v) for k, v in solids.items()}
 
 
+#: corners closer than this share of the boundary's diagonal are one point (a scanned vessel's STL
+#: carries corners 1e-8 m apart, and Netgen's STL reader died on the slivers between them)
+WELD_SHARE = 1e-6
+
+
+def welded(tris: np.ndarray, labels: np.ndarray) -> tuple[np.ndarray, np.ndarray, dict]:
+    """The staged triangles with near-coincident corners merged, and the triangles that collapse (two
+    corners one point, or no area) and exact repeats dropped - each kept triangle keeps its label."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+    P = tris.reshape(-1, 3)
+    diag = float(np.linalg.norm(P.max(axis=0) - P.min(axis=0))) or 1.0
+    tol = WELD_SHARE * diag
+    pairs = cKDTree(P).query_pairs(tol, output_type="ndarray")
+    if len(pairs):
+        g = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(len(P), len(P)))
+        _n, comp = connected_components(g, directed=False)
+        first = np.full(comp.max() + 1, -1, dtype=np.int64)
+        order = np.arange(len(P))[::-1]
+        first[comp[order]] = order
+        P = P[first[comp]]
+    _u, idx = np.unique(P, axis=0, return_inverse=True)
+    F = idx.reshape(-1, 3)
+    T = P.reshape(-1, 3, 3)
+    area = 0.5 * np.linalg.norm(np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]), axis=1)
+    keep = (F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 0] != F[:, 2]) & (area > tol * tol)
+    key = np.sort(F, axis=1)
+    _k, first_of = np.unique(key, axis=0, return_index=True)
+    unique = np.zeros(len(F), dtype=bool)
+    unique[first_of] = True
+    keep &= unique
+    return T[keep], labels[keep], {"merged_corners": int(len(pairs)), "dropped": int((~keep).sum())}
+
+
 def write_plain_stl(path: Path, tris: np.ndarray) -> None:
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("solid fluid\n")
@@ -270,6 +305,7 @@ def build(ws: Path, spec: dict, rung: dict) -> tuple[object, dict]:
     names = list(solids)
     tris = np.concatenate([solids[n] for n in names])
     labels = np.concatenate([np.full(len(solids[n]), i) for i, n in enumerate(names)])
+    tris, labels, weld = welded(tris, labels)
     plain = ws / "_netgen_surface.stl"
     write_plain_stl(plain, tris)
     geo = STLGeometry(str(plain))
@@ -295,6 +331,7 @@ def build(ws: Path, spec: dict, rung: dict) -> tuple[object, dict]:
         mesh = geo.GenerateMesh(mp=mp)
         naming = name_faces(mesh, tris, labels, names)
         naming["edge_angle"] = kw["yangle"]
+        naming["weld"] = weld
         if not naming["mixed"]:
             break
         lower = [a for a in EDGE_ANGLE_STEPS if a < kw["yangle"]]

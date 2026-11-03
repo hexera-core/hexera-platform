@@ -17,7 +17,7 @@ from meshpipeline.cad.cad_tessellate import tessellate_to_stl as _cad_tessellate
 # THE ENGINE'S DECLARED NAMESPACE (as in engines/cfmesh/cfmesh_runner.py): cfMesh's finalize resolves
 # these by name off the engine it is handed, so each import below is used at run time.
 from meshpipeline.cad.stl_io import inspect_stl, read_stl_solids  # noqa: F401
-from meshpipeline.engines.cfmesh.finalize import finalize  # noqa: F401  (engine-adapter seam)
+from meshpipeline.engines.cfmesh.finalize import finalize as _openfoam_finalize
 from meshpipeline.engines.cfmesh.foam_exec import (  # noqa: F401
     _DEFAULT_BASHRC,
     _foam_env,
@@ -54,6 +54,19 @@ PASSAGE_BUDGET_S = 600.0
 #: what an attempt needs for its last rung to still be worth starting
 RUNG_MIN_SECONDS = 60
 _POLYMESH = ("points", "faces", "owner", "neighbour", "boundary")
+
+
+def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str = "",
+             internal_flow: bool = False, engine_params: dict | None = None,
+             flow_topology: str = "") -> dict:
+    """cfMesh's OpenFOAM-family finalize (the delivery check, the quality record, the manifest),
+    which calls back into this module by name - its words said under this engine's name."""
+    out = _openfoam_finalize(workspace_dir, intake_patches, engine, domain, internal_flow,
+                             engine_params, flow_topology)
+    for k in ("output", "stdout"):
+        if isinstance(out.get(k), str):
+            out[k] = out[k].replace("[CFMESH]", "[NETGEN]")
+    return out
 
 
 def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None):

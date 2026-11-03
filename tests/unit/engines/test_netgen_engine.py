@@ -203,3 +203,13 @@ def test_samples_cover_a_long_sliver_end_to_end():
     assert pts[:, 0].min() == pytest.approx(0.0) and pts[:, 0].max() == pytest.approx(1.0)
     gaps = np.diff(np.unique(np.round(pts[:, 0], 9)))
     assert gaps.max() <= 0.05 + 1e-9
+
+
+def test_near_coincident_corners_are_welded_and_collapsed_triangles_dropped():
+    a = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], float)
+    b = np.array([[1, 0, 0], [1, 1, 0], [0, 1 + 1e-9, 0]], float)      # shares an edge, 1e-9 off
+    sliver = np.array([[0, 0, 0], [1e-9, 0, 0], [0, 1, 0]], float)     # collapses when welded
+    tris, labels, info = NM.welded(np.stack([a, b, sliver, a]), np.array([0, 1, 2, 0]))
+    assert len(tris) == 2 and labels.tolist() == [0, 1]
+    assert info["merged_corners"] >= 2 and info["dropped"] == 2
+    assert np.array_equal(tris[1][2], tris[0][2])                       # one point now
