@@ -1,4 +1,14 @@
 #!/bin/bash
+
+# RETIRED 2026-11-03. This script wrote to GCP project `hexera`, whose billing account is
+# being wound down. The personal environment dev-rehaan in hexera-dev is labelled
+# managed-by=deploy, so its mesh job must be refreshed through the GitHub Actions workflow
+# (the file .github/workflows/deploy.yml, dispatched with slug=rehaan), never by a hand-rolled
+# jobs replace from here. Doing it by hand also fights create-mesh-tier.sh, which branches on
+# that same label.
+echo "RETIRED: this script targeted the old hexera project. Use the GitHub Actions workflow instead." >&2
+exit 1
+
 # Build a mesh image from THIS branch by layering its wheel onto the proven mesh image.
 #
 # WHY NOT THE Dockerfile's `mesh` TARGET. That target builds the native floor from scratch:

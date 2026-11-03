@@ -53,7 +53,9 @@ const _EDGE=[0.27,0.25,0.22];          /* hairline edges at rest */
 /* darker while the faces carry colour, so every cell still reads against the data (the original
    heatmap's edge, lightened with the calm end of its scale so a whole part does not read dark) */
 const _EDGE_HEAT=[0.24,0.23,0.22];
-const _SEL=[1.0,0.31,0.0],_SEL_EDGE=[0.62,0.22,0.02];
+/* the isolate / selection colour is --steel-bright over --steel-muted, not the accent
+   orange: red on a mesh reads as a fault flag, and the quality bands already own red */
+const _SEL=[0.616,0.714,0.831],_SEL_EDGE=[0.341,0.439,0.561];
 const HEAT_HINT='Click a face to see its numbers · Drag still rotates';
 const _SEL_COLS=['#e8613c','#f2c744','#3fa650','#3f7fd9','#b455c8','#38c2c2'];
 
