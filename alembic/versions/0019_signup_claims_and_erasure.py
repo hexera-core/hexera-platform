@@ -3,15 +3,15 @@
 #             them), so this is NOT order-safe for the image: deploy runs migrations first, then rolls
 #             the image. The previous image is unaffected by the extra columns and table.
 
-# Revision ID: 0018_signup_claims_and_erasure
-# Revises: 0017_chat_session_user_notes
+# Revision ID: 0019_signup_claims_and_erasure
+# Revises: 0018_byte_counts_bigint
 from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0018_signup_claims_and_erasure"
-down_revision = "0017_chat_session_user_notes"
+revision = "0019_signup_claims_and_erasure"
+down_revision = "0018_byte_counts_bigint"
 branch_labels = None
 depends_on = None
 

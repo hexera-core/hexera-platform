@@ -137,7 +137,7 @@ async def test_a_caller_with_no_billable_organisation_is_admitted(tenant, organi
 @pytest.mark.parametrize("gate", [True, False])
 @pytest.mark.asyncio
 async def test_a_signed_up_account_awaiting_verification_is_refused(tenant, monkeypatch, gate):
-    # The organisation and its grant wait for a verified address (0018), so a person with an
+    # The organisation and its grant wait for a verified address (0019), so a person with an
     # account row and no organisation is unverified. Admitting them would make the unverified
     # window an unlimited free tier - and nothing is debited at the job's end either. This holds
     # with the credit gate off too: it is a verification rule, not a balance rule.

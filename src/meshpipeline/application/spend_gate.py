@@ -56,7 +56,7 @@ async def admit(db: AsyncSession, *, owner_id: str, organization_id: str) -> str
     """Refuse a job this tenant cannot pay for; otherwise return the plan whose limits apply."""
     organization = await _organization(db, organization_id)
     if organization is None:
-        # A SIGNED-UP PERSON WITH NO ORGANISATION IS WAITING ON EMAIL VERIFICATION (0018): the
+        # A SIGNED-UP PERSON WITH NO ORGANISATION IS WAITING ON EMAIL VERIFICATION (0019): the
         # organisation and its grant are created only once the address is proven. Admitting them
         # here would turn the unverified window into an unlimited free tier - nothing would be
         # debited at the job's end either - so they are refused until they verify.

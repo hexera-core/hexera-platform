@@ -931,7 +931,7 @@ class Organization(Base):
     current_period_end:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
                                                                     nullable=True)
 
-    # THE ERASURE LIFECYCLE (0018). Requested is when the owner asked for their account to be
+    # THE ERASURE LIFECYCLE (0019). Requested is when the owner asked for their account to be
     # deleted: from that moment nobody can sign in to it, its keys are revoked and owner_id is
     # pseudonymised (application/privacy_service.py). Erased is when the maintenance sweep has
     # also removed the stored bytes. The row itself stays, renamed, because the credit ledger and
@@ -990,7 +990,7 @@ class User(Base):
                                                                nullable=True)
     last_login_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
                                                                nullable=True)
-    # THE NAME TYPED AT SIGN-UP, held until the address is verified (0018). No organisation exists
+    # THE NAME TYPED AT SIGN-UP, held until the address is verified (0019). No organisation exists
     # before then, so there is nowhere else to keep it; cleared once the organisation is created.
     pending_organization_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
@@ -1004,7 +1004,7 @@ class User(Base):
 
 
 class SignupGrantClaim(Base):
-    # ONE NORMALISED ADDRESS THAT HAS RECEIVED THE SIGNUP GRANT (0018). The primary key is the
+    # ONE NORMALISED ADDRESS THAT HAS RECEIVED THE SIGNUP GRANT (0019). The primary key is the
     # whole mechanism: inserting this row in the grant's own transaction makes a second grant for
     # the same mailbox collide on write, whether it comes from a second organisation, a re-sign-up
     # after erasure, or a plus-addressed alias. A digest, never the address - see
