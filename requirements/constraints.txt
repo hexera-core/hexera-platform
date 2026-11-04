@@ -128,7 +128,7 @@ psycopg==3.2.3
 psycopg-binary==3.2.3
 psycopg-pool==3.3.1
 pyamg==5.3.0
-pyasn1==0.6.4
+pyasn1==0.6.5
 pyasn1_modules==0.4.2
 pycparser==3.0
 pycryptodome==3.23.0

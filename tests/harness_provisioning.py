@@ -75,12 +75,23 @@ async def table_names(url: URL | str) -> set[str]:
 
 
 def ensure_bucket() -> None:
-    try:
-        from meshpipeline.contracts.object_storage import get_object_store
+    # MAKES the configured bucket and proves it is there. An earlier version only probed for an
+    # object, which never creates a bucket - so the bucket existed only once some other test in the
+    # same process happened to upload through MinioStore. The multipart-delta tests list uploads
+    # through MINIO_BUCKET and read an empty list while it is missing, so they passed or failed by
+    # which files the size-based sharder put beside them (PR #391 grew one file; shard 1 went red).
+    from minio import Minio
 
-        get_object_store().exists(object_key="provisioning-probe")
-    except Exception:  # noqa: BLE001 - best-effort; suites assert their own storage needs
-        pass
+    import meshpipeline.settings.providers as provcfg
+
+    client = Minio(provcfg.MINIO_ENDPOINT, access_key=provcfg.MINIO_ACCESS_KEY,
+                   secret_key=provcfg.MINIO_SECRET_KEY, secure=provcfg.MINIO_SECURE,
+                   region=provcfg.MINIO_REGION)
+    bucket = provcfg.MINIO_BUCKET
+    if not client.bucket_exists(bucket):
+        client.make_bucket(bucket)
+    if not client.bucket_exists(bucket):
+        raise RuntimeError(f"the integration tier could not provision MinIO bucket {bucket!r}")
 
 
 # DROP SCHEMA public CASCADE, then rebuild. The proof that `url` is disposable is re-taken here,

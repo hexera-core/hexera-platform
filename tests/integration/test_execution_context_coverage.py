@@ -231,7 +231,9 @@ async def run_committed_scenarios(mp, tmp, jobs: list, seen: list | None = None,
                      ("internal-narrow-passage", {"internal": True, "native_double": False,
                                                   "narrow_passage": True}),
                      ("domain-preflight", {"body": S._half_model, "native_double": False,
-                                         "domain_refused": True})):
+                                         "domain_refused": True}),
+                     ("brake-released", {"body": S._half_model, "native_double": False,
+                                         "brake_released": True})):
         jobs.append((await step(f"snappy-driver:{name}",
                                 S._run(mp, tmp / f"snappy-{name}", **kw)))[0])
 
@@ -265,6 +267,21 @@ async def run_committed_scenarios(mp, tmp, jobs: list, seen: list | None = None,
                                      lambda j: {**N._VMTK, "job_id": str(j),
                                                 "geometry": geometry})))["job_id"])
 
+    # The Repair check step: the inspection opens its lane and the attempt says its one line,
+    # the two nodes run back to back under one claim, as the graph runs them.
+    from meshpipeline.pipeline.repair_attempt import node_repair_attempt
+    from meshpipeline.pipeline.repair_inspect import node_repair_inspect
+
+    async def _repair_check(state):
+        return await node_repair_attempt({**state, **await node_repair_inspect(state)})
+
+    (tmp / "repair").mkdir(parents=True, exist_ok=True)
+    surface = N._self_intersecting_geometry(tmp / "repair")
+    jobs.append((await step("repair-check:surface-file",
+                            N._owned(mp, nodes, _repair_check,
+                                     lambda j: {**N._VMTK, "job_id": str(j),
+                                                "geometry": surface})))["job_id"])
+
     # The infra-retry node's user-facing note, through the same execution-owned boundary a real
     # replay uses. The backoff is zeroed for certification only - the wait is policy, not what
     # this scenario proves.
@@ -278,6 +295,14 @@ async def run_committed_scenarios(mp, tmp, jobs: list, seen: list | None = None,
                                                 "api_failure": "builder_transient",
                                                 "retry_count": 1,
                                                 "infra_retry_count": 0})))["job_id"])
+
+    # The guard-clock replay's note (docs/RULES.md TIME-3), through the same boundary.
+    from meshpipeline.pipeline.graph import node_guard_replay
+
+    jobs.append((await step("guard-replay:same-attempt",
+                            N._owned(mp, nodes, node_guard_replay,
+                                     lambda j: {"job_id": str(j), "retry_count": 1,
+                                                "guard_replay_count": 0})))["job_id"])
 
     # The builder policy's own close-out: two valid meshes, no submission, so the loop ends with
     # the policy making the submission and announcing it.

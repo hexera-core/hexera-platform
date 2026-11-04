@@ -41,6 +41,11 @@ async def node_repair_inspect(state: PipelineState) -> dict:
     if geometry is None or not geometry.path or not Path(geometry.path).exists():
         return {}
 
+    # THE RUN'S "Repair check" STEP OPENS HERE, so the user sees their part being checked;
+    # node_repair_attempt says what came of it (pipeline/repair_words.py).
+    from meshpipeline.pipeline import repair_words
+    await repair_words.aopen(str(job_id))
+
     source = Path(geometry.path)
     size = source.stat().st_size
     if size > rcfg.CAD_INSPECT_MAX_BYTES:

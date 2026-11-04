@@ -187,3 +187,14 @@ def test_an_inspection_dependency_that_cannot_import_does_not_fail_the_run(tmp_p
     assert out["repair_report"]["error_type"].endswith("Error")
     assert "NotFound" in out["repair_report"]["error_type"] or \
         out["repair_report"]["error_type"] == "ImportError"
+
+
+# The repair nodes publish the run's Repair check step through the ownership-checked port. This
+# suite exercises node contracts, not Redis or PostgreSQL, so the port is stood in for; ownership
+# has its own suites.
+@pytest.fixture(autouse=True)
+def _execution_publisher(monkeypatch):
+    from tests.execution_publisher_double import install
+
+    import meshpipeline.application.execution_publisher as _ep
+    return install(monkeypatch, _ep)

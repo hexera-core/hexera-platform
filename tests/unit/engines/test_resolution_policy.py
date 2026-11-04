@@ -97,10 +97,11 @@ class TestTheRungAfterASwitch:
         assert not rp.rung_after_switch(self._st(retry_count=3), attempts_ceiling=3,
                                         attempt_seconds=3600)[0]
 
-    def test_never_when_a_whole_attempt_no_longer_fits_the_runs_time(self):
-        ok, why = rp.rung_after_switch(self._st(pipeline_deadline_epoch=1000.0),
-                                       attempts_ceiling=3, attempt_seconds=3600, now=0.0)
-        assert not ok and "time" in why
+    def test_the_time_left_never_decides_the_rung(self):
+        # docs/RULES.md TIME-1: the same state gives the same answer whatever the clock reads
+        for deadline in (10.0, 1000.0, 3599.0, 1e9):
+            assert rp.rung_after_switch(self._st(pipeline_deadline_epoch=deadline),
+                                        attempts_ceiling=3, attempt_seconds=3600, now=0.0) == (True, "")
 
 
 class TestTheNote:

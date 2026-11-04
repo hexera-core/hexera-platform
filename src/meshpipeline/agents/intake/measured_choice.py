@@ -24,8 +24,11 @@ from collections.abc import Iterable, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
 
-#: How long a turn waits for the geometry to be measured before going on without it.
-MEASURE_WAIT_S = 15.0
+#: The GUARD on a turn's wait for the geometry to be measured (docs/RULES.md TIME-4). The turn
+#: waits for the measurement - a fixed amount of work, cached once made - so the engine it
+#: recommends never depends on how busy the worker was. This only stops a hung measurement; a trip
+#: is that measurement failing (recorded as a guard trip), never "no recommendation this turn".
+MEASURE_WAIT_S = 300.0
 
 
 def staged_upload(session_id: str, source_ref=None) -> str:
@@ -118,16 +121,16 @@ def rank(*, path: str, purpose: str, input_kind: str, form: str, engines: Sequen
 
 
 async def rank_in_time(*, timeout_s: float = MEASURE_WAIT_S, **kw):
-    """`rank` off the event loop, waited for at most `timeout_s`; None when it is not ready (the
-    measurement keeps going and is cached for the next turn) or fails."""
+    """`rank` off the event loop, waited for until it is done (its guard `timeout_s` only stops a
+    hung measurement, TIME-4); None when it fails or the guard trips."""
     try:
         return await asyncio.wait_for(asyncio.to_thread(rank, **kw), timeout=timeout_s)
     except TimeoutError:
-        logger.info("Intake: the geometry is still being measured - no engine recommendation "
-                    "this turn")
-        from meshpipeline.engines.determinism import note_time_limit
-        note_time_limit("intake.recommendation", "no measured engine recommendation this turn: "
-                        "the measurement was not ready", budget_s=float(timeout_s))
+        logger.warning("Intake: the geometry measurement ran past its %.0f s guard - no engine "
+                       "recommendation", timeout_s)
+        from meshpipeline.contracts.work_limits import TIME_WAIT
+        from meshpipeline.engines.determinism import note_guard_trip
+        note_guard_trip("intake.recommendation", rule=TIME_WAIT, guard_s=float(timeout_s))
     except Exception as exc:  # noqa: BLE001 - advice never breaks a turn
         logger.warning("Intake: engine recommendation unavailable (%s: %s)",
                        type(exc).__name__, str(exc)[:200])

@@ -265,3 +265,14 @@ def test_a_replay_cannot_steal_an_llm_operations_row():
     out = directive_outcomes([replay, llm], [ran], [])
     assert out[0]["outcome"] == "not_reached"
     assert (out[1]["directive_id"], out[1]["outcome"]) == ("llm:0", "kept")
+
+
+# The repair nodes publish the run's Repair check step through the ownership-checked port. This
+# suite exercises node contracts, not Redis or PostgreSQL, so the port is stood in for; ownership
+# has its own suites.
+@pytest.fixture(autouse=True)
+def _execution_publisher(monkeypatch):
+    from tests.execution_publisher_double import install
+
+    import meshpipeline.application.execution_publisher as _ep
+    return install(monkeypatch, _ep)

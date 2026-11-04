@@ -45,6 +45,17 @@ import numpy as np
 #: joined, never more than GAP_JOIN_SHARE of the smaller part's box diagonal (a 5 mm pin: 0.1 mm).
 GAP_JOIN_MM = 0.5
 GAP_JOIN_SHARE = 0.02
+#: A gap measured AT the limit is within it, in any unit: the comparison carries this relative slack.
+#: Without it the same stud punch read as "5 pairs across a 0.5 mm gap" on the check (millimetres) and
+#: "4 meet only along a line, 1 across a gap" on the run (the part staged in metres, where 0.5 mm came
+#: out a hair over 0.0005 m) - two answers for one part (demo dry run, 2 Nov).
+LIMIT_RTOL = 1e-6
+
+
+def within(gap, limit: float):
+    """Whether a measured gap (a number or an array) lies within `limit`, the limit itself included in
+    any unit (LIMIT_RTOL)."""
+    return gap <= limit * (1.0 + LIMIT_RTOL)
 #: Two faces FACE each other when their outward normals are within this angle of opposite.
 FACING_DEG = 45.0
 #: The least facing area that makes a joint: this share of the smaller part's box diagonal, squared
@@ -478,7 +489,7 @@ def _facing(sa: _Surface, a: int, fa, sb: _Surface, b: int, fb, limit: float, re
     gap[ok_b] = np.linalg.norm(on_b[ok_b] - on_a[ok_b], axis=1)
     opposed = np.einsum("ij,ij->i", n_a, n_b) <= -math.cos(math.radians(FACING_DEG))
     ahead = np.einsum("ij,ij->i", on_b - on_a, n_a) >= -tol
-    m = ok_b & (gap <= limit) & opposed & ((gap <= tol) | ahead)
+    m = ok_b & within(gap, limit) & opposed & ((gap <= tol) | ahead)
     # LYING ON IT, THE SAME SIDE OUT: the two parts' material on the same side of one surface - a body drawn
     # twice, or two parts passing into each other flush with a shared face
     aligned = ok_b & (gap <= tol) & (np.einsum("ij,ij->i", n_a, n_b) >= math.cos(math.radians(FACING_DEG)))
@@ -1027,7 +1038,7 @@ def _measure(parts: list, *, tol: float, mm: float, budget_s: float, t0: float, 
                     if dd > limit + slack or sk_i.get(a) or sk_j.get(b):
                         continue
                     dab, where_ab = _dist_at(faces[i][a], faces[j][b])
-                    if dab <= limit:
+                    if within(dab, limit):
                         close.append((a, b, dab, where_ab))
                 if close and not skinned:
                     dmin = min(c[2] for c in close)

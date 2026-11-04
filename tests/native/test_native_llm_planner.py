@@ -146,3 +146,14 @@ def test_live_model_directive_that_the_caps_accept_is_kept_with_its_provenance(
     assert [e for e in inspect_brep_file(write_loose_faces_step(tmp_path / "orig.step")).entities
             if e["code"] == "open_shell"], "the original must have been broken"
     assert inspect_brep_file(promoted).entities == ()
+
+
+# The repair nodes publish the run's Repair check step through the ownership-checked port. This
+# suite exercises node contracts, not Redis or PostgreSQL, so the port is stood in for; ownership
+# has its own suites.
+@pytest.fixture(autouse=True)
+def _execution_publisher(monkeypatch):
+    from tests.execution_publisher_double import install
+
+    import meshpipeline.application.execution_publisher as _ep
+    return install(monkeypatch, _ep)

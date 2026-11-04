@@ -377,3 +377,14 @@ def test_history_attaches_per_code_not_per_face():
     small, shell = repo.added
     assert small["decision_history"][0]["action"] == "leave"
     assert "decision_history" not in shell, "another problem on the face has no history yet"
+
+
+# The repair nodes publish the run's Repair check step through the ownership-checked port. This
+# suite exercises node contracts, not Redis or PostgreSQL, so the port is stood in for; ownership
+# has its own suites.
+@pytest.fixture(autouse=True)
+def _execution_publisher(monkeypatch):
+    from tests.execution_publisher_double import install
+
+    import meshpipeline.application.execution_publisher as _ep
+    return install(monkeypatch, _ep)

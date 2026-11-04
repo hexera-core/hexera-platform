@@ -97,11 +97,11 @@ CAD_REPAIR_MAX_HOLE_SPAN_RATIO: float = float(
 #: deadline proving it is pathological. The work is handed to a thread and abandoned on expiry:
 #: OpenCASCADE offers no interruption point, so the thread finishes in the background while the
 #: run proceeds on the original geometry with an inconclusive report.
-CAD_INSPECT_TIMEOUT_S: float = float(optional_env("CAD_INSPECT_TIMEOUT_S", "25"))
+CAD_INSPECT_TIMEOUT_S: float = float(optional_env("CAD_INSPECT_TIMEOUT_S", "60"))
 
 #: Files larger than this are not inspected at all. Reading a very large STEP costs seconds before
 #: anything is measured, and a part that big is one an operator should look at anyway.
-CAD_INSPECT_MAX_BYTES: int = int(optional_env("CAD_INSPECT_MAX_BYTES", str(80 * 1024 * 1024)))
+CAD_INSPECT_MAX_BYTES: int = int(optional_env("CAD_INSPECT_MAX_BYTES", str(128 * 1024 * 1024)))
 
 #: Seconds the run will WAIT for a repair before going on without it. Not a limit on the kernel:
 #: OpenCASCADE offers no interruption point, so the thread finishes in the background while the

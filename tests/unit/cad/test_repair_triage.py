@@ -241,6 +241,22 @@ def test_a_judgement_defect_still_wins_and_still_carries_its_targets():
     assert [t["entity"] for t in advice.targets] == ["face:4"]
 
 
+def test_a_located_wire_self_intersection_on_an_invalid_body_uses_bounded_global_repair(
+        monkeypatch):
+    import meshpipeline.settings.cad_repair as rcfg
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FIX_SMALL_FACES", True)
+    wire = _entity("self_intersection", entity="wire:4")
+    wire["kernel_status"] = "SelfIntersectingWire"
+    invalid = _entity("invalid_brep", entity="face:3")
+    sliver = _entity("small_face", entity="face:8", severity="warning")
+
+    advice = recommend(repair_status="repairable", report=_located(wire, invalid, sliver))
+
+    assert advice.route == ROUTE_CONSERVATIVE_REPAIR
+    assert advice.profile == "conservative"
+
+
 def test_a_thousand_slivers_do_not_become_a_thousand_targets():
     many = [_entity("small_edge", entity=f"edge:{i}", severity="warning") for i in range(200)]
     advice = recommend(repair_status="repairable", report=_located(*many))
