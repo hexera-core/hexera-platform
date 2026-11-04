@@ -24,6 +24,10 @@ import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml }
 // a delivered FEA mesh (a structural solid) is read face by face, with its quality against each
 // solver limit, its plan and its hot spots (FEA build step 5)
 import { bindFeaResults, feaDownloads, feaResultsHtml } from "./fea_results.js";
+// the reading instruments on the mesh: the inspect window's controls, the size legend, and the
+// plain words for what is on screen (viewer/inspect.js)
+import { cutText, dialRadius, fmtLen, inspectorHtml, mergeFactor, odometerText, radiusDial,
+         scaleBar } from "./inspect.js";
 
 let _vtkP=null;
 function loadVtk(){if(window.vtk)return Promise.resolve();
@@ -174,6 +178,7 @@ export async function openViewer(job,anchorEl,opts){
       <div class="v-loading" id="v-load-${job}"><svg class="v-spin" viewBox="0 0 24 24" aria-hidden="true"><circle class="sp-arm" cx="12" cy="12" r="7.2"/><path class="sp-hd" d="M19.20 8.16L22.40 14.56L16.00 14.56Z"/><path class="sp-hd" d="M4.80 15.84L1.60 9.44L8.00 9.44Z"/></svg><div>Loading mesh…</div></div>
       <div class="v-tools">${upSelectHtml('v-up-'+job,upAxis)}<button class="v-btn v-tool" id="v-fitbtn-${job}" type="button" title="Frame the whole mesh">Fit</button></div>
       <div class="v-hint" id="v-hint-${job}">${MOUSE_HINT}</div>
+      ${inspectorHtml(job,{xray:true,clip:true,worst:true,fly:true})}
       <div class="v-count" id="v-count-${job}"></div></div>
     <div class="v-flags" id="v-flags-${job}" style="display:none"></div>`;
   // each Download click asks the API for a fresh link, so one read long after the page loaded -
@@ -350,9 +355,17 @@ function initViewer(job,surf,uiCfg){
   // The viewer renders the BOUNDARY surface, so `totalFaces` is boundary faces - not
   // cells. Say the real cell count when the backend knows it, and name what we counted
   // when it does not. (This badge used to call 8,260 boundary faces "8,260 cells".)
+  /* ...and when the mesh was merged to fit the budget, `totalFaces` is not the boundary either:
+     it is the DRAWN polygons. On the customer plate that made the badge read "486,372 boundary
+     faces" for a mesh whose boundary is 30,011,162 - the drawn figure wearing the mesh's label,
+     one step along from the bug above. `reduced` carries both numbers precisely because they are
+     different, so the badge says both. */
+  const _red=surf.reduced||null;
   document.getElementById('v-count-'+job).textContent=
     surf.cell_count?surf.cell_count.toLocaleString()+' cells'
-                   :totalFaces.toLocaleString()+' boundary faces';
+    :_red&&_red.delivered_faces
+      ?`${totalFaces.toLocaleString()} drawn of ${(+_red.delivered_faces).toLocaleString()} faces`
+      :totalFaces.toLocaleString()+' boundary faces';
 
   document.getElementById('v-fitbtn-'+job).onclick=()=>{ren.resetCamera();clampCam();rw.render();};
   // WHICH WAY IS UP: turn the camera to the chosen axis, re-frame, and remember it for this job
@@ -1214,41 +1227,80 @@ function initViewer(job,surf,uiCfg){
      the camera is looking, and swaps it in for the merged one while it is on, because two
      coincident surfaces at different resolutions fight for the same depth and neither reads.
      Off again and the merged actors come back exactly as they were. */
-  (function detailWindow(){
+  /* INSPECT - the real cells of the place you CLICK.
+     `fit_to_budget` clusters cells so a delivered mesh fits what a browser can carry: the first
+     customer cold plate delivers 13,022,400 boundary faces on the coolant alone against a budget
+     of 800,000 triangles, so about sixteen delivered faces become one drawn one. The zoom still
+     lets a reader go right in, where the surface under their cursor is a merged approximation of
+     the cells rather than the cells - every number they are given is the mesh's own and the
+     surface is not. This asks the backend for a ball of the DELIVERED boundary and swaps it in for
+     the merged one while it is on, because two coincident surfaces at different resolutions fight
+     for the same depth and neither reads.
+
+     WHAT CHANGED, AND WHY, after the owner of this product said he could not tell what the old
+     button did. It was one control called "Detail", built `className='v-dlbtn'` and appended to
+     `.v-dl` - the DOWNLOADS bar - so the instrument that reads the mesh was dressed as a download
+     and filed next to ParaView. Three faults, none of them the cut itself:
+
+       1. IT LOOKED LIKE A DOWNLOAD. Fixed by giving it its own class and its own home: the
+          overlay on the canvas, with every other control that changes what the canvas shows.
+       2. IT CUT WHERE THE CAMERA POINTED. The centre was `cam.getFocalPoint()`, so to read a
+          place you had to first aim the entire camera at it. Now you click it. `pickCell` already
+          existed for the region markers and the heatmap probe; this is its third reader.
+       3. IT NEVER SAID HOW BIG ANYTHING WAS. On a part whose passages are 100-300 um and whose
+          envelope is 170 mm, a reader with no legend cannot tell a channel from a fillet. There
+          is now a size bar and a line that says what a pixel is worth and whether the surface is
+          the mesh or the stand-in for it.
+
+     AND THE CUT NO LONGER DIES ON A CAMERA MOVE. The old window cleared itself on the wheel,
+     correctly, because its ball was cut where the camera WAS - move the camera and the ball was
+     somewhere else. A ball cut at a point the reader chose is still that point's ball from any
+     angle, so it now survives the camera and you can orbit the real cells. That is the whole
+     reason to want them. */
+  (function inspectWindow(){
     if(surf.kind!=='polymesh')return;
-    const bar=document.querySelector('#viewer-'+job+' .v-dl');if(!bar||!window.vtk)return;
-    const a=document.createElement('a');a.className='v-dlbtn';a.href='#';a.id='v-detail-'+job;
-    a.title='the real cells around what you are looking at, unmerged';
-    a.innerHTML='<b>Detail</b><span>'+(surf.reduced?'cells here, unmerged':'the cells here')+'</span>';
-    const lbl=a.querySelector('span'),was=lbl.textContent;
+    if(!window.vtk)return;
+    const box=document.getElementById('v-insp-box-'+job);if(!box)return;
+    /* `a` IS THE ARM BUTTON AND `lbl` ITS READOUT, under the names the draw loop below already
+       uses. The loop is unchanged and well tested; renaming its two outputs to suit a new shell
+       would be churn in the one part of this window that never had a defect. */
+    const a=document.getElementById('v-insp-arm-'+job);
+    const lbl=document.getElementById('v-insp-read-'+job);
+    const dial=document.getElementById('v-insp-dial-'+job);
+    const rEl=document.getElementById('v-insp-r-'+job);
+    const was='click the mesh';
     let shown=[];              // the detail's own actors
     let shownNames=[];         // and what each one is, so what was drawn can be read back
     let shownPainted=0;        // how many of them carry the metric's colours rather than a tint
     let shownMetric='';        // and which metric that is, so a test can tell grey from grey
     let hidden=[];             // the merged actors this turned off
+    let centre=null;           // the point the reader picked; null until they pick one
+    let armed=false;
     function clear(){
       shown.forEach(ac=>ren.removeActor(ac));shown=[];shownNames=[];
-      shownPainted=0;shownMetric='';
+      shownPainted=0;shownMetric='';centre=null;
       hidden.forEach(en=>en.actor.setVisibility(true));hidden=[];
-      a.removeAttribute('aria-pressed');lbl.textContent=was;rw.render();}
-    /* HOW BIG A BALL. What the camera can see: half the view's height at this distance, so the
-       detail is the neighbourhood the reader is actually looking at and not a guess at a scale.
-       Floored at a few of the finest cells so a reader who has not zoomed in still gets cells
-       rather than one face. */
-    function radiusNow(){
-      const f=cam.getFocalPoint(),p=cam.getPosition();
-      const d=Math.hypot(p[0]-f[0],p[1]-f[1],p[2]-f[2]);
-      const half=d*tanHalf();
-      const floor=4*((stats&&stats.p10>0)?stats.p10:diag*0.002);
-      return Math.max(half,floor);}
-    a.onclick=async e=>{
-      e.preventDefault();
+      applyClip();applyXray();
+      // aria-pressed is the MODE and setArmed owns it. It used to be set by a successful cut and
+      // removed by this, so clearing one window turned the button off while the mode was still
+      // on - the cursor stayed a crosshair and the next click cut again from a control that
+      // looked idle.
+      lbl.textContent=was;rw.render();legendSoon();}
+    /* HOW BIG A BALL: the dial, geometric from four of the finest cells to half the part (see
+       inspect.dialRadius). It used to be half the view's height, which tied the thing being read
+       to the thing doing the reading - zoom to see the cells and the window you were reading
+       changed size under you. */
+    const fine=4*((stats&&stats.p10>0)?stats.p10:diag*0.002);
+    function radiusNow(){return dialRadius(dial?dial.value:38,{fine,diag});}
+    function showR(){if(rEl)rEl.textContent=fmtLen(radiusNow());}
+    showR();
+    async function cut(at){
       if(a.dataset.busy)return;
-      if(shown.length){clear();return;}
       a.dataset.busy='1';lbl.textContent='reading…';
       try{
-        const f=cam.getFocalPoint(),r=radiusNow();
-        const q=`x=${f[0]}&y=${f[1]}&z=${f[2]}&radius=${r}`;
+        const r=radiusNow();
+        centre=at.slice();
+        const q=`x=${at[0]}&y=${at[1]}&z=${at[2]}&radius=${r}`;
         const res=await fetch(`/api/v1/simulation/${job}/detail?${q}`,{headers:headers()});
         if(!res.ok){
           // the backend refuses in words - too big to read, no workspace left on this machine -
@@ -1306,23 +1358,289 @@ function initViewer(job,surf,uiCfg){
         // picked or the flat palette. A cut of a mesh delivered before the fields were measured
         // draws grey, and grey that is not named reads as a clean mesh.
         shownPainted=painted;shownMetric=painted?paintedMetric:'';
-        const col=painted?` - ${paintedLabel}`:'';
-        lbl.textContent=(got.truncated
-          ?`${got.faces_returned.toLocaleString()} of ${got.faces_in_range.toLocaleString()} faces - zoom in`
-          :`${got.faces_returned.toLocaleString()} cells, unmerged`)+col;
-        a.setAttribute('aria-pressed','true');
-        rw.render();}
-      catch(err){lbl.textContent='detail failed';console.warn('detail',err);}
-      finally{delete a.dataset.busy;}};
-    bar.appendChild(a);
-    // any camera move puts the merged surface back: the ball was cut where the camera WAS
-    host.addEventListener('wheel',()=>{if(shown.length)clear();},{capture:true,passive:true});
-    closeDetail=()=>{if(shown.length)clear();};
+        const col=painted?` · ${paintedLabel}`:'';
+        // "zoom in" was the wrong instruction once the window stopped being the camera's: the way
+        // to see all of a truncated window is to narrow the DIAL, which is what cutText says.
+        lbl.textContent=cutText(got)+col;
+        applyClip();
+        rw.render();
+        legendSoon();          // the legend now says "real cells"; it only watched the camera
+        /* FRAME A CUT THAT IS TOO SMALL TO SEE. The window is a ball of a chosen size, and on a
+           70 mm chip a 2.5 mm ball is forty pixels: the merged surface goes, the cells arrive,
+           and what a reader sees is the mesh disappearing. So when the cut would come in under
+           about a fifth of the view, the camera glides in and frames it - which is also the
+           thing a reader was going to do by hand, badly, with a scroll wheel. Over that size it
+           is left alone, because a reader who asked for a wide window meant to keep their view. */
+        const onScreen=(2*r)/Math.max(perPx(),1e-12);
+        if(onScreen<0.18*(host.clientHeight||600))glideTo(at,distFor(r));}
+      catch(err){lbl.textContent='could not read there';console.warn('detail',err);}
+      finally{delete a.dataset.busy;}}
+
+    /* ONE CUT AT A TIME. `cut` adds actors; asked twice without this it would stack a second
+       ball's cells over the first and leave both in `shown`, so the count on screen would be the
+       sum of two windows and `clear` would be the only way back. The merged actors stay hidden
+       across a re-cut on purpose - they are what the cut stands in front of. */
+    function dropShown(){
+      shown.forEach(ac=>ren.removeActor(ac));shown=[];shownNames=[];
+      shownPainted=0;shownMetric='';}
+    async function recut(at){dropShown();await cut(at);}
+
+    /* ARMED IS A MODE, and it says so three ways - the button's own state, the cursor, and the
+       hint under the canvas - because a mode a reader cannot see is a mode they will click out of
+       by accident and blame the mesh for. */
+    function setArmed(on){
+      armed=!!on;
+      a.setAttribute('aria-pressed',armed?'true':'false');
+      box.dataset.armed=armed?'1':'0';
+      host.style.cursor=armed?'crosshair':'';
+      const h=document.getElementById('v-hint-'+job);
+      if(h)h.textContent=armed?'Click a spot to read its real cells · Drag still rotates'
+                              :(activeMetric?HEAT_HINT:MOUSE_HINT);
+      if(!armed)clear();else lbl.textContent=was;
+      rw.render();}
+    a.onclick=e=>{e.preventDefault();setArmed(!armed);};
+
+    /* THE CLICK. `pickCell` is the viewer's own picker - the region markers and the heatmap probe
+       read the mesh through it already, this is its third reader - and `cellCenter` turns the face
+       it returns into the point the ball is cut around. A drag is not a click: the orbit moves the
+       pointer, and without this test every rotation that ended over the mesh fired a cut. */
+    let dxy=null;
+    host.addEventListener('pointerdown',e=>{dxy=[e.clientX,e.clientY];},true);
+    host.addEventListener('click',e=>{
+      if(!armed)return;
+      if(e.target&&e.target.closest&&
+         e.target.closest('.v-insp,.v-tools,.v-legend,.v-legend-scale,.v-probe,.v-flags'))return;
+      if(dxy&&Math.hypot(e.clientX-dxy[0],e.clientY-dxy[1])>4)return;
+      pickCell(e,(en,cid)=>{recut(cellCenter(en,cid));});},true);
+    // Esc leaves the mode the way Esc leaves every mode
+    host.setAttribute('tabindex','-1');
+    document.addEventListener('keydown',e=>{
+      if(e.key==='Escape'&&(armed||shown.length)&&document.getElementById('viewer-'+job))
+        setArmed(false);});
+
+    /* THE DIAL moves the label on every tick and the CUT only when it settles. A re-cut per tick
+       is a request per tick: the window the plate reads from is 1.66 GB of index on the server
+       and a slider dragged across its range is forty of them. */
+    if(dial){
+      dial.addEventListener('input',showR);
+      dial.addEventListener('change',()=>{showR();if(centre)recut(centre.slice());});}
+
+    /* THE SHELL, AND WHY IT ADDS THE METAL RATHER THAN FADING IT. A cooled solid is a block with
+       passages cut through it, so the metal's every patch but the coupling is a face of that
+       block - `encloses_domain` is how the engine says so, and `mesh_facts` opens exactly those
+       HIDDEN, because the first thing a reader should see of a conjugate mesh is the coolant and
+       not six grey rectangles sealing it in.
+
+       Which makes "fade the metal" a control with nothing to do: measured on the plate, a slider
+       taken to 85% changed not one pixel, because what it was fading was already not drawn. The
+       useful move is the other one - put the metal BACK, see-through, so the channels are seen
+       inside the block they are cut from. So this is an opacity, plainly: off draws no shell,
+       right draws a solid one, and anywhere between is the view worth having.
+
+       It leaves a cut alone. While real cells are up the merged actors are deliberately hidden,
+       and a shell switched on over them would hang in front of the thing being read. */
+    const ENCLOSE=new Set((surf.patches||[]).filter(p=>p&&p.encloses_domain)
+                                            .map(p=>String(p.name)));
+    const xEl=document.getElementById('v-insp-xray-'+job);
+    const xLbl=document.getElementById('v-insp-xrayr-'+job);
+    function applyXray(){
+      const v=xEl?(+xEl.value)/100:0;
+      if(xLbl)xLbl.textContent=v?Math.round(v*100)+'%':'off';
+      const cutUp=shown.length>0;
+      entries.forEach(en=>{
+        if(ENCLOSE.size&&!ENCLOSE.has(en.patch))return;   // only the wrapper, where there is one
+        const pr=en.actor.getProperty();
+        if(v>0){
+          if(en._shellWas===undefined)en._shellWas=en.actor.getVisibility();
+          if(!cutUp)en.actor.setVisibility(true);
+          if(pr.setOpacity)pr.setOpacity(Math.max(0.03,v));
+        }else{
+          if(pr.setOpacity)pr.setOpacity(1);
+          if(en._shellWas!==undefined){
+            if(!cutUp)en.actor.setVisibility(en._shellWas);
+            delete en._shellWas;}}});}
+    if(xEl)xEl.addEventListener('input',()=>{applyXray();rw.render();});
+
+    /* CLIP. A plane, slid through the part, with everything on one side of it not drawn. Nothing
+       is removed and nothing is measured differently: `addClippingPlane` is a mapper setting, so
+       the mesh on the server and the counts on screen are untouched and sliding it back shows
+       exactly what was there. The cut's own actors get the same plane, or an inspect window
+       opened inside a clipped part would hang in front of the opening. */
+    let clipAx='',clipFlip=false;
+    const clipEl=document.getElementById('v-insp-clip-'+job);
+    function applyClip(){
+      const ms=entries.map(en=>en.actor.getMapper()).concat(shown.map(ac=>ac.getMapper()));
+      ms.forEach(m=>{if(m&&m.removeAllClippingPlanes)m.removeAllClippingPlanes();});
+      if(!clipAx)return;
+      const k={x:0,y:1,z:2}[clipAx];
+      const lo=_bs[k*2],hi=_bs[k*2+1],t=clipEl?(+clipEl.value)/100:0.5;
+      const o=[0,0,0];o[k]=lo+(hi-lo)*t;
+      const n=[0,0,0];n[k]=clipFlip?-1:1;
+      const pl=vtk.Common.DataModel.vtkPlane.newInstance({origin:o,normal:n});
+      ms.forEach(m=>{if(m&&m.addClippingPlane)m.addClippingPlane(pl);});}
+    box.querySelectorAll('.v-insp-c[data-ax]').forEach(b=>{
+      b.onclick=()=>{
+        clipAx=b.dataset.ax||'';
+        box.querySelectorAll('.v-insp-c[data-ax]').forEach(o=>
+          o.setAttribute('aria-pressed',o===b?'true':'false'));
+        if(clipEl)clipEl.disabled=!clipAx;
+        applyClip();rw.render();};});
+    if(clipEl)clipEl.addEventListener('input',()=>{applyClip();rw.render();});
+    const flipB=document.getElementById('v-insp-flip-'+job);
+    if(flipB)flipB.onclick=()=>{clipFlip=!clipFlip;applyClip();rw.render();};
+
+    /* THE HELP IS THE FEATURE, on the evidence: the control worked and was unreadable, so the
+       words that say what it does earn their place beside it rather than in a document nobody
+       opens next to a 3D view. */
+    const helpB=document.getElementById('v-insp-help-'+job);
+    const helpBox=document.getElementById('v-insp-helpbox-'+job);
+    if(helpB&&helpBox)helpB.onclick=()=>{
+      const on=helpBox.hidden;helpBox.hidden=!on;
+      helpB.setAttribute('aria-expanded',on?'true':'false');};
+
+    /* THE GLIDE IS THIS WINDOW'S OWN, which is a decision and not an oversight. The heatmap has
+       one - `flyTo`, eased, turning about a single axis, cancelled by any input - and it is the
+       better glide. It is also unreachable here: the heatmap returns early on a payload with
+       neither per-patch quality arrays nor hotspots, so every line below that return, `flyTo`
+       among them, is never defined on exactly that payload. The chip IS that payload. Borrowing
+       it would have given a camera that glides on the plate and silently does nothing on the
+       chip - the same cross-closure fault that has already cost this file `tanHalf` and `rampOf`,
+       both of which threw into a button's label. So this one is short, plain and always defined.
+
+       The BEARING IS KEPT: the camera looks the way it already looked and moves in. On a part
+       that is one repeated pattern end to end, choosing a new angle for the reader is how they
+       lose track of where they are. */
+    let glide=0,glideSeq=0;
+    const EASE=t=>t<0.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
+    /** Taking the mouse ends the glide. A camera that keeps moving while a reader is dragging it
+     *  is a camera fighting its owner, and on the long walk below it is also the stop button. */
+    function stopGlide(){glideSeq++;if(glide){cancelAnimationFrame(glide);glide=0;}}
+    host.addEventListener('pointerdown',stopGlide,{capture:true});
+    host.addEventListener('wheel',stopGlide,{capture:true,passive:true});
+    function glideTo(at,dist){
+      cancelAnimationFrame(glide);
+      const token=++glideSeq;
+      const f0=cam.getFocalPoint().slice(),p0=cam.getPosition().slice();
+      const v=[p0[0]-f0[0],p0[1]-f0[1],p0[2]-f0[2]];
+      const d0=Math.hypot(v[0],v[1],v[2])||1e-9;
+      for(let k=0;k<3;k++)v[k]/=d0;
+      const r=capRange(),d1=Math.max(r[0],Math.min(r[1],dist||d0));
+      const calm=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const dur=calm?0:620,t0=performance.now();
+      return new Promise(res=>{
+        const step=()=>{
+          if(token!==glideSeq){glide=0;res(false);return;}
+          const t=dur?Math.min(1,(performance.now()-t0)/dur):1,e=EASE(t);
+          const d=d0*Math.pow(d1/d0,e);
+          const f=[0,1,2].map(k=>f0[k]+(at[k]-f0[k])*e);
+          // the same guard flyTo uses: the clamp must not re-enter while the camera is mid-move
+          _clamping=true;
+          try{cam.setFocalPoint(f[0],f[1],f[2]);
+              cam.setPosition(f[0]+v[0]*d,f[1]+v[1]*d,f[2]+v[2]*d);
+              cam.orthogonalizeViewUp();}
+          finally{_clamping=false;}
+          clampCam();ren.resetCameraClippingRange();rw.render();legendSoon();
+          if(t<1)glide=requestAnimationFrame(step);else{glide=0;res(true);}};
+        step();});}
+    /** How far back to sit so a ball of radius r fills about 45% of the view's height. */
+    function distFor(r){return Math.max(r,1e-12)/(0.45*Math.max(tanHalf(),1e-6));}
+
+    /* WORST turns a figure into a place, which is the one thing a number like "83.6 degrees"
+       cannot do for a reader on its own. The payload already carries the places: the hotspots are
+       the worst faces per metric with an x/y/z taken off the index's own centroids
+       (boundary_quality._sidecar_hotspots), measured on the faces the mesher wrote. So this needs
+       no new measurement, no new endpoint and no second opinion - it takes the top of that list,
+       glides there, and cuts. The metric is the one the reader picked if they have picked one. */
+    const HOTS=((surf.quality_fields||{}).hotspots)||[];
+    const METRIC_NAME={non_ortho:'non-orthogonality',skewness:'skewness',
+                       aspect_ratio:'aspect ratio'};
+    const worstB=document.getElementById('v-insp-worst-'+job);
+    if(worstB){
+      if(!HOTS.length){worstB.disabled=true;
+        worstB.title='this mesh shipped no hot spots - nothing measured over a bar';}
+      worstB.onclick=async()=>{
+        const pool=activeMetric?HOTS.filter(h=>h.metric===activeMetric):[];
+        const list=(pool.length?pool:HOTS).slice().sort((p,q)=>(q.value||0)-(p.value||0));
+        const h=list[0];if(!h)return;
+        const at=[h.x,h.y,h.z];
+        setArmed(true);
+        lbl.textContent='flying to the worst face…';
+        await glideTo(at,distFor(radiusNow()));
+        await recut(at);
+        const nm=METRIC_NAME[h.metric]||h.metric;
+        const v=Math.round((+h.value||0)*100)/100;
+        lbl.textContent=lbl.textContent+' · worst '+nm+' '+v+(h.patch?' on '+h.patch:'');};}
+
+    /* FLY walks the focal point along the part's longest axis in even hops, so a channel network
+       can be FOLLOWED instead of orbited - on a plate that is mostly one repeated pattern, an
+       orbit tells a reader almost nothing about what changes along it.
+       Any drag, wheel or Fit cancels the glide (flyTo's own rule), and a cancelled hop resolves
+       false - so taking the mouse ends the tour rather than fighting it for the camera. */
+    const flyB=document.getElementById('v-insp-fly-'+job);
+    let flying=false;
+    if(flyB)flyB.onclick=async()=>{
+      if(flying){flying=false;stopGlide();return;}
+      /* THE WHOLE PART, NOT ONE BALL. The camera's zoom-out cap is computed from what is
+         currently VISIBLE (capRange, off the visible set), so walking the long axis with a cut
+         up holds the camera inside that cut's few millimetres: measured on the chip, an
+         eight-hop walk of a 78 mm part ended at 2.22 um a pixel. Putting the merged surface
+         back first gives the walk the part's own envelope. */
+      if(shown.length)clear();
+      flying=true;flyB.textContent='Stop';flyB.setAttribute('aria-pressed','true');
+      try{
+        const k=[0,1,2].reduce((b,i)=>
+          (_bs[i*2+1]-_bs[i*2])>(_bs[b*2+1]-_bs[b*2])?i:b,0);
+        const lo=_bs[k*2],hi=_bs[k*2+1],span=hi-lo;
+        const mid=[0,1,2].map(i=>(_bs[i*2]+_bs[i*2+1])/2);
+        const STOPS=7;
+        for(let s=0;s<=STOPS&&flying;s++){
+          const at=mid.slice();at[k]=lo+span*(s/STOPS);
+          const ok=await glideTo(at,distFor(span/(2*STOPS)));
+          if(!ok)break;}
+      }finally{
+        flying=false;flyB.textContent='Fly';flyB.removeAttribute('aria-pressed');}};
+
+    /* THE SIZE LEGEND, which is the answer to "I cannot tell what I am looking at". A bar whose
+       LABEL is a round number (see inspect.scaleBar), the worth of one pixel, and whether the
+       surface under the cursor is the mesh or the merged stand-in for it. Coalesced onto one
+       animation frame because a camera fires modified on every mouse move of an orbit. */
+    const MERGE=mergeFactor(surf.reduced);
+    const sBar=document.getElementById('v-scale-i-'+job);
+    const sLbl=document.getElementById('v-scale-l-'+job);
+    const sOdo=document.getElementById('v-scale-o-'+job);
+    function perPx(){
+      const f=cam.getFocalPoint(),p=cam.getPosition();
+      const d=Math.hypot(p[0]-f[0],p[1]-f[1],p[2]-f[2]);
+      return (2*d*tanHalf())/(host.clientHeight||600);}
+    let legendQ=0;
+    function legend(){
+      const m=perPx(),sb=scaleBar(m,140);
+      if(sBar)sBar.style.width=Math.max(6,Math.min(220,sb.px))+'px';
+      if(sLbl)sLbl.textContent=sb.label;
+      if(sOdo)sOdo.textContent=odometerText({mPerPx:m,merged:MERGE,real:!!shown.length});}
+    function legendSoon(){
+      if(legendQ)return;
+      legendQ=requestAnimationFrame(()=>{legendQ=0;legend();});}
+    legend();
+    if(cam.onModified)cam.onModified(legendSoon);
+    new ResizeObserver(legendSoon).observe(host);
+
+    // a drag on a slider is not an orbit, and a click on the overlay is not a click on the mesh
+    shield(box);
+    const sc=document.getElementById('v-scale-'+job);if(sc)shield(sc);
+
+    closeDetail=()=>{if(shown.length){clear();setArmed(false);}};
     /* WHAT A READER CAN ACTUALLY SEE, which is what all three of this window's defects came
        down to: which patches are drawn - a budget that drops a region drops it from here -
        and whether the merged surface this stands in front of is still hidden. */
     window._vdbg[job].detail=()=>({button:a,shown:shown.length,names:shownNames.slice(),
                                    hidden:hidden.length,radius:radiusNow(),
+                                   // the mode, the point it was cut around and the instruments,
+                                   // so the browser tier can drive this without pixel picking
+                                   armed,centre:centre?centre.slice():null,
+                                   clip:clipAx||null,xray:xEl?+xEl.value:0,
+                                   scale:sLbl?sLbl.textContent:'',odometer:sOdo?sOdo.textContent:'',
+                                   cut:at=>recut(at),arm:on=>setArmed(on),
                                    // whether what is on screen carries the METRIC'S colours or
                                    // the flat per-patch tint: both are colours, and a test that
                                    // only counted actors could not tell them apart
