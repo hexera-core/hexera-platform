@@ -979,9 +979,11 @@ jobs:
           # is what the environment is for, and a branch with no open pull request has no ci-gate
           # at all - so requiring one would make the iteration path depend on remembering to run
           # CI first. The artifact is still validated either way: this job gates the RELEASE
-          # RECORD, and release-validate builds and tests the exact images before any of them are
-          # published. What is given up is ruff, mypy, CodeQL and the dependency audit, on a
-          # sandbox, at the request of a person who typed the branch name.
+          # RECORD. Development deploys still build and publish digest-pinned images from this
+          # commit before anything is provisioned, but they no longer wait for the full release
+          # artifact gate. What is given up is ruff, mypy, CodeQL, the dependency audit and the
+          # exhaustive artifact validation, on a sandbox, at the request of a person who typed the
+          # branch name.
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             echo "manual dev deploy - CI is reported, not required"
             # A skipped gate is a draft pull request (ci.yml runs nothing on one): no verdict, not a
@@ -1201,29 +1203,41 @@ jobs:
           # and a cache is writable by workflows that run on untrusted pull requests - restoring
           # one into the publishing path is how poisoned bytes reach a registry. A deploy runs
           # once per release; the seconds a cache saves are not worth that.
-      # The same single pinned environment ci.yml installs. Gate C runs the UI suite on the host
-      # against the containerised app image, so the host needs the test dependencies; no version
-      # is named here, for the same reason ci.yml names none.
+      # The full profile installs the same pinned environment ci.yml installs. Gate C runs the UI
+      # suite on the host against the containerised app image, so full validation needs the test
+      # dependencies. The dev-fast profile builds a wheel and images only, so it installs just the
+      # pinned PEP 517 frontend instead of minutes of runtime/test wheels.
       #
       # THIS INSTALL IS WHY provision IS A SEPARATE JOB AND NOT JUST A SEPARATE STEP: pyvista and
       # the rest of dev.txt are minutes of wheels that deploy.sh has no use for. Every script under
       # deploy/gcp/scripts uses a bare `python3` and the standard library, so provision runs on the
       # runner's own interpreter with nothing installed into it.
-      - if: steps.reuse.outputs.reused != 'true'
-        run: pip install -c requirements/constraints.txt -r requirements/runtime.txt -r requirements/dev.txt
+      - name: Install release validation dependencies
+        if: steps.reuse.outputs.reused != 'true'
+        env:
+          RELEASE_VALIDATION_PROFILE: ${{ needs.target.outputs.environment == 'dev' && 'dev-fast' || 'full' }}
+        run: |
+          if [ "${RELEASE_VALIDATION_PROFILE}" = "dev-fast" ]; then
+            pip install -c requirements/constraints.txt build==1.2.2
+          else
+            pip install -c requirements/constraints.txt -r requirements/runtime.txt -r requirements/dev.txt
+          fi
       - name: Install the meshpipeline distribution (editable)
         if: steps.reuse.outputs.reused != 'true'
         run: pip install -e . --no-deps
 
-      # GATE C, part 1. Builds the deployable images ONCE from this commit and validates THOSE
-      # artifacts - wheel provenance, both app entrypoints, the mesh toolchain, the vendored
-      # browser assets, the UI in a real browser, and the five-engine native terminal matrix.
+      # GATE C, part 1 for production. Development targets use RELEASE_VALIDATION_PROFILE=dev-fast:
+      # still a clean commit, wheel identity, image builds, digest publication and promotion by
+      # immutable reference, but without entrypoint smoke, browser smoke, native tiers or the
+      # pricing audit. That is the iteration trade: dev deploys quickly; production tags keep the
+      # exhaustive artifact proof.
       # RELEASE_PYTHON is the interpreter set up above: the gate otherwise falls through to the
       # repository virtualenv (absent here) and then to whatever python3 the host resolves to.
-      - name: Validate the release artifact (build the images once, test those exact bytes)
+      - name: Build and validate the release artifact
         if: steps.reuse.outputs.reused != 'true'
         env:
           RELEASE_PYTHON: ${{ steps.python.outputs.python-path }}
+          RELEASE_VALIDATION_PROFILE: ${{ needs.target.outputs.environment == 'dev' && 'dev-fast' || 'full' }}
           # THE LAYER CACHE, in the registry this run is already authenticated to.
           #
           # Every run of this job starts on a fresh runner with an empty local build cache, so the
