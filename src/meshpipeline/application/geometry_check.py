@@ -2906,9 +2906,20 @@ def weigh_flow_axis(facts: dict, vision: dict | None, flow_axis, up_axis: str) -
 
     if flow_axis not in AXES or (vision or {}).get("flow_from") == "the user's words":
         return flow_axis, ""
-    shaped, reading = axis_from_reading(facts.get("flow_axis_reading"), up_axis)
-    if shaped and float(reading.get("confidence") or 0.0) >= SHAPE_OUTRANKS_NOSE and shaped[1] != flow_axis[1]:
-        return None, f"the pictures' nose said {flow_axis}"
+    # EVERY reading is weighed, not only the first: a car's wheels (an unsure sign, so first and
+    # under the bar) and its mirror plane (sure) are two readings, and either can rule the nose out
+    readings = facts.get("flow_axis_reading")
+    vehicle = ((facts.get("reading") or {}).get("vehicle") or {}).get("axis")
+    for one in ([readings] if isinstance(readings, dict) else readings or []):
+        shaped, reading = axis_from_reading([one], up_axis)
+        if not shaped or shaped[1] == flow_axis[1]:
+            continue
+        # A VEHICLE'S LENGTH IS MEASURED (cad/flow_reading.on_wheels): a nose lies at one end of
+        # it, so a "nose" across it was read off a picture that shows the vehicle end-on. Only
+        # which end leads is unsure, and that is the nose's to say when it lies along the length.
+        along_vehicle = reading.get("rule") == "along" and vehicle in (reading.get("axes") or [])
+        if along_vehicle or float(reading.get("confidence") or 0.0) >= SHAPE_OUTRANKS_NOSE:
+            return None, f"the pictures' nose said {flow_axis}"
     return flow_axis, ""
 
 

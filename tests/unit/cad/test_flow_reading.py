@@ -273,6 +273,29 @@ def test_a_sure_shape_axis_stands_against_the_pictures_nose_but_never_against_th
     assert weigh_flow_axis(unsure, {"flow_from": "the nose"}, "+y", "+z") == ("+y", "")
 
 
+def test_a_nose_across_a_vehicles_length_or_across_any_sure_reading_is_set_aside():
+    # the Camaro on dev (4 Nov): wheels said -x (0.55, under the bar, so first), its mirror plane
+    # said across y (0.7); the model read a "nose" off the end-on side picture as +y. The first
+    # reading alone never outranked it, so the car was proposed flowing sideways
+    car = {"reading": {"vehicle": {"axis": "x", "supports": 4}},
+           "flow_axis_reading": [
+               {"rule": "along", "axes": ["x"], "confidence": 0.55, "reason": "wheels", "sign": "-"},
+               {"rule": "across", "axes": ["y"], "confidence": 0.7, "reason": "mirror"}]}
+    assert weigh_flow_axis(car, {"flow_from": "the nose"}, "-y", "+z") == (None, "the pictures' nose said -y")
+    assert axis_from_reading(car["flow_axis_reading"], "+z")[0] == "-x"
+    # along the length the nose gives the sign, even against the wheels' own guess
+    assert weigh_flow_axis(car, {"flow_from": "the nose"}, "+x", "+z") == ("+x", "")
+    # the vehicle's length alone (no mirror reading) still rules out a nose across it
+    wheels_only = {"reading": {"vehicle": {"axis": "x"}},
+                   "flow_axis_reading": [{"rule": "along", "axes": ["x"], "confidence": 0.55, "reason": "wheels"}]}
+    assert weigh_flow_axis(wheels_only, {"flow_from": "the nose"}, "+y", "+z")[0] is None
+    # an unsure reading that is not a vehicle leaves the nose to speak, as before
+    cut = {"flow_axis_reading": [{"rule": "along", "axes": ["x"], "confidence": 0.55, "reason": "cut"}]}
+    assert weigh_flow_axis(cut, {"flow_from": "the nose"}, "+y", "+z") == ("+y", "")
+    # the user's words still decide
+    assert weigh_flow_axis(car, {"flow_from": "the user's words"}, "-y", "+z") == ("-y", "")
+
+
 def test_a_nose_from_the_pictures_says_where_it_came_from_and_how_sure_it_is():
     rotor = {"flow_axis_reading": [{"rule": "along", "axes": ["x"], "confidence": 0.75, "reason": "rotor"}]}
     agree = nose_sureness(rotor, "-x", "+z")
