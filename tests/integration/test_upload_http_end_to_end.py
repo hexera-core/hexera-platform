@@ -49,7 +49,7 @@ def _free_port() -> int:
 
 @pytest.fixture()
 def api_server(tmp_path):
-    from tests.integration.conftest import ensure_signed_owner
+    from tests.harness_provisioning import ensure_signed_owner
     ensure_signed_owner(_OWNER)
     import httpx
 
