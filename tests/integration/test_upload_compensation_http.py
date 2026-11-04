@@ -40,6 +40,8 @@ async def _capacity_headroom():
     # own driver URL, so it is handed the bare coordinates.
     url = make_url(os.environ["DATABASE_URL"]).difference_update_query(["sslmode"])
     await hp.truncate_tables(url, "simulation_jobs")
+    from tests.integration.conftest import ensure_signed_owner
+    ensure_signed_owner(_OWNER)
     yield
 
 

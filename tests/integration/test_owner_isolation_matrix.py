@@ -48,6 +48,9 @@ def _free_port() -> int:
 
 @pytest.fixture(scope="module")
 def api(tmp_path_factory):
+    from tests.integration.conftest import ensure_signed_owner
+    for raw_owner in (_A, _B):
+        ensure_signed_owner(raw_owner)
     # THE HARDENED CONFIGURATION, which is the only one where owner identity means anything: both
     # secrets set, so X-User-Id must be signed. The dev path where identity is self-asserted is a
     # different contract and is covered by the unit tier.

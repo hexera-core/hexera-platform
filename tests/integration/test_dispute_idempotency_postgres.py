@@ -17,8 +17,11 @@ if not os.getenv("DATABASE_URL"):
 def _tenant(tag: str = "") -> str:
     # A FRESH tenant per test. The suite shares one database, so an owner that outlived its test
     # would make these assertions depend on execution order - which is exactly what an idempotency
-    # suite must not do.
-    return f"dispute-{tag}{uuid.uuid4().hex[:12]}"
+    # suite must not do. Provisioned a users row because the signed path refuses an identity that
+    # has none (an erased account's cookie); see conftest.ensure_signed_owner.
+    from tests.integration.conftest import ensure_signed_owner
+
+    return ensure_signed_owner(f"dispute-{tag}{uuid.uuid4().hex[:12]}")
 
 
 class CountingLauncher:
