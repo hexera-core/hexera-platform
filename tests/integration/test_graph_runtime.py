@@ -67,8 +67,7 @@ def test_engine_resolution_runs_on_real_code_without_crashing(monkeypatch):
     # The selection ANNOUNCEMENT is execution-owned: authorizing it is a PostgreSQL round trip
     # against a claim, which this hermetic module has no service to make. So the announcement is
     # recorded here and the node's own decision is what is asserted; that the announcement is
-    # refused without a live claim, and published under one, is
-    # tests/integration/test_pipeline_node_ownership.py's contract.
+    # refused without a live claim is the execution_fence suites' contract.
     announced: list = []
 
     async def _publish(job_id, text, op_id):
