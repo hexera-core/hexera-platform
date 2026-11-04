@@ -338,7 +338,7 @@
 "tests/unit/cad/test_annular_openings.py": 2.9,
 "tests/unit/cad/test_assembly_files.py": 22.5,
 "tests/unit/cad/test_bore_staging.py": 0.4,
-"tests/unit/cad/test_broken_cad_gate.py": 714.9,
+"tests/unit/cad/test_broken_cad_gate.py": 10.1,
 "tests/unit/cad/test_cad_reader_by_content.py": 0.0,
 "tests/unit/cad/test_contacts_not_corners.py": 0.3,
 "tests/unit/cad/test_coordinate_state.py": 0.0,
