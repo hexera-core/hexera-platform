@@ -283,6 +283,17 @@ def _runtime_paths_are_test_owned(tmp_path):
 
 
 @_pytest.fixture(autouse=True)
+def _model_clock_starts_at_zero():
+    """progress_clock's native-run seconds are process-wide; a test that ran a mesher must not shift
+    model_time() for whichever test the shard runs next."""
+    from meshpipeline.contracts import progress_clock
+
+    progress_clock.reset()
+    yield
+    progress_clock.reset()
+
+
+@_pytest.fixture(autouse=True)
 def _reset_circuit_breakers():
     try:
         from meshpipeline.adapters._shared import resilience
