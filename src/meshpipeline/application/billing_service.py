@@ -145,6 +145,16 @@ class AlreadySubscribed(ValueError):
 _LIVE_SUBSCRIPTION_STATUSES = frozenset({"active", "trialing", "past_due", "unpaid", "incomplete"})
 
 
+def has_live_subscription(organization) -> bool:
+    """Whether Stripe still holds an open subscription for this organisation.
+
+    PUBLIC because account erasure must refuse while one is open: `unpaid` and `incomplete` are
+    in - an account deleted in either state would leave a subscription nobody can reach the
+    console to cancel. The admission gate's PAYING_STATUSES is deliberately a different set.
+    """
+    return _has_live_subscription(organization)
+
+
 def _has_live_subscription(organization) -> bool:
     return bool(getattr(organization, "stripe_subscription_id", None)) and (
         (getattr(organization, "subscription_status", "") or "").strip().lower()

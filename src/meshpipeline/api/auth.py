@@ -76,11 +76,16 @@ async def create_session(
             status_code=403,
             detail="This deployment is not accepting new accounts") from None
 
+    # EMITTED HERE, after get_db has committed - including the events the resolution itself
+    # earned (the signup grant above all): a line describing a rolled-back write would record
+    # something that never happened.
     audit.record("auth.session", actor=account.user_id,
                  organization_id=account.organization_id,
                  # "verified", not "email_verified": the scrubber redacts any key naming email.
                  detail={"verified": account.email_verified,
                          "provisioned": account.provisioned})
+    for action, kwargs in account.audit_events:
+        audit.record(action, **kwargs)
     return {
         "user_id": account.user_id,
         "owner_id": account.owner_id,

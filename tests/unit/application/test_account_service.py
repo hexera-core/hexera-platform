@@ -111,7 +111,7 @@ def fakes(monkeypatch):
         create = staticmethod(f.create_membership)
         organization_id_for_email = staticmethod(f.organization_id_for_email)
 
-    async def fake_grant(db, *, organization_id, email):
+    async def fake_grant(db, *, organization_id, email, events=None):
         f.grants.append(organization_id)
         return polcfg.SIGNUP_GRANT_CREDITS
 

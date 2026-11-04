@@ -63,7 +63,7 @@ def provisioning(monkeypatch):
     async def fake_create_membership(db, *, user_id, organization_id, role):
         return None
 
-    async def fake_grant(db, *, organization_id, email):
+    async def fake_grant(db, *, organization_id, email, events=None):
         return 500
 
     async def fake_record_login(db, *, user_id, at, email_verified, name=""):

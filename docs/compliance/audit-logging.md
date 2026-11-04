@@ -11,7 +11,7 @@ the `hexera-audit` bucket, kept 400 days and, once locked, impossible to shorten
 |---|---|---|
 | `auth.session` | success, refused (`invalid_token`, `link_refused`, `signup_disabled`); success carries `verified` and `provisioned` | `api/auth.py` |
 | `account.unverified_registration_replaced` | success | `account_service` |
-| `credits.signup_grant` | success, withheld (`withheld_domain`, `already_claimed`) | `credit_service` |
+| `credits.signup_grant` | success, withheld (`withheld_domain`, `already_claimed`); emitted by `api/auth.py` after the provisioning transaction commits | `credit_service` via `api/auth.py` |
 | `api_key.created`, `api_key.revoked` | success | `api/v1/api_keys.py` |
 | `admin.authenticate` | refused | `api/v1/admin_billing.py` |
 | `admin.credit_grant` | success | `api/v1/admin_ops.py` |

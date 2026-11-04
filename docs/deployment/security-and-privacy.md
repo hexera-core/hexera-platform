@@ -8,9 +8,11 @@ matrix, records of processing, retention schedule and runbooks - is in `docs/com
 
 - **Export:** `GET /api/v1/account/export` returns every row this service holds for the caller's
   account and organisation (credential hashes excluded). Console session only; an API key is refused.
-- **Erasure:** `POST /api/v1/account/erasure` with the typed address. Keys revoked, conversations,
-  profile and memberships deleted, `owner_id` pseudonymised, all at once; stored bytes removed by
-  the hourly erasure sweep. The credit ledger and billing identity are kept as accounting records.
+- **Erasure:** `POST /api/v1/account/erasure` with the typed address. Keys revoked, conversation
+  content scrubbed, profile and memberships deleted, `owner_id` pseudonymised, all at once; the
+  hourly erasure sweep cancels unresolvable parked reviews, removes stored bytes (uploads,
+  results, geometry-check pictures and skins) and the scrubbed conversation rows, then marks the
+  erasure complete. The credit ledger and billing identity are kept as accounting records.
 - **Training data is opt-in:** `DATA_COLLECTION_ENABLED` defaults to `false`.
 - **Audit trail:** `application/audit.py`, routed to a retention-locked bucket; see
   `docs/compliance/audit-logging.md`.

@@ -13,9 +13,12 @@ from datetime import UTC, datetime
 from sqlalchemy import and_, delete, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from meshpipeline.application import audit
-from meshpipeline.application.maintenance.geometry_retention import SOURCE_REQUIRING_STATES
-from meshpipeline.application.spend_gate import PAYING_STATUSES
+from meshpipeline.application import audit, billing_service
+from meshpipeline.application.job_cancel import CancelResult
+from meshpipeline.application.maintenance.geometry_retention import (
+    SOURCE_REQUIRING_STATES,
+    TERMINAL_STATES,
+)
 from meshpipeline.persistence.models import (
     ApiKey,
     Artifact,
@@ -26,6 +29,7 @@ from meshpipeline.persistence.models import (
     CreditLedgerEntry,
     GeometryInterpretationRow,
     GeometrySource,
+    JobStatus,
     Membership,
     MembershipRole,
     Organization,
@@ -45,8 +49,10 @@ OWNER_SCOPED: tuple = (
     CaptureOperation, ArtifactReconciliation, SourceObjectCleanup, ApiKey,
 )
 
-#: Columns an export never carries: a credential's hash is not the subject's data, it is ours.
-_EXPORT_EXCLUDED_COLUMNS = frozenset({"key_hash"})
+#: Columns an export never carries. A credential's hash is not the subject's data, it is ours -
+#: and `active_worker_token` is a LIVE worker lease: models.py forbids it ever leaving through an
+#: API, and an export of a running job is an API.
+_EXPORT_EXCLUDED_COLUMNS = frozenset({"key_hash", "active_worker_token"})
 
 #: The most rows of one table one export carries. A larger account is told it was truncated and
 #: support completes the request by hand (docs/compliance/dsar-runbook.md), rather than one
@@ -171,10 +177,11 @@ async def request_erasure(db: AsyncSession, *, owner_id: str, organization_id: s
                             .with_for_update())).scalar_one()
     if org.erasure_requested_at is not None:
         return {"status": "already_requested", "requested_at": org.erasure_requested_at.isoformat()}
-    if (org.stripe_subscription_id and org.subscription_status
-            and org.subscription_status in PAYING_STATUSES - {""}):
-        # Erasing a tenant that is still being billed would leave a subscription charging an
-        # account nobody can sign in to. The person cancels first, under Billing.
+    if billing_service.has_live_subscription(org):
+        # Erasing a tenant whose subscription Stripe still holds open - `unpaid` and `incomplete`
+        # included - would leave it charging an account nobody can sign in to manage. The person
+        # cancels first, under Billing. Billing's own live set is the authority here, not the
+        # admission gate's PAYING_STATUSES.
         raise ErasureRefused("Cancel your subscription under Billing before deleting the account.")
 
     # THE SCOPE OF AN ERASURE IS ONE ORGANISATION. The owner-matched half catches only rows whose
@@ -189,18 +196,30 @@ async def request_erasure(db: AsyncSession, *, owner_id: str, organization_id: s
                                                      ApiKey.revoked_at.is_(None))
                                 .values(revoked_at=at))).rowcount
 
-    # CONVERSATIONS ARE DELETED OUTRIGHT: they are free text the person typed, the most likely
-    # place in the schema for personal data we did not ask for.
-    chats = (await db.execute(delete(ChatSession).where(_belongs(ChatSession)))).rowcount
+    # CONVERSATION CONTENT GOES NOW; the ROWS go in the sweep. They are free text the person
+    # typed - the most likely place in the schema for personal data we did not ask for - so every
+    # user-written column is emptied in this transaction. The row ids survive until the sweep
+    # because each session's geometry-check objects (skin, pictures, the user's naming words)
+    # live under `sessions/<id>/...` in the object store, and deleting the rows first would lose
+    # the only record of which objects to remove.
+    chats = (await db.execute(update(ChatSession).where(_belongs(ChatSession)).values(
+        messages=[], request_txt=None, review_brief_txt=None, intake_patches=None,
+        user_notes=None, llm_metadata=[], engine_params=None, intake_gate=None,
+        domain=None))).rowcount
 
     pseudonym = erased_owner(parsed)
     for model in OWNER_SCOPED:
-        if model is ChatSession:
-            continue
         await db.execute(update(model).where(_belongs(model)).values(owner_id=pseudonym))
     # The name the person gave their upload is their text, not lineage; the row keeps its ids.
     await db.execute(update(GeometrySource).where(_belongs(GeometrySource))
                      .values(original_filename=""))
+    # A terminal job's dispatch payload is the approved submission verbatim - the address, the
+    # request text, the notes. Nothing re-reads it once the job is terminal. Live jobs keep
+    # theirs (a cancel still renders its verdict from it); the sweep clears those once they end.
+    await db.execute(update(SimulationJob)
+                     .where(_belongs(SimulationJob),
+                            SimulationJob.status.in_(sorted(s.value for s in TERMINAL_STATES)))
+                     .values(dispatch_payload=None))
 
     member_ids = select(Membership.user_id).where(Membership.organization_id == parsed)
     users = list((await db.execute(select(User).where(User.id.in_(member_ids)))).scalars())
@@ -220,30 +239,49 @@ async def request_erasure(db: AsyncSession, *, owner_id: str, organization_id: s
                              erasure_requested_at=at))
 
     logger.info("erasure requested for organisation %s: %s keys revoked, %s conversations "
-                "deleted", parsed, revoked, chats)
+                "scrubbed", parsed, revoked, chats)
     # The audit line is the CALLER's to write, after the transaction commits: a line describing a
     # rolled-back erasure would be a record of something that never happened.
     return {"status": "requested", "requested_at": at.isoformat(),
             "audit_detail": {"actor": str(user.id), "api_keys_revoked": revoked,
-                             "conversations_deleted": chats, "users_removed": len(users)}}
+                             "conversations_scrubbed": chats, "users_removed": len(users)}}
 
 
 async def sweep_erasures(db: AsyncSession, store, *, limit: int = 10,
                          now: datetime | None = None) -> dict:
     """Delete the stored bytes of every organisation whose erasure is pending, then mark it erased.
 
-    An organisation with a job that still needs its bytes waits for the next run: the reaper
-    (STALLED_JOB_TIMEOUT_HOURS) bounds how long that can be. Idempotent - a source already purged
-    or an artifact already gone is simply skipped - so a failed run is re-run, not unwound.
+    An organisation with a RUNNING job waits for the next run: the reaper
+    (STALLED_JOB_TIMEOUT_HOURS) bounds how long that can be. A job parked in `pending_review`
+    would wait FOREVER - the reaper leaves parked jobs alone, and erasure removed the only people
+    who could decide the review - so those are cancelled here first, through the same cancel the
+    owner would have used. Idempotent - a source already purged or an artifact already gone is
+    simply skipped - so a failed run is re-run, not unwound.
     """
+    from meshpipeline.application.job_cancel import cancel_job
+
     at = now or datetime.now(UTC)
-    # Organisations still waiting on a job are EXCLUDED FROM THE PAGE, not skipped inside it:
-    # `limit` oldest-first with in-loop skips would hand the same waiting rows back every run and
-    # starve every erasure requested after them.
+    base = (Organization.erasure_requested_at.is_not(None), Organization.erased_at.is_(None))
+
+    # 1. CLOSE THE REVIEWS NOBODY CAN ANSWER. cancel_job runs in its own transaction per job,
+    #    exactly as the owner's cancel does - eviction, the terminal CAS, the park closed.
+    parked = (await db.execute(
+        select(SimulationJob.id, SimulationJob.organization_id)
+        .join(Organization, Organization.id == SimulationJob.organization_id)
+        .where(*base, SimulationJob.status == JobStatus.pending_review))).all()
+    cancelled = 0
+    for job_id, org_id in parked:
+        outcome = await cancel_job(job_id, owner_id=erased_owner(org_id),
+                                   organization_id=str(org_id),
+                                   reason="account erased - the review had nobody left to decide")
+        cancelled += outcome.result in (CancelResult.cancelled, CancelResult.already_cancelled)
+
+    # 2. THE PAGE. Organisations still waiting on a job are EXCLUDED FROM IT, not skipped inside
+    #    it: `limit` oldest-first with in-loop skips would hand the same waiting rows back every
+    #    run and starve every erasure requested after them.
     active_job = exists().where(and_(
         SimulationJob.organization_id == Organization.id,
         SimulationJob.status.in_(sorted(s.value for s in SOURCE_REQUIRING_STATES))))
-    base = (Organization.erasure_requested_at.is_not(None), Organization.erased_at.is_(None))
     pending = list((await db.execute(
         select(Organization.id).where(*base, ~active_job)
         .order_by(Organization.erasure_requested_at).limit(limit))).scalars())
@@ -274,40 +312,88 @@ async def sweep_erasures(db: AsyncSession, store, *, limit: int = 10,
         erased += 1
         audit.record("privacy.erasure_completed", actor="system", organization_id=str(org_id))
     return {"pending": len(pending) + waiting, "erased": erased, "waiting_on_jobs": waiting,
-            "failed": failed}
+            "reviews_cancelled": cancelled, "failed": failed}
+
+
+def _erased_rows(model, org_id: uuid.UUID):
+    """The WHERE clause for one erased organisation's rows, pre-0004 strays included.
+
+    Rows written before 0004's backfill carry NO organisation; the request matched them by the
+    owner's address and rewrote that to the stable pseudonym `erased:<org>`, which is therefore
+    the DURABLE LINK this sweep follows back to them. Matching the pseudonym alone would also
+    work for stamped rows - but the organisation id is indexed and the pseudonym is not.
+    """
+    return or_(model.organization_id == org_id, model.owner_id == erased_owner(org_id))
 
 
 async def _nothing_remains(db: AsyncSession, org_id: uuid.UUID) -> bool:
-    job_ids = select(SimulationJob.id).where(SimulationJob.organization_id == org_id)
+    job_ids = select(SimulationJob.id).where(_erased_rows(SimulationJob, org_id))
     unpurged = (await db.execute(select(GeometrySource.id).where(
-        GeometrySource.organization_id == org_id,
+        _erased_rows(GeometrySource, org_id),
         GeometrySource.purged_at.is_(None)).limit(1))).first()
     artifact = (await db.execute(select(Artifact.id)
                                  .where(Artifact.job_id.in_(job_ids)).limit(1))).first()
     active = (await db.execute(select(SimulationJob.id).where(and_(
-        SimulationJob.organization_id == org_id,
+        _erased_rows(SimulationJob, org_id),
         SimulationJob.status.in_(sorted(s.value for s in SOURCE_REQUIRING_STATES)),
     )).limit(1))).first()
-    return unpurged is None and artifact is None and active is None
+    chat = (await db.execute(select(ChatSession.id)
+                             .where(_erased_rows(ChatSession, org_id)).limit(1))).first()
+    return unpurged is None and artifact is None and active is None and chat is None
+
+
+#: The geometry check's fixed records under `sessions/<id>/geometry_check/`. The pictures are not
+#: fixed-named; their keys are read out of scout.json below.
+_CHECK_RECORDS = ("scout.json", "naming.json", "confirmed.json", "skin.json", "upright.png")
 
 
 async def _erase_bytes(db: AsyncSession, store, org_id: uuid.UUID, at: datetime) -> None:
+    import json
+
+    from meshpipeline.application.geometry_check import check_object_key
+
     sources = list((await db.execute(select(GeometrySource).where(
-        GeometrySource.organization_id == org_id, GeometrySource.purged_at.is_(None)))).scalars())
+        _erased_rows(GeometrySource, org_id), GeometrySource.purged_at.is_(None)))).scalars())
     for source in sources:
         _delete_if_present(store, source.object_key)
         source.purged_at = at
-    job_ids = select(SimulationJob.id).where(SimulationJob.organization_id == org_id)
+    job_ids = select(SimulationJob.id).where(_erased_rows(SimulationJob, org_id))
     artifacts = list((await db.execute(select(Artifact).where(Artifact.job_id.in_(job_ids))
                                        )).scalars())
     for artifact in artifacts:
         _delete_if_present(store, artifact.storage_key)
         await db.delete(artifact)
+    # A terminal job's dispatch payload is the approved submission verbatim; with the account
+    # erased and the bytes going, nothing re-reads it.
+    await db.execute(update(SimulationJob)
+                     .where(_erased_rows(SimulationJob, org_id),
+                            SimulationJob.status.in_(sorted(s.value for s in TERMINAL_STATES)))
+                     .values(dispatch_payload=None, cancel_reason=None))
     # Upload intents that never became a source still name a stored object each.
     keys = (await db.execute(select(ArtifactReconciliation.object_key).distinct().where(
-        ArtifactReconciliation.organization_id == org_id))).scalars()
+        _erased_rows(ArtifactReconciliation, org_id)))).scalars()
     for key in keys:
         _delete_if_present(store, key)
+
+    # EACH SESSION'S GEOMETRY-CHECK OBJECTS, then the session row. The check stores the uploaded
+    # shape (skin.json), rendered pictures and the user's own naming words under the session id;
+    # the row was scrubbed at request time and kept precisely so this cleanup still knows where
+    # to look. The picture names vary, but scout.json records every picture's object key.
+    sessions = list((await db.execute(select(ChatSession)
+                                      .where(_erased_rows(ChatSession, org_id)))).scalars())
+    for session in sessions:
+        sid = str(session.id)
+        scout: dict = {}
+        try:
+            scout = json.loads(store.get_bytes(object_key=check_object_key(sid, "scout.json")))
+        except Exception:  # noqa: BLE001 - absent or unreadable: the fixed names still go
+            scout = {}
+        picture_keys = [s.get("object_key") for s in (scout.get("snapshots") or [])]
+        picture_keys.append((scout.get("upright_sheet") or {}).get("object_key"))
+        for key in picture_keys + [check_object_key(sid, name) for name in _CHECK_RECORDS]:
+            if key:
+                _delete_if_present(store, key)
+        await db.delete(session)
     await db.flush()
 
 

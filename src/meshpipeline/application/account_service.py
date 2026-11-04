@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import meshpipeline.settings.policy as polcfg
-from meshpipeline.application import audit, credit_service
+from meshpipeline.application import credit_service
 from meshpipeline.contracts.firebase_token import VerifiedToken
 from meshpipeline.persistence.models import MembershipRole, Organization
 from meshpipeline.persistence.repositories import tenant_scope
@@ -57,12 +57,18 @@ class Account:
     #: whether THIS call created the account. The caller uses it for nothing but logging; it is
     #: here because a test cannot otherwise tell "provisioned" from "found" without counting rows.
     provisioned: bool
+    #: Audit events this resolution earned, as (action, kwargs) pairs for audit.record. CARRIED,
+    #: NOT EMITTED: everything here ran inside the caller's uncommitted transaction, and a line
+    #: describing a rolled-back grant or provisioning would record something that never happened.
+    #: api/auth.py emits them once get_db has committed.
+    audit_events: tuple = ()
 
 
 async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
                                now: datetime | None = None,
                                organization_name: str = "") -> Account:
     at = now or datetime.now(UTC)
+    events: list = []
 
     # 1. THE UID PATH: the ordinary case, every sign-in after the first.
     user = await user_repo.get_by_firebase_uid(db, token.uid)
@@ -83,7 +89,7 @@ async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
         # from the stranger claiming to be them.
         existing = await user_repo.get_by_email(db, token.email)
         if existing is not None:
-            user = await _link(db, existing, token)
+            user = await _link(db, existing, token, events)
         else:
             # 3. THE SIGNUP PATH. Only the users row is written here - the person exists, but no
             # organisation, membership or credit does until the address is verified (step 4).
@@ -108,7 +114,7 @@ async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
                     existing = await user_repo.get_by_email(db, token.email)
                     if existing is None:
                         raise
-                    user = await _link(db, existing, token)
+                    user = await _link(db, existing, token, events)
 
     # `token.name` travels with the login stamp so a display name changed in Identity Platform
     # reaches `users.name`, which every reader of this column - the organisation page's member
@@ -124,7 +130,7 @@ async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
         # no admission (application/spend_gate.py refuses an organisation-less account). That is
         # what turns "create Identity Platform accounts in a loop" from a credit tap into a list
         # of inert rows.
-        organization_id = await _provision_organization(db, user, token)
+        organization_id = await _provision_organization(db, user, token, events)
         provisioned = organization_id is not None
     return Account(
         user_id=str(user.id),
@@ -133,10 +139,11 @@ async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
         email_verified=token.email_verified,
         name=token.name or user.name or token.email,
         provisioned=provisioned,
+        audit_events=tuple(events),
     )
 
 
-async def _link(db: AsyncSession, existing, token: VerifiedToken):
+async def _link(db: AsyncSession, existing, token: VerifiedToken, events: list | None = None):
     """Attach `token.uid` to an existing row for the same address, or refuse.
 
     Every refusal here raises the SAME exception with no detail the caller can use: the attacker
@@ -162,7 +169,9 @@ async def _link(db: AsyncSession, existing, token: VerifiedToken):
                                                        to_uid=token.uid)):
             logger.info("sign-in: an unverified, unprovisioned registration was replaced by a "
                         "verified one for the same address")
-            audit.record("account.unverified_registration_replaced", actor=str(existing.id))
+            if events is not None:
+                events.append(("account.unverified_registration_replaced",
+                               {"actor": str(existing.id)}))
             return await user_repo.get_by_firebase_uid(db, token.uid)
         logger.warning("sign-in refused: a token presented a uid for an address that is already "
                        "linked to a different account")
@@ -187,7 +196,8 @@ async def _link(db: AsyncSession, existing, token: VerifiedToken):
     return existing
 
 
-async def _provision_organization(db: AsyncSession, user, token: VerifiedToken):
+async def _provision_organization(db: AsyncSession, user, token: VerifiedToken,
+                                  events: list | None = None):
     # ONE TRANSACTION, three writes and the grant. The session this runs in is committed by the
     # caller's `get_db()` context, so a failure anywhere here leaves no organisation without its
     # owner and no owner half-provisioned. That atomicity is the whole reason the grant is issued
@@ -207,7 +217,7 @@ async def _provision_organization(db: AsyncSession, user, token: VerifiedToken):
     await membership_repo.create(db, user_id=user.id, organization_id=organization.id,
                                  role=MembershipRole.owner)
     granted = await credit_service.grant_signup_credits(db, organization_id=organization.id,
-                                                        email=token.email)
+                                                        email=token.email, events=events)
     await user_repo.clear_pending_organization_name(db, user_id=user.id)
     logger.info("provisioned organisation %s for a verified account, granted %s credits",
                 organization.id, granted)

@@ -54,11 +54,20 @@ export function PrivacyPanel({ email }: { email: string }) {
       }
       // THE SIGN-IN RECORD GOES TOO. The API has already removed everything that names this
       // person; the Identity Platform account is the console's to delete, because only this
-      // session can. A stale session makes Identity Platform refuse, and the account data is gone
-      // either way, so the person is told and support removes the remaining sign-in record.
+      // session can. A stale session makes Identity Platform refuse the delete - the account
+      // DATA is gone either way, but the sign-in record then remains, and finishing silently
+      // would leave the person believing otherwise. They are told, and sign out themselves.
       const user = firebaseAuth().currentUser;
-      if (user) {
-        await deleteUser(user).catch(() => undefined);
+      const signInRecordRemoved = user
+        ? await deleteUser(user).then(() => true, () => false)
+        : false;
+      if (!signInRecordRemoved) {
+        setNote(
+          "Your account data has been deleted. Your sign-in record could not be removed from " +
+            "this session - sign in once more and delete the account again, or contact support " +
+            "to remove it.",
+        );
+        return;
       }
       await signOut({ redirectTo: "/sign-in" });
     } catch {

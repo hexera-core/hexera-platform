@@ -82,8 +82,12 @@ async def test_erasure_removes_the_person_and_keeps_the_ledger(db):
     assert await db.get(User, user_id) is None
     assert (await db.execute(select(func.count()).select_from(Membership)
                              .where(Membership.organization_id == org_id))).scalar_one() == 0
-    assert (await db.execute(select(func.count()).select_from(ChatSession)
-                             .where(ChatSession.organization_id == org_id))).scalar_one() == 0
+    # The conversation's CONTENT goes at request time; the row waits for the sweep, which still
+    # needs its id to delete the session's geometry-check objects.
+    session = (await db.execute(select(ChatSession)
+                                .where(ChatSession.organization_id == org_id))).scalar_one()
+    assert session.messages == [] and session.request_txt is None
+    assert session.owner_id == privacy_service.erased_owner(org_id)
     key = (await db.execute(select(ApiKey).where(ApiKey.organization_id == org_id))).scalar_one()
     assert key.revoked_at is not None
     assert key.owner_id == privacy_service.erased_owner(org_id)
@@ -101,7 +105,7 @@ async def test_erasure_removes_the_person_and_keeps_the_ledger(db):
 
 async def test_the_sweep_marks_an_erasure_complete(db):
     from meshpipeline.application import privacy_service
-    from meshpipeline.persistence.models import Organization
+    from meshpipeline.persistence.models import ChatSession, Organization
 
     email, org_id, _, _ = await _owner(db)
     await privacy_service.request_erasure(db, owner_id=email, organization_id=str(org_id))
@@ -119,3 +123,5 @@ async def test_the_sweep_marks_an_erasure_complete(db):
     org = await db.get(Organization, org_id)
     await db.refresh(org)
     assert org.erased_at is not None
+    assert (await db.execute(select(func.count()).select_from(ChatSession)
+                             .where(ChatSession.organization_id == org_id))).scalar_one() == 0

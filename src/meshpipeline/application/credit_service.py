@@ -10,7 +10,7 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import meshpipeline.settings.policy as polcfg
-from meshpipeline.application import audit, signup_claims
+from meshpipeline.application import signup_claims
 from meshpipeline.persistence.models import CreditEntryType
 from meshpipeline.persistence.repositories.credit_ledger_repository import (
     CreditLedgerRepository,
@@ -92,34 +92,41 @@ async def history(db: AsyncSession, *, organization_id: uuid.UUID, limit: int = 
 
 
 async def grant_signup_credits(db: AsyncSession, *, organization_id: uuid.UUID,
-                               email: str) -> int:
+                               email: str, events: list | None = None) -> int:
     """Grant the one-time signup credits, or withhold them. Returns what was granted.
 
     THREE GATES, in order, each cheap and each answering 0 rather than refusing the account:
     the configured amount, the withheld-domain list, and the once-per-mailbox claim. The caller
     (account_service) has already required a verified address before it gets here.
+
+    THE AUDIT LINE IS THE CALLER'S TO WRITE, after its transaction commits: this function appends
+    the event to `events` rather than emitting it, because a grant (or a claim) this transaction
+    rolls back must not stand in the trail as something that happened.
     """
+    def _event(outcome: str, detail: dict) -> None:
+        if events is not None:
+            events.append(("credits.signup_grant",
+                           {"outcome": outcome, "actor": "system",
+                            "organization_id": str(organization_id), "detail": detail}))
+
     # Read through the module, not bound at import, so an operator's value and a test's
     # monkeypatch both reach it - the same discipline settings/plans.py uses.
     amount = polcfg.SIGNUP_GRANT_CREDITS
     if amount <= 0:
         return 0
     if signup_claims.grant_withheld_domain(email):
-        audit.record("credits.signup_grant", outcome="withheld", actor="system",
-                     organization_id=str(organization_id), detail={"cause": "withheld_domain"})
+        _event("withheld", {"cause": "withheld_domain"})
         return 0
     if not await signup_claims.claim(db, email):
         # THE SAME MAILBOX HAS HAD ITS GRANT - through another organisation, a `+tag` alias, or an
         # account it has since erased. The new account works; it is simply not free a second time.
-        audit.record("credits.signup_grant", outcome="withheld", actor="system",
-                     organization_id=str(organization_id), detail={"cause": "already_claimed"})
+        _event("withheld", {"cause": "already_claimed"})
         return 0
     # A DETERMINISTIC ENTRY ID makes a replay of this organisation's grant a no-op in the ledger
     # itself, independent of the claim row above.
     await grant(db, organization_id=organization_id, amount=amount, reason=SIGNUP_REASON,
                 entry_id=_signup_grant_entry_id(organization_id))
-    audit.record("credits.signup_grant", actor="system", organization_id=str(organization_id),
-                 detail={"amount": amount})
+    _event("success", {"amount": amount})
     return amount
 
 

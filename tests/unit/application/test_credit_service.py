@@ -137,6 +137,22 @@ async def test_a_configured_zero_disables_the_signup_grant(ledger, claims, monke
 
 
 @pytest.mark.asyncio
+async def test_the_grant_reports_its_outcome_to_the_caller_not_the_trail(ledger, claims):
+    # The audit line is the CALLER's to write after its transaction commits; this function only
+    # describes what happened. A rolled-back grant must not stand in the trail.
+    org = uuid.uuid4()
+    events: list = []
+    await credit_service.grant_signup_credits(None, organization_id=org,
+                                              email="a@example.com", events=events)
+    await credit_service.grant_signup_credits(None, organization_id=uuid.uuid4(),
+                                              email="a+again@example.com", events=events)
+    assert [(a, k["outcome"], k["detail"]) for a, k in events] == [
+        ("credits.signup_grant", "success", {"amount": polcfg.SIGNUP_GRANT_CREDITS}),
+        ("credits.signup_grant", "withheld", {"cause": "already_claimed"}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_one_mailbox_gets_one_grant_across_organisations_and_aliases(ledger, claims):
     # The farming shapes: a second account for the same inbox, a +tag alias, a dotted Gmail
     # spelling, and re-signing up after erasing the first account. Each still gets an account;
