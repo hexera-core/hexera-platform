@@ -1321,8 +1321,9 @@ def vet_openings(facts: dict, skin: Path) -> None:
     through a plate, a dimple closed into a pocket - would come back from the mesher as a patch
     with no faces. It is proposed as not an opening, with the reason in the notes; the user can
     still make it one. A proposal left without an inlet takes its largest remaining opening. Run
-    for every reading: a body in a flow keeps its openings for a flip to internal flow too. A CAD
-    file is staged on its B-rep, not on this skin, so only a triangle file is vetted this way."""
+    only when the fluid is read as flowing through the part (hold_openings_to_the_staging): a body
+    in a flow keeps its openings unvetted for a flip, which the mesher's own staging still checks.
+    A CAD file is staged on its B-rep, not on this skin, so only a triangle file is vetted this way."""
     from meshpipeline.application.geometry_confirmation import body_of, patches_from
     from meshpipeline.cad.fluid_passages import stranded_openings
 
@@ -1491,9 +1492,26 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
         if facts.get("openings_from") != "fluid_volume":
             # the extracted openings bound the fluid by construction; the skin's own passages
             # (several parts' skins together) say nothing about them
-            facts = keep_a_stageable_proposal(facts, local_path, skin, scale)
-            vet_openings(facts, skin)
+            facts = hold_openings_to_the_staging(facts, local_path, skin, scale)
     return facts, skin
+
+
+def hold_openings_to_the_staging(facts: dict, local_path: Path, skin: Path, scale: float) -> dict:
+    """THE OPENINGS HELD TO THE MESHER'S STAGING (keep_a_stageable_proposal, then vet_openings) -
+    only when the fluid is read as flowing THROUGH the part. Both stage the whole skin, and the
+    first scouts it a second time: minutes on a car with a dozen wheel-arch and grille candidates
+    (the Camaro on dev: 4 of the check's 6 minutes), for openings that are not even drawn on a body
+    in a flow (stickered). A body read as one keeps its openings, unvetted, for a flip to "through
+    it"; a flip that confirms one opening into nothing is still caught before any mesher runs, by
+    the same staging (cad/fluid_passages.PassagePlan.refusal, in the snappy and cfMesh drivers),
+    with the way out said: mark it as not an opening on the picture. `openings_vetted` says which."""
+    if facts.get("flow") == "external":
+        facts["openings_vetted"] = False
+        return facts
+    facts = keep_a_stageable_proposal(facts, local_path, skin, scale)
+    vet_openings(facts, skin)
+    facts["openings_vetted"] = True
+    return facts
 
 
 def _ports_of(facts: dict) -> list[dict]:
