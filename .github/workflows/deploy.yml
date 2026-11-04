@@ -123,9 +123,10 @@ on:
       # declarative, like every other API setting: redeploying the app
       # unticked drops the flags from an environment that had them, which is the point - the
       # workflow, not a hand-edit in the cloud, decides. The fleet only picks the change up when
-      # `fleet` is ticked too, because an instance template is immutable.
+      # `fleet` is ticked too, because an instance template is immutable. SHARED DEV does not need
+      # the tick: it runs every CRS capability on every deploy (see the provision job's env).
       cad_repair:
-        description: "cad_repair - in development, enable the CAD Repair System plus its explicit geometry-invention capabilities (production releases enable the bounded core and review automatically)"
+        description: "cad_repair - in a personal environment, enable the CAD Repair System plus its explicit geometry-invention capabilities (shared dev enables all of it automatically; production releases enable the bounded core and review)"
         required: false
         default: false
         type: boolean
@@ -978,14 +979,18 @@ jobs:
           # is what the environment is for, and a branch with no open pull request has no ci-gate
           # at all - so requiring one would make the iteration path depend on remembering to run
           # CI first. The artifact is still validated either way: this job gates the RELEASE
-          # RECORD, and release-validate builds and tests the exact images before any of them are
-          # published. What is given up is ruff, mypy, CodeQL and the dependency audit, on a
-          # sandbox, at the request of a person who typed the branch name.
+          # RECORD. Development deploys still build and publish digest-pinned images from this
+          # commit before anything is provisioned, but they no longer wait for the full release
+          # artifact gate. What is given up is ruff, mypy, CodeQL, the dependency audit and the
+          # exhaustive artifact validation, on a sandbox, at the request of a person who typed the
+          # branch name.
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             echo "manual dev deploy - CI is reported, not required"
+            # A skipped gate is a draft pull request (ci.yml runs nothing on one): no verdict, not a
+            # failed one.
             read -r _t _ok _bad _c _p <<<"$(
               gh api "repos/${REPO}/commits/${SHA}/check-runs?per_page=100" \
-                --jq '[.check_runs[] | select(.name == "hexera/ci-gate")]
+                --jq '[.check_runs[] | select(.name == "hexera/ci-gate" and .conclusion != "skipped")]
                       | "\(length) \([.[] | select(.conclusion == "success")] | length) \([.[] | select(.status == "completed" and .conclusion != "success")] | length) 0 \([.[] | select(.status != "completed")] | length)"' 2>/dev/null || echo "0 0 0 0 0"
             )"
             if [ "${_t}" -eq 0 ]; then
@@ -1198,29 +1203,41 @@ jobs:
           # and a cache is writable by workflows that run on untrusted pull requests - restoring
           # one into the publishing path is how poisoned bytes reach a registry. A deploy runs
           # once per release; the seconds a cache saves are not worth that.
-      # The same single pinned environment ci.yml installs. Gate C runs the UI suite on the host
-      # against the containerised app image, so the host needs the test dependencies; no version
-      # is named here, for the same reason ci.yml names none.
+      # The full profile installs the same pinned environment ci.yml installs. Gate C runs the UI
+      # suite on the host against the containerised app image, so full validation needs the test
+      # dependencies. The dev-fast profile builds a wheel and images only, so it installs just the
+      # pinned PEP 517 frontend instead of minutes of runtime/test wheels.
       #
       # THIS INSTALL IS WHY provision IS A SEPARATE JOB AND NOT JUST A SEPARATE STEP: pyvista and
       # the rest of dev.txt are minutes of wheels that deploy.sh has no use for. Every script under
       # deploy/gcp/scripts uses a bare `python3` and the standard library, so provision runs on the
       # runner's own interpreter with nothing installed into it.
-      - if: steps.reuse.outputs.reused != 'true'
-        run: pip install -c requirements/constraints.txt -r requirements/runtime.txt -r requirements/dev.txt
+      - name: Install release validation dependencies
+        if: steps.reuse.outputs.reused != 'true'
+        env:
+          RELEASE_VALIDATION_PROFILE: ${{ needs.target.outputs.environment == 'dev' && 'dev-fast' || 'full' }}
+        run: |
+          if [ "${RELEASE_VALIDATION_PROFILE}" = "dev-fast" ]; then
+            pip install -c requirements/constraints.txt build==1.2.2
+          else
+            pip install -c requirements/constraints.txt -r requirements/runtime.txt -r requirements/dev.txt
+          fi
       - name: Install the meshpipeline distribution (editable)
         if: steps.reuse.outputs.reused != 'true'
         run: pip install -e . --no-deps
 
-      # GATE C, part 1. Builds the deployable images ONCE from this commit and validates THOSE
-      # artifacts - wheel provenance, both app entrypoints, the mesh toolchain, the vendored
-      # browser assets, the UI in a real browser, and the five-engine native terminal matrix.
+      # GATE C, part 1 for production. Development targets use RELEASE_VALIDATION_PROFILE=dev-fast:
+      # still a clean commit, wheel identity, image builds, digest publication and promotion by
+      # immutable reference, but without entrypoint smoke, browser smoke, native tiers or the
+      # pricing audit. That is the iteration trade: dev deploys quickly; production tags keep the
+      # exhaustive artifact proof.
       # RELEASE_PYTHON is the interpreter set up above: the gate otherwise falls through to the
       # repository virtualenv (absent here) and then to whatever python3 the host resolves to.
-      - name: Validate the release artifact (build the images once, test those exact bytes)
+      - name: Build and validate the release artifact
         if: steps.reuse.outputs.reused != 'true'
         env:
           RELEASE_PYTHON: ${{ steps.python.outputs.python-path }}
+          RELEASE_VALIDATION_PROFILE: ${{ needs.target.outputs.environment == 'dev' && 'dev-fast' || 'full' }}
           # THE LAYER CACHE, in the registry this run is already authenticated to.
           #
           # Every run of this job starts on a fresh runner with an empty local build cache, so the
@@ -1434,25 +1451,40 @@ jobs:
       # CREDIT_GATE_ENABLED=false. Non-secret settings only: create-api-service.sh refuses any
       # secret-bearing name here. Shared dev and prod (no slug) never read one.
       API_EXTRA_ENV: ${{ github.event.inputs.slug != '' && vars[format('API_EXTRA_ENV_{0}', github.event.inputs.slug)] || '' }}
-      # Production releases ship the bounded core repair loop; development environments retain the
-      # explicit cad_repair opt-in. The geometry-invention flags below remain opt-in everywhere.
-      CAD_REPAIR_ENABLED: ${{ (needs.target.outputs.deployment_id == 'prod' || inputs.cad_repair) && 'true' || '' }}
+      # Production releases ship the bounded core repair loop. SHARED DEV (deployment_id 'dev')
+      # runs every CRS capability on every deploy, merge or dispatch alike: a push to main carries no
+      # inputs, and these settings are declarative, so anything short of keying on the target would
+      # be dropped by the next merge. Personal environments retain the explicit cad_repair opt-in,
+      # and production keeps the geometry-invention flags off.
+      CAD_REPAIR_ENABLED: ${{ (needs.target.outputs.deployment_id == 'prod' || needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && 'true' || '' }}
       # THE REVIEW IS STATED EITHER WAY once repair is on, and this is the one flag here that
       # cannot ride the "empty means not stated" convention. Unticking it is a POSITIVE choice -
       # the autonomous posture - and an empty value does not express it: an environment whose
       # saved worker.env already carries CAD_REPAIR_REVIEW_ENABLED=true would keep parking
       # repairs for a person while the API dropped the flag, so the tick would appear to do
-      # nothing. Production defaults to review-on; development keeps the autonomous override.
-      CAD_REPAIR_REVIEW_ENABLED: ${{ needs.target.outputs.deployment_id == 'prod' && 'true' || inputs.cad_repair && (inputs.cad_repair_review && 'true' || 'false') || '' }}
-      # Planar hole filling rides the same tick. What protects a through-hole is the paired-rim
+      # nothing. Production and shared dev default to review-on; a cad_repair dispatch keeps the
+      # autonomous override.
+      CAD_REPAIR_REVIEW_ENABLED: ${{ needs.target.outputs.deployment_id == 'prod' && 'true' || inputs.cad_repair && (inputs.cad_repair_review && 'true' || 'false') || needs.target.outputs.deployment_id == 'dev' && 'true' || '' }}
+      # Planar hole filling rides the same switch. What protects a through-hole is the paired-rim
       # guard (both ends of a missing passage, any cross-section, refuse filling for the run); the
       # session caps only bound the size and volume drift of a fill that is kept.
-      CAD_REPAIR_FILL_PLANAR_HOLES: ${{ inputs.cad_repair && 'true' || '' }}
-      # The other two geometry-adding flags ride the same tick: the non-planar fill and the heal.
-      CAD_REPAIR_FILL_NONPLANAR_HOLES: ${{ inputs.cad_repair && 'true' || '' }}
-      CAD_REPAIR_HEAL_SELF_INTERSECTIONS: ${{ inputs.cad_repair && 'true' || '' }}
-      # The planner posture, stated only when it is not "off"; empty means "not stated".
-      CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || '' }}
+      CAD_REPAIR_FILL_PLANAR_HOLES: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && 'true' || '' }}
+      # The other geometry-changing flags ride the same switch: the non-planar fill, the heal and
+      # the small-face sweep.
+      CAD_REPAIR_FILL_NONPLANAR_HOLES: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && 'true' || '' }}
+      CAD_REPAIR_HEAL_SELF_INTERSECTIONS: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && 'true' || '' }}
+      CAD_REPAIR_FIX_SMALL_FACES: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && 'true' || '' }}
+      # Development repair carries enough room for a mixed defect case. Production retains the
+      # shipped six-operation default unless a release changes it deliberately.
+      CAD_REPAIR_MAX_OPS: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && '12' || '' }}
+      CAD_REPAIR_TIMEOUT_S: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && '420' || '' }}
+      # The planner posture, stated only when it is not "off"; empty means "not stated". Shared dev
+      # runs the planner LIVE, so model guidance enters the same planner, caps and measurements as
+      # the rule planner's own directives - a push carries no input at all, so the empty value
+      # falls through to this default. The guidance is bounded, not trusted: the posture fails
+      # closed on a typo, a call that times out or returns nothing leaves the rule planner's choice
+      # standing, and every directive still answers to the session caps and the progress rule.
+      CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || needs.target.outputs.deployment_id == 'dev' && 'live' || '' }}
       # The verdict by measured limits, per target (the `target` job): 'true' on dev, empty on prod.
       VERDICT_BY_LIMITS: ${{ needs.target.outputs.verdict_by_limits }}
     steps:

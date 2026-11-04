@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import meshpipeline.settings.policy as polcfg
+from meshpipeline.agents.intake import approval as ap
 from meshpipeline.agents.intake import engine_selection as es
 from meshpipeline.agents.intake import measured_choice, refusal, turn
 from meshpipeline.agents.intake import settings as icfg
@@ -569,14 +570,17 @@ def _confirmation_block(state: dict) -> str:
         f"  request_txt:    {state.get('request_txt') or '(unset)'}\n\n"
         "Dispatch belongs to the APPLICATION alone, and THIS TURN DID NOT DISPATCH: a message\n"
         "the application reads as plain consent dispatches directly and never reaches you.\n"
-        "Because you are running, any pending approval is dead - a fresh submit_requirements\n"
-        "is REQUIRED before anything can dispatch. Decide from the WHOLE conversation:\n"
+        "Decide from the WHOLE conversation:\n"
+        "- They ASK a question about the summary or their own solver set-up (how big, which\n"
+        "  element type, which parts to bond, what units) → answer it from the summary and the\n"
+        "  FACTS section, and submit NOTHING: the summary they are looking at still stands, and\n"
+        "  their next plain yes starts the run. Never ask them to confirm it again.\n"
         "- They changed anything (a number, the engine, a patch, the domain size, the\n"
         "  dimensionality) → apply it, re-run preview_selected_admission on the FULL updated\n"
         "  payload, and call submit_requirements again. The application will show them a new\n"
-        "  summary; you do not write it.\n"
+        "  summary with what changed; you do not write it.\n"
         "- They changed the ENGINE → that is a new selection: call propose_engine_selection.\n"
-        "- They refuse, hesitate, or ask a question → answer them.\n"
+        "- They refuse or hesitate → answer them.\n"
         "- It reads to you like pure agreement with no change → the application could not be\n"
         "  certain it was consent. Do not argue and do not announce progress: re-run\n"
         "  preview_selected_admission on the UNCHANGED payload and call submit_requirements\n"
@@ -657,11 +661,24 @@ def _previous_run_block(state: Mapping[str, Any]) -> str:
             f"{', '.join(missing) or '(nothing)'}.\n"
             "Establish each missing value that applies from the conversation before submitting;\n"
             "never invent one:\n")
+    from meshpipeline.agents.intake import chat_facts
+    delivered = ended == "succeeded"
     return (
-        "\n\n## ANOTHER RUN ON THE SAME GEOMETRY - the previous run has ended\n"
+        "\n\n## THE LAST RUN - it has ENDED; answer questions about it from this\n"
         f"This conversation already approved a run (job {prev.get('job_id') or 'unknown'}), "
-        f"and it ended: {ended or 'the record of it is gone'}. The user was told:\n"
+        f"and it ended: {ended or 'the record of it is gone'}."
+        + (" Its mesh WAS GENERATED and delivered: never say it has not been generated yet."
+           if delivered else "")
+        + (f" Engine that built it: {prev.get('engine')}." if prev.get("engine") else "")
+        + f" {chat_facts.size_fact(state) if delivered else ''}".rstrip()
+        + "\nThe user was told:\n"
         f"{outcome_lines}\n\n"
+        "A QUESTION about that run (how it turned out, whether anything needs attention before the\n"
+        "solver, its size, its files, its quality figures) is ANSWERED from the lines above, in\n"
+        "plain words, naming each figure past its limit - and nothing else happens: no question, no\n"
+        "new summary, no submit_requirements. Only when the user asks for another run does the part\n"
+        "below apply.\n\n"
+        "## ANOTHER RUN ON THE SAME GEOMETRY\n"
         f"{provenance}"
         f"{json.dumps(last, indent=2, ensure_ascii=False, default=str)}\n\n"
         "The uploaded geometry and its confirmed unit are unchanged; never ask about them again.\n"
@@ -1250,6 +1267,10 @@ async def node_intake(state: PipelineState) -> dict:
     # reads the ranking, and the one engine question proposes its best engine with the evidence.
     _recommendation = await _measured_recommendation(state, state.get("messages", []))
     system += measured_choice.prompt_block(_recommendation, settled=False)
+    # WHAT THE APPLICATION KNOWS, on every turn: the user's notes, the delivered files' unit and the
+    # mesh's size (or that it is not computed yet) - the chat answers from these, never a guess
+    from meshpipeline.agents.intake import chat_facts
+    system += chat_facts.facts_block(state)
     state_messages = state.get("messages", [])
     llm_messages = _build_llm_messages(system=system, state_messages=state_messages)
 
@@ -1312,7 +1333,10 @@ async def node_intake(state: PipelineState) -> dict:
         thermal=_thermal_declared(state_messages),
         source_ref=_ctx.source_ref, rec_authorized=_ctx.rec_authorized,
         pending=_ctx.pending, selection=_ctx.selection, approval=_ctx.approval,
-        recommendation=_recommendation)
+        recommendation=_recommendation,
+        # a question about the run that ended is answered, never made another run
+        answer_only=(not _awaiting_confirmation
+                     and chat_facts.asks_about_last_run(state, _ctx.latest_user_msg)))
     _executor = IntakeToolExecutor(
         state=_exec_state, job_id=str(job_id), implemented_engines=_IMPLEMENTED_ENGINES,
         search_tool=_execute_intake_tool, trace=_trace_publisher)
@@ -1382,6 +1406,14 @@ async def node_intake(state: PipelineState) -> dict:
         # returned empty content. A blank assistant message is not a turn: the user saw an empty
         # bubble and the next call handed the model an empty assistant turn as history.
         assistant_text = turn.unsettled_reply(_exec_state, _loop_result.exit)
+    if _loop_result.exit is not _LoopExit.terminal_action:
+        # THE MODEL'S OWN WORDS HELD TO THE FACTS: a cell count the application did not compute,
+        # or a file unit other than the delivered one, is replaced by the fact
+        _held = chat_facts.hold_to_facts(assistant_text, state)
+        if _held.changed:
+            logger.warning("Intake: reply held to the facts - %d sentence(s) replaced: %s - job_id=%s",
+                           len(_held.dropped), " | ".join(d[:80] for d in _held.dropped[:4]), job_id)
+            assistant_text = _held.text
     _had_usage = bool(_in_tokens or _out_tokens)
     _record = turn.TurnRecord(
         finish_reason=_policy.finish_reason or "unknown",
@@ -1412,9 +1444,25 @@ async def node_intake(state: PipelineState) -> dict:
             len(_requirements.request_txt), len(_requirements.review_brief_txt), job_id)
         return turn.completed_patch(_ctx, _record, _requirements, _exec_state.user_notes)
 
+    if (_ctx.approval is not None and not _turn_moved_the_summary(_exec_state)
+            and ap.revivable(_ctx.approval, user_msg_count=_ctx.user_msg_count)):
+        # THE SUMMARY STANDS AGAIN: this turn's message withdrew it as a change, yet the turn
+        # changed nothing - the intake answered and submitted nothing new - so the user's next
+        # yes lands on the summary they are looking at, instead of being asked it again
+        logger.info("Intake: the turn changed nothing - the summary %s stands again - job_id=%s",
+                    (_ctx.approval or {}).get("id"), job_id)
+        _ctx = dataclasses.replace(_ctx, approval=ap.revive(_ctx.approval,
+                                                            user_msg_count=_ctx.user_msg_count))
     logger.info("Intake: asking question turn=%d - job_id=%s: %s",
                 _budget.turn_number, job_id, assistant_text[:120])
     return turn.continuing_patch(_ctx, _record)
+
+
+def _turn_moved_the_summary(st: IntakeExecutionState) -> bool:
+    """Whether the turn moved anything a summary stands on: a submission, the engine selection
+    proposed again, or the application's own question asked in place of a summary."""
+    return (bool(st.submit_args) or st.selection_prompt is not None or st.notes_prompt is not None
+            or "propose_engine_selection" in st.tools_invoked)
 
 
 def _public_trace_of(publisher) -> list:

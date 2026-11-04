@@ -102,4 +102,6 @@ def test_every_hand_off_verdict_in_run_mesh_carries_the_key():
 
     from meshpipeline.agents.builder.tools import meshing
     src = inspect.getsource(meshing)
-    assert src.count("HANDS_OFF") >= 6
+    # the import + four hand-offs (case contract, over size, layers not converging, broken mesh).
+    # A run its guard clock stopped is not a hand-off: the attempt is run again (TIME-3, #259)
+    assert src.count("HANDS_OFF") >= 5

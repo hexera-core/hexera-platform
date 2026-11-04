@@ -608,6 +608,20 @@ def _describe(cause: object, facts: Mapping | None = None, *,
         return what, f"You can run it again ({_RUN_AGAIN}), or tell me what to change first."
     if c is FailureCause.ENGINE_TIMED_OUT:
         who = f" ({f.get('engine') or engine})" if (f.get("engine") or engine) else ""
+        trip = f.get("guard")
+        if trip:
+            # A GUARD CLOCK STOPPED IT (docs/RULES.md TIME-3; pipeline/executor._guard_failure): an
+            # infrastructure stop, replayed once before the run ends here. Said as what it is - ours,
+            # not the part's - and never with a lever (less detail, a coarser mesh): a guard set
+            # from the planned work says nothing about the work being too much (D3, dev-areen 2 Nov)
+            from meshpipeline.contracts.work_limits import trip_words
+            where = trip_words(trip if isinstance(trip, Mapping) else {"where": str(trip)})
+            return (f"The run ran out of time on our side: {where}. That is a stop on our side, "
+                    "not a result about your part or your settings - the same attempt was run "
+                    "again once, unchanged, and stopped the same way, so no complete mesh came "
+                    "back.",
+                    f"You can run it again with nothing changed: {_RUN_AGAIN}. If it stops the "
+                    "same way, tell us - that guard clock is ours to fix.")
         return (f"The mesher{who} ran out of time: its run did not finish within the time one "
                 "run may take, so no complete mesh came back.",
                 f"Ask for less detail (for example 'standard' instead of 'max') and {_RUN_AGAIN}.")

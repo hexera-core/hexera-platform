@@ -844,6 +844,86 @@
   ]
  },
  {
+  "context": "agents/intake/approval.py::is_question::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/approval.py",
+  "qualname": "is_question",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_SELF_DIRECTED",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/approval.py::is_question::search#2|NotAPublisher|not-a-publisher|agents/intake/approval.py::result of _PHRASED_CHANGE.get(w)",
+  "path": "agents/intake/approval.py",
+  "qualname": "is_question",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "phrased",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "agents/intake/approval.py::result of _PHRASED_CHANGE.get(w)"
+  ]
+ },
+ {
+  "context": "agents/intake/chat_facts.py::_wrong_unit::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/chat_facts.py",
+  "qualname": "_wrong_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_FILE_NOUN",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/chat_facts.py::_wrong_unit::search#2|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/chat_facts.py",
+  "qualname": "_wrong_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_OTHER_UNIT",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/chat_facts.py::_wrong_unit::search#3|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/chat_facts.py",
+  "qualname": "_wrong_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 3,
+  "receiver": "_METRES",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/chat_facts.py::hold_to_facts::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/chat_facts.py",
+  "qualname": "hold_to_facts",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_BARE_MAGNITUDE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/intake/garbled.py::flaw::search#1|NotAPublisher|not-a-publisher|",
   "path": "agents/intake/garbled.py",
   "qualname": "flaw",
@@ -2306,6 +2386,19 @@
   "method": "search",
   "ordinal": 3,
   "receiver": "_RESTATES",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/geometry_confirmation.py::declared_unit::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/geometry_confirmation.py",
+  "qualname": "declared_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -4873,6 +4966,21 @@
   "roots": []
  },
  {
+  "context": "pipeline/executor.py::_guard_failure::check#1|ExecutionEventPublisher|execution-owned|pipeline/executor.py::callers of _guard_failure()",
+  "path": "pipeline/executor.py",
+  "qualname": "_guard_failure",
+  "semantic": "check",
+  "method": "acheck",
+  "ordinal": 1,
+  "receiver": "pub",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/executor.py::callers of _guard_failure()"
+  ]
+ },
+ {
   "context": "pipeline/executor.py::node_executor::check#1|ExecutionEventPublisher|execution-owned|pipeline/executor.py::execution_publisher",
   "path": "pipeline/executor.py",
   "qualname": "node_executor",
@@ -5107,6 +5215,21 @@
   "lifecycle": "not-a-publisher",
   "gated_required": false,
   "roots": []
+ },
+ {
+  "context": "pipeline/graph.py::node_guard_replay::note#1|ExecutionEventPublisher|execution-owned|pipeline/graph.py::execution_publisher",
+  "path": "pipeline/graph.py",
+  "qualname": "node_guard_replay",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 1,
+  "receiver": "execution_publisher(job_id, agent='builder')",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/graph.py::execution_publisher"
+  ]
  },
  {
   "context": "pipeline/graph.py::node_infra_retry::note#1|ExecutionEventPublisher|execution-owned|pipeline/graph.py::execution_publisher",
