@@ -61,6 +61,13 @@ def _not_gated_by_another_suites_jobs(monkeypatch):
     # Raising that one too made it ask for a million disputes.
     import meshpipeline.settings.policy as polcfg
     monkeypatch.setattr(polcfg, "MAX_CONCURRENT_JOBS", 1_000_000, raising=False)
+    # Nor by the spend gate: it reads a users row with no organisation as an account awaiting email
+    # verification and refuses it a run, and these tenants carry that row only because the signed
+    # path requires one. They are legacy owner-only tenants; admission is proven in its own suite.
+    from unittest.mock import AsyncMock
+
+    from meshpipeline.application import spend_gate
+    monkeypatch.setattr(spend_gate.user_repo, "get_by_email", AsyncMock(return_value=None))
 
 
 @pytest.fixture(autouse=True)

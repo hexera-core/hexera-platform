@@ -197,7 +197,8 @@ async def test_history_is_refused_for_another_tenant(api_server):
     import httpx
     resp = await _upload(api_server, _payload("tenant"))
     session_id = resp.json()["session_id"]
-    other = "tenant-intruder"
+    from tests.harness_provisioning import ensure_signed_owner
+    other = ensure_signed_owner("tenant-intruder")
     async with httpx.AsyncClient(base_url=api_server["base"], timeout=30.0) as c:
         hist = await c.get(f"/api/v1/chat/history/{session_id}",
                            headers={"X-API-Key": _API_KEY, "X-User-Id": other,
