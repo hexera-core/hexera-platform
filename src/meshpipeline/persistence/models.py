@@ -123,7 +123,7 @@ class GeometrySource(Base):
     # in. Provider ETags/MD5 are metadata and are deliberately not used for this: a MinIO
     # multipart ETag is not a digest of the content at all.
     sha256:        Mapped[str]       = mapped_column(String(64), nullable=False, index=True)
-    size_bytes:    Mapped[int]       = mapped_column(Integer, nullable=False)
+    size_bytes:    Mapped[int]       = mapped_column(BigInteger, nullable=False)
     created_at:    Mapped[datetime]  = mapped_column(DateTime(timezone=True), server_default=func.now())
     # RETENTION. The row is lineage and is never deleted to satisfy a retention window; only the
     # stored object is. `purged_at` records that the bytes are gone, and the two claim columns
@@ -360,7 +360,7 @@ class Artifact(Base):
     # newer attempt supersedes. A STALE-generation upload can never overwrite a current-generation row.
     execution_generation: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     storage_key:  Mapped[str]         = mapped_column(String(1024), nullable=False)
-    size_bytes:   Mapped[int]         = mapped_column(Integer, default=0)
+    size_bytes:   Mapped[int]         = mapped_column(BigInteger, default=0)
     checksum:     Mapped[str | None]  = mapped_column(String(128), nullable=True)  # provider checksum (integrity/dedup)
     created_at:   Mapped[datetime]    = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at:   Mapped[datetime]    = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -769,7 +769,7 @@ class ArtifactReconciliation(Base):
     artifact_type: Mapped[ArtifactType] = mapped_column(Enum(ArtifactType), nullable=False)
     object_key:    Mapped[str]        = mapped_column(String(1024), nullable=False)
     object_checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)  # the etag/md5 at upload
-    object_size:   Mapped[int]        = mapped_column(Integer, default=0)
+    object_size:   Mapped[int]        = mapped_column(BigInteger, default=0)
     failure_category: Mapped[str]     = mapped_column(String(64), nullable=False, server_default="row_write_failed")
     retry_count:   Mapped[int]        = mapped_column(Integer, nullable=False, server_default="0")
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

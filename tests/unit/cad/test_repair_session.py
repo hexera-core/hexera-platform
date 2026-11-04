@@ -22,9 +22,9 @@ _SOUND = Measure(valid=True, solids=1, shells=1, faces=20, edges=60, vertices=40
 
 
 def _defect(code=DefectCode.small_edge, *, fingerprint="edge:aaaa", index=1,
-            severity=DefectSeverity.warning, kind="edge") -> EntityDefect:
+            severity=DefectSeverity.warning, kind="edge", location=None) -> EntityDefect:
     return EntityDefect(code=code, severity=severity, entity_type=kind, entity_index=index,
-                        message="x", fingerprint=fingerprint)
+                        message="x", fingerprint=fingerprint, location=location or {})
 
 
 class _Op:
@@ -213,6 +213,71 @@ def test_an_operation_that_introduced_a_new_defect_is_rolled_back():
     verdict = session.try_op(op, op.targets_for(defect), defect.code, tolerance_mm=0.01)
 
     assert verdict.status == ROLLED_BACK and verdict.reason == "new_defect"
+
+
+def test_removing_an_error_may_leave_new_warnings_for_later_cleanup():
+    target = _defect(DefectCode.self_intersection, fingerprint="wire:target",
+                     severity=DefectSeverity.error, kind="wire")
+    old_warning_a = _defect(fingerprint="edge:old-a", index=4)
+    old_warning_b = _defect(fingerprint="edge:old-b", index=5)
+    warning_a = _defect(DefectCode.small_face, fingerprint="face:new-a",
+                        severity=DefectSeverity.warning, kind="face", index=2)
+    warning_b = _defect(DefectCode.small_edge, fingerprint="edge:new-b",
+                        severity=DefectSeverity.warning, index=3)
+    op = _Op(outcome=OpOutcome(shape="fixed"))
+    session = _session(scans=[((target, old_warning_a, old_warning_b), True),
+                              ((warning_a, warning_b), True)])
+
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+
+    assert verdict.status == KEPT, verdict.reason
+
+
+def test_removing_one_error_does_not_excuse_a_warning_explosion():
+    target = _defect(DefectCode.self_intersection, fingerprint="wire:target",
+                     severity=DefectSeverity.error, kind="wire")
+    warnings = tuple(_defect(DefectCode.small_face, fingerprint=f"face:new-{i}",
+                             severity=DefectSeverity.warning, kind="face", index=i + 2)
+                     for i in range(2))
+    op = _Op(outcome=OpOutcome(shape="fixed"))
+    session = _session(scans=[((target,), True), (warnings, True)])
+
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+
+    assert verdict.status == ROLLED_BACK and verdict.reason == "new_defect"
+
+
+def test_a_sliver_sweep_may_rename_warnings_only_when_the_total_falls():
+    target = _defect(DefectCode.small_face, fingerprint="face:sliver", kind="face")
+    old_a = _defect(fingerprint="edge:old-a", index=2)
+    old_b = _defect(fingerprint="edge:old-b", index=3)
+    renamed = _defect(fingerprint="edge:renamed", index=4)
+    op = _Op(outcome=OpOutcome(
+        shape="fixed",
+        mapping=EntityMapping(moved={}, gone=frozenset({"face:sliver"}), basis="kernel"),
+    ))
+    op.name = "fix_small_faces"
+    session = _session(scans=[((target, old_a, old_b), True), ((renamed,), True)])
+
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+
+    assert verdict.status == KEPT, verdict.reason
+
+
+def test_a_persisting_warning_renamed_by_a_kernel_rebuild_is_not_a_new_defect():
+    box = {"bbox_min": [10.0, 20.0, 30.0], "bbox_max": [11.0, 20.0, 30.0]}
+    target = _defect(DefectCode.open_shell, fingerprint="edge:rim", severity=DefectSeverity.error)
+    warning_before = _defect(fingerprint="edge:warning-before", index=2, location=box)
+    warning_after = _defect(fingerprint="edge:warning-after", index=17, location=box)
+    op = _Op(outcome=OpOutcome(
+        shape="fixed",
+        mapping=EntityMapping(moved={}, gone=frozenset({"edge:rim"}), basis="kernel"),
+    ))
+    session = _session(scans=[((target, warning_before), True), ((warning_after,), True)])
+
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+
+    assert verdict.status == KEPT, verdict.reason
 
 
 def test_a_new_defect_on_geometry_the_operation_declared_it_added_is_not_held_against_it():

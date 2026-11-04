@@ -160,6 +160,22 @@ def test_the_result_says_what_was_done_with_them_and_a_note_never_fails_it():
     assert back.notes_remarks == told.notes_remarks
 
 
+def test_the_notes_line_never_vanishes_when_the_run_moved_to_another_engine(tmp_path):
+    """The exhaust header of the 2 Nov dry run: VMTK could not finish, snappyHexMesh built the mesh,
+    and no step left a remark - the result lost its "From your notes" line. It now says where the
+    notes went; a step's own remark still wins."""
+    from meshpipeline.application.pipeline_run import _notes_remarks
+    state = {"user_notes": NOTES, "openfoam_workspace": str(tmp_path), "engine": "snappy",
+             "engine_ladder": {"attempts": [{"attempt": 1, "engine": "vmtk", "kind": "engine"},
+                                            {"attempt": 2, "engine": "snappy", "kind": "passed"}]}}
+    (line,) = _notes_remarks(state)
+    assert line.startswith("they went to every attempt of this run (VMTK, then snappyHexMesh)")
+    assert un.result_lines([line])[0].startswith("From your notes: they went to every attempt")
+    un.record_remark(tmp_path, "refined the merge region", by="snappy_planner")
+    assert _notes_remarks(state) == ["refined the merge region"]
+    assert _notes_remarks({"openfoam_workspace": str(tmp_path)}) == [], "no notes, no line"
+
+
 def test_the_why_record_and_run_stamp_name_the_notes(tmp_path):
     from meshpipeline.application import run_reproducibility, why_record
     un.record_remark(tmp_path, "refined at the bolt holes", by="fea_ai")

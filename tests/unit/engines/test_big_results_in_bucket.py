@@ -6,9 +6,11 @@ import contextlib
 import gzip
 import io
 import json
+import os
 import tarfile
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -102,6 +104,71 @@ def test_a_flow_mesh_is_packed_on_the_mesher_and_fetched_by_the_worker(tmp_path,
     assert [n for n, _p, k in entries if k is not None] == ["openfoam_case/constant/polyMesh/faces"]
     assert gzip.decompress(b"".join(BF.bundle_chunks(entries, bucket.reader))) == \
         _tarfile_bundle(ws, members, "openfoam_case")
+
+
+def _fetched_flow(tmp_path):
+    ws = _flow_ws(tmp_path)
+    bucket = _Bucket()
+    BF.keep(ws, bucket="ex", output_key="o", writer=bucket.writer)
+    BF.fetch(ws, bucket.reader)
+    return ws, bucket
+
+
+def _passed_through(ws) -> list[str]:
+    return [n for n, _p, k in BF.bundle_entries(ws, ["constant/polyMesh"], "c") if k is not None]
+
+
+def test_a_same_size_rewrite_inside_one_clock_tick_is_never_shipped_stale(tmp_path, small_files, monkeypatch):
+    """A coarse file-system clock (whole seconds on some; one kernel tick on a fast machine): every
+    write, the fetch's stamp and the worker's rewrite land in the same tick, so the rewrite leaves
+    size, times and inode exactly as the fetch stamped them. The content must decide."""
+    tick = 1_700_000_000 * 1_000_000_000
+    real = BF._stat
+
+    def coarse(p):
+        st = real(p)
+        return SimpleNamespace(st_size=st.st_size, st_ino=st.st_ino, st_mtime_ns=tick, st_ctime_ns=tick)
+
+    monkeypatch.setattr(BF, "_stat", coarse)
+    monkeypatch.setattr(BF, "time", SimpleNamespace(time_ns=lambda: tick + 1000))
+    ws, bucket = _fetched_flow(tmp_path)
+    owner = ws / "constant/polyMesh/owner"
+    before = BF._stamp(owner)
+    owner.write_text("FoamFile{}\n" + "8\n" * 400)                                   # the same 811 bytes
+    assert BF._stamp(owner) == before                      # the stamp alone cannot see the change
+    assert _passed_through(ws) == ["c/constant/polyMesh/faces"]
+    members = ["constant/polyMesh", "system/meshDict"]
+    entries = BF.bundle_entries(ws, members, "c")
+    assert gzip.decompress(b"".join(BF.bundle_chunks(entries, bucket.reader))) == _tarfile_bundle(ws, members, "c")
+
+
+def test_a_file_stamped_long_after_its_last_write_is_judged_by_its_stamp_alone(tmp_path, small_files, monkeypatch):
+    """A multi-GB file is written long before the fetch record is taken: its stamp is proof, and the
+    bundle never reads it to check. A change since - even with its time set back - still shows."""
+    ws, _bucket = _fetched_flow(tmp_path)
+    rec = json.loads((ws / BF.FETCHED_FILE).read_text())
+    rec["at"] += 60 * 1_000_000_000                       # as if stamped a minute after the writes
+    (ws / BF.FETCHED_FILE).write_text(json.dumps(rec))
+
+    def no_read(p):
+        raise AssertionError(f"{p.name} was read to check it")
+
+    monkeypatch.setattr(BF, "_tar_crc", no_read)
+    assert _passed_through(ws) == ["c/constant/polyMesh/faces", "c/constant/polyMesh/owner"]
+    owner = ws / "constant/polyMesh/owner"
+    st = owner.stat()
+    new = owner.with_name("owner.new")
+    new.write_text("FoamFile{}\n" + "8\n" * 400)                                     # the same size,
+    os.utime(new, ns=(st.st_atime_ns, st.st_mtime_ns))                              # the same time,
+    new.replace(owner)                                                              # swapped in
+    assert _passed_through(ws) == ["c/constant/polyMesh/faces"]
+
+
+def test_a_fetch_record_of_another_form_repacks_every_file(tmp_path, small_files):
+    ws, _bucket = _fetched_flow(tmp_path)
+    rec = json.loads((ws / BF.FETCHED_FILE).read_text())
+    (ws / BF.FETCHED_FILE).write_text(json.dumps({r: s[:2] for r, s in rec["files"].items()}))  # the old form
+    assert _passed_through(ws) == []
 
 
 def test_a_short_fetch_is_refused_and_leaves_nothing_half_written(tmp_path, small_files):

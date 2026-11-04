@@ -91,6 +91,23 @@ def test_the_domain_question_buttons_settle_it():
         assert pm.reading_for(msgs).route == route
 
 
+def test_the_answer_to_the_question_holds_after_the_next_reply():
+    """Shared dev, 3 Nov: "shaft with an impeller" asked the domain question, the user clicked FEA,
+    and the next reply ("Millimetres.") put the part back on the flow route - its check card
+    showed the far field, the ground and the stickers. The answer is the reply to the question,
+    not the latest message."""
+    for (_label, send), route in zip(pm.DOMAIN_CHOICES, (pm.ROUTE_FLOW, pm.ROUTE_FEA)):
+        msgs = [{"role": "assistant", "content": "Geometry received. What are you meshing this for?"},
+                {"role": "user", "content": "Shaft with an impeller on it, stress please"},
+                {"role": "assistant", "content": pm.DOMAIN_QUESTION},
+                {"role": "user", "content": send}]
+        assert pm.reading_for(msgs).route == route
+        for later in ("Millimetres.", "Go on.", "I confirmed the geometry check. Go on.", "yes"):
+            msgs = msgs + [{"role": "assistant", "content": "What unit is the file in?"},
+                           {"role": "user", "content": later}]
+            assert pm.reading_for(msgs).route == route, (send, later)
+
+
 def test_buttons_come_with_exactly_the_application_questions():
     assert [c["send"] for c in pm.choices_for(pm.THERMAL_QUESTION)] == [s for _l, s in pm.THERMAL_CHOICES]
     analysis = pm.choices_for(pm.ANALYSIS_QUESTION)
