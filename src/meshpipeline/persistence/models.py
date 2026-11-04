@@ -931,6 +931,21 @@ class Organization(Base):
     current_period_end:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
                                                                     nullable=True)
 
+    # THE ERASURE LIFECYCLE (0019). Requested is when the owner asked for their account to be
+    # deleted: from that moment nobody can sign in to it, its keys are revoked and owner_id is
+    # pseudonymised (application/privacy_service.py). Erased is when the maintenance sweep has
+    # also removed the stored bytes. The row itself stays, renamed, because the credit ledger and
+    # the Stripe customer it carries are financial records with their own retention period.
+    erasure_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
+                                                                  nullable=True)
+    erased_at:            Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
+                                                                  nullable=True)
+
+    __table_args__: tuple = (
+        Index("ix_organizations_erasure_pending", "erasure_requested_at",
+              postgresql_where=text("erasure_requested_at IS NOT NULL AND erased_at IS NULL")),
+    )
+
 
 class StripeEvent(Base):
     # ONE HANDLED WEBHOOK. Stripe delivers at least once and retries every non-2xx, so a repeat is
@@ -975,6 +990,9 @@ class User(Base):
                                                                nullable=True)
     last_login_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
                                                                nullable=True)
+    # THE NAME TYPED AT SIGN-UP, held until the address is verified (0019). No organisation exists
+    # before then, so there is nowhere else to keep it; cleared once the organisation is created.
+    pending_organization_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
                                                  server_default=func.now(), nullable=False)
 
@@ -983,6 +1001,20 @@ class User(Base):
         # would resolve to an organisation for one spelling of the address and not the other.
         CheckConstraint("email = lower(email)", name="ck_users_email_lowercased"),
     )
+
+
+class SignupGrantClaim(Base):
+    # ONE NORMALISED ADDRESS THAT HAS RECEIVED THE SIGNUP GRANT (0019). The primary key is the
+    # whole mechanism: inserting this row in the grant's own transaction makes a second grant for
+    # the same mailbox collide on write, whether it comes from a second organisation, a re-sign-up
+    # after erasure, or a plus-addressed alias. A digest, never the address - see
+    # application/signup_claims.py for the normalisation and why the row outlives erasure.
+
+    __tablename__ = "signup_grant_claims"
+
+    email_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    claimed_at:   Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                   server_default=func.now(), nullable=False)
 
 
 class Membership(Base):

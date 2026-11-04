@@ -249,6 +249,10 @@ jobs:
       # below, and preserved by bootstrap-env.sh's `${APP_ENV:-dev}` idiom.
       app_env: ${{ steps.pick.outputs.app_env }}
       api_cors_origins: ${{ steps.pick.outputs.api_cors_origins }}
+      # The API's self-service signup posture. Production states the launch offer explicitly so a
+      # default change in create-api-service.sh cannot silently close signup or remove its grant.
+      console_signup_enabled: ${{ steps.pick.outputs.console_signup_enabled }}
+      signup_grant_credits: ${{ steps.pick.outputs.signup_grant_credits }}
       cloudsql_instance: ${{ steps.pick.outputs.cloudsql_instance }}
       redis_instance: ${{ steps.pick.outputs.redis_instance }}
       migrate_db_name: ${{ steps.pick.outputs.migrate_db_name }}
@@ -841,6 +845,11 @@ jobs:
             # two lines up, so the edge and the API agree on what the front door is.
             echo "app_env=prod"
             echo "api_cors_origins=https://console.hexera.ai"
+            # Production's launch offer is open self-service signup with one 100-credit grant.
+            # Authentication, the internal /auth/session API-key gate, and request rate limits stay
+            # responsible for access and abuse control; this value controls the product offer.
+            echo "console_signup_enabled=true"
+            echo "signup_grant_credits=100"
             # NOT prod-pg / prod-redis. These two are STATEFUL and already exist under the older
             # naming - hexera-prod-pg has backups, point-in-time recovery, deletion protection and
             # no public IP, and it holds the meshpipeline database. Cloud SQL and Memorystore
@@ -1375,6 +1384,10 @@ jobs:
       # file by another route is gone before stage 2 reads it.
       APP_ENV: ${{ needs.target.outputs.app_env }}
       API_CORS_ORIGINS: ${{ needs.target.outputs.api_cors_origins }}
+      # Explicit launch policy for prod. Empty on dev and personal environments means the API
+      # service script keeps its development defaults (also signup open, 100 signup credits).
+      CONSOLE_SIGNUP_ENABLED: ${{ needs.target.outputs.console_signup_enabled }}
+      SIGNUP_GRANT_CREDITS: ${{ needs.target.outputs.signup_grant_credits }}
       # THE DATA TIER, BY NAME. create-data-tier.sh reconciles these two instances and writes
       # their resolved PRIVATE addresses back into the deployment env, so MIGRATE_DB_HOST and
       # REDIS_URL are outputs of this run rather than literals that go stale in this file.
@@ -1441,9 +1454,6 @@ jobs:
       STRIPE_PRICE_EXTRA_CREDITS: ${{ github.event.inputs.slug == '' && vars.STRIPE_PRICE_EXTRA_CREDITS || '' }}
       EXTRA_CREDITS_AMOUNT: ${{ github.event.inputs.slug == '' && vars.EXTRA_CREDITS_AMOUNT || '' }}
       CONSOLE_BASE_URL: ${{ github.event.inputs.slug == '' && vars.CONSOLE_BASE_URL || '' }}
-      # TEMPORARY: production signup stays open while Stripe is not ready. The API owns this gate,
-      # and pinning it here keeps a missing payment-provider setup from closing account creation.
-      CONSOLE_SIGNUP_ENABLED: ${{ needs.target.outputs.deployment_id == 'prod' && 'true' || '' }}
       # A PERSONAL ENVIRONMENT'S OWN API SETTINGS, stated on purpose so a deploy keeps them. The API
       # service's environment is declarative (create-api-service.sh): a flag set on the live service
       # by hand made the next deploy of that environment refuse to run. Repository variable

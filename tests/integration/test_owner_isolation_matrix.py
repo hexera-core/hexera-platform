@@ -186,7 +186,8 @@ async def _provisioned_owner(db, *, org_name: str = "", organization_id=None,
         # `credits` states a different starting balance; 0 is an exhausted account.
         from meshpipeline.application import credit_service
         if credits is None:
-            await credit_service.grant_signup_credits(db, organization_id=organization_id)
+            await credit_service.grant_signup_credits(db, organization_id=organization_id,
+                                                      email=email)
         else:
             await credit_service.grant(db, organization_id=organization_id, amount=credits,
                                        reason="seeded by the isolation matrix")

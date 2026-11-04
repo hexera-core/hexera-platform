@@ -26,6 +26,16 @@ CONSUMERS = ("app", "compose", "make", "sdk")
 KINDS = ("str", "int", "float", "bool", "path", "list", "url")
 
 
+#: Disposable-inbox providers whose addresses never receive the free signup grant. A starting set,
+#: not a complete one: SIGNUP_GRANT_WITHHELD_DOMAINS replaces it per deployment.
+DEFAULT_WITHHELD_DOMAINS = ",".join((
+    "mailinator.com", "guerrillamail.com", "guerrillamail.net", "sharklasers.com",
+    "10minutemail.com", "temp-mail.org", "tempmail.com", "yopmail.com", "trashmail.com",
+    "getnada.com", "dispostable.com", "maildrop.cc", "mailnesia.com", "throwawaymail.com",
+    "fakeinbox.com", "mintemail.com", "emailondeck.com", "tempr.email", "moakt.com",
+))
+
+
 @dataclass(frozen=True)
 class EnvVar:
     name: str
@@ -346,8 +356,8 @@ INVENTORY: list[Group] = [
                help="the Identity Platform project whose ID tokens the console signs in with"),
     ]),
     Group("Product modes", vars=[
-        EnvVar("DATA_COLLECTION_ENABLED", "true",
-               help="Save redacted run data for training and corpus export."),
+        EnvVar("DATA_COLLECTION_ENABLED", "false",
+               help="Save redacted run data for training and corpus export. Opt-in (docs/compliance)."),
         EnvVar("PUBLIC_TRACE_MODE", "raw",
                help="Control technical details shown through the UI: safe or raw."),
         EnvVar("ALLOW_PUBLIC_RAW_TRACE", "true",
@@ -420,7 +430,11 @@ INVENTORY: list[Group] = [
         EnvVar("MAX_JOBS_PER_OWNER", "5"),
         EnvVar("MAX_CONCURRENT_JOBS", "20"),
         EnvVar("SIGNUP_GRANT_CREDITS", "100", kind="int",
-               help="credits a newly provisioned organisation is granted once; 0 disables it"),
+               help="credits a newly provisioned organisation is granted once, after its owner's "
+                    "address is verified and only once per mailbox; 0 disables it"),
+        EnvVar("SIGNUP_GRANT_WITHHELD_DOMAINS", DEFAULT_WITHHELD_DOMAINS,
+               help="comma-separated email domains (and their subdomains) whose new accounts are "
+                    "provisioned without the free signup grant - disposable-inbox providers"),
         EnvVar("JOB_BASE_CREDITS", "10", kind="int",
                help="credits one SUCCEEDED job costs before its minutes are counted; a failed "
                     "job is never charged"),

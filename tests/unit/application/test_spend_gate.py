@@ -19,7 +19,7 @@ def _org(*, plan="", status=""):
 
 @pytest.fixture
 def tenant(monkeypatch):
-    state = {"org": _org(), "balance": 100, "running": 0}
+    state = {"org": _org(), "balance": 100, "running": 0, "account_row": False}
 
     async def _get_by_id(db, organization_id):
         return state["org"] if organization_id == ORG else None
@@ -32,7 +32,11 @@ def tenant(monkeypatch):
         assert organization_id == ORG
         return state["running"]
 
+    async def _user_by_email(db, email):
+        return SimpleNamespace(email=email) if state["account_row"] else None
+
     monkeypatch.setattr(spend_gate.organization_repo, "get_by_id", _get_by_id)
+    monkeypatch.setattr(spend_gate.user_repo, "get_by_email", _user_by_email)
     monkeypatch.setattr(spend_gate.job_repo, "count_active_for_organization", _running)
     monkeypatch.setattr(credit_service, "balance", _balance)
     monkeypatch.setattr(polcfg, "JOB_BASE_CREDITS", 10)
@@ -128,6 +132,19 @@ async def test_a_caller_with_no_billable_organisation_is_admitted(tenant, organi
     # tenant - so refusing here protects nothing and breaks the owner-only posture.
     tenant["balance"] = -1_000
     assert await _admit(organization_id) == ""
+
+
+@pytest.mark.parametrize("gate", [True, False])
+@pytest.mark.asyncio
+async def test_a_signed_up_account_awaiting_verification_is_refused(tenant, monkeypatch, gate):
+    # The organisation and its grant wait for a verified address (0019), so a person with an
+    # account row and no organisation is unverified. Admitting them would make the unverified
+    # window an unlimited free tier - and nothing is debited at the job's end either. This holds
+    # with the credit gate off too: it is a verification rule, not a balance rule.
+    monkeypatch.setattr(polcfg, "CREDIT_GATE_ENABLED", gate)
+    tenant["account_row"] = True
+    with pytest.raises(spend_gate.OutOfCredits, match="Verify your email"):
+        await _admit("")
 
 
 def test_admissions_for_one_tenant_are_serialised_before_anything_is_read():

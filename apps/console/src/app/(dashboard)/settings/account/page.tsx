@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
 import { AccountForm } from "@/app/_components/account-form";
+import { PrivacyPanel } from "@/app/_components/privacy-panel";
 import { ownerIdFromSession } from "@/lib/auth/session";
 
 export default async function AccountPage() {
@@ -40,6 +41,18 @@ export default async function AccountPage() {
         </div>
         <div className="panel__body">
           <AccountForm name={session?.user?.name ?? ""} />
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel__head">
+          <div>
+            <p className="label">Your data</p>
+            <p className="page__sub">Export or delete your account.</p>
+          </div>
+        </div>
+        <div className="panel__body">
+          <PrivacyPanel email={ownerId ?? ""} />
         </div>
       </section>
     </div>
