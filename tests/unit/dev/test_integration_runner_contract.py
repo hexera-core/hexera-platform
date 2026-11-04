@@ -166,12 +166,10 @@ def test_a_correctly_provisioned_report_passes(guard, tmp_path):
     assert guard.main([_report(tmp_path, _full_pass())]) == 0
 
 
-def test_the_optional_skips_are_still_allowed(guard, tmp_path):
-    optional = (_case("test_graph_runtime", "test_x",
-                      '<skipped message="real STEP not staged (make test-integration stages it)"/>')
-                + _case("test_upload_compensation_http", "test_y",
-                        '<skipped message="restricted MinIO identity not provisioned (MINIO_READONLY_KEY)"/>'))
-    assert guard.main([_report(tmp_path, _full_pass(optional))]) == 0
+def test_no_skip_is_optional_any_more(guard, tmp_path):
+    skipped = _case("test_graph_runtime", "test_x",
+                    '<skipped message="real STEP not staged (make test-integration stages it)"/>')
+    assert guard.main([_report(tmp_path, _full_pass(skipped))]) == 1
 
 
 def test_an_empty_run_is_not_a_pass(guard, tmp_path):

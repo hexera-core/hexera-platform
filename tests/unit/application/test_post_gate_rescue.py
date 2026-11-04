@@ -1,8 +1,7 @@
 # Responsibility: Verify that once the executor has passed a mesh, ANY later exception - a reviewer
 # crash, a checkpoint write, anything - delivers the mesh with a note that the review did not
 # conclude, and never fails the job; and that every case outside that rule is raised as before.
-# Boundaries: a stood-in graph (the real LangGraph run is
-# tests/integration/test_reviewer_crash_still_delivers.py); the terminal rules are the real ones.
+# Boundaries: a stood-in graph; the terminal rules are the real ones.
 from __future__ import annotations
 
 import asyncio
