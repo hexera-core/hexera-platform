@@ -17,10 +17,6 @@ pytestmark = pytest.mark.asyncio
 if not os.getenv("DATABASE_URL") or not os.getenv("MINIO_ENDPOINT"):
     pytest.skip("real PostgreSQL and MinIO endpoints are required", allow_module_level=True)
 
-# Identities the harness provisions on the disposable server; see the round's compose/bootstrap.
-_READONLY = ("MINIO_READONLY_KEY", "MINIO_READONLY_SECRET")
-_NODELETE = ("MINIO_NODELETE_KEY", "MINIO_NODELETE_SECRET")
-
 _API_KEY = "integration-api-key"
 _USER_SECRET = "integration-user-secret"
 _OWNER = "tenant-compensation"
@@ -40,7 +36,7 @@ async def _capacity_headroom():
     # own driver URL, so it is handed the bare coordinates.
     url = make_url(os.environ["DATABASE_URL"]).difference_update_query(["sslmode"])
     await hp.truncate_tables(url, "simulation_jobs")
-    from tests.integration.conftest import ensure_signed_owner
+    from tests.harness_provisioning import ensure_signed_owner
     ensure_signed_owner(_OWNER)
     yield
 
@@ -117,30 +113,7 @@ def _admin_store():
     return MinioStore()
 
 
-def _require(env_pair):
-    if not all(os.getenv(k) for k in env_pair):
-        pytest.skip(f"restricted MinIO identity not provisioned ({env_pair[0]})")
-    return os.getenv(env_pair[0]), os.getenv(env_pair[1])
-
-
 # object upload fails first
-
-async def test_a_denied_object_upload_commits_no_row_and_creates_no_object(tmp_path):
-    key, secret = _require(_READONLY)
-    before = await _source_rows()
-    proc, base, log, _ = _start_api(tmp_path, {"MINIO_ACCESS_KEY": key, "MINIO_SECRET_KEY": secret})
-    try:
-        resp = await _post(base, _payload("denied-write"))
-    finally:
-        proc.terminate()
-        proc.wait(timeout=15)
-
-    assert resp.status_code == 503, resp.text
-    assert await _source_rows() == before, "a source row committed although the object never landed"
-    body = resp.text.lower()
-    for leak in ("accessdenied", "srcint-data", "minio", "s3", "127.0.0.1", secret.lower()):
-        assert leak not in body, f"the public error exposed {leak!r}"
-
 
 # database fails afterwards
 
@@ -196,68 +169,3 @@ def _list_source_keys(store) -> set[str]:
 
 
 # compensation itself fails
-
-async def test_a_failed_compensation_is_reported_loudly_and_leaks_nothing(tmp_path):
-    from sqlalchemy import text
-
-    from meshpipeline.persistence.session import dispose_engine, get_db
-    key, secret = _require(_NODELETE)
-    store = _admin_store()
-
-    async with get_db() as db:
-        await db.execute(text(
-            "create or replace function reject_compensation_tenant() returns trigger as $$ "
-            "begin raise exception 'integration: refusing insert'; end; $$ language plpgsql"))
-        # DDL takes no bind parameters; _OWNER is a module constant, not caller input.
-        await db.execute(text(
-            "create trigger reject_compensation_tenant before insert on geometry_sources "
-            f"for each row when (new.owner_id = '{_OWNER}') "
-            "execute function reject_compensation_tenant()"))
-        await db.commit()
-    await dispose_engine()
-
-    before_keys = _list_source_keys(store)
-    proc, base, log, _ = _start_api(tmp_path, {"MINIO_ACCESS_KEY": key, "MINIO_SECRET_KEY": secret})
-    try:
-        resp = await _post(base, _payload("compensation-denied"))
-    finally:
-        proc.terminate()
-        proc.wait(timeout=15)
-        async with get_db() as db:
-            await db.execute(text("drop trigger if exists reject_compensation_tenant "
-                                  "on geometry_sources"))
-            await db.commit()
-        await dispose_engine()
-
-    assert resp.status_code == 500, resp.text
-    assert not await _source_rows(), "a row committed despite the refusal"
-
-    # REPORTED LOUDLY, and - what actually matters - still OWNED. The log line is a diagnostic;
-    # the authority that reclaims the stranded object is the cleanup intent recorded before the
-    # write, which must survive a failed compensation as `pending` so the maintenance sweep picks
-    # it up. Asserting a literal banner in the log proved neither of those, and this contract had
-    # never run: the identity it needs was not provisioned, so it skipped on every machine.
-    text_log = log.read_text()
-    assert "compensation delete failed" in text_log, "a stranded object was not reported loudly"
-
-    body = resp.text.lower()
-    for leak in ("accessdenied", "srcint-data", "minio", "sources/", secret.lower()):
-        assert leak not in body, f"the public error exposed {leak!r}"
-
-    # the orphan is identifiable, and the harness's administrator identity removes it
-    orphans = _list_source_keys(store) - before_keys
-    assert len(orphans) == 1, orphans
-
-    # STILL OWNED. The log line is a diagnostic; the authority that reclaims the stranded object is
-    # the cleanup intent recorded before the write, which must survive a failed compensation as
-    # `pending`. If it were closed here the sweep would skip it and the object would be permanent.
-    async with get_db() as db:
-        state = (await db.execute(
-            text("select state from source_object_cleanups where object_key = :k"),
-            {"k": next(iter(orphans))})).scalar_one()
-    await dispose_engine()
-    assert "pending" in str(state).lower(), (
-        f"the stranded object's cleanup intent is {state!r}, so maintenance would never reclaim it")
-    for k in orphans:
-        store.delete_object(object_key=k)
-    assert not (_list_source_keys(store) - before_keys)

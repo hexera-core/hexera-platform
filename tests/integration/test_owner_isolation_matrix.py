@@ -48,7 +48,7 @@ def _free_port() -> int:
 
 @pytest.fixture(scope="module")
 def api(tmp_path_factory):
-    from tests.integration.conftest import ensure_signed_owner
+    from tests.harness_provisioning import ensure_signed_owner
     for raw_owner in (_A, _B):
         ensure_signed_owner(raw_owner)
     # THE HARDENED CONFIGURATION, which is the only one where owner identity means anything: both
