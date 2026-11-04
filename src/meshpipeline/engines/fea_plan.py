@@ -448,9 +448,10 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
                    "follow; they get no elements of their own.")
     cusps = plan.get("cusps") or []
     if cusps:
-        out.append(f"Cusps: {len(cusps)} place(s) where two CAD edges of a face meet at almost no angle, so the "
-                   "material runs to nothing there. No element there can be well shaped at any size: the ones "
-                   "touching them get straight sides and are set aside, and the delivery names each place.")
+        out.append(f"Cusps: {len(cusps)} place(s) where two CAD edges of a face meet at almost no angle, or a "
+                   "fillet or blend runs out to a point, so the material runs to nothing there. No element there "
+                   "can be well shaped at any size: the ones touching them that miss the quality limits get "
+                   "straight sides and are set aside, and the delivery names each place.")
     micro = plan.get("micro") or []
     if micro:
         smallest = min(float(m.get("size_mm") or 0.0) for m in micro)
