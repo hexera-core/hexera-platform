@@ -105,11 +105,17 @@ export function mountCanvas(host, opts = {}) {
   };
 
   const ignore = opts.ignore || DEFAULT_IGNORE;
-  const onDown = (e) => {
+  const onTake = (e) => {
     if (!(e.target && e.target.closest && e.target.closest(ignore))) canvas.touched = true;
   };
   // capture: the vtk interactor stops propagation, so a bubble listener here never fires
-  host.addEventListener("pointerdown", onDown, true);
+  host.addEventListener("pointerdown", onTake, true);
+  // THE WHEEL TAKES THE CAMERA TOO. Zoom is a camera move a user makes without ever pressing a
+  // button, so keying "the user has taken the camera" to pointerdown alone threw a wheel-only
+  // close-up away on the next resize - and a resize is not rare here: the conversation drawer
+  // toggles one. The same `ignore` keeps a scroll over the toolbar or an overlay out of it,
+  // since those scroll their own content and say nothing about the part.
+  host.addEventListener("wheel", onTake, { capture: true, passive: true });
 
   /* THE FRAMING FOLLOWS THE CANVAS until the user takes the camera. The workbench grid gives a
      panel its real size a tick after the scene is appended, so the first fit is always made
@@ -132,7 +138,8 @@ export function mountCanvas(host, opts = {}) {
     disposed = true;
     ro.disconnect();
     host.removeEventListener("contextmenu", noMenu);
-    host.removeEventListener("pointerdown", onDown, true);
+    host.removeEventListener("pointerdown", onTake, true);
+    host.removeEventListener("wheel", onTake, true);
     // Each step is independently wrapped: a vtk build that is missing one of these must not
     // prevent the later ones, and the context release is the last and most important of them.
     const step = (fn) => { try { fn(); } catch { /* releasing is best-effort by nature */ } };

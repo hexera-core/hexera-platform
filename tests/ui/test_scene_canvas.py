@@ -191,3 +191,20 @@ def test_dispose_is_not_wired_to_anything_yet():
     assert not callers, (
         "mountCanvas().dispose() is meant to be unwired in this step; found callers:\n  "
         + "\n  ".join(callers))
+
+
+def test_a_wheel_zoom_takes_the_camera_so_a_resize_does_not_throw_it_away(live):
+    """ZOOM IS A CAMERA MOVE MADE WITHOUT PRESSING ANYTHING. Keying "the user has taken the
+    camera" to pointerdown alone meant a wheel-only close-up survived until the next resize and
+    then vanished - and a resize is not rare here, because the conversation drawer toggles one."""
+    _mount(live)
+    got = live.evaluate("""(() => {const s = window._scene, out = {};
+      const wheel = (el) => el.dispatchEvent(new WheelEvent('wheel', {bubbles: true, deltaY: -120}));
+      const tool = document.createElement('button'); tool.className = 'vt';
+      s.host.appendChild(tool);
+      wheel(tool); out.afterFurniture = s.canvas.touched;
+      wheel(s.host.querySelector('canvas')); out.afterCanvas = s.canvas.touched;
+      return out; })()""")
+    assert got["afterFurniture"] is False, (
+        "a scroll over a control scrolls that control's own content and says nothing about the part")
+    assert got["afterCanvas"] is True, "a wheel zoom on the part is the user taking the camera"
