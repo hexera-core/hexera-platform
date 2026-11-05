@@ -4324,3 +4324,66 @@ root-box arithmetic was never the point. What stands is the measurement that mat
 deliverable: **22.0035 um is the floor with this image**, the narrowest genuine passage on the
 coolant is 99.03 um and gets 4.5 cells, and the coolant is one connected region in two independent
 meshes.
+
+### The two ports are separate patches now, and three OpenFOAM traps on the way
+
+The box-domain route delivers both port mouths as one patch, `fluid_to_air`. The plate-only route
+got `port_a` and `port_b` for free, because its pipeline names them off the CAD. So the coupled mesh
+was correct and you could not set a flow rate on it: an inlet and an outlet take different boundary
+conditions and cannot share a patch.
+
+Split by x at 95 mm. The mouths' centres are 89.3396 mm and 99.8820 mm and their nearest approach is
+27.9444 mm, so any threshold between them works.
+
+| stage | rc | s |
+|---|---|---|
+| topoSet, the two face sets | 0 | 297 |
+| createPatch | 0 | 591 |
+| checkMesh | 0 | 562 |
+| checkMesh -writeFields | 0 | 648 |
+| write_index + write_quality | 0 | 180 |
+
+| patch | type | faces |
+|---|---|---|
+| fluid_to_solid | mappedWall | 21,708,529 |
+| **port_a** | **patch** | **1,759** |
+| **port_b** | **patch** | **1,706** |
+
+`Number of regions: 1 (OK)`, `Boundary openness ... OK`, `Mesh OK`.
+
+**Checked geometrically, not by face count.** 1,759 + 1,706 = 3,465 is the right total and says
+nothing about which faces went where. A 2 mm detail cut at x 89.34 returns only `port_a` (442
+faces), a cut at x 99.88 only `port_b` (432), and a 20 mm cut between them sees both (1,450 and
+1,398). An inverted filter would have given the wrong port; a straddling one would have given both
+in each cut.
+
+They are `port_a` and `port_b` and not `inlet` and `outlet`, because Corintis has not said which is
+which and a mesh that names them is a mesh that has guessed.
+
+#### Three traps, and none of them was the mesh
+
+**`-region <r>` changes where a dict is read from.** `topoSet -region fluid` and
+`createPatch -region fluid` read `system/<region>/<dict>`, not `system/<dict>`. And
+`-dict system/topoSetDict.ports` does not override it: the prefix is applied anyway and it resolves
+to `system/fluid/system/topoSetDict.ports`. Put the dict at `system/<region>/` under its default
+name and pass no `-dict`.
+
+**`createPatch` has no `-constant`.** Same family as `subsetMesh`, which is already in my notes, and
+I used it anyway.
+
+**A rehearsal that passes for a reason you have not identified is not a rehearsal.** I rehearsed
+this on a coarse 427k-cell copy and it passed - because an earlier iteration of that same script had
+left a `createPatchDict` in `system/fluid/` while the version under test wrote one to `system/`.
+Both existed, OpenFOAM read the one I was not testing, and I concluded the recipe was proven. On the
+real mesh, with only `system/createPatchDict`, it died at once. Check WHICH file was read.
+
+What did NOT go wrong was the thing I had rehearsed FOR: `createPatch` on one region of a conjugate
+case does not trip the cross-region `mappedWall` lookup. `fluid_to_solid` points at `solid`, which
+is not loaded, and createPatch ran rc=0 and left it alone. Only `checkMesh -allGeometry` forces that
+mapping to be built.
+
+And the fail-safe earned itself. `cp boundary boundary.beforesplit` before the surgery, restore on a
+non-zero rc: the boundary came back, the index and the per-face quality were never touched, and a
+verified 413M-cell deliverable stayed consistent through a failed attempt. The detail cuts return
+byte-for-byte the same counts after the reindex as before it - 404/404 at the chip contact, 428 at a
+port mouth - so the rebuild preserved the face numbering exactly.
