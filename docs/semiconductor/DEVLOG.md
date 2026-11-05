@@ -4278,3 +4278,49 @@ the index against the corrected boundary instead.**
 
 The live page was never broken either, which I corrected separately: it serves a payload baked
 2026-11-04, before the boundary was edited.
+
+### Resolved: it is 32-bit labels, and serial does not rescue it either
+
+The serial arm came back, with a like-for-like parallel control on the same geometry, and it settles
+this.
+
+| arm | surface | mode | got as far as | ended |
+|---|---|---|---|---|
+| quarter_par | quarter area | 8 ranks | "Refining boxes intersecting surface meshes" | `MPI_ERR_BUFFER` |
+| quarter_ser | quarter area | serial | **past that**, through two "Marking inside/outside" passes | `FOAM FATAL` |
+| cbox7 | **full area** | serial | "Refining boxes intersecting surface meshes" | `FOAM FATAL`, rc=134 in 612 s |
+
+Serial really does clear the stage that kills every parallel run, which is what I had claimed and
+could not then show. And it does not help, because it aborts a few stages later:
+
+```
+--> FOAM FATAL ERROR: Negative size requested.
+    From void Foam::Module::LongList<T, Offset>::allocateSize(Foam::label)
+         [with T = int; int Offset = 19; Foam::label = int]
+    #4 Foam::Module::meshOctreeAddressing::createNodeLabels()
+    #5 Foam::Module::cartesianMeshExtractor::createPointsAndAddressing()
+```
+
+**A negative allocation size with `Foam::label = int` is a signed 32-bit overflow.** So this is one
+root cause wearing two faces, and both are the same fact about the build:
+
+| | where it overflows | what you see |
+|---|---|---|
+| parallel | `meshOctreeModifierLoadDistribution.C`, leaf weights summed with `sumOp<label>`, quotient used as a destination rank | `MPI_ERR_RANK` / `MPI_ERR_BUFFER` |
+| serial | `meshOctreeAddressing::createNodeLabels()`, the octree's node addressing | `Negative size requested` |
+
+The build is the whole of it. `cartesianMesh -help` prints `Arch: LSB;label=32;scalar=64`, the only
+platform in the image is `linux64GccDPInt32Opt`, and `WM_LABEL_SIZE=32`. There is no `Int64`
+cartesianMesh anywhere in it.
+
+**So microchannels +5 cannot be done with this image at all, by any route, and the fix is a
+64-bit-label build** - `WM_LABEL_SIZE=64`, platform `linux64GccDPInt64Opt`. That is an image
+rebuild, not a flag, because the image carries only the 32-bit platform. It is also a real and
+costed next step, which "cfMesh caps the octree at level 14" was not.
+
+Three claims in this entry are now settled against me. "Level 14 cap": there is no level cap, it is
+label width. "Serial is the only route past level 15": serial gets further and still fails. And the
+root-box arithmetic was never the point. What stands is the measurement that matters for the
+deliverable: **22.0035 um is the floor with this image**, the narrowest genuine passage on the
+coolant is 99.03 um and gets 4.5 cells, and the coolant is one connected region in two independent
+meshes.
