@@ -251,7 +251,10 @@ if [ -n "$(as_field autoscaler.name)" ]; then
   LIVE_SCALE_IN_WINDOW="$(as_field autoscaler.autoscalingPolicy.scaleInControl.timeWindowSec)"
 fi
 
-AS_MIN="${LIVE_MIN:-${WORKER_MIG_MIN_REPLICAS:-1}}"
+# The last fallback is 0, not 1, and matches create-worker-fleet.sh's own default: a floor is a
+# VM billed against an empty queue, so an unstated floor is no floor. A deployment that wants a
+# warm pool states WORKER_MIG_MIN_REPLICAS (bootstrap-env.sh defaults it to 1 for APP_ENV=prod).
+AS_MIN="${LIVE_MIN:-${WORKER_MIG_MIN_REPLICAS:-0}}"
 AS_MAX="${LIVE_MAX:-${WORKER_MIG_MAX_REPLICAS:-5}}"
 AS_COOLDOWN="${LIVE_COOLDOWN:-${WORKER_MIG_COOLDOWN_SECONDS:-180}}"
 AS_ASSIGNMENT="${LIVE_ASSIGNMENT:-${WORKER_JOBS_PER_INSTANCE:-1}}"

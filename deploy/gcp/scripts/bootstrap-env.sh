@@ -222,6 +222,29 @@ discover() {
 }
 
 emit_env() {
+  # THE WORKER FLEET'S WARM FLOOR, AND WHY IT IS NOT 1 EVERYWHERE. The floor is the number of
+  # e2-standard-4 VMs the autoscaler holds even with an empty queue, so it is a bill that runs
+  # whether or not anybody is simulating anything: one VM is ~24 core-hours and ~96 GiB-hours a
+  # day, per environment, forever. Production wants that - the first job of the morning should not
+  # wait for a VM to boot and a container to pull. A dev environment does not: shared dev and every
+  # personal dev-<slug> fleet spend most of their life idle, and the whole point of the queue-depth
+  # metric plus the off-fleet publisher is that a group at zero can still be woken.
+  #
+  # So the DEFAULT is decided by APP_ENV, which deploy.yml pins per target (prod for a v* tag, dev
+  # for shared dev and for every slug). An explicitly stated WORKER_MIG_MIN_REPLICAS still wins, in
+  # either direction - that is what "unless explicitly set" means here, and it is how a dev
+  # environment that genuinely wants a warm worker asks for one.
+  #
+  # THIS ONLY DECIDES A NEW FLEET'S FLOOR. create-queue-depth-publisher.sh deliberately preserves
+  # the LIVE autoscaler's sizing (the admin console owns it), so lowering this default does NOT
+  # pull an existing fleet down to zero. Reclaiming an already-warm dev fleet is one command per
+  # group - see docs/deployment/personal-environments.md.
+  #
+  # NO BACKTICKS ANYWHERE IN THIS FUNCTION, including out here above the heredoc: the heredoc is
+  # unquoted, and the guard that enforces it (tests/unit/deploy/test_personal_environments.py)
+  # slices emit_env whole rather than just its body.
+  local _worker_min_default=0
+  if [ "${APP_ENV:-dev}" = prod ]; then _worker_min_default=1; fi
   cat <<ENVFILE
 # deploy/gcp/generated.env - GENERATED deployment state (scripts/bootstrap-env.sh).
 # DO NOT HAND-EDIT: rerunning discovery preserves existing values, and deploy stages write the
@@ -331,7 +354,7 @@ GEOMETRY_QUEUE_NAME=${GEOMETRY_QUEUE_NAME:-${REDIS_KEY_PREFIX:-}geometry_checks}
 REDIS_URL=${REDIS_URL:-}
 WORKER_MIG=${WORKER_MIG:-}
 WORKER_MIG_ZONE=${WORKER_MIG_ZONE:-}
-WORKER_MIG_MIN_REPLICAS=${WORKER_MIG_MIN_REPLICAS:-1}
+WORKER_MIG_MIN_REPLICAS=${WORKER_MIG_MIN_REPLICAS:-${_worker_min_default}}
 WORKER_MIG_MAX_REPLICAS=${WORKER_MIG_MAX_REPLICAS:-5}
 WORKER_MIG_COOLDOWN_SECONDS=${WORKER_MIG_COOLDOWN_SECONDS:-180}
 WORKER_JOBS_PER_INSTANCE=${WORKER_JOBS_PER_INSTANCE:-1}
