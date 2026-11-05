@@ -12,7 +12,7 @@ import tarfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import meshpipeline.settings.providers as provcfg
 from meshpipeline.adapters.mesh_execution.exchange_coordinates import (
@@ -342,6 +342,20 @@ def _operation_reference(response, *, engine: str) -> CloudRunOperationReference
             f"{engine}: the run was accepted in {reference.location}, not the configured region; "
             "the provider may have accepted it")
     return reference
+
+
+#: The engines whose runner can publish a mid-run frame. snappy writes a complete polyMesh per
+#: phase when it is not run with `-overwrite`; nothing else in the roster writes anything usable
+#: mid-run (cfMesh builds in memory, gmsh's fill is one blocking call, vmtk emits whole artifacts).
+#: Used to decide whether a finished run may have left a frame behind - a question about the RUN,
+#: which a setting read at collection time cannot answer.
+_FRAME_ENGINES: Final = ("snappy",)
+
+
+def _can_publish_frames(engine: str) -> bool:
+    """Whether `engine`'s runner could have written a mid-run frame for this run."""
+    name = str(engine or "").strip().lower()
+    return any(name == e or name.startswith(e + "_") for e in _FRAME_ENGINES)
 
 
 def _snappy_ranks_pin() -> str:
@@ -930,12 +944,18 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
             # frame per run would accumulate there for ever. They are also worthless the moment
             # the real mesh is collected.
             #
-            # GATED ON THE SWITCH, not attempted blindly. Where frames are off there is nothing to
-            # delete, and asking anyway spends a request per run and per stage on every mesh the
-            # platform has ever run, to remove an object that cannot exist. The same switch the
-            # dispatch passed to the mesher decides it, so the two cannot disagree about whether
-            # this run could have written one.
-            if _snapshots_enabled():
+            # GATED ON THE RUN, NOT ON THIS PROCESS'S CONFIG. It used to read the switch here,
+            # which is wrong in a way that only shows up later: the worker that COLLECTS a result
+            # need not be the one that dispatched it, and a flag turned off in between - or a
+            # replacement worker on an older revision - would skip deleting a frame an earlier
+            # worker had already published. The object then outlives the run, and on a supplied
+            # exchange bucket (no lifecycle rule) it outlives everything.
+            #
+            # The engine is the stable property: only the snappy family can publish a frame at
+            # all, it is fixed for the life of the run, and it travels with the result rather than
+            # with whoever picks it up. So every snappy run pays one tolerated NotFound delete and
+            # no other engine pays anything.
+            if _can_publish_frames(engine):
                 from google.api_core.exceptions import NotFound as _NotFound
 
                 from meshpipeline.artifact_keys import PARTIAL_STAGES, partial_key_beside
