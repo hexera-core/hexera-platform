@@ -344,6 +344,16 @@ def _operation_reference(response, *, engine: str) -> CloudRunOperationReference
     return reference
 
 
+def _snapshots_enabled() -> bool:
+    """Whether this deployment lets a running mesh publish a frame of itself. Read at dispatch, so
+    the answer is the one in force now; never allowed to fail a dispatch."""
+    try:
+        import meshpipeline.settings.mesh_snapshot as mscfg
+        return bool(mscfg.MESH_PROGRESSIVE_SNAPSHOT_ENABLED)
+    except Exception:  # noqa: BLE001 - a progress nicety never stops a mesh from being submitted
+        return False
+
+
 def _trigger_job(*, input_uri: str, output_uri: str, engine: str,
                  timeout: int) -> CloudRunOperationReference:
     import requests as _rq
@@ -356,6 +366,14 @@ def _trigger_job(*, input_uri: str, output_uri: str, engine: str,
         # the exchange contract this worker speaks: a mesh job on another answers "platform
         # updating" instead of misreading the workspace (contracts/mesh_execution)
         {"name": MESH_CONTRACT_ENV, "value": str(MESH_EXCHANGE_VERSION)},
+        # WHETHER THIS RUN MAY PUBLISH A MESH WHILE IT BUILDS. The job's own definition carries no
+        # env at all, by design, so a setting the mesher reads can only arrive as a per-execution
+        # override - and without this line the snapshot path is unreachable in every deployment,
+        # however the environment is configured. The WORKER decides and the job obeys: the flag is
+        # read here, where the dispatch is, rather than in the mesh image, so turning it off takes
+        # effect on the next run instead of the next mesh deploy.
+        {"name": "MESH_PROGRESSIVE_SNAPSHOT_ENABLED",
+         "value": "true" if _snapshots_enabled() else "false"},
     ]}]}}
     try:
         resp = _rq.post(f"https://run.googleapis.com/v2/{name}:run",

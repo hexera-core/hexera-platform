@@ -75,6 +75,7 @@ docker run -d --rm --name mesh \
   -e ENGINE="$(get instance/attributes/engine)" \
   -e TIMEOUT="$T" \
   -e HEXERA_MESH_CONTRACT="$(get instance/attributes/mesh-contract)" \
+  -e MESH_PROGRESSIVE_SNAPSHOT_ENABLED="$(get instance/attributes/mesh-snapshots)" \
   -e TMPDIR=/work -v /mnt/stateful_partition/work:/work \
   "$IMG" python -m meshpipeline.runtime.mesh_runner || say "the mesh container did not start"
 while docker inspect mesh >/dev/null 2>&1; do
@@ -132,9 +133,16 @@ def _job_container() -> tuple[str, str]:
 def instance_body(*, name: str, zone: str, machine: str, image: str, account: str, input_uri: str,
                   output_uri: str, engine: str, timeout: int, disk_gb: int) -> dict:
     """The instances.insert body (pure: tests read it)."""
+    from meshpipeline.adapters.mesh_execution.cloud_run_client import _snapshots_enabled
     from meshpipeline.contracts.mesh_execution import MESH_EXCHANGE_VERSION
+
+    # THE SAME SWITCH THE CLOUD RUN ROUTE PASSES, for the same reason: the VM runs the job's own
+    # container, which carries no env of its own, so a setting the mesher reads reaches it only
+    # from here. The two routes must agree, or a mesh would publish frames on one path and not the
+    # other depending on how big it was - which reads as a bug in the feature rather than in us.
     meta = {"mesh-image": image, "input-uri": input_uri, "output-uri": output_uri, "engine": engine,
             "timeout": str(int(timeout)), "mesh-contract": str(MESH_EXCHANGE_VERSION),
+            "mesh-snapshots": "true" if _snapshots_enabled() else "false",
             "startup-script": STARTUP_SCRIPT}
     body: dict = {
         "name": name,

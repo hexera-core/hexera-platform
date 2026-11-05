@@ -50,6 +50,12 @@ export function setResultHandler(fn) { onResult = fn || (() => {}); }
 let onCancel = () => {};
 export function setCancelHandler(fn) { onCancel = fn || (() => {}); }
 
+/* Installed by the entrypoint. A frame of the mesh-so-far exists: the stage says so and hands the
+   pointer on. Reading the bytes and drawing them is the application's (viewer/mesh_partial.js) -
+   this module renders and does not fetch. */
+let onMeshPartial = () => {};
+export function setMeshPartialHandler(fn) { onMeshPartial = fn || (() => {}); }
+
 /* What each lane mark means, in words: the dot's title and its name for a screen reader. The
    marks themselves are drawn by css/theme.css; `Stage.markOf` decides which one a lane earns. */
 const MARKS = {
@@ -451,6 +457,10 @@ export const Stage = {
     if(m&&ev.kind!=='say'&&!/^Still /.test(ev.text)){m.narrated=true;
       const l=m.el.querySelector('.mb-lbl');if(l)l.textContent=String(ev.text);}
     RunLine.model.narrate(ev,this.now());RunLine.draw();},
+  // A FRAME OF THE MESH-SO-FAR was published: a pointer, never geometry. The stage holds no
+  // viewer and reads no bytes - it passes the pointer to whoever was installed to draw it, and a
+  // build with nobody installed renders exactly what it did before.
+  meshPartial(phase,key){onMeshPartial(phase,key);},
   // THE RECEIPT a phase published: deterministic rows the user opens on that step of the live line.
   // It is detail, not narration - the step's own one-line summary is untouched, and a receipt for a
   // stage this build has no step for is dropped by the model.
