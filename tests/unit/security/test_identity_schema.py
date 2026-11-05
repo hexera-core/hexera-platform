@@ -27,8 +27,14 @@ _COLUMNS = {
 #: being loosened until it stops refusing anything.
 _ADDED_BY_LATER_REVISIONS: dict[str, set[str]] = {
     # 0006_stripe_billing. See that revision for why the billing identity belongs on the tenant row.
+    # 0019_signup_claims_and_erasure adds the erasure lifecycle: requested when the owner asked,
+    # erased when the sweep has also removed the stored bytes.
     "organizations": {"stripe_customer_id", "stripe_subscription_id", "plan",
-                      "subscription_status", "current_period_end"},
+                      "subscription_status", "current_period_end",
+                      "erasure_requested_at", "erased_at"},
+    # 0019_signup_claims_and_erasure: the organisation name typed at sign-up, held until the
+    # address is verified and the organisation exists, then cleared.
+    "users": {"pending_organization_name"},
     # 0007_usage_metering. NULL until the sweep reports a debit to the provider's meter, and NULL
     # forever on a grant or a refund - only a debit is ever metered.
     # 0008_overage_metering adds `overage`: how much of a debit the metered price bills.

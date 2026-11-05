@@ -251,6 +251,19 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
     # ratio is snapped to one (the two boxes never agree to the last digit)
     ratio = 1000.0 * diag_m / diag_read
     mm_per_unit = 10.0 ** round(math.log10(ratio)) if ratio > 0 else ratio
+    # THE SAME SOLID, MEASURED BEFORE (cad/fea_measure_cache, keyed on the staged file's digest): its record is
+    # read back and only the surface the plan sizes on is tessellated again - no walls ray-traced, no Boolean
+    # checks run a second time (a landing gear's plan spent 1054 s of its 1090 s measurement on those)
+    from meshpipeline.cad import fea_measure_cache as MC
+
+    cache_key = MC.key_for(step, mm_per_unit=mm_per_unit, max_ray_triangles=MAX_RAY_TRIANGLES)
+    kept = MC.load(cache_key)
+    if kept is not None:
+        surface = _surface_again(shape, mm_per_unit, healed=bool(kept.get("healed")))
+        if surface is not None:
+            logger.info("fea driver: the staged solid was measured before - its record reused")
+            return kept["record"], surface, diag_m
+    healed = False
     try:
         record, surface = measure_cad_surface(shape, mm_per_unit=mm_per_unit, max_ray_triangles=MAX_RAY_TRIANGLES)
     except Exception as exc:  # noqa: BLE001 - healed and measured again; a second failure is the part's
@@ -264,6 +277,7 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
         record, surface = measure_cad_surface(fix.Shape(), mm_per_unit=mm_per_unit,
                                               max_ray_triangles=MAX_RAY_TRIANGLES)
         record.setdefault("notes", []).append(f"the CAD was healed before it was measured ({exc})")
+        healed = True
     # MESH-1: WHERE THE CAD MAY BE BROKEN, measured on this very solid (detect only, never a stop): the
     # mesh is tried; a valid one is delivered with a note, and only a failure AT that spot is the CAD's
     try:
@@ -271,7 +285,26 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
         record["suspects"] = SD.find(shape, record)
     except Exception as exc:  # noqa: BLE001 - no suspects measured is no suspects
         logger.warning("fea driver: suspected defects not measured (%s)", type(exc).__name__)
+    MC.save(cache_key, {"record": record, "healed": healed})
     return record, surface, diag_m
+
+
+def _surface_again(shape, mm_per_unit: float, *, healed: bool):
+    """The labelled surface measure_cad_surface measured `shape` on (healed first when it was), tessellated
+    again; None when it cannot be (the solid is then measured as before)."""
+    from meshpipeline.cad.fea_measure import _brep_surface
+
+    try:
+        if healed:
+            from OCP.ShapeFix import ShapeFix_Shape
+
+            fix = ShapeFix_Shape(shape)
+            fix.Perform()
+            shape = fix.Shape()
+        return _brep_surface(shape, float(mm_per_unit))[0]
+    except Exception as exc:  # noqa: BLE001 - measured as before
+        logger.info("fea driver: the kept measurement's surface could not be made again (%s)", type(exc).__name__)
+        return None
 
 
 def _suspect_faces(record: dict) -> set[str]:

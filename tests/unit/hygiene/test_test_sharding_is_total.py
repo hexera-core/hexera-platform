@@ -128,7 +128,7 @@ def test_the_integration_union_pass_exists_and_the_gate_waits_on_it():
     """Sharding the integration tier MOVED its non-vacuity guard; it must not have removed it.
 
     A shard cannot assert the 300-test floor or the three named real-PostgreSQL guarantees - split
-    four ways it holds neither - so `run_in_container.sh` runs its guard with --partial and the
+    across shards it holds neither - so `run_in_container.sh` runs its guard with --partial and the
     whole-suite claim is made once, over the union of every shard's report, by `integration-tier`.
     That claim is only worth anything if a red one can fail the run, so the gate has to wait on it
     and has to read its result. Both are asserted here, because the way this guard would be lost

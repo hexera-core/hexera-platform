@@ -257,8 +257,10 @@ def test_run_walks_the_ladder_when_tetgen_gives_up(tmp_path, monkeypatch):
         {"sizing_array": "LocalRadius", "boundary_layers": 3})))
     (tmp_path / "lumen_open.vtp").write_text("staged")   # what staging leaves
     res = R._run_vmtk_local(tmp_path, timeout=10)
-    # the surface stage once, then two generator attempts
-    assert res["rc"] == 0 and len(calls) == 3
+    # the surface stage once, then two generator attempts - and the OpenFOAM case export, which
+    # runs whatever the time left (docs/RULES.md TIME-1; it used to be skipped under 60 s)
+    assert res["rc"] == 0 and len(calls) == 4
+    assert "gmshToFoam" in " ".join(calls[3])
     assert calls[0][1] == "vmtksurfaceremeshing"
     assert calls[1][1] == "vmtkmeshgenerator" and calls[2][1] == "vmtkmeshgenerator"
     assert "-skipremeshing 1" in " ".join(calls[2]) and "-sublayers 3" in " ".join(calls[2])
@@ -271,7 +273,7 @@ def test_run_walks_the_ladder_when_tetgen_gives_up(tmp_path, monkeypatch):
     assert "next:" in (tmp_path / "log.vmtk").read_text()
 
 
-def test_the_ladder_shares_one_time_budget(tmp_path, monkeypatch):
+def test_the_ladder_runs_every_step_whatever_the_clock(tmp_path, monkeypatch):
     import subprocess as sp
 
     from meshpipeline.engines.vmtk import vmtk_runner as R
@@ -292,12 +294,13 @@ def test_the_ladder_shares_one_time_budget(tmp_path, monkeypatch):
     (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
         {"sizing_array": "LocalRadius", "boundary_layers": 3})))
     (tmp_path / "lumen_open.vtp").write_text("staged")   # what staging leaves
+    steps = R.repair_ladder(json.loads((tmp_path / "vmtk_spec.json").read_text()))
     res = R._run_vmtk_local(tmp_path, timeout=1000)
-    # the surface stage (700 s) and one generator step (700 s) exhaust the 1000 s budget: the
-    # remaining ladder steps are not started, and the note says so
-    assert len(calls) == 2
-    assert "ladder step(s) not started" in res["repair_note"]
-    assert "of the 1000 s budget left" in res["repair_note"]
+    # docs/RULES.md TIME-1: the surface stage (700 s) and the first generator step (700 s) pass
+    # the 1000 s mark, and every later ladder step still runs - each failed fill is a measured
+    # reason for the next. The clock is each step's guard only (what is left, at least 1 s).
+    assert len(calls) == 1 + len(steps) and len(steps) > 1
+    assert "not started" not in res["repair_note"]
 
 
 def _polydata(pts, tri):
@@ -430,7 +433,7 @@ def test_a_wall_that_still_folds_is_remeshed_in_other_orders_then_goes_on(tmp_pa
     assert "still folded" in (tmp_path / "log.vmtk").read_text()
 
 
-def test_the_surface_retries_respect_the_budget(tmp_path, monkeypatch):
+def test_the_surface_retries_all_run_whatever_the_clock(tmp_path, monkeypatch):
     from meshpipeline.engines.vmtk import vmtk_runner as R
     pts, tri = _staged_tube(tmp_path)
     clock = {"t": 0.0}
@@ -444,9 +447,10 @@ def test_the_surface_retries_respect_the_budget(tmp_path, monkeypatch):
     (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
         {"sizing_array": "LocalRadius", "boundary_layers": 3})))
     res = R._run_vmtk_local(tmp_path, timeout=1000)
-    # the first remesh (700 s) and one retry (700 s) use the budget up: no third remesh
-    assert [c[1] for c in calls].count("vmtksurfaceremeshing") == 2
-    assert "of the budget is left to remesh it again" in res["repair_note"]
+    # docs/RULES.md TIME-1: the first remesh (700 s) and its retries run past the 1000 s mark,
+    # and every planned retry still runs - the clock never skips one
+    assert [c[1] for c in calls].count("vmtksurfaceremeshing") == 1 + len(R._SURFACE_RETRIES)
+    assert "budget" not in res["repair_note"] and "still folded" in res["repair_note"]
 
 
 def test_an_unchanged_retry_keeps_its_pass_identity(tmp_path, monkeypatch):

@@ -386,7 +386,7 @@ def _open_boundary_defects(shape, *, diagonal: float, interior: set[int]) -> lis
 #: of edges and the analyser is consulted per sub-shape, so an unbounded walk is how inspection
 #: comes to cost minutes. Past this the walk reports what it has and says it is partial: an
 #: incomplete localisation is worth having, a stalled worker is not.
-LOCALIZE_STATUS_BUDGET = 1200
+LOCALIZE_STATUS_BUDGET = 5000
 
 
 def _status_defects(shape, *, interior: set[int],
@@ -881,10 +881,12 @@ def localize_scan(shape, *, valid: bool | None = None,
     # `FillPlanarHole.targets_for` will aim at. At equal severity the earlier record survives
     # deduplication, so putting the status walk first would silently disable planar filling.
     found.extend(_open_boundary_defects(shape, diagonal=diagonal, interior=interior))
-    # FACE CROSSINGS BEFORE THE STATUS WALK, for the same reason: the analyzer's record of a face
-    # is the one carrying `crossing_face_indices`, so at equal severity it must be the survivor
-    # over a walk's `SelfIntersectingWire` on the same face.
-    if face_scan_s > 0:
+    # FACE CROSSINGS BEFORE THE STATUS WALK on a valid body, for the same reason: the analyzer's
+    # record carries `crossing_face_indices`, so at equal severity it must survive over the walk's
+    # record. An invalid body first needs the cheaper status-directed repair; pair analysis there
+    # is both expensive and premature, and will run on the repaired body if it becomes valid.
+    ran_face_scan = face_scan_s > 0 and valid
+    if ran_face_scan:
         found.extend(face_self_intersections(shape, budget_s=face_scan_s, interior=interior))
     attributed, complete = _status_defects(shape, interior=interior, valid=valid)
     found.extend(attributed)
@@ -900,7 +902,7 @@ def localize_scan(shape, *, valid: bool | None = None,
     # stable order the report is read in - two scans of identical bytes must produce identical
     # names, or nothing can be compared across a repair.
     stamped = _stamped(tuple(found), diagonal_mm=diagonal)
-    return (_linked(stamped) if face_scan_s > 0 else stamped), complete
+    return (_linked(stamped) if ran_face_scan else stamped), complete
 
 
 def _diagonal(shape) -> float:

@@ -72,10 +72,17 @@ def held_for_update(request, kwargs: dict) -> dict | None:
                                                    headers={platform_contract.HEADER: seen}))
 
 
+# THE GEOMETRY TASKS ACK LATE TOO, for the pipeline task's reason (above). dev-areen, 2 Nov, six uploads at
+# once on one worker's two check slots: acked early, each running check freed its prefetch slot at start,
+# so the worker reserved the next two checks and sat on them - out of the queue list (the console's line
+# could only say "Waiting to start…", never "Queued behind N"), out of the demand the autoscaler reads, and
+# out of reach of any machine it would add. Acked late, the two running checks hold the two slots and the
+# rest wait in the list, where they are counted, said and taken by the next free slot on any machine.
 @celery_app.task(
     name="worker.tasks.scout_geometry",
     bind=False,
     max_retries=0,
+    acks_late=True,
     # the application's numbers: the API reads a check through a time box built from them
     soft_time_limit=SCOUT_SOFT_LIMIT_S,
     time_limit=SCOUT_HARD_LIMIT_S,
@@ -85,14 +92,18 @@ def scout_geometry(**kwargs) -> dict:
     # toolchain the API image does not carry. It runs on the `geometry_checks` queue (celery_app.py
     # task_routes), which every worker drains from a slot of its own, so an upload is drawn while a
     # mesh job runs beside it rather than after it.
+    from meshpipeline.adapters.pipeline_execution.geometry_running import running
     from meshpipeline.application.geometry_check import run_geometry_check
-    return run_geometry_check(**kwargs)
+    # COUNTED WHILE IT RUNS (geometry_running): the fleet's demand sees checks in flight, not only queued
+    with running(_task_id(scout_geometry, f"geometry-check-{kwargs.get('session_id', '')}")):
+        return run_geometry_check(**kwargs)
 
 
 @celery_app.task(
     name="worker.tasks.name_geometry",
     bind=False,
     max_retries=0,
+    acks_late=True,
     soft_time_limit=NAMING_SOFT_LIMIT_S,
     time_limit=NAMING_HARD_LIMIT_S,
 )
@@ -100,8 +111,36 @@ def name_geometry(**kwargs) -> dict:
     # THE NAMING runs once the user has said what the part is: the pictures the scout stored and
     # the user's words go to the vision model together. Same queue as the scout - the user is
     # waiting on this one too.
-    from meshpipeline.application.geometry_check import run_geometry_naming
-    return run_geometry_naming(**kwargs)
+    from meshpipeline.adapters.pipeline_execution.geometry_running import running, waiting
+    from meshpipeline.application.geometry_check import run_geometry_naming, scout_still_running
+    yielded = int(kwargs.pop(NAMING_YIELDED, 0) or 0)
+    task_id = _task_id(name_geometry, f"geometry-naming-{kwargs.get('session_id', '')}")
+    # A NAMING THAT COULD ONLY WAIT GIVES ITS SLOT TO A TASK THAT IS WAITING (shared dev, 2 Nov: the stud
+    # punch's scout and its naming - waiting on that scout - held both of the worker's two slots for four
+    # minutes, while the Camaro's naming, a half-minute model call on a part already scouted, sat queued
+    # behind them until the user gave up on it). Its own scout still at work and another task in the queue,
+    # it goes back to the end of the queue and the slot takes the next task; bounded, so it never starves.
+    if yielded < NAMING_YIELD_MAX and scout_still_running(str(kwargs.get("session_id") or "")) and waiting() > 0:
+        from meshpipeline.application.geometry_check import naming_limits_for
+        soft, hard = naming_limits_for(str(kwargs.get("session_id") or ""))
+        name_geometry.apply_async(kwargs={**kwargs, NAMING_YIELDED: yielded + 1}, task_id=task_id,
+                                  soft_time_limit=soft, time_limit=hard)
+        logger.info("geometry naming: its scout is still running and a task is waiting - back in the queue "
+                    "(%d) - session=%s", yielded + 1, kwargs.get("session_id"))
+        return {"status": "yielded", "yielded": yielded + 1}
+    with running(task_id):
+        return run_geometry_naming(**kwargs)
+
+
+#: the naming's yields so far (a task argument the naming body never sees), and how many it may make: each
+#: one lets a waiting task run first, so a busy queue can never keep a naming from its turn for long
+NAMING_YIELDED = "naming_yielded"
+NAMING_YIELD_MAX = 12
+
+
+def _task_id(task, fallback: str) -> str:
+    request = getattr(task, "request", None)
+    return str(getattr(request, "id", None) or fallback)
 
 
 async def launch(db, job_id: str, payload: dict) -> None:

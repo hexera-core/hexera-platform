@@ -136,6 +136,9 @@ def install_adapters() -> None:
     training_export.set_export_enqueuer(_enqueue_training_export)
     geometry_check.set_scout_enqueuer(_enqueue_geometry_scout)
     geometry_check.set_naming_enqueuer(_enqueue_geometry_naming)
+    # where a waiting check stands in its queue, for the console's line ("queued behind 2 other checks")
+    from meshpipeline.adapters.pipeline_execution.geometry_running import queue_state as _geometry_queue_state
+    geometry_check.set_queue_reader(_geometry_queue_state)
     mesh_execution.set_mesh_executor(build_mesh_executor())
     # BIG RESULTS STAY IN THE EXCHANGE BUCKET (RUN-7): delivery streams them from there. Only a
     # remote run keeps a file, so a local stack never calls these.

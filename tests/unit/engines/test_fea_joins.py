@@ -495,3 +495,55 @@ def test_the_stage_says_a_line_contact_in_words():
     from meshpipeline.application import fea_check as F
 
     assert F.gap_words("Plate", "Frame", 0.0, line=True) == "Plate meets Frame only along a line or an edge - joined there"
+
+
+# #
+# one answer in any unit (demo dry run, 2 Nov: the stud punch's check said "5 across a 0.5 mm gap",
+# its run "4 only along a line, 1 across a gap" - the run measures the part staged in metres)
+# #
+
+def test_a_gap_measured_at_the_limit_is_within_it_in_any_unit():
+    assert J.within(0.5, 0.5) and J.within(0.5 / 1000 * (1 + 1e-12), 0.0005)
+    assert not J.within(0.51, 0.5) and not J.within(0.000501, 0.0005)
+
+
+def test_the_check_and_the_run_measure_the_same_joints():
+    """Two 100 mm cubes 0.5 mm apart - a gap AT the limit - measured as the check does (millimetres)
+    and as the run's staging does (the shape in metres): the same joints, the same kind, the same area."""
+    shape = fx.gapped_blocks(100.0, 0.5)
+    check = A.record(shape, mm_per_unit=1.0)["interfaces"]
+    metres = A._scaled(shape, 0.001)
+    parts = A.solids(metres)
+    lo, hi = A._box(metres)
+    diag = float(np.linalg.norm(hi - lo))
+    vols = [A._props(s, True)[0] for s in parts]
+    fused = A.fuse(parts, fuzzy=A.FUZZY_SHARE * diag, mm_per_unit=1000.0)
+    run, _info = A.joined_interfaces(parts, fused, vols, diag=diag, mm_per_unit=1000.0, scale=1.0)
+    said = [(i["parts"], i["kind"], bool(i.get("line"))) for i in check]
+    assert said == [(i["parts"], i["kind"], bool(i.get("line"))) for i in run]
+    assert said == [(["Part_1", "Part_2"], "gap", False)]
+    assert run[0]["area_mm2"] * 1e6 == pytest.approx(check[0]["area_mm2"], rel=0.02)
+
+
+def test_every_surface_counts_the_joints_one_way():
+    from meshpipeline.application import fea_check as F
+
+    itfs = [{"kind": "touching"}, {"kind": "gap"}, {"kind": "gap", "line": True}, {"kind": "touching", "line": True},
+            {"kind": "overlap"}]
+    assert F.joint_counts(itfs) == {"touching": 1, "gap": 3, "line": 2, "overlap": 1}
+    assert F.joints_words(itfs) == ("5 joints: 1 place where parts touch, 3 across a small gap (2 of them only "
+                                    "along a line or an edge), 1 where parts pass into each other")
+    assert F.joints_words([]) == ""
+    # the stage's summary and the declaration the chat reads say the same counts
+    from meshpipeline.application import geometry_confirmation as gcf
+    from meshpipeline.cad.fea_measure import FACT_KEY
+    view = F.assembly_view({"solids": 2, FACT_KEY: {"measured": True, A.FACT_KEY: {"parts": [], "interfaces": [
+        {"id": "Interface_1", "kind": "touching", "parts": ["Part_1", "Part_2"]},
+        {"id": "Interface_2", "kind": "gap", "parts": ["Part_1", "Part_3"], "gap_mm": 0.5}]}}})
+    assert "1 place where parts touch, 1 across a small gap" in view["summary"]
+    from types import SimpleNamespace
+    said = gcf.fea_confirmation_message(SimpleNamespace(
+        part="punch", bodies=3, parts_summary="3 parts", fea_connection="bonded",
+        joints_summary=F.joints_words(view["interfaces"]), gap_summary="", pairs_summary="",
+        clean_summary="The geometry is clean.", size_mm=[1, 1, 1], unit="mm", unit_fixed=False))
+    assert "Where the parts meet: 2 joints: 1 place where parts touch, 1 across a small gap." in said

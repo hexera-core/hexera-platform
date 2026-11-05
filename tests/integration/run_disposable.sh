@@ -187,11 +187,5 @@ from tests import disposable_database as dd
 dd.provision(os.path.expandvars('$ADMIN_URL_SH'))
 \""
 
-# `docker cp` against the ALREADY RESOLVED container, never `docker compose cp`: compose re-reads
-# the project, rebuilds anything it considers out of date and recreates the service. That would
-# silently make a stale image current in the middle of the run the freshness check just guarded,
-# and it leaves the recreated containers stopped.
-docker cp "tests/fixtures/external/geometry/elbow90_fluid.step" "$WORKER:/tmp/elbow90_fluid.step" >/dev/null 2>&1 || true
-
 docker exec -e MESH_TEST_RUN_ID="$RUN_ID" -e API_ROOT="$API_ROOT_DIR" -e MINIO_BUCKET="$TASK_BUCKET" "$WORKER" sh -c "
   DATABASE_URL=\"$TASK_URL_SH\" PYTHONPATH=/srv exec python -m pytest -q -rs -o asyncio_mode=auto ${PYTEST_ARGS:-/srv/tests/integration}"

@@ -25,7 +25,7 @@ import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml }
 // a delivered FEA mesh (a structural solid) is read face by face, with its quality against each
 // solver limit, its plan and its hot spots (FEA build step 5)
 import { bindFeaResults, feaResultsHtml } from "./fea_results.js";
-import { bindResultPanel, cfdPastLimit, downloadsHtml, hotSpotsHtml, keyNumbers, keyNumbersHtml, notesHtml, verdictHtml, verdictOf } from "./result_panel.js";
+import { bindDownloadMenu, bindResultPanel, cfdPastLimit, downloadsHtml, hotSpotsHtml, keyNumbers, keyNumbersHtml, notesHtml, verdictHtml, verdictOf } from "./result_panel.js";
 
 let _vtkP=null;
 function loadVtk(){if(window.vtk)return Promise.resolve();
@@ -170,6 +170,7 @@ export async function openViewer(job,anchorEl,opts){
   // each Download click asks the API for a fresh link, so one read long after the page loaded -
   // or a large file's retry - never meets an expired one
   bindFreshDownloads(box);
+  bindDownloadMenu(box);
   bindResultPanel(box,job,{fetchReport:async j=>{
     const r=await fetch(`/api/v1/simulation/${j}/report.html`,{headers:headers()});
     if(!r.ok)throw new Error('report '+r.status);
@@ -906,13 +907,14 @@ function initViewer(job,surf,uiCfg){
     // GROUPED, the way the figures are read: how big the mesh is, what its cells are, how good
     // they are. A zero that only says "nothing is wrong" (no skewed faces, a skew fraction of 0)
     // is folded into the figure it qualifies instead of taking a cell of its own.
-    const SIZE=[['cells','Cells'],['faces','Faces'],['regions','Regions']];
+    // the cell count is the panel's first key number already, so it is not said twice here
+    const SIZE=[['faces','Faces'],['regions','Regions']];
     const TYPES=[['hexahedra','Hexahedra'],['polyhedra','Polyhedra'],['prisms','Prisms'],
                  ['pyramids','Pyramids'],['tetrahedra','Tetrahedra']];
     const QUALITY=[['max_non_ortho','Max non-orthogonality','°'],['max_skewness','Max skewness',''],
                    ['max_aspect_ratio','Max aspect ratio','']];
     const FOLDED=['avg_non_ortho','skew_faces','skew_fraction'];
-    const KNOWN=[...SIZE,...TYPES,...QUALITY].map(r=>r[0]).concat(FOLDED,['units','engine']);
+    const KNOWN=[...SIZE,...TYPES,...QUALITY].map(r=>r[0]).concat(FOLDED,['units','engine','cells']);
     const isNum=v=>typeof v==='number'&&isFinite(v);
     // integers read as counts; a measured value to two decimals, and a very small one in
     // exponent form rather than a run of zeroes
@@ -977,6 +979,12 @@ function initViewer(job,surf,uiCfg){
                 :'input surface - the mesh itself could not be rendered · ')
     +(surf.patches||[]).map(p=>`${p.name}: ${(p.face_count||p.tri_count||0).toLocaleString()} faces`).join(' · ');
   statusEl.title=statusEl.textContent;   // one line on screen; the whole of it on hover
+  // A DELIVERED mesh says what it is on hover over the verdict: the line itself only repeated the
+  // key numbers. A surface that is not the mesh keeps its line - that is news.
+  if(surf.is_mesh){statusEl.closest('.v-row')?.classList.add('rp-quiet');
+    const head=document.querySelector('#viewer-'+job+' .rp-head');
+    if(head)head.title=statusEl.textContent.charAt(0).toUpperCase()+statusEl.textContent.slice(1)
+      +(surf.quality&&surf.quality.engine?` · ${surf.quality.engine}`:'')+(surf.quality&&surf.quality.units?` · ${surf.quality.units}`:'');}
 
   /* A DELIVERED THERMAL MODEL - its parts table, its quality in words, its ready-made slices
      and its own files (viewer/thermal_results.js). A slice is the delivered mesh cut by a plane,
@@ -1026,7 +1034,7 @@ function initViewer(job,surf,uiCfg){
       cam.setViewUp(...(Math.abs(n[2])>0.9?[0,1,0]:[0,0,1]));
       _clamping=true;ren.resetCamera(b);_clamping=false;rw.render();}
     host.innerHTML=thermalResultsHtml(job,thermal);
-    thermalDownloads(document.querySelector('#viewer-'+job+' .v-dl'),job,thermal);
+    thermalDownloads(document.querySelector('#viewer-'+job+' .rp-dlmenu')||document.querySelector('#viewer-'+job+' .v-dl'),job,thermal);
     const api=bindThermalResults(host,job,thermal,{
       isolate:name=>{if(sliceOn)showSlice(null);if(partsApi)partsApi.isolate(name);},
       slice:name=>showSlice(name)});
@@ -1102,10 +1110,10 @@ function initViewer(job,surf,uiCfg){
   (function vtkExport(){
     // a polyMesh, or the triangle surface of a tetrahedral engine's DELIVERED mesh (VMTK, Gmsh)
     if(surf.kind!=='polymesh'&&!(surf.kind==='stl'&&surf.is_mesh===true))return;
-    const bar=document.querySelector('#viewer-'+job+' .v-dl');if(!bar)return;
-    const a=document.createElement('a');a.className='v-dlbtn';a.href='#';a.id='v-vtk-'+job;
-    a.title='the boundary with its quality fields, for ParaView';
-    a.innerHTML='<b>ParaView</b><span>.vtk with quality fields</span>';
+    const bar=document.querySelector('#viewer-'+job+' .rp-dlmenu')||document.querySelector('#viewer-'+job+' .v-dl');if(!bar)return;
+    const a=document.createElement('a');a.className='v-dlbtn rp-dl';a.href='#';a.id='v-vtk-'+job;a.setAttribute('role','menuitem');
+    a.title='The boundary with its quality fields (.vtk), for ParaView';
+    a.innerHTML='<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 2h5l3 3v9H4z"/></svg><b>ParaView</b><span>.vtk</span>';
     a.onclick=async e=>{e.preventDefault();if(a.dataset.busy)return;a.dataset.busy='1';
       const lbl=a.querySelector('span'),was=lbl.textContent;lbl.textContent='building…';
       try{const r=await fetch(`/api/v1/simulation/${job}/surface.vtk`,{headers:headers()});

@@ -451,7 +451,7 @@ def sharp_corners(s: Surface, pairs: EdgePairs, *, turn_deg: float = SHARP_TURN_
     and a point at its middle."""
     # read off the edges themselves, not the face labels: a triangle file's smooth region can run
     # round a part-filleted edge, so both sides of its sharp stretch carry the same label
-    sel = np.flatnonzero(pairs.concave & (pairs.turn_deg >= turn_deg))
+    sel = np.flatnonzero(pairs.concave & (pairs.turn_deg >= turn_deg) & ~touching(s, pairs))
     if not len(sel):
         return []
     la, lb = s.label[pairs.tri_a[sel]], s.label[pairs.tri_b[sel]]
@@ -491,6 +491,55 @@ def sharp_corners(s: Surface, pairs: EdgePairs, *, turn_deg: float = SHARP_TURN_
         out.append({"labels": (int(lo[members[0]]), int(hi[members[0]])), "turn_deg": turn,
                     "angle_deg": 180.0 - turn, "length_mm": total, "at_mm": at})
     out.sort(key=lambda c: (c["angle_deg"], -c["length_mm"]))
+    return out
+
+
+#: TWO FACES BACK TO BACK: a shared edge whose faces turn by more than 180 - CONTACT_DEG degrees (their air-side
+#: angle under CONTACT_DEG) is where two surfaces lie against each other - two bodies pressed together, a part
+#: on its pin - never an inside corner: no part has a corner of 0 to 10 degrees, and the landing gear of 1 Nov
+#: had 412 of them, every one where two of its parts touch. Its real corners began at 54 degrees.
+CONTACT_DEG = 10.0
+
+
+def touching(s: Surface, pairs: EdgePairs) -> np.ndarray:
+    """Which shared edges are a CONTACT, not a corner: they join two different bodies (across_bodies), or
+    their two faces lie back to back (CONTACT_DEG)."""
+    return across_bodies(s, pairs) | (pairs.turn_deg > 180.0 - CONTACT_DEG)
+
+
+def across_bodies(s: Surface, pairs: EdgePairs) -> np.ndarray:
+    """Which shared edges join triangles of two DIFFERENT bodies (False everywhere when the bodies are not
+    known). TWO BODIES TOUCHING ARE A CONTACT, NOT A CORNER (1 Nov): where a bolt's head sits on a lug, or a
+    link on its pin, the welded tessellation shares the edge the two parts meet along, and its two faces -
+    one of each part, lying back to back - read as a valley turning by nearly 180 degrees: a "0 degree
+    inside corner" no single part has. An IGES landing gear of 20 bodies reported 570 such corners."""
+    if s.body is None or not len(pairs.tri_a):
+        return np.zeros(len(pairs.tri_a), dtype=bool)
+    body = np.asarray(s.body)
+    return body[s.label[pairs.tri_a]] != body[s.label[pairs.tri_b]]
+
+
+def contacts(s: Surface, pairs: EdgePairs) -> list[dict]:
+    """Where two surfaces touch along an edge of the welded surface (touching), one entry per pair of faces
+    that do: the two faces (labels), their bodies (0-based, None when the bodies are not known), how long the
+    shared edges are in all and a point on them. Longest first."""
+    cross = np.flatnonzero(touching(s, pairs))
+    if not len(cross):
+        return []
+    la, lb = s.label[pairs.tri_a[cross]], s.label[pairs.tri_b[cross]]
+    lo, hi = np.minimum(la, lb), np.maximum(la, lb)
+    a, b = s.xyz[pairs.verts[cross, 0]], s.xyz[pairs.verts[cross, 1]]
+    length = np.linalg.norm(b - a, axis=1)
+    mids = 0.5 * (a + b)
+    body = np.asarray(s.body) if s.body is not None else None
+    out = []
+    for key in sorted({(int(x), int(y)) for x, y in zip(lo.tolist(), hi.tolist(), strict=True)}):
+        m = (lo == key[0]) & (hi == key[1])
+        centre = mids[m].mean(axis=0)
+        at = mids[m][int(np.argmin(np.linalg.norm(mids[m] - centre, axis=1)))]
+        out.append({"labels": list(key), "bodies": None if body is None else [int(body[key[0]]), int(body[key[1]])],
+                    "length_mm": float(length[m].sum()), "at_mm": at})
+    out.sort(key=lambda c: (-c["length_mm"], c["labels"]))
     return out
 
 
@@ -862,12 +911,35 @@ def nesting_depth(xyz: np.ndarray, tris: np.ndarray, comp: np.ndarray) -> np.nda
     first[comp[::-1]] = np.arange(len(comp))[::-1]
     d = np.array([0.3119, 0.5741, 0.7570])
     d /= np.linalg.norm(d)
+    # EACH PIECE'S TRIANGLES ONCE (1 Nov): the test below used to pick piece j's triangles out of the whole
+    # surface for every pair (i, j) - a 2.8 MB elbow STL of many loose pieces spent over 30 minutes here.
+    # The same triangles, in the same order (a stable sort), so every count - and the depth - is the same.
+    # And a triangle the ray cannot reach is not tested: seen along the ray, the point must lie in the
+    # triangle's shadow, so only triangles whose shadow's box (padded far past rounding) holds it are.
+    order = np.argsort(comp, kind="stable")
+    starts = np.searchsorted(comp[order], np.arange(n + 1))
+    e1 = np.cross(d, [1.0, 0.0, 0.0])
+    e1 /= np.linalg.norm(e1)
+    plane = np.stack([e1, np.cross(d, e1)], axis=1)          # (3, 2): the view along the ray
+    pad = 1e-9 * (float(np.abs(xyz).max()) + float(np.linalg.norm(xyz.max(axis=0) - xyz.min(axis=0))) + 1e-300)
+    shadows: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+
+    def shadow(j: int) -> tuple[np.ndarray, np.ndarray]:
+        if j not in shadows:
+            flat = pts[order[starts[j]:starts[j + 1]]] @ plane    # (k, 3, 2)
+            shadows[j] = (flat.min(axis=1) - pad, flat.max(axis=1) + pad)
+        return shadows[j]
+
     for i in range(n):
         o = xyz[tris[first[i], 0]]
-        for j in range(n):
-            if j == i or np.any(lo[i] < lo[j]) or np.any(hi[i] > hi[j]):
+        seen = o @ plane
+        holds = np.flatnonzero(np.all(lo[i] >= lo, axis=1) & np.all(hi[i] <= hi, axis=1))
+        for j in holds.tolist():
+            if j == i:
                 continue
-            tj = pts[comp == j]
+            smin, smax = shadow(j)
+            under = np.flatnonzero(np.all(smin <= seen, axis=1) & np.all(smax >= seen, axis=1))
+            tj = pts[order[starts[j]:starts[j + 1]][under]]
             a, e1, e2 = tj[:, 0], tj[:, 1] - tj[:, 0], tj[:, 2] - tj[:, 0]
             p = np.cross(d, e2)
             det = np.einsum("ij,ij->i", p, e1)

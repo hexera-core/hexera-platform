@@ -75,12 +75,23 @@ async def table_names(url: URL | str) -> set[str]:
 
 
 def ensure_bucket() -> None:
-    try:
-        from meshpipeline.contracts.object_storage import get_object_store
+    # MAKES the configured bucket and proves it is there. An earlier version only probed for an
+    # object, which never creates a bucket - so the bucket existed only once some other test in the
+    # same process happened to upload through MinioStore. The multipart-delta tests list uploads
+    # through MINIO_BUCKET and read an empty list while it is missing, so they passed or failed by
+    # which files the size-based sharder put beside them (PR #391 grew one file; shard 1 went red).
+    from minio import Minio
 
-        get_object_store().exists(object_key="provisioning-probe")
-    except Exception:  # noqa: BLE001 - best-effort; suites assert their own storage needs
-        pass
+    import meshpipeline.settings.providers as provcfg
+
+    client = Minio(provcfg.MINIO_ENDPOINT, access_key=provcfg.MINIO_ACCESS_KEY,
+                   secret_key=provcfg.MINIO_SECRET_KEY, secure=provcfg.MINIO_SECURE,
+                   region=provcfg.MINIO_REGION)
+    bucket = provcfg.MINIO_BUCKET
+    if not client.bucket_exists(bucket):
+        client.make_bucket(bucket)
+    if not client.bucket_exists(bucket):
+        raise RuntimeError(f"the integration tier could not provision MinIO bucket {bucket!r}")
 
 
 # DROP SCHEMA public CASCADE, then rebuild. The proof that `url` is disposable is re-taken here,
@@ -194,3 +205,33 @@ def session_authority():
             "conftest proves one before collection; reaching a destructive helper without it "
             "means the suite is pointed at a database nobody provisioned for this run.")
     return _SESSION_AUTHORITY
+
+
+def ensure_signed_owner(email: str) -> str:
+    """Give a signed-header identity the users row the API now requires it to have.
+
+    api/security.py refuses a signed identity that resolves to no organisation AND no users row -
+    that is what kills an erased account's cookie. In production the row always exists (sign-in
+    creates it; 0004 backfilled every pre-existing owner), so a suite that mints a signed owner
+    out of thin air must mint the row too, exactly as the environment it simulates would have.
+    Synchronous and idempotent, so a module-level constant and a per-test helper can both use it.
+    """
+    import os
+    import uuid as _uuid
+
+    if not os.getenv("DATABASE_URL"):
+        return email
+    from sqlalchemy import create_engine, text
+
+    from tests.disposable_database import _sync_url
+
+    engine = create_engine(_sync_url(os.environ["DATABASE_URL"]), isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(
+                "INSERT INTO users (id, email, name) VALUES (:i, :e, '') "
+                "ON CONFLICT (email) DO NOTHING"),
+                {"i": str(_uuid.uuid4()), "e": email.strip().lower()})
+    finally:
+        engine.dispose()
+    return email

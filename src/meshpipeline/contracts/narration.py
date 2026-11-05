@@ -206,11 +206,12 @@ def _num(v) -> float | None:
         return None
 
 
-def quality_line(q: dict | None) -> str | None:
+def quality_line(q: dict | None, past_limits: list[str] | None = None) -> str | None:
     """What the mesh's MEASURED quality says, in one plain line: the executor's own record
     (quality.json / the manifest's quality), never anything the reviewer wrote. None when there is
     nothing measured to say. FEA: inverted elements, the worst element (scaled Jacobian, 1 is
-    perfect), elements through the thinnest wall. CFD: cells, worst non-orthogonality and skewness."""
+    perfect), elements through the thinnest wall; `past_limits` the verdict's FEA rows the mesh
+    misses (good only when there is none). CFD: cells, worst non-orthogonality and skewness."""
     from math import floor
 
     from meshpipeline.events import cells_words
@@ -236,8 +237,15 @@ def quality_line(q: dict | None) -> str | None:
                         else f"the thinnest wall {tw:.2g} elements thick")
         if not bits:
             return None
-        notes = int(_num(q.get("elements_under_floor")) or 0) > 0 or bool(q.get("fea_rules_short")) \
-            or (tw is not None and tw < 2)
+        # THE VERDICT'S OWN LIMITS (demo dry run, 2 Nov: the line said "Quality looks good ... worst
+        # element 0.00286" while the verdict listed that same figure under its 0.01 limit). The caller
+        # passes the rows of engines/verdict_limits.fea_limits the mesh misses, read as the verdict and
+        # the result screen read them; without them, the floor, the plan's rules and the walls decide
+        if past_limits is not None:
+            notes = bool(past_limits)
+        else:
+            notes = int(_num(q.get("elements_under_floor")) or 0) > 0 or bool(q.get("fea_rules_short")) \
+                or (tw is not None and tw < 2)
         head = "The mesh is valid; some figures are past a limit and listed in the report" if notes \
             else "Quality looks good"
         return plain(f"{head}: {', '.join(bits)}.")

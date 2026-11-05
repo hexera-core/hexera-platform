@@ -16,16 +16,18 @@
 # construction. tests/unit/hygiene/test_test_sharding_is_total.py asserts both properties against
 # the shard count the workflow actually uses.
 #
-# BALANCE IS BY FILE SIZE, descending, into the currently-lightest shard (greedy LPT). Byte count
-# is a proxy for runtime and an imperfect one, but it is DETERMINISTIC and needs no recorded
-# timings file - and a timings file is a second thing to keep in step with the tree, which is the
-# failure this module exists to avoid. Round-robin over a sorted list was the alternative and it
-# balances badly: tests/unit/engines alone is 96 files, and its largest are far from average.
+# BALANCE IS BY MEASURED TIME, descending, into the currently-lightest shard (greedy LPT). It used
+# to be by file size, which is deterministic but put most of the slow files into one unit shard
+# (18m25s against ~7m for the other five). The timings live in test_durations.json, refreshed with
+# `--record <junit.xml>...`; a stale or missing entry only costs balance, never totality, because
+# an unmeasured file is weighed by its size and every file still lands in exactly one shard.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -44,31 +46,85 @@ def tracked_test_files(root: str) -> list[str]:
     return sorted(set(out))
 
 
+#: Measured seconds per test file, written by `--record` from CI's JUnit reports. Weighing by file
+#: SIZE put most of the slow files in one unit shard (18 min against 7 for its siblings); measured
+#: time is what a shard actually costs. A file with no measurement yet - a new one - is weighed by
+#: its size at the suite's average seconds per byte, so it still lands somewhere sensible.
+DURATIONS = ROOT / "devtools/quality/test_durations.json"
+
+
+def _durations() -> dict[str, float]:
+    if not DURATIONS.is_file():
+        return {}
+    return {k: float(v) for k, v in json.loads(DURATIONS.read_text(encoding="utf-8")).items()}
+
+
+def _weights(files: list[str]) -> dict[str, float]:
+    measured = _durations()
+    sizes = {p: (ROOT / p).stat().st_size for p in files}
+    known = [p for p in files if p in measured]
+    known_bytes = sum(sizes[p] for p in known)
+    rate = (sum(measured[p] for p in known) / known_bytes) if known_bytes else 1.0
+    return {p: measured[p] if p in measured else sizes[p] * rate for p in files}
+
+
 def partition(files: list[str], shards: int) -> list[list[str]]:
-    """Greedy longest-processing-time bins, by file size.
+    """Greedy longest-processing-time bins, by measured duration (file size when unmeasured).
 
     Total and disjoint by construction: every file is appended to exactly one bin. The sort is
-    (-size, path) so equal-sized files order by name and the partition is stable across machines.
+    (-weight, path) so equal weights order by name and the partition is stable across machines.
     """
     if shards < 1:
         raise ValueError("shards must be >= 1")
-    weighed = sorted(files, key=lambda p: (-(ROOT / p).stat().st_size, p))
+    weight = _weights(files)
+    weighed = sorted(files, key=lambda p: (-weight[p], p))
     bins: list[list[str]] = [[] for _ in range(shards)]
-    load = [0] * shards
+    load = [0.0] * shards
     for path in weighed:
         target = load.index(min(load))
         bins[target].append(path)
-        load[target] += (ROOT / path).stat().st_size
+        load[target] += weight[path]
     return [sorted(b) for b in bins]
+
+
+def record(reports: list[str]) -> int:
+    """Merge the per-file seconds in JUnit `reports` into DURATIONS (one rounded number a file)."""
+    seconds: dict[str, float] = {}
+    for report in reports:
+        for case in ET.parse(report).getroot().iter("testcase"):  # noqa: S314 - our own CI reports
+            path = case.get("file") or ""
+            if not path:
+                parts = (case.get("classname") or "").split(".")
+                mods = [i for i, part in enumerate(parts) if part.startswith("test_")]
+                if not mods:
+                    continue
+                path = "/".join(parts[: mods[0] + 1]) + ".py"
+            seconds[path] = seconds.get(path, 0.0) + float(case.get("time") or 0)
+    if not seconds:
+        print("::error:: no test cases in the given reports", file=sys.stderr)
+        return 1
+    merged = {**_durations(), **{k: round(v, 1) for k, v in seconds.items()}}
+    tracked = set(tracked_test_files("tests"))
+    merged = {k: v for k, v in sorted(merged.items()) if k in tracked}
+    DURATIONS.write_text(json.dumps(merged, indent=0, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"recorded {len(seconds)} files into {DURATIONS.relative_to(ROOT)}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("root", help="tree to shard, e.g. tests/unit")
-    ap.add_argument("--shard", type=int, required=True, help="1-based shard index")
-    ap.add_argument("--of", type=int, required=True, help="total shard count")
+    ap.add_argument("root", nargs="?", help="tree to shard, e.g. tests/unit")
+    ap.add_argument("--shard", type=int, help="1-based shard index")
+    ap.add_argument("--of", type=int, help="total shard count")
     ap.add_argument("--null", action="store_true", help="NUL-separate, for xargs -0")
+    ap.add_argument("--record", nargs="+", metavar="JUNIT",
+                    help="merge per-file seconds from these JUnit reports into test_durations.json")
     args = ap.parse_args(argv)
+
+    if args.record:
+        return record(args.record)
+    if not args.root or args.shard is None or args.of is None:
+        ap.error("root, --shard and --of are required unless --record is given")
 
     if args.of < 1 or not 1 <= args.shard <= args.of:
         print(f"::error:: shard {args.shard} of {args.of} is not a shard", file=sys.stderr)

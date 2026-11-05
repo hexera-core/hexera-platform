@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 _SEVERITY_RANK = {DefectSeverity.fatal: 0, DefectSeverity.error: 1,
                   DefectSeverity.warning: 2, DefectSeverity.info: 3}
 
+#: Close localized free boundaries before a whole-shape invalidity repair. ShapeFix can otherwise
+#: rebuild around an intentional opening and introduce new defects before the scoped fill gets a
+#: turn. Other codes retain the established big-entity-first ordering below.
+_CODE_RANK = {DefectCode.invalid_brep: 1}
+
 #: Within one severity, the BIGGER entity first: repairing a shell can rewrite its faces and a
 #: face its edges, never the other way round, so aiming big-first lets one kept operation subsume
 #: the smaller findings before they are proposed at all. The old tie-break was alphabetical
@@ -282,6 +287,7 @@ class RulesPlanner:
         ordered = sorted(
             defects,
             key=lambda d: (_SEVERITY_RANK.get(d.severity, 9),
+                           _CODE_RANK.get(d.code, 0),
                            _ENTITY_RANK.get(d.entity_type, 9), d.entity_index,
                            d.code.value))
 

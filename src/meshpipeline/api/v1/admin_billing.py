@@ -40,6 +40,10 @@ async def admin_dep(x_admin_key: Annotated[str, Header(alias="X-Admin-Key")] = "
         # access should not advertise that the capability exists and is merely unconfigured.
         raise HTTPException(status_code=404, detail="not found")
     if not hmac.compare_digest(x_admin_key.strip(), configured):
+        # AUDITED, because a wrong admin credential is either a misconfigured console or somebody
+        # guessing - and the second is exactly what an alert on this line exists to catch.
+        from meshpipeline.application import audit
+        audit.record("admin.authenticate", outcome="refused", actor="admin")
         raise HTTPException(status_code=403, detail=_REFUSED)
 
 

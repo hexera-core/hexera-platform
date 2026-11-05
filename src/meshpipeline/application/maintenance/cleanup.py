@@ -411,6 +411,31 @@ async def _reap_stalled_async() -> dict:
 
 
 
+def sweep_account_erasures() -> dict:
+    import asyncio
+    return asyncio.run(_sweep_account_erasures_async())
+
+
+async def _sweep_account_erasures_async() -> dict:
+    # The byte half of an account erasure (application/privacy_service.py): every row naming the
+    # person went when they asked; this removes their uploads and results from the object store.
+    from meshpipeline.application.privacy_service import sweep_erasures
+    from meshpipeline.contracts.object_storage import get_object_store
+    from meshpipeline.persistence.session import dispose_engine, get_db
+
+    store = get_object_store()
+    if store is None:
+        logger.warning("erasure sweep: no object store configured - nothing to erase")
+        return {"pending": 0, "erased": 0, "waiting_on_jobs": 0, "failed": 0}
+    try:
+        async with get_db() as db:
+            result = await sweep_erasures(db, store)
+    finally:
+        await dispose_engine()
+    logger.info("erasure sweep: %s", result)
+    return result
+
+
 def purge_expired_geometry_sources() -> dict:
     import asyncio
     return asyncio.run(_purge_geometry_sources_async())

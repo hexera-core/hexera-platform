@@ -194,6 +194,10 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/geometry/{session_id}/check/skin"),      # the part's skin, for the 3D stage
         ("POST", "/api/v1/geometry/{session_id}/check/retry"),    # run the scout or the naming again
         ("POST", "/api/v1/ws/ticket"),
+        # THE DATA-SUBJECT ROUTES (docs/compliance/dsar-runbook.md). Console session only - an API
+        # key is refused both - because a leaked key must not export a tenant wholesale or erase it.
+        ("GET", "/api/v1/account/export"),       # everything held about the caller, one JSON file
+        ("POST", "/api/v1/account/erasure"),     # delete the account; typed address to confirm
     }
     v1 = {r for r in served if r[1].startswith("/api/v1/")}
     assert v1 == expected, (
