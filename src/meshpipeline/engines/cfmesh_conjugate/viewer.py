@@ -7,9 +7,7 @@ import logging
 from pathlib import Path
 
 from meshpipeline.engines.cfmesh_conjugate.conjugate import (
-    FLUID_REGION,
     SOLID_REGION,
-    SOLID_TO_FLUID,
 )
 
 logger = logging.getLogger(__name__)
@@ -24,10 +22,24 @@ POOR_TYPE = "poorQuality"
 #: budget is a mesh with nothing worth highlighting, because the highlight would be the mesh.
 POOR_MAX_TRIANGLES = 400_000
 
-#: The coupling's own two patches. The two are the SAME surface - measured at 93,600 faces on each
-#: side of the unit cell - so only the coolant's side is drawn: drawing both doubles the geometry
-#: for a view that is already on screen.
-_SKIP = ("solid_to_fluid",)
+#: A coupling is ONE surface with two sides - measured at 93,600 faces on each side of the unit
+#: cell, and at 353,184 on each side of the chip-to-plate contact on the coupled plate - so only
+#: one side is drawn: drawing both doubles the geometry for a view that is already on screen. The
+#: solid's side is the one dropped, because the solid is also the region whose other patches are
+#: the outside of the block and open hidden.
+_SKIP = ("solid_to_fluid", "solid_to_chip")
+
+
+def _regions(ws: Path) -> list[tuple[str, Path]]:
+    """This workspace's delivered regions, named, each with a readable boundary.
+
+    `delivered_regions` returns one unnamed region on a single-region engine; there is nothing for
+    this file to prefix in that case, so it is dropped rather than drawn as "/patch".
+    """
+    from meshpipeline.render.detail_window import delivered_regions
+
+    return [(r, pm) for r, pm in delivered_regions(ws)
+            if r and (pm / "boundary").is_file()]
 
 
 def conjugate_viewer(workspace, *, roles: dict, units: str,
@@ -57,10 +69,12 @@ def conjugate_viewer(workspace, *, roles: dict, units: str,
     raw: list[dict] = []
     merged_roles = dict(roles or {})
     stats: list[dict] = []
-    for region in (FLUID_REGION, SOLID_REGION):
-        polymesh = ws / "constant" / region / "polyMesh"
-        if not (polymesh / "boundary").is_file():
-            continue
+    # EVERY DELIVERED REGION, not the fluid/solid pair. The coupled plate+chip case delivers
+    # three - fluid, solid and chip - and a loop over the pair drops the chip, which is the body
+    # the coupled case exists to model. `delivered_regions` also knows to leave out the pre-split
+    # block at constant/polyMesh, which naming the regions skipped and a glob would pick up. It
+    # sorts, so a two-region workspace still yields (fluid, solid) in the old order.
+    for region, polymesh in _regions(ws):
         skip = tuple(skip_names) + _SKIP
         try:
             # THE INDEX FIRST, BECAUSE THE PARSE DOES NOT SURVIVE THIS SIZE. `boundary_surface`
@@ -94,7 +108,11 @@ def conjugate_viewer(workspace, *, roles: dict, units: str,
             # mesh_facts opens such a part HIDDEN and the viewer re-frames on what is left, which
             # on this engine is the coolant. Without it the first thing a reader sees of a
             # conjugate mesh is the one surface that tells them nothing.
-            if region == SOLID_REGION and bare != SOLID_TO_FLUID:
+            # A COUPLING IS NOT A FACE OF THE BLOCK, whichever body is on the other side, so
+            # the test is "the solid's patches, except where it meets another region" rather than
+            # one hard-coded coupling name. The chip encloses nothing: it is a body INSIDE the
+            # metal, and hiding it by default would hide the thing being cooled.
+            if region == SOLID_REGION and not bare.startswith(SOLID_REGION + "_to_"):
                 p["encloses_domain"] = True
         raw += patches
         if cell_stats:
@@ -239,10 +257,7 @@ def _paint(resp: dict, ws: Path, *, colours: bool = True) -> None:
         if not isinstance(bar, (int, float)):
             return
         merged: dict = {}
-        for region in (FLUID_REGION, SOLID_REGION):
-            polymesh = ws / "constant" / region / "polyMesh"
-            if not (polymesh / "boundary").is_file():
-                continue
+        for region, polymesh in _regions(ws):
             # THE NAMES THIS VIEWER DRAWS ARE NOT THE NAMES ON DISK. Every patch here is written
             # "<region>/<patch>" so the two regions' identically named block faces cannot replace
             # one another in the roster; the polyMesh knows only the bare name. Handing the

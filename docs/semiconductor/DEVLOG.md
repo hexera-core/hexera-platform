@@ -3811,3 +3811,247 @@ checked on this box.
 So 16.5 um costs time, not a bigger box. ws_shell took 38.7 h at 270M, so about 50 h at 328M. The
 m4-megamem-56 and the quota request are still the answer for resolving below the fluid_fine band, and
 they are not needed to get 16.5 um on this part.
+
+## 2026-11-05: the coupled plate+chip mesh, and the floor under its resolution
+
+### First, a correction to the entry above
+
+The last line of "There was never a memory argument for 22 um" says a 16.5 um mesh of this part has
+already been built and checked. That is wrong and I wrote it. `ws_plate/cartesianMesh.log` ends:
+
+```
+Saving mesh generated after step edgeExtraction
+"Stopping after step edgeExtraction"
+ExecutionTime = 1934.91 s  ClockTime = 3096 s
+```
+
+It ran with `workflowControls { stopAfter edgeExtraction; }` and never ran the optimiser at all.
+Its own report says `fluid pieces=93 mesh_ok=False`, `solid pieces=20 mesh_ok=False`. Its 3,096 s
+is the pre-optimiser pipeline, not a 328M-cell mesh in 52 minutes. The rest of that section stands:
+checkMesh is 702 B/cell and there was never a memory argument for 22 um. There is a different
+argument for it, measured below, and it is the mesher's.
+
+### The four-piece coolant was our STL, not their CAD
+
+I had been about to ask Corintis whether their plate has a second coolant volume, because the
+coolant came out as four disconnected pieces: 66,484,395 cells, then 134,234, 9,037, and one single
+cell. Rehaan said a production CAD cannot be wrong. He was right.
+
+Our `fluid.stl` was already **two surface pieces**. The second piece is 1,596 triangles and
+1.4968e-06 m3, and the mesh's 134,234-cell island is **1.4979e-06 m3** - a **0.07%** match. 132
+triangles had gone missing in a re-export and that severed the neck into a plenum. The whole
+surface existed all along at `stage_plate`.
+
+Rebuilt on verified-whole surfaces (`scratchpad/clean_stls.py`, output in `/home/rehaan/clean_stl`,
+every surface re-measured as one piece with positive volume before meshing):
+
+| | broken surface | verified surface |
+|---|---|---|
+| coolant pieces | 4 | **1 (OK)** |
+| coolant cells | 66,627,667 | 66,604,192 |
+| cartesianMesh | 1,013 s | **698 s** |
+| non-orthogonality max | 48.62 | 48.6248 |
+| checkMesh | Mesh OK | Mesh OK |
+
+The whole chain on the clean surfaces is 1,826 s, which is 0.51 h, against 7,932 s on the broken
+one. There is a gate missing here: `parts.py` already has `components`, `volume_m3` and `passages`
+and nothing calls them before a mesh starts.
+
+### cfMesh takes exactly one shell, so the coupled domain is a box
+
+Five things were tried before the box, and all five are refuted by measurement:
+
+| attempt | result |
+|---|---|
+| block.stl and a chip box concatenated in one STL, flush | chip region **0 cells**, mesh bbox was the plate only |
+| the same, chip sunk 0.7 mm into the plate | 0 cells, and the mesh's y_min ROSE to 20.77 mm |
+| the same, sunk 2.1 mm | 0 cells, y_min rose to 22.21 mm |
+| OCC fuse of the plate's 6 channelled solids | died, no traceback |
+| OCC fuse of the sewn 27,696-face envelope with the chip | died, no traceback |
+
+A disjoint second shell is not ignored, it corrupts the octree. The first version of the overlap
+test was not a fair test - its background cell was 0.7 mm and the overlap was 10 um, 1.4% of a cell
+- so it was re-run at one, three and six background cells of overlap, and the answer did not change.
+
+So the domain is a padded box and `topoSet` assigns every cell to one of four zones. The cost,
+stated plainly: the plate's outer skin stops being a conforming surface and becomes a staircase,
+mitigated by refining `block.stl` one level. The coolant and chip interfaces are unaffected,
+because those were always staircase cuts, which is what the conjugate method is.
+
+### The zone algebra has one shape that works in parallel
+
+| attempt | what OpenFOAM says |
+|---|---|
+| `includeCut true` with `useSurfaceOrientation true` | "You cannot specify both ... since 'includeCut' specifies a topological split" |
+| `includeCut true` with a real seed point | "outsidePoint ... is not inside any cell" on 7 of 8 ranks |
+| `docker run --cpus=96` on a 32-core box | rc=125, docker refuses it. Use `$(nproc)`. |
+
+`surfaceToCell` with a seed point **cannot run in parallel**: each rank owns part of the mesh and
+the seed sits in a cell on exactly one of them. So `useSurfaceOrientation` is the only usable form,
+cut cells can never be claimed by a surface, and **the air has to be defined positively** as
+strictly outside both bodies rather than as the leftover. The plate then absorbs every cut cell,
+which is what stops a one-cell air film forming across the chip-to-plate thermal path.
+
+Order: `outChip` (strictly outside the chip), `airCells` (strictly outside the envelope, subset to
+`outChip`), `chipCells`, `fluidCells` (minus air, minus chip), `plateCells` (everything else). The
+chip is lifted 24.267 um so it bites into the envelope, because the chip's top tessellates to
+y = 20.105911 mm and the envelope starts at 20.110179 and cells in that 4.267 um gap would fall
+into no zone at all.
+
+### cbox2, the coupled mesh
+
+`couple_box.sh cbox2 0.000352056 1 4 2 1 8 12` on corintis-farfield, n2-highmem-96. Background
+352.056 um, coolant +1, microchannels +4 (22 um), chip +2 (88 um), plate skin +1, scaleY 3 over the
+microchannel band only.
+
+| stage | s |
+|---|---|
+| cartesianMesh | 652 |
+| topoSet | 467 |
+| splitMeshRegions | 817 |
+| checkMesh, 4 regions, parallel | 515 |
+| **to a checked four-region mesh** | **2,452 = 0.68 h** |
+| reconstruct, fluid + chip + solid | 4,079 |
+
+| zone | cells | checkMesh |
+|---|---|---|
+| air | 48,534,275 | 1 region, non-ortho 54.19, Mesh OK |
+| chip | 24,173,140 | 2 regions, non-ortho 0, aspect 1.0014, Mesh OK |
+| fluid | 68,806,800 | **1 region**, non-ortho 49.31, Mesh OK |
+| solid | 271,759,108 | 1 region, non-ortho 51.46, Mesh OK |
+| total | **413,273,323** | exact partition |
+
+The chip reads as two regions because the chip IS two disjoint solids: the 19 chip solids in
+`PlateAndChip.step` fuse into two bodies totalling 16,294.856 mm3. Its non-orthogonality is 0 and
+its aspect ratio 1.0014 because both bodies are boxes.
+
+Every region came back **Mesh OK**. The solid's non-orthogonality is 51.46 against ws_shell's 84.08
+with 41,700 faces over the 70 degree bar; the coupled solid has none over the bar at all.
+
+### What it checks out against
+
+`scratchpad/verify_cbox2.py` reads the published logs and checks four things.
+
+The zones partition the domain: topoSet's four `cellZoneSet` sizes equal splitMeshRegions' four
+region sizes exactly, they sum to 413,273,323, and splitMeshRegions, which demands every cell in
+one and only one cellZone, did not complain.
+
+The volumes, each measured by checkMesh on its own region after the split, against the surfaces
+they came from. The error budget is half a cell over the **measured** cut area, which has to be the
+measured one: a first version used `6 x V^(2/3)`, the area of a compact body, and flagged the
+coolant and the chip as out of budget wrongly, because a branching microchannel network has
+1,125 m2 of surface per m3 against a cube's 165.
+
+| zone | mesh m3 | CAD m3 | error | half-cell budget |
+|---|---|---|---|---|
+| fluid | 5.341940e-05 | 5.369222e-05 | -0.508% | 1.24% |
+| solid | 2.220540e-04 | 2.226721e-04 | -0.278% | 2.25% |
+| chip | 1.648140e-05 | 1.629485e-05 | +1.145% | 4.82% |
+| air | 5.836940e-04 | 5.830486e-04 | +0.111% | 2.70% |
+| **total** | **8.756488e-04** | **8.757078e-04** | **-0.007%** | |
+
+The total is the independent check, because the four regions were measured separately: a cell lost
+or counted twice would show there. It is 70 parts per million.
+
+The interfaces, from splitMeshRegions, which counts the internal faces between two zones once:
+
+| between | faces | area | against the CAD |
+|---|---|---|---|
+| fluid - solid | 21,722,346 | mixed cell sizes | |
+| air - chip | 1,956,532 | 15,156 mm2 at 88 um | 15,128, +0.2% |
+| air - solid | 1,589,600 | 49,255 mm2 at 176 um | 47,955, +2.7% |
+| **chip - solid** | **353,184** | **2,736 mm2 at 88 um** | **2,736, -0.0%** |
+| air - fluid | 3,508 | the two port mouths | |
+
+A trap worth writing down: the per-patch `nFaces` my publish function greps out of
+`constant/<region>/polyMesh/boundary` come from **processor0** until the reconstruct has run, so on
+a first publish they are one rank's share and they do not match each other. cbox2's first publish
+said `solid_to_chip` 21,896 against splitMeshRegions' 353,184. Believe the interface table on the
+first publish and the patch counts only on the second.
+
+**A finding for Corintis.** The chip's top face is 49.9 x 59.2 mm and the pedestal it lands on is
+63 x 55 mm, so the chip contacts the plate over 93% of its own top face and about 7% overhangs into
+air. The mesh says 2,736 mm2 against 2,745 mm2 predicted from the two footprints intersected. The
+same thing was measured at a 1.4 mm background on a 468,953-cell proof run, where the contact came
+to 2,753 mm2, so it is the geometry and not a resolution artefact.
+
+### 22 um is the floor, and it is the mesher, not the box and not the cell budget
+
+I tried to take the microchannels from 22 um to 11 um, because the plate has a 41 um feature that
+gets 1.86 cells across at 22 um. The cell budget said it would cost 623M cells, inside Rehaan's
+700M ceiling. It does not run. `microchannels` at `additionalRefinementLevels 5` dies in
+"Refining boxes intersecting surface meshes", always in an MPI call.
+
+| explanation | the test | result |
+|---|---|---|
+| octree box-count overflow past `2**31//12` = 178,956,970 | a quarter of the microchannel area, 55,917,190 boxes | still fails, `MPI_ERR_BUFFER` |
+| per-process size, so more ranks | 16 ranks instead of 8 | still fails, `MPI_ERR_RANK` |
+| the attached Bsend buffer is too small | `MPI_BUFFER_SIZE` 1 GB to 2 GB | still fails |
+| Bsend at all | `-opt-switch commsType=nonBlocking`, accepted by the build | still fails |
+| cfMesh's octree itself | serial, no mpirun and no `-parallel` | **walks straight past it** |
+
+So the limit is in the parallel octree. Everything that fails is octree level 15 and everything
+that works is level 14 or under, in two independent configurations: cbox2 at a 0.360505 m root with
++4, and ws_plate at a 0.27038 m root with +4.
+
+That gave the one lever worth trying in parallel. cfMesh sizes its root cube as `maxCellSize x 2^n`
+and counts `additionalRefinementLevels` down from the background level, so the fine cell is
+`root/2^(background+extra)`. With a 0.180253 m root instead of 0.360505 the background is level 9,
++5 is level 14, and the fine cell is 0.180253/16384 = **11.0 um** with every other band exactly
+where cbox2 puts it. The part is 177.5 mm and that root is 180.253 mm, so it fits.
+
+cfMesh will not take it. Measured, four domain boxes at four x pads:
+
+| x pad | domain extent | root side | octree level |
+|---|---|---|---|
+| 1.0 mm | 179.500 mm | 0.360505 | 10 |
+| 0.5 mm | 178.500 mm | 0.360505 | 10 |
+| 0.3 mm | 178.100 mm | 0.360505 | 10 |
+| 0.1 mm | 177.700 mm | 0.360505 | 10 |
+
+0.360505 / 177.5e-3 = 2.03, so it wants a root about twice the part's longest dimension and no pad
+gets under that. **With a level-14 cap and a 2x root, the finest cell this part can be meshed at in
+parallel is `2 x 177.5 mm / 2^14 = 21.67 um`, which is the 22 um we have.** Raising maxCellSize
+does not help either: the root scales with it and the level count moves with the root.
+
+So the 41 um feature gets 1.86 cells across and we cannot improve it by meshing harder. That is
+worth saying to Corintis as a limitation of the tool, not of the machine, because without these
+probes it would have looked like a budget problem that a bigger box fixes.
+
+Scripts: `scratchpad/octree_probe.sh`, `buffer_probe.sh`, `serial_probe.sh`, `root_probe2.sh`,
+`make_fine_slices.py`, `make_box_pads.py`, `budget3.py`.
+
+### Two bugs in my own probes, both worth not repeating
+
+`stopAfter templateGeneration;` written at the top of a meshDict is **silently ignored**. The key
+lives inside a `workflowControls` dict, as the 2026-10-30 entry above uses it. Every arm of the
+first probes ran the full pipeline instead of stopping after the template. Their failures stand,
+because all of them died in the octree before any later stage, but a passing arm would have run for
+hours and the cell count I meant to read was never going to arrive.
+
+`timeout 75 docker run ...` does not stop it. `timeout` sends SIGTERM to `docker run`, the
+container keeps going, and timeout waits for it. Measured: a 75 s cap still running at 264 s. Start
+the container detached with `--name`, read what you need, and `docker kill` it by name.
+
+### What the budget allows, measured from the real surface areas
+
+Against cbox2's 413,273,323, with `scratchpad/budget3.py` sizing each option off the measured
+surface areas rather than the body volume:
+
+| option | total | verdict |
+|---|---|---|
+| chip entry +2 to +3 at its 3.6 mm thickness | 941M | over the 700M ceiling |
+| a 44 um band, 20 cells, on the chip's surfaces | 575M | fits, octree level 13 |
+| microchannels +5 on a 2-cell band | 623M | fits the ceiling, refused by the mesher |
+| microchannels +5 on a 4-cell band | 832M | over the ceiling and refused |
+
+The chip +3 estimate in the notes before tonight was 516M and that was wrong. It counted the chip
+body only. The chip entry's `refinementThickness 0.0036` also refines a shell of air around the
+chip, and that shell is 2.434e-05 m3 of 88 um cells, inverted from the air zone's 48,534,275 cells
+against its 5.837e-04 m3, so x8 is 250M cells on its own plus 125M in the plate band above the
+contact. Size a level change off the measured zone counts and areas, never off the body volume.
+
+`couple_box.sh` now takes two optional extra levels, which add a `microchannels_fine` or
+`chip_contact` entry **beside** the proven ones so nothing is coarsened, an optional domain STL, and
+a **hard 700M gate** that stops the run before topoSet if cartesianMesh breaches the ceiling.
+`RANKS 1` meshes serially and then decomposes, which is the only route past level 15.
