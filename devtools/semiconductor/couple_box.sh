@@ -331,7 +331,11 @@ publish () {
     echo "=== integrity"
     grep -aiE "segmentation|signal 1[01]|FOAM FATAL|Cannot untangle|exited on signal|one and only one" \
       "$c/cartesianMesh.log" "$c"/*.log "$c"/*.dockerlog 2>/dev/null | head -6
-    echo "  (nothing above = no crash and no zone-overlap complaint)"
+    echo "  (lines above are matches, NOT an all-clear. An earlier version of this captioned them"
+    echo "   \"nothing above = no crash\" while printing six FOAM FATAL lines: redistributePar fails"
+    echo "   on this case with \"Cannot find a patch which is not of type empty, mapped or coupled\""
+    echo "   and reconstructParMesh picks it up, which is what recon_*_fb rc=0 in the stage table"
+    echo "   means. Read the lines, do not read the caption.)"
     tail -4 "$c/cartesianMesh.log" 2>/dev/null
     echo
     echo "=== meshDict and topoSetDict used"
@@ -345,10 +349,16 @@ publish () {
   done
 }
 
-# RANKS 1 MESHES SERIALLY, which is the only route past octree level 15: every level-15
-# failure is an MPI call inside "Refining boxes intersecting surface meshes", and with no
-# mpirun and no -parallel there is no such call. The mesh is then decomposed and the rest of
-# the chain runs in parallel exactly as usual.
+# RANKS 1 MESHES SERIALLY. Every failure at microchannels +5 is an MPI call inside "Refining
+# boxes intersecting surface meshes", and the mechanism is a 32-bit overflow in the PARALLEL load
+# balancer: meshOctreeModifierLoadDistribution.C sums leaf weights with sumOp<label> on int32 and
+# divides to pick a destination rank, so a negative total yields a negative rank - which is exactly
+# MPI_ERR_RANK. That function returns immediately when neiProcs().size() == 0, so serial should
+# never reach it. SHOULD: an earlier version of this comment called serial "the only route past
+# octree level 15" as if measured, and the arm that would have shown it was killed before it
+# published anything. scratchpad/serial_probe2.sh measures it properly. There is also no level cap
+# in this cfMesh - cube positions are int32 labels, good to level 31 - so "level 15" was never the
+# limit either. The mesh is then decomposed and the rest of the chain runs in parallel as usual.
 if [ "$RANKS" -le 1 ]; then
   stage mesh "OMP_NUM_THREADS=$THREADS cartesianMesh > cartesianMesh.log 2>&1" || { publish; exit 1; }
 else

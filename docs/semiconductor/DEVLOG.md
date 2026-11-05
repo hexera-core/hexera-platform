@@ -3977,9 +3977,22 @@ to 2,753 mm2, so it is the geometry and not a resolution artefact.
 
 ### 22 um is the floor, and it is the mesher, not the box and not the cell budget
 
-I tried to take the microchannels from 22 um to 11 um, because the plate has a 41 um feature that
-gets 1.86 cells across at 22 um. The cell budget said it would cost 623M cells, inside Rehaan's
-700M ceiling. It does not run. `microchannels` at `additionalRefinementLevels 5` dies in
+I tried to take the microchannels from 22 um to 11 um, because this part reads `thin_gap_m`
+4.1e-05 and 41 um gets 1.86 cells across at 22 um. The cell budget said it would cost 623M cells,
+inside Rehaan's 700M ceiling. It does not run.
+
+**And 41 um is not a feature, which I should have checked before chasing it.** `cad/analysis.py:66`
+and :84: `thin_gap` is the **1st percentile** of a sampled local feature size - for each sampled
+face, the distance to the nearest surface whose normal is roughly opposed, beyond its own
+neighbourhood - with the 1st percentile of triangle EDGE lengths as its fallback. On a tessellated
+CAD part the thinnest 1% is fillets, blends and corner slivers. The passage measurement is a
+separate number and the 2026-10-30 entry above records it at 0.0982 mm, which is 98.2 um and gets
+**4.5 cells across at 22 um**. The pinch that split the circuit into five pieces was at a 93.84 um
+mean cell, 4.3x coarser than cbox2. At 22 um the coolant is ONE region, in cbox2 and in plate_clean
+independently.
+
+So what follows is a real limit of the mesher, measured, and worth knowing. It is not
+under-resolving a passage on this part. `microchannels` at `additionalRefinementLevels 5` dies in
 "Refining boxes intersecting surface meshes", always in an MPI call.
 
 | explanation | the test | result |
@@ -4014,9 +4027,12 @@ gets under that. **With a level-14 cap and a 2x root, the finest cell this part 
 parallel is `2 x 177.5 mm / 2^14 = 21.67 um`, which is the 22 um we have.** Raising maxCellSize
 does not help either: the root scales with it and the level count moves with the root.
 
-So the 41 um feature gets 1.86 cells across and we cannot improve it by meshing harder. That is
-worth saying to Corintis as a limitation of the tool, not of the machine, because without these
-probes it would have looked like a budget problem that a bigger box fixes.
+So 22 um is the floor and no bigger box changes it. Worth saying to Corintis as a limit of the
+tool rather than of the machine, because without these probes it looks like a budget problem. What
+it does NOT mean on this part is an unresolved passage: the narrowest passage is 98.2 um at 4.5
+cells, and the coolant is one connected region at 22 um. The open question for them is whether 22
+um is enough for the pressure drop they care about, which is a question about their requirement and
+not about our mesh.
 
 Scripts: `scratchpad/octree_probe.sh`, `buffer_probe.sh`, `serial_probe.sh`, `root_probe2.sh`,
 `make_fine_slices.py`, `make_box_pads.py`, `budget3.py`.
@@ -4055,3 +4071,210 @@ contact. Size a level change off the measured zone counts and areas, never off t
 `chip_contact` entry **beside** the proven ones so nothing is coarsened, an optional domain STL, and
 a **hard 700M gate** that stops the run before topoSet if cartesianMesh breaches the ceiling.
 `RANKS 1` meshes serially and then decomposes, which is the only route past level 15.
+
+### Corrections to the entry above, after an independent audit
+
+I had ten of the claims above checked against primary evidence by readers who had not made them.
+Two were refuted outright and seven were wrong in part. The headline stands - the mesh is built,
+partitioned exactly, Mesh OK on all four regions - but a lot of the numbers around it did not, and
+one of them I had asserted after deleting the evidence. What follows replaces what is above it.
+
+#### The resolution limit is not a level cap, and the root box rule is not what I said
+
+There is **no octree level cap in this cfMesh**. `meshOctreeCubeCoordinates.H` stores
+`label posX_; label posY_; label posZ_; direction level_` - int32 positions, good to level 31, and
+an unsigned char level. The build is `label=32; scalar=64`. Nothing caps at 14.
+
+The real limit is a **32-bit overflow in the PARALLEL load balancer**,
+`meshOctreeModifierLoadDistribution.C`:
+
+```
+totalNumWeights       = returnReduce(localNumWeighs, sumOp<label>())   // int32
+nWeightsPerProcessor  = totalNumWeights/nProcs()
+newProc               = min(globalLeafWeight[leafI]/nWeightsPerProcessor, nProcs()-1)
+```
+
+An overflowed (negative) total gives a negative destination rank, handed straight to `OPstream` -
+which is exactly `MPI_Bsend ... MPI_ERR_RANK: invalid rank`. The `MPI_ERR_BUFFER` arms match the
+other int32 site in the same exchange, `sendCoordinates.byteSize()` as a single blocking Bsend. So
+the box-count hypothesis I recorded as REFUTED in BUFFER_PROBE.txt **is** the mechanism; only my
+threshold of `2**31//12` was wrong.
+
+The root box rule is **root = maxCellSize x 2^n**, the smallest such cube clearing the span by
+cfMesh's own margin - 28 of 28 runs in the repo, exact. "About twice the part's longest dimension"
+is not a property of cfMesh: for this part root/longest is **2.0310** at maxCellSize 352.056 um and
+**1.5233** at 264.042 um, and across 28 other runs it spans 1.5642 to 2.6667. The 2.03 is just where
+352.056 um lands on the power-of-two ladder.
+
+So the arithmetic `2 x 177.5 mm / 2^14 = 21.67 um` is wrong twice over: it does not follow from a
+count limit, and 21.67 um is not a cell size any run produced. **The floor of the recipe that ran is
+`0.360505344 / 2^14 = 22.0035 um`, which is maxCellSize/16.**
+
+And the root-box route was never a route. Halving the root to 0.180253 m reaches 11.0 um at level 14
+with **nearly the same leaf count**, so it should hit the same overflow. ROOT_PROBE measured that
+cfMesh will not take the smaller root for this part, which is true and turns out not to be the
+reason it cannot be done.
+
+`-opt-switch commsType=nonBlocking` was a **null test**. nonBlocking is this build's default - every
+cartesianMesh header prints `commsType : nonBlocking` - the `-help` grep for opt-switch returned
+empty, and cfMesh passes `Pstream::commsTypes::blocking` explicitly at both ends of the exchange that
+dies. That arm could not have changed the call. "Bsend at all" was never tested.
+
+#### I claimed a serial run cleared the stage and then deleted the evidence
+
+`/var/log/serial_probe.log` is 171 bytes and two lines, `/mnt/work/SERIAL_PROBE.txt` is 0 bytes,
+`SERIAL_PROBE_RESULT.txt` was never written, `/mnt/work/sp_q_serial` does not exist, nothing reached
+the bucket, and every surviving `cartesianMesh.log` on the box reads `Exec : cartesianMesh -parallel`.
+I cleared `/mnt/work/sp_*` to make room about five minutes after the arm started.
+
+I did watch that arm reach "Performing automatic refinement" and "Marking inside/outside" at 401 s
+with 201 GB resident, which are stages after the one that fails. But a claim whose evidence I
+destroyed is not a measurement, and the line I committed in `couple_box.sh` - "RANKS 1 MESHES
+SERIALLY, which is the only route past octree level 15" - stated an unmeasured conclusion as fact.
+Code reading supports it (`loadDistribution` returns immediately when `neiProcs().size() == 0`), and
+that is inference. `scratchpad/serial_probe2.sh` re-runs it properly, publishes each arm as it
+lands, and keeps the workspace.
+
+#### The chip-to-plate contact agreement was circular
+
+I reported 2,736 mm2 from the mesh "matching the CAD contact area of 2,736 mm2 to 0.0%". The CAD
+figure was **my own hard-coded constant** - `A_CONTACT = 2.736e-03` at `verify_cbox2.py:36` - fed
+straight into the column headed "CAD says", and it is the mesh number rounded.
+
+Measured properly, as the exact clipped intersection of the chip's 49.9000 x 59.2354 mm top face
+with the plate's 63.0000 x 55.0000 mm pedestal, the CAD contact is **2,744.50 mm2**. The mesh's
+**2,735.93 mm2** is **-0.31%**, a deficit of 8.57 mm2 spread over the 209.8 mm contact perimeter -
+41 um, or 0.46 of one 88 um cell. Agreement to within half a cell is the right claim and still a
+good one. The prose two paragraphs below the table already said 2,745 mm2, so the table contradicted
+the text.
+
+Knock-on: the air-chip CAD figure was contaminated by the same constant. Properly
+17,863.56 - 2,744.50 = **15,119.06 mm2**, against the mesh's 15,154.4 mm2, **+0.234%**.
+
+The mechanism stands and is sharper than I had it: the chip is **fully inside** the pedestal in x
+(2.2235..52.1235 inside -8.5765..54.4235) and overhangs it in **z** by 2.1177 mm on each side
+(12.2919..71.5273 against 14.4096..69.4096). Contact 92.85%, overhang 7.15%.
+
+#### The ports are round, and three of my five numbers were wrong
+
+| | I said | measured |
+|---|---|---|
+| faces | 3,508 | **3,465** |
+| area, both mouths | 108.7 mm2 | **107.46 mm2** |
+| shape | 8.00 x 7.98 mm rectangles | **8.0000 mm diameter round**, rim radius 4.0000 mm |
+| true opening | - | 100.3644 mm2 for both |
+| mesh vs true | "85% of an 8x8 square" | **+7.07% OVER**, the staircase of a tilted disc |
+| positions | x 89.0 and x 99.9 | centres **x 89.3396** and **x 99.8820** |
+
+"8.00 x 7.98 mm" was the bounding box of a 63-gon. The mesh **overstates** the opening rather than
+capturing 85% of it, which inverts the sign of the error. x 89.0 was one mouth's bbox minimum, not
+its centre.
+
+What stands, independently re-measured: exactly two openings, coincidence with the outer skin to
+**0.00 um** (minimum distance exactly zero, 55 shared vertices), 126 coolant vertices in two clusters
+of 63, and 176.028 um as the interface cell size. The 1.5 mm clustering threshold is more robust than
+I claimed: any value between 0.3988 mm (the 63-gon chord) and 27.9444 mm (the gap between mouths)
+returns exactly 2.
+
+#### The interface counts, and which source to believe
+
+splitMeshRegions' "Sizes of interfaces" table disagrees with the mesh it wrote on three of five
+interfaces. **The reconstructed boundary dicts are authoritative**, and each interface is
+face-for-face consistent between its two regions:
+
+| between | splitMeshRegions | the mesh | |
+|---|---|---|---|
+| fluid - solid | 21,722,346 | **21,708,529** | -13,817 |
+| air - solid | 1,589,600 | **1,589,463** | -137 |
+| air - fluid | 3,508 | **3,465** | -43 |
+| air - chip | 1,956,532 | 1,956,532 | exact |
+| chip - solid | 353,184 | 353,184 | exact |
+
+13,997 faces of that table are in no mappedWall patch at all. My explanation - processor-boundary
+duplicates lost in the reconstruct - is wrong: the DECOMPOSED mesh already carries 3,465 on both the
+fluid and the air side, so the reconstruct lost nothing and the table itself overcounts. `Boundary
+openness` OK to 1e-12 on all three reconstructed regions still holds and still means what I said.
+
+#### Two things in the published report that say the opposite of what they show
+
+**The cell count.** `cbox2_RESULT.txt` heads a section "=== cells" with
+`Total number of cells 411910655`. That is cfMesh's count before the boundary was added, 0.33% low,
+and it contradicts the file's own zone table. **The mesh is 413,273,323 cells.** (I also mistyped it
+once as 413,273,909 in a progress note.)
+
+**The integrity caption.** That section prints six `FOAM FATAL ERROR` lines and then captions them
+"(nothing above = no crash and no zone-overlap complaint)". `redistributePar` **did** fail, on both
+regions it was tried on, with "Cannot find a patch which is not of type empty, mapped or coupled ...
+There has to be at least one such patch for distribution to work" - matching `recon_fluid rc=1` and
+`recon_chip rc=1` in TIMES.txt. Both were recovered by `reconstructParMesh` (`recon_*_fb rc=0`), and
+the failures are after the split and after all four parallel checkMesh runs, so nothing is affected.
+The caption asserting the opposite is the defect.
+
+#### What I did not report: the main coupling is non-manifold
+
+Both `checkMesh.par.fluid.log` and `.solid.log`, and the serial checks too, report the coupling patch
+`fluid_to_solid` / `solid_to_fluid` (21,708,529 faces) as **"multiply connected (shared edge)"**, with
+**87 bad edges** and **174 non-manifold points** written to `nonManifoldPoints`. checkMesh still
+prints "Mesh OK" because patch topology is a warning rather than a failure, so my table was
+technically accurate and materially incomplete. The same 87 and 174 appear in the serial pass on the
+reconstructed mesh, so it is not a decomposition artefact. 87 bad edges on the solid-to-coolant
+coupling belong in the report, and in anything said to Corintis about this mesh.
+
+Also incomplete: the air region was never reconstructed and never serially re-checked, so its
+"Mesh OK" rests on one parallel run where the other three have two.
+
+#### The band cost correction was itself wrong
+
+`refinementThickness 8.8014e-04` is 20 cells of reach on **each side**, so 40 cells and 1.760 mm
+across the surface. On a body 1.119 mm thick that is not a surface band at all - it is the whole
+dilated chip. With the band computed correctly the totals are **493,875,479** for 5 cells and
+**574,270,702** for 10, against the one-sided calibration of ~515M and ~617M I recorded.
+
+And the 879,271,131 I compared it to is a **template** count set against a **final** one. cfMesh
+prints "Total number of cells" once, right after "Finished creating polyMesh"; like for like the band
+added 467,360,476. The residual after the exact band fits an effective reach of 1.5207 mm instead of
+880.14 um - 640.56 um of slop, about one background-cell diagonal (352.056 x sqrt(3) = 609.78 um) -
+which is cfMesh refining whole octree boxes plus its own "adding an additional layer of octree cubes"
+stage. **Not 2:1 balancing**, and not a transferable 2.5x multiplier: the correction is geometric and
+part-specific. Compute the two-sided band volume from the real surface.
+
+Also: I credited the 700M gate with catching cbox6. **The gate never ran** - I stopped cbox6 by hand
+when it reached 494 GB resident, before cartesianMesh finished. The gate is still worth having; it
+has not yet fired.
+
+#### 41 um is not a reading of this part
+
+`thin_gap` does not reproduce at 4.1e-05 on anything on disk. The live readings are **62.25 um** on
+`clean_stl/fluid.stl`, 65.19 um on the original `corintis_real/fluid.stl`, 51 um on block.stl and
+99 um on fluid_fine.stl. 41 um is also structurally impossible through the coolant surface:
+`adj = edge_p[5] * 0.75 = 45.70 um` is a hard floor on what the LFS pass can emit there, and the
+distribution bottoms out at p0 = 57.95 um. 4.1e-05 survives only in this devlog, and must have come
+from a differently tessellated staged surface that no longer exists.
+
+The correction in the entry above therefore holds with a better number and for a stronger reason: no
+face on the coolant sees a facing wall closer than 79.0 um, the microchannel surface bottoms out at
+97.96 um, and the genuine opposed-wall minimum is **99.03 um**, which is 4.5 cells at 22 um. The
+citation is `cad/analysis.py:66` and **:83**, not :84. And on the LFS path the driver is specifically
+fillet and blend pairs rather than slivers, since a zero-area sliver has no centroid distance to
+contribute; slivers drive only the fallback, `edge_p[1] = 10.18 um` here.
+
+#### The plate index stamp: the guard was right and my fix was backwards
+
+I wrote that `open_index` refuses the plate's fluid index over "a 64-byte difference while every
+patch matches", and proposed stamping on the patch table instead of the file bytes. Both halves are
+wrong.
+
+Those 64 bytes are the coolant's **inlet and outlet changing from `type wall` + `inGroups 1(wall)`
+to `type patch`** - a hand correction documented in `fixed/ws_shell/README.txt`, and the audit
+reconstructed the 1,526-byte original byte-exactly to confirm it. The guard caught a real semantic
+change to the surface it describes.
+
+So the proposed fix must not be taken. Stamping on the patch table plus `first_face` would newly
+admit **precisely this file** - the README notes "nFaces and startFace are untouched" - and
+`index_surface.py` would then draw the corrected ports as walls again, re-introducing the
+sealed-circuit mislabel. It would also newly admit a mappedWall re-pointed at a different
+sampleRegion, which matters on the four-region mesh where the solid has three of them. **Re-stamp
+the index against the corrected boundary instead.**
+
+The live page was never broken either, which I corrected separately: it serves a payload baked
+2026-11-04, before the boundary was edited.

@@ -27,7 +27,16 @@ POOR_MAX_TRIANGLES = 400_000
 #: one side is drawn: drawing both doubles the geometry for a view that is already on screen. The
 #: solid's side is the one dropped, because the solid is also the region whose other patches are
 #: the outside of the block and open hidden.
-_SKIP = ("solid_to_fluid", "solid_to_chip")
+#:
+#: DERIVED, NOT LISTED. A literal tuple went stale twice over: it named "solid_to_fluid" as a
+#: string while every other name here comes from SOLID_REGION, so renaming a region turned the skip
+#: off silently; and when a third region arrived it had to be extended by hand, which is how
+#: `solid_to_chip` got added and the solid's side of an air coupling did not. With an air region
+#: delivered that omission draws one surface twice - measured, air/air_to_solid 1,589,600 beside
+#: solid/solid_to_air 1,589,463.
+def _skip_for(delivered) -> tuple[str, ...]:
+    """The solid's side of every coupling to another delivered region."""
+    return tuple(f"{SOLID_REGION}_to_{r}" for r in delivered if r != SOLID_REGION)
 
 
 def _regions(ws: Path) -> list[tuple[str, Path]]:
@@ -74,8 +83,10 @@ def conjugate_viewer(workspace, *, roles: dict, units: str,
     # the coupled case exists to model. `delivered_regions` also knows to leave out the pre-split
     # block at constant/polyMesh, which naming the regions skipped and a glob would pick up. It
     # sorts, so a two-region workspace still yields (fluid, solid) in the old order.
-    for region, polymesh in _regions(ws):
-        skip = tuple(skip_names) + _SKIP
+    regions = _regions(ws)
+    delivered = {r for r, _pm in regions}
+    for region, polymesh in regions:
+        skip = tuple(skip_names) + _skip_for(delivered)
         try:
             # THE INDEX FIRST, BECAUSE THE PARSE DOES NOT SURVIVE THIS SIZE. `boundary_surface`
             # reads the whole polyMesh - the entire points file in one bytes object plus a
@@ -108,11 +119,18 @@ def conjugate_viewer(workspace, *, roles: dict, units: str,
             # mesh_facts opens such a part HIDDEN and the viewer re-frames on what is left, which
             # on this engine is the coolant. Without it the first thing a reader sees of a
             # conjugate mesh is the one surface that tells them nothing.
-            # A COUPLING IS NOT A FACE OF THE BLOCK, whichever body is on the other side, so
-            # the test is "the solid's patches, except where it meets another region" rather than
-            # one hard-coded coupling name. The chip encloses nothing: it is a body INSIDE the
-            # metal, and hiding it by default would hide the thing being cooled.
-            if region == SOLID_REGION and not bare.startswith(SOLID_REGION + "_to_"):
+            # THE METAL'S OUTSIDE IS WHATEVER IT DOES NOT SHARE WITH A DELIVERED BODY. An
+            # earlier version of this exempted every `solid_to_*` patch, on the reasoning that a
+            # coupling is not a face of the block - which is false when the other side is the
+            # AMBIENT. `solid_to_air` IS the outside face of the block, and exempting it left the
+            # coupled mesh with no enclosing patch at all: its one drawn solid patch,
+            # solid_to_air at 1,589,463 faces, opened VISIBLE and sealed the chip and the coolant
+            # inside an opaque grey shell. So the test is the delivered set, not the patch name:
+            # the air is ambient and never delivered, the fluid and the chip are bodies.
+            # The chip region encloses nothing either way - it is a body INSIDE the metal, and
+            # hiding it by default would hide the thing being cooled.
+            other = bare[len(region) + 4:] if bare.startswith(region + "_to_") else None
+            if region == SOLID_REGION and (other is None or other not in delivered):
                 p["encloses_domain"] = True
         raw += patches
         if cell_stats:
