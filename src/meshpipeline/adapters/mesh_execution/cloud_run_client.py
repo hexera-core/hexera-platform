@@ -907,24 +907,30 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
             # the coordinates are derived per operation key, and a prefix sweep here could take
             # another job's or another generation's exchange with it.
             #
-            # The mid-run frames go with them. The bucket's lifecycle rule would reclaim them in
-            # two days, but that rule is only applied to a bucket this tooling CREATED: a reused
-            # exchange bucket has no lifecycle at all, and a frame per run would accumulate there
-            # for ever. They are also worthless the moment the real mesh is collected.
-            # A frame exists only on a deployment that publishes them, so its absence is the
-            # ordinary case and is not worth a word; everything else is reported as before.
-            from google.api_core.exceptions import NotFound as _NotFound
+            # The mid-run frames go with them, ON A DEPLOYMENT THAT PUBLISHES THEM. The bucket's
+            # lifecycle rule would reclaim them in two days, but that rule is only applied to a
+            # bucket this tooling CREATED: a reused exchange bucket has no lifecycle at all, and a
+            # frame per run would accumulate there for ever. They are also worthless the moment
+            # the real mesh is collected.
+            #
+            # GATED ON THE SWITCH, not attempted blindly. Where frames are off there is nothing to
+            # delete, and asking anyway spends a request per run and per stage on every mesh the
+            # platform has ever run, to remove an object that cannot exist. The same switch the
+            # dispatch passed to the mesher decides it, so the two cannot disagree about whether
+            # this run could have written one.
+            if _snapshots_enabled():
+                from google.api_core.exceptions import NotFound as _NotFound
 
-            from meshpipeline.artifact_keys import PARTIAL_STAGES, partial_key_beside
-            for _k in (partial_key_beside(out_key, _s) for _s in PARTIAL_STAGES):
-                try:
-                    bucket.blob(_k).delete()
-                except _NotFound:
-                    pass
-                except Exception as _exc:  # noqa: BLE001 - best-effort; the run already succeeded
-                    logger.warning("exchange cleanup failed for a mid-run frame of %s (%s) - the "
-                                   "object remains and the bucket lifecycle reclaims it",
-                                   engine, type(_exc).__name__)
+                from meshpipeline.artifact_keys import PARTIAL_STAGES, partial_key_beside
+                for _k in (partial_key_beside(out_key, _s) for _s in PARTIAL_STAGES):
+                    try:
+                        bucket.blob(_k).delete()
+                    except _NotFound:
+                        pass
+                    except Exception as _exc:  # noqa: BLE001 - best-effort; the run succeeded
+                        logger.warning("exchange cleanup failed for a mid-run frame of %s (%s) - "
+                                       "the object remains and the bucket lifecycle reclaims it",
+                                       engine, type(_exc).__name__)
             for _k in (in_key, out_key, res_key):
                 try:
                     bucket.blob(_k).delete()

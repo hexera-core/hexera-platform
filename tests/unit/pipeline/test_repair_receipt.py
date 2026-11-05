@@ -119,17 +119,74 @@ def test_a_refusal_detail_that_would_leak_loses_the_detail_not_the_row():
 # the measured shape change
 
 
-def test_the_shape_change_is_stated_against_its_cap():
+def test_the_shape_change_states_the_total_and_caps_only_the_unexplained_part():
     rows = R.repair_receipt_rows(_state(), _out(
         operations=[_op("sew_faces", "open_shell", "face:1")],
-        measurements={"before": {"surface_area_mm2": 1000.0, "volume_mm3": 500.0},
-                      "after": {"surface_area_mm2": 1004.0, "volume_mm3": 500.0}}))
+        measurements={"before": {"surface_area_mm2": 1000.0, "volume_mm3": 500.0, "solids": 1},
+                      "after": {"surface_area_mm2": 1004.0, "volume_mm3": 500.0, "solids": 1}}))
     area = _find(rows, "Surface area")
-    assert area["value"] == "0.4%"
-    assert area["why"] == (f"a repair here may change it by at most "
-                           f"{R._percent(rcfg.CAD_REPAIR_MAX_AREA_CHANGE_RATIO)}")
-    # an unchanged volume WAS measured, so it is stated as the small number it is
+    assert area["value"] == "0.4%", "the total change is still the headline number"
+    # nothing was declared, so all of it is unexplained and the cap applies to all of it
+    assert R._percent(rcfg.CAD_REPAIR_MAX_AREA_CHANGE_RATIO) in area["why"]
+    assert "not accounted for by the repairs" in area["why"]
     assert _find(rows, "Volume changed")["value"] == "under 0.01%"
+
+
+def test_a_declared_change_is_not_reported_as_breaking_the_cap_it_passed():
+    """THE REGRESSION THIS GUARDS. `caps._accounted` subtracts what the kept operations declared
+    before judging, so a fill that declares 5% and adds 5% is fully accounted for and PASSES a 2%
+    residual. Printing 5% beside "at most 2%" accused an approved repair of breaking its own
+    limit."""
+    rows = R.repair_receipt_rows(_state(), _out(
+        operations=[_op("fill_planar_hole", "open_shell", "face:1")],
+        measurements={"before": {"surface_area_mm2": 1000.0, "volume_mm3": 500.0, "solids": 1},
+                      "after": {"surface_area_mm2": 1050.0, "volume_mm3": 500.0, "solids": 1},
+                      "declared_area_mm2": 50.0}))
+    area = _find(rows, "Surface area")
+    assert area["value"] == "5%", "the part really did change by five percent; say so"
+    assert "the repairs declared 5% of it" in area["why"]
+    assert "under 0.01% of that is not accounted for" in area["why"], \
+        "every bit of the change was declared, so nothing is unexplained"
+
+
+@pytest.mark.parametrize("before_solids,after_solids", [(0, 0), (1, 2), (1, 0)])
+def test_a_volume_the_guard_never_compared_is_not_presented_as_checked(before_solids, after_solids):
+    """An open shell has no inside - OpenCASCADE returns a number for it that is not a volume -
+    and a body that CLOSED is new volume no operation could have declared. `cumulative_refusal`
+    skips both, so the receipt must not imply a limit was applied."""
+    rows = R.repair_receipt_rows(_state(), _out(
+        operations=[_op("sew_faces", "open_shell", "face:1")],
+        measurements={"before": {"surface_area_mm2": 1000.0, "volume_mm3": 800.0,
+                                 "solids": before_solids},
+                      "after": {"surface_area_mm2": 1004.0, "volume_mm3": 1000.0,
+                                "solids": after_solids}}))
+    volume = _find(rows, "Volume changed")
+    assert "not checked against a limit here" in volume["why"]
+    assert R._percent(rcfg.CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO) not in volume["why"]
+
+
+def test_an_operation_that_raised_is_not_reported_as_a_measured_rollback():
+    """`session.py` marks an operation FAILED when it raised while running: there may be no
+    after-measurement at all. Calling that "the result did not hold up when it was measured"
+    reports a measurement nobody took, and dresses a tool fault as a verdict on the part."""
+    rows = R.repair_receipt_rows(_state(), _out(
+        operations=[_op("sew_faces", "open_shell", "face:1", status="failed",
+                        reason="RuntimeError: /tmp/work/x.step kernel abort")]))
+    row = _find(rows, "Tried to fix")
+    assert row["value"] == "Could not run"
+    assert "measured" not in row["why"]
+    assert "stopped while it was working" in row["why"]
+    # and the kernel's own words never reach the page
+    assert not leaks(row["why"]) and "RuntimeError" not in row["why"] and "/tmp" not in row["why"]
+
+
+def test_a_rollback_and_a_failure_are_not_collapsed_into_one_row():
+    rows = R.repair_receipt_rows(_state(), _out(
+        operations=[_op("sew_faces", "open_shell", "face:1", status="rolled_back",
+                        reason="cap:area"),
+                    _op("fix_small_edges", "open_shell", "face:2", status="failed")]))
+    values = {r["value"] for r in rows if "Tried to fix" in r["label"]}
+    assert values == {"Rolled back", "Could not run"}
 
 
 def test_an_unmeasured_shape_change_omits_the_row_rather_than_guessing():

@@ -172,22 +172,36 @@ def _kept_rows(record: Mapping) -> list[dict]:
 
 
 def _undone_rows(record: Mapping) -> list[dict]:
-    """What was tried and put back. Named by the defect it aimed at: the operation's own label is
-    internal, and its recorded reason is a code or a kernel message."""
+    """What was tried and did not stay. Named by the defect it aimed at: the operation's own label
+    is internal, and its recorded reason is a code or a kernel message.
+
+    A ROLLED-BACK operation ran, was measured, and was put back. A FAILED one raised while running
+    (cad/repair/session.py marks it so) and may have produced no after-measurement at all. Saying
+    "rolled back - the result did not hold up when it was measured" about the second one reports a
+    measurement that was never taken, and dresses a tool fault as a judgement about the customer's
+    part. They are different outcomes and the receipt says which it was.
+    """
     seen: set[tuple[str, str]] = set()
     rows = []
     for op in record.get("operations") or ():
         if not isinstance(op, Mapping) or op.get("status") == "kept":
             continue
         code = str(op.get("defect_code") or "")
-        reason = str(op.get("reason") or "")
-        why = next((w for prefix, w in _UNDONE if reason.startswith(prefix)), _UNDONE_OTHERWISE)
         because = _DEFECT_WORDS.get(code, "")
         label = f"Tried to fix {because}" if because else "Tried a repair"
+        if str(op.get("status") or "") == "failed":
+            # No reason is read from the record here on purpose: a failure's reason is whatever the
+            # kernel said as it stopped, which is the one string on this path most likely to carry
+            # a path, a tool name or a type nobody outside this codebase can act on.
+            value, why = "Could not run", "the tool stopped while it was working on it"
+        else:
+            reason = str(op.get("reason") or "")
+            value = "Rolled back"
+            why = next((w for prefix, w in _UNDONE if reason.startswith(prefix)), _UNDONE_OTHERWISE)
         if (label, why) in seen:
             continue
         seen.add((label, why))
-        rows.append(_row(label, "Rolled back", _safe(why)))
+        rows.append(_row(label, value, _safe(why)))
     return rows
 
 
@@ -229,8 +243,19 @@ def _percent(ratio: float) -> str:
 
 
 def _shape_rows(record: Mapping) -> list[dict]:
-    """How far the shape MOVED, against the cap that would have refused it. Omitted entirely when
-    the run did not measure it - a fact that cannot be measured is None, never a guess."""
+    """How far the shape MOVED, and how much of that move no operation claimed.
+
+    THE CAP IS NOT ON THE TOTAL. `cad/repair/caps._accounted` subtracts what the kept operations
+    DECLARED they would add before judging: a fill that says it adds 5% of the area and adds 5% is
+    fully accounted for and passes a 2% residual. Printing the total beside that 2% made an
+    approved repair read as though it had broken its own limit - the receipt accused the run of
+    something the guard had explicitly allowed. The total is still shown, because it is the honest
+    answer to "how much did my part change"; the cap is shown against the unexplained part, which
+    is the number it actually bounds.
+
+    Omitted entirely when the run did not measure it: a fact that cannot be measured is None,
+    never a guess.
+    """
     import meshpipeline.settings.cad_repair as rcfg
 
     measured = _measurements(record)
@@ -238,16 +263,39 @@ def _shape_rows(record: Mapping) -> list[dict]:
         return []
     before, after = dict(measured["before"]), dict(measured["after"])
     rows = []
-    for what, key, cap in (("Surface area changed", "surface_area_mm2",
-                            rcfg.CAD_REPAIR_MAX_AREA_CHANGE_RATIO),
-                           ("Volume changed", "volume_mm3",
-                            rcfg.CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO)):
+    for what, key, declared_key, cap in (
+            ("Surface area changed", "surface_area_mm2", "declared_area_mm2",
+             rcfg.CAD_REPAIR_MAX_AREA_CHANGE_RATIO),
+            ("Volume changed", "volume_mm3", "declared_volume_mm3",
+             rcfg.CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO)):
         was, now = _num(before.get(key)), _num(after.get(key))
         if was is None or now is None or was <= 0:
             continue
-        rows.append(_row(what, _percent((now - was) / was),
-                         f"a repair here may change it by at most {_percent(float(cap))}"))
+        if key == "volume_mm3" and not _volume_was_compared(before, after):
+            # THE GUARD SKIPS THIS COMPARISON, so the receipt may not imply it was made. An open
+            # shell has no inside: OpenCASCADE still returns a number for it, and that number is
+            # not a volume. A body that CLOSED is new volume no operation could have declared.
+            rows.append(_row(what, _percent((now - was) / was),
+                             "not checked against a limit here: the part has no closed inside to "
+                             "measure, or a body closed that no repair could have predicted"))
+            continue
+        declared = _num(measured.get(declared_key)) or 0.0
+        unexplained = abs(now - (was + declared)) / was
+        why = (f"{_percent(unexplained)} of that is not accounted for by the repairs, and the "
+               f"limit on that is {_percent(float(cap))}")
+        if declared:
+            why = f"the repairs declared {_percent(declared / was)} of it; " + why
+        rows.append(_row(what, _percent((now - was) / was), why))
     return rows
+
+
+def _volume_was_compared(before: Mapping, after: Mapping) -> bool:
+    """Whether `cad/repair/caps.cumulative_refusal` actually judged the volume, by its own rule:
+    both sides must have an inside, and a body must not have closed during the run."""
+    was_solids, now_solids = _num(before.get("solids")), _num(after.get("solids"))
+    if was_solids is None or now_solids is None:
+        return False
+    return was_solids > 0 and now_solids > 0 and now_solids <= was_solids
 
 
 def _outcome_row(record: Mapping) -> list[dict]:
