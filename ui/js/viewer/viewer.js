@@ -54,6 +54,9 @@ const _POOR_COL=[0.93,0.27,0.22];
 const _PATCH_COLS=[[0.80,0.78,0.72],[0.64,0.77,0.75],[0.83,0.76,0.60],
                    [0.72,0.72,0.70],[0.66,0.71,0.73],[0.76,0.70,0.66]];
 const _EDGE=[0.27,0.25,0.22];          /* hairline edges at rest */
+/* How much of the merged surface is left showing behind an inspect window, so a cut has a part
+   around it instead of black. Low enough that it cannot be mistaken for the cells. */
+const GHOST_OPACITY=0.10;
 /* darker while the faces carry colour, so every cell still reads against the data (the original
    heatmap's edge, lightened with the calm end of its scale so a whole part does not read dark) */
 const _EDGE_HEAT=[0.24,0.23,0.22];
@@ -1279,7 +1282,14 @@ function initViewer(job,surf,uiCfg){
     function clear(){
       shown.forEach(ac=>ren.removeActor(ac));shown=[];shownNames=[];
       shownPainted=0;shownMetric='';centre=null;
-      hidden.forEach(en=>en.actor.setVisibility(true));hidden=[];
+      hidden.forEach(h=>{
+        // older shape (an actor) and the ghost shape (actor + what it was), so a half-applied
+        // state from a reload cannot leave a surface stuck at a tenth opacity
+        const en=h.en||h,pr=en.actor.getProperty();
+        if(h.en){if(pr.setOpacity)pr.setOpacity(h.op);
+                 if(pr.setEdgeVisibility)pr.setEdgeVisibility(h.ev);}
+        else en.actor.setVisibility(true);});
+      hidden=[];
       applyClip();applyXray();
       // aria-pressed is the MODE and setArmed owns it. It used to be set by a successful cut and
       // removed by this, so clearing one window turned the button off while the mode was still
@@ -1310,7 +1320,21 @@ function initViewer(job,surf,uiCfg){
           return;}
         const got=await res.json();
         if(!(got.patches||[]).length){lbl.textContent='no cells there';return;}
-        entries.forEach(en=>{if(en.actor.getVisibility()){en.actor.setVisibility(false);hidden.push(en);}});
+        /* THE REST OF THE MESH STAYS, AS A GHOST. It used to be switched off outright, on the
+           grounds that two coincident surfaces at different resolutions fight for the same depth
+           and neither reads. True, and the wrong trade: what a reader got was a scrap of cells
+           floating in black with nothing around it and no way to tell where on a 178 mm plate
+           they were looking. Asked what he was getting from it, the owner of this product said
+           exactly that. At a tenth opacity and with its edges off the merged surface cannot
+           compete with the cut - the cut is opaque and wins the depth test wherever they touch -
+           but it still says where the cut IS. */
+        entries.forEach(en=>{
+          if(!en.actor.getVisibility())return;
+          const pr=en.actor.getProperty();
+          hidden.push({en,op:pr.getOpacity?pr.getOpacity():1,
+                       ev:pr.getEdgeVisibility?pr.getEdgeVisibility():true});
+          if(pr.setOpacity)pr.setOpacity(GHOST_OPACITY);
+          if(pr.setEdgeVisibility)pr.setEdgeVisibility(false);});
         let painted=0,paintedLabel='',paintedMetric='';
         (got.patches||[]).forEach((p,i)=>{
           const pd=vtk.Common.DataModel.vtkPolyData.newInstance();
