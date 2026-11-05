@@ -15,7 +15,12 @@
    works; waiting on the user, done or failed, it is still. */
 .gp-row{animation:none}
 .gp{display:flex;flex-direction:column;gap:5px;max-width:76ch;font-size:var(--fs-md);line-height:1.5;color:var(--text-muted)}
-.gp-head{display:flex;align-items:center;gap:10px;min-height:22px;flex-wrap:wrap}
+/* ONE GRID for the line: the mark, the words, then the right-hand meta (time, fold). Every row of
+   the feed therefore shares a left edge at the text gutter (--gp-gutter + the gap = 24px, which is
+   what the note, reason, advice and prose below are indented to) and a right edge at the card's. */
+.gp{--gp-gutter:14px;--gp-text:24px}
+.gp-head{display:grid;grid-template-columns:var(--gp-gutter) minmax(0,1fr) auto auto;
+  align-items:center;gap:10px;min-height:22px}
 .gp-mark{flex:none;width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;
   font-size:11px;font-weight:700;line-height:1}
 .gp-mark:empty::before{content:'';width:8px;height:8px;border-radius:50%;border:1.5px solid var(--steel);box-sizing:border-box}
@@ -36,7 +41,7 @@
 .gp-chev{width:5px;height:5px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
   transform:translateY(-2px) rotate(45deg);transition:transform .15s}
 .gp-toggle[aria-expanded="true"] .gp-chev{transform:translateY(1px) rotate(-135deg)}
-.gp-note,.gp-reason,.gp-advice,.gp-acts{padding-left:24px;font-size:var(--fs-sm)}
+.gp-note,.gp-reason,.gp-advice,.gp-acts{padding-left:var(--gp-text,24px);font-size:var(--fs-sm)}
 .gp-note{color:var(--text-faint)}
 .gp[data-slow="very"] .gp-note{color:var(--warn)}
 .gp-reason{color:var(--text-faint)}
@@ -49,13 +54,30 @@
 .gp-steps{list-style:none;margin:2px 0 0 6px;padding:2px 0 2px 17px;border-left:1px solid var(--divider);
   display:flex;flex-direction:column;gap:3px}
 .gp-steps[hidden]{display:none}
-.gp-step{display:flex;align-items:baseline;gap:8px;font-size:var(--fs-sm);color:var(--text-muted)}
+.gp-step{display:grid;grid-template-columns:12px minmax(0,1fr) auto;align-items:baseline;
+  gap:3px 8px;font-size:var(--fs-sm);color:var(--text-muted)}
 .gp-tick{flex:none;width:12px;text-align:center;font-size:10px;color:var(--text-faint)}
 .gp-step.done .gp-tick{color:var(--ok)}
 .gp-step.active .gp-tick{color:var(--accent)}
 .gp-step.failed .gp-tick{color:var(--danger)}
 .gp-step.failed .gp-label,.gp-step.active .gp-label{color:var(--text)}
 .gp-t{font-size:var(--fs-xs);color:var(--text-faint);font-variant-numeric:tabular-nums}
+
+/* THE RECEIPT on a step (js/render/check_progress.js): a quiet affordance, never a button and
+   never the accent - the accent means "happening now", and a durable record is not that. Open, it
+   is a two-column list indented to the step's own text column: the thing on the left, its measured
+   value right-aligned in the mono face, and the one-line derivation under it. Starts closed. */
+.gp-rc-toggle{grid-column:2;justify-self:start;padding:0;border:0;background:none;
+  color:var(--steel);font:inherit;font-size:var(--fs-xs);line-height:1.4;cursor:pointer;
+  border-bottom:1px dotted currentColor;transition:color .12s}
+.gp-rc-toggle:hover{color:var(--steel-bright)}
+.gp-rc{grid-column:2/-1;list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.gp-rc[hidden]{display:none}
+.gp-rc-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;align-items:baseline}
+.gp-rc-k{color:var(--text-muted)}
+.gp-rc-v{justify-self:end;text-align:right;font-family:var(--mono);font-size:var(--fs-xs);
+  color:var(--steel-bright)}
+.gp-rc-why{grid-column:1/-1;font-size:var(--fs-xs);line-height:1.45;color:var(--text-faint)}
 @keyframes gp-pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(.55);opacity:.45}}
 @keyframes gp-shimmer{from{background-position:100% 0}to{background-position:-120% 0}}
 
@@ -85,5 +107,5 @@
 @keyframes wi-out{0%{transform:translateY(4px);opacity:0}40%{opacity:1}100%{transform:translateY(-3px);opacity:0}}
 
 /* WHAT HEXERA DECIDED AND WHY: short plain sentences above the live step, as the run decides */
-.gp-said{display:flex;flex-direction:column;gap:8px;margin-bottom:6px}
-.gp-say{margin:0;max-width:68ch;font-size:var(--fs-base);line-height:1.6;color:var(--text-bright);text-wrap:pretty}
+.gp-said{display:flex;flex-direction:column;gap:5px;margin-bottom:4px;padding-left:var(--gp-text,24px)}
+.gp-say{margin:0;max-width:68ch;font-size:var(--fs-base);line-height:1.55;color:var(--text-bright);text-wrap:pretty}

@@ -32,11 +32,13 @@ export function countWords(n) {
 }
 /* the most commentary lines a run line keeps in view: the newest, the older ones scroll away */
 const SAID_MAX = 6;
+/* the most rows a step's receipt draws - the contract says at most 12, and this holds it to that */
+const RECEIPT_MAX = 12;
 
 export function createRunProgress(now = () => Date.now()) {
   let steps, attempt, waitingText, ended, meshInfo, lastEventAt, said, told, pre;
   function reset() {
-    steps = STEPS.map(([key, doing, label]) => ({ key, doing, label, state: "todo", seconds: null, t0: null }));
+    steps = STEPS.map(([key, doing, label]) => ({ key, doing, label, state: "todo", seconds: null, t0: null, receipt: null }));
     attempt = 1; waitingText = ""; ended = null; meshInfo = null; lastEventAt = 0; said = []; told = null; pre = null;
   }
   reset();
@@ -55,7 +57,7 @@ export function createRunProgress(now = () => Date.now()) {
     steps.forEach((s, j) => {
       if (j < i) { if (s.state === "active") finish(s, at); else if (s.state === "todo" && s.key !== "repair") s.state = "done"; }
       // a step run again (a second meshing pass) makes the steps after it to do again
-      else if (j > i && s.state !== "todo") Object.assign(s, { state: "todo", seconds: null, t0: null, label: STEPS[j][2] });
+      else if (j > i && s.state !== "todo") Object.assign(s, { state: "todo", seconds: null, t0: null, label: STEPS[j][2], receipt: null });
     });
     const s = steps[i];
     if (s.state === "active" || (key === "engine" && s.state === "done")) return s;
@@ -106,6 +108,24 @@ export function createRunProgress(now = () => Date.now()) {
       if (!meshInfo) { told = { ...(told || {}), ...info }; return; }
       Object.assign(meshInfo, info);
     },
+    /** THE RECEIPT for a step: the durable rows that phase decided, as the backend published them
+     *  (`{type:"receipt", stage, title, rows:[{label, value, why?}]}`). Nothing is summarised,
+     *  reworded or computed here - the rows are shown as they were said, capped at RECEIPT_MAX so a
+     *  runaway publisher cannot bury the line. A receipt for a stage this build has no step for is
+     *  dropped, the same way an unknown event type is. */
+    receipt(ev, at) {
+      touch(at);
+      const s = step(LANE_STEP[String((ev && ev.stage) || "")] || "");
+      if (!s) return;
+      const rows = ((ev && ev.rows) || [])
+        .filter((r) => r && typeof r === "object")
+        .slice(0, RECEIPT_MAX)
+        .map((r) => ({ label: String(r.label == null ? "" : r.label),
+                       value: String(r.value == null ? "" : r.value),
+                       why: r.why == null ? "" : String(r.why) }));
+      if (!rows.length) return;
+      s.receipt = { title: String((ev && ev.title) || "Receipt"), rows };
+    },
     meshed(cells, at) {
       touch(at); const s = step("mesh");
       if (s.state !== "active") start("mesh", at);
@@ -123,7 +143,7 @@ export function createRunProgress(now = () => Date.now()) {
       touch(at);
       if (!(n > attempt)) return;
       attempt = n;
-      steps.forEach((s) => { if (s.key !== "engine" && s.key !== "repair") Object.assign(s, { state: "todo", seconds: null, t0: null, label: STEPS[idx(s.key)][2] }); });
+      steps.forEach((s) => { if (s.key !== "engine" && s.key !== "repair") Object.assign(s, { state: "todo", seconds: null, t0: null, label: STEPS[idx(s.key)][2], receipt: null }); });
       meshInfo = null;
     },
     final(data, at) {
@@ -140,7 +160,7 @@ export function createRunProgress(now = () => Date.now()) {
     view() {
       const t = now();
       const shown = steps.map((s) => ({ key: s.key, doing: s.doing, label: s.label, state: s.state,
-        seconds: s.state === "active" ? null : s.seconds }));
+        seconds: s.state === "active" ? null : s.seconds, receipt: s.receipt || null }));
       const prefix = attempt > 1 ? `Attempt ${attempt}: ` : "";
       if (ended) {
         const total = ended.total;
@@ -152,7 +172,7 @@ export function createRunProgress(now = () => Date.now()) {
         const at = steps.find((s) => s.state === "failed");
         return { state: "failed", live: false, steps: shown,
           current: at ? `Stopped while ${at.doing.replace(/…$/, "").replace(/^./, (c) => c.toLowerCase())}.` : "The run ended without a mesh.",
-          advice: "The message below says what happened. Tell me what to change, or run it again.", can_retry: false };
+          advice: "Tell me what to change, or run it again.", can_retry: false };
       }
       const active = steps.find((s) => s.state === "active");
       if (!active) {
@@ -172,19 +192,19 @@ export function createRunProgress(now = () => Date.now()) {
         const count = meshInfo.n != null && meshInfo.of ? ` · ${countWords(meshInfo.n)} of about ${countWords(meshInfo.of)}${meshInfo.unit ? " " + meshInfo.unit : ""}`
           : meshInfo.n != null ? ` · ${countWords(meshInfo.n)}${meshInfo.unit ? " " + meshInfo.unit : ""} so far` : "";
         current = `${prefix}${meshInfo.stage || "Meshing your part"}${count}…`;
-        if (meshInfo.beat) note = meshInfo.beat + ". It's still working; this updates when it moves.";
+        if (meshInfo.beat) note = meshInfo.beat + ". This updates when it moves.";
       }
       if (active.key === "mesh" && meshInfo) {
         if (meshInfo.stage && !meshInfo.narrated) current = `${prefix}Meshing on the cloud mesher - ${meshInfo.stage}…`;
         const typ = meshInfo.typical, cap = meshInfo.budget;
-        if (cap && elapsed >= cap) note = "Past its time limit - it should stop by itself any moment now.";
+        if (cap && elapsed >= cap) note = "Past its time limit - it stops by itself.";
         else if (cap && elapsed >= 0.8 * cap) note = `If it's still going at ${durationWords(cap)}, it stops by itself.`;
         else if (typ && elapsed > typ) note = `Taking longer than similar runs (usually about ${durationWords(typ)}).`;
       } else if (SOFT_MS[active.key] && elapsed * 1000 > SOFT_MS[active.key]) {
-        note = "Taking longer than usual - still working.";
+        note = `Past ${durationWords(SOFT_MS[active.key] / 1000)} - still running.`;
       }
       if (!note && lastEventAt && t - lastEventAt > QUIET_NOTE_MS && active.key !== "mesh") {
-        note = "No news from the run for a while. It's still running; this updates when it moves.";
+        note = `No news for ${durationWords(QUIET_NOTE_MS / 1000)}. Still running; this updates when it moves.`;
       }
       return { state: "running", live: true, steps: shown, current, note, elapsed_s: elapsed,
                slow: note ? "yes" : undefined, kind };

@@ -27,21 +27,42 @@ const MARK = { done: "✓", failed: "✕", skipped: "–" };
 /* the states a line ends in: nothing on it works any more */
 const SETTLED = ["done", "failed", "unsupported"];
 
+/** A step's RECEIPT, collapsed: the quiet affordance and the two-column rows behind it.
+ *  Shown as published - label, its value, and the one-line derivation under it when there is one.
+ *  Nothing here is computed; a receipt the backend did not send draws nothing at all. */
+function receiptHtml(s, open) {
+  const r = s.receipt;
+  if (!r || !(r.rows || []).length) return "";
+  const id = `gp-rc-${esc(String(s.key))}`;
+  const rows = r.rows.map((row) =>
+    `<li class="gp-rc-row"><span class="gp-rc-k">${esc(row.label)}</span>`
+    + `<span class="gp-rc-v num">${esc(row.value)}</span>`
+    + (row.why ? `<span class="gp-rc-why">${esc(row.why)}</span>` : "")
+    + `</li>`).join("");
+  return `<button type="button" class="gp-rc-toggle" aria-expanded="${open ? "true" : "false"}"`
+    + ` aria-controls="${id}" data-step="${esc(String(s.key))}"`
+    + ` aria-label="${esc(r.title)} receipt">Receipt</button>`
+    + `<ul class="gp-rc" id="${id}"${open ? "" : " hidden"}>${rows}</ul>`;
+}
+
 /** The steps folded under the line: the ones done (or failed), each with its time. */
-function stepsHtml(p) {
+function stepsHtml(p, openReceipts) {
   const shown = (p.steps || []).filter((s) => s.state === "done" || s.state === "failed" || s.state === "active");
+  const isOpen = (k) => !!(openReceipts && openReceipts.has && openReceipts.has(k));
   return shown.map((s) => {
     // a step that failed is named as what it was doing, not as if it had been done
     const label = s.state === "active" ? s.doing : s.state === "failed" ? String(s.doing || "").replace(/…$/, "") : s.label;
     const t = s.seconds == null || s.state === "active" ? "" : durationWords(s.seconds);
     return `<li class="gp-step ${esc(s.state)}"><span class="gp-tick" aria-hidden="true">${MARK[s.state] || "•"}</span>`
-      + `<span class="gp-label">${esc(label)}</span><span class="gp-t num">${esc(t)}</span></li>`;
+      + `<span class="gp-label">${esc(label)}</span><span class="gp-t num">${esc(t)}</span>`
+      + receiptHtml(s, isOpen(s.key)) + `</li>`;
   }).join("");
 }
 
 /** The line's markup for one served progress. Pure, so it is testable without a page.
  *  `opts.open` unfolds the steps; `opts.elapsed` is the running step's time as shown now;
- *  `opts.offline` says the server has not answered for a while. */
+ *  `opts.offline` says the server has not answered for a while; `opts.openReceipts` is the set of
+ *  step keys whose receipt the user has opened (every receipt starts closed). */
 export function progressHtml(p, opts = {}) {
   if (!p) return "";
   const state = String(p.state || "");
@@ -54,7 +75,7 @@ export function progressHtml(p, opts = {}) {
       + `${state === "done" ? "Details" : `${done} done`}<span class="gp-chev" aria-hidden="true"></span></button>`
     : "";
   let note = p.note || "";
-  if (opts.offline) note = "Can't reach the server right now - still trying…";
+  if (opts.offline) note = "Can't reach the server - still trying…";
   if (opts.ended) note = "Stopped checking. Reload the page to see where it got to.";
   const failed = state === "failed" || state === "unsupported";
   const body = failed ? `${p.reason ? `<div class="gp-reason">${esc(p.reason)}</div>` : ""}`
@@ -72,7 +93,7 @@ export function progressHtml(p, opts = {}) {
     + `<span class="gp-time num" aria-hidden="true">${esc(time)}</span>${toggle}</div>`
     + (note ? `<div class="gp-note">${esc(note)}</div>` : "")
     + body
-    + `<ol class="gp-steps"${opts.open ? "" : " hidden"}>${stepsHtml(p)}</ol></div>`;
+    + `<ol class="gp-steps"${opts.open ? "" : " hidden"}>${stepsHtml(p, opts.openReceipts)}</ol></div>`;
 }
 
 /* what a re-draw is for: a change a person can see. The running step's seconds move on every
@@ -83,7 +104,8 @@ function signature(p, opts) {
   return JSON.stringify([p.state, p.current, p.note, p.slow, p.reason, p.advice, p.can_retry, !!p.live, p.kind || "",
     (p.said || []).length,
     !!opts.offline, !!opts.ended,
-    (p.steps || []).map((s) => [s.key, s.state, s.state === "active" ? null : s.seconds])]);
+    (p.steps || []).map((s) => [s.key, s.state, s.state === "active" ? null : s.seconds,
+      s.receipt ? s.receipt.rows.length : 0])]);
 }
 
 /** THE ONE LINE in the conversation. `show` places it on the first progress and follows it after;
@@ -93,6 +115,9 @@ function signature(p, opts) {
  *  the moment the check is not working, so nothing spins forever. */
 export function createCheckProgress() {
   let el = null, last = null, sig = "", open = false, got = 0, timer = null, flags = {}, retry = null;
+  /* which steps' receipts the user has opened. Kept out of the markup so a re-draw (a new step, a
+     new word on the line) does not shut one the user is reading. */
+  const openReceipts = new Set();
 
   const elapsedNow = () => (last && last.elapsed_s != null ? Number(last.elapsed_s) + (Date.now() - got) / 1000 : null);
   const working = () => !!(last && last.live && !flags.offline && !flags.ended);
@@ -103,7 +128,7 @@ export function createCheckProgress() {
     if (t && working()) t.textContent = durationWords(elapsedNow());
   }
   function draw() {
-    el.innerHTML = progressHtml(last, { ...flags, open, elapsed: elapsedNow() });
+    el.innerHTML = progressHtml(last, { ...flags, open, openReceipts, elapsed: elapsedNow() });
     // folding is done in place: a re-draw would take the focus off the button
     const toggle = el.querySelector(".gp-toggle");
     toggle?.addEventListener("click", () => {
@@ -111,6 +136,14 @@ export function createCheckProgress() {
       toggle.setAttribute("aria-expanded", open ? "true" : "false");
       const list = el.querySelector(".gp-steps"); if (list) list.hidden = !open;
     });
+    // a receipt opens and closes IN PLACE: no re-draw, so the feed never scrolls under the reader
+    el.querySelectorAll(".gp-rc-toggle").forEach((b) => b.addEventListener("click", () => {
+      const key = b.dataset.step, now = !openReceipts.has(key);
+      if (now) openReceipts.add(key); else openReceipts.delete(key);
+      b.setAttribute("aria-expanded", now ? "true" : "false");
+      const panel = el.querySelector("#" + CSS.escape(b.getAttribute("aria-controls")));
+      if (panel) panel.hidden = !now;
+    }));
     const btn = el.querySelector(".gp-retry");
     if (btn) btn.addEventListener("click", () => {
       if (!retry) return;
@@ -152,7 +185,8 @@ export function createCheckProgress() {
     },
     /** What the line holds now: for the ui tier. */
     state() { return { state: last && last.state, live: working(), open, connected: !!(el && el.isConnected) }; },
-    reset() { stopTimer(); el?.remove(); el = null; last = null; sig = ""; open = false; flags = {}; retry = null; },
+    reset() { stopTimer(); el?.remove(); el = null; last = null; sig = ""; open = false; flags = {}; retry = null;
+      openReceipts.clear(); },
   };
 }
 

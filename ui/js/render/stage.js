@@ -431,7 +431,7 @@ export const Stage = {
     const ref=hasHist?history.typical_s*1000:budget*1000;
     const sub=hasHist
       ?`similar runs take about ${fmtDur(history.typical_s*1000)} (usually ${fmtDur(history.p10_s*1000)} to ${fmtDur(history.p90_s*1000)})`
-      :`no similar runs yet · stops by itself after ${fmtDur(budget*1000)} at most`;
+      :`no similar runs yet · stops by itself at ${fmtDur(budget*1000)}`;
     const w=document.createElement('div');w.className='meshbar';
     w.innerHTML=`<div class="mb-top"><span class="mb-lbl">meshing · ${esc(engine||'')}</span>
         <span class="mb-num">0:00</span></div>
@@ -451,6 +451,11 @@ export const Stage = {
     if(m&&ev.kind!=='say'&&!/^Still /.test(ev.text)){m.narrated=true;
       const l=m.el.querySelector('.mb-lbl');if(l)l.textContent=String(ev.text);}
     RunLine.model.narrate(ev,this.now());RunLine.draw();},
+  // THE RECEIPT a phase published: deterministic rows the user opens on that step of the live line.
+  // It is detail, not narration - the step's own one-line summary is untouched, and a receipt for a
+  // stage this build has no step for is dropped by the model.
+  receipt(agent,ev){if(!ev)return;
+    RunLine.model.receipt({...ev,stage:ev.stage||agent},this.now());RunLine.draw();},
   // THE PLAN the run will build (cells, wall layers, where it refines), in its lane and on the line
   plan(agent,summary){if(summary)this.info(agent,'Plan: '+summary);
     RunLine.model.plan(summary,this.now());RunLine.draw();},

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 
@@ -54,20 +55,75 @@ def _life_watch():
         return None
 
 
+#: How often the snapshot watcher looks for a phase mesh to have appeared. The phase it waits for
+#: takes minutes to write; a look is two stat calls.
+SNAPSHOT_EVERY_S = 10.0
+
+
+def _snapshot_watch(ws: str, output_uri: str, stop, partial: dict, *,
+                    every_s: float | None = None) -> None:
+    """THE MESH ARRIVING. While the mesher works, wait for snappy's castellated phase mesh to be
+    written whole, publish ONE decimated boundary surface of it beside the result, put its key in
+    `partial` for the beacon to carry, and delete the intermediate again.
+
+    SELF-GATING, and deliberately so. The only way a numbered time directory appears in a workspace
+    is a serial snappyHexMesh invoked without `-overwrite`, which happens only when the deployment's
+    switch is on (engines/snappy/progressive.snapshots_enabled). A parallel run writes
+    `processor*/1/polyMesh` and never `1/polyMesh`, so it never snapshots; a cfMesh, gmsh or vmtk
+    run writes no time directory at all. There is no engine name and no rank count to read here.
+
+    Best effort throughout: a frame that cannot be read, decimated or uploaded is dropped with a
+    log line. Nothing about a mesh depends on it.
+    """
+    from meshpipeline.adapters.mesh_execution.gcs_exchange import upload_partial
+    from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
+    from meshpipeline.engines.snappy import progressive as prog
+
+    every_s = SNAPSHOT_EVERY_S if every_s is None else every_s
+    while not stop.wait(every_s):
+        try:
+            # READ ONCE, THEN GONE: `take_castellated` removes the intermediate as it reads it. A
+            # second copy of the mesh in the workspace is what loses a big job on the way home
+            # (engines/return_scope), and the frame has nothing more to give.
+            payload = prog.take_castellated(ws, units=COMPLETED_MESH_UNIT.value)
+        except Exception:  # noqa: BLE001 - a viewer frame is never a reason to lose a mesh
+            logging.getLogger(__name__).warning(
+                "progressive snapshots: no frame for the castellated phase", exc_info=True)
+            return
+        if payload is None:
+            continue
+        try:
+            key = upload_partial(output_uri, prog.CASTELLATED, payload)
+            # Set only once the object exists: a pointer the API cannot follow is worse than no
+            # pointer. The beacon reads this and carries the KEY, never the geometry.
+            partial["partial_key"] = key
+            partial["partial_stage"] = prog.CASTELLATED
+        except Exception:  # noqa: BLE001 - the frame is a courtesy, like the beacon itself
+            logging.getLogger(__name__).warning(
+                "progressive snapshots: the castellated frame could not be uploaded", exc_info=True)
+        return
+
+
 def _beacon(ws: str, output_uri: str, stop, *, every_s: float | None = None,
-            pulse_s: float | None = None, returning=None) -> None:
+            pulse_s: float | None = None, returning=None, partial=None) -> None:
     """THE MESHER'S STAGE AND ITS PROGRESS, said while the runner lives: every few seconds the newest
     log is read (engines/mesher_stage) and written beside the result for the waiting worker - when the
     stage has moved on, and at least every `pulse_s` regardless (the pulse). `progress_at` is when the
     mesher's output last moved; once `returning` is set (the mesh is being sent back) the stage is
     RETURNING and that counts as moving. Best effort: a write that fails is tried again at the next
-    pulse, and the beacon never touches the mesh."""
+    pulse, and the beacon never touches the mesh.
+
+    `partial`: what the snapshot watcher has published, carried as a POINTER - the key of a sibling
+    object and the phase it is a frame of, nothing more. The geometry never travels on the beacon:
+    this is a small blob on a 30-second timeout, written as a courtesy, and a few megabytes through
+    it would make a mesh wait on a viewer frame. A new key is itself a reason to write now."""
     from meshpipeline.adapters.mesh_execution.gcs_exchange import upload_progress
     from meshpipeline.engines.mesher_stage import read_stage
 
     every_s = BEACON_EVERY_S if every_s is None else every_s
     pulse_s = BEACON_PULSE_S if pulse_s is None else pulse_s
     said = None
+    said_partial: str | None = None
     mark, moved_at, sent_at = _output_mark(ws), time.time(), 0.0
     # WORKING, NOT ONLY WRITING (RUN-4, 28 Oct): a mesher can work for an hour without a line of log -
     # gmsh's 3D fill of the 34 M-element cyclone did - and the waiting worker read that as no
@@ -84,7 +140,9 @@ def _beacon(ws: str, output_uri: str, stop, *, every_s: float | None = None,
             mark, moved_at = cur, now
         stage = dict(RETURNING) if handing_back else read_stage(ws)
         new_stage = stage is not None and bool(stage) and stage.get("key") != said
-        if not (new_stage or now - sent_at >= pulse_s):
+        pointer = dict(partial or {})
+        new_partial = bool(pointer.get("partial_key")) and pointer["partial_key"] != said_partial
+        if not (new_stage or new_partial or now - sent_at >= pulse_s):
             continue
         try:
             # looked at once per beacon written, not at every glance at the logs: the process tree is
@@ -94,9 +152,10 @@ def _beacon(ws: str, output_uri: str, stop, *, every_s: float | None = None,
         except Exception:  # noqa: BLE001 - a look that fails says nothing either way
             pass
         try:
-            upload_progress(output_uri, {**(stage or {}), "at": now, "progress_at": moved_at,
-                                         "alive_at": alive_at})
+            upload_progress(output_uri, {**(stage or {}), **pointer, "at": now,
+                                         "progress_at": moved_at, "alive_at": alive_at})
             said = (stage or {}).get("key", said)
+            said_partial = pointer.get("partial_key", said_partial)
             sent_at = now
         except Exception:  # noqa: BLE001 - the live line is a courtesy; the next pulse tries again
             sent_at = now
@@ -136,9 +195,20 @@ def run(input_uri: str, output_uri: str, engine: str, timeout: int, contract: st
         return refused
     ws = download_workspace(input_uri)
     stop, returning = threading.Event(), threading.Event()
-    beacon = threading.Thread(target=_beacon, args=(ws, output_uri, stop), kwargs={"returning": returning},
-                              daemon=True)
+    # What the snapshot watcher has published, read by the beacon. One dict, two threads, two
+    # string values: no lock, because the beacon only ever reads a key the watcher has finished
+    # writing (it sets them only after the object is up) and a missed look is caught by the next.
+    partial: dict = {}
+    beacon = threading.Thread(target=_beacon, args=(ws, output_uri, stop),
+                              kwargs={"returning": returning, "partial": partial}, daemon=True)
     beacon.start()
+    # THE MESH ARRIVING, when the deployment asked for it. With the switch off there is no second
+    # thread at all: off is today's run, exactly. With it on the watcher is still self-gating (see
+    # _snapshot_watch) - no time directory is written on any path but snappy's serial one.
+    import meshpipeline.settings.mesh_snapshot as mscfg
+    if mscfg.MESH_PROGRESSIVE_SNAPSHOT_ENABLED:
+        threading.Thread(target=_snapshot_watch, args=(ws, output_uri, stop, partial),
+                         daemon=True).start()
     try:
         try:
             result = run_engine_local(ws, engine=engine, timeout=int(timeout))

@@ -272,12 +272,15 @@ async def node_repair_attempt(state: PipelineState) -> dict:
     """Repair the geometry if the evidence supports it, and hand on whichever file should be meshed.
 
     THE RUN SAYS WHAT HAPPENED. Whichever way the attempt ended, the Repair check lane the
-    inspection opened gets its one line (pipeline/repair_words.py), read from what was recorded."""
-    from meshpipeline.pipeline import repair_words
+    inspection opened gets its one line (pipeline/repair_words.py), read from what was recorded -
+    and, where there is detail worth a record, the receipt beside it: what was kept, what was
+    undone, what was REFUSED and why (pipeline/repair_receipt.py)."""
+    from meshpipeline.pipeline import repair_receipt, repair_words
 
+    job_id = str(state.get("job_id", "unknown"))
     out = await _attempt(state)
-    await repair_words.asay(str(state.get("job_id", "unknown")),
-                            repair_words.repair_check_words(state, out))
+    await repair_words.asay(job_id, repair_words.repair_check_words(state, out))
+    await repair_receipt.apublish(job_id, repair_receipt.repair_receipt_rows(state, out))
     return out
 
 
@@ -520,6 +523,12 @@ async def _attempt(state: PipelineState) -> dict:
             # WHAT WAS DELIBERATELY NOT ATTEMPTED AND WHY - the rims of a missing bore wall above
             # all, which used to be a silent skip inside the fill executor.
             "refusals": measured.get("refusals", []),
+            # THE MEASURED SHAPE CHANGE, before and after. The caps already refused anything past
+            # them, so this is not a check - it is the figure the receipt states beside the cap
+            # it stayed inside (pipeline/repair_receipt.py). The refused path carries the same two
+            # keys in `detail.measurements`; this is the path that used to discard them.
+            "measurements": {k: dict(v) for k in ("before", "after")
+                             if isinstance(v := measured.get(k), dict)},
             "defects_remaining": [dict(e) for e in repair_report.entities],
             "summary": repair_report.summary,
         },

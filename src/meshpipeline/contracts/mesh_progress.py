@@ -33,7 +33,12 @@ def relaying(sink: StageSink | None) -> Iterator[None]:
 def report(stage: dict | None) -> None:
     """The mesher says it is at `stage` ({"key", "label"}). Never raises."""
     sink = _SINK.get()
-    if sink is None or not isinstance(stage, dict) or not stage.get("label"):
+    if sink is None or not isinstance(stage, dict):
+        return
+    # A pointer to a stored frame of the mesh-so-far (`partial_key`) is reportable on its own: the
+    # beacon can carry one before the mesher has written a stage line this side can label, and a
+    # frame nobody is told about is a frame nobody draws.
+    if not (stage.get("label") or stage.get("partial_key")):
         return
     try:
         sink(stage)
@@ -68,7 +73,7 @@ def publishing_sink(publish: ExecutionEventPublisher, loop, *, op_prefix: str,
 
     from meshpipeline.contracts import narration as N
 
-    said: dict = {"key": None, "since": 0.0, "n": None}
+    said: dict = {"key": None, "since": 0.0, "n": None, "partial": None}
     count = [0]
 
     async def _publish_stage(key: str, label: str, op_id: str) -> None:
@@ -78,6 +83,9 @@ def publishing_sink(publish: ExecutionEventPublisher, loop, *, op_prefix: str,
 
     async def _narrate(kind: str, words: str, op_id: str, n=None, of=None, unit: str = "") -> None:
         await N.astep(publish, kind, words, n=n, of=of, unit=unit, op_id=op_id)
+
+    async def _publish_partial(phase: str, object_key: str, op_id: str) -> None:
+        await publish.amesh_partial(phase, object_key, op_id=op_id)
 
     def _quiet(fut) -> None:
         fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
@@ -98,6 +106,19 @@ def publishing_sink(publish: ExecutionEventPublisher, loop, *, op_prefix: str,
                 _narrate(kind, N.still_words(words, time.monotonic() - said["since"]),
                          f"{op_prefix}:beat:{count[0]}"), loop))
             return
+        # A FRAME OF THE MESH-SO-FAR, said once per stored object and on its own identity. Read
+        # BEFORE the stage dedupe below: the beacon carries the pointer alongside whichever stage
+        # the mesher is on, and that stage is usually one already said - which would drop the
+        # pointer with it. No geometry travels here; see events.mesh_partial.
+        pkey = str(stage.get("partial_key") or "")
+        if pkey and pkey != said["partial"]:
+            said["partial"] = pkey
+            count[0] += 1
+            _quiet(asyncio.run_coroutine_threadsafe(
+                _publish_partial(str(stage.get("partial_stage") or ""), pkey,
+                                 f"{op_prefix}:partial:{count[0]}"), loop))
+        if not (stage.get("key") or stage.get("label")):
+            return          # a pointer-only beacon says nothing about the stage; do not word one
         key = str(stage.get("key") or "")
         n = _int(stage.get("n"))
         moved = key == said["key"] and n is not None and n != said["n"]

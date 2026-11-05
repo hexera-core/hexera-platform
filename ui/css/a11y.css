@@ -27,6 +27,9 @@ select:focus-visible, [role="button"]:focus-visible, [tabindex]:focus-visible, .
   /* the geometry check's live line: a still mark and plain text; the words still change */
   .gp[data-live] .gp-mark:empty::before{animation:none}
   .gp[data-live] .gp-now{animation:none;background:none;color:var(--text)}
+  /* a receipt opens and closes at once, with no eased colour or chevron sweep */
+  .gp-rc-toggle{transition:none}
+  .gp-chev{transition:none}
   /* the work icons hold still, drawn whole */
   .gp-mark .wi *{animation:none!important;opacity:1!important;transform:none!important;stroke-dashoffset:0!important}
   .gp-mark .wi .wi-c2{fill:var(--accent)}
