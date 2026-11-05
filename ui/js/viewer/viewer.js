@@ -20,8 +20,10 @@ import { VIEWER_FALLBACK } from "./config.js";
 import { get as getState } from "../core/state.js";
 // vtk.js itself, loaded once for the page, and the decoders for the buffers it is handed
 import { b64f32, b64u32, b64u8, loadVtk } from "./scene/vtk_load.js";
+import { mountCanvas } from "./scene/canvas.js";
+import { makeOverlay } from "./scene/overlay.js";
 import { bindFreshDownloads } from "../render/download.js";
-import { MOUSE_HINT, UP_AXES, VIEW_PRESETS, bindMouse, isUpAxis, orient, presetView, saveUp, savedUp, shield, upScope, upVector } from "./view_controls.js";
+import { MOUSE_HINT, UP_AXES, VIEW_PRESETS, isUpAxis, orient, presetView, saveUp, savedUp, shield, upScope, upVector } from "./view_controls.js";
 // the floating toolbar (View, Section, Parts, Measure, Snapshot) and the part's theme colours
 import { ICONS, axesHtml, bindSeg, bindToolbar, cssRgb, drawAxes, optRow, savePng, segHtml, snapshotPng, themeRgb, toolbarHtml } from "./toolbar.js";
 // a delivered thermal model (an ECXML upload) is read part by part, with slices and its own files
@@ -249,14 +251,17 @@ function initViewer(job,surf,uiCfg){
   const host=document.getElementById('v-canvas-'+job);
   // the scene is the theme's viewer canvas, so the part sits on the same black as the page
   const sceneBg=themeRgb('--viewer-canvas',[0.035,0.055,0.075]);
-  const grw=vtk.Rendering.Misc.vtkGenericRenderWindow.newInstance({background:sceneBg});
-  grw.setContainer(host);
-  const ren=grw.getRenderer(),rw=grw.getRenderWindow();
-  const apiRW=grw.getApiSpecificRenderWindow?grw.getApiSpecificRenderWindow():grw.getOpenGLRenderWindow();
-  grw.resize();
-  const ro=new ResizeObserver(()=>{setRenderScale();rw.render();});ro.observe(host);
-  host.addEventListener('contextmenu',e=>e.preventDefault());
-  bindMouse(grw);                     // left-drag turns, right-drag pans, the wheel zooms
+  // THE SHARED BOOT. Two things change here for the delivered mesh, both deliberate:
+  //  - THE LIGHTS. This viewer rode vtk's default headlight while the geometry stage used a
+  //    three-camera-light rig, so the same part was lit two ways depending on which panel it was
+  //    in. It now gets the rig: a key from the upper left, a fill from the right, a faint rim.
+  //  - THE RESIZE POLICY. This viewer never re-framed on a size change, and the workbench grid
+  //    gives the panel its real size a tick AFTER the first fit - so the opening framing was the
+  //    one computed against a placeholder box. It now re-frames until the user takes the camera
+  //    (canvas.fit, assigned once the camera envelope is live), and never after.
+  const canvas=mountCanvas(host,{background:sceneBg,ignore:ON_CANVAS_UI});
+  const {ren,rw,apiRW}=canvas;
+  const overlay=makeOverlay(canvas);
 
   /* one IMMUTABLE actor per patch - real polygon cells */
   const entries=[];let totalFaces=0;
@@ -302,7 +307,7 @@ function initViewer(job,surf,uiCfg){
   // the parts panel's own repaint: the heatmap hands edges back through the panel, so a selected
   // part keeps its selection edge - and a listener on it, so the problem areas follow what is shown
   let repaintParts=null,onPartsPainted=null;
-  const cam=ren.getActiveCamera();
+  const cam=canvas.cam;
   // CAD is z-up, and the geometry check already draws parts that way: start from a front-quarter
   // view looking slightly down with +z up. vtk's default camera is +y-up, which laid cars and
   // aircraft on their side in the mesh viewer. A part modelled another way up opens the way the
@@ -385,15 +390,11 @@ function initViewer(job,surf,uiCfg){
      ~8 of the FINEST cells fill the view (nothing more to resolve); the
      orbit target cannot leave the model box. STL fallback (no real cells)
      uses bbox-derived caps instead. */
-  const _DPR=Math.min(window.devicePixelRatio||1,2);
   const stats=surf.cell_stats||null;
   const GRID_PX=uiCfg.grid_px, FINE_FILL=uiCfg.fine_fill,
         FRAME_FRAC=uiCfg.frame_frac, SPAN_F=uiCfg.flag_span_factor,
         MAX_FLAGS=uiCfg.max_flags;
-  function setRenderScale(){
-    const r=host.getBoundingClientRect();
-    apiRW.setSize(Math.max(2,Math.round(r.width*_DPR)),
-                  Math.max(2,Math.round(r.height*_DPR)));}
+  const setRenderScale=canvas.setRenderScale;
   function capRange(){
     const t=Math.tan(cam.getViewAngle()*Math.PI/360);
     if(stats&&stats.typ>0&&stats.p10>0){
@@ -781,30 +782,18 @@ function initViewer(job,surf,uiCfg){
     const f={x:c[0],y:c[1],z:c[2],nrm:_nrm,span:rr*SPAN_F,patch:en.patch,
              note:'',col:col,actors:actors,el:el};
     el.onclick=ev=>{ev.stopPropagation();editNote(f);};
+    f.off=overlay.anchor(el,()=>[f.x,f.y,f.z],{normal:()=>f.nrm||null});
     flags.push(f);
     rw.render();renderFlags();}
 
-  /* pin badges track their 3-D anchors every frame (stops when the viewer
-     panel is removed from the document) */
-  (function badgeLoop(){
-    if(!document.body.contains(host))return;
+  /* The flags place themselves, as overlay anchors on the panel's one loop. A flag's DEPTH CUE
+     is the overlay's: the pin is HTML and cannot be occluded by the mesh, so a mark whose surface
+     normal points away from the camera is dimmed rather than drawn as a near one. What is left
+     here is the work that is not a single point - the size readout, the axes gizmo and the
+     two-ended measure line. */
+  overlay.each((aspect,rect)=>{
     const rr=worldR();
     if(!_lastR||Math.abs(rr-_lastR)>_lastR*0.02){_lastR=rr;sizeLbl.textContent=fmtR(rr);}
-    const size=apiRW.getSize(),aspect=size[0]/size[1];
-    const rect=host.getBoundingClientRect();
-    flags.forEach(f=>{if(!f.el)return;
-      const nd=ren.worldToNormalizedDisplay(f.x,f.y,f.z,aspect);
-      const ok=nd[2]>0&&nd[2]<1&&nd[0]>=0&&nd[0]<=1&&nd[1]>=0&&nd[1]<=1;
-      f.el.style.display=ok?'':'none';
-      if(ok){f.el.style.left=(nd[0]*rect.width)+'px';
-             f.el.style.top=((1-nd[1])*rect.height)+'px';
-             // DEPTH CUE: the pin is an HTML overlay, so it cannot be occluded by the
-             // mesh. A mark whose surface normal points away from the camera is on the
-             // FAR side - dim it, so a back-face pin never reads as a near one.
-             const cam=ren.getActiveCamera(),cp=cam.getPosition();
-             const vx=f.x-cp[0],vy=f.y-cp[1],vz=f.z-cp[2];
-             const facing=(f.nrm?(f.nrm[0]*vx+f.nrm[1]*vy+f.nrm[2]*vz):-1)<0;
-             f.el.classList.toggle('back',!facing);}});
     if(axesOn)drawAxes(axesEl,cam);
     // the measured line, over the part, with its distance at the middle
     if(mlineEl){const two=measureLabel&&measurePts.length===2;
@@ -814,8 +803,7 @@ function initViewer(job,surf,uiCfg){
       if(ok){const ln=mlineEl.firstElementChild,xy=nd=>[nd[0]*rect.width,(1-nd[1])*rect.height];
         const [a,b]=ends.map(xy);
         ln.setAttribute('x1',a[0]);ln.setAttribute('y1',a[1]);ln.setAttribute('x2',b[0]);ln.setAttribute('y2',b[1]);
-        measureLabel.style.left=((a[0]+b[0])/2)+'px';measureLabel.style.top=((a[1]+b[1])/2)+'px';}}
-    requestAnimationFrame(badgeLoop);})();
+        measureLabel.style.left=((a[0]+b[0])/2)+'px';measureLabel.style.top=((a[1]+b[1])/2)+'px';}}});
 
   // a click (not a drag) while armed places a marker - the camera still
   // orbits. Capture phase: the vtk interactor stops propagation of pointer
@@ -868,11 +856,13 @@ function initViewer(job,surf,uiCfg){
           if(ev.key==='Escape'){f._editing=false;renderFlags();}});
         setTimeout(()=>{ta.focus();ta.selectionStart=ta.value.length;},0);}
       delEl.onclick=()=>{f.actors.forEach(a=>ren.removeActor(a));
+        if(f.off)f.off();
         if(f.el)f.el.remove();
         flags.splice(i,1);rw.render();renderFlags();};
       flagsEl.appendChild(d);});}
 
   clearBtn.onclick=()=>{flags.forEach(f=>{f.actors.forEach(a=>ren.removeActor(a));
+      if(f.off)f.off();
       if(f.el)f.el.remove();});
     flags.length=0;rw.render();renderFlags();};
 
@@ -885,6 +875,9 @@ function initViewer(job,surf,uiCfg){
   const _fp0=cam.getFocalPoint(),_cp0=cam.getPosition();
   const _fitDist=Math.hypot(_cp0[0]-_fp0[0],_cp0[1]-_fp0[1],_cp0[2]-_fp0[2])||1;
   setRenderScale();
+  // only now is the camera envelope live (`fit` runs clampCam, which reads _fitDist): from here
+  // a size change re-frames the part until the user first presses on the canvas
+  canvas.fit=fit;
   cam.onModified(clampCam);
   clampCam();                    // opening view = closest allowed to Fit
   rw.render();
