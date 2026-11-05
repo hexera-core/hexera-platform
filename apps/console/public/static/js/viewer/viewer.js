@@ -16,8 +16,12 @@ import { getSurface } from "../api/endpoints.js";
 import { headers } from "../api/client.js";
 import { acceptMesh, flagDispute } from "./dispute.js";
 import { VIEWER_FALLBACK } from "./config.js";
+// which conversation this run came from: the scope the way up is remembered against
+import { get as getState } from "../core/state.js";
+// vtk.js itself, loaded once for the page, and the decoders for the buffers it is handed
+import { b64f32, b64u32, b64u8, loadVtk } from "./scene/vtk_load.js";
 import { bindFreshDownloads } from "../render/download.js";
-import { MOUSE_HINT, UP_AXES, VIEW_PRESETS, bindMouse, isUpAxis, orient, presetView, saveUp, savedUp, shield, upVector } from "./view_controls.js";
+import { MOUSE_HINT, UP_AXES, VIEW_PRESETS, bindMouse, isUpAxis, orient, presetView, saveUp, savedUp, shield, upScope, upVector } from "./view_controls.js";
 // the floating toolbar (View, Section, Parts, Measure, Snapshot) and the part's theme colours
 import { ICONS, axesHtml, bindSeg, bindToolbar, cssRgb, drawAxes, optRow, savePng, segHtml, snapshotPng, themeRgb, toolbarHtml } from "./toolbar.js";
 // a delivered thermal model (an ECXML upload) is read part by part, with slices and its own files
@@ -26,20 +30,6 @@ import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml }
 // solver limit, its plan and its hot spots (FEA build step 5)
 import { bindFeaResults, feaResultsHtml } from "./fea_results.js";
 import { bindDownloadMenu, bindResultPanel, cfdPastLimit, downloadsHtml, hotSpotsHtml, keyNumbers, keyNumbersHtml, notesHtml, verdictHtml, verdictOf } from "./result_panel.js";
-
-let _vtkP=null;
-function loadVtk(){if(window.vtk)return Promise.resolve();
-  if(!_vtkP)_vtkP=new Promise((res,rej)=>{
-    const s=document.createElement('script');s.src='/static/vendor/vtk.js';
-    s.onload=res;s.onerror=()=>rej(new Error('vtk.js failed to load'));
-    document.head.appendChild(s);});
-  return _vtkP;}
-
-function b64f32(b){const bin=atob(b),n=bin.length,u=new Uint8Array(n);
-  for(let i=0;i<n;i++)u[i]=bin.charCodeAt(i);return new Float32Array(u.buffer);}
-function b64u8(b){const bin=atob(b),n=bin.length,u=new Uint8Array(n);
-  for(let i=0;i<n;i++)u[i]=bin.charCodeAt(i);return u;}
-function b64u32(b){return new Uint32Array(b64u8(b).buffer);}
 
 /* geometry fills: a mid-tone grey, each patch a step of tint so the parts read apart without
    shouting; the ORANGE selection and the edges stand out on every one of them. The values come
@@ -113,6 +103,11 @@ function viewerToolsHtml(job,upAxis){
         <button type="button" class="vp-x" data-a="clear" aria-label="Clear the pick">${ICONS.close}</button></div>`;
 }
 
+/* WHICH WAY UP, AND WHERE IT IS REMEMBERED. The choice belongs to the conversation the run came
+   from, so the part and its delivered mesh agree; a run opened by link knows no conversation and
+   falls back to its own job, as every run used to. */
+const upStore = (job) => upScope(job, getState.runOrigin(job));
+
 export async function openViewer(job,anchorEl,opts){
   opts=opts||{};
   if(document.getElementById('viewer-'+job)){document.getElementById('viewer-'+job).scrollIntoView({behavior:'smooth'});return;}
@@ -129,7 +124,8 @@ export async function openViewer(job,anchorEl,opts){
       {kind:'Past a limit',items:(opts.withNotes||[]).concat(feaRows,extra)},
       {kind:'Reviewer notes',items:opts.notes||[]}],
       opts.concerns||opts.unreviewed?reasonDetails(opts.reasoning):'');};
-  const upAxis=savedUp('job',job)||'+z';
+  const _up=upStore(job);
+  const upAxis=savedUp(_up.scope,_up.id)||'+z';
   box.innerHTML=`<div class="v-bar">
       <div class="v-sec v-head rp-head">
         ${verdictHtml(verdictOf(opts))}
@@ -310,12 +306,13 @@ function initViewer(job,surf,uiCfg){
   // CAD is z-up, and the geometry check already draws parts that way: start from a front-quarter
   // view looking slightly down with +z up. vtk's default camera is +y-up, which laid cars and
   // aircraft on their side in the mesh viewer. A part modelled another way up opens the way the
-  // user last set it for this job (the "Up" control on the canvas).
+  // user last set it in this conversation (the "Up" control on the canvas).
   const VIEW_DIR=[1,-1,0.7];
   const upSel=document.getElementById('v-up-'+job);
   cam.setFocalPoint(0,0,0);cam.setPosition(...VIEW_DIR);cam.setViewUp(0,0,1);
-  // with no choice stored for this job, the way up the geometry check proposed (surf.up_axis)
-  if(upSel&&!savedUp('job',job)&&isUpAxis(surf.up_axis))upSel.value=surf.up_axis;
+  // with no choice stored for this conversation, the way up the check proposed (surf.up_axis)
+  const upAt=upStore(job);
+  if(upSel&&!savedUp(upAt.scope,upAt.id)&&isUpAxis(surf.up_axis))upSel.value=surf.up_axis;
   orient(cam,(upSel&&upSel.value)||'+z',VIEW_DIR);
   // one render for the opening view (below, once it is framed): a big model drawn twice in a row
   // held the page past a headless browser's patience
@@ -371,11 +368,11 @@ function initViewer(job,surf,uiCfg){
       _refitDist=Math.max(_refitDist,Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||0);}
     finally{_clamping=false;}
     clampCam();ren.resetCameraClippingRange();rw.render();};
-  // WHICH WAY IS UP: turn the camera to the chosen axis, re-frame, and remember it for this job
+  // WHICH WAY IS UP: turn the camera to the chosen axis, re-frame, and remember the choice
   function setUp(axis){
     orient(cam,axis,VIEW_DIR);frameCam();clampCam();ren.resetCameraClippingRange();rw.render();
     if(upSel&&upSel.value!==axis)upSel.value=axis;
-    saveUp('job',job,axis);}
+    saveUp(upAt.scope,upAt.id,axis);}
   if(upSel)upSel.onchange=()=>setUp(upSel.value);
   // a press or a scroll on the toolbar, an overlay or the picked chip is not an orbit or a zoom
   host.querySelectorAll('.vt,.v-ov,.v-picked').forEach(shield);

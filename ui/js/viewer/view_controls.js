@@ -90,6 +90,24 @@ export function saveUp(scope, id, axis) {
   try { window.localStorage.setItem(key(scope, id), axis); } catch { /* not remembered, still applied */ }
 }
 
+/* ONE CHOICE PER CONVERSATION, NOT ONE PER RUN. The geometry check saved the way up against its
+   session; the delivered-mesh viewer saved it against the job. So a user who stood the CAD part
+   +y up got the mesh of that same file back +z up, and setting it again on the mesh did not
+   reach the part. The session is the right scope: it is the one thing the part and every mesh cut
+   from it share.
+   `upScope` answers with the scope a caller should read and write, and migrates a choice saved
+   under the old job key into the session once, so nobody loses a preference to this change. The
+   old key is left where it is - a run opened by link knows no conversation and still has only
+   its job to go on, and that is the scope it gets. */
+export function upScope(job, sessionId) {
+  if (!sessionId) return { scope: "job", id: job };
+  if (job && !savedUp("session", sessionId)) {
+    const fromJob = savedUp("job", job);
+    if (fromJob) saveUp("session", sessionId, fromJob);
+  }
+  return { scope: "session", id: sessionId };
+}
+
 /** The "Up" selector's markup: a label and a small select. */
 export function upSelectHtml(id, axis) {
   const opts = UP_AXES.map(([v, l]) => `<option value="${v}"${v === axis ? " selected" : ""}>${l}</option>`).join("");

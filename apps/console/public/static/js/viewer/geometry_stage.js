@@ -26,23 +26,15 @@ import { applyFlow, bindAxis, bindUnit, changedAnswers, editsLine, extentAlong, 
 import { bindFeaPanel, bindMeasure, feaPanelHtml, followAssembly, followClean, followMeasure, interfaceMarks, lightSpotRow } from "../render/fea_form.js";
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
+import { b64f32, b64u32, loadVtk } from "./scene/vtk_load.js";
 import { UP_AXES, VIEW_PRESETS, bindMouse, isUpAxis, orient, presetView, saveUp, savedUp, shield, upVector } from "./view_controls.js";
 // the viewer's floating toolbar (View, Measure, Snapshot here) and the part's theme colours
 import { bindSeg, bindToolbar, optRow, savePng, segHtml, snapshotPng, themeRgb, toolbarHtml } from "./toolbar.js";
 
-let _vtkP = null;
-export function loadVtk() {
-  if (window.vtk) return Promise.resolve();
-  if (!_vtkP) _vtkP = new Promise((res, rej) => {
-    const s = document.createElement("script"); s.src = "/static/vendor/vtk.js";
-    s.onload = res; s.onerror = () => rej(new Error("vtk.js failed to load"));
-    document.head.appendChild(s); });
-  return _vtkP;
-}
-export function b64f32(b) { const bin = atob(b), n = bin.length, u = new Uint8Array(n);
-  for (let i = 0; i < n; i++) u[i] = bin.charCodeAt(i); return new Float32Array(u.buffer); }
-export function b64u32(b) { const bin = atob(b), n = bin.length, u = new Uint8Array(n);
-  for (let i = 0; i < n; i++) u[i] = bin.charCodeAt(i); return new Uint32Array(u.buffer); }
+// the loader and the decoders moved to the one module every scene shares; they are re-exported
+// here because this file is where the progressive mesh and the review view have always imported
+// them from, and the move is not meant to be a change to anyone's imports
+export { b64f32, b64u32, loadVtk } from "./scene/vtk_load.js";
 
 /* the console's own palette: the theme's viewer canvas behind a matte mid-tone grey part (the
    theme's --part-body: soft on the eyes, so the orange selection and the steel edges stand out),

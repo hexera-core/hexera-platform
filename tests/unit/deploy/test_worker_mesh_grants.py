@@ -148,7 +148,7 @@ def test_every_setting_the_fleet_writes_is_read_by_the_worker():
     written, mapped = _fleet_metadata_keys(), _startup_mapped_keys()
     # attributes the startup script consumes by name rather than through the mapping table
     consumed_directly = {"mesh-image", "startup-script", "enable-guest-attributes"}
-    orphans = {k for k in written - mapped - consumed_directly}
+    orphans = written - mapped - consumed_directly
     assert not orphans, (
         f"these worker metadata attributes have no reader in deploy/gcp/worker/startup.sh, so the "
         f"fleet is configured with settings it will never apply: {sorted(orphans)}")
