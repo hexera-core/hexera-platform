@@ -55,3 +55,31 @@ def test_the_worst_element_is_the_scaled_jacobian_the_result_screen_shows():
          "elements_under_floor": 0, "fea_rules_short": 0, "fea": {"through_wall_min": 2.0}}
     assert N.quality_line(q) == \
         "Quality looks good: 409k elements, worst element 0.198 (1 is perfect), every wall at least 2 elements thick."
+
+
+def test_the_live_line_reads_the_verdicts_limits_not_its_own():
+    # demo dry run 2026-11-02 (C5 knuckle): the line said "Quality looks good ... worst element 0.00286"
+    # while the verdict listed that very figure under its 0.01 limit; the floor and the rules were clean
+    knuckle = {"cells": 1017710, "min_sicn": 0.12, "fea_min_scaled_jacobian": 0.002861, "fea_inverted": 0,
+               "elements_under_floor": 0, "fea_rules_short": 0, "fea": {"through_wall_min": 2.03}}
+    said = N.quality_line(knuckle, past_limits=["Worst scaled Jacobian (1 is a perfect element)"])
+    assert said.startswith("The mesh is valid; some figures are past a limit") and "0.00286" in said
+    assert N.quality_line(knuckle, past_limits=[]).startswith("Quality looks good")
+
+
+def test_the_executor_hands_the_line_the_rows_the_verdict_misses():
+    from meshpipeline.pipeline.executor import _fea_past_limits
+
+    q = {"cells": 1017710, "element_order": 2, "min_sicn": 0.12, "fea_inverted": 0, "elements_under_floor": 0,
+         "fea_rules_short": 0, "fea_min_scaled_jacobian": 0.002861, "fea_max_jacobian_ratio": 3.0,
+         "fea_max_aspect_ratio": 153.6, "fea_min_dihedral_deg": 1.628, "fea_max_dihedral_deg": 176.8,
+         "fea": {"plan": "fea_plan.json", "through_wall_min": 2.03}}
+    past = _fea_past_limits(q)
+    assert past is not None and len(past) == 4
+    assert any("scaled Jacobian" in p for p in past) and any("aspect" in p for p in past)
+    clean = {**q, "fea_min_scaled_jacobian": 0.2, "fea_max_aspect_ratio": 9.0, "fea_min_dihedral_deg": 12.0,
+             "fea_max_dihedral_deg": 150.0}
+    assert _fea_past_limits(clean) == []
+    assert N.quality_line(clean, past_limits=_fea_past_limits(clean)).startswith("Quality looks good")
+    # a CFD record is not an FEA plan's: the line keeps its own reading
+    assert _fea_past_limits({"cells": 10, "max_non_ortho": 40.0}) is None
