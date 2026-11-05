@@ -82,14 +82,26 @@ grant_bucket "${GCP_MESH_BUCKET}" "serviceAccount:${RUNTIME_SA}" "roles/storage.
 # SKIPPED, NOT FAILED, when there is no API. This repository automates the mesh job on its own,
 # and a mesh-only deployment has no API service and no API account - so an absent one is an
 # ordinary state here, not a misconfiguration.
+#
+# THE WHOLE BLOCK HANGS OFF `CLOUDRUN_API_SERVICE`, including the fallback, and that is the point
+# rather than an oversight. Deriving `<deployment-id>-api` from DEPLOYMENT_ID alone invents an
+# account a mesh-only install never created, and `add-iam-policy-binding` against a principal that
+# does not exist FAILS - which under `set -e` takes the whole script down. That turned "this
+# deployment has no API" into "you cannot apply IAM at all", on the one deployment shape this
+# repository automates end to end. A named service is what says an API exists; its account may
+# legitimately not exist YET, which is the provisioning-order case the fallback still serves.
 API_SERVICE="${CLOUDRUN_API_SERVICE:-}"
 API_SA_EMAIL=""
 if [ -n "${API_SERVICE}" ]; then
   API_SA_EMAIL="$(gc run services describe "${API_SERVICE}" --region "${GCP_REGION}" \
     --format='value(spec.template.spec.serviceAccountName)' 2>/dev/null || true)"
-fi
-if [ -z "${API_SA_EMAIL}" ] && [ -n "${API_SERVICE_ACCOUNT:-${DEPLOYMENT_ID:-}}" ]; then
-  API_SA_EMAIL="${API_SERVICE_ACCOUNT:-${DEPLOYMENT_ID}-api}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+  # A name is only derivable with something to derive it FROM. Without either, "-api@project" is
+  # not a principal and the binding would fail the same way the invented account did.
+  API_SA_NAME="${API_SERVICE_ACCOUNT:-}"
+  [ -n "${API_SA_NAME}" ] || [ -z "${DEPLOYMENT_ID:-}" ] || API_SA_NAME="${DEPLOYMENT_ID}-api"
+  if [ -z "${API_SA_EMAIL}" ] && [ -n "${API_SA_NAME}" ]; then
+    API_SA_EMAIL="${API_SA_NAME}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+  fi
 fi
 if [ -n "${API_SA_EMAIL}" ]; then
   info "API runtime identity: ${API_SA_EMAIL} (read-only on the exchange)"
