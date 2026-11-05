@@ -59,6 +59,50 @@ def _life_watch():
 #: takes minutes to write; a look is two stat calls.
 SNAPSHOT_EVERY_S = 10.0
 
+#: HOW LONG A FINISHED MESH MAY WAIT FOR A FRAME TO SETTLE, before the frame is abandoned and the
+#: result is published anyway.
+#:
+#: WHY ANY WAIT AT ALL. The worker that collects the result deletes the partial object as part of
+#: collecting it (cloud_run_client: one tolerated delete per snappy run). An upload still in flight
+#: when the result is published can therefore land AFTER that delete and recreate the object after
+#: its own cleanup - and on a supplied exchange bucket, which gets no lifecycle rule, that orphan is
+#: permanent. So the snapshot side is settled BEFORE `upload_result`, not left to race it.
+#:
+#: WHY IT IS SHORT. A frame is never worth delaying a delivered mesh for. The payload is a few
+#: megabytes on the same client the beacon uses, so an upload that is going to succeed is done in
+#: well under a second; five seconds is an order of magnitude of slack on that, and it is noise
+#: beside the result archive's own upload, which takes minutes (gcs_exchange: 300 s of deadline for
+#: hundreds of MB). Past it the frame is ABANDONED rather than waited on: the worker's delete may
+#: then lose the race, which costs one orphaned object of a few MB, and a mesh waits for nothing.
+SNAPSHOT_SETTLE_S = 5.0
+
+
+def _settle_snapshots(stop, thread, *, timeout_s: float | None = None) -> bool:
+    """Stop the snapshot watcher and wait, briefly, for anything in flight to finish.
+
+    True when the snapshot side is quiet (or there never was one); False when a frame was still in
+    flight at the bound and has been ABANDONED - said in the log, and the caller publishes anyway.
+    Never raises: this sits between a finished mesh and its delivery.
+    """
+    timeout_s = SNAPSHOT_SETTLE_S if timeout_s is None else timeout_s
+    try:
+        stop.set()
+        if thread is None:
+            return True
+        thread.join(timeout_s)
+        if thread.is_alive():
+            logging.getLogger(__name__).warning(
+                "progressive snapshots: a frame was still being uploaded %.0fs after the mesh "
+                "finished; it is abandoned and the result is published now - the frame's object "
+                "may outlive the run's cleanup", timeout_s)
+            return False
+        return True
+    except Exception:  # noqa: BLE001 - the result is the deliverable; nothing here may stop it
+        logging.getLogger(__name__).warning(
+            "progressive snapshots: the snapshot watcher could not be settled; the result is "
+            "published regardless", exc_info=True)
+        return False
+
 
 def _snapshot_watch(ws: str, output_uri: str, stop, partial: dict, *,
                     every_s: float | None = None) -> None:
@@ -93,6 +137,16 @@ def _snapshot_watch(ws: str, output_uri: str, stop, partial: dict, *,
         if payload is None:
             continue
         try:
+            # THE LAST LOOK BEFORE THE WIRE. Reading and decimating a frame takes seconds, and the
+            # mesh can finish inside them; an upload started after the result is published can land
+            # after the worker has deleted the partial key and recreate the object after its own
+            # cleanup (see SNAPSHOT_SETTLE_S). A frame whose moment has passed is simply dropped -
+            # the mesh itself is about to be delivered, which is the better picture anyway.
+            if stop.is_set():
+                logging.getLogger(__name__).info(
+                    "progressive snapshots: the mesh finished while the castellated frame was "
+                    "being read; the frame is dropped rather than published after the result")
+                return
             key = upload_partial(output_uri, prog.CASTELLATED, payload)
             # Set only once the object exists: a pointer the API cannot follow is worse than no
             # pointer. The beacon reads this and carries the KEY, never the geometry.
@@ -195,6 +249,10 @@ def run(input_uri: str, output_uri: str, engine: str, timeout: int, contract: st
         return refused
     ws = download_workspace(input_uri)
     stop, returning = threading.Event(), threading.Event()
+    # THE SNAPSHOT SIDE STOPS BEFORE THE BEACON DOES, and so has an event of its own: the beacon
+    # must go on pulsing through the result's upload (a remote that is still there), while the
+    # frame must be settled BEFORE that upload publishes the result (see SNAPSHOT_SETTLE_S).
+    snap_stop = threading.Event()
     # What the snapshot watcher has published, read by the beacon. One dict, two threads, two
     # string values: no lock, because the beacon only ever reads a key the watcher has finished
     # writing (it sets them only after the object is up) and a missed look is caught by the next.
@@ -206,9 +264,11 @@ def run(input_uri: str, output_uri: str, engine: str, timeout: int, contract: st
     # thread at all: off is today's run, exactly. With it on the watcher is still self-gating (see
     # _snapshot_watch) - no time directory is written on any path but snappy's serial one.
     import meshpipeline.settings.mesh_snapshot as mscfg
+    snapshots = None
     if mscfg.MESH_PROGRESSIVE_SNAPSHOT_ENABLED:
-        threading.Thread(target=_snapshot_watch, args=(ws, output_uri, stop, partial),
-                         daemon=True).start()
+        snapshots = threading.Thread(target=_snapshot_watch,
+                                     args=(ws, output_uri, snap_stop, partial), daemon=True)
+        snapshots.start()
     try:
         try:
             result = run_engine_local(ws, engine=engine, timeout=int(timeout))
@@ -217,8 +277,14 @@ def run(input_uri: str, output_uri: str, engine: str, timeout: int, contract: st
             # waiting worker never takes a long upload for a remote that is gone
             returning.set()
         result.pop("workspace_tar", None)
+        # BEFORE THE RESULT IS PUBLISHED, never after: publishing it is what starts the worker's
+        # collection, and the collection deletes the frame's object. Bounded at SNAPSHOT_SETTLE_S
+        # and abandoned past it - with the flag off there is no thread and this is two statements
+        # on an event nobody reads.
+        _settle_snapshots(snap_stop, snapshots)
         upload_result(output_uri, ws, result)
     finally:
+        snap_stop.set()
         stop.set()
     return result
 

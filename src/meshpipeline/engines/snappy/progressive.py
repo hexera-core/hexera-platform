@@ -38,6 +38,21 @@ is archived. A workspace already brushes the 512 MiB extraction ceiling (engines
 a 1M-cell polyMesh is about 42 MB; a second and third copy of it would lose the mesh on the way
 home on exactly the big jobs this feature is for.
 
+THE FRAME IS SIZED BEFORE IT IS LOADED, NOT AFTER. This runs inside the mesher's own container,
+under the mesher's own memory limit, beside a snappy that is still working - and on Cloud Run the
+workspace is in that same memory (adapters/mesh_execution/gce_vm:22), where this container has
+already been OOM-killed at 16 GiB (deploy/gcp/scripts/bootstrap-env.sh). So a ceiling that is
+tested AFTER `boundary_surface` has read every mesh point and every boundary face is not a guard at
+all: the load it is meant to prevent is what kills the mesher, and the customer loses a built mesh
+so that we could decline to draw a picture. `partial_payload` therefore establishes the source size
+from the polyMesh HEADERS - the `boundary` file's declared `nFaces`, and the leading list count in
+`points` - and refuses before a single array is allocated. A size that cannot be read that way is
+refused too: no frame is always the safe side of this decision.
+
+For the same reason a frame is declined when the container is already near its memory ceiling,
+whatever the triangle count says - and that check FAILS OPEN: memory information that cannot be
+read means proceed exactly as before, never means refuse a mesh.
+
 THE FLAG ALONE REACHES NOTHING. `snapshots_enabled` needs a SERIAL run, and no deployed
 environment is serial by default: the Cloud Run mesh job is 8 vCPU, so `determinism.snappy_ranks`
 returns 8, and the big VM runs the same image with no CPU limit at all. So
@@ -116,7 +131,25 @@ MAX_TRIANGLES = 100_000
 #: frame whose boundary is past this is not drawn at all: a snapshot must never be the reason a
 #: mesh runs out of memory. A 2M-cell castellated boundary measures a few hundred thousand faces,
 #: well inside it.
+#:
+#: MEASURED FROM THE HEADERS, BEFORE THE LOAD (see the module text): the `boundary` file declares
+#: `nFaces` per patch, so the number is exact and costs one read of a few kilobytes.
 MAX_SOURCE_TRIANGLES = 3_000_000
+#: THE OTHER HALF OF THE WORK CEILING, and the half that bites first on a big mesh.
+#: `polymesh_surface.read_points` reads EVERY point of the volume mesh, not only the boundary's:
+#: the whole ASCII blob, a translated copy of it, a float64 array and then a float32 one, which
+#: measures around 100 bytes per point at its peak. 8M points is about 800 MB of peak allocation
+#: inside the mesher's container - already more than a courtesy may spend - and it is far past the
+#: 2M-cell meshes this frame is for. Read from the leading list count in the `points` FoamFile
+#: header, so it costs nothing to establish either.
+MAX_SOURCE_POINTS = 8_000_000
+#: HOW MUCH OF THE CONTAINER'S MEMORY MUST STILL BE FREE for a frame to be read at all. The
+#: ceilings above bound what the frame allocates; this bounds what it is allocated BESIDE. snappy's
+#: own peak is neither in this process's control nor visible from here, so a frame that starts with
+#: less room than this is the frame most likely to be the last straw. 15% of the deployed 32 GiB
+#: job is about 5 GiB of headroom - more than the ceilings above can spend. FAILS OPEN: memory
+#: information that cannot be read means proceed exactly as before (`_memory_room`).
+MIN_MEMORY_ROOM = 0.15
 
 
 def snapshots_enabled(*, nproc: int) -> bool:
@@ -376,6 +409,70 @@ def _packed(name: str, type_: str, tris) -> dict:
             "points": verts.astype(np.float32).tobytes(), "polys": polys.tobytes()}
 
 
+def declared_source_size(polymesh) -> tuple[int, int] | None:
+    """(boundary faces, mesh points) as the polyMesh DECLARES them, or None when it does not.
+
+    THE WHOLE POINT IS WHAT IS NOT READ. OpenFOAM writes a `FoamFile` header and then a leading
+    count on each list, and the `boundary` file - a few kilobytes whatever the mesh - carries
+    `nFaces` per patch. So both numbers are exact, and both come from kilobytes rather than from
+    the hundreds of megabytes the arrays themselves measure. Nothing here is estimated from file
+    size: the declared count is available, and a guess from bytes would be either wrong (the
+    `faces` file is mostly INTERNAL faces, so its size says little about the boundary) or useless.
+
+    The counts come from `polymesh_surface`'s own readers, including its private `_data_start`, on
+    purpose: the number this refuses on must be the number that reader would go on to load, not a
+    second parse that could disagree with it.
+
+    None when either number cannot be established - an unparseable header, a `boundary` with no
+    patches, a file that vanished. The caller refuses the frame on None: a courtesy whose cost
+    cannot be measured is not taken (see the module text).
+    """
+    from meshpipeline.engines.snappy.polymesh_surface import _data_start, read_boundary_patches
+
+    pm = Path(polymesh)
+    try:
+        patches = read_boundary_patches(pm)
+        if not patches:
+            return None
+        faces = sum(int(p["n_faces"]) for p in patches)
+        _offset, points = _data_start(pm / "points")
+    except Exception:  # noqa: BLE001 - an unmeasurable frame is refused, never raised about
+        return None
+    return faces, int(points)
+
+
+def _memory_room() -> float | None:
+    """The share of this container's memory still free, or None when that cannot be read.
+
+    None IS THE FAIL-OPEN ANSWER, and it is what a developer's machine and anything outside a
+    cgroup answer: the caller then proceeds exactly as it did before this check existed. Unreadable
+    memory information must never be a reason to refuse a frame, let alone to disturb a mesh.
+
+    Cheap by construction - at most two small reads of pseudo-files, no process tree walk - because
+    this is consulted on a frame that is already in hand. The same places `fea_tetwild.memory_room`
+    and `snapgrid.grid` read: the job's own cgroup where it has one (Cloud Run, a container), and
+    the machine's `MemAvailable` otherwise.
+    """
+    def read(path: str) -> str:
+        try:
+            return Path(path).read_text().strip()
+        except OSError:
+            return ""
+
+    for limit_path, used_path in (("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),
+                                  ("/sys/fs/cgroup/memory/memory.limit_in_bytes",
+                                   "/sys/fs/cgroup/memory/memory.usage_in_bytes")):
+        limit, used = read(limit_path), read(used_path)
+        # `max` (v2) or a sentinel near 2**63 (v1) is "no limit here": fall through to the host's.
+        if limit.isdigit() and used.isdigit() and 0 < int(limit) < (1 << 62):
+            return max(0.0, 1.0 - int(used) / int(limit))
+    info = {ln.split(":")[0]: ln.split() for ln in read("/proc/meminfo").splitlines() if ":" in ln}
+    try:
+        return int(info["MemAvailable"][1]) / int(info["MemTotal"][1])
+    except (KeyError, IndexError, ValueError, ZeroDivisionError):
+        return None
+
+
 def partial_payload(polymesh, *, units: str, stage: str = CASTELLATED,
                     max_triangles: int = MAX_TRIANGLES) -> dict | None:
     """One decimated boundary surface of the phase mesh at `polymesh`, or None when there is none.
@@ -383,6 +480,11 @@ def partial_payload(polymesh, *, units: str, stage: str = CASTELLATED,
     Refuses anything but a numbered time directory's polyMesh: `constant/polyMesh` mid-run holds
     blockMesh's background box (see the module text), and the cheapest way to make that unreachable
     is to refuse the path rather than to remember not to pass it.
+
+    Refuses an oversized source BEFORE loading it, from the sizes the polyMesh declares in its own
+    headers (`declared_source_size`), and refuses any frame while the container is short of memory
+    (`_memory_room`). Both refusals are None and a log line: this runs inside the mesher, and the
+    frame is a courtesy that may never be the reason a mesh is killed.
     """
     import numpy as np
 
@@ -398,19 +500,40 @@ def partial_payload(polymesh, *, units: str, stage: str = CASTELLATED,
     if not polymesh_complete(pm):
         return None
 
+    # THE SIZE FIRST, THE GEOMETRY ONLY THEN. Everything from here to `boundary_surface` reads
+    # headers, so an oversized source is refused having allocated nothing. The order matters more
+    # than the ceilings do: this used to load the whole mesh and refuse it afterwards, and the load
+    # is what the memory guard kills the mesher for (see the module text).
+    declared = declared_source_size(pm)
+    if declared is None:
+        logger.info("progressive snapshots: the phase mesh does not declare its size, so the cost "
+                    "of a frame of it cannot be measured; no frame for this phase")
+        return None
+    n_faces, n_points = declared
+    # A polygon of k corners fans into k-2 triangles; a hex mesh's boundary is quads, so this is
+    # the triangle count for the usual case and an under-count only for snappy's polyhedra.
+    if n_faces * 2 > MAX_SOURCE_TRIANGLES or n_points > MAX_SOURCE_POINTS:
+        logger.info("progressive snapshots: %d boundary faces and %d points is past the work "
+                    "ceiling (%d triangles, %d points); no frame for this phase, and the mesh "
+                    "keeps the memory", n_faces, n_points, MAX_SOURCE_TRIANGLES, MAX_SOURCE_POINTS)
+        return None
+    room = _memory_room()
+    if room is not None and room < MIN_MEMORY_ROOM:
+        # Independent of size: the frame fits its own ceilings and still must not be read now.
+        # The caller then drops the staged phase mesh, as it does for any completed read - which on
+        # Cloud Run, where the workspace is itself in memory, GIVES THE MESH BACK that memory. So
+        # the pressure case ends with the mesher better off than it started, and with no frame.
+        logger.info("progressive snapshots: %.0f%% of this container's memory is free, under the "
+                    "%.0f%% a frame may start on; no frame for this phase",
+                    room * 100, MIN_MEMORY_ROOM * 100)
+        return None
+
     raw, _stats = boundary_surface(pm)
     if not raw:
         return None
     # The budget is the WHOLE frame's, shared out by how many faces each patch carries, so one
     # large patch cannot spend it all and a small one is not decimated away to nothing.
     total = sum(int(p["face_count"]) for p in raw) or 1
-    # A polygon of k corners fans into k-2 triangles; a hex mesh's boundary is quads, so this is
-    # the face count for the usual case and more for snappy's polyhedra. Measured BEFORE anything
-    # is triangulated, because the ceiling exists to stop the work, not to report on it.
-    if total * 2 > MAX_SOURCE_TRIANGLES:
-        logger.info("progressive snapshots: %d boundary faces is past the work ceiling; no frame "
-                    "for this phase", total)
-        return None
     packed: list[dict] = []
     for p in raw:
         points = np.frombuffer(p["points"], dtype=np.float32).reshape(-1, 3)
@@ -432,6 +555,7 @@ def partial_payload(polymesh, *, units: str, stage: str = CASTELLATED,
     return resp
 
 
-__all__ = ["CASTELLATED", "CASTELLATED_TIME_DIR", "MAX_TRIANGLES", "castellated_polymesh",
+__all__ = ["CASTELLATED", "CASTELLATED_TIME_DIR", "MAX_SOURCE_POINTS", "MAX_SOURCE_TRIANGLES",
+           "MAX_TRIANGLES", "MIN_MEMORY_ROOM", "castellated_polymesh", "declared_source_size",
            "drop_time_dirs", "partial_payload", "polymesh_complete", "promote_final_mesh",
            "snappy_command", "snapshots_enabled", "time_dirs"]
