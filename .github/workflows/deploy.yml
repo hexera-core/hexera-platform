@@ -130,6 +130,18 @@ on:
         required: false
         default: false
         type: boolean
+      # A MESH THAT SHOWS ITSELF WHILE IT BUILDS. Snappy's serial path publishes one decimated
+      # frame of the castellated mesh, which the viewer draws instead of holding the CAD part. It
+      # changes how snappy is invoked (the phase meshes are kept rather than overwritten), so tick
+      # `fleet` with it: the worker holds the decision and passes it to the mesher per execution.
+      # Off everywhere by default, including shared dev and production.
+      # NOT A TICK: the in-progress mesh frame is a repository variable, see
+      # MESH_PROGRESSIVE_SNAPSHOT_ENABLED in the provision job's env. It was a checkbox and is not
+      # one any more, for two reasons. The dispatch input budget is a hard ceiling that GitHub
+      # enforces by refusing the WHOLE workflow, naming neither the cap nor the field that
+      # breached it (tests/unit/deploy/test_personal_environments.py guards it); and a tick that
+      # cannot switch the feature on by itself is a lie told in a UI - a frame needs
+      # MESH_SNAPPY_RANKS=1 beside it, which is not a checkbox either.
       # The review rides the cad_repair tick by default. Unticking THIS while cad_repair is ticked
       # leaves the review at its shipped default (off), so the loop repairs autonomously under its
       # caps - the posture a demonstration of the autonomous pass needs, and nothing else changes.
@@ -229,6 +241,11 @@ jobs:
       # environment, unstated on prod (its shipped default, off, stays in force) until dev has run
       # with it. It reaches the workers as template metadata, so a fleet deploy applies it.
       verdict_by_limits: ${{ steps.pick.outputs.verdict_by_limits }}
+      # THE IN-PROGRESS MESH FRAME: 'true' on shared dev and every personal environment, unstated
+      # on prod (its shipped default, off, stays in force) until it is cut there deliberately. The
+      # rank pin travels beside it because the feature is unreachable without both.
+      mesh_snapshots: ${{ steps.pick.outputs.mesh_snapshots }}
+      mesh_snappy_ranks: ${{ steps.pick.outputs.mesh_snappy_ranks }}
       outreach_enabled: ${{ steps.pick.outputs.outreach_enabled }}
       outreach_worker_job: ${{ steps.pick.outputs.outreach_worker_job }}
       outreach_db_host: ${{ steps.pick.outputs.outreach_db_host }}
@@ -562,6 +579,13 @@ jobs:
               echo "worker_env_uri=gs://${_did}-transfer-${_num}/worker.env"
               # the measured limits decide pass, concerns or fail; the AI review only adds notes
               echo "verdict_by_limits=true"
+              # THE IN-PROGRESS MESH FRAME, on in every dev environment and unstated on prod, the
+              # same posture the verdict above takes. It needs BOTH levers: the flag, and the rank
+              # pin, because a parallel run never snapshots and the flag alone would read as a
+              # feature that does nothing. A repository variable of either name still wins, so an
+              # environment that wants its meshes parallel can say so without editing this.
+              echo "mesh_snapshots=true"
+              echo "mesh_snappy_ranks=1"
               # THE OBJECT STORE. Every field is pinned EXCEPT the access id, and the exception is
               # the point.
               #
@@ -720,6 +744,10 @@ jobs:
               echo "worker_env_uri=gs://dev-transfer-224734058693/worker.env"
               # the measured limits decide pass, concerns or fail; the AI review only adds notes
               echo "verdict_by_limits=true"
+              # the in-progress mesh frame, as on every personal environment: both levers together,
+              # and unstated on prod until it is cut there deliberately
+              echo "mesh_snapshots=true"
+              echo "mesh_snappy_ranks=1"
               # THE OBJECT STORE DEV ALREADY OWNS. Everything below RESTATES live configuration -
               # the bucket, the HMAC key and the secret container all exist and the worker fleet
               # has been reading exactly these values out of worker.env all along. Only the API
@@ -1467,6 +1495,24 @@ jobs:
       # be dropped by the next merge. Personal environments retain the explicit cad_repair opt-in,
       # and production keeps the geometry-invention flags off.
       CAD_REPAIR_ENABLED: ${{ (needs.target.outputs.deployment_id == 'prod' || needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && 'true' || '' }}
+      # THE IN-PROGRESS MESH FRAME. A repository variable rather than a dispatch tick: the input
+      # budget is a hard ceiling GitHub enforces by refusing the whole workflow, and this feature
+      # needs TWO levers set together (MESH_SNAPPY_RANKS=1 beside it, or a frame is never read),
+      # which a single checkbox cannot honestly express. Empty means not stated, which leaves
+      # whatever the environment already carries, as every declarative flag here does.
+      #
+      # ON IN EVERY DEV ENVIRONMENT, unstated on prod, which is the posture every optional feature
+      # here takes while it is still being proven: shared dev and the personal environments run it
+      # so it is exercised, and production keeps its shipped default (off) until it is cut there
+      # deliberately. A repository variable of the same name still WINS, so an environment that
+      # wants it off - or prod, if it is ever turned on early - says so without editing this file.
+      MESH_PROGRESSIVE_SNAPSHOT_ENABLED: ${{ vars.MESH_PROGRESSIVE_SNAPSHOT_ENABLED || needs.target.outputs.mesh_snapshots || '' }}
+      # The rank pin that makes the frame reachable at all. Also a variable, for the same reason:
+      # it is only ever set beside the flag above, and forcing a mesh serial is a performance
+      # decision an environment makes once, not something to re-tick per deploy. Flagged in the
+      # spec: on Cloud Run the workspace lives in memory, so a serial snapshotting run there
+      # belongs on a small case or on the big-VM route.
+      MESH_SNAPPY_RANKS: ${{ vars.MESH_SNAPPY_RANKS || needs.target.outputs.mesh_snappy_ranks || '' }}
       # THE REVIEW IS STATED EITHER WAY once repair is on, and this is the one flag here that
       # cannot ride the "empty means not stated" convention. Unticking it is a POSITIVE choice -
       # the autonomous posture - and an empty value does not express it: an environment whose

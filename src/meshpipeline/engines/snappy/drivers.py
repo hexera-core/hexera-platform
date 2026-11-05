@@ -596,9 +596,14 @@ async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
     import asyncio as _a
 
     from meshpipeline.contracts import mesh_progress as _mp
-    # THE MESHER'S OWN STAGE ("adding wall layers"), relayed to the live line while it runs
+    from meshpipeline.engines.live_estimate import planned_live_count as _planned_live
+    # THE MESHER'S OWN STAGE ("adding wall layers"), relayed to the live line while it runs -
+    # counted against THIS case's own planned cells where it recorded them (the plan record
+    # render_snappy_case wrote beside it), in this engine's own word for one of them.
+    _of, _unit = _planned_live(engine, workspace)
     with _mp.relaying(_mp.publishing_sink(publish, _a.get_running_loop(),
-                                          op_prefix=_mp.stage_op_prefix(workspace, native_attempt))):
+                                          op_prefix=_mp.stage_op_prefix(workspace, native_attempt),
+                                          of=_of, unit=_unit)):
         result = await _a.to_thread(R.run_snappy, workspace, timeout=cap)
     # BEFORE the result is judged, published, recorded or delivered. If ownership was
     # lost here, this raises and NO success result is published for the run above.

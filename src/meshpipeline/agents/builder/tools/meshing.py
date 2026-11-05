@@ -261,6 +261,11 @@ class PreparedMeshRun:
     refusal: dict | None = None
     #: the case this run hands the mesher (agents/builder/rerun_guard.case_digest)
     case_digest: str = ""
+    #: WHAT THE LIVE LINE MAY SAY THE COUNT IS OUT OF: the cells or elements THIS engine's own
+    #: record beside the case plans to make (None when it records none), and the engine's own word
+    #: for one of them. A courtesy to the screen only - nothing here decides or bounds a mesh.
+    planned: int | None = None
+    unit: str = ""
 
 
 # Everything `run_mesh` decided BEFORE it announced itself. Blocking (registry lookups, file
@@ -424,8 +429,13 @@ def prepare_mesh_run(ctx: BuilderToolContext) -> PreparedMeshRun:
         _history = _hist_estimate(engine, _purpose)
     except Exception:  # noqa: BLE001 - an absent history is honestly absent, never invented
         _history = None
+    # WHAT THE LIVE LINE COUNTS AGAINST (engines/live_estimate): the engine's own estimate on
+    # record beside the case it is about to run, and the engine's own word for one of them. Both
+    # may be absent; neither is consulted by anything but the words on the screen.
+    from meshpipeline.engines.live_estimate import planned_live_count
+    _planned_live, _unit = planned_live_count(ename, workspace)
     return PreparedMeshRun(engine=engine, cap=_cap, purpose=_purpose, history=_history,
-                           case_digest=_digest)
+                           case_digest=_digest, planned=_planned_live, unit=_unit)
 
 
 # The two halves composed, WITHOUT the announcement. The announcement is an execution-owned

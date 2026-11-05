@@ -560,6 +560,16 @@ WORKER_METADATA=(
 # prod does not yet): the run decides pass, concerns or fail from the mesh's measured numbers and
 # the AI review only adds notes. Absent, the env object's value (the shipped default, off) stands.
 [ -z "${VERDICT_BY_LIMITS:-}" ] || WORKER_METADATA+=("verdict-by-limits=${VERDICT_BY_LIMITS}")
+# Whether a running mesh may publish a decimated frame of itself for the viewer. The WORKER holds
+# the decision - it passes the switch to the mesher as a per-execution override, because the mesh
+# job and the big VM carry no env of their own - so turning this off takes effect on the next run
+# rather than the next mesh image deploy.
+[ -z "${MESH_PROGRESSIVE_SNAPSHOT_ENABLED:-}" ] \
+  || WORKER_METADATA+=("mesh-progressive-snapshot-enabled=${MESH_PROGRESSIVE_SNAPSHOT_ENABLED}")
+# The rank pin that makes a frame reachable at all. It travels with the switch above because the
+# two are one decision: a frame is only read from a SERIAL snappy run, so the flag without this
+# leaves a deployment holding both halves of a feature and seeing none of it.
+[ -z "${MESH_SNAPPY_RANKS:-}" ] || WORKER_METADATA+=("mesh-snappy-ranks=${MESH_SNAPPY_RANKS}")
 WORKER_METADATA+=(${WORKER_SECRET_METADATA[@]+"${WORKER_SECRET_METADATA[@]}"})
 
 # The metadata list is handed to gcloud with '|' as its delimiter. Neither of the obvious
