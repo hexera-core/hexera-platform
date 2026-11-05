@@ -292,12 +292,20 @@ publish () {
     grep -aA8 "^Region" "$c/splitMeshRegions.log" 2>/dev/null | head -12
     echo
     echo "=== per region"
+    # THE SERIAL PASS FIRST, because it measured the RECONSTRUCTED single-piece mesh, which is what
+    # is delivered. The parallel pass sums each processor's local counts, so it over-counts points
+    # and faces by the processor-boundary duplicates while agreeing exactly on cells - measured on
+    # cbox2: fluid 219,799,339 parallel against 219,500,627 serial, same 68,806,800 cells. Reporting
+    # the parallel figures after the serial pass has run, which is what this did, shows the
+    # decomposed mesh's numbers for a mesh nobody ships.
     for r in fluid solid chip air; do
-      for src in "$c/checkMesh.par.$r.log" "$c/checkMesh.$r.log"; do
+      for src in "$c/checkMesh.$r.log" "$c/checkMesh.par.$r.log"; do
         [ -f "$src" ] || continue
-        echo "--- $r"
-        grep -aE "^ *cells:|^ *points:|^ *faces:|Number of regions|not connected|non-orthogonality Max|severely non-orth|Max skewness|Max aspect|Total volume|Mesh OK|\*\*\*" \
-          "$src" | head -12
+        case "$src" in *checkMesh.par.*) which="parallel, on the decomposed mesh" ;;
+                       *) which="serial, on the reconstructed mesh" ;; esac
+        echo "--- $r   ($which)"
+        grep -aE "^ *cells:|^ *points:|^ *faces:|^ *internal faces:|Number of regions|not connected|Boundary openness|non-orthogonality Max|severely non-orth|Max skewness|Max aspect|Total volume|Mesh OK|\*\*\*" \
+          "$src" | head -14
         break
       done
     done
@@ -306,6 +314,11 @@ publish () {
     echo "  minus coolant = 2.226721e-04 m3. THE COOLANT MUST BE ONE REGION."
     echo
     echo "=== the interfaces, which must match face for face"
+    echo "  (the RECONSTRUCTED boundary files are authoritative. splitMeshRegions' interface table"
+    echo "   above counts internal faces between zones summed over processors, so a face on a"
+    echo "   processor boundary is counted twice and the table reads slightly high: 21,722,346 for"
+    echo "   fluid-solid on cbox2 against 21,708,529 in both reconstructed boundary files, which"
+    echo "   agree with each other exactly. Boundary openness OK is what proves nothing was lost.)"
     for r in fluid solid chip; do
       for p in "$c/constant/$r/polyMesh/boundary" "$c/processor0/constant/$r/polyMesh/boundary"; do
         [ -f "$p" ] || continue
