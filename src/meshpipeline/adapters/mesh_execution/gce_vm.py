@@ -76,6 +76,7 @@ docker run -d --rm --name mesh \
   -e TIMEOUT="$T" \
   -e HEXERA_MESH_CONTRACT="$(get instance/attributes/mesh-contract)" \
   -e MESH_PROGRESSIVE_SNAPSHOT_ENABLED="$(get instance/attributes/mesh-snapshots)" \
+  -e MESH_SNAPPY_RANKS="$(get instance/attributes/mesh-snappy-ranks)" \
   -e TMPDIR=/work -v /mnt/stateful_partition/work:/work \
   "$IMG" python -m meshpipeline.runtime.mesh_runner || say "the mesh container did not start"
 while docker inspect mesh >/dev/null 2>&1; do
@@ -133,16 +134,36 @@ def _job_container() -> tuple[str, str]:
 def instance_body(*, name: str, zone: str, machine: str, image: str, account: str, input_uri: str,
                   output_uri: str, engine: str, timeout: int, disk_gb: int) -> dict:
     """The instances.insert body (pure: tests read it)."""
-    from meshpipeline.adapters.mesh_execution.cloud_run_client import _snapshots_enabled
     from meshpipeline.contracts.mesh_execution import MESH_EXCHANGE_VERSION
 
     # THE SAME SWITCH THE CLOUD RUN ROUTE PASSES, for the same reason: the VM runs the job's own
     # container, which carries no env of its own, so a setting the mesher reads reaches it only
     # from here. The two routes must agree, or a mesh would publish frames on one path and not the
     # other depending on how big it was - which reads as a bug in the feature rather than in us.
+    #
+    # So it is read from the SETTING THAT OWNS IT (settings/mesh_snapshot), not from the sibling
+    # adapter that happens to dispatch the other route: agreement between the two routes is the
+    # invariant, and an underscore import across siblings makes it brittle rather than enforcing
+    # it. Guarded and lazy, because a progress nicety must never be why a mesh is not submitted:
+    # the setting raises on a malformed boolean, and that must not take a dispatch with it.
+    try:
+        from meshpipeline.settings.mesh_snapshot import snapshots_enabled_at_dispatch
+        snapshots = snapshots_enabled_at_dispatch()
+    except Exception:  # noqa: BLE001 - unreadable settings mean no frames, never no mesh
+        snapshots = False
+    # The rank pin rides with the frame switch, for the reason stated on the Cloud Run route: the
+    # frame is only read from a serial run, and the module that decides rank count runs in the
+    # container. Sending one without the other is how a deployment ends up holding both settings
+    # and still skipping every frame.
+    try:
+        import meshpipeline.engines.determinism as dcfg
+        ranks = str(dcfg.MESH_SNAPPY_RANKS or "")
+    except Exception:  # noqa: BLE001 - a sizing hint never stops a mesh being submitted
+        ranks = ""
     meta = {"mesh-image": image, "input-uri": input_uri, "output-uri": output_uri, "engine": engine,
             "timeout": str(int(timeout)), "mesh-contract": str(MESH_EXCHANGE_VERSION),
-            "mesh-snapshots": "true" if _snapshots_enabled() else "false",
+            "mesh-snapshots": "true" if snapshots else "false",
+            "mesh-snappy-ranks": ranks,
             "startup-script": STARTUP_SCRIPT}
     body: dict = {
         "name": name,

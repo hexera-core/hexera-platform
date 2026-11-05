@@ -19,6 +19,21 @@ NATIVE = Path(__file__).parents[3] / "src" / "meshpipeline" / "engines" / "snapp
 _HDR = "FoamFile{{ version 2.0; format ascii; class {cls}; object {obj}; }}\n"
 
 
+@pytest.fixture(autouse=True)
+def _fresh_module_state():
+    """The module remembers things per process (what was promoted, when the attempt started, what
+    it has already said). A test must not inherit another's."""
+    prog._PROMOTED.clear()
+    prog._TORN.clear()
+    prog._ATTEMPT_AT = None
+    prog._SAID_PARALLEL = False
+    yield
+    prog._PROMOTED.clear()
+    prog._TORN.clear()
+    prog._ATTEMPT_AT = None
+    prog._SAID_PARALLEL = False
+
+
 def _polymesh(root: Path, *, complete: bool = True) -> Path:
     """A minimal ASCII polyMesh: one square face on one patch. Enough for the boundary reader."""
     pm = root / "polyMesh"
@@ -58,6 +73,26 @@ def test_the_parallel_path_never_snapshots(monkeypatch):
     monkeypatch.setattr(mscfg, "MESH_PROGRESSIVE_SNAPSHOT_ENABLED", True)
     for nproc in (2, 4, 12):
         assert prog.snapshots_enabled(nproc=nproc) is False
+
+
+def test_a_run_asked_for_frames_that_cannot_publish_them_says_why_once(monkeypatch, caplog):
+    # THE DEPLOYED CASE: every environment meshes with 8 ranks, so the flag alone publishes
+    # nothing. The reason is in the log rather than left to be inferred from silence - and it is
+    # said once, not once per look, because the decision cannot change mid-run.
+    monkeypatch.setattr(mscfg, "MESH_PROGRESSIVE_SNAPSHOT_ENABLED", True)
+    with caplog.at_level("INFO", logger=prog.__name__):
+        for _ in range(5):
+            assert prog.snapshots_enabled(nproc=8) is False
+    said = [r.getMessage() for r in caplog.records if "MESH_SNAPPY_RANKS=1" in r.getMessage()]
+    assert len(said) == 1, said
+    assert "8 snappy ranks" in said[0]
+
+
+def test_a_serial_run_says_nothing_about_ranks(monkeypatch, caplog):
+    monkeypatch.setattr(mscfg, "MESH_PROGRESSIVE_SNAPSHOT_ENABLED", True)
+    with caplog.at_level("INFO", logger=prog.__name__):
+        assert prog.snapshots_enabled(nproc=1) is True
+    assert not [r for r in caplog.records if "MESH_SNAPPY_RANKS" in r.getMessage()]
 
 
 def test_the_parallel_invocation_in_the_engine_still_overwrites():
@@ -133,12 +168,107 @@ def test_the_intermediate_is_deleted_the_moment_it_is_read(tmp_path):
 
 
 def test_the_intermediate_is_deleted_even_when_no_frame_comes_of_it(tmp_path, monkeypatch):
+    # A read that COMPLETED and found no frame in it (past the work ceiling, no boundary) has had
+    # everything the directory can give: it goes, and `1/` does not ride home in the archive.
+    _polymesh(tmp_path / "1")
+    monkeypatch.setattr(prog, "partial_payload", lambda *a, **k: None)
+    assert prog.take_castellated(tmp_path, units="mm") is None
+    assert not (tmp_path / "1").exists()
+    assert prog.drop_time_dirs(tmp_path) == []          # nothing staged, nothing left
+
+
+def test_a_torn_read_keeps_the_frame_for_the_next_look(tmp_path, monkeypatch):
+    # snappy writes a polyMesh straight to its final paths, so the all-five-present test cannot
+    # prove the last file is finished. Deleting on a failed read ended snapshotting for the whole
+    # run over a file a second from complete; now the next look reads the same frame again.
+    _polymesh(tmp_path / "1")
+    calls: list = []
+
+    def _torn(*a, **k):
+        calls.append(a)
+        raise RuntimeError("owner is half written")
+
+    monkeypatch.setattr(prog, "partial_payload", _torn)
+    assert prog.take_castellated(tmp_path, units="mm") is None       # never raises at the watcher
+    assert len(calls) == 1
+    assert prog.take_castellated(tmp_path, units="mm") is None
+    assert len(calls) == 2, "the frame was thrown away instead of being read again"
+    # and when it finally reads, the frame is a frame and the directory goes
+    monkeypatch.undo()
+    payload = prog.take_castellated(tmp_path, units="mm")
+    assert payload is not None and payload["partial"] is True
+    assert prog.drop_time_dirs(tmp_path) == [], "a staged frame rode home in the archive"
+
+
+def test_a_frame_kept_for_a_retry_still_cannot_reach_the_archive(tmp_path, monkeypatch):
+    # The staged frame is the one copy of the mesh a failed read leaves behind. drop_time_dirs
+    # runs on every exit path the engine has (native.py), so it must take the staging with it.
     _polymesh(tmp_path / "1")
     monkeypatch.setattr(prog, "partial_payload",
-                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no numpy")))
-    with pytest.raises(RuntimeError):
-        prog.take_castellated(tmp_path, units="mm")
-    assert not (tmp_path / "1").exists()
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("torn")))
+    assert prog.take_castellated(tmp_path, units="mm") is None
+    assert prog.drop_time_dirs(tmp_path) == [prog._STAGING]
+    assert not any(p.name.startswith(".snapshot") for p in tmp_path.iterdir())
+
+
+def test_the_claim_is_held_over_the_move_and_not_over_the_decimation(tmp_path):
+    # The lock exists so the watcher cannot delete a directory the promotion is about to move. It
+    # must not also make a finished mesh wait on a viewer frame: promote_final_mesh runs on the
+    # engine thread the moment snappy returns, so the read and the decimation happen with nothing
+    # held - which is observable as the promotion completing while the payload is still building.
+    _polymesh(tmp_path / "constant")
+    _polymesh(tmp_path / "1")
+    _polymesh(tmp_path / "2")
+    (tmp_path / "2" / "polyMesh" / "points").write_text("THE MESH")
+    import threading
+    import unittest.mock as _m
+    promoted, blocked = [], []
+    real = prog.partial_payload
+
+    def _slow(pm, **kw):
+        out = real(pm, **kw)                       # the frame is read and decimated...
+        t = threading.Thread(target=lambda: promoted.append(prog.promote_final_mesh(tmp_path)))
+        t.start()
+        t.join(5.0)                                # ...and the mesh may be promoted while it is
+        blocked.append(t.is_alive())
+        return out
+
+    with _m.patch.object(prog, "partial_payload", _slow):
+        out = prog.take_castellated(tmp_path, units="mm")
+    assert blocked == [False], "a finished mesh waited on the viewer frame's decimation"
+    assert promoted == [True]
+    assert out is not None
+    assert (tmp_path / "constant" / "polyMesh" / "points").read_text() == "THE MESH"
+
+
+def test_a_stale_time_directory_is_never_promoted_as_this_attempts_mesh(tmp_path, monkeypatch):
+    # Benign today - every dispatch extracts a fresh workspace - but _promote is the authoritative
+    # stage, so a previous attempt's mesh must not be able to become this attempt's deliverable.
+    # The roster parallel_stages.polymesh_complete already holds for constant/polyMesh.
+    import os
+    import time as _t
+    monkeypatch.setattr(mscfg, "MESH_PROGRESSIVE_SNAPSHOT_ENABLED", True)
+    _polymesh(tmp_path / "constant")
+    _polymesh(tmp_path / "1")
+    old = _t.time() - 3600
+    for f in (tmp_path / "1" / "polyMesh").iterdir():
+        os.utime(f, (old, old))
+    prog.snappy_command(nproc=1)                       # this attempt starts now
+    assert prog.promote_final_mesh(tmp_path) is False, "a previous attempt's mesh was promoted"
+    assert not (tmp_path / "constant" / "polyMesh").exists()
+
+
+def test_a_stale_time_directory_is_never_published_as_this_attempts_frame(tmp_path, monkeypatch):
+    import os
+    import time as _t
+    monkeypatch.setattr(mscfg, "MESH_PROGRESSIVE_SNAPSHOT_ENABLED", True)
+    _polymesh(tmp_path / "1")
+    old = _t.time() - 3600
+    for f in (tmp_path / "1" / "polyMesh").iterdir():
+        os.utime(f, (old, old))
+    prog.snappy_command(nproc=1)
+    assert prog.take_castellated(tmp_path, units="mm") is None
+    assert prog.castellated_polymesh(tmp_path) is not None, "the freshness test, not completeness"
 
 
 # ---------------------------------------------------------------- the final mesh
@@ -216,3 +346,26 @@ def test_the_pointer_is_published_once_even_while_the_stage_repeats():
 
     asyncio.run(_run())
     assert published == [("castellated", "jobs/x/partial-castellated.json")]
+
+
+def test_the_watcher_says_why_a_parallel_run_publishes_nothing(monkeypatch, tmp_path, caplog):
+    # WHERE IT IS ACTUALLY REACHED: the engine asks snapshots_enabled only on its serial branch,
+    # so a parallel run never consults the module - but the runner's watcher polls take_castellated
+    # on every run the switch is on for. A workspace with processor* in it is that run.
+    monkeypatch.setattr(mscfg, "MESH_PROGRESSIVE_SNAPSHOT_ENABLED", True)
+    (tmp_path / "processor0" / "1" / "polyMesh").mkdir(parents=True)
+    with caplog.at_level("INFO", logger=prog.__name__):
+        for _ in range(4):
+            assert prog.take_castellated(tmp_path, units="mm") is None
+    said = [r.getMessage() for r in caplog.records if "MESH_SNAPPY_RANKS=1" in r.getMessage()]
+    assert len(said) == 1, said
+    assert "parallel" in said[0]
+
+
+def test_a_serial_workspace_with_nothing_in_it_yet_says_nothing(monkeypatch, tmp_path, caplog):
+    # The ordinary case: every look before the castellated phase is written. Silence.
+    monkeypatch.setattr(mscfg, "MESH_PROGRESSIVE_SNAPSHOT_ENABLED", True)
+    (tmp_path / "constant").mkdir()
+    with caplog.at_level("INFO", logger=prog.__name__):
+        assert prog.take_castellated(tmp_path, units="mm") is None
+    assert caplog.records == []

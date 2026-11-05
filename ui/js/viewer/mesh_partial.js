@@ -1,6 +1,7 @@
 // Responsibility: Show the mesh as it is BEING built - one frame per pointer the run published -
 // in a viewport that never claims to be the delivered mesh.
-// Owns: its vtk.js scene, the one panel per run, and the record of which pointers were drawn.
+// Owns: its vtk.js scene, the one panel per run, the record of which pointers were drawn, and the
+// takeover of the workbench while a frame is up - which it gives back when the frame closes.
 // Boundaries: it fetches its own frame and draws it; it decides nothing about the run, enables no
 // download, opens no result panel, and never sets the delivered-mesh state.
 
@@ -32,6 +33,7 @@
  * panel down and makes every later pointer for that run a no-op.
  */
 import { getMeshPartial } from "../api/endpoints.js";
+import { get as getState } from "../core/state.js";
 import { b64f32, b64u32, loadVtk } from "./geometry_stage.js";
 import { MOUSE_HINT, bindMouse, isUpAxis, orient, savedUp, shield } from "./view_controls.js";
 import { themeRgb } from "./toolbar.js";
@@ -44,21 +46,39 @@ const AMBIENT = 0.22, DIFFUSE = 0.80, SPECULAR = 0.06;
 // the front-quarter view every viewer here opens with, given for +Z up
 const VIEW_DIR = [1, -1, 0.7];
 
-/** What is known about one run: the pointers already taken, the panel, and whether the delivered
- *  mesh has arrived (after which no partial is drawn, however late the pointer). */
+/** What is known about one run: the pointers already taken, the panel and how to give the page
+ *  back when it closes, and whether the delivered mesh has arrived (after which no partial is
+ *  drawn, however late the pointer). */
 const _runs = new Map();
 function runState(job) {
   let st = _runs.get(job);
-  if (!st) { st = { keys: new Set(), panel: null, scene: null, done: false, draws: 0 }; _runs.set(job, st); }
+  if (!st) { st = { keys: new Set(), panel: null, release: null, scene: null, done: false, draws: 0 }; _runs.set(job, st); }
   return st;
+}
+
+/** DOES THIS FRAME STILL BELONG ON SCREEN? A frame is fetched and drawn across two awaits, and the
+ *  page can move under it: a user who opened a running job by link and then uploaded new geometry
+ *  is looking at a new session, and the geometry check that follows must not be covered by the
+ *  previous run's mesh. The page's own state (core/state.js) is the one source of truth for what
+ *  is displayed - the same one main.js reads when it hands the pointer over - so the frame is
+ *  checked against it: the run it was requested for must still be the displayed run, and the
+ *  session it was requested in must still be the displayed session. Both are compared exactly -
+ *  a page that was attached to a run by link carries NO session of its own, so "none, and now
+ *  there is one" is a page that has moved on just as much as one session replacing another. */
+function stillShown(job, sessionId) {
+  return getState.jobId() === job && getState.sessionId() === sessionId;
 }
 
 /* THE WORKBENCH TAKEOVER, the move the geometry check and the delivered mesh both make: with a
    workbench on the page the viewport takes its column and the conversation stays beside it;
-   without one (an embedding page) the panel opens after its anchor. */
+   without one (an embedding page) the panel opens after its anchor.
+   Releasing gives the page back (the geometry stage's own contract): the viewer that was hidden
+   underneath comes back, and when there is none the workbench mode and its toggle go with the
+   panel - a run that failed after a frame was shown must not leave an empty workbench behind, nor
+   a "Hide conversation" button for a conversation that is no longer a drawer. */
 function takeOver(box, anchorEl) {
   const wb = document.getElementById("workbench"), app = document.getElementById("app");
-  if (!(wb && app)) { if (anchorEl) anchorEl.after(box); return; }
+  if (!(wb && app)) { if (anchorEl) anchorEl.after(box); return () => box.remove(); }
   wb.querySelectorAll(".viewer").forEach((v) => { v.hidden = true; });
   wb.appendChild(box);
   app.classList.add("wb"); app.classList.remove("wb-collapsed");
@@ -71,6 +91,18 @@ function takeOver(box, anchorEl) {
       tg.setAttribute("aria-pressed", on ? "true" : "false");
     };
   }
+  return () => {
+    box.remove();
+    const left = [...wb.querySelectorAll(".viewer")];
+    if (left.length) { left[left.length - 1].hidden = false; return; }
+    app.classList.remove("wb", "wb-collapsed");
+    // THE TOGGLE IS THE TAKEOVER'S, and whoever opened last owns it (it is assigned with `=`, not
+    // added): with no viewer left there is no drawer to open, so the handler goes with the button.
+    if (tg) {
+      tg.hidden = true; tg.textContent = "Hide conversation"; tg.setAttribute("aria-pressed", "false");
+      tg.onclick = null;
+    }
+  };
 }
 
 /** The words under the frame. It names the phase the mesher is in and says plainly that this is
@@ -184,9 +216,9 @@ function openPanel(job, opts) {
   box.innerHTML = `<div class="v-canvas" id="mp-canvas-${job}">
       <div class="v-hint">${MOUSE_HINT}</div>
       <div class="v-count" id="mp-caption-${job}" role="status"></div></div>`;
-  takeOver(box, opts.anchorEl);
+  const release = takeOver(box, opts.anchorEl);
   box.querySelectorAll(".v-hint,.v-count").forEach(shield);
-  return box;
+  return { box, release };
 }
 
 /** Which way up this run is being looked at: the choice the user made for this job, else the one
@@ -206,6 +238,10 @@ function upAxisFor(job, surf, sessionId) {
 export async function showMeshPartial(job, phase, objectKey, opts) {
   opts = opts || {};
   if (!job) return false;
+  const session = opts.sessionId || null;
+  // the page has already moved off this run or this conversation: nothing to draw, and no pointer
+  // to spend - it is refused before the key is taken
+  if (!stillShown(job, session)) return false;
   const st = runState(job);
   if (st.done) return false;                       // the delivered mesh has already won
   const key = String(objectKey || "");
@@ -213,16 +249,24 @@ export async function showMeshPartial(job, phase, objectKey, opts) {
   // pointer with no key is nothing this can be idempotent about
   if (!key || st.keys.has(key)) return false;
   st.keys.add(key);
+  /* A FRAME THAT NO LONGER BELONGS ON SCREEN DREW NOTHING, so it gives its pointer back: the rule
+     is one DRAW per pointer, and a page that returns to this run may still want this frame. */
+  const abandon = () => { st.keys.delete(key); return false; };
   try {
     const surf = await getMeshPartial(job);
     // the route has nothing (the flag is off, nothing is published yet, the exchange was tidied)
     if (!surf) return false;
     // A PARTIAL SAYS SO. Anything else is refused rather than shown as the mesh being built.
     if (surf.partial !== true || surf.is_mesh === true) return false;
+    if (!stillShown(job, session)) return abandon();      // the page moved while this was in flight
     await loadVtk();
     if (st.done) return false;                     // it delivered while this frame was in flight
+    // ...and again on the far side of the last await, immediately before the panel opens: this is
+    // the check that keeps a stale frame from taking the workbench over a new upload
+    if (!stillShown(job, session)) return abandon();
     if (!st.panel || !document.getElementById(st.panel.id)) {
-      st.panel = openPanel(job, opts);
+      const opened = openPanel(job, opts);
+      st.panel = opened.box; st.release = opened.release;
       st.scene = initScene(job, document.getElementById("mp-canvas-" + job),
                            upAxisFor(job, surf, opts.sessionId));
     }
@@ -239,12 +283,19 @@ export async function showMeshPartial(job, phase, objectKey, opts) {
 }
 
 /** The run delivered (or ended). The partial content is dropped and every later pointer for this
- *  run is a no-op, so a frame still in flight can never land over the delivered mesh. */
+ *  run is a no-op, so a frame still in flight can never land over the delivered mesh.
+ *
+ *  THE PAGE IS GIVEN BACK, not just the panel. A delivered mesh takes the workbench over straight
+ *  after this and never notices, but a run that failed or was cancelled opens no viewer at all -
+ *  the repair panel draws in the conversation, or nothing does - so the takeover is released here:
+ *  whatever viewer was hidden under the frame comes back, or the page leaves workbench mode and
+ *  its toggle with it. Nothing is left blank, and no "Hide conversation" button is left stuck. */
 export function dropMeshPartial(job) {
   if (!job) return;
   const st = runState(job);
   st.done = true;
   if (st.scene) st.scene.stop();
-  if (st.panel) st.panel.remove();
-  st.scene = null; st.panel = null;
+  if (st.release) st.release();
+  else if (st.panel) st.panel.remove();
+  st.scene = null; st.panel = null; st.release = null;
 }

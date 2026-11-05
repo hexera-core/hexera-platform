@@ -46,18 +46,52 @@ def _find(rows, needle: str) -> dict:
 # what it did
 
 
+def _target(entity: str, code: str, **measurements) -> dict:
+    """An advice target in the shape `cad/repair/triage._targets` records it."""
+    return {"entity": entity, "code": code, "severity": "error", "region": "unknown",
+            "message": "", "measurements": dict(measurements), "location": {}}
+
+
 def test_a_kept_operation_becomes_a_row_with_its_count_and_the_defect_it_answered():
     rows = R.repair_receipt_rows(_state(), _out(
         operations=[_op("fix_face_boundary", "wire_gap", "edge:1", "edge:2"),
                     _op("fix_face_boundary", "wire_gap", "edge:7")],
-        targets=[{"code": "wire_gap", "measurements": {"boundary_length": 2.4321}},
-                 {"code": "wire_gap", "measurements": {"boundary_length": 0.5}}]))
+        targets=[_target("edge:1", "wire_gap", boundary_length=2.4321),
+                 _target("edge:2", "wire_gap", boundary_length=0.5),
+                 _target("edge:7", "wire_gap")]))
 
     gaps = _find(rows, "gaps")
     assert gaps["label"] == "Closed gaps", "the label says what was done, without the count"
     assert gaps["value"] == "3", "the value is the count of targets, not of operations"
     assert "a gap where two edges did not meet" in gaps["why"]
     assert "2.43 mm" in gaps["why"], "the measured span travels with the row"
+
+
+def test_a_kept_row_never_prints_the_span_of_a_defect_it_did_not_touch():
+    """THE REGRESSION THIS GUARDS. `record["targets"]` is `advice.targets` - what the repair was
+    ADVISED to look at. A part with a 2 mm wire gap that was filled and a 40 mm paired-rim opening
+    that was REFUSED printed "largest measured span 40 mm" on the kept row, one line above the
+    refusal of that very opening. The span may be read only from the targets the kept operation
+    itself named."""
+    rows = R.repair_receipt_rows(_state(), _out(
+        operations=[_op("fill_planar_hole", "open_shell", "face:small")],
+        targets=[_target("face:small", "open_shell", boundary_length=2.0),
+                 _target("face:rim", "open_shell", boundary_length=40.0)],
+        refusals=[{"defect": "face:rim", "reason": "paired_rim"}]))
+
+    kept = next(r for r in rows if r["value"] == "1")
+    assert "2 mm" in kept["why"] and "40" not in kept["why"], \
+        "the refused opening is still in the part; the kept row may not claim its span"
+    # and the refusal of that opening is still on the receipt beside it
+    assert _find(rows, "Did not fill an opening")["value"] == "Refused"
+
+
+def test_a_kept_row_whose_targets_were_never_measured_omits_the_span():
+    rows = R.repair_receipt_rows(_state(), _out(
+        operations=[_op("fill_planar_hole", "open_shell", "face:3")],
+        targets=[_target("face:9", "open_shell", boundary_length=40.0)]))
+    row = next(r for r in rows if r["value"] == "1")
+    assert "mm" not in row.get("why", ""), "silence beats someone else's measurement"
 
 
 def test_an_operation_the_vocabulary_does_not_know_is_still_counted_never_named():
@@ -306,3 +340,98 @@ def test_a_lost_claim_stops_the_node_while_any_other_failure_is_swallowed(monkey
 
     monkeypatch.setattr(ep, "execution_publisher", lambda job_id, agent=None: _Broken())
     asyncio.run(R.apublish("job-1", rows))        # the user stream is never load-bearing
+
+
+# the refused run - the one that MOST needs a receipt
+
+
+def _refused_out(**measured) -> dict:
+    """The record `repair_attempt._declined` returns on the `RepairRefused` path: a decline, with
+    the loop it ran carried inside `detail.measurements`."""
+    return {"repair_attempt": {"attempted": False, "outcome": "refused",
+                               "route": "conservative_repair",
+                               "reason": "the repair was refused: the run's surface area ended "
+                                         "0.4100 of the original away",
+                               "detail": {"measurements": dict(measured)}}}
+
+
+def test_a_result_thrown_away_whole_still_gets_its_receipt():
+    """THE REGRESSION THIS GUARDS. `repair_receipt_rows` returned [] unless the record carried
+    `attempted` or `refusals` at its top level - and EVERY decline has neither, so the run that
+    most needs an account ("we changed your part too far and threw the result away") said
+    nothing at all."""
+    rows = R.repair_receipt_rows(_state(), _refused_out(
+        operations=[_op("fill_planar_hole", "open_shell", "face:1"),
+                    _op("sew_faces", "open_shell", "face:2", status="rolled_back",
+                        reason="cap:area_change")],
+        refusals=[{"defect": "edge:12", "reason": "paired_rim"}],
+        before={"surface_area_mm2": 1000.0, "volume_mm3": 500.0, "solids": 1},
+        after={"surface_area_mm2": 1410.0, "volume_mm3": 500.0, "solids": 1},
+        declared_area_mm2=0.0, result_discarded=True))
+
+    labels = _labels(rows)
+    assert "The repair was undone" in labels, "the headline fact is stated, not implied"
+    undone = _find(rows, "The repair was undone")
+    assert undone["value"] == "Nothing changed"
+    assert "original file was used" in undone["why"]
+    # the refusal the receipt exists for survives
+    assert _find(rows, "Did not fill an opening")["value"] == "Refused"
+    # and the attempt that was rolled back inside the loop is still named
+    assert _find(rows, "Tried to fix")["value"] == "Rolled back"
+
+
+def test_a_thrown_away_result_claims_nothing_as_kept_or_as_fixed():
+    """An operation the session KEPT is not kept once the after-check discards the result whole:
+    the customer's part never saw it. A "Closed 1 gap" row here would be a plain untruth."""
+    rows = R.repair_receipt_rows(_state(), _refused_out(
+        operations=[_op("fill_planar_hole", "open_shell", "face:1")],
+        refusals=[{"defect": "edge:12", "reason": "paired_rim"}],
+        result_discarded=True))
+
+    assert not [r for r in rows if r["label"].startswith("Filled")
+                or r["label"].startswith("Closed")]
+    assert "Everything found was fixed" not in _labels(rows), \
+        "nothing was fixed: the result was thrown away"
+
+
+def test_the_undone_results_shape_change_is_labelled_as_the_undone_results():
+    """The before/after of a refused run describes geometry nobody received. The number is the
+    evidence the refusal was made on and is worth stating - under a label that says whose it is."""
+    rows = R.repair_receipt_rows(_state(), _refused_out(
+        operations=[_op("fill_planar_hole", "open_shell", "face:1")],
+        before={"surface_area_mm2": 1000.0, "volume_mm3": 500.0, "solids": 1},
+        after={"surface_area_mm2": 1410.0, "volume_mm3": 500.0, "solids": 1},
+        declared_area_mm2=0.0, result_discarded=True))
+    area = _find(rows, "surface area")
+    assert area["label"] == "The undone repair changed the surface area"
+    assert area["value"] == "41%"
+    assert "Surface area changed" not in _labels(rows), \
+        "the customer's part did not change by 41%; only the discarded result did"
+
+
+def test_a_loop_that_kept_nothing_says_so_rather_than_claiming_it_was_undone():
+    """`conservative.py` raises RepairRefused a second way: nothing was kept, so there was no
+    result to discard. "The repair was undone" would describe a rollback that never happened."""
+    rows = R.repair_receipt_rows(_state(), _refused_out(
+        operations=[_op("sew_faces", "open_shell", "face:1", status="rolled_back",
+                        reason="target_absent")],
+        refusals=[{"defect": "edge:1", "reason": "untargetable"}]))
+    row = _find(rows, "Nothing was repaired")
+    assert row["value"] == "Nothing changed"
+    assert "The repair was undone" not in _labels(rows)
+    assert all(not leaks(r.get("why", "")) for r in rows)
+
+
+def test_a_refusal_with_nothing_measured_sends_no_receipt_at_all():
+    """A heading whose only row restates the lane's own sentence claims a record that is not
+    there. `repair_words` already says "Nothing could be repaired safely"."""
+    assert R.repair_receipt_rows(_state(), _refused_out()) == []
+    assert R.repair_receipt_rows(_state(), _refused_out(before={"solids": 1})) == []
+
+
+@pytest.mark.parametrize("outcome", ["no_report", "no_geometry", "off", "format", "timeout",
+                                     "unavailable", "failed", "not_promoted", "not_autonomous"])
+def test_a_decline_that_measured_nothing_is_still_silent(outcome):
+    assert R.repair_receipt_rows(_state(), {"repair_attempt": {
+        "attempted": False, "outcome": outcome, "reason": "whatever it was",
+        "detail": {"reasons": ["triage said so"]}}}) == []

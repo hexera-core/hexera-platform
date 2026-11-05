@@ -67,7 +67,13 @@ def publishing_sink(publish: ExecutionEventPublisher, loop, *, op_prefix: str,
     re-says the current stage as "Still ... · N min". Each line gets its own identity, so a replay
     dedupes. A count (`n`) that moves while the stage stays is said again, so the number on the
     row moves; `of` and `unit` are the plan's own estimate ("of about 1.9M elements") when the
-    mesher does not say one."""
+    mesher does not say one.
+
+    AN ESTIMATE THE MESH HAS ALREADY PASSED IS DROPPED, not stretched: a mesh can and does come out
+    bigger than its plan (a thin plate's layer stage can add several times the castellated cells),
+    and "2.9M of about 1.9M cells" with a bar pinned at the end is a line an engineer would laugh
+    at. Past the estimate the row says only the count it has measured - "2.9M cells so far" - and
+    the bar goes with it. The count itself is never clamped: it is a measurement."""
     import asyncio
     import time
 
@@ -131,8 +137,11 @@ def publishing_sink(publish: ExecutionEventPublisher, loop, *, op_prefix: str,
             _quiet(asyncio.run_coroutine_threadsafe(_publish_stage(key, str(stage.get("label") or ""), op), loop))
         said["n"] = n
         kind, words = N.stage_words(key)
+        _of = _int(stage.get("of")) or (of if n is not None else None)
+        if _of is not None and n is not None and n > _of:
+            _of = None      # past its estimate: the count stands alone (see the docstring)
         _quiet(asyncio.run_coroutine_threadsafe(
-            _narrate(kind, words, f"{op}:say", n=n, of=_int(stage.get("of")) or (of if n is not None else None),
+            _narrate(kind, words, f"{op}:say", n=n, of=_of,
                      unit=str(stage.get("unit") or (unit if n is not None else ""))), loop))
 
     return _sink

@@ -566,6 +566,10 @@ WORKER_METADATA=(
 # rather than the next mesh image deploy.
 [ -z "${MESH_PROGRESSIVE_SNAPSHOT_ENABLED:-}" ] \
   || WORKER_METADATA+=("mesh-progressive-snapshot-enabled=${MESH_PROGRESSIVE_SNAPSHOT_ENABLED}")
+# The rank pin that makes a frame reachable at all. It travels with the switch above because the
+# two are one decision: a frame is only read from a SERIAL snappy run, so the flag without this
+# leaves a deployment holding both halves of a feature and seeing none of it.
+[ -z "${MESH_SNAPPY_RANKS:-}" ] || WORKER_METADATA+=("mesh-snappy-ranks=${MESH_SNAPPY_RANKS}")
 WORKER_METADATA+=(${WORKER_SECRET_METADATA[@]+"${WORKER_SECRET_METADATA[@]}"})
 
 # The metadata list is handed to gcloud with '|' as its delimiter. Neither of the obvious

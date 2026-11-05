@@ -1,6 +1,7 @@
 // Responsibility: Show the geometry check's live line in the conversation - a small working mark
-// with the step running now in plain words, its time counting up, the steps done (ticked, folded
-// away), a "still working" note, and a plain message with the way on when a step fails.
+// with the step running now in plain words, its time counting up, a hairline bar under it when the
+// feed says how far through it is, the steps done (ticked, folded away), a "still working" note,
+// and a plain message with the way on when a step fails.
 // Boundaries: it renders the line the API serves (application/geometry_progress); it fetches
 // nothing and decides nothing about the check. The poll that feeds it lives in shell/composer.js.
 import { esc } from "../core/format.js";
@@ -24,12 +25,29 @@ export function durationWords(seconds) {
 }
 
 const MARK = { done: "✓", failed: "✕", skipped: "–" };
+/** The served fraction as a width, or "" when there is none to draw. A progress a caller sent
+ *  outside 0..1 is clamped rather than dropped: an overshooting mesh must read as full, never as
+ *  a bar that has run off its track. */
+export function barWidth(progress) {
+  if (progress == null) return "";
+  const v = Number(progress);
+  if (!Number.isFinite(v)) return "";
+  return `${(Math.max(0, Math.min(1, v)) * 100).toFixed(1)}%`;
+}
 /* the states a line ends in: nothing on it works any more */
 const SETTLED = ["done", "failed", "unsupported"];
 
 /** A step's RECEIPT, collapsed: the quiet affordance and the two-column rows behind it.
  *  Shown as published - label, its value, and the one-line derivation under it when there is one.
- *  Nothing here is computed; a receipt the backend did not send draws nothing at all. */
+ *  Nothing here is computed; a receipt the backend did not send draws nothing at all.
+ *
+ *  WHO SENDS ONE. Not the geometry check: `application/geometry_progress` publishes no `receipt`
+ *  key on a step, and until it does this path draws nothing for the check's own line. The rows
+ *  come from the RUN feed - `execution_publisher.areceipt` -> `render/run_progress.model.receipt`
+ *  -> its `view()`, which is drawn through this very renderer (run_progress imports
+ *  `createCheckProgress`), so a run's receipts reach the page through here and nowhere else. That
+ *  is why the step shape, the open/close state and the `.gp-rc-*` CSS live with the renderer both
+ *  lanes share rather than being duplicated in the run line. */
 function receiptHtml(s, open) {
   const r = s.receipt;
   if (!r || !(r.rows || []).length) return "";
@@ -86,11 +104,18 @@ export function progressHtml(p, opts = {}) {
   const mark = state === "done" ? "✓" : failed ? "✕" : live ? workIcon(runningKind(p)) : "";
   // WHAT HEXERA DECIDED AND WHY, as it decides: the run's own plain sentences, always in view
   const said = (p.said || []).map((t) => `<p class="gp-say">${esc(t)}</p>`).join("");
+  // HOW FAR THROUGH, as a hairline under the running line - drawn only while the line is live and
+  // the feed carries a fraction (run_progress sends one only when the engine's estimate is on the
+  // wire beside the count). It is aria-hidden like the mark and the ticks: the words in .gp-now
+  // already state "1.22M of about 1.9M cells" to a screen reader, and a progressbar role here
+  // would announce the same numbers a second time.
+  const width = live ? barWidth(p.progress) : "";
   return `<div class="gp" data-state="${esc(state)}"${live ? ' data-live="1"' : ""}${p.slow ? ` data-slow="${esc(p.slow)}"` : ""}>`
     + (said ? `<div class="gp-said" aria-live="polite">${said}</div>` : "")
     + `<div class="gp-head"><span class="gp-mark" aria-hidden="true">${mark}</span>`
     + `<span class="gp-now" role="status" aria-live="polite">${esc(p.current || "")}</span>`
     + `<span class="gp-time num" aria-hidden="true">${esc(time)}</span>${toggle}</div>`
+    + (width ? `<div class="gp-bar" aria-hidden="true"><i style="width:${width}"></i></div>` : "")
     + (note ? `<div class="gp-note">${esc(note)}</div>` : "")
     + body
     + `<ol class="gp-steps"${opts.open ? "" : " hidden"}>${stepsHtml(p, opts.openReceipts)}</ol></div>`;
@@ -101,7 +126,11 @@ export function progressHtml(p, opts = {}) {
    focus off a button the user is on. */
 function signature(p, opts) {
   if (!p) return "";
+  // the bar's WIDTH is not in here on purpose: it moves far more finely than the words (which
+  // round to "1.2M"), and keeping it out lets the fill ease to its new width in place instead of
+  // being replaced mid-transition. Whether there is a bar at all does change the markup.
   return JSON.stringify([p.state, p.current, p.note, p.slow, p.reason, p.advice, p.can_retry, !!p.live, p.kind || "",
+    p.progress == null,
     (p.said || []).length,
     !!opts.offline, !!opts.ended,
     (p.steps || []).map((s) => [s.key, s.state, s.state === "active" ? null : s.seconds,
@@ -178,6 +207,11 @@ export function createCheckProgress() {
       const next = signature(last, flags);
       if (next !== sig) { sig = next; draw(); }
       else tick();
+      // the bar follows the fraction on every poll, in place, so a count that moves without
+      // changing a word still moves it - and so the width eases rather than jumping
+      const fill = el.querySelector(".gp-bar > i");
+      const width = working() ? barWidth(last.progress) : "";
+      if (fill && width) fill.style.width = width;
       if (working()) { if (!timer) timer = setInterval(tick, 1000); } else stopTimer();
       // the conversation follows the line only when it moved, never on a poll that changed a word
       const scroller = col.closest(".scroll");

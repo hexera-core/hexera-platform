@@ -27,6 +27,8 @@ select:focus-visible, [role="button"]:focus-visible, [tabindex]:focus-visible, .
   /* the geometry check's live line: a still mark and plain text; the words still change */
   .gp[data-live] .gp-mark:empty::before{animation:none}
   .gp[data-live] .gp-now{animation:none;background:none;color:var(--text)}
+  /* the progress hairline jumps straight to its new width; the fraction still reads */
+  .gp-bar > i{transition:none}
   /* a receipt opens and closes at once, with no eased colour or chevron sweep */
   .gp-rc-toggle{transition:none}
   .gp-chev{transition:none}

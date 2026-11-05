@@ -679,6 +679,20 @@ def castellation_budget(budget: int, final: float | None, *, margin: float,
     return max(least, int(float(budget) * float(budget) / float(final)))
 
 
+def planned_cells_on_record(workspace) -> int | None:
+    """EngineSpec.planned_cells_on_record for snappyHexMesh: the cells the case written in
+    `workspace` was planned at, from the record render_snappy_case wrote beside it
+    (size_brake.PLAN_CELLS_FILE, `plan_cells` - the finished mesh's cells, layers and the gap
+    boxes included). None when the case carries no record: nothing is estimated from the dicts."""
+    from meshpipeline.engines.size_brake import PLAN_CELLS_FILE
+    try:
+        rec = json.loads((Path(workspace) / PLAN_CELLS_FILE).read_text())
+    except (OSError, ValueError, TypeError):
+        return None
+    v = rec.get("plan_cells") if isinstance(rec, dict) else None
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
+
+
 def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analysis: dict,
                        recommendation: dict, domain_min, domain_max,
                        strategy: dict | None = None, dimensionality: str = "3D",

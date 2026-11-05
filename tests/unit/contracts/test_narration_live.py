@@ -81,3 +81,40 @@ def test_the_review_verdict_is_said_on_the_live_line():
     rec = _Rec()
     asyncio.run(rationale.areviewer_verdict(rec, passed=True))
     assert rec.said and rec.said[0]["kind"] == "say" and rec.said[0]["text"].endswith("it passes.")
+
+
+def test_a_count_past_its_estimate_stops_claiming_a_fraction():
+    """A mesh CAN come out bigger than its plan (a thin plate's layers). Past the estimate the row
+    says the count it measured and nothing else - never "150% of about 1.9M"."""
+    rec = _Rec()
+
+    async def go():
+        sink = mesh_progress.publishing_sink(rec, asyncio.get_running_loop(), op_prefix="p",
+                                             of=1_900_000, unit="cells")
+
+        def remote():
+            with mesh_progress.relaying(sink):
+                mesh_progress.report({"key": "layers", "label": "adding wall layers", "n": 1_220_000})
+                mesh_progress.report({"key": "layers", "label": "x", "n": 1_900_000})   # exactly at it
+                mesh_progress.report({"key": "layers", "label": "x", "n": 2_900_000})   # past it
+        await asyncio.to_thread(remote)
+        await asyncio.sleep(0.05)
+    asyncio.run(go())
+    assert [(s["n"], s["of"], s["unit"]) for s in rec.said] == [
+        (1_220_000, 1_900_000, "cells"), (1_900_000, 1_900_000, "cells"), (2_900_000, None, "cells")]
+
+
+def test_with_no_estimate_the_count_keeps_its_noun_and_claims_nothing():
+    rec = _Rec()
+
+    async def go():
+        sink = mesh_progress.publishing_sink(rec, asyncio.get_running_loop(), op_prefix="p",
+                                             unit="elements")
+
+        def remote():
+            with mesh_progress.relaying(sink):
+                mesh_progress.report({"key": "volume", "label": "filling the solid", "n": 185_067})
+        await asyncio.to_thread(remote)
+        await asyncio.sleep(0.05)
+    asyncio.run(go())
+    assert [(s["n"], s["of"], s["unit"]) for s in rec.said] == [(185_067, None, "elements")]

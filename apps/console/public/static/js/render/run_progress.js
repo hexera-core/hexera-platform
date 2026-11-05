@@ -1,7 +1,8 @@
 // Responsibility: Turn a mesh run's events into one live line at the top of the run card - the step
 // running now in plain words (the engine chosen and why, the plan, meshing on the cloud mesher and
-// what the mesher says it is doing, checking quality, the AI review), its time, the steps done
-// ticked with their times, a note when a step runs long, and how the run ended.
+// what the mesher says it is doing, checking quality, the AI review), its time, how far through
+// the engine's own estimate says it is, the steps done ticked with their times, a note when a step
+// runs long, and how the run ended.
 // Boundaries: a model the stage renderer feeds (render/stage.js); it draws through the geometry
 // check's line (render/check_progress.js), so the two read alike. It reads no prose to decide
 // anything: an event's TYPE and lane say what happened; a note is only ever shown as it was said.
@@ -32,6 +33,27 @@ export function countWords(n) {
 }
 /* the most commentary lines a run line keeps in view: the newest, the older ones scroll away */
 const SAID_MAX = 6;
+/** HOW FAR THROUGH, as a fraction of the engine's own estimate, kept on the stage info.
+ *  It is FIRST set only when both numbers are on the wire: a count with no estimate says nothing
+ *  about how far through a mesh is, so until an estimate arrives there is nothing to draw. After
+ *  that it never falls - a count the mesher re-reads from its log can come back smaller, and a bar
+ *  that twitches is worse than no bar at all - and it never leaves.
+ *
+ *  Past the estimate it holds at FULL. The backend drops `of` once the count passes it
+ *  (contracts/mesh_progress), so a bar tied to the fraction would vanish at exactly the moment a
+ *  user is watching hardest, which reads as a failure rather than as progress. Held at full it
+ *  stops being a fraction and becomes a true statement - at or past what we expected, still
+ *  working - and the words beside it carry the honest number ("2.9M cells so far"), so nothing is
+ *  overclaimed. A full bar never means done: the step row and its tick say that.
+ *
+ *  A line with no count at all (a stage that does not count, "Finishing up") moves nothing: it is
+ *  silence about the number, not news that the estimate has been passed. */
+function advance(info) {
+  const n = Number(info.n), of = Number(info.of);
+  if (info.n == null || !Number.isFinite(n) || n < 0) return;
+  if (!Number.isFinite(of) || of <= 0) { if (info.frac != null) info.frac = 1; return; }
+  info.frac = Math.max(info.frac || 0, Math.min(1, n / of));
+}
 /* the most rows a step's receipt draws - the contract says at most 12, and this holds it to that */
 const RECEIPT_MAX = 12;
 
@@ -105,8 +127,11 @@ export function createRunProgress(now = () => Date.now()) {
       // before the mesher runs: the machine waits for the mesh; any other work (measuring, planning)
       // is what the step running now is doing
       if (!meshInfo && ev.kind !== "machine" && !/^Still /.test(text)) { pre = { kind: info.kind, stage: text, at }; return; }
-      if (!meshInfo) { told = { ...(told || {}), ...info }; return; }
+      // `told` outlives a mesh (it is what the machine said before one started), so no fraction is
+      // ever parked on it: a rebuild must start with an empty bar, not inherit the last one's.
+      if (!meshInfo) { told = { ...(told || {}), ...info, frac: undefined }; return; }
       Object.assign(meshInfo, info);
+      advance(meshInfo);
     },
     /** THE RECEIPT for a step: the durable rows that phase decided, as the backend published them
      *  (`{type:"receipt", stage, title, rows:[{label, value, why?}]}`). Nothing is summarised,
@@ -183,7 +208,7 @@ export function createRunProgress(now = () => Date.now()) {
       }
       const elapsed = Math.max(0, (t - active.t0) / 1000);
       let current = prefix + active.doing, note = "";
-      let kind = "";
+      let kind = "", progress = null;
       if (active.key !== "mesh" && pre && pre.at >= active.t0) {
         kind = pre.kind; current = `${prefix}${pre.stage}…`;
       }
@@ -192,6 +217,10 @@ export function createRunProgress(now = () => Date.now()) {
         const count = meshInfo.n != null && meshInfo.of ? ` · ${countWords(meshInfo.n)} of about ${countWords(meshInfo.of)}${meshInfo.unit ? " " + meshInfo.unit : ""}`
           : meshInfo.n != null ? ` · ${countWords(meshInfo.n)}${meshInfo.unit ? " " + meshInfo.unit : ""} so far` : "";
         current = `${prefix}${meshInfo.stage || "Meshing your part"}${count}…`;
+        // once this mesh has had an estimate, it keeps its bar for the rest of the mesh (advance):
+        // a heartbeat holds it, a stage with no count holds it, and the estimate being passed
+        // pins it at full. It starts again at nothing with the next mesh.
+        if (meshInfo.frac != null) progress = meshInfo.frac;
         if (meshInfo.beat) note = meshInfo.beat + ". This updates when it moves.";
       }
       if (active.key === "mesh" && meshInfo) {
@@ -207,7 +236,7 @@ export function createRunProgress(now = () => Date.now()) {
         note = `No news for ${durationWords(QUIET_NOTE_MS / 1000)}. Still running; this updates when it moves.`;
       }
       return { state: "running", live: true, steps: shown, current, note, elapsed_s: elapsed,
-               slow: note ? "yes" : undefined, kind };
+               slow: note ? "yes" : undefined, kind, progress };
     },
   };
 }

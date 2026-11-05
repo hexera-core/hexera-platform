@@ -198,6 +198,10 @@ API_ENV_PAIRS=(
   # The API reads it to decide whether its partial route exists at all; the worker reads its own
   # copy to decide whether to ask the mesher for frames. Off unless the environment says so.
   "MESH_PROGRESSIVE_SNAPSHOT_ENABLED=${MESH_PROGRESSIVE_SNAPSHOT_ENABLED:-false}"
+  # Carried so the API's own view of the environment matches the mesher's. It gates no route here
+  # - it is the mesher that sizes a run - but an environment whose halves disagree is the thing
+  # the frame switch's documentation warns about.
+  "MESH_SNAPPY_RANKS=${MESH_SNAPPY_RANKS:-}"
 )
 # BILLING'S NON-SECRET HALF, only where this deployment charges (the two Stripe credentials are
 # bound above as references). CONSOLE_BASE_URL is where Stripe returns the browser; left unset it

@@ -212,6 +212,35 @@ What Phase 1 is, exactly:
   engine but snappy. The kill criterion stands for them: if the castellated frame does not read as
   progress to a non-expert in review, the parallel path is not built.
 
+**Known limitation, as shipped: the flag alone reaches nothing.** "Serial only" is not a
+restriction on an edge case here — it excludes every environment this repo deploys.
+`progressive.snapshots_enabled` requires `nproc < 2`, and `determinism.snappy_ranks` answers 8 on
+both execution routes: `MESH_SNAPPY_RANKS` is blank, the Cloud Run mesh job is 8 vCPU / 32 GiB
+(`deploy/gcp/scripts/bootstrap-env.sh`), and the big-machine VM runs the same image under
+`docker run` with no `--cpus` at all. So `MESH_PROGRESSIVE_SNAPSHOT_ENABLED=true` on its own
+changes nothing anywhere, and the `mesh_snapshots` tick in `deploy.yml` changes nothing on its own
+either.
+
+- **To see a frame today:** set `MESH_SNAPPY_RANKS=1` for the environment as well as ticking
+  `mesh_snapshots`. The mesh is then serial, and slower in proportion.
+- **Why it is not simply lifted:** a parallel run's castellated mesh exists only as
+  `processor*/1/polyMesh`, one partition per rank. A frame of the whole thing needs a
+  `reconstructParMesh` per look — minutes of serial CPU, charged against the mesh's own timeout,
+  on exactly the largest jobs. That is the cost the serial rule refuses to pay silently.
+- **What it would take:** either a reconstruction budgeted out of the run's timeout and skipped
+  when the estimate does not fit, or a per-rank boundary read that decimates each partition
+  separately and lets the viewer draw the union (no reconstruction, but a new reader and a
+  payload that is several patches per rank).
+- **Until then the silence is explained, not inferred:** a run asked for frames that is parallel
+  logs the reason once, at info, naming `MESH_SNAPPY_RANKS=1`. The setting's own help text and the
+  workflow input say the same thing, so nobody has to read `snapshots_enabled` to find out why
+  turning the flag on did nothing.
+- **A hazard to weigh before forcing serial on Cloud Run:** the mesh job's workspace lives in
+  memory there (`adapters/mesh_execution/gce_vm.py:22`), the phase meshes are extra copies of the
+  mesh in that same 32 GiB, and that container has already been OOM-killed at 16 GiB
+  (`bootstrap-env.sh`). A serial mesh with kept phase meshes is the big-VM route's business, not
+  the 32 GiB job's, for any case that is not small.
+
 The UI contract is unchanged either way: the viewer's Mesh content is fed whenever something
 exists, and the camera does not move. So the viewer work does not block on this.
 

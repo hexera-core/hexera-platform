@@ -53,34 +53,71 @@ def _trigger(monkeypatch):
     return run
 
 
-@pytest.mark.parametrize("enabled,expected", [(True, "true"), (False, "false")])
-def test_the_cloud_run_route_tells_the_mesher_the_answer(monkeypatch, _trigger, enabled, expected):
-    from meshpipeline.adapters.mesh_execution import cloud_run_client as crc
+def _vm_meta(**over) -> dict:
+    from meshpipeline.adapters.mesh_execution import gce_vm
 
-    monkeypatch.setattr(crc, "_snapshots_enabled", lambda: enabled)
+    body = gce_vm.instance_body(
+        name="m-1", zone="us-central1-a", machine="n2-highmem-16",
+        image="img@sha256:abc", account="mesh@p.iam.gserviceaccount.com",
+        input_uri="gs://b/in", output_uri="gs://b/out",
+        engine="snappy", timeout=600, disk_gb=100, **over)
+    return {i["key"]: i["value"] for i in body["metadata"]["items"]}
+
+
+@pytest.mark.parametrize("enabled,expected", [(True, "true"), (False, "false")])
+def test_both_routes_tell_the_mesher_the_same_answer(monkeypatch, _trigger, enabled, expected):
+    """FROM THE SETTING ITSELF, not from either adapter's helper.
+
+    The two routes agreeing is the invariant (disagreement publishes frames on small meshes and
+    not on large ones), and it is only actually asserted if the test states the SETTING and lets
+    each route read whatever it reads: stubbing one adapter's reader proves that adapter passes
+    its own answer on, and nothing about the other. Both read
+    settings/mesh_snapshot.snapshots_enabled_at_dispatch, which is why this can be written.
+    """
+    import meshpipeline.settings.mesh_snapshot as mscfg
+
+    monkeypatch.setattr(mscfg, "MESH_PROGRESSIVE_SNAPSHOT_ENABLED", enabled)
     env = _trigger()
     assert env["MESH_PROGRESSIVE_SNAPSHOT_ENABLED"] == expected
     # the four values the mesher has always needed are still there: this is an addition
     for key in ("INPUT_URI", "OUTPUT_URI", "ENGINE", "TIMEOUT"):
         assert key in env
-
-
-@pytest.mark.parametrize("enabled,expected", [(True, "true"), (False, "false")])
-def test_the_big_vm_route_tells_it_the_same_answer(monkeypatch, enabled, expected):
-    from meshpipeline.adapters.mesh_execution import cloud_run_client as crc
-    from meshpipeline.adapters.mesh_execution import gce_vm
-
-    monkeypatch.setattr(crc, "_snapshots_enabled", lambda: enabled)
-    body = gce_vm.instance_body(
-        name="m-1", zone="us-central1-a", machine="n2-highmem-16",
-        image="img@sha256:abc", account="mesh@p.iam.gserviceaccount.com",
-        input_uri="gs://b/in", output_uri="gs://b/out",
-        engine="snappy", timeout=600, disk_gb=100)
-    meta = {i["key"]: i["value"] for i in body["metadata"]["items"]}
-    assert meta["mesh-snapshots"] == expected
+    meta = _vm_meta()
+    assert meta["mesh-snapshots"] == expected == env["MESH_PROGRESSIVE_SNAPSHOT_ENABLED"]
     # and the startup script must actually hand it to the container, or the attribute is decoration
     assert "MESH_PROGRESSIVE_SNAPSHOT_ENABLED" in meta["startup-script"]
     assert "instance/attributes/mesh-snapshots" in meta["startup-script"]
+
+
+def test_the_vm_route_reads_the_setting_and_not_its_sibling_adapter():
+    """Two execution adapters, ONE owner of the switch.
+
+    `gce_vm` used to import `cloud_run_client._snapshots_enabled` - a private helper of a sibling
+    adapter, which the architecture boundaries do not catch (both are under `adapters/`) and which
+    makes "the two routes must agree" brittle rather than enforced: there were two answers to who
+    reads the switch at dispatch.
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).parents[3] / "src" / "meshpipeline" / "adapters" / "mesh_execution"
+           / "gce_vm.py").read_text()
+    assert "snapshots_enabled_at_dispatch" in src
+    assert "_snapshots_enabled" not in src
+
+
+def test_a_settings_failure_never_stops_a_vm_being_started(monkeypatch):
+    """The same promise the Cloud Run route makes, on the route that carries the big jobs."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _boom(name, *a, **k):
+        if name == "meshpipeline.settings.mesh_snapshot":
+            raise RuntimeError("settings are unreadable")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", _boom)
+    assert _vm_meta()["mesh-snapshots"] == "false"
 
 
 def test_a_settings_failure_never_stops_a_mesh_being_dispatched(monkeypatch):
@@ -98,3 +135,49 @@ def test_a_settings_failure_never_stops_a_mesh_being_dispatched(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", _boom)
     assert crc._snapshots_enabled() is False
+
+
+# THE RANK PIN IS HALF THE FEATURE. A frame is only ever read from a SERIAL snappy run, and the
+# module that decides rank count (engines/determinism.snappy_ranks) runs inside the mesh
+# container. So a deployment can hold MESH_PROGRESSIVE_SNAPSHOT_ENABLED=true, mean it, and still
+# see nothing - which is the exact confusion the setting's own documentation warns about. Both
+# routes therefore carry the pin beside the switch, and these assert they agree.
+@pytest.mark.parametrize("pin", ["1", "4", ""])
+def test_the_cloud_run_route_carries_the_rank_pin(monkeypatch, _trigger, pin):
+    import meshpipeline.engines.determinism as dcfg
+
+    monkeypatch.setattr(dcfg, "MESH_SNAPPY_RANKS", pin, raising=False)
+    assert _trigger()["MESH_SNAPPY_RANKS"] == pin
+
+
+@pytest.mark.parametrize("pin", ["1", "4", ""])
+def test_the_big_vm_route_carries_the_same_rank_pin(monkeypatch, pin):
+    import meshpipeline.engines.determinism as dcfg
+    from meshpipeline.adapters.mesh_execution import gce_vm
+
+    monkeypatch.setattr(dcfg, "MESH_SNAPPY_RANKS", pin, raising=False)
+    body = gce_vm.instance_body(
+        name="m-1", zone="us-central1-a", machine="n2-highmem-16",
+        image="img@sha256:abc", account="mesh@p.iam.gserviceaccount.com",
+        input_uri="gs://b/in", output_uri="gs://b/out", engine="snappy",
+        timeout=600, disk_gb=100)
+    meta = {i["key"]: i["value"] for i in body["metadata"]["items"]}
+    assert meta["mesh-snappy-ranks"] == pin
+    # and the startup script must hand it to the container, or the attribute is decoration
+    assert "MESH_SNAPPY_RANKS" in meta["startup-script"]
+    assert "instance/attributes/mesh-snappy-ranks" in meta["startup-script"]
+
+
+def test_an_unreadable_rank_setting_does_not_stop_a_dispatch(monkeypatch, _trigger):
+    """Sizing is a hint. If reading it raises, the mesh still goes and the mesher sizes itself."""
+    import builtins
+
+    real = builtins.__import__
+
+    def _boom(name, *a, **k):
+        if name == "meshpipeline.engines.determinism":
+            raise RuntimeError("settings are unreadable")
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", _boom)
+    assert _trigger()["MESH_SNAPPY_RANKS"] == ""

@@ -1,6 +1,7 @@
 # Responsibility: Verify the mesh-so-far in a real browser - one draw per pointer however often the
 # durable log replays it, a route with nothing to serve leaving the screen exactly as it was, a
-# frame that never reads as the delivered mesh, and a camera whose direction survives the swap.
+# frame that never reads as the delivered mesh, a camera whose direction survives the swap, a frame
+# that resolves after the page moved on drawing nothing, and a closed partial handing the page back.
 # Boundaries: the console's own modules in the page, fed through the one event dispatch a live or
 # replayed run goes through; only the partial route is stood in for. It reads the camera, never pixels.
 from __future__ import annotations
@@ -161,3 +162,100 @@ def test_the_camera_keeps_its_direction_across_a_swap(live):
     # one content, swapped - not two sets of actors
     assert before["actors"] == 1 and after["actors"] == 1, out
     assert_clean(live, "the camera across a partial swap")
+
+
+def test_a_frame_that_resolves_after_a_new_upload_draws_nothing(live):
+    # THE STALE FRAME. A user opens a running job by link (the page carries the run, and no
+    # conversation of its own), then uploads new geometry while the frame is still in flight. The
+    # frame that resumes afterwards belongs to what the page was showing, not to what it is showing
+    # now: it may not take the workbench, and it may not hide the new geometry check behind the
+    # previous run's mesh. Its pointer is given back, so the frame is still drawable if the page
+    # comes back to that run.
+    out = live.evaluate(_script("""
+      const quick = window.fetch;                 // the route answers slowly enough to move under
+      window.fetch = (u, o) => String(u).includes('/mesh/partial')
+        ? settle(900).then(() => quick(u, o)) : quick(u, o);
+      pointer(__KEY__);
+      await settle(150);
+      setState.sessionId('session-after-the-upload');      // the upload opened a new conversation
+      await settle(2500);
+      const stale = {calls: window.__partialCalls.length, drawn: !!drawn(),
+                     panels: document.querySelectorAll('.mp-view').length,
+                     wb: document.getElementById('app').classList.contains('wb'),
+                     toggle: !document.getElementById('wb-toggle').hidden};
+      // the pointer was not spent: back on the run it was published for, the same frame draws
+      setState.sessionId(null);
+      pointer(__KEY__);
+      await settle(2500);
+      return {stale, back: {calls: window.__partialCalls.length, actors: drawn() && drawn().actors(),
+                            panels: document.querySelectorAll('.mp-view').length}};
+    """, [_partial()]), timeout=120)
+    assert out["stale"] == {"calls": 1, "drawn": False, "panels": 0, "wb": False, "toggle": False}, out
+    assert out["back"] == {"calls": 2, "actors": 1, "panels": 1}, out
+    assert_clean(live, "a frame that resolved after a new upload")
+
+
+def test_a_frame_that_resolves_after_the_page_moved_to_another_run_draws_nothing(live):
+    # the same rule for the other half of the identity: the run the frame was requested for is no
+    # longer the run on screen
+    out = live.evaluate(_script("""
+      const quick = window.fetch;
+      window.fetch = (u, o) => String(u).includes('/mesh/partial')
+        ? settle(900).then(() => quick(u, o)) : quick(u, o);
+      pointer(__KEY__);
+      await settle(150);
+      setState.jobId('another-run');              // a second run took the page
+      await settle(2500);
+      return {calls: window.__partialCalls.length, drawn: !!drawn(),
+              panels: document.querySelectorAll('.mp-view').length,
+              wb: document.getElementById('app').classList.contains('wb')};
+    """, [_partial()]), timeout=120)
+    assert out == {"calls": 1, "drawn": False, "panels": 0, "wb": False}, out
+    assert_clean(live, "a frame that resolved after another run took the page")
+
+
+def test_closing_a_partial_on_a_failed_run_hands_the_page_back(live):
+    # A RUN THAT FAILS AFTER A FRAME WAS SHOWN delivers no viewer at all - the repair panel draws in
+    # the conversation, or has nothing to hand over - so the frame's takeover of the workbench has
+    # to come undone with it: no empty workbench, and no "Hide conversation" button left owning a
+    # page that has no drawer. The path is the real one: the stage's own ending, through main.js.
+    out = live.evaluate(_script("""
+      pointer(__KEY__);
+      await settle(2500);
+      const took = {wb: document.getElementById('app').classList.contains('wb'),
+                    panels: document.querySelectorAll('.mp-view').length,
+                    toggle: !document.getElementById('wb-toggle').hidden};
+      Stage.final({pass: false, attempts: 1, text: 'it failed', files: []});
+      await settle(500);
+      const tg = document.getElementById('wb-toggle'), app = document.getElementById('app');
+      const after = {wb: app.classList.contains('wb'), collapsed: app.classList.contains('wb-collapsed'),
+                     panels: document.querySelectorAll('.mp-view').length,
+                     viewers: document.querySelectorAll('#workbench .viewer').length,
+                     toggle: !tg.hidden, label: tg.textContent.trim(),
+                     pressed: tg.getAttribute('aria-pressed')};
+      tg.click();                        // nothing is left for it to toggle
+      return {took, after, stuck: app.classList.contains('wb-collapsed')};
+    """, [_partial()]), timeout=120)
+    assert out["took"] == {"wb": True, "panels": 1, "toggle": True}, out
+    assert out["after"] == {"wb": False, "collapsed": False, "panels": 0, "viewers": 0,
+                            "toggle": False, "label": "Hide conversation", "pressed": "false"}, out
+    assert out["stuck"] is False, out
+    assert_clean(live, "a partial closed on a failed run")
+
+
+def test_a_cancelled_run_leaves_no_empty_workbench(live):
+    # cancelling is the other ending with no viewer behind it
+    out = live.evaluate(_script("""
+      pointer(__KEY__);
+      await settle(2500);
+      const before = document.querySelectorAll('.mp-view').length;
+      Stage.final({pass: false, cancelled: true, attempts: 1, text: 'cancelled', files: []});
+      await settle(500);
+      const tg = document.getElementById('wb-toggle');
+      return {before, panels: document.querySelectorAll('.mp-view').length,
+              wb: document.getElementById('app').classList.contains('wb'),
+              viewers: document.querySelectorAll('#workbench .viewer').length,
+              toggle: !tg.hidden};
+    """, [_partial()]), timeout=120)
+    assert out == {"before": 1, "panels": 0, "wb": False, "viewers": 0, "toggle": False}, out
+    assert_clean(live, "a partial closed on a cancelled run")

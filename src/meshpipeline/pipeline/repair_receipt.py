@@ -130,12 +130,26 @@ def _without_count(words: str, n: int) -> str:
     return _text(re.sub(rf"\b{n}\s+", "", words, count=1))
 
 
-def _span_words(targets, code: str) -> str:
-    """The largest span the inspection MEASURED on this defect's targets, in millimetres, or ""
-    when none of them carries one. Never derived from anything but a recorded measurement."""
+def _span_words(targets, code: str, entities: set[str]) -> str:
+    """The spans the inspection MEASURED on the targets THIS ROW'S OPERATIONS ACTUALLY TOOK, in
+    millimetres, or "" when none of them carries one.
+
+    `entities` is what the kept operations named, and the span may be read from nothing else. It
+    used to be the largest span over every target of the same CODE in `advice.targets` - what the
+    repair was ADVISED to look at. A part with a 2 mm wire gap that was filled and a 40 mm
+    paired-rim opening of the same code that was REFUSED printed "Closed 1 gap - largest measured
+    span 40 mm" one line above the refusal of that very opening: the row claimed credit for a
+    defect still in the customer's part.
+
+    NOR IS IT CALLED THE LARGEST OF ITS KIND. `triage._targets` keeps the worst twenty defects, so
+    a span can be measured and never forwarded; this says only what it is - the largest among the
+    ones measured here.
+    """
     best: float | None = None
     for target in targets or ():
         if not isinstance(target, Mapping) or str(target.get("code") or "") != code:
+            continue
+        if str(target.get("entity") or "") not in entities:
             continue
         measured = target.get("measurements")
         if not isinstance(measured, Mapping):
@@ -144,13 +158,14 @@ def _span_words(targets, code: str) -> str:
             value = _num(measured.get(key))
             if value is not None and value > 0 and (best is None or value > best):
                 best = value
-    return "" if best is None else f"largest measured span {best:.3g} mm"
+    return "" if best is None else f"spans up to {best:.3g} mm among those measured"
 
 
 def _kept_rows(record: Mapping) -> list[dict]:
     """One row per kind of operation that was KEPT, grouped exactly as repair_words groups them."""
     counts: dict[tuple[str, str], int] = {}
     codes: dict[tuple[str, str], str] = {}
+    took: dict[tuple[str, str], set[str]] = {}
     for op in record.get("operations") or ():
         if not isinstance(op, Mapping) or op.get("status") != "kept":
             continue
@@ -158,6 +173,10 @@ def _kept_rows(record: Mapping) -> list[dict]:
         key = _key(name, code)
         counts[key] = counts.get(key, 0) + (len(op.get("targets") or ()) or 1)
         codes.setdefault(key, code)
+        # WHAT THIS ROW MAY SPEAK FOR: the identifiers the kept operations themselves named. A
+        # defect the repair was advised to look at and did not touch is not this row's to measure.
+        took.setdefault(key, set()).update(
+            str(t) for t in (op.get("targets") or ()) if isinstance(t, str))
 
     rows = []
     targets = record.get("targets") or ()
@@ -165,7 +184,7 @@ def _kept_rows(record: Mapping) -> list[dict]:
         code = codes.get(key, "")
         label = _sentence(_without_count(_plural(n, *_DID.get(key, _FIXED)), n))
         because = _DEFECT_WORDS.get(code, "")
-        span = _span_words(targets, code)
+        span = _span_words(targets, code, took.get(key) or set())
         why = "; ".join(x for x in (f"for {because}" if because else "", span) if x)
         rows.append(_row(label, str(n), _safe(why)))
     return rows
@@ -226,14 +245,71 @@ def _refusal_rows(record: Mapping) -> list[dict]:
     return rows
 
 
+#: DECLINED OUTCOMES WITH SOMETHING MEASURED TO ACCOUNT FOR. `repair_attempt._declined` records
+#: `attempted: False` for every decline, but the refused one is the only one that carries the
+#: loop it ran - its attempts, its refusals and its caps evidence - and that run is the one a
+#: customer most needs an account of: we changed your part too far and threw the result away. The
+#: rest (no_report, no_geometry, off, format, triage, timeout, unavailable, failed, not_promoted)
+#: measured nothing a row could state, and the lane's one line already says which it was.
+_ACCOUNTABLE_DECLINES = ("refused",)
+
+
+def _view(record: Mapping) -> dict:
+    """ONE SHAPE FOR BOTH PATHS, so the rows below read the repair loop rather than the path it
+    took. A completed repair records its loop at the top of the attempt record; a REFUSED one
+    returns a decline and carries the same loop inside `detail.measurements`
+    (repair_attempt._attempt). `undone` marks the second: that loop's result reached no customer,
+    so nothing of it may be reported as kept.
+    """
+    view = dict(record)
+    if record.get("attempted") or str(record.get("outcome") or "") not in _ACCOUNTABLE_DECLINES:
+        return view
+    detail = record.get("detail")
+    measured = detail.get("measurements") if isinstance(detail, Mapping) else None
+    if not isinstance(measured, Mapping):
+        return view
+    view["undone"] = True
+    view["measurements"] = dict(measured)
+    view["operations"] = [dict(op) for op in (measured.get("operations") or ())
+                          if isinstance(op, Mapping)]
+    view["refusals"] = [dict(r) for r in (measured.get("refusals") or ())
+                        if isinstance(r, Mapping)]
+    return view
+
+
+def _undone_whole_rows(view: Mapping) -> list[dict]:
+    """The one row a refused run owes the customer: nothing of it reached your part.
+
+    The two refusals read differently and must not be collapsed. `result_discarded` is a finished
+    result the after-checks threw away WHOLE - operations the session had kept included, which is
+    why `undone` suppresses every kept row above. Without it, the loop simply never kept anything.
+    Neither says the part changed, and neither reports the recorded reason, which is a caps
+    message full of ratios and kernel measurements. Nor does either name WHICH check refused: the
+    after-checks refuse a result for losing a solid, deleting faces or moving the shape too far,
+    and the row says the result did not hold up rather than guessing which of those it was. The
+    shape rows beside it carry the figure when the figure is what refused it.
+    """
+    measured = view.get("measurements")
+    discarded = bool(measured.get("result_discarded")) if isinstance(measured, Mapping) else False
+    if discarded:
+        return [_row("The repair was undone", "Nothing changed",
+                     "the finished result did not hold up when the whole part was measured, "
+                     "so your original file was used")]
+    return [_row("Nothing was repaired", "Nothing changed",
+                 "no attempt held up when it was measured, so your original file was used")]
+
+
 def _measurements(record: Mapping) -> dict:
-    """The repair's own before/after measurement, wherever the attempt recorded it. Empty when it
-    did not: this receipt does not reconstruct a measurement from anything else."""
-    for holder in (record, record.get("detail") if isinstance(record.get("detail"), Mapping) else {}):
-        measured = (holder or {}).get("measurements")
-        if isinstance(measured, Mapping) and isinstance(measured.get("before"), Mapping) \
-                and isinstance(measured.get("after"), Mapping):
-            return dict(measured)
+    """The repair's own before/after measurement, as `_view` normalised it. Empty when the run did
+    not take one: this receipt reconstructs a measurement from nothing else.
+
+    ONE PLACE LOOKS FOR IT. The refused path's copy lives in `detail.measurements` and is lifted
+    into this key by `_view`, so there is no second search here to fall out of step with it.
+    """
+    measured = record.get("measurements")
+    if isinstance(measured, Mapping) and isinstance(measured.get("before"), Mapping) \
+            and isinstance(measured.get("after"), Mapping):
+        return dict(measured)
     return {}
 
 
@@ -242,8 +318,12 @@ def _percent(ratio: float) -> str:
     return f"{pct:.2g}%" if pct >= 0.01 else "under 0.01%"
 
 
-def _shape_rows(record: Mapping) -> list[dict]:
+def _shape_rows(record: Mapping, *, undone: bool = False) -> list[dict]:
     """How far the shape MOVED, and how much of that move no operation claimed.
+
+    `undone` is the refused run, whose before/after describe a result that was thrown away. The
+    number is still the evidence the refusal was made on - often the whole reason for it - but the
+    label has to say it is the undone result that moved, not the customer's part.
 
     THE CAP IS NOT ON THE TOTAL. `cad/repair/caps._accounted` subtracts what the kept operations
     DECLARED they would add before judging: a fill that says it adds 5% of the area and adds 5% is
@@ -264,9 +344,11 @@ def _shape_rows(record: Mapping) -> list[dict]:
     before, after = dict(measured["before"]), dict(measured["after"])
     rows = []
     for what, key, declared_key, cap in (
-            ("Surface area changed", "surface_area_mm2", "declared_area_mm2",
+            ("The undone repair changed the surface area" if undone else "Surface area changed",
+             "surface_area_mm2", "declared_area_mm2",
              rcfg.CAD_REPAIR_MAX_AREA_CHANGE_RATIO),
-            ("Volume changed", "volume_mm3", "declared_volume_mm3",
+            ("The undone repair changed the volume" if undone else "Volume changed",
+             "volume_mm3", "declared_volume_mm3",
              rcfg.CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO)):
         was, now = _num(before.get(key)), _num(after.get(key))
         if was is None or now is None or was <= 0:
@@ -312,18 +394,29 @@ def repair_receipt_rows(state: Mapping, out: Mapping) -> list[dict]:
 
     [] when there is nothing true to say: no inspection, nothing to attempt, and nothing refused.
     The caller must not publish an empty receipt - a heading with no rows claims a record exists.
+
+    A REFUSED RUN GETS ITS RECEIPT TOO (see `_view`), and it is the run that most needs one. What
+    it does NOT get is a kept row or an "everything found was fixed" row: its result was thrown
+    away whole, so the operations the session kept changed nothing the customer has. The declines
+    that measured nothing still return [] - including `no_report` and `no_geometry`, which carry
+    no refusals and no detail and so fall out of the same test as every other one.
     """
     state = state or {}
     record = _records(out or {})
     if not dict(state.get("repair_report") or {}):
         return []
-    if record.get("outcome") in ("no_report", "no_geometry"):
-        return []
-    if not record.get("attempted") and not (record.get("refusals") or ()):
-        return []
+    view = _view(record)
 
-    rows = (_kept_rows(record) + _undone_rows(record) + _refusal_rows(record)
-            + _shape_rows(record) + _outcome_row(record))
+    if view.get("undone"):
+        # The restatement row is worth sending only beside something measured: on its own it says
+        # no more than the lane's line already did, under a heading claiming a record.
+        measured = (_undone_rows(view) + _refusal_rows(view) + _shape_rows(view, undone=True))
+        rows = measured + _undone_whole_rows(view) if measured else []
+    elif not view.get("attempted") and not (view.get("refusals") or ()):
+        return []
+    else:
+        rows = (_kept_rows(view) + _undone_rows(view) + _refusal_rows(view)
+                + _shape_rows(view) + _outcome_row(view))
     return [r for r in rows if r["label"]]
 
 

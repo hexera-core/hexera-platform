@@ -41,6 +41,14 @@
 .gp-chev{width:5px;height:5px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
   transform:translateY(-2px) rotate(45deg);transition:transform .15s}
 .gp-toggle[aria-expanded="true"] .gp-chev{transform:translateY(1px) rotate(-135deg)}
+/* HOW FAR THROUGH: a hairline under the running line, on the text gutter so it starts where the
+   words do. The accent already carries "this is what is happening now" on the mark and the active
+   tick; the fill takes the same hue at half weight (--accent-line) so the bar reads as a quiet
+   instrument scale beside that one hot mark, not as a second thing shouting for the eye. */
+.gp-bar{margin-left:var(--gp-text,24px);height:2px;border-radius:var(--radius-tight);
+  background:var(--divider);overflow:hidden}
+.gp-bar > i{display:block;height:100%;width:0;border-radius:var(--radius-tight);
+  background:var(--accent-line);transition:width .6s cubic-bezier(.16,1,.3,1)}
 .gp-note,.gp-reason,.gp-advice,.gp-acts{padding-left:var(--gp-text,24px);font-size:var(--fs-sm)}
 .gp-note{color:var(--text-faint)}
 .gp[data-slow="very"] .gp-note{color:var(--warn)}

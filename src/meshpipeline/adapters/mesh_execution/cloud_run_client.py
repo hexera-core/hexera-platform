@@ -344,6 +344,16 @@ def _operation_reference(response, *, engine: str) -> CloudRunOperationReference
     return reference
 
 
+def _snappy_ranks_pin() -> str:
+    """The rank pin this deployment states, or "" for "not pinned, size it yourself". Read at
+    dispatch like the frame switch beside it, and never allowed to fail a dispatch."""
+    try:
+        import meshpipeline.engines.determinism as dcfg
+        return str(dcfg.MESH_SNAPPY_RANKS or "")
+    except Exception:  # noqa: BLE001 - a sizing hint never stops a mesh being submitted
+        return ""
+
+
 def _snapshots_enabled() -> bool:
     """Whether this deployment lets a running mesh publish a frame of itself. Read at dispatch, so
     the answer is the one in force now; never allowed to fail a dispatch."""
@@ -374,6 +384,13 @@ def _trigger_job(*, input_uri: str, output_uri: str, engine: str,
         # effect on the next run instead of the next mesh deploy.
         {"name": "MESH_PROGRESSIVE_SNAPSHOT_ENABLED",
          "value": "true" if _snapshots_enabled() else "false"},
+        # THE RANK PIN TRAVELS WITH IT, and must, because the two are one decision. The frame is
+        # only ever read from a SERIAL snappy run, and `engines/determinism.snappy_ranks` - which
+        # answers that question - runs in the mesh container, reading this name. Left behind, the
+        # worker could hold both settings and the mesher would still take its 8 ranks and skip
+        # every frame, which is the failure the flag's own documentation warns about. Blank is
+        # sent as blank: it means "not pinned", and the mesher's own sizing decides.
+        {"name": "MESH_SNAPPY_RANKS", "value": _snappy_ranks_pin()},
     ]}]}}
     try:
         resp = _rq.post(f"https://run.googleapis.com/v2/{name}:run",
