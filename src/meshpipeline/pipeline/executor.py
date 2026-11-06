@@ -455,8 +455,10 @@ async def node_executor(state: PipelineState) -> dict:
             if not ok and _rp.is_note_gate(key):
                 _noted.append((key, _fb))
 
-        _gates_ok, _gate_key, _gate_feedback = run_gates(
-            _spec.gates, _ctx, on_result=_report_gate)
+        # off the event loop: a gate may measure the mesh for a minute (engines/cad_fidelity),
+        # and the worker's drain and cancellation checks must keep running meanwhile
+        _gates_ok, _gate_key, _gate_feedback = await asyncio.to_thread(
+            lambda: run_gates(_spec.gates, _ctx, on_result=_report_gate))
         for _key, _ok in _gate_results:
             if not _ok and _rp.is_note_gate(_key):
                 # A NOTE, NOT A FAILED CHECK (LAD-cfd-3/4): never shown as a failed check - the
@@ -529,8 +531,10 @@ async def node_executor(state: PipelineState) -> dict:
                         evaluate_domain_extents,
                     )
                     try:
+                        from meshpipeline.engines.ground_plane import floor_of as _floor_of
                         _v = evaluate_domain_extents(_typed_req, _typed_ruler, mesh_manifest,
-                                                     flow_axis=state.get("flow_axis"))
+                                                     flow_axis=state.get("flow_axis"),
+                                                     floor=_floor_of(state.get("up_axis")))
                     except Exception:  # noqa: BLE001
                         logger.exception("Executor: typed extent evaluation crashed - "
                                          "job_id=%s", job_id)

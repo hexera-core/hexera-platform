@@ -23,7 +23,7 @@ import { esc } from "../core/format.js";
 import { applyFlow, bindAxis, bindUnit, changedAnswers, editsLine, extentAlong, followSuggestion, followUnit, formHtml,
   markConfirmed, noteDrawn, readExternal, readForm, rowHtml, servedProposal, shown, tableHead, unitChoiceHint,
   unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
-import { bindFeaPanel, bindMeasure, feaPanelHtml, followAssembly, followClean, followMeasure, interfaceMarks, lightSpotRow } from "../render/fea_form.js";
+import { bindFeaPanel, bindMeasure, feaPanelHtml, followAssembly, followClean, followMeasure, followPlan, interfaceMarks, lightSpotRow } from "../render/fea_form.js";
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
 import { b64f32, b64u32, loadVtk } from "./scene/vtk_load.js";
@@ -1115,6 +1115,8 @@ async function openFeaStage(sessionId, d, confirm, opts) {
       const follow = (fn) => { try { return !!fn(); } catch (e) { console.warn("FEA stage: not redrawn", e); return false; } };
       if (d2 && d2.fea) { Object.assign(f, d2.fea); follow(() => followClean(panel, f)); }
       const movedA = !!a && follow(() => followAssembly(panel, a));
+      // PLAN-fea-22: the size choice, once the check has sized the mesh
+      if (d2 && d2.fea && d2.fea.plan) follow(() => followPlan(panel, d2.fea.plan));
       const moved = (!!m && follow(() => followMeasure(panel, m, p, null))) || movedA;
       if (moved) {
         p.hot_spots = [...(((m || f.measure) || {}).hot_spots || []), ...interfaceMarks(a || f.assembly)];

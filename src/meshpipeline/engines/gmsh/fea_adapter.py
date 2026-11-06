@@ -692,8 +692,11 @@ def fill_each_volume(gmsh, vols) -> None:
     present: set[int] = set()
     gmsh.option.setNumber("Mesh.MeshOnlyVisible", 1)
     gmsh.option.setNumber("Mesh.Renumber", 0)
+    failed: list[tuple[int, str]] = []
+    attempted: list[int] = []
     try:
         for v in vols:
+            attempted.append(int(v))
             own = sorted({abs(int(t)) for _d, t in gmsh.model.getBoundary([(3, int(v))], oriented=False)})
             for s_ in own:
                 if s_ not in present:
@@ -704,15 +707,22 @@ def fill_each_volume(gmsh, vols) -> None:
             try:
                 gmsh.model.mesh.generate(3)
             except Exception as exc:
-                # THE PART THAT FAILED, and where: its own surfaces whose meshes cross each other
+                # THE PART THAT FAILED, and where: its own surfaces whose meshes cross each other. The fill stops
+                # here - after an error gmsh refuses every further mesh call in this process ("I'm busy! Ask me
+                # that later", lab 27 Oct) - and the parts filled so far are kept (LAD-fea-11): the next pass meshes
+                # this one and the ones not reached, this one last
                 where = crossing_surfaces(gmsh, set(own)) or own[:12]
-                raise RuntimeError(f"{exc} (volume {int(v)}; on surface {', surface '.join(str(t) for t in where)})") from exc
+                failed.append((int(v), f"{exc} (volume {int(v)}; on surface {', surface '.join(str(t) for t in where)})"))
+                print(f"[GMSH-FEA] volume {int(v)} could not be filled - the {len(attempted) - 1} filled before it "
+                      f"are kept ({KEEP_RULE})", file=sys.stderr)
             for s_ in own:
                 # as the fill left them (a fill turns its boundary triangles to face out of the volume)
                 types, tags, nodes = gmsh.model.mesh.getElements(2, int(s_))
                 aside[int(s_)] = [(int(et), tg, nd) for et, tg, nd in zip(types, tags, nodes, strict=True)]
                 gmsh.model.mesh.removeElements(2, int(s_))
                 present.discard(s_)
+            if failed:
+                break
     finally:
         # every surface's triangles back, as they were; then numbered as a fill numbers them
         for s_ in sorted(present):
@@ -725,6 +735,176 @@ def fill_each_volume(gmsh, vols) -> None:
             gmsh.model.mesh.renumberElements()
         gmsh.model.setVisibility(everything, 1)
         gmsh.option.setNumber("Mesh.MeshOnlyVisible", 0)
+    if failed:
+        raise PartsFailed(failed, attempted)
+
+
+class PartsFailed(RuntimeError):
+    """Some volumes of parts meshed apart could not be filled; every other one was (LAD-fea-11)."""
+
+    def __init__(self, failed: list[tuple[int, str]], attempted: list[int] | None = None):
+        super().__init__("; ".join(msg for _v, msg in failed))
+        self.volumes = [int(v) for v, _m in failed]
+        #: the volumes the fill reached (it stops at the first that fails); the others were never tried
+        self.attempted = [int(v) for v in (attempted or self.volumes)]
+
+
+#: LAD-fea-11: THE PARTS A FAILED PASS DID MESH ARE KEPT - their mesh (gmsh's own file, at the scale it was
+#: built at) and what the next pass needs to read it back (the scale, the sidecar's ties, which volumes)
+KEEP_MSH = "fea_kept_parts.msh"
+KEEP_JSON = "fea_kept_parts.json"
+KEEP_RULE = "LAD-fea-11"
+
+
+def save_kept(gmsh, ws: Path, *, scale: float, tied: dict, kept: list[int], failed: list[int],
+              part_volumes: dict[str, list[int]] | None, tiny: dict | None = None) -> None:
+    """LAD-fea-11: the parts this pass filled, kept for the next pass: the whole model's mesh as gmsh writes it
+    (with each node's place on its curve or face), no physical group in it, and which volumes it keeps."""
+    groups = [(d, t, list(gmsh.model.getEntitiesForPhysicalGroup(d, t)), gmsh.model.getPhysicalName(d, t))
+              for d, t in gmsh.model.getPhysicalGroups()]
+    keys = ("Mesh.SaveParametric", "Mesh.SaveAll", "Mesh.Binary", "Mesh.MshFileVersion")
+    before = {k: gmsh.option.getNumber(k) for k in keys}
+    gmsh.model.removePhysicalGroups()
+    try:
+        for k, v in zip(keys, (1, 1, 1, 4.1), strict=True):
+            gmsh.option.setNumber(k, v)
+        gmsh.write(str(Path(ws) / KEEP_MSH))
+    finally:
+        for k, v in before.items():
+            gmsh.option.setNumber(k, v)
+        for d, t, ents, name in groups:
+            gmsh.model.addPhysicalGroup(d, ents, tag=t, name=name)
+    part_of = {int(v): p for p, vs in (part_volumes or {}).items() for v in vs}
+    # MESH-9: the kept parts' own tiny-face merges, for the pass that reads them back (curving, fold-in, record)
+    own = {abs(int(t)) for v in kept for _d, t in gmsh.model.getBoundary([(3, int(v))], oriented=False)}
+    kept_tiny = TINY.restricted(gmsh, tiny, own)
+    (Path(ws) / KEEP_JSON).write_text(json.dumps({
+        **({"tiny": kept_tiny} if kept_tiny else {}),
+        "rule": KEEP_RULE, "scale": float(scale), "kept_volumes": sorted(int(v) for v in kept),
+        "failed_volumes": sorted(int(v) for v in failed),
+        "kept_parts": sorted({part_of[v] for v in kept if v in part_of}),
+        "failed_parts": sorted({part_of[v] for v in failed if v in part_of}),
+        "tags": {"surface_tag": {str(k): int(v) for k, v in (tied.get("surface_tag") or {}).items()},
+                 "volume_tag": {str(k): int(v) for k, v in (tied.get("volume_tag") or {}).items()}}}))
+    print(f"[GMSH-FEA] kept the mesh of {len(kept)} part volume(s) for the next pass; {len(failed)} to mesh again "
+          f"({KEEP_RULE})", file=sys.stderr)
+
+
+def keep_filled(gmsh, ws: Path, vols, failed, rung_vols, *, scale: float, tied: dict,
+                part_volumes: dict[str, list[int]] | None, untried=(), tiny: dict | None = None) -> list[int]:
+    """LAD-fea-11: the volumes of `vols` that hold elements - not failed, not fTetWild's - kept for the next
+    pass. A volume gmsh left empty without raising (it only warns "No elements in volume") is a failed part, never
+    a kept one: kept, it would reach the solver files with no elements. Returns the kept volumes."""
+    skip = {int(v) for v in untried}
+    candidates = sorted({int(v) for v in vols} - {int(v) for v in failed} - {int(v) for v in rung_vols} - skip)
+    hollow = set(empty_volumes(gmsh, candidates))
+    # a volume filled with a flat or inverted element (SICN under DEGENERATE_SICN) is not a mesh to keep: it is
+    # meshed again, as it would be without LAD-fea-11 (kept, Netgen's optimiser crashed on such a sliver - the
+    # folding chair's Part_1, lab 28 Oct)
+    flat = set(flat_volumes(gmsh, [v for v in candidates if v not in hollow]))
+    if flat:
+        print(f"[GMSH-FEA] volume(s) {sorted(flat)} filled with a flat or inverted element - meshed again, never kept "
+              f"({KEEP_RULE})", file=sys.stderr)
+    hollow |= flat
+    good = [v for v in candidates if v not in hollow]
+    if good:
+        save_kept(gmsh, ws, scale=scale, tied=tied, kept=good, failed=sorted({int(v) for v in failed} | hollow),
+                  part_volumes=part_volumes, tiny=tiny)
+    return good
+
+
+def flat_volumes(gmsh, vols) -> list[int]:
+    """LAD-fea-11: the volumes of `vols` with an element under DEGENERATE_SICN (flat or inverted, straight sides)."""
+    out = []
+    for v in vols:
+        _types, etags, _nodes = gmsh.model.mesh.getElements(3, int(v))
+        tags = [int(x) for arr in etags for x in arr]
+        if tags and min(gmsh.model.mesh.getElementQualities(tags, "minSICN")) < DEGENERATE_SICN:
+            out.append(int(v))
+    return out
+
+
+def kept_for(ws: Path, run: dict) -> dict | None:
+    """LAD-fea-11: what an earlier pass kept, when this pass's plan says to use it and the files are here."""
+    keep = (run or {}).get("keep")
+    if not keep:
+        return None
+    try:
+        meta = json.loads((Path(ws) / KEEP_JSON).read_text())
+    except (OSError, ValueError):
+        return None
+    if not (Path(ws) / KEEP_MSH).exists() or not meta.get("kept_volumes"):
+        return None
+    meta["tags"] = {k: {int(a): int(b) for a, b in (meta.get("tags") or {}).get(k, {}).items()}
+                    for k in ("surface_tag", "volume_tag")}
+    return meta
+
+
+def hold_volumes(gmsh, volumes: list[int]) -> list[tuple[int, int, object, object, object, list]]:
+    """LAD-fea-11: the volumes' meshes and their faces', taken out of the model (gmsh's surface stage discards
+    every volume's mesh, and the mesh of faces it read from a file); give_back_volumes puts them back, the same
+    nodes (with their places on their faces), elements and tags."""
+    held = []
+    for v in volumes:
+        faces = sorted({abs(int(t)) for _d, t in gmsh.model.getBoundary([(3, int(v))], oriented=False)})
+        for dim, tag in [(3, int(v))] + [(2, f) for f in faces]:
+            tags, xyz, par = gmsh.model.mesh.getNodes(dim, tag, includeBoundary=False, returnParametricCoord=True)
+            types, etags, enodes = gmsh.model.mesh.getElements(dim, tag)
+            held.append((dim, tag, tags, xyz, par, list(zip(types, etags, enodes, strict=True))))
+        gmsh.model.mesh.clear([(3, int(v))] + [(2, f) for f in faces])
+    return held
+
+
+def give_back_volumes(gmsh, held) -> None:
+    """Put held meshes back. gmsh numbers new nodes and elements from the largest tag still in the model, so the
+    surface stage may have taken the held tags: every held node and element comes back above every tag in use
+    now, and the held elements' references to held nodes follow (those to the curves' nodes stay)."""
+    import numpy as np
+
+    node_shift = int(gmsh.model.mesh.getMaxNodeTag())
+    elem_shift = int(gmsh.model.mesh.getMaxElementTag())
+    held_nodes = np.concatenate([np.asarray(h[2], dtype=np.int64) for h in held] or [np.zeros(0, np.int64)])
+    top = int(held_nodes.max()) if len(held_nodes) else 0
+    is_held = np.zeros(top + 1, dtype=bool)
+    is_held[held_nodes] = True
+    for dim, tag, tags, xyz, par, _elements in sorted(held, key=lambda h: (h[0], h[1])):
+        if len(tags):
+            gmsh.model.mesh.addNodes(dim, tag, (np.asarray(tags, dtype=np.int64) + node_shift).tolist(), xyz,
+                                     par if dim == 2 else [])
+    for _dim, tag, _tags, _xyz, _par, elements in sorted(held, key=lambda h: (h[0], h[1])):
+        for et, etags, enodes in elements:
+            nodes = np.asarray(enodes, dtype=np.int64)
+            inside = nodes <= top
+            moved = nodes.copy()
+            moved[inside & is_held[np.minimum(nodes, top)]] += node_shift
+            gmsh.model.mesh.addElementsByType(tag, int(et), (np.asarray(etags, dtype=np.int64) + elem_shift).tolist(),
+                                              moved.tolist())
+
+
+def load_kept(gmsh, ws: Path, kept: list[int]) -> list[int]:
+    """LAD-fea-11: the kept parts' mesh read back onto the same entities; every other volume, with the faces,
+    curves and corners bounding it, left with no mesh, to be meshed in this pass. A volume the file holds no
+    element of is not kept, whatever the record says. Returns the volumes kept."""
+    gmsh.merge(str(Path(ws) / KEEP_MSH))
+    keep = {int(v) for v in kept} - set(empty_volumes(gmsh, sorted(int(v) for v in kept)))
+    clear: set[tuple[int, int]] = set()
+    for _d, v in gmsh.model.getEntities(3):
+        if int(v) in keep:
+            continue
+        clear.add((3, int(v)))
+        faces = [(2, abs(int(t))) for _d2, t in gmsh.model.getBoundary([(3, int(v))], oriented=False)]
+        curves = ([(1, abs(int(t))) for _d2, t in gmsh.model.getBoundary(faces, combined=False, oriented=False)]
+                  if faces else [])
+        points = ([(0, abs(int(t))) for _d2, t in gmsh.model.getBoundary(curves, combined=False, oriented=False)]
+                  if curves else [])
+        clear.update(faces + curves + points)
+    if clear:
+        # volumes first, then faces, curves, corners: gmsh leaves a face's mesh in place while elements of a
+        # volume not yet cleared still use its nodes. A part the file holds filled but not kept (a flat fill,
+        # never kept) kept its faces' old triangles under the new mesh, and the solver files stopped on them
+        # (o_fc_folding_chair, lab 28 Oct: 194 triangles on Part_1_Face_1 the face of no element)
+        gmsh.model.mesh.clear(sorted(clear, key=lambda dt: (-dt[0], dt[1])))
+    return sorted(keep)
 
 
 #: MESH-7: the rule that fills each volume of parts meshed apart with only its own surface mesh in the model
@@ -1160,7 +1340,7 @@ def rung_volumes(run: dict, vols: list[int], part_volumes: dict[str, list[int]] 
 
 
 def last_rung(gmsh, ws: Path, plan: dict, geom: Path, built: dict, asm, sidecar: dict, *, order: int,
-              tick: Ticker, fell_back: str = "") -> dict:
+              tick: Ticker, fell_back: str = "", scale: float = 1.0) -> dict:
     """LAD-fea-9: fTetWild's mesh of the rung's volumes, written into the model gmsh meshed the other parts
     in (engines/fea_tetwild.mesh_into). Returns the rung's record for quality.json."""
     from meshpipeline.engines import fea_tetwild as TW
@@ -1178,8 +1358,11 @@ def last_rung(gmsh, ws: Path, plan: dict, geom: Path, built: dict, asm, sidecar:
         names = [f"Face_{k + 1}" for k in range(len(surfaces))]
     # fTetWild's own output is the sign of progress while it runs (the ticker would hide a stuck one)
     tick.stop()
+    # the model was built `scale` times its metres and its mesh is back in metres now (MESH-4's to_m): fTetWild's
+    # parts go in in metres too
     info = TW.mesh_into(gmsh, ws, plan, geom, built["rung_volumes"], volume_index=volume_index,
-                        surface_tag_of=surface_tag_of, names=names, order=order, workers=job_cpus())
+                        surface_tag_of=surface_tag_of, names=names, order=order, workers=job_cpus(),
+                        model_scale=float(scale))
     info["tied"] = bool(built.get("gmsh_volumes"))
     info["gmsh_parts"] = len(built.get("gmsh_volumes") or [])
     if fell_back:
@@ -1188,11 +1371,13 @@ def last_rung(gmsh, ws: Path, plan: dict, geom: Path, built: dict, asm, sidecar:
     return info
 
 
-def rung_build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: dict) -> dict:
-    """LAD-fea-9's build: gmsh meshes the parts fTetWild does not take; should it fail on them in this pass
-    too, every part goes to fTetWild (said as "fell_back"). Raises NoSolid only."""
+def rung_build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: dict, *,
+               scale: float = 1.0, tags: dict | None = None) -> dict:
+    """LAD-fea-9's build: gmsh meshes the parts fTetWild does not take (or keeps them from an earlier pass,
+    LAD-fea-11); should it fail on them in this pass too, every part goes to fTetWild (said as "fell_back").
+    Raises NoSolid only."""
     try:
-        return build_volume(gmsh, ws, plan, geom, asm, sidecar, rung="named")
+        return build_volume(gmsh, ws, plan, geom, asm, sidecar, scale=scale, tags=tags, rung="named")
     except FillFailed as first:
         said = f"{type(first.exc).__name__}: {str(first.exc)[:300]}"
         print(f"[FTETWILD] gmsh failed on the other parts too ({said}) - every part goes to fTetWild",
@@ -1288,11 +1473,18 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
     tied = {"surface_tag": surface_tag, "volume_tag": volume_tag}
     # MESH-9: A FACE OR EDGE FAR BELOW THE ELEMENT SIZE THERE is meshed as part of its smooth neighbour
     # (gmsh compounds on the model; the CAD file is never changed). Nothing tiny: nothing set, the same mesh
+    # LAD-fea-11: what an earlier pass kept (read back below); its parts' faces are this pass's to keep, never
+    # to merge (MESH-9 `frozen`): a kept mesh is the mesh pass 1 made, face for face
+    meta = (kept_for(ws, run) if asm and rung != "all" and str((sidecar or {}).get("mode") or "") in ("tie", "contact")
+            else None)
+    same_scale = meta is not None and float(meta.get("scale") or 1.0) == float(scale)
+    frozen = ({abs(int(t)) for v in meta["kept_volumes"] if v in set(vols)
+               for _d, t in gmsh.model.getBoundary([(3, int(v))], oriented=False)} if meta and same_scale else set())
     merges: dict = {}
     if tiny:
         merges = TINY.plan_merges(gmsh, sized, face_tags=face_tags,
                                   protected=joint_surfaces(gmsh, sidecar, surface_tag, volume_tag, face_tags)
-                                  if asm else set())
+                                  if asm else set(), frozen=frozen)
         TINY.apply(gmsh, merges)
     whole = set(TINY.members(merges)) if TINY.active(merges) else None
     micro: list[int] = []
@@ -1321,24 +1513,58 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
     # LAD-fea-9, THE LAST RUNG: fTetWild's parts are left unmeshed; gmsh meshes only the others (their own
     # surfaces, each volume alone), exactly as a pass meshes them. Without a rung nothing here changes
     rung_vols: list[int] = []
-    if rung is not None:
-        rung_vols = sorted(vols) if rung == "all" else rung_volumes(run, vols, part_volumes)
-        rest = [v for v in vols if v not in rung_vols]
+    # LAD-fea-11: THE PARTS AN EARLIER PASS FILLED ARE KEPT (parts meshed apart): read back, and only the others
+    # meshed in this pass. Without a kept file nothing here changes
+    kept: list[int] = []
+    kept_tiny: dict = {}
+    if meta is not None and same_scale:
+        # LAD-fea-13: a kept part the refinement after the rung makes finer is meshed again in this pass
+        again = {int(v) for q in ((run.get("keep") or {}).get("remesh_parts") or [])
+                 for v in (part_volumes or {}).get(f"Part_{int(q)}") or []}
+        kept = [v for v in meta["kept_volumes"] if v in set(vols) and v not in again]
+        if kept:
+            kept = load_kept(gmsh, ws, kept)
+            mine = {abs(int(t)) for v in kept for _d, t in gmsh.model.getBoundary([(3, int(v))], oriented=False)}
+            kept_tiny = TINY.restricted(gmsh, meta.get("tiny"), mine)
+            print(f"[GMSH-FEA] {len(kept)} part volume(s) kept from the pass before; meshing the other "
+                  f"{len(vols) - len(kept)} ({KEEP_RULE})", file=sys.stderr)
+    # MESH-9 on the finished mesh (curving, fold-in, the record): this pass's merges and the kept parts'
+    after = TINY.united(merges, kept_tiny)
+    if rung is not None or kept:
+        rung_vols = [] if rung is None else (sorted(vols) if rung == "all" else rung_volumes(run, vols, part_volumes))
+        # a part gmsh filled in a later pass is kept as gmsh filled it: fTetWild never meshes it a second time
+        rung_vols = [v for v in rung_vols if v not in set(kept)]
+        rest = [v for v in vols if v not in rung_vols and v not in set(kept)]
+        # the parts that failed before are filled last: a fill that fails stops the pass's fills
+        before = {int(v) for v in ((meta or {}).get("failed_volumes") or [])}
+        rest = [v for v in rest if int(v) not in before] + [v for v in rest if int(v) in before]
+        all_vols, all_surfaces = vols, surfaces
         if not rest:
+            if rung is None:
+                return {"vols": vols, "surfaces": surfaces, "face_tags": face_tags, "surface_tag": surface_tag,
+                        "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro,
+                        "repeated_triangles": {}, "kept_volumes": kept,
+                        **({"tiny": after} if TINY.active(after) else {})}
             return {"vols": vols, "surfaces": surfaces, "face_tags": face_tags, "surface_tag": surface_tag,
                     "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro,
-                    "repeated_triangles": {}, "rung_volumes": rung_vols, "gmsh_volumes": []}
+                    "repeated_triangles": {}, "rung_volumes": rung_vols,
+                    "gmsh_volumes": sorted(v for v in vols if v not in rung_vols), "kept_volumes": kept}
         everything = gmsh.model.getEntities()
         gmsh.model.setVisibility(everything, 0)
         gmsh.model.setVisibility([(3, int(v)) for v in rest], 1, recursive=True)
         gmsh.option.setNumber("Mesh.MeshOnlyVisible", 1)
-        all_vols, all_surfaces = vols, surfaces
         vols = rest
         surfaces = {abs(int(t)) for v in rest for _d, t in gmsh.model.getBoundary([(3, v)], oriented=False)} & surfaces
     # LAD-fea-8: after a surface stage that stalled, gmsh's first mesh of every face is kept (its repeats
     # dropped below, MESH-5) rather than thrown away for a MeshAdapt run that never ends
     gmsh.option.setNumber("Mesh.AlgorithmSwitchOnFailure", 0 if run.get("surface_switch") is False else 1)
     note_stage(ws, "surface", "meshing the surfaces")
+    # gmsh's surface stage throws away every volume's mesh: the kept parts' are held aside through it, and no
+    # node is numbered afresh meanwhile (the held elements name their curves' nodes by tag; the fill numbers all)
+    renumber = gmsh.option.getNumber("Mesh.Renumber")
+    if kept:
+        gmsh.option.setNumber("Mesh.Renumber", 0)
+    held = hold_volumes(gmsh, kept) if kept else []
     # MESH-9: a tiny face merged into its neighbour may rightly hold no triangle of its own
     drawn = surfaces - {int(s) for s in (merges.get("faces") or {})}
     try:
@@ -1349,6 +1575,10 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
         named = sorted({s for s in surfaces_named(str(exc)) if s in surfaces}
                        | set(_empty_surfaces(gmsh, drawn) if not surfaces_named(str(exc)) else []))
         raise _tiny_failed(FillFailed(exc, named, face_tags, tied), whole) from exc
+    finally:
+        if held:
+            give_back_volumes(gmsh, held)
+        gmsh.option.setNumber("Mesh.Renumber", renumber)
     # MESH-9: a compound's nodes back exactly on their CAD face or curve, with their parameters there
     TINY.settle_nodes(gmsh, merges)
     repeated = drop_repeated_triangles(gmsh, surfaces)
@@ -1359,6 +1589,11 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
         else:
             gmsh.model.mesh.generate(3)
     except Exception as exc:
+        if isinstance(exc, PartsFailed):
+            # LAD-fea-11: every other part was filled - kept, with the parts kept before, for the next pass
+            keep_filled(gmsh, ws, (all_vols if (rung is not None or kept) else vols), exc.volumes, rung_vols,
+                        scale=scale, tied=tied, part_volumes=part_volumes,
+                        untried=[v for v in vols if int(v) not in set(exc.attempted)], tiny=after)
         # the surfaces the fill failed on, for the next pass (LAD-fea-6)
         named = sorted(set(empty) | {s for s in surfaces_named(str(exc)) if s in surfaces})
         if not named:
@@ -1371,18 +1606,25 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
     # its surfaces, as a fill failure is, and never delivered
     hollow = empty_volumes(gmsh, vols)
     if hollow:
+        if asm and str((sidecar or {}).get("mode") or "") in ("tie", "contact"):
+            # LAD-fea-11: the parts filled, kept; the ones left empty are the ones to mesh again
+            keep_filled(gmsh, ws, (all_vols if (rung is not None or kept) else vols), hollow, rung_vols,
+                        scale=scale, tied=tied, part_volumes=part_volumes, tiny=after)
         named = sorted({abs(int(t)) for v in hollow for _d, t in gmsh.model.getBoundary([(3, v)], oriented=False)
                         if int(t) in surfaces} | set(empty))
         raise _tiny_failed(FillFailed(RuntimeError(f"{EMPTY_VOLUMES} the 3D fill left volume(s) {hollow} with no "
                                                    "elements"), named, face_tags, tied, hollow=hollow), whole)
-    if rung is not None:
+    if rung is not None or kept:
         gmsh.model.setVisibility(gmsh.model.getEntities(), 1)
         gmsh.option.setNumber("Mesh.MeshOnlyVisible", 0)
-        return {"vols": all_vols, "surfaces": all_surfaces, "face_tags": face_tags, "surface_tag": surface_tag,
-                "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro,
-                "repeated_triangles": repeated, "rung_volumes": rung_vols, "gmsh_volumes": sorted(vols),
-                **({"tiny": merges} if TINY.active(merges) else {}),
-            **({"short": short} if short.get("edges") else {})}
+        out = {"vols": all_vols, "surfaces": all_surfaces, "face_tags": face_tags, "surface_tag": surface_tag,
+               "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro,
+               "repeated_triangles": repeated, "kept_volumes": kept,
+               **({"tiny": after} if TINY.active(after) else {}),
+               **({"short": short} if short.get("edges") else {})}
+        if rung is not None:
+            out.update(rung_volumes=rung_vols, gmsh_volumes=sorted(v for v in all_vols if v not in rung_vols))
+        return out
     return {"vols": vols, "surfaces": surfaces, "face_tags": face_tags, "surface_tag": surface_tag,
             "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro,
             "repeated_triangles": repeated, **({"tiny": merges} if TINY.active(merges) else {}),
@@ -1565,14 +1807,22 @@ def _mesh(workspace) -> int:
         ftw: dict = {}
         tags: dict | None = None
         scale = 1.0
+        # LAD-fea-11: parts an earlier pass kept are read back at the scale they were built at
+        kept_meta = kept_for(ws, run) if asm else None
+        if kept_meta is not None:
+            scale, tags = float(kept_meta.get("scale") or 1.0), kept_meta["tags"]
         try:
-            built = (build_volume(gmsh, ws, plan, geom, asm, sidecar, scale=scale) if not rung
-                     else rung_build(gmsh, ws, plan, geom, asm, sidecar))
+            built = (build_volume(gmsh, ws, plan, geom, asm, sidecar, scale=scale, tags=tags) if not rung
+                     else rung_build(gmsh, ws, plan, geom, asm, sidecar, scale=scale, tags=tags))
         except NoSolid:
             print("[GMSH-FEA] no solid volume in geometry.step - an FEA mesh needs a closed solid",
                   file=sys.stderr)
             return 3
         except FillFailed as first:
+            if scale != 1.0:
+                # built at the CAD's own scale already (the kept parts' scale): nothing more to try in this pass
+                first.report(ws)
+                raise first.exc from None
             # MESH-4: THE CAD'S OWN SCALE. The staged solid is in metres; OpenCASCADE's fixed
             # tolerances (1e-7 of a model unit) are then a tenth of a micron, and a CAD edge of a few
             # nanometres where a feature grazes another (libredrive_pulley_housing: a 1.8 mm half-hole
@@ -1597,8 +1847,10 @@ def _mesh(workspace) -> int:
         # fTetWild takes every part)
         meshed = not rung or bool(built.get("gmsh_volumes"))
         note_stage(ws, "optimising", "improving the elements")
-        for _ in range(int(run.get("optimise_passes") or 1) if meshed else 0):
-            gmsh.model.mesh.optimize("Netgen")
+        # MESH-10: no volume comes out of the optimiser with invalid elements it went in without
+        from meshpipeline.engines.gmsh import optimise_guard
+        optimised = optimise_guard.optimise(gmsh, "Netgen", int(run.get("optimise_passes") or 1) if meshed else 0,
+                                            log_prefix="[GMSH-FEA]")
         order = int((plan.get("element") or {}).get("order") or 2)
         settled: dict = {"straightened": 0, "set_aside": [], "cusp_places_m": [], "cusp_elements": 0,
                          "micro_used": [], "micro_elements": 0}
@@ -1626,7 +1878,7 @@ def _mesh(workspace) -> int:
                                         D.SICN_FLOOR, micro=plan.get("micro") or [])
         if rung:
             # LAD-fea-9: fTetWild's parts into the same model, after gmsh's own (straight 10-node tets)
-            ftw = last_rung(gmsh, ws, plan, geom, built, asm, sidecar, order=order, tick=tick,
+            ftw = last_rung(gmsh, ws, plan, geom, built, asm, sidecar, order=order, tick=tick, scale=scale,
                             fell_back=str(built.get("fell_back") or ""))
         # MESH-9: every merged tiny face's elements into its neighbour's named face, and the record
         tiny_out: dict = {}
@@ -1642,6 +1894,10 @@ def _mesh(workspace) -> int:
         n_elem = len(all_tags)
         n_nodes = len(gmsh.model.mesh.getNodes()[0])
         aside = set(settled["set_aside"])
+        # LAD-fea-12: the last rung's slivers on the surface, set aside the same way (their tags stay out of the record)
+        ftw_aside = ftw.pop("set_aside", None) if ftw else None
+        if ftw_aside:
+            aside |= {int(t) for t in ftw_aside.pop("tags")}
         held = [q for t, q in zip(all_tags, qualities, strict=True) if int(t) not in aside]
         # THE FLOOR holds every element but the ones set aside at a cusp (PLAN-fea-10); validity
         # (no degenerate element) holds every element without exception
@@ -1757,7 +2013,8 @@ def _mesh(workspace) -> int:
                               "micro_elements": int(settled["micro_elements"]),
                               "min_sicn": round(float(min(aside_q)), 4) if aside_q else None,
                               "places_mm": [[round(v * 1000.0, 2) for v in p] for p in settled["cusp_places_m"]],
-                              "micro": [_micro_place(plan["micro"][i]) for i in settled["micro_used"]]},
+                              "micro": [_micro_place(plan["micro"][i]) for i in settled["micro_used"]],
+                              **({"ftetwild_slivers": ftw_aside} if ftw_aside else {})},
             "sicn_low_fraction": round(low / n_elem, 6) if n_elem else 1.0,
             "fatal": fatal, "size_h": base, "quality_bar": "fea", "sicn_floor": note_floor,
             "elements_under_floor": low,
@@ -1770,6 +2027,8 @@ def _mesh(workspace) -> int:
                                           "fea_max_aspect_ratio", "fea_min_dihedral_deg",
                                           "fea_max_dihedral_deg", "fea_inverted") if k in shape},
             "fea_rules_short": len(rules.get("short") or []) if rules else None,
+            # MESH-10: the volumes the optimiser made invalid, given back the mesh they went in with
+            **({"fea_optimiser_kept_input": optimised} if optimised else {}),
             # MESH-5: a face's repeated surface triangles dropped before the fill
             **({"fea_repeated_triangles": {str(k): v for k, v in built["repeated_triangles"].items()}}
                if built.get("repeated_triangles") else {}),

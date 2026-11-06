@@ -763,6 +763,9 @@ async def _run_async(req: JobRequest) -> dict:
         # is closed for the mesh by each route's staging; read off the stored confirmation
         from meshpipeline.application.geometry_confirmation import confirmed_leak_closing
         initial_state["leak_closing"] = await asyncio.to_thread(confirmed_leak_closing, str(session_id or ""))
+        # WHICH WAY IS UP, as the user confirmed it on the stage (INS-9): the ground is laid under it
+        from meshpipeline.application.geometry_confirmation import confirmed_up_axis
+        initial_state["up_axis"] = await asyncio.to_thread(confirmed_up_axis, str(session_id or ""))
         # AN FEA ASSEMBLY'S JOINTS, as the user confirmed them on the stage (bonded unless they said
         # contact); read off the stored confirmation, never the event loop's to wait on
         from meshpipeline.application.fea_check import confirmed_connection
@@ -772,6 +775,12 @@ async def _run_async(req: JobRequest) -> dict:
         # PLAN-fea-19/20: the single pairs the user set on the stage (each pair's type, an overlap's owner)
         from meshpipeline.application.fea_check import confirmed_pairs
         initial_state["fea_pairs"] = await asyncio.to_thread(confirmed_pairs, str(session_id or ""))
+        # PLAN-fea-22: THE SIZE THE USER PICKED (the full-rules mesh unless they picked the quicker one)
+        from meshpipeline.application.fea_check import confirmed_plan_choice
+        initial_state["fea_plan_choice"] = await asyncio.to_thread(confirmed_plan_choice, str(session_id or ""))
+        # PLANNED ONCE: where the stage kept the plans it made (the run reuses them for this very staged solid)
+        from meshpipeline.application.fea_check import plans_object_key
+        initial_state["fea_plans_object"] = plans_object_key(str(session_id or ""))
 
         initial_state["repair_directives"] = list(req.repair_directives)
 
@@ -1046,6 +1055,14 @@ async def _run_async(req: JobRequest) -> dict:
                          words=f"the measurement settles it: {_s.get('settled_by')}")
         except Exception:  # noqa: BLE001 - a record never touches a verdict
             jlog.debug("review record: why entries not kept", exc_info=True)
+        # and how closely the mesh follows the CAD (engines/cad_fidelity.py): a concern is said beside
+        # the delivered mesh, and every number travels in the result record
+        from meshpipeline.application.final_result import (
+            cad_fidelity_caveat,
+            cad_fidelity_record,
+        )
+        _fidelity_caveat = cad_fidelity_caveat(_run_outcome)
+        _fidelity = cad_fidelity_record(_run_outcome, size_caveat=_scale_caveat)
         verdict, api_failure = _run_outcome.reviewer_verdict, _run_outcome.api_failure
 
         retry_count = _run_outcome.retry_count
@@ -1285,6 +1302,7 @@ async def _run_async(req: JobRequest) -> dict:
                 # THE FALLBACK LADDER'S ACCOUNT: which engines ran, why the run moved, and - when
                 # no mesh came out - the one offer the user can accept in a sentence
                 repair_lineage=dict(final_state.get("repair_lineage") or {}),
+                cad_fidelity=_fidelity,
                 engine_ladder=_ladder_record(
                     final_state, succeeded=final_status == JobStatus.succeeded,
                     system_failure=bool(api_failure) or _timed_out, jlog=jlog),
@@ -1293,6 +1311,7 @@ async def _run_async(req: JobRequest) -> dict:
                                      + ([_review_caveat] if _review_caveat else [])
                                      + ([_narrow_caveat] if _narrow_caveat else [])
                                      + ([_scale_caveat] if _scale_caveat else [])
+                                     + ([_fidelity_caveat] if _fidelity_caveat else [])
                                      + ([_verdict_caveat] if _verdict_caveat else [])
                                      + ([_notes_caveat] if _notes_caveat else [])),
                 review_blocking=list(_review_blocking),

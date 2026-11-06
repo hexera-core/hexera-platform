@@ -29,6 +29,7 @@ load and support still has its face; a face too small to keep a triangle of its 
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 import shutil
@@ -378,6 +379,132 @@ def orient(xyz: np.ndarray, tets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return t, np.abs(vol)
 
 
+#: LAD-fea-12: a tetrahedron whose volume is under this share of its longest edge cubed is all but flat (a regular
+#: one has 0.118). On ox_mc_lid's Part_239 that is SICN about 5e-5 and under, the worst element the quality record
+#: (four decimals) still reads as above 0; the flattest, 3e-16, gmsh measured inside out.
+FLAT_SHARE = 1e-6
+FLAT_RULE = "LAD-fea-12"
+#: ...and a sliver still under this SICN after the peel, with a face on the surface, is set aside from the floor and
+#: named (the gmsh adapter's DEGENERATE_SICN: the record would read it as 0.0)
+SLIVER_SICN = 5e-5
+
+
+def _odd_edges(tris: np.ndarray) -> int:
+    """How many edges of the boundary triangles are not the edge of exactly two of them."""
+    e = np.sort(np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]]), axis=1)
+    _u, count = np.unique(e, axis=0, return_counts=True)
+    return int((count != 2).sum())
+
+
+def peel_flat(xyz: np.ndarray, tets: np.ndarray) -> tuple[np.ndarray, int, int]:
+    """LAD-fea-12: fTetWild's flat slivers ON THE SURFACE taken off. fTetWild can leave a tetrahedron with no
+    volume lying on the part's surface, two or three of its faces outside (Part_239 of ox_mc_lid: ten of them in
+    one 50-micron spot, the flattest measured inside out). Such a sliver holds no material: it is dropped, one at a
+    time, flattest first, whenever the surface without it has no more edges off two triangles than it had (fTetWild's
+    own surface can have a few already), and again while dropping one lays bare another. A flat one inside the part
+    is left for the gate.
+    `tets` oriented (orient). Returns (the tets kept, how many were dropped, how many flat ones are left)."""
+    t = np.asarray(tets, dtype=np.int64)
+    edges = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
+
+    def flat(tt):
+        a, b, c, d = (xyz[tt[:, i]] for i in range(4))
+        vol = np.abs(np.einsum("ij,ij->i", np.cross(b - a, c - a), d - a)) / 6.0
+        lmax = np.max([np.linalg.norm(xyz[tt[:, i]] - xyz[tt[:, j]], axis=1) for i, j in edges], axis=0)
+        rel = vol / np.maximum(lmax, 1e-300) ** 3
+        idx = np.where(rel < FLAT_SHARE)[0]
+        return idx[np.argsort(rel[idx], kind="stable")]
+
+    dropped = 0
+    while True:
+        cand = flat(t)
+        if not len(cand):
+            return t, dropped, 0
+        surface = boundary(t)
+        outside = {tuple(sorted(f)) for f in surface.tolist()}
+        odd = _odd_edges(surface)
+        took = False
+        for i in cand.tolist():
+            if sum(tuple(sorted(t[i, list(c)].tolist())) in outside for c in TET_FACES) < 2:
+                continue
+            rest = np.delete(t, i, axis=0)
+            if _odd_edges(boundary(rest)) <= odd:
+                t, dropped, took = rest, dropped + 1, True
+                break
+        if not took:
+            return t, dropped, int(len(cand))
+
+
+#: LAD-fea-13: one refinement pass after the last rung, on the parts whose zones fell short
+REFINE_RULE = "LAD-fea-13"
+
+
+def _zone_part(z: Mapping) -> str:
+    """The part a zone is on ("Part_k"), or "whole" for a single part's zone."""
+    from meshpipeline.cad.fea_assembly import part_of_face
+
+    for f in z.get("faces") or []:
+        k = part_of_face(str(f))
+        if k is not None:
+            return f"Part_{k}"
+    return "whole"
+
+
+def refine_targets(plan: Mapping, short: list[str], walls: list[Mapping], parts: list[int] | None) -> dict[str, dict]:
+    """LAD-fea-13: the parts the refinement pass re-meshes, each with its short zones, split by who meshes them:
+    {"ftetwild": {"Part_k" | "whole": [zone ids]}, "gmsh": {"Part_k": [zone ids]}}. A wall short of its elements is
+    on the part of the face the check measured (zone ids repeat across an assembly's parts: T5_1 is the fifth face
+    of every part); any other short zone (a hot spot) is on the parts of its own faces. `parts`: the parts the
+    rung's pass gave fTetWild (None: every part)."""
+    found: dict[str, set[str]] = {}
+    walled = set()
+    for w in walls:
+        zid, face = str(w.get("zone") or ""), str(w.get("face") or "")
+        if zid and zid in set(short):
+            found.setdefault(_face_part(face), set()).add(zid)
+            walled.add(zid)
+    for z in plan.get("zones") or []:
+        zid = str(z.get("id"))
+        if zid in set(short) and zid not in walled:
+            found.setdefault(_zone_part(z), set()).add(zid)
+    out: dict[str, dict] = {"ftetwild": {}, "gmsh": {}}
+    for key, zids in sorted(found.items()):
+        by = "ftetwild" if (parts is None or key == "whole" or int(key.split("_")[1]) in set(parts)) else "gmsh"
+        out[by][key] = sorted(zids)
+    return out
+
+
+def _face_part(face: str) -> str:
+    from meshpipeline.cad.fea_assembly import part_of_face
+
+    k = part_of_face(face)
+    return f"Part_{k}" if k is not None else "whole"
+
+
+def tighten_zones(zones: list, targets: Mapping[str, list[str]], factor: float) -> list[dict]:
+    """The plan's zones with each target part's own short zone entries `factor` finer (LAD-fea-3's way), every
+    other entry as it was."""
+    out = []
+    for z in zones:
+        key = _zone_part(z)
+        if str(z.get("id")) in set(targets.get(key) or []):
+            z = {**z, "size_m": float(z["size_m"]) * factor, "tightened": factor}
+        out.append(z)
+    return out
+
+
+def refined_plan(plan: Mapping, refine: Mapping, key: str) -> tuple[Mapping, list[dict]]:
+    """(the plan this part is sized by, the zones held through every cell): a part the refinement names gets its
+    short zones LAD-fea-3 finer and held (LAD-fea-13); every other part the plan as it was - so its run, and its
+    mesh, are the ones before."""
+    mine = (refine.get("parts") or {}).get(key) or []
+    if not mine:
+        return plan, []
+    zones = tighten_zones(list(plan.get("zones") or []), {key: list(mine)}, float(refine.get("factor") or 1.0))
+    band = [z for z in zones if z.get("tightened") and _zone_part(z) == key]
+    return {**plan, "zones": zones}, band
+
+
 def boundary(tets: np.ndarray) -> np.ndarray:
     """The triangles that are the face of one tetrahedron only, oriented outward, in a fixed order."""
     f = np.concatenate([tets[:, list(c)] for c in TET_FACES])
@@ -508,7 +635,7 @@ def tessellate(fmap, faces: list[int], deflection: float) -> tuple[np.ndarray, n
 
 
 def sizing_grid(xyz: np.ndarray, tris: np.ndarray, label: np.ndarray, names: list[str], plan: Mapping,
-                edge: float, pad: float = 0.0) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+                edge: float, pad: float = 0.0, band: list[dict] | tuple = ()) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     """fTetWild's background mesh: the part's box in BG_DIVISIONS cells along EACH side (a thin pane's
     thickness is resolved as finely as its length - fc_glass_frames, 25 Oct: one 57 mm cell across a
     10 mm pane let its 7.5 mm wall zone fall through, and its tets ran 7 mm off the CAD), a cell or
@@ -536,6 +663,18 @@ def sizing_grid(xyz: np.ndarray, tris: np.ndarray, label: np.ndarray, names: lis
     field = SizeField(surface, zones, growth=float(plan.get("growth") or 1.3), scale_to_m=1.0)
     h = np.minimum(field.zone_size(pts), edge)
     h = np.where(np.isfinite(h) & (h > 0), h, edge)
+    if band:
+        # LAD-fea-13: THE ZONES BEING REFINED, HELD THROUGH EVERY CELL. A zone's size rises away from it at most
+        # (growth - 1) per metre, so a node one cell diagonal from it may read a size that much coarser than the
+        # zone itself, and fTetWild, reading sizes between the nodes, lets a wall thinner than a cell fall through
+        # (g_c0152's 0.29 mm wall in a 5 mm cell). Lowered by exactly that much, the grid never reads coarser than
+        # the zones anywhere in a cell; never finer than the finest of them
+        bfield = SizeField(surface, list(band), growth=float(plan.get("growth") or 1.3), scale_to_m=1.0)
+        hb = bfield.zone_size(pts)
+        floor = min(float(z["size_m"]) for z in band)
+        slack = (float(plan.get("growth") or 1.3) - 1.0) * float(np.linalg.norm(step))
+        hb = np.where(np.isfinite(hb), np.maximum(floor, hb - slack), np.inf)
+        h = np.minimum(h, hb)
     # six tetrahedra a cube (Kuhn's split along the main diagonal: conforming between cubes)
     def vid(i, j, k):
         return (i * (n[1] + 1) + j) * (n[2] + 1) + k
@@ -602,6 +741,24 @@ def run_part(job: dict) -> dict:
         bg = d / "sizing.msh"
         _write_bg(bg, *job["bg"])
         cmd += ["--bg-mesh", str(bg)]
+    else:
+        (d / "sizing.msh").unlink(missing_ok=True)
+    # LAD-fea-13: THE SAME INPUTS, THE SAME MESH. fTetWild runs on one thread with constant seeds, so a part whose
+    # surface, settings and sizing are byte for byte those of a run already in its folder gets that run's mesh
+    # without running again (the rung's refinement pass re-meshes only the parts it refines)
+    key = _run_key(d, cmd)
+    done = d / "run.json"
+    if out.exists() and done.exists():
+        try:
+            was = json.loads(done.read_text())
+            if was.get("key") == key:
+                pts, tets = _read_tets(out)
+                return {"xyz": pts, "tets": tets, "seconds": was.get("seconds"), "peak_gib": was.get("peak_gib"),
+                        "command": was.get("command"), "reused": True}
+        except Exception:  # noqa: BLE001 - a record that cannot be read is run again
+            pass
+    done.unlink(missing_ok=True)
+    out.unlink(missing_ok=True)
     t0 = time.monotonic()
     tail: list[str] = []
     peak_kb = 0
@@ -635,8 +792,24 @@ def run_part(job: dict) -> dict:
         pts, tets = _read_tets(out)
     except Exception as exc:  # noqa: BLE001 - said as this part's failure
         return {"error": f"fTetWild's mesh could not be read ({exc})", "seconds": seconds}
-    return {"xyz": pts, "tets": tets, "seconds": seconds, "peak_gib": peak_gib,
-            "command": [Path(cmd[0]).name, *cmd[5:]]}
+    command = [Path(cmd[0]).name, *cmd[5:]]
+    done.write_text(json.dumps({"key": key, "seconds": seconds, "peak_gib": peak_gib, "command": command}))
+    return {"xyz": pts, "tets": tets, "seconds": seconds, "peak_gib": peak_gib, "command": command}
+
+
+def _run_key(d: Path, cmd: list[str]) -> str:
+    """What decides a run's mesh: fTetWild's version, its settings (not the paths) and the bytes of its input
+    surface and sizing mesh."""
+    import hashlib
+
+    h = hashlib.sha256()
+    h.update(f"{VERSION}|{cmd[5:]}".replace(str(d), "").encode())
+    for name in ("input.obj", "sizing.msh"):
+        f = d / name
+        if f.exists():
+            h.update(name.encode())
+            h.update(f.read_bytes())
+    return h.hexdigest()
 
 
 def _hwm_kb(pid: int) -> int:
@@ -751,7 +924,8 @@ def run_parts(jobs: list[dict], workers: int) -> list[dict]:
 
 
 def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *, volume_index: Mapping[int, int],
-              surface_tag_of: Mapping[int, int], names: list[str], order: int = 2, workers: int = 1) -> dict:
+              surface_tag_of: Mapping[int, int], names: list[str], order: int = 2, workers: int = 1,
+              model_scale: float = 1.0) -> dict:
     """fTetWild's mesh of each of `volumes` (gmsh volume tags of the staged model), written INTO that
     model: its nodes on the volume, its 10-node tetrahedra in the volume, each boundary triangle (6-node)
     on the CAD surface it is nearest to. `volume_index`: gmsh volume tag -> 0-based solid index (MapShapes
@@ -762,8 +936,11 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
 
     settings = (plan.get("mesh") or {}).get("ftetwild") or {}
     per = settings.get("per_part") or {}
+    refine = settings.get("refine") or {}
     shape, fmap, _smap, own = cad_faces(staged)
-    scale = frame_scale(gmsh, shape)
+    # the reader's unit to the mesh's: a model built `model_scale` times its metres whose mesh is back in metres
+    # (MESH-4, LAD-fea-11) takes fTetWild's parts in metres too
+    scale = frame_scale(gmsh, shape) / float(model_scale or 1.0)
     jobs, meta = [], []
     from meshpipeline.cad.fea_assembly import part_of_face
 
@@ -778,11 +955,13 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
         defl = float(cfg.get("tessellation_m") or TESSELLATION_SHARE * eps)
         xyz, tris, label = tessellate(fmap, faces, defl / scale)
         xyz = xyz * scale
-        bg = sizing_grid(xyz, tris, label, list(names), plan, edge, pad=4.0 * eps)
+        own_plan, band = refined_plan(plan, refine, key)
+        bg = sizing_grid(xyz, tris, label, list(names), own_plan, edge, pad=4.0 * eps, band=band)
         jobs.append({"dir": str(ws / "_ftetwild" / f"volume_{int(v)}"), "xyz": xyz, "tris": tris, "edge": edge,
                      "epsilon": eps, "bg": bg, "name": key if key != "whole" else "part"})
         meta.append({"volume": int(v), "key": key, "sized": bg is not None, "part": part, "faces": faces, "xyz": xyz, "tris": tris,
-                     "label": label, "edge": edge, "eps": eps, "deflection": defl})
+                     "label": label, "edge": edge, "eps": eps, "deflection": defl,
+                     "refined": sorted(z["id"] for z in band)})
     note_stage(ws, "ftetwild", f"meshing {len(jobs)} part(s) with fTetWild (the last rung)")
     results = run_parts(jobs, workers)
     failed = [(m["key"], r["error"]) for m, r in zip(meta, results, strict=True) if "error" in r]
@@ -794,10 +973,16 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
     out_parts = []
     worst_dev = 0.0
     eps_max = 0.0
+    aside_tags: list[int] = []
+    aside_slivers: list[dict] = []
     moved_all: list[str] = []
     lost_all: list[str] = []
     for m, r in zip(meta, results, strict=True):
         tets, _vol = orient(r["xyz"], r["tets"])
+        tets, peeled, flat_left = peel_flat(r["xyz"], tets)
+        if peeled:
+            print(f"[FTETWILD] {m['key']}: {peeled} flat sliver(s) on the surface taken off ({FLAT_RULE})",
+                  file=sys.stderr)
         tris = boundary(tets)
         if order > 1:
             xyz10, tet10, tri6 = quadratic(r["xyz"], tets, tris)
@@ -834,6 +1019,26 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
         etags = elem_next + np.arange(len(tet10), dtype=np.int64)
         elem_next += len(tet10)
         gmsh.model.mesh.addElementsByType(m["volume"], tet_type, etags.tolist(), tags[tet10].ravel().tolist())
+        # LAD-fea-12: the slivers the peel could not take off (a face on the surface, the rest inside) - set aside
+        # from the floor and named, as a detail too small for the mesh (PLAN-fea-12); a flat one wholly inside is
+        # left for the gate
+        q = np.asarray(gmsh.model.mesh.getElementQualities(etags.tolist(), "minSICN"), dtype=float)
+        thin = np.where(q < SLIVER_SICN)[0]
+        if len(thin):
+            outside = {tuple(sorted(f)): j for j, f in enumerate(tris.tolist())}
+            onface = []
+            for i in thin.tolist():
+                out_faces = [outside[k] for c in TET_FACES if (k := tuple(sorted(tets[i, list(c)].tolist()))) in outside]
+                if out_faces:
+                    onface.append(i)
+                    # each one named: its part, the CAD face its outside face lies on, its SICN and where
+                    aside_slivers.append({"part": m["key"], "face": names[int(tri_face[out_faces[0]])],
+                                          "sicn": float(f"{q[i]:.3g}"),
+                                          "at_mm": np.round(r["xyz"][tets[i]].mean(axis=0) * 1000.0, 3).tolist()})
+            aside_tags += [int(etags[i]) for i in onface]
+            if onface:
+                print(f"[FTETWILD] {m['key']}: {len(onface)} sliver(s) on the surface under SICN {SLIVER_SICN:g} set aside "
+                      f"({FLAT_RULE})", file=sys.stderr)
         for k in m["faces"]:
             sel = tri_face == k
             if not sel.any():
@@ -848,6 +1053,10 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
                           "cad_to_mesh_mm": _sig(float(cdist.max(initial=0.0)) * 1e3),
                           "sizing_field": m["sized"],
                           "faces": len(m["faces"]), "moved_faces": moved, "lost_faces": lost,
+                          **({"refined_zones": m["refined"], "refine_rule": REFINE_RULE} if m["refined"] else {}),
+                          **({"reused": True} if r.get("reused") else {}),
+                          **({"flat_slivers_dropped": peeled, "flat_rule": FLAT_RULE} if peeled else {}),
+                          **({"flat_inside": flat_left} if flat_left else {}),
                           "command": r.get("command")})
         worst_dev = max(worst_dev, dev)
         eps_max = max(eps_max, m["eps"] + m["deflection"])
@@ -857,7 +1066,10 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
             "parts": [p["part"] for p in out_parts], "per_part": out_parts,
             "epsilon_mm": _sig(eps_max * 1e3), "deviation_mm": _sig(worst_dev * 1e3),
             "moved_faces": moved_all, "lost_faces": lost_all,
-            "tied": bool(settings.get("tied"))}
+            "tied": bool(settings.get("tied")),
+            # LAD-fea-12: the slivers set aside (the adapter holds the floor without them, the delivery names them)
+            **({"set_aside": {"rule": FLAT_RULE, "elements": len(aside_tags), "slivers": aside_slivers,
+                              "tags": aside_tags}} if aside_tags else {})}
     info["words"] = words(info)
     print(f"{RUNG_LINE} meshed {', '.join(str(p['part']) for p in out_parts)}: "
           + ", ".join(f"{p['part']} {p['elements']} elements in {p['fTetWild_s']} s, within {p['deviation_mm']} mm"
@@ -866,5 +1078,6 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
 
 
 __all__ = ["BIN_PATH", "COMMIT", "ENGINE", "MAX_RUNG_PASSES", "Nearest", "VERSION", "binary", "boundary",
-           "closest_on_triangles", "envelope_m", "failed_parts", "mesh_into", "orient", "params", "quadratic",
-           "rung_parts", "run_part", "sizing_grid", "split_long", "tessellate", "words"]
+           "closest_on_triangles", "envelope_m", "failed_parts", "FLAT_RULE", "FLAT_SHARE", "mesh_into", "orient",
+           "params", "peel_flat", "quadratic", "REFINE_RULE", "SLIVER_SICN", "refine_targets", "refined_plan", "tighten_zones", "rung_parts", "run_part", "sizing_grid", "split_long", "tessellate",
+           "words"]

@@ -228,6 +228,42 @@ class IntakeToolExecutor:
             logger.debug("Intake: geometry regions unavailable (%s)", exc)
             return {}
 
+    def _measured_setup_errors(self, args: dict) -> list[str]:
+        # WHAT THE MEASURED PART CANNOT CARRY, said before the summary is put to the user: a
+        # symmetry plane on a whole body, the ground taken for a half model's cut, a reference
+        # length a thousand times off (agents/intake/measured_setup). The check's stored facts and
+        # the confirmed form are the evidence; unreadable, nothing is said and nothing is refused.
+        sid = str(self.state.session_id or "")
+        if not sid:
+            return []
+        try:
+            import json
+
+            from meshpipeline.agents.intake.measured_setup import setup_errors
+            from meshpipeline.application.geometry_check import check_object_key, read_check
+            from meshpipeline.contracts.object_storage import get_object_store
+
+            facts = (read_check(sid) or {}).get("facts") or {}
+            try:
+                confirmed = json.loads(get_object_store().get_bytes(
+                    object_key=check_object_key(sid, "confirmed.json")))
+            except Exception:  # noqa: BLE001 - nothing confirmed: no size to judge a length by
+                confirmed = {}
+            return setup_errors(args, facts, confirmed if isinstance(confirmed, dict) else {})
+        except Exception as exc:  # noqa: BLE001 - a check we cannot read refuses nothing
+            logger.debug("Intake: measured setup check unavailable (%s)", exc)
+            return []
+
+    def _confirmed_up_axis(self) -> str:
+        # WHICH WAY IS UP, as the user confirmed it on the picture (INS-9): the ground lies under
+        # it, so a flow along z is along the ground of a Y-up file. Unreadable: +z, as before.
+        try:
+            from meshpipeline.application.geometry_confirmation import confirmed_up_axis
+
+            return confirmed_up_axis(str(self.state.session_id or ""))
+        except Exception:  # noqa: BLE001 - unknown is +z up, never a refusal
+            return ""
+
     def _staged_upload(self) -> str:
         # The session's upload as a local file (staged, or fetched back from its stored source), or ''.
         return measured_choice.staged_upload(str(self.state.session_id or ""),
@@ -665,7 +701,9 @@ class IntakeToolExecutor:
                 "Not in this turn: the user asked a question about the run that has ended. Answer it "
                 "from the LAST RUN facts in your instructions - the mesh exists - and set up nothing. "
                 "Nothing was saved."))
-        val_errors = validate_submission(args)
+        _up = self._confirmed_up_axis()
+        val_errors = ((validate_submission(args, up_axis=_up) if _up else validate_submission(args))
+                      or self._measured_setup_errors(args))
         # STRUCTURAL GATE: authorized ONLY by a matching, unexpired, single-engine SUPPORTED
         # preview TOKEN for the EXACT payload, in this session/owner and the current revision.
         canon = at.canonical_payload(args.get("mesh_engine"), args.get("purpose"),
