@@ -82,6 +82,8 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "cad-repair-fix-small-faces:CAD_REPAIR_FIX_SMALL_FACES" \
             "cad-repair-max-ops:CAD_REPAIR_MAX_OPS" \
             "cad-repair-timeout-s:CAD_REPAIR_TIMEOUT_S" \
+            "cad-repair-stall-limit:CAD_REPAIR_STALL_LIMIT" \
+            "cad-inspect-timeout-s:CAD_INSPECT_TIMEOUT_S" \
             "cad-repair-llm-planner:CAD_REPAIR_LLM_PLANNER" \
             "verdict-by-limits:VERDICT_BY_LIMITS" \
             "mesh-progressive-snapshot-enabled:MESH_PROGRESSIVE_SNAPSHOT_ENABLED" \
