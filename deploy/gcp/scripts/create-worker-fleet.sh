@@ -479,6 +479,22 @@ done
 #    job", with no execution created (2026-10-11). Shared dev's bindings had been made by hand.
 #    Scoped to this environment's job and bucket; a failure is reported with the command, since no
 #    worker would notice it until its first mesh.
+# THE FLEET MUST BE ABLE TO READ THE OBJECT IT BOOTS FROM. Nothing else grants this: on a project
+# whose default compute account still holds legacy Editor the read works by accident, and on one
+# that has been hardened every instance boots, fails `gcloud storage cp .../worker.env` with 403,
+# and the group sits "RUNNING" while consuming nothing (dev-rag, 2026-11-05). Idempotent like the
+# mesh-bucket grant below; a failure is a warning with the command, since the deploy identity may
+# lack bucket IAM rights on somebody's project.
+if gc storage buckets add-iam-policy-binding "gs://${_worker_env_bucket}" \
+     --member "serviceAccount:${WORKER_SA_EMAIL}" --role roles/storage.objectViewer >/dev/null; then
+  log "gs://${_worker_env_bucket} += roles/storage.objectViewer -> ${WORKER_SA_EMAIL}"
+else
+  warn "could not let ${WORKER_SA_EMAIL} read gs://${_worker_env_bucket}/worker.env - every worker
+     boots and fails to configure itself until an owner runs:
+       gcloud storage buckets add-iam-policy-binding gs://${_worker_env_bucket} --project ${GCP_PROJECT_ID} \
+         --member serviceAccount:${WORKER_SA_EMAIL} --role roles/storage.objectViewer"
+fi
+
 if [ -n "${CLOUDRUN_MESH_JOB:-}" ] && [ -n "${GCP_MESH_BUCKET:-}" ]; then
   if gc run jobs add-iam-policy-binding "${CLOUDRUN_MESH_JOB}" --region "${GCP_REGION}" \
        --member "serviceAccount:${WORKER_SA_EMAIL}" --role roles/run.jobsExecutorWithOverrides >/dev/null; then
