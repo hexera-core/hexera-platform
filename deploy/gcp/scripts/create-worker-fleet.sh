@@ -619,10 +619,8 @@ WORKER_METADATA=(
   || WORKER_METADATA+=("cad-repair-timeout-s=${CAD_REPAIR_TIMEOUT_S}")
 [ -z "${CAD_REPAIR_LLM_PLANNER:-}" ] \
   || WORKER_METADATA+=("cad-repair-llm-planner=${CAD_REPAIR_LLM_PLANNER}")
-<<<<<<< HEAD
 [ -z "${CAD_REPAIR_RAG:-}" ] \
   || WORKER_METADATA+=("cad-repair-rag=${CAD_REPAIR_RAG}")
-=======
 # The verdict by measured limits (docs/RULES.md VER), only when the target states it (dev does,
 # prod does not yet): the run decides pass, concerns or fail from the mesh's measured numbers and
 # the AI review only adds notes. Absent, the env object's value (the shipped default, off) stands.
@@ -637,7 +635,6 @@ WORKER_METADATA=(
 # two are one decision: a frame is only read from a SERIAL snappy run, so the flag without this
 # leaves a deployment holding both halves of a feature and seeing none of it.
 [ -z "${MESH_SNAPPY_RANKS:-}" ] || WORKER_METADATA+=("mesh-snappy-ranks=${MESH_SNAPPY_RANKS}")
->>>>>>> origin/main
 WORKER_METADATA+=(${WORKER_SECRET_METADATA[@]+"${WORKER_SECRET_METADATA[@]}"})
 
 # The metadata list is handed to gcloud with '|' as its delimiter. Neither of the obvious
