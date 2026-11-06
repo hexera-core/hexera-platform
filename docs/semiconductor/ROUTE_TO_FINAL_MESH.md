@@ -532,13 +532,12 @@ surface only.
 same ratio" as I first wrote. The two bodies read +0.78% and -1.07% against their STLs, opposite
 signs, so it is two small independent errors rather than one scale factor.
 
-**The ports are not split yet, and that is not a regression.** The shipped mesh carries `port_a`
-(1,759 faces) and `port_b` (1,706 faces) as separate patches of type `patch`, while `cbox2b` has a
-single `fluid_to_air` of 4,140. But `cbox2`'s own RESULT.txt records that its run also produced one
-`fluid_to_air`, of 3,465 faces, which is exactly 1,759 + 1,706. So the split is a post-processing
-step that was applied to `cbox2` and has not yet been applied here. It is outstanding work, not a
-regression, and until it is done the mesh cannot carry an inlet condition on one port and an outlet
-on the other.
+**The ports needed splitting, and now are.** The shipped mesh carries `port_a` (1,759 faces) and
+`port_b` (1,706 faces) as separate patches of type `patch`, while `cbox2b` came out of the chain
+with a single `fluid_to_air` of 4,140. `cbox2`'s own RESULT.txt records that its run also produced
+one `fluid_to_air`, of 3,465 faces, exactly 1,759 + 1,706, so this was a post-processing step
+applied there and not here: outstanding work rather than a regression. **Done**, and the result is
+in the port-split section at the end of this document.
 
 The partition closes, but less tightly than I first claimed. `block.stl` minus the CAD coolant is
 222,672.07 mm3 against a meshed plate of 222,527 mm3, 0.065% apart, and that particular pairing
@@ -749,3 +748,52 @@ reproduced, 76 findings raised, 45 survived refutation and 31 were themselves wr
 substantive survivors are folded in above and in the other documents. The pattern worth keeping:
 every single one of the five biggest errors was a case of my stating a mechanism that sounded right
 rather than deriving it, while the measurements themselves almost all reproduced.
+
+---
+
+## The ports are split, so the mesh can carry a flow boundary
+
+Done 6 November, after the sidecar upload. `cbox2b` came out of the chain with a single
+`fluid_to_air` patch of 4,140 faces and type `mappedWall`, which is a conjugate interface and not
+something a solver can put an inlet on. The shipped mesh carries two patches of type `patch`
+instead, so this was outstanding work rather than a design question.
+
+| | shipped `cbox2` | `cbox2b` before | `cbox2b` now | ratio to shipped |
+|---|---|---|---|---|
+| `port_a` | 1,759 faces | | **2,092** | 1.189 |
+| `port_b` | 1,706 faces | | **2,048** | 1.200 |
+| `fluid_to_air` | | 4,140, `mappedWall` | removed as zero-sized | |
+| sum | 3,465 | 4,140 | **4,140** | |
+
+Both ratios land on 1.195, which is `(22.0035 / 20.1263)^2` to three digits: a port mouth is a
+fixed area and the faces on it are a cell smaller each way, so that is the number it had to be.
+
+**Where the cut went, and it is measured rather than guessed.** Off `cbox2`'s own index, `port_a`
+spans z 73.507 to 81.252 mm and `port_b` z 39.357 to 47.279 mm, completely disjoint, while
+`cbox2b`'s merged patch spans 39.414 to 81.277. So a plane at z = 60 mm separates them with 13 mm
+of clearance either side. `topoSet` carved 2,092 and 2,048 faces out of the 4,140 and `createPatch`
+made them patches, reporting "Removed zero-sized patch fluid_to_air".
+
+| stage | seconds |
+|---|---|
+| copy the region into its own case | 7 |
+| topoSet, two face sets | 368 |
+| createPatch | 703 |
+| checkMesh | 645 |
+| rebuild the boundary index | 165 |
+| rebuild the quality sidecar | 43 |
+
+Done on a copy, and swapped in only after `checkMesh` returned Mesh OK and the two counts summed to
+exactly 4,140. The mesh is on a self-deleting disk and the archive policy here is sidecars rather
+than meshes, so a failed in-place `createPatch` would have cost the whole three-hour run. Quality
+after the split is identical to before it, as it must be, since `createPatch` moves faces between
+patches and does not touch a point: non-orthogonality 49.4505, skewness 1.65686, aspect 3.70845.
+
+**One thing this leaves.** The air region still carries an `air_to_fluid` patch naming a patch that
+no longer exists on the coolant side. The shipped mesh has the same loose end, and the air region is
+only ever decomposed and is not part of the three-region deliverable, so this is parity rather than
+a new defect. Worth closing if the air region is ever reconstructed.
+
+**And it does not settle which port is which.** `port_a` is the OUTLET and `port_b` the INLET, from
+the customer's own STEP naming, and that assignment is unchanged and still the thing not to get
+backwards.

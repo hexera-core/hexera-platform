@@ -4955,12 +4955,25 @@ cells against 20.30% of volume, close to the volume ratio and 1.87% apart, not "
 two bodies read +0.78% and -1.07% against their STLs, opposite signs, so two small independent
 errors rather than one scale factor.
 
-**The ports are not split yet.** The shipped mesh carries `port_a` (1,759 faces) and `port_b` (1,706)
-as separate patches of type `patch`; `cbox2b` has one `fluid_to_air` of 4,140. But `cbox2`'s own
-RESULT.txt records that its run also produced a single `fluid_to_air`, of 3,465 faces, which is
-exactly 1,759 + 1,706. So the split is a post-processing step applied to `cbox2` and not yet applied
-here: outstanding work, not a regression. Until it is done the mesh cannot carry an inlet condition
-on one port and an outlet on the other.
+**The ports needed splitting, and are now split.** The shipped mesh carries `port_a` (1,759 faces)
+and `port_b` (1,706) as separate patches of type `patch`; `cbox2b` came out of the chain with one
+`fluid_to_air` of 4,140, type `mappedWall`, which no solver can put an inlet on. `cbox2`'s own
+RESULT.txt records that its run also produced a single `fluid_to_air`, of 3,465 = 1,759 + 1,706, so
+this was a post-processing step applied there and not here.
+
+Split at z = 60 mm, measured off `cbox2`'s index: `port_a` spans z 73.507 to 81.252 mm and `port_b`
+39.357 to 47.279, disjoint, with the merged patch spanning 39.414 to 81.277, so the plane has 13 mm
+of clearance either side. Result: `port_a` 2,092 faces and `port_b` 2,048, summing to exactly 4,140,
+with `createPatch` reporting "Removed zero-sized patch fluid_to_air". Both counts are 1.189x and
+1.200x the shipped ones, against the 1.195 that `(22.0035/20.1263)^2` requires. Quality is identical
+before and after, as it must be when faces move between patches and no point moves. Done on a copy
+and swapped in only after Mesh OK and the exact face sum, because the mesh is on a self-deleting
+disk and the archive policy here is sidecars rather than meshes. 1,931 s end to end including the
+sidecar rebuild and re-upload.
+
+The air region still names an `air_to_fluid` patch that no longer exists on the coolant side. The
+shipped mesh has the same loose end and the air region is only ever decomposed, so that is parity
+rather than a new defect.
 
 The partition closes less tightly than I claimed. `block.stl` minus the CAD coolant against the
 meshed plate is 0.065% apart, but that pairing holds only on `cbox2b`; like for like, meshed plate
