@@ -2067,9 +2067,9 @@ def _keep_flow_parts(session_id: str, stored: dict, facts: dict, interpretation:
 
 
 def _keep_parts(session_id: str, record: dict, surface) -> None:
-    """NOTE-4, BEFORE APPROVAL: an assembly's parts kept for the checklist (application/part_matches) - its facts
+    """NOTE-4/6, BEFORE APPROVAL: an assembly's parts and the areas inside a part kept for the checklist (application/part_matches) - its facts
     table and pictures, drawn on the labelled surface that exists only here. Never fails the measurement."""
-    if surface is None or not session_id or int(record.get("bodies") or 0) < 2:
+    if surface is None or not session_id:
         return
     from meshpipeline.application import part_matches as PM
     kept = PM.store_parts(session_id, record, surface)

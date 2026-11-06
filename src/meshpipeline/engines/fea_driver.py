@@ -1767,7 +1767,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # AI-fea-9 / PLAN-fea-29: the element sizes the user asked for, part by part, tied to the parts by the vision
     # model from the parts' facts and pictures, checked by the rules; nothing applied when it cannot be read
     part_sizes = await PS.decide(ws, record, surface, state or {}, job_id=job_id, run=run, wait_s=ai_wait_s(run))
-    sizes = PS.per_part(part_sizes.get("entries") or []) if part_sizes.get("status") == "used" else {}
+    sizes = PS.sizes_of(part_sizes)
     if part_sizes.get("status") != "none":
         _cite(job_id, PS.decisions(part_sizes))
     # A COUNT OR SIZES THE USER ASKED FOR NEVER FAIL THE RUN: when no pass builds a valid mesh of the plan their

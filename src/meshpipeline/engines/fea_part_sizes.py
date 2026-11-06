@@ -28,6 +28,19 @@ async def decide(ws: Path, record: Mapping, surface, state: Mapping, *, job_id: 
                            enabled=FEA_AI if enabled is None else enabled, wait_s=wait_s)
 
 
+def sizes_of(ps: Mapping | None) -> dict[str, dict]:
+    """The plan's sizes from a reading: part id -> {"min_m", "max_m"}; an area inside a part (NOTE-6, PLAN-fea-32)
+    also carries its faces and its plain name. {} when nothing was read."""
+    if not ps or ps.get("status") != "used":
+        return {}
+    out = per_part(list(ps.get("entries") or []), ps.get("features") or {})
+    names = {str(r.get("id")): str(r.get("name") or "") for r in ps.get("parts") or [] if r.get("feature")}
+    for k, v in out.items():
+        if v.get("faces") and names.get(k):
+            v["name"] = names[k]
+    return out
+
+
 def words(ps: Mapping | None) -> list[str]:
     return PW.words(ps)
 
@@ -44,4 +57,4 @@ def decisions(ps: Mapping | None) -> list[dict]:
     return out
 
 
-__all__ = ["CONSUMER", "RULE", "decide", "decisions", "part_table", "per_part", "section", "words"]
+__all__ = ["CONSUMER", "RULE", "decide", "decisions", "part_table", "per_part", "section", "sizes_of", "words"]

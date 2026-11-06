@@ -473,9 +473,15 @@ def user_sized(zone_list: list[dict], sizes: Mapping[str, Mapping]) -> list[dict
     ladder does not tighten it back."""
     if not sizes:
         return [dict(z) for z in zone_list]
+    # NOTE-6 / PLAN-fea-32: AN AREA INSIDE A PART THE USER SIZED (a feature id with its faces) wins over its part on
+    # its faces: every zone on them is held inside the area's range, and the area gets a zone of its own
+    areas = {k: v for k, v in sizes.items() if v.get("faces")}
+    area_of = {str(f): k for k, v in areas.items() for f in v["faces"]}
     out = []
     for z in zone_list:
-        key = str(z.get("part") or "") if z.get("kind") == "part" else (_part_key((z.get("faces") or [""])[0]) or "Part_1")
+        on = [area_of[str(f)] for f in z.get("faces") or [] if str(f) in area_of] if z.get("kind") != "part" else []
+        key = on[0] if on else (str(z.get("part") or "") if z.get("kind") == "part"
+                                else (_part_key((z.get("faces") or [""])[0]) or "Part_1"))
         want = sizes.get(key)
         if not want:
             out.append(dict(z))
@@ -495,13 +501,23 @@ def user_sized(zone_list: list[dict], sizes: Mapping[str, Mapping]) -> list[dict
         row["size_m"] = _r(new)
         _accuracy(z, row, new)
         out.append(row)
+    for k, v in areas.items():
+        lo, hi = float(v["min_m"]), float(v["max_m"])
+        mid = 0.5 * (lo + hi)
+        out.append({"id": f"U{str(k).rsplit('_', 1)[-1]}", "kind": "area", "faces": [str(f) for f in v["faces"]],
+                    "size_m": _r(mid), "reach_m": _r(AREA_REACH * mid), "user": k, "user_min_m": lo,
+                    "user_max_m": hi, "rule_size_m": _r(mid), "rule": "PLAN-fea-32"})
     return out
+
+
+#: PLAN-fea-32: how far an area's own size holds off its faces, in that size (then the sizes grow by PLAN-fea-6)
+AREA_REACH = 3.0
 
 
 def user_base(sizes: Mapping[str, Mapping]) -> float | None:
     """PLAN-fea-29: the base the user's sizes ask for - the middle of the coarsest range (the base is the
-    ceiling; each part's own base holds inside it)."""
-    mids = [0.5 * (float(v["min_m"]) + float(v["max_m"])) for v in (sizes or {}).values()]
+    ceiling; each part's own base holds inside it). An area inside a part (NOTE-6) sets no base."""
+    mids = [0.5 * (float(v["min_m"]) + float(v["max_m"])) for v in (sizes or {}).values() if not v.get("faces")]
     return max(mids) if mids else None
 
 
@@ -833,7 +849,8 @@ def user_words(plan: Mapping) -> list[str]:
         own = [z for z in zs if z.get("user") in ids]
         finest = min([float(z["size_m"]) for z in own if z.get("kind") != "part"] or [0.5 * (lo + hi)])
         rng = f"{lo * 1e3:.3g} mm" if abs(hi - lo) < 1e-12 else f"{lo * 1e3:.3g}-{hi * 1e3:.3g} mm"
-        line = (f"You asked for {rng} elements on {', '.join(ids[:8])}{' and more' if len(ids) > 8 else ''}: "
+        said = [str(sizes[i].get("name") or i) for i in ids[:8]]
+        line = (f"You asked for {rng} elements on {', '.join(said)}{' and more' if len(ids) > 8 else ''}: "
                 f"they are meshed at {0.5 * (lo + hi) * 1e3:.3g} mm, and nothing in them finer than "
                 f"{max(finest, 0.0) * 1e3:.3g} mm")
         line += (" - finer than you asked only where coarser elements cannot be built valid." if finest < lo * (1 - 1e-6)

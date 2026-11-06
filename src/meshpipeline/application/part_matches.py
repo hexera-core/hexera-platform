@@ -83,7 +83,8 @@ def store_parts(session_id: str, record: Mapping, surface, *, route: str = ROUTE
     could not be drawn). Never raises."""
     try:
         from meshpipeline.cad import part_words as PW
-        table = PW.part_table(PW.check_record(record) if route == ROUTE_FEA else record, surface)
+        # the parts, and (FEA) the areas inside them (NOTE-6): a single part with no area to name keeps nothing
+        table, _faces_of, shown = PW.table_of(PW.check_record(record) if route == ROUTE_FEA else record, surface)
         if len(table) < 2:
             return None
         from meshpipeline.contracts.object_storage import get_object_store
@@ -92,7 +93,7 @@ def store_parts(session_id: str, record: Mapping, surface, *, route: str = ROUTE
         pictures = []
         with tempfile.TemporaryDirectory(prefix="part_pictures_") as tmp:
             views = []
-            for path in render_parts(surface, [r["id"] for r in table], Path(tmp), card=True):
+            for path in render_parts(shown, [r["id"] for r in table], Path(tmp), card=True):
                 if path.suffix == ".json":
                     # where each visible part's number goes on a card view, and what that view hides
                     views.append({"name": path.stem, **json.loads(path.read_text())})
@@ -209,8 +210,33 @@ def _num(pid: str) -> str:
     return str(pid).rsplit("_", 1)[-1]
 
 
-def parts_words(ids: list[str]) -> str:
-    """"part 9", "parts 2, 3 and 5", "parts 1-4 and 7" (runs of three or more joined)."""
+def parts_words(ids: list[str], names: dict[str, str] | None = None) -> str:
+    """"part 9", "parts 2, 3 and 5", "parts 1-4 and 7" (runs of three or more joined); an area inside a part
+    (NOTE-6) by its own name ("4 holes, 8.5 mm across"), two at most, then how many."""
+    names = names or {}
+    areas = [names[p] for p in ids if p in names]
+    ids = [p for p in ids if p not in names]
+    said = _part_words(ids) if ids else ""
+    if areas:
+        shown = " and ".join(areas[:2]) + (f" and {len(areas) - 2} more" if len(areas) > 2 else "")
+        return f"{said}, {shown}" if said else shown
+    return said
+
+
+def _where(e: Mapping, ids: list[str], names: dict[str, str], one_part: bool) -> str:
+    """Where a row's size goes, in words: "parts 9-12", "4 holes, 8.5 mm across", "the other 6 parts", and on a
+    single part "the rest of the part" / "the whole part"."""
+    if e.get("rest_parts") and not e.get("parts"):
+        if one_part:
+            return "the rest of the part"
+        return f"the other {len(ids)} part{'s' if len(ids) != 1 else ''}"
+    if one_part and [p for p in ids if p not in names] == ["Part_1"]:
+        areas = [p for p in ids if p in names]
+        return "the whole part" + (f", {parts_words(areas, names)}" if areas else "")
+    return parts_words(ids, names)
+
+
+def _part_words(ids: list[str]) -> str:
     nums = sorted({int(_num(p)) for p in ids if _num(p).isdigit()})
     if not nums:
         return ""
@@ -251,24 +277,36 @@ def rows_of(reading: Mapping, seen: Mapping, session_id: str) -> dict | None:
     """The card's rows from a checked reading: one per phrase that holds ("frame rail → part 9 → 3–4 mm"), one
     line per phrase the model could not place ("Couldn't tell which part is 'X'"); None when the notes name no
     part (or the AI step did not answer: the run reads them again)."""
-    from meshpipeline.render.part_pictures import colour_of
+    from meshpipeline.render.part_pictures import colour_of, number
     if reading.get("status") != "used":
         return None
     table = list(seen.get("table") or [])
+    names = {str(r["id"]): str(r.get("name") or "") for r in table if r.get("feature")}
+    one_part = sum(1 for r in table if not r.get("feature")) == 1
     rows = []
     for e in reading.get("entries") or []:
         ids = [*e.get("parts", []), *e.get("rest_parts", [])]
         rows.append({"phrase": e.get("phrase"), "words": _short(e.get("quote") or ""),
                      "quote": e.get("quote") or "", "parts": ids,
-                     "parts_text": (f"the other {len(ids)} part{'s' if len(ids) != 1 else ''}"
-                                    if e.get("rest_parts") and not e.get("parts") else parts_words(ids)),
+                     "parts_text": _where(e, ids, names, one_part),
                      "size": size_words(e), "picked": e.get("why") == "picked by you"})
     unsure = [{"phrase": u.get("phrase"), "words": _short(u.get("quote") or ""), "quote": u.get("quote") or "",
                "text": f"Couldn't tell which part is “{_short(u.get('quote') or '', 40)}”", "size": size_words(u)}
               for u in reading.get("unsure") or []]
     if not rows and not unsure:
         return None
-    parts = [{"id": r["id"], "n": _num(r["id"]), "name": readable(r.get("name") or ""), "colour": colour_of(i)}
+    # WHAT A ROW COVERS on the picture: its parts, and the areas inside them no other row sized (a part's size holds
+    # on its holes and fillets too, unless they were named for their own) - so "the rest of the part" lights the
+    # whole rest of it
+    inside = {str(r["id"]): str(r.get("in_part") or "") for r in table if r.get("feature")}
+    claimed = {p for r in rows for p in r["parts"]}
+    for r in rows:
+        lit = [*r["parts"], *[f for f, p in inside.items() if p in r["parts"] and f not in claimed]]
+        if len(lit) > len(r["parts"]):
+            r["lit"] = lit
+    parts = [{"id": r["id"], "n": number(r["id"]),
+              "name": (str(r.get("name") or "") if r.get("feature") else readable(r.get("name") or "")),
+              "colour": colour_of(i)}
              for i, r in enumerate(table)]
     if len(parts) > MAX_LISTED:
         keep = {r["id"] for r in sorted(table, key=lambda r: -float(r.get("volume_mm3") or 0))[:MAX_LISTED]}

@@ -144,7 +144,7 @@ def check_record(record: Mapping) -> dict:
     """The geometry check's FEA record (cad/fea_measure, an assembly's under fea_assembly.FACT_KEY) in the shape
     part_table reads off the driver's: each part's id and CAD name, and which parts touch."""
     asm = record.get("assembly") or {}
-    return {"faces": record.get("faces") or {},
+    return {"faces": record.get("faces") or {}, "hot_spots": record.get("hot_spots") or [], "bores": record.get("bores") or [],
             "part_bases": [{"id": p.get("id"), "name": p.get("name") or ""} for p in asm.get("parts") or []
                            if p.get("id")],
             "assembly_plan": {"pair_list": [{"parts": list(i.get("parts") or [])}
@@ -194,6 +194,12 @@ only which part is which ("the long tube is the inlet duct"): "name". For each:
 - quote: the user's own words for this phrase, copied exactly from the notes (the numbers in it).
 - why: one short plain sentence - which parts you took and what told you ("Part_9 is the only long hollow beam").
 - confidence: 0 to 1. Below 0.6 when you cannot tell which parts are meant - say so in why; never guess.
+Some rows are AREAS INSIDE A PART (feature: true): a hole or a group of alike holes, a bore, a notch, fillets,
+bosses or shafts, thin walls (ribs, flanges), a large flat face - each with a plain name, how many, its size and the
+part it is in (in_part); in the pictures each area has its own colour and an F number (F3 is Feature_3), the rest of
+the part grey. Words about such an area ("1 mm at the mounting holes", "fine on the fillets", "coarser on the big
+flat face") take the area's id; words about a whole part take the part's id; "elsewhere" or "everything else" means
+the rest of the parts (everything_else true), never the areas.
 NOT sizes: an element COUNT ("500k elements"), loads, pressures, bolt sizes alone (M8), part dimensions,
 elements through a wall. If the notes say nothing about particular parts, phrases is an empty list.
 words: one or two short plain sentences for the user on how you read their words. No ids-only answers: name the
@@ -378,7 +384,8 @@ def _check(arguments: str, table: list[dict], notes: str,
     if rest_entry is not None:
         # "everything else": every part no other phrase sized, each checked against its own size
         for p, row in rows.items():
-            if p in taken:
+            # "everything else" is the rest of the PARTS: an area inside a part (NOTE-6) is sized only when named
+            if p in taken or row.get("feature"):
                 continue
             d = _f(row.get("diag_mm"))
             if d and (rest_entry["max_mm"] > d or rest_entry["min_mm"] < d / PART_FINEST):
@@ -395,15 +402,18 @@ def _mm(v: float) -> str:
     return f"{float(v):.3g} mm"
 
 
-def per_part(entries: list[dict]) -> dict[str, dict]:
-    """Part id -> {"min_m", "max_m", "quote"} from the checked entries (metres, the plan's unit)."""
+def per_part(entries: list[dict], faces_of: Mapping[str, list[str]] | None = None) -> dict[str, dict]:
+    """Part id (or area id, NOTE-6) -> {"min_m", "max_m", "quote"} from the checked entries (metres, the plan's
+    unit); an area also carries its "faces" (`faces_of`), where its size holds."""
     out: dict[str, dict] = {}
+    faces_of = faces_of or {}
     for e in entries:
         if e.get("ask", "size") != "size":
             continue
         for p in [*e.get("parts", []), *e.get("rest_parts", [])]:
             out.setdefault(p, {"min_m": float(e["min_mm"]) * 1e-3, "max_m": float(e["max_mm"]) * 1e-3,
-                               "quote": e.get("quote") or "", "rest": p in e.get("rest_parts", [])})
+                               "quote": e.get("quote") or "", "rest": p in e.get("rest_parts", []),
+                               **({"faces": list(faces_of[p])} if p in faces_of else {})})
     return out
 
 
@@ -511,6 +521,24 @@ def draw(ws: Path, surface, table: list[dict]) -> list[Path]:
         return []
 
 
+def table_of(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]], Any]:
+    """The rows the words are tied to - the parts (part_table) and, where the record names its faces, the areas
+    inside them (NOTE-6, cad/part_features: holes, fillets, bosses, thin walls, large flat faces) - their faces, and
+    the surface the pictures are drawn on (each area its own colour; on one part, the rest of it grey)."""
+    table = part_table(record, surface)
+    faces_of: dict[str, list[str]] = {}
+    shown = surface
+    try:
+        from meshpipeline.cad import part_features as PF
+        feats, faces_of = PF.features(record, surface)
+        if feats:
+            table = [*table, *feats]
+            shown = PF.labelled(surface, faces_of, parts=True)
+    except Exception as exc:  # noqa: BLE001 - the parts alone
+        logger.warning("part words: the areas inside the parts were not read (%s)", type(exc).__name__)
+    return table, faces_of, shown
+
+
 async def decide(ws: Path, record: Mapping, surface, state: Mapping, *, consumer: str, purpose: str = "",
                  job_id: str = "", run=None, enabled: bool = True, wait_s: float = TIMEOUT_S) -> dict:
     """NOTE-4's section for this run: "none" (no words to read, or the AI off), "used" (the checked entries,
@@ -519,17 +547,20 @@ async def decide(ws: Path, record: Mapping, surface, state: Mapping, *, consumer
     user-notes consumer. Never raises (but a fenced worker's stale publish)."""
     if not enabled or not wanted(state):
         return section("none")
-    table = part_table(record, surface)
+    table, faces_of, shown = table_of(record, surface)
     if not table:
         return section("none", note="no parts could be measured")
     # THE READING MADE BEFORE APPROVAL (the stage's checklist, as the user left it) is the one used: the user saw
     # it and approved it. The model is asked again only when there is none.
     stored = from_stored((state or {}).get("part_matches"), table)
     if stored is not None:
+        stored["features"] = dict(faces_of)
         return stored
-    pictures = await asyncio.to_thread(draw, ws, surface, table)
-    return await ask(ws, table, pictures, state, consumer=consumer, purpose=purpose, job_id=job_id, run=run,
-                     wait_s=wait_s)
+    pictures = await asyncio.to_thread(draw, ws, shown, table)
+    got = await ask(ws, table, pictures, state, consumer=consumer, purpose=purpose, job_id=job_id, run=run,
+                    wait_s=wait_s)
+    got["features"] = dict(faces_of)
+    return got
 
 
 async def ask(ws: Path | None, table: list[dict], pictures: list[Path], state: Mapping, *, consumer: str,

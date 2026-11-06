@@ -35,8 +35,18 @@ def colour_of(index: int) -> str:
     return PALETTE[int(index) % len(PALETTE)]
 
 
-def _num(pid: str) -> str:
-    return str(pid).rsplit("_", 1)[-1]
+#: the rest of a part whose areas are drawn: one grey piece, no number
+REST = "__rest__"
+REST_COLOUR = "#B8BCC2"
+
+
+def number(pid: str) -> str:
+    """What a part or an area is called on the pictures: "9" for Part_9, "F3" for Feature_3 (an area inside a part)."""
+    n = str(pid).rsplit("_", 1)[-1]
+    return f"F{n}" if str(pid).startswith("Feature_") else n
+
+
+_num = number
 
 
 def _rgb(hex_colour: str) -> tuple[float, float, float]:
@@ -83,7 +93,7 @@ def _shot(pieces: dict, colour, cam: tuple, window, *, flat: bool, transparent: 
     return img
 
 
-def tag_places(ids, n_parts: int) -> tuple[list[dict], list[int]]:
+def tag_places(ids, n_parts: int, labels: list[str] | None = None) -> tuple[list[dict], list[int]]:
     """Where each part's number goes in a view, read off its id picture: a point deep inside the part's VISIBLE pixels
     (a part behind another gets no number on the one in front), each tag clear of the others. Returns
     ([{"k", "x", "y"}], [indices of the parts not visible in this view])."""
@@ -105,7 +115,7 @@ def tag_places(ids, n_parts: int) -> tuple[list[dict], list[int]]:
         depth = ndimage.distance_transform_edt(mask)
         y, x = np.unravel_index(int(np.argmax(depth)), depth.shape)
         cy, cx = sl[0].start + y - 1, sl[1].start + x - 1
-        w = 14 + 9 * len(str(k + 1))
+        w = 14 + 9 * len(labels[k] if labels else str(k + 1))
         for dx, dy in [(0, 0)] + [(r * math.cos(a), r * math.sin(a)) for r in (14, 26, 40, 56)
                                   for a in [i * math.pi / 4 for i in range(8)]]:
             box = (cx + dx - w / 2, cy + dy - TAG_H / 2, cx + dx + w / 2, cy + dy + TAG_H / 2)
@@ -191,6 +201,14 @@ def render_parts(surface, part_ids: list[str], out_dir, *, card: bool = False) -
         if len(sel):
             pieces[p] = whole.extract_cells(sel).extract_surface(algorithm="dataset_surface")  # type: ignore[arg-type]
     labels = [_num(p) for p in part_ids]
+    # THE REST OF A PART whose areas are drawn (NOTE-6): grey, no number, never a part - but drawn, so it hides
+    # what it hides
+    rest_sel = np.flatnonzero(tri_part < 0)
+    rest = (whole.extract_cells(rest_sel).extract_surface(algorithm="dataset_surface")  # type: ignore[arg-type]
+            if len(rest_sel) else None)
+    singles = list(pieces)
+    if rest is not None:
+        pieces[REST] = rest
 
     def cam(d) -> tuple:
         dv = np.asarray(d, dtype=float) / np.linalg.norm(d)
@@ -198,17 +216,17 @@ def render_parts(surface, part_ids: list[str], out_dir, *, card: bool = False) -
         return tuple(centre - dv * 2.2 * diag), tuple(centre), up
 
     def coloured(p):
-        return _rgb(PALETTE[order[p] % len(PALETTE)])
+        return _rgb(REST_COLOUR) if p == REST else _rgb(PALETTE[order[p] % len(PALETTE)])
 
     def ids_of(p):
-        return _id_rgb(order[p])
+        return (0.0, 0.0, 0.0) if p == REST else _id_rgb(order[p])
 
     paths: list[Path] = []
     for name, d in VIEWS.items():
         c = cam(d)
         img = _shot(pieces, coloured, c, WINDOW, flat=False, transparent=False)
         ids = decode_ids(_shot(pieces, ids_of, c, WINDOW, flat=True, transparent=True))
-        tags, _hidden = tag_places(ids, len(part_ids))
+        tags, _hidden = tag_places(ids, len(part_ids), labels)
         im = _draw_tags(np.asarray(img)[:, :, :3], tags, labels)
         from PIL import ImageDraw
         ImageDraw.Draw(im).text((10, 8), f"whole model, {name.split('_')[1]} view: each part its own colour and "
@@ -216,7 +234,7 @@ def render_parts(surface, part_ids: list[str], out_dir, *, card: bool = False) -
         path = out / f"{name}.png"
         im.convert("RGB").save(path)
         paths.append(path)
-    ids_list = list(pieces)
+    ids_list = singles
     for s in range(min(MAX_SHEETS, math.ceil(len(ids_list) / PER_SHEET))):
         chunk = ids_list[s * PER_SHEET:(s + 1) * PER_SHEET]
         cols = min(5, len(chunk))
@@ -245,7 +263,7 @@ def render_parts(surface, part_ids: list[str], out_dir, *, card: bool = False) -
             ids = decode_ids(_shot(pieces, ids_of, c, CARD_WINDOW, flat=True, transparent=True))
             y0, y1, x0, x1 = _crop_box(shaded[:, :, 3])
             shaded, ids = shaded[y0:y1, x0:x1], ids[y0:y1, x0:x1]
-            tags, hidden = tag_places(ids, len(part_ids))
+            tags, hidden = tag_places(ids, len(part_ids), labels)
             enc = np.zeros(ids.shape + (4,), dtype=np.uint8)
             on = ids >= 0
             n = ids + 1

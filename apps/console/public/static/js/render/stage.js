@@ -219,7 +219,7 @@ export const Stage = {
       const i=this._pmOpen,r=rowOf(i);if(!r||!parts)return;
       const on=new Set(r.parts||[]);
       if(on.has(id))on.delete(id);else on.add(id);
-      r.parts=[...on];
+      r.parts=[...on];delete r.lit;
       el.querySelectorAll(`.rc-pm-part[data-part="${CSS.escape(id)}"]`).forEach(c=>{
         c.classList.toggle('on',on.has(id));c.setAttribute('aria-pressed',String(on.has(id)));});
       this._pmPaint(el);
@@ -303,10 +303,10 @@ export const Stage = {
     const img=g.getImageData(0,0,w,h),px=img.data;
     const order=m.order||(m.parts||[]).map(p=>p.id);
     const rows=m.rows||[],col=this._PM_COL;
-    const rowOfPart={};rows.forEach((r,k)=>(r.parts||[]).forEach(id=>{if(!(id in rowOfPart))rowOfPart[id]=k;}));
+    const rowOfPart={};rows.forEach((r,k)=>(r.lit||r.parts||[]).forEach(id=>{if(!(id in rowOfPart))rowOfPart[id]=k;}));
     const active=this._pmHover!=null?this._pmHover:this._pmOpen;
     const act=active!=null?[...rows,...(m.unsure||[])].find(r=>r.phrase===active):null;
-    const actSet=act?new Set(act.parts||[]):null;
+    const actSet=act?new Set(act.lit||act.parts||[]):null;
     const actCol=act?this._pmColour(m,act):'#E3A23B';
     const rgb=(hex)=>[parseInt(hex.slice(1,3),16),parseInt(hex.slice(3,5),16),parseInt(hex.slice(5,7),16)];
     const tint=order.map(id=>{
