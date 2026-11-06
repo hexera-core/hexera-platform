@@ -71,15 +71,18 @@ def _scripted(monkeypatch, report=None, raises=None):
     return calls
 
 
-def test_with_review_off_a_small_face_still_sends_the_whole_part_to_manual_cleanup(
+def test_with_review_off_a_small_face_does_not_stop_the_open_shell_being_repaired(
         tmp_path, monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_REVIEW_ENABLED", False)
-    calls = _scripted(monkeypatch)
+    calls = _scripted(monkeypatch, _report(
+        operations=(_op("sew_faces", "kept", "open_shell", "eb"),),
+        entities=(_entity("small_face", "warning", "face", 3, "fa"),),
+        stopped_because="no_candidate", resolved=False, refusals=[], planner="rules-v1",
+        operations_attempted=1, operations_kept=1))
     out = _run(_small_and_open(tmp_path))
-    assert out["repair_attempt"]["attempted"] is False
-    assert out["repair_attempt"]["route"] == "manual_cleanup"
-    assert calls == []
-    assert "repair_review_candidates" not in out
+    assert out["repair_attempt"]["attempted"] is True
+    assert len(calls) == 1
+    assert not out.get("repair_review_candidates")
 
 
 def test_with_review_on_repairables_run_and_judgement_defects_mint(tmp_path, monkeypatch):
