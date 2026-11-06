@@ -149,6 +149,19 @@ on:
           - "off"
           - shadow
           - live
+      # THE FIX-MEMORY POSTURE, chosen here like llm_planner. "off" exports nothing and the
+      # shipped default (no retrieval work at all) stays in force; "shadow" records, per attempt
+      # the repair loop makes, what the baked fix memory predicted beside what the session judged
+      # - and never acts on it. There is no "live" choice yet on purpose. Only meaningful with
+      # cad_repair.
+      cad_repair_rag:
+        description: "cad_repair_rag - the posture of the CAD repair surface's fix-memory retrieval on the targeted environment: off (no retrieval) or shadow (predictions recorded beside verdicts, never acted on)"
+        required: false
+        default: "off"
+        type: choice
+        options:
+          - "off"
+          - shadow
 
 # A deploy MUTATES a cloud project through an 18-stage provisioner. Cancelling one mid-flight
 # leaves the project half-reconciled - the stages are individually idempotent, the sequence is
@@ -1441,6 +1454,8 @@ jobs:
       CAD_REPAIR_HEAL_SELF_INTERSECTIONS: ${{ inputs.cad_repair && 'true' || '' }}
       # The planner posture, stated only when it is not "off"; empty means "not stated".
       CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || '' }}
+      # The fix-memory posture, same convention: stated only when it is not "off".
+      CAD_REPAIR_RAG: ${{ inputs.cad_repair_rag != 'off' && inputs.cad_repair_rag || '' }}
     steps:
       # A SHALLOW CHECKOUT IS ENOUGH HERE, unlike release's. Nothing in this job reads history:
       # lib.sh derives the image tag from `rev-parse --short=12 HEAD` plus a `diff --quiet HEAD`
