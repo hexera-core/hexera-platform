@@ -49,7 +49,11 @@ version = { attr = "meshpipeline.__version__" }
 # devtools/fitness/build_engine_fitness.py). The review palette is code (render/review_palette.py),
 # not shipped data, and documentation lives in docs/, outside the distribution - a glob matching
 # no file is a promise of something that is not there.
-meshpipeline = ["prompts/**/*.txt", "engines/fitness_table.json"]
+meshpipeline = ["prompts/**/*.txt", "engines/fitness_table.json",
+                # the baked fix-memory snapshot the repair loop's shadow posture reads
+                # (cad/repair/fixmemory.py); without it a deployed CAD_REPAIR_RAG=shadow
+                # disables itself with a warning (dev-rag, 2026-11-06)
+                "cad/repair/data/*.json.gz"]
 
 # Toolchain config (Ruff + mypy + coverage + pytest). There is no pytest.ini: pytest reads
 # [tool.pytest.ini_options] below, so this file is the one place a tool setting is declared.
