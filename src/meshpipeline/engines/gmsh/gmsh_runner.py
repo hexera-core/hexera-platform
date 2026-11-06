@@ -71,7 +71,8 @@ class StagingCrashed(RuntimeError):
     """The CAD kernel stopped (crashed, hung) on this file every way it was staged."""
 
 
-def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Path:
+def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None,
+                      stage_timeout_s: float | None = None) -> Path:
     out_stl = Path(out_stl)
     ws = out_stl.parent
     ws.mkdir(parents=True, exist_ok=True)
@@ -82,7 +83,9 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
         # the caller's own gmsh session: staged in it, as it always was
         drawn = _stage_here(gmsh, geom_path, out_stl, factor, extras=True)
     else:
-        drawn = _stage_guarded(geom_path, out_stl, factor)
+        drawn = _stage_guarded(geom_path, out_stl, factor,
+                               timeout_s=(stage_timeout_s if stage_timeout_s
+                                          else STAGE_TIMEOUT_S))
     if not drawn:
         from meshpipeline.cad.cad_tessellate import tessellate_to_stl as _occ_tessellate
         _occ_tessellate(geom_path, out_stl, prepared=prepared)
