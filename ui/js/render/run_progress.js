@@ -1,7 +1,8 @@
 // Responsibility: Turn a mesh run's events into one live line at the top of the run card - the step
 // running now in plain words (the engine chosen and why, the plan, meshing on the cloud mesher and
-// what the mesher says it is doing, checking quality, the AI review), its time, the steps done
-// ticked with their times, a note when a step runs long, and how the run ended.
+// what the mesher says it is doing, checking quality, the AI review), its time, how far through
+// the engine's own estimate says it is, the steps done ticked with their times, a note when a step
+// runs long, and how the run ended.
 // Boundaries: a model the stage renderer feeds (render/stage.js); it draws through the geometry
 // check's line (render/check_progress.js), so the two read alike. It reads no prose to decide
 // anything: an event's TYPE and lane say what happened; a note is only ever shown as it was said.
@@ -9,13 +10,14 @@ import { createCheckProgress, durationWords } from "./check_progress.js";
 
 const STEPS = [
   ["engine", "Choosing the mesh engine…", "Chose the mesh engine"],
+  ["repair", "Checking your part for repair…", "Checked your part"],
   ["plan", "Planning the mesh…", "Planned the mesh"],
   ["mesh", "Meshing on the cloud mesher…", "Meshed"],
   ["quality", "Checking quality…", "Checked quality"],
   ["review", "Reviewing the mesh against your brief…", "Reviewed"],
 ];
 /* which lane opening starts which step */
-const LANE_STEP = { engine_select: "engine", builder: "plan", executor: "quality", classifier: "quality",
+const LANE_STEP = { engine_select: "engine", repair: "repair", builder: "plan", executor: "quality", classifier: "quality",
                     reviewer: "review" };
 /* a step this long with no word from the run gets a note: it is still running, and the page will move */
 const QUIET_NOTE_MS = 10 * 60 * 1000;
@@ -31,11 +33,34 @@ export function countWords(n) {
 }
 /* the most commentary lines a run line keeps in view: the newest, the older ones scroll away */
 const SAID_MAX = 6;
+/** HOW FAR THROUGH, as a fraction of the engine's own estimate, kept on the stage info.
+ *  It is FIRST set only when both numbers are on the wire: a count with no estimate says nothing
+ *  about how far through a mesh is, so until an estimate arrives there is nothing to draw. After
+ *  that it never falls - a count the mesher re-reads from its log can come back smaller, and a bar
+ *  that twitches is worse than no bar at all - and it never leaves.
+ *
+ *  Past the estimate it holds at FULL. The backend drops `of` once the count passes it
+ *  (contracts/mesh_progress), so a bar tied to the fraction would vanish at exactly the moment a
+ *  user is watching hardest, which reads as a failure rather than as progress. Held at full it
+ *  stops being a fraction and becomes a true statement - at or past what we expected, still
+ *  working - and the words beside it carry the honest number ("2.9M cells so far"), so nothing is
+ *  overclaimed. A full bar never means done: the step row and its tick say that.
+ *
+ *  A line with no count at all (a stage that does not count, "Finishing up") moves nothing: it is
+ *  silence about the number, not news that the estimate has been passed. */
+function advance(info) {
+  const n = Number(info.n), of = Number(info.of);
+  if (info.n == null || !Number.isFinite(n) || n < 0) return;
+  if (!Number.isFinite(of) || of <= 0) { if (info.frac != null) info.frac = 1; return; }
+  info.frac = Math.max(info.frac || 0, Math.min(1, n / of));
+}
+/* the most rows a step's receipt draws - the contract says at most 12, and this holds it to that */
+const RECEIPT_MAX = 12;
 
 export function createRunProgress(now = () => Date.now()) {
   let steps, attempt, waitingText, ended, meshInfo, lastEventAt, said, told, pre;
   function reset() {
-    steps = STEPS.map(([key, doing, label]) => ({ key, doing, label, state: "todo", seconds: null, t0: null }));
+    steps = STEPS.map(([key, doing, label]) => ({ key, doing, label, state: "todo", seconds: null, t0: null, receipt: null }));
     attempt = 1; waitingText = ""; ended = null; meshInfo = null; lastEventAt = 0; said = []; told = null; pre = null;
   }
   reset();
@@ -47,13 +72,14 @@ export function createRunProgress(now = () => Date.now()) {
     s.state = "done"; s.seconds = Math.max(0, (at - s.t0) / 1000);
   }
   /** `key` starts now: every step before it that was open is done, and any it skipped is done too
-   *  (a pinned engine opens no engine lane; an engine without a planner sends no plan). */
+   *  (a pinned engine opens no engine lane; an engine without a planner sends no plan) - except the
+   *  repair check: a run that never opened it (no part on disk, a re-review) did not check one. */
   function start(key, at) {
     const i = idx(key);
     steps.forEach((s, j) => {
-      if (j < i) { if (s.state === "active") finish(s, at); else if (s.state === "todo") s.state = "done"; }
+      if (j < i) { if (s.state === "active") finish(s, at); else if (s.state === "todo" && s.key !== "repair") s.state = "done"; }
       // a step run again (a second meshing pass) makes the steps after it to do again
-      else if (j > i && s.state !== "todo") Object.assign(s, { state: "todo", seconds: null, t0: null, label: STEPS[j][2] });
+      else if (j > i && s.state !== "todo") Object.assign(s, { state: "todo", seconds: null, t0: null, label: STEPS[j][2], receipt: null });
     });
     const s = steps[i];
     if (s.state === "active" || (key === "engine" && s.state === "done")) return s;
@@ -101,8 +127,29 @@ export function createRunProgress(now = () => Date.now()) {
       // before the mesher runs: the machine waits for the mesh; any other work (measuring, planning)
       // is what the step running now is doing
       if (!meshInfo && ev.kind !== "machine" && !/^Still /.test(text)) { pre = { kind: info.kind, stage: text, at }; return; }
-      if (!meshInfo) { told = { ...(told || {}), ...info }; return; }
+      // `told` outlives a mesh (it is what the machine said before one started), so no fraction is
+      // ever parked on it: a rebuild must start with an empty bar, not inherit the last one's.
+      if (!meshInfo) { told = { ...(told || {}), ...info, frac: undefined }; return; }
       Object.assign(meshInfo, info);
+      advance(meshInfo);
+    },
+    /** THE RECEIPT for a step: the durable rows that phase decided, as the backend published them
+     *  (`{type:"receipt", stage, title, rows:[{label, value, why?}]}`). Nothing is summarised,
+     *  reworded or computed here - the rows are shown as they were said, capped at RECEIPT_MAX so a
+     *  runaway publisher cannot bury the line. A receipt for a stage this build has no step for is
+     *  dropped, the same way an unknown event type is. */
+    receipt(ev, at) {
+      touch(at);
+      const s = step(LANE_STEP[String((ev && ev.stage) || "")] || "");
+      if (!s) return;
+      const rows = ((ev && ev.rows) || [])
+        .filter((r) => r && typeof r === "object")
+        .slice(0, RECEIPT_MAX)
+        .map((r) => ({ label: String(r.label == null ? "" : r.label),
+                       value: String(r.value == null ? "" : r.value),
+                       why: r.why == null ? "" : String(r.why) }));
+      if (!rows.length) return;
+      s.receipt = { title: String((ev && ev.title) || "Receipt"), rows };
     },
     meshed(cells, at) {
       touch(at); const s = step("mesh");
@@ -116,12 +163,12 @@ export function createRunProgress(now = () => Date.now()) {
       s.label = ok ? "Review passed" : "Review asked for changes";
       finish(s, at);
     },
-    /** a rebuild: the plan, the mesh and the checks run again; the engine stands */
+    /** a rebuild: the plan, the mesh and the checks run again; the engine and the repair check stand */
     attempt(n, at) {
       touch(at);
       if (!(n > attempt)) return;
       attempt = n;
-      steps.forEach((s) => { if (s.key !== "engine") Object.assign(s, { state: "todo", seconds: null, t0: null, label: STEPS[idx(s.key)][2] }); });
+      steps.forEach((s) => { if (s.key !== "engine" && s.key !== "repair") Object.assign(s, { state: "todo", seconds: null, t0: null, label: STEPS[idx(s.key)][2], receipt: null }); });
       meshInfo = null;
     },
     final(data, at) {
@@ -138,7 +185,7 @@ export function createRunProgress(now = () => Date.now()) {
     view() {
       const t = now();
       const shown = steps.map((s) => ({ key: s.key, doing: s.doing, label: s.label, state: s.state,
-        seconds: s.state === "active" ? null : s.seconds }));
+        seconds: s.state === "active" ? null : s.seconds, receipt: s.receipt || null }));
       const prefix = attempt > 1 ? `Attempt ${attempt}: ` : "";
       if (ended) {
         const total = ended.total;
@@ -150,7 +197,7 @@ export function createRunProgress(now = () => Date.now()) {
         const at = steps.find((s) => s.state === "failed");
         return { state: "failed", live: false, steps: shown,
           current: at ? `Stopped while ${at.doing.replace(/…$/, "").replace(/^./, (c) => c.toLowerCase())}.` : "The run ended without a mesh.",
-          advice: "The message below says what happened. Tell me what to change, or run it again.", can_retry: false };
+          advice: "Tell me what to change, or run it again.", can_retry: false };
       }
       const active = steps.find((s) => s.state === "active");
       if (!active) {
@@ -161,7 +208,7 @@ export function createRunProgress(now = () => Date.now()) {
       }
       const elapsed = Math.max(0, (t - active.t0) / 1000);
       let current = prefix + active.doing, note = "";
-      let kind = "";
+      let kind = "", progress = null;
       if (active.key !== "mesh" && pre && pre.at >= active.t0) {
         kind = pre.kind; current = `${prefix}${pre.stage}…`;
       }
@@ -170,22 +217,26 @@ export function createRunProgress(now = () => Date.now()) {
         const count = meshInfo.n != null && meshInfo.of ? ` · ${countWords(meshInfo.n)} of about ${countWords(meshInfo.of)}${meshInfo.unit ? " " + meshInfo.unit : ""}`
           : meshInfo.n != null ? ` · ${countWords(meshInfo.n)}${meshInfo.unit ? " " + meshInfo.unit : ""} so far` : "";
         current = `${prefix}${meshInfo.stage || "Meshing your part"}${count}…`;
-        if (meshInfo.beat) note = meshInfo.beat + ". It's still working; this updates when it moves.";
+        // once this mesh has had an estimate, it keeps its bar for the rest of the mesh (advance):
+        // a heartbeat holds it, a stage with no count holds it, and the estimate being passed
+        // pins it at full. It starts again at nothing with the next mesh.
+        if (meshInfo.frac != null) progress = meshInfo.frac;
+        if (meshInfo.beat) note = meshInfo.beat + ". This updates when it moves.";
       }
       if (active.key === "mesh" && meshInfo) {
         if (meshInfo.stage && !meshInfo.narrated) current = `${prefix}Meshing on the cloud mesher - ${meshInfo.stage}…`;
         const typ = meshInfo.typical, cap = meshInfo.budget;
-        if (cap && elapsed >= cap) note = "Past its time limit - it should stop by itself any moment now.";
+        if (cap && elapsed >= cap) note = "Past its time limit - it stops by itself.";
         else if (cap && elapsed >= 0.8 * cap) note = `If it's still going at ${durationWords(cap)}, it stops by itself.`;
         else if (typ && elapsed > typ) note = `Taking longer than similar runs (usually about ${durationWords(typ)}).`;
       } else if (SOFT_MS[active.key] && elapsed * 1000 > SOFT_MS[active.key]) {
-        note = "Taking longer than usual - still working.";
+        note = `Past ${durationWords(SOFT_MS[active.key] / 1000)} - still running.`;
       }
       if (!note && lastEventAt && t - lastEventAt > QUIET_NOTE_MS && active.key !== "mesh") {
-        note = "No news from the run for a while. It's still running; this updates when it moves.";
+        note = `No news for ${durationWords(QUIET_NOTE_MS / 1000)}. Still running; this updates when it moves.`;
       }
       return { state: "running", live: true, steps: shown, current, note, elapsed_s: elapsed,
-               slow: note ? "yes" : undefined, kind };
+               slow: note ? "yes" : undefined, kind, progress };
     },
   };
 }

@@ -71,8 +71,11 @@ def test_balanced_keeps_the_tet_check_for_the_snap_and_relaxes_it_for_layers_onl
     assert "minTetQuality 1e-13;" in main
     # the layer stage reads the relaxed set from its first iteration, tet check off there only
     assert "nRelaxedIter 0;" in d and "minTetQuality -1e30;" in relaxed
-    # non-orthogonality stays at the bar the reviewer judges, in both
-    assert "maxNonOrtho 65;" in main and "maxNonOrtho 65;" in relaxed
+    # the snap keeps 65; the layer stage sits just under the limit the verdict judges the mesh by (VER-2, 70)
+    assert "maxNonOrtho 65;" in main and "maxNonOrtho 68;" in relaxed
+    from meshpipeline.engines.verdict_limits import PRODUCTION_LIMITS
+    limit = next(lim for lim in PRODUCTION_LIMITS if lim.key == "max_non_ortho" and "snappy" in lim.engines)
+    assert R.LAYER_MAX_NON_ORTHO == limit.limit - R.LAYER_NON_ORTHO_MARGIN
 
 
 def test_strict_is_unchanged(tmp_path):

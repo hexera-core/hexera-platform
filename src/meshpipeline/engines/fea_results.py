@@ -237,7 +237,7 @@ def results(workspace) -> dict | None:
                       "label": f"{n} · {cad}" if cad else n})
 
     # one authority for a delivered mesh's unit (contracts/mesh_units): every deck is written in it
-    from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
+    from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT, export_units_words
     mesh_units = COMPLETED_MESH_UNIT.value
     asm = assembly_block(fea.get("assembly") or {})
     extra: dict[str, Any] = {"assembly": asm} if asm else {}
@@ -267,10 +267,8 @@ def results(workspace) -> dict | None:
                     + (f" of {len(asm['parts'])} parts" if asm else "")
                     + (f", {level} level" if level else "") + f"; {len(faces)} named faces."),
         "level": level,
-        "units": {"mesh": mesh_units,
-                  "words": (f"Lengths in the files are in {'metres' if mesh_units == 'm' else mesh_units} "
-                            "(the part's own unit, converted). Use consistent units for loads and materials "
-                            "in your solver (for example N, m, Pa).")},
+        # the one sentence the result screen, the report and the chat all say (contracts/mesh_units)
+        "units": {"mesh": mesh_units, "words": export_units_words()},
         "check": {"outcome": outcome, "words": said, "rows": rows,
                   "solvers": "Limits: the strictest of Abaqus/CalculiX, Nastran and Ansys."},
         "elements": cells,

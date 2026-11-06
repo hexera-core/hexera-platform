@@ -48,6 +48,9 @@ def _free_port() -> int:
 
 @pytest.fixture(scope="module")
 def api(tmp_path_factory):
+    from tests.harness_provisioning import ensure_signed_owner
+    for raw_owner in (_A, _B):
+        ensure_signed_owner(raw_owner)
     # THE HARDENED CONFIGURATION, which is the only one where owner identity means anything: both
     # secrets set, so X-User-Id must be signed. The dev path where identity is self-asserted is a
     # different contract and is covered by the unit tier.
@@ -186,7 +189,8 @@ async def _provisioned_owner(db, *, org_name: str = "", organization_id=None,
         # `credits` states a different starting balance; 0 is an exhausted account.
         from meshpipeline.application import credit_service
         if credits is None:
-            await credit_service.grant_signup_credits(db, organization_id=organization_id)
+            await credit_service.grant_signup_credits(db, organization_id=organization_id,
+                                                      email=email)
         else:
             await credit_service.grant(db, organization_id=organization_id, amount=credits,
                                        reason="seeded by the isolation matrix")

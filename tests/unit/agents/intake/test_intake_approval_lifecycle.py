@@ -421,6 +421,11 @@ def _dispatch_once(session_gate, session_overrides=None, msgs=None):
         yield AsyncMock()
 
     with (patch("meshpipeline.persistence.session.get_db", _db),
+          # spend_gate consults the users table for an organisation-less owner (an account
+          # awaiting verification is refused). "alice" is this harness's legacy owner-only
+          # tenant - no row - and a bare MagicMock would read as one that exists.
+          patch("meshpipeline.application.spend_gate.user_repo.get_by_email",
+                AsyncMock(return_value=None)),
           patch("meshpipeline.persistence.repositories.job_repository.JobRepository", _JobRepo),
           patch("meshpipeline.application.job_service.JobService", _Svc),
           patch("meshpipeline.application.pipeline_run.dispatch", _fake_dispatch),

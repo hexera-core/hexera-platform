@@ -78,6 +78,8 @@ def test_every_beat_entry_has_a_hosted_home_and_no_stale_one_is_claimed():
      "meshpipeline.application.maintenance.cleanup", "purge_expired_geometry_sources"),
     ("tasks.cleanup.reconcile_orphan_artifacts",
      "meshpipeline.application.maintenance.reconcile", "reconcile_orphan_artifacts"),
+    ("tasks.cleanup.sweep_account_erasures",
+     "meshpipeline.application.maintenance.cleanup", "sweep_account_erasures"),
 ])
 def test_each_hosted_step_calls_the_function_its_celery_task_calls(monkeypatch, task, module, attr):
     from meshpipeline.adapters.pipeline_execution import maintenance_tasks

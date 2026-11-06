@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import enum
+import re
 import time
 import uuid
 
@@ -45,21 +46,40 @@ _CHANGE_WORDS = frozenset({
 })
 
 
+#: A QUESTION ABOUT WHAT THE USER THEMSELVES SHOULD DO in their own tool ("which parts should I set
+#: as bonded contacts in my solver?", "do I need to add a load case?"): its change word is the user's
+#: own action, never a change to the summary. The demo dry run of 2 Nov read the stud punch's "Which
+#: tool parts should I set as bonded contacts?" as a change: the summary was thrown away, and the
+#: "Yes, go ahead." after it was asked to confirm the same summary again. "Can I ...?" is not here -
+#: "can I add more layers?" is a request.
+_SELF_DIRECTED = re.compile(r"\b(?:should|do|does|must)\s+i\b|\bi\s+(?:need|have)\s+to\b")
+#: Change words that are a change only in some phrases: "turn" in "how did the mesh turn out?"
+#: asks, "turn the layers off" changes.
+_PHRASED_CHANGE = {"turn": re.compile(r"\bturn(?:s|ed)?\s+(?:\w+\s+){0,2}(?:on|off|up|down)\b")}
+
+
 def is_question(message: str, engine: str = "") -> bool:
     """Whether the answer to a summary only ASKS something about it: it has a question mark, no
     word that asks for something to be different, and names no engine but the summary's own
-    ("which mesher will you use?" asks; "could we use cfMesh?" changes)."""
-    import re
-
+    ("which mesher will you use?" asks; "could we use cfMesh?" changes). A question about what the
+    user should do in their own solver asks, whatever verb it uses."""
     from meshpipeline.agents.intake import vocabulary as _vocab
 
     text = str(message or "")
     if "?" not in text:
         return False
-    words = re.findall(r"[a-z]+", text.casefold())
-    if not words or any(w in _CHANGE_WORDS for w in words):
+    low = text.casefold()
+    words = re.findall(r"[a-z]+", low)
+    if not words or _vocab.engines_named_in(text, (engine or "").strip().lower()):
         return False
-    return not _vocab.engines_named_in(text, (engine or "").strip().lower())
+    if _SELF_DIRECTED.search(low):
+        return True
+    for w in words:
+        if w in _CHANGE_WORDS:
+            phrased = _PHRASED_CHANGE.get(w)
+            if phrased is None or phrased.search(low):
+                return False
+    return True
 
 
 def classify(message: str, engine: str = "") -> str:
@@ -167,6 +187,93 @@ def invalidate(approval: dict | None, reason: str) -> dict | None:
         return None
     return {**approval, "status": INVALIDATED, "invalidated_reason": reason,
             "invalidated_at": time.time()}
+
+
+#: The reason message.py writes when the user's answer to a summary was read as a change.
+_ANSWERED_WITH = "user replied with a "
+
+
+def revivable(approval: dict | None, *, user_msg_count: int) -> bool:
+    """Whether the summary THIS turn's message withdrew may stand again: it was withdrawn because
+    the user's answer read as a change (not because a gate refused it, or it expired), and that
+    answer was exactly the message the summary waited for. The caller decides only when the turn
+    then changed nothing (agents/intake/agent.py: no new submission)."""
+    if not approval or approval.get("status") != INVALIDATED:
+        return False
+    if not str(approval.get("invalidated_reason") or "").startswith(_ANSWERED_WITH):
+        return False
+    if time.time() > float(approval.get("expires_at", 0) or 0):
+        return False
+    return int(approval.get("expected_confirmation_msg_count", -1)) == int(user_msg_count)
+
+
+def revive(approval: dict, *, user_msg_count: int) -> dict:
+    """A WITHDRAWN SUMMARY STANDS AGAIN when the message that withdrew it changed nothing: the
+    intake answered a question and submitted nothing new, so the summary on the card is still the
+    one the user is looking at, and their next message - a plain yes - lands on it. Without this,
+    a question the classifier read as a change cost the summary, and the user's yes was answered
+    with the same summary and the same question a second time (dry run, 2 Nov, the stud punch)."""
+    out = {k: v for k, v in approval.items() if k not in ("invalidated_reason", "invalidated_at")}
+    out.update(status=AWAITING, expected_confirmation_msg_count=int(user_msg_count) + 1,
+               revived_count=int(approval.get("revived_count", 0) or 0) + 1)
+    return out
+
+
+#: The fields a summary's change is read from, in the words a user knows them by.
+_CHANGE_LABELS = (("mesh_engine", "engine"), ("purpose", "purpose"), ("input_kind", "input"),
+                  ("dimensionality", "dimensions"), ("mesh_fidelity", "detail level"),
+                  ("requested_extents", "domain size"), ("reference_length_m", "reference length"),
+                  ("flow_axis", "flow direction"))
+
+
+def _shown(value) -> str:
+    if isinstance(value, float):
+        return f"{value:g}"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_shown(v) for v in value) or "none"
+    if isinstance(value, dict):
+        return ", ".join(f"{k.replace('_', ' ')} {_shown(v)}" for k, v in sorted(value.items())) or "none"
+    return "none" if value in (None, "") else str(value)
+
+
+def _patch_roles(payload: dict) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for p in payload.get("patches") or ():
+        if isinstance(p, dict) and str(p.get("name") or "").strip():
+            out[str(p["name"]).strip()] = str(p.get("role") or p.get("type") or "").strip()
+    return out
+
+
+def changes_between(before: dict | None, after: dict | None, *, limit: int = 6) -> list[str]:
+    """WHAT A NEW SUMMARY CHANGED against the one it replaces, in plain words ("layers: 3 -> 5",
+    "outlet added"), so a summary redone after the user's correction says what it took from their
+    words - not the same lines again with no sign anything was heard (dry run, 2 Nov: the exhaust
+    header's "No, use 5 layers; only 63 mm outlet" was answered with the identical text). The
+    request's own wording is counted only when nothing else changed. [] when nothing did."""
+    a, b = dict(before or {}), dict(after or {})
+    out: list[str] = []
+    pa, pb = dict(a.get("engine_params") or {}), dict(b.get("engine_params") or {})
+    for key in sorted(set(pa) | set(pb)):
+        if pa.get(key) != pb.get(key):
+            out.append(f"{key.replace('_', ' ')}: {_shown(pa.get(key))} -> {_shown(pb.get(key))}")
+    for key, label in _CHANGE_LABELS:
+        if a.get(key) != b.get(key) and (a.get(key) or b.get(key)):
+            out.append(f"{label}: {_shown(a.get(key))} -> {_shown(b.get(key))}")
+    ra, rb = _patch_roles(a), _patch_roles(b)
+    out.extend(f"{n} added" + (f" ({rb[n]})" if rb[n] else "") for n in rb if n not in ra)
+    out.extend(f"{n} removed" for n in ra if n not in rb)
+    out.extend(f"{n}: {ra[n] or 'no role'} -> {rb[n] or 'no role'}" for n in ra
+               if n in rb and ra[n] != rb[n])
+    if not out and (str(a.get("request_txt") or "").strip() != str(b.get("request_txt") or "").strip()):
+        out.append("the written requirements")
+    return out[:limit] + ([f"and {len(out) - limit} more"] if len(out) > limit else [])
+
+
+def changed_line(changes: list[str], *, since_run: bool = False) -> str:
+    """The one line above the question on a redone summary: what changed, or '' for none."""
+    if not changes:
+        return ""
+    return f"Changed from the {'last run' if since_run else 'last summary'}: {'; '.join(changes)}."
 
 
 def builder_payload(approval: dict) -> dict:

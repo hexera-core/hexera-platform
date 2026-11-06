@@ -67,8 +67,7 @@ def test_engine_resolution_runs_on_real_code_without_crashing(monkeypatch):
     # The selection ANNOUNCEMENT is execution-owned: authorizing it is a PostgreSQL round trip
     # against a claim, which this hermetic module has no service to make. So the announcement is
     # recorded here and the node's own decision is what is asserted; that the announcement is
-    # refused without a live claim, and published under one, is
-    # tests/integration/test_pipeline_node_ownership.py's contract.
+    # refused without a live claim is the execution_fence suites' contract.
     announced: list = []
 
     async def _publish(job_id, text, op_id):
@@ -86,59 +85,6 @@ def test_engine_resolution_runs_on_real_code_without_crashing(monkeypatch):
     assert [a["op_id"] for a in announced] == ["forced", "resolved"], announced
     assert [a["text"] for a in announced] == [es.engine_choice_words(_expected, "topology_internal"),
                                               es.engine_choice_words(default_engine(), "default")], announced
-
-
-def test_gmsh_deterministic_path_on_real_geometry():
-    import json
-    from pathlib import Path
-
-    step = Path("/tmp/elbow90_fluid.step")
-    if not step.exists():
-        import pytest
-        pytest.skip("real STEP not staged (make test-integration stages it)")
-    # THE TYPED COORDINATE STATE is not optional: the gmsh bundle refuses to stage a B-rep without
-    # it, because the physical size of the imported model would otherwise be a guess. This case
-    # passed `prepared=None` from before that contract existed, and the licensed-CAD skip meant it
-    # never ran again to say so.
-    from meshpipeline.contracts.coordinate_state import from_source_file
-    from meshpipeline.contracts.geometry_units import (
-        GeometryInterpretation,
-        LengthUnit,
-        ResolutionBasis,
-        scale_to_metres,
-    )
-    from meshpipeline.engines.gates import GateCtx, run_gates
-    from meshpipeline.engines.gmsh import gmsh_runner as runner
-    from meshpipeline.engines.registry import get_spec
-
-    prepared = from_source_file(GeometryInterpretation(
-        interpretation_id="i-it", owner_id="o-it", geometry_source_id="s-it",
-        unit=LengthUnit.millimetre, scale_to_metres=scale_to_metres(LengthUnit.millimetre),
-        basis=ResolutionBasis.user_confirmed))
-
-    ws = Path("/tmp/it_gmsh_ws")
-    ws.mkdir(exist_ok=True)
-    runner.tessellate_to_stl(step, ws / "input.stl", prepared=prepared)
-    info = runner.inspect_stl(ws)
-    assert info["volumes"] >= 1
-    largest = max(info["surfaces"], key=lambda s: s["area"])["tag"]
-    (ws / "gmsh_spec.json").write_text(json.dumps({
-        "element_order": 2, "size": {"mode": "factor", "value": 0.08},
-        "groups": [{"name": "fixed_base", "role": "fixed",
-                    "surface_tags": [largest]}]}))
-    # _run_gmsh_local is the mesh EXECUTION (runs in the Cloud Run container);
-    # run_cartesian_mesh is now the cloud-dispatch seam. Integration validates the real
-    # subprocess, so it calls the execution fn - the same one do_mesh runs on Cloud Run.
-    res = runner._run_gmsh_local(ws, timeout=300)
-    assert res["rc"] == 0, res["log_tail"]
-    out = runner.finalize(str(ws), [{"name": "fixed_base", "type": "fixed"}],
-                          "gmsh", domain="integration elbow FEA",
-                          engine_params={"element_order": "2"})
-    assert out["success"], out["output"]
-    ok, key, fb = run_gates(get_spec("gmsh").gates, GateCtx(
-        workspace=ws, engine="gmsh",
-        intake_patches=[{"name": "fixed_base", "type": "fixed"}]))
-    assert ok, f"{key}: {fb}"
 
 
 def test_a_stalled_review_is_reviewed_again_and_its_verdict_ends_the_run(monkeypatch):

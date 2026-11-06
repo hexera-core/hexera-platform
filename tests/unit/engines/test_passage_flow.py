@@ -266,7 +266,19 @@ def test_the_reading_comes_from_the_polymesh_and_only_when_the_floor_failed(tmp_
     assert PF.judge_resolution({**_quality(2.0), **out}).ok
     # a polyMesh that is not there, or a budget that runs out, is no evidence - never an error
     assert PF.passage_flow_of_polymesh(tmp_path / "nowhere", _quality(2.0)) == {}
-    assert PF.passage_flow_of_polymesh(tmp_path, _quality(2.0), budget_s=1e-9) == {}
+    from meshpipeline.contracts.work_limits import TIME_KEEP_VALID, ends_attempt
+    from meshpipeline.engines import determinism as det
+    with det.recording() as rec:
+        assert PF.passage_flow_of_polymesh(tmp_path, _quality(2.0), budget_s=1e-9) == {}
+    # the mesh beside it is valid: its guard tripping keeps the mesh, checked without the reading
+    # (TIME-8) - the attempt is not replayed
+    assert [t["rule"] for t in rec.guard_trips] == [TIME_KEEP_VALID]
+    assert not ends_attempt(rec.guard_trips[0])
+    # a mesh with a fatal defect fails its gate whatever the flow does: never read beside it
+    with det.recording() as rec:
+        assert PF.passage_flow_of_polymesh(
+            tmp_path, {**_quality(2.0), "fatal": ["negative-volume cells"]}) == {}
+    assert rec.guard_trips == []
 
 
 # #

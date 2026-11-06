@@ -77,6 +77,22 @@ CONF_ROTOR, CONF_ROTOR_2, CONF_REVOLUTION, CONF_BAR = 0.75, 0.6, 0.7, 0.6
 CONF_MIRROR, CONF_EXTRUSION, CONF_CUT = 0.7, 0.6, 0.6
 AXES = "xyz"
 
+#: A BODY STANDING ON ITS WHEELS (a car, a truck, the Ahmed body on its stilts): the skin's lowest
+#: points - within SUPPORT_BAND of its height above the lowest one - fall in SUPPORTS or more
+#: separate patches (more than SUPPORT_CELL of its length apart: a tyre's two tread edges are one
+#: patch), spread so the polygon round them covers SUPPORT_SPREAD of the footprint (a car's four
+#: tyres: about half), while what lies flat on that plane covers SUPPORT_TOUCH of it at most (a flat
+#: underside is the scout's own ground rule). The Camaro on shared dev (2 Nov): its tyres touch the
+#: floor, its underside is clear of it, and the scout - which knew only a flat bottom or a scene of
+#: many pieces - read it "not on the ground", for the user to correct by hand.
+SUPPORT_BAND, SUPPORT_CELL, SUPPORTS, SUPPORT_SPREAD, SUPPORT_TOUCH = 0.01, 0.05, 3, 0.25, 0.3
+#: THE NOSE OF A VEHICLE ON ITS WHEELS: of the two ends of its length (END_SHARE of it each), the one
+#: whose top is lower by NOSE_DROP of the height at least - a bonnet against a boot or a tail, a
+#: cab against a box body, a nose cone against a rear wing. Ends alike (a bus, a box) say nothing.
+END_SHARE, NOSE_DROP = 0.12, 0.08
+#: How sure the vehicle reading is: the long axis of a body on wheels, and with its sign.
+CONF_VEHICLE_AXIS, CONF_VEHICLE_NOSE = 0.65, 0.55
+
 
 @dataclass
 class Skin:
@@ -317,6 +333,72 @@ def direction(skin: Skin, sym: Symmetry) -> list[dict]:
                               f"one flat face covers the {'-+'[end % 2]}{AXES[k]} end, like a half model's "
                               "symmetry plane or a wing's root: the flow runs along that face"))
     return said
+
+
+def on_wheels(skin: Skin, up: int = 2) -> dict | None:
+    """A body standing on separate supports at its lowest plane (wheels, stilts), with the ground
+    under them square to `up`; None when it does not. Says how many supports, how widely spread and
+    - along its longer horizontal side - which end is its nose when the ends' tops say so."""
+    from scipy import ndimage
+    from scipy.spatial import ConvexHull
+
+    size = skin.size
+    flat = [k for k in range(3) if k != up]
+    height = float(size[up])
+    if height <= 0 or min(size[k] for k in flat) <= 0:
+        return None
+    corners = skin.tris.reshape(-1, 3)
+    low = corners[corners[:, up] <= skin.lo[up] + SUPPORT_BAND * height]
+    if len(low) < SUPPORTS:
+        return None
+    long_side = max(float(size[k]) for k in flat)
+    cell = SUPPORT_CELL * long_side
+    ij = np.floor((low[:, flat] - skin.lo[flat]) / cell).astype(int)
+    shape = tuple(int(v) + 1 for v in ij.max(axis=0))
+    if shape[0] * shape[1] > 4_000_000:
+        return None
+    grid = np.zeros(shape, dtype=bool)
+    grid[ij[:, 0], ij[:, 1]] = True
+    labels, n = ndimage.label(grid, structure=np.ones((3, 3), dtype=bool))
+    if n < SUPPORTS:
+        return None
+    footprint = float(size[flat[0]] * size[flat[1]])
+    # how much of the footprint lies flat on the lowest plane: a flat underside is no set of wheels
+    in_band = (skin.tris[:, :, up] <= skin.lo[up] + SUPPORT_BAND * height).all(axis=1)
+    touch = float((skin.tri_area[in_band] * np.abs(skin.tri_normal[in_band, up])).sum())
+    if touch > SUPPORT_TOUCH * footprint:
+        return None
+    centres = np.array(ndimage.center_of_mass(grid, labels, range(1, n + 1)), dtype=float) * cell
+    try:
+        spread = float(ConvexHull(centres).volume) / footprint
+    except Exception:  # noqa: BLE001 - supports in a line (a monowheel, a ski) stand on no polygon
+        return None
+    if spread < SUPPORT_SPREAD:
+        return None
+    k = flat[int(np.argmax([size[j] for j in flat]))]
+    t = (corners[:, k] - skin.lo[k]) / float(size[k])
+    tops = [float(corners[t <= END_SHARE, up].max()), float(corners[t >= 1.0 - END_SHARE, up].max())]
+    drop = (tops[1] - tops[0]) / height          # > 0: the - end is the lower one
+    nose = ("-" if drop > 0 else "+") + AXES[k] if abs(drop) >= NOSE_DROP else None
+    return {"supports": int(n), "spread": round(spread, 3), "axis": AXES[k], "nose": nose,
+            "end_tops": [round((v - float(skin.lo[up])) / height, 3) for v in tops]}
+
+
+def vehicle_said(wheels: dict) -> dict:
+    """The direction a body on wheels gives: along its longer side, and - when one end is plainly
+    lower - away from that end, its nose."""
+    n, k = wheels["supports"], wheels["axis"]
+    if wheels.get("nose"):
+        nose = wheels["nose"]
+        flow = ("-" if nose[0] == "+" else "+") + k
+        said = _said("along", AXES.index(k), CONF_VEHICLE_NOSE,
+                     f"it stands on {n} separate supports at its lowest plane, like a vehicle on its wheels, and its "
+                     f"{nose} end is the lower one, like a bonnet or a nose: the flow meets that end and runs along {flow}")
+        said["sign"] = flow[0]
+        return said
+    return _said("along", AXES.index(k), CONF_VEHICLE_AXIS,
+                 f"it stands on {n} separate supports at its lowest plane, like a vehicle on its wheels: the flow "
+                 f"runs along its length ({k}); its two ends look alike, so which one meets the flow is for you to say")
 
 
 def rotor_axis(sym: Symmetry) -> int | None:
@@ -614,8 +696,16 @@ def read_flow(tris, facts: dict) -> dict:
         return {"read": False, "reason": "the skin is too small or too large to read quickly"}
     sym = symmetry(skin)
     fill, hull = fill_and_hull(skin)
-    out = {"read": True, "symmetry": sym.as_dict(), "fill": round(fill, 3), "hull": round(hull, 3),
-           "direction": direction(skin, sym)}
+    said = direction(skin, sym)
+    wheels = on_wheels(skin)
+    if wheels is not None:
+        # a vehicle on its wheels: the ground under them, and its length - ahead of a mirror plane,
+        # which leaves the length or the width open on a car as wide as it is tall
+        said = [vehicle_said(wheels), *said]
+    out: dict[str, Any] = {"read": True, "symmetry": sym.as_dict(), "fill": round(fill, 3), "hull": round(hull, 3),
+                           "direction": said}
+    if wheels is not None:
+        out["vehicle"] = wheels
     kind = body_or_passage(skin, sym, fill, hull, facts)
     if kind:
         out["kind"] = kind
@@ -684,8 +774,18 @@ def apply_reading(facts: dict, reading: dict) -> None:
     d = reading.get("direction")
     if d:
         facts["flow_axis_reading"] = d
+    wheels = reading.get("vehicle")
+    if wheels and not facts.get("grounded"):
+        # standing on its wheels at the file's lowest z: on the ground (contracts.geometry_fields
+        # keeps it only for a file drawn z up, where the ground plane can go under it). Said for a
+        # part read as a passage too - only a body in a flow reads it, so a user (or the naming)
+        # who says the fluid flows around it finds the car already on the ground
+        facts["grounded"] = True
+        facts["grounded_from"] = f"it stands on {wheels['supports']} separate supports at its lowest plane"
+        facts.setdefault("notes", []).append("it stands on separate supports (wheels) at its lowest plane, so it "
+                                             "is proposed on the ground")
 
 
-__all__ = ["Skin", "Symmetry", "apply_reading", "body_or_passage", "diffuser_behind", "direction",
+__all__ = ["Skin", "Symmetry", "apply_reading", "on_wheels", "vehicle_said", "body_or_passage", "diffuser_behind", "direction",
            "fill_and_hull", "narrows_behind", "opens_behind", "profile", "read_flow", "read_skin", "roles", "skin_triangles",
            "symmetry", "widest_tie"]

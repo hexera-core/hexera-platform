@@ -66,7 +66,18 @@ def test_one_post_reaches_the_run_endpoint_with_the_existing_overrides(posted):
         "INPUT_URI": "gs://b/in", "OUTPUT_URI": "gs://b/out",
         "ENGINE": "cfmesh", "TIMEOUT": "420",
         # the exchange contract the worker speaks (contracts/mesh_execution)
-        "HEXERA_MESH_CONTRACT": str(MESH_EXCHANGE_VERSION)}
+        "HEXERA_MESH_CONTRACT": str(MESH_EXCHANGE_VERSION),
+        # WHETHER THIS RUN MAY PUBLISH A FRAME OF ITSELF WHILE IT BUILDS. The mesh job's own
+        # definition declares no environment, deliberately, so a setting the mesher reads can
+        # only arrive here - and the exact set is asserted precisely so that stays true: a
+        # reader added to the mesh image without a line in this dict is a setting that silently
+        # keeps its default wherever it actually runs.
+        "MESH_PROGRESSIVE_SNAPSHOT_ENABLED": "false",
+        # Blank is the value, not an omission: "" means the pin is not stated and the mesher sizes
+        # itself. It travels beside the frame switch because the two are one decision - a frame is
+        # only read from a serial run - and a deployment holding one without the other sees
+        # nothing and has no way to tell why.
+        "MESH_SNAPPY_RANKS": ""}
     assert calls[0]["timeout"] == 60
 
 

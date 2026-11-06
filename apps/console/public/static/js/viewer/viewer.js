@@ -16,8 +16,14 @@ import { getSurface } from "../api/endpoints.js";
 import { headers } from "../api/client.js";
 import { acceptMesh, flagDispute } from "./dispute.js";
 import { VIEWER_FALLBACK } from "./config.js";
+// which conversation this run came from: the scope the way up is remembered against
+import { get as getState } from "../core/state.js";
+// vtk.js itself, loaded once for the page, and the decoders for the buffers it is handed
+import { b64f32, b64u32, b64u8, loadVtk } from "./scene/vtk_load.js";
+import { mountCanvas } from "./scene/canvas.js";
+import { makeOverlay } from "./scene/overlay.js";
 import { bindFreshDownloads } from "../render/download.js";
-import { MOUSE_HINT, UP_AXES, VIEW_PRESETS, bindMouse, isUpAxis, orient, presetView, saveUp, savedUp, shield, upVector } from "./view_controls.js";
+import { MOUSE_HINT, UP_AXES, VIEW_PRESETS, isUpAxis, orient, presetView, saveUp, savedUp, shield, upScope, upVector } from "./view_controls.js";
 // the floating toolbar (View, Section, Parts, Measure, Snapshot) and the part's theme colours
 import { ICONS, axesHtml, bindSeg, bindToolbar, cssRgb, drawAxes, optRow, savePng, segHtml, snapshotPng, themeRgb, toolbarHtml } from "./toolbar.js";
 // a delivered thermal model (an ECXML upload) is read part by part, with slices and its own files
@@ -25,21 +31,7 @@ import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml }
 // a delivered FEA mesh (a structural solid) is read face by face, with its quality against each
 // solver limit, its plan and its hot spots (FEA build step 5)
 import { bindFeaResults, feaResultsHtml } from "./fea_results.js";
-import { bindResultPanel, cfdPastLimit, downloadsHtml, hotSpotsHtml, keyNumbers, keyNumbersHtml, notesHtml, verdictHtml, verdictOf } from "./result_panel.js";
-
-let _vtkP=null;
-function loadVtk(){if(window.vtk)return Promise.resolve();
-  if(!_vtkP)_vtkP=new Promise((res,rej)=>{
-    const s=document.createElement('script');s.src='/static/vendor/vtk.js';
-    s.onload=res;s.onerror=()=>rej(new Error('vtk.js failed to load'));
-    document.head.appendChild(s);});
-  return _vtkP;}
-
-function b64f32(b){const bin=atob(b),n=bin.length,u=new Uint8Array(n);
-  for(let i=0;i<n;i++)u[i]=bin.charCodeAt(i);return new Float32Array(u.buffer);}
-function b64u8(b){const bin=atob(b),n=bin.length,u=new Uint8Array(n);
-  for(let i=0;i<n;i++)u[i]=bin.charCodeAt(i);return u;}
-function b64u32(b){return new Uint32Array(b64u8(b).buffer);}
+import { bindDownloadMenu, bindResultPanel, cfdPastLimit, downloadsHtml, hotSpotsHtml, keyNumbers, keyNumbersHtml, notesHtml, verdictHtml, verdictOf } from "./result_panel.js";
 
 /* geometry fills: a mid-tone grey, each patch a step of tint so the parts read apart without
    shouting; the ORANGE selection and the edges stand out on every one of them. The values come
@@ -113,6 +105,11 @@ function viewerToolsHtml(job,upAxis){
         <button type="button" class="vp-x" data-a="clear" aria-label="Clear the pick">${ICONS.close}</button></div>`;
 }
 
+/* WHICH WAY UP, AND WHERE IT IS REMEMBERED. The choice belongs to the conversation the run came
+   from, so the part and its delivered mesh agree; a run opened by link knows no conversation and
+   falls back to its own job, as every run used to. */
+const upStore = (job) => upScope(job, getState.runOrigin(job));
+
 export async function openViewer(job,anchorEl,opts){
   opts=opts||{};
   if(document.getElementById('viewer-'+job)){document.getElementById('viewer-'+job).scrollIntoView({behavior:'smooth'});return;}
@@ -129,7 +126,8 @@ export async function openViewer(job,anchorEl,opts){
       {kind:'Past a limit',items:(opts.withNotes||[]).concat(feaRows,extra)},
       {kind:'Reviewer notes',items:opts.notes||[]}],
       opts.concerns||opts.unreviewed?reasonDetails(opts.reasoning):'');};
-  const upAxis=savedUp('job',job)||'+z';
+  const _up=upStore(job);
+  const upAxis=savedUp(_up.scope,_up.id)||'+z';
   box.innerHTML=`<div class="v-bar">
       <div class="v-sec v-head rp-head">
         ${verdictHtml(verdictOf(opts))}
@@ -170,6 +168,7 @@ export async function openViewer(job,anchorEl,opts){
   // each Download click asks the API for a fresh link, so one read long after the page loaded -
   // or a large file's retry - never meets an expired one
   bindFreshDownloads(box);
+  bindDownloadMenu(box);
   bindResultPanel(box,job,{fetchReport:async j=>{
     const r=await fetch(`/api/v1/simulation/${j}/report.html`,{headers:headers()});
     if(!r.ok)throw new Error('report '+r.status);
@@ -252,14 +251,17 @@ function initViewer(job,surf,uiCfg){
   const host=document.getElementById('v-canvas-'+job);
   // the scene is the theme's viewer canvas, so the part sits on the same black as the page
   const sceneBg=themeRgb('--viewer-canvas',[0.035,0.055,0.075]);
-  const grw=vtk.Rendering.Misc.vtkGenericRenderWindow.newInstance({background:sceneBg});
-  grw.setContainer(host);
-  const ren=grw.getRenderer(),rw=grw.getRenderWindow();
-  const apiRW=grw.getApiSpecificRenderWindow?grw.getApiSpecificRenderWindow():grw.getOpenGLRenderWindow();
-  grw.resize();
-  const ro=new ResizeObserver(()=>{setRenderScale();rw.render();});ro.observe(host);
-  host.addEventListener('contextmenu',e=>e.preventDefault());
-  bindMouse(grw);                     // left-drag turns, right-drag pans, the wheel zooms
+  // THE SHARED BOOT. Two things change here for the delivered mesh, both deliberate:
+  //  - THE LIGHTS. This viewer rode vtk's default headlight while the geometry stage used a
+  //    three-camera-light rig, so the same part was lit two ways depending on which panel it was
+  //    in. It now gets the rig: a key from the upper left, a fill from the right, a faint rim.
+  //  - THE RESIZE POLICY. This viewer never re-framed on a size change, and the workbench grid
+  //    gives the panel its real size a tick AFTER the first fit - so the opening framing was the
+  //    one computed against a placeholder box. It now re-frames until the user takes the camera
+  //    (canvas.fit, assigned once the camera envelope is live), and never after.
+  const canvas=mountCanvas(host,{background:sceneBg,ignore:ON_CANVAS_UI});
+  const {ren,rw,apiRW}=canvas;
+  const overlay=makeOverlay(canvas);
 
   /* one IMMUTABLE actor per patch - real polygon cells */
   const entries=[];let totalFaces=0;
@@ -305,16 +307,17 @@ function initViewer(job,surf,uiCfg){
   // the parts panel's own repaint: the heatmap hands edges back through the panel, so a selected
   // part keeps its selection edge - and a listener on it, so the problem areas follow what is shown
   let repaintParts=null,onPartsPainted=null;
-  const cam=ren.getActiveCamera();
+  const cam=canvas.cam;
   // CAD is z-up, and the geometry check already draws parts that way: start from a front-quarter
   // view looking slightly down with +z up. vtk's default camera is +y-up, which laid cars and
   // aircraft on their side in the mesh viewer. A part modelled another way up opens the way the
-  // user last set it for this job (the "Up" control on the canvas).
+  // user last set it in this conversation (the "Up" control on the canvas).
   const VIEW_DIR=[1,-1,0.7];
   const upSel=document.getElementById('v-up-'+job);
   cam.setFocalPoint(0,0,0);cam.setPosition(...VIEW_DIR);cam.setViewUp(0,0,1);
-  // with no choice stored for this job, the way up the geometry check proposed (surf.up_axis)
-  if(upSel&&!savedUp('job',job)&&isUpAxis(surf.up_axis))upSel.value=surf.up_axis;
+  // with no choice stored for this conversation, the way up the check proposed (surf.up_axis)
+  const upAt=upStore(job);
+  if(upSel&&!savedUp(upAt.scope,upAt.id)&&isUpAxis(surf.up_axis))upSel.value=surf.up_axis;
   orient(cam,(upSel&&upSel.value)||'+z',VIEW_DIR);
   // one render for the opening view (below, once it is framed): a big model drawn twice in a row
   // held the page past a headless browser's patience
@@ -370,11 +373,11 @@ function initViewer(job,surf,uiCfg){
       _refitDist=Math.max(_refitDist,Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||0);}
     finally{_clamping=false;}
     clampCam();ren.resetCameraClippingRange();rw.render();};
-  // WHICH WAY IS UP: turn the camera to the chosen axis, re-frame, and remember it for this job
+  // WHICH WAY IS UP: turn the camera to the chosen axis, re-frame, and remember the choice
   function setUp(axis){
     orient(cam,axis,VIEW_DIR);frameCam();clampCam();ren.resetCameraClippingRange();rw.render();
     if(upSel&&upSel.value!==axis)upSel.value=axis;
-    saveUp('job',job,axis);}
+    saveUp(upAt.scope,upAt.id,axis);}
   if(upSel)upSel.onchange=()=>setUp(upSel.value);
   // a press or a scroll on the toolbar, an overlay or the picked chip is not an orbit or a zoom
   host.querySelectorAll('.vt,.v-ov,.v-picked').forEach(shield);
@@ -387,15 +390,11 @@ function initViewer(job,surf,uiCfg){
      ~8 of the FINEST cells fill the view (nothing more to resolve); the
      orbit target cannot leave the model box. STL fallback (no real cells)
      uses bbox-derived caps instead. */
-  const _DPR=Math.min(window.devicePixelRatio||1,2);
   const stats=surf.cell_stats||null;
   const GRID_PX=uiCfg.grid_px, FINE_FILL=uiCfg.fine_fill,
         FRAME_FRAC=uiCfg.frame_frac, SPAN_F=uiCfg.flag_span_factor,
         MAX_FLAGS=uiCfg.max_flags;
-  function setRenderScale(){
-    const r=host.getBoundingClientRect();
-    apiRW.setSize(Math.max(2,Math.round(r.width*_DPR)),
-                  Math.max(2,Math.round(r.height*_DPR)));}
+  const setRenderScale=canvas.setRenderScale;
   function capRange(){
     const t=Math.tan(cam.getViewAngle()*Math.PI/360);
     if(stats&&stats.typ>0&&stats.p10>0){
@@ -783,30 +782,18 @@ function initViewer(job,surf,uiCfg){
     const f={x:c[0],y:c[1],z:c[2],nrm:_nrm,span:rr*SPAN_F,patch:en.patch,
              note:'',col:col,actors:actors,el:el};
     el.onclick=ev=>{ev.stopPropagation();editNote(f);};
+    f.off=overlay.anchor(el,()=>[f.x,f.y,f.z],{normal:()=>f.nrm||null});
     flags.push(f);
     rw.render();renderFlags();}
 
-  /* pin badges track their 3-D anchors every frame (stops when the viewer
-     panel is removed from the document) */
-  (function badgeLoop(){
-    if(!document.body.contains(host))return;
+  /* The flags place themselves, as overlay anchors on the panel's one loop. A flag's DEPTH CUE
+     is the overlay's: the pin is HTML and cannot be occluded by the mesh, so a mark whose surface
+     normal points away from the camera is dimmed rather than drawn as a near one. What is left
+     here is the work that is not a single point - the size readout, the axes gizmo and the
+     two-ended measure line. */
+  overlay.each((aspect,rect)=>{
     const rr=worldR();
     if(!_lastR||Math.abs(rr-_lastR)>_lastR*0.02){_lastR=rr;sizeLbl.textContent=fmtR(rr);}
-    const size=apiRW.getSize(),aspect=size[0]/size[1];
-    const rect=host.getBoundingClientRect();
-    flags.forEach(f=>{if(!f.el)return;
-      const nd=ren.worldToNormalizedDisplay(f.x,f.y,f.z,aspect);
-      const ok=nd[2]>0&&nd[2]<1&&nd[0]>=0&&nd[0]<=1&&nd[1]>=0&&nd[1]<=1;
-      f.el.style.display=ok?'':'none';
-      if(ok){f.el.style.left=(nd[0]*rect.width)+'px';
-             f.el.style.top=((1-nd[1])*rect.height)+'px';
-             // DEPTH CUE: the pin is an HTML overlay, so it cannot be occluded by the
-             // mesh. A mark whose surface normal points away from the camera is on the
-             // FAR side - dim it, so a back-face pin never reads as a near one.
-             const cam=ren.getActiveCamera(),cp=cam.getPosition();
-             const vx=f.x-cp[0],vy=f.y-cp[1],vz=f.z-cp[2];
-             const facing=(f.nrm?(f.nrm[0]*vx+f.nrm[1]*vy+f.nrm[2]*vz):-1)<0;
-             f.el.classList.toggle('back',!facing);}});
     if(axesOn)drawAxes(axesEl,cam);
     // the measured line, over the part, with its distance at the middle
     if(mlineEl){const two=measureLabel&&measurePts.length===2;
@@ -816,8 +803,7 @@ function initViewer(job,surf,uiCfg){
       if(ok){const ln=mlineEl.firstElementChild,xy=nd=>[nd[0]*rect.width,(1-nd[1])*rect.height];
         const [a,b]=ends.map(xy);
         ln.setAttribute('x1',a[0]);ln.setAttribute('y1',a[1]);ln.setAttribute('x2',b[0]);ln.setAttribute('y2',b[1]);
-        measureLabel.style.left=((a[0]+b[0])/2)+'px';measureLabel.style.top=((a[1]+b[1])/2)+'px';}}
-    requestAnimationFrame(badgeLoop);})();
+        measureLabel.style.left=((a[0]+b[0])/2)+'px';measureLabel.style.top=((a[1]+b[1])/2)+'px';}}});
 
   // a click (not a drag) while armed places a marker - the camera still
   // orbits. Capture phase: the vtk interactor stops propagation of pointer
@@ -870,11 +856,13 @@ function initViewer(job,surf,uiCfg){
           if(ev.key==='Escape'){f._editing=false;renderFlags();}});
         setTimeout(()=>{ta.focus();ta.selectionStart=ta.value.length;},0);}
       delEl.onclick=()=>{f.actors.forEach(a=>ren.removeActor(a));
+        if(f.off)f.off();
         if(f.el)f.el.remove();
         flags.splice(i,1);rw.render();renderFlags();};
       flagsEl.appendChild(d);});}
 
   clearBtn.onclick=()=>{flags.forEach(f=>{f.actors.forEach(a=>ren.removeActor(a));
+      if(f.off)f.off();
       if(f.el)f.el.remove();});
     flags.length=0;rw.render();renderFlags();};
 
@@ -887,6 +875,9 @@ function initViewer(job,surf,uiCfg){
   const _fp0=cam.getFocalPoint(),_cp0=cam.getPosition();
   const _fitDist=Math.hypot(_cp0[0]-_fp0[0],_cp0[1]-_fp0[1],_cp0[2]-_fp0[2])||1;
   setRenderScale();
+  // only now is the camera envelope live (`fit` runs clampCam, which reads _fitDist): from here
+  // a size change re-frames the part until the user first presses on the canvas
+  canvas.fit=fit;
   cam.onModified(clampCam);
   clampCam();                    // opening view = closest allowed to Fit
   rw.render();
@@ -906,13 +897,14 @@ function initViewer(job,surf,uiCfg){
     // GROUPED, the way the figures are read: how big the mesh is, what its cells are, how good
     // they are. A zero that only says "nothing is wrong" (no skewed faces, a skew fraction of 0)
     // is folded into the figure it qualifies instead of taking a cell of its own.
-    const SIZE=[['cells','Cells'],['faces','Faces'],['regions','Regions']];
+    // the cell count is the panel's first key number already, so it is not said twice here
+    const SIZE=[['faces','Faces'],['regions','Regions']];
     const TYPES=[['hexahedra','Hexahedra'],['polyhedra','Polyhedra'],['prisms','Prisms'],
                  ['pyramids','Pyramids'],['tetrahedra','Tetrahedra']];
     const QUALITY=[['max_non_ortho','Max non-orthogonality','°'],['max_skewness','Max skewness',''],
                    ['max_aspect_ratio','Max aspect ratio','']];
     const FOLDED=['avg_non_ortho','skew_faces','skew_fraction'];
-    const KNOWN=[...SIZE,...TYPES,...QUALITY].map(r=>r[0]).concat(FOLDED,['units','engine']);
+    const KNOWN=[...SIZE,...TYPES,...QUALITY].map(r=>r[0]).concat(FOLDED,['units','engine','cells']);
     const isNum=v=>typeof v==='number'&&isFinite(v);
     // integers read as counts; a measured value to two decimals, and a very small one in
     // exponent form rather than a run of zeroes
@@ -977,6 +969,12 @@ function initViewer(job,surf,uiCfg){
                 :'input surface - the mesh itself could not be rendered · ')
     +(surf.patches||[]).map(p=>`${p.name}: ${(p.face_count||p.tri_count||0).toLocaleString()} faces`).join(' · ');
   statusEl.title=statusEl.textContent;   // one line on screen; the whole of it on hover
+  // A DELIVERED mesh says what it is on hover over the verdict: the line itself only repeated the
+  // key numbers. A surface that is not the mesh keeps its line - that is news.
+  if(surf.is_mesh){statusEl.closest('.v-row')?.classList.add('rp-quiet');
+    const head=document.querySelector('#viewer-'+job+' .rp-head');
+    if(head)head.title=statusEl.textContent.charAt(0).toUpperCase()+statusEl.textContent.slice(1)
+      +(surf.quality&&surf.quality.engine?` · ${surf.quality.engine}`:'')+(surf.quality&&surf.quality.units?` · ${surf.quality.units}`:'');}
 
   /* A DELIVERED THERMAL MODEL - its parts table, its quality in words, its ready-made slices
      and its own files (viewer/thermal_results.js). A slice is the delivered mesh cut by a plane,
@@ -1026,7 +1024,7 @@ function initViewer(job,surf,uiCfg){
       cam.setViewUp(...(Math.abs(n[2])>0.9?[0,1,0]:[0,0,1]));
       _clamping=true;ren.resetCamera(b);_clamping=false;rw.render();}
     host.innerHTML=thermalResultsHtml(job,thermal);
-    thermalDownloads(document.querySelector('#viewer-'+job+' .v-dl'),job,thermal);
+    thermalDownloads(document.querySelector('#viewer-'+job+' .rp-dlmenu')||document.querySelector('#viewer-'+job+' .v-dl'),job,thermal);
     const api=bindThermalResults(host,job,thermal,{
       isolate:name=>{if(sliceOn)showSlice(null);if(partsApi)partsApi.isolate(name);},
       slice:name=>showSlice(name)});
@@ -1102,10 +1100,10 @@ function initViewer(job,surf,uiCfg){
   (function vtkExport(){
     // a polyMesh, or the triangle surface of a tetrahedral engine's DELIVERED mesh (VMTK, Gmsh)
     if(surf.kind!=='polymesh'&&!(surf.kind==='stl'&&surf.is_mesh===true))return;
-    const bar=document.querySelector('#viewer-'+job+' .v-dl');if(!bar)return;
-    const a=document.createElement('a');a.className='v-dlbtn';a.href='#';a.id='v-vtk-'+job;
-    a.title='the boundary with its quality fields, for ParaView';
-    a.innerHTML='<b>ParaView</b><span>.vtk with quality fields</span>';
+    const bar=document.querySelector('#viewer-'+job+' .rp-dlmenu')||document.querySelector('#viewer-'+job+' .v-dl');if(!bar)return;
+    const a=document.createElement('a');a.className='v-dlbtn rp-dl';a.href='#';a.id='v-vtk-'+job;a.setAttribute('role','menuitem');
+    a.title='The boundary with its quality fields (.vtk), for ParaView';
+    a.innerHTML='<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 2h5l3 3v9H4z"/></svg><b>ParaView</b><span>.vtk</span>';
     a.onclick=async e=>{e.preventDefault();if(a.dataset.busy)return;a.dataset.busy='1';
       const lbl=a.querySelector('span'),was=lbl.textContent;lbl.textContent='building…';
       try{const r=await fetch(`/api/v1/simulation/${job}/surface.vtk`,{headers:headers()});

@@ -11,7 +11,7 @@ from sqlalchemy import select
 import meshpipeline.settings.billing as billcfg
 import meshpipeline.settings.plans as plancfg
 from meshpipeline.api.v1.admin_billing import admin_dep
-from meshpipeline.application import credit_service
+from meshpipeline.application import audit, credit_service
 from meshpipeline.persistence.models import (
     CaptureOperation,
     CreditLedgerEntry,
@@ -108,6 +108,8 @@ async def grant_credits(organization_id: str, body: CreditGrantRequest) -> dict:
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         balance = await credit_service.balance(db, organization_id=organization)
+    audit.record("admin.credit_grant", actor="admin", organization_id=str(organization),
+                 target=str(body.operation_id or ""), detail={"amount": body.amount})
     return {"balance": balance}
 
 

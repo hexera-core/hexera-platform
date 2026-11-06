@@ -19,6 +19,7 @@ class _User:
     email: str
     name: str = ""
     firebase_uid: str | None = None
+    pending_organization_name: str | None = None
 
 
 @dataclass
@@ -48,8 +49,9 @@ def provisioning(monkeypatch):
     async def fake_get_by_email(db, email):
         return next((user for user in users.values() if user.email == email), None)
 
-    async def fake_create_user(db, *, email, name, firebase_uid):
-        user = _User(id=uuid.uuid4(), email=email, name=name, firebase_uid=firebase_uid)
+    async def fake_create_user(db, *, email, name, firebase_uid, pending_organization_name=None):
+        user = _User(id=uuid.uuid4(), email=email, name=name, firebase_uid=firebase_uid,
+                     pending_organization_name=pending_organization_name)
         users[firebase_uid] = user
         return user
 
@@ -61,7 +63,7 @@ def provisioning(monkeypatch):
     async def fake_create_membership(db, *, user_id, organization_id, role):
         return None
 
-    async def fake_grant(db, *, organization_id):
+    async def fake_grant(db, *, organization_id, email, events=None):
         return 500
 
     async def fake_record_login(db, *, user_id, at, email_verified, name=""):
@@ -69,6 +71,14 @@ def provisioning(monkeypatch):
 
     async def fake_org_for_email(db, email):
         return recorder.organizations[0].id if recorder.organizations else None
+
+    async def fake_lock(db, user_id):
+        return None
+
+    async def fake_clear_pending(db, *, user_id):
+        for user in users.values():
+            if user.id == user_id:
+                user.pending_organization_name = None
 
     async def fake_attach(db, *, user_id, firebase_uid):
         for user in users.values():
@@ -82,6 +92,9 @@ def provisioning(monkeypatch):
     monkeypatch.setattr(account_service.user_repo, "create", fake_create_user)
     monkeypatch.setattr(account_service.user_repo, "record_login", fake_record_login)
     monkeypatch.setattr(account_service.user_repo, "attach_firebase_uid", fake_attach)
+    monkeypatch.setattr(account_service.user_repo, "lock", fake_lock)
+    monkeypatch.setattr(account_service.user_repo, "clear_pending_organization_name",
+                        fake_clear_pending)
     monkeypatch.setattr(account_service.organization_repo, "create", fake_create_org)
     monkeypatch.setattr(account_service.membership_repo, "create", fake_create_membership)
     monkeypatch.setattr(account_service.membership_repo, "organization_id_for_email",

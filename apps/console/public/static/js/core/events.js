@@ -18,7 +18,7 @@ import { fmtBytes } from "./format.js";
 /** Stage lanes, in the order the pipeline runs them. Presentation only - a stage the UI has
  *  no word for still renders, via `laneLabel`. */
 const LANE_LABELS = {
-  intake: "Requirements", engine_select: "Engine selection",
+  intake: "Requirements", engine_select: "Engine selection", repair: "Repair check",
   geometry_admission: "Input validation", builder: "Mesh creation",
   executor: "Mesh validation", classifier: "Diagnostics",
   reviewer: "Review", outcome: "Outcome", result: "Result",
@@ -93,8 +93,15 @@ const HANDLERS = {
   // the mesh the run will build, and what the running mesher says it is doing
   plan:        (ev, r, st) => r.plan(st, ev.summary || ""),
   mesh_stage:  (ev, r) => r.meshStage(ev.label || ""),
+  // A FRAME OF THE MESH-SO-FAR exists. A pointer, never the geometry: the renderer asks the API
+  // for the bytes (the run's own event is what authorises that read), and the viewer swaps its
+  // content without moving the camera. A build that cannot draw one ignores it.
+  mesh_partial: (ev, r) => { if (r.meshPartial) r.meshPartial(ev.phase || "", ev.object_key || ""); },
   // a step row or a commentary line, already in the user's words (contracts/narration)
   narrate:     (ev, r, st) => r.narrate(st, ev),
+  // THE RECEIPT for a step: a fixed-shape, durable record of what that phase decided - rows of
+  // {label, value, why?}, already deterministic text. The UI opens it; it never summarises it.
+  receipt:     (ev, r, st) => r.receipt(st, ev),
   // the verdict is kept on its lane, so the lane's mark can never contradict it
   verdict:     (ev, r, st) => r.verdict(st, ev.verdict === "PASS", verdictText(ev.verdict)),
   closing:     () => {},          // the stream holds it for the result card

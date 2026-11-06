@@ -37,6 +37,37 @@ def validate_completed_mesh_unit(value: Any) -> LengthUnit:
     return COMPLETED_MESH_UNIT
 
 
+_WORDS = {LengthUnit.metre: ("metres", "m"), LengthUnit.millimetre: ("millimetres", "mm"),
+          LengthUnit.centimetre: ("centimetres", "cm"), LengthUnit.inch: ("inches", "in")}
+
+
+def export_units_words(source_unit: Any = None) -> str:
+    """THE ONE SENTENCE every surface uses for what unit the delivered files are in - the result
+    screen, the report and the chat - so none of them can say another (the 2 Nov dry run: the chat
+    told the knuckle's user "the coordinates will remain in millimetres" while every file was in
+    metres). `source_unit` is the part's own unit as the user confirmed it, when known: the
+    conversion is then said with its factor. Places and sizes we show the user (the check, the plan,
+    the result's notes) stay in millimetres, as measured on the part."""
+    out_words, out_abbr = _WORDS[COMPLETED_MESH_UNIT]
+    try:
+        unit = LengthUnit(source_unit) if source_unit else None
+    except ValueError:
+        unit = None
+    said = f"Lengths in the delivered files are in {out_words}"
+    if unit is None:
+        said += " (converted from your part's own unit)."
+    elif unit is COMPLETED_MESH_UNIT:
+        said += ", the unit your part is in."
+    else:
+        from meshpipeline.contracts.geometry_units import scale_to_metres
+        words, abbr = _WORDS[unit]
+        said += (f": your part is in {words}, so every coordinate is converted "
+                 f"(1 {abbr} = {scale_to_metres(unit):g} {out_abbr}).")
+    return (said + " Places and sizes shown on the check and in the result's notes stay in "
+            "millimetres, as measured on your part. Use consistent units for loads and materials in "
+            "your solver (for example N, m, Pa).")
+
+
 def completed_mesh_unit(manifest: Mapping[str, Any] | None) -> LengthUnit:
     if not isinstance(manifest, Mapping):
         raise MeshUnitsError("no mesh manifest to read units from")

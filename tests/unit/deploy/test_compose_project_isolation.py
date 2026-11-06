@@ -64,8 +64,7 @@ def test_no_tracked_file_attaches_to_the_old_fixed_network():
     notes = ("docs/architecture/overview.md", "docs/getting-started/setup.md")
     proc = subprocess.run(["git", "grep", "-n", "mesh-network", "--", ".",
                            *(f":(exclude){n}" for n in notes), ":(exclude)AUDIT-*.md",
-                           ":(exclude)tests/unit/deploy/test_compose_project_isolation.py",
-                           ":(exclude)tests/integration/test_compose_network_isolation_live.py"],
+                           ":(exclude)tests/unit/deploy/test_compose_project_isolation.py"],
                           cwd=str(REPO), capture_output=True, text=True)
     assert proc.returncode in (0, 1), f"the search itself failed: {proc.stderr[:200]}"
     assert proc.stdout.strip() == "", (

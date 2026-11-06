@@ -135,6 +135,12 @@ def test_off_is_byte_for_byte_and_never_consults_the_model(tmp_path, monkeypatch
             "operations": [_kept("sew_faces", "open_shell", "eb")],
             "targets": out["repair_attempt"]["targets"], "refusals": [],
             "defects_remaining": [],
+            # EVERYTHING THE LOOP MEASURED, less what the record states as a field of its own
+            # (repair_attempt._forwarded). Named here rather than copied from `out`, because the
+            # receipt reads its figures out of this dict and a key lost on the way through it is
+            # exactly how the declared-change fix came to be dead code in production.
+            "measurements": {"planner": "rules-v1",
+                             "operations_attempted": 1, "operations_kept": 1},
             "summary": "Repaired within the conservative caps."},
     }
     assert out == expected
@@ -265,3 +271,14 @@ def test_a_replay_cannot_steal_an_llm_operations_row():
     out = directive_outcomes([replay, llm], [ran], [])
     assert out[0]["outcome"] == "not_reached"
     assert (out[1]["directive_id"], out[1]["outcome"]) == ("llm:0", "kept")
+
+
+# The repair nodes publish the run's Repair check step through the ownership-checked port. This
+# suite exercises node contracts, not Redis or PostgreSQL, so the port is stood in for; ownership
+# has its own suites.
+@pytest.fixture(autouse=True)
+def _execution_publisher(monkeypatch):
+    from tests.execution_publisher_double import install
+
+    import meshpipeline.application.execution_publisher as _ep
+    return install(monkeypatch, _ep)

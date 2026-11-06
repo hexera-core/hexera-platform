@@ -136,12 +136,21 @@ def install_adapters() -> None:
     training_export.set_export_enqueuer(_enqueue_training_export)
     geometry_check.set_scout_enqueuer(_enqueue_geometry_scout)
     geometry_check.set_naming_enqueuer(_enqueue_geometry_naming)
+    # where a waiting check stands in its queue, for the console's line ("queued behind 2 other checks")
+    from meshpipeline.adapters.pipeline_execution.geometry_running import queue_state as _geometry_queue_state
+    geometry_check.set_queue_reader(_geometry_queue_state)
     mesh_execution.set_mesh_executor(build_mesh_executor())
     # BIG RESULTS STAY IN THE EXCHANGE BUCKET (RUN-7): delivery streams them from there. Only a
     # remote run keeps a file, so a local stack never calls these.
     from meshpipeline.adapters.mesh_execution.gcs_exchange import kept_deleter, kept_reader
     from meshpipeline.contracts import kept_objects
     kept_objects.set_kept_objects(kept_reader, kept_deleter)
+    # THE MESH ARRIVING: a running mesher may leave a boundary surface of the mesh-so-far beside
+    # its result, and the API serves those bytes rather than handing the browser a bucket URL.
+    # Read-only, one key at a time (contracts/mesh_partial).
+    from meshpipeline.adapters.mesh_execution.gcs_exchange import download_exchange_bytes
+    from meshpipeline.contracts import mesh_partial
+    mesh_partial.set_partial_reader(download_exchange_bytes)
     # THE PRE-FLIGHT: the written case is held to the approved patches before any mesher starts,
     # so a name the case does not carry costs seconds and an internal error naming it - never a
     # whole run that ends as "quality".
