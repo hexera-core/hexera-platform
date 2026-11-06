@@ -34,6 +34,18 @@ def test_the_shape_and_the_flow_say_what_the_part_is():
     assert shape_kind("", [1, 1, 1]) is None and shape_kind("external", [0, 0, 0]) is None
 
 
+def test_a_car_is_car_like_before_the_ground_is_known_and_a_wing_stays_flat():
+    # the Camaro on the console (5 Nov): the unit question came before the check had put it on
+    # the ground, and 4836 x 2036 x 1408 mm read as "a thin flat body like a wing or aircraft"
+    assert shape_kind("external", [4836, 2036, 1408]) is GROUND_VEHICLE
+    assert shape_kind("external", [4.7, 2.05, 1.4], up_axis="+z") is GROUND_VEHICLE
+    # a wing of the same plan-form is far thinner: still flat, never a car
+    assert shape_kind("external", [10.0, 2.0, 0.24]) is FLAT_LIFTING
+    assert shape_kind("external", [62.0, 58.0, 11.0]) is FLAT_LIFTING          # an airliner, span ~ length
+    # on the ground a low car still counts, as before
+    assert shape_kind("external", [4.0, 1.8, 0.6], grounded=True) is GROUND_VEHICLE
+
+
 def test_a_4_7_unit_car_is_read_as_4_7_metres_and_said_so():
     r = infer_unit(4.7, shape=GROUND_VEHICLE)
     assert r.unit is M and r.confidence == "high"

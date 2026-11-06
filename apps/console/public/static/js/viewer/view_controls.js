@@ -46,6 +46,28 @@ export const isUpAxis = (a) => Object.prototype.hasOwnProperty.call(TURN, a);
 /** The world vector that points up the screen for an axis choice. */
 export function upVector(axis) { return (TURN[axis] || TURN["+z"])([0, 0, 1]); }
 
+/* THE SET VIEWS, each given for +Z up as where the camera sits from the part's centre and which
+   way is up on the screen; they turn with the chosen up axis like everything else. Front looks
+   along +Y (the camera on the -Y side), Side looks along -X, Top looks straight down with +Y up
+   the screen, and Corner is the front-quarter view every viewer opens with. */
+export const VIEW_PRESETS = {
+  front: { label: "Front", from: [0, -1, 0], up: [0, 0, 1] },
+  top: { label: "Top", from: [0, 0, 1], up: [0, 1, 0] },
+  side: { label: "Side", from: [1, 0, 0], up: [0, 0, 1] },
+  corner: { label: "Corner (3D)", from: [1, -1, 0.7], up: [0, 0, 1] },
+};
+/** Turn the camera to a set view for an up axis, keeping the focal point and the distance. The
+ *  caller re-frames afterwards. */
+export function presetView(cam, axis, key) {
+  const v = VIEW_PRESETS[key] || VIEW_PRESETS.corner, t = TURN[axis] || TURN["+z"];
+  const d = t(v.from), u = t(v.up);
+  const f = cam.getFocalPoint(), p = cam.getPosition();
+  const dist = Math.hypot(p[0] - f[0], p[1] - f[1], p[2] - f[2]) || 1;
+  const L = Math.hypot(d[0], d[1], d[2]) || 1;
+  cam.setPosition(f[0] + d[0] / L * dist, f[1] + d[1] / L * dist, f[2] + d[2] / L * dist);
+  cam.setViewUp(u[0], u[1], u[2]);
+}
+
 /** Look along `dir` - given for +Z up - turned for `axis` up, keeping the focal point and the
  *  distance. The caller re-frames afterwards. */
 export function orient(cam, axis, dir) {
@@ -66,6 +88,24 @@ export function savedUp(scope, id) {
 }
 export function saveUp(scope, id, axis) {
   try { window.localStorage.setItem(key(scope, id), axis); } catch { /* not remembered, still applied */ }
+}
+
+/* ONE CHOICE PER CONVERSATION, NOT ONE PER RUN. The geometry check saved the way up against its
+   session; the delivered-mesh viewer saved it against the job. So a user who stood the CAD part
+   +y up got the mesh of that same file back +z up, and setting it again on the mesh did not
+   reach the part. The session is the right scope: it is the one thing the part and every mesh cut
+   from it share.
+   `upScope` answers with the scope a caller should read and write, and migrates a choice saved
+   under the old job key into the session once, so nobody loses a preference to this change. The
+   old key is left where it is - a run opened by link knows no conversation and still has only
+   its job to go on, and that is the scope it gets. */
+export function upScope(job, sessionId) {
+  if (!sessionId) return { scope: "job", id: job };
+  if (job && !savedUp("session", sessionId)) {
+    const fromJob = savedUp("job", job);
+    if (fromJob) saveUp("session", sessionId, fromJob);
+  }
+  return { scope: "session", id: sessionId };
 }
 
 /** The "Up" selector's markup: a label and a small select. */

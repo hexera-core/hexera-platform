@@ -157,6 +157,11 @@ class DeliveredMesh:
     cells: str            # one of CELL_KINDS - what fills the volume
     walls: str            # one of WALL_FITS - how the cells meet the body
     prism_layers: bool    # can deliver the near-wall prism layers a brief asks for, reliably
+    #: THE WORD A USER HEARS FOR ONE OF THEM, on the live line and nowhere else ("1.22M of about
+    #: 1.9M cells"). Declared, never inferred from `cells`: a polyMesh and a VTK volume mesh both
+    #: count CELLS whatever shape fills them, while an FEA deck counts ELEMENTS - and "cells" in
+    #: front of a structural engineer reading a tetrahedral deck is simply the wrong noun.
+    counted_as: str = "cells"
     #: builds the refined wake behind an external body ON ITS OWN, from the plan (graded boxes
     #: along the declared flow - engines/wake_region.py), not only when a planner happens to
     #: author one. An engine without it does not deliver what an external-flow plan on an engine
@@ -1088,6 +1093,16 @@ class EngineSpec:
     # vocabulary (cfMesh reads SIZES, snappy reads LEVELS/bands). Keeps measure_scales
     # engine-agnostic: it measures the body, the ENGINE phrases the recommendation.
     _load_recommend: Callable[[], Callable | None] = lambda: None
+    # THE PLANNED CELL COUNT of a configured case: reads the engine's own estimate out of what its
+    # configure_mesh returned (an int), or None when it planned none. The AI plan is compared with
+    # the rules plan on it (engines/plan_guard.py, AIG-2). None -> no estimate, nothing compared.
+    _load_planned_cells: Callable[[], Callable | None] = lambda: None
+    # THE SAME ESTIMATE, READ BACK OUT OF THE CASE'S OWN WORKSPACE (workspace) -> int | None. The
+    # live line is installed where the configure_mesh result is long gone (the run is dispatched
+    # from the workspace alone), so an engine that writes its plan beside the case declares the
+    # reader for it here. None -> no estimate on record, and the line says only what it has
+    # counted so far. A courtesy: never consulted by anything that decides a mesh.
+    _load_planned_cells_on_record: Callable[[], Callable | None] = lambda: None
     # REVIEW RUBRIC - the engine's MESH-CLASS review axes (ReviewAxis tuple): what THIS
     # mesh class can fail at, phrased as interpretation-needing concerns (not thresholds
     # - those are criteria.py). The reviewer runtime unions these with the user-declared
@@ -1126,6 +1141,45 @@ class EngineSpec:
     def validate_authoring(self, strategy: dict) -> list:
         _v = self._load_authoring_validate()
         return list(_v(strategy)) if _v else []
+
+    def planned_cells(self, configured: dict) -> int | None:
+        """The cells the case configure_mesh just wrote plans to make (the engine's own estimate),
+        or None when it has none or it does not read as a cell count."""
+        _p = self._load_planned_cells()
+        if not _p:
+            return None
+        try:
+            v = _p(configured)
+        except Exception:  # noqa: BLE001 - an estimate that cannot be read is no estimate
+            return None
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v <= 0                 or v == float("inf"):
+            return None
+        return int(v)
+
+    def planned_cells_on_record(self, workspace) -> int | None:
+        """The same estimate, read back out of the case written in `workspace` (the record the
+        engine itself wrote beside it): None when this engine records none, when the case carries
+        none, or when what it carries does not read as a count. Never raises - it feeds the live
+        line only (contracts/mesh_progress), which is a courtesy."""
+        _p = self._load_planned_cells_on_record()
+        if not _p:
+            return None
+        try:
+            v = _p(workspace)
+        except Exception:  # noqa: BLE001 - an estimate that cannot be read is no estimate
+            return None
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v <= 0 \
+                or v == float("inf"):
+            return None
+        return int(v)
+
+    @property
+    def counted_as(self) -> str:
+        """The word for one of the things this engine makes, for the live line: the engine's own
+        declaration (DeliveredMesh.counted_as). "" when it declares no delivered mesh - a line
+        with no noun rather than a guessed one."""
+        dm = self.delivered_mesh
+        return str(getattr(dm, "counted_as", "") or "") if dm is not None else ""
 
     def recommend_authoring(self, analysis: dict, *, fidelity: str = "") -> dict:
         from meshpipeline.pipeline.enums import authoring_tier

@@ -12,7 +12,7 @@ import tarfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import meshpipeline.settings.providers as provcfg
 from meshpipeline.adapters.mesh_execution.exchange_coordinates import (
@@ -177,6 +177,9 @@ def _relay_progress(bucket, progress_key: str, seen: dict) -> bool:
 #: never heard from (booting, or a runner that writes no beacon) is waited for to the deadline, as before.
 WAIT_STALL_S = 900 + 300
 
+#: How often a quiet remote stage is re-said as "Still ... · N min" on the run's live line.
+BEAT_S = 120
+
 
 def _poll_gcs_json(bucket, key: str, deadline_s: float, progress_key: str | None = None,
                    stall_s: float = WAIT_STALL_S, start_s: float | None = None,
@@ -188,6 +191,12 @@ def _poll_gcs_json(bucket, key: str, deadline_s: float, progress_key: str | None
     start = time.time()
     seen: dict = {}
     heard_at: float | None = None
+    beat_at = start
+    from meshpipeline.contracts import mesh_progress
+    if progress_key:
+        # until the remote's beacon speaks (a VM boots and pulls its image first), the user is told
+        # what is happening now, not left on the last stage the worker reached
+        mesh_progress.report({"key": "starting", "label": "getting the mesher ready"})
     while True:
         if blob.exists():
             return json.loads(blob.download_as_bytes())
@@ -205,6 +214,10 @@ def _poll_gcs_json(bucket, key: str, deadline_s: float, progress_key: str | None
         if reason:
             raise _Abandoned(reason)
         now = time.time()
+        if progress_key and now - beat_at >= BEAT_S:
+            # THE HEARTBEAT: a long stage with no new word from the remote still moves the page
+            beat_at = now
+            mesh_progress.beat()
         silent = heard_at is None or now - heard_at >= stall_s
         if silent and heard_at is not None and seen.get("pulses"):
             # heard, pulsing, then nothing for stall_s: the remote is GONE (its machine went away)
@@ -331,6 +344,40 @@ def _operation_reference(response, *, engine: str) -> CloudRunOperationReference
     return reference
 
 
+#: The engines whose runner can publish a mid-run frame. snappy writes a complete polyMesh per
+#: phase when it is not run with `-overwrite`; nothing else in the roster writes anything usable
+#: mid-run (cfMesh builds in memory, gmsh's fill is one blocking call, vmtk emits whole artifacts).
+#: Used to decide whether a finished run may have left a frame behind - a question about the RUN,
+#: which a setting read at collection time cannot answer.
+_FRAME_ENGINES: Final = ("snappy",)
+
+
+def _can_publish_frames(engine: str) -> bool:
+    """Whether `engine`'s runner could have written a mid-run frame for this run."""
+    name = str(engine or "").strip().lower()
+    return any(name == e or name.startswith(e + "_") for e in _FRAME_ENGINES)
+
+
+def _snappy_ranks_pin() -> str:
+    """The rank pin this deployment states, or "" for "not pinned, size it yourself". Read at
+    dispatch like the frame switch beside it, and never allowed to fail a dispatch."""
+    try:
+        import meshpipeline.engines.determinism as dcfg
+        return str(dcfg.MESH_SNAPPY_RANKS or "")
+    except Exception:  # noqa: BLE001 - a sizing hint never stops a mesh being submitted
+        return ""
+
+
+def _snapshots_enabled() -> bool:
+    """Whether this deployment lets a running mesh publish a frame of itself. Read at dispatch, so
+    the answer is the one in force now; never allowed to fail a dispatch."""
+    try:
+        import meshpipeline.settings.mesh_snapshot as mscfg
+        return bool(mscfg.MESH_PROGRESSIVE_SNAPSHOT_ENABLED)
+    except Exception:  # noqa: BLE001 - a progress nicety never stops a mesh from being submitted
+        return False
+
+
 def _trigger_job(*, input_uri: str, output_uri: str, engine: str,
                  timeout: int) -> CloudRunOperationReference:
     import requests as _rq
@@ -343,6 +390,21 @@ def _trigger_job(*, input_uri: str, output_uri: str, engine: str,
         # the exchange contract this worker speaks: a mesh job on another answers "platform
         # updating" instead of misreading the workspace (contracts/mesh_execution)
         {"name": MESH_CONTRACT_ENV, "value": str(MESH_EXCHANGE_VERSION)},
+        # WHETHER THIS RUN MAY PUBLISH A MESH WHILE IT BUILDS. The job's own definition carries no
+        # env at all, by design, so a setting the mesher reads can only arrive as a per-execution
+        # override - and without this line the snapshot path is unreachable in every deployment,
+        # however the environment is configured. The WORKER decides and the job obeys: the flag is
+        # read here, where the dispatch is, rather than in the mesh image, so turning it off takes
+        # effect on the next run instead of the next mesh deploy.
+        {"name": "MESH_PROGRESSIVE_SNAPSHOT_ENABLED",
+         "value": "true" if _snapshots_enabled() else "false"},
+        # THE RANK PIN TRAVELS WITH IT, and must, because the two are one decision. The frame is
+        # only ever read from a SERIAL snappy run, and `engines/determinism.snappy_ranks` - which
+        # answers that question - runs in the mesh container, reading this name. Left behind, the
+        # worker could hold both settings and the mesher would still take its 8 ranks and skip
+        # every frame, which is the failure the flag's own documentation warns about. Blank is
+        # sent as blank: it means "not pinned", and the mesher's own sizing decides.
+        {"name": "MESH_SNAPPY_RANKS", "value": _snappy_ranks_pin()},
     ]}]}}
     try:
         resp = _rq.post(f"https://run.googleapis.com/v2/{name}:run",
@@ -689,6 +751,8 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         ws = Path(workspace)
         bucket = storage_client().bucket(bucket_name)
         if submit:
+            from meshpipeline.contracts import mesh_progress
+            mesh_progress.report({"key": "uploading", "label": "sending the part to the mesh machine"})
             in_blob = bucket.blob(in_key, chunk_size=_UPLOAD_CHUNK_BYTES)
             in_blob.upload_from_string(_tar_dir(ws), content_type="application/gzip",
                                        timeout=_UPLOAD_TIMEOUT_S)
@@ -870,9 +934,40 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
                 logger.warning("the job was handed on while its result was collected: its exchange "
                                "is left for the job's next owner")
         if bucket is not None and collection_complete and not handed_on:
-            # EXACTLY the three keys this operation owns, each deleted by name. Never a prefix
-            # delete: the coordinates are derived per operation key, and a prefix sweep here could
-            # take another job's or another generation's exchange with it.
+            # EXACTLY the keys this operation owns, each deleted by name. Never a prefix delete:
+            # the coordinates are derived per operation key, and a prefix sweep here could take
+            # another job's or another generation's exchange with it.
+            #
+            # The mid-run frames go with them, ON A DEPLOYMENT THAT PUBLISHES THEM. The bucket's
+            # lifecycle rule would reclaim them in two days, but that rule is only applied to a
+            # bucket this tooling CREATED: a reused exchange bucket has no lifecycle at all, and a
+            # frame per run would accumulate there for ever. They are also worthless the moment
+            # the real mesh is collected.
+            #
+            # GATED ON THE RUN, NOT ON THIS PROCESS'S CONFIG. It used to read the switch here,
+            # which is wrong in a way that only shows up later: the worker that COLLECTS a result
+            # need not be the one that dispatched it, and a flag turned off in between - or a
+            # replacement worker on an older revision - would skip deleting a frame an earlier
+            # worker had already published. The object then outlives the run, and on a supplied
+            # exchange bucket (no lifecycle rule) it outlives everything.
+            #
+            # The engine is the stable property: only the snappy family can publish a frame at
+            # all, it is fixed for the life of the run, and it travels with the result rather than
+            # with whoever picks it up. So every snappy run pays one tolerated NotFound delete and
+            # no other engine pays anything.
+            if _can_publish_frames(engine):
+                from google.api_core.exceptions import NotFound as _NotFound
+
+                from meshpipeline.artifact_keys import PARTIAL_STAGES, partial_key_beside
+                for _k in (partial_key_beside(out_key, _s) for _s in PARTIAL_STAGES):
+                    try:
+                        bucket.blob(_k).delete()
+                    except _NotFound:
+                        pass
+                    except Exception as _exc:  # noqa: BLE001 - best-effort; the run succeeded
+                        logger.warning("exchange cleanup failed for a mid-run frame of %s (%s) - "
+                                       "the object remains and the bucket lifecycle reclaims it",
+                                       engine, type(_exc).__name__)
             for _k in (in_key, out_key, res_key):
                 try:
                     bucket.blob(_k).delete()

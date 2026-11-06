@@ -13,11 +13,12 @@ from dataclasses import dataclass, field, replace
 import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair.contracts import DefectSeverity
 
-# The ONE list of sources whose directive may answer a held defect, shared with DirectedPlanner so
+# The ONE list of sources whose directive may answer a held defect, shared with RepairPlanner so
 # the planner's permission and the session's exemption cannot drift apart.
-from meshpipeline.cad.repair.directives import HELD_ANSWERING_SOURCES
+from meshpipeline.cad.repair.directives import HELD_ANSWERING_SOURCES, RepairPlanner
 from meshpipeline.cad.repair.localize import analyzer_only
-from meshpipeline.cad.repair.plan import RulesPlanner, RunHistory
+from meshpipeline.cad.repair.operations import FixSmallFaces
+from meshpipeline.cad.repair.plan import RunHistory
 from meshpipeline.cad.repair.session import HEAL_OP, OpVerdict, RepairSession
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,21 @@ def _abandoned(session: RepairSession) -> bool:
     return any(d.fingerprint in tried for d in _judged(session))
 
 
+def _analyzer_heal(candidate, session: RepairSession) -> bool:
+    """Is this the one optional operation an error-led run may still attempt?"""
+    return candidate.op.name == HEAL_OP and any(
+        analyzer_only(d) and d.fingerprint == candidate.defect_fingerprint
+        for d in session.defects()
+    )
+
+
+def _enabled_sliver_sweep(candidate, session: RepairSession) -> bool:
+    """Allow the deployment-controlled sweep once after an error-led repair."""
+    return (bool(rcfg.CAD_REPAIR_FIX_SMALL_FACES)
+            and candidate.op.name == FixSmallFaces.name
+            and not any(verdict.op == FixSmallFaces.name for verdict in session.log))
+
+
 def _terminal(session: RepairSession, fallback: str) -> str:
     """What to call a finished run. ONE place, so no break path can disagree with another.
 
@@ -152,16 +168,13 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
     `session` and `clock` are injectable so the driver's budget arithmetic can be tested without
     a kernel and without waiting.
 
-    WHY THE PLANNER DECIDES WHETHER THERE IS WORK, rather than a severity test on the defect list.
-    An earlier version stopped as `resolved` the moment no ERROR-severity defect remained - which
-    made `fix_small_edges` unreachable on the very fixture that proves it works, because a sliver
-    edge is reported as a WARNING. Yet a sliver is exactly what breaks a mesher: it forces cells
-    orders of magnitude smaller than the part. So the loop runs while the planner still has
-    something it is willing to try, and severity decides only what the STOP IS CALLED when the
-    planner runs dry: `resolved` if nothing at error severity is left, `no_candidate` if something
-    is. A sound part still produces zero verdicts, because the planner proposes nothing for it.
+    WHY THE PLANNER DECIDES WHETHER THERE IS WORK, rather than a blanket severity test on the
+    defect list. A warning-only run must still reach operations such as `fix_small_edges`; a sound
+    part must produce zero verdicts. An error-led run is narrower: once its errors are cleared, its
+    pre-existing warnings remain report evidence instead of expanding the mutation scope after the
+    required repair already succeeded.
     """
-    chosen = planner if planner is not None else RulesPlanner()
+    chosen = planner if planner is not None else RepairPlanner(())
     limits = budget if budget is not None else LoopBudget.from_settings()
     # THE CLOCK STARTS BEFORE THE SESSION EXISTS, so the face scan's slice of the budget is a
     # slice of what this run actually has left - including the first scan - and not of a fresh
@@ -204,6 +217,7 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
                          complete_scan=False, planner_label=getattr(chosen, "label", ""),
                          original=original, final=original)
 
+    entered_with_errors = _errors_remain(work)
     consecutive_misses = 0
     while True:
         if len(work.log) >= limits.max_ops:
@@ -219,10 +233,15 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
         if candidate is None:
             stopped = _terminal(work, NO_CANDIDATE)
             break
+        if (entered_with_errors and not _errors_remain(work) and not _abandoned(work)
+                and not _analyzer_heal(candidate, work)
+                and not _enabled_sliver_sweep(candidate, work)):
+            stopped = RESOLVED
+            break
 
         # WHAT THIS PROPOSAL IS ALLOWED TO ANSWER. A directive from the engineer being asked (or a
         # replay of an operation this upload already kept) may aim at a held defect - that is
-        # DirectedPlanner's HELD_ANSWERING_SOURCES - so the session must not then roll the result
+        # RepairPlanner's HELD_ANSWERING_SOURCES - so the session must not then roll the result
         # back for touching the very entity the answer was about. The exemption is only what this
         # directive aims at, never every hold on the part.
         answered_held = (
@@ -272,8 +291,8 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
             continue
 
         # THE FEEDBACK. Without this the same failing pair is proposed until the budget runs out,
-        # and nothing in the run has learned anything. Consumed only within this run: the
-        # model-directed portion plans ahead of the loop and never sees this ledger fill.
+        # and nothing in the run has learned anything. Consumed only within this run: model
+        # guidance is prepared ahead of the loop and never sees this ledger fill.
         history.mark_ineffective(candidate.defect_fingerprint, candidate.op.name)
         consecutive_misses += 1
         if consecutive_misses >= limits.stall_limit:

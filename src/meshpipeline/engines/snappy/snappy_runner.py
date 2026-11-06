@@ -130,10 +130,28 @@ def balanced_quality() -> tuple[str, int, int, float, str]:
 
     So the bars are split: the snap keeps the tet check (1e-13, the "strict" value), and the layer
     stage uses the relaxed set from its first iteration (nRelaxedIter 0) with the tet check off
-    there only. maxNonOrtho stays 65 in both, the bar the reviewer judges. Measured (production
-    image, product path): Camaro valid on the first pass, 2.39 of 3 layers (was invalid three
-    times); F1 wing 2.53 (2.52 with the old bars), skewed faces 34 -> 27."""
-    return "1e-13", 65, 0, 0.5, " minTetQuality -1e30;"
+    there only. Measured (production image, product path): Camaro valid on the first pass, 2.39 of
+    3 layers (was invalid three times); F1 wing 2.53 (2.52 with the old bars), skewed faces 34 -> 27.
+
+    THE LAYER STAGE'S NON-ORTHOGONALITY IS THE LIMIT THE MESH IS HELD TO (LAYER_MAX_NON_ORTHO). The
+    snap keeps 65; the layer stage used 65 too, stricter than the 70 the verdict holds a snappy mesh
+    to (engines/verdict_limits, VER-2). The Camaro on shared dev (2 Nov): 88% of its layer cells were
+    in place after the first layer iteration, and the 65 bar took back 4,726 faces' worth at the
+    car's concave corners - wheel rims, the grille - ending at 79.7% coverage, under the 80% limit,
+    on a mesh whose cells passed every other limit. The layer bar is checked on the layer cells as
+    they are added, and the finished mesh reads a little past it (65 delivered 66.35 on the product
+    path; 70 delivered 70.11, past the limit) - so the bar sits LAYER_NON_ORTHO_MARGIN under the
+    limit. Layer-only replays on the job's snapped mesh: 65 -> 79.72%, 67 -> 80.96%, 68 -> 81.48%,
+    70 -> 82.29% of the layer cells."""
+    return "1e-13", LAYER_MAX_NON_ORTHO, 0, 0.5, " minTetQuality -1e30;"
+
+
+#: The "balanced" layer stage's maxNonOrtho: the production limit the verdict holds a snappy mesh to
+#: (engines/verdict_limits PRODUCTION_LIMITS, max_non_ortho <= 70) less LAYER_NON_ORTHO_MARGIN - not
+#: the snap's stricter 65, which only throws away layers the delivery would have kept, and not the
+#: limit itself, which the finished mesh reads just past.
+LAYER_NON_ORTHO_MARGIN = 2
+LAYER_MAX_NON_ORTHO = 70 - LAYER_NON_ORTHO_MARGIN
 
 
 def layer_min_vol(finest_cell_m: float, *, n_layers: int, min_thickness_rel: float) -> float:
@@ -480,8 +498,10 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
         raise ValueError(f"a ground plane lies across z, so the flow cannot travel along "
                          f"{flow_axis} as well")
     m = (strategy or {}).get("domain_margin") or {}
-    up, dn = float(m.get("up", 2.0)), float(m.get("down", 4.0))
-    side, vert = float(m.get("side", 2.0)), float(m.get("vert", 2.0))
+    from meshpipeline.engines.snappy.planner import plan_float
+    m = m if isinstance(m, dict) else {}
+    up, dn = plan_float(m, "up", 2.0), plan_float(m, "down", 4.0)
+    side, vert = plan_float(m, "side", 2.0), plan_float(m, "vert", 2.0)
     # THE RULER the margins multiply. When the approved intent carries a reference length -
     # the unit the user quoted the far-field in, and the unit the extent gate judges the
     # delivered box in - the margins are multiples of THAT, so the number in the request is
@@ -677,6 +697,20 @@ def castellation_budget(budget: int, final: float | None, *, margin: float,
     return max(least, int(float(budget) * float(budget) / float(final)))
 
 
+def planned_cells_on_record(workspace) -> int | None:
+    """EngineSpec.planned_cells_on_record for snappyHexMesh: the cells the case written in
+    `workspace` was planned at, from the record render_snappy_case wrote beside it
+    (size_brake.PLAN_CELLS_FILE, `plan_cells` - the finished mesh's cells, layers and the gap
+    boxes included). None when the case carries no record: nothing is estimated from the dicts."""
+    from meshpipeline.engines.size_brake import PLAN_CELLS_FILE
+    try:
+        rec = json.loads((Path(workspace) / PLAN_CELLS_FILE).read_text())
+    except (OSError, ValueError, TypeError):
+        return None
+    v = rec.get("plan_cells") if isinstance(rec, dict) else None
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
+
+
 def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analysis: dict,
                        recommendation: dict, domain_min, domain_max,
                        strategy: dict | None = None, dimensionality: str = "3D",
@@ -739,10 +773,12 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # Each level is shifted up by `deficit` to undo the clamp's coarsening (see above).
     floor = min(_HARD_MAX_LEVEL, int(rec["surface_level"][0]) + deficit)
     ceil_ = min(_HARD_MAX_LEVEL, max(floor, int(rec.get("afford_level", floor)) + deficit))
+    from meshpipeline.engines.snappy.planner import plan_float, plan_int
     so = strategy.get("surface_level")
-    lvl = floor if not so else max(floor, min(int(so[-1]) + deficit, ceil_))
+    lvl = floor if not so else max(floor, min(plan_int(strategy, "surface_level", floor - deficit)
+                                              + deficit, ceil_))
     smin = smax = lvl
-    flevel = int(strategy.get("feature_level", rec["feature_level"]))
+    flevel = plan_int(strategy, "feature_level", int(rec["feature_level"]))
     flevel = min(_HARD_MAX_LEVEL, max(smax, min(flevel, int(rec["feature_level"])) + deficit))
     bands = rec["distance_bands"]
     if deficit:
@@ -825,8 +861,10 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # The thin-feature layer policy may LOCALLY override the count per class region
     # (layer_counts) and relax the termination knobs (layer_overrides); with neither given the
     # authored dict is byte-identical to the historical one - pinned by regression test.
-    n_layers = max(0, int(strategy.get("n_layers", 3)))
-    first_rel = float(strategy.get("first_layer_rel", 0.35))
+    n_layers = max(0, plan_int(strategy, "n_layers", 3))
+    first_rel = plan_float(strategy, "first_layer_rel", 0.35)
+    if first_rel <= 0.0:
+        first_rel = 0.35
     layer_counts = {str(k): max(0, int(v)) for k, v in (layer_counts or {}).items()}
 
     def _n_for(patch: str) -> int:
@@ -906,6 +944,7 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # and the run says so. No field (one body, or none read) authors the historical dict.
     _gap = None
     _gap_geom = _gap_refine = ""
+    _planned_cells = max_cells          # the plan's budget before the gap boxes price themselves in
     if gap_field is not None:
         _gap, max_cells = _plan_body_gaps(
             gap_field, wall_cell=base_actual / (2 ** smax), budget=max_cells,
@@ -937,8 +976,20 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # the PLAN's own budget - the planner's, kept through every re-plan of the pass (the driver
     # carries it as _plan_cells): the brake measures every pass against what was asked for, never
     # against a budget a previous trip already cut
-    (ws / PLAN_CELLS_FILE).write_text(json.dumps(
-        {"plan_cells": int(strategy.get("_plan_cells") or max_cells)}))
+    #
+    # ... PLUS WHAT THE GAP BOXES WERE PRICED AT (RUN-8). The boxes above raise snappy's own ceiling
+    # to pay for 13 cells across every gap between the body's parts - cells the plan asks for on
+    # purpose. Measured against the planner's budget alone, the brake read that paid-for mesh as a
+    # runaway: a slotted wing (JAXA JSM narrow gap: a 2M plan raised to 6.44M for its gaps) was
+    # stopped at 4.97M castellated cells, "2.5 times its budget", though it meshed production-grade
+    # at 6.24M without the brake - and no re-plan could shrink it (the boxes price themselves back
+    # in), so no mesh came out at all. A plan the boxes did not raise keeps exactly its old record.
+    _plan_rec: dict = {"plan_cells": int(strategy.get("_plan_cells") or _planned_cells)}
+    if max_cells > _planned_cells:
+        _gap_cells = int(max_cells - _planned_cells)
+        _plan_rec = {"plan_cells": _plan_rec["plan_cells"] + _gap_cells,
+                     "planned_cells": _plan_rec["plan_cells"], "gap_cells": _gap_cells}
+    (ws / PLAN_CELLS_FILE).write_text(json.dumps(_plan_rec))
     if cast_cells != max_cells and _final:
         logger.info("render_snappy_case: the finished mesh is estimated at %.3g cells with its layers, "
                     "%.1f times the %d budget - castellation budget %d", _final, _final / max_cells,

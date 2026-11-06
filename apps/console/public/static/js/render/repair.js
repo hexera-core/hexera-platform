@@ -49,11 +49,11 @@ export function openRepairPanel(job, anchorEl, data) {
   // and the outcome message above has already explained why.
   const repaired = files.some((f) => f.type === "repaired_cad");
   const headline = repaired
-    ? "Your CAD was repaired"
-    : "What the inspection found in your CAD";
+    ? "CAD Repair System repaired your CAD"
+    : "What CAD Repair System found in your CAD";
   const line = repaired
-    ? "We fixed the geometry in your upload and this is the result. Your original file is "
-      + "unchanged - the repair is a new file, and the report says what was done to it."
+    ? "Your original file is unchanged - the repair is a new file, and the report says what "
+      + "was done to it."
     : "The inspection could not repair this automatically. The report says what it found.";
   // The panel borrows the result panel's own sections rather than inventing a look: a head with
   // the title, the explanation in the `v-why` band that wraps, and the downloads as a `v-dl`

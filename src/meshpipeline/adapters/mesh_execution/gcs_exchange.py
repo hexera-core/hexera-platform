@@ -55,6 +55,47 @@ def upload_progress(output_uri: str, stage: dict) -> None:
         json.dumps(stage), content_type="application/json", timeout=30)
 
 
+#: A partial surface is megabytes, not a beacon's few hundred bytes, so it gets an upload deadline
+#: of its own rather than the beacon's 30 seconds. Still generous: an upload that cannot finish in
+#: two minutes is one the user's frame has already outlived.
+PARTIAL_UPLOAD_TIMEOUT_S = 120
+
+
+def upload_partial(output_uri: str, stage: str, payload: dict) -> str:
+    """A boundary surface of the mesh-so-far, beside where the result will land. Returns its key.
+
+    Its own object, NOT part of the beacon (artifact_keys.partial_key_beside says why). The caller
+    puts only the key on the beacon, and only after this has returned.
+    """
+    from meshpipeline.artifact_keys import partial_key_beside
+    out_bucket, out_key = split_gs(output_uri)
+    key = partial_key_beside(out_key, stage)
+    storage_client().bucket(out_bucket).blob(key).upload_from_string(
+        json.dumps(payload), content_type="application/json",
+        timeout=PARTIAL_UPLOAD_TIMEOUT_S)
+    return key
+
+
+def download_exchange_bytes(object_key: str, *, bucket: str = "") -> bytes | None:
+    """The bytes of one object in the mesh exchange, or None when it is not there.
+
+    The ONE read of the exchange from outside the mesher: the API serves a mid-run partial through
+    it, so the browser is never handed a signed URL and the bucket needs no CORS and no public
+    access. Nothing else about the exchange is readable this way - the caller supplies the key, and
+    the keys are derived (artifact_keys), never taken from a request.
+    """
+    from google.api_core.exceptions import NotFound
+
+    import meshpipeline.settings.providers as provcfg
+    name = (bucket or provcfg.GCP_MESH_BUCKET or "").strip()
+    if not name:
+        return None
+    try:
+        return storage_client().bucket(name).blob(object_key).download_as_bytes(timeout=60)
+    except NotFound:
+        return None
+
+
 def kept_writer(bucket: str, key: str):
     """A binary writer for one kept file's object (engines/bucket_files.keep): a resumable upload
     in chunks, each with its own deadline, so a file of tens of GB is never one request."""

@@ -55,7 +55,7 @@ def test_every_recommendation_declares_itself_as_shadow_and_names_its_advisor():
     # a reader acting on this is contradicting the payload; and a stored recommendation has to say
     # which advisor produced it or the corpus cannot tell a baseline from a model
     assert advice["shadow"] is True
-    assert advice["advisor"] == "rules-v1"
+    assert advice["advisor"] == "repair-v1"
 
 
 # WHEN IT ADVISES
@@ -239,6 +239,22 @@ def test_a_judgement_defect_still_wins_and_still_carries_its_targets():
     assert advice.route == ROUTE_MANUAL_CLEANUP
     # and the person is pointed at the defect that needs the judgement, not at the easy one
     assert [t["entity"] for t in advice.targets] == ["face:4"]
+
+
+def test_a_located_wire_self_intersection_on_an_invalid_body_uses_bounded_global_repair(
+        monkeypatch):
+    import meshpipeline.settings.cad_repair as rcfg
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FIX_SMALL_FACES", True)
+    wire = _entity("self_intersection", entity="wire:4")
+    wire["kernel_status"] = "SelfIntersectingWire"
+    invalid = _entity("invalid_brep", entity="face:3")
+    sliver = _entity("small_face", entity="face:8", severity="warning")
+
+    advice = recommend(repair_status="repairable", report=_located(wire, invalid, sliver))
+
+    assert advice.route == ROUTE_CONSERVATIVE_REPAIR
+    assert advice.profile == "conservative"
 
 
 def test_a_thousand_slivers_do_not_become_a_thousand_targets():

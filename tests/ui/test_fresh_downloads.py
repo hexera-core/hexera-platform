@@ -122,7 +122,9 @@ def test_the_viewer_lists_each_deliverable_with_its_id():
     stream = pathlib.Path("ui/js/realtime/stream.js").read_text()
     assert "id: a.id" in stream, "terminalResult drops the artifact id the click needs"
     viewer = pathlib.Path("ui/js/viewer/viewer.js").read_text()
-    assert "downloadAttrs(job,f)" in viewer and "bindFreshDownloads(box)" in viewer
+    # the rows are drawn by the result screen (revamp 5/5); the viewer binds the fresh links on them
+    rows = pathlib.Path("ui/js/viewer/result_panel.js").read_text()
+    assert "downloadAttrs(job, f)" in rows and "downloadsHtml(job," in viewer and "bindFreshDownloads(box)" in viewer
 
 
 def test_a_refusal_page_in_the_frame_is_noticed_and_a_blank_frame_is_not(live):

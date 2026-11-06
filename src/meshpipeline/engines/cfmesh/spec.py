@@ -63,6 +63,16 @@ def _recommend():
     return recommend
 
 
+def _planned_cells():
+    from meshpipeline.engines.cfmesh.cfmesh_runner import planned_cells_of
+    return planned_cells_of
+
+
+def _planned_cells_on_record():
+    from meshpipeline.engines.cfmesh.cfmesh_runner import planned_cells_on_record
+    return planned_cells_on_record
+
+
 def _planned_timeout(workspace):
     from meshpipeline.engines.cfmesh.cfmesh_runner import planned_run_cap
     return planned_run_cap(workspace)
@@ -266,6 +276,8 @@ SPEC = EngineSpec(
         _load_authoring_tool=_authoring_tool,
         _load_authoring_validate=_authoring_validate,
         _load_recommend=_recommend,
+        _load_planned_cells=_planned_cells,
+        _load_planned_cells_on_record=_planned_cells_on_record,
         _load_review_rubric=_review_rubric,
         _load_criteria=_criteria,
         _load_workspace_scaffold=_workspace_scaffold,

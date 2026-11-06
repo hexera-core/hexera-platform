@@ -24,10 +24,9 @@ from meshpipeline.cad.repair.operations import MAX_SMALL_FACE_REMOVALS as _MAX_S
 # The roadmap's posture is that AI classifies, plans and explains while deterministic tools own
 # the geometry. Before a model can be allowed to recommend anything, there has to be something to
 # measure it against and a corpus to learn from, and this repository has neither yet: no operator
-# has made a recorded repair decision. So this is the DETERMINISTIC PORTION - rules over the
-# defect taxonomy the inspection already produces. It is the reference the model-directed portion
-# is measured against on operator agreement, and the operator decisions it is shown beside are the
-# labels that training will use.
+# has made a recorded repair decision. These rules over the inspection's defect taxonomy are the
+# system's fallback and benchmark reference. Operator decisions shown beside them become the labels
+# that training will use.
 #
 # It is also the shape the model will have to fit: a route, a confidence, the evidence behind it,
 # and the right to abstain. An honest "I do not know" is worth more than a confident guess about
@@ -174,10 +173,9 @@ class Recommendation:
             "abstain_reason": self.abstain_reason,
             "profile": self.profile,
             "targets": [dict(t) for t in self.targets],
-            # WHO IS ADVISING, stated in the payload itself. When a model takes this over, a
-            # recorded recommendation has to say which advisor produced it or the corpus cannot
-            # tell the baseline's agreement from the model's.
-            "advisor": "rules-v1",
+            # WHO IS ADVISING, stated in the payload itself. Internal fallback details do not
+            # create a second advisor: this recommendation belongs to CAD Repair System.
+            "advisor": "repair-v1",
             # SHADOW ALWAYS, for now. A reader that acts on this is contradicting the payload.
             "shadow": True,
         }
@@ -333,6 +331,28 @@ def recommend(*, repair_status: str = "", report: Mapping | None = None,
     judgement = [e for e in entities if e.get("code") in _NEEDS_JUDGEMENT]
     judgement_codes = {c for c in codes if c in _NEEDS_JUDGEMENT}
     if judgement_codes and not review:
+        intersections = [e for e in entities
+                         if e.get("code") == DefectCode.self_intersection.value]
+        located_invalidity = any(e.get("code") == DefectCode.invalid_brep.value
+                                 for e in entities)
+        wire_invalidity = (
+            judgement_codes <= {DefectCode.self_intersection.value,
+                                DefectCode.small_face.value}
+            and bool(intersections)
+            and all(e.get("kernel_status") in ("SelfIntersectingWire", "IntersectingWires")
+                    for e in intersections)
+            and located_invalidity
+            and (DefectCode.small_face.value not in judgement_codes
+                 or rcfg.CAD_REPAIR_FIX_SMALL_FACES)
+        )
+        if wire_invalidity:
+            return Recommendation(
+                route=ROUTE_CONSERVATIVE_REPAIR, confidence=0.7,
+                reasons=("the invalid topology and wire intersection are located, so the bounded "
+                         "global repair can be measured before any sliver cleanup",),
+                evidence=evidence, profile=RepairProfile.conservative.value,
+                targets=_targets(entities))
+
         # A SLIVER-ONLY FILE IS NO LONGER A PERSON'S BY DEFAULT. `small_face` sat with the
         # judgement codes because "a very small face is usually intentional - a chamfer, a logo".
         # On a labelled defect corpus that reasoning sent every Boolean sliver to manual cleanup

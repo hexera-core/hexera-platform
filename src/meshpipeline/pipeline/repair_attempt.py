@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -44,6 +45,30 @@ if TYPE_CHECKING:
 #: changes the suffix the builder stages from, so it is left for a later slice rather than
 #: half-handled here.
 _REPAIRABLE_SUFFIXES = {".step", ".stp"}
+
+#: Measurements the attempt record already states as fields of ITS OWN, so carrying them inside
+#: `measurements` as well would store one fact twice and let the two copies disagree.
+_RECORD_FIELDS = frozenset({"refusals", "operations", "resolved", "stopped_because"})
+
+
+def _forwarded(measured: Mapping) -> dict:
+    """Everything the repair loop measured, minus what the record states itself.
+
+    A DENYLIST, AND THAT IS THE POINT. This used to be a whitelist of `before`/`after`, which
+    silently dropped `declared_area_mm2` and `declared_volume_mm3` the day
+    `cad/repair/conservative.py` began recording them - so the receipt, with no declaration to
+    subtract, told customers an approved repair had broken a limit it had actually passed
+    (pipeline/repair_receipt._shape_rows). A key added to the loop's measurements now reaches the
+    receipt without a change here; one disappears only by being named above, on purpose.
+    """
+    def _copy(value):
+        if isinstance(value, Mapping):
+            return dict(value)
+        if isinstance(value, (list, tuple)):
+            return [dict(v) if isinstance(v, Mapping) else v for v in value]
+        return value
+
+    return {k: _copy(v) for k, v in measured.items() if k not in _RECORD_FIELDS}
 
 
 def _derived_source(original, repaired_path: Path):
@@ -83,9 +108,13 @@ def _derived_source(original, repaired_path: Path):
         local_path=repaired_path)
 
 
-def _declined(reason: str, *, route: str = "", detail: dict | None = None) -> dict:
-    """Nothing was changed, and the run says why. Never an error: the gate judges the original."""
-    record = {"attempted": False, "reason": reason, "route": route}
+def _declined(reason: str, *, outcome: str, route: str = "", detail: dict | None = None) -> dict:
+    """Nothing was changed, and the run says why. Never an error: the gate judges the original.
+
+    `outcome` is the same why as a closed word (no_report, off, not_autonomous, no_geometry,
+    format, triage, timeout, unavailable, refused, failed, not_promoted): the run's Repair check
+    line (pipeline/repair_words.py) is read from it, never from the reason's prose."""
+    record = {"attempted": False, "reason": reason, "outcome": outcome, "route": route}
     if detail:
         record["detail"] = detail
     return {"repair_attempt": record}
@@ -129,8 +158,8 @@ def _outcomes(state, operations, refusals, *, discarded: bool = False,
               directives=None, discarded_reason: str = "") -> list[dict]:
     """What became of each directive this run was given. Never raises; empty when review is off.
 
-    `directives` is what the kernel was handed (the state's, plus the live LLM planner's); it
-    defaults to the state's own.
+    `directives` is what the system handed its planner, including state and optional model
+    guidance; it defaults to the state's own.
     """
     if directives is None:
         directives = state.get("repair_directives") or ()
@@ -245,8 +274,8 @@ def _shadow_row(job_id: str, plan, outcome: str, *, operations=(), stopped_becau
                 resolved=None, refusals=()) -> None:
     """THE ONE SHADOW WRITER, called from every exit of the node past the pre-pass.
 
-    A shadow run's whole value is the pairing of what the model-directed portion proposed with
-    what the deterministic portion did on the same part, so it is logged once whichever way the
+    A shadow run pairs optional model guidance with CAD Repair System's executed plan on the same
+    part, so it is logged once whichever way the
     loop ended; `not_executed` says the loop never produced a verdict. A no-op when there is no
     shadow plan. Never raises.
     """
@@ -265,7 +294,22 @@ def _shadow_row(job_id: str, plan, outcome: str, *, operations=(), stopped_becau
 
 
 async def node_repair_attempt(state: PipelineState) -> dict:
-    """Repair the geometry if the evidence supports it, and hand on whichever file should be meshed."""
+    """Repair the geometry if the evidence supports it, and hand on whichever file should be meshed.
+
+    THE RUN SAYS WHAT HAPPENED. Whichever way the attempt ended, the Repair check lane the
+    inspection opened gets its one line (pipeline/repair_words.py), read from what was recorded -
+    and, where there is detail worth a record, the receipt beside it: what was kept, what was
+    undone, what was REFUSED and why (pipeline/repair_receipt.py)."""
+    from meshpipeline.pipeline import repair_receipt, repair_words
+
+    job_id = str(state.get("job_id", "unknown"))
+    out = await _attempt(state)
+    await repair_words.asay(job_id, repair_words.repair_check_words(state, out))
+    await repair_receipt.apublish(job_id, repair_receipt.repair_receipt_rows(state, out))
+    return out
+
+
+async def _attempt(state: PipelineState) -> dict:
     import asyncio
 
     from meshpipeline.cad.repair.triage import ROUTE_CONSERVATIVE_REPAIR, recommend
@@ -274,19 +318,21 @@ async def node_repair_attempt(state: PipelineState) -> dict:
     job_id = state.get("job_id", "unknown")
     report = dict(state.get("repair_report") or {})
     if not report:
-        return _declined("this run carries no inspection to act on")
+        return _declined("this run carries no inspection to act on", outcome="no_report")
     if not rcfg.CAD_REPAIR_ENABLED:
-        return _declined("CAD repair is switched off in this deployment")
+        return _declined("CAD repair is switched off in this deployment", outcome="off")
     if not rcfg.CAD_REPAIR_AUTONOMOUS:
-        return _declined("automatic repair is switched off; the report stands for an operator")
+        return _declined("automatic repair is switched off; the report stands for an operator",
+                         outcome="not_autonomous")
 
     original = _materialized(state)
     if original is None or not original.path or not Path(original.path).exists():
-        return _declined("there is no materialised geometry to repair")
+        return _declined("there is no materialised geometry to repair", outcome="no_geometry")
 
     source = Path(original.path)
     if source.suffix.lower() not in _REPAIRABLE_SUFFIXES:
-        return _declined(f"the bounded repair does not rewrite {source.suffix.lower()} files")
+        return _declined(f"the bounded repair does not rewrite {source.suffix.lower()} files",
+                         outcome="format")
 
     engine = str(state.get("engine", "") or "")
     advice = recommend(repair_status=str(state.get("repair_status", "") or ""),
@@ -295,7 +341,7 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         # Triage declined to recommend an automatic repair: abstained, or routed this to a person
         # or to the customer. Either way it is not ours to attempt.
         # A DIRECTED RE-RUN STILL ANSWERS EVERY DIRECTIVE: none was tried, so each is not_reached.
-        return {**_declined(f"triage routed this to {advice.route}", route=advice.route,
+        return {**_declined(f"triage routed this to {advice.route}", outcome="triage", route=advice.route,
                             detail={"reasons": list(advice.reasons),
                                     "abstain_reason": advice.abstain_reason}),
                 **_not_reached(state, job_id, advice.route)}
@@ -305,9 +351,9 @@ async def node_repair_attempt(state: PipelineState) -> dict:
     # same place and re-derives the repair, which is why the derived identity is deterministic.
     destination = source.with_name(f"{source.stem}-repaired{source.suffix}")
 
-    # THE LLM PLANNER, if the deployment runs one. OFF TOUCHES NOTHING. SHADOW asks and only
-    # records; LIVE hands the proposals to the kernel AFTER the engineer's and the replay's, which
-    # keep their place. The kernel judges an LLM directive exactly like any other.
+    # OPTIONAL MODEL GUIDANCE. OFF TOUCHES NOTHING. SHADOW asks and only records; LIVE adds its
+    # proposals after the engineer's and replay directives, which keep their place. All of them
+    # enter the same RepairPlanner and the kernel judges each directive exactly the same way.
     posture = _posture()
     directives = tuple(state.get("repair_directives") or ())
     shadow_plan = None
@@ -341,12 +387,13 @@ async def node_repair_attempt(state: PipelineState) -> dict:
                         "is meshed", budget_s=float(rcfg.CAD_REPAIR_TIMEOUT_S))
         _shadow_row(job_id, shadow_plan, "not_executed")
         return {**_declined(f"the repair exceeded {rcfg.CAD_REPAIR_TIMEOUT_S:.0f}s",
-                            route=advice.route), **await _triage_only(report, source),
+                            outcome="timeout", route=advice.route), **await _triage_only(report, source),
                 **_not_reached(state, job_id, advice.route, directives)}
     except RepairUnavailable as exc:
         # OUR limitation, never a verdict on the file.
         _shadow_row(job_id, shadow_plan, "not_executed")
-        return {**_declined(f"the repair could not run here: {exc}", route=advice.route),
+        return {**_declined(f"the repair could not run here: {exc}", outcome="unavailable",
+                            route=advice.route),
                 **await _triage_only(report, source),
                 **_not_reached(state, job_id, advice.route, directives)}
     except RepairRefused as exc:
@@ -382,14 +429,15 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         minted = await asyncio.to_thread(
             _mint, report=report, measured=dict(exc.measurements), source=source,
             survivors_path=None)
-        return {**_declined(f"the repair was refused: {exc}", route=advice.route,
+        return {**_declined(f"the repair was refused: {exc}", outcome="refused", route=advice.route,
                             detail={"measurements": exc.measurements}),
                 **minted, **_outcome_state(outcomes)}
     except Exception as exc:  # noqa: BLE001 - a repair that breaks is never the file's fault
         _shadow_row(job_id, shadow_plan, "not_executed")
         logger.warning("node_repair_attempt: the repair failed (%s) - continuing on the original "
                        "- job_id=%s", type(exc).__name__, job_id)
-        return {**_declined(f"the repair failed: {type(exc).__name__}", route=advice.route),
+        return {**_declined(f"the repair failed: {type(exc).__name__}", outcome="failed",
+                            route=advice.route),
                 **await _triage_only(report, source),
                 **_not_reached(state, job_id, advice.route, directives)}
 
@@ -419,7 +467,8 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         _shadow_row(job_id, shadow_plan, "not_executed")
         # THE RUN STAYS ON THE ORIGINAL, so only what a person decides is minted: the repair's
         # survivors describe a file nobody will mesh.
-        return {**_declined(f"the repaired geometry was not promoted: {exc}", route=advice.route),
+        return {**_declined(f"the repaired geometry was not promoted: {exc}", outcome="not_promoted",
+                            route=advice.route),
                 **await _triage_only(report, source),
                 **_not_promoted(state, job_id, advice.route, directives, repair_report, str(exc))}
     except Exception as exc:  # noqa: BLE001
@@ -427,7 +476,7 @@ async def node_repair_attempt(state: PipelineState) -> dict:
                        "continuing on the original - job_id=%s", type(exc).__name__, exc, job_id)
         _shadow_row(job_id, shadow_plan, "not_executed")
         return {**_declined(f"the repaired file could not be adopted: {type(exc).__name__}",
-                            route=advice.route),
+                            outcome="not_promoted", route=advice.route),
                 **await _triage_only(report, source),
                 **_not_promoted(state, job_id, advice.route, directives, repair_report,
                                 type(exc).__name__)}
@@ -499,6 +548,14 @@ async def node_repair_attempt(state: PipelineState) -> dict:
             # WHAT WAS DELIBERATELY NOT ATTEMPTED AND WHY - the rims of a missing bore wall above
             # all, which used to be a silent skip inside the fill executor.
             "refusals": measured.get("refusals", []),
+            # THE MEASURED SHAPE CHANGE, before and after - and everything else the loop
+            # measured, above all what the kept operations DECLARED they would add. The caps
+            # already refused anything past them, so this is not a check: it is the figure the
+            # receipt states beside the cap it stayed inside, and the receipt cannot separate
+            # accounted-for change from unexplained change without the declarations
+            # (pipeline/repair_receipt._shape_rows). See `_forwarded` for why this is not a
+            # whitelist. The refused path forwards the same dict whole, in `detail.measurements`.
+            "measurements": _forwarded(measured),
             "defects_remaining": [dict(e) for e in repair_report.entities],
             "summary": repair_report.summary,
         },

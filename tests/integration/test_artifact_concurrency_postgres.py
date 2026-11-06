@@ -270,6 +270,53 @@ async def test_api_lists_one_download_per_logical_artifact_and_hides_reconciliat
         assert exc.status_code == 404
 
 
+# A FILE BIGGER THAN 2 GiB IS STILL RECORDED (job 986ea907, 2026-11-02). The sizes are the ones
+# that FEA assembly produced: a 4.5 GB bundle, a 6.2 GB Ansys deck. Against the old 32-bit columns
+# each row write was refused (value out of int32 range), the uploader deleted every multi-GB object
+# as an orphan, and the delivery failed with the mesh already built and reviewed.
+
+_BIG_BUNDLE_BYTES = 4_503_723_800      # gmsh_case.tar.gz
+_BIG_DECK_BYTES = 6_151_555_156        # exports/mesh.cdb
+
+
+async def test_a_deliverable_over_2_gib_is_recorded_at_its_true_size(SessionLocal):
+    job_id = await _job(SessionLocal)
+    async with SessionLocal() as s:
+        out = await repo.deliver_artifact(
+            s, job_id=job_id, logical_key="mesh_bundle", artifact_type=ArtifactType.mesh_bundle,
+            storage_key="jobs/j/gmsh_case.tar.gz", size_bytes=_BIG_BUNDLE_BYTES, checksum="md5",
+            delivery_attempt=0)
+        await s.commit()
+    assert out == DeliveryOutcome.created
+    rows = await _rows(SessionLocal, job_id)
+    assert [r.size_bytes for r in rows] == [_BIG_BUNDLE_BYTES]
+
+
+async def test_an_orphan_over_2_gib_is_recorded_for_reconciliation(SessionLocal):
+    job_id = await _job(SessionLocal)
+    async with SessionLocal() as s:
+        await recon.record_orphan(
+            s, owner_id="owner-1", job_id=job_id, delivery_attempt=0, logical_key="fea_cdb",
+            artifact_type=ArtifactType.mesh, object_key="jobs/j/exports/mesh.cdb",
+            object_checksum=None, object_size=_BIG_DECK_BYTES)
+        await s.commit()
+    async with SessionLocal() as s:
+        recs = await recon.get_by_job(s, job_id)
+    assert [r.object_size for r in recs] == [_BIG_DECK_BYTES]
+
+
+async def test_an_upload_over_2_gib_is_recorded_as_a_source(SessionLocal):
+    from meshpipeline.persistence.repositories.geometry_source_repository import (
+        GeometrySourceRepository,
+    )
+    async with SessionLocal() as s:
+        row = await GeometrySourceRepository().create(
+            s, owner_id="owner-1", original_filename="big.stp", suffix_hint=".stp",
+            object_key=f"sources/{uuid.uuid4()}", sha256="a" * 64, size_bytes=_BIG_DECK_BYTES)
+        await s.commit()
+        assert row.size_bytes == _BIG_DECK_BYTES
+
+
 def SessionLocal_ctx(SessionLocal):
     from contextlib import asynccontextmanager
 

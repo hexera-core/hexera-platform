@@ -30,7 +30,6 @@ STATEMENT = re.compile(
 PROVING_THE_GUARD = {
     "integration/test_disposable_database_authority.py",
     "integration/test_provisioning_contract.py",
-    "integration/test_harness_provisioning.py",
     "integration/test_schema_authority.py",
     "integration/test_production_schema_guard.py",
     # The migration wrapper's whole subject is what happens to a schema across upgrade and

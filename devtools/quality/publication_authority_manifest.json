@@ -91,6 +91,19 @@
   "roots": []
  },
  {
+  "context": "adapters/event_stream/redis.py::JobPublisher.mesh_partial::mesh_partial#1|NotAPublisher|not-a-publisher|",
+  "path": "adapters/event_stream/redis.py",
+  "qualname": "JobPublisher.mesh_partial",
+  "semantic": "mesh_partial",
+  "method": "mesh_partial",
+  "ordinal": 1,
+  "receiver": "E",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "adapters/event_stream/redis.py::JobPublisher.mesh_stage::mesh_stage#1|NotAPublisher|not-a-publisher|",
   "path": "adapters/event_stream/redis.py",
   "qualname": "JobPublisher.mesh_stage",
@@ -122,6 +135,19 @@
   "qualname": "JobPublisher.meshing",
   "semantic": "meshing",
   "method": "meshing",
+  "ordinal": 1,
+  "receiver": "E",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "adapters/event_stream/redis.py::JobPublisher.narrate::narrate#1|NotAPublisher|not-a-publisher|",
+  "path": "adapters/event_stream/redis.py",
+  "qualname": "JobPublisher.narrate",
+  "semantic": "narrate",
+  "method": "narrate",
   "ordinal": 1,
   "receiver": "E",
   "authority": "NotAPublisher",
@@ -187,6 +213,19 @@
   "qualname": "JobPublisher.reasoning",
   "semantic": "reasoning",
   "method": "reasoning",
+  "ordinal": 1,
+  "receiver": "E",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "adapters/event_stream/redis.py::JobPublisher.receipt::receipt#1|NotAPublisher|not-a-publisher|",
+  "path": "adapters/event_stream/redis.py",
+  "qualname": "JobPublisher.receipt",
+  "semantic": "receipt",
+  "method": "receipt",
   "ordinal": 1,
   "receiver": "E",
   "authority": "NotAPublisher",
@@ -383,6 +422,32 @@
   "semantic": "error",
   "method": "error",
   "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "adapters/model_inference/router.py::_run::error#2|NotAPublisher|not-a-publisher|",
+  "path": "adapters/model_inference/router.py",
+  "qualname": "_run",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "adapters/model_inference/router.py::_run::error#3|NotAPublisher|not-a-publisher|",
+  "path": "adapters/model_inference/router.py",
+  "qualname": "_run",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 3,
   "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
@@ -805,6 +870,86 @@
   ]
  },
  {
+  "context": "agents/intake/approval.py::is_question::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/approval.py",
+  "qualname": "is_question",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_SELF_DIRECTED",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/approval.py::is_question::search#2|NotAPublisher|not-a-publisher|agents/intake/approval.py::result of _PHRASED_CHANGE.get(w)",
+  "path": "agents/intake/approval.py",
+  "qualname": "is_question",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "phrased",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "agents/intake/approval.py::result of _PHRASED_CHANGE.get(w)"
+  ]
+ },
+ {
+  "context": "agents/intake/chat_facts.py::_wrong_unit::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/chat_facts.py",
+  "qualname": "_wrong_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_FILE_NOUN",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/chat_facts.py::_wrong_unit::search#2|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/chat_facts.py",
+  "qualname": "_wrong_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_OTHER_UNIT",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/chat_facts.py::_wrong_unit::search#3|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/chat_facts.py",
+  "qualname": "_wrong_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 3,
+  "receiver": "_METRES",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/chat_facts.py::hold_to_facts::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/chat_facts.py",
+  "qualname": "hold_to_facts",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_BARE_MAGNITUDE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/intake/garbled.py::flaw::search#1|NotAPublisher|not-a-publisher|",
   "path": "agents/intake/garbled.py",
   "qualname": "flaw",
@@ -942,6 +1087,19 @@
   "method": "stage",
   "ordinal": 1,
   "receiver": "self.tally()",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/loop/provider_round.py::ProviderRound.invoke::error#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/loop/provider_round.py",
+  "qualname": "ProviderRound.invoke",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -1331,6 +1489,19 @@
   "roots": []
  },
  {
+  "context": "api/security.py::_refuse_unless_account_exists::error#1|NotAPublisher|not-a-publisher|",
+  "path": "api/security.py",
+  "qualname": "_refuse_unless_account_exists",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "api/v1/repair_review.py::_compensate::error#1|NotAPublisher|not-a-publisher|",
   "path": "api/v1/repair_review.py",
   "qualname": "_compensate",
@@ -1651,6 +1822,19 @@
   "roots": []
  },
  {
+  "context": "application/audit.py::record::error#1|NotAPublisher|not-a-publisher|",
+  "path": "application/audit.py",
+  "qualname": "record",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/dispute_operation.py::dispatch_or_record_failure::error#1|NotAPublisher|not-a-publisher|",
   "path": "application/dispute_operation.py",
   "qualname": "dispatch_or_record_failure",
@@ -1864,6 +2048,21 @@
   ]
  },
  {
+  "context": "application/execution_publisher.py::OwnershipCheckedPublisher.amesh_partial::mesh_partial#1|InternalEmitter|internal-emitter|application/execution_publisher.py::OwnershipCheckedPublisher",
+  "path": "application/execution_publisher.py",
+  "qualname": "OwnershipCheckedPublisher.amesh_partial",
+  "semantic": "mesh_partial",
+  "method": "mesh_partial",
+  "ordinal": 1,
+  "receiver": "self._inner",
+  "authority": "InternalEmitter",
+  "lifecycle": "internal-emitter",
+  "gated_required": false,
+  "roots": [
+   "application/execution_publisher.py::OwnershipCheckedPublisher"
+  ]
+ },
+ {
   "context": "application/execution_publisher.py::OwnershipCheckedPublisher.amesh_stage::mesh_stage#1|InternalEmitter|internal-emitter|application/execution_publisher.py::OwnershipCheckedPublisher",
   "path": "application/execution_publisher.py",
   "qualname": "OwnershipCheckedPublisher.amesh_stage",
@@ -1899,6 +2098,21 @@
   "qualname": "OwnershipCheckedPublisher.ameshing",
   "semantic": "meshing",
   "method": "meshing",
+  "ordinal": 1,
+  "receiver": "self._inner",
+  "authority": "InternalEmitter",
+  "lifecycle": "internal-emitter",
+  "gated_required": false,
+  "roots": [
+   "application/execution_publisher.py::OwnershipCheckedPublisher"
+  ]
+ },
+ {
+  "context": "application/execution_publisher.py::OwnershipCheckedPublisher.anarrate::narrate#1|InternalEmitter|internal-emitter|application/execution_publisher.py::OwnershipCheckedPublisher",
+  "path": "application/execution_publisher.py",
+  "qualname": "OwnershipCheckedPublisher.anarrate",
+  "semantic": "narrate",
+  "method": "narrate",
   "ordinal": 1,
   "receiver": "self._inner",
   "authority": "InternalEmitter",
@@ -1959,6 +2173,21 @@
   "qualname": "OwnershipCheckedPublisher.areasoning",
   "semantic": "reasoning",
   "method": "reasoning",
+  "ordinal": 1,
+  "receiver": "self._inner",
+  "authority": "InternalEmitter",
+  "lifecycle": "internal-emitter",
+  "gated_required": false,
+  "roots": [
+   "application/execution_publisher.py::OwnershipCheckedPublisher"
+  ]
+ },
+ {
+  "context": "application/execution_publisher.py::OwnershipCheckedPublisher.areceipt::receipt#1|InternalEmitter|internal-emitter|application/execution_publisher.py::OwnershipCheckedPublisher",
+  "path": "application/execution_publisher.py",
+  "qualname": "OwnershipCheckedPublisher.areceipt",
+  "semantic": "receipt",
+  "method": "receipt",
   "ordinal": 1,
   "receiver": "self._inner",
   "authority": "InternalEmitter",
@@ -2239,6 +2468,19 @@
   "method": "search",
   "ordinal": 3,
   "receiver": "_RESTATES",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/geometry_confirmation.py::declared_unit::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/geometry_confirmation.py",
+  "qualname": "declared_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -3371,6 +3613,21 @@
   "roots": []
  },
  {
+  "context": "contracts/mesh_progress.py::publishing_sink._publish_partial::mesh_partial#1|ExecutionEventPublisher|execution-owned|contracts/mesh_progress.py::parameter",
+  "path": "contracts/mesh_progress.py",
+  "qualname": "publishing_sink._publish_partial",
+  "semantic": "mesh_partial",
+  "method": "amesh_partial",
+  "ordinal": 1,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "contracts/mesh_progress.py::parameter"
+  ]
+ },
+ {
   "context": "contracts/mesh_progress.py::publishing_sink._publish_stage::mesh_stage#1|ExecutionEventPublisher|execution-owned|contracts/mesh_progress.py::parameter",
   "path": "contracts/mesh_progress.py",
   "qualname": "publishing_sink._publish_stage",
@@ -4266,6 +4523,21 @@
   ]
  },
  {
+  "context": "engines/snappy/drivers.py::_build_snappy_deterministic::note#8|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_build_snappy_deterministic",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 8,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::parameter"
+  ]
+ },
+ {
   "context": "engines/snappy/drivers.py::_build_snappy_deterministic::plan#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
   "path": "engines/snappy/drivers.py",
   "qualname": "_build_snappy_deterministic",
@@ -4508,6 +4780,19 @@
   "method": "search",
   "ordinal": 3,
   "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snappy/progressive.py::_promote::error#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy/progressive.py",
+  "qualname": "_promote",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -4791,6 +5076,21 @@
   "roots": []
  },
  {
+  "context": "pipeline/executor.py::_guard_failure::check#1|ExecutionEventPublisher|execution-owned|pipeline/executor.py::callers of _guard_failure()",
+  "path": "pipeline/executor.py",
+  "qualname": "_guard_failure",
+  "semantic": "check",
+  "method": "acheck",
+  "ordinal": 1,
+  "receiver": "pub",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/executor.py::callers of _guard_failure()"
+  ]
+ },
+ {
   "context": "pipeline/executor.py::node_executor::check#1|ExecutionEventPublisher|execution-owned|pipeline/executor.py::execution_publisher",
   "path": "pipeline/executor.py",
   "qualname": "node_executor",
@@ -5027,6 +5327,21 @@
   "roots": []
  },
  {
+  "context": "pipeline/graph.py::node_guard_replay::note#1|ExecutionEventPublisher|execution-owned|pipeline/graph.py::execution_publisher",
+  "path": "pipeline/graph.py",
+  "qualname": "node_guard_replay",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 1,
+  "receiver": "execution_publisher(job_id, agent='builder')",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/graph.py::execution_publisher"
+  ]
+ },
+ {
   "context": "pipeline/graph.py::node_infra_retry::note#1|ExecutionEventPublisher|execution-owned|pipeline/graph.py::execution_publisher",
   "path": "pipeline/graph.py",
   "qualname": "node_infra_retry",
@@ -5039,6 +5354,51 @@
   "gated_required": true,
   "roots": [
    "pipeline/graph.py::execution_publisher"
+  ]
+ },
+ {
+  "context": "pipeline/repair_receipt.py::apublish::receipt#1|ExecutionEventPublisher|execution-owned|pipeline/repair_receipt.py::execution_publisher",
+  "path": "pipeline/repair_receipt.py",
+  "qualname": "apublish",
+  "semantic": "receipt",
+  "method": "areceipt",
+  "ordinal": 1,
+  "receiver": "_pub",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/repair_receipt.py::execution_publisher"
+  ]
+ },
+ {
+  "context": "pipeline/repair_words.py::aopen::stage#1|ExecutionEventPublisher|execution-owned|pipeline/repair_words.py::execution_publisher",
+  "path": "pipeline/repair_words.py",
+  "qualname": "aopen",
+  "semantic": "stage",
+  "method": "astage",
+  "ordinal": 1,
+  "receiver": "_pub",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/repair_words.py::execution_publisher"
+  ]
+ },
+ {
+  "context": "pipeline/repair_words.py::asay::note#1|ExecutionEventPublisher|execution-owned|pipeline/repair_words.py::execution_publisher",
+  "path": "pipeline/repair_words.py",
+  "qualname": "asay",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 1,
+  "receiver": "_pub",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/repair_words.py::execution_publisher"
   ]
  },
  {

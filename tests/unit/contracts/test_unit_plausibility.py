@@ -96,3 +96,15 @@ def test_bad_input_proposes_nothing():
 
 def test_lengths_read_as_a_person_says_them():
     assert [length_words(x) for x in (0.117, 117.0, 3000.0, 0.0266, 1.05)] == ["11.7 cm", "117 m", "3 km", "2.66 cm", "1.05 m"]
+
+
+def test_building_the_mesh_is_not_a_building():
+    """The intake wrote "the mesh-building steps" into a stud punch's requirements, and the run
+    called the 63.9 cm hand tool "far too small for a building" (PR #393 real-path test, 3 Nov)."""
+    from meshpipeline.contracts.unit_plausibility import expected_from_words
+    for words in ("Notes go to the mesh-building steps.", "rebuilding the mesh after a change"):
+        got = expected_from_words(words)
+        assert got is None or got.what != "a building", words
+    for words in ("wind around a city block of buildings", "wind on a building", "Building B, wind loads"):
+        got = expected_from_words(words)
+        assert got is not None and got.what == "a building", words

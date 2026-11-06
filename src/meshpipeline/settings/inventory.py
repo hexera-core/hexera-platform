@@ -26,6 +26,16 @@ CONSUMERS = ("app", "compose", "make", "sdk")
 KINDS = ("str", "int", "float", "bool", "path", "list", "url")
 
 
+#: Disposable-inbox providers whose addresses never receive the free signup grant. A starting set,
+#: not a complete one: SIGNUP_GRANT_WITHHELD_DOMAINS replaces it per deployment.
+DEFAULT_WITHHELD_DOMAINS = ",".join((
+    "mailinator.com", "guerrillamail.com", "guerrillamail.net", "sharklasers.com",
+    "10minutemail.com", "temp-mail.org", "tempmail.com", "yopmail.com", "trashmail.com",
+    "getnada.com", "dispostable.com", "maildrop.cc", "mailnesia.com", "throwawaymail.com",
+    "fakeinbox.com", "mintemail.com", "emailondeck.com", "tempr.email", "moakt.com",
+))
+
+
 @dataclass(frozen=True)
 class EnvVar:
     name: str
@@ -346,8 +356,8 @@ INVENTORY: list[Group] = [
                help="the Identity Platform project whose ID tokens the console signs in with"),
     ]),
     Group("Product modes", vars=[
-        EnvVar("DATA_COLLECTION_ENABLED", "true",
-               help="Save redacted run data for training and corpus export."),
+        EnvVar("DATA_COLLECTION_ENABLED", "false",
+               help="Save redacted run data for training and corpus export. Opt-in (docs/compliance)."),
         EnvVar("PUBLIC_TRACE_MODE", "raw",
                help="Control technical details shown through the UI: safe or raw."),
         EnvVar("ALLOW_PUBLIC_RAW_TRACE", "true",
@@ -364,6 +374,10 @@ INVENTORY: list[Group] = [
         EnvVar("GEOMETRY_CHECK_VISION_TIMEOUT_S", "60", kind="int", exposure="internal",
                help="seconds the vision naming step may take before the check ships with the code's own names"),
     ]),
+    Group("Progressive mesh snapshots", note="Whether a mesh that is still running publishes a decimated boundary surface of the mesh-so-far, so the console viewer shows the mesh arriving instead of holding the CAD part. Read on the mesher's side only. With it off, nothing about a mesh run changes. NOT REACHABLE ON ITS OWN: a frame is only read from a serial snappyHexMesh, and every deployed environment meshes with 8 ranks, so this must be paired with MESH_SNAPPY_RANKS=1 (a serial mesh, slower) or it changes nothing at all.", vars=[
+        EnvVar("MESH_PROGRESSIVE_SNAPSHOT_ENABLED", "false", kind="bool",
+               help="publish one decimated boundary of snappy's castellated phase mid-run; SERIAL runs only, so pin MESH_SNAPPY_RANKS=1 beside it or nothing is published"),
+    ]),
     Group("CAD repair", note="Whether a customer's geometry may be MUTATED, and the caps a conservative repair must stay inside. Inspection runs regardless and only ever reads; CAD_REPAIR_ENABLED is the switch that separates looking from changing, and with it off a repair is refused before any kernel call.", vars=[
         EnvVar("CAD_REPAIR_ENABLED", "false", kind="bool",
                help="allow repair attempts to write new geometry; inspection is unaffected"),
@@ -371,9 +385,9 @@ INVENTORY: list[Group] = [
                help="repair a file in the run when triage can point at the defect, instead of only reporting it"),
         EnvVar("CAD_REPAIR_TIMEOUT_S", "120", kind="float", exposure="internal",
                help="seconds the run waits for a repair before going on without it; the kernel itself cannot be interrupted"),
-        EnvVar("CAD_INSPECT_TIMEOUT_S", "25", kind="float", exposure="internal",
+        EnvVar("CAD_INSPECT_TIMEOUT_S", "60", kind="float", exposure="internal",
                help="seconds inspection may spend on one file before the run goes on without it"),
-        EnvVar("CAD_INSPECT_MAX_BYTES", str(80 * 1024 * 1024), kind="int", exposure="internal",
+        EnvVar("CAD_INSPECT_MAX_BYTES", str(128 * 1024 * 1024), kind="int", exposure="internal",
                help="files larger than this are not inspected; an operator looks at them instead"),
         EnvVar("CAD_REPAIR_MAX_DEVIATION_RATIO", "0.001", kind="float", exposure="internal",
                help="largest surface movement a repair may leave, as a fraction of the part diagonal"),
@@ -424,7 +438,11 @@ INVENTORY: list[Group] = [
         EnvVar("MAX_JOBS_PER_OWNER", "5"),
         EnvVar("MAX_CONCURRENT_JOBS", "20"),
         EnvVar("SIGNUP_GRANT_CREDITS", "100", kind="int",
-               help="credits a newly provisioned organisation is granted once; 0 disables it"),
+               help="credits a newly provisioned organisation is granted once, after its owner's "
+                    "address is verified and only once per mailbox; 0 disables it"),
+        EnvVar("SIGNUP_GRANT_WITHHELD_DOMAINS", DEFAULT_WITHHELD_DOMAINS,
+               help="comma-separated email domains (and their subdomains) whose new accounts are "
+                    "provisioned without the free signup grant - disposable-inbox providers"),
         EnvVar("JOB_BASE_CREDITS", "10", kind="int",
                help="credits one SUCCEEDED job costs before its minutes are counted; a failed "
                     "job is never charged"),
@@ -590,6 +608,7 @@ INVENTORY: list[Group] = [
 
     Group("Mesh toolchain", vars=[
         EnvVar("VMTK_BIN", "vmtk", help="vmtk runs as an isolated subprocess: its conda VTK cannot coexist with the app's"),
+        EnvVar("BUILDER_AI", "on", exposure="internal", help="on | off: cfMesh, VMTK, gmsh (CFD) and snappy multi-region attempts are built by the builder model, and by the rules plan whenever it gives no mesh (engines/rules_plan.py, AIG-1); off = the rules plan only"),
         EnvVar("FEA_AI", "on", exposure="internal", help="on | off: the FEA builder asks the builder model for its judgement calls (zone priority, small features, the user's budget), which the rules make exact (engines/fea_ai.py); off = the rules' own plan"),
     ]),
 

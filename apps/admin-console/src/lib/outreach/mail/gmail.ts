@@ -8,11 +8,15 @@
  *
  * Scopes are minimal on purpose — send and read, never modify or delete.
  */
-import { google } from "googleapis";
+// The Gmail module alone, never the "googleapis" barrel: the barrel re-exports every Google API
+// (~940 declaration files, ~176 MB), which more than doubles the memory tsc and next build need
+// for this whole app (2.3 GB vs 1.0 GB) and ran CI's typecheck out of heap on an 8 GB runner.
+// The explicit index.js keeps the path resolvable from the ESM outreach worker bundle too.
+import { auth, gmail } from "googleapis/build/src/apis/gmail/index.js";
 
 import { decryptSecret, encryptSecret, kmsKeyName } from "../crypto";
 import type { OAuth2Client } from "google-auth-library";
-import type { gmail_v1 } from "googleapis";
+import type { gmail_v1 } from "googleapis/build/src/apis/gmail/index.js";
 import { get, run } from "../db";
 import { nowIso } from "../core/time";
 import { buildMessage, type MessageParts } from "./mime";
@@ -56,7 +60,7 @@ export function oauthClient(): OAuth2Client {
         "be connected. See docs/deployment/outreach.md.",
     );
   }
-  return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
+  return new auth.OAuth2(clientId, clientSecret, redirectUri);
 }
 
 /** Reads the stored token and opens its sealed fields. Nothing else should read the table. */
@@ -138,7 +142,7 @@ export async function authorizedClient(accountEmail?: string): Promise<{ client:
 
 export async function gmailApi(accountEmail?: string): Promise<{ api: gmail_v1.Gmail; account: StoredToken }> {
   const { client, account } = await authorizedClient(accountEmail);
-  return { api: google.gmail({ version: "v1", auth: client }), account };
+  return { api: gmail({ version: "v1", auth: client }), account };
 }
 
 export interface SendResult {
@@ -304,7 +308,7 @@ export async function starMessage(messageId: string, accountEmail?: string): Pro
 }
 
 export async function getProfileEmail(client: OAuth2Client): Promise<string> {
-  const api = google.gmail({ version: "v1", auth: client });
+  const api = gmail({ version: "v1", auth: client });
   const profile = await api.users.getProfile({ userId: "me" });
   const address = profile.data.emailAddress;
   if (!address) throw new Error("Gmail did not return the account's email address");

@@ -1,0 +1,21 @@
+1793017715.553 Info    : [ 10%] Meshing surface 193 (Plane, Frontal-Delaunay)
+1793017715.572 Info    : [ 10%] Meshing surface 194 (Plane, Frontal-Delaunay)
+1793017715.575 Info    : [ 10%] Meshing surface 195 (Plane, Frontal-Delaunay)
+1793017715.577 Info    : [ 10%] Meshing surface 196 (Plane, Frontal-Delaunay)
+1793017715.600 Info    : Done meshing 2D (Wall 33.2333s, CPU 36.1882s)
+1793017715.618 Info    : 75986 nodes 151947 elements
+1793017715.993 Info    : Meshing 3D...
+1793017715.995 Info    : 3D Meshing 1 volume with 1 connected component
+1793017716.093 Info    : Tetrahedrizing 64361 nodes...
+1793017716.929 Info    : Done tetrahedrizing 64369 nodes (Wall 0.835507s, CPU 0.872188s)
+1793017716.945 Info    : Reconstructing mesh...
+1793017717.382 Info    :  - Creating surface mesh
+1793017741.322 Info    : It. 123500 - 244 nodes created - worst tet radius 1.01983 (nodes removed 123233 23)
+1793017741.344 Info    : It. 124000 - 244 nodes created - worst tet radius 1.00058 (nodes removed 123728 28)
+1793017741.364 Info    : 3D refinement terminated (64605 nodes total):
+1793017741.365 Info    :  - 1419 Delaunay cavities modified for star shapeness
+1793017741.366 Info    :  - 123766 nodes could not be inserted
+1793017741.367 Info    :  - 185067 tetrahedra created in 21.1854 sec. (8735 tets/s)
+1793017755.057 Info    : 433 node relocations
+1793017755.107 Info    : Done meshing 3D (Wall 36.1796s, CPU 39.1606s)
+1793017755.112 Info    : Optimizing mesh...

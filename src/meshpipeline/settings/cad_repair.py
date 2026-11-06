@@ -97,11 +97,11 @@ CAD_REPAIR_MAX_HOLE_SPAN_RATIO: float = float(
 #: deadline proving it is pathological. The work is handed to a thread and abandoned on expiry:
 #: OpenCASCADE offers no interruption point, so the thread finishes in the background while the
 #: run proceeds on the original geometry with an inconclusive report.
-CAD_INSPECT_TIMEOUT_S: float = float(optional_env("CAD_INSPECT_TIMEOUT_S", "25"))
+CAD_INSPECT_TIMEOUT_S: float = float(optional_env("CAD_INSPECT_TIMEOUT_S", "60"))
 
 #: Files larger than this are not inspected at all. Reading a very large STEP costs seconds before
 #: anything is measured, and a part that big is one an operator should look at anyway.
-CAD_INSPECT_MAX_BYTES: int = int(optional_env("CAD_INSPECT_MAX_BYTES", str(80 * 1024 * 1024)))
+CAD_INSPECT_MAX_BYTES: int = int(optional_env("CAD_INSPECT_MAX_BYTES", str(128 * 1024 * 1024)))
 
 #: Seconds the run will WAIT for a repair before going on without it. Not a limit on the kernel:
 #: OpenCASCADE offers no interruption point, so the thread finishes in the background while the
@@ -174,18 +174,17 @@ def _planner_posture() -> str:
     return raw if raw in ("shadow", "live") else "off"
 
 
-#: Where the model sits in the repair loop's planner seat. "off" is byte-for-byte the prior
-#: behaviour: the deterministic portion alone, no model call, no shadow row. "shadow" asks the
-#: model and records what it would have directed beside what the deterministic portion did,
-#: without acting on it. "live" lets its directives act, inside the same caps and measurements
-#: every operation already answers to - the same surface, not a second engine. An unknown
+#: Optional model guidance inside CAD Repair System. "off" makes no model call and writes no
+#: shadow row. "shadow" records guidance beside the system's executed plan without acting on it.
+#: "live" lets that guidance enter the same planner and answer to the same caps and measurements
+#: as every other directive. An unknown
 #: value reads as "off": a typo in a deployment must not put a model in charge of geometry.
 CAD_REPAIR_LLM_PLANNER: str = _planner_posture()
 
 #: The most model calls one repair run may make while directing it. A hard ceiling on spend.
 CAD_REPAIR_LLM_PLANNER_CALLS_MAX: int = int(optional_env("CAD_REPAIR_LLM_PLANNER_CALLS_MAX", "2"))
 
-#: Seconds one model call may take before the deterministic portion's choice stands.
+#: Seconds one model call may take before the planner continues with its bounded fallback.
 CAD_REPAIR_LLM_PLANNER_TIMEOUT_S: float = float(
     optional_env("CAD_REPAIR_LLM_PLANNER_TIMEOUT_S", "20.0"))
 

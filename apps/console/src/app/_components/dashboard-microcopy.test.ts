@@ -46,3 +46,10 @@ test("organisation names the workspace boundary", () => {
 
   assert.match(source, /Members, billing, credits and runs belong to this workspace\./);
 });
+
+test("CAD Repair System evidence is available without a console feature gate", () => {
+  const source = dashboardSource("repair/page.tsx");
+
+  assert.match(source, />CAD Repair System</);
+  assert.doesNotMatch(source, /CAD_REPAIR_POC|notFound/);
+});

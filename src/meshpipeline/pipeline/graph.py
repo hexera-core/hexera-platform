@@ -84,7 +84,9 @@ def review_can_rerun(state: PipelineState) -> bool:
     the renderer fell over, or a provider or dependency browned out. A pre-loop refusal (a malformed
     assurance plan, missing deterministic evidence, absent review targets) and a provider that is
     down for good repeat identically, so they go to the sink as before. Bounded per mesh by
-    REVIEWER_RERUN_MAX (every builder attempt resets the count) and by the run's own deadline."""
+    REVIEWER_RERUN_MAX (every builder attempt resets the count) - a count, never the time left
+    (docs/RULES.md TIME-1): the run's own deadline is a guard (TIME-5), and a rerun review it
+    stops ends the run as ours, the same as any review that cannot conclude."""
     import meshpipeline.agents.reviewer.settings as rcfg
     from meshpipeline.agents.reviewer.loop_policy import RERUNNABLE_MARKERS
     from meshpipeline.errors import classify_api_failure
@@ -96,22 +98,69 @@ def review_can_rerun(state: PipelineState) -> bool:
     if int(state.get("review_rerun_count", 0) or 0) >= rcfg.REVIEWER_RERUN_MAX:
         return False
     transient = classify_api_failure(marker).is_retryable
-    if not (marker in RERUNNABLE_MARKERS or transient):
-        return False
-    deadline = state.get("pipeline_deadline_epoch")
-    if deadline:
-        # Only when a review still fits: the backoff (a transient failure waits it out first)
-        # plus a window a review can actually use. Otherwise the job would sleep through the
-        # rest of its time and start a review that runs out at once.
-        from meshpipeline.application.pipeline_budget import remaining_seconds
-        wait = rcfg.REVIEWER_RERUN_BACKOFF_S if transient else 0
-        if remaining_seconds(float(deadline)) <= wait + REVIEW_RERUN_MIN_WINDOW_S:
-            from meshpipeline.engines.determinism import note_time_limit
-            note_time_limit("review_rerun", "a review without a verdict was not started again: "
-                            "too little time left", left_s=remaining_seconds(float(deadline)),
-                            needed_s=float(wait + REVIEW_RERUN_MIN_WINDOW_S))
-            return False
-    return True
+    return marker in RERUNNABLE_MARKERS or transient
+
+
+def guard_trip_of(state: PipelineState) -> dict:
+    """The guard trip that ended the attempt the executor just judged ({} when none): its cause is
+    the run running past a guard clock (executor: ENGINE_TIMED_OUT with a `guard` fact)."""
+    from meshpipeline.contracts.failure_cause import FailureCause
+    facts = state.get("executor_failure_facts") or {}
+    if (state.get("executor_success") is True
+            or str(state.get("executor_failure_cause") or "") != FailureCause.ENGINE_TIMED_OUT.value
+            or not isinstance(facts, dict) or not facts.get("guard")):
+        return {}
+    return dict(facts["guard"]) if isinstance(facts["guard"], dict) else {"where": str(facts["guard"])}
+
+
+def _after_guard_trip(state: PipelineState) -> str:
+    """TIME-3, decided from counts alone: replay the attempt, or end the run as ran out of time.
+    The decision is cited in the run's why record."""
+    from meshpipeline.contracts import decision_record as dr
+    from meshpipeline.contracts.work_limits import GUARD_REPLAYS, after_trip, trip_words
+    trip = guard_trip_of(state)
+    inputs = {"replays": int(state.get("guard_replay_count", 0) or 0), "allowed": GUARD_REPLAYS,
+              "where": str(trip.get("where") or "")}
+    outcome, rule = after_trip(inputs)
+    dr.cite(str(state.get("job_id") or ""), stage=dr.STAGE_GUARD, decided="after_trip",
+            value=outcome, rule=rule, inputs=inputs, source=dr.SOURCE_GUARD_CLOCK,
+            words=(f"{trip_words(trip)}: "
+                   + ("the attempt is run again as it was (an infrastructure stop)."
+                      if outcome == "replay" else
+                      "it already had its replay, so the run ends as ran out of time.")))
+    return outcome
+
+
+async def node_guard_replay(state: PipelineState) -> dict:
+    """A GUARD CLOCK STOPPED THE ATTEMPT (docs/RULES.md TIME-3): an infrastructure stop, not a result
+    about the shape. Run the SAME attempt again, as it was: retry_count steps back one, so the
+    builder prepares the same attempt number in the same workspace - no lever, no coarser plan, no
+    other engine. The workspace is put back as the attempt found it (its plan memories, meshes and
+    reshuffled surfaces gone), so the replay decides as the attempt did on a quiet machine, and its
+    trips are cleared so the replay is judged on its own. Admission (one replay) is
+    route_after_executor's job."""
+    from meshpipeline.engines import determinism as det
+    job_id = state.get("job_id", "unknown")
+    replay = int(state.get("guard_replay_count", 0) or 0) + 1
+    trip = guard_trip_of(state)
+    ws = str(state.get("openfoam_workspace") or "")
+    if ws:
+        det.restore_attempt_start(ws)
+        det.clear_guard_trips(ws)
+    logger.warning("node_guard_replay: a guard clock stopped attempt %s (%s) - replay %d, the same "
+                   "attempt as it was - job_id=%s", state.get("retry_count"), trip.get("where"),
+                   replay, job_id)
+    try:
+        from meshpipeline.application.execution_publisher import execution_publisher
+        await execution_publisher(job_id, agent="builder").anote(
+            "This attempt ran past its guard clock - an infrastructure stop, not a result about "
+            "your part. Running the same attempt again, unchanged.", op_id=f"guard-replay:{replay}")
+    except Exception:  # noqa: BLE001 - narration never costs the replay
+        pass
+    return {"guard_replay_count": replay,
+            "retry_count": max(0, int(state.get("retry_count", 1) or 1) - 1),
+            "executor_success": False, "executor_failed_gate": "",
+            "executor_failure_cause": "", "executor_failure_facts": {}}
 
 
 #: The least time a rerun review is started with. A review that opens its renderer and makes a
@@ -207,7 +256,8 @@ def _sound_or_end(state: PipelineState) -> Literal["node_deliver_sound", "__end_
 
 def route_after_executor(
     state: PipelineState,
-) -> Literal["node_reviewer", "node_classifier", "node_deliver_sound", "__end__"]:
+) -> Literal["node_reviewer", "node_classifier", "node_guard_replay", "node_deliver_sound",
+             "__end__"]:
     success            = state.get("executor_success", False)
     retry_count        = state.get("retry_count", 0)
     solvability_failed = state.get("solvability_failed", False)
@@ -230,7 +280,7 @@ def route_after_executor(
         if caveats and changeable:
             # A SWITCH DOES NOT SPEND THE LADDER (LAD-cfd-2): the engine the run moved to built a
             # sound mesh short of the floor on its first try - it still gets one rung, inside the
-            # run's ceiling of attempts and only when a whole attempt fits in the run's time
+            # run's ceiling of attempts. The time left never decides it (TIME-1)
             ok, why = _rp.rung_after_switch(state,
                                             attempts_ceiling=bcfg.BUILDER_MAX_TOTAL_ATTEMPTS,
                                             attempt_seconds=float(bcfg.BUILDER_LOOP_TIMEOUT))
@@ -255,6 +305,18 @@ def route_after_executor(
                 "ladder spent → reviewer (caveated delivery candidate) - job_id=%s",
                 len(caveats), state.get("job_id"))
         return "node_reviewer"
+
+    # A GUARD CLOCK STOPPED THE ATTEMPT (docs/RULES.md TIME-3): an infrastructure stop, never a
+    # result about the shape. It never reaches the classifier or the fallback ladder - no lever, no
+    # coarser plan, no other engine. The same attempt is replayed once; a second trip ends the run
+    # as ran out of time.
+    if guard_trip_of(state):
+        if _after_guard_trip(state) == "replay":
+            return "node_guard_replay"
+        logger.warning("route_after_executor: a guard clock stopped the attempt again after its "
+                       "replay → END (ran out of time), unless an earlier attempt built a sound "
+                       "mesh (LAD-cfd-3) - job_id=%s", state.get("job_id"))
+        return _sound_or_end(state)
 
     # RETRY ONLY WHAT A RETRY CAN FIX. Some failures are decided by inputs the next attempt
     # receives unchanged: a case authored from the approval disagrees with it (the next attempt
@@ -355,9 +417,40 @@ async def node_deliver_sound(state: PipelineState) -> dict:
     }
 
 
+def limits_end_the_review(state: PipelineState) -> bool:
+    """VER-5: once the measured limits decide (VERDICT_BY_LIMITS), the review of a mesh every gate
+    passed ends the run whatever it said - and whether or not it concluded. Its points are notes;
+    the verdict is the measured one, worked out at terminal assembly. A user's dispute is the user's
+    own decision and keeps its routing."""
+    from meshpipeline.settings import policy as _polcfg
+    return bool(_polcfg.VERDICT_BY_LIMITS and state.get("executor_success") is True
+                and not state.get("executor_failed_gate") and not state.get("user_dispute"))
+
+
 def route_after_reviewer(
     state: PipelineState,
 ) -> Literal["__end__", "node_classifier", "node_failure_handler", "node_review_retry"]:
+    if limits_end_the_review(state):
+        # THE REVIEW ONLY ADDS NOTES, AND A REVIEW THAT DID NOT CONCLUDE ADDS NONE (VER-5). No rerun
+        # of a review that cannot change the outcome, no failure because a model was busy or down:
+        # the measured limits decide pass, concerns or fail on the mesh the gates passed.
+        logger.info("route_after_reviewer: the measured limits decide (VER-5) → END "
+                    "(review %s, attempt=%d/%d) - job_id=%s",
+                    ("did not conclude: " + str(state.get("api_failure"))) if state.get("api_failure")
+                    else f"concluded {state.get('reviewer_verdict')}, a note only",
+                    int(state.get("retry_count", 0) or 0), bcfg.BUILDER_MAX_TOTAL_ATTEMPTS,
+                    state.get("job_id"))
+        try:
+            from meshpipeline.contracts import decision_record as dr
+            dr.cite(str(state.get("job_id") or ""), stage="review_route", decided="review route",
+                    value="end", rule="VER-5",
+                    inputs={"review_concluded": not state.get("api_failure"),
+                            "reviewer_verdict": str(state.get("reviewer_verdict") or ""),
+                            "attempt": int(state.get("retry_count", 0) or 0)},
+                    words="the review only adds notes: the measured limits decide this run")
+        except Exception:  # noqa: BLE001 - a record never changes a route
+            logger.debug("route_after_reviewer: why record not kept", exc_info=True)
+        return _END
     if state.get("api_failure"):
         # A review that could not conclude says nothing about the mesh. When another look can
         # change that, look again rather than throw away a mesh that passed every gate.
@@ -493,6 +586,7 @@ def build_graph(checkpointer):
     b.add_node("node_failure_handler", _fenced("node_failure_handler", node_failure_handler))
     b.add_node("node_infra_retry",     _fenced("node_infra_retry", node_infra_retry))
     b.add_node("node_review_retry",    _fenced("node_review_retry", node_review_retry))
+    b.add_node("node_guard_replay",    _fenced("node_guard_replay", node_guard_replay))
     b.add_node("node_deliver_sound",   _fenced("node_deliver_sound", node_deliver_sound))
 
     b.add_edge(START, "node_intake")
@@ -530,10 +624,13 @@ def build_graph(checkpointer):
         {
             "node_reviewer":      "node_reviewer",
             "node_classifier":    "node_classifier",
+            "node_guard_replay":  "node_guard_replay",
             "node_deliver_sound": "node_deliver_sound",
             END:                  END,
         },
     )
+    # A GUARD-CLOCK REPLAY runs the same attempt again (docs/RULES.md TIME-3)
+    b.add_edge("node_guard_replay", "node_builder")
     # THE NEWEST SOUND MESH, when the last attempt failed (LAD-cfd-3): reviewed and delivered as a
     # caveated delivery candidate is
     b.add_edge("node_deliver_sound", "node_reviewer")

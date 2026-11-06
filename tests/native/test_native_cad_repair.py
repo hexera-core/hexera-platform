@@ -583,7 +583,7 @@ def test_the_report_states_what_the_loop_did_and_why_it_stopped(tmp_path, monkey
     assert measured["stopped_because"]
     assert isinstance(measured["resolved"], bool)
     assert isinstance(measured["complete_scan"], bool)
-    assert measured["planner"] == "rules-v1"
+    assert measured["planner"] == "repair-v1"
     # EVERY ATTEMPT, KEPT OR NOT.
     assert report.operations, "the report lists no operations"
     for op in report.operations:
@@ -705,3 +705,14 @@ def test_a_repaired_file_declares_the_uploads_unit_so_the_carried_interpretation
     assert parser_applied_unit(repaired) == parser_applied_unit(source)
     before, after = _diagonal(_read_shape(source)), _diagonal(_read_shape(repaired))
     assert abs(after - before) / before < 1e-6, (before, after)
+
+
+# The repair nodes publish the run's Repair check step through the ownership-checked port. This
+# suite exercises node contracts, not Redis or PostgreSQL, so the port is stood in for; ownership
+# has its own suites.
+@pytest.fixture(autouse=True)
+def _execution_publisher(monkeypatch):
+    from tests.execution_publisher_double import install
+
+    import meshpipeline.application.execution_publisher as _ep
+    return install(monkeypatch, _ep)

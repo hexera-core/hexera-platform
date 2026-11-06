@@ -1,4 +1,4 @@
-# Responsibility: Verify the geometry stage's ruler: with "Measure" on, two clicks on the part draw
+# Responsibility: Verify the geometry stage's ruler: with the toolbar's Measure open, two clicks on the part draw
 # a line with the distance in the file's unit; a click within a few pixels of a hole's edge lands
 # on the edge, so a bore's width across is two clicks; a third click starts again; Esc ends it;
 # and nothing of it reaches the confirmation.
@@ -24,7 +24,7 @@ def test_two_clicks_measure_the_part_and_a_holes_edge_pulls_the_click_onto_it(li
       const cam = h.cam();
       cam.setFocalPoint({ox}, {oy}, {oz}); cam.setPosition({ox - 0.3}, {oy}, {oz}); cam.setViewUp(0, 0, 1);
       h.render();
-      root.querySelector('.gc-measure').click();
+      document.getElementById('gs-{sid}-vt-measure').click();
     }})()""")
     centre = live.evaluate(f"""(() => {{ const r = document.getElementById('gs-canvas-{sid}').getBoundingClientRect();
       return [r.left + r.width / 2, r.top + r.height / 2]; }})()""")
@@ -60,7 +60,10 @@ def test_two_clicks_measure_the_part_and_a_holes_edge_pulls_the_click_onto_it(li
     live.press("Escape", vk=27)
     done = state()
     assert done == {"n": 0, "mm": None, "label": None, "shown": None, "measuring": False, "rows": 0}, done
-    assert not live.evaluate(f"document.querySelector('#gstage-{sid} .gc-measure').classList.contains('armed')")
+    # the toolbar's Measure overlay closed with it, and the form has no ruler button of its own
+    assert live.evaluate(f"document.getElementById('gs-{sid}-vt-measure').getAttribute('aria-expanded')") == "false"
+    assert live.evaluate(f"window._vdbg['gstage:{sid}'].tools.current()") is None
+    assert not live.evaluate(f"!!document.querySelector('#gstage-{sid} .gc-measure')")
     assert live.evaluate(f"(window.__confirmed || {{}})['{sid}'] || null") is None
     live.evaluate(f"window.__stages['{sid}'].release()")
     assert centre

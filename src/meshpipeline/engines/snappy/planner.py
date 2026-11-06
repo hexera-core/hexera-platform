@@ -109,6 +109,243 @@ def clamp_cell_budget(raw: object, *, ceiling: int, default: int = 4_000_000) ->
     return min(iv, ceiling)
 
 
+# THE GUARD ON A PLANNER ANSWER. The plan is advice: the drivers run on rules defaults for every
+# knob the plan leaves out, so a value that is not a usable number is dropped back to that
+# default, and a usable one is held to the range the planner's own brief states. Nothing here
+# raises - a plan that cannot be read at all comes back empty, which is the rules-only plan.
+
+#: The keys each brief's JSON schema names (PLANNER_SYSTEM / INTERNAL_PLANNER_SYSTEM).
+_TEXT_KEYS = ("approach", "focus", "risks")
+_EXTERNAL_KEYS = frozenset({*_TEXT_KEYS, "domain_margin", "reference_length_m", "n_layers",
+                            "first_layer_rel", "quality", "max_cells", "wake"})
+_INTERNAL_KEYS = frozenset({*_TEXT_KEYS, "cells_across_diameter", "surface_level",
+                            "feature_level", "n_layers", "first_layer_rel", "quality",
+                            "max_cells"})
+#: The ranges each brief states, word for word: external "n_layers 3-5. first_layer_rel
+#: 0.25-0.5"; internal "cells_across_diameter 16-40 ... surface_level 1-3 ... feature_level =
+#: surface_level+1 ... n_layers 3-6 ... first_layer_rel 0.2-0.4". The drivers' own defaults
+#: (n_layers 3, first_layer_rel 0.35 / 0.3, cells across 24, surface level 2) sit inside them.
+_EXTERNAL_RANGES: dict[str, tuple[float, float]] = {
+    "n_layers": (3, 5), "first_layer_rel": (0.25, 0.5)}
+_INTERNAL_RANGES: dict[str, tuple[float, float]] = {
+    "cells_across_diameter": (16, 40), "surface_level": (1, 3), "feature_level": (2, 4),
+    "n_layers": (3, 6), "first_layer_rel": (0.2, 0.4)}
+_INT_KNOBS = frozenset({"n_layers", "cells_across_diameter", "surface_level", "feature_level",
+                        "max_cells"})
+#: The far-field margins, in reference lengths (or body lengths): the product default box is
+#: up 2, down 4, side 2, vert 2 (snappy_runner.domain_from_strategy). Upstream and downstream
+#: never shorter than half/all of that default, vertical never under its 2-length floor; only
+#: the spanwise margin may be 0 (a slab whose symmetry planes are its own end faces). The tops
+#: leave room for a transonic far field (50-100 chords) without a runaway box.
+_MARGIN_RANGES: dict[str, tuple[float, float]] = {
+    "up": (1.0, 100.0), "down": (2.0, 200.0), "side": (0.0, 100.0), "vert": (2.0, 100.0)}
+#: How far a planner's reference length may sit from the length it must agree with.
+_REFERENCE_AGREEMENT = 0.10
+#: The smallest cell budget a plan may ask for (the timeout floor, _MIN_TIMEOUT_BUDGET below).
+_MIN_PLAN_BUDGET = 200_000
+_TEXT_LIMIT = 1000
+
+
+def _finite_number(v: object) -> float | None:
+    """A finite float from a number or a clean numeric string, else None. A bool is not one."""
+    import math as _math
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        f = float(v)
+    elif isinstance(v, str):
+        try:
+            f = float(v.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    return f if _math.isfinite(f) else None
+
+
+def plan_int(strategy: object, key: str, default: int) -> int:
+    """`strategy[key]` as a whole number, or `default` when it is missing or not a usable number.
+    A list (a [min, max] level pair) reads its last entry. Never raises."""
+    v = strategy.get(key) if isinstance(strategy, dict) else None
+    if isinstance(v, (list, tuple)):
+        v = v[-1] if v else None
+    f = _finite_number(v)
+    return int(round(f)) if f is not None else int(default)
+
+
+def plan_float(strategy: object, key: str, default: float) -> float:
+    """`strategy[key]` as a finite float, or `default`. Never raises."""
+    v = strategy.get(key) if isinstance(strategy, dict) else None
+    f = _finite_number(v)
+    return f if f is not None else float(default)
+
+
+def _measured_lengths(state: object) -> list[float]:
+    """The geometry's measured lengths (bounding-box extents and diagonal) carried in `state`."""
+    if not isinstance(state, dict):
+        return []
+    out: list[float] = []
+    ext = state.get("extent_m")
+    if isinstance(ext, (list, tuple)):
+        out.extend(f for f in (_finite_number(x) for x in ext) if f is not None and f > 0)
+    d = _finite_number(state.get("diag_m"))
+    if d is not None and d > 0:
+        out.append(d)
+    return out
+
+
+def _clean_wake(raw: object, notes: list[str]) -> object | None:
+    """The plan's wake field with every knob the wake planner would refuse taken out (each one
+    then keeps its default); None when the field is not a wake at all."""
+    from collections.abc import Mapping
+
+    from meshpipeline.engines.wake_region import _KNOBS, validate_wake
+    if isinstance(raw, bool):
+        return raw
+    if not isinstance(raw, Mapping):
+        notes.append("the wake setting was not true, false or a set of wake knobs - "
+                     "the default wake is used")
+        return None
+    w: dict = {}
+    for k, v in raw.items():
+        if k not in _KNOBS:
+            notes.append(f"unknown wake knob {k!r} dropped")
+            continue
+        if k in ("levels_below_surface", "tiers"):
+            f = _finite_number(v)
+            if f is not None and float(f).is_integer():
+                v = int(f)
+        elif k in ("length", "start") and not isinstance(v, bool):
+            f = _finite_number(v)
+            v = f if f is not None else v
+        w[k] = v
+    bad = {p.split(".", 1)[1] for p, _ in validate_wake(w) if "." in p}
+    for k in sorted(bad):
+        notes.append(f"wake {k} {w.pop(k)!r} is out of range - its default is used")
+    return w
+
+
+def validate_plan(plan: object, *, flow_regime: str = "external",
+                  state: dict | None = None) -> tuple[dict, list[str]]:
+    """The planner's answer made safe to drive with, plus plain-words notes on what was changed.
+
+    - only the keys the brief's schema names are kept (internal and external differ);
+    - a knob that is not a finite number of the right kind (null, "30-40", NaN, a list of junk)
+      is DROPPED, so the driver uses its rules default for it;
+    - a usable number is CLAMPED to the range the brief itself states;
+    - max_cells is held to the compute limit, quality to balanced/strict, text to a short line;
+    - domain_margin entries are held to sensible positive ranges around the default box;
+    - reference_length_m is kept only when it agrees (within 10%) with the stated reference
+      length in `state["reference_length_m"]`, or - with none stated - with one of the
+      geometry's measured lengths (`state["extent_m"]`, `state["diag_m"]`); else dropped.
+
+    A plan that is not an object comes back empty - the rules-only plan. Never raises.
+    """
+    notes: list[str] = []
+    if not isinstance(plan, dict):
+        return {}, (["the plan was not an object - the rules defaults are used"]
+                    if plan is not None else [])
+    internal = flow_regime == "internal"
+    keys = _INTERNAL_KEYS if internal else _EXTERNAL_KEYS
+    ranges = _INTERNAL_RANGES if internal else _EXTERNAL_RANGES
+    out: dict = {}
+    unknown = sorted(str(k) for k in plan if k not in keys)
+    if unknown:
+        notes.append("keys the plan may not set were dropped: " + ", ".join(unknown))
+    for k in sorted(k for k in plan if k in keys):
+        v = plan[k]
+        try:
+            if k in _TEXT_KEYS:
+                if isinstance(v, str):
+                    out[k] = v[:_TEXT_LIMIT]
+                elif v is not None:
+                    notes.append(f"{k} was not text - dropped")
+            elif k == "quality":
+                q = v.strip().lower() if isinstance(v, str) else None
+                if q in ("balanced", "strict"):
+                    out[k] = q
+                elif v is not None:
+                    notes.append(f"quality {v!r} is not balanced or strict - the default is used")
+            elif k == "max_cells":
+                f = _finite_number(v)
+                if f is None or f <= 0:
+                    if v is not None:
+                        notes.append(f"max_cells {v!r} is not a usable cell count - "
+                                     "the default budget is used")
+                    continue
+                ceiling = int(polcfg.CELL_HARD_LIMIT)
+                iv = max(min(_MIN_PLAN_BUDGET, ceiling), min(int(f), ceiling))
+                if iv != int(f):
+                    notes.append(f"max_cells {int(f)} held to {iv}")
+                out[k] = iv
+            elif k == "wake":
+                if v is None:
+                    continue
+                w = _clean_wake(v, notes)
+                if w is not None:
+                    out[k] = w
+            elif k == "domain_margin":
+                if v is None:
+                    continue
+                if not isinstance(v, dict):
+                    notes.append("domain_margin was not a set of margins - the default box is used")
+                    continue
+                dm: dict = {}
+                for mk, mv in v.items():
+                    if mk not in _MARGIN_RANGES:
+                        notes.append(f"unknown margin {mk!r} dropped")
+                        continue
+                    f = _finite_number(mv)
+                    if f is None:
+                        notes.append(f"margin {mk} {mv!r} is not a number - its default is used")
+                        continue
+                    lo, hi = _MARGIN_RANGES[mk]
+                    c = min(max(f, lo), hi)
+                    if c != f:
+                        notes.append(f"margin {mk} {f:g} held to {c:g}")
+                    dm[mk] = c
+                if dm:
+                    out[k] = dm
+            elif k == "reference_length_m":
+                if v is None:
+                    continue                       # null is the brief's "no reference length"
+                f = _finite_number(v)
+                if f is None or f <= 0:
+                    notes.append(f"reference length {v!r} is not a positive length - dropped")
+                    continue
+                stated = _finite_number((state or {}).get("reference_length_m"))
+                against = [stated] if stated is not None and stated > 0 else _measured_lengths(state)
+                if against and any(abs(f - a) <= _REFERENCE_AGREEMENT * a for a in against):
+                    out[k] = f
+                else:
+                    notes.append(f"reference length {f:g} m does not match "
+                                 + ("the stated reference length" if stated else
+                                    "any measured length of the part" if against else
+                                    "anything known about the part") + " - dropped")
+            else:                                  # a numeric knob with a stated range
+                raw = v[-1] if (k == "surface_level" and isinstance(v, (list, tuple)) and v) else v
+                f = _finite_number(raw)
+                if f is None:
+                    if v is not None:
+                        notes.append(f"{k} {v!r} is not a usable number - its default is used")
+                    continue
+                if k in _INT_KNOBS:
+                    f = float(round(f))
+                lo, hi = ranges.get(k, (f, f))
+                c = min(max(f, lo), hi)
+                if c != f:
+                    notes.append(f"{k} {f:g} held to {c:g}")
+                out[k] = int(c) if k in _INT_KNOBS else c
+        except Exception:                          # a guard never costs a plan
+            notes.append(f"{k} could not be read - its default is used")
+    if internal and "feature_level" in out and "surface_level" in out \
+            and out["feature_level"] < out["surface_level"]:
+        notes.append(f"feature_level {out['feature_level']} raised to the surface level "
+                     f"{out['surface_level']}")
+        out["feature_level"] = out["surface_level"]
+    return out, notes
+
+
 #: After a pass runs out of time the next one must be MEANINGFULLY smaller. The wall cell of an
 #: internal plan is bore / cells_across_diameter and the near-wall cells dominate, so the count
 #: goes with cells_across squared: 0.7 of it is about half the cells. A proposal already at or
@@ -270,6 +507,8 @@ class PlanOutcome:
     plan: dict | None = None
     round: ModelRoundResult | None = None
     failure_marker: str = ""
+    #: what the guard (validate_plan) dropped or held from the model's answer, in plain words
+    guard_notes: tuple[str, ...] = ()
 
 
 async def make_mesh_plan(*, workspace, job_id: str, request_txt: str,
@@ -277,11 +516,13 @@ async def make_mesh_plan(*, workspace, job_id: str, request_txt: str,
                          previous_plan: dict | None = None,
                          flow_regime: str = "external",
                          mesh_fidelity: str = "",
-                         surface=None) -> dict | None:
+                         surface=None,
+                         reference_length_m: float | None = None) -> dict | None:
     return (await plan_with_accounting(
         workspace=workspace, job_id=job_id, request_txt=request_txt,
         prior_feedback=prior_feedback, previous_plan=previous_plan,
-        flow_regime=flow_regime, mesh_fidelity=mesh_fidelity, surface=surface)).plan
+        flow_regime=flow_regime, mesh_fidelity=mesh_fidelity, surface=surface,
+        reference_length_m=reference_length_m)).plan
 
 
 async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
@@ -293,7 +534,8 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
                                attempt: int = 1,
                                native_attempt: int = 1,
                                plan_call: int = 0,
-                               surface=None) -> PlanOutcome:
+                               surface=None,
+                               reference_length_m: float | None = None) -> PlanOutcome:
     stl = Path(workspace) / "input.stl"
     if not stl.exists():
         # NO PROVIDER CALL HAPPENS ON THIS PATH, so no reasoning is published for it.
@@ -339,8 +581,11 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
         from meshpipeline.contracts import user_notes as _un
         _notes = _un.workspace_block(workspace, consumer="snappy_planner")
         if _notes:
-            user += ("\n\n" + _notes + "\nYou may add \"notes_remark\": \"<one plain line on what "
-                     "the plan did with the notes>\" to your JSON.")
+            # asked of EVERY plan, the first engine's and the one a switch hands over to: the line on
+            # the result is the user's only sign their notes reached the mesh they got
+            user += ("\n\n" + _notes + "\nAdd \"notes_remark\": \"<one plain line on what the plan "
+                     "did with the notes>\" to your JSON - this plan's own, even when an earlier "
+                     "engine already planned this part.")
         if prior_feedback and previous_plan:
             user += ("\n\nYour PREVIOUS plan (which you must REVISE, not repeat) was:\n"
                      + json.dumps(previous_plan, indent=1)
@@ -388,15 +633,27 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
         plan = json.loads(m.group(0)) if m else None
         if isinstance(plan, dict) and plan.get("notes_remark"):
             _un.record_remark(workspace, plan.pop("notes_remark"), by="snappy_planner")
+        # THE GUARD: what leaves the planner is only what the drivers can use - every value that
+        # is not a usable number goes back to the rules default, every usable one is held to the
+        # brief's own range. The raw answer is still what the training record keeps.
+        _raw_plan = plan
+        _guard: list[str] = []
+        if plan is not None:
+            plan, _guard = validate_plan(plan, flow_regime=flow_regime, state={
+                "reference_length_m": reference_length_m,
+                "extent_m": metrics["extent_m"], "diag_m": metrics["diag_m"]})
+            if _guard:
+                logger.warning("Planner: answer guarded for %s - %s", job_id, "; ".join(_guard))
         _had_usage = bool(round_result.input_tokens or round_result.output_tokens)
         _log_plan_event(job_id, {
-            "status": "ok" if plan else "unparseable",
+            "status": "ok" if _raw_plan else "unparseable",
             "flow_regime": flow_regime,
             "is_revision": bool(prior_feedback or previous_plan),
             "system_snapshot": _system,
             "user_message": user,
             "response_text": content,
-            "plan": plan,
+            "plan": _raw_plan,
+            "guard_notes": _guard or None,
             "usage": {"prompt_tokens": round_result.input_tokens,
                       "completion_tokens": round_result.output_tokens}
             if _had_usage else None,
@@ -409,7 +666,7 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
             logger.info("Planner: plan for %s - approach=%r quality=%s n_layers=%s max_cells=%s",
                         job_id, str(plan.get("approach"))[:60], plan.get("quality"),
                         plan.get("n_layers"), plan.get("max_cells"))
-        return PlanOutcome(plan, round_result)
+        return PlanOutcome(plan, round_result, guard_notes=tuple(_guard))
     except StaleExecutionPublish:
         raise
     except Exception:
