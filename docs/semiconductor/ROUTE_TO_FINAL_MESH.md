@@ -270,3 +270,78 @@ phase 4   Gmsh 2.5D            weeks                strategic, not this quarter
 Phase 0b blocks phase 2 because with `minVol` wrong the layer run extrudes nothing and reports
 success. Phase 2c must land with 2b because separating them makes the integrated answer worse.
 Everything else can slip without breaking what came before.
+
+---
+
+## Added 2026-11-06: two things measured after the first draft
+
+### The staircase cannot be reduced by re-orienting the part, and now I know why
+
+The staircase factor is `|cos theta| + |sin theta|` per wall, area-weighted. That does not depend
+on cell size, which is the reason refining never removes the area error and only shrinks the step.
+But it does depend on angle, and cfMesh meshes on global axes while we choose how the geometry is
+oriented. So rotating the STL about y before meshing and rotating back afterwards is free, and if
+the network had a dominant off-axis direction there would be a saving sitting there.
+
+Swept every angle against the real CAD wall normals, area-weighted, on `fluid.stl`:
+
+| rotation about y | inflation on the vertical walls |
+|---|---|
+| **as built, 0 deg** | **+8.44%, and this is the minimum** |
+| 15 deg | +23.88% |
+| 30 deg | +33.99% |
+| 45 deg | +37.61%, the worst |
+| 90 deg | +8.44%, by symmetry |
+
+The part is already in the best orientation available. 61.1% of wall area sits within 5 degrees of
+one axis and another 14.9% within 5 degrees of the other, so 76.0% is effectively aligned already.
+The remaining 24.0% is off-axis at a mean 25.42 degrees and scattered across every direction,
+because it is a branching tree, and no single rotation can align many directions at once.
+
+The model predicts +6.2% overall against the +7.8% measured on the mesh, so it accounts for most of
+the effect and the scale-invariance conclusion holds.
+
+**So three routes to the staircase are now measured dead, not assumed dead:** finer cells
+(scale-invariant), re-orienting (already optimal), and the three refinement utilities (interface
+area came back bit-identical in all 13 verification runs). What remains is phase 2c.
+
+### The plate-only mesh had a fitted outer skin and the coupled mesh does not
+
+I had this wrong. `block.stl` is not a box despite the name: it is the plate's own sewn envelope,
+**27,696 triangles**, and the delivered plate mesh's `meshDict` points `surfaceFile` straight at
+it. cfMesh projects the domain boundary onto its surface, so that mesh's outer skin was genuinely
+body-fitted.
+
+| mesh | domain handed to cfMesh | triangles | outer skin |
+|---|---|---|---|
+| plate only, `ws_shell`, 270.5M | `block.stl` | 27,696 | **fitted** |
+| coupled, `cbox2`, 413M | `cb_domain_box.stl` | 12 | staircase |
+
+`couple_box.sh` names this as its one cost. It was accepted because cfMesh takes exactly one shell
+as its domain and five attempts to hand it plate-plus-chip as one shell all failed: two
+concatenated-shell variants returned `chipCells 0`, and both OCC fuses died with no traceback. So
+the fitted skin is not recoverable for a coupled mesh without solving that fuse, and `ws_fitted`,
+which tried, was 6.2x slower for 19.8% fewer cells and never finished.
+
+**What did not change either way:** the coolant walls and the chip contact are staircase cuts in
+both meshes, because they are interior to the domain whatever surface bounds it. The +11.6%
+channel area error is identical in both. Only the plate's outside differs.
+
+### Phase 0c: find out whether losing the fitted skin cost anything
+
+New, and it follows from the above. Measure the staircase area error on `wall_outer`, the plate's
+outer surface, the same way the channels were measured: face centres and outward normals out of
+the solid region's boundary index, against `block.stl`.
+
+| | |
+|---|---|
+| effort | an hour, no meshing, on the sidecar we already hold |
+| `wall_outer` faces in the delivered mesh | 615,176 |
+| why it might not matter | the outer skin is where heat leaves to ambient, not where it crosses into the coolant, so its area error scales external loss rather than the chip-to-coolant path |
+| why it might | if the deliverable includes case temperature or an external convection coefficient, an inflated outer area overstates how much heat escapes without going through the water |
+
+If the error is small, the box domain is settled and nothing more is owed to it. If it is large,
+the fuse problem is worth one more attempt, because the fitted skin is the only thing that fixes
+it and we abandoned it on an uncontrolled comparison.
+
+Run this alongside phase 0a and 0b. It changes nothing about phase 1.
