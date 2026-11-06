@@ -23,19 +23,11 @@ REQUIRED = {
         "test_a_cancel_that_lands_after_the_workers_first_read_stops_the_delivery"),
 }
 
-#: The ONLY skips a correctly provisioned run may contain. Both are genuinely optional inputs a
-#: clean clone does not have, not services this runner is responsible for starting:
-#:   - the licensed CAD STEP fixture, which is not redistributable
-#:   - the two restricted MinIO identities, which exercise a provider's own IAM refusals
-ALLOWED_SKIP_SUBSTRINGS = (
-    "real STEP not staged",
-    "restricted MinIO identity not provisioned",
-    # A compose stack brought up INSIDE the containerised tier would be a container nested in a
-    # container, which is not the isolation these tests describe. This string is emitted only when
-    # the runner marks the tier; a host run with no daemon still says "docker is unavailable here"
-    # and still fails here, which is the case worth catching.
-    "compose stacks are a host-tier concern",
-)
+#: Skips a correctly provisioned run may contain: none. Every test in the tier needs only what the
+#: runner starts, so ANY skip - above all one for a missing service - is the false green this guard
+#: exists to catch. (The tests that depended on unstaged optional inputs were removed rather than
+#: left permanently skipped in CI.)
+ALLOWED_SKIP_SUBSTRINGS: tuple[str, ...] = ()
 
 #: A floor, not a target. The database-backed modules contribute far more than this; the point is
 #: that "collected nothing" and "collected only the hermetic subset" both fail loudly.
@@ -100,15 +92,14 @@ def main(paths: list[str], partial: bool = False) -> int:
     """Judge one report, or the UNION of a sharded run's reports.
 
     THE UNION IS THE SUBJECT, not each report in turn, and that is the whole reason this takes a
-    list. Split four ways, no single shard executes MIN_EXECUTED tests and no single shard holds
+    list. Split across shards, no single shard executes MIN_EXECUTED tests and no single shard holds
     all three named guarantees - so judging shard-by-shard would report the tier as vacuous on
     every run. Judged together, the assertions mean exactly what they meant when the tier was one
     session: this many tests really executed against a real database, and these three guarantees
     really passed.
 
     `partial` is the other half of that. A shard asserts what is true OF A SHARD - the report
-    parses, it is not empty, nothing failed, nothing skipped for a reason that is not one of the
-    two optional fixtures - and defers the two whole-suite claims to the union pass. It is not a
+    parses, it is not empty, nothing failed, nothing skipped - and defers the two whole-suite claims to the union pass. It is not a
     way to turn the guard off: the union pass is a job the gate waits on, so a run where it did
     not happen is not green.
     """
@@ -149,7 +140,7 @@ def main(paths: list[str], partial: bool = False) -> int:
     for c in failed:
         problems.append(f"failed: {_classname_module(c)}::{c.get('name')}")
 
-    # Every skip must be one of the two optional fixtures. A skip for a MISSING SERVICE is the
+    # No skip is optional. A skip for a MISSING SERVICE is the
     # exact regression this guard exists to catch, so it is reported with its own reason text.
     for c in skipped:
         node = c.find("skipped")
@@ -161,7 +152,7 @@ def main(paths: list[str], partial: bool = False) -> int:
 
     # The named guarantees must be present AND passing - not merely 'not failed', which a skipped
     # or absent test also satisfies. Asserted over the UNION only: the three live in three
-    # different modules, so at four shards no single report can hold them all.
+    # different modules, so once sharded no single report can hold them all.
     for label, (module, name) in ({} if partial else REQUIRED).items():
         matches = [c for c in cases
                    if _classname_module(c) == module and (c.get("name") or "").startswith(name)]

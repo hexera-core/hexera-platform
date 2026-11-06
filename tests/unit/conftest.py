@@ -237,6 +237,8 @@ os.environ.setdefault("MESH_API_KEY",     "")
 # LOUD on purpose: if worker.tasks stops importing under the stubs, every test
 # session should fail here, not silently skip (a swallowed ImportError once
 # masked a broken celery.signals stub for the whole local suite).
+import functools as _functools
+
 import pytest as _pytest
 
 import meshpipeline.adapters.pipeline_execution.celery  # noqa: F401  side-effect: register `worker` package for tests
@@ -283,6 +285,17 @@ def _runtime_paths_are_test_owned(tmp_path):
 
 
 @_pytest.fixture(autouse=True)
+def _model_clock_starts_at_zero():
+    """progress_clock's native-run seconds are process-wide; a test that ran a mesher must not shift
+    model_time() for whichever test the shard runs next."""
+    from meshpipeline.contracts import progress_clock
+
+    progress_clock.reset()
+    yield
+    progress_clock.reset()
+
+
+@_pytest.fixture(autouse=True)
 def _reset_circuit_breakers():
     try:
         from meshpipeline.adapters._shared import resilience
@@ -299,6 +312,16 @@ def _reset_circuit_breakers():
 
 
 # the user stream
+@_functools.lru_cache(maxsize=1)
+def _publisher_protocol() -> frozenset:
+    """The event names the production publisher calls through to, read from the wrapper itself
+    rather than copied here - so a method added there is a name this double is held to."""
+    from meshpipeline.application.execution_publisher import OwnershipCheckedPublisher
+    return frozenset(name[1:] for name in dir(OwnershipCheckedPublisher)
+                     if name.startswith("a") and not name.startswith("_")
+                     and callable(getattr(OwnershipCheckedPublisher, name, None)))
+
+
 class FakePublisher:
 
     def __init__(self, job_id: str = "", agent: str = "") -> None:
@@ -320,12 +343,33 @@ class FakePublisher:
                                                               op_id=op_id)
     def check(self, statement, *, ok) -> None:      self._rec("check", statement=statement, ok=ok)
     def action(self, actions) -> None:              self._rec("action", actions=actions)
-    def reasoning(self, text) -> None:              self._rec("reasoning", text=text)
+    # the production spelling (`arationale`/`areasoning` in application/execution_publisher.py),
+    # not a convenient shorthand: a double whose signature differs raises a TypeError that the
+    # user-stream callers swallow exactly as they swallow a missing method
+    def reasoning(self, rid, phase, *, duration_ms=None, token_count=None, content=None,
+                  status="active") -> None:
+        self._rec("reasoning", id=rid, phase=phase, duration_ms=duration_ms,
+                  token_count=token_count, content=content, status=status)
+    def rationale(self, conclusion, because="") -> None:
+        self._rec("rationale", conclusion=conclusion, because=because)
+    def file(self, display_path, byte_count, operation="created", op_id="") -> None:
+        self._rec("file", display_path=display_path, byte_count=byte_count,
+                  operation=operation, op_id=op_id)
+    def tool_call(self, cid, tool_name, arguments=None, status="started", op_id="") -> None:
+        self._rec("tool_call", id=cid, tool_name=tool_name, status=status, op_id=op_id)
+    def tool_result(self, rid, call_id, tool_name, result=None, status="success",
+                    duration_ms=None, op_id="") -> None:
+        self._rec("tool_result", id=rid, call_id=call_id, tool_name=tool_name, status=status,
+                  duration_ms=duration_ms, op_id=op_id)
     def search(self, query) -> None:                self._rec("search", query=query)
     def screenshot(self, image_b64, op_id="") -> None:
         self._rec("screenshot", op_id=op_id)
-    def meshing(self, engine, budget_s) -> None:    self._rec("meshing", engine=engine, budget_s=budget_s)
-    def meshed(self, cells=None) -> None:           self._rec("meshed", cells=cells)
+    # `history` and `op_id` are accepted because `ameshing`/`ameshed` pass them: a double that
+    # refuses an argument the protocol sends raises a TypeError the callers swallow, which is the
+    # same silent gap as a missing method. They are not recorded, so the event shape is unchanged.
+    def meshing(self, engine, budget_s, history=None, op_id="") -> None:
+        self._rec("meshing", engine=engine, budget_s=budget_s)
+    def meshed(self, cells=None, op_id="") -> None: self._rec("meshed", cells=cells)
     def plan(self, cells=None, layers=None, refinements=None, op_id="") -> None:
         self._rec("plan", cells=cells, layers=layers, refinements=refinements, op_id=op_id)
     def mesh_stage(self, key, label, op_id="") -> None:
@@ -337,6 +381,44 @@ class FakePublisher:
         # production passes the terminal identity so an early close and a later
         # outbox delivery are one event; the double must accept it
         self._rec("closing", text=text, event_id=event_id)
+
+    def receipt(self, title, rows, op_id="") -> None:
+        self._rec("receipt", title=title, op_id=op_id,
+                  rows=[dict(r) for r in (rows or ())])
+
+    def mesh_partial(self, phase, object_key, op_id="") -> None:
+        self._rec("mesh_partial", phase=phase, object_key=object_key, op_id=op_id)
+
+    # A PROTOCOL METHOD THIS DOUBLE IS MISSING IS A TEST FAILURE, NEVER A SILENT PASS.
+    #
+    # Every `a<name>` wrapper in application/execution_publisher.py calls straight through to
+    # `<name>` on this object, and the user stream is deliberately never load-bearing:
+    # pipeline/repair_receipt.apublish and its siblings swallow `Exception` so a sick stream can
+    # never fail a customer's run. Those two facts together meant a test routing a receipt through
+    # this fake swallowed its own AttributeError and passed having published NOTHING - which is
+    # how the Repair receipt reached review untested on the path that emits it.
+    #
+    # `pytest.fail` raises from BaseException, which `except Exception` does not catch, so the gap
+    # surfaces in the test that has it rather than in production. The production handlers are
+    # untouched: they still swallow everything a real publisher can raise.
+    #
+    # ONLY the protocol's own names. Callers probe this object with `getattr(publish, "...", None)`
+    # for optional seams (engines/fea_driver.py, contracts/narration.py), and a double that
+    # answered every attribute with a callable would turn those probes into false positives.
+    # Anything else still raises AttributeError exactly as before.
+    def __getattr__(self, name: str):
+        if name.startswith("_") or name not in _publisher_protocol():
+            raise AttributeError(name)
+
+        def _unimplemented(*_a, **_kw):
+            _pytest.fail(
+                f"FakePublisher does not implement {name!r}, which the publisher protocol in "
+                f"application/execution_publisher.py calls through to - and the production "
+                f"callers swallow the AttributeError, so without this the test would have passed "
+                f"having published nothing. Add it beside the others in conftest.",
+                pytrace=False)
+
+        return _unimplemented
 
 
 def install_durable_execution_fakes(monkeypatch, run_module, *, published=None,

@@ -434,6 +434,76 @@ async def get_surface(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     return out
 
 
+@router.get("/{job_id}/mesh/partial")
+async def get_mesh_partial(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                           organization_id: str = Depends(org_dep)):
+    """The newest boundary surface of the mesh-so-far this job published, while it is still meshing.
+
+    404 until there is one, and on every deployment that does not publish them
+    (MESH_PROGRESSIVE_SNAPSHOT_ENABLED). The bytes are handed through as the mesher wrote them, as
+    the geometry check's skin is: the worker already wrote the JSON the viewer reads, and decoding
+    and re-encoding it here would only make copies.
+
+    THE KEY IS NEVER THE CALLER'S. It is read from this job's own event stream - the pointer the
+    run published - so a caller cannot name an object, and the route reaches nothing in the
+    exchange that this job did not put there itself. Serving it through the API rather than
+    handing the browser a signed URL is also what keeps the exchange bucket closed: no CORS rule,
+    no public access, one reader.
+    """
+    import meshpipeline.settings.mesh_snapshot as mscfg
+    if not mscfg.MESH_PROGRESSIVE_SNAPSHOT_ENABLED:
+        raise HTTPException(404, "This deployment does not publish a mesh while it is building")
+    async with get_db() as db:
+        job = await svc.get_job(db, job_id, owner_id, organization_id=organization_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    key = await _published_partial_key(str(job_id))
+    if not key:
+        raise HTTPException(404, "No partial mesh has been published for this job")
+    from fastapi.responses import Response
+
+    from meshpipeline.contracts.mesh_partial import read_partial
+    try:
+        raw = await asyncio.to_thread(read_partial, key)
+    except Exception as exc:  # noqa: BLE001 - the exchange is a dependency, not the caller
+        logger.warning("partial mesh unreadable for job %s: %s", job_id, type(exc).__name__)
+        raise HTTPException(503, "The partial mesh is temporarily unavailable") from exc
+    if raw is None:
+        # The run moved on and its exchange was tidied, or the frame expired. Not an error: the
+        # delivered mesh is what the viewer shows from here.
+        raise HTTPException(404, "No partial mesh is stored for this job")
+    return Response(content=raw, media_type="application/json")
+
+
+async def _published_partial_key(job_id: str) -> str:
+    """The object key of the newest partial THIS job published, or "" when it published none.
+
+    Read from the job's own durable event log, which is the record of what the run said - so the
+    route never trusts a key from a request and never derives one from an operation key it would
+    have to be told. One list read; the log is already held for the page's replay."""
+    import json as _json
+
+    import meshpipeline.events as E
+    from meshpipeline.artifact_keys import is_partial_key
+    from meshpipeline.contracts.event_stream import subscription
+    try:
+        raw = await subscription(job_id).backlog()
+    except Exception as exc:  # noqa: BLE001 - no stream, no pointer; the route 404s
+        logger.info("partial mesh: the event log for job %s is unreadable (%s)",
+                    job_id, type(exc).__name__)
+        return ""
+    key = ""
+    for line in raw or ():
+        try:
+            event = _json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(event, dict) and event.get("type") == E.MESH_PARTIAL \
+                and is_partial_key(event.get("object_key") or ""):
+            key = str(event.get("object_key") or "") or key
+    return key
+
+
 async def _up_axis_of(job_id: uuid.UUID, owner_id: str, organization_id: str) -> str | None:
     """Which way is up for the part a job meshed - what the user confirmed on its geometry check,
     else what the check proposed - for the viewer to open with. None when the job had no check or

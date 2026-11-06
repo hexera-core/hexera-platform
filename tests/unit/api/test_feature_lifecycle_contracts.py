@@ -183,6 +183,10 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/simulation/{job_id}/surface"),
         ("GET", "/api/v1/simulation/{job_id}/surface.vtk"),     # the viewer's ParaView export
         ("GET", "/api/v1/simulation/{job_id}/report.html"),     # the Mesh report, a download of its own
+        # THE MESH ARRIVING: a boundary surface of the mesh-so-far, while the run is still meshing.
+        # Served only where MESH_PROGRESSIVE_SNAPSHOT_ENABLED is on, from the pointer the run
+        # itself published; the viewer asks for it when a `mesh_partial` event says there is one.
+        ("GET", "/api/v1/simulation/{job_id}/mesh/partial"),
         ("POST", "/api/v1/upload/step-file"),
         # THE DIRECT UPLOAD for a file too large for a request body: begin (a signed PUT URL for
         # one object), then finish (the multipart route's checks on the bytes that arrived). The
@@ -194,6 +198,10 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/geometry/{session_id}/check/skin"),      # the part's skin, for the 3D stage
         ("POST", "/api/v1/geometry/{session_id}/check/retry"),    # run the scout or the naming again
         ("POST", "/api/v1/ws/ticket"),
+        # THE DATA-SUBJECT ROUTES (docs/compliance/dsar-runbook.md). Console session only - an API
+        # key is refused both - because a leaked key must not export a tenant wholesale or erase it.
+        ("GET", "/api/v1/account/export"),       # everything held about the caller, one JSON file
+        ("POST", "/api/v1/account/erasure"),     # delete the account; typed address to confirm
     }
     v1 = {r for r in served if r[1].startswith("/api/v1/")}
     assert v1 == expected, (

@@ -72,6 +72,9 @@
 /* the geometry stage's panel holds a form, so it gets a little more room than a parts list -
    on a wide window only; below 900px the stage stacks like every other viewer */
 #workbench .viewer.gc-stage{grid-template-columns:minmax(0,1fr) clamp(340px,30vw,460px)}
+/* the mesh WHILE IT IS BEING BUILT is a viewport and nothing else: there is nothing to decide
+   about a mesh that is still growing, so it carries no panel beside it */
+#workbench .viewer.mp-view{grid-template-columns:minmax(0,1fr)}
 /* a thermal model's panel is a parts table: wider again, and its foot sits on the panel's edge */
 #workbench .viewer.tm-stage{grid-template-columns:minmax(0,1fr) clamp(400px,36vw,560px)}
 #workbench .viewer.tm-stage .v-bar{padding-bottom:0}

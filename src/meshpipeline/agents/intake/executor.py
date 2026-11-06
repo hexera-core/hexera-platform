@@ -170,6 +170,9 @@ class IntakeExecutionState:
     submit_args: dict | None = None
     #: the user's own words captured with the submission - verbatim, never the model's rewrite
     user_notes: list = field(default_factory=list)
+    #: THE TURN ONLY ANSWERS: the user asked a question about the run that has ended, so no new
+    #: submission is taken in it (agents/intake/chat_facts.asks_about_last_run)
+    answer_only: bool = False
 
     search_calls_used: int = 0
     search_events: list = field(default_factory=list)
@@ -688,6 +691,16 @@ class IntakeToolExecutor:
                 "Not allowed in this turn: you compared engines for the user, who has not selected "
                 "one. Tell them which engines are compatible and ask which they want. Nothing was "
                 "saved."))
+        if st.answer_only:
+            # A QUESTION ABOUT THE RUN THAT ENDED is answered, never turned into another run: the
+            # exhaust header's "How did the mesh turn out?" was answered with a fresh summary and
+            # "Shall I proceed?" (dry run, 2 Nov)
+            logger.info("Intake: submit rejected - the user asked about the finished run - job_id=%s",
+                        self._job_id)
+            return IntakeToolResult(tool="submit_requirements", accepted=False, content=(
+                "Not in this turn: the user asked a question about the run that has ended. Answer it "
+                "from the LAST RUN facts in your instructions - the mesh exists - and set up nothing. "
+                "Nothing was saved."))
         _up = self._confirmed_up_axis()
         val_errors = ((validate_submission(args, up_axis=_up) if _up else validate_submission(args))
                       or self._measured_setup_errors(args))
@@ -763,7 +776,12 @@ class IntakeToolExecutor:
         unchanged = (prior.get("status") == ap.INVALIDATED
                      and prior.get("intent_fingerprint") == at.fingerprint(intent_canon)
                      and _same_submission(prior.get("payload"), payload))
+        # ...and when it did change, the summary says WHAT, so the user sees their correction taken
+        changed = (ap.changed_line(ap.changes_between(prior.get("payload"), payload),
+                                   since_run=prior.get("status") == ap.DISPATCHED)
+                   if prior.get("payload") and not unchanged else "")
         st.submit_summary = (at.CONFIRM_REQUIREMENTS_ASK + "\n\n"
+                             + (f"{changed}\n\n" if changed else "")
                              + (f"{NOTES_KEPT}\n\n" if notes else "")
                              + (f"{ap.NOTHING_CHANGED} " if unchanged else "") + ap.PROCEED_ASK)
         st.approval = ap.create(

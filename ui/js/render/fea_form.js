@@ -33,6 +33,9 @@ function sizeHtml(p) {
 
 function bodiesHtml(f) {
   const n = f.bodies;
+  // a file of loose surfaces (an IGES of trimmed faces) has no solids to count: its bodies are the pieces
+  // its faces sew into (cad/fea_measure.sewn_bodies)
+  if (!n && f.bodies_sewn > 0) return `${f.bodies_sewn} (surfaces, counted by sewing them into bodies)`;
   // the clean check counts the pieces a solid is made of: one solid of two overlapping pieces is
   // said as such, so the two lines never disagree
   if (n === 1 && f.pieces > 1) return `1 solid, made of ${f.pieces} pieces that pass into each other`;
@@ -299,8 +302,27 @@ export function measureHtml(m, p) {
 }
 
 /** Each type's lines first shown; the rest of a type open with "Show all N", or when a tag on the
- *  part is clicked. */
+ *  part is clicked. A type with more than FOLD_SPOTS lines is FOLDED to its one-line summary (how many,
+ *  and the range of their sizes) - an IGES landing gear listed 570 identical "0°" corners (1 Nov). */
 const FIRST_SPOTS = 8;
+const FOLD_SPOTS = 12;
+
+/** One type's spots in one line: "160 · 14° to 149°, refinement capped" / "29 · radius 1.2 to 15 mm". */
+export function groupSummary(type, rows, p) {
+  const n = rows.length;
+  if (type === "sharp_corner") {
+    const a = rows.map((h) => Math.round(Number(h.angle_deg))).filter((v) => !isNaN(v));
+    if (!a.length) return `${n}`;
+    const lo = Math.min(...a), hi = Math.max(...a);
+    return `${n} · ${lo === hi ? `${lo}°` : `${lo}° to ${hi}°`}, refinement capped`;
+  }
+  const r = rows.map((h) => Number(h.radius_mm)).filter((v) => !isNaN(v));
+  if (!r.length) return `${n}`;
+  const lo = Math.min(...r), hi = Math.max(...r);
+  const u = lenUnit(p);
+  return `${n} · radius ${lo === hi ? len(lo, p) : `${len(lo, p)} to ${len(hi, p)}`} ${u}`;
+}
+
 const measureState = (m) => (!m ? "none" : m.measured ? "measured" : "unmeasured");
 /** The hot spots are listed in groups, one per type, in the order the server sends them (sharpest
  *  and smallest first). */
@@ -329,11 +351,17 @@ function measureBody(m, p) {
   // EVERY hot spot is listed, in a group per type; a long group shows its first lines and opens
   // whole with "Show all N" (a spot left out looks the same as one never found)
   const list = spotGroups(spots).map(([type, rows]) => {
+    // A LONG GROUP IS FOLDED to its one-line summary (how many, and the range of their sizes): its lines
+    // stay, closed, for "Show all N" and for a mark clicked on the part
+    const fold = rows.length > FOLD_SPOTS;
+    const first = fold ? 0 : FIRST_SPOTS;
     const lines = rows.map((h, i) =>
-      `<li class="fea-spot-row" data-spot="${esc(h.id)}"${i >= FIRST_SPOTS ? " hidden" : ""}><span class="fea-spot-id">${esc(h.id)}</span><span>${spotWords(h, p)}</span></li>`).join("");
-    const folded = rows.length > FIRST_SPOTS
+      `<li class="fea-spot-row" data-spot="${esc(h.id)}"${i >= first ? " hidden" : ""}><span class="fea-spot-id">${esc(h.id)}</span><span>${spotWords(h, p)}</span></li>`).join("");
+    const folded = rows.length > first
       ? `<li class="fea-spot-more"><button type="button" class="fea-spot-open">Show all ${rows.length}</button></li>` : "";
-    return `<li class="fea-spot-group" data-type="${esc(type)}"><div class="fea-spot-head">${esc(GROUP_WORDS[type] || "Other hot spots")} <span class="fea-spot-n">${rows.length}</span></div>
+    const head = `${esc(GROUP_WORDS[type] || "Other hot spots")} <span class="fea-spot-n">${rows.length}</span>`
+      + (fold ? ` <span class="fea-spot-sum">${esc(groupSummary(type, rows, p).replace(/^\d+ · /, ""))}</span>` : "");
+    return `<li class="fea-spot-group" data-type="${esc(type)}"${fold ? ' data-folded="1"' : ""}><div class="fea-spot-head">${head}</div>
       <ul class="fea-spot-rows">${lines}${folded}</ul></li>`;
   }).join("");
   // only a part past the record's own limit (thousands of hot spots) has any the server did not send
@@ -342,6 +370,7 @@ function measureBody(m, p) {
     ? `<div class="gc-note">A perfectly sharp inside corner's stress never settles however fine the mesh, so refinement there stops at a set level.</div>` : "";
   return `<div class="rc-row"><div class="rc-k">Thinnest wall</div><div class="rc-v fea-wall">${wall}</div></div>
     <div class="rc-row"><div class="rc-k">Hot spots</div><div class="rc-v fea-spots-sum">${esc(m.summary || "")}</div></div>
+    ${m.contacts ? `<div class="rc-row"><div class="rc-k">Contacts</div><div class="rc-v fea-contacts">${esc(String(m.contacts))} place${m.contacts === 1 ? "" : "s"} where parts touch (not corners)</div></div>` : ""}
     ${spots.length ? `<ul class="fea-spots" aria-label="Hot spots the mesh will be refined at">${list}${unsent}</ul>
     <div class="gc-note">The mesh is refined at these automatically.</div>${capped}` : ""}`;
 }

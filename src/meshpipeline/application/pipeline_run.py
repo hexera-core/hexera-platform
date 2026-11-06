@@ -506,8 +506,17 @@ def _notes_remarks(final_state) -> list:
     if not final_state.get("user_notes"):
         return []
     try:
-        from meshpipeline.contracts.user_notes import read_remarks
-        return read_remarks(final_state.get("openfoam_workspace") or "")
+        from meshpipeline.contracts.user_notes import given_remark, read_remarks
+        said = read_remarks(final_state.get("openfoam_workspace") or "")
+        if said:
+            return said
+        # NO STEP SAID WHAT IT DID WITH THEM: the result still says they were given to every attempt,
+        # so the line never just vanishes (the exhaust header of the 2 Nov dry run: VMTK -> snappy,
+        # and "From your notes" was gone from the result)
+        ladder = final_state.get("engine_ladder") if isinstance(final_state.get("engine_ladder"), dict) else {}
+        from meshpipeline.engines.registry import engine_label
+        tried = [str(a.get("engine") or "") for a in ladder.get("attempts") or [] if isinstance(a, dict)]
+        return [given_remark([engine_label(e) for e in (tried or [str(final_state.get("engine") or "")]) if e])]
     except Exception:  # noqa: BLE001 - best effort (NOTE-3)
         return []
 
@@ -1226,6 +1235,13 @@ async def _run_async(req: JobRequest) -> dict:
         # asked ONCE, here: the plan's system-failure exclusion and the status's timeout account
         # must read the same answer
         _timed_out = _pb.is_exhausted(_pipeline_deadline)
+        if _timed_out:
+            # the pipeline's own clock is a guard (docs/RULES.md TIME-5): it ends the run as
+            # ours, and is recorded as such
+            import meshpipeline.settings.runtime as _rtcfg
+            from meshpipeline.engines.determinism import note_guard_trip
+            note_guard_trip("pipeline", rule="TIME-5",
+                            guard_s=float(_rtcfg.PIPELINE_TOTAL_TIMEOUT_SECONDS))
         _review_plan = _rrp.plan_review(
             final_state, status=final_status,
             system_failure=_rrp.is_system_failure(api_failure=bool(api_failure),

@@ -136,6 +136,9 @@ class ConfirmIn(BaseModel):
     fea_connection: str = ""
     #: SET BY THE SERVER for an FEA assembly, from the stored check: its parts, in plain words.
     parts_summary: str = ""
+    #: SET BY THE SERVER for an FEA assembly: where its parts meet, in the stage's own words
+    #: (application/fea_check.joints_words), so the chat counts the joints the stage counted.
+    joints_summary: str = ""
     #: PLAN-fea-18: the stage's switch for the small-gap joins (on unless the user switched it off);
     #: read into the run from the stored confirmation (application/fea_check.confirmed_gap_joins).
     fea_gap_joins: bool | None = None
@@ -307,8 +310,15 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     if payload["route"] == fea_check.STAGE_FEA:
         # the part, its unit and size (the proposal), its bodies and the clean check - no flow form
         payload["fea"] = await asyncio.to_thread(fea_check.fea_view, payload.get("facts"))
-    if payload.get("check_mode") != THERMAL_CHECK:
-        # the generic form's fields; a thermal model is served as its `thermal` view instead
+        # ...and NO OPENINGS: a solid part for structural analysis has no inlet or outlet, so the
+        # scout's flow openings (read before the purpose was known) are not served on its check
+        # (the dry run's stud punch carried 18, the knuckle 7). Stored as they were, for a user who
+        # turns the part to CFD.
+        if isinstance(payload.get("proposal"), dict):
+            payload["proposal"] = fea_check.without_flow_openings(payload["proposal"])
+    if payload.get("check_mode") != THERMAL_CHECK and payload["route"] != fea_check.STAGE_FEA:
+        # the generic form's fields; a thermal model is served as its `thermal` view instead, an
+        # FEA part as its `fea` view (no flow, far field or ground to fill in)
         payload["fields"] = form_spec()
     payload.setdefault("named", payload.get("status") == "ready")
     payload["naming_requested"] = naming_pending(requested)
@@ -365,12 +375,30 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     # THE LIVE LINE the chat shows while the part is checked: the step running now, the steps
     # done with their times, a note when one runs long, and the way on when one fails - held to
     # this check's own limits (sized to its file)
+    # WHERE A WAITING CHECK STANDS (contracts/geometry_check.queue_state): "queued behind 2 other checks", or
+    # checking once a worker has it - asked only while a task of this check may still be waiting
+    queue = await asyncio.to_thread(_queue_of, str(session_id), reported, requested)
     payload["progress"] = progress_view(reported, requested, progress,
                                         scout_limit_s=limits_of(stored)[0],
                                         naming_limit_s=limits_of(requested, RETRY_NAMING)[0],
                                         confirmed=confirmed is not None,
-                                        fea=payload.get("route") == fea_check.STAGE_FEA)
+                                        fea=payload.get("route") == fea_check.STAGE_FEA,
+                                        queue=queue)
     return payload
+
+
+def _queue_of(session_id: str, reported: dict | None, requested: dict | None) -> dict:
+    """The queue's word on this session's scout and naming tasks (their ids are the session's: runtime/
+    composition), for the tasks that may still be waiting."""
+    from meshpipeline.contracts.geometry_check import queue_state
+
+    out: dict = {}
+    status = str((reported or {}).get("status") or "")
+    if status == "pending":
+        out["scout"] = queue_state(f"geometry-check-{session_id}")
+    if requested and not requested.get("withdrawn") and status in ("scouted", "pending"):
+        out["naming"] = queue_state(f"geometry-naming-{session_id}")
+    return {k: v for k, v in out.items() if v is not None}
 
 
 def unit_needed(session) -> bool:
@@ -605,6 +633,7 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         body = body.model_copy(update={
             "fea_connection": connection,
             "parts_summary": fea_check.parts_words(asm) if asm else "",
+            "joints_summary": fea_check.joints_words(asm.get("interfaces")) if asm else "",
             "fea_pairs": pair_changes or None,
             "pairs_summary": fea_check.pairs_summary(pair_changes, asm),
             "fea_gap_joins": gap_on if gaps else None,

@@ -252,12 +252,13 @@ def single_skin_notes(ws: Path) -> tuple[dict[int, int], list[str], list[dict]]:
 
 def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[int]] | None = None,
                 part_volumes: dict[str, list[int]] | None = None,
-                whole: set[tuple[int, int]] | None = None) -> int | None:
+                whole: set[tuple[int, int]] | None = None, short: dict | None = None) -> int | None:
     """The plan's zones as gmsh fields; returns the background field (None when no zone binds).
     face_tags: an assembly's face names (Part_k_Face_j) -> the surface tags carrying each; a single
     part's Face_k is surface k. part_volumes: an assembly's Part_k -> the volume tags carrying it
     (the part's base size holds through those volumes, PLAN-fea-17). whole: the CAD entities a MESH-9
-    compound meshes (a field that can size one of them is never restricted)."""
+    compound meshes (a field that can size one of them is never restricted). short: MESH-24's sized
+    short edges (engines/gmsh/fea_short.plan_short), each a field of its own."""
     from meshpipeline.engines.fea_size_field import group_zones
 
     def tags_of(name: str) -> list[int]:
@@ -352,6 +353,12 @@ def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[
             ids.append(th)
             bounds.append({"field": th, "dim": dim, "tags": list(src), "size": size, "reach": reach,
                            "dist_max": reach + (base - size) / max(g1, 1e-6), "sampling": int(n_s)})
+    if short and short.get("edges"):
+        from meshpipeline.engines.gmsh import fea_short as SHORT
+
+        s_ids, s_bounds = SHORT.fields(gmsh, short, base, g1 + 1.0)
+        ids += s_ids
+        bounds += s_bounds
     if not ids:
         return None
     ids = reach_restricted(gmsh, ids, bounds, base, whole=whole) if whole else reach_restricted(gmsh, ids, bounds, base)
@@ -374,6 +381,8 @@ PRUNE_MARGIN = 1e-6
 SAMPLED_MASS = 1e-12
 #: MESH-6: the rule that consults, on each CAD entity, only the size fields that can size it
 REACH_RULE = "MESH-6"
+#: MESH-24: short edges and narrow faces sized at their own size (engines/gmsh/fea_short.py)
+SHORT_RULE = "MESH-24"
 
 
 def _boxes(gmsh, dim_tags: list[tuple[int, int]], pad_model: float):
@@ -1483,8 +1492,21 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
         micro = micro_curves_one_segment(gmsh, skip={t for d, t in whole or () if d == 1})
         if micro:
             print(f"[GMSH-FEA] micro curve(s) {micro[:20]} meshed as one segment each (MESH-4)", file=sys.stderr)
+    # MESH-24: A CAD EDGE FAR SHORTER THAN THE ELEMENTS BESIDE IT gets elements of its own length there (not on
+    # the fTetWild rung's build, which sizes from the plan alone); nothing short: no field, the same mesh
+    short: dict = {}
+    if rung is None and not _NO_SHORT[0]:
+        from meshpipeline.engines.gmsh import fea_short as SHORT
+
+        short = SHORT.plan_short(gmsh, sized, face_tags=face_tags,
+                                 skip={t for d, t in whole or () if d == 1} | set(micro),
+                                 skip_faces={t for d, t in whole or () if d == 2})
+        if short.get("edges"):
+            _SHORT_USED[0] = True
+            print(f"[GMSH-FEA] {len(short['edges'])} short CAD edge(s) or narrow face(s) sized at their own size "
+                  f"({SHORT.RULE}; {short.get('left', 0)} left as drawn by the budget)", file=sys.stderr)
     note_stage(ws, "sizing", "setting the element sizes")
-    bg = size_fields(gmsh, sized, surfaces, face_tags, part_volumes, whole=whole)
+    bg = size_fields(gmsh, sized, surfaces, face_tags, part_volumes, whole=whole, short=short)
     if bg is not None:
         gmsh.model.mesh.field.setAsBackgroundMesh(bg)
     remesh = {int(s) for s in run.get("remesh_surfaces") or []}
@@ -1598,13 +1620,22 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
         out = {"vols": all_vols, "surfaces": all_surfaces, "face_tags": face_tags, "surface_tag": surface_tag,
                "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro,
                "repeated_triangles": repeated, "kept_volumes": kept,
-               **({"tiny": after} if TINY.active(after) else {})}
+               **({"tiny": after} if TINY.active(after) else {}),
+               **({"short": short} if short.get("edges") else {})}
         if rung is not None:
             out.update(rung_volumes=rung_vols, gmsh_volumes=sorted(v for v in all_vols if v not in rung_vols))
         return out
     return {"vols": vols, "surfaces": surfaces, "face_tags": face_tags, "surface_tag": surface_tag,
             "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro,
-            "repeated_triangles": repeated, **({"tiny": merges} if TINY.active(merges) else {})}
+            "repeated_triangles": repeated, **({"tiny": merges} if TINY.active(merges) else {}),
+            **({"short": short} if short.get("edges") else {})}
+
+
+def _short_record(short: dict, scale: float) -> dict:
+    """quality.json's MESH-24 record (engines/gmsh/fea_short.record)."""
+    from meshpipeline.engines.gmsh import fea_short as SHORT
+
+    return SHORT.record(short, scale)
 
 
 def _tiny_failed(exc: FillFailed, whole: set[tuple[int, int]] | None) -> FillFailed:
@@ -1617,7 +1648,84 @@ def _tiny_failed(exc: FillFailed, whole: set[tuple[int, int]] | None) -> FillFai
 _AS_DRAWN = [False]
 
 
+#: MESH-24: set while a pass is meshed again with its short edges as drawn (the sized mesh was not better)
+_NO_SHORT = [False]
+#: MESH-24: whether the last build sized any short edge or narrow face
+_SHORT_USED = [False]
+#: MESH-24: the figures a sized mesh is held to against the same pass meshed as drawn: the element-quality rows
+#: of the verdict (engines/verdict_limits.fea_limits)
+SHORT_HELD = ("elements_under_floor", "fea_min_scaled_jacobian", "fea_max_jacobian_ratio", "fea_max_aspect_ratio",
+              "fea_min_dihedral_deg", "fea_max_dihedral_deg")
+
+
+def _short_score(q: dict) -> tuple[int, float]:
+    """(element-quality rows missed, minus the worst scaled Jacobian): lower is the better mesh."""
+    from meshpipeline.contracts.decision_record import limit_met
+    from meshpipeline.engines.verdict_limits import fea_limits
+
+    rows = [r for r in fea_limits(q) if r.get("key") in SHORT_HELD]
+    missed = sum(1 for r in rows if limit_met(r.get("measured"), str(r.get("op")), r.get("limit")) is False)
+    return missed, -float(q.get("fea_min_scaled_jacobian") or 0.0)
+
+
 def mesh(workspace) -> int:
+    """Mesh the staged solid by the plan (_mesh_tiny). MESH-24: A SIZED MESH NEVER COSTS A PART THE MESH IT HAD.
+    When short edges or narrow faces were sized and the mesh still misses an element-quality limit (or was not
+    built), the same pass is meshed again with them as drawn, and the better of the two is kept (fewer
+    element-quality rows missed, then the better worst scaled Jacobian; FEA corpus, 3 Nov: on a bonded
+    assembly whose micro edges were sized, slivers moved just past the micro set-aside). A sized mesh that
+    meets every element limit is kept at once."""
+    import shutil
+
+    ws = Path(workspace)
+    # what the workspace held before: the outputs are the files this pass made or wrote again
+    before = {f.name: f.stat().st_mtime_ns for f in ws.iterdir() if f.is_file()}
+    _SHORT_USED[0] = False
+    rc = _mesh_tiny(ws)
+    if not _SHORT_USED[0] or _NO_SHORT[0]:
+        return rc
+    try:
+        q1 = json.loads((ws / "quality.json").read_text()) if rc == 0 else {}
+    except (OSError, ValueError):
+        q1 = {}
+    if rc == 0 and q1 and _short_score(q1)[0] == 0:
+        return rc
+    first = ws / "_mesh24_sized"
+    shutil.rmtree(first, ignore_errors=True)
+    first.mkdir()
+    for f in ws.iterdir():
+        if f.is_file() and before.get(f.name) != f.stat().st_mtime_ns:
+            shutil.move(str(f), first / f.name)
+    print(f"[GMSH-FEA] the mesh with short edges sized {'was not built' if rc else 'still misses an element limit'} - "
+          f"meshed again with them as drawn, the better kept ({SHORT_RULE})", file=sys.stderr)
+    _NO_SHORT[0] = True
+    try:
+        rc2 = _mesh_tiny(ws)
+    finally:
+        _NO_SHORT[0] = False
+    try:
+        q2 = json.loads((ws / "quality.json").read_text()) if rc2 == 0 else {}
+    except (OSError, ValueError):
+        q2 = {}
+    keep_drawn = rc2 == 0 and q2 and (rc != 0 or not q1 or _short_score(q2) < _short_score(q1))
+    if keep_drawn:
+        q2["fea_short_edges"] = {**(q1.get("fea_short_edges") or {}), "kept": "as drawn",
+                                 "why": "the mesh as drawn met more element limits" if q1 else
+                                 "the sized mesh was not built"}
+        (ws / "quality.json").write_text(json.dumps(q2, indent=2))
+        shutil.rmtree(first, ignore_errors=True)
+        return rc2
+    # the sized mesh stands: the as-drawn run's files go, the sized run's come back
+    for f in ws.iterdir():
+        if f.is_file() and (first / f.name).exists():
+            f.unlink()
+    for f in first.iterdir():
+        shutil.move(str(f), ws / f.name)
+    shutil.rmtree(first, ignore_errors=True)
+    return rc
+
+
+def _mesh_tiny(workspace) -> int:
     """Mesh the staged solid by the plan (_mesh). MESH-9: a mesh its tiny-face merges left NOT VALID (an
     inverted or degenerate element) is meshed again in the same pass with every face as drawn - a merge never
     costs a part the mesh it had (fc_zcoupling, 27 Oct: a collapsed sliver left inverted elements and cost
@@ -1928,6 +2036,8 @@ def _mesh(workspace) -> int:
             **({"fea_mesh_scale": "mm", "fea_mesh_scale_rule": MM_SCALE_RULE,
                 "fea_micro_curves_one_segment": len(built.get("micro_curves") or [])}
                if scale != 1.0 else {}),
+            # MESH-24: the short edges and narrow faces sized at their own size
+            **({"fea_short_edges": _short_record(built["short"], scale)} if built.get("short") else {}),
             # MESH-9: the tiny faces meshed as part of a neighbour, and into which named face each went
             **({"fea_tiny": tiny_out} if tiny_out else {}),
             "fea_bad_surfaces": traced,

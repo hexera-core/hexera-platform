@@ -92,9 +92,18 @@ class PreviousRun:
     status: str = ""
     #: the verdict the user was shown for that run, as application code rendered it
     outcome: str = ""
+    #: WHAT IT DELIVERED, measured (application/run_facts) - facts of the result, never requirements:
+    #: the mesh's cell or element count (None when not delivered or not readable), the engine that
+    #: built it, and what it was for. The chat answers "how big is it?" from these, not a guess.
+    cells: int | None = None
+    engine: str = ""
+    purpose: str = ""
 
     def as_state(self) -> dict:
-        return {"job_id": self.job_id, "status": self.status, "outcome": self.outcome}
+        out: dict = {"job_id": self.job_id, "status": self.status, "outcome": self.outcome}
+        out.update({k: v for k, v in (("cells", self.cells), ("engine", self.engine),
+                                      ("purpose", self.purpose)) if v})
+        return out
 
 
 @dataclass(frozen=True)
@@ -147,6 +156,8 @@ class _LastRun:
     job_id: uuid.UUID
     status: str
     outcome: str
+    engine: str = ""
+    purpose: str = ""
 
     @property
     def live(self) -> bool:
@@ -155,7 +166,8 @@ class _LastRun:
 
     @property
     def previous(self) -> PreviousRun:
-        return PreviousRun(job_id=str(self.job_id), status=self.status, outcome=self.outcome)
+        return PreviousRun(job_id=str(self.job_id), status=self.status, outcome=self.outcome,
+                           engine=self.engine, purpose=self.purpose)
 
 
 def _dispatched_job_id(gate: dict) -> uuid.UUID | None:
@@ -198,7 +210,9 @@ async def _last_run(db, *, locked, gate: dict, job_repo) -> _LastRun | None:
     job = await job_repo.get_internal(db, job_id)
     raw_status = getattr(job, "status", None) if job is not None else None
     status = str(getattr(raw_status, "value", raw_status) or "")
-    return _LastRun(job_id=job_id, status=status, outcome=_outcome_of(job))
+    from meshpipeline.application.run_facts import of_final_result
+    made = of_final_result(getattr(job, "final_result", None) if job is not None else None)
+    return _LastRun(job_id=job_id, status=status, outcome=_outcome_of(job), **made)
 
 
 async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger,

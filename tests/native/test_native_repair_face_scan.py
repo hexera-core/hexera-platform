@@ -58,10 +58,28 @@ def test_the_analyzer_record_wins_dedupe_over_a_status_walk_record(tmp_path, mon
                         entity_type="face", entity_index=1, message="walk",
                         kernel_status="SelfIntersectingWire")
     monkeypatch.setattr(localize, "_status_defects", lambda s, **kw: ([walk], True))
-    found, _ = localize_scan(shape, valid=False, face_scan_s=5.0)
+    found, _ = localize_scan(shape, valid=True, face_scan_s=5.0)
     survivor = next(d for d in found if d.entity_type == "face" and d.entity_index == 1
                     and d.code is DefectCode.self_intersection)
     assert survivor.measurements["crossing_faces"]
+
+
+def test_an_invalid_shape_defers_face_pair_analysis_until_after_status_repair(tmp_path, monkeypatch):
+    shape = _read(write_open_shell_step(tmp_path / "o.step"))
+    calls = 0
+
+    def face_scan(_shape, *, budget_s, interior):
+        nonlocal calls
+        calls += 1
+        return []
+
+    monkeypatch.setattr(localize, "face_self_intersections", face_scan)
+    monkeypatch.setattr(localize, "_status_defects", lambda s, **kw: ([], True))
+
+    _found, complete = localize_scan(shape, valid=False, face_scan_s=5.0)
+
+    assert complete is True
+    assert calls == 0
 
 
 def test_the_real_analyzer_names_crossing_faces_and_none_on_a_sound_box():

@@ -123,3 +123,39 @@ def test_a_refused_pull_grant_warns_with_the_owner_command():
 def test_an_image_outside_artifact_registry_is_said():
     _made, out = _run_vm(ENV, describe="docker.io/x/mesh:1")
     assert "is not in Artifact Registry" in out
+
+
+# EVERY WORKER METADATA ATTRIBUTE MUST HAVE A READER. The fleet script writes settings as instance
+# metadata and `deploy/gcp/worker/startup.sh` copies them into the worker's env; an attribute with
+# no line in that mapping is written, costs nothing to notice, and is silently never read. That is
+# how the progressive-snapshot switch and its rank pin both reached a deployed fleet and did
+# nothing at all - twice, because the same mistake was made at two different links of the chain.
+def _fleet_metadata_keys() -> set[str]:
+    import pathlib
+    import re
+    text = pathlib.Path("deploy/gcp/scripts/create-worker-fleet.sh").read_text()
+    return set(re.findall(r'WORKER_METADATA\+=\("([a-z0-9-]+)=', text))
+
+
+def _startup_mapped_keys() -> set[str]:
+    import pathlib
+    import re
+    text = pathlib.Path("deploy/gcp/worker/startup.sh").read_text()
+    return set(re.findall(r'"([a-z0-9-]+):[A-Z0-9_]+"', text))
+
+
+def test_every_setting_the_fleet_writes_is_read_by_the_worker():
+    written, mapped = _fleet_metadata_keys(), _startup_mapped_keys()
+    # attributes the startup script consumes by name rather than through the mapping table
+    consumed_directly = {"mesh-image", "startup-script", "enable-guest-attributes"}
+    orphans = written - mapped - consumed_directly
+    assert not orphans, (
+        f"these worker metadata attributes have no reader in deploy/gcp/worker/startup.sh, so the "
+        f"fleet is configured with settings it will never apply: {sorted(orphans)}")
+
+
+def test_the_snapshot_switch_and_its_rank_pin_both_reach_the_worker():
+    """Named explicitly because a frame needs BOTH, and half the chain is the same as none of it."""
+    mapped = _startup_mapped_keys()
+    assert "mesh-progressive-snapshot-enabled" in mapped
+    assert "mesh-snappy-ranks" in mapped

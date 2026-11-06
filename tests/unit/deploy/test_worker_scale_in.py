@@ -324,29 +324,82 @@ def _seconds(pattern: str, text: str) -> int:
     return int(m.group(1))
 
 
-def test_the_shutdown_script_stops_both_workers_inside_the_vms_budget():
-    s = (WORKER / "shutdown.sh").read_text(encoding="utf-8")
-    sim = _seconds(r"docker stop --time (\d+) hexera-worker\b", s)
-    geo = _seconds(r"docker stop --time (\d+) hexera-geometry-worker\b", s)
-    # a VM being deleted gets about ninety seconds; the job needs its SIGTERM well inside that
-    assert sim < 90 and geo <= sim
+#: How long the VM has to play with, by the way it can die. A DELETED on-demand VM gets about
+#: ninety seconds; a RECLAIMED Spot VM gets about thirty. The budget has to fit whichever applies.
+VM_WINDOW_SECONDS = {"STANDARD": 90, "SPOT": 30}
+
+
+def _fleet_budgets(provisioning_model: str) -> tuple[int, int]:
+    """The budgets create-worker-fleet.sh would hand a VM of this provisioning model.
+
+    The numbers moved OUT of the two worker scripts and into the fleet script when dev went to
+    Spot: a reclaimed Spot VM cannot afford the on-demand 75 s, so the budget depends on something
+    the static scripts do not know. They read it from instance metadata; this runs the block that
+    decides it.
+    """
+    text = (SCRIPTS / "create-worker-fleet.sh").read_text(encoding="utf-8")
+    start = text.index('if [ "${WORKER_PROVISIONING_MODEL}" = SPOT ]; then\n  WORKER_STOP_TIMEOUT')
+    end = text.index("# The guard that makes the paragraph above a rule")
+    p = subprocess.run(
+        ["bash", "-c", text[start:end] + '\necho "$WORKER_STOP_TIMEOUT $GEOMETRY_STOP_TIMEOUT"'],
+        env={"PATH": "/usr/bin:/bin", "WORKER_PROVISIONING_MODEL": provisioning_model},
+        capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    sim, geo = p.stdout.split()
+    return int(sim), int(geo)
+
+
+@pytest.mark.parametrize("model", ["STANDARD", "SPOT"])
+def test_the_shutdown_script_stops_both_workers_inside_the_vms_budget(model):
+    sim, geo = _fleet_budgets(model)
+    # the job needs its SIGTERM well inside whatever window this VM actually gets
+    assert sim < VM_WINDOW_SECONDS[model], (
+        f"a {model} worker is given {sim}s to drain, but such a VM is stopped after about "
+        f"{VM_WINDOW_SECONDS[model]}s - docker stop would still be waiting when it went away")
+    assert geo <= sim
     # ...and long enough for the hand-back after the graph's own grace to unwind
     from meshpipeline.application.worker_handoff import CANCEL_GRACE_SECONDS, DRAIN_POLL_SECONDS
-    assert sim > CANCEL_GRACE_SECONDS + DRAIN_POLL_SECONDS + 30
+    assert sim > CANCEL_GRACE_SECONDS + DRAIN_POLL_SECONDS, (
+        f"{model}'s {sim}s budget is under the measured drain "
+        f"({CANCEL_GRACE_SECONDS}s grace + {DRAIN_POLL_SECONDS}s poll), so the hand-back is "
+        f"SIGKILLed and the job waits out its lease instead")
     # both at once: the geometry worker's stop costs the simulation worker nothing
+    s = (WORKER / "shutdown.sh").read_text(encoding="utf-8")
     assert "&" in s and "wait" in s
 
 
-def test_the_containers_carry_the_same_budget_when_docker_stops_them_first():
-    # Docker's own shutdown on a stopping VM may reach the containers before the script does, and
-    # its default is ten seconds, then SIGKILL.
-    startup = (WORKER / "startup.sh").read_text(encoding="utf-8")
-    shutdown = (WORKER / "shutdown.sh").read_text(encoding="utf-8")
-    for name in ("hexera-worker", "hexera-geometry-worker"):
-        run_line = next(ln for ln in startup.splitlines()
-                        if ln.startswith(f"docker run -d --name {name} "))
-        given = _seconds(r"--stop-timeout (\d+)", run_line)
-        assert given == _seconds(rf"docker stop --time (\d+) {name}\b", shutdown), name
+def test_every_stop_of_a_container_uses_the_one_budget_the_template_set():
+    """Three different things stop a worker container, and all three have to agree.
+
+    Docker's own shutdown on a stopping VM may reach the containers before shutdown.sh does (its
+    default is ten seconds, then SIGKILL), and the watchdog restarts an unhealthy container, which
+    stops it first. Each of the three used to carry the literal 75; now each reads the SAME two
+    metadata keys the template was built with, so a Spot fleet's shorter budget reaches all of
+    them or none.
+    """
+    for script, keys in (("startup.sh", ("worker-stop-timeout", "geometry-stop-timeout")),
+                         ("shutdown.sh", ("worker-stop-timeout", "geometry-stop-timeout")),
+                         ("watchdog.sh", ("worker-stop-timeout", "geometry-stop-timeout"))):
+        text = (WORKER / script).read_text(encoding="utf-8")
+        for key in keys:
+            assert key in text, f"{script} does not read {key} from instance metadata"
+        # and the on-demand values remain the fallback, so a VM from an older template is unchanged
+        assert "WORKER_STOP_TIMEOUT=75" in text and "GEOMETRY_STOP_TIMEOUT=30" in text, (
+            f"{script} must fall back to the on-demand budget when the metadata is absent")
+    # no literal budget survives in any of the three
+    for script in ("startup.sh", "shutdown.sh", "watchdog.sh"):
+        text = (WORKER / script).read_text(encoding="utf-8")
+        literals = re.findall(r"--(?:stop-timeout|time)[= ]+(\d+)|restart -t (\d+)", text)
+        assert not literals, f"{script} still hard-codes a stop budget: {literals}"
+
+
+def test_the_template_carries_the_budget_it_decided():
+    """The metadata the three scripts read has to actually be on the template, or every one of
+    them silently falls back to the on-demand 75 on a Spot fleet - which is the exact failure the
+    budget exists to prevent."""
+    body = (SCRIPTS / "create-worker-fleet.sh").read_text(encoding="utf-8")
+    assert '"worker-stop-timeout=${WORKER_STOP_TIMEOUT}"' in body
+    assert '"geometry-stop-timeout=${GEOMETRY_STOP_TIMEOUT}"' in body
 
 
 def _refusing_urlopen(mod, code: int, message: str):

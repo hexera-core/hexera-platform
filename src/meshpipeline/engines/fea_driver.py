@@ -255,6 +255,19 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
     # ratio is snapped to one (the two boxes never agree to the last digit)
     ratio = 1000.0 * diag_m / diag_read
     mm_per_unit = 10.0 ** round(math.log10(ratio)) if ratio > 0 else ratio
+    # THE SAME SOLID, MEASURED BEFORE (cad/fea_measure_cache, keyed on the staged file's digest): its record is
+    # read back and only the surface the plan sizes on is tessellated again - no walls ray-traced, no Boolean
+    # checks run a second time (a landing gear's plan spent 1054 s of its 1090 s measurement on those)
+    from meshpipeline.cad import fea_measure_cache as MC
+
+    cache_key = MC.key_for(step, mm_per_unit=mm_per_unit, max_ray_triangles=MAX_RAY_TRIANGLES)
+    kept = MC.load(cache_key)
+    if kept is not None:
+        surface = _surface_again(shape, mm_per_unit, healed=bool(kept.get("healed")))
+        if surface is not None:
+            logger.info("fea driver: the staged solid was measured before - its record reused")
+            return kept["record"], surface, diag_m
+    healed = False
     try:
         record, surface = measure_cad_surface(shape, mm_per_unit=mm_per_unit, max_ray_triangles=MAX_RAY_TRIANGLES)
     except Exception as exc:  # noqa: BLE001 - healed and measured again; a second failure is the part's
@@ -268,6 +281,7 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
         record, surface = measure_cad_surface(fix.Shape(), mm_per_unit=mm_per_unit,
                                               max_ray_triangles=MAX_RAY_TRIANGLES)
         record.setdefault("notes", []).append(f"the CAD was healed before it was measured ({exc})")
+        healed = True
     # MESH-1: WHERE THE CAD MAY BE BROKEN, measured on this very solid (detect only, never a stop): the
     # mesh is tried; a valid one is delivered with a note, and only a failure AT that spot is the CAD's
     try:
@@ -275,7 +289,26 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
         record["suspects"] = SD.find(shape, record)
     except Exception as exc:  # noqa: BLE001 - no suspects measured is no suspects
         logger.warning("fea driver: suspected defects not measured (%s)", type(exc).__name__)
+    MC.save(cache_key, {"record": record, "healed": healed})
     return record, surface, diag_m
+
+
+def _surface_again(shape, mm_per_unit: float, *, healed: bool):
+    """The labelled surface measure_cad_surface measured `shape` on (healed first when it was), tessellated
+    again; None when it cannot be (the solid is then measured as before)."""
+    from meshpipeline.cad.fea_measure import _brep_surface
+
+    try:
+        if healed:
+            from OCP.ShapeFix import ShapeFix_Shape
+
+            fix = ShapeFix_Shape(shape)
+            fix.Perform()
+            shape = fix.Shape()
+        return _brep_surface(shape, float(mm_per_unit))[0]
+    except Exception as exc:  # noqa: BLE001 - measured as before
+        logger.info("fea driver: the kept measurement's surface could not be made again (%s)", type(exc).__name__)
+        return None
 
 
 def _suspect_faces(record: dict) -> set[str]:
@@ -1017,12 +1050,16 @@ async def _relayed_mesh(publish, ws: Path, *, seq: int, timeout, of: int | None 
     """One run of the mesher, with its stage reports (the remote beacon, read by the mesh client)
     relayed to the run's live line while it runs - in the words contracts/narration gives them."""
     from meshpipeline.contracts import mesh_progress
+    from meshpipeline.engines.live_estimate import planned_live_count
     from meshpipeline.engines.runtime import get_engine
 
+    # THE NOUN IS THE ENGINE'S OWN (EngineSpec.counted_as): this path delivers an FEA deck, whose
+    # count is in ELEMENTS - said whether or not the plan has an estimate to count them against.
+    _unit = planned_live_count(ENGINE, ws)[1]
     sink = None if publish is None or getattr(publish, "amesh_stage", None) is None else \
         mesh_progress.publishing_sink(publish, asyncio.get_running_loop(),
                                       op_prefix=mesh_progress.stage_op_prefix(ws, seq),
-                                      of=of, unit="elements" if of else "")
+                                      of=of, unit=_unit)
     with mesh_progress.relaying(sink):
         return await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws, timeout=timeout)
 
@@ -1302,14 +1339,16 @@ def _clear_outputs(ws: Path) -> None:
 
 
 async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run,
-                  publish=None, *, escalate: bool = True) -> tuple[dict, dict, dict]:
+                  publish=None, of: int | None = None, *, escalate: bool = True) -> tuple[dict, dict, dict]:
     """One native pass on `machine`: RUN-3 (out of memory: one machine up) and RUN-5 (still working at
     the Cloud Run wall: a VM) as every pass - but a pass that need not escalate (`escalate` False: LAD-fea-13's
-    refinement, a mesh already in hand) ends where it stops. Returns (the result, the machine it ran on, its work)."""
+    refinement, a mesh already in hand) ends where it stops. Returns (the result, the machine it ran on, its work).
+    `of`: the elements THIS pass's plan estimates, for the live line's "N of about M" - the plan's
+    own number or nothing."""
     from meshpipeline.contracts import mesh_machine as MM
 
     while True:
-        result = await _relayed_mesh(publish, ws, seq=900 + n, timeout=work["ceiling_s"])
+        result = await _relayed_mesh(publish, ws, seq=900 + n, timeout=work["ceiling_s"], of=of)
         if not escalate:
             return result, machine, work
         if _out_of_memory(result):
@@ -1419,7 +1458,8 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
         await _N.asay(publish, "The usual mesher could not meet every check, so a second mesher tries this part.",
                       op_id=f"fea:rung:{n}")
         await _N.astep(publish, "machine", _N.machine_words(machine), op_id=f"fea:rung:machine:{n}")
-        result, machine, work = await _native(ws, machine, work, job_id, n, run, publish=publish)
+        result, machine, work = await _native(ws, machine, work, job_id, n, run, publish=publish,
+                                              of=int(elements) or None)
         await run.fence("accept native mesh output")
         q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
         made = bool(q) and BF.present(ws, "mesh.inp")

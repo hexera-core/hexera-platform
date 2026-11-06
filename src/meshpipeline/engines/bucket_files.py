@@ -38,7 +38,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import tarfile
+import time
 import zlib
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
@@ -376,16 +378,61 @@ def raw_chunks(k: Kept, opener: Opener) -> Iterator[bytes]:
         raise KeptFileError(f"{k.rel}: the stored object is {left} bytes short of the file")
 
 
+#: How close to the fetch a file's last change may be before its stamp alone cannot prove the file
+#: unchanged. A file system keeps time in ticks (a few ms on Linux, up to two seconds on some), so a
+#: same-size rewrite inside the tick of the fetch leaves the stamp exactly as it was. Then the
+#: content decides: its CRC-32, which the record already carries (git's "racy" index rule).
+RACY_NS = 3 * 1_000_000_000
+
+
+def _stat(p: Path) -> os.stat_result:
+    return os.stat(p, follow_symlinks=False)
+
+
 def _stamp(p: Path) -> list[int]:
-    st = p.stat()
-    return [int(st.st_size), int(st.st_mtime_ns)]
+    """What a fetched file must still match to count as unchanged: its size, its content and
+    status-change times, and its inode (a file swapped in by rename, or its time set back, differs)."""
+    st = _stat(p)
+    return [int(st.st_size), int(st.st_mtime_ns), int(st.st_ctime_ns), int(st.st_ino)]
+
+
+def _tar_crc(p: Path) -> int:
+    """The CRC-32 of a file's tar data (its bytes, then the padding): what pack() recorded."""
+    crc = n = 0
+    with p.open("rb") as fh:
+        while chunk := fh.read(_CHUNK):
+            n += len(chunk)
+            crc = zlib.crc32(chunk, crc)
+    return zlib.crc32(_padding(n), crc) & 0xFFFFFFFF
+
+
+def _unchanged(p: Path, k: Kept, record: Mapping[str, Any]) -> bool:
+    """Whether the fetched file at `p` is still exactly what was fetched, so its packed bytes may go
+    into the bundle as they are. A file the worker changed must never ship stale: its stamp must
+    match the one taken at the fetch, and when its times are too close to that moment for the stamp
+    to tell (RACY_NS), its content is read and must match the packed file's CRC-32. A big file is
+    fetched long before the record is taken, so only the last few files ever need that read."""
+    files = record.get("files")
+    was = files.get(k.rel) if isinstance(files, Mapping) else None
+    if not isinstance(was, list) or len(was) != 4 or was[0] != k.bytes:
+        return False
+    try:
+        if p.is_symlink() or not p.is_file() or _stamp(p) != was:
+            return False
+        at = record.get("at")
+        if isinstance(at, int) and max(was[1], was[2]) < at - RACY_NS:
+            return True     # last changed well before the stamp: any change since shows in it
+        return _tar_crc(p) == k.crc32
+    except OSError:
+        return False
 
 
 def fetch(workspace, opener: Opener, *, threads: int = 4) -> int:
     """At collection: unpack every row marked fetch to its place in `workspace` (a temporary name,
-    then renamed over), its size checked, its permission bits restored; then note each one's size
-    and time (FETCHED_FILE), so the bundle passes its packed bytes through only while the file is
-    as fetched. Returns the bytes written."""
+    then renamed over), its size checked, its permission bits restored; then, once every file is in
+    place, note each one's stamp and the moment it was taken (FETCHED_FILE), so the bundle passes
+    its packed bytes through only while the file is as fetched (_unchanged). Returns the bytes
+    written."""
     from concurrent.futures import ThreadPoolExecutor
     ws = Path(workspace)
     rows = [k for k in read_record(ws).values() if k.fetch]
@@ -408,16 +455,22 @@ def fetch(workspace, opener: Opener, *, threads: int = 4) -> int:
 
     with ThreadPoolExecutor(max_workers=max(1, min(threads, len(rows)))) as pool:
         total = sum(pool.map(one, rows))
-    (ws / FETCHED_FILE).write_text(json.dumps({k.rel: _stamp(ws / k.rel) for k in rows}, sort_keys=True))
+    files = {k.rel: _stamp(ws / k.rel) for k in rows}
+    at = time.time_ns()                 # after every stamp: a change from here on may share its tick
+    (ws / FETCHED_FILE).write_text(json.dumps({"version": 2, "at": at, "files": files}, sort_keys=True))
     return total
 
 
-def _as_fetched(workspace: Path) -> dict[str, list[int]]:
+def _as_fetched(workspace: Path) -> dict[str, Any]:
+    """The fetch record, {} when absent or of another version (every fetched file then counts as
+    changed and is packed again here: slower, never stale)."""
     try:
         d = json.loads((workspace / FETCHED_FILE).read_text())
-        return d if isinstance(d, dict) else {}
     except (OSError, ValueError):
         return {}
+    if not isinstance(d, dict) or d.get("version") != 2:
+        return {}
+    return d
 
 
 def packed_chunks(k: Kept, opener: Opener) -> Iterator[bytes]:
@@ -505,7 +558,7 @@ def bundle_entries(workspace, members: Iterable[str], prefix: str) -> list[tuple
             out.append((name, None, kept_files[rel]))
             return
         k = kept_files.get(rel)
-        if k is not None and k.fetch and p.is_file() and as_fetched.get(rel) == _stamp(p):
+        if k is not None and k.fetch and _unchanged(p, k, as_fetched):
             # fetched and not changed since: its packed bytes go in as they are (nothing compressed here)
             out.append((name, None, k))
             return
