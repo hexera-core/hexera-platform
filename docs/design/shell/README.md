@@ -243,12 +243,167 @@ Two corrections from the 14th helper's lab-VM sweep (1 Nov):
     - T-joint in bending, web shell into a solid plate: 4.6% off the all-solid T (1.6% off the all-shell T,
       which is itself 6.3% softer than all-solid: its junction has no corner metal);
     - T-joint, plate shell under a solid web: 4.0% off the all-solid T.
-  - Nastran (RBE3 / RBE2 on the same node choice) and Ansys (CE) follow in PR 3, with the mixed-part mesher.
+  - Nastran and Ansys, and the mixed-part mesher: PR 3, section 2.6 (the same ties as MPC and CE).
 - **The solid region gets at least 2 quadratic elements through the thickness** at the link, so its face can carry the linear stress through the wall that a moment puts on it.
 - **Proved in CalculiX, in the accuracy lane (PR 2):**
   - a cantilever plate, half shell and half solid, tip load: the tip deflection within 2% of the pure-shell model and of beam theory (PL³/3EI);
   - a T-joint under bending (the stiffener shell, the plate solid, and the other way round), against the all-solid mesh;
   - a plate with a solid boss, against the all-solid mesh.
+
+### 2.6 Mixed parts: shell where thin, solid where thick (PR 3, MIXED-1..6, SHLINK-4, placeholders)
+
+A part that is mostly thin walls with some thick regions (a boss, a pad, a mounting block, a flange, cast corners)
+was meshed fully solid. Now its thin walls are shelled, only its thick regions stay solid, and the two are joined so
+loads and moments pass. Code: `cad/mixed_split.py`, `engines/mixed_links.py`, `engines/mixed_mesh.py`,
+`engines/mixed_run.py`.
+
+**What industry does.** Femap, HyperMesh, ANSA and Abaqus all mesh such parts mixed and join shell to solid with a
+constraint that carries moment: Abaqus `*SHELL TO SOLID COUPLING` (each shell edge node spread over the solid face
+nodes within half a wall of it), Nastran RBE3 or RSSCON, Ansys shell-solid assembly contact (MPC). Each says the
+same thing about where the joint goes: away from the junction, where the wall's stress is a plate's again. The 3D
+stress near a junction dies out within about one wall (Saint-Venant); one to two walls is the usual choice.
+
+**MIXED-1, the thick core.** Each shell wall's slab (its sewn mid-face thickened to its wall, half each side, 2%
+over) is taken from the body. What is left and holds a face the extraction called thick or solid is a thick core.
+What is left and holds none is junction metal a shell model leaves out (fillets, the corner of an L); over 2% of
+the body's volume of it means a wall was missed, and the split is not used.
+
+**MIXED-2, the cut.** Each core is grown CUT_WALLS = 2 of the thickest wall running into it, in every direction (OCC's
+3D offset), and the body's metal inside the grown core is the solid region. Inside a wall the grown core's side is
+the wall's own cross-section, square to it: a straight edge's offset is a plane, a boss's circle a cylinder of
+radius r + 2t, a tube's end a plane across the tube. Each mid-face is trimmed by the same grown core, so the shell
+edge lies on the cut face, along the wall's middle. No list of shapes: a distance from the thick region.
+
+**MIXED-3, accounted for.** The solid region's volume plus each trimmed mid-face's area times its wall must hold the
+body's volume within the shell check's band (0.85 to 1.10). On the seven generated parts: 1.000 to 1.016.
+
+**SHLINK-4, the join.** CalculiX takes no shell rotation in an `*EQUATION`: tied that way (each shell edge node's
+rotation to the least-squares rigid motion of the cut face, the RBE3 / Abaqus form) a half-shell, half-solid
+cantilever was still a hinge (tip 10^8 times too far), with or without a moment put on the nodes to make CalculiX
+knot them. So the join is the form CalculiX solves, written the same in every solver (SHLINK-1's idea, carried to
+tetrahedra):
+- the shell runs one wall on past the cut face into the solid (one row of overlap quads, group `SHLINK_overlap`);
+- its row on the cut face is tied, translations only, to the cut face's nodes; its inner row to the solid's nodes
+  in a band round it (half a wall each way along the shell, inside the wall);
+- each tie is the weighted least-squares LINEAR field through those nodes read at the shell node (weights: the
+  node's area share times the row's hat function). A plain weighted mean is linear-exact only where its weights
+  centre on the node: at a row's end node it sat a third of an element inward, and the in-plane bend of a
+  cantilever crossed short (21% stiff). The linear fit reads any linear field exactly (a unit test holds it).
+
+The moment crosses as the couple of the two rows, a wall apart, each spread over the wall's whole section.
+Measured on a 2 mm, 200 x 20 cantilever, half C3D10 and half S4, against the all-solid C3D10 model: out-of-plane
+bend 0.03% (pure shell 0.2%), in-plane bend 0.2%, tension 0.1%; the same with one tetrahedron through the wall.
+The solid side keeps the FEA path's own rule of at least two quadratic elements through every wall (PLAN-fea-3),
+so the stub of wall in the solid region is meshed as any wall is.
+
+Per solver: CalculiX and Abaqus `*EQUATION`, Nastran MPC (set 1; the deck says "add MPC = 1"), Ansys CE. The solid
+region is C3D10 / CTETRA (10 nodes) / SOLID187 in the same deck as the shells, numbered after them. Only CalculiX
+solves for real; the others are read back and labelled "not yet tested in the real solver" as every deck is.
+
+**MIXED-4, Auto.** Auto recommends Mixed when the part is one body the shell check calls mixed, its mid-surfaces meet
+everywhere (no open edge), and its thin walls hold at least half its metal. Under that, the joins cost more than
+the shell saves, and the part is meshed solid. Several bodies are meshed solid in this version.
+
+**MIXED-6, the words.** "Thin walls meshed as shell (78% of the part, 2 mm thick); 3 thick regions kept solid and
+joined to them."
+
+**The solid region's mesh** is the FEA path's own: the region is staged in metres and measured, planned and meshed by
+`fea_driver.measure_staged` / `choose_plan` and `gmsh/fea_adapter.mesh` (no AI pass and no ladder in this version).
+
+**MIXED-1b, rims are no cores.** A left-over piece thinner than half the thinnest wall (twice its volume over its
+area) is a rim the slabs left, not a thick region: a 4 mm plate whose hole bores were read thick left a 0.6 mm ring
+round each hole, and growing those crashed OCC. It counts as left-over metal, as a junction's does.
+
+**MIXED-2b, repeatable.** OCC's offset hands back the same faces, surfaces and curves (bit for bit, as sets) in a
+different order each run (it orders by memory address). `canonical()` stores the grown core's solids, shells,
+faces, wires and edges again in an order read from exact geometric keys (an edge's end points and middle point; a
+face's edges and the surface point at its parameters' middle), so every Boolean on it and both meshes repeat.
+
+**MIXED-2c, cores that grow.** A concave round tighter than the growth turns inside out in OCC's plain offset (no
+solid). The core is then grown with the offset's complete intersection; then with its tight concave faces taken out
+by OCC's defeaturing (grown that far the round is inside the grown core anyway); last with sharp joins, which reach
+a little further round the core's edges, never less far. The plain offset is tried first, so every core it grew
+grows as before.
+
+**MIXED-7, mixed walls are panels.** A thick region stiffens the wall round it, so the wall's free modes bend in
+half-waves a fraction of its width. In a mixed part every shell wall at least a tenth of its body's largest sheet
+wide gets SHMESH-15's 20 elements across, however few walls wide it is: a 2 mm plate 18 walls wide round a boss
+was meshed 7 across and its modes 7-12 came out up to 6.8% stiff of a converged solid; as a panel, within 0.9%.
+
+**MIXED-8, walls too thick for shells stay solid (2 Nov, Areen's call).** The box and the casting were outside 5%
+however fine the shell or wherever the cut: shell theory itself, on walls too short for their thickness. So each
+shell wall is measured: its REACH is the farthest any point of it lies from its nearest support - a joint (an edge
+where another wall meets it at an angle; a sheet's bend running on into its flange is no joint), a free edge the
+body's metal goes on past (a thick region), or a stretch of the wall with metal past its faces (the wall running
+through a corner column). A wall is a shell only if it reaches at least 10 of its walls (`REACH_WALLS`); fewer, and
+it is kept solid with the thick regions (its mid-face marks it as a core), the rest still shell. If the walls left
+as shell hold under half the part's metal (MIXED-4's share), or none is left, the part is meshed solid, said so:
+"Walls too thick for shells: 5 of its 5 thin walls reach less than 10 times their thickness from the nearest joint or
+thick region (the shortest, 4 mm thick, reaches 19.8 mm: 4.9 times). ..."
+
+Why 10, and why the reach. 10 is the shell check's own 1/10 (SHELL-2: Mindlin shells hold to t / L of about 1/10;
+plate texts put the thin / thick plate line at a span of 8 to 10 thicknesses). SHELL-2 reads L as the square root of
+the whole sheet's area, which called the box's five walls one sheet 30 walls across. The reach is the length a wall
+really bends over, and where the idealisation's error sits: a shell wall bends from the middle of its joint, half
+the other wall's thickness from where the solid wall starts to bend, and the 3D stress round a joint reaches about a
+wall into it - both a fixed length, so a share of the reach that grows as the reach shortens. The accuracy table
+says the same: every part that read within 5% of a converged solid has all its walls at 11 walls or more (L
+bracket 11 and 25, plate with a boss 26, tube 40, strip 99; failure-map plates 23 to 51); the two outside have walls
+of 3.5 to 6.7 (box 4.9 to 6.7, back wall +23%; casting 3.5 to 6.7, mode 12 -6.8%). Not fitted to a part: the line is
+the shell check's own.
+
+What it costs. The stiffened panel's 3 mm walls reach 7.8 (plate, from its stiffeners) to 8.3 walls (the 25 mm
+stiffeners), so it is meshed solid too, though it read within 3% mixed - even pushed sideways at a stiffener's tip,
+where a short wall's bend is worst (+3.0%; its plate +0.5%). The rule is cautious there: it costs that panel the
+smaller mesh (33,179 elements against 167,056), never accuracy. Training part sh0025 (a tray: 3 mm side walls
+reaching 2 to 3 walls, a 4 mm one 9) had read within 3.2% on its free modes, which its floor carries; the rule keeps
+the floor as shell and the walls solid, but the core grown round those walls does not grow (OCC's offset), so it is
+meshed solid with both reasons said. sh0052 keeps one 5 mm flange solid (5.3 walls) and still mixes, modes within
+1.2% (0.8% before). A plate with a lip too thick for shells (`plate_lip_block` in the accuracy lane: 2 mm, the 12 mm
+lip kept solid with the block) reads within 0.3% on its statics.
+
+Code: `cad/mixed_split.wall_reach` (a fixed grid over each mid-face, exact distances to points along the supports:
+deterministic), `engines/mixed_run.too_thick` / `reach_of` / `kept_solid`. `recommend(record, reach)` reads MIXED-8
+when it is given the reach; the stage (#377) measures it with `reach_of` before offering Mixed.
+
+(The casting's wall / 3 truth ran past CalculiX's one-hour limit on one thread; its truth is wall / 2.5, 254,288
+elements, which the product's all-solid mesh matches within 0.6% on every mode and 0.1% on the statics.)
+
+**Proof (2 Nov, lab VM, CalculiX 2.21 on one thread).** The CI accuracy lane's parts against a CONVERGED all-solid
+truth: a uniform C3D10 mesh of wall / 3 everywhere (24 a turn on curves; `MIXED_TRUTH_WALLS=3`, too big for a
+runner). The product's own all-solid mesh is within 0.25% of it on every mode, so CI's comparison against it holds.
+Static displacements and stress are read AT the probe point (a weighted linear fit over the directions the nodes
+span, within three local node spacings), and each load is shared so it acts at the loaded face's middle (equal
+nodal shares put it where a graded mesh's nodes are: the casting's all-solid mesh put the block's load 8.7 mm
+nearer the clamp and read 11% stiff); modes 7-12 free-free:
+
+| part | elements, mixed / all-solid | displacements | stress | modes 7-12 |
+|---|---|---|---|---|
+| cantilever strip in a block | 13,367 / 55,600 | tip -0.2%; in-plane -1.2%; stretch -0.2% | | -0.1 to +0.7% |
+| plate with a thick boss | 13,320 / 55,276 | -0.2%, -0.4% | | +0.1 to +0.8% |
+| L bracket with a thick pad | 22,279 / 67,691 | +0.9%, +1.0% | +0.1% | -1.2 to -0.6% |
+| stiffened panel with a thick mount | 33,179 / 167,056 | +0.2%, +0.1% | +0.6% | -2.7 to -0.7% (before MIXED-8; now meshed solid, walls 7.8 to 8.3) |
+| tube with a thick flange | 31,038 / 113,227 | end -2.2%, middle -3.1% | -0.7% | +0.2 to +0.5% |
+| casting with ribs and a block (truth wall / 2.5) | 36,249 / 127,221 | -0.6%, +0.2% | -3.3% | -3.1 to -0.2%; mode 12 -6.8% (open) (before MIXED-8; now meshed solid, walls 3.5 to 6.7) |
+| box with thick corners | 45,954 / 63,586 | column top -1.4%; back wall +23.2% (open) | +3.0% | -4.0 to -1.4%; mode 11 -5.5% (open) (before MIXED-8; now meshed solid, walls 4.9 to 6.7) |
+| plate with a lip too thick for shells and a block (MIXED-8: lip kept solid; truth wall / 2, 209,256) | 55,127 / 206,155 | block -0.2%, plate -0.2%, lip top -0.2% | -0.2% | -0.8 to +0.4% |
+
+The flanged tube's old -15.7% stress and +5.5% middle were the readings, not the mesh: the stress was a plane fit
+through a fixed count of nodes, and on a 15-degree faceted wall the band keeps one line of nodes, so it reached
+44 mm along the wall into the flange's junction (7.16 MPa; the shell node beside the point read 8.56, beam theory
+8.55); the middle was the mean of four nodes sitting 3 mm above the box's middle, where the deflection rises 2.5%
+a millimetre. Read at the point, the tube is within 3.1% everywhere.
+
+Closed by MIXED-8 (both now meshed solid), as it was explained: the box and the casting's 12th mode. Both are as far from the converged truth as from the product's
+own solid mesh, and are unchanged by a shell mesh twice as fine (-0.7%) or a cut 3 walls in (0.0%): the shell
+idealisation itself. The box's 4 mm walls are 10 walls tall: a shell wall bends from the bottom's mid-plane, 2 mm
+lower than the solid wall's inner corner, so it is (38 / 36)^3 = 1.18 times as flexible out of plane - the back
+wall's +23.2%. The casting's ribs are 20 mm by 3 mm (6.7 walls tall), the same thick-shell regime. Keeping the junction metal solid as well (grown 2 walls) made 140,094 tetrahedra, more than the whole
+all-solid mesh (63,586): such a box gains nothing from a mixed mesh.
+
+Training parts that mix (sh0004/12/23/24/25/28/52/53/58/59/88/89) and the failure map's 20 "mixed" cases, against the
+product's all-solid mesh (modes 7-12) and run twice (decks hashed): see the PR. Repeat: every mixed deck made is
+byte-identical in two processes - the 7 accuracy parts and the training parts that mix.
 
 ## 3. Meshing (PR 2)
 
