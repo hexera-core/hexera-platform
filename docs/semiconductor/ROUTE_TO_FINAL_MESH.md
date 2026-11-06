@@ -334,6 +334,8 @@ channel area error is identical in both. Only the plate's outside differs.
 
 ### Phase 0c: find out whether losing the fitted skin cost anything
 
+**Answered 6 November, +2.74% on the delivered mesh. The result is at the end of this document.**
+
 New, and it follows from the above. Measure the staircase area error on `wall_outer`, the plate's
 outer surface, the same way the channels were measured: face centres and outward normals out of
 the solid region's boundary index, against `block.stl`.
@@ -502,3 +504,38 @@ serial checkMesh is 7,932 s of the 10,796, which is 73%. Meshing is 7.4%.
 - The 1 um surface offset above, which is a geometry decision and needs a call.
 - Phase 0a and 0c are untouched and still free.
 - Phase 2a, the one-hour layer gate, now has a mesh to carve its subsets out of.
+
+## Phase 0c is done: losing the fitted outer skin costs about 3%
+
+Measured 6 November off both coupled meshes' own plate sidecars, against `block.stl`, which is the
+surface the plate-only mesh fitted. `block.stl` encloses metal and coolant together, its volume
+matches the meshed plate plus the coolant to 0.065%, and it carries no internal channel walls, so
+its area is purely the outer skin. The mesh's outer skin is solid_to_air plus solid_to_chip: every
+plate face not wetted by coolant.
+
+| area | CAD target | `cbox2` | `cbox2b` |
+|---|---|---|---|
+| plate outer skin | 47,955.416 mm2 | 49,270.083 mm2, **+2.74%** | 49,546.102 mm2, **+3.32%** |
+| plate wetted by coolant | 60,410.451 mm2 | 65,313.918 mm2, **+8.12%** | 65,411.222 mm2, **+8.28%** |
+| chip to plate contact | 2,744.50 mm2 | 2,735.930 mm2, -0.31% | 2,748.484 mm2, **+0.14%** |
+
+**The answer.** About 3% of outer area, and it only feeds the external convection term, which is a
+small part of this problem next to the coolant. The fitted skin was worth having and it is not worth
+a box-domain redesign to get back.
+
+Three other things fall out of the same measurement.
+
+The coolant wetted area inflation is now measured directly on the delivered mesh rather than
+inferred: +8.12%, against the +7.8% this document had. It is +8.28% on the new mesh, so the re-mesh
+made it 0.16 points worse. That is the same 2 um inclusion bias that shows in the channel widths and
+in the coolant volume, appearing a third time in a third quantity, which is what makes it a real
+effect rather than three coincidences.
+
+The chip-to-plate contact area went from -0.31% to +0.14% against the CAD. That is the one area
+figure the re-mesh improved, and it matters, because that interface carries the whole heat load.
+
+And both meshes carry about 0.19% non-quad boundary faces, 45,097 and 52,271, which are the
+refinement-level transitions. Any area measurement on these meshes has to use a general polygon
+area; assuming quads throws those faces away. My first attempt did exactly that.
+
+Method: `devtools/semiconductor/skin_area.py`, exact for planar polygons by the 3D shoelace.
