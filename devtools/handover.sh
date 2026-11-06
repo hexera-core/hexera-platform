@@ -29,15 +29,16 @@ echo "what it costs and what is live:"
 pick docs/deployment/gcp-live-inventory.md           09-what-is-running.md
 pick docs/deployment/cost-estimate.md                10-what-it-costs.md
 echo "the Corintis job:"
-pick docs/semiconductor/COUPLED_MESH_DELIVERY.md     11-corintis-what-we-shipped.md
-pick docs/semiconductor/MESH_QUALITY_ASSESSMENT.md   12-corintis-how-good-is-it.md
-pick docs/semiconductor/MESH_QUANTISATION.md         13-corintis-the-defect-we-found.md
+pick docs/semiconductor/CORINTIS.md                  11-corintis-the-account.md
+pick docs/semiconductor/COUPLED_MESH_DELIVERY.md     12-corintis-what-we-shipped.md
+pick docs/semiconductor/MESH_QUALITY_ASSESSMENT.md   13-corintis-how-good-is-it.md
+pick docs/semiconductor/MESH_QUANTISATION.md         14-corintis-the-defect-we-found.md
 echo "the raw logs, included on request:"
-pick docs/semiconductor/DEVLOG.md                    14-devlog-semiconductor.md
-pick docs/engines/fitness-changelog.md               15-engine-fitness-changelog.md
+pick docs/semiconductor/DEVLOG.md                    15-devlog-semiconductor.md
+pick docs/engines/fitness-changelog.md               16-engine-fitness-changelog.md
 
 cat > "$OUT/00-READ-THIS-FIRST.md" <<'IDX'
-# Hexera, in fifteen documents
+# Hexera, in sixteen documents
 
 Everything here is a copy out of `docs/` in the platform repo, numbered in the order I would read
 them. The repo is the source of truth; this folder is a snapshot so it can be sent as one thing.
@@ -72,15 +73,18 @@ it, then cannot run a single job. Do not skip it.
 
 ## The Corintis job, our first real customer part
 
-Read these three in order. **11 and 12 describe what we shipped. 13 partly contradicts 12**, and
+Read `11` first, then the rest in order. **11 and 12 describe what we shipped. 13 partly contradicts 12**, and
 that is deliberate rather than an oversight: it is a defect found afterwards, on 5 November, by
 measuring the delivered mesh instead of the CAD it was built from.
 
 | | |
 |---|---|
-| `11-corintis-what-we-shipped.md` | the delivery note, the coupled plate and chip mesh |
-| `12-corintis-how-good-is-it.md` | quality graded bad / okayish / pretty good / great |
-| `13-corintis-the-defect-we-found.md` | the grid rounds every 100 um channel to 88, 110 or 132 um |
+| `11-corintis-the-account.md` | **start here.** Who they are, the six things they asked
+for by name, what we have not told them yet, and what we still need from them |
+| `12-corintis-what-we-shipped.md` | the delivery note, the coupled plate and chip mesh |
+| `13-corintis-how-good-is-it.md` | quality graded bad / okayish / pretty good / great. Its
+section 5 conclusion is marked superseded |
+| `14-corintis-the-defect-we-found.md` | the grid rounds every 100 um channel to 88, 110 or 132 um |
 
 The short version of 13: the coolant boundary sits on mesh cell faces, so a channel has to be a
 whole number of cells wide, and at our cell size there is no whole number that gives 100 um. Flow
@@ -91,18 +95,18 @@ It is fixable by changing one number, and the mesh gets smaller when we do.
 
 | | |
 |---|---|
-| `14-devlog-semiconductor.md` | 4,758 lines. Every change, what it measured, and what it cost to find out |
-| `15-engine-fitness-changelog.md` | 36 lines. How engine selection has moved |
+| `15-devlog-semiconductor.md` | 4,758 lines. Every change, what it measured, and what it cost to find out |
+| `16-engine-fitness-changelog.md` | 36 lines. How engine selection has moved |
 
-**`14` is a working log, not a document.** It is chronological, it includes every dead end, and it
+**`15` is a working log, not a document.** It is chronological, it includes every dead end, and it
 contains claims that later entries correct. Three in particular: an earlier figure of "9% low on
 Nusselt" is wrong in sign and subject and the 2026-11-06 entry retracts it; the near-wall cell
 count was treated as the dominant error when it is not; and a planned 64-bit image rebuild turned
 out to be a regression. Reading it front to back is the honest version of how the mesh got built.
 Reading any single entry out of order is a way to quote a number we no longer stand behind.
 
-If you want the conclusions rather than the path, `11` through `13` are the conclusions, and the
-last entry of `14` has the plan that came out of it.
+If you want the conclusions rather than the path, `11` through `14` are the conclusions, and the
+last entry of `15` has the plan that came out of it.
 
 ## Deliberately not in here
 

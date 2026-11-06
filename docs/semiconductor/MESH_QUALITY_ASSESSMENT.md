@@ -214,6 +214,17 @@ What a user must still do:
 
 **Not boundary layers. I checked, and cfMesh cannot put them there.**
 
+> **SUPERSEDED 2026-11-06.** The sentence above is true about cfMesh and the wrong
+> conclusion to draw from it. `snappyHexMesh` run as a pure layer adder
+> (`castellatedMesh false; snap false; addLayers true;`) on the SPLIT fluid region does add
+> graded layers, and the conformal interface survives: measured 100% coverage, all hexes,
+> Mesh OK, interface area unchanged to 2.5e-7 percent. It had looked impossible because the
+> shipped `meshQualityDict` carries `minVol 1e-13`, an absolute pyramid volume 56x above
+> what a 22 um cell produces, so every face of a perfect mesh is flagged and the run exits
+> 0 having extruded nothing. Layers are still not the first thing to do, but the reason is
+> the staircase cancellation below, not capability. See CORINTIS.md and the 2026-11-06
+> devlog entry.
+
 `cartesianMesh` meshes one domain whose boundary is `domain.stl`, a plain box. `fluid.stl` and
 `fluid_fine.stl` appear only under `surfaceMeshRefinement`, so the channel walls are internal at
 mesh time. They become patches only when `splitMeshRegions` cuts the regions apart. Run on a
