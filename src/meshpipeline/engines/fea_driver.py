@@ -499,14 +499,14 @@ MAX_CUBES_CEILING = 12_000_000
 
 
 def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float, *, limit: float | None = None,
-               recount: bool = True):
+               recount: bool = True, scale: float = 1.0):
     """The zones' volume histogram (engines/fea_size_field). With `limit`, it is counted to 1.5 times it
     (never less than STOP_ELEMENTS), and a count that ran out of cubes under the limit is counted again
-    with more (MAX_CUBES_CEILING)."""
+    with more (MAX_CUBES_CEILING). `scale`: PLAN-fea-27's factor on the base size."""
     from meshpipeline.engines import fea_size_field as SF
 
     field = SF.SizeField(surface, zone_list, growth=L.growth(levers), scale_to_m=1e-3)
-    coarsest = diag_m / P.MIN_DIVISIONS
+    coarsest = P.base_size(diag_m, scale)
     stop = STOP_ELEMENTS if limit is None else max(STOP_ELEMENTS, 1.5 * float(limit))
     cubes = SF.MAX_CUBES
     while True:
@@ -521,23 +521,29 @@ def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float
 def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
               limit: int = P.ELEMENT_LIMIT, zone_floor_m: float | None = None, hist=None,
               through: float | None = None, ai: dict | None = None,
-              zone_floors: dict[str, float] | None = None, recount: bool = True) -> dict:
+              zone_floors: dict[str, float] | None = None, recount: bool = True,
+              scale: float | None = None) -> dict:
     """The plan for this part, with the ladder's levers applied: the zones the rules ask for, the
     coarsest base the part allows, the estimate against `limit`. `zone_floor_m`: PLAN-fea-8's
     coarsening (the finest zones floored, never past their validity minimums); `hist`: the zones'
     histogram when the caller already has it; `ai`: the AI's checked decision (engines/fea_ai), made
     exact by the rules before any coarsening. `zone_floors`: PLAN-fea-8's coarsening kind by kind (zone
-    kind -> floor), the low-stress zones first (COARSEN_ORDER)."""
+    kind -> floor), the low-stress zones first (COARSEN_ORDER). `scale`: PLAN-fea-27's one factor on
+    every size (the base and every zone, the minimums re-applied) for the user's element count."""
     levers = list(levers or [])
     zone_list, applied = FA.apply_zones(P.zones(record, tighten=L.tightened(levers)), _used(ai), record,
                                         diag_m=diag_m)
+    s = float(scale or 1.0)
+    if s != 1.0:
+        zone_list = P.scaled(zone_list, s)
     for kind, f in sorted((zone_floors or {}).items()):
         zone_list = P.floored(zone_list, float(f), through or P.KEEP_THROUGH, kinds=(kind,))
     if zone_floor_m:
         zone_list = P.floored(zone_list, float(zone_floor_m), through or P.KEEP_THROUGH)
     if hist is None:
-        hist = _histogram(surface, zone_list, levers, diag_m, limit=limit, recount=recount)
-    plan = P.finish(record, zone_list, hist, diag_m=diag_m, limit=limit, levers=levers, growth=L.growth(levers))
+        hist = _histogram(surface, zone_list, levers, diag_m, limit=limit, recount=recount, scale=s)
+    plan = P.finish(record, zone_list, hist, diag_m=diag_m, limit=limit, levers=levers, growth=L.growth(levers),
+                    scale=s)
     if zone_floors:
         plan["zone_floors_m"] = {k: float(v) for k, v in sorted(zone_floors.items())}
     if zone_floor_m:
@@ -705,19 +711,161 @@ def _with_ai(plan: dict) -> dict:
     return plan
 
 
+def element_target(state: dict | None, ai: dict | None) -> dict | None:
+    """AI-fea-4 / PLAN-fea-27: the element count the user named, as the AI read it from their words and the
+    rules checked it (engines/fea_ai._target): {"elements", "mode", "low"/"high" for a range, "source": "ai"};
+    None when it named none. The AI alone reads the notes (a saved decision answers for it when it is down,
+    AI-fea-6). When the AI gave no answer and the user left notes, {"unread": True}: the plan is the rules'
+    own and the words say a count in the notes was not applied this run."""
+    d = _used(ai)
+    if d is None:
+        return {"unread": True} if (state or {}).get("user_notes") else None
+    n = int(d.get("target_elements") or d.get("budget_elements") or 0)
+    if not n:
+        return None
+    mode = str(d.get("target_mode") or "about")
+    out: dict = {"elements": n, "mode": mode, "quote": "", "source": "ai"}
+    if mode == "range":
+        out.update(low=int(d["target_min"]), high=int(d["target_max"]))
+    return out
+
+
+#: PLAN-fea-27: a count that falls slower than s^-FLAT_SLOPE as the factor grows is held by the minimums
+FLAT_SLOPE = 0.3
+
+
+def _gap(n: float, t: float) -> float:
+    """How far an estimate is from the count, as a log ratio (0 = on it)."""
+    return abs(math.log(max(float(n), 1.0) / max(float(t), 1.0)))
+
+
+def target_plan(record: dict, surface, diag_m: float, *, levers: list[dict], ai: dict | None, target: dict,
+                limit: int, rules: dict) -> dict:
+    """PLAN-fea-27: the plan scaled to the user's element count. `rules` is the rules' own plan (its estimate N0).
+    ONE factor s on every size - the base (PLAN-fea-28's fifth of the part at most) and every zone, the minimums
+    re-applied after (fea_plan.scaled) - solved on the REAL estimate: the first guess from count ~ 1/size^3,
+    then secant steps on log(count) against log(s), kept inside the bracket found (a halving there when a step
+    leaves it). Where a minimum holds a zone, its count stops falling and the other sizes take up the slack: the
+    secant's slope follows that. Both ways: under N0 coarser, over it finer - never past the largest machine
+    (the count is aimed at LIMIT_AIM of `limit` at most). Returns the plan with its `target` record."""
+    asked = int(target["elements"])
+    mode = str(target.get("mode") or "about")
+    # the most the largest machine holds, with the solve's own tolerance to spare (an estimate near it still fits)
+    cap = int(P.LIMIT_AIM * float(limit) / (1.0 + P.TARGET_TOLERANCE))
+    aim = min(asked, cap)
+    if mode == "range":
+        # A RANGE: aimed at its middle, and any estimate inside it is a hit (the solve stops there)
+        low, high = int(target["low"]), int(target["high"])
+        ok_lo, ok_hi = float(min(low, cap)), float(min(high, int(P.LIMIT_AIM * float(limit))))
+        if ok_lo >= ok_hi:
+            ok_lo, ok_hi = aim / (1.0 + P.TARGET_TOLERANCE), aim * (1.0 + P.TARGET_TOLERANCE)
+    else:
+        ok_lo, ok_hi = aim / (1.0 + P.TARGET_TOLERANCE), aim * (1.0 + P.TARGET_TOLERANCE)
+
+    def hit(n: float) -> bool:
+        return ok_lo <= n <= ok_hi
+
+    def miss(n: float) -> float:
+        """How far outside what counts as a hit (0 inside), then how far from the aim."""
+        return 0.0 if hit(n) else min(_gap(n, ok_lo), _gap(n, ok_hi))
+
+    n0 = float(rules["estimate"]["elements"])
+    rec = {"asked": asked, "mode": mode, "source": target.get("source"), "quote": target.get("quote") or "",
+           "aim": aim, "machine": aim < asked or (mode == "range" and int(target["low"]) > cap),
+           "rules_elements": int(n0), "rules_base_m": rules["base_size_m"],
+           **{k: target[k] for k in ("low", "high") if target.get(k)}}
+    if ((mode == "at_most" and n0 <= asked) or (mode == "at_least" and n0 >= asked)
+            or (mode == "range" and int(target["low"]) <= n0 <= int(target["high"]) and rules["fits"])):
+        rules["target"] = {**rec, "scale": 1.0, "kept_rules": True, "steps": 0}
+        return rules
+    tried: list[tuple[float, float, dict]] = [(1.0, n0, rules)]
+    s = 1.0
+    if not hit(n0):
+        lo, hi = P.SCALE_MIN, P.SCALE_MAX            # lo: a factor whose count is over the aim; hi: under it
+        if n0 > aim:
+            lo = 1.0
+        else:
+            hi = 1.0
+        s_next = min(max((n0 / aim) ** (1.0 / 3.0), P.SCALE_MIN), P.SCALE_MAX)
+        for _ in range(P.TARGET_STEPS):
+            if s_next in [x[0] for x in tried]:
+                break
+            plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, scale=s_next)
+            n = float(plan["estimate"]["elements"])
+            tried.append((s_next, n, plan))
+            if hit(n):
+                break
+            if n > aim:
+                lo = max(lo, s_next)
+            else:
+                hi = min(hi, s_next)
+            if n > aim and s_next >= P.SCALE_MAX * (1 - 1e-9):
+                break                                   # every zone at its minimum: no factor goes lower
+            over = [x for x in tried if x[1] > aim]
+            under = [x for x in tried if x[1] <= aim]
+            if over and under:
+                # BRACKETED: the line through the nearest estimate on each side (log count against log factor)
+                (s1, n1, _p1), (s2, n2, _p2) = max(over, key=lambda x: x[0]), min(under, key=lambda x: x[0])
+            else:
+                # the secant through the last two estimates
+                (s1, n1, _p1), (s2, n2, _p2) = tried[-2], tried[-1]
+            slope = (math.log(max(n2, 1.0)) - math.log(max(n1, 1.0))) / (math.log(s2) - math.log(s1)) \
+                if s1 != s2 else -3.0
+            if over and under:
+                s_cand = (math.exp(math.log(s2) + (math.log(aim) - math.log(max(n2, 1.0))) / slope)
+                          if slope < -1e-6 else math.sqrt(lo * hi))
+            elif slope > -FLAT_SLOPE and n > aim:
+                # FLAT: the minimums hold nearly every element - the end of the range once, then stop
+                if any(x[0] >= P.SCALE_MAX * (1 - 1e-9) for x in tried) or len(tried) > 2:
+                    break
+                s_cand = P.SCALE_MAX
+            elif slope > -FLAT_SLOPE:
+                s_cand = math.sqrt(lo * hi)
+            else:
+                s_cand = math.exp(math.log(s2) + (math.log(aim) - math.log(max(n2, 1.0))) / slope)
+            if not (lo <= s_cand <= hi):
+                s_cand = math.sqrt(lo * hi)
+            s_next = min(max(s_cand, P.SCALE_MIN), P.SCALE_MAX)
+            if hi / lo < 1.0 + 1e-3:
+                break
+    fitting = [x for x in tried if x[2]["fits"]] or tried
+    s, n, best = min(fitting, key=lambda x: (miss(x[1]), _gap(x[1], aim), x[0]))
+    zs = best.get("zones") or []
+    # the minimums held it: the count stays over the aim, coarser than the rules, and a held zone sizes the mesh
+    held_min = bool(n > ok_hi and s > 1.0
+                    and P.held_zones(list(zs), float(best["base_size_m"])))
+    best["target"] = {**rec, "scale": round(float(s), 4), "steps": len(tried) - 1, "held_by_minimums": held_min,
+                      "hit": hit(n),
+                      "base_capped": bool(s > 1.0 and P.base_size(diag_m, s) < P.base_size(diag_m) * s * (1 - 1e-9)),
+                      "tried": [[round(x[0], 4), int(x[1])] for x in tried]}
+    return best
+
+
 def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
-                ceiling_s: float | None = None, ai: dict | None = None) -> dict:
+                ceiling_s: float | None = None, ai: dict | None = None, target: dict | None = None) -> dict:
     """PLAN-fea-8, NEVER A STOP BEFORE MESHING (Areen, 21 Oct): the rules' own plan when it fits under
     the limit; else the finest zones coarsened until it fits, never past what keeps elements valid,
     what that leaves short named (resolution_short); else - every zone at its validity minimum and
-    still over - meshed so anyway. The returned plan always meshes."""
+    still over - meshed so anyway. The returned plan always meshes.
+    `target`: the element count the user named (element_target): PLAN-fea-27 scales the whole plan to it,
+    both ways, inside the minimums and the largest machine; only a scaled plan that still does not fit the
+    machine goes on to PLAN-fea-8's coarsening, as any plan over its limit does."""
     levers = list(levers or [])
     limit, why = element_limit(record, ceiling_s)
-    # AI-fea-4: the user's own budget lowers the limit, never raises it
-    mine, said = FA.budget_limit(limit, _used(ai))
-    if said:
-        limit, why = mine, said
     plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai)
+    missed: dict | None = None
+    # AI-fea-4: the AI gave no answer and the user left notes - a count in them is not applied, and said
+    unread = bool(target and target.get("unread"))
+    if unread:
+        target = None
+    if target:
+        scaled_plan = target_plan(record, surface, diag_m, levers=levers, ai=ai, target=target, limit=limit,
+                                  rules=plan)
+        if scaled_plan["fits"]:
+            scaled_plan["limit"].update(why=why, memory=limit_facts())
+            return _restate(record, scaled_plan)
+        missed = {k: v for k, v in scaled_plan["target"].items() if k != "tried"}
+        plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai)
     if not plan["fits"] and FA.refines(_used(ai)):
         # AI-fea-5: THE AI'S REFINEMENTS NEVER COST THE RULES' OWN ZONES. Over the limit, they are
         # left out first (its other choices stand) - the limit's coarsening is only ever for what
@@ -727,6 +875,10 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
         plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai)
     zone_list, _ = FA.apply_zones(P.zones(record, tighten=L.tightened(levers)), _used(ai), record, diag_m=diag_m)
     plan["limit"].update(why=why, memory=limit_facts())
+    if missed:
+        plan["target_missed"] = missed
+    if unread:
+        plan["target_unread"] = True
     if plan["fits"]:
         return _restate(record, plan)
     needed = int(plan["estimate"]["elements"])
@@ -786,6 +938,10 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
                          # past even the largest machine allowed: meshed anyway, said (RUN-2)
                          "over_memory": bool(at_minimums and int(best["estimate"]["elements"])
                                              > memory_elements(_ceiling_gib()))}
+    if missed:
+        best["target_missed"] = missed
+    if unread:
+        best["target_unread"] = True
     return _restate(record, best)
 
 
@@ -1424,6 +1580,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if (ai.get("decision") or {}).get("notes_remark"):
         from meshpipeline.contracts.user_notes import record_remark
         record_remark(ws, ai["decision"]["notes_remark"], by="fea_ai")
+    # PLAN-fea-27: an element count the user named, as the AI read it from their notes (AI-fea-4)
+    target = element_target(state, ai)
     levers: list[dict] = []
     passes: list[dict] = []
     tripped: dict | None = None
@@ -1441,10 +1599,17 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 # PLAN-fea-8: the rules' own plan, coarsened to fit under the limit when it must - never a
                 # stop before meshing
                 plan = await asyncio.to_thread(choose_plan, record, surface, diag_m, levers=levers,
-                                               ceiling_s=ceiling_for(run), ai=ai)
+                                               ceiling_s=ceiling_for(run), ai=ai, target=target)
                 chosen = {"limit": plan["limit"], "zone_floor_m": plan.get("zone_floor_m"),
-                          "zone_floors": plan.get("zone_floors_m"), "coarsened": plan.get("coarsened")}
+                          "zone_floors": plan.get("zone_floors_m"), "coarsened": plan.get("coarsened"),
+                          # PLAN-fea-27: every later pass keeps the factor the user's count gave
+                          "scale": plan.get("scale"), "target": plan.get("target"),
+                          "target_missed": plan.get("target_missed"), "target_unread": plan.get("target_unread")}
                 first_plan = plan
+                if P.target_remark(plan):
+                    # PLAN-fea-27: what was done with the count the notes named, for the result's line
+                    from meshpipeline.contracts.user_notes import record_remark
+                    record_remark(ws, P.target_remark(plan), by="fea_target")
                 # every later pass plans with the decision the first one kept (refinements left out
                 # when they would not fit stay out)
                 if plan.get("ai"):
@@ -1454,12 +1619,16 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 if L.coarse_factor(levers) < 1.0:
                     # LAD-fea-4: the built mesh was over the limit - the finest zones coarser, from the
                     # floor already in force (or the finest zone), never past their validity minimums
-                    start = floor_m or min([float(z["size_m"]) for z in P.zones(record)] or [diag_m / P.MIN_DIVISIONS])
+                    sized = first_plan.get("zones") if chosen.get("scale") else P.zones(record)
+                    start = floor_m or min([float(z["size_m"]) for z in sized or []] or [diag_m / P.MIN_DIVISIONS])
                     floor_m = start / L.coarse_factor(levers)
                 plan = await asyncio.to_thread(make_plan, record, surface, diag_m, levers=levers,
                                                limit=int(chosen["limit"]["elements"]), zone_floor_m=floor_m, ai=ai,
-                                               zone_floors=chosen.get("zone_floors"))
+                                               zone_floors=chosen.get("zone_floors"), scale=chosen.get("scale"))
                 plan["limit"] = chosen["limit"]
+                for key in ("target", "target_missed", "target_unread"):
+                    if chosen.get(key):
+                        plan[key] = chosen[key]
                 if chosen.get("coarsened"):
                     plan["coarsened"] = chosen["coarsened"]
                     plan["fits"] = True
@@ -1755,6 +1924,6 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["connection_of", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
+__all__ = ["connection_of", "element_target", "target_plan", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
            "complexity", "element_limit", "fill_rate", "watchdog_words", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "NOT_RUN", "NOT_RUN_GATE", "not_run", "not_run_words", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

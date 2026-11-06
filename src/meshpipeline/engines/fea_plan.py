@@ -34,6 +34,11 @@ THE RULES (docs/RULES.md):
   PLAN-fea-11 curving never makes an element worse
   PLAN-fea-12 a MICRO DETAIL is set aside and named the same way
   PLAN-fea-14 the base size is the coarsest the part allows; the rules refine where they ask
+  PLAN-fea-27 an element count the user named: every size (the base and every zone) scaled by ONE
+              factor until the estimate is near it, both ways, the hard minimums re-applied after
+              (2 through every wall, 4 per quarter-turn of every curved face, the corner cap) and
+              never past the largest machine
+  PLAN-fea-28 under such a count the base grows to a fifth of the part at most
 """
 from __future__ import annotations
 
@@ -90,6 +95,21 @@ PER_H3 = 4.5
 #: plans put under one element across a 0.1-0.5 mm wall and failed).
 KEEP_THROUGH = 1.0
 KEEP_PER_QUARTER = 3
+
+#: PLAN-fea-27: THE USER'S ELEMENT COUNT. Every size is scaled by one factor until the estimate is within
+#: this share of the count, in at most TARGET_STEPS estimates past the rules' own; the factor stays
+#: within [SCALE_MIN, SCALE_MAX]. Coarser, every rule's zone is at its minimum by x2 (the walls and rounds
+#: are there already, a hot spot's 6 per quarter-turn reaches 4 at x1.5, a corner's quarter of its wall
+#: and the base reach their half and fifth at x2); SCALE_MAX leaves room for the AI's refined zones.
+TARGET_TOLERANCE = 0.05
+TARGET_STEPS = 6
+SCALE_MIN = 1.0 / 20.0
+SCALE_MAX = 3.0
+#: PLAN-fea-28: under the user's count the base size grows to the part's diagonal over this at most - twice
+#: PLAN-fea-14's tenth. The base is the size only where no rule asks for finer (walls, curved faces and
+#: hot spots keep their own minimums), so this bounds the bulk of a chunky part: measured on the
+#: textbook cases (RULES.md PLAN-fea-28).
+TARGET_MIN_DIVISIONS = 5
 
 QUARTER = math.pi / 2.0
 #: zone kinds in plain words (PLAN-fea-8's coarsening says which it touched and which it kept)
@@ -301,6 +321,77 @@ def floored(zone_list: list[dict], floor_m: float, through: float = KEEP_THROUGH
     return out
 
 
+def base_size(diag_m: float, scale: float = 1.0) -> float:
+    """The base size: PLAN-fea-14's tenth of the part, times PLAN-fea-27's factor, never coarser than
+    PLAN-fea-28's fifth of the part."""
+    base = float(diag_m) / MIN_DIVISIONS
+    if scale == 1.0:
+        return base
+    return min(base * float(scale), float(diag_m) / TARGET_MIN_DIVISIONS)
+
+
+def scale_cap(z: Mapping) -> tuple[float, str] | None:
+    """PLAN-fea-27: the coarsest a zone may be scaled to and keep the hard minimums, and the rule that sets it:
+    2 elements through its wall (PLAN-fea-3; a sharp corner's wall too), 4 per quarter-turn of a curved
+    face (PLAN-fea-7; a hole, fillet or notch is one), a part's own base at a fifth of the part
+    (PLAN-fea-28). None for no limit."""
+    kind = z.get("kind")
+    caps: list[tuple[float, str]] = []
+    t, r = _f(z.get("thickness_m")), _f(z.get("radius_m"))
+    if kind in ("wall", "wall_spot", "corner", "hole", "fillet", "notch") and t:
+        caps.append((t / WALL_ELEMENTS, "PLAN-fea-3"))
+    if kind in ("hole", "fillet", "notch", "round") and r:
+        caps.append((QUARTER * r / ROUND_PER_QUARTER, "PLAN-fea-7"))
+    if kind == "part":
+        caps.append((float(z["size_m"]) * MIN_DIVISIONS / TARGET_MIN_DIVISIONS, "PLAN-fea-28"))
+    return min(caps) if caps else None
+
+
+def scaled(zone_list: list[dict], scale: float) -> list[dict]:
+    """PLAN-fea-27: every zone's size times `scale`, the hard minimums re-applied: coarser never past
+    scale_cap (and never finer than the zone already was); finer, a capped sharp corner keeps its cap
+    (PLAN-fea-5: refining it buys nothing). Each zone keeps the size the rules gave it (`unscaled_m`);
+    one a minimum held is marked with that rule (`held`); a hot spot made coarser than PLAN-fea-4's
+    accuracy size is marked `below_accuracy`, and the counts the mesh is checked against become what its
+    scaled size gives (`per_quarter`, `wall_elements`), so a zone coarser by the user's choice is not
+    "short" and tightened again (LAD-fea-3)."""
+    s = float(scale)
+    if s == 1.0:
+        return [dict(z) for z in zone_list]
+    out = []
+    for z in zone_list:
+        size = float(z["size_m"])
+        want = size * s
+        new, held = want, ""
+        if s > 1.0:
+            cap = scale_cap(z)
+            if cap is not None and cap[0] < want:
+                new, held = max(size, cap[0]), cap[1]
+        elif z.get("kind") == "corner" and z.get("capped"):
+            new, held = size, "PLAN-fea-5"
+        row = {**z, "size_m": _r(new), "unscaled_m": size}
+        if held:
+            row["held"] = held
+        if new > size and z.get("kind") in ("hole", "fillet", "notch"):
+            r, t = _f(z.get("radius_m")), _f(z.get("thickness_m"))
+            if r:
+                got = QUARTER * r / new
+                row["per_quarter"] = round(min(float(z.get("per_quarter") or HOT_SPOT_PER_QUARTER), got), 3)
+                if got < HOT_SPOT_PER_QUARTER * (1 - 1e-6):
+                    row["below_accuracy"] = True
+            if t:
+                got_t = t / new
+                row["wall_elements"] = round(max(float(WALL_ELEMENTS),
+                                                 min(float(z.get("wall_elements") or STRESS_WALL_ELEMENTS), got_t)), 3)
+                if got_t < STRESS_WALL_ELEMENTS * (1 - 1e-6):
+                    row["below_accuracy"] = True
+        elif new > size and z.get("kind") in ("wall", "wall_spot") and z.get("wall_elements") and _f(z.get("thickness_m")):
+            # a wall the AI refined (AI-fea-1: 3 through), coarsened back towards the rule's 2
+            row["wall_elements"] = round(max(float(WALL_ELEMENTS), float(z["thickness_m"]) / new), 3)
+        out.append(row)
+    return out
+
+
 def shortfalls(zone_list: list[dict], n: int = 12) -> list[str]:
     """What the coarsened zones leave short of their rules, the worst first, in plain words
     (resolution_short): elements through a wall, per quarter-turn of a round."""
@@ -331,11 +422,12 @@ def shortfalls(zone_list: list[dict], n: int = 12) -> list[str]:
 
 
 def finish(record: Mapping, zone_list: list[dict], hist: Histogram, *, diag_m: float, limit: int,
-           levers: list[dict] | None = None, growth: float = GROWTH) -> dict:
+           levers: list[dict] | None = None, growth: float = GROWTH, scale: float = 1.0) -> dict:
     """The whole plan, from the zones and their histogram (see the module text): the base size is
-    the coarsest the part allows (PLAN-fea-14), and the plan fits when its estimate is within
-    LIMIT_AIM of `limit` (PLAN-fea-8)."""
-    base = diag_m / MIN_DIVISIONS
+    the coarsest the part allows (PLAN-fea-14; times PLAN-fea-27's `scale` under the user's element
+    count, the zones scaled already), and the plan fits when its estimate is within LIMIT_AIM of
+    `limit` (PLAN-fea-8)."""
+    base = base_size(diag_m, scale)
     est = elements(hist, base, PER_H3)
     # PLAN-fea-8: a count that ran out of cubes after counting further (engines/fea_driver._histogram) is a
     # floor; under the limit it fits - a plan short of its machine steps up when it runs (RUN-3)
@@ -348,6 +440,7 @@ def finish(record: Mapping, zone_list: list[dict], hist: Histogram, *, diag_m: f
         "estimate": {"elements": int(round(est)), **({} if hist.complete else {"at_least": True})},
         "limit": {"elements": int(limit)},
         "fits": bool(fits), "levers": list(levers or []),
+        **({"scale": float(scale)} if scale != 1.0 else {}),
         # PLAN-fea-10: the cusps the adapter sets aside (metres, the mesh's unit)
         "cusps": [{"at_m": [_r(float(v) * _MM) for v in c["at_mm"]], "faces": list(c.get("faces") or []),
                    "angle_deg": c.get("angle_deg")} for c in record.get("cusps") or []],
@@ -386,9 +479,16 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
     zs = plan["zones"]
     est = plan["estimate"]["elements"]
     limit = int((plan.get("limit") or {}).get("elements") or ELEMENT_LIMIT)
-    out = [f"The mesh the rules recommend: the base element size is {plan['base_size_m'] * 1e3:.3g} mm (a tenth "
-           "of the part), and every rule below makes it finer where it asks to.",
-           "Quadratic tetrahedra (10-node), a solid mesh; every CAD face is a named group."]
+    scale = float(plan.get("scale") or 1.0)
+    if scale != 1.0:
+        first = (f"The mesh sized to your element count: the base element size is {plan['base_size_m'] * 1e3:.3g} mm "
+                 f"(a tenth of the part, times {scale:.3g}), and every rule below makes it finer where it asks to, "
+                 "scaled by the same factor.")
+    else:
+        first = (f"The mesh the rules recommend: the base element size is {plan['base_size_m'] * 1e3:.3g} mm (a tenth "
+                 "of the part), and every rule below makes it finer where it asks to.")
+    out = [first, "Quadratic tetrahedra (10-node), a solid mesh; every CAD face is a named group."]
+    out.extend(target_words(plan))
     out.extend(assembly_words(plan.get("assembly") or {}))
     walls = [z for z in zs if z["kind"] == "wall" and z["size_m"] < plan["base_size_m"]]
     if walls:
@@ -491,6 +591,164 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
     return [w for w in out if w]
 
 
+#: the zone kinds a held minimum is said for, in plain words, with what it keeps
+_HELD_WORDS = {"PLAN-fea-3": f"{WALL_ELEMENTS} elements through their wall",
+               "PLAN-fea-7": f"{ROUND_PER_QUARTER} elements per quarter-turn of their curve",
+               "PLAN-fea-5": "their cap at a quarter of the wall beside them",
+               "PLAN-fea-28": "their base at a fifth of their part"}
+
+
+def _n(v) -> str:
+    """An element count in plain words: 1.04M, 640k, 9,500."""
+    x = float(v)
+    if x >= 1e9:
+        return f"{x / 1e9:.3g} billion"
+    if x >= 1e6:
+        return f"{x / 1e6:.3g}M"
+    if x >= 1e4:
+        return f"{x / 1e3:.3g}k"
+    return f"{int(round(x)):,}"
+
+
+def held_words(z: Mapping) -> str:
+    """The minimum that held one zone, where it is: 'the 4 mm wall under Face_7'."""
+    where = (z.get("faces") or [z.get("id")])[0]
+    if z.get("held") == "PLAN-fea-3" and z.get("thickness_m"):
+        return f"{WALL_ELEMENTS} elements through the {float(z['thickness_m']) * 1e3:.3g} mm wall under {where}"
+    if z.get("held") == "PLAN-fea-7" and z.get("radius_m"):
+        return (f"{ROUND_PER_QUARTER} elements per quarter-turn of the radius "
+                f"{float(z['radius_m']) * 1e3:.3g} mm curve of {where}")
+    return f"{_HELD_WORDS.get(str(z.get('held')), 'its minimum')} ({where})"
+
+
+def held_zones(zone_list: list[dict], base_m: float) -> list[dict]:
+    """The zones a minimum held under PLAN-fea-27 that still size the mesh (finer than the base)."""
+    return [z for z in zone_list if z.get("held") and float(z["size_m"]) < float(base_m)]
+
+
+def binding(zone_list: list[dict], base_m: float = math.inf) -> dict | None:
+    """The held zone a lower count would break first: the thinnest held wall, else the smallest held
+    curve, else any held zone (PLAN-fea-27's words)."""
+    held = [z for z in held_zones(zone_list, base_m) if z.get("held") != "PLAN-fea-5"]
+    walls = [z for z in held if z["held"] == "PLAN-fea-3" and z.get("thickness_m")]
+    if walls:
+        return min(walls, key=lambda z: float(z["thickness_m"]))
+    curves = [z for z in held if z["held"] == "PLAN-fea-7" and z.get("radius_m")]
+    if curves:
+        return min(curves, key=lambda z: float(z["radius_m"]))
+    return held[0] if held else None
+
+
+#: AI-fea-4: the AI step that reads the notes gave no answer (and no saved one): a count in them is not applied
+UNREAD_WORDS = ("If your notes asked for an element count, it was not applied this run: the AI step that reads "
+                "your notes did not answer, so the mesh is the rules' own plan.")
+UNREAD_REMARK = ("any element count you asked for was not applied this run: the AI step that reads your notes did "
+                 "not answer, so the mesh is the rules' own plan.")
+
+
+def asked_words(t: Mapping) -> str:
+    """The count the user named, as they asked it: "about 1M", "between 700k and 1.5M", "at most 300k"."""
+    if t.get("mode") == "range" and t.get("low") is not None:
+        return f"between {_n(t['low'])} and {_n(t['high'])}"
+    said = {"at_most": "at most", "at_least": "at least"}.get(str(t.get("mode")), "about")
+    return f"{said} {_n(t['asked'])}"
+
+
+def target_words(plan: Mapping) -> list[str]:
+    """PLAN-fea-27 in plain words: what the user asked for, what was built, by what factor, and what held
+    it - the minimums, the largest machine - and where the stress is now less accurate."""
+    t = plan.get("target") or {}
+    if not t and plan.get("target_unread"):
+        return [UNREAD_WORDS]
+    if not t:
+        m = plan.get("target_missed") or {}
+        if m:
+            return [f"You asked for about {_n(m['asked'])} elements; even with every size scaled to its minimum the "
+                    "plan is more than the largest machine allowed holds, so it is coarsened as any plan over its "
+                    "limit is (below)."]
+        return []
+    said = asked_words(t)
+    src = " (read from your notes by the AI)" if t.get("source") == "ai" else ""
+    out: list[str] = []
+    est = int((plan.get("estimate") or {}).get("elements") or 0)
+    rules = int(t.get("rules_elements") or 0)
+    s = float(t.get("scale") or 1.0)
+    if t.get("kept_rules"):
+        out.append(f"You asked for {said} elements{src}; the rules' own plan, about {_n(rules)}, already "
+                   "meets that, so it is meshed as the rules recommend.")
+        return out
+    if t.get("machine"):
+        out.append(f"You asked for {said} elements{src}: more than the largest machine allowed holds, so "
+                   f"the plan aims at {_n(t['aim'])}, the most it fits.")
+    if abs(s - 1.0) < 1e-9:
+        out.append(f"You asked for {said} elements{src}; the rules' own plan is about {_n(rules)}, close "
+                   "enough, so every size stays as the rules give it.")
+    else:
+        way = "coarser" if s > 1 else "finer"
+        out.append(f"You asked for {said} elements{src}; the rules alone plan about {_n(rules)}. Every size "
+                   f"- the base and every refined zone - was scaled by the same factor, x{s:.3g} ({way}): planned "
+                   f"about {_n(est)}" + (" - inside your range." if t.get("mode") == "range" and t.get("hit") else "."))
+    zs = list(plan.get("zones") or [])
+    base = float(plan.get("base_size_m") or 0.0)
+    spots = [z for z in zs if z.get("kind") in ("hole", "fillet", "notch")]
+    if spots and base:
+        f = min(spots, key=lambda z: float(z["size_m"]))
+        ratio = base / float(f["size_m"])
+        was = (float(t["rules_base_m"]) / float(f.get("unscaled_m") or f["size_m"])) if t.get("rules_base_m") else ratio
+        if ratio > 1.05:
+            out.append(f"Fine areas stay finer than the rest: the finest hot spot ({f.get('spot') or f['id']}) is "
+                       f"{ratio:.3g} times finer than the base size"
+                       + (" - as in the rules' own plan." if abs(ratio / was - 1.0) < 0.05 else
+                          f" ({was:.3g} times in the rules' own plan: a minimum held it)."))
+    held = held_zones(zs, base)
+    if held:
+        by: dict[str, int] = {}
+        for z in held:
+            by[str(z["held"])] = by.get(str(z["held"]), 0) + 1
+        kept = "; ".join(f"{n} zone(s) keep {_HELD_WORDS.get(r, 'their minimum')} ({r})" for r, n in sorted(by.items()))
+        out.append(f"The minimums still hold: {kept}" + ("; the other sizes went further to make up." if s > 1 else "."))
+    if t.get("held_by_minimums"):
+        b = binding(zs, base)
+        out.append(f"The minimums stop it at about {_n(est)}: a count under about {_n(est)} would break "
+                   + (held_words(b) if b else "the minimums") + ".")
+    if t.get("base_capped"):
+        out.append(f"The base size stops at a fifth of the part ({base * 1e3:.3g} mm, PLAN-fea-28), so the part keeps "
+                   "its shape.")
+    low = [z for z in zs if z.get("below_accuracy")]
+    if low:
+        worst = min(low, key=lambda z: float(z.get("per_quarter") or HOT_SPOT_PER_QUARTER))
+        names = ", ".join(str(z.get("spot") or z["id"]) for z in low[:6]) + (f" and {len(low) - 6} more" if len(low) > 6 else "")
+        out.append(f"{len(low)} hot spot(s) ({names}) are now coarser than the stress rule's size (PLAN-fea-4: "
+                   f"{HOT_SPOT_PER_QUARTER} per quarter-turn, {STRESS_WALL_ELEMENTS} through the wall beside it; the "
+                   f"coarsest has about {float(worst.get('per_quarter') or HOT_SPOT_PER_QUARTER):.2g} per quarter-turn): "
+                   "the peak stress there is less accurate.")
+    return out
+
+
+def target_remark(plan: Mapping) -> str:
+    """PLAN-fea-27's one line for the result ("From your notes: ..."), '' without a count."""
+    t = plan.get("target") or {}
+    m = plan.get("target_missed") or {}
+    if plan.get("target_unread") and not t:
+        return UNREAD_REMARK
+    if m and not t:
+        return (f"you asked for about {_n(m['asked'])} elements; even at every minimum the plan was over the largest "
+                "machine, so it was coarsened as any plan over its limit is.")
+    if not t:
+        return ""
+    said = asked_words(t)
+    est = int((plan.get("estimate") or {}).get("elements") or 0)
+    if t.get("kept_rules"):
+        return f"you asked for {said} elements; the rules' own plan (about {_n(est)}) already meets it."
+    out = (f"you asked for {said} elements; planned about {_n(est)} "
+           f"(every size x{float(t.get('scale') or 1.0):.3g}).")
+    if t.get("held_by_minimums"):
+        out += " The minimums (2 elements through every wall, 4 per quarter-turn of every curve) stop it there."
+    elif t.get("machine"):
+        out += " That is the most the largest machine holds."
+    return out
+
+
 def assembly_words(asm: Mapping) -> list[str]:
     """PLAN-fea-17 in plain words: the parts, how they are joined, and the notes (an empty list for
     a single part)."""
@@ -589,6 +847,21 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
                                  if coarse.get("kept") else "") + ".") if coarse.get("floors_m") else
                              "the finest zones coarsened to fit, short where named." if coarse else
                              "meshed as planned."))})
+    t = plan.get("target") or {}
+    if t:
+        held = held_zones(list(zs), float(plan["base_size_m"]))
+        out.append({"stage": "fea_plan", "decided": "element count", "rule": "PLAN-fea-27",
+                    "value": float(t.get("scale") or 1.0),
+                    "inputs": {k: t.get(k) for k in ("asked", "mode", "source", "quote", "aim", "machine",
+                                                     "rules_elements", "steps", "held_by_minimums", "kept_rules",
+                                                     "low", "high", "hit") if t.get(k) is not None}
+                    | {"estimate": plan["estimate"]["elements"], "held": len(held),
+                       "below_accuracy": [z.get("spot") or z["id"] for z in zs if z.get("below_accuracy")]},
+                    "words": " ".join(target_words(plan)[:2])})
+        if t.get("base_capped"):
+            out.append({"stage": "fea_plan", "decided": "base size under the element count", "rule": "PLAN-fea-28",
+                        "value": plan["base_size_m"], "inputs": {"divisions": TARGET_MIN_DIVISIONS},
+                        "words": "The base size stops at a fifth of the part."})
     memory = (plan.get("limit") or {}).get("memory")
     if memory:
         out.append({"stage": "fea_plan", "decided": "memory limit", "rule": "PLAN-fea-16",
@@ -604,5 +877,7 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
 
 __all__ = ["CORNER_DIVISIONS", "assembly_words", "ELEMENT_LIMIT", "GROWTH", "HOT_SPOT_PER_QUARTER", "HOT_SPOT_REACH", "KEEP_PER_QUARTER",
            "KEEP_THROUGH", "LIMIT_AIM", "MICRO_KEEP", "MIN_DIVISIONS", "PER_H3", "PLAN_FILE", "ROUND_PER_QUARTER",
-           "STRESS_WALL_ELEMENTS", "VERSION", "WALL_ELEMENTS", "decisions", "finish", "floored", "keep_size",
-           "shortfalls", "words", "zones"]
+           "SCALE_MAX", "SCALE_MIN", "STRESS_WALL_ELEMENTS", "TARGET_MIN_DIVISIONS", "TARGET_STEPS",
+           "TARGET_TOLERANCE", "UNREAD_REMARK", "UNREAD_WORDS", "VERSION", "WALL_ELEMENTS", "asked_words", "base_size", "binding", "decisions", "finish", "floored",
+           "held_words", "held_zones", "keep_size", "scale_cap", "scaled", "shortfalls", "target_remark", "target_words", "words",
+           "zones"]

@@ -258,6 +258,16 @@ def results(workspace) -> dict | None:
         extra["skins_left_out"] = [{"face": s.get("face"), "on": s.get("on"), "words": s.get("words")}
                                    for s in acc["skins"]]
     faces_said = faces_words(acc) if (acc.get("skins") or acc.get("merged") or acc.get("missing")) else ""
+    # PLAN-fea-27: the element count the user named, beside the count the mesh has
+    tgt = plan.get("target") or {}
+    if tgt.get("asked"):
+        from meshpipeline.engines.fea_plan import asked_words
+        extra["target"] = {"asked": int(tgt["asked"]), "mode": tgt.get("mode") or "about",
+                           "planned": int((plan.get("estimate") or {}).get("elements") or 0), "built": cells,
+                           "scale": float(tgt.get("scale") or 1.0),
+                           **{k: int(tgt[k]) for k in ("low", "high") if tgt.get(k) is not None},
+                           "words": (f"You asked for {asked_words(tgt)} elements; the mesh has "
+                                     f"{cells:,} (every size x{float(tgt.get('scale') or 1.0):.3g}).")}
     if faces_said:
         # the same account in one short line, for the result screen (the whole sentence is in the plan words)
         extra["faces_short"] = faces_short(acc)
