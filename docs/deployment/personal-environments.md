@@ -14,6 +14,12 @@ gh workflow run deploy.yml --ref "$(git branch --show-current)" \
 gh workflow run deploy.yml --ref "$(git branch --show-current)" \
   -f slug=pranav -f console=true -f fleet=true
 
+# NOTE: a brand new environment also needs `make seed-secrets SLUG=<slug>` run once on
+# your own machine BEFORE the first deploy, or the API rolls with empty credentials and
+# no job can run. The deploy identity cannot read a secret payload by design, so the
+# first value in each container has to be written by a person. See
+# dev-raymond-setup.md step 0.
+
 # every deploy after that: one run, and a fast one
 gh workflow run deploy.yml --ref "$(git branch --show-current)" \
   -f slug=pranav -f app=true -f console=true
