@@ -112,6 +112,22 @@ export async function addNote(sessionId, text) {
   return r.json();
 }
 
+/** The parts checklist under the notes: which parts the notes mean ({status: "none" | "waiting" | "reading" |
+ *  "done", rows, unsure, parts, picture}). */
+export async function getPartMatches(sessionId) {
+  const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/parts`, { headers: headers() });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
+/** The parts the user picked for one phrase of their notes; resolves to the checklist as it now stands. */
+export async function pickPartMatch(sessionId, phrase, parts) {
+  const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/parts`,
+    { method: "POST", headers: headers(), body: JSON.stringify({ phrase, parts }) });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
 /** The job's current durable facts. `throwOnError` is false for the poller, which treats a
  *  transient 5xx as normal, and true for the deep link, which must know it failed. */
 export async function getJob(jobId, { throwOnError = true } = {}) {

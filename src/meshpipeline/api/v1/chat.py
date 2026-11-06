@@ -25,6 +25,17 @@ router = APIRouter()
 svc = JobService()
 
 
+async def _brief(session, owner_id: str):
+    """The request card, with the parts checklist read off the event loop (store reads, maybe a queued reading)."""
+    import asyncio
+
+    from meshpipeline.application import part_matches as PM
+    if session is None or not getattr(session, "request_txt", None):
+        return build_brief(session)
+    pm = await asyncio.to_thread(lambda: PM.with_url(PM.view(session, owner_id=owner_id)))
+    return build_brief(session, part_matches=pm)
+
+
 @router.get("")
 async def list_sessions(limit: int = pagination.DEFAULT_LIMIT, cursor: str | None = None,
                         owner_id: str = Depends(owner_dep),
@@ -178,7 +189,7 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
         session_id=session_id,
         reply=_extract_reply(result),
         awaiting_confirmation=bool(_sess.request_txt) and _sess.job_id is None,
-        brief=build_brief(_sess),
+        brief=await _brief(_sess, owner_id),
         # re-projected for the mode running NOW: a session written under raw must
         # not be served raw by a server that has since restarted safe
         trace=project_all(result.get("_public_trace", [])),
@@ -208,7 +219,7 @@ async def chat_notes(body: ChatNoteIn, owner_id: str = Depends(owner_dep),
     from meshpipeline.contracts.user_notes import clean as _clean_notes
     notes = [{"id": n["id"], "text": n["text"], "source": n["source"]}
              for n in _clean_notes(getattr(session, "user_notes", None))]
-    return {"session_id": str(body.session_id), "brief": build_brief(session), "user_notes": notes}
+    return {"session_id": str(body.session_id), "brief": await _brief(session, owner_id), "user_notes": notes}
 
 
 #: Typed approval outcome -> HTTP status. The route owns this table and nothing else about

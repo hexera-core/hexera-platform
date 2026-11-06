@@ -137,6 +137,7 @@ class PipelineState(TypedDict):
     fea_connection:     str            # an FEA assembly: "bonded" | "contact", as confirmed on the stage ("" otherwise)
     fea_gap_joins:      bool           # an FEA assembly: parts across a small gap joined there (PLAN-fea-18); True unless switched off
     fea_pairs:          dict           # an FEA assembly: the single pairs set on the stage, by pair key (PLAN-fea-19/20); {} = the rule
+    part_matches:       dict | None    # NOTE-4: the notes tied to parts before approval, as the user left it; None = read at run time
     mesh_manifest:      dict
     reviewer_result:         str
     reviewer_verdict:        str

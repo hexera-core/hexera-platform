@@ -772,6 +772,10 @@ async def _run_async(req: JobRequest) -> dict:
         # PLAN-fea-19/20: the single pairs the user set on the stage (each pair's type, an overlap's owner)
         from meshpipeline.application.fea_check import confirmed_pairs
         initial_state["fea_pairs"] = await asyncio.to_thread(confirmed_pairs, str(session_id or ""))
+        # NOTE-4: the notes tied to parts on the request card before approval, with the parts the user picked
+        from meshpipeline.application.part_matches import for_run as _part_matches
+        initial_state["part_matches"] = await asyncio.to_thread(
+            _part_matches, str(session_id or ""), req.user_notes, request_txt)
 
         initial_state["repair_directives"] = list(req.repair_directives)
 

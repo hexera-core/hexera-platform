@@ -140,6 +140,17 @@ def part_table(record: Mapping, surface) -> list[dict]:
     return rows
 
 
+def check_record(record: Mapping) -> dict:
+    """The geometry check's FEA record (cad/fea_measure, an assembly's under fea_assembly.FACT_KEY) in the shape
+    part_table reads off the driver's: each part's id and CAD name, and which parts touch."""
+    asm = record.get("assembly") or {}
+    return {"faces": record.get("faces") or {},
+            "part_bases": [{"id": p.get("id"), "name": p.get("name") or ""} for p in asm.get("parts") or []
+                           if p.get("id")],
+            "assembly_plan": {"pair_list": [{"parts": list(i.get("parts") or [])}
+                                            for i in asm.get("interfaces") or []]}}
+
+
 def _alike(a: Mapping, b: Mapping) -> bool:
     va, vb = _f(a.get("volume_mm3")), _f(b.get("volume_mm3"))
     sa, sb = a.get("size_mm") or [], b.get("size_mm") or []
@@ -255,15 +266,19 @@ def _numbers(text: str) -> list[float]:
     return [float(m.replace(",", ".")) for m in _NUM.findall(_DASHES.sub("-", str(text or "")))]
 
 
-def check(arguments: str, table: list[dict], notes: str) -> tuple[list[dict], list[str], list[str]]:
-    """(the entries that hold, in millimetres; what was dropped, in plain words; the model's words). Never raises."""
+def check(arguments: str, table: list[dict], notes: str,
+          unsure: list[dict] | None = None) -> tuple[list[dict], list[str], list[str]]:
+    """(the entries that hold, in millimetres; what was dropped, in plain words; the model's words). Never raises.
+    `unsure`, when given, is told each phrase dropped only because it was not clear which parts it means (its
+    index, quote, ask and sizes): the console offers those for the user to pick the parts."""
     try:
-        return _check(arguments, table, notes)
+        return _check(arguments, table, notes, unsure)
     except Exception as exc:  # noqa: BLE001 - a malformed answer is the model's, never the run's
         return [], [f"the answer did not fit the schema ({type(exc).__name__}): nothing applied"], []
 
 
-def _check(arguments: str, table: list[dict], notes: str) -> tuple[list[dict], list[str], list[str]]:
+def _check(arguments: str, table: list[dict], notes: str,
+           unsure: list[dict] | None = None) -> tuple[list[dict], list[str], list[str]]:
     try:
         raw = json.loads(arguments or "")
     except ValueError:
@@ -276,7 +291,7 @@ def _check(arguments: str, table: list[dict], notes: str) -> tuple[list[dict], l
     dropped: list[str] = []
     taken: set[str] = set()
     rest_entry: dict | None = None
-    for e in raw.get("phrases") or raw.get("sizes") or []:
+    for i, e in enumerate(raw.get("phrases") or raw.get("sizes") or []):
         if not isinstance(e, dict):
             dropped.append("an entry that was not an object: dropped")
             continue
@@ -310,6 +325,10 @@ def _check(arguments: str, table: list[dict], notes: str) -> tuple[list[dict], l
             dropped.append(f"{tag}: the unit {unit!r} is not a length unit, so nothing was applied for it")
             continue
         if conf is None or conf < MIN_CONFIDENCE:
+            if unsure is not None:
+                unsure.append({"phrase": i, "quote": quote, "ask": ask, "why": why,
+                               **({"min_mm": _g(lo * UNITS_MM[unit]), "max_mm": _g(hi * UNITS_MM[unit])}
+                                  if ask == "size" else {})})
             dropped.append(f"{tag}: it was not clear which parts you meant ({why or 'no reason given'}), so "
                            "nothing was applied for it")
             continue
@@ -325,7 +344,7 @@ def _check(arguments: str, table: list[dict], notes: str) -> tuple[list[dict], l
         if not ids and not rest:
             dropped.append(f"{tag}: it named no part, so nothing was applied for it")
             continue
-        entry: dict[str, Any] = {"parts": [], "everything_else": rest, "ask": ask, "quote": quote, "why": why,
+        entry: dict[str, Any] = {"phrase": i, "parts": [], "everything_else": rest, "ask": ask, "quote": quote, "why": why,
                  "confidence": round(float(conf), 2),
                  **({"min_mm": _g(lo_mm), "max_mm": _g(hi_mm), "unit": unit, "asked": [lo, hi]} if ask == "size" else {})}
         if ask != "size":
@@ -397,10 +416,75 @@ UNREAD_WORDS = ("If your notes asked for something on particular parts, it was n
 
 
 def section(status: str, *, entries=None, dropped=None, words=None, table=None, pictures=None, note: str = "",
-            key: str = "", source: str = "") -> dict:
+            key: str = "", source: str = "", phrases=None, unsure=None) -> dict:
+    """`phrases`: the model's own answer (kept so a part the user picks on the stage is checked by the same rules);
+    `unsure`: the phrases dropped only because it was not clear which parts they mean."""
     return {"status": status, "rule": RULE, "entries": list(entries or []), "dropped": list(dropped or []),
             "words": list(words or []), "parts": list(table or []), "pictures": [str(p) for p in pictures or []],
-            "note": note, "key": key, "source": source}
+            "note": note, "key": key, "source": source, "phrases": list(phrases or []), "unsure": list(unsure or [])}
+
+
+def _phrases_of(arguments: str) -> list[dict]:
+    try:
+        raw = json.loads(arguments or "")
+    except ValueError:
+        return []
+    got = raw.get("phrases") if isinstance(raw, dict) else None
+    return [e for e in got if isinstance(e, dict)] if isinstance(got, list) else []
+
+
+def picked(ps: Mapping, picks: Mapping[str, list[str]], table: list[dict], notes: str) -> dict:
+    """The reading `ps` with the parts the user picked on the stage (`picks`: phrase index -> part ids), checked
+    again by the same rules: a picked phrase is the user's own (sure), its quote and numbers still the notes', its
+    sizes still sane for each part. A pick of no parts drops the phrase. Pure; never raises."""
+    phrases = [dict(e) for e in ps.get("phrases") or []]
+    if not phrases or not picks:
+        return dict(ps)
+    for k, ids in picks.items():
+        try:
+            i = int(k)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= i < len(phrases):
+            # no parts picked: the phrase is back to "which parts?" (unsure), never lost
+            phrases[i].update(parts=[str(p) for p in ids or []], everything_else=False,
+                              confidence=1.0 if ids else 0.0, why="picked by you" if ids else "no part picked")
+    args = json.dumps({"phrases": phrases, "words": ps.get("words") or []})
+    unsure: list[dict] = []
+    entries, dropped, words = check(args, table, notes, unsure)
+    out = dict(ps)
+    out.update(entries=entries, dropped=dropped, words=words, phrases=phrases, unsure=unsure, picked=True)
+    return out
+
+
+def from_stored(stored: Mapping | None, table: list[dict]) -> dict | None:
+    """A reading made before approval (the stage's checklist, maybe corrected by the user), for this run's own parts
+    table: every entry kept only on the parts this run has; None when nothing usable was stored."""
+    if not stored or stored.get("status") != "used":
+        return None
+    # a part is the same part only when its id is, and its name too where both readings have one (the check and the
+    # run may number the parts of a file in their own order)
+    then = {str(r.get("id")): str(r.get("name") or "") for r in stored.get("parts") or []}
+    ids = {str(r["id"]) for r in table
+           if not (then.get(str(r["id"])) and r.get("name") and then[str(r["id"])] != str(r["name"]))}
+    entries = []
+    gone: list[str] = []
+    for e in stored.get("entries") or []:
+        e = dict(e)
+        for f in ("parts", "rest_parts"):
+            kept = [p for p in e.get(f) or [] if p in ids]
+            gone.extend(p for p in e.get(f) or [] if p not in ids)
+            if f in e:
+                e[f] = kept
+        if e.get("parts") or e.get("rest_parts") or (e.get("everything_else") and e.get("ask") != "size"):
+            entries.append(e)
+    dropped = list(stored.get("dropped") or [])
+    if gone:
+        dropped.append(f"{', '.join(sorted(set(gone))[:5])} is not a part of the model as meshed, so nothing was "
+                       "applied there")
+    return section("used", entries=entries, dropped=dropped, words=stored.get("words") or [], table=table,
+                   pictures=[], key=str(stored.get("key") or ""), source="checked before approval",
+                   phrases=stored.get("phrases") or [], unsure=stored.get("unsure") or [])
 
 
 def _key(messages: list[dict], tool: dict) -> str:
@@ -436,21 +520,35 @@ async def decide(ws: Path, record: Mapping, surface, state: Mapping, *, consumer
     table = part_table(record, surface)
     if not table:
         return section("none", note="no parts could be measured")
+    # THE READING MADE BEFORE APPROVAL (the stage's checklist, as the user left it) is the one used: the user saw
+    # it and approved it. The model is asked again only when there is none.
+    stored = from_stored((state or {}).get("part_matches"), table)
+    if stored is not None:
+        return stored
     pictures = await asyncio.to_thread(draw, ws, surface, table)
+    return await ask(ws, table, pictures, state, consumer=consumer, purpose=purpose, job_id=job_id, run=run,
+                     wait_s=wait_s)
+
+
+async def ask(ws: Path | None, table: list[dict], pictures: list[Path], state: Mapping, *, consumer: str,
+              purpose: str = "", job_id: str = "", run=None, wait_s: float = TIMEOUT_S) -> dict:
+    """The model asked on a parts table and its pictures, already made (decide's second half; the geometry check's
+    step before approval calls it on what it measured). Never raises (but a fenced worker's stale publish)."""
     msgs = messages_for(state, table, pictures, consumer=consumer, purpose=purpose)
     tool = size_tool()
     key = _key(msgs, tool)
     notes = notes_text(state)
     user_id = str((state or {}).get("user_id") or "")
-    rel = [p.relative_to(ws) if Path(p).is_relative_to(ws) else p for p in pictures]
+    rel = [p.relative_to(ws) if ws is not None and Path(p).is_relative_to(ws) else p for p in pictures]
 
     def answered(rr, source: str) -> dict | None:
         args = _args_of(rr) if rr is not None else None
         if args is None:
             return None
-        entries, dropped, words = check(args, table, notes)
+        unsure: list[dict] = []
+        entries, dropped, words = check(args, table, notes, unsure)
         return section("used", entries=entries, dropped=dropped, words=words, table=table, pictures=rel, key=key,
-                       source=source)
+                       source=source, phrases=_phrases_of(args), unsure=unsure)
 
     def without(status: str, why: str) -> dict:
         from meshpipeline.contracts.decision_cache import recorded_answer
@@ -524,5 +622,5 @@ def decisions(ps: Mapping | None, stage: str = "notes") -> list[dict]:
 
 
 __all__ = ["ASKS", "MIN_CONFIDENCE", "PART_FINEST", "PICTURES_DIR", "RULE", "SYSTEM", "TOOL", "UNREAD_WORDS", "UNITS_MM",
-           "check", "decide", "decisions", "draw", "messages_for", "notes_text", "part_table", "per_part", "section",
-           "size_tool", "wanted", "words"]
+           "ask", "check", "check_record", "decide", "decisions", "draw", "from_stored", "messages_for", "notes_text",
+           "part_table", "per_part", "picked", "section", "size_tool", "wanted", "words"]

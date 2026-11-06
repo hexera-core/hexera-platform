@@ -13,7 +13,7 @@
  * loads this module, and this module is the only thing index.html loads.
  */
 import { apiFetch, setNotifier, useIdentity } from "./api/client.js";
-import { addNote, getJob } from "./api/endpoints.js";
+import { addNote, getJob, getPartMatches, pickPartMatch } from "./api/endpoints.js";
 import { dispatch, resultSurface } from "./core/events.js";
 import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCopy }
   from "./core/state.js";
@@ -208,13 +208,19 @@ function attachJob(id, { replayHistory = false, message = "", origin = getState.
 /* THE NOTES BOX under the plan: the user's own text, kept as typed; the card redraws with it */
 async function addBriefNote(text) {
   const d = await addNote(getState.sessionId(), text);
-  Stage.brief(d.brief, addBriefNote);
+  Stage.brief(d.brief, addBriefNote, briefParts);
 }
+
+/* THE PARTS CHECKLIST under the notes: which parts the notes mean, and the user's fix for one phrase */
+const briefParts = {
+  get: () => getPartMatches(getState.sessionId()),
+  pick: (phrase, parts) => pickPartMatch(getState.sessionId(), phrase, parts),
+};
 
 configureComposer({
   notice: Notice,
   chat: (role, text) => Stage.chat(role, text),
-  brief: (b) => Stage.brief(b, addBriefNote),
+  brief: (b) => Stage.brief(b, addBriefNote, briefParts),
   engineChoice: (c, pick) => Stage.engineChoice(c, pick),
   // the buttons under an application question: what the mesh is for, an FEA part's analysis type
   choices: (list, pick) => Stage.choices(list, pick),

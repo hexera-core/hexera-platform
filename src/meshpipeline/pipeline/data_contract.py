@@ -471,6 +471,9 @@ STATE_FIELDS: dict[str, str] = {
     "fea_pairs":             "an FEA assembly's single pairs as the user set them on the stage, by pair key "
                              "(Part_1|Part_3): each pair's type (bonded / contact / off) and an overlap's owner "
                              "(PLAN-fea-19/20); {} when every pair follows the rule",
+    "part_matches":          "the user's words about particular parts tied to the parts before approval (NOTE-4, the "
+                             "request card's checklist), with the parts the user picked; None when there was none "
+                             "for the notes as they stand - the route then reads the notes itself",
     "flow_topology":         "internal/external flow regime DERIVED from the purpose - a neutral "
                              "fact read by the executor/runners, NOT an engine-native param",
     "leak_closing":          "the leak size the user confirmed on the stage (INS-8): every leak of the "

@@ -543,6 +543,40 @@ async def get_check_skin(session_id: uuid.UUID, owner_id: str = Depends(owner_de
     return Response(content=raw, media_type="application/json")
 
 
+class PartPickIn(BaseModel):
+    #: the phrase of the notes the row stands for (its index in the reading), and the parts the user picked for it
+    phrase: int = Field(ge=0, le=500)
+    parts: list[str] = Field(default_factory=list, max_length=500)
+
+
+@router.get("/{session_id}/check/parts")
+async def get_check_parts(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                          organization_id: str = Depends(org_dep)) -> dict:
+    """The parts checklist on the request card (NOTE-4 before approval): which parts the notes mean.
+    {"status": "none"} when the notes name no part; "waiting" / "reading" while it is worked out; "done" with
+    the rows, the parts and a link to the picture."""
+    session = await _owned_session(session_id, owner_id, organization_id)
+    from meshpipeline.application import part_matches as PM
+    got = await asyncio.to_thread(lambda: PM.with_url(PM.view(session, owner_id=owner_id)))
+    return got or {"status": "none"}
+
+
+@router.post("/{session_id}/check/parts")
+async def pick_check_parts(session_id: uuid.UUID, body: PartPickIn, owner_id: str = Depends(owner_dep),
+                           organization_id: str = Depends(org_dep)) -> dict:
+    """Fix one row of the parts checklist: the parts the user picked for one phrase of their notes, kept for the
+    run (the normal Approve takes it). Checked by the same rules as the model's reading."""
+    session = await _owned_session(session_id, owner_id, organization_id)
+    if session.job_id is not None:
+        raise HTTPException(409, "The run has already started, so its parts cannot be changed. "
+                                 "Change them before you approve the next run.")
+    from meshpipeline.application import part_matches as PM
+    got = await asyncio.to_thread(lambda: PM.with_url(PM.pick(session, body.phrase, body.parts)))
+    if got is None:
+        raise HTTPException(409, "Your notes changed since this list was made. Wait for the new one, then pick again.")
+    return got
+
+
 @router.post("/{session_id}/check/confirm")
 async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = Depends(owner_dep),
                         organization_id: str = Depends(org_dep)) -> dict:

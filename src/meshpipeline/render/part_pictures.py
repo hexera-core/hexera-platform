@@ -22,8 +22,35 @@ def _num(pid: str) -> str:
     return str(pid).rsplit("_", 1)[-1]
 
 
-def render_parts(surface, part_ids: list[str], out_dir) -> list[Path]:
-    """The overview pictures, then the sheets of single parts; returns their paths in that order."""
+#: the console's picture (the stage's parts checklist): the overview from this side, no caption
+CARD = "parts_card"
+CARD_WINDOW = (960, 640)
+
+
+def colour_of(index: int) -> str:
+    """The colour part number index+1 (in the table's order) is drawn in, for the console to match."""
+    return PALETTE[int(index) % len(PALETTE)]
+
+
+def _save_cropped(img, path: Path, margin: int = 12) -> None:
+    """An RGBA picture saved cropped to what is drawn on it (the transparent border trimmed, a small margin kept)."""
+    import numpy as np
+    from PIL import Image
+
+    a = np.asarray(img)
+    if a.ndim == 3 and a.shape[2] == 4:
+        ys, xs = np.nonzero(a[:, :, 3] > 0)
+        if len(xs):
+            y0, y1 = max(0, ys.min() - margin), min(a.shape[0], ys.max() + 1 + margin)
+            x0, x1 = max(0, xs.min() - margin), min(a.shape[1], xs.max() + 1 + margin)
+            a = a[y0:y1, x0:x1]
+    Image.fromarray(np.ascontiguousarray(a)).save(path)
+
+
+def render_parts(surface, part_ids: list[str], out_dir, *, card: bool = False) -> list[Path]:
+    """The overview pictures, then the sheets of single parts; returns their paths in that order. `card`: the
+    console's picture too (CARD, last), the whole model from the front corner with each part's number and no
+    caption."""
     import numpy as np
     import pyvista as pv
 
@@ -56,8 +83,11 @@ def render_parts(surface, part_ids: list[str], out_dir) -> list[Path]:
         if len(sel):
             pieces[p] = whole.extract_cells(sel).extract_surface(algorithm="dataset_surface")  # type: ignore[arg-type]
     paths: list[Path] = []
-    for name, d in VIEWS.items():
-        pl = pv.Plotter(off_screen=True, window_size=list(WINDOW))
+    views = [(name, d, WINDOW, True) for name, d in VIEWS.items()]
+    if card:
+        views.append((CARD, VIEWS["parts_iso"], CARD_WINDOW, False))
+    for name, d, window, caption in views:
+        pl = pv.Plotter(off_screen=True, window_size=list(window))
         pl.set_background("white")  # type: ignore[arg-type]
         pts, labels = [], []
         for p, mesh in pieces.items():
@@ -65,20 +95,26 @@ def render_parts(surface, part_ids: list[str], out_dir) -> list[Path]:
             pts.append(np.asarray(mesh.center))
             labels.append(_num(p))
         if pts:
-            pl.add_point_labels(np.asarray(pts), labels, font_size=22, bold=True, text_color="black",
-                                shape="rounded_rect", shape_color="white", shape_opacity=0.85, point_size=1,
-                                always_visible=True, show_points=False)
+            pl.add_point_labels(np.asarray(pts), labels, font_size=22 if caption else 18, bold=True,
+                                text_color="black", shape="rounded_rect", shape_color="white", shape_opacity=0.85,
+                                point_size=1, always_visible=True, show_points=False)
         dv = np.asarray(d, dtype=float) / np.linalg.norm(d)
         pl.camera.position = tuple(centre - dv * 2.2 * diag)
         pl.camera.focal_point = tuple(centre)
         pl.camera.up = (0.0, 0.0, 1.0) if abs(dv[2]) < 0.9 else (0.0, 1.0, 0.0)
         pl.reset_camera()  # type: ignore[call-arg]
-        pl.add_text(f"whole model, {name.split('_')[1]} view: each part its own colour and number",
-                    position="upper_left", font_size=11, color="black")
+        if caption:
+            pl.add_text(f"whole model, {name.split('_')[1]} view: each part its own colour and number",
+                        position="upper_left", font_size=11, color="black")
         path = out / f"{name}.png"
-        pl.screenshot(str(path))
+        if caption:
+            pl.screenshot(str(path))
+        else:
+            # the console's picture sits on the card's own background: no white box, cropped to the model
+            _save_cropped(pl.screenshot(None, transparent_background=True, return_img=True), path)
         pl.close()
         paths.append(path)
+    card_path = paths.pop() if card else None
     ids = list(pieces)
     for s in range(min(MAX_SHEETS, math.ceil(len(ids) / PER_SHEET))):
         chunk = ids[s * PER_SHEET:(s + 1) * PER_SHEET]
@@ -100,7 +136,9 @@ def render_parts(surface, part_ids: list[str], out_dir) -> list[Path]:
         pl.screenshot(str(path))
         pl.close()
         paths.append(path)
+    if card_path is not None:
+        paths.append(card_path)
     return paths
 
 
-__all__ = ["render_parts"]
+__all__ = ["CARD", "PALETTE", "colour_of", "render_parts"]

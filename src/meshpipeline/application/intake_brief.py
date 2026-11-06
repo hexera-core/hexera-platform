@@ -184,7 +184,10 @@ def _is_fea(purpose: Any) -> bool:
     return bool(fea_review.is_fea(purpose))
 
 
-def build_brief(session: Any) -> dict[str, Any] | None:
+def build_brief(session: Any, *, part_matches: dict | None = None) -> dict[str, Any] | None:
+    """The request card. `part_matches`: the parts checklist (application/part_matches.view, read off the event
+    loop by the caller): "Reading your notes…" while the notes are tied to the parts, then the rows
+    "words → parts → size" and the phrases it could not place; left out when the notes name no part."""
     if session is None or not _clean(getattr(session, "request_txt", None)):
         return None
 
@@ -226,6 +229,9 @@ def build_brief(session: Any) -> dict[str, Any] | None:
     from meshpipeline.contracts.user_notes import clean as _clean_notes
     brief["user_notes"] = [{"id": n["id"], "text": n["text"], "source": n["source"]}
                            for n in _clean_notes(getattr(session, "user_notes", None))]
+    # NOTE-4 BEFORE APPROVAL: which parts the notes mean, for the user to see (and fix) before Approve
+    if part_matches:
+        brief["part_matches"] = part_matches
     brief["checks"] = build_checks(brief)
     _add_display_labels(brief)
     return brief

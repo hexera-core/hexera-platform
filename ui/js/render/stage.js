@@ -118,7 +118,7 @@ export const Stage = {
   // THE FINALIZED BRIEF, as the application settled it - not the model's prose
   // re-read here. Rendered once and then updated in place, because a later turn
   // re-sends the same brief and a conversation should not accumulate copies of it.
-  brief(b,addNote){
+  brief(b,addNote,parts){
     if(!b)return;
     const sig=JSON.stringify(b);
     if(this._briefSig===sig)return;
@@ -166,12 +166,13 @@ export const Stage = {
         ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
           :'<div class="rc-h">Mesh plan</div>'}${rows}
         ${ck?`<div class="rc-h rc-h2">Checked</div>${ck}`:''}
-        ${notes||box?`<div class="rc-h rc-h2">Your notes</div>${notes}${box}`:''}
+        ${notes||box?`<div class="rc-h rc-h2">Your notes</div>${notes}<div class="rc-pm"></div>${box}`:''}
       </div>`;
     if(this._briefEl){this._briefEl.innerHTML=html;}
     else{this.clearEmpty();
       const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
       this.col().appendChild(g);this._briefEl=g;}
+    this._partMatches(b.part_matches,parts);
     const add=this._briefEl.querySelector('.rc-notes-add');
     const inp=this._briefEl.querySelector('.rc-notes-in');
     if(add&&inp){
@@ -188,6 +189,71 @@ export const Stage = {
       add.onclick=send;
       inp.addEventListener('keydown',(e)=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send();}});}
     this.scrollBottom();},
+
+  /* THE PARTS YOUR NOTES MEAN, under the notes, before Approve: one picture with every part numbered, then a
+     row per phrase ("frame rail · part 9 · 3–4 mm") and a line per phrase that could not be placed. A row opens
+     the part list; a click on a part keeps it at once (no save button: the normal Approve takes it). Nothing at
+     all when the notes name no part. `parts`: {get(), pick(phrase, ids)}. */
+  _partMatches(m,parts){
+    clearTimeout(this._pmTimer);
+    const el=this._briefEl&&this._briefEl.querySelector('.rc-pm');
+    if(!el)return;
+    this._pm=m||null;
+    const draw=()=>{el.innerHTML=this._pmHtml(this._pm);};
+    draw();
+    if(m&&(m.status==='reading'||m.status==='waiting')&&parts){
+      const t0=Date.now();
+      const poll=async()=>{
+        let got=null;try{got=await parts.get();}catch{/* try again */}
+        if(got)this._pm=got.status==='none'?null:got;
+        draw();
+        const busy=this._pm&&(this._pm.status==='reading'||this._pm.status==='waiting');
+        if((busy||!got)&&Date.now()-t0<8*60e3)this._pmTimer=setTimeout(poll,3000);};
+      this._pmTimer=setTimeout(poll,2500);}
+    el.onclick=(e)=>{
+      const m=this._pm;if(!m||m.status!=='done')return;
+      const chip=e.target.closest('.rc-pm-part');
+      if(chip){
+        if(!parts)return;
+        const i=this._pmOpen;
+        const r=[...(m.rows||[]),...(m.unsure||[])].find(x=>x.phrase===i);if(!r)return;
+        const on=new Set(r.parts||[]),id=chip.dataset.part;
+        if(on.has(id))on.delete(id);else on.add(id);
+        r.parts=[...on];chip.classList.toggle('on',on.has(id));chip.setAttribute('aria-pressed',String(on.has(id)));
+        clearTimeout(this._pmSave);
+        this._pmSave=setTimeout(async()=>{
+          try{const got=await parts.pick(i,[...on]);if(got&&this._pmOpen===i){this._pm=got;draw();}}
+          catch(err){const msg=el.querySelector('.rc-pm-msg');if(msg)msg.textContent=(err&&err.message)||'Not saved.';}},450);
+        return;}
+      const row=e.target.closest('.rc-pm-row');if(!row)return;
+      const i=Number(row.dataset.phrase);
+      this._pmOpen=this._pmOpen===i?null:i;draw();};},
+
+  _pmHtml(m){
+    if(!m)return '';
+    if(m.status==='reading')return '<div class="rc-pm-wait" role="status">Reading your notes…</div>';
+    if(m.status!=='done')return '';
+    const open=this._pmOpen;
+    const row=(r,unsure)=>{
+      const i=r.phrase,isOpen=open===i;
+      const what=unsure?esc(r.text)
+        :`<span class="rc-pm-w" title="${esc(r.quote)}">${esc(r.words)}</span>`;
+      const where=unsure?'Pick parts'
+        :`${esc(r.parts_text)}${r.size?`<span class="rc-pm-s">${esc(r.size)}</span>`:''}`;
+      return `<button type="button" class="rc-pm-row${unsure?' unk':''}${isOpen?' open':''}" data-phrase="${i}"`
+        +` aria-expanded="${isOpen}"><span class="rc-pm-q">${what}</span><span class="rc-pm-v">${where}</span>`
+        +`<span class="rc-pm-c" aria-hidden="true"></span></button>`+(isOpen?this._pmPicker(m,r):'');};
+    const pic=m.picture?`<img class="rc-pm-pic" src="${esc(m.picture)}" alt="Your model, each part numbered">`:'';
+    return `<div class="rc-pm-h">Parts in your notes</div>${pic}`
+      +(m.rows||[]).map(r=>row(r,false)).join('')+(m.unsure||[]).map(r=>row(r,true)).join('');},
+
+  _pmPicker(m,r){
+    const on=new Set(r.parts||[]);
+    return `<div class="rc-pm-pick" role="group" aria-label="Which parts">`
+      +(m.parts||[]).map(p=>`<button type="button" class="rc-pm-part${on.has(p.id)?' on':''}" data-part="${esc(p.id)}"`
+        +` aria-pressed="${on.has(p.id)}"><span class="dot" style="background:${esc(p.colour)}"></span>${esc(p.n)}`
+        +`${p.name?`<span class="nm">${esc(p.name)}</span>`:''}</button>`).join('')
+      +'<span class="rc-pm-msg" role="status"></span></div>';},
 
   /* THE ENGINE CHOICE, under the one engine question. Every engine that can take the uploaded file,
      best measured fit first: its fit, the plain-words reason (how it did in the lab on shapes measured
