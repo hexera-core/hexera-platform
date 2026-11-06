@@ -571,12 +571,14 @@ export const Stage = {
   plan(agent,summary){const row=this.node(agent);
     if(summary)this._line(row,'plan','Plan: '+summary);
     Run.plan(summary,this.now());this.drawLive();},
-  endMesh(cells){
+  endMesh(cells){this.ensureProc();
     const n=Number(cells);
     const words=Number.isFinite(n)&&n>0?`${countWords(n)} ${this._unit||'cells'}`:'';
-    if(words)this._line(this.rows.build,'built',`Built ${words}.`);
+    if(words)this._line(this.rows.build,'built',`Mesh built: ${words}.`);
     this.meshBar=null;
-    Run.meshed(words,this.now());this.drawLive();},
+    // the count said again once the checks have started (the measured one) moves the line, not the run
+    if(!this.rows||this.rows.build.state==='active')Run.meshed(words,this.now());
+    this.drawLive();},
 
   /* THE ROW'S MARK SAYS HOW IT ENDED. A tick is earned:
        bad    ✕  a check failed, an error was reported, or the review failed the mesh

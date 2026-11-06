@@ -77,7 +77,7 @@ def test_every_run_shows_the_same_four_rows_and_no_result_row(live):
     assert out["lanes"][0]["said"] == "snappy"
     # a run that said nothing about its design still shows the row, saying so
     assert out["lanes"][1]["mark"] == "skip" and "Nothing to design" in out["lanes"][1]["said"]
-    assert out["lanes"][2]["said"] == "Built 3.5M cells."
+    assert out["lanes"][2]["said"] == "Mesh built: 3.5M cells."
     assert "The check passed." in out["lanes"][3]["said"]
 
 

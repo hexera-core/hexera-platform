@@ -62,7 +62,7 @@ def test_the_run_line_follows_the_run_row_by_row(live):
     assert "done:design:Plan: about 2.1M cells, 5 wall layers, finer cells in the wake" in m["rows"]
     c = out["checking"]
     assert c["row"] == "review" and c["now"] == "Checking the mesh…"
-    assert "done:build:Built 2.1M cells." in c["rows"]
+    assert "done:build:Mesh built: 2.1M cells." in c["rows"]
     assert out["reviewing"]["now"] == "Reviewing the mesh against your brief…"
     d = out["done"]
     assert not d["live"] and d["title"] == "Mesh ready" and out["clock"] == "7:12"

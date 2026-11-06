@@ -166,7 +166,7 @@ def retry_line(n: int, lever: dict | None) -> str:
     return f"Pass {n - 1} did not pass every check, so pass {n} changes the sizes where it fell short."
 
 
-def _length_words(m: float) -> str:
+def length_words(m: float) -> str:
     """A cell size as an engineer reads it: "160 mm", "0.42 mm", "1.2 m"."""
     return f"{m:.3g} m" if m >= 1 else f"{m * 1e3:.3g} mm"
 
@@ -181,9 +181,9 @@ def cfd_plan_lines(*, internal: bool, cells: int | None = None, layers: int | No
     out = ["The fluid fills the inside of your part, so I'm meshing the space within it." if internal
            else "The flow goes around your part, so I'm meshing the space around it."]
     if base_m and base_m > 0:
-        finer = (f", refined down to about {_length_words(wall_m)} at the walls"
+        finer = (f", refined down to about {length_words(wall_m)} at the walls"
                  if wall_m and 0 < wall_m < base_m else "")
-        out.append(f"Base cells about {_length_words(base_m)} across{finer}.")
+        out.append(f"Base cells about {length_words(base_m)} across{finer}.")
     if internal and cells_across:
         out.append(f"At least {int(cells_across)} cells go across the narrowest passage, so the flow there is resolved.")
     if layers:
@@ -322,5 +322,5 @@ def pass_words(n: int, most: int) -> str:
 
 __all__ = ["KINDS", "MAX_CHARS", "STAGES", "UNKNOWN_STAGE", "asay", "astep", "leaks", "machine_words",
            "pass_words", "plain", "plan_lines", "quality_line", "retry_line", "review_line", "cfd_plan_lines",
-           "grid_plan_lines", "soften",
+           "grid_plan_lines", "length_words", "soften",
            "stage_words", "still_words"]
