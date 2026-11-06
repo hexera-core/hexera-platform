@@ -168,8 +168,9 @@ def axis_from_reading(readings, up_axis: str = DEFAULT_UP) -> tuple[str | None, 
     surest first), across the up axis, and the reading that gave it: ALONG an axis is that axis;
     ACROSS one or more is the one horizontal axis square to them all. A reading that leaves a
     choice (across the up axis alone, a body symmetric both ways) gives way to the next; none
-    left: (None, {}) - the longest side and the user settle it then. The sign is +: which end the
-    flow meets first is for the pictures and the user."""
+    left: (None, {}) - the longest side and the user settle it then. The sign is + unless the
+    reading itself knows which end meets the flow (a vehicle's lower end, its nose: `sign`); else
+    that is for the pictures and the user."""
     if isinstance(readings, dict):
         readings = [readings]
     up = up_or_default(up_axis)[1]
@@ -178,7 +179,9 @@ def axis_from_reading(readings, up_axis: str = DEFAULT_UP) -> tuple[str | None, 
             continue
         axes = [a for a in (reading.get("axes") or []) if a in ("x", "y", "z")]
         if reading.get("rule") == "along" and len(axes) == 1:
-            return "+" + axes[0], reading
+            # a reading that knows which end meets the flow (a vehicle's nose) gives its sign
+            sign = "-" if reading.get("sign") == "-" else "+"
+            return sign + axes[0], reading
         if reading.get("rule") == "across" and axes:
             left = [a for a in "xyz" if a != up and a not in axes]
             if len(left) == 1:

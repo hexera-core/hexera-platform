@@ -479,3 +479,36 @@ def test_a_valid_fixture_extracts_so_the_preservation_cases_are_not_vacuous(tmp_
     safe_extract_tar(fileobj=io.BytesIO(_tar_gz({"mesh.msh": b"solver"})), dest=str(dest))
     assert (dest / "mesh.msh").read_bytes() == b"solver"
     assert gzip.decompress(_tar_gz({"mesh.msh": b"solver"}))[:8] != b""
+
+
+# THE MID-RUN FRAME'S CLEANUP, and why it is gated.
+#
+# The worker owns every delete on the exchange and names each key it removes; a frame published
+# while the mesh was building is one of those keys. But a deployment with frames OFF can never have
+# written one, and asking the provider to delete it anyway spends a request per run, per stage, on
+# every mesh the platform runs - to remove an object that cannot exist. The switch that decides
+# whether the mesher may publish is the same one that decides whether we tidy up after it, so the
+# dispatch and the cleanup cannot disagree about what this run could have left behind.
+def test_an_engine_that_cannot_publish_deletes_only_the_three_keys_the_run_owns(bucket, tmp_path):
+    # cfmesh builds in memory and writes nothing mid-run, so there is never a frame to tidy.
+    coords = coordinates_for(KEY)
+    b = bucket(_seeded(coords, output=_tar_gz({"mesh.msh": b"solver"}),
+                       result={"rc": 0, "timed_out": False, "log_tail": "ok"}))
+    out = _collect(tmp_path)
+    assert out["rc"] == 0
+    assert not [k for k in b.deleted if "partial" in k], \
+        "a deployment that publishes no frames asked the provider to delete one"
+    assert len(b.deleted) == 3
+
+
+def test_a_snappy_run_also_removes_the_frame_it_may_have_published(bucket, tmp_path):
+    """Gated on the ENGINE, not on this process's config: the worker that collects need not be
+    the one that dispatched, so a flag flipped in between must not strand a published frame."""
+    coords = coordinates_for(KEY)
+    b = bucket(_seeded(coords, output=_tar_gz({"mesh.msh": b"solver"}),
+                       result={"rc": 0, "timed_out": False, "log_tail": "ok"}))
+    out = crc.collect_mesh_remote(tmp_path, engine="snappy", timeout=60, operation_key=KEY)
+    assert out["rc"] == 0, "tidying a frame must never downgrade a collected result"
+    assert [k for k in b.deleted if "partial" in k], "the frame was left in the exchange"
+    # and the three the run has always owned are still removed, each by name
+    assert len([k for k in b.deleted if "partial" not in k]) == 3

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import meshpipeline.settings.policy as polcfg
-from meshpipeline.agents.builder.tool_context import BuilderToolContext
+from meshpipeline.agents.builder.tool_context import HANDS_OFF, BuilderToolContext
 
 #: THE staged surface every engine analyses. A DERIVED workspace artefact - written upstream by the
 #: engine's own tessellator - not the source geometry and not an identity. It carries no unit,
@@ -261,6 +261,11 @@ class PreparedMeshRun:
     refusal: dict | None = None
     #: the case this run hands the mesher (agents/builder/rerun_guard.case_digest)
     case_digest: str = ""
+    #: WHAT THE LIVE LINE MAY SAY THE COUNT IS OUT OF: the cells or elements THIS engine's own
+    #: record beside the case plans to make (None when it records none), and the engine's own word
+    #: for one of them. A courtesy to the screen only - nothing here decides or bounds a mesh.
+    planned: int | None = None
+    unit: str = ""
 
 
 # Everything `run_mesh` decided BEFORE it announced itself. Blocking (registry lookups, file
@@ -424,8 +429,13 @@ def prepare_mesh_run(ctx: BuilderToolContext) -> PreparedMeshRun:
         _history = _hist_estimate(engine, _purpose)
     except Exception:  # noqa: BLE001 - an absent history is honestly absent, never invented
         _history = None
+    # WHAT THE LIVE LINE COUNTS AGAINST (engines/live_estimate): the engine's own estimate on
+    # record beside the case it is about to run, and the engine's own word for one of them. Both
+    # may be absent; neither is consulted by anything but the words on the screen.
+    from meshpipeline.engines.live_estimate import planned_live_count
+    _planned_live, _unit = planned_live_count(ename, workspace)
     return PreparedMeshRun(engine=engine, cap=_cap, purpose=_purpose, history=_history,
-                           case_digest=_digest)
+                           case_digest=_digest, planned=_planned_live, unit=_unit)
 
 
 # The two halves composed, WITHOUT the announcement. The announcement is an execution-owned
@@ -564,6 +574,7 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
         # the same names - the job ends as an internal error either way if it is not fixed.
         _mine = not res.get("internal_defect")
         return {"success": False, "rc": res.get("rc"), "patch_contract_mismatch": True,
+                **({} if _mine else {HANDS_OFF: True}),
                 "mismatch": res.get("case_contract_mismatch"),
                 "guidance": ("Nothing was meshed: your spec does not build the approved patches "
                              "exactly - " + "; ".join(res.get("case_contract_mismatch") or [])
@@ -592,7 +603,7 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
                 builder_text=f"[MESH_OVER_SIZE] {_words}",
                 facts={"over_size_by_rule": True, "estimated_cells": int(_o.get("cells") or 0),
                        "cell_limit": int(_o.get("budget") or 0), "meshers_started": 1}).write(workspace)
-            return {"success": False, "oversize": dict(_o),
+            return {"success": False, "oversize": dict(_o), HANDS_OFF: True,
                     "guidance": (f"Not meshed: {_words}. This engine's own passage sizing asks for "
                                  "that, so a coarser size does not change it. Do NOT run_mesh again and "
                                  "do NOT reconfigure - end your turn now; the run moves on to another "
@@ -619,7 +630,7 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
             builder_text=f"[VMTK_LAYERS_NOT_CONVERGING] {_words}",
             facts={"layers_not_converging": True, "retangled": int(_l.get("retangled") or 0),
                    "meshers_started": 1}).write(workspace)
-        return {"success": False, "layers_not_converging": _l,
+        return {"success": False, "layers_not_converging": _l, HANDS_OFF: True,
                 "guidance": (f"Not meshed: {_words}. Do NOT run_mesh again and do NOT reconfigure - "
                              "end your turn now; the run moves on to the next engine, which builds the "
                              "layers the plan asks for."),
@@ -686,6 +697,7 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
         from meshpipeline.engines.registry import engine_label
         nxt = engine_label(ctx.broken_mesh_moves_to) or ctx.broken_mesh_moves_to
         out["moves_on_to"] = ctx.broken_mesh_moves_to
+        out[HANDS_OFF] = True
         out["guidance"] = (f"Not valid ({', '.join(str(x) for x in fatal)}): this engine's mesh "
                            f"of this shape is broken. Do NOT run_mesh again and do NOT reconfigure "
                            f"- end your turn now. The run moves on to {nxt}, which builds the "

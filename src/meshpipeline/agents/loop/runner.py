@@ -123,7 +123,7 @@ async def run_agent_loop(
             continue
 
         round_index = acct.tally().rounds
-        terminated = False
+        terminated = ended = False
         for call in result.tool_calls:
             if budget.expired():
                 return _exhausted(LoopExit.deadline_exhausted)
@@ -148,8 +148,15 @@ async def run_agent_loop(
                 acct.record_terminal_action()
                 terminated = True
                 break
+            if outcome.ends_loop:
+                # THE DRIVER'S OWN STOP, decided by a tool's result (a builder engine handing the run
+                # on): no other call of this round and no further round - nothing can come of them
+                ended = True
+                break
         if terminated:
             return _finish(LoopExit.terminal_action)
+        if ended:
+            return _finish(LoopExit.policy_abort)
 
         # CLOSE-OUT: the agent may complete its OWN terminal action when its state warrants it.
         # A TYPED hook on LoopDriver - never reflective discovery, which would silently disable

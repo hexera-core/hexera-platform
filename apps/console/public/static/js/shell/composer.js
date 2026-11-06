@@ -191,7 +191,7 @@ function keepHolding() {
 export function holdForDrawing() {
   if (_checkState === "done" || _checkState === "over") return enableInput();
   if (_checkState === "ready") return holdInput(stageWait(), STAGE_WAIT_MS);
-  holdInput("Drawing your part… it will appear beside this chat in a moment", DRAWING_WAIT_MS);
+  holdInput("Drawing your part… it appears beside this chat", DRAWING_WAIT_MS);
 }
 export function releaseHold() {
   if (!_held) return;
@@ -296,7 +296,7 @@ async function watchGeometryCheck(sessionId) {
       if (told !== key) {
         told = key;
         deps.notice.show("The geometry check did not finish: " + (d.reason || "it gave up")
-          + ". Try again, or just carry on in the chat.", "warn",
+          + ". Try again, or carry on in the chat.", "warn",
           { sticky: true, action: "Try again", onAction: () => {
             deps.notice.clear();
             retryFn(d.retry).catch((e) => deps.notice.show("Could not run the geometry check again: " + e.message, "error"));
@@ -406,7 +406,7 @@ async function sendText(txt) {
     else enableInput();
   } catch (e) {
     if (e.status !== 401) {
-      deps.chat("assistant", "Something went wrong sending that: " + e.message + ". Please try again.");
+      deps.chat("assistant", "Could not send that: " + e.message + ". Try again.");
     }
     enableInput();
   }

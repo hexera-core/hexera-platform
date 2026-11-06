@@ -562,6 +562,18 @@ def _planned_total(*, base: float | None, narrow: list, wall_cell: float, max_ce
     return total
 
 
+def planned_cells_on_record(workspace) -> int | None:
+    """EngineSpec.planned_cells_on_record for cfMesh: the cells the case written in `workspace`
+    was planned at, from the run plan render_cfmesh_case wrote beside it (RUN_PLAN_FILE,
+    `estimated_cells`). None when the case carries no plan - nothing is estimated from meshDict."""
+    try:
+        plan = json.loads((Path(workspace) / RUN_PLAN_FILE).read_text())
+    except (OSError, ValueError, TypeError):
+        return None
+    v = plan.get("estimated_cells") if isinstance(plan, dict) else None
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
+
+
 def planned_cells_of(configured: dict) -> int | None:
     """EngineSpec.planned_cells for cfMesh: the planned cells a configure_mesh result carries."""
     v = (configured or {}).get("planned_cells") if isinstance(configured, dict) else None

@@ -130,10 +130,28 @@ def balanced_quality() -> tuple[str, int, int, float, str]:
 
     So the bars are split: the snap keeps the tet check (1e-13, the "strict" value), and the layer
     stage uses the relaxed set from its first iteration (nRelaxedIter 0) with the tet check off
-    there only. maxNonOrtho stays 65 in both, the bar the reviewer judges. Measured (production
-    image, product path): Camaro valid on the first pass, 2.39 of 3 layers (was invalid three
-    times); F1 wing 2.53 (2.52 with the old bars), skewed faces 34 -> 27."""
-    return "1e-13", 65, 0, 0.5, " minTetQuality -1e30;"
+    there only. Measured (production image, product path): Camaro valid on the first pass, 2.39 of
+    3 layers (was invalid three times); F1 wing 2.53 (2.52 with the old bars), skewed faces 34 -> 27.
+
+    THE LAYER STAGE'S NON-ORTHOGONALITY IS THE LIMIT THE MESH IS HELD TO (LAYER_MAX_NON_ORTHO). The
+    snap keeps 65; the layer stage used 65 too, stricter than the 70 the verdict holds a snappy mesh
+    to (engines/verdict_limits, VER-2). The Camaro on shared dev (2 Nov): 88% of its layer cells were
+    in place after the first layer iteration, and the 65 bar took back 4,726 faces' worth at the
+    car's concave corners - wheel rims, the grille - ending at 79.7% coverage, under the 80% limit,
+    on a mesh whose cells passed every other limit. The layer bar is checked on the layer cells as
+    they are added, and the finished mesh reads a little past it (65 delivered 66.35 on the product
+    path; 70 delivered 70.11, past the limit) - so the bar sits LAYER_NON_ORTHO_MARGIN under the
+    limit. Layer-only replays on the job's snapped mesh: 65 -> 79.72%, 67 -> 80.96%, 68 -> 81.48%,
+    70 -> 82.29% of the layer cells."""
+    return "1e-13", LAYER_MAX_NON_ORTHO, 0, 0.5, " minTetQuality -1e30;"
+
+
+#: The "balanced" layer stage's maxNonOrtho: the production limit the verdict holds a snappy mesh to
+#: (engines/verdict_limits PRODUCTION_LIMITS, max_non_ortho <= 70) less LAYER_NON_ORTHO_MARGIN - not
+#: the snap's stricter 65, which only throws away layers the delivery would have kept, and not the
+#: limit itself, which the finished mesh reads just past.
+LAYER_NON_ORTHO_MARGIN = 2
+LAYER_MAX_NON_ORTHO = 70 - LAYER_NON_ORTHO_MARGIN
 
 
 def layer_min_vol(finest_cell_m: float, *, n_layers: int, min_thickness_rel: float) -> float:
@@ -677,6 +695,20 @@ def castellation_budget(budget: int, final: float | None, *, margin: float,
         return int(budget)
     least = max(int(floor), int(CASTELLATION_FLOOR_SHARE * float(budget)))
     return max(least, int(float(budget) * float(budget) / float(final)))
+
+
+def planned_cells_on_record(workspace) -> int | None:
+    """EngineSpec.planned_cells_on_record for snappyHexMesh: the cells the case written in
+    `workspace` was planned at, from the record render_snappy_case wrote beside it
+    (size_brake.PLAN_CELLS_FILE, `plan_cells` - the finished mesh's cells, layers and the gap
+    boxes included). None when the case carries no record: nothing is estimated from the dicts."""
+    from meshpipeline.engines.size_brake import PLAN_CELLS_FILE
+    try:
+        rec = json.loads((Path(workspace) / PLAN_CELLS_FILE).read_text())
+    except (OSError, ValueError, TypeError):
+        return None
+    v = rec.get("plan_cells") if isinstance(rec, dict) else None
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
 
 
 def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analysis: dict,

@@ -107,3 +107,44 @@ def test_the_way_up_the_check_proposed_opens_the_viewer_until_the_user_chooses_a
     assert got["kept"]["up"] == pytest.approx([0, 1, 0], abs=1e-6), got
     live.evaluate("localStorage.removeItem('hexera.view-up.job.kept-job')")
     assert_clean(live, "the viewer opening the proposed way up")
+
+
+def test_the_way_up_is_remembered_for_the_conversation_not_the_run(live, tmp_path):
+    # THE PART AND ITS MESH AGREE. The geometry check stores the user's "Up" against the session;
+    # the mesh viewer used to store it against the job, so the same file came back the other way
+    # up once it was meshed. Both read the session now, and a choice saved under the old job key
+    # is migrated into it once rather than lost.
+    live.evaluate("""(async () => {
+      const s = await import('/static/js/core/state.js');
+      localStorage.removeItem('hexera.view-up.session.conv-1');
+      localStorage.removeItem('hexera.view-up.session.conv-2');
+      localStorage.removeItem('hexera.view-up.job.sess-job');
+      // the geometry check's own saved choice for this conversation
+      localStorage.setItem('hexera.view-up.session.conv-1', '+y');
+      // a choice saved by the old build, keyed by the run
+      localStorage.setItem('hexera.view-up.job.old-job', '-z');
+      s.beginRun('sess-job', {sessionId: 'conv-1'});
+      s.beginRun('old-job', {sessionId: 'conv-2'});
+    })()""")
+    _open(live, _payload(tmp_path), "sess-job")
+    _open(live, _payload(tmp_path), "old-job")
+    got = live.evaluate("""(() => ({
+      fromSession: document.getElementById('v-up-sess-job').value,
+      migrated: document.getElementById('v-up-old-job').value,
+      written: localStorage.getItem('hexera.view-up.session.conv-2'),
+      oldKept: localStorage.getItem('hexera.view-up.job.old-job')}))()""")
+    # the check's session choice opens the delivered mesh, with nothing stored for the job
+    assert got["fromSession"] == "+y", got
+    # the old job-scoped choice is adopted, and written under the session so the part sees it too
+    assert got["migrated"] == "-z" and got["written"] == "-z", got
+    assert got["oldKept"] == "-z", got
+
+    # and what the user picks on the mesh is stored for the conversation, not for the run
+    now = live.evaluate("""(() => {
+      window._vdbg['sess-job'].setUp('-y');
+      return {session: localStorage.getItem('hexera.view-up.session.conv-1'),
+              job: localStorage.getItem('hexera.view-up.job.sess-job')}; })()""")
+    assert now["session"] == "-y" and now["job"] is None, now
+    live.evaluate("['hexera.view-up.session.conv-1','hexera.view-up.session.conv-2',"
+                  "'hexera.view-up.job.old-job'].forEach(k => localStorage.removeItem(k))")
+    assert_clean(live, "the way up remembered for the conversation")
