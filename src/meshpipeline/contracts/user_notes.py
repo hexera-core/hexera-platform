@@ -72,6 +72,8 @@ CONSUMERS: dict[str, str] = {
     "fea_ai": "engines/fea_ai.py: the FEA judgement calls are shown them",
     "fea_part_sizes": "engines/fea_part_sizes.py: the phrases about particular parts are tied to the parts by the "
                       "vision model (cad/part_words), and the sizes they ask for applied part by part",
+    "snappy_part_levels": "engines/snappy/part_levels.py: the same reading on the flow route; each part's size "
+                          "becomes its own snappyHexMesh level against the background cell",
     "reviewer": "agents/reviewer/visual.py: shown as context, never as criteria",
     "delivery": "application/final_result.py: a step's 'From your notes' line on the result",
     "chat": "agents/intake/chat_facts.py: every chat answer, before and after the run, is given "
@@ -81,7 +83,7 @@ CONSUMERS: dict[str, str] = {
 COMMON_CONSUMERS = ("intake", "builder_workspace", "reviewer", "delivery", "chat")
 #: Each route of application/purpose_map.ROUTES, and the AI steps that read the notes on it.
 ROUTE_CONSUMERS: dict[str, tuple[str, ...]] = {
-    "flow": (*COMMON_CONSUMERS, "builder_model", "snappy_planner"),
+    "flow": (*COMMON_CONSUMERS, "builder_model", "snappy_planner", "snappy_part_levels"),
     "fea": (*COMMON_CONSUMERS, "fea_ai", "fea_part_sizes", "builder_model"),
     # an ECXML model is built by snapgrid's deterministic driver: no AI step in the build, so the
     # intake sets what fits a field and the reviewer reads them beside the result
@@ -92,7 +94,7 @@ ENGINE_CONSUMERS: dict[str, tuple[str, ...]] = {
     "cfmesh": ("builder_model",),
     "gmsh": ("builder_model", "fea_ai", "fea_part_sizes"),
     "snapgrid": ("intake",),
-    "snappy": ("snappy_planner",),
+    "snappy": ("snappy_planner", "snappy_part_levels"),
     "snappy_multiregion": ("builder_model",),
     "vmtk": ("builder_model",),
 }

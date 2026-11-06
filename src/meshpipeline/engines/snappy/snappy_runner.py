@@ -724,7 +724,8 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                        outside_points: list | None = None,
                        wake: WakeRequest | None = None,
                        contact: GroundContact | None = None,
-                       gap_field: tuple | None = None) -> dict:
+                       gap_field: tuple | None = None,
+                       part_sizes: dict | None = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     rec = recommendation
@@ -892,10 +893,28 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     _names = [str(r) for r in (surface_regions or []) if str(r).strip()]
     _geo_regions = (" regions { " + " ".join(f"{r} {{ name {r}; }}" for r in _names) + " }"
                     if _names else "")
+    # PLAN-cfd-4: THE SIZES THE USER ASKED FOR, PART BY PART (engines/snappy/part_levels): a part that is its own
+    # region gets its own level, finer or coarser; a part merged into a wall with others is refined near its own
+    # surface (a distance region on its own file). None: the dict is exactly what it has always been.
+    _part_lv: dict = {"regions": {}, "refine": {}, "words": []}
+    if part_sizes and (part_sizes.get("reading") or {}).get("status") == "used":
+        from meshpipeline.engines.snappy import part_levels as PL
+        _part_lv = PL.plan(part_sizes.get("reading"), part_sizes.get("by_id") or {}, base_m=float(base_actual),
+                           smin=int(smin), smax=int(smax), regions=_names)
+    _lv_of = {r: _part_lv["regions"].get(r, (smin, smax)) for r in _names}
     _ref_regions = (" regions { "
-                    + " ".join(f"{r} {{ level ({smin} {smax}); patchInfo {{ type wall; }} }}"
+                    + " ".join(f"{r} {{ level ({_lv_of[r][0]} {_lv_of[r][1]}); patchInfo {{ type wall; }} }}"
                                for r in _names) + " }"
                     if _names else "")
+    _part_geom = _part_refine = ""
+    for _pname, _plevel in _part_lv["refine"].items():
+        from meshpipeline.engines.snappy import part_levels as PL
+        _pf = f"partref_{PL.safe(_pname)}"
+        if not (ws / "constant" / "triSurface" / f"{_pf}.stl").exists():
+            continue
+        _band = PL.BAND_CELLS * float(base_actual) / 2 ** int(_plevel)
+        _part_geom += f" {_pf}.stl {{ type triSurfaceMesh; name {_pf}; }}"
+        _part_refine += f" {_pf} {{ mode distance; levels (({_band:.6g} {int(_plevel)})); }}"
     # ONE ENTRY PER REGION, by the patch's real name. snappyHexMesh names a region patch after the
     # region itself, not <surface>_<region>: a pattern built on the surface name matches nothing,
     # and OpenFOAM says so in the log and then adds no layers at all - a wall-resolved case would
@@ -998,11 +1017,11 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     (ws / "system" / "snappyHexMeshDict").write_text(
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
 castellatedMesh true; snap true; addLayers {'true' if _any_layers else 'false'};
-geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom}{_gap_geom} }}
+geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom}{_gap_geom}{_part_geom} }}
 castellatedMeshControls {{ maxLocalCells {cast_cells}; maxGlobalCells {cast_cells}; minRefinementCells 10;
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {{ file "{feature_file}"; level {flevel}; }}{_contact_feature} );
   refinementSurfaces {{ {surface_name} {{ level ({smin} {smax});{_ref_regions} }} }} resolveFeatureAngle {ang:.0f};
-  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine}{_gap_refine} }}
+  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine}{_gap_refine}{_part_refine} }}
   locationInMesh {vf(loc)}; allowFreeStandingZoneFaces true;{_outside} }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
@@ -1079,6 +1098,10 @@ mergeTolerance 1e-6; debug 0;
         out["gap_plan"] = _gap.record()
         out["gap_note"] = _gap.words(base_actual / (2 ** smax), auto=True)
         _gap.write(ws)
+    if _part_lv["regions"] or _part_lv["refine"] or _part_lv["words"]:
+        # PLAN-cfd-4: the parts the notes sized, and how (the driver says it and records it)
+        out["part_levels"] = {"regions": {k: list(v) for k, v in _part_lv["regions"].items()},
+                              "refine": dict(_part_lv["refine"]), "words": list(_part_lv["words"])}
     return out
 
 

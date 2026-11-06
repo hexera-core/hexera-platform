@@ -215,3 +215,7 @@ def test_parts_words_are_short():
     assert PM.parts_words(["Part_9"]) == "part 9"
     assert PM.parts_words(["Part_1", "Part_2", "Part_3", "Part_4", "Part_7"]) == "parts 1–4 and 7"
     assert PM.parts_words(["Part_2", "Part_5"]) == "parts 2 and 5"
+
+
+def test_the_flow_route_reads_with_the_snappy_consumer():
+    assert PM._route_ask(PM.ROUTE_CFD)[0] == "snappy_part_levels"

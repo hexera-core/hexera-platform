@@ -478,6 +478,8 @@ def from_stored(stored: Mapping | None, table: list[dict]) -> dict | None:
                 e[f] = kept
         if e.get("parts") or e.get("rest_parts") or (e.get("everything_else") and e.get("ask") != "size"):
             entries.append(e)
+    if stored.get("entries") and not entries:
+        return None                 # nothing of it is on the parts this run has: the route reads the notes itself
     dropped = list(stored.get("dropped") or [])
     if gone:
         dropped.append(f"{', '.join(sorted(set(gone))[:5])} is not a part of the model as meshed, so nothing was "

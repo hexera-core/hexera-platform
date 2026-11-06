@@ -1839,6 +1839,9 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
             if "error" in seen:
                 seen = {"up_error": seen["error"]}
             vision.update(seen)
+    # NOTE-5 ON THE FLOW ROUTE: a surface of several named parts (or a CAD file of several solids) keeps its parts
+    # for the checklist before approval, as the FEA route's measurement does
+    _keep_flow_parts(session_id, stored, facts, interpretation)
     proposal = _proposal(facts, vision)
     # what the scout stored, minus the fields write_status writes itself: the status, the clock,
     # and the session id - which it also takes as its first argument
@@ -2013,6 +2016,54 @@ def _fea_measure_cad(path: Path, interp_ref, ref):
         if len(names) == len(surface.names):
             surface.names = list(names)
     return shape, record, surface
+
+
+def _keep_flow_parts(session_id: str, stored: dict, facts: dict, interpretation: dict | None) -> None:
+    """NOTE-5 on the flow route: the parts of an upload of several named surfaces (an STL's named solids, in the
+    order the mesher stages them) or several CAD solids (Part_k in OpenCASCADE's order), kept for the checklist
+    (application/part_matches, its CFD route). Never fails the naming; a single part keeps nothing."""
+    try:
+        from meshpipeline.application import part_matches as PM
+        from meshpipeline.cad.ingest import canonicalise
+        from meshpipeline.contracts.geometry_source import GeometrySourceRef
+        from meshpipeline.contracts.intake_formats import GeometryKind
+        from meshpipeline.engines.snappy import part_levels as PL
+
+        if not session_id or not isinstance(stored.get("source"), dict):
+            return
+        ref = GeometrySourceRef.from_payload(stored["source"])
+        scale = float(facts.get("scale_to_m") or 0.001)
+        with tempfile.TemporaryDirectory(prefix="flow_parts_") as tmp:
+            work = Path(tmp)
+            fetched = _fetch(ref, work)
+            _too_big(fetched)
+            canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
+            if canonical.kind is GeometryKind.cad:
+                from meshpipeline.cad.fea_assembly import global_face_names, solids
+                from meshpipeline.cad.fea_measure import _brep_surface
+                from meshpipeline.cad.scout import read_cad
+                shape = read_cad(canonical.path)
+                n = len(solids(shape))
+                if n < 2:
+                    return
+                surface = _brep_surface(shape, 1000.0 * scale)[0]
+                names = global_face_names(shape)
+                if len(names) != len(surface.names):
+                    return
+                surface.names = list(names)
+                record: dict = {"part_bases": [{"id": f"Part_{k}", "name": ""} for k in range(1, n + 1)]}
+            else:
+                from meshpipeline.cad.stl_io import read_stl_solids
+                got = {k: v for k, v in read_stl_solids(canonical.path).items() if v}
+                if len(got) < 2:
+                    return
+                surface, record, _by_id = PL.surface_of(
+                    {k: [[[c * scale for c in p] for p in t] for t in v] for k, v in got.items()})
+        kept = PM.store_parts(session_id, record, surface, route=PM.ROUTE_CFD)
+        if kept is not None:
+            facts[PM.PARTS_KEY] = kept
+    except Exception as exc:  # noqa: BLE001 - no checklist, never a failed naming
+        logger.info("geometry naming: the flow parts were not kept (%s: %s)", type(exc).__name__, str(exc)[:200])
 
 
 def _keep_parts(session_id: str, record: dict, surface) -> None:

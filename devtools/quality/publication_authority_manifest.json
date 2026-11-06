@@ -4613,6 +4613,21 @@
   ]
  },
  {
+  "context": "engines/snappy/drivers.py::_say_part_levels::note#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::callers of _say_part_levels()",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_say_part_levels",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 1,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::callers of _say_part_levels()"
+  ]
+ },
+ {
   "context": "engines/snappy/finalize.py::_polymesh_boundary_foam_types::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/snappy/finalize.py",
   "qualname": "_polymesh_boundary_foam_types",
@@ -4793,6 +4808,19 @@
   "method": "error",
   "ordinal": 1,
   "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snappy/snappy_runner.py::render_snappy_case::plan#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy/snappy_runner.py",
+  "qualname": "render_snappy_case",
+  "semantic": "plan",
+  "method": "plan",
+  "ordinal": 1,
+  "receiver": "PL",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

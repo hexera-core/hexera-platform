@@ -331,6 +331,9 @@ def enqueue_reading(session_id: str, key: str, user_notes, request_txt, *, owner
 
 def _route_ask(route: str) -> tuple[str, str, bool]:
     """(the user-notes consumer, the mesh's purpose, whether the AI step is on) for the route."""
+    if route == ROUTE_CFD:
+        from meshpipeline.engines.snappy import part_levels as PL
+        return PL.CONSUMER, PL.PURPOSE, True
     from meshpipeline.engines import fea_part_sizes as PS
     from meshpipeline.engines.fea_ai import FEA_AI
     return PS.CONSUMER, PS.PURPOSE, bool(FEA_AI)
