@@ -663,7 +663,10 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
     # small-gap switch sets their default)
     found, info = joined_interfaces(parts, fused, vols, diag=diag, mm_per_unit=mm_per_unit, scale=1.0,
                                     gap_joins=True)
-    choices = P.choose(found, connection=connection, gap_joins=gap_joins, volume_of=volume_of, overrides=pairs)
+    # the pairs' words say each gap in millimetres: `found` is in the model's own unit here (metres
+    # in the mesher: the punch's 0.5 mm gaps read "across 0.0005 mm", 4 Nov)
+    in_mm = [{**i, "gap_mm": float(i["gap_mm"]) * mm_per_unit} if i.get("gap_mm") is not None else i for i in found]
+    choices = P.choose(in_mm, connection=connection, gap_joins=gap_joins, volume_of=volume_of, overrides=pairs)
     choice = {str(c["id"]): c for c in choices}
     off = [i for i in found if choice.get(str(i["id"]), {}).get("type") == P.OFF]
     interfaces = [i for i in found if i not in off]

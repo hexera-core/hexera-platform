@@ -178,6 +178,13 @@ def test_a_small_gap_pair_set_contact_keeps_the_fused_mesh(tmp_path):
     assert [p["kind"] for p in back["pairs"]] == ["tie"]
 
 
+def test_a_gap_is_said_in_millimetres_whatever_unit_the_model_is_in(tmp_path):
+    # the mesher stages in metres: the punch's 0.5 mm gaps once read "across 0.0005 mm" (4 Nov)
+    side = A.stage(fx.gapped_blocks(0.01, 0.0002), A.BONDED, tmp_path / "m", mm_per_unit=1000.0)
+    (joint,) = side["joints"]
+    assert "across 0.2 mm" in joint["why"], joint["why"]
+
+
 def test_the_pin_keeps_its_full_shape_in_its_bracket_and_the_user_can_say_otherwise(tmp_path):
     side = A.stage(fx.pin_in_bracket(), A.BONDED, tmp_path / "pin", mm_per_unit=1.0)
     assert side["mode"] == "bonded"

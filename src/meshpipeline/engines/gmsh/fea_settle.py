@@ -29,8 +29,9 @@ from collections.abc import Iterable, Mapping
 import numpy as np
 
 #: An element touches a cusp when one of its corners lies within this many of its own longest edges
-#: of the cusp point.
-CUSP_REACH = 2.0
+#: of the cusp point. Three, not two: the punch's link pins (4 Nov) left a bad element 1.2 mm from its
+#: cusp, a little over two of its own edges out, still part of the cusp's fan of slivers.
+CUSP_REACH = 3.0
 #: ...and a micro detail (PLAN-fea-12) when one of its corners lies this close to a point along it.
 MICRO_REACH = 2.0
 #: gmsh's 10-node tetrahedron: midside node 4+k sits on the edge between these corners (gmsh's own
@@ -66,6 +67,49 @@ def straighten(gmsh, tag: int) -> int:
     return moved
 
 
+def _shape_limits() -> tuple[float, float, float]:
+    """(largest aspect, smallest dihedral, largest dihedral) the verdict allows (VER-2 FEA rows)."""
+    from meshpipeline.engines.fea_quality import LIMITS
+
+    lim = {k: float(v) for k, _lab, _op, v, _src in LIMITS}
+    return lim["fea_max_aspect_ratio"], lim["fea_min_dihedral_deg"], lim["fea_max_dihedral_deg"]
+
+
+def misses_shape_limits(gmsh, tags: np.ndarray) -> np.ndarray:
+    """Per element of `tags` (gmsh volume element tags, as qualities() gives them): whether its
+    straight shape misses the verdict's aspect or dihedral limit, measured the verdict's way
+    (engines/fea_quality.element_measures on the 4 corners)."""
+    from meshpipeline.engines.fea_quality import element_measures
+
+    tags = np.asarray(tags, dtype=np.int64)
+    out = np.zeros(len(tags), dtype=bool)
+    if not len(tags):
+        return out
+    ntag, xyz, _ = gmsh.model.mesh.getNodes()
+    ntag = np.asarray(ntag, dtype=np.int64)
+    idx = np.full(int(ntag.max()) + 1, -1, dtype=np.int64)
+    idx[ntag] = np.arange(len(ntag))
+    xyz = np.asarray(xyz, dtype=float).reshape(-1, 3)
+    etags_all, corners_all = [], []
+    for typ, et, en in zip(*gmsh.model.mesh.getElements(3), strict=True):
+        k = int(gmsh.model.mesh.getElementProperties(int(typ))[3])
+        etags_all.append(np.asarray(et, dtype=np.int64))
+        corners_all.append(np.asarray(en, dtype=np.int64).reshape(-1, k)[:, :4])
+    et = np.concatenate(etags_all)
+    cn = np.concatenate(corners_all)
+    pos = {int(t): i for i, t in enumerate(et.tolist())}
+    rows = np.array([pos.get(int(t), -1) for t in tags.tolist()], dtype=np.int64)
+    ok = rows >= 0
+    max_aspect, min_dih, max_dih = _shape_limits()
+    sel = np.where(ok)[0]
+    for s in range(0, len(sel), 100_000):
+        part = sel[s:s + 100_000]
+        X = xyz[idx[cn[rows[part]]]]
+        m = element_measures(X)
+        out[part] = (m["aspect"] > max_aspect) | (m["min_dihedral"] < min_dih) | (m["max_dihedral"] > max_dih)
+    return out
+
+
 def settle(gmsh, straight: Mapping[int, float], cusps_m: Iterable, floor: float,
            micro: Iterable[Mapping] = ()) -> dict:
     """PLAN-fea-11, then PLAN-fea-10 and PLAN-fea-12 on the current (curved) model. `straight` is
@@ -97,7 +141,12 @@ def settle(gmsh, straight: Mapping[int, float], cusps_m: Iterable, floor: float,
     n_cusp = n_micro = 0
     if len(pts) or mtree is not None:
         tags, q = qualities(gmsh)
-        for t in tags[q < floor].tolist():
+        # AN ELEMENT A CUSP SPOILS is one under the SICN floor OR one that misses the verdict's own
+        # shape limits (aspect, dihedral angles: engines/fea_quality.LIMITS). The score alone let
+        # through elements by a cusp the verdict then counted against the mesh (the punch, 4 Nov:
+        # aspect 23, dihedral 2.9 degrees, 1.2 mm from a cusp, minSICN above the floor)
+        spoiled = (q < floor) | misses_shape_limits(gmsh, tags)
+        for t in tags[spoiled].tolist():
             _nodes, c = _corners(gmsh, t)
             h = max(float(np.linalg.norm(c[i] - c[j])) for i, j in _EDGES)
             if len(pts):
@@ -122,4 +171,5 @@ def settle(gmsh, straight: Mapping[int, float], cusps_m: Iterable, floor: float,
             "micro_used": sorted(used), "micro_elements": n_micro}
 
 
-__all__ = ["CUSP_REACH", "GMSH_TET10_EDGES", "MICRO_REACH", "qualities", "settle", "straighten"]
+__all__ = ["CUSP_REACH", "GMSH_TET10_EDGES", "MICRO_REACH", "misses_shape_limits", "qualities", "settle",
+           "straighten"]
