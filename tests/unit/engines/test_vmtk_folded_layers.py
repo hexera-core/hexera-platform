@@ -98,15 +98,19 @@ def _ladder_run(tmp_path, monkeypatch, layered_end):
     return res, gens
 
 
-def test_a_layered_fill_gets_the_whole_clock_and_gives_way_only_when_stuck(tmp_path, monkeypatch):
+def test_a_stuck_layered_fill_is_a_guard_trip_not_a_layer_free_mesh(tmp_path, monkeypatch):
     """NO SHARE OF THE CLOCK (contracts/native_time): the layered fill may run to the machine's wall -
-    it used to get 60% of 3,000 s - and only a STUCK one moves the ladder to the layer-free fill."""
-    res, gens = _ladder_run(tmp_path, monkeypatch, 'stall')
-    assert len(gens) == 2
+    it used to get 60% of 3,000 s. And a STUCK one (no sign of life for the stall window) is a guard
+    trip (docs/RULES.md TIME-1..3): the attempt is replayed as it was, never the layer-free fill
+    because a clock ran out - so whether a mesh keeps its layers never depends on a clock."""
+    from meshpipeline.engines import determinism as det
+    with det.recording() as rec:
+        res, gens = _ladder_run(tmp_path, monkeypatch, 'stall')
+    assert len(gens) == 1                                   # no layer-free fill after the trip
     assert gens[0][1] >= 13_800 - 10 - 1                  # the whole wall, not a share of it
-    assert '-boundarylayer 0' in ' '.join(gens[1][0])
-    assert 'made no progress' in res['repair_note']
-    assert not res.get('timed_out') and (tmp_path / 'mesh.vtu').read_text() == 'filled'
+    assert res['timed_out'] is True and not (tmp_path / 'mesh.vtu').exists()
+    assert [t['where'] for t in rec.guard_trips] == ['vmtk'] and rec.time_limited == []
+    assert 'guard clock' in res['repair_note']
 
 
 def test_a_layered_fill_still_working_at_the_wall_starts_no_other_step(tmp_path, monkeypatch):
@@ -117,3 +121,35 @@ def test_a_layered_fill_still_working_at_the_wall_starts_no_other_step(tmp_path,
     assert res['timed_out'] and not res.get('stalled')
     assert 'still working' in res['repair_note']
     assert not (tmp_path / 'mesh.vtu').exists()
+
+
+@pytest.mark.parametrize('surface_s', [10.0, 2500.0])
+def test_the_ladder_takes_the_same_steps_whatever_the_time_left(tmp_path, monkeypatch, surface_s):
+    # a slow surface stage (2,500 s of a 3,000 s guard) used to leave "under 60 s" for later
+    # steps, which were then not started; now the same failures take the same steps either way
+    clock = {'t': 0.0}
+    calls: list[list[str]] = []
+    folded = iter([0.277, 0.0])
+
+    def fake_run(argv, timeout=None, **kw):
+        calls.append(list(argv))
+        if 'vmtksurfaceremeshing' in ' '.join(argv):
+            clock['t'] += surface_s
+            (tmp_path / 'lumen.vtp').write_text('remeshed')
+        else:
+            clock['t'] += 200.0
+            (tmp_path / 'mesh.vtu').write_text('filled')
+        return sp.CompletedProcess(argv, 0, stdout='Done executing.', stderr='')
+
+    monkeypatch.setattr(R, 'run_guarded', fake_run)
+    monkeypatch.setattr(R, '_now', lambda: clock['t'])
+    monkeypatch.setattr(R, '_folded_share', lambda ws: next(folded))
+    monkeypatch.setattr(R, 'export_openfoam_case', lambda ws, timeout: None)
+    (tmp_path / 'vmtk_spec.json').write_text(json.dumps(R.resolve_strategy(
+        {'sizing_array': 'LocalRadius', 'boundary_layers': 3})))
+    (tmp_path / 'lumen_open.vtp').write_text('staged')
+    res = R._run_vmtk_local(tmp_path, timeout=3000)
+    gens = [c for c in calls if len(c) > 1 and c[1] == 'vmtkmeshgenerator']
+    assert len(gens) == 2, "the folded stack is followed by a thinner one, however late"
+    assert not res.get('timed_out')
+    assert 'folded into itself' in res['repair_note'] and 'guard' not in res['repair_note']

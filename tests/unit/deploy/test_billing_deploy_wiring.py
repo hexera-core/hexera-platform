@@ -49,8 +49,12 @@ def test_the_admin_credential_is_bound_to_the_api_where_it_is_stated():
 
 def test_prod_signup_is_pinned_open_while_billing_is_not_configured():
     # Until Stripe is ready, production signups must not depend on a payment-provider variable.
+    # The pin is stated once, in the prod picker, and carried into the deploy job through the
+    # target outputs - the same mechanism tests/unit/deploy/test_prod_api_hardening.py holds the
+    # grant to - rather than hardcoded in the job env where a second copy of the key once
+    # duplicated it.
     text = WORKFLOW.read_text(encoding="utf-8")
-    assert (
-        "CONSOLE_SIGNUP_ENABLED: ${{ "
-        "needs.target.outputs.deployment_id == 'prod' && 'true' || '' }}"
-    ) in text
+    assert 'echo "console_signup_enabled=true"' in text
+    assert ("CONSOLE_SIGNUP_ENABLED: "
+            "${{ needs.target.outputs.console_signup_enabled }}") in text
+    assert text.count("CONSOLE_SIGNUP_ENABLED:") == 1, "the env key is stated once"

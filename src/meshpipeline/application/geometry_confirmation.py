@@ -337,6 +337,10 @@ def fea_confirmation_message(body) -> str:
         parts.append(f"An assembly of {said_parts}, meshed together as solids." if said_parts
                      else "An assembly of several parts, meshed together as solids.")
         parts.append(FEA_CONNECTION_WORDS.get(connection, FEA_CONNECTION_WORDS["bonded"]))
+        # where they meet, counted as the stage counts them (application/fea_check.joints_words)
+        joints_said = str(getattr(body, "joints_summary", "") or "").strip().rstrip(".")
+        if joints_said:
+            parts.append(f"Where the parts meet: {joints_said}.")
         gap_said = str(getattr(body, "gap_summary", "") or "").strip()
         if gap_said:
             parts.append(gap_said)
@@ -553,6 +557,20 @@ def declared_case(messages: list[dict] | None) -> tuple[str, str] | None:
                 return "conjugate_heat_transfer", kind
             return ("internal_cfd" if flow == "through" else "external_cfd"), kind
     return None
+
+
+def declared_unit(messages: list[dict] | None) -> str:
+    """The file's unit as the user confirmed it on the stage (a LengthUnit value) - read back from
+    unit_sentence's own words in the latest declaration; "" when it states none."""
+    from meshpipeline.contracts.unit_plausibility import UNIT_WORDS
+
+    by_words = {words: unit.value for unit, words in UNIT_WORDS.items()}
+    for m in reversed(list(messages or [])):
+        if isinstance(m, dict) and _is_declaration(m):
+            found = re.search(r"The file is in (" + "|".join(map(re.escape, by_words)) + r")\b",
+                              str(m.get("content", "")))
+            return by_words[found.group(1)] if found else ""
+    return ""
 
 
 def with_declaration(messages: list[dict] | None, message: str) -> list[dict]:

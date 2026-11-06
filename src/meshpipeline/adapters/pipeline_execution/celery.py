@@ -111,10 +111,31 @@ def name_geometry(**kwargs) -> dict:
     # THE NAMING runs once the user has said what the part is: the pictures the scout stored and
     # the user's words go to the vision model together. Same queue as the scout - the user is
     # waiting on this one too.
-    from meshpipeline.adapters.pipeline_execution.geometry_running import running
-    from meshpipeline.application.geometry_check import run_geometry_naming
-    with running(_task_id(name_geometry, f"geometry-naming-{kwargs.get('session_id', '')}")):
+    from meshpipeline.adapters.pipeline_execution.geometry_running import running, waiting
+    from meshpipeline.application.geometry_check import run_geometry_naming, scout_still_running
+    yielded = int(kwargs.pop(NAMING_YIELDED, 0) or 0)
+    task_id = _task_id(name_geometry, f"geometry-naming-{kwargs.get('session_id', '')}")
+    # A NAMING THAT COULD ONLY WAIT GIVES ITS SLOT TO A TASK THAT IS WAITING (shared dev, 2 Nov: the stud
+    # punch's scout and its naming - waiting on that scout - held both of the worker's two slots for four
+    # minutes, while the Camaro's naming, a half-minute model call on a part already scouted, sat queued
+    # behind them until the user gave up on it). Its own scout still at work and another task in the queue,
+    # it goes back to the end of the queue and the slot takes the next task; bounded, so it never starves.
+    if yielded < NAMING_YIELD_MAX and scout_still_running(str(kwargs.get("session_id") or "")) and waiting() > 0:
+        from meshpipeline.application.geometry_check import naming_limits_for
+        soft, hard = naming_limits_for(str(kwargs.get("session_id") or ""))
+        name_geometry.apply_async(kwargs={**kwargs, NAMING_YIELDED: yielded + 1}, task_id=task_id,
+                                  soft_time_limit=soft, time_limit=hard)
+        logger.info("geometry naming: its scout is still running and a task is waiting - back in the queue "
+                    "(%d) - session=%s", yielded + 1, kwargs.get("session_id"))
+        return {"status": "yielded", "yielded": yielded + 1}
+    with running(task_id):
         return run_geometry_naming(**kwargs)
+
+
+#: the naming's yields so far (a task argument the naming body never sees), and how many it may make: each
+#: one lets a waiting task run first, so a busy queue can never keep a naming from its turn for long
+NAMING_YIELDED = "naming_yielded"
+NAMING_YIELD_MAX = 12
 
 
 def _task_id(task, fallback: str) -> str:

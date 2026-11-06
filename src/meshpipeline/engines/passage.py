@@ -34,13 +34,47 @@ PASSAGE_CEILING_CELLS = 40
 #: taken at every real boundary point, against the real boundary edges.
 MAX_MEASURE_POINTS = 60_000
 
-#: The measure is evidence beside a finished mesh, never worth more than a few minutes of the
-#: run's budget: past this it is abandoned and the mesh ships without it (the gate then does
-#: not judge resolution). Before this cap the measure read the WHOLE volume through a VTK
-#: OpenFOAM reader with no limit at all, and a 0.8 M-cell cut-cell fill spent 17 minutes there
-#: after a 13-second cartesianMesh (Cloud Run execution f5r99, 2026-09-12); a bigger fill sat
-#: for 161 minutes and held the mesh service's capacity while every other run queued behind it.
+#: The FLOOR of the measure's guard (the old fixed cap, TIME-2: nothing that finished under it is
+#: cut now). Before any cap the measure read the WHOLE volume through a VTK OpenFOAM reader with
+#: no limit at all, and a 0.8 M-cell cut-cell fill spent 17 minutes there after a 13-second
+#: cartesianMesh (Cloud Run execution f5r99, 2026-09-12); a bigger fill sat for 161 minutes and
+#: held the mesh service's capacity while every other run queued behind it. It now reads the
+#: boundary files only, and its guard follows from that work (measure_guard).
 PASSAGE_MEASURE_BUDGET_S = 240.0
+
+#: THE MEASURE IS PLANNED WORK (docs/RULES.md TIME-2): its work is the boundary it reads - every
+#: boundary face of the mesh (the chords are capped at MAX_MEASURE_POINTS, the cells-across figure
+#: is read at every real boundary point) - so its guard is set from the mesh's boundary face count,
+#: read from the polyMesh's own `boundary` file before anything else is read. The slow rate is the
+#: 10th percentile over the 306 measures of the full benchmark (30 Oct, both sides; there the
+#: measure ran in a worker thread, where its clock never arms, so each ran to its end): 143
+#: boundary points a second (median 929; slowest 62, the gyroid and cerebral-vessel walls), at
+#: about one boundary point per face on these hex-dominant fills. With the guard 3 times that, every
+#: one of the 306 fits. 114 of them took more than the old fixed 240 s (up to 1,622 s): on the mesh
+#: job, where the clock does arm, each of those tripped, and the valid mesh beside it was replayed
+#: and then lost as "ran out of time" (dev-areen, 2 Nov: the FDA pump housing and the gyroid
+#: phantom).
+PASSAGE_MEASURE_FACES_PER_S = 120.0
+#: The longest guard the measure gets: well inside the mesh job's wall around the run, and twice
+#: the slowest measure the benchmark saw (annular_008, 1.8 M boundary points, 1,622 s).
+PASSAGE_MEASURE_CEILING_S = 3600.0
+
+
+def measure_guard(polymesh):
+    """The planned work and GUARD of the passage measure of `polymesh` (contracts/work_limits,
+    TIME-2): its boundary faces at the measure's slow rate, three times over, never under the old
+    fixed 240 s, never over PASSAGE_MEASURE_CEILING_S. The face count comes from the boundary file,
+    so the same mesh gets the same guard on any machine; a boundary that cannot be read gets the
+    floor."""
+    from meshpipeline.contracts.work_limits import PlannedWork
+    try:
+        from meshpipeline.engines.cfmesh.polymesh_surface import read_boundary_patches
+        faces = float(sum(int(p["n_faces"]) for p in read_boundary_patches(Path(polymesh))))
+    except Exception:  # noqa: BLE001 - an unreadable boundary plans nothing; the floor guards it
+        faces = 0.0
+    return PlannedWork(where="passage.measure", unit="boundary faces", amount=faces or None,
+                       rate=PASSAGE_MEASURE_FACES_PER_S, floor_s=PASSAGE_MEASURE_BUDGET_S,
+                       ceiling_s=PASSAGE_MEASURE_CEILING_S)
 
 
 class MeasureOverdue(Exception):
@@ -784,14 +818,18 @@ def boundary_of_polymesh(polymesh, *, wall_only: bool = False
     return points[used], inv.reshape(tri.shape), edges
 
 
-def passage_of_polymesh(workspace, *, budget_s: float = PASSAGE_MEASURE_BUDGET_S) -> dict:
+def passage_of_polymesh(workspace, *, budget_s: float | None = None) -> dict:
     """The passage measure of the polyMesh under <workspace>/constant, from its boundary
-    files alone, abandoned past `budget_s`. {} when anything is missing or the budget runs
-    out - a measurement never loses a finished mesh."""
+    files alone, under its guard: `budget_s`, else the guard its planned work gives it
+    (measure_guard). {} when anything is missing or the guard trips - a measurement never loses
+    a finished mesh."""
     ws = Path(workspace)
     pm = ws / "constant" / "polyMesh"
     if not (pm / "owner").exists():
         return {}
+    work = measure_guard(pm)
+    if budget_s is None:
+        budget_s = float(work.guard_seconds)
     try:
         with measure_deadline(budget_s):
             pts, faces, edges = boundary_of_polymesh(pm)
@@ -802,11 +840,21 @@ def passage_of_polymesh(workspace, *, budget_s: float = PASSAGE_MEASURE_BUDGET_S
                 return passage_of_surface(pts, faces, wall=(wpts, wfaces), edges=wedges)
             return passage_of_surface(pts, faces, edges=edges)
     except MeasureOverdue:
-        logger.warning("passage measure abandoned after %.0f s; the mesh ships without it",
-                       budget_s)
-        from meshpipeline.engines.determinism import note_time_limit
-        note_time_limit("passage.measure", "the passage measure was abandoned: the mesh ships "
-                        "without it", budget_s=float(budget_s))
+        # PLANNED WORK (the mesh's boundary faces, MAX_MEASURE_POINTS chords); the clock is its
+        # guard, set from that work (measure_guard). The measure is read beside a mesh checkMesh
+        # has already measured, so a trip here never throws that mesh away (docs/RULES.md
+        # TIME-8): the mesh goes on to its checks without the measure, and the trip is recorded
+        # as one that kept the mesh - never a replay that measures the same mesh on the same
+        # machine, trips again, and ends a valid mesh as "ran out of time".
+        logger.warning("passage measure ran past its %.0f s guard - the mesh is checked without "
+                       "it (TIME-8)", budget_s)
+        from meshpipeline.contracts.work_limits import TIME_KEEP_VALID
+        from meshpipeline.engines.determinism import note_guard_trip
+        planned = work.as_dict()
+        note_guard_trip("passage.measure", rule=TIME_KEEP_VALID, guard_s=float(budget_s),
+                        amount=planned.get("amount"), unit=planned.get("unit"),
+                        planned_s=planned.get("planned_s"),
+                        kept="the mesh, checked without the passage measure")
         return {}
     except Exception:  # noqa: BLE001 - evidence, not a verdict
         logger.warning("passage measure of the polyMesh failed", exc_info=True)
@@ -1241,14 +1289,15 @@ def narrow_passage_regions(points, radius, *, cell_m: float, areas=None,
 
 
 __all__ = ["MAX_MEASURE_POINTS", "PASSAGE_CEILING_CELLS", "PASSAGE_CELLS_ACROSS",
-           "PASSAGE_FLOOR_CELLS", "PASSAGE_MEASURE_BUDGET_S", "MeasureOverdue", "NarrowRegions",
+           "PASSAGE_FLOOR_CELLS", "PASSAGE_MEASURE_BUDGET_S", "PASSAGE_MEASURE_CEILING_S",
+           "PASSAGE_MEASURE_FACES_PER_S", "MeasureOverdue", "NarrowRegions",
            "boundary_of_polymesh", "boundary_triangles_of_polymesh",
            "declared_port_half_width", "declared_port_widths", "field_radius_stats",
            "narrow_passage_regions", "passage_field_of_stls", "point_areas",
            "port_corrected_radius", "staged_passage_field", "weighted_percentile",
            "FIELD_MAX_POINTS",
            "cavity_skin", "choose_passage_radius", "orient_fluid_boundary", "inside_point", "interior_from_ports",
-           "mean_edge", "measure_deadline", "measure_passage", "orient_wall_faces",
+           "mean_edge", "measure_deadline", "measure_guard", "measure_passage", "orient_wall_faces",
            "passage_of_polymesh", "polygon_edges", "triangle_edges",
            "passage_of_stls", "passage_of_surface", "plausible_radius", "port_radius_stats",
            "radius_stats", "size_caps", "under_floor_regions", "vouched_by_ports",

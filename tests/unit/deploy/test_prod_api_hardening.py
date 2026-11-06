@@ -109,6 +109,21 @@ def test_the_workflow_pins_prods_hardening():
             f"never reaches bootstrap-env.sh and is erased by the regenerated deployment env")
 
 
+def test_the_workflow_opens_prod_signup_with_the_free_credit_grant():
+    """Production's chosen launch policy is open signup with a 100-credit one-time grant. Carry
+    both values through the picker -> job env -> API-service path so a script default change cannot
+    silently close signup or remove the offer."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "console_signup_enabled=true" in text, (
+        "deploy.yml's prod picker does not explicitly enable self-service signup")
+    assert "signup_grant_credits=100" in text, (
+        "deploy.yml's prod picker does not explicitly grant 100 credits to a new organisation")
+    for name in ("CONSOLE_SIGNUP_ENABLED", "SIGNUP_GRANT_CREDITS"):
+        assert f"{name}: ${{{{ needs.target.outputs.{name.lower()} }}}}" in text, (
+            f"deploy.yml never maps {name} into the deploy job's env:, so the picker's value "
+            f"never reaches create-api-service.sh")
+
+
 def test_the_generated_env_preserves_a_stated_app_env():
     """Regeneration must carry a stated value through, not overwrite it with the dev default.
 

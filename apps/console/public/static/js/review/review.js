@@ -22,7 +22,8 @@ import { getReview, postReviewDecision, postReviewRun } from "../api/endpoints.j
 import { getGeometrySkin } from "../api/endpoints.js";
 import { esc } from "../core/format.js";
 import { b64f32, b64u32, loadVtk } from "../viewer/geometry_stage.js";
-import { bindMouse } from "../viewer/view_controls.js";
+import { mountCanvas } from "../viewer/scene/canvas.js";
+import { makeOverlay } from "../viewer/scene/overlay.js";
 
 const BACKGROUND = [0.035, 0.055, 0.075], BODY = [0.74, 0.78, 0.84], SEL = "#ff4f00";
 
@@ -114,16 +115,13 @@ async function mountView(host, sessionId, jobId) {
   if (!sessionId) return null;
   let surf;
   try { surf = await getGeometrySkin(sessionId); await loadVtk(); } catch { return null; }
-  const grw = vtk.Rendering.Misc.vtkGenericRenderWindow.newInstance({ background: BACKGROUND });
-  grw.setContainer(host);
-  const ren = grw.getRenderer(), rw = grw.getRenderWindow();
-  const apiRW = grw.getApiSpecificRenderWindow ? grw.getApiSpecificRenderWindow() : grw.getOpenGLRenderWindow();
-  const DPR = Math.min(window.devicePixelRatio || 1, 2);
-  const scale = () => { const r = host.getBoundingClientRect();
-    apiRW.setSize(Math.max(2, Math.round(r.width * DPR)), Math.max(2, Math.round(r.height * DPR))); };
-  grw.resize();
-  host.addEventListener("contextmenu", (e) => e.preventDefault());
-  bindMouse(grw);
+  // THE SAME BOOT EVERY SCENE GETS, including the three-light rig the geometry stage has always
+  // had and this view never did: until now the review rode vtk's default headlight, which lights
+  // the part flat from dead ahead. The part is lit here the way it is lit on the stage.
+  const canvas = mountCanvas(host, { background: BACKGROUND });
+  const { ren, rw, apiRW, cam } = canvas;
+  const scale = canvas.setRenderScale;
+  const overlay = makeOverlay(canvas);
   (surf.patches || []).forEach((pt) => {
     let pts, polys, normals = null;
     if (pt.polys_b64) { pts = b64f32(pt.points_b64); polys = b64u32(pt.polys_b64);
@@ -142,7 +140,6 @@ async function mountView(host, sessionId, jobId) {
     pr.setAmbient(0.32); pr.setDiffuse(0.76); pr.setSpecular(0.12); pr.setSpecularPower(20);
     ren.addActor(actor);
   });
-  const cam = ren.getActiveCamera();
   cam.azimuth(45); cam.elevation(25); ren.resetCamera(); rw.render();
   const bs = ren.computeVisiblePropBounds();
   const diag = Math.max(Math.hypot(bs[1] - bs[0], bs[3] - bs[2], bs[5] - bs[4]), 1e-9);
@@ -162,21 +159,15 @@ async function mountView(host, sessionId, jobId) {
   let at = null;                       // the defect's point, in the skin's units (metres)
   let mateAt = null;                   // its paired partner's, when it has one on screen
   const fit = () => { ren.resetCamera(bounds); rw.render(); };
-  const ro = new ResizeObserver(() => { scale(); if (!at) fit(); else rw.render(); });
-  ro.observe(host);
-
-  function put(el, p) {
-    if (!p) { el.style.display = "none"; return false; }
-    const size = apiRW.getSize(), aspect = size[0] / Math.max(size[1], 1), rect = host.getBoundingClientRect();
-    const nd = ren.worldToNormalizedDisplay(p[0], p[1], p[2], aspect);
-    const ok = nd[2] > 0 && nd[2] < 1 && nd[0] >= 0 && nd[0] <= 1 && nd[1] >= 0 && nd[1] <= 1;
-    el.style.display = ok ? "" : "none";
-    if (ok) { el.style.left = (nd[0] * rect.width) + "px"; el.style.top = ((1 - nd[1]) * rect.height) + "px"; }
-    return ok;
-  }
-  function place() { put(mate, mateAt); return put(pin, at); }
-  let alive = true;
-  (function loop() { if (!alive || !document.body.contains(host)) return; place(); requestAnimationFrame(loop); })();
+  // THE RESIZE POLICY IS THE SHARED ONE NOW. This view used "has a defect been pinned yet" as its
+  // proxy for "has the camera been placed deliberately" - which was right about `show()` and
+  // blind to the user: an orbit, then a resize, and the view snapped back to the whole part.
+  // `canvas.touched` is set by a press on the canvas, and `show()` sets it for its own camera
+  // move, so the proxy's correct behaviour is kept and the user's orbit is kept too.
+  canvas.fit = fit;
+  overlay.anchor(pin, () => at);
+  overlay.anchor(mate, () => mateAt);
+  const place = () => { overlay.tick(); return pin.style.display !== "none"; };
 
   /** Put the pin on the defect and bring the camera to it, looking down its normal; a paired
    *  partner's camera, when given, gets the second pin. */
@@ -184,8 +175,10 @@ async function mountView(host, sessionId, jobId) {
     const pc = ((partner || {}).centroid_mm || []);
     mateAt = pc.length === 3 ? pc.map(toSkin) : null;
     const c = ((camera || {}).centroid_mm || []);
-    if (c.length !== 3) { at = null; fit(); return; }
+    if (c.length !== 3) { at = null; canvas.touched = false; fit(); place(); return; }
     at = c.map(toSkin);
+    // a camera placed on a defect is a deliberate framing: a later resize must not undo it
+    canvas.touched = true;
     let n = (camera.normal || [0, 0, 0]).slice();
     const L = Math.hypot(n[0], n[1], n[2]);
     n = L > 1e-9 ? n.map((v) => v / L) : [-0.5, -0.5, 0.7];
@@ -202,7 +195,7 @@ async function mountView(host, sessionId, jobId) {
     visible: () => (place() ? 1 : 0),
     camera: () => cam.getPosition(),
   };
-  return { show, stop() { alive = false; ro.disconnect(); delete window._vdbg["review:" + jobId]; } };
+  return { show, stop() { overlay.stop(); canvas.ro.disconnect(); delete window._vdbg["review:" + jobId]; } };
 }
 
 /* ---------- the review ---------- */

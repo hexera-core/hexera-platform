@@ -11,6 +11,13 @@ from meshpipeline.contracts.geometry_source import (
     MaterializedGeometry,
 )
 
+#: A run_mesh result that HANDS THE RUN ON: this engine cannot build this case and the run moves on
+#: to the next engine (pipeline/engine_fallback) - the builder loop ends with that call
+#: (agents/builder/loop_policy), never waiting on the model to end its turn (exhaust_manifold_007,
+#: shared dev 2 Nov: VMTK's layers would not untangle, the guidance said "end your turn now", and the
+#: model spent 10 minutes saying there was no mesh.msh to submit before the run moved to snappy).
+HANDS_OFF = "hands_off"
+
 
 @dataclass(frozen=True, slots=True)
 class BuilderToolContext:

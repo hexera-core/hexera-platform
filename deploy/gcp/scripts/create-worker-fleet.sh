@@ -84,6 +84,63 @@ VPC_NETWORK="${VPC_NETWORK:-default}"
 VPC_SUBNET="${VPC_SUBNET:-default}"
 WORKER_BASE_INSTANCE_NAME="${WORKER_BASE_INSTANCE_NAME:-${WORKER_MIG}}"
 
+# SPOT OR STANDARD, AND WHAT IT COSTS BESIDES MONEY. A Spot VM is the same machine at about a
+# third of the price, on the condition that Compute Engine may reclaim it at any time with a
+# SHUTDOWN WINDOW OF UP TO THIRTY SECONDS - not the ninety a deleted on-demand VM gets. That one
+# number is the whole design below: the drain budget has to fit inside it or the hand-back does
+# not finish, and a job whose hand-back does not finish waits out its WORKER_LEASE_SECONDS (900)
+# before the reaper re-runs it as worker_lost.
+#
+# WHAT THE MEASURED DRAIN ACTUALLY NEEDS. application/worker_handoff.py: the run notices the drain
+# mark within DRAIN_POLL_SECONDS (1 s), is cancelled, gets CANCEL_GRACE_SECONDS (15 s) to unwind,
+# and then the job is re-launched and the lease released. About eighteen seconds, so it fits a
+# thirty-second window with room - but NOT with the 75 s budget an on-demand VM is given, which
+# would be SIGKILLed two thirds of the way through. Hence a per-model budget, below.
+#
+# WHY DEV AND NOT PROD. Dev work is bursty and restartable: over the fourteen days to 2026-11-05
+# the dev fleets were busy in 77 separate periods, median 26 min and 57% under half an hour, and
+# the E2 line of the bill averaged about fifteen e2-standard-4 running. Prod stays STANDARD because
+# a reclaimed VM there means a customer's run restarts from the beginning - relaunch() re-dispatches
+# a job, it does not resume one - and that is not a trade production makes to save money.
+#
+# Decided by APP_ENV, like the fleet's warm floor (bootstrap-env.sh). An explicitly stated
+# WORKER_PROVISIONING_MODEL still wins either way.
+WORKER_PROVISIONING_MODEL="${WORKER_PROVISIONING_MODEL:-STANDARD}"
+WORKER_PROVISIONING_MODEL="$(printf '%s' "${WORKER_PROVISIONING_MODEL}" | tr '[:lower:]' '[:upper:]')"
+case "${WORKER_PROVISIONING_MODEL}" in
+  STANDARD|SPOT) ;;
+  *) die "WORKER_PROVISIONING_MODEL must be STANDARD or SPOT, got '${WORKER_PROVISIONING_MODEL}'" ;;
+esac
+
+# THE DRAIN BUDGET, in seconds, for each of the two containers. Read by worker/startup.sh (the
+# container's own --stop-timeout) and worker/shutdown.sh (the docker stop that the VM's shutdown
+# runs), so both halves of the drain agree on one number instead of hard-coding it twice.
+#
+# SPOT: 25 s and 10 s. The window is "up to thirty seconds" and best effort, so the budget leaves
+# five seconds of headroom for the shutdown script's own startup and docker's signalling.
+# STANDARD: 75 s and 30 s, the values the live fleet has always used, inside the ~90 s a deleted
+# VM gets.
+if [ "${WORKER_PROVISIONING_MODEL}" = SPOT ]; then
+  WORKER_STOP_TIMEOUT="${WORKER_STOP_TIMEOUT:-25}"
+  GEOMETRY_STOP_TIMEOUT="${GEOMETRY_STOP_TIMEOUT:-10}"
+else
+  WORKER_STOP_TIMEOUT="${WORKER_STOP_TIMEOUT:-75}"
+  GEOMETRY_STOP_TIMEOUT="${GEOMETRY_STOP_TIMEOUT:-30}"
+fi
+for _n in WORKER_STOP_TIMEOUT GEOMETRY_STOP_TIMEOUT; do
+  [[ "${!_n}" =~ ^[0-9]+$ ]] && [ "${!_n}" -gt 0 ] \
+    || die "${_n} must be a positive whole number of seconds, got '${!_n}'"
+done
+# The guard that makes the paragraph above a rule rather than a comment: a Spot fleet whose drain
+# budget does not fit the reclaim window silently converts every preemption into a 15-minute
+# worker_lost, which looks like flakiness and not like a misconfiguration.
+if [ "${WORKER_PROVISIONING_MODEL}" = SPOT ] && [ "${WORKER_STOP_TIMEOUT}" -gt 25 ]; then
+  die "WORKER_PROVISIONING_MODEL is SPOT but WORKER_STOP_TIMEOUT is ${WORKER_STOP_TIMEOUT}s. A
+   reclaimed Spot VM is stopped after about THIRTY seconds, so a budget above 25 leaves the
+   hand-back to be SIGKILLed and the job to wait out its 900 s lease. Lower the budget, or set
+   WORKER_PROVISIONING_MODEL=STANDARD."
+fi
+
 # scaling - the same knobs create-queue-depth-publisher.sh reads, so the two writers of this policy
 # cannot disagree about it
 WORKER_MIG_MIN_REPLICAS="${WORKER_MIG_MIN_REPLICAS:-0}"
@@ -516,6 +573,12 @@ WORKER_METADATA=(
   "redis-key-prefix=${REDIS_KEY_PREFIX:-}"
   "database-url=${WORKER_DATABASE_URL}"
   "env-uri=${WORKER_ENV_URI}"
+  # THE DRAIN BUDGET, read by BOTH halves of the drain: startup.sh sets it as each container's own
+  # --stop-timeout, shutdown.sh uses it for the docker stop it runs when the VM goes down. Passed
+  # as metadata rather than baked into the two scripts because it depends on the provisioning model
+  # (a reclaimed Spot VM has ~30 s, a deleted on-demand VM ~90 s) and the scripts are static files.
+  "worker-stop-timeout=${WORKER_STOP_TIMEOUT}"
+  "geometry-stop-timeout=${GEOMETRY_STOP_TIMEOUT}"
   # THE OBJECT STORE AND THE DEPLOYMENT'S OWN NAMES, from the same variables create-api-service.sh
   # gives the API. The env object above is published once, from .env.example, the first time a
   # personal environment's fleet is created and never again - so without these a dev-<slug> worker
@@ -548,12 +611,28 @@ WORKER_METADATA=(
   || WORKER_METADATA+=("cad-repair-fill-nonplanar-holes=${CAD_REPAIR_FILL_NONPLANAR_HOLES}")
 [ -z "${CAD_REPAIR_HEAL_SELF_INTERSECTIONS:-}" ] \
   || WORKER_METADATA+=("cad-repair-heal-self-intersections=${CAD_REPAIR_HEAL_SELF_INTERSECTIONS}")
+[ -z "${CAD_REPAIR_FIX_SMALL_FACES:-}" ] \
+  || WORKER_METADATA+=("cad-repair-fix-small-faces=${CAD_REPAIR_FIX_SMALL_FACES}")
+[ -z "${CAD_REPAIR_MAX_OPS:-}" ] \
+  || WORKER_METADATA+=("cad-repair-max-ops=${CAD_REPAIR_MAX_OPS}")
+[ -z "${CAD_REPAIR_TIMEOUT_S:-}" ] \
+  || WORKER_METADATA+=("cad-repair-timeout-s=${CAD_REPAIR_TIMEOUT_S}")
 [ -z "${CAD_REPAIR_LLM_PLANNER:-}" ] \
   || WORKER_METADATA+=("cad-repair-llm-planner=${CAD_REPAIR_LLM_PLANNER}")
 # The verdict by measured limits (docs/RULES.md VER), only when the target states it (dev does,
 # prod does not yet): the run decides pass, concerns or fail from the mesh's measured numbers and
 # the AI review only adds notes. Absent, the env object's value (the shipped default, off) stands.
 [ -z "${VERDICT_BY_LIMITS:-}" ] || WORKER_METADATA+=("verdict-by-limits=${VERDICT_BY_LIMITS}")
+# Whether a running mesh may publish a decimated frame of itself for the viewer. The WORKER holds
+# the decision - it passes the switch to the mesher as a per-execution override, because the mesh
+# job and the big VM carry no env of their own - so turning this off takes effect on the next run
+# rather than the next mesh image deploy.
+[ -z "${MESH_PROGRESSIVE_SNAPSHOT_ENABLED:-}" ] \
+  || WORKER_METADATA+=("mesh-progressive-snapshot-enabled=${MESH_PROGRESSIVE_SNAPSHOT_ENABLED}")
+# The rank pin that makes a frame reachable at all. It travels with the switch above because the
+# two are one decision: a frame is only read from a SERIAL snappy run, so the flag without this
+# leaves a deployment holding both halves of a feature and seeing none of it.
+[ -z "${MESH_SNAPPY_RANKS:-}" ] || WORKER_METADATA+=("mesh-snappy-ranks=${MESH_SNAPPY_RANKS}")
 WORKER_METADATA+=(${WORKER_SECRET_METADATA[@]+"${WORKER_SECRET_METADATA[@]}"})
 
 # The metadata list is handed to gcloud with '|' as its delimiter. Neither of the obvious
@@ -588,7 +667,30 @@ if [ "${WORKER_SELF_RETIRE}" = true ]; then
 else
   SELF_RETIRE_LABEL=""
 fi
+
+# THE PROVISIONING FLAGS, composed HERE so that the hash below covers them. A template is reused
+# when its NAME matches, and the name is the digest plus this hash - so a provisioning flag that is
+# not hashed is a flag that cannot be changed. That is not hypothetical: the first Spot deploy
+# (dev-spotcheck, 2026-11-06) built a template carrying --instance-termination-action DELETE, the
+# group refused it, and removing the flag changed no hashed input - so the next run would have
+# found the same name, reported "reused - the specification is unchanged", and failed identically.
+# Hashing the flags makes a change to them a new template, which is the only thing that can fix it.
+#
+# NO --instance-termination-action. It reads like the right thing - a reclaimed VM that merely
+# STOPS would sit in the group as a TERMINATED instance for the group to repair, where a deleted
+# one is just recreated - and Compute Engine REFUSES it outright for a group member:
+#
+#   ERROR: (gcloud.compute.instance-groups.managed.create) Could not fetch resource:
+#    - Spot virtual machines with termination action set to DELETE cannot be used with
+#      Managed Instance Groups.
+#
+# The group already owns that decision: a managed instance group deletes and recreates its own
+# reclaimed Spot VMs. gcloud derives the rest of what SPOT implies - automaticRestart false,
+# onHostMaintenance TERMINATE - so stating those here would only conflict with it.
+PROVISIONING_FLAGS=(--provisioning-model "${WORKER_PROVISIONING_MODEL}")
+
 SPEC_HASH="$(printf '%s\n' "${APP_IMAGE}" "${WORKER_MACHINE_TYPE}" "${WORKER_BOOT_DISK_GB}" \
+  "${PROVISIONING_FLAGS[@]}" \
   "${WORKER_BOOT_DISK_TYPE}" "${WORKER_IMAGE_FAMILY}" "${WORKER_IMAGE_PROJECT}" "${VPC_NETWORK}" \
   "${VPC_SUBNET}" "${WORKER_SA_EMAIL}" "${WORKER_SCOPES}" "${WORKER_METADATA[@]}" \
   "${SELF_RETIRE_LABEL}" \
@@ -611,10 +713,16 @@ else
 # ambiguous - every region has a `default` - and gcloud refuses it with "Underspecified resource
 # [default]". The fleet's subnet is the one in the deployment's own region.
 WORKER_SUBNET_REF="projects/${GCP_PROJECT_ID}/regions/${GCP_REGION}/subnetworks/${VPC_SUBNET}"
-info "Creating instance template ${TEMPLATE}"
+info "Creating instance template ${TEMPLATE} (${WORKER_PROVISIONING_MODEL})"
+  # THE PROVISIONING MODEL, and the flag that must NOT accompany it. --provisioning-model carries
+  # STANDARD or SPOT; gcloud derives the rest of what SPOT implies - no automatic restart, no live
+  # migration - so passing those here would only conflict with it.
+  #
+  # The flags were composed ABOVE, before SPEC_HASH, so that changing them rotates the template.
   # --no-address: a worker has no public address and reaches Artifact Registry, Secret Manager and
   # the model providers through Cloud NAT, which is what the live fleet already does.
   gc compute instance-templates create "${TEMPLATE}" \
+    "${PROVISIONING_FLAGS[@]}" \
     --machine-type "${WORKER_MACHINE_TYPE}" \
     --image-family "${WORKER_IMAGE_FAMILY}" \
     --image-project "${WORKER_IMAGE_PROJECT}" \

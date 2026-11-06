@@ -114,10 +114,15 @@ def _run_real_confirmation(session):
     async def _db():
         yield AsyncMock()
 
+    # spend_gate consults the users table for an organisation-less owner (an account awaiting
+    # verification is refused). "alice" is this harness's legacy owner-only tenant - no row.
+    _no_user = AsyncMock(return_value=None)
+
     prior = pe._launcher
     pe.set_pipeline_launcher(_CapturingLauncher())
     try:
         with (patch("meshpipeline.persistence.session.get_db", _db),
+              patch("meshpipeline.application.spend_gate.user_repo.get_by_email", _no_user),
               patch("meshpipeline.persistence.repositories.job_repository.JobRepository", _JobRepo),
               patch("meshpipeline.application.job_service.JobService", _Svc),
               source_lookup(_SOURCE),

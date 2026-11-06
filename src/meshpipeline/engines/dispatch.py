@@ -32,7 +32,10 @@ def _run_stamped(runner, workspace: Any, *, engine: str, bashrc: str, timeout: i
     """Run `runner` pinned to the determinism settings (engines/determinism.py) and stamp the
     result: the case's hashes before the run, the threads/ranks/seeds/versions it ran with, and
     every time a clock changed a decision. The stamp rides home beside the mesh (STAMP_FILE) and
-    in the result (`reproducibility`). A stamp that cannot be made never fails a run."""
+    in the result (`reproducibility`). A stamp that cannot be made never fails a run.
+
+    `timeout` is the run's GUARD (contracts/work_limits, TIME-2): a run stopped by it is a guard
+    trip, recorded in the stamp, and the attempt ends as an infrastructure failure (TIME-3)."""
     import logging
     import time
 
@@ -48,9 +51,9 @@ def _run_stamped(runner, workspace: Any, *, engine: str, bashrc: str, timeout: i
     det.pin_process_environment(engine)
     with det.recording() as rec:
         out = runner(workspace, bashrc=bashrc, timeout=int(timeout))
-        if isinstance(out, dict) and out.get("timed_out"):
-            det.note_time_limit(engine, "the native run was stopped at its time limit",
-                                budget_s=float(timeout))
+        if isinstance(out, dict) and out.get("timed_out") and not rec.guard_trips:
+            # the runner did not say which of its steps hit the guard: the run itself did
+            det.note_guard_trip(engine, guard_s=float(timeout))
         try:
             foam = ""
             if engine in _OPENFOAM_ENGINES or engine == "snapgrid":

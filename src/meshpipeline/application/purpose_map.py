@@ -237,15 +237,35 @@ def _user_texts(messages) -> list[str]:
             if isinstance(m, dict) and m.get("role") == "user" and str(m.get("content") or "").strip()]
 
 
+def _answer_to(messages, asked: str) -> str:
+    """The user's reply to the purpose question the application asked: the first user message
+    after it ("" while it is unanswered)."""
+    question, seen = QUESTIONS.get(asked, ""), False
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        content = str(m.get("content") or "").strip()
+        if not seen:
+            seen = m.get("role") == "assistant" and content == question
+        elif m.get("role") == "user" and content:
+            return content
+    return ""
+
+
 def reading_for(messages) -> PurposeReading:
     """THE CONVERSATION'S PURPOSE, as the application routes it. The answer to a purpose question
-    the application asked speaks first (it answers exactly that); otherwise everything the user
+    the application asked speaks first (it answers exactly that) and keeps speaking: it is the
+    reply right after the question, not the latest message - otherwise the next reply ("Millimetres.")
+    handed the route back to the words that made the question needed, and a part the user had
+    sent to FEA ("shaft with an impeller" + the FEA button) turned back into a flow, its check card
+    showing the far field and the stickers (Areen, shared dev, 3 Nov). Otherwise everything the user
     has said, read together. After the one question, words that still settle nothing take the
     generic path (a flow, whose stage asks through-or-around) - never a second question."""
     texts = _user_texts(messages)
     asked = question_asked(messages)
-    if asked and texts:
-        answer = read_purpose(f"heat: {texts[-1]}" if asked == ASK_THERMAL else texts[-1])
+    said = _answer_to(messages, asked) if asked else ""
+    if said:
+        answer = read_purpose(f"heat: {said}" if asked == ASK_THERMAL else said)
         if answer.settled:
             return answer
     reading = read_purpose("\n".join(texts))

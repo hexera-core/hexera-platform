@@ -480,7 +480,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (276 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (278 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -548,6 +548,7 @@ Every supported setting (276 entries). `template` settings are the ones `.env.ex
 | `LANGFUSE_SECRET_KEY` | template | app | yes |
 | `GEOMETRY_CHECK_ENABLED` | template | app |  |
 | `GEOMETRY_CHECK_VISION_TIMEOUT_S` | internal | app |  |
+| `MESH_PROGRESSIVE_SNAPSHOT_ENABLED` | template | app |  |
 | `CAD_INSPECT_MAX_BYTES` | internal | app |  |
 | `CAD_INSPECT_TIMEOUT_S` | internal | app |  |
 | `CAD_REPAIR_ALLOW_FACE_REMOVAL` | internal | app |  |
@@ -583,6 +584,7 @@ Every supported setting (276 entries). `template` settings are the ones `.env.ex
 | `MAX_JOBS_PER_OWNER` | template | app |  |
 | `RECONCILE_RETRY_DELAY_SECONDS` | template | app |  |
 | `SIGNUP_GRANT_CREDITS` | template | app |  |
+| `SIGNUP_GRANT_WITHHELD_DOMAINS` | template | app |  |
 | `CONSOLE_BASE_URL` | template | app |  |
 | `EXTRA_CREDITS_AMOUNT` | template | app |  |
 | `STRIPE_API_KEY` | template | app | yes |
