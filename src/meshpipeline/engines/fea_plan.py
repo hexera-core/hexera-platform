@@ -91,7 +91,7 @@ CORNER_DIVISIONS = 4
 GROWTH = 1.3
 #: PLAN-fea-7: elements per quarter-turn of a round that is not a hot spot (its shape only).
 ROUND_PER_QUARTER = 4
-#: Tetrahedra per size cubed INSIDE the part, measured on gmsh's own Delaunay fill. Before rulebook 56 it was 4.5 with
+#: Tetrahedra per size cubed INSIDE the part, measured on gmsh's own Delaunay fill. Before rulebook 57 it was 4.5 with
 #: the boundary included (lab ~/fea4_lab: a cube at 10/6/4 mm gave 4.9/4.6/4.2 per h^3), and plans coarser than the
 #: rules' were under-counted (#417: 1.38M planned, 1.73M built). PLAN-fea-31 counts the boundary on its own
 #: (fea_size_field.SURFACE_PER_AREA), so the volume's own rate is refitted with it: 32 builds of 8 parts (single parts and
@@ -154,14 +154,32 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
     spot_faces: set[str] = set()
     thinnest = _f((record.get("thickness") or {}).get("min_mm"))
     own = _part_thinnest(record)
+    # PLAN-fea-24 and PLAN-fea-25: the cosmetic fillets (no hot spot of their own) and the round faces whose
+    # wall reading is only their own edge break (no wall of their own)
+    cosmetic_rows = cosmetic_fillets(record)
+    cosmetic = {c["spot"] for c in cosmetic_rows}
+    cosmetic_faces = {f for c in cosmetic_rows for f in c["faces"]} - {
+        str(f) for h in record.get("hot_spots") or [] if h.get("id") not in cosmetic for f in h.get("faces") or []}
+    no_wall = {r["face"]: r for r in round_walls(record)}
+    face_rows = record.get("faces") or {}
 
     for h in record.get("hot_spots") or []:
         faces = [str(f) for f in h.get("faces") or []]
         t = _f(h.get("local_thickness_mm"))
+        if h.get("id") in cosmetic:
+            # PLAN-fea-24: a cosmetic fillet is meshed at the size round it (its face is a micro round below)
+            continue
         if h.get("type") == "sharp_corner":
             # a corner whose faces read no wall of their own: the thinnest wall of ITS OWN PART
             # (PLAN-fea-17: every part sized by its own rules), the whole part's only for a single part
             basis = _f(h.get("cap_basis_mm")) or t or own.get(_part_key(faces[0]) if faces else "", thinnest)
+            if no_wall and any(f in no_wall for f in faces):
+                # PLAN-fea-25: a corner beside a round whose reading was its own edge break is capped by the wall
+                # of its other faces (the round's reading is no wall)
+                read = [_face_wall(face_rows.get(f) or {}) for f in faces if f not in no_wall]
+                rest = [v for v in read if v is not None]
+                if rest:
+                    basis = min(rest)
             if basis is None or len(faces) < 2:
                 continue
             size = basis / CORNER_DIVISIONS
@@ -186,12 +204,16 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
                     "spot": h.get("id"), "capped": False, "radius_m": r * _MM, "why": why,
                     **({"thickness_m": t * _MM, "wall_elements": STRESS_WALL_ELEMENTS} if t else {})})
 
-    face_rows = record.get("faces") or {}
     for name in sorted(face_rows, key=_face_sort):
         row = face_rows[name] or {}
         # PLAN-fea-3, THIN ONLY WHERE IT IS THIN: a face thin only in places keeps the wall the rest
         # of it agrees on, and each thin spot is a zone of its own round where its readings are
         t = _f(row.get("thickness_wall_mm")) or _f(row.get("thickness_min_mm"))
+        span = no_wall[name]["span_mm"] if name in no_wall else None
+        if span is not None and t is not None and t <= span:
+            # PLAN-fea-25: the reading across a micro round's own edge break is no wall (the faces it joins
+            # carry the wall rule for any real thin material there)
+            t = None
         if t is not None:
             out.append({"id": f"W{_face_tag(name)}", "kind": "wall", "faces": [name],
                         "size_m": t / WALL_ELEMENTS * _MM, "reach_m": t * _MM, "rule": "PLAN-fea-3",
@@ -199,7 +221,7 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
                         "why": f"a {_mm(t)} wall under {name}: {WALL_ELEMENTS} elements through it"})
         for i, sp in enumerate(row.get("thin_spots") or [], start=1):
             ts, rad = _f(sp.get("thickness_mm")), _f(sp.get("radius_mm"))
-            if not ts or rad is None:
+            if not ts or rad is None or (span is not None and ts <= span):
                 continue
             out.append({"id": f"T{_face_tag(name)}_{i}", "kind": "wall_spot", "faces": [name],
                         "size_m": ts / WALL_ELEMENTS * _MM, "reach_m": ts * _MM, "rule": "PLAN-fea-3",
@@ -208,6 +230,9 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
                         "why": (f"a {_mm(ts)} thin spot of the wall under {name}, {_mm(rad)} across: "
                                 f"{WALL_ELEMENTS} elements through it there")})
         r = _f(row.get("radius_mm"))
+        if r is not None and name in cosmetic_faces:
+            # PLAN-fea-24: a cosmetic fillet's face keeps its shape the way a micro round does
+            continue
         if r is not None and name not in spot_faces and r < ROUND_MICRO * _part_diag(record, name):
             # PLAN-fea-12: A ROUND KEPT ONLY FOR ITS SHAPE that is smaller than ROUND_MICRO of its part is an edge
             # break the elements' curved sides follow, not a shape that needs elements of its own (a 127 mm
@@ -244,6 +269,77 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
 #: PLAN-fea-12: a round kept only for its shape (PLAN-fea-7) under this share of its part's diagonal is an
 #: edge break, not a shape (cad/fea_measure.MICRO_FRACTION: the CAD details recorded as micro)
 ROUND_MICRO = 1e-3
+#: PLAN-fea-24: A COSMETIC FILLET is a fillet whose radius is under this share of the wall it sits in (and,
+#: as every micro round, under ROUND_MICRO of its part). Resolving one would ask for elements under 1/150 of
+#: that wall (6 per quarter-turn: 0.26 r), and its stress peak is confined to about one radius of its root -
+#: the defeaturing both Ansys Mechanical (defeature size, "remove fillets below") and Abaqus/CAE (Geometry
+#: Edit: remove small fillets) apply before meshing for stiffness and the stress away from the feature.
+COSMETIC_WALL_SHARE = 0.05
+#: PLAN-fea-25: a micro round's wall reading up to this many radii is its own edge break - the ray across the
+#: round meets the neighbouring face within about two radii - not a wall
+ROUND_WALL_SPAN = 3.0
+
+
+def cosmetic_fillets(record: Mapping) -> list[dict]:
+    """PLAN-fea-24: the fillet hot spots that are cosmetic - radius under COSMETIC_WALL_SHARE of the wall they
+    sit in AND under ROUND_MICRO of their part. Holes and notches are never cosmetic (a hole carries load round
+    it; a notch is cut on purpose), nor is a fillet with no wall reading."""
+    out = []
+    for h in record.get("hot_spots") or []:
+        if h.get("type") != "fillet":
+            continue
+        r, t = _f(h.get("radius_mm")), _f(h.get("local_thickness_mm"))
+        faces = [str(f) for f in h.get("faces") or []]
+        if r is None or t is None or not faces:
+            continue
+        if r < COSMETIC_WALL_SHARE * t and r < ROUND_MICRO * _part_diag(record, faces[0]):
+            out.append({"spot": h.get("id"), "faces": faces, "radius_mm": r, "wall_mm": t})
+    return out
+
+
+def round_walls(record: Mapping) -> list[dict]:
+    """PLAN-fea-25: the micro rounds and cosmetic fillets (faces) whose own wall reading is at most
+    ROUND_WALL_SPAN of their radius - the gap across their own edge break, not a wall. Each with the span
+    (mm) a reading must be over to count as a wall there."""
+    rounds = {m["face"]: float(m["radius_mm"]) for m in micro_rounds(record)}
+    for c in cosmetic_fillets(record):
+        for f in c["faces"]:
+            rounds.setdefault(f, float(c["radius_mm"]))
+    out = []
+    rows = record.get("faces") or {}
+    for name in sorted(rounds, key=_face_sort):
+        row = rows.get(name) or {}
+        span = ROUND_WALL_SPAN * rounds[name]
+        readings = [_f(row.get("thickness_wall_mm")) or _f(row.get("thickness_min_mm"))]
+        readings += [_f(sp.get("thickness_mm")) for sp in row.get("thin_spots") or []]
+        under = [v for v in readings if v is not None and v <= span]
+        if under:
+            out.append({"face": name, "radius_mm": rounds[name], "span_mm": span, "reading_mm": min(under)})
+    return out
+
+
+#: PLAN-fea-26: a plan whose base size is more than this many times its finest zone is said to be slow to mesh
+#: before it meshes. Calibrated on the 240 corpus parts planned on main beside their corpus run (docs/RULES.md
+#: PLAN-fea-26): under 100 to 1 the median part meshed at 0.5 ms an element; 100-300, 2.2 ms; over 300, 15-25 ms
+#: (and 3 of 3 failed)
+SLOW_RATIO = 300.0
+
+
+def slow_ratio(zone_list: list[dict], base_m: float) -> dict | None:
+    """PLAN-fea-26: the plan's size spread (base over finest zone) when it is over SLOW_RATIO, else None."""
+    sized = [z for z in zone_list if _f(z.get("size_m"))]
+    if not sized or not base_m:
+        return None
+    fin = min(sized, key=lambda z: float(z["size_m"]))
+    ratio = float(base_m) / float(fin["size_m"])
+    if ratio <= SLOW_RATIO:
+        return None
+    return {"ratio": _r(ratio), "base_mm": _r(base_m * 1e3), "finest_mm": _r(float(fin["size_m"]) * 1e3),
+            "zone": str(fin["id"])}
+
+
+def _face_wall(row: Mapping) -> float | None:
+    return _f(row.get("thickness_wall_mm")) or _f(row.get("thickness_min_mm"))
 
 
 def _part_diag(record: Mapping, face: str) -> float:
@@ -593,6 +689,15 @@ def finish(record: Mapping, zone_list: list[dict], hist: Histogram, *, diag_m: f
     rounds = micro_rounds(record)
     if rounds:
         plan["micro_rounds"] = rounds          # PLAN-fea-12 (absent when there is none: the plan is as before)
+    cosmetic = cosmetic_fillets(record)
+    if cosmetic:
+        plan["cosmetic"] = cosmetic            # PLAN-fea-24 (absent when there is none)
+    edge_breaks = round_walls(record)
+    if edge_breaks:
+        plan["round_walls"] = edge_breaks      # PLAN-fea-25 (absent when there is none)
+    slow = slow_ratio(zone_list, float(base))
+    if slow:
+        plan["slow"] = slow                    # PLAN-fea-26 (absent when the sizes are not that far apart)
     plan["words"] = words(record, plan)
     plan["decisions"] = decisions(record, plan)
     return plan
@@ -601,7 +706,10 @@ def finish(record: Mapping, zone_list: list[dict], hist: Histogram, *, diag_m: f
 def micro_rounds(record: Mapping) -> list[dict]:
     """PLAN-fea-12: the rounds kept only for their shape that are under ROUND_MICRO of their part - no zone of
     their own (zones() leaves them out), named."""
-    spot = {str(f) for h in record.get("hot_spots") or [] for f in h.get("faces") or []}
+    # the faces of the holes, fillets and notches (a cosmetic fillet's too: PLAN-fea-24 names those itself);
+    # a sharp corner's faces may be micro rounds, as zones() reads them
+    spot = {str(f) for h in record.get("hot_spots") or []
+            if h.get("type") != "sharp_corner" for f in h.get("faces") or []}
     out = []
     for name, row in sorted((record.get("faces") or {}).items(), key=lambda kv: _face_order(kv[0])):
         r = _f((row or {}).get("radius_mm"))
@@ -680,6 +788,21 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
         out.append(f"{len(small)} round face(s) far smaller than their part (the smallest of radius "
                    f"{min(float(m['radius_mm']) for m in small):.3g} mm) are edge breaks the elements' curved sides "
                    "follow; they get no elements of their own.")
+    cosmetic = plan.get("cosmetic") or []
+    if cosmetic:
+        c = min(cosmetic, key=lambda x: x["radius_mm"])
+        out.append(f"Cosmetic fillets: {len(cosmetic)} fillet(s) far smaller than the wall they sit in (the smallest, "
+                   f"radius {c['radius_mm']:.3g} mm on {c['faces'][0]} in a {c['wall_mm']:.3g} mm wall) are meshed at "
+                   "the size around them, not refined: they do not change the part's stiffness or the stress away "
+                   "from them. The stress right at them is not resolved - it will read lower than the true peak. If "
+                   "a peak there matters (fatigue, a crack starting there), ask for those fillets to be refined.")
+    edge_breaks = plan.get("round_walls") or []
+    if edge_breaks:
+        e = min(edge_breaks, key=lambda x: x["reading_mm"])
+        out.append(f"{len(edge_breaks)} small round face(s) read a 'wall' only across their own edge break (the "
+                   f"thinnest, {e['reading_mm']:.3g} mm on {e['face']}, of radius {e['radius_mm']:.3g} mm). That is "
+                   "no wall, so it sets no size; the faces beside each round still keep at least "
+                   f"{WALL_ELEMENTS} elements through any real wall there.")
     cusps = plan.get("cusps") or []
     if cusps:
         out.append(f"Cusps: {len(cusps)} place(s) where two CAD edges of a face meet at almost no angle, so the "
@@ -720,6 +843,11 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
             out.append("That least valid mesh may be more than the mesh job's memory holds; it is meshed anyway, "
                        "and if the memory runs out the result says so.")
     out.append(f"Estimated before meshing: about {est:,} elements (the limit is {limit:,}).")
+    slow = plan.get("slow") or {}
+    if slow:
+        out.append(f"Slow to mesh: element sizes here run from {slow['base_mm']:.3g} mm down to {slow['finest_mm']:.3g} mm "
+                   f"({slow['zone']}, {slow['ratio']:,.0f} to 1). Sizes that far apart make the surface stage slow on "
+                   "every face the small zones touch, so this run may take a long time.")
     for lever in plan.get("levers") or []:
         out.append(str(lever.get("words") or ""))
     return [w for w in out if w]
@@ -1055,6 +1183,23 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
                     "rule": "PLAN-fea-12",
                     "inputs": {"smallest_mm": min(float(m.get("size_mm") or 0.0) for m in micro), "keep": MICRO_KEEP},
                     "words": f"{len(micro)} micro detail(s): the elements on them are set aside."})
+    cosmetic = plan.get("cosmetic") or []
+    if cosmetic:
+        out.append({"stage": "fea_plan", "decided": "cosmetic fillets", "value": len(cosmetic), "rule": "PLAN-fea-24",
+                    "inputs": {"spots": [c["spot"] for c in cosmetic], "wall_share": COSMETIC_WALL_SHARE,
+                               "part_share": ROUND_MICRO},
+                    "words": (f"{len(cosmetic)} cosmetic fillet(s) meshed at the size around them; the stress right at "
+                              "them is not resolved.")})
+    edge_breaks = plan.get("round_walls") or []
+    if edge_breaks:
+        out.append({"stage": "fea_plan", "decided": "edge breaks read as no wall", "value": len(edge_breaks),
+                    "rule": "PLAN-fea-25", "inputs": {"faces": [e["face"] for e in edge_breaks], "span": ROUND_WALL_SPAN},
+                    "words": f"{len(edge_breaks)} small round(s) read a wall only across their own edge break: no wall."})
+    slow = plan.get("slow") or {}
+    if slow:
+        out.append({"stage": "fea_plan", "decided": "slow to mesh", "value": slow["ratio"], "rule": "PLAN-fea-26",
+                    "inputs": {**slow, "warn_ratio": SLOW_RATIO},
+                    "words": f"Sizes {slow['ratio']:,.0f} to 1 apart: the run may be slow."})
     out.append({"stage": "fea_plan", "decided": "curving", "value": "never worse than straight", "rule": "PLAN-fea-11",
                 "inputs": {}, "words": "An element curving would leave worse than straight keeps straight sides."})
     out.append({"stage": "fea_plan", "decided": "growth", "value": plan["growth"], "rule": "PLAN-fea-6", "inputs": {},

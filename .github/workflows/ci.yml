@@ -135,7 +135,7 @@ jobs:
       # With code scanning on, zizmor's findings go to the Security tab as SARIF and its check
       # gates them. With it off (no Advanced Security), zizmor prints them to this log as
       # annotations and fails this job on any high-severity finding itself.
-      - uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
+      - uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
         with:
           advanced-security: ${{ steps.code-scanning.outputs.available == 'true' }}
           annotations: ${{ steps.code-scanning.outputs.available != 'true' }}
@@ -600,7 +600,7 @@ jobs:
       # NOT merged: every attempt's report lands in its own integration-report-<shard>-attempt-<n>
       # directory, because merging would lay the attempts' identically named files over each
       # other. The guard below chooses the newest attempt per shard by number.
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: integration-report-*
           path: integration-reports

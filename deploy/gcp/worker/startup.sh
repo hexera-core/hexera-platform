@@ -161,9 +161,20 @@ HEALTH_FLAGS=(--health-cmd "python -m meshpipeline.runtime.worker_liveness check
 
 # --stop-timeout: when the VM is deleted, docker's own shutdown may stop this container before the
 # shutdown script does (shutdown.sh). Docker's default is 10 seconds and then SIGKILL; this gives
-# the running job the same 75 seconds to hand itself back to the queue whichever stop comes first.
+# the running job the same budget to hand itself back to the queue whichever stop comes first.
+#
+# THE BUDGET COMES FROM THE TEMPLATE, because it depends on how this VM can die. A deleted
+# on-demand VM gets about ninety seconds, so the budget is 75; a RECLAIMED SPOT VM gets about
+# thirty, so it is 25 - and the same number has to be on the container and in shutdown.sh or
+# whichever stop arrives first would use the wrong one. create-worker-fleet.sh decides it and
+# passes it here; the defaults below are the on-demand values, for an instance whose template
+# predates this metadata.
+WORKER_STOP_TIMEOUT="$(md worker-stop-timeout || true)"
+GEOMETRY_STOP_TIMEOUT="$(md geometry-stop-timeout || true)"
+[[ "${WORKER_STOP_TIMEOUT}" =~ ^[0-9]+$ ]] || WORKER_STOP_TIMEOUT=75
+[[ "${GEOMETRY_STOP_TIMEOUT}" =~ ^[0-9]+$ ]] || GEOMETRY_STOP_TIMEOUT=30
 docker rm -f hexera-worker >/dev/null 2>&1 || true
-docker run -d --name hexera-worker --restart always --stop-timeout 75 --hostname "${WORKER_HOSTNAME}" \
+docker run -d --name hexera-worker --restart always --stop-timeout "${WORKER_STOP_TIMEOUT}" --hostname "${WORKER_HOSTNAME}" \
   "${HEALTH_FLAGS[@]}" \
   --env-file /etc/hexera/worker.env \
   -v /var/lib/hexera/workspaces:/srv/workspaces \
@@ -184,7 +195,7 @@ docker run -d --name hexera-worker --restart always --stop-timeout 75 --hostname
 # checks need at two slots each (queue_depth_publisher.demand - its GEOMETRY_SLOTS_PER_INSTANCE is this
 # --concurrency, held equal by tests/unit/deploy/test_geometry_check_queue.py).
 docker rm -f hexera-geometry-worker >/dev/null 2>&1 || true
-docker run -d --name hexera-geometry-worker --restart always --stop-timeout 30 --hostname "${WORKER_HOSTNAME}" \
+docker run -d --name hexera-geometry-worker --restart always --stop-timeout "${GEOMETRY_STOP_TIMEOUT}" --hostname "${WORKER_HOSTNAME}" \
   "${HEALTH_FLAGS[@]}" \
   --env-file /etc/hexera/worker.env \
   -v /var/lib/hexera/workspaces:/srv/workspaces \
