@@ -4453,3 +4453,306 @@ Three OCP 8 signatures differ from OCP 7 and cost an attempt each: `TDF_LabelSeq
 `OCP.collections.Sequence_TDF_Label`, `TDocStd_Document` takes a `TCollection_ExtendedString` and
 not an `AsciiString`, and `Bnd_Box.Get()` is unregistered so the corners come from `CornerMin()` and
 `CornerMax()`.
+
+## 2026-11-06: the boundary layers were never the problem, and the grid was
+
+| | state |
+|---|---|
+| question asked | can we add boundary layers and grading some other way, and is there published work on it |
+| answer | yes to both, and the premise behind the question was wrong |
+| boundary layers | reachable on the mesh we already shipped, proven in our own image |
+| the real defect | the grid snaps every 100 um channel to 88, 110 or 132 um |
+| cost to fix the real defect | one number in meshDict, and the mesh gets smaller |
+| what I had been telling Rehaan | wrong in sign, in magnitude and in subject |
+
+### What I ran
+
+37 agents, 6.17M tokens, 77 minutes, no errors. Sixteen research angles, twenty techniques put
+through adversarial verification, one synthesis. Journal at
+`wf_f5fee2ef-012/journal.jsonl`; the synthesis is the last `result` line.
+
+Eleven of the sixteen angles reported that the shared 200-call web budget ran out early and they
+fell back to reading primary source and running experiments inside `hexera-mesh:2412`. That
+produced far better evidence than the searches would have. Worth writing into how we do this:
+cfd-online, develop.openfoam.com, ScienceDirect and gitlab.onelab.info are all hard-blocked from
+here, while the doxygen API, arxiv PDFs through pdftotext, OSTI `/servlets/purl/` and simply
+cloning the source all work.
+
+### Boundary layers are possible, and stopping at "cfMesh cannot" was my mistake
+
+`snappyHexMesh` run as a pure layer adder, on a mesh it did not build:
+
+```
+castellatedMesh false;  snap false;  addLayers true;
+```
+
+on the post-split fluid region, keyed on the `fluid_to_solid` patch. The shipped annotated dict
+says it in one line at line 681: "Per final patch **or faceZone** (so not geometry!) the layer
+information". ESI ships a tutorial that does exactly this, `mesh/snappyHexMesh/addLayersToFaceZone`.
+
+Measured on a 110 um slot with 5 cells across, built to mimic ours:
+
+| | |
+|---|---|
+| layer ladder, um from the wall | 0.978 / 1.456 / 2.166 / 3.224, then an 18.871 core |
+| expansion ratio | 1.4887, 1.4876, 1.4885 against a computed 1.4886 |
+| cells across the channel | 5 becomes 13 |
+| first cell centre | 11.0 um becomes 0.489 um, 22.5x closer |
+| coverage | 920 of 920 faces, 100% |
+| checkMesh | Mesh OK, zero tets |
+| interface faces | 460 before, 460 after; area 1.844045802e-05 to 1.844045346e-05 m2 |
+
+The conformal coupling survives because layers shrink the interior and insert cells, they never
+move the extrusion base. Verifiers checked it with order-sensitive md5 hashes of the patch point
+coordinates and area integrals, not log lines.
+
+#### The reason it looked impossible, and it voids something else of ours
+
+The shipped `etc/caseDicts/meshQualityDict` carries `minVol 1e-13`, an **absolute** face-pyramid
+volume. A 22.0035 um cell's pyramids are about 1.8e-15, which is 56x below it. So every face of a
+geometrically perfect mesh gets flagged, you get `Extruding 0 out of N faces (0%)`, then
+`Finished meshing with 12800 illegal faces`, then checkMesh says `Mesh OK`, and **it exits 0**.
+
+Set `minVol 1e-20` and coverage goes straight to 100%. Ablation says `minVol` is necessary and
+sufficient. Do not also clear `minTetQuality`: it is dimensionless and scale-invariant so it was
+never the blocker, and clearing it disables inverted-cell detection.
+
+The same flag means **any `checkMesh -meshQuality` report we hold that used the shipped dict is
+worthless**, because it would have reported all 47.7M faces of the production mesh as failing.
+That is a defect in our delivery evidence and it has nothing to do with layers.
+
+#### Two things that decide whether it works on our part
+
+A 2:1 refinement transition sitting **on** the layer patch is fatal: coverage collapsed to 2.96%
+and three rescue attempts all went to 0%, while the identical transition one cell away gave 100%.
+Our wetted surface is 95.2% at 22 um, 3.5% at 176 um and 0.6% at 88 um with a 4x cliff inside 0.5
+mm, so this has to be measured before committing. If it bites, split the interface by cell level
+in `topoSet` and layer only the fine zone.
+
+Fewer and thicker beats more and thinner, which is the opposite of normal practice: 6 layers at 1
+um gave 24% coverage, 4 layers at 4 to 8 um gave 100%. `maxThicknessToMedialRatio 0.3` caps the
+stack at 15.11 um per side in our channel.
+
+Memory is the real constraint, measured at 1.61 kB per output cell. Whole mesh is about 805 GB and
+impossible. Post-split fluid region is about 251 GB, which wants a 512 GB box.
+
+### refineWallLayer, which I had half-proved before the sweep landed
+
+Same question from the other direction, and the measurement I was in the middle of when the
+research came back. `refineWallLayer` has no `-region` option in v2412, so the region has to be
+lifted into its own case and put back.
+
+On a fat 4 mm channel, three passes:
+
+| pass | first cell centre | cells | interface faces |
+|---|---|---|---|
+| 0 | 100.00 um | 10,250 | 3,200 |
+| 1 | 50.00 um | 13,178 | 3,200 |
+| 2 | 25.00 um | 16,106 | 3,200 |
+| 3 | 12.50 um | - | 3,200 |
+
+Then on a 100.76 um slot at 22.0035 um cells, 4.5 cells across, which is the real hard case:
+
+| pass | cells | max AR | non-ortho | checkMesh | interface |
+|---|---|---|---|---|---|
+| 0 | 1,120 | 1.56 | 0.06 | OK | 720 |
+| 1 | 1,760 | 4.00 | 10.94 | OK | 720 |
+| 2 | 2,400 | 4.80 | 20.69 | OK | 720 |
+| 3 | 3,040 | 8.62 | 24.09 | OK | **720** |
+
+The slot's open ends went 112 to 304 faces, which is expected and harmless: those are the
+`port_a`/`port_b` equivalent, not the coupling. The coupled interface never moved. Total mesh
+volume came back bit-identical across passes, so not a single point moves and the interface cannot
+drift. That makes it the lowest-geometric-risk option we have.
+
+Two measurements downgrade it against snappy. Staircase corner cells owning two interface faces
+get only one cut, so after three passes 7.5% of the wetted area was completely unrefined and the
+first-cell spread was 26x against snappy's 2.75x. And it is not parallel-safe: its `cellCuts`
+constructor is the one of six that never calls `syncProc`, and a 4-rank run returned `Mesh OK`
+while being unsound by construction. Never run it under mpirun.
+
+### Refuted, so nobody re-attempts them
+
+| route | why it is dead |
+|---|---|
+| cfMesh `boundaryLayers` during cartesianMesh | the guide states it verbatim in section 4.5. Our `Cannot find any patch names matching coolant.*` is the documented design, not a bug |
+| cfMesh `generateBoundaryLayers` post-split | calls `meshOptimisation()` unconditionally with nothing locked, and `untangleMeshFV` has an unconstrained boundary-vertex pass. It would silently drift the fluid interface off the solid one. Both sides still report equal face counts, `nearestPatchFace` still finds a nearest face, the solver still runs, and the conjugate flux is quietly non-conservative |
+| `snappyMultiRegionHeater` as a precedent | ships with `addLayers false` and its layers block is an external box patch |
+| meshing the regions separately, coupling non-conformally | measured AMI weights 0.931 to 1.345 source and 0.599 to 1.025 target at perfect alignment and matched cell size, so +34%/-40% local flux error replacing exactly zero |
+
+### The claim that overturned the premise, and what I measured myself
+
+The sweep said the dominant error is not the wall gradient at all. 100.76 um is 4.579 cells, so
+every channel snaps to a whole number of cells. I had measured channel gaps before by raycasting
+the CAD, which can only ever hand back the CAD's own number, so this had gone unseen.
+
+Measured on the delivered 413.27M cell `cbox2`, out of the boundary index sidecar, with real
+outward normals from each face's winding. 284,906 gaps in a 200 um slab at mid channel depth.
+Every face in the slab was an axis-aligned quad, so no approximation enters.
+
+| | CAD | delivered mesh |
+|---|---|---|
+| median channel width | 100.04 um | 110.02 um |
+| mean channel width | 100.7 um | 103.14 um |
+| 93.7% of channels lie in | 96 to 104 um | **nothing lies there** |
+| widths present | one population, core CV 0.89% | 88.014 (36.1%), 110.017 (52.7%), 132.021 (6.4%) |
+| distance from a whole number of cells | 0.437 cells | **0.0008 cells** |
+| w^3 conductance spread, p95/p5 | 1.09x | **3.38x** |
+
+The conjugate interface lies on existing octree cell faces, because `splitMeshRegions` cuts along
+cell faces and there is no surface fitting on an internal surface. So the mesh cannot represent
+100 um at all. The nearest it has are 88.014 and 110.017, and which one a channel gets depends on
+nothing but where it falls on the grid.
+
+Slot flow goes as width cubed. 88.014 um carries 0.673x the flow of a 100.04 um channel and
+110.017 um carries 1.331x, so two channels the CAD made identical come out 1.98x apart.
+
+The mean is only 2.4% off, so this is not a bias we could correct afterwards. It is scatter, and
+it is about three times the channel-to-channel variation the part's own manufacturing has, in a
+topology-optimised network whose entire purpose is controlling flow split.
+
+#### The array is uniform, so it is free to fix
+
+| | median | CV within 6 um of the median | share in that band |
+|---|---|---|---|
+| channel | 100.04 um | 0.89% | 94.5% |
+| fin | 101.25 um | 0.40% | 94.8% |
+| pitch | **201.263 um** | 0.46% | 94.5% |
+
+Channel and fin are each almost exactly half the pitch, so an **even** number of cells per pitch
+divides evenly into both. Odd counts are useless, the channel lands on x.47 cells.
+
+| pitch | dx | maxCellSize | channel | error | cells |
+|---|---|---|---|---|---|
+| 8 cells | 25.1578 um | **402.525** | exactly 4 cells | +0.6% | about 276M |
+| 10 cells | 20.1263 um | **322.020** | exactly 5 cells | +0.6% | about 540M |
+| today | 22.0035 um | 352.056 | 4 or 5 or 6 | -12.0 / +10.0 / +32.0% | 413M |
+
+Same octree depth either way, so no new label or buffer risk. This supersedes the sweep's own
+405.540 and 324.432, which assumed a 202.77 um pitch; the measured pitch is 201.263 um.
+
+### Three things I had told Rehaan that were wrong
+
+**"8.7% low on Nusselt."** Wrong in sign and in subject. The 2/N^2 law is exact but it governs
+flow rate: `u_FV/u_exact = 1 + 2/N^2`, confirmed to five decimals. At 4.579 cells that is +9.5% on
+flow, so fRe is -10.1% and pressure drop is about 10% low. Nusselt is about 4% **high**, not low,
+because no-slip forces the second derivative of T to zero at the wall so the two-point gradient
+error loses its leading term. Chip-to-coolant dT is only about 1.4% off. The mesh is close to
+right on the quantity the customer most likely cares about, and shipping a -9% Nu number would
+have been wrong in sign, magnitude and subject, and would have pointed them at the wrong fix.
+
+**Adding layers alone would have made the answer worse.** The staircase inflates wetted area +7.8%
+overall and +11.6% on the channels, which currently cancels most of the gradient error: 1.116 x
+0.988 is about +10% on Q. Fix the gradient without fixing the area and Q moves from about +10% to
+about -5%. Nobody should do one without the other.
+
+**The `WM_LABEL_SIZE=64` rebuild is a regression, not an unlock.** Our own `BUFFER_PROBE.txt` from
+5 November already refuted the overflow diagnosis: the error is `MPI_ERR_BUFFER`, and
+`MPI_Buffer_attach` takes an int so `MPI_BUFFER_SIZE` caps near 2^31 bytes, which `WM_LABEL_SIZE`
+cannot touch. Worse, the octree cube struct is 16 bytes at int32 and 32 at int64, so a 64-bit
+build **halves** the box ceiling and would leave the mesh we ship today at 1.91 GB against a
+2.147 GB hard cap, an 11% margin on something that works. `ROOT_PROBE.txt`, same day, has the free
+alternative: halve the octree root from 0.360505 to 0.180253 m and microchannels +5 lands on level
+14 instead of 15. The part is 177.500 mm in x so it fits. We had the refutation and the fix on
+disk and were still planning the rebuild.
+
+One more worth saying out loud: **700M cells and the 32-bit face-label wall are the same number.**
+At our measured 3.02 faces per cell, 2^31 faces is about 711M cells. The customer's own 700M
+figure sits within 2% of overflowing our build. Our real ceiling is 600 to 650M and we should tell
+them that rather than quoting theirs back.
+
+And y+ is meaningless here. At Dh 187 um and Re 34 to 800 there is no boundary layer and no log
+layer; the thermal profile fills the channel and the viscous scale is the half-channel. Measured
+on a validated conjugate unit cell at matched cell count: uniform 8 cells is +2.02% on Nu,
+geometric r=1.3 is -1.32%, r=1.6 is -4.05%. Aggressive wall clustering is measurably **worse**
+than uniform at the same cost. The only near-wall treatment that helped was mild banding, one
+octree level in a one-cell band, at -0.57%, which is ordinary local refinement cfMesh already
+does.
+
+### What we are going to do, in order
+
+**1. Nothing. The rank-1 check is already done.** It was "histogram the per-channel width on the
+mesh we have", and that is the measurement above. Confirmed, so rank 2 is justified.
+
+**2. Retune `maxCellSize` for pitch commensurability and tighten the chip band.** Two numbers, one
+re-mesh. `322.020` for 5 cells per channel everywhere, which is finer than what we shipped and
+lands around 540M, inside the ceiling. `402.525` if cell count turns out to be binding, at about
+276M. Separately the chip entry in `couple_box.sh` is an 88 um band 3.6 mm deep around roughly
+12,000 mm2, about 63M cells reaching 3.6 mm into the plate under the chip; tightening it to 0.36
+mm recovers most of that. Our own generator comment already suspected it. This is the only action
+that improves fidelity and reduces cell count at once.
+
+**3. Retire the 9% claim internally and publish the measured error budget instead.** chip-to-coolant
+dT -1.4%, Nu +4.4% high, fRe -10.1% so dp about 10% low, per-channel flow scatter 3.38x today and
+1.0x after step 2, staircase wetted area +7.8% and +11.6% with a partial cancellation giving Q
+about +10%. Any Nu we quote has to name its thermal BC: the four candidates span 2.907 to 7.214
+for this aspect ratio, a factor of 2.5, which dwarfs every mesh error we are discussing.
+
+**4. Fix `system/meshQualityDict` to `minVol 1e-20` and re-run checkMesh on every region.** Also
+correct every document quoting a 50 degree quality bar to the real 70 from
+`COUPLED_MESH_DELIVERY.md`. Our measured max is 51.46, so the headline "zero faces over 50 out of
+47.7M" was overstating a number to ourselves. Then put three assertions in the pipeline
+permanently, because every failure in this family exits 0: grep for `faces with face pyramid
+volume <` returning zero, grep for `does not match any patch` returning nothing, and an explicit
+comparison of the two interface patch face counts.
+
+**5. Gate the layers on a one-hour subset test before spending a production run.** Carve two 2M
+cell subsets of the real fluid region with `topoSet`/`subsetMesh`, one straddling the 4x
+refinement cliff at x about 55 mm including a branching junction, one entirely inside the 22 um
+zone. Read four lines: extrusion percentage, interface face count and integrated area unchanged to
+1e-6, checkMesh OK with nothing over 70 degrees, zero polyhedra on all-hex input. Kill the route if
+the in-zone block itself comes in under 60%, because that means the branching junctions are
+defeating the medial axis.
+
+**6. Measure the junction-to-junction segment length distribution from `PlateAndChip.step`.** This
+is the last large unknown and it swings the answer by 40 points. Segment-averaged Nu error at 4.6
+cells is about -1% on a 2.45 mm segment, -10% at 0.73 mm, -25% at 0.24 mm and -43% at 0.07 mm, and
+a branching plate restarts the thermal layer at every junction. The slot's thermal entrance length
+is 1.4 to 5.7 mm. Note the familiar `0.05*Re*Pr*Dh` rule is the circular-tube rule and
+overestimates this slot by 4.3 to 6.3x; it would have told us the flow never develops over 55 mm
+when the truth is a few millimetres.
+
+**7. Cancel the `WM_LABEL_SIZE=64` rebuild.** It is a decision, not work.
+
+Strategic, not this quarter: a Gmsh 2.5D swept route was proven on the real dimensions including a
+branching T-junction. Two 2D BoundaryLayer fields on the shared wall curves, each excluding the
+other material's surface, then a graded extrude through the 1499.9 um depth. Measured 2.0 um first
+cells with grading on both sides of a conformal internal interface, zero duplicated nodes, hexes
+and prisms only, two Physical Volumes that `gmshToFoam` turns into cellZones. 10,137 3D cells per
+mm2 of footprint against about 46,900 for the equivalent band of ours, so 4.6x lighter with an 11x
+finer wall cell. It is the only route that kills the staircase outright rather than reducing it,
+because the walls follow the CAD curves. `gmshToFoam` is ASCII MSH2 only, first order only, and
+serial, with a reported failure near 400M elements. Precondition is checking the channels are
+genuinely prismatic in z, which our 1499.9 um measurement makes likely but does not prove; if they
+taper, and Corintis's own patent claims 1 to 10 degrees of DRIE sidewall taper, the extrusion needs
+a scaling law.
+
+### The reframing, which is also the commercial story
+
+Nobody in the published literature meshes a whole plate. The largest microchannel conjugate mesh
+found anywhere in the sweep is 24M cells, a single channel at 200 cells per Dh. Device-level meshes
+are 1 to 12M. Unit cells are 40k to 500k. Ours is about 17x the largest published and 1000x
+typical.
+
+Corintis themselves state in their own methods that a full 3D model of the network "would involve
+tens of millions of degrees of freedom, making the simulation computationally expensive, and the
+optimization unfeasible", and they design with a 2.5D depth-averaged two-layer FEM model on linear
+triangles with an assumed parabolic out-of-plane profile. Published error for that class of model
+against full 3D is 7.27 to 24.8% on Nusselt and 12.6 to 16.3% on inlet velocity.
+
+So our mesh, even at 4.6 cells across, is plausibly more accurate than the tool that designed the
+part. That is a better thing to say than "we added boundary layers".
+
+### What this cost to find
+
+The capability question was answerable in an afternoon and had been for weeks: `snappyHexMesh`,
+`refineWallLayer`, `refineMesh` and `generateBoundaryLayers` have all been in `hexera-mesh:2412`
+the whole time, and the one line that mattered is in the shipped annotated dict. Our institutional
+"layers do not work here" came from two real failures on disk, `t3work/C2/log.snappyHexMesh` at
+28.7% coverage and `t3work/LM/log.layers` finishing with 439 illegal faces, but both were the
+ordinary castellate-snap-addLayers route on snapped geometry, which is a different operation from
+addLayers-only on an existing Cartesian mesh. We generalised from the wrong experiment.
+
+And the physics question was answerable with an hour of a 1D solver, which would have said that
+wall clustering makes laminar Nu worse at matched cost, before sixteen research angles were
+commissioned to find out how to do the clustering.
