@@ -57,9 +57,9 @@ it cheaper at the same time.
 |---|---|---|
 | `maxCellSize` | 352.056 um | **322.020 um** |
 | finest cell | 22.0035 um | 20.1263 um |
-| cells per channel | 4 / 5 / 6 | exactly 5 |
+| cells per channel | 4 / 5 / 6 | 5 for 85% of them, measured, see the result below |
 | channel width in the mesh | 88.014 / 110.017 / 132.021 um | 100.631 um, +0.6% |
-| flow spread | 3.38x | none |
+| flow spread | 3.38x | 1.73x measured, not none |
 | octree depth | level 14 | level 14, unchanged |
 
 Why one number does this: the coolant boundary lies on octree cell faces, so a channel must be a
@@ -79,9 +79,14 @@ couple_box.sh cbox2b 0.000322020 1 4 2 1 8 12
 | cells | about 496M, nearer 440M with the chip band tightened | cells go as h^-2.038, measured |
 | time | about 2.2 h | scaled off `cbox2`'s own stage table, see [MESH_TIME.md](MESH_TIME.md) |
 
-**Gate.** Re-run the channel histogram. Every gap must be exactly 5 cells with zero spread.
-Non-orthogonality and skewness must not move, because the octree depth has not changed. Interface
-face counts must be equal on both sides.
+**Gate, and what it returned.** Run on 6 November as `cbox2b`. Non-orthogonality, skewness and
+the interface face counts all held. The channel histogram did not: 85.00% of channels came out at
+exactly 5 cells rather than all of them, and "zero spread" was my prediction, not the result. The
+measurement and the cause are in the phase 1 result at the end of this document.
+
+I also did **not** tighten the chip `refinementThickness`, deliberately: the pitch fix is the proven
+change and the chip trim's thermal cost is unmeasured, so I changed one variable. At 506M cells the
+band costs nothing we need.
 
 ## Phase 2: boundary layers and the staircase, together
 
@@ -345,3 +350,155 @@ the fuse problem is worth one more attempt, because the fitted skin is the only 
 it and we abandoned it on an uncontrolled comparison.
 
 Run this alongside phase 0a and 0b. It changes nothing about phase 1.
+
+## Added 2026-11-06 evening: phase 1 is built, and the gate was only half met
+
+`cbox2b`. 506,362,044 cells, 3.00 h, Mesh OK on all four regions. Same surfaces, same octree
+depth, same ranks and threads as the mesh we shipped. `maxCellSize` 352.056 to 322.020 um was the
+only change I made.
+
+### The gate, line by line
+
+| gate | asked for | returned | |
+|---|---|---|---|
+| channel width | every gap exactly 5 cells, zero spread | 85.00% at exactly 5 cells | **not met** |
+| non-orthogonality | must not move | 49.45 coolant, 50.38 plate | met |
+| skewness | must not move | 1.657 coolant, 1.654 plate | met |
+| interface faces | equal both sides | 25,685,941 both sides | met |
+| cells | about 496M | 506,362,044 | met, 2.1% over |
+
+I wrote "zero spread" and that was wrong. The reason is in the next two sections and it is worth
+knowing, because it is the thing that limits any grid-aligned mesh of this part.
+
+### What the re-mesh did buy
+
+Measured on 791,205 channel gaps in the microchannel array, with the manifold and plenum channels
+excluded by width band, on both meshes with the same script.
+
+| the ~100 um channel array | the part | shipped `cbox2` | new `cbox2b` |
+|---|---|---|---|
+| median width | 100.04 um | 110.000 um | **100.630 um** |
+| error on the median | | +9.96% | **+0.59%** |
+| mean width | 100.7 um | 103.133 um | 102.716 um |
+| standard deviation | | 12.986 um | **7.509 um** |
+| coefficient of variation | 0.89% | 12.59% | **7.31%** |
+| share at the right width | 93.7% | 55.39% | **85.00%** |
+| widths the grid can produce | one population | 88.0 / 110.0 / 132.0 | 80.5 / 100.6 / 120.8 |
+| flow spread, p95/p5 of w^3 | 1.09x | 3.375x | **1.730x** |
+
+The three-way split is gone. The width is right to 0.6% instead of 10% wide, and the
+channel-to-channel flow scatter is halved. That was the point of the run and it worked.
+
+### Why 85% and not 100%, which is a property of the part
+
+Commensurability fixes the width a channel is aiming at. It does not fix where the channel sits on
+the grid. Each wall snaps to the nearest lattice plane independently, so a channel comes out at
+5 cells only while both walls round the same way.
+
+| | measured |
+|---|---|
+| channel width variation in the CAD | CV 0.89%, so 0.045 of a cell |
+| pitch variation in the CAD | CV 0.46%, so 0.046 of a cell per pitch |
+| tolerance to stay at 5 cells | half a cell across the pair of walls |
+| distance of a meshed wall from a lattice plane | median 0.0016 cells |
+
+Width variation alone is eleven standard deviations inside the tolerance, so it is not the cause.
+The pitch wander is, because it moves the grid phase along a row of sixty pitches and the phase
+only has to cross one half-plane for a channel to pick up or drop a cell.
+
+Finer cells would help this, which is the one place in this whole plan where finer cells help: at
+ten cells per channel the same wobble is half as large relative to the tolerance. The next even
+pitch is 12 cells at 16.772 um, and that is 775M cells on the measured scaling, over the ceiling.
+So 20.1263 um is the practical floor and 85% is what a grid-aligned mesh of this part gives.
+
+### The residual is lopsided, and that part is fixable
+
+| | cells per channel, mesh | cells per channel, CAD | bias |
+|---|---|---|---|
+| `cbox2` at 22.0035 um | 4.6871 | 4.5766 | +0.1105 cells, +2.43 um |
+| `cbox2b` at 20.1263 um | 5.1036 | 5.0034 | +0.1002 cells, +2.02 um |
+
+12.67% of channels come out a cell too wide against only 2.33% too narrow. Both meshes put the
+mean channel the same tenth of a cell too wide, so this is not noise and not a function of cell
+size. The mesh is claiming about 2 um of fin as coolant on every channel, the same amount each
+time, which is what a one-sided inclusion test at the surface would do.
+
+The coolant volume says the same thing independently, against the volume of the CAD shell itself:
+
+| | coolant volume | against CAD |
+|---|---|---|
+| CAD shell, `clean_fluid.stl` | 53,692.22 mm3 | |
+| `cbox2` | 53,419.40 mm3 | -0.51% |
+| `cbox2b` | 55,102.60 mm3 | **+2.63%** |
+
+So the re-mesh made the width right and the volume slightly worse. Both are measured and both
+matter, the width for flow split and the volume for pressure drop and residence time.
+
+**The lever.** Offsetting the coolant surface inward by about 1 um would move the mean onto 5.000
+cells, collapse the 6-cell group and take the volume back toward zero error. It costs nothing to
+mesh. I have not done it, because it changes how we represent the geometry rather than how we grid
+it, and that is a decision rather than a fix.
+
+### Full quality, both meshes
+
+| region | cells `cbox2` | cells `cbox2b` | non-ortho max | skewness max | aspect max | Mesh OK |
+|---|---|---|---|---|---|---|
+| coolant | 68,806,800 | 82,529,515 | 49.31 to 49.45 | 1.651 to 1.657 | 3.738 to 3.708 | both |
+| plate | 271,759,108 | 327,126,204 | 51.46 to 50.38 | 1.647 to 1.654 | 3.722 to 3.697 | both |
+| chip | 24,173,140 | 31,012,960 | 0 to 0 | 0 to 0 | 1.0014 to 1.0014 | both |
+| air | 48,534,275 | 65,693,365 | 54.19 to 50.12 | 1.435 to 1.437 | 5.957 to 5.427 | both |
+| total | 413,273,323 | **506,362,044** | | | | |
+
+Nothing got worse. The plate and the air both improved, which is the octree depth being unchanged
+while the far field is now resolved slightly finer relative to the part.
+
+### Three things I checked because they looked like defects, and are not
+
+**The coolant is one piece.** `checkMesh` says three regions. `splitMeshRegions -detectOnly` says
+82,529,513 cells, one cell, one cell. Two stranded cells in 82.5 million. The shipped mesh had a
+clean one-piece coolant, so the two strays are new, and they are the only thing in this run that
+is worse than what we shipped.
+
+**It is not our surface.** The earlier four-piece coolant was traced to a two-piece `fluid.stl` of
+ours. That does not apply here. `cb_fluid.stl` is byte for byte the verified clean surface: 52,466
+triangles, one connected shell, closed on every edge, 53,692.2192 mm3. I checked rather than
+assumed, because I had already assumed wrong about a surface once on this part.
+
+**The chip being two regions is correct.** `cb_chip_fit.stl` is genuinely two closed bodies, 68 and
+28 triangles, 3,307.59 and 12,987.26 mm3. The mesh split 6,388,480 and 24,624,480 cells, the same
+ratio as the volumes. The shipped mesh did the same.
+
+The partition itself closes: the plate envelope minus the coolant is 222,672.07 mm3 and the meshed
+plate region is 222,527 mm3, 0.065% apart.
+
+### Cell count scales as h^-2.28 on this part
+
+| basis | predicted | actual | error |
+|---|---|---|---|
+| h^-2.038, measured `probe_edge` to `ws_fitted` | 496M | 506,362,044 | -2.1% |
+| dx^-3, as [MESH_QUANTISATION.md](MESH_QUANTISATION.md) first wrote it | 540M | 506,362,044 | +6.6% |
+| fitted on these two runs | | | h^-2.2795 |
+
+Use 2.28 for this part from now on. It sits between a surface count and a volume count because
+most of the cells are in banded refinement around a surface, not filling a volume.
+
+### Timing, against the mesh we shipped
+
+| stage | `cbox2` | `cbox2b` | ratio |
+|---|---|---|---|
+| cartesianMesh | 652 s | 799 s | 1.23 |
+| topoSet | 467 s | 575 s | 1.23 |
+| splitMeshRegions | 817 s | 869 s | 1.06 |
+| checkMesh in parallel, four regions | 515 s | 621 s | 1.21 |
+| reconstruct, three regions | 4,179 s | 4,857 s | 1.16 |
+| checkMesh in serial, three regions | 2,728 s | 3,075 s | 1.13 |
+| **total** | **9,359 s, 2.60 h** | **10,796 s, 3.00 h** | **1.15** |
+
+22.5% more cells for 15% more time. The serial tail is still the whole problem: reconstruct plus
+serial checkMesh is 7,932 s of the 10,796, which is 73%. Meshing is 7.4%.
+
+### What this leaves open
+
+- The 1 um surface offset above, which is a geometry decision and needs a call.
+- Phase 0a and 0c are untouched and still free.
+- Phase 2a, the one-hour layer gate, now has a mesh to carve its subsets out of.

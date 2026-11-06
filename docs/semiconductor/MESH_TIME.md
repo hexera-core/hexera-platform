@@ -166,3 +166,40 @@ The right basis is the table above.
    +3 estimate was 516M counting the chip body and 941M counting the air shell it also refines.
 6. **Do not trust a small reproducer for a stretch or a domain change.** Both scaleY 4 and the
    cuboid domain looked good small and were refuted on the real part.
+
+## What the next run actually took, measured 6 November
+
+`cbox2b` at `maxCellSize 322.020`. The prediction above was 496M cells and about 2.2 h.
+
+| | predicted | actual |
+|---|---|---|
+| cells | about 496M | 506,362,044 |
+| to a checked four-region mesh | 2,940 s = 0.82 h | 2,864 s = 0.80 h |
+| reconstruct plus serial checkMesh | 4,890 s = 1.36 h | 7,932 s = 2.20 h |
+| **total** | **about 2.2 h** | **10,796 s = 3.00 h** |
+
+Stage by stage against the mesh we shipped:
+
+| stage | `cbox2` 413M | `cbox2b` 506M | ratio | cells ratio |
+|---|---|---|---|---|
+| cartesianMesh | 652 s | 799 s | 1.23 | 1.225 |
+| topoSet | 467 s | 575 s | 1.23 | |
+| splitMeshRegions | 817 s | 869 s | 1.06 | |
+| checkMesh, parallel, four regions | 515 s | 621 s | 1.21 | |
+| reconstruct, three regions | 4,179 s | 4,857 s | 1.16 | |
+| checkMesh, serial, three regions | 2,728 s | 3,075 s | 1.13 | |
+| **total** | **9,359 s, 2.60 h** | **10,796 s, 3.00 h** | **1.15** | |
+
+**Where the 2.2 h prediction went wrong.** It was built on `cbox2`'s reconstruct and the three
+serial checkMesh runs being 4,079 s. In `cbox2`'s own stage table those two together are 6,907 s,
+and I scaled only the reconstruct. The front half was right to 2.6%: 0.80 h against 0.82 h
+predicted. The error is entirely in the tail and it is an arithmetic error of mine, not a
+behaviour change.
+
+**The 1.15x total for 1.225x the cells is the real headline.** Every stage scales sub-linearly or
+with the cells, nothing blew up, and the mesher is still only 7.4% of the run. Reconstruct plus
+serial checkMesh is 7,932 s of 10,796, which is 73%. That tail is the only thing worth attacking
+and it is unchanged from what this document already says about it.
+
+A corrected forecast for anything larger: take the front half as 0.80 h scaled by cells, and the
+tail as 2.20 h scaled by cells. Both were measured on these two runs rather than on one.

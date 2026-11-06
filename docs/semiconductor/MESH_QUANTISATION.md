@@ -63,7 +63,7 @@ amplitude but never removes the area inflation.
 
 ## Method
 
-`scratchpad/chan_quant.py` reads the 21,708,529 `fluid_to_solid` face centres and points out of
+`devtools/semiconductor/chan_quant.py` reads the 21,708,529 `fluid_to_solid` face centres and points out of
 the boundary index sidecar, recovers each face's outward normal from its winding, keeps the
 axis-aligned x-normal faces in a 200 um slab at mid channel depth, and pairs each inward-facing
 wall with the next outward-facing one. 284,906 gaps. Every face in the slab was an axis-aligned
@@ -75,3 +75,56 @@ the network.
 
 I had measured channel gaps once before, by raycasting the CAD. That can only ever return the
 CAD's own width, which is why this went unnoticed until now.
+
+## Measured 6 November on the re-meshed part
+
+I re-meshed at `maxCellSize` 322.020 um, the pitch-10 row of the table above, and measured the
+same way. `cbox2b`, 506,362,044 cells, 3.00 h.
+
+| the ~100 um channel array, 791,205 gaps | CAD | `cbox2` at 22.0035 um | `cbox2b` at 20.1263 um |
+|---|---|---|---|
+| median width | 100.04 um | 110.000 um | **100.630 um** |
+| error on the median | | +9.96% | **+0.59%** |
+| widths present | one population | 88.0 / 110.0 / 132.0 | 80.5 / 100.6 / 120.8 |
+| share at the right width | 93.7% | 55.39% | **85.00%** |
+| coefficient of variation | 0.89% | 12.59% | **7.31%** |
+| w^3 flow spread, p95/p5 | 1.09x | 3.375x | **1.730x** |
+
+The prediction in the table above was "exactly 5 cells everywhere". That is not what happened.
+85.00% came out at exactly 5 cells, 12.67% a cell wide and 2.33% a cell narrow.
+
+**Why.** An even cell count per pitch fixes the width a channel is aiming at. It does not fix where
+the channel sits on the grid, and each wall snaps to its nearest lattice plane on its own. The
+pitch has CV 0.46%, which is 0.046 of a cell per pitch, so the grid phase wanders along a row of
+sixty pitches and only has to cross one half-plane for a channel to gain or lose a cell. Channel
+width variation is not the cause: at CV 0.89% it is eleven standard deviations inside the half-cell
+tolerance.
+
+Finer cells do help this one, unlike the staircase. At ten cells per channel the same wander is
+half as large against the same tolerance. The next even pitch is 12 cells at 16.772 um and that is
+775M cells on the measured h^-2.28 scaling, over the ceiling. So 20.1263 um is the floor and 85% is
+what a grid-aligned mesh of this part gives.
+
+**The residual is one-sided, and that part is not the grid.** Both meshes put the mean channel the
+same tenth of a cell too wide: 5.1036 cells against 5.0034 in the CAD at 20.1263 um, 4.6871 against
+4.5766 at 22.0035 um. That is about 2 um of fin counted as coolant on every channel, the same
+amount at either cell size. The coolant volume agrees independently, against the CAD shell at
+53,692.22 mm3: `cbox2` came in at 53,419.40 mm3, which is -0.51%, and `cbox2b` at 55,102.60 mm3,
+which is +2.63%. So fixing the width made the volume slightly worse.
+
+Offsetting the coolant surface inward by about 1 um would move the mean onto 5.000 cells, collapse
+the wide group and take the volume error back to roughly zero, at no meshing cost. It changes how
+we represent the geometry rather than how we grid it, so it is a decision and not a fix I have
+taken.
+
+**Cell count.** 506,362,044 against 413,273,323 over a 1.0933x cell-size ratio fits h^-2.2795. The
+dx^-3 used above predicted 540M and was 6.6% high.
+
+**Method.** the 5 November copy of this script was lost from the scratchpad, so I rewrote it, put it in the
+repo as `devtools/semiconductor/chan_quant.py` where it cannot be lost again, and ran the rewrite
+against the shipped mesh before trusting it on the new one. It returned 88.001 / 110.000 / 132.002 um at
+36.09 / 52.68 / 6.34% and a w^3 spread of 3.383x, which reproduces the numbers at the top of this
+file, so the same script on the new mesh is comparable. It reports twice, all gaps and then the microchannel band
+only, so the wider manifold and plenum channels, which are 4.9% and 7.4% of gaps on the two meshes,
+are not counted as scatter. `devtools/semiconductor/stl_shells.py` is the surface-side companion
+that counts shells and checks closedness.

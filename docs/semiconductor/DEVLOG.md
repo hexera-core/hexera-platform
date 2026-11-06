@@ -4756,3 +4756,128 @@ addLayers-only on an existing Cartesian mesh. We generalised from the wrong expe
 And the physics question was answerable with an hour of a 1D solver, which would have said that
 wall clustering makes laminar Nu worse at matched cost, before sixteen research angles were
 commissioned to find out how to do the clustering.
+
+## 2026-11-06, evening: the commensurate re-mesh is built and the channel fix is 85%, not 100%
+
+`cbox2b` on `corintis-farfield`, `n2-highmem-96`. 506,362,044 cells, 3.00 h, Mesh OK on all four
+regions. One change from the mesh we shipped: `maxCellSize` 352.056 to 322.020 um, so the finest
+cell is 20.1263 um and the 201.263 um channel-plus-fin pitch is exactly ten cells. Same surfaces,
+same octree depth, same 8 ranks by 12 threads, same scaleY 3.
+
+### The result
+
+| the ~100 um channel array, 791,205 gaps | CAD | `cbox2` | `cbox2b` |
+|---|---|---|---|
+| median channel width | 100.04 um | 110.000 um | 100.630 um |
+| error on the median | | +9.96% | +0.59% |
+| widths present | one population | 88.0 / 110.0 / 132.0 | 80.5 / 100.6 / 120.8 |
+| share at the right width | 93.7% | 55.39% | 85.00% |
+| coefficient of variation | 0.89% | 12.59% | 7.31% |
+| w^3 flow spread p95/p5 | 1.09x | 3.375x | 1.730x |
+
+The three-way split is gone, the width is right to 0.6% instead of 10% wide, and the
+channel-to-channel flow scatter is halved.
+
+**I predicted every channel would be exactly 5 cells with zero spread and that was wrong.** 85.00%
+at 5 cells, 12.67% a cell wide, 2.33% a cell narrow. Commensurability fixes the width a channel is
+aiming at, not where it sits on the grid, and each wall snaps to its nearest lattice plane on its
+own. The pitch has CV 0.46%, which is 0.046 of a cell per pitch, so the phase wanders along a row
+of sixty pitches and only has to cross one half-plane for a channel to gain or lose a cell. Channel
+width variation is not the cause: CV 0.89% is eleven standard deviations inside the half-cell
+tolerance.
+
+This is the one place where finer cells would help, unlike the staircase, which is scale-invariant.
+The next even pitch is 12 cells at 16.772 um and that is 775M cells on the measured scaling, over
+the ceiling. So 20.1263 um is the floor and 85% is what a grid-aligned mesh of this part gives.
+
+### The residual is one-sided, and that is a different defect
+
+| | cells per channel, mesh | cells per channel, CAD | bias |
+|---|---|---|---|
+| `cbox2` at 22.0035 um | 4.6871 | 4.5766 | +0.1105 cells, +2.43 um |
+| `cbox2b` at 20.1263 um | 5.1036 | 5.0034 | +0.1002 cells, +2.02 um |
+
+Both meshes put the mean channel the same tenth of a cell too wide, at either cell size, so it is
+not noise. The coolant volume agrees independently against the CAD shell at 53,692.22 mm3:
+`cbox2` 53,419.40 mm3, -0.51%; `cbox2b` 55,102.60 mm3, +2.63%. Fixing the width made the volume
+slightly worse. An inward surface offset of about 1 um would fix both at no meshing cost, and I
+have not done it because it changes how we represent the geometry rather than how we grid it.
+
+### Quality, every region, both meshes
+
+| region | cells `cbox2` | cells `cbox2b` | non-ortho max | skewness max | aspect max |
+|---|---|---|---|---|---|
+| coolant | 68,806,800 | 82,529,515 | 49.31 to 49.45 | 1.651 to 1.657 | 3.738 to 3.708 |
+| plate | 271,759,108 | 327,126,204 | 51.46 to 50.38 | 1.647 to 1.654 | 3.722 to 3.697 |
+| chip | 24,173,140 | 31,012,960 | 0 to 0 | 0 to 0 | 1.0014 to 1.0014 |
+| air | 48,534,275 | 65,693,365 | 54.19 to 50.12 | 1.435 to 1.437 | 5.957 to 5.427 |
+
+Interface faces match on both sides, 25,685,941 coolant to plate and 424,080 chip to plate. Nothing
+got worse; the plate and the air improved.
+
+### Three apparent defects, all resolved
+
+1. **`checkMesh` says the coolant is three regions.** `splitMeshRegions -detectOnly` says
+   82,529,513 cells, one cell, one cell. Two stranded cells in 82.5 million. The shipped mesh had a
+   clean one-piece coolant, so these two strays are the only thing in this run worse than what we
+   shipped.
+2. **It is not our surface.** I had earlier traced a four-piece coolant to a two-piece `fluid.stl`
+   of ours. That does not apply here. `cb_fluid.stl` is byte for byte the verified clean surface:
+   52,466 triangles, one connected shell, closed on every edge, 53,692.2192 mm3. I measured it
+   rather than assuming, having already assumed wrong about a surface on this part once.
+3. **The chip being two regions is correct.** `cb_chip_fit.stl` is genuinely two closed bodies, 68
+   and 28 triangles, 3,307.59 and 12,987.26 mm3, and the mesh split 6,388,480 and 24,624,480 cells
+   in the same ratio. The shipped mesh did the same.
+
+The partition closes: plate envelope minus coolant is 222,672.07 mm3, meshed plate region is
+222,527 mm3, 0.065% apart.
+
+### Two numbers in the earlier docs were wrong and are now corrected
+
+**`cbox2` took 2.60 hours, not 1.81.** Its own stage table totals 9,359 s. The 1.81 h figure
+counted the reconstruct but not the three serial `checkMesh` runs that follow it. That error
+propagated into the 2.2 h forecast for this run, whose front half was right to 2.6% (2,864 s
+against 2,940 s predicted) and whose tail I under-counted by the same 2,828 s. Actual 3.00 h.
+
+**Cell count on this part goes as h^-2.28, not h^-2.038 and not dx^-3.** 506,362,044 against
+413,273,323 over a 1.0933x cell-size ratio fits h^-2.2795. The h^-2.038 basis predicted 496M and
+was 2.1% low; dx^-3 predicted 540M and was 6.6% high.
+
+### Method, and why the tooling was re-validated first
+
+`scratchpad/chan_quant.py` from 5 November was gone, so I rewrote it, put it in the repo as
+`devtools/semiconductor/chan_quant.py` where it cannot be lost again, and ran the rewrite against
+the shipped mesh before trusting it on the new one. It returned
+88.001 / 110.000 / 132.002 um at 36.09 / 52.68 / 6.34% with a w^3 spread of 3.383x, reproducing
+`MESH_QUANTISATION.md` to three decimals. It reports twice, all gaps and then a width band, so the
+wider manifold and plenum channels, 4.9% and 7.4% of gaps on the two meshes, are not counted as
+scatter. The surface-side companion that counts shells and checks closedness, which is what settled
+all three apparent defects above, is `devtools/semiconductor/stl_shells.py`.
+
+`cad_quant.py` and `cad_pitch.py`, which measured the same widths straight off the STL triangles
+with no mesh involved, were also lost from the scratchpad. Their numbers are in
+MESH_QUANTISATION.md and `stl_shells.py` covers the closedness half, but the CAD-side width
+histogram would have to be rewritten to be re-run.
+
+The boundary index for the coolant region built in 164 s for 25,690,081 faces and 1,214.5 MB, which
+is the sidecar the viewer reads.
+
+### Phase 0b is done
+
+`couple_box.sh` never writes a `meshQualityDict`, so the `checkMesh` runs in the chain are plain
+`checkMesh` and were never affected by the absolute `minVol 1e-13` in the shipped
+`etc/caseDicts/meshQualityDict`. I wrote a corrected dict with `minVol 1e-20` and `minTetQuality`
+left where it ships, and ran `checkMesh -meshQuality` against it on all three reconstructed
+regions.
+
+### Housekeeping
+
+Three stale far-field probes, `ff1`, `ff2` and `ff4`, came back with the box because the instance
+`startup-script` relaunches them on every boot. They were holding 96 cores and 528 GB of 755 while
+my run wanted 32 cores. I killed all three by container id, matching each one's mounts against
+`/mnt/work/ff` rather than using `pkill -f`, which on this box matches the SSH wrapper's own
+command line. I left the `startup-script` itself alone: I could only read the part of it that
+defines the far-field experiment, and if it also mounts `/mnt/work` then removing it breaks the box
+on its next boot. The box self-deletes at its 22 h `maxRunDuration` and is not expected to reboot.
+`splitMeshRegions -detectOnly` wrote a `0/` time directory and two `cellToRegion` fields; both
+removed so the workspace ships clean.
