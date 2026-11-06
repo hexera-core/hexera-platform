@@ -120,6 +120,9 @@ class Opening:
     #: (cad_tessellate.stands_in_opening, the staging's own reading) - so the flow crosses
     #: `area - filled`, not the whole hole. 0.0 for a plain bore.
     filled: float = 0.0
+    #: the share of a disc's rim along which the wall runs on into a neighbouring face in the same
+    #: plane (cad/flat_cut): a flat piece of the wall, not a cut through the passage, from 0.15 up
+    runs_on: float = 0.0
 
     @property
     def annular(self) -> bool:
@@ -551,6 +554,8 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
     # faces, and they are the whole point.
     every_flat = list(candidates)                          # what the stage's "add an opening" may snap to
     probed: list[Opening] = []
+    from meshpipeline.cad.flat_cut import RUNS_ON_SHARE, edge_faces, runs_on_share
+    rim_neighbours = edge_faces(shape) if not declared_openings else None
     for kind in (() if declared_openings else ("ring", "disc")):
         same = sorted((o for o in candidates if o.kind == kind), key=lambda o: o.area, reverse=True)
         largest = same[0].area if same else 0.0
@@ -562,6 +567,8 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
             depth = first_hit(o.centroid, _flip(o.normal), 0.001 * diag)
             o.depth = depth
             o.depth_ratio = depth / max(math.sqrt(max(o.area, 0.0)), 1e-9)
+            if kind == "disc" and rim_neighbours is not None:
+                o.runs_on = runs_on_share(faces[o.face_index], rim_neighbours)
             probed.append(o)
     candidates = probed
     # AN ANNULUS'S OPENING is the ring between the bore and what stands in it: the flat end of a
@@ -667,6 +674,10 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
             # has. It fills its box like the cylinder it is; a rotor hub whose two end discs sit as
             # close is nearly all blades and fills a fifth of its box, so its discs stay walls.
             walls = set()
+        # A FLAT PIECE OF THE WALL is never a mouth, whatever its partner: the side of a square exit
+        # section blends into the round-to-square transition along one edge, and its opposite side
+        # sits too far off to pair with it (s_duct_001: two side walls proposed as outlets)
+        walls |= {id(o) for o in discs if o.runs_on >= RUNS_ON_SHARE}
         mouths = [o for o in mouth_like if id(o) not in walls]
         # odd in shape, size or aspect; a duct's side walls are long and thin but they are not odd
         odd_flats = len([o for o in discs if o not in mouth_like and id(o) not in walls])
