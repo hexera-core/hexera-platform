@@ -1,17 +1,16 @@
 #!/bin/bash
 # Collect the docs worth sending a co-founder into one flat folder, numbered in reading order.
 #
-# COPIES, not the originals, and the folder is gitignored. Two copies of a doc in one repo drift,
-# and the drift is silent. So this is a build output: rerun it and the bundle is current. The
-# script is what is committed, not the bundle.
+# COPIES into a gitignored handover/, not a second tracked set. Two copies of a doc in one repo
+# drift, and the drift is silent. So this is a build output: rerun it and the bundle is current.
+# The script is the artifact, not the bundle.
 set -e
-cd /home/rehaan/hexera-platform-semi
+cd "$(git rev-parse --show-toplevel)"
 OUT=handover
 rm -rf "$OUT"; mkdir -p "$OUT"
 
-# source path                                        -> name in the bundle
 pick() {
-  [ -f "$1" ] || { echo "MISSING $1"; return 1; }
+  [ -f "$1" ] || { echo "  MISSING $1"; return 1; }
   cp "$1" "$OUT/$2"
   printf "  %-46s -> %s\n" "$1" "$2"
 }
@@ -33,9 +32,12 @@ echo "the Corintis job:"
 pick docs/semiconductor/COUPLED_MESH_DELIVERY.md     11-corintis-what-we-shipped.md
 pick docs/semiconductor/MESH_QUALITY_ASSESSMENT.md   12-corintis-how-good-is-it.md
 pick docs/semiconductor/MESH_QUANTISATION.md         13-corintis-the-defect-we-found.md
+echo "the raw logs, included on request:"
+pick docs/semiconductor/DEVLOG.md                    14-devlog-semiconductor.md
+pick docs/engines/fitness-changelog.md               15-engine-fitness-changelog.md
 
 cat > "$OUT/00-READ-THIS-FIRST.md" <<'IDX'
-# Hexera, in thirteen documents
+# Hexera, in fifteen documents
 
 Everything here is a copy out of `docs/` in the platform repo, numbered in the order I would read
 them. The repo is the source of truth; this folder is a snapshot so it can be sent as one thing.
@@ -85,10 +87,25 @@ whole number of cells wide, and at our cell size there is no whole number that g
 through a slot goes as width cubed, so two channels the CAD made identical come out 1.98x apart.
 It is fixable by changing one number, and the mesh gets smaller when we do.
 
+## The raw logs
+
+| | |
+|---|---|
+| `14-devlog-semiconductor.md` | 4,758 lines. Every change, what it measured, and what it cost to find out |
+| `15-engine-fitness-changelog.md` | 36 lines. How engine selection has moved |
+
+**`14` is a working log, not a document.** It is chronological, it includes every dead end, and it
+contains claims that later entries correct. Three in particular: an earlier figure of "9% low on
+Nusselt" is wrong in sign and subject and the 2026-11-06 entry retracts it; the near-wall cell
+count was treated as the dominant error when it is not; and a planned 64-bit image rebuild turned
+out to be a regression. Reading it front to back is the honest version of how the mesh got built.
+Reading any single entry out of order is a way to quote a number we no longer stand behind.
+
+If you want the conclusions rather than the path, `11` through `13` are the conclusions, and the
+last entry of `14` has the plan that came out of it.
+
 ## Deliberately not in here
 
-- `docs/semiconductor/DEVLOG.md`, 4,758 lines of working log including every dead end. Useful to
-  whoever is in the code, not to someone getting oriented.
 - `docs/superpowers/`, 33 files and 25,600 lines of plans and design specs. Working papers.
 - Anything under `deploy/` or `devtools/`. Read those in the repo, not as a snapshot.
 
@@ -96,10 +113,9 @@ I checked all 54 tracked documents for leaked credentials before building this. 
 IDX
 echo "  (index written: 00-READ-THIS-FIRST.md)"
 
-grep -qx "/handover/" .gitignore 2>/dev/null || printf "\n# handover bundle: a build output of devtools/handover.sh, never a second source of truth\n/handover/\n" >> .gitignore
-cp "$0" devtools/handover.sh 2>/dev/null || true
-chmod +x devtools/handover.sh 2>/dev/null || true
+cd "$(git rev-parse --show-toplevel)"
+grep -qx "/handover/" .gitignore 2>/dev/null || \
+  printf "\n# handover bundle: a build output of devtools/handover.sh, never a second source of truth\n/handover/\n" >> .gitignore
 
 echo
 echo "bundle: $(ls -1 "$OUT" | wc -l) files, $(du -sh "$OUT" | cut -f1), $(cat "$OUT"/*.md | wc -l) lines"
-ls -1 "$OUT"
