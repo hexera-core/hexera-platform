@@ -73,6 +73,9 @@ class RepairRun:
     planner_label: str = ""
     original: dict = field(default_factory=dict)
     final: dict = field(default_factory=dict)
+    #: What the fix memory PREDICTED for each attempt, beside what the session then judged.
+    #: Empty unless CAD_REPAIR_RAG=shadow; never read by anything that decides geometry.
+    shadow: tuple[dict, ...] = ()
 
     @property
     def resolved(self) -> bool:
@@ -176,6 +179,17 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
         work.remaining_s = remaining
     history = RunHistory()
 
+    # THE SHADOW IS CONSTRUCTED ONLY WHEN ASKED FOR, so an off run does no snapshot load, no
+    # import of the memory, no work at all - the flag's contract. Advisory: its rows join the
+    # report; nothing it says reaches the kernel or the session.
+    scorer = None
+    if rcfg.CAD_REPAIR_RAG == "shadow":
+        from meshpipeline.cad.repair.fixmemory import ShadowScorer
+
+        scorer = ShadowScorer()
+        if not scorer.available:
+            scorer = None
+
     original = work.original.to_dict()
 
     # THE FIRST SCAN HAPPENS HERE, and its completeness is read AFTER it. `complete_scan` starts
@@ -215,8 +229,18 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
             frozenset({*(t.fingerprint for t in candidate.targets),
                        candidate.defect_fingerprint})
             if candidate.source in HELD_ANSWERING_SOURCES else frozenset())
+        if scorer is not None:
+            # BEFORE the attempt, so the prediction cannot see the verdict. The defect record is
+            # looked up by the candidate's own fingerprint; a directive aiming at geometry the
+            # scan never named has no patch to describe and is observed as such.
+            found = next((d for d in work.defects()
+                          if d.fingerprint == candidate.defect_fingerprint), None)
+            if found is not None:
+                scorer.observe(work.shape, found, candidate.op.name)
         verdict = work.try_op(candidate.op, candidate.targets, candidate.defect_code,
                               tolerance_mm=tolerance_mm, answered_held=answered_held)
+        if scorer is not None:
+            scorer.resolve(verdict.status)
         if candidate.source and work.log and work.log[-1] is verdict:
             # THE DIRECTIVE THAT PROPOSED IT travels with the verdict, so what became of an
             # engineer's decision is read off the log and never inferred from op names.
@@ -268,4 +292,5 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
                      refusals=tuple(history.refusals), defects=work.defects(),
                      stopped_because=stopped, complete_scan=work.complete_scan,
                      planner_label=getattr(chosen, "label", ""),
-                     original=original, final=work.current().to_dict())
+                     original=original, final=work.current().to_dict(),
+                     shadow=scorer.close() if scorer is not None else ())
