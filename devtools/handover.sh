@@ -79,8 +79,8 @@ measuring the delivered mesh instead of the CAD it was built from.
 
 | | |
 |---|---|
-| `11-corintis-the-account.md` | **start here.** Who they are, the six things they asked
-for by name, what we have not told them yet, and what we still need from them |
+| `11-corintis-the-account.md` | **start here.** Who they are, their part as measured, the six
+things they asked for by name, what the older docs do not reflect, and what is still unknown |
 | `12-corintis-what-we-shipped.md` | the delivery note, the coupled plate and chip mesh |
 | `13-corintis-how-good-is-it.md` | quality graded bad / okayish / pretty good / great. Its
 section 5 conclusion is marked superseded |
