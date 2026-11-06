@@ -55,6 +55,15 @@ def quality_shortfalls(q: dict) -> list[dict]:
 #: picture, OCC's name readers - and with it the worker and the run. A crash or a hang here costs a retry
 #: without the optional parts (gmsh's B-rep, the face names), never the caller.
 STAGE_TIMEOUT_S = 4 * 3600
+#: THE OPTIONAL PARTS GET THEIR OWN WALL, and a much shorter one. `full` writes the staged solid and then
+#: gmsh's B-rep, the file's face names and the surface picture - none of which the driver meshes - and the
+#: picture is a curvature-driven surface mesh that on a large thin-walled part (the Formula car, 213 faces
+#: over 4.3 m) runs for hours after the solid is written. Charged the staging wall, that time is spent for
+#: a report picture the OCC tessellator draws instead: the repair promotion proof stages (pipeline/
+#: repair_promote.stages_for) under its own CAD_REPAIR_TIMEOUT_S, and a sound repair of that car was
+#: refused - "the staging proof exceeded 3600s" - with the run falling back to geometry it had measured as
+#: unmeshable. Past this bound the part is staged again as `plain`: the same staged solid, no extras.
+STAGE_EXTRAS_TIMEOUT_S = 300
 #: what the staging process prints when it is done (gmsh and OCC write their own chatter to stdout)
 _STAGED = "GMSH_STAGED "
 #: ... and as it goes: a crash after the staged solid is written keeps it
@@ -89,9 +98,14 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
     return out_stl
 
 
-def _stage_guarded(geom_path, out_stl: Path, factor: float, *, timeout_s: float = STAGE_TIMEOUT_S) -> bool:
+def _stage_guarded(geom_path, out_stl: Path, factor: float, *, timeout_s: float = STAGE_TIMEOUT_S,
+                   extras_timeout_s: float = STAGE_EXTRAS_TIMEOUT_S) -> bool:
     """_stage_here in a process of its own (run_guarded); a crash or a hang is staged again without the
-    optional parts. Returns whether gmsh drew the surface picture."""
+    optional parts. Returns whether gmsh drew the surface picture.
+
+    `full` is bounded by `extras_timeout_s` rather than the staging wall: everything it does beyond the
+    staged solid is a report's, so a part slow to draw is staged again as `plain` in minutes instead of
+    holding its caller's clock for hours (STAGE_EXTRAS_TIMEOUT_S)."""
     ws = out_stl.parent
     why = ""
     for mode in STAGE_MODES:
@@ -99,10 +113,11 @@ def _stage_guarded(geom_path, out_stl: Path, factor: float, *, timeout_s: float 
             (ws / f).unlink(missing_ok=True)
         args = [sys.executable, "-m", "meshpipeline.engines.gmsh.gmsh_runner", "stage",
                 str(Path(geom_path).resolve()), str(out_stl.resolve()), repr(float(factor)), mode]
+        wall = min(float(extras_timeout_s), float(timeout_s)) if mode == "full" else float(timeout_s)
         try:
-            proc = run_guarded(args, timeout=timeout_s, capture_output=True, text=True)
+            proc = run_guarded(args, timeout=wall, capture_output=True, text=True)
         except subprocess.TimeoutExpired:
-            why = f"it ran past {int(timeout_s)} s"
+            why = f"it ran past {int(wall)} s"
             logger.warning("gmsh staging: %s %s - staging it %s", Path(geom_path).name, why, _NEXT[mode])
             continue
         lines = (proc.stdout or "").splitlines()
