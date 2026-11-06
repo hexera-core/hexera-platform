@@ -663,7 +663,10 @@ def test_the_fea_path_gives_the_textbook_answer(case, tmp_path, monkeypatch):
     err = got / want - 1.0
     row = {"case": case, "analysis": analysis, "elements": q["cells"], "what": what,
            "got": float(got), "want": float(want), "error_pct": round(100 * err, 2), "tolerance_pct": round(100 * tol, 1),
-           "pass": bool(abs(err) <= tol)}
+           "pass": bool(abs(err) <= tol),
+           # the worst element and what the MMG post-pass did (MESH-mmg-1): an accuracy change is traced to it
+           "min_scaled_jacobian": q.get("fea_min_scaled_jacobian"), "max_aspect": q.get("fea_max_aspect_ratio"),
+           "mmg_kept": (q.get("fea_mmg") or {}).get("kept")}
     _record(row)
     print(json.dumps(row))
     assert abs(err) <= tol, f"{case}: {what} {got:.5g} vs {want:.5g} ({100 * err:+.2f}%, tolerance {100 * tol:.0f}%)"

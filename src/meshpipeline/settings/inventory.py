@@ -606,6 +606,7 @@ INVENTORY: list[Group] = [
         EnvVar("VMTK_BIN", "vmtk", help="vmtk runs as an isolated subprocess: its conda VTK cannot coexist with the app's"),
         EnvVar("BUILDER_AI", "on", exposure="internal", help="on | off: cfMesh, VMTK, gmsh (CFD) and snappy multi-region attempts are built by the builder model, and by the rules plan whenever it gives no mesh (engines/rules_plan.py, AIG-1); off = the rules plan only"),
         EnvVar("FEA_AI", "on", exposure="internal", help="on | off: the FEA builder asks the builder model for its judgement calls (zone priority, small features, the user's budget), which the rules make exact (engines/fea_ai.py); off = the rules' own plan"),
+        EnvVar("FEA_MMG", "on", exposure="internal", help="on | off: the FEA quality post-pass (MESH-mmg-1, engines/fea_mmg.py): mmg3d improves the inside of a volume that still holds an element the production limits would note, its surface frozen, kept only when better; off = the gmsh mesh as filled and optimised. Needs mmg3d in the mesh image (skipped, and said, where it is not)"),
     ]),
 
     Group("Repeatability", note="INTERNAL. Same clean file in, same result out (engines/determinism.py, contracts/decision_cache.py). Every native run is stamped with what it ran under (reproducibility.json beside the mesh); every AI decision is keyed by what the model was shown.", vars=[
