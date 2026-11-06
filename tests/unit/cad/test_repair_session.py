@@ -529,3 +529,32 @@ def test_a_failed_verdict_keeps_the_measurement_it_already_paid_for():
     verdict = session.try_op(op, op.targets_for(defect), defect.code, tolerance_mm=0.01)
 
     assert verdict.status == FAILED and "before" in verdict.delta
+
+
+def test_a_persisting_warning_whose_box_moved_by_kernel_rounding_is_not_a_new_defect():
+    # THE MULTI-DEFECT FILL. A rebuild re-approximates a sliver it never touched, and the same
+    # face comes back with its measured box shifted by a fraction of the tolerance the operation
+    # was allowed to move geometry by (0.00037 mm on the Formula body that found this). Exact
+    # float comparison called that a brand-new defect; and because a second rim was still open,
+    # `improved_to_warnings` could not excuse it. The result was that NO fill was ever kept on a
+    # part with more than one error - every hole patch was rolled back on arithmetic noise.
+    before_box = {"bbox_min": [10.0, 20.0, 30.0], "bbox_max": [11.0, 21.0, 30.0]}
+    after_box = {"bbox_min": [10.00037, 20.00037, 30.00037],
+                 "bbox_max": [11.00037, 21.00037, 30.00037]}
+    target = _defect(DefectCode.open_shell, fingerprint="edge:rim", severity=DefectSeverity.error)
+    still_open = _defect(DefectCode.open_shell, fingerprint="edge:other-rim", index=3,
+                         severity=DefectSeverity.error)
+    sliver_before = _defect(DefectCode.small_face, fingerprint="face:sliver-before", index=2,
+                            kind="face", location=before_box)
+    sliver_after = _defect(DefectCode.small_face, fingerprint="face:sliver-after", index=17,
+                           kind="face", location=after_box)
+    op = _Op(outcome=OpOutcome(
+        shape="fixed",
+        mapping=EntityMapping(moved={}, gone=frozenset({"edge:rim"}), basis="kernel"),
+    ))
+    session = _session(scans=[((target, still_open, sliver_before), True),
+                              ((still_open, sliver_after), True)])
+
+    verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
+
+    assert verdict.status == KEPT, verdict.reason
