@@ -229,6 +229,10 @@ def repair_check_words(state: Mapping, out: Mapping) -> str | None:
         return _with_review(f"Nothing could be repaired safely; {_ORIGINAL}")
     if outcome == "not_promoted":
         return _with_review(f"The repaired file failed our checks; {_ORIGINAL}")
+    if outcome == "not_proved":
+        # NOT "failed our checks": that is a verdict, and a proof stopped by our own clock reached
+        # none. The repair may have been perfectly sound - it was never finished being checked.
+        return _with_review(f"The repaired file was not checked in time; {_ORIGINAL}")
     if outcome in ("timeout", "unavailable", "failed"):
         return _with_review(f"The repair could not finish; {_ORIGINAL}")
     if review:
