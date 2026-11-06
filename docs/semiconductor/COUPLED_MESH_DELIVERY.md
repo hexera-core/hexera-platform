@@ -69,6 +69,51 @@ Checked geometrically rather than by face count: a 2 mm cut at x 89.34 returns o
 at x 99.88 only `port_b`, and a 20 mm cut between them sees both. So the faces went to the right
 mouths.
 
+## Which port is the inlet
+
+Corintis' own CAD answers this and I had missed it. `ColdPlateAssembly_CLEAN.step` is an assembly of
+six named solids, and two of them are called `Outlet:1` and `Inlet:1`:
+
+| STEP solid | x range, mm | z centre, mm |
+|---|---|---|
+| Microfluidics_Core:1 | -8.577 .. 54.424 | 41.910 |
+| Top_Lid:1 | -61.577 .. 115.924 | 41.910 |
+| **Outlet:1** | **57.169 .. 89.829** | **75.868** |
+| Splits:1 | -8.577 .. 54.424 | 41.910 |
+| Board_cooling:1 | -61.577 .. 115.924 | 41.910 |
+| **Inlet:1** | **67.669 .. 100.228** | **42.137** |
+
+Measured off the delivered mesh, through the viewer rather than from any figure quoted earlier:
+
+| mesh patch | x range, mm | z centre, mm | lands on |
+|---|---|---|---|
+| port_a | 88.960 .. 89.644 | 77.727 | **Outlet:1** |
+| port_b | 99.697 .. 100.052 | 43.536 | **Inlet:1** |
+
+The frames are the same frame: the plate's outer surface in the mesh runs x -61.555 .. 115.903 and
+z -8.610 .. 92.429 against the STEP assembly's -61.577 .. 115.924 and -8.590 .. 92.410, agreeing to
+0.022 mm, which is a ninth of one skin cell.
+
+**The pairing is forced, not fitted.** port_b sits at x 99.697 .. 100.052, which is 9.868 mm wholly
+outside `Outlet:1`'s x range, so it cannot be the outlet whatever anchor you measure from. The same
+holds the other way: port_a at 88.960 .. 89.644 is 8.025 mm outside `Inlet:1`'s range. Neither
+assignment is close to its alternative.
+
+**So why are the patches still called port_a and port_b.** Because what I measured is a
+correspondence to a named solid, not a direction of flow. Every statement of direction here comes
+from Corintis: the two component names in a STEP exported 2025-08-29, and the red and blue hoses on
+slide 3 of the alignment deck of 2026-10-28. The deck is a second human act and not a render of the
+file - the STEP carries no red or blue, its only colour is `Copper - Raw` and both fittings are
+"Steel - Satin" - but it is the same organisation, and it may simply be reading the same part names
+back. Renaming would convert their unverified label into a boundary condition we assert, baked into
+`polyMesh/boundary` where a swap made at authoring time would be permanent and invisible.
+
+**One line from you settles it and I will rename them in minutes.** It is a label, not a remesh: no
+face moves and no count changes.
+
+Until then, do not assume `port_a` is the inlet because it is first. On your own CAD's naming it is
+the outlet.
+
 ## Before you solve it
 
 I retyped three patches that `splitMeshRegions` left pointing at the air region, which is not

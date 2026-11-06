@@ -4387,3 +4387,69 @@ non-zero rc: the boundary came back, the index and the per-face quality were nev
 verified 413M-cell deliverable stayed consistent through a failed attempt. The detail cuts return
 byte-for-byte the same counts after the reindex as before it - 404/404 at the chip contact, 428 at a
 port mouth - so the rebuild preserved the face numbering exactly.
+
+### The customer told us which port is the inlet, in the file, and I had not looked
+
+Rehaan asked whether the port roles were visible in what Corintis sent. They are, and not only in
+the picture. `ColdPlateAssembly_CLEAN.step` is a six-solid assembly and the six are
+`Microfluidics_Core:1`, `Top_Lid:1`, `Outlet:1`, `Splits:1`, `Board_cooling:1`, `Inlet:1`. I had
+meshed from this file for days and never read its assembly names.
+
+| STEP solid | x range, mm | z centre, mm |
+|---|---|---|
+| Outlet:1 | 57.169 .. 89.829 | 75.868 |
+| Inlet:1 | 67.669 .. 100.228 | 42.137 |
+
+| mesh patch | x range, mm | z centre, mm | lands on |
+|---|---|---|---|
+| port_a | 88.960 .. 89.644 | 77.727 | Outlet:1 |
+| port_b | 99.697 .. 100.052 | 43.536 | Inlet:1 |
+
+The mesh figures are measured through the running viewer, not quoted from the split. The frame
+control is the plate's outer surface: x -61.555 .. 115.903 and z -8.610 .. 92.429 in the mesh
+against -61.577 .. 115.924 and -8.590 .. 92.410 in the STEP, agreeing to 0.022 mm.
+
+The pairing is forced by exclusion rather than by a distance score: port_b is 9.868 mm wholly
+outside `Outlet:1`'s x range and port_a is 8.025 mm wholly outside `Inlet:1`'s.
+
+#### Four skeptics, none of whom could refute it, and the one that mattered said do not act on it
+
+I put the claim to four independent adversarial lenses before touching the deliverable, because
+inverting a customer's inlet and outlet inverts their entire simulation. None refuted the mapping.
+Two made points worth keeping.
+
+The frame lens noted that a bounding box is invariant under a 180 degree rotation about its own
+centre, so the 0.022 mm agreement is structurally blind to exactly the transform that would swap two
+ports, and is anyway circular since the mesh was built from this STEP. Both survive: the ports are
+not symmetric about the box centre, they sit together at the high-x end, so that rotation throws
+them 92 mm away from any STEP port; and the unique swap-consistent rigid motion displaces the
+plate's outer box by 135.5 mm in x, against an observed 0.021 mm.
+
+The semantics lens made the decisive point. We measured a correspondence to a named SOLID. A solid
+named `Inlet` is a designer's label on a fitting, not a flow boundary condition, and every statement
+of direction in the whole dossier traces back to Corintis. Renaming adds no information and converts
+their unverified label into one we assert.
+
+So the patches ship as `port_a` and `port_b`, the mapping goes in the delivery note, and the
+question goes back to them as one line.
+
+#### Where that lens was itself wrong, and it is worth correcting
+
+It claimed the deck's red and blue "are stored IN the STEP", making the deck a render of the same
+source and worth zero independent bits. That is false and checkable: the file holds exactly one
+`COLOUR_RGB`, `'Copper - Raw'`, and the two fittings resolve to `FILL_AREA_STYLE('Steel - Satin')`
+and `'Steel - Satin (1)'`. No red, no blue. The deck's colouring was a separate human act at
+Corintis fourteen months after the export, and cold-in / hot-out is a thermally meaningful choice
+that would likely have caught an obvious swap. Stronger than the lens allowed. Still the same
+organisation, so it does not change the decision.
+
+#### What it cost to find
+
+A STEP read with `STEPCAFControl_Reader` and `XCAFDoc_ShapeTool`, and the mesh's own port geometry
+pulled from the viewer's surface endpoint. Both are minutes of work. The information had been
+sitting in a 288,000-line file in Downloads since August 2025.
+
+Three OCP 8 signatures differ from OCP 7 and cost an attempt each: `TDF_LabelSequence` is
+`OCP.collections.Sequence_TDF_Label`, `TDocStd_Document` takes a `TCollection_ExtendedString` and
+not an `AsciiString`, and `Bnd_Box.Get()` is unregistered so the corners come from `CornerMin()` and
+`CornerMax()`.
