@@ -49,6 +49,8 @@ SICN_FLOOR = 0.1
 GENTLE_GROWTH = 1.2
 OPTIMISE_PASSES = 3
 TIGHTEN = 0.8
+#: LAD-fea-6: a failure naming more than this share of the part's surfaces is not localised to them
+LOCAL_SHARE = 0.25
 
 
 def growth(levers: list[dict]) -> float:
@@ -75,12 +77,17 @@ def tightened(levers: list[dict]) -> dict[str, float]:
 
 def mesh_settings(levers: list[dict]) -> dict:
     names = {lv["lever"] for lv in levers}
-    remesh = sorted(_remeshed(levers))
+    # LAD-fea-8: a surface the surface stage stalled (or ran out of time) on is never put on MeshAdapt again
+    stuck = {int(lv["inputs"]["surface"]) for lv in levers
+             if lv["lever"] == SURFACE_STALL and (lv.get("inputs") or {}).get("surface") is not None}
+    stuck |= {int(s) for lv in levers for s in lv.get("no_switch") or []}
+    remesh = sorted(_remeshed(levers) - stuck)
+    no_switch = SURFACE_STALL in names or any(lv.get("no_switch") for lv in levers)
     return {"algorithm3d": "hxt" if "LAD-fea-2" in names else "delaunay",
             "optimise_passes": OPTIMISE_PASSES if "LAD-fea-1" in names else 1,
             **({"remesh_surfaces": remesh} if remesh else {}),
             # LAD-fea-8: the surface stage keeps gmsh's own first mesh of every face (no switch to MeshAdapt)
-            **({"surface_switch": False} if SURFACE_STALL in names else {})}
+            **({"surface_switch": False} if no_switch else {})}
 
 
 #: LAD-fea-8: the lever a surface stage that stalled pulls
@@ -116,6 +123,22 @@ def surface_stall_lever(surface: int, levers: list[dict], *, n: int) -> dict | N
                       "and drops its repeated triangles (MESH-5).")}
 
 
+def switched_surfaces(log: str) -> list[int]:
+    """LAD-fea-8: the surfaces gmsh switched to MeshAdapt BY ITSELF in a pass (its default failed there and
+    Mesh.AlgorithmSwitchOnFailure took over): a "Meshing surface N (..., MeshAdapt)" line after one for the same N
+    on another algorithm (the surface workers' lines interleave, MESH-23, so not necessarily the next line)."""
+    import re
+
+    out: set[int] = set()
+    first: dict[int, str] = {}
+    for m in re.finditer(r"Meshing surface (\d+) \([^,()]*, ([^)]+)\)", log or ""):
+        s, algo = int(m.group(1)), m.group(2).strip()
+        if algo == "MeshAdapt" and first.get(s, "MeshAdapt") != "MeshAdapt":
+            out.add(s)
+        first.setdefault(s, algo)
+    return sorted(out)
+
+
 def failed_surfaces(q: Mapping, log: str = "") -> list[int]:
     """The surfaces a pass went wrong on: the invalid elements' (quality.json), else the ones the
     failed fill named (the adapter's BAD SURFACES line in its output)."""
@@ -141,6 +164,10 @@ def failed_faces(q: Mapping, log: str = "") -> list[str]:
     return []
 
 
+def _no_switched(levers: list[dict]) -> set[int]:
+    return {int(s) for lv in levers for s in lv.get("no_switch") or []}
+
+
 def _remeshed(levers: list[dict]) -> set[int]:
     return {int(s) for lv in levers for s in lv.get("surfaces") or []}
 
@@ -163,6 +190,7 @@ def pass_facts(n: int, rc, q: Mapping, plan: Mapping, log: str = "", killed: boo
             "per_quarter_min": (rules.get("hot_spots") or {}).get("min_per_quarter_turn"),
             "bad_surfaces": [] if valid else failed_surfaces(q if built else {}, log),
             "bad_faces": [] if valid else failed_faces(q if built else {}, log),
+            "surfaces_total": int((plan.get("measure") or {}).get("faces") or 0),
             # LAD-fea-7: the mesher was killed by the job's memory limit
             "out_of_memory": bool(killed and not built)}
 
@@ -184,8 +212,15 @@ def lever_options(facts: Mapping, levers: list[dict], plan: Mapping) -> list[dic
     if facts.get("out_of_memory"):
         # LAD-fea-7: no lever builds this plan in less memory
         return []
-    # LAD-fea-6: the surfaces this pass went wrong on that no lever has re-meshed yet
-    fresh = sorted(set(facts.get("bad_surfaces") or []) - _remeshed(levers))
+    # LAD-fea-6: the surfaces this pass went wrong on that no lever has re-meshed yet - ONLY THE ONES THAT
+    # FAILED: a failure that names more than LOCAL_SHARE of the part's surfaces (a fill that names a whole
+    # volume's boundary) is not on those surfaces, and switching them all to MeshAdapt only makes every face
+    # slow (1 Nov: all 441 faces of a 640 mm part, MeshAdapt grinding on its largest face for hours)
+    bad = set(facts.get("bad_surfaces") or [])
+    total = int(facts.get("surfaces_total") or 0)
+    if total and len(bad) > LOCAL_SHARE * total:
+        bad = set()
+    fresh = sorted(bad - _remeshed(levers))
     other = (f" The surface(s) it went wrong on ({_listed(fresh)}) are meshed with gmsh's MeshAdapt "
              "(LAD-fea-6).") if fresh else ""
     hxt = {"lever": "LAD-fea-2", "inputs": {"rc": facts["rc"], "surfaces": fresh}, "surfaces": fresh,
@@ -203,6 +238,14 @@ def lever_options(facts: Mapping, levers: list[dict], plan: Mapping) -> list[dic
                                     "uses gmsh's other 3D algorithm (HXT)." + other)}
             order = [gentle, hxt]
         rest = [o for o in order if o["lever"] not in pulled]
+        # LAD-fea-8, RIDING ALONG: the faces gmsh switched to MeshAdapt by itself in this failed pass keep gmsh's
+        # first mesh next time (no switch), the pass after a failure is never the same grind again (1 Nov: a skin
+        # face of a 640 mm part spent 13 minutes in MeshAdapt on every pass, and the fill failed each time)
+        switched = sorted(set(facts.get("switched") or []) - _no_switched(levers))
+        if switched and SURFACE_STALL not in pulled:
+            said = (f" gmsh switched surface(s) {_listed(switched)} to MeshAdapt by itself there, so the next pass keeps "
+                    "its first mesh of every face instead (LAD-fea-8).")
+            rest = [{**o, "no_switch": switched, "words": str(o["words"]) + said} for o in rest]
         way = _other_way(fresh, facts)
         if order[0]["lever"] in pulled:
             # the fixed ladder's own choice was pulled already: the other way leads (LAD-fea-6), and
@@ -243,13 +286,19 @@ def _other_way(fresh: list[int], facts: Mapping) -> dict | None:
                       "with gmsh's MeshAdapt instead of the default.")}
 
 
-def rung_words(parts: list[int] | None, rung: int) -> str:
+def rung_words(parts: list[int] | None, rung: int, crossing: Mapping | None = None) -> str:
     """LAD-fea-9's line in the plan's words: which parts fTetWild meshes, and why."""
     who = ("the part" if parts is None else
            ("part " if len(parts) == 1 else "parts ") + ", ".join(f"Part_{p}" for p in parts[:8])
            + (", ..." if len(parts) > 8 else ""))
     if parts is None and rung > 1:
         who = "every part"
+    if crossing:
+        # LAD-fea-16: straight here, because the CAD's faces cross - not because every gmsh option was tried
+        where = f" ({', '.join(crossing['faces'][:6])})" if crossing.get("faces") else ""
+        return (f"The fill failed where {crossing.get('by') or 'a check'} had found faces of the CAD crossing each "
+                f"other{where}; no gmsh algorithm can mend that, so fTetWild meshes {who} - the last rung (LAD-fea-16, "
+                "LAD-fea-9). Its surface follows the CAD within its envelope; the faces keep their names.")
     return (f"No gmsh option built a valid mesh (Delaunay, HXT, MeshAdapt on the surfaces that failed"
             f"{', the tie' if parts is not None or rung > 1 else ''}), so fTetWild meshes {who} - the last "
             "rung (LAD-fea-9). Its surface follows the CAD within its envelope; the faces keep their names.")
