@@ -13,6 +13,7 @@ from meshpipeline.application.geometry_check import (
     SCOUT_SOFT_LIMIT_S,
 )
 from meshpipeline.application.pipeline_run import run_pipeline
+from meshpipeline.application.shell_check import SHELL_CHECK_LIMIT_S
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,21 @@ NAMING_YIELD_MAX = 12
 def _task_id(task, fallback: str) -> str:
     request = getattr(task, "request", None)
     return str(getattr(request, "id", None) or fallback)
+
+
+@celery_app.task(
+    name="worker.tasks.shell_check_geometry",
+    bind=False,
+    max_retries=0,
+    soft_time_limit=SHELL_CHECK_LIMIT_S + 120,
+    time_limit=SHELL_CHECK_LIMIT_S + 180,
+)
+def shell_check_geometry(**kwargs) -> dict:
+    # SHSTAGE-2: AN FEA PART'S SHELL CHECK, started once the part is measured: its mid-surface found and
+    # drawn for the stage's "Mesh as" choice. Same queue as the scout and the naming (the user is on the
+    # stage); the extraction runs in a child process with its own time limit (application/shell_check).
+    from meshpipeline.application.shell_check import run_shell_check
+    return run_shell_check(**kwargs)
 
 
 async def launch(db, job_id: str, payload: dict) -> None:

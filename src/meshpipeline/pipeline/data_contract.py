@@ -471,6 +471,8 @@ STATE_FIELDS: dict[str, str] = {
     "fea_pairs":             "an FEA assembly's single pairs as the user set them on the stage, by pair key "
                              "(Part_1|Part_3): each pair's type (bonded / contact / off) and an overlap's owner "
                              "(PLAN-fea-19/20); {} when every pair follows the rule",
+    "fea_mesh_as":           "an FEA part meshed as a shell (its mid-surface, plate elements) or a solid, as "
+                             "settled on the stage at Proceed (SHSTAGE-5); 'solid' when nothing says",
     "flow_topology":         "internal/external flow regime DERIVED from the purpose - a neutral "
                              "fact read by the executor/runners, NOT an engine-native param",
     "leak_closing":          "the leak size the user confirmed on the stage (INS-8): every leak of the "

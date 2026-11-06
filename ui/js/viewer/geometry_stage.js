@@ -18,12 +18,13 @@
  * without waiting for it. Proceeding hands the workbench back, and the conversation carries on
  * where it was.
  */
-import { getGeometrySkin } from "../api/endpoints.js";
+import { getGeometrySkin, getShellSurface } from "../api/endpoints.js";
 import { esc } from "../core/format.js";
 import { applyFlow, bindAxis, bindUnit, changedAnswers, editsLine, extentAlong, followSuggestion, followUnit, formHtml,
   markConfirmed, noteDrawn, readExternal, readForm, rowHtml, servedProposal, shown, tableHead, unitChoiceHint,
   unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
-import { bindFeaPanel, bindMeasure, feaPanelHtml, followAssembly, followClean, followMeasure, interfaceMarks, lightSpotRow } from "../render/fea_form.js";
+import { bindFeaPanel, bindMeasure, effectiveMeshAs, feaPanelHtml, followAssembly, followClean, followMeasure, followMeshAs, interfaceMarks,
+  lightSpotRow, pickedMeshAs, shellMarks, wallColour } from "../render/fea_form.js";
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
 import { b64f32, b64u32, loadVtk } from "./scene/vtk_load.js";
@@ -53,6 +54,8 @@ const STICKER = [1.0, 0.83, 0.0], SEL = [1.0, 0.31, 0.0];
 const SPOT = [0.42, 0.62, 0.86];
 // an assembly's interfaces: a muted green where parts touch, a muted red where they pass into each other
 const TOUCH = [0.40, 0.72, 0.52], OVERLAP = [0.86, 0.45, 0.40];
+// SHSTAGE-4: a region that stays solid (a muted amber) and where the plates do not meet (a clear red)
+const SHELL_SOLID = [0.80, 0.62, 0.32], SHELL_OPEN = [0.85, 0.20, 0.18];
 
 function spherePd(cx, cy, cz, r) {
   const la = 12, lo = 16, pts = [], polys = [];
@@ -592,12 +595,14 @@ function initScene(sessionId, box, surf, p) {
     const mp = vtk.Rendering.Core.vtkMapper.newInstance();
     mp.setInputData(spherePd(c[0], c[1], c[2], 0.008 * diag));
     const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
-    const col = h.type === "interface_overlap" ? OVERLAP : h.type === "interface_touching" ? TOUCH : SPOT;
+    const col = h.type === "interface_overlap" ? OVERLAP : h.type === "interface_touching" ? TOUCH
+      : h.type === "shell_open" ? SHELL_OPEN : h.type === "shell_solid" ? SHELL_SOLID : SPOT;
     const pp = ac.getProperty(); pp.setColor(col[0], col[1], col[2]);
     pp.setAmbient(0.55); pp.setDiffuse(0.6); pp.setSpecular(0.2);
     ren.addActor(ac);
     const el = document.createElement("div");
-    el.className = "v-pin fea-spot" + (String(h.type || "").startsWith("interface_") ? " fea-itf" : "") + (spotMarks ? " mark" : "");
+    el.className = "v-pin fea-spot" + (String(h.type || "").startsWith("interface_") ? " fea-itf" : "")
+      + (String(h.type || "").startsWith("shell_") ? " fea-shell-pin " + h.type : "") + (spotMarks ? " mark" : "");
     el.textContent = String(h.id); el.dataset.spot = String(h.id);
     el.title = `${h.id}: ${h.shape || h.type}${h.capped ? " (refinement capped)" : ""}`;
     el.onclick = (ev) => { ev.stopPropagation(); lightSpot(h.id); };
@@ -611,6 +616,53 @@ function initScene(sessionId, box, surf, p) {
     lightSpotRow(panel, id);
   }
   if (p.hot_spots) setSpots(p.hot_spots);
+
+  /* SHSTAGE-4: THE MID-SURFACE over the part (cad/shell_preview overlay.json), each triangle coloured by
+     the wall it stands for on the muted ramp the panel's legend shows, and the open edges as red marks.
+     Shown while the effective choice is Shell: the part turns see-through so the surface inside reads. */
+  let shellActors = [], shellOn = false;
+  function clearShell() { shellActors.forEach((a) => ren.removeActor(a)); shellActors = []; }
+  function setShell(ov, k) {
+    clearShell();
+    if (!ov || !ov.xyz) { rw.render(); return; }
+    const s = (Number(k) || 1) / 1000;
+    const xyz = b64f32(ov.xyz), tri = b64u32(ov.tri), wall = b64f32(ov.wall);
+    const pts = new Float32Array(xyz.length); for (let i = 0; i < xyz.length; i++) pts[i] = xyz[i] * s;
+    const nt = tri.length / 3, polys = new Uint32Array(nt * 4), cols = new Uint8Array(nt * 3);
+    for (let t = 0; t < nt; t++) {
+      polys[t * 4] = 3; polys[t * 4 + 1] = tri[t * 3]; polys[t * 4 + 2] = tri[t * 3 + 1]; polys[t * 4 + 3] = tri[t * 3 + 2];
+      const c = wallColour(wall[t], ov.t_min, ov.t_max);
+      cols[t * 3] = Math.round(c[0] * 255); cols[t * 3 + 1] = Math.round(c[1] * 255); cols[t * 3 + 2] = Math.round(c[2] * 255);
+    }
+    const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
+    pd.getPoints().setData(pts, 3); pd.getPolys().setData(polys);
+    pd.getCellData().setScalars(vtk.Common.Core.vtkDataArray.newInstance({ name: "wall", values: cols, numberOfComponents: 3 }));
+    const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(pd);
+    mp.setScalarModeToUseCellData(); mp.setColorModeToDirectScalars();
+    const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
+    const pr = ac.getProperty(); pr.setAmbient(0.35); pr.setDiffuse(0.7); pr.setSpecular(0.05);
+    ren.addActor(ac); shellActors.push(ac);
+    const open = (ov.open_at_mm || []).filter((q) => q && q.length === 3);
+    if (open.length) {
+      const opd = vtk.Common.DataModel.vtkPolyData.newInstance();
+      opd.getPoints().setData(Float32Array.from(open.flat().map((v) => v * s)), 3);
+      const verts = new Uint32Array(open.length * 2); open.forEach((_q, i) => { verts[i * 2] = 1; verts[i * 2 + 1] = i; });
+      opd.getVerts().setData(verts);
+      const omp = vtk.Rendering.Core.vtkMapper.newInstance(); omp.setInputData(opd);
+      const oac = vtk.Rendering.Core.vtkActor.newInstance(); oac.setMapper(omp); oac.setPickable(false);
+      const op = oac.getProperty(); op.setColor(...SHELL_OPEN); op.setPointSize(7); op.setLighting(false);
+      if (op.setRenderPointsAsSpheres) op.setRenderPointsAsSpheres(true);
+      ren.addActor(oac); shellActors.push(oac);
+    }
+    showShell(shellOn);
+  }
+  function showShell(on) {
+    shellOn = !!on;
+    const drawn = shellOn && shellActors.length > 0;
+    shellActors.forEach((a) => a.setVisibility(drawn));
+    skins.forEach((sk) => sk.actor.getProperty().setOpacity(drawn ? 0.22 : 1));
+    rw.render();
+  }
 
   /* LOOK INTO A MOUTH - the close-up the pictures had, now a camera move: from outside, straight
      down the opening's normal, framed on it */
@@ -1033,7 +1085,8 @@ function initScene(sessionId, box, surf, p) {
   /* support/debug hook - the browser tier drives the stage through it, without pixel picking */
   window._vdbg = window._vdbg || {};
   window._vdbg["gstage:" + sessionId] = {
-    pins: () => pins.length, spots: () => spots.map((s) => s.id), selected: () => sel, select, look, diag, add, addAt, rayAt, remove, iso,
+    pins: () => pins.length, spots: () => spots.map((s) => s.id), selected: () => sel,
+    shell: () => ({ actors: shellActors.length, shown: shellOn && shellActors.length > 0 }), select, look, diag, add, addAt, rayAt, remove, iso,
     tracing: () => (trace ? trace.length : null), adding: () => addMode,
     measuring: () => measuring, measured: () => measuredNow(), measureAt, screenOf,
     openings: () => (p.openings || []).map((o) => Number(o.id)),
@@ -1048,7 +1101,7 @@ function initScene(sessionId, box, surf, p) {
   };
   return {
     stop: () => { overlay.stop(); canvas.ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
-    rebind, refresh: refreshExternal, setSpots,
+    rebind, refresh: refreshExternal, setSpots, setShell, showShell,
   };
 }
 
@@ -1067,8 +1120,8 @@ async function openFeaStage(sessionId, d, confirm, opts) {
   const f = d.fea || {};
   // the scene draws stickers from the proposal's openings: an FEA part has none, but it has the
   // hot spots its measurement found (shown, never edited)
-  const p = { ...(d.proposal || {}), openings: [],
-    hot_spots: [...((f.measure && f.measure.hot_spots) || []), ...interfaceMarks(f.assembly)] };
+  const marks = () => [...((f.measure && f.measure.hot_spots) || []), ...interfaceMarks(f.assembly), ...shellMarks(f.shell)];
+  const p = { ...(d.proposal || {}), openings: [], hot_spots: marks() };
   const id = "gstage-" + sessionId;
   document.getElementById(id)?.remove();
   const box = document.createElement("div"); box.className = "viewer gc-stage fea-stage"; box.id = id;
@@ -1080,9 +1133,22 @@ async function openFeaStage(sessionId, d, confirm, opts) {
   const release = takeOver(box, opts.anchorEl);
   const panel = box.querySelector(".fea-panel");
   let scene = null, closed = false;
+  /* SHSTAGE-4: the mid-surface is fetched once the shell check is ready, and shown while the effective
+     choice is Shell (Shell picked, or Auto recommending it) */
+  let overlay = null, fetching = false;
+  const meshAsChanged = () => { if (scene) scene.showShell(effectiveMeshAs(f.shell, pickedMeshAs(panel)) === "shell"); };
+  async function loadOverlay() {
+    const s = f.shell;
+    if (overlay || fetching || !s || s.state !== "ready" || !s.overlay) return;
+    fetching = true;
+    try { overlay = await getShellSurface(sessionId); } catch (e) { console.warn("mid-surface not drawn:", e && e.message); }
+    fetching = false;
+    if (overlay && scene && !closed) { scene.setShell(overlay, s.scale); meshAsChanged(); }
+  }
   bindFeaPanel(panel, f, p, {
     confirm: (body, edits) => confirm(body, edits),
     done: () => { closed = true; if (scene) scene.stop(); release(); },
+    meshAsChanged,
   });
   try {
     await loadVtk();
@@ -1090,6 +1156,7 @@ async function openFeaStage(sessionId, d, confirm, opts) {
     if (closed) return null;
     scene = initScene(sessionId, box, surf, p);
     document.getElementById("gs-load-" + sessionId)?.remove();
+    loadOverlay();
   } catch (e) {
     if (closed) return null;
     console.warn("FEA stage unavailable, showing the card instead:", e && e.message);
@@ -1115,11 +1182,14 @@ async function openFeaStage(sessionId, d, confirm, opts) {
       const follow = (fn) => { try { return !!fn(); } catch (e) { console.warn("FEA stage: not redrawn", e); return false; } };
       if (d2 && d2.fea) { Object.assign(f, d2.fea); follow(() => followClean(panel, f)); }
       const movedA = !!a && follow(() => followAssembly(panel, a));
-      const moved = (!!m && follow(() => followMeasure(panel, m, p, null))) || movedA;
+      // SHSTAGE-2: the shell check lands minutes after the stage opened - "Mesh as" and its marks follow
+      const movedS = !!(d2 && d2.fea && d2.fea.shell) && follow(() => followMeshAs(panel, d2.fea.shell, meshAsChanged));
+      const moved = (!!m && follow(() => followMeasure(panel, m, p, null))) || movedA || movedS;
       if (moved) {
-        p.hot_spots = [...(((m || f.measure) || {}).hot_spots || []), ...interfaceMarks(a || f.assembly)];
+        p.hot_spots = marks();
         if (scene) scene.setSpots(p.hot_spots);
       }
+      if (movedS) { loadOverlay(); meshAsChanged(); }
     },
     isNaming: () => false,
   };
