@@ -386,6 +386,27 @@ def _vmtk_boundary(ws: Path) -> CaseBoundary | None:
     return CaseBoundary(patches=patches, kind="roles", authored_by=RENDERER)
 
 
+def _netgen_boundary(ws: Path) -> CaseBoundary | None:
+    """The staged fluid boundary Netgen meshes (fluid_boundary.stl): every solid is a patch the
+    mesh carries under the same name - the wall, then each opening under its declared name."""
+    from meshpipeline.engines.workspace_facts import contract_patches
+    stl = ws / "fluid_boundary.stl"
+    if not stl.exists():
+        return None
+    names = list(dict.fromkeys(stl_solid_names(stl)))
+    if not names:
+        raise CaseUnreadable("fluid_boundary.stl names no patches")
+    roles = {p["name"]: p["type"] for p in contract_patches(ws)}
+    staged = {}
+    try:
+        staged = json.loads((ws / "netgen_staging.json").read_text())
+    except (OSError, ValueError):
+        pass
+    wall = str(staged.get("wall_name") or "wall")
+    return CaseBoundary(patches={n: ("wall" if n in (wall, "wall") else roles.get(n, ""))
+                                 for n in names}, kind="roles", authored_by=RENDERER)
+
+
 #: How each engine's written case is read. An engine not listed here is not judged (the
 #: multi-region case splits regions after meshing, and its user boundaries cannot be read from
 #: the dicts beforehand).
@@ -394,6 +415,7 @@ _READERS = {
     "cfmesh": _cfmesh_boundary,
     "gmsh": _gmsh_boundary,
     "vmtk": _vmtk_boundary,
+    "netgen": _netgen_boundary,
 }
 
 
@@ -403,7 +425,8 @@ def _topology(ws: Path) -> str:
 
 
 #: Who writes each covered engine's case - which says whose mistake an unreadable one is.
-_AUTHOR = {"snappy": RENDERER, "cfmesh": RENDERER, "gmsh": BUILDER, "vmtk": RENDERER}
+_AUTHOR = {"snappy": RENDERER, "cfmesh": RENDERER, "gmsh": BUILDER, "vmtk": RENDERER,
+           "netgen": RENDERER}
 
 
 def read_case_boundary(workspace, engine: str) -> CaseBoundary | None:

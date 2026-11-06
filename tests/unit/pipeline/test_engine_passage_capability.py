@@ -35,11 +35,14 @@ INTERNAL = [{"name": "inlet", "type": "inlet"}, {"name": "outlet", "type": "outl
             {"name": "outlet_2", "type": "outlet"}, {"name": "wall", "type": "wall"}]
 
 
-def _cfmesh_broke(passages: int | None = None, **kw) -> dict:
+def _cfmesh_broke(passages: int | None = None, tried: tuple = (), **kw) -> dict:
     """cfMesh, recommended and confirmed, whose first attempt came out broken - the shape of
-    every one of the 11 sweep cases at the moment the ladder decided."""
+    every one of the 11 sweep cases at the moment the ladder decided. `tried`: engines that
+    already had an attempt of their own (Netgen, which also meshes several passages per job)."""
     rec = {"approved": "cfmesh", "source": lad.SOURCE_SUGGESTED,
            "order": ["cfmesh", "snappy", "vmtk", "gmsh"]}
+    if tried:
+        rec["attempts"] = [{"engine": e} for e in tried]
     if passages is not None:
         rec.update(passages=passages, passages_source=lad.PASSAGES_STAGED)
     s = {"job_id": "j", "engine": "cfmesh", "engine_source": lad.SOURCE_SUGGESTED,
@@ -79,22 +82,24 @@ def test_every_internal_engine_declares_how_many_passages_one_job_meshes():
                 if get_spec(n).max_passages_for("internal") is not None}
     assert set(declared) == set(ladder_order("internal"))
     # cfMesh meshes every passage side by side, up to what one mesh holds (its driver's own limit);
-    # snappy fills the one its seed point is in; VMTK and gmsh fill one lumen / one volume
-    assert declared == {"cfmesh": MAX_PASSAGES, "snappy": 1, "vmtk": 1, "gmsh": 1}
+    # Netgen fills every closed piece of the staged boundary in one volume; snappy fills the one
+    # its seed point is in; VMTK and gmsh fill one lumen / one volume
+    assert declared == {"cfmesh": MAX_PASSAGES, "netgen": MAX_PASSAGES, "snappy": 1, "vmtk": 1,
+                        "gmsh": 1}
 
 
 def test_the_snappy_refusal_names_the_engines_the_declarations_name():
     from meshpipeline.engines.snappy.drivers import _meshes_them
-    assert _meshes_them(2) == ("Mesh it with cfMesh, which meshes separate passages side by side, "
-                               "or ")
+    assert _meshes_them(2) == ("Mesh it with cfMesh or Netgen, which mesh separate passages side by "
+                               "side, or ")
     assert _meshes_them(MAX_PASSAGES + 1) == "Or "        # past every engine: one file per passage
 
 
 @pytest.mark.parametrize("n, flow, expect", [
-    (None, "internal", {"cfmesh", "snappy", "vmtk", "gmsh"}),     # not counted: nothing ruled out
-    (1, "internal", {"cfmesh", "snappy", "vmtk", "gmsh"}),
-    (2, "internal", {"cfmesh"}),
-    (MAX_PASSAGES, "internal", {"cfmesh"}),
+    (None, "internal", {"cfmesh", "snappy", "vmtk", "gmsh", "netgen"}),   # not counted: nothing ruled out
+    (1, "internal", {"cfmesh", "snappy", "vmtk", "gmsh", "netgen"}),
+    (2, "internal", {"cfmesh", "netgen"}),
+    (MAX_PASSAGES, "internal", {"cfmesh", "netgen"}),
     (MAX_PASSAGES + 1, "internal", set()),
     (5, "external", {"cfmesh", "snappy", "gmsh"}),                # passages are an internal fact
 ])
@@ -176,9 +181,21 @@ def test_without_a_count_the_ladder_is_as_it_was():
     assert lad.decide(st, record=lad.with_attempt(st, lad.classify(st)), now=0.0).switch_to == "snappy"
 
 
-def test_an_engine_that_meshes_one_passage_is_no_rung_for_a_case_of_two():
+def test_netgen_is_the_rung_for_a_case_of_two_when_cfmesh_broke():
     st = _cfmesh_broke(passages=2)
-    assert [r.engine for r in lad.ladder(st)] == ["cfmesh"]
+    assert [r.engine for r in lad.ladder(st)] == ["cfmesh", "netgen"]
+    # Netgen meshes both passages, but its mesh is tetrahedral where cfMesh's is hex-dominant: it
+    # is OFFERED, never switched to without asking
+    d = lad.decide(st, record=lad.with_attempt(st, lad.classify(st)), now=0.0)
+    assert not d.switch
+    o = lad.final_record({**st, "retry_count": 3}, succeeded=False, system_failure=False)["offer"]
+    assert o["kind"] == "engine" and o["engine"] == "netgen" and o["reply"] == "use Netgen"
+    assert "tetrahedral cells instead of hex-dominant ones" in o["text"]
+
+
+def test_an_engine_that_meshes_one_passage_is_no_rung_for_a_case_of_two():
+    st = _cfmesh_broke(passages=2, tried=("netgen",))
+    assert [r.engine for r in lad.ladder(st)] == ["cfmesh", "netgen"]
     assert "snappy" not in lad.able_engines(st)
     # every other engine takes this STL for internal flow - and meshes one passage per job
     assert lad.held_back_by_passages(st, exclude=("cfmesh",)) == ["snappy", "vmtk", "gmsh"]
@@ -233,13 +250,13 @@ def test_a_deterministic_refusal_for_its_passage_limit_still_moves_to_an_engine_
 # the offer a failed run ends with
 
 def test_the_offer_says_why_no_engine_was_switched_to_and_gives_both_outs():
-    st = _cfmesh_broke(passages=2, retry_count=3)
+    st = _cfmesh_broke(passages=2, retry_count=3, tried=("netgen",))
     rec = lad.final_record(st, succeeded=False, system_failure=False)
     o = rec["offer"]
     assert o["kind"] == "passages" and o["engine"] == "cfmesh" and o["reply"] == "use cfMesh"
     assert o["held_back"] == ["snappy", "vmtk", "gmsh"] and o["passages"] == 2
     text = o["text"]
-    assert text.startswith("cfMesh could not mesh this shape: its mesh came out broken")
+    assert text.startswith("Neither cfMesh nor Netgen could mesh this shape: its mesh came out broken")
     assert "2 separate passages that do not connect" in text
     assert ("snappyHexMesh, VMTK and Gmsh mesh only one passage per job, so I did not switch to "
             "them") in text
@@ -282,7 +299,7 @@ def test_a_confirmed_recommendation_is_not_logged_as_the_users_pin(caplog, monke
 
 
 def test_a_fewer_layers_offer_says_why_no_other_engine_was_tried():
-    st = _cfmesh_broke(passages=2, retry_count=3,
+    st = _cfmesh_broke(passages=2, retry_count=3, tried=("netgen",),
                        request_txt="Internal CFD mesh, 5 prism layers on the wall.")
     o = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
     assert o["kind"] == "fewer_layers"
@@ -331,8 +348,16 @@ def test_the_round3_cases_never_move_to_an_engine_that_refuses_them(case, kind, 
         assert d.switch_to == "snappy"
         return
     # a broken or absent mesh, and a measured check missed once, are all stopped by the passages:
-    # no untried engine meshes them in one job, so cfMesh's own levers are all the run has left
+    # no untried engine delivers the approved (hex-dominant) mesh of them in one job, so the run is
+    # never moved; Netgen, which meshes every passage in one fill, is the out a failed run may offer
     assert not d.switch and "separate passages" in d.why, d.why
     o = lad.final_record({**st, "retry_count": 9}, succeeded=False, system_failure=False)["offer"]
-    assert o["kind"] in ("passages", "fewer_layers") and "separate passages" in o["text"]
-    assert o.get("engine") in ("cfmesh", "") and "use snappyHexMesh" not in o["text"]
+    assert o["kind"] in ("passages", "fewer_layers", "engine")
+    assert o.get("engine") in ("cfmesh", "netgen", "") and "use snappyHexMesh" not in o["text"]
+    if o["kind"] == "engine":
+        assert o["engine"] == "netgen" and o["reply"] == "use Netgen"
+    elif o["kind"] == "passages":
+        assert "separate passages" in o["text"]
+    else:
+        # fewer layers on cfMesh: no "no other engine" note, since Netgen is still untried
+        assert "No other engine was tried" not in o["text"]

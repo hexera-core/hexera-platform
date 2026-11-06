@@ -190,5 +190,5 @@ def test_the_optional_solvability_contract_stays_explicitly_declared():
         "multiregion must keep declaring the optional-solvability opt-out; without it the executor "
         "seam would look for a whole-case solve that cannot exist for a split multi-region mesh")
     assert {"gmsh", "vmtk"} <= set(declared_none)
-    # ...and the single-region OpenFOAM engines still perform theirs
-    assert set(performs_check) == {"cfmesh", "snappy"}, performs_check
+    # ...and the single-region OpenFOAM engines still perform theirs (Netgen: one pressure per region)
+    assert set(performs_check) == {"cfmesh", "netgen", "snappy"}, performs_check

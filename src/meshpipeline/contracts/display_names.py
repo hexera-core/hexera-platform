@@ -9,6 +9,7 @@ from typing import Final
 MESH_ENGINES: Final[dict[str, str]] = {
     "cfmesh":             "cfMesh",
     "gmsh":               "Gmsh",
+    "netgen":             "Netgen",
     "snappy":             "snappyHexMesh",
     "snappy_multiregion": "snappyHexMesh multi-region",
     "snapgrid":           "Snap-grid multi-region (ECXML)",
