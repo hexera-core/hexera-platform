@@ -53,3 +53,40 @@ def test_no_parts_in_the_notes_shows_nothing(live):
       return document.querySelector('.rc-pm').children.length + document.querySelectorAll('.rc-pm-row').length;
     })()""")
     assert out == 0
+
+
+def test_the_picture_tints_a_rows_parts_and_a_click_on_it_picks_a_part(live):
+    out = live.evaluate("""(async () => {
+      const { Stage } = await import('/static/js/render/stage.js');
+      Stage.mount(); Stage._pmOpen = null;
+      // a 20 x 10 model: the left half is part 1, the right half part 2 (the id picture), all grey (the shaded one)
+      const png = async (fill) => { const c = new OffscreenCanvas(20, 10), g = c.getContext('2d');
+        fill(g); return await c.convertToBlob({type: 'image/png'}); };
+      const shaded = await png(g => { g.fillStyle = 'rgb(200,200,200)'; g.fillRect(0, 0, 20, 10); });
+      const ids = await png(g => { g.fillStyle = 'rgb(1,0,200)'; g.fillRect(0, 0, 10, 10);
+                                   g.fillStyle = 'rgb(2,0,200)'; g.fillRect(10, 0, 10, 10); });
+      const done = {status: 'done', order: ['Part_1', 'Part_2'],
+        parts: [{id: 'Part_1', n: '1', name: ''}, {id: 'Part_2', n: '2', name: ''}],
+        rows: [{phrase: 0, words: 'the rail', quote: 'the rail', parts: ['Part_1'], parts_text: 'part 1', size: '3 mm'}],
+        unsure: [], views: [{name: 'card_a', w: 20, h: 10, tags: [], hidden: []}]};
+      const picks = [];
+      const parts = {get: async () => done, pick: async (i, p) => { picks.push([i, p]); return done; },
+                     picture: async (n) => (n === 'card_a' ? shaded : ids)};
+      Stage.brief({purpose: 'structural', engine: 'gmsh', user_notes: [{text: 'the rail'}], part_matches: done},
+                  async () => {}, parts);
+      await new Promise(r => setTimeout(r, 400));
+      const px = (x) => { const c = document.querySelector('.rc-pm-pic');
+        return [...c.getContext('2d').getImageData(x, 5, 1, 1).data].slice(0, 3); };
+      const tinted = px(2), grey = px(15);
+      document.querySelector('.rc-pm-row').click();
+      await new Promise(r => setTimeout(r, 400));
+      const c = document.querySelector('.rc-pm-pic'), b = c.getBoundingClientRect();
+      c.dispatchEvent(new MouseEvent('click', {bubbles: true, clientX: b.left + b.width * 0.75,
+                                               clientY: b.top + b.height / 2}));
+      await new Promise(r => setTimeout(r, 700));
+      return {tinted, grey, picks};
+    })()""", timeout=30)
+    r, g, b = out["tinted"]
+    assert not (r == g == b), "a row's part is drawn in the row's colour"
+    assert out["grey"][0] == out["grey"][1] == out["grey"][2], "a part no row means stays grey"
+    assert out["picks"] == [[0, ["Part_1", "Part_2"]]], "a click on the picture adds the part under it"

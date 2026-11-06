@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import tempfile
 import time
 from collections.abc import Mapping
@@ -36,8 +37,11 @@ MATCHES = "part_matches.json"
 PICKS = "part_picks.json"
 #: the pictures, in the check's folder (fixed names, so the privacy sweep knows them)
 PICTURE_DIR = "parts"
-PICTURE_NAMES = ("parts_iso", "parts_top", "parts_front", "parts_alone_1", "parts_alone_2", "parts_card")
-CARD = "parts_card"
+PICTURE_NAMES = ("parts_iso", "parts_top", "parts_front", "parts_alone_1", "parts_alone_2",
+                 "card_a", "card_a_ids", "card_b", "card_b_ids")
+#: the console's card views (render/part_pictures.CARD_VIEWS): a neutral shaded picture and its id picture each
+CARD_VIEWS = ("card_a", "card_b")
+CARD_PICTURES = frozenset(n for v in CARD_VIEWS for n in (v, f"{v}_ids"))
 #: a reading queued this long ago and not landed is queued again (the model may take 3 minutes, the queue more)
 READING_STALE_S = 600.0
 #: the parts listed in the picker at most (the largest first beyond it)
@@ -87,11 +91,16 @@ def store_parts(session_id: str, record: Mapping, surface, *, route: str = ROUTE
         store = get_object_store()
         pictures = []
         with tempfile.TemporaryDirectory(prefix="part_pictures_") as tmp:
+            views = []
             for path in render_parts(surface, [r["id"] for r in table], Path(tmp), card=True):
+                if path.suffix == ".json":
+                    # where each visible part's number goes on a card view, and what that view hides
+                    views.append({"name": path.stem, **json.loads(path.read_text())})
+                    continue
                 key = _key(f"{PICTURE_DIR}/{path.name}", session_id)
                 store.upload_file(local_path=path, object_key=key)
                 pictures.append({"name": path.stem, "object_key": key})
-        return {"route": route, "table": table, "pictures": pictures}
+        return {"route": route, "table": table, "pictures": pictures, "views": views}
     except Exception as exc:  # noqa: BLE001 - no checklist, never a failed check
         logger.warning("part matches: the parts were not kept for the checklist (%s: %s)", type(exc).__name__,
                        str(exc)[:200])
@@ -259,32 +268,48 @@ def rows_of(reading: Mapping, seen: Mapping, session_id: str) -> dict | None:
               for u in reading.get("unsure") or []]
     if not rows and not unsure:
         return None
-    parts = [{"id": r["id"], "n": _num(r["id"]), "name": r.get("name") or "", "colour": colour_of(i)}
+    parts = [{"id": r["id"], "n": _num(r["id"]), "name": readable(r.get("name") or ""), "colour": colour_of(i)}
              for i, r in enumerate(table)]
     if len(parts) > MAX_LISTED:
         keep = {r["id"] for r in sorted(table, key=lambda r: -float(r.get("volume_mm3") or 0))[:MAX_LISTED]}
         parts = [p for p in parts if p["id"] in keep]
-    out: dict[str, Any] = {"status": "done", "rows": rows, "unsure": unsure, "parts": parts}
-    card = next((p for p in seen.get("pictures") or [] if p.get("name") == CARD), None)
-    if card is not None:
-        out["picture_key"] = card.get("object_key")
+    # order: the part under each id of the card's id picture (the table's order)
+    out: dict[str, Any] = {"status": "done", "rows": rows, "unsure": unsure, "parts": parts,
+                           "order": [r["id"] for r in table]}
+    # THE CARD'S VIEWS (render/part_pictures CARD_VIEWS): served through the API (GET .../check/parts/<name>.png)
+    # so the console can read the id picture under the cursor; the first view always, the second only when the
+    # first hides a part
+    stored = {p.get("name") for p in seen.get("pictures") or []}
+    views = [{k: v[k] for k in ("name", "w", "h", "tags", "hidden") if k in v} for v in seen.get("views") or []
+             if v.get("name") in stored and f"{v.get('name')}_ids" in stored]
+    if views:
+        out["views"] = views if views[0].get("hidden") else views[:1]
     return out
 
 
-def with_url(v: dict | None) -> dict | None:
-    """The view with a short-lived link to its picture (the stored key never leaves the server)."""
-    if not v or not v.get("picture_key"):
-        return v
-    from datetime import timedelta
+_JUNK_NAME = re.compile(r"^(?:p|pt|part|body|solid|shape|component|comp|feature|brep|item|mesh|object|obj|unnamed|"
+                        r"default|copy|instance|occurrence|occ)?[\s_\-.#:]*\d*(?:\s*[(\[<]\d+[)\]>])?$", re.I)
 
+
+def readable(name: str) -> str:
+    """A CAD part name shown to the user only when it reads as a name ("Bolt M8", "Rail"); "p5 (3)", "Body1",
+    "Solid_12" and the like say nothing and are left out."""
+    n = " ".join(str(name or "").split())
+    letters = re.sub(r"[^A-Za-z]", "", n)
+    if len(letters) < 3 or _JUNK_NAME.match(n) or re.fullmatch(r"[A-Za-z]{0,2}[\d\W_]+", n):
+        return ""
+    return n[:40]
+
+
+def card_picture(session_id: str, name: str) -> bytes | None:
+    """The bytes of one of the card's pictures (CARD_PICTURES), or None. Never raises."""
+    if name not in CARD_PICTURES:
+        return None
     from meshpipeline.contracts.object_storage import get_object_store
-    out = {k: x for k, x in v.items() if k != "picture_key"}
     try:
-        out["picture"] = get_object_store().create_download_url(object_key=str(v["picture_key"]),
-                                                                expires_in=timedelta(hours=1))
-    except Exception:  # noqa: BLE001 - the rows alone
-        pass
-    return out
+        return get_object_store().get_bytes(object_key=_key(f"{PICTURE_DIR}/{name}.png", session_id))
+    except Exception:  # noqa: BLE001 - absent: the rows alone
+        return None
 
 
 def enqueue_reading(session_id: str, key: str, user_notes, request_txt, *, owner_id: str = "") -> bool:
@@ -333,7 +358,7 @@ def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str 
                 store = get_object_store()
                 pictures: list[Path] = []
                 for p in seen.get("pictures") or []:
-                    if p.get("name") == CARD:
+                    if p.get("name") in CARD_PICTURES:
                         continue
                     dest = Path(tmp) / f"{p.get('name')}.png"
                     try:
@@ -403,6 +428,6 @@ def for_run(session_id: str, user_notes, request_txt) -> dict | None:
         return None
 
 
-__all__ = ["CARD", "MATCHES", "PARTS_KEY", "PICKS", "PICTURE_NAMES", "ROUTE_CFD", "ROUTE_FEA", "copy_parts",
+__all__ = ["CARD_PICTURES", "CARD_VIEWS", "card_picture", "readable", "MATCHES", "PARTS_KEY", "PICKS", "PICTURE_NAMES", "ROUTE_CFD", "ROUTE_FEA", "copy_parts",
            "enqueue_reading", "for_run", "key_of", "notes_of", "parts_seen", "parts_words", "pick", "picture_keys",
-           "rows_of", "run_reading", "size_words", "store_parts", "view", "with_picks", "with_url"]
+           "rows_of", "run_reading", "size_words", "store_parts", "view", "with_picks"]

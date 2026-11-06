@@ -32,7 +32,7 @@ async def _brief(session, owner_id: str):
     from meshpipeline.application import part_matches as PM
     if session is None or not getattr(session, "request_txt", None):
         return build_brief(session)
-    pm = await asyncio.to_thread(lambda: PM.with_url(PM.view(session, owner_id=owner_id)))
+    pm = await asyncio.to_thread(lambda: PM.view(session, owner_id=owner_id))
     return build_brief(session, part_matches=pm)
 
 

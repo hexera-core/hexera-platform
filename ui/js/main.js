@@ -13,7 +13,7 @@
  * loads this module, and this module is the only thing index.html loads.
  */
 import { apiFetch, setNotifier, useIdentity } from "./api/client.js";
-import { addNote, getJob, getPartMatches, pickPartMatch } from "./api/endpoints.js";
+import { addNote, getJob, getPartMatches, getPartPicture, pickPartMatch } from "./api/endpoints.js";
 import { dispatch, resultSurface } from "./core/events.js";
 import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCopy }
   from "./core/state.js";
@@ -215,6 +215,7 @@ async function addBriefNote(text) {
 const briefParts = {
   get: () => getPartMatches(getState.sessionId()),
   pick: (phrase, parts) => pickPartMatch(getState.sessionId(), phrase, parts),
+  picture: (name) => getPartPicture(getState.sessionId(), name),
 };
 
 configureComposer({

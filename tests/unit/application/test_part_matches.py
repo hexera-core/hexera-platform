@@ -68,10 +68,14 @@ def world(monkeypatch):
     check = {"status": "ready", "session_id": SID,
              "facts": {FACT_KEY: {PM.PARTS_KEY: {"route": "fea", "table": TABLE, "pictures": [
                  {"name": "parts_iso", "object_key": gc.check_object_key(SID, "parts/parts_iso.png")},
-                 {"name": "parts_card", "object_key": gc.check_object_key(SID, "parts/parts_card.png")}]}}}}
+                 {"name": "card_a", "object_key": gc.check_object_key(SID, "parts/card_a.png")},
+                 {"name": "card_a_ids", "object_key": gc.check_object_key(SID, "parts/card_a_ids.png")}],
+                 "views": [{"name": "card_a", "w": 10, "h": 8, "tags": [], "hidden": []},
+                           {"name": "card_b", "w": 10, "h": 8, "tags": [], "hidden": []}]}}}}
     store = _Store({gc.check_object_key(SID, "scout.json"): json.dumps(check).encode(),
                     gc.check_object_key(SID, "parts/parts_iso.png"): b"png",
-                    gc.check_object_key(SID, "parts/parts_card.png"): b"png"})
+                    gc.check_object_key(SID, "parts/card_a.png"): b"png",
+                    gc.check_object_key(SID, "parts/card_a_ids.png"): b"png"})
     monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
     queued: list[dict] = []
     monkeypatch.setattr(GC, "_part_words_enqueuer", lambda **kw: queued.append(kw))
@@ -102,7 +106,8 @@ def test_the_card_queues_one_reading_and_says_so_until_it_lands(world):
     assert ("part 3", "3–4 mm") in rows.values()
     assert [u["text"] for u in got["unsure"]] == ["Couldn't tell which part is “Refine the bracket”"]
     assert [p["n"] for p in got["parts"]] == ["1", "2", "3", "4"] and got["parts"][0]["colour"].startswith("#")
-    assert PM.with_url(got)["picture"].endswith("parts/parts_card.png") and "picture_key" not in PM.with_url(got)
+    assert got["views"] == [{"name": "card_a", "w": 10, "h": 8, "tags": [], "hidden": []}]   # nothing hidden: one side
+    assert PM.card_picture(SID, "card_a") == b"png" and PM.card_picture(SID, "../scout") is None
 
 
 def test_changed_notes_read_again_and_an_old_reading_is_never_used(world):
@@ -199,6 +204,11 @@ def test_the_driver_takes_the_stored_reading_without_asking(monkeypatch):
     got = asyncio.run(PW.decide(Path("."), {}, None, {"user_notes": [{"id": "n", "text": "q", "source": "c"}],
                                                        "part_matches": stored}, consumer="fea_part_sizes"))
     assert got["status"] == "used" and PW.per_part(got["entries"])["Part_3"]["min_m"] == pytest.approx(0.003)
+
+
+def test_only_names_that_read_as_names_are_shown():
+    assert [PM.readable(n) for n in ("p5 (3)", "Body1", "Solid_12", "Bolt M8", "Rail", "PART-4", "x")] == [
+        "", "", "", "Bolt M8", "Rail", "", ""]
 
 
 def test_parts_words_are_short():

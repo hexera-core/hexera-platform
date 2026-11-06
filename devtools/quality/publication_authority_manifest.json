@@ -5454,9 +5454,9 @@
   "roots": []
  },
  {
-  "context": "render/part_pictures.py::render_parts::screenshot#1|NotAPublisher|not-a-publisher|render/part_pictures.py::result of pv.Plotter(off_screen=True, window_size=list(window))",
+  "context": "render/part_pictures.py::_shot::screenshot#1|NotAPublisher|not-a-publisher|render/part_pictures.py::result of pv.Plotter(off_screen=True, window_size=list(window))",
   "path": "render/part_pictures.py",
-  "qualname": "render_parts",
+  "qualname": "_shot",
   "semantic": "screenshot",
   "method": "screenshot",
   "ordinal": 1,
@@ -5469,33 +5469,18 @@
   ]
  },
  {
-  "context": "render/part_pictures.py::render_parts::screenshot#2|NotAPublisher|not-a-publisher|render/part_pictures.py::result of pv.Plotter(off_screen=True, window_size=list(window))",
+  "context": "render/part_pictures.py::render_parts::screenshot#1|NotAPublisher|not-a-publisher|render/part_pictures.py::result of pv.Plotter(off_screen=True, window_size=[260 * cols, 240 * rows], shape=(rows, cols), border=True)",
   "path": "render/part_pictures.py",
   "qualname": "render_parts",
   "semantic": "screenshot",
   "method": "screenshot",
-  "ordinal": 2,
+  "ordinal": 1,
   "receiver": "pl",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
   "roots": [
-   "render/part_pictures.py::result of pv.Plotter(off_screen=True, window_size=list(window))"
-  ]
- },
- {
-  "context": "render/part_pictures.py::render_parts::screenshot#3|NotAPublisher|not-a-publisher|render/part_pictures.py::result of pv.Plotter(off_screen=True, window_size=list(window))",
-  "path": "render/part_pictures.py",
-  "qualname": "render_parts",
-  "semantic": "screenshot",
-  "method": "screenshot",
-  "ordinal": 3,
-  "receiver": "pl",
-  "authority": "NotAPublisher",
-  "lifecycle": "not-a-publisher",
-  "gated_required": false,
-  "roots": [
-   "render/part_pictures.py::result of pv.Plotter(off_screen=True, window_size=list(window))"
+   "render/part_pictures.py::result of pv.Plotter(off_screen=True, window_size=[260 * cols, 240 * rows], shape=(rows, cols), border=True)"
   ]
  },
  {

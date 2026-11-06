@@ -190,16 +190,19 @@ export const Stage = {
       inp.addEventListener('keydown',(e)=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send();}});}
     this.scrollBottom();},
 
-  /* THE PARTS YOUR NOTES MEAN, under the notes, before Approve: one picture with every part numbered, then a
-     row per phrase ("frame rail · part 9 · 3–4 mm") and a line per phrase that could not be placed. A row opens
-     the part list; a click on a part keeps it at once (no save button: the normal Approve takes it). Nothing at
-     all when the notes name no part. `parts`: {get(), pick(phrase, ids)}. */
+  /* THE PARTS YOUR NOTES MEAN, under the notes, before Approve: one picture of the model, then a row per phrase
+     ("frame rail · part 9 · 3–4 mm") with its colour, and a line per phrase that could not be placed. The picture
+     tints each row's parts in the row's colour and leaves the rest grey; hovering or opening a row shows only ITS
+     parts. A row opens the part list; a click on a part - in the list or on the picture - keeps it at once (no save
+     button: the normal Approve takes it). A second side of the model is offered only when the first hides a part.
+     Nothing at all when the notes name no part. `parts`: {get(), pick(phrase, ids), picture(name)}. */
   _partMatches(m,parts){
     clearTimeout(this._pmTimer);
     const el=this._briefEl&&this._briefEl.querySelector('.rc-pm');
     if(!el)return;
-    this._pm=m||null;
-    const draw=()=>{el.innerHTML=this._pmHtml(this._pm);};
+    this._pm=m||null;this._pmParts=parts||null;
+    const draw=()=>{el.innerHTML=this._pmHtml(this._pm);this._pmPaint(el);};
+    this._pmDraw=draw;
     draw();
     if(m&&(m.status==='reading'||m.status==='waiting')&&parts){
       const t0=Date.now();
@@ -210,50 +213,132 @@ export const Stage = {
         const busy=this._pm&&(this._pm.status==='reading'||this._pm.status==='waiting');
         if((busy||!got)&&Date.now()-t0<8*60e3)this._pmTimer=setTimeout(poll,3000);};
       this._pmTimer=setTimeout(poll,2500);}
+    const rowOf=(i)=>{const m=this._pm;return m&&[...(m.rows||[]),...(m.unsure||[])].find(x=>x.phrase===i);};
+    // a part toggled for the open row: kept at once, the card redrawn from the server's checked answer
+    this._pmToggle=(id)=>{
+      const i=this._pmOpen,r=rowOf(i);if(!r||!parts)return;
+      const on=new Set(r.parts||[]);
+      if(on.has(id))on.delete(id);else on.add(id);
+      r.parts=[...on];
+      el.querySelectorAll(`.rc-pm-part[data-part="${CSS.escape(id)}"]`).forEach(c=>{
+        c.classList.toggle('on',on.has(id));c.setAttribute('aria-pressed',String(on.has(id)));});
+      this._pmPaint(el);
+      clearTimeout(this._pmSave);
+      this._pmSave=setTimeout(async()=>{
+        try{const got=await parts.pick(i,[...on]);if(got&&this._pmOpen===i){this._pm=got;draw();}}
+        catch(err){const msg=el.querySelector('.rc-pm-msg');if(msg)msg.textContent=(err&&err.message)||'Not saved.';}},450);};
     el.onclick=(e)=>{
       const m=this._pm;if(!m||m.status!=='done')return;
+      if(e.target.closest('.rc-pm-flip')){this._pmView=this._pmView?0:1;this._pmPaint(el);return;}
       const chip=e.target.closest('.rc-pm-part');
-      if(chip){
-        if(!parts)return;
-        const i=this._pmOpen;
-        const r=[...(m.rows||[]),...(m.unsure||[])].find(x=>x.phrase===i);if(!r)return;
-        const on=new Set(r.parts||[]),id=chip.dataset.part;
-        if(on.has(id))on.delete(id);else on.add(id);
-        r.parts=[...on];chip.classList.toggle('on',on.has(id));chip.setAttribute('aria-pressed',String(on.has(id)));
-        clearTimeout(this._pmSave);
-        this._pmSave=setTimeout(async()=>{
-          try{const got=await parts.pick(i,[...on]);if(got&&this._pmOpen===i){this._pm=got;draw();}}
-          catch(err){const msg=el.querySelector('.rc-pm-msg');if(msg)msg.textContent=(err&&err.message)||'Not saved.';}},450);
-        return;}
+      if(chip){this._pmToggle(chip.dataset.part);return;}
       const row=e.target.closest('.rc-pm-row');if(!row)return;
       const i=Number(row.dataset.phrase);
-      this._pmOpen=this._pmOpen===i?null:i;draw();};},
+      this._pmOpen=this._pmOpen===i?null:i;draw();};
+    el.onmouseover=(e)=>{const row=e.target.closest('.rc-pm-row');const i=row?Number(row.dataset.phrase):null;
+      if(i!==this._pmHover){this._pmHover=i;this._pmPaint(el);}};
+    el.onmouseleave=()=>{if(this._pmHover!=null){this._pmHover=null;this._pmPaint(el);}};},
+
+  // the rows' colours: muted, distinct, the same order every time
+  _PM_COL:['#5B9BD5','#E3A23B','#62B66C','#D9675F','#A37FCB','#4FB0AC','#CDB447','#E08DB0'],
 
   _pmHtml(m){
     if(!m)return '';
     if(m.status==='reading')return '<div class="rc-pm-wait" role="status">Reading your notes…</div>';
     if(m.status!=='done')return '';
     const open=this._pmOpen;
-    const row=(r,unsure)=>{
+    const row=(r,k,unsure)=>{
       const i=r.phrase,isOpen=open===i;
-      const what=unsure?esc(r.text)
-        :`<span class="rc-pm-w" title="${esc(r.quote)}">${esc(r.words)}</span>`;
+      const what=unsure?esc(r.text):`<span class="rc-pm-w" title="${esc(r.quote)}">${esc(r.words)}</span>`;
       const where=unsure?'Pick parts'
         :`${esc(r.parts_text)}${r.size?`<span class="rc-pm-s">${esc(r.size)}</span>`:''}`;
+      const dot=unsure?'<span class="rc-pm-dot none"></span>'
+        :`<span class="rc-pm-dot" style="background:${this._PM_COL[k%this._PM_COL.length]}"></span>`;
       return `<button type="button" class="rc-pm-row${unsure?' unk':''}${isOpen?' open':''}" data-phrase="${i}"`
-        +` aria-expanded="${isOpen}"><span class="rc-pm-q">${what}</span><span class="rc-pm-v">${where}</span>`
+        +` aria-expanded="${isOpen}">${dot}<span class="rc-pm-q">${what}</span><span class="rc-pm-v">${where}</span>`
         +`<span class="rc-pm-c" aria-hidden="true"></span></button>`+(isOpen?this._pmPicker(m,r):'');};
-    const pic=m.picture?`<img class="rc-pm-pic" src="${esc(m.picture)}" alt="Your model, each part numbered">`:'';
-    return `<div class="rc-pm-h">Parts in your notes</div>${pic}`
-      +(m.rows||[]).map(r=>row(r,false)).join('')+(m.unsure||[]).map(r=>row(r,true)).join('');},
+    const views=m.views||[];
+    const fig=views.length?`<div class="rc-pm-fig"><canvas class="rc-pm-pic" role="img"
+        aria-label="Your model; the parts each note means are in its colour"></canvas>${views.length>1
+        ?'<button type="button" class="rc-pm-flip" title="Other side" aria-label="Show the other side"></button>':''}</div>`:'';
+    return `<div class="rc-pm-h">Parts in your notes</div>${fig}`
+      +(m.rows||[]).map((r,k)=>row(r,k,false)).join('')+(m.unsure||[]).map(r=>row(r,0,true)).join('');},
+
+  _pmColour(m,r){const k=(m.rows||[]).indexOf(r);return k>=0?this._PM_COL[k%this._PM_COL.length]:'#E3A23B';},
 
   _pmPicker(m,r){
-    const on=new Set(r.parts||[]);
-    return `<div class="rc-pm-pick" role="group" aria-label="Which parts">`
+    const on=new Set(r.parts||[]),c=this._pmColour(m,r);
+    return `<div class="rc-pm-pick" role="group" aria-label="Which parts" style="--pm-c:${c}">`
       +(m.parts||[]).map(p=>`<button type="button" class="rc-pm-part${on.has(p.id)?' on':''}" data-part="${esc(p.id)}"`
-        +` aria-pressed="${on.has(p.id)}"><span class="dot" style="background:${esc(p.colour)}"></span>${esc(p.n)}`
+        +` aria-pressed="${on.has(p.id)}"><span class="dot"></span>${esc(p.n)}`
         +`${p.name?`<span class="nm">${esc(p.name)}</span>`:''}</button>`).join('')
+      +`${(m.views||[]).length?'<span class="rc-pm-hint">or click the parts on the picture</span>':''}`
       +'<span class="rc-pm-msg" role="status"></span></div>';},
+
+  /* the picture: the neutral shaded side, each pixel's part read off its id picture, tinted by what the user is
+     looking at; the numbers only where a part is seen (placed on the server, clear of each other) */
+  async _pmPaint(el){
+    const m=this._pm,cv=el.querySelector('.rc-pm-pic');
+    if(!m||!cv||!(m.views||[]).length||!this._pmParts||!this._pmParts.picture)return;
+    const view=m.views[Math.min(this._pmView||0,m.views.length-1)];
+    this._pmCache=this._pmCache||{};
+    const load=async(name)=>{
+      if(!this._pmCache[name])this._pmCache[name]=this._pmParts.picture(name).then(b=>createImageBitmap(b));
+      return this._pmCache[name];};
+    let shaded,idsImg;
+    try{[shaded,idsImg]=await Promise.all([load(view.name),load(view.name+'_ids')]);}
+    catch{delete this._pmCache[view.name];delete this._pmCache[view.name+'_ids'];return;}
+    if(!cv.isConnected)return;
+    const w=shaded.width,h=shaded.height;
+    cv.width=w;cv.height=h;
+    const g=cv.getContext('2d');
+    const key=view.name+'#ids';
+    if(!this._pmCache[key]){
+      const c2=new OffscreenCanvas(w,h).getContext('2d');c2.drawImage(idsImg,0,0);
+      const d=c2.getImageData(0,0,w,h).data,ids=new Int32Array(w*h);
+      for(let p=0;p<w*h;p++){const o=p*4;ids[p]=(d[o+3]>0&&Math.abs(d[o+2]-200)<=1)?d[o]+256*d[o+1]-1:-1;}
+      this._pmCache[key]=ids;}
+    const ids=this._pmCache[key];
+    g.clearRect(0,0,w,h);g.drawImage(shaded,0,0);
+    const img=g.getImageData(0,0,w,h),px=img.data;
+    const order=m.order||(m.parts||[]).map(p=>p.id);
+    const rows=m.rows||[],col=this._PM_COL;
+    const rowOfPart={};rows.forEach((r,k)=>(r.parts||[]).forEach(id=>{if(!(id in rowOfPart))rowOfPart[id]=k;}));
+    const active=this._pmHover!=null?this._pmHover:this._pmOpen;
+    const act=active!=null?[...rows,...(m.unsure||[])].find(r=>r.phrase===active):null;
+    const actSet=act?new Set(act.parts||[]):null;
+    const actCol=act?this._pmColour(m,act):'#E3A23B';
+    const rgb=(hex)=>[parseInt(hex.slice(1,3),16),parseInt(hex.slice(3,5),16),parseInt(hex.slice(5,7),16)];
+    const tint=order.map(id=>{
+      if(actSet)return actSet.has(id)?rgb(actCol):null;
+      return id in rowOfPart?rgb(col[rowOfPart[id]%col.length]):null;});
+    for(let p=0;p<w*h;p++){
+      const k=ids[p];if(k<0)continue;
+      const o=p*4,L=px[o]/255,t=tint[k];
+      if(t){const f=0.28+0.9*L;px[o]=Math.min(255,t[0]*f);px[o+1]=Math.min(255,t[1]*f);px[o+2]=Math.min(255,t[2]*f);}
+      else{const v=actSet?60+70*L:85+95*L;px[o]=px[o+1]=px[o+2]=v;}}
+    g.putImageData(img,0,0);
+    // the numbers: where the part is seen; faded when another row is looked at
+    g.font='600 14px Geist, system-ui, sans-serif';g.textAlign='center';g.textBaseline='middle';
+    for(const t of view.tags||[]){
+      const lit=!actSet||actSet.has(t.part);
+      const tw=12+9*String(t.n).length;
+      g.globalAlpha=lit?1:0.35;
+      g.fillStyle='rgba(255,255,255,0.92)';g.strokeStyle='rgba(0,0,0,0.55)';g.lineWidth=1;
+      g.beginPath();g.roundRect(t.x-tw/2,t.y-11,tw,22,6);g.fill();g.stroke();
+      g.fillStyle='#111';g.fillText(String(t.n),t.x,t.y+0.5);}
+    g.globalAlpha=1;
+    // the picture answers the cursor: which part is here, and a click picks it for the open row
+    const at=(e)=>{const r=cv.getBoundingClientRect();
+      const x=Math.floor((e.clientX-r.left)*w/r.width),y=Math.floor((e.clientY-r.top)*h/r.height);
+      const k=(x>=0&&y>=0&&x<w&&y<h)?ids[y*w+x]:-1;return k>=0?order[k]:null;};
+    const name=(id)=>{const p=(m.parts||[]).find(q=>q.id===id);return p?`Part ${p.n}${p.name?` · ${p.name}`:''}`:'';};
+    cv.onmousemove=(e)=>{const id=at(e);cv.title=id?name(id):'';cv.style.cursor=id&&this._pmOpen!=null?'pointer':'';};
+    cv.onclick=(e)=>{e.stopPropagation();const id=at(e);if(!id)return;
+      if(this._pmOpen!=null){this._pmToggle(id);return;}
+      // no row open: open the row this part belongs to, so its match can be checked and fixed
+      const r=rows.find(x=>(x.parts||[]).includes(id));
+      if(r){this._pmOpen=r.phrase;this._pmDraw();}};},
 
   /* THE ENGINE CHOICE, under the one engine question. Every engine that can take the uploaded file,
      best measured fit first: its fit, the plain-words reason (how it did in the lab on shapes measured

@@ -557,8 +557,21 @@ async def get_check_parts(session_id: uuid.UUID, owner_id: str = Depends(owner_d
     the rows, the parts and a link to the picture."""
     session = await _owned_session(session_id, owner_id, organization_id)
     from meshpipeline.application import part_matches as PM
-    got = await asyncio.to_thread(lambda: PM.with_url(PM.view(session, owner_id=owner_id)))
+    got = await asyncio.to_thread(lambda: PM.view(session, owner_id=owner_id))
     return got or {"status": "none"}
+
+
+@router.get("/{session_id}/check/parts/{name}.png")
+async def get_check_parts_picture(session_id: uuid.UUID, name: str, owner_id: str = Depends(owner_dep),
+                                  organization_id: str = Depends(org_dep)) -> Response:
+    """One of the checklist card's pictures (a side of the model, shaded or its part ids), served from the API so the
+    console can read which part is under the cursor. 404 when there is none."""
+    await _owned_session(session_id, owner_id, organization_id)
+    from meshpipeline.application import part_matches as PM
+    data = await asyncio.to_thread(PM.card_picture, str(session_id), name)
+    if data is None:
+        raise HTTPException(404, "No such picture for this session's parts")
+    return Response(content=data, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
 
 
 @router.post("/{session_id}/check/parts")
@@ -571,7 +584,7 @@ async def pick_check_parts(session_id: uuid.UUID, body: PartPickIn, owner_id: st
         raise HTTPException(409, "The run has already started, so its parts cannot be changed. "
                                  "Change them before you approve the next run.")
     from meshpipeline.application import part_matches as PM
-    got = await asyncio.to_thread(lambda: PM.with_url(PM.pick(session, body.phrase, body.parts)))
+    got = await asyncio.to_thread(lambda: PM.pick(session, body.phrase, body.parts))
     if got is None:
         raise HTTPException(409, "Your notes changed since this list was made. Wait for the new one, then pick again.")
     return got

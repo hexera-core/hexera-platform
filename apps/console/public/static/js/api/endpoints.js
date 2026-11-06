@@ -128,6 +128,13 @@ export async function pickPartMatch(sessionId, phrase, parts) {
   return r.json();
 }
 
+/** One of the checklist card's pictures (a side of the model, shaded or its part ids), as a Blob. */
+export async function getPartPicture(sessionId, name) {
+  const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/parts/${name}.png`, { headers: headers() });
+  if (!r.ok) throw await readError(r);
+  return r.blob();
+}
+
 /** The job's current durable facts. `throwOnError` is false for the poller, which treats a
  *  transient 5xx as normal, and true for the deep link, which must know it failed. */
 export async function getJob(jobId, { throwOnError = true } = {}) {
