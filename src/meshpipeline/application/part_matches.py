@@ -42,6 +42,8 @@ PICTURE_NAMES = ("parts_iso", "parts_top", "parts_front", "parts_alone_1", "part
 #: the console's card views (render/part_pictures.CARD_VIEWS): a neutral shaded picture and its id picture each
 CARD_VIEWS = ("card_a", "card_b")
 CARD_PICTURES = frozenset(n for v in CARD_VIEWS for n in (v, f"{v}_ids"))
+#: the parts model the console turns in 3D (render/part_model), beside the pictures
+MODEL = "model.json"
 #: a reading queued this long ago and not landed is queued again (the model may take 3 minutes, the queue more)
 READING_STALE_S = 600.0
 #: the parts listed in the picker at most (the largest first beyond it)
@@ -56,7 +58,7 @@ def _key(name: str, session_id: str) -> str:
 
 def picture_keys(session_id: str) -> list[str]:
     """Every picture key this step may have stored for the session (the privacy sweep deletes them)."""
-    return [_key(f"{PICTURE_DIR}/{n}.png", session_id) for n in PICTURE_NAMES]
+    return [*(_key(f"{PICTURE_DIR}/{n}.png", session_id) for n in PICTURE_NAMES), _key(f"{PICTURE_DIR}/{MODEL}", session_id)]
 
 
 def _read(session_id: str, name: str) -> dict | None:
@@ -91,20 +93,52 @@ def store_parts(session_id: str, record: Mapping, surface, *, route: str = ROUTE
         from meshpipeline.render.part_pictures import render_parts
         store = get_object_store()
         pictures = []
+        ids = [r["id"] for r in table]
         with tempfile.TemporaryDirectory(prefix="part_pictures_") as tmp:
             views = []
-            for path in render_parts(shown, [r["id"] for r in table], Path(tmp), card=True):
-                if path.suffix == ".json":
+            # THE MODEL THE USER TURNS (the checklist's 3D view): the same surface, each triangle's part; the
+            # pictures stay for the vision model (and as the console's fallback)
+            model = _model_file(shown, ids, Path(tmp), inside={str(r["id"]): str(r.get("in_part") or "")
+                                                                for r in table if r.get("feature")})
+            for path in [*render_parts(shown, ids, Path(tmp), card=True), *([model] if model else [])]:
+                if path.suffix == ".json" and path.name != MODEL:
                     # where each visible part's number goes on a card view, and what that view hides
                     views.append({"name": path.stem, **json.loads(path.read_text())})
                     continue
                 key = _key(f"{PICTURE_DIR}/{path.name}", session_id)
                 store.upload_file(local_path=path, object_key=key)
+                if path.name == MODEL:
+                    continue
                 pictures.append({"name": path.stem, "object_key": key})
-        return {"route": route, "table": table, "pictures": pictures, "views": views}
+        out = {"route": route, "table": table, "pictures": pictures, "views": views}
+        if model:
+            out["model"] = _key(f"{PICTURE_DIR}/{MODEL}", session_id)
+        return out
     except Exception as exc:  # noqa: BLE001 - no checklist, never a failed check
         logger.warning("part matches: the parts were not kept for the checklist (%s: %s)", type(exc).__name__,
                        str(exc)[:200])
+        return None
+
+
+def _model_file(surface, part_ids: list[str], tmp: Path, *, inside: dict[str, str] | None = None) -> Path | None:
+    """The parts model (render/part_model) written to `tmp`, or None when it cannot be made (the pictures alone).
+    `inside`: the part each area is in."""
+    try:
+        from meshpipeline.render.part_model import model_payload
+        path = tmp / MODEL
+        path.write_text(json.dumps(model_payload(surface, part_ids, inside=inside), separators=(",", ":")))
+        return path
+    except Exception as exc:  # noqa: BLE001 - the console shows the pictures instead
+        logger.warning("part matches: the parts model was not made (%s: %s)", type(exc).__name__, str(exc)[:200])
+        return None
+
+
+def model_bytes(session_id: str) -> bytes | None:
+    """The stored parts model (JSON bytes) the console turns, or None. Never raises."""
+    from meshpipeline.contracts.object_storage import get_object_store
+    try:
+        return get_object_store().get_bytes(object_key=_key(f"{PICTURE_DIR}/{MODEL}", session_id))
+    except Exception:  # noqa: BLE001 - absent: the pictures instead
         return None
 
 
@@ -116,24 +150,33 @@ def copy_parts(seen: Mapping | None, session_id: str) -> dict | None:
     from meshpipeline.contracts.object_storage import get_object_store
     store = get_object_store()
     pictures = []
-    for p in seen.get("pictures") or []:
-        key = _key(f"{PICTURE_DIR}/{p.get('name')}.png", session_id)
+    out = {k: v for k, v in dict(seen).items() if k != "model"}
+    model = {"name": MODEL[:-5], "object_key": seen.get("model"), "file": MODEL} if seen.get("model") else None
+    for p in [*(seen.get("pictures") or []), *([model] if model else [])]:
+        file = str(p.get("file") or f"{p.get('name')}.png")
+        key = _key(f"{PICTURE_DIR}/{file}", session_id)
         if p.get("object_key") == key:
-            pictures.append(dict(p))
+            if p is model:
+                out["model"] = key
+            else:
+                pictures.append(dict(p))
             continue
         try:
             data = store.get_bytes(object_key=str(p.get("object_key")))
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as fh:
+            with tempfile.NamedTemporaryFile(suffix=Path(file).suffix, delete=False) as fh:
                 fh.write(data)
                 tmp = Path(fh.name)
             try:
                 store.upload_file(local_path=tmp, object_key=key)
             finally:
                 tmp.unlink(missing_ok=True)
-            pictures.append({"name": p.get("name"), "object_key": key})
+            if p is model:
+                out["model"] = key
+            else:
+                pictures.append({"name": p.get("name"), "object_key": key})
         except Exception as exc:  # noqa: BLE001 - fewer pictures
             logger.info("part matches: picture %s not copied (%s)", p.get("name"), type(exc).__name__)
-    return {**dict(seen), "pictures": pictures}
+    return {**out, "pictures": pictures}
 
 
 def parts_seen(check: Mapping | None) -> dict | None:
@@ -160,18 +203,37 @@ def key_of(notes: str, table: list[dict]) -> str:
 
 
 def view(session: Any, *, owner_id: str = "") -> dict | None:
-    """What the request card shows about the notes and the parts (blocking: call it off the event loop):
-    None (no notes, no parts, or the notes name no part), {"status": "waiting"} (the check is still measuring),
-    {"status": "reading"} (queued here when the notes or the parts changed), or {"status": "done", ...} with
-    the rows. Never raises."""
+    """What the request card shows about the notes and the parts (blocking: call it off the event loop). Drawing
+    the card never starts a reading - the user's Finalize notes does (`finalize`), or their yes (`before_run`):
+    None (no words, or no parts to tie them to), {"status": "waiting"} (the check is still measuring),
+    {"status": "ready"} (words not read yet: the card offers Finalize notes), {"status": "reading"} or
+    {"status": "done", "rows": [...]} (no rows: the words name no part). While the notes changed since the last
+    reading, its rows stay on the card ("stale"). Never raises."""
     try:
-        return _view(session, owner_id=owner_id)
+        return _view(session, owner_id=owner_id, start=False)
     except Exception as exc:  # noqa: BLE001 - the card is drawn without the rows
         logger.warning("part matches: the checklist was not drawn (%s: %s)", type(exc).__name__, str(exc)[:200])
         return None
 
 
-def _view(session: Any, *, owner_id: str = "") -> dict | None:
+def finalize(session: Any, *, owner_id: str = "") -> dict | None:
+    """THE USER FINALIZED THEIR NOTES: the reading of the words as they stand now (the first answer and every note)
+    is started - unless it already runs or is done - and the card's view is answered. Never raises."""
+    try:
+        return _view(session, owner_id=owner_id, start=True)
+    except Exception as exc:  # noqa: BLE001 - nothing read; the run reads the notes itself
+        logger.warning("part matches: the notes were not read (%s: %s)", type(exc).__name__, str(exc)[:200])
+        return None
+
+
+def before_run(session: Any, *, owner_id: str = "") -> str:
+    """Whether a yes can start the run now: "go" (nothing to read, or the words as they stand are read) or "read"
+    (they are not read yet: the reading is started now and the yes waits for it). Never raises: "go" when unsure."""
+    got = finalize(session, owner_id=owner_id)
+    return "read" if got and got.get("status") == "reading" else "go"
+
+
+def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
     from meshpipeline.application.geometry_check import read_check
     sid = str(getattr(session, "id", "") or "")
     notes = notes_of(getattr(session, "user_notes", None), getattr(session, "request_txt", None))
@@ -184,16 +246,26 @@ def _view(session: Any, *, owner_id: str = "") -> dict | None:
         return {"status": "waiting"} if status in ("pending", "scouted") else None
     key = key_of(notes, seen["table"])
     stored = _read(sid, MATCHES)
-    if stored is None or stored.get("key") != key or (
-            stored.get("status") == "reading" and time.time() - float(stored.get("at") or 0) > READING_STALE_S):
-        queued = enqueue_reading(sid, key, getattr(session, "user_notes", None),
-                                 getattr(session, "request_txt", None),
-                                 owner_id=owner_id or str(getattr(session, "owner_id", "") or ""))
-        return {"status": "reading"} if queued else None
-    if stored.get("status") == "reading":
-        return {"status": "reading"}
-    reading = with_picks(sid, stored, seen["table"], notes)
-    return rows_of(reading, seen, sid)
+    was = stored or {}
+    current = stored is not None and was.get("key") == key
+    lapsed = current and was.get("status") == "reading" and (
+        time.time() - float(was.get("at") or 0) > READING_STALE_S)
+    if start and (not current or lapsed):
+        if enqueue_reading(sid, key, getattr(session, "user_notes", None), getattr(session, "request_txt", None),
+                           owner_id=owner_id or str(getattr(session, "owner_id", "") or ""), previous=stored):
+            stored, current = _read(sid, MATCHES), True
+    if current and stored is not None and stored.get("status") == "done":
+        got = rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid)
+        return got or {"status": "done", "rows": [], "unsure": []}
+    # NOT READ FOR THESE WORDS (yet): the last reading's rows stay on the card until the new one lands
+    status = "reading" if current and stored is not None and stored.get("status") == "reading" else "ready"
+    out: dict[str, Any] = {"status": status}
+    last = stored if stored is not None and stored.get("status") == "done" else (stored or {}).get("previous")
+    if isinstance(last, dict) and last.get("status") == "done":
+        old = rows_of(with_picks(sid, last, seen["table"], notes), seen, sid)
+        if old:
+            out = {**old, "status": status, "stale": True}
+    return out
 
 
 def with_picks(session_id: str, stored: Mapping, table: list[dict], notes: str) -> dict:
@@ -218,7 +290,14 @@ def parts_words(ids: list[str], names: dict[str, str] | None = None) -> str:
     ids = [p for p in ids if p not in names]
     said = _part_words(ids) if ids else ""
     if areas:
-        shown = " and ".join(areas[:2]) + (f" and {len(areas) - 2} more" if len(areas) > 2 else "")
+        # one area by its name; several alike ("2 bosses ...", "2 bosses ...") or long names as a count
+        uniq = list(dict.fromkeys(areas))
+        if len(uniq) == 1 and len(areas) == 1:
+            shown = uniq[0]
+        elif len(areas) == 2 and len(uniq) == 2 and len(uniq[0]) + len(uniq[1]) <= 44:
+            shown = f"{uniq[0]} and {uniq[1]}"
+        else:
+            shown = f"{len(areas)} areas"
         return f"{said}, {shown}" if said else shown
     return said
 
@@ -250,6 +329,9 @@ def _part_words(ids: list[str]) -> str:
         i = j + 1
     if len(nums) == 1:
         return f"part {runs[0]}"
+    if len(runs) > 4:
+        # a long scatter of parts ("parts 5–8, 11–14, 19, 62, ...") is a count: the model shows which
+        return f"{len(nums)} parts"
     return "parts " + (", ".join(runs[:-1]) + " and " + runs[-1] if len(runs) > 1 else runs[0])
 
 
@@ -314,6 +396,9 @@ def rows_of(reading: Mapping, seen: Mapping, session_id: str) -> dict | None:
     # order: the part under each id of the card's id picture (the table's order)
     out: dict[str, Any] = {"status": "done", "rows": rows, "unsure": unsure, "parts": parts,
                            "order": [r["id"] for r in table]}
+    # the part each area is inside: a click on an area picks its part unless the row is about areas
+    if inside:
+        out["inside"] = {f: p for f, p in inside.items() if p}
     # THE CARD'S VIEWS (render/part_pictures CARD_VIEWS): served through the API (GET .../check/parts/<name>.png)
     # so the console can read the id picture under the cursor; the first view always, the second only when the
     # first hides a part
@@ -322,6 +407,9 @@ def rows_of(reading: Mapping, seen: Mapping, session_id: str) -> dict | None:
              if v.get("name") in stored and f"{v.get('name')}_ids" in stored]
     if views:
         out["views"] = views if views[0].get("hidden") else views[:1]
+    # THE MODEL THE USER TURNS (GET .../check/parts/model): the console draws it in 3D, the pictures its fallback
+    if seen.get("model"):
+        out["model"] = True
     return out
 
 
@@ -350,11 +438,15 @@ def card_picture(session_id: str, name: str) -> bytes | None:
         return None
 
 
-def enqueue_reading(session_id: str, key: str, user_notes, request_txt, *, owner_id: str = "") -> bool:
-    """Mark the reading of `key` as begun and hand it to the geometry worker. False when nothing runs it."""
+def enqueue_reading(session_id: str, key: str, user_notes, request_txt, *, owner_id: str = "",
+                    previous: Mapping | None = None) -> bool:
+    """Mark the reading of `key` as begun and hand it to the geometry worker. False when nothing runs it.
+    `previous`: the last reading, whose rows the card keeps showing until this one lands."""
     from meshpipeline.contracts.geometry_check import enqueue_part_words
     try:
-        _write(session_id, MATCHES, {"key": key, "status": "reading", "at": time.time()})
+        last = previous if (previous or {}).get("status") == "done" else (previous or {}).get("previous")
+        _write(session_id, MATCHES, {"key": key, "status": "reading", "at": time.time(),
+                                     **({"previous": dict(last)} if isinstance(last, Mapping) else {})})
         return enqueue_part_words(session_id=session_id, key=key, owner_id=owner_id,
                                   user_notes=json.loads(json.dumps(list(user_notes or []), default=str)),
                                   request_txt=str(request_txt or ""))
@@ -469,6 +561,6 @@ def for_run(session_id: str, user_notes, request_txt) -> dict | None:
         return None
 
 
-__all__ = ["CARD_PICTURES", "CARD_VIEWS", "card_picture", "readable", "MATCHES", "PARTS_KEY", "PICKS", "PICTURE_NAMES", "ROUTE_CFD", "ROUTE_FEA", "copy_parts",
+__all__ = ["CARD_PICTURES", "CARD_VIEWS", "MODEL", "before_run", "finalize", "card_picture", "model_bytes", "readable", "MATCHES", "PARTS_KEY", "PICKS", "PICTURE_NAMES", "ROUTE_CFD", "ROUTE_FEA", "copy_parts",
            "enqueue_reading", "for_run", "key_of", "notes_of", "parts_seen", "parts_words", "pick", "picture_keys",
            "rows_of", "run_reading", "size_words", "store_parts", "view", "with_picks"]

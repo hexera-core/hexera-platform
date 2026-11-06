@@ -574,6 +574,33 @@ async def get_check_parts_picture(session_id: uuid.UUID, name: str, owner_id: st
     return Response(content=data, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
 
 
+@router.get("/{session_id}/check/parts/model")
+async def get_check_parts_model(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                                organization_id: str = Depends(org_dep)) -> Response:
+    """The checklist's model in 3D (render/part_model): the measured surface, simplified for the browser, each
+    triangle's part or area, for the console to turn and pick parts on. The stored JSON is handed through as it is
+    (the gzip middleware compresses it). 404 when there is none (the console shows the pictures)."""
+    await _owned_session(session_id, owner_id, organization_id)
+    from meshpipeline.application import part_matches as PM
+    data = await asyncio.to_thread(PM.model_bytes, str(session_id))
+    if data is None:
+        raise HTTPException(404, "No parts model for this session")
+    return Response(content=data, media_type="application/json", headers={"Cache-Control": "private, max-age=3600"})
+
+
+@router.post("/{session_id}/check/parts/finalize")
+async def finalize_check_parts(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                               organization_id: str = Depends(org_dep)) -> dict:
+    """The user finalized their notes: the parts their words name (the first answer and every note) are read now,
+    once for the words as they stand; answers with the checklist ("reading", then the rows on the next poll)."""
+    session = await _owned_session(session_id, owner_id, organization_id)
+    if session.job_id is not None:
+        raise HTTPException(409, "The run has already started, so its notes cannot change.")
+    from meshpipeline.application import part_matches as PM
+    got = await asyncio.to_thread(lambda: PM.finalize(session, owner_id=owner_id))
+    return got or {"status": "none"}
+
+
 @router.post("/{session_id}/check/parts")
 async def pick_check_parts(session_id: uuid.UUID, body: PartPickIn, owner_id: str = Depends(owner_dep),
                            organization_id: str = Depends(org_dep)) -> dict:
@@ -586,7 +613,7 @@ async def pick_check_parts(session_id: uuid.UUID, body: PartPickIn, owner_id: st
     from meshpipeline.application import part_matches as PM
     got = await asyncio.to_thread(lambda: PM.pick(session, body.phrase, body.parts))
     if got is None:
-        raise HTTPException(409, "Your notes changed since this list was made. Wait for the new one, then pick again.")
+        raise HTTPException(409, "Your notes changed since this list was made. Press Finalize notes, then pick again.")
     return got
 
 

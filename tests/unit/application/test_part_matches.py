@@ -93,10 +93,12 @@ def _run_queued(w) -> None:
     PM.run_reading(**kw)
 
 
-def test_the_card_queues_one_reading_and_says_so_until_it_lands(world):
-    assert PM.view(world.session) == {"status": "reading"}
+def test_finalize_queues_one_reading_and_the_card_says_so_until_it_lands(world):
+    assert PM.view(world.session) == {"status": "ready"} and not world.queued      # drawing the card reads nothing
+    assert PM.finalize(world.session) == {"status": "reading"}
     assert len(world.queued) == 1 and world.queued[0]["session_id"] == SID
-    assert PM.view(world.session) == {"status": "reading"}          # not queued twice
+    assert PM.finalize(world.session) == {"status": "reading"}      # not queued twice
+    assert PM.view(world.session) == {"status": "reading"}
     assert len(world.queued) == 1
     _run_queued(world)
     got = PM.view(world.session)
@@ -111,10 +113,11 @@ def test_the_card_queues_one_reading_and_says_so_until_it_lands(world):
 
 
 def test_changed_notes_read_again_and_an_old_reading_is_never_used(world):
-    PM.view(world.session)
+    PM.finalize(world.session)
     first = world.queued[-1]
     world.session.user_notes = [{"id": "n1", "text": NOTE + " 2 mm on part 4.", "source": "console"}]
-    assert PM.view(world.session) == {"status": "reading"}
+    assert PM.view(world.session) == {"status": "ready"}                       # a new note re-arms Finalize
+    assert PM.finalize(world.session) == {"status": "reading"}
     second = world.queued[-1]
     assert second["key"] != first["key"]
     assert PM.run_reading(**first)["status"] == "superseded"      # the older notes' reading lands late: dropped
@@ -124,7 +127,7 @@ def test_changed_notes_read_again_and_an_old_reading_is_never_used(world):
 
 
 def test_a_pick_fixes_a_row_checked_by_the_rules_and_the_run_takes_it(world):
-    PM.view(world.session)
+    PM.finalize(world.session)
     _run_queued(world)
     got = PM.pick(world.session, 2, ["Part_4", "Part_99"])           # an unknown id is dropped
     refine = [r for r in got["rows"] if r["words"] == "Refine the bracket"]
@@ -138,7 +141,7 @@ def test_a_pick_fixes_a_row_checked_by_the_rules_and_the_run_takes_it(world):
 
 
 def test_no_part_picked_puts_the_phrase_back_to_which_parts(world):
-    PM.view(world.session)
+    PM.finalize(world.session)
     _run_queued(world)
     got = PM.pick(world.session, 1, [])
     assert "1.5-2 mm for the bolts" in [u["words"] for u in got["unsure"]]
@@ -146,9 +149,9 @@ def test_no_part_picked_puts_the_phrase_back_to_which_parts(world):
 
 def test_notes_naming_no_part_show_nothing(world):
     world.router.phrases = []
-    PM.view(world.session)
+    PM.finalize(world.session)
     _run_queued(world)
-    assert PM.view(world.session) is None
+    assert PM.view(world.session) == {"status": "done", "rows": [], "unsure": []}     # read: nothing to show
 
 
 def test_no_notes_or_no_parts_show_nothing_and_ask_nothing(world, monkeypatch):
@@ -167,9 +170,9 @@ def test_the_model_down_shows_nothing_and_the_run_reads_again(world, monkeypatch
         async def call_reviewer_with_tools(self, *a, **k):
             raise RuntimeError("down")
     monkeypatch.setattr(model_inference, "_router", _Down())
-    PM.view(world.session)
+    PM.finalize(world.session)
     _run_queued(world)
-    assert PM.view(world.session) is None
+    assert PM.view(world.session) == {"status": "done", "rows": [], "unsure": []}
     assert PM.for_run(SID, world.session.user_notes, world.session.request_txt) is None
 
 
@@ -215,6 +218,9 @@ def test_parts_words_are_short():
     assert PM.parts_words(["Part_9"]) == "part 9"
     assert PM.parts_words(["Part_1", "Part_2", "Part_3", "Part_4", "Part_7"]) == "parts 1–4 and 7"
     assert PM.parts_words(["Part_2", "Part_5"]) == "parts 2 and 5"
+    assert PM.parts_words([f"Part_{n}" for n in (1, 3, 5, 7, 9, 11)]) == "6 parts"     # a scatter is a count
+    assert PM.parts_words(["Feature_1", "Feature_2", "Feature_3"], {"Feature_1": "2 bosses", "Feature_2": "2 bosses",
+                                                                    "Feature_3": "a hole"}) == "3 areas"
 
 
 def test_the_flow_route_reads_with_the_snappy_consumer():

@@ -228,11 +228,30 @@ def size_tool() -> dict:
                 "words": {"type": "array", "items": {"type": "string"}}}}}}
 
 
-def notes_text(state: Mapping) -> str:
-    """The user's own words this step reads: the notes (word for word) and the request."""
+def squash(text: str) -> str:
+    return " ".join(re.sub(r"[^\w.\-–]+", " ", str(text or "").casefold()).split()).strip(" .")
+
+
+def sentences(text: str) -> list[str]:
+    """The sentences (and lines) of a text, as written."""
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", str(text or "")) if s.strip()]
+
+
+def request_beyond_notes(state: Mapping) -> str:
+    """The request's words that the notes do not already say: a sentence the user wrote in both places (the
+    first answer and the notes box) is read once, so it becomes one row, never two."""
     from meshpipeline.contracts.user_notes import render
     s = state or {}
-    parts = [render(s.get("user_notes") or []), str(s.get("request_txt") or "").strip()]
+    said = squash(render(s.get("user_notes") or []))
+    kept = [x for x in sentences(str(s.get("request_txt") or "")) if not (squash(x) and squash(x) in said)]
+    return " ".join(kept).strip()
+
+
+def notes_text(state: Mapping) -> str:
+    """The user's own words this step reads: the notes (word for word) and the request's words beyond them."""
+    from meshpipeline.contracts.user_notes import render
+    s = state or {}
+    parts = [render(s.get("user_notes") or []), request_beyond_notes(s)]
     return "\n\n".join(p for p in parts if p)
 
 
@@ -245,7 +264,7 @@ def messages_for(state: Mapping, table: list[dict], pictures: list[Path], *, con
                  purpose: str = "") -> list[dict]:
     from meshpipeline.contracts.user_notes import prompt_block
     s = state or {}
-    text = {"user_request": str(s.get("request_txt") or "").strip()[:4000], "mesh_for": purpose,
+    text = {"user_request": request_beyond_notes(s)[:4000], "mesh_for": purpose,
             "user_notes": prompt_block(s.get("user_notes") or [], consumer=consumer),
             "parts": table,
             "pictures": [p.stem for p in pictures]}

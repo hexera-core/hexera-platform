@@ -192,11 +192,28 @@ th,td{border-color:var(--border)}
 @media (prefers-reduced-motion:reduce){.req-card .rc-pm-wait{animation:none}}
 .req-card .rc-pm-fig{position:relative;margin:4px 0 10px;text-align:center}
 .req-card .rc-pm-pic{display:inline-block;max-width:100%;max-height:250px;vertical-align:top}
-.req-card .rc-pm-flip{position:absolute;top:0;right:0;width:28px;height:28px;padding:0;border:1px solid var(--border);
-  border-radius:50%;background:var(--surface-2);cursor:pointer;transition:border-color .12s,background .12s}
-.req-card .rc-pm-flip::before{content:'';position:absolute;inset:8px;border:1.5px solid var(--text-faint);
-  border-top-color:transparent;border-radius:50%}
-.req-card .rc-pm-flip:hover{border-color:var(--border-strong);background:var(--surface-raised)}
+/* the model in 3D: drag turns it, the wheel zooms; the tags ride on it */
+.req-card .rc-pm-fig.rc-pm-3d{height:300px;overflow:hidden;cursor:grab;touch-action:none}
+.req-card .rc-pm-fig.rc-pm-3d:active{cursor:grabbing}
+.req-card .rc-pm-3d canvas{display:block}
+.req-card .pv-tags{position:absolute;inset:0;pointer-events:none;z-index:1}
+.req-card .pv-tag{position:absolute;left:0;top:0;margin:-9px 0 0 0;translate:-50% 0;height:18px;min-width:18px;
+  padding:0 5px;box-sizing:border-box;border:1.5px solid var(--c);border-radius:9px;background:rgba(255,255,255,.94);
+  color:#111;font:600 11px/15px var(--sans);text-align:center;white-space:nowrap;font-variant-numeric:tabular-nums;
+  transition:opacity .15s}
+.req-card .pv-ring{position:absolute;left:0;top:0;width:18px;height:18px;margin:-9px 0 0 -9px;box-sizing:border-box;
+  border:1.5px solid var(--c);border-radius:50%;background:color-mix(in srgb,var(--c) 18%,transparent);transition:opacity .15s}
+.req-card .pv-tag.dim,.req-card .pv-ring.dim{opacity:.28}
+.req-card .pv-tip{position:absolute;left:0;top:0;z-index:2;padding:3px 8px;border:1px solid var(--border);
+  border-radius:var(--r-sm,6px);background:var(--surface-raised);color:var(--text);font:500 var(--fs-sm)/1.35 var(--sans);
+  white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+.req-card .rc-pm-row.hot{background:var(--surface-2)}
+/* Finalize notes: under the notes box, the one step that reads the parts the words name */
+.req-card .rc-fin{display:flex;align-items:center;justify-content:flex-end;gap:12px;padding:2px 0 8px}
+.req-card .rc-fin-msg{color:var(--danger);font-size:var(--fs-sm)}
+.req-card .rc-fin-msg:empty{display:none}
+/* an older reading's rows wait, quiet, while the notes changed since */
+.req-card .rc-pm-body.stale .rc-pm-rows{opacity:.55}
 .req-card .rc-pm-dot{width:8px;height:8px;border-radius:50%}
 .req-card .rc-pm-dot.none{box-sizing:border-box;border:1.5px dashed var(--warn)}
 .req-card .rc-pm-row{display:grid;grid-template-columns:8px minmax(0,1fr) auto 14px;align-items:center;gap:12px;

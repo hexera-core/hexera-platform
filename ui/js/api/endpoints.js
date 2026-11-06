@@ -135,6 +135,20 @@ export async function getPartPicture(sessionId, name) {
   return r.blob();
 }
 
+/** Finalize notes: the parts the user's words name are read now; resolves to the checklist ("reading" at first). */
+export async function finalizePartMatches(sessionId) {
+  const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/parts/finalize`, { method: "POST", headers: headers() });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
+/** The checklist's model in 3D (each triangle's part), for the console to turn and pick parts on. */
+export async function getPartModel(sessionId) {
+  const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/parts/model`, { headers: headers() });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
 /** The job's current durable facts. `throwOnError` is false for the poller, which treats a
  *  transient 5xx as normal, and true for the deep link, which must know it failed. */
 export async function getJob(jobId, { throwOnError = true } = {}) {

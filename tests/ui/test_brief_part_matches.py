@@ -1,4 +1,4 @@
-# Responsibility: Verify the parts checklist under the notes on the request card (NOTE-4 before approval): "Reading your notes…" until the reading lands (polled), then one row per phrase with its parts and size and a line per phrase that could not be placed; a row opens the part list, a click on a part keeps it at once (no save button), and nothing at all shows when the notes name no part.
+# Responsibility: Verify the parts checklist under the notes on the request card (NOTE-4/5 before approval): nothing is read until Finalize notes, which shows "Reading your notes…", then the rows and the approval question again; the model is turned in 3D (the picture only as the fallback) with the rows' numbers on their parts; "Reading your notes…" until the reading lands (polled), then one row per phrase with its parts and size and a line per phrase that could not be placed; a row opens the part list, a click on a part keeps it at once (no save button), and nothing at all shows when the notes name no part.
 # Boundaries: the console's own modules in the page; the network is a stub object handed to the card. It reads the DOM, never pixels.
 from __future__ import annotations
 
@@ -53,6 +53,68 @@ def test_no_parts_in_the_notes_shows_nothing(live):
       return document.querySelector('.rc-pm').children.length + document.querySelectorAll('.rc-pm-row').length;
     })()""")
     assert out == 0
+
+
+def test_finalize_notes_reads_then_shows_the_rows_and_asks_to_proceed(live):
+    out = live.evaluate("""(async () => {
+      const { Stage } = await import('/static/js/render/stage.js');
+      Stage.mount();
+      const done = __VIEW__;
+      let fin = 0;
+      const parts = {get: async () => (fin ? done : {status: 'ready'}),
+                     finalize: async () => { fin++; return {status: 'reading'}; }, pick: async () => done};
+      Stage.brief({purpose:'structural', engine:'gmsh', user_notes:[{text:'3-4 mm for the frame rail'}],
+                   proceed_ask: 'Shall I proceed with mesh generation?', part_matches:{status:'ready'}},
+                  async () => {}, parts);
+      const before = {btn: [...document.querySelectorAll('.rc-fin-btn')].map(b => b.textContent),
+                      rows: document.querySelectorAll('.rc-pm-row').length};
+      document.querySelector('.rc-fin-btn').click();
+      await new Promise(r => setTimeout(r, 100));
+      const wait = (document.querySelector('.rc-pm-wait') || {}).textContent;
+      await new Promise(r => setTimeout(r, 3200));
+      const lines = [...document.querySelectorAll('#cc .im .txt')].map(t => t.textContent.trim());
+      return {before, fin, wait, rows: document.querySelectorAll('.rc-pm-row').length,
+              btn: document.querySelectorAll('.rc-fin-btn').length, lines};
+    })()""".replace("__VIEW__", VIEW), timeout=30)
+    assert out["before"] == {"btn": ["Finalize notes"], "rows": 0}, "nothing is read until the user finalizes"
+    assert out["fin"] == 1 and out["wait"] == "Reading your notes…"
+    assert out["rows"] == 2 and out["btn"] == 0
+    assert out["lines"][-1] == "Shall I proceed with mesh generation?", "the approval question under the rows"
+
+
+def test_the_model_turns_in_3d_and_a_row_lights_its_parts(live):
+    out = live.evaluate("""(async () => {
+      const { Stage } = await import('/static/js/render/stage.js');
+      const { mountPartsView } = await import('/static/js/viewer/parts_view.js');
+      Stage.mount();
+      // two boxes side by side, part 1 and part 2, as the server's parts model
+      const P = [], T = [], part = [];
+      const box = (x0, k) => { const b = P.length / 3;
+        for (let i = 0; i < 8; i++) P.push(x0 + (i & 1), (i >> 1) & 1, (i >> 2) & 1);
+        [[0,1,3],[0,3,2],[4,6,7],[4,7,5],[0,4,5],[0,5,1],[2,3,7],[2,7,6],[0,2,6],[0,6,4],[1,5,7],[1,7,3]]
+          .forEach(t => { T.push(b + t[0], b + t[1], b + t[2]); part.push(k); }); };
+      box(0, 1); box(2, 2);
+      const b64 = (a) => btoa(String.fromCharCode(...new Uint8Array(a.buffer)));
+      const model = {order: ['Part_1', 'Part_2'], points_b64: b64(Float32Array.from(P)),
+        normals_b64: b64(new Float32Array(P.length)), tris_b64: b64(Uint32Array.from(T)),
+        part_b64: b64(Uint16Array.from(part)), edges_b64: '', spots: []};
+      const done = {status: 'done', order: ['Part_1', 'Part_2'], model: true,
+        parts: [{id: 'Part_1', n: '1', name: ''}, {id: 'Part_2', n: '2', name: ''}],
+        rows: [{phrase: 0, words: 'the rail', quote: 'the rail', parts: ['Part_1'], parts_text: 'part 1', size: '3 mm'}],
+        unsure: []};
+      let view = null;
+      const parts = {get: async () => done, pick: async () => done, model: async () => model,
+                     mount: async (h, m, o) => (view = await mountPartsView(h, m, o))};
+      Stage.brief({purpose: 'structural', engine: 'gmsh', user_notes: [{text: 'the rail'}], part_matches: done},
+                  async () => {}, parts);
+      for (let i = 0; i < 100 && !(view && view.debug.ready()); i++) await new Promise(r => setTimeout(r, 100));
+      return {canvas: !!document.querySelector('.rc-pm-fig canvas'), pic: !!document.querySelector('.rc-pm-pic'),
+              ready: !!(view && view.debug.ready()), tris: view && view.debug.triangles,
+              turn: !!document.querySelector('.rc-pm-flip'), tags: view ? view.debug.tags() : null};
+    })()""", timeout=40)
+    assert out["canvas"] and not out["pic"], "the user turns the model in 3D, not a picture"
+    assert out["ready"] and out["tris"] == 24 and not out["turn"]
+    assert out["tags"] == ["1"], "the row's part carries its number; the grey part none"
 
 
 def test_the_picture_tints_a_rows_parts_and_a_click_on_it_picks_a_part(live):

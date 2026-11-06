@@ -26,14 +26,20 @@ svc = JobService()
 
 
 async def _brief(session, owner_id: str):
-    """The request card, with the parts checklist read off the event loop (store reads, maybe a queued reading)."""
+    """The request card, with the parts checklist read off the event loop (store reads only: drawing the card never
+    starts a reading - Finalize notes does)."""
     import asyncio
 
     from meshpipeline.application import part_matches as PM
     if session is None or not getattr(session, "request_txt", None):
         return build_brief(session)
     pm = await asyncio.to_thread(lambda: PM.view(session, owner_id=owner_id))
-    return build_brief(session, part_matches=pm)
+    brief = build_brief(session, part_matches=pm)
+    # the approval question the console says again once the notes are finalized and their parts shown
+    if brief is not None and getattr(session, "job_id", None) is None \
+            and ap.is_live((getattr(session, "intake_gate", None) or {}).get("approval")):
+        brief["proceed_ask"] = ap.PROCEED_ASK
+    return brief
 
 
 @router.get("")
@@ -146,9 +152,15 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
         # A turn the authority settled with no model call: the deferral question, or the units
         # question. The reply is the authority's; the route only carries it.
         from meshpipeline.application.purpose_map import choices_for
+        brief, again = None, False
+        if outcome.status is msg.MessageStatus.reading_first:
+            # the yes waits for the notes: the card shows the reading, and the console sends the yes again
+            async with get_db() as db:
+                held = await session_repo.get_for_owner(db, session_id, owner_id, organization_id=organization_id)
+            brief, again = await _brief(held, owner_id), True
         return ChatResponse(session_id=session_id, reply=outcome.reply,
                             awaiting_confirmation=outcome.awaiting_confirmation,
-                            choices=choices_for(outcome.reply))
+                            choices=choices_for(outcome.reply), brief=brief, yes_after_reading=again)
 
     session = _require_session(outcome.session, session_id)
     previous_run = outcome.previous_run

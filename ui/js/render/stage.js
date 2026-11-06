@@ -85,6 +85,8 @@ export const Stage = {
   // arrives the copy stays format-neutral rather than guessing.
   mount(){document.getElementById('stage').innerHTML='<div class="scroll"><div class="chat-col" id="cc"><div id="empty"><p id="empty-lead">Upload geometry to begin.</p><p id="empty-formats"></p><p class="empty-sub">Hexera will guide you through the simulation setup.</p></div></div></div>';
     this.nodes={};this.proc=null;this.tl=null;this._briefEl=null;this._briefSig='';
+    // the run started (or a new conversation): the card's model gives its GL context back
+    clearTimeout(this._pmTimer);if(this._pmDrop)this._pmDrop();this._pm=null;this._pmOpen=null;this._pmHover=null;this._pmHoverPart=null;this._pm3dFailed=false;
     // A NEW RUN STARTS CLEAN. The attempt the last run ended on, the attempts that built and a
     // mesh bar a run left open when it ended mid-mesh all belonged to that run: kept, the next
     // run's "Attempt 1" header went missing and its mesh bar never appeared (the old, detached
@@ -166,13 +168,13 @@ export const Stage = {
         ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
           :'<div class="rc-h">Mesh plan</div>'}${rows}
         ${ck?`<div class="rc-h rc-h2">Checked</div>${ck}`:''}
-        ${notes||box?`<div class="rc-h rc-h2">Your notes</div>${notes}<div class="rc-pm"></div>${box}`:''}
+        ${notes||box?`<div class="rc-h rc-h2">Your notes</div>${notes}${box}<div class="rc-pm"></div>`:''}
       </div>`;
     if(this._briefEl){this._briefEl.innerHTML=html;}
     else{this.clearEmpty();
       const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
       this.col().appendChild(g);this._briefEl=g;}
-    this._partMatches(b.part_matches,parts);
+    this._partMatches(b.part_matches,parts,b.proceed_ask);
     const add=this._briefEl.querySelector('.rc-notes-add');
     const inp=this._briefEl.querySelector('.rc-notes-in');
     if(add&&inp){
@@ -190,36 +192,47 @@ export const Stage = {
       inp.addEventListener('keydown',(e)=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send();}});}
     this.scrollBottom();},
 
-  /* THE PARTS YOUR NOTES MEAN, under the notes, before Approve: one picture of the model, then a row per phrase
-     ("frame rail · part 9 · 3–4 mm") with its colour, and a line per phrase that could not be placed. The picture
-     tints each row's parts in the row's colour and leaves the rest grey; hovering or opening a row shows only ITS
-     parts. A row opens the part list; a click on a part - in the list or on the picture - keeps it at once (no save
-     button: the normal Approve takes it). A second side of the model is offered only when the first hides a part.
-     Nothing at all when the notes name no part. `parts`: {get(), pick(phrase, ids), picture(name)}. */
-  _partMatches(m,parts){
+  /* THE PARTS YOUR NOTES MEAN, under the notes, before Approve: the user's model in 3D (drag turns it, the wheel
+     zooms, a double-click frames it), then a row per phrase ("frame rail · part 9 · 3–4 mm") with its colour, and
+     a line per phrase that could not be placed. Each row's parts wear the row's colour and carry their numbers;
+     hovering a row (or a part on the model) lights that row's parts and fades the rest. A row opens the part list;
+     a click on a part - in the list or on the model - keeps it at once (no save button: the normal Approve takes
+     it). The model stays put while the rows redraw. Without WebGL (or the model) the picture is shown instead.
+     Nothing at all when the notes name no part. `parts`: {get(), pick(phrase, ids), picture(name), model(),
+     mount(host, model, opts)}. */
+  _partMatches(m,parts,ask){
     clearTimeout(this._pmTimer);
     const el=this._briefEl&&this._briefEl.querySelector('.rc-pm');
     if(!el)return;
-    this._pm=m||null;this._pmParts=parts||null;
-    const draw=()=>{el.innerHTML=this._pmHtml(this._pm);this._pmPaint(el);};
+    this._pm=m||null;this._pmParts=parts||null;this._pmAskLine=ask||'';
+    const draw=()=>{this._pmDrawIn(el);this._pmPaint(el);};
     this._pmDraw=draw;
     draw();
-    if(m&&(m.status==='reading'||m.status==='waiting')&&parts){
+    // WHILE THE NOTES ARE READ the card follows the reading; once it lands after Finalize notes, the approval
+    // question is said again under the card (the user answers it in the chat, as always)
+    this._pmPoll=()=>{
+      clearTimeout(this._pmTimer);
       const t0=Date.now();
       const poll=async()=>{
         let got=null;try{got=await parts.get();}catch{/* try again */}
         if(got)this._pm=got.status==='none'?null:got;
         draw();
         const busy=this._pm&&(this._pm.status==='reading'||this._pm.status==='waiting');
-        if((busy||!got)&&Date.now()-t0<8*60e3)this._pmTimer=setTimeout(poll,3000);};
-      this._pmTimer=setTimeout(poll,2500);}
+        if((busy||!got)&&Date.now()-t0<8*60e3){this._pmTimer=setTimeout(poll,3000);return;}
+        this._pmAsked();};
+      this._pmTimer=setTimeout(poll,2500);};
+    if(m&&(m.status==='reading'||m.status==='waiting')&&parts)this._pmPoll();
     const rowOf=(i)=>{const m=this._pm;return m&&[...(m.rows||[]),...(m.unsure||[])].find(x=>x.phrase===i);};
     // a part toggled for the open row: kept at once, the card redrawn from the server's checked answer
     this._pmToggle=(id)=>{
       const i=this._pmOpen,r=rowOf(i);if(!r||!parts)return;
       const on=new Set(r.parts||[]);
       if(on.has(id))on.delete(id);else on.add(id);
-      r.parts=[...on];delete r.lit;
+      // the row lights its parts and the areas inside them no row names, as the server will say
+      r.parts=[...on];
+      const named=new Set([...(this._pm.rows||[]),...(this._pm.unsure||[])].flatMap(x=>x.parts||[]));
+      const areas=Object.entries(this._pm.inside||{}).filter(([f,p])=>on.has(p)&&!named.has(f)).map(([f])=>f);
+      if(areas.length)r.lit=[...on,...areas];else delete r.lit;
       el.querySelectorAll(`.rc-pm-part[data-part="${CSS.escape(id)}"]`).forEach(c=>{
         c.classList.toggle('on',on.has(id));c.setAttribute('aria-pressed',String(on.has(id)));});
       this._pmPaint(el);
@@ -227,9 +240,16 @@ export const Stage = {
       this._pmSave=setTimeout(async()=>{
         try{const got=await parts.pick(i,[...on]);if(got&&this._pmOpen===i){this._pm=got;draw();}}
         catch(err){const msg=el.querySelector('.rc-pm-msg');if(msg)msg.textContent=(err&&err.message)||'Not saved.';}},450);};
+    // a part clicked on the model or the picture: picked for the open row, else its own row opens
+    this._pmClick=(raw)=>{
+      const id=this._pmResolve(raw);
+      if(!id)return;
+      if(this._pmOpen!=null){this._pmToggle(id);return;}
+      const r=(this._pm&&this._pm.rows||[]).find(x=>(x.parts||[]).includes(id));
+      if(r){this._pmOpen=r.phrase;this._pmHoverPart=null;draw();}};
     el.onclick=(e)=>{
+      if(e.target.closest('.rc-fin-btn')){this._pmFinalize();return;}
       const m=this._pm;if(!m||m.status!=='done')return;
-      if(e.target.closest('.rc-pm-flip')){this._pmView=this._pmView?0:1;this._pmPaint(el);return;}
       const chip=e.target.closest('.rc-pm-part');
       if(chip){this._pmToggle(chip.dataset.part);return;}
       const row=e.target.closest('.rc-pm-row');if(!row)return;
@@ -242,10 +262,62 @@ export const Stage = {
   // the rows' colours: muted, distinct, the same order every time
   _PM_COL:['#5B9BD5','#E3A23B','#62B66C','#D9675F','#A37FCB','#4FB0AC','#CDB447','#E08DB0'],
 
+  /* the block's frame: Finalize notes (or "Reading your notes…"), then - only when the reading found parts - the
+     heading, the model (kept across redraws: not re-made when a row opens or the card is redrawn for a new note)
+     and the rows. Rows of an older reading stay, quiet, until the new one lands. */
+  _pmDrawIn(el){
+    const m=this._pm;
+    if(!m){el.innerHTML='';this._pmDrop();return;}     // nothing to read: nothing at all
+    if(!el.querySelector('.rc-pm-top'))
+      el.innerHTML='<div class="rc-pm-top"></div><div class="rc-pm-body" hidden><div class="rc-pm-h">In your notes</div><div class="rc-pm-rows"></div></div>';
+    const top=el.querySelector('.rc-pm-top'),body=el.querySelector('.rc-pm-body'),rowsEl=el.querySelector('.rc-pm-rows');
+    top.innerHTML=this._pmHtml(m);
+    const has=!!m&&((m.rows||[]).length+(m.unsure||[]).length>0);
+    body.hidden=!has;body.classList.toggle('stale',!!(m&&m.stale));
+    if(!has){this._pmDrop();rowsEl.innerHTML='';return;}
+    const key=(m.order||[]).join('|');
+    const want=!!(m.model||(m.views||[]).length);
+    if(this._pmFig&&this._pmFigKey!==key)this._pmDrop();
+    if(want&&!this._pmFig){
+      const fig=document.createElement('div');fig.className='rc-pm-fig';
+      fig.setAttribute('role','img');fig.setAttribute('aria-label','Your model; the parts each note means are in its colour');
+      this._pmFig=fig;this._pmFigKey=key;}
+    if(this._pmFig&&this._pmFig.parentNode!==body)body.insertBefore(this._pmFig,rowsEl);
+    rowsEl.innerHTML=this._pmRowsHtml(m);},
+
+  /* FINALIZE NOTES: the parts the words name are read now (the first answer and every note); the card follows */
+  async _pmFinalize(){
+    const parts=this._pmParts,btn=this._briefEl&&this._briefEl.querySelector('.rc-fin-btn');
+    if(!parts||!parts.finalize||(btn&&btn.disabled))return;
+    if(btn)btn.disabled=true;
+    let got=null;
+    try{got=await parts.finalize();}
+    catch(e){if(btn){btn.disabled=false;const msg=this._briefEl.querySelector('.rc-fin-msg');if(msg)msg.textContent=(e&&e.message)||'Not started. Try again.';}return;}
+    this._pmAskDue=true;
+    this._pm=got&&got.status!=='none'?got:null;
+    if(this._pmDraw)this._pmDraw();
+    if(this._pm&&(this._pm.status==='reading'||this._pm.status==='waiting'))this._pmPoll();
+    else this._pmAsked();},
+
+  // the approval question, said once under the card when a Finalize notes has been read
+  _pmAsked(){
+    if(!this._pmAskDue)return;
+    this._pmAskDue=false;
+    if(this._pmAskLine)this.chat('assistant',this._pmAskLine);},
+
+  // the model given up: its GL context released (a new file, or the notes no longer name a part)
+  _pmDrop(){
+    if(this._pm3d&&this._pm3d.dispose)try{this._pm3d.dispose();}catch{/* gone already */}
+    if(this._pmFig)this._pmFig.remove();
+    this._pm3d=null;this._pm3dP=null;this._pmFig=null;this._pmFigKey=null;this._pmCache=null;},
+
   _pmHtml(m){
-    if(!m)return '';
-    if(m.status==='reading')return '<div class="rc-pm-wait" role="status">Reading your notes…</div>';
-    if(m.status!=='done')return '';
+    if(m&&m.status==='reading')return '<div class="rc-pm-wait" role="status">Reading your notes…</div>';
+    if(m&&m.status==='ready')return '<div class="rc-fin"><span class="rc-fin-msg" role="status"></span>'
+      +'<button type="button" class="gc-proceed rc-fin-btn">Finalize notes</button></div>';
+    return '';},
+
+  _pmRowsHtml(m){
     const open=this._pmOpen;
     const row=(r,k,unsure)=>{
       const i=r.phrase,isOpen=open===i;
@@ -257,30 +329,94 @@ export const Stage = {
       return `<button type="button" class="rc-pm-row${unsure?' unk':''}${isOpen?' open':''}" data-phrase="${i}"`
         +` aria-expanded="${isOpen}">${dot}<span class="rc-pm-q">${what}</span><span class="rc-pm-v">${where}</span>`
         +`<span class="rc-pm-c" aria-hidden="true"></span></button>`+(isOpen?this._pmPicker(m,r):'');};
-    const views=m.views||[];
-    const fig=views.length?`<div class="rc-pm-fig"><canvas class="rc-pm-pic" role="img"
-        aria-label="Your model; the parts each note means are in its colour"></canvas>${views.length>1
-        ?'<button type="button" class="rc-pm-flip" title="Other side" aria-label="Show the other side"></button>':''}</div>`:'';
-    return `<div class="rc-pm-h">In your notes</div>${fig}`
-      +(m.rows||[]).map((r,k)=>row(r,k,false)).join('')+(m.unsure||[]).map(r=>row(r,0,true)).join('');},
+    return (m.rows||[]).map((r,k)=>row(r,k,false)).join('')+(m.unsure||[]).map(r=>row(r,0,true)).join('');},
 
   _pmColour(m,r){const k=(m.rows||[]).indexOf(r);return k>=0?this._PM_COL[k%this._PM_COL.length]:'#E3A23B';},
 
+  _isArea:(id)=>String(id).startsWith('Feature_'),
+  // a row about areas inside a part (holes, fillets): it holds one, or the model is a single part
+  _pmAreaRow(m,r){
+    const solids=(m.order||(m.parts||[]).map(p=>p.id)).filter(id=>!this._isArea(id)).length;
+    return solids===1||!!(r&&(r.parts||[]).some(id=>this._isArea(id)));},
+  /* WHAT A POINT ON THE MODEL MEANS: an area inside a part is itself where the open row is about areas (or, with no
+     row open, where a row names it); anywhere else it is the part it is in */
+  _pmResolve(id){
+    const m=this._pm;if(!id||!m||!this._isArea(id))return id||null;
+    const open=this._pmOpen!=null?[...(m.rows||[]),...(m.unsure||[])].find(r=>r.phrase===this._pmOpen):null;
+    const own=open?this._pmAreaRow(m,open):(m.rows||[]).some(r=>(r.parts||[]).includes(id));
+    return own?id:((m.inside||{})[id]||id);},
+
   _pmPicker(m,r){
     const on=new Set(r.parts||[]),c=this._pmColour(m,r);
+    // the list holds what a click on the model would pick: the parts, or the areas for a row about areas
+    const areas=this._pmAreaRow(m,r),solid=(p)=>!this._isArea(p.id);
+    const list=(m.parts||[]).filter(p=>on.has(p.id)||(areas?!solid(p)||(m.parts||[]).filter(solid).length===1:solid(p)));
     return `<div class="rc-pm-pick" role="group" aria-label="Which parts" style="--pm-c:${c}">`
-      +(m.parts||[]).map(p=>`<button type="button" class="rc-pm-part${on.has(p.id)?' on':''}" data-part="${esc(p.id)}"`
+      +list.map(p=>`<button type="button" class="rc-pm-part${on.has(p.id)?' on':''}" data-part="${esc(p.id)}"`
         +` aria-pressed="${on.has(p.id)}"><span class="dot"></span>${esc(p.n)}`
         +`${p.name?`<span class="nm">${esc(p.name)}</span>`:''}</button>`).join('')
-      +`${(m.views||[]).length?'<span class="rc-pm-hint">or click the parts on the picture</span>':''}`
+      +`${this._pmFig?'<span class="rc-pm-hint">or click parts on the model</span>':''}`
       +'<span class="rc-pm-msg" role="status"></span></div>';},
 
-  /* the picture: the neutral shaded side, each pixel's part read off its id picture, tinted by what the user is
-     looking at; the numbers only where a part is seen (placed on the server, clear of each other) */
+  /* WHAT THE MODEL SHOWS NOW: each row's parts in its colour, the row looked at (a row hovered, the row of the
+     part under the cursor, else the open row) lit and the rest faded, and the numbers of the parts the rows name -
+     never a single part's own "1" */
+  _pmLook(){
+    const m=this._pm,rows=m.rows||[],col=this._PM_COL;
+    const colour={},tags=[],tagged=new Set();
+    const num=(id)=>{const n=String(id).split('_').pop();return String(id).startsWith('Feature_')?'F'+n:n;};
+    const onePart=(m.order||(m.parts||[]).map(p=>p.id)).filter(id=>!String(id).startsWith('Feature_')).length===1;
+    rows.forEach((r,k)=>{const c=col[k%col.length];
+      (r.lit||r.parts||[]).forEach(id=>{if(!(id in colour))colour[id]=c;});
+      (r.parts||[]).forEach(id=>{if(tagged.has(id)||(onePart&&!String(id).startsWith('Feature_')))return;
+        tagged.add(id);tags.push({part:id,n:num(id),colour:c,row:r.phrase});});});
+    // an area no row names is seen as part of its part: its pixels count for that part's number
+    const owner={};
+    Object.entries(m.inside||{}).forEach(([f,p])=>{if(!tagged.has(f))owner[f]=p;});
+    const hp=this._pmResolve(this._pmHoverPart);
+    // the part under the cursor lights its row - unless a row is open, which stays the one shown
+    const hpRow=hp!=null&&this._pmOpen==null?rows.find(r=>(r.lit||r.parts||[]).includes(hp)):null;
+    const active=this._pmHover!=null?this._pmHover:hpRow?hpRow.phrase:this._pmOpen;
+    const act=active!=null?[...rows,...(m.unsure||[])].find(r=>r.phrase===active):null;
+    const hoverSet=hp?new Set([hp,...Object.keys(m.inside||{}).filter(f=>owner[f]===hp)]):null;
+    return {colour,tags,owner,hover:hoverSet,picking:this._pmOpen!=null,focusRow:act?act.phrase:null,
+      active:act?new Set(act.lit||act.parts||[]):null,activeColour:act?this._pmColour(m,act):null,hpRow};},
+
+  /* the model (or, without one, the picture) drawn as the user is looking at it */
   async _pmPaint(el){
-    const m=this._pm,cv=el.querySelector('.rc-pm-pic');
-    if(!m||!cv||!(m.views||[]).length||!this._pmParts||!this._pmParts.picture)return;
-    const view=m.views[Math.min(this._pmView||0,m.views.length-1)];
+    const m=this._pm,fig=this._pmFig,parts=this._pmParts;
+    if(!m||m.status!=='done'||!fig||!parts)return;
+    const look=this._pmLook();
+    // the row of the part under the cursor answers it
+    el.querySelectorAll('.rc-pm-row').forEach(b=>b.classList.toggle('hot',!!look.hpRow&&Number(b.dataset.phrase)===look.hpRow.phrase));
+    if(m.model&&parts.model&&parts.mount&&!this._pm3dFailed){
+      if(!this._pm3dP){
+        const name=(id)=>{const p=(m.parts||[]).find(q=>q.id===id);const n=String(id).split('_').pop();
+          if(String(id).startsWith('Feature_'))return `F${n}${p&&p.name?` · ${p.name}`:''}`;
+          return `Part ${n}${p&&p.name?` · ${p.name}`:''}`;};
+        fig.classList.add('rc-pm-3d');fig.innerHTML='';
+        this._pm3dP=(async()=>{
+          const model=await parts.model();
+          if(this._pmFig!==fig)return null;
+          return parts.mount(fig,model,{label:(id)=>name(this._pmResolve(id)),
+            onHover:(id)=>{if(id!==this._pmHoverPart){this._pmHoverPart=id;this._pmPaint(el);}},
+            onClick:(id)=>this._pmClick(id)});})().then(v=>{this._pm3d=v;return v;}).catch(e=>{
+            console.warn('parts model unavailable, showing the picture:',e&&e.message);
+            this._pm3dFailed=true;this._pm3dP=null;fig.classList.remove('rc-pm-3d');fig.innerHTML='';
+            const rowsEl=el.querySelector('.rc-pm-rows');if(rowsEl)rowsEl.innerHTML=this._pmRowsHtml(this._pm);
+            this._pmPaint(el);return null;});}
+      const v=await this._pm3dP;
+      if(v&&this._pmFig===fig)v.set(this._pmLook());
+      return;}
+    if((m.views||[]).length&&parts.picture)return this._pmPicture(fig,look);},
+
+  /* THE FALLBACK PICTURE: the neutral shaded side, each pixel's part read off its id picture, tinted by what the
+     user is looking at; the numbers only where a part is seen (placed on the server, clear of each other) */
+  async _pmPicture(fig,look){
+    const m=this._pm;
+    let cv=fig.querySelector('.rc-pm-pic');
+    if(!cv){fig.innerHTML='<canvas class="rc-pm-pic"></canvas>';cv=fig.querySelector('.rc-pm-pic');}
+    const view=m.views[0];
     this._pmCache=this._pmCache||{};
     const load=async(name)=>{
       if(!this._pmCache[name])this._pmCache[name]=this._pmParts.picture(name).then(b=>createImageBitmap(b));
@@ -302,23 +438,15 @@ export const Stage = {
     g.clearRect(0,0,w,h);g.drawImage(shaded,0,0);
     const img=g.getImageData(0,0,w,h),px=img.data;
     const order=m.order||(m.parts||[]).map(p=>p.id);
-    const rows=m.rows||[],col=this._PM_COL;
-    const rowOfPart={};rows.forEach((r,k)=>(r.lit||r.parts||[]).forEach(id=>{if(!(id in rowOfPart))rowOfPart[id]=k;}));
-    const active=this._pmHover!=null?this._pmHover:this._pmOpen;
-    const act=active!=null?[...rows,...(m.unsure||[])].find(r=>r.phrase===active):null;
-    const actSet=act?new Set(act.lit||act.parts||[]):null;
-    const actCol=act?this._pmColour(m,act):'#E3A23B';
+    const actSet=look.active,actCol=look.activeColour||'#E3A23B';
     const rgb=(hex)=>[parseInt(hex.slice(1,3),16),parseInt(hex.slice(3,5),16),parseInt(hex.slice(5,7),16)];
-    const tint=order.map(id=>{
-      if(actSet)return actSet.has(id)?rgb(actCol):null;
-      return id in rowOfPart?rgb(col[rowOfPart[id]%col.length]):null;});
+    const tint=order.map(id=>actSet?(actSet.has(id)?rgb(actCol):null):(look.colour[id]?rgb(look.colour[id]):null));
     for(let p=0;p<w*h;p++){
       const k=ids[p];if(k<0)continue;
       const o=p*4,L=px[o]/255,t=tint[k];
       if(t){const f=0.28+0.9*L;px[o]=Math.min(255,t[0]*f);px[o+1]=Math.min(255,t[1]*f);px[o+2]=Math.min(255,t[2]*f);}
       else{const v=actSet?60+70*L:85+95*L;px[o]=px[o+1]=px[o+2]=v;}}
     g.putImageData(img,0,0);
-    // a SMALL area the open or hovered row means gets a soft ring round each piece of it, so it can be found
     if(actSet){
       g.strokeStyle=actCol;g.lineWidth=2;g.fillStyle=actCol;
       for(const r of view.rings||[]){
@@ -326,17 +454,12 @@ export const Stage = {
         g.globalAlpha=0.16;g.beginPath();g.arc(r.x,r.y,r.r,0,2*Math.PI);g.fill();
         g.globalAlpha=0.9;g.beginPath();g.arc(r.x,r.y,r.r,0,2*Math.PI);g.stroke();}
       g.globalAlpha=1;}
-    // THE NUMBERS that mean something here: the parts and areas a row names (the open or hovered row's alone while
-    // one is looked at); never a single part's own "1"; inside the frame; one that would touch another is left out
-    const named=new Set(rows.flatMap(r=>r.parts||[]));
-    const onePart=(m.parts||[]).filter(p=>!String(p.n).startsWith('F')).length===1;
-    const shown=(view.tags||[]).filter(t=>(actSet?actSet.has(t.part):named.has(t.part))
-      &&!(onePart&&!String(t.n).startsWith('F')));
+    const named=new Set(look.tags.map(t=>t.part));
+    const shown=(view.tags||[]).filter(t=>actSet?actSet.has(t.part)&&named.has(t.part):named.has(t.part));
     g.font='600 14px Geist, system-ui, sans-serif';g.textAlign='center';g.textBaseline='middle';
     const boxes=[];
     for(const t of shown){
       const tw=12+9*String(t.n).length,th=22;
-      // a ringed area: its number just above its first ring, never over the spot it marks
       const ring=actSet&&(view.rings||[]).find(r=>r.part===t.part);
       const tx=ring?ring.x:t.x,ty=ring?ring.y-ring.r-th/2-2:t.y;
       const x=Math.min(Math.max(tx,tw/2+1),w-tw/2-1),y=Math.min(Math.max(ty,th/2+1),h-th/2-1);
@@ -346,17 +469,12 @@ export const Stage = {
       g.fillStyle='rgba(255,255,255,0.92)';g.strokeStyle='rgba(0,0,0,0.55)';g.lineWidth=1;
       g.beginPath();g.roundRect(x-tw/2,y-th/2,tw,th,6);g.fill();g.stroke();
       g.fillStyle='#111';g.fillText(String(t.n),x,y+0.5);}
-    // the picture answers the cursor: which part is here, and a click picks it for the open row
     const at=(e)=>{const r=cv.getBoundingClientRect();
       const x=Math.floor((e.clientX-r.left)*w/r.width),y=Math.floor((e.clientY-r.top)*h/r.height);
       const k=(x>=0&&y>=0&&x<w&&y<h)?ids[y*w+x]:-1;return k>=0?order[k]:null;};
     const name=(id)=>{const p=(m.parts||[]).find(q=>q.id===id);return p?`Part ${p.n}${p.name?` · ${p.name}`:''}`:'';};
     cv.onmousemove=(e)=>{const id=at(e);cv.title=id?name(id):'';cv.style.cursor=id&&this._pmOpen!=null?'pointer':'';};
-    cv.onclick=(e)=>{e.stopPropagation();const id=at(e);if(!id)return;
-      if(this._pmOpen!=null){this._pmToggle(id);return;}
-      // no row open: open the row this part belongs to, so its match can be checked and fixed
-      const r=rows.find(x=>(x.parts||[]).includes(id));
-      if(r){this._pmOpen=r.phrase;this._pmDraw();}};},
+    cv.onclick=(e)=>{e.stopPropagation();this._pmClick(at(e));};},
 
   /* THE ENGINE CHOICE, under the one engine question. Every engine that can take the uploaded file,
      best measured fit first: its fit, the plain-words reason (how it did in the lab on shapes measured

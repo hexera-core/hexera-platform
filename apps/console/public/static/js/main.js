@@ -13,7 +13,8 @@
  * loads this module, and this module is the only thing index.html loads.
  */
 import { apiFetch, setNotifier, useIdentity } from "./api/client.js";
-import { addNote, getJob, getPartMatches, getPartPicture, pickPartMatch } from "./api/endpoints.js";
+import { addNote, finalizePartMatches, getJob, getPartMatches, getPartModel, getPartPicture, pickPartMatch }
+  from "./api/endpoints.js";
 import { dispatch, resultSurface } from "./core/events.js";
 import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCopy }
   from "./core/state.js";
@@ -31,6 +32,8 @@ import { refreshHealth } from "./shell/settings.js";
 import { configureDispute } from "./viewer/dispute.js";
 import { offerReview, openParked } from "./review/review.js";
 import { openGeometryStage } from "./viewer/geometry_stage.js";
+import { mountPartsView } from "./viewer/parts_view.js";
+import { savedUp } from "./viewer/view_controls.js";
 import { openViewer } from "./viewer/viewer.js";
 import { dropMeshPartial, showMeshPartial } from "./viewer/mesh_partial.js";
 
@@ -216,12 +219,28 @@ const briefParts = {
   get: () => getPartMatches(getState.sessionId()),
   pick: (phrase, parts) => pickPartMatch(getState.sessionId(), phrase, parts),
   picture: (name) => getPartPicture(getState.sessionId(), name),
+  // the model in 3D, turned and picked on; the way up the user chose for this file's check
+  model: () => getPartModel(getState.sessionId()),
+  mount: (host, model, opts) => mountPartsView(host, model,
+    { ...opts, upAxis: savedUp("session", getState.sessionId()) || "+z" }),
+  // Finalize notes: the parts the words name are read now
+  finalize: () => finalizePartMatches(getState.sessionId()),
 };
 
 configureComposer({
   notice: Notice,
   chat: (role, text) => Stage.chat(role, text),
   brief: (b) => Stage.brief(b, addBriefNote, briefParts),
+  // a yes before Finalize notes: wait (a minute at most) for the reading the server started
+  notesRead: async () => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < 60e3) {
+      let m = null;
+      try { m = await getPartMatches(getState.sessionId()); } catch { /* try again */ }
+      if (m && m.status !== "reading" && m.status !== "waiting") return;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  },
   engineChoice: (c, pick) => Stage.engineChoice(c, pick),
   // the buttons under an application question: what the mesh is for, an FEA part's analysis type
   choices: (list, pick) => Stage.choices(list, pick),
