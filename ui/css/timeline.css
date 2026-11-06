@@ -29,6 +29,8 @@
 .tl-name{display:flex;align-items:center;gap:9px;cursor:pointer;user-select:none;padding-top:1px}
 .tl-name .nm{font-weight:600;font-size:13px;color:var(--text)}
 .tl-name .ct{font-size:11px;color:var(--text-faint);font-family:var(--mono)}
+/* a lane's own one line (the repair check's outcome) in place of a count: it may shrink, never wrap */
+.tl-name .ct.said{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tl-chev{margin-left:10px;color:var(--steel-muted);font-size:9px;transition:transform .2s}
 .tl-node.open .tl-chev{transform:rotate(180deg)}
 .tl-body{display:none;margin-top:9px}.tl-node.open .tl-body{display:block}
@@ -111,6 +113,7 @@
 .proc.done .proc-cancel{display:none}
 .tl-verd .pill.cancelled{border-color:var(--text-faint);color:var(--text-faint)}
 .tl-verd .pill.concerns{border-color:#b45309;color:#b45309}
+.tl-verd .pill.notes{border-color:var(--text-faint);color:var(--text-muted)}
 
 /* THE RUN'S LIVE LINE (js/render/run_progress.js) at the top of the card: the step running now,
    drawn as the geometry check's line is (css/chat.css .gp) */

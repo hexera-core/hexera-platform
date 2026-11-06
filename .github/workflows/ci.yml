@@ -26,7 +26,10 @@ permissions:
 on:
   push:
     branches: [main]
+  # A draft runs nothing (see preflight). ready_for_review is listed because it is not a default
+  # activity type: without it, leaving draft would not start CI until the next push.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   # Weekly, because a dependency advisory lands on nobody's commit: CodeQL and the dependency
   # audit go stale against a repository that simply was not touched that week.
   schedule:
@@ -58,6 +61,9 @@ env:
 jobs:
   preflight:
     name: Preflight
+    # A DRAFT PULL REQUEST RUNS NO CI, to save Actions spend. Every lane needs this job, so
+    # skipping it here skips them all; ci-gate is the one job that has to be told separately.
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -129,7 +135,7 @@ jobs:
       # With code scanning on, zizmor's findings go to the Security tab as SARIF and its check
       # gates them. With it off (no Advanced Security), zizmor prints them to this log as
       # annotations and fails this job on any high-severity finding itself.
-      - uses: zizmorcore/zizmor-action@70fb788f84895a7701f5643d103d587e460b5c99 # v0.6.3
+      - uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
         with:
           advanced-security: ${{ steps.code-scanning.outputs.available == 'true' }}
           annotations: ${{ steps.code-scanning.outputs.available != 'true' }}
@@ -210,12 +216,11 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6]
     runs-on: ubuntu-24.04
-    # A sixth of the work, and the old 40 was already generous for the whole of it. Six, not four: the
-    # partition is by file size, so any change to a test file reshuffles it, and at four the heaviest
-    # shard runs near 20 min, so leave cleanup and runner-variance headroom (#320 crossed it twice).
-    # 35, not 25 (30 Oct): tests/unit/application/test_geometry_check.py alone runs 9 minutes on these
-    # runners, and the size partition can put it beside test_fea_joins (5) and test_repair_corpus_catalogue
-    # (5): that shard ran past 25 three times on the shell branches, cancelled at 82-87% with every test green.
+    # A sixth of the work, and the old 40 was already generous for the whole of it. The partition is
+    # by MEASURED time (devtools/quality/test_durations.json); when it was by file size the heaviest
+    # shard ran 18m25s against ~7m for the rest, so leave cleanup and runner-variance headroom.
+    # 35, not 25: on the 2-core runners shard 3 already took 22 of 25 min on a green run, and #382
+    # timed out twice on it with no unit test changed - runner speed, not a hang.
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -354,14 +359,14 @@ jobs:
           persist-credentials: false
       - id: code-scanning
         uses: ./.github/actions/code-scanning-available
-      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: python
           queries: security-extended
       # The analysis always runs. Only its upload depends on code scanning being available: an
       # upload to a repository without Advanced Security fails the lane after a clean scan (and
       # the database upload burns two minutes retrying), so neither is attempted then.
-      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           category: /language:python
           output: ${{ runner.temp }}/codeql-sarif
@@ -485,23 +490,24 @@ jobs:
   # which is what run_in_container.sh already does per invocation - so the shards share nothing
   # and cannot interfere with each other.
   #
-  # WHAT A SHARD MAY NOT CONCLUDE is that the TIER ran. Split four ways, no single shard executes
+  # WHAT A SHARD MAY NOT CONCLUDE is that the TIER ran. Split three ways, no single shard executes
   # the 300-test floor and no single shard holds all three named real-PostgreSQL guarantees; they
   # live in three different modules. So a shard asserts what is true of a shard - the report
-  # parses, it is not empty, nothing failed, nothing skipped for a reason that is not one of the
-  # two optional fixtures - and `integration-tier` below asserts the two whole-suite claims once,
+  # parses, it is not empty, nothing failed, nothing skipped - and `integration-tier` below asserts the two whole-suite claims once,
   # over the union of every shard's JUnit report. ci-gate waits on that job, so a run in which the
   # union was never proven is not green. The guard did not get weaker; it moved.
   integration:
-    name: Integration tier (${{ matrix.shard }}/4)
+    name: Integration tier (${{ matrix.shard }}/3)
     needs: [preflight]
     if: needs.preflight.outputs.run_images == 'true' && needs.preflight.outputs.full_ci == 'true'
     strategy:
-      # Four shards, four independent verdicts. Cancelling the siblings of the first failure would
-      # throw away three quarters of the evidence AND three quarters of the union the guard needs.
+      # Three shards, three independent verdicts. Cancelling the siblings of the first failure would
+      # throw away two thirds of the evidence AND two thirds of the union the guard needs. Three,
+      # not four: each shard pays ~2.5 min of image build and stack start-up before its first test,
+      # and after the dead/duplicate suites were cut a fourth shard bought ~1 min of wall-clock.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3]
     # THE HEAVY LANE. This job builds container images and/or runs the dependency-backed tier,
     # and a 2-core / 14 GB standard runner is what made the deploy job carry a "reclaim runner
     # disk" step before it could build at all. `vars.HEXERA_RUNNER_HEAVY` is the label of a
@@ -543,7 +549,7 @@ jobs:
       # service's token (the cache API is only reachable from an action, not a `run:` step).
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
       - uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487  # v4.0.0
-      - name: Integration shard ${{ matrix.shard }} of 4
+      - name: Integration shard ${{ matrix.shard }} of 3
         env:
           SHARD: ${{ matrix.shard }}
           # the tier image through the same layer cache (Makefile DOCKER_BUILD). Every shard reads
@@ -555,7 +561,7 @@ jobs:
           # and wrong here: the union pass runs in another job on another machine and the JUnit
           # report is all it has.
           INTEGRATION_REPORT_DIR: ${{ github.workspace }}/integration-reports
-        run: make test-container-integration-shard SHARD="$SHARD" SHARDS=4
+        run: make test-container-integration-shard SHARD="$SHARD" SHARDS=3
       # `always()`: a shard that FAILED is exactly the shard whose report the union pass most needs
       # - without it the union reports a missing shard rather than the real failure underneath.
       #
@@ -601,12 +607,12 @@ jobs:
       - name: Every shard reported, and the union is not vacuous
         run: |
           set -euo pipefail
-          # FOUR SHARDS, each judged by its NEWEST attempt, and every one of them must be there.
+          # THREE SHARDS, each judged by its NEWEST attempt, and every one of them must be there.
           # Counting them is not pedantry: the union guard's floor is a property of the whole
-          # tier, and three shards' worth of tests could clear it while a quarter of the suite
+          # tier, and two shards' worth of tests could clear it while a third of the suite
           # never ran at all.
           python3 tests/integration/assert_integration_coverage.py \
-            --shard-artifacts integration-reports --shards 4
+            --shard-artifacts integration-reports --shards 3
 
   ui:
     name: UI in a real browser
@@ -673,8 +679,8 @@ jobs:
       - web
     # `always()` would also fire for a run the concurrency group cancelled, posting a red required
     # check nobody is waiting on. `!cancelled()` still runs the gate when a lane genuinely fails,
-    # which is the entire point of it.
-    if: ${{ !cancelled() }}
+    # which is the entire point of it. A skipped preflight is a draft, which has no verdict to give.
+    if: ${{ !cancelled() && needs.preflight.result != 'skipped' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

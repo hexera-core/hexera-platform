@@ -90,6 +90,29 @@
   --shadow-2:0 18px 48px -24px rgba(0,0,0,.8);
 }
 
+/* /
+   THE VIEWER'S ROLES. The viewer toolbar, its overlays and the 3D part read only these names, and
+   the chrome ones point at tokens above - so a new theme is this one block. The part colours are
+   read by the viewers' scripts when a view opens (viewer/toolbar.js themeRgb): a mid-tone grey with
+   low glare, so the orange selection and the steel edges stand out on it, and a step of tint per
+   patch so the patches read apart without shouting.
+/ */
+:root{
+  --toolbar-bg:color-mix(in srgb,var(--surface-1) 92%,transparent);
+  --toolbar-line:var(--border);
+  --overlay-bg:var(--surface-raised);
+  --overlay-line:var(--border-strong);
+  --overlay-well:var(--surface-1);       /* the sunken track of a choice or a search box */
+  --overlay-on:var(--surface-2);         /* the chosen side of a choice */
+  --part-body:#7c828a;                   /* was #bdc7d6 - near-white, glaring */
+  --part-tint-1:#708783;
+  --part-tint-2:#8a8273;
+  --part-tint-3:#737d8c;
+  --part-tint-4:#857a87;
+  --part-tint-5:#7a8576;
+  --part-cut:var(--steel-bright);        /* the line a section draws across the part */
+}
+
 html,body{height:100%;font-family:var(--sans);font-size:14px;line-height:1.65;
   color:var(--text);background:var(--canvas);
   -webkit-text-size-adjust:100%;-webkit-font-smoothing:antialiased}

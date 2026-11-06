@@ -56,6 +56,19 @@ def body_count(facts: dict | None) -> int | None:
         return None
 
 
+def sewn_body_count(facts: dict | None) -> int | None:
+    """How many bodies a file of loose surfaces sews into (cad/fea_measure.sewn_bodies), when it has no
+    solids to count; None otherwise."""
+    from meshpipeline.cad.fea_measure import FACT_KEY
+
+    rec = (facts or {}).get(FACT_KEY)
+    try:
+        n = rec.get("bodies_sewn") if isinstance(rec, dict) else None
+        return int(n) if n is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def piece_count(facts: dict | None) -> int | None:
     """How many separate pieces the clean check found (cad/validity: its connected bodies) - more
     than the solids when one solid is made of pieces that pass into each other, as a turbine blade
@@ -301,6 +314,9 @@ def fea_view(facts: dict | None) -> dict:
     out = {"question": QUESTION, "bodies": body_count(facts), "pieces": piece_count(facts),
            "clean": clean, "clean_summary": said, "single_part_only": blocked, "blocked_kind": kind, "way_out": way_out,
            "can_proceed": not blocked, "warnings": found, "measure": measure_view(facts)}
+    sewn = sewn_body_count(facts)
+    if sewn is not None:
+        out["bodies_sewn"] = sewn
     # several closed solids: an assembly, with its one question (a surface that is no solid stops first)
     asm = None if blocked else assembly_view(facts)
     if asm is not None:
@@ -332,17 +348,10 @@ def assembly_view(facts: dict | None) -> dict | None:
         if src.get("kind") == "gap" or src.get("line"):
             i.update(gap_mm=src.get("gap_mm"), gap_max_mm=src.get("gap_max_mm"), gap_limit_mm=src.get("gap_limit_mm"),
                      line=bool(src.get("line")))
-    touching = sum(1 for i in interfaces if i["kind"] == "touching")
     over = sum(1 for i in interfaces if i["kind"] == "overlap")
     gaps = [i for i in interfaces if i["kind"] == "gap" or i.get("line")]
-    words = [f"{len(parts) or n} parts"]
-    if touching:
-        words.append(f"{touching} place{'s' if touching != 1 else ''} where parts touch")
-    if gaps:
-        words.append(f"{len(gaps)} across a small gap")
-    if over:
-        words.append(f"{over} where parts pass into each other")
-    label = {p["id"]: (p["name"] or p["id"]) for p in parts}
+    words = [f"{len(parts) or n} parts", *joint_phrases(interfaces)]
+    label ={p["id"]: (p["name"] or p["id"]) for p in parts}
     raw_joins = rec.get("joins")
     joins: dict = raw_joins if isinstance(raw_joins, dict) else {}
     for i, src in zip(interfaces, rec.get("interfaces") or [], strict=False):
@@ -502,6 +511,62 @@ def confirmed_gap_joins(session_id: str) -> bool:
     return gap_joins_answer(record.get("fea_gap_joins"))
 
 
+#: What a flow check proposes that an FEA part has none of: its openings and how they were found,
+#: which way the fluid goes, the far-field box, the ground, the point inside the flow - and the
+#: scout's notes, which are its reading of the part as a flow ("the flow is proposed along +x",
+#: "opening 6 is the inlet").
+FLOW_ONLY_KEYS = ("openings", "openings_reason", "seed_point_m", "seed_point_mm", "flow", "flow_axis",
+                  "flow_axis_confidence", "flow_axis_from", "flow_axis_guessed", "flow_question",
+                  "grounded", "reference_length_mm", "extents", "inside", "notes")
+
+
+def without_flow_openings(proposal: dict) -> dict:
+    """The check's proposal as an FEA stage serves it: the part, its size, unit and up axis - with
+    no openings to confirm and no flow, far field or ground (FLOW_ONLY_KEYS). The card follows
+    the analysis the user chose."""
+    out = {k: v for k, v in (proposal or {}).items() if k not in FLOW_ONLY_KEYS}
+    out["openings"] = []
+    return out
+
+
+def joint_counts(interfaces) -> dict[str, int]:
+    """Where an assembly's parts meet, counted ONE way for every surface (the stage, the declaration
+    the chat reads, the run's plan): each interface once - where parts touch, across a small gap
+    (those that meet only along a line or an edge among them), where they pass into each other."""
+    out = {"touching": 0, "gap": 0, "line": 0, "overlap": 0}
+    for i in interfaces or ():
+        if not isinstance(i, dict):
+            continue
+        if i.get("line"):
+            out["gap"] += 1
+            out["line"] += 1
+        elif i.get("kind") in ("touching", "gap", "overlap"):
+            out[str(i["kind"])] += 1
+    return out
+
+
+def joint_phrases(interfaces) -> list[str]:
+    """joint_counts in the stage's words: "1 place where parts touch", "5 across a small gap"."""
+    c = joint_counts(interfaces)
+    words = []
+    if c["touching"]:
+        words.append(f"{c['touching']} place{'s' if c['touching'] != 1 else ''} where parts touch")
+    if c["gap"]:
+        words.append(f"{c['gap']} across a small gap"
+                     + (f" ({c['line']} of them only along a line or an edge)" if c["line"] else ""))
+    if c["overlap"]:
+        words.append(f"{c['overlap']} where parts pass into each other")
+    return words
+
+
+def joints_words(interfaces) -> str:
+    """Every joint of an assembly in one line: "6 joints: 1 place where parts touch, 5 across a
+    small gap"; "" when the parts meet nowhere."""
+    phrases = joint_phrases(interfaces)
+    total = sum(v for k, v in joint_counts(interfaces).items() if k != "line")
+    return f"{total} joint{'s' if total != 1 else ''}: {', '.join(phrases)}" if phrases else ""
+
+
 def parts_words(asm: dict | None) -> str:
     """An assembly's parts in one plain line for the declaration: "3 parts: Part_1 (Valve body),
     Part_2 and Part_3"."""
@@ -572,7 +637,8 @@ def measure_view(facts: dict | None) -> dict | None:
     return {"measured": True, "basis": rec.get("basis"), "thickness_min_mm": thick.get("min_mm"),
             "thickness_face": thick.get("face"), "thickness_at_mm": thick.get("at_mm"),
             "hot_spots": shown, "counts": counts, "more": max(0, sum(counts.values()) - len(shown)),
-            "summary": hot_spot_words(counts), "notes": list(rec.get("notes") or [])}
+            "summary": hot_spot_words(counts), "notes": list(rec.get("notes") or []),
+            "contacts": int(rec.get("contact_count") or 0)}
 
 
 def hot_spot_words(counts: dict[str, int]) -> str:
@@ -605,7 +671,7 @@ def in_unit(record: dict | None, scale_to_m: float | None) -> dict | None:
 
 __all__ = ["TRY_ANYWAY", "has_solid", "warnings", "FOLD_BACK", "fold_back_message", "SELF_OVERLAP", "WAY_OUT_REPAIR", "WAY_OUT_REPAIR_PART", "self_overlap_message", "CONNECTION_OPTIONS", "CONNECTION_QUESTION", "DEFAULT_CONNECTION", "NOT_SOLID", "NOT_SOLID_REASONS",
            "QUESTION", "SHOWN_HOT_SPOTS", "GAP_JOIN_QUESTION", "DEFAULT_GAP_JOINS", "gap_words",
-           "PAIR_NOTE", "confirmed_pairs", "pair_rows", "pairs_answer", "pairs_summary",
+           "PAIR_NOTE", "confirmed_pairs", "pair_rows", "pairs_answer", "pairs_summary", "joint_counts", "joint_phrases", "joints_words", "FLOW_ONLY_KEYS", "without_flow_openings",
            "gap_joins_answer", "confirmed_gap_joins", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL", "WAY_OUT_SOLID", "assembly_view",
-           "blocker", "body_count", "clean_words", "confirmed_connection", "connection_answer", "fea_view",
+           "blocker", "body_count", "sewn_body_count", "clean_words", "confirmed_connection", "connection_answer", "fea_view",
            "hot_spot_words", "in_unit", "measure_view", "not_solid_message", "parts_words", "stage_route"]

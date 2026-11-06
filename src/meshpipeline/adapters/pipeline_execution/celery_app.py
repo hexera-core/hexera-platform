@@ -145,6 +145,13 @@ celery_app.conf.update(
             "schedule": 3600.0,
             "options": {"queue": "cleanup_tasks"},
         },
+        # The stored bytes of an erased account. Hourly: an erasure request has a month under
+        # GDPR Article 12(3), and every row naming the person was already removed at request time.
+        "sweep-account-erasures": {
+            "task": "tasks.cleanup.sweep_account_erasures",
+            "schedule": 3600.0,
+            "options": {"queue": "cleanup_tasks"},
+        },
         "reconcile-orphan-artifacts": {
             "task": "tasks.cleanup.reconcile_orphan_artifacts",
             "schedule": 600.0,

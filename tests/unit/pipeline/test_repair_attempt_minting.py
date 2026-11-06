@@ -185,3 +185,14 @@ def test_the_node_reports_truncation_beside_the_candidates(tmp_path, monkeypatch
     out = _run(_state(tmp_path, *entities))
     assert len(out["repair_review_candidates"]) == 500
     assert out["repair_review_truncated"] == 1
+
+
+# The repair nodes publish the run's Repair check step through the ownership-checked port. This
+# suite exercises node contracts, not Redis or PostgreSQL, so the port is stood in for; ownership
+# has its own suites.
+@pytest.fixture(autouse=True)
+def _execution_publisher(monkeypatch):
+    from tests.execution_publisher_double import install
+
+    import meshpipeline.application.execution_publisher as _ep
+    return install(monkeypatch, _ep)

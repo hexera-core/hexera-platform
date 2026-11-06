@@ -142,6 +142,12 @@ def test_the_builders_run_mesh_moves_a_run_off_the_wall_and_tells_a_stuck_one_as
     assert caps == [(NT.CLOUD_RUN_WALL_S, "cloud_run"), (NT.VM_WALL_S, "gce")]
     assert out["timed_out"] and out["stalled"] and "no progress for 15 min" in out["guidance"]
     assert "too fine" not in out["guidance"]
+    # ...and a stuck run is a guard trip (docs/RULES.md TIME-3): the attempt is replayed as it was,
+    # at the wall of the machine it ended on
+    from meshpipeline.engines.determinism import guard_trips
+    assert out["guard_tripped"] is True
+    assert [(t["where"], t["guard_s"], t.get("stalled")) for t in guard_trips(tmp_path)] == [
+        ("vmtk", float(NT.VM_WALL_S), True)]
 
 
 # EACH ENGINE'S NATIVE RUN SAYS WHEN IT WAS STUCK

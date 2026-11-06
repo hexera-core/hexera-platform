@@ -191,7 +191,7 @@ function keepHolding() {
 export function holdForDrawing() {
   if (_checkState === "done" || _checkState === "over") return enableInput();
   if (_checkState === "ready") return holdInput(stageWait(), STAGE_WAIT_MS);
-  holdInput("Drawing your part… it will appear beside this chat in a moment", DRAWING_WAIT_MS);
+  holdInput("Drawing your part… it appears beside this chat", DRAWING_WAIT_MS);
 }
 export function releaseHold() {
   if (!_held) return;
@@ -214,7 +214,11 @@ async function watchGeometryCheck(sessionId) {
   // THE STAGE OPENS AS SOON AS THE PART IS MEASURED, with the measuring step's own labels under
   // a banner that says what is happening, and takes the model's labels when they arrive. The
   // user is already turning the part while the model thinks - and can proceed without it.
-  let stage = null, stageFailed = false, told = "";
+  let stage = null, stageFailed = false, told = "", stageKind = "";
+  // THE STAGE FOLLOWS THE ANALYSIS THE USER CHOSE: a check served for another analysis than the
+  // open stage's (the purpose settled, or changed, after it opened) re-opens it as that one, so an
+  // FEA part never keeps the flow form, its far field and its stickers (shared dev, 3 Nov)
+  const kindOf = (d) => (d.thermal ? "thermal" : d.fea ? "fea" : "flow");
   // THE WAY ON when a step gave up: the scout when the part was never measured, the naming when
   // it was. The watch goes on, so the fresh result lands where the old one would have.
   const retryFn = async (step) => { const d = await retryGeometryCheck(sessionId, step); told = ""; return d; };
@@ -268,6 +272,12 @@ async function watchGeometryCheck(sessionId) {
       // answered, on the stage or the card, whatever the naming did afterwards
       _checkState = "done"; releaseHold(); if (stage) stage.release(); return;
     }
+    if (stage && d && d.skin && (d.thermal || d.route) && kindOf(d) !== stageKind) {
+      try { stage.release(); } catch (e) { console.warn("geometry stage: release failed", e); }
+      stageKind = kindOf(d);
+      stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
+      if (stage === null) stageFailed = true;
+    }
     if (status === "off" || status === "unsupported" || (status === "failed" && !stage && !d.retry)) {
       if (status === "failed" && d.reason) {
         deps.notice.show("The geometry check could not read this file; the questions will "
@@ -286,7 +296,7 @@ async function watchGeometryCheck(sessionId) {
       if (told !== key) {
         told = key;
         deps.notice.show("The geometry check did not finish: " + (d.reason || "it gave up")
-          + ". Try again, or just carry on in the chat.", "warn",
+          + ". Try again, or carry on in the chat.", "warn",
           { sticky: true, action: "Try again", onAction: () => {
             deps.notice.clear();
             retryFn(d.retry).catch((e) => deps.notice.show("Could not run the geometry check again: " + e.message, "error"));
@@ -306,6 +316,7 @@ async function watchGeometryCheck(sessionId) {
       // an FEA part gets its own stage, never the flow form with its stickers. A thermal model's
       // file says it all by itself, so it opens at once.
       if (d.skin && !stage && !stageFailed && (d.thermal || d.route)) {
+        stageKind = kindOf(d);
         stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);   // null when the stage cannot draw
         if (stage === null) stageFailed = true;                               // the card stands in
         // the part is on the stage (a preview while a big file is still measured): the box says
@@ -322,7 +333,8 @@ async function watchGeometryCheck(sessionId) {
       if (!readySeen || !waitingFull) {
         _checkState = "ready";
         if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
-        if (stage) safeUpdate(stage, d); else if (!readySeen) await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
+        if (stage) safeUpdate(stage, d);
+        else if (!readySeen) { stageKind = kindOf(d); stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn); }
       }
       readySeen = true;
       if (!waitingFull) return;
@@ -394,7 +406,7 @@ async function sendText(txt) {
     else enableInput();
   } catch (e) {
     if (e.status !== 401) {
-      deps.chat("assistant", "Something went wrong sending that: " + e.message + ". Please try again.");
+      deps.chat("assistant", "Could not send that: " + e.message + ". Try again.");
     }
     enableInput();
   }

@@ -29,13 +29,14 @@ def _stub(monkeypatch, order: list[str], *, failing: set[str] = frozenset()) -> 
     make("reap", cleanup, "reap_stalled_jobs")
     make("purge", cleanup, "purge_expired_geometry_sources")
     make("reconcile", reconcile, "reconcile_orphan_artifacts")
+    make("erasures", cleanup, "sweep_account_erasures")
 
 
 def test_every_step_runs_in_order_and_a_clean_run_exits_zero(monkeypatch, capsys):
     order: list[str] = []
     _stub(monkeypatch, order)
     assert maintenance_sweep.main([]) == 0
-    assert order == ["reap", "purge", "reconcile"]
+    assert order == ["reap", "purge", "reconcile", "erasures"]
     out = json.loads(capsys.readouterr().out)
     assert out["failed"] == []
     assert list(out["steps"]) == [name for name, _ in maintenance_sweep.HOSTED_STEPS]
@@ -48,7 +49,7 @@ def test_a_failing_step_does_not_stop_the_others_and_the_run_is_red(monkeypatch,
     order: list[str] = []
     _stub(monkeypatch, order, failing={"reap"})
     assert maintenance_sweep.main([]) == 1
-    assert order == ["reap", "purge", "reconcile"]
+    assert order == ["reap", "purge", "reconcile", "erasures"]
     out = json.loads(capsys.readouterr().out)
     assert out["failed"] == ["tasks.cleanup.reap_stalled_jobs"]
     assert out["steps"]["tasks.cleanup.reap_stalled_jobs"] == {"error": "RuntimeError"}

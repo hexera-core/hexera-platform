@@ -15,11 +15,23 @@
 # graph, releases its lease, puts the job back on the queue and returns - a few seconds in all. The
 # next free worker runs the job; the user is told it moved. Only then does the container exit.
 #
-# WHY THE BUDGET IS 75 SECONDS. A VM being deleted gets about ninety seconds before Compute Engine
-# stops it regardless (graceful shutdown with a longer window cannot be enabled on instances in a
-# managed instance group), and this script has to finish inside that. The hand-back needs a few
-# seconds; the rest is headroom for a graph step that is slow to unwind. `docker stop` gives up with
-# SIGKILL at the end of its timeout, and a job still unreleased then is re-run once by the reaper.
+# WHY THE BUDGET IS WHAT IT IS, AND WHY IT IS NOT A CONSTANT. A VM being DELETED gets about ninety
+# seconds before Compute Engine stops it regardless (graceful shutdown with a longer window cannot
+# be enabled on instances in a managed instance group), and this script has to finish inside that -
+# so 75 seconds, the hand-back plus headroom for a graph step that is slow to unwind.
+#
+# A RECLAIMED SPOT VM gets about THIRTY, not ninety. A 75-second budget on a Spot fleet is worse
+# than a short one: `docker stop` would still be waiting when the machine went away, so the job
+# would never be handed back and would instead wait out its 900-second lease to be re-run as
+# worker_lost - flakiness that looks like nothing in particular. So the number is decided per
+# provisioning model by create-worker-fleet.sh and read from instance metadata here, where it is
+# the same value the containers carry as their own --stop-timeout (startup.sh).
+#
+# The measured drain is about eighteen seconds - the run notices the mark within 1 s, is cancelled,
+# and gets 15 s to unwind (application/worker_handoff.py) - which is what makes 25 fit in 30.
+#
+# `docker stop` gives up with SIGKILL at the end of its timeout, and a job still unreleased then is
+# re-run once by the reaper.
 #
 # BOTH CONTAINERS, AT ONCE. The geometry-check worker only ever holds seconds of work, so it gets a
 # shorter budget, and stopping it in parallel costs the simulation worker nothing.
@@ -34,6 +46,15 @@ set -uo pipefail
 touch /run/hexera-shutting-down
 systemctl stop hexera-worker-watchdog >/dev/null 2>&1 || true
 
-docker stop --time 75 hexera-worker &
-docker stop --time 30 hexera-geometry-worker &
+# The budget the template was built with. Defaults are the on-demand values, so an instance whose
+# template predates this metadata behaves exactly as it did before.
+md() { curl -sf -H 'Metadata-Flavor: Google' \
+  "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1"; }
+WORKER_STOP_TIMEOUT="$(md worker-stop-timeout || true)"
+GEOMETRY_STOP_TIMEOUT="$(md geometry-stop-timeout || true)"
+[[ "${WORKER_STOP_TIMEOUT}" =~ ^[0-9]+$ ]] || WORKER_STOP_TIMEOUT=75
+[[ "${GEOMETRY_STOP_TIMEOUT}" =~ ^[0-9]+$ ]] || GEOMETRY_STOP_TIMEOUT=30
+
+docker stop --time "${WORKER_STOP_TIMEOUT}" hexera-worker &
+docker stop --time "${GEOMETRY_STOP_TIMEOUT}" hexera-geometry-worker &
 wait

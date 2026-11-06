@@ -56,6 +56,8 @@ MAX_RAY_TRIANGLES = 600_000
 SHAPE_WORDS = {"hole": "hole", "fillet": "fillet", "notch": "notch", "groove": "groove",
                ff.SHARP_CORNER: "inside corner"}
 _TYPE_ORDER = {ff.SHARP_CORNER: 0, ff.NOTCH: 1, ff.FILLET: 2, ff.HOLE: 3}
+#: At most this many contacts are listed (the longest); `contact_count` says how many there are.
+MAX_CONTACTS = 200
 
 
 def _r(v: float) -> float:
@@ -100,8 +102,19 @@ def measure_cad_surface(shape, *, mm_per_unit: float,
     # free-form face is round however its CAD writes it - read from the surface itself
     curvature = {k: r for k, face in enumerate(faces)
                  if kinds[k] not in ("plane",) and (r := face_radius(face, float(mm_per_unit))) is not None}
-    record = _record(surface, arcs, bodies=_cad_bodies(shape), basis="cad", kinds=kinds, started=started,
+    bodies, sewn = _cad_bodies(shape), None
+    if bodies == 0:
+        # A FILE OF LOOSE SURFACES (an IGES of trimmed faces, no shell, no solid): its bodies are COUNTED
+        # as the pieces its faces sew into (sewn_bodies), said as `bodies_sewn` - `bodies` stays the
+        # solids' count, which an assembly's staging and fuse are built on. The count is not used to split
+        # the walls: a face the sewing leaves loose would read its own part's far side as another body's
+        groups = sewn_bodies(shape, surface, float(mm_per_unit))
+        if groups is not None:
+            sewn = groups[1]
+    record = _record(surface, arcs, bodies=bodies, basis="cad", kinds=kinds, started=started,
                      max_ray_triangles=max_ray_triangles, curvature=curvature)
+    if sewn is not None:
+        record["bodies_sewn"] = int(sewn)
     record["cusps"] = cad_cusps(shape, float(mm_per_unit))
     record["micro"] = cad_micro(shape, float(mm_per_unit), diag_mm=float(surface.diag))
     # PLAN-fea-12: the rounds under the measure floor are micro details too, named (no places to set aside)
@@ -504,6 +517,109 @@ def _face_arc(face, kind: str, s: ff.Surface, idx: np.ndarray, mm: float) -> ff.
                   around_deg=min(360.0, math.degrees(u1 - u0)), labels=label, basis="exact", at=at)
 
 
+#: Loose faces are sewn into bodies within this share of the part's diagonal - the clean check's own
+#: sewing tolerance (cad/validity_brep.SEW_TOLERANCE), so the two never disagree on what is joined - and only
+#: up to this many faces (cad/validity_brep.MAX_SEW_FACES).
+SEW_SHARE = 1e-4
+MAX_SEW_FACES = 20_000
+
+
+def sewn_bodies(shape, surface: ff.Surface, mm: float) -> tuple[np.ndarray, int] | None:
+    """THE BODIES OF A FILE OF LOOSE SURFACES: (each face's body, in face order; how many). Two faces are of
+    one body where OpenCASCADE's sewing joins them along an edge - except an edge whose two faces lie back
+    to back (cad/fea_features.CONTACT_DEG): that is two parts pressed together, sewn shut only because their
+    edges happen to coincide. A face joined to nothing is a body of its own. None when there is nothing to
+    sew or the sewing fails (the bodies stay uncounted)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
+
+    try:
+        fmap = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(shape, TopAbs_FACE, fmap)
+        n = fmap.Extent()
+        if n == 0 or n > MAX_SEW_FACES:
+            return None
+        sewing = BRepBuilderAPI_Sewing(SEW_SHARE * float(surface.diag) / mm)
+        for i in range(1, n + 1):
+            sewing.Add(fmap.FindKey(i))
+        sewing.Perform()
+        sewn = sewing.SewedShape()
+        if sewn is None or sewn.IsNull():
+            return None
+        sewn_faces = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(sewn, TopAbs_FACE, sewn_faces)
+        parent = list(range(sewn_faces.Extent() + 1))
+
+        def root(i: int) -> int:
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        e2f = TopTools_IndexedDataMapOfShapeListOfShape()
+        TopExp.MapShapesAndAncestors_s(sewn, TopAbs_EDGE, TopAbs_FACE, e2f)
+        back_to_back = -math.cos(math.radians(ff.CONTACT_DEG))
+        for i in range(1, e2f.Extent() + 1):
+            ks = sorted({sewn_faces.FindIndex(f) for f in e2f.FindFromIndex(i)} - {0})
+            if len(ks) != 2:
+                continue                                  # a free edge, or several parts meeting at one
+            if root(ks[0]) == root(ks[1]):
+                continue                                  # joined already: this edge changes nothing (and
+                                                          # its normals, read on the exact faces, are slow)
+            dot = _edge_normals_dot(TopoDS.Edge_s(e2f.FindKey(i)), [sewn_faces.FindKey(k) for k in ks])
+            if dot is not None and dot < back_to_back:
+                continue                                  # two parts lying against each other: a contact
+            parent[root(ks[0])] = root(ks[1])
+        body = np.full(n, -1, dtype=np.int64)
+        for i in range(1, n + 1):
+            f = fmap.FindKey(i)
+            g = sewing.Modified(f) if sewing.IsModified(f) else f
+            k = sewn_faces.FindIndex(g)
+            body[i - 1] = root(k) if k else -(i + 1)
+        # numbered in face order, so the same file always gives the same numbers
+        _u, first, inverse = np.unique(body, return_index=True, return_inverse=True)
+        rank = np.empty(len(first), dtype=np.int64)
+        rank[np.argsort(first, kind="stable")] = np.arange(len(first))
+        body = rank[inverse.reshape(-1)]
+        return body, int(len(first))
+    except Exception as exc:  # noqa: BLE001 - uncounted, as before
+        logger.info("fea measure: the loose faces could not be sewn into bodies (%s)", type(exc).__name__)
+        return None
+
+
+def _edge_normals_dot(edge, faces) -> float | None:
+    """The dot product of two faces' outward normals at the middle of the edge they share; None when either
+    cannot be read there."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+    from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.ShapeAnalysis import ShapeAnalysis_Surface
+    from OCP.TopAbs import TopAbs_REVERSED
+    from OCP.TopoDS import TopoDS
+
+    try:
+        if BRep_Tool.Degenerated_s(edge):
+            return None
+        c = BRepAdaptor_Curve(edge)
+        p = c.Value(0.5 * (c.FirstParameter() + c.LastParameter()))
+        ns = []
+        for f_shape in faces:
+            f = TopoDS.Face_s(f_shape)
+            uv = ShapeAnalysis_Surface(BRep_Tool.Surface_s(f)).ValueOfUV(p, 1e-9)
+            pr = BRepLProp_SLProps(BRepAdaptor_Surface(f), uv.X(), uv.Y(), 1, 1e-9)
+            if not pr.IsNormalDefined():
+                return None
+            n = pr.Normal()
+            sign = -1.0 if f.Orientation() == TopAbs_REVERSED else 1.0
+            ns.append(np.array([n.X(), n.Y(), n.Z()]) * sign)
+        return float(ns[0] @ ns[1])
+    except Exception:  # noqa: BLE001 - unreadable: the faces are joined as the sewing joined them
+        return None
+
+
 def _cad_bodies(shape) -> int:
     from OCP.TopAbs import TopAbs_SHELL, TopAbs_SOLID
     from OCP.TopExp import TopExp
@@ -666,6 +782,9 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
                       # settles under refinement, so the plan stops refining it at a set level; the
                       # thinner wall beside it is the length that level is set against
                       "capped": True, "cap_basis_mm": local, "local_thickness_mm": local})
+    # WHERE TWO BODIES TOUCH (cad/fea_features.contacts): contacts, never inside corners - said once per
+    # pair of bodies, for the assembly reading and the stage
+    touching = ff.contacts(s, pairs)
     spots.sort(key=lambda h: (_TYPE_ORDER[h["type"]], h.get("radius_mm") or h.get("angle_deg") or 0.0))
     counts: dict[str, int] = {}
     for h in spots:
@@ -692,6 +811,14 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
            "notes": notes, "seconds": round(time.time() - started, 2)}
     if bores:
         out["bores"] = bores
+    if touching:
+        out["contact_count"] = len(touching)
+        out["contacts"] = [{"faces": [s.names[k] for k in c["labels"]], "length_mm": _r(c["length_mm"]),
+                            "at_mm": _pt(c["at_mm"]),
+                            **({"bodies": [b + 1 for b in c["bodies"]]} if c["bodies"] is not None else {})}
+                           for c in touching[:MAX_CONTACTS]]
+        notes.append(f"{len(touching)} place(s) where two surfaces lie against each other (parts touching) are "
+                     "read as contacts, not as sharp inside corners.")
     if sub_floor:
         out["sub_floor"] = sub_floor
     if thick.get("lying"):
