@@ -1,0 +1,145 @@
+{
+  "rows": [
+    {
+      "row": {
+        "file": "/tmp/crs-repair-phase0-small-edge.step",
+        "size_bytes": 23131,
+        "valid_before": true,
+        "counts_before": {
+          "solids": 1,
+          "shells": 1,
+          "faces": 8,
+          "edges": 36,
+          "vertices": 72
+        },
+        "defects_before": [
+          "small_edge",
+          "small_face"
+        ],
+        "located_before": {
+          "small_edge": 2,
+          "small_face": 1
+        },
+        "regions_before": {
+          "unknown": 3
+        },
+        "status": "clean",
+        "route": "manual_cleanup",
+        "confidence": 0.6,
+        "targets": [
+          {
+            "entity": "face:6",
+            "code": "small_face",
+            "region": "unknown"
+          }
+        ],
+        "abstain_reason": "",
+        "outcome": "not_attempted:manual_cleanup",
+        "seconds": 0.76
+      },
+      "cpu_seconds": 0.9897699999999999,
+      "max_rss_kb": 306736,
+      "raw_rows_path": "devtools/validation/evidence/2026-10-29-crs-repair-phase0/generated-small-edge-raw/0000-crs-repair-phase0-small-edge-r1/rows.json",
+      "wall_seconds": 1.0778779169995687
+    },
+    {
+      "row": {
+        "file": "/tmp/crs-repair-phase0-small-edge.step",
+        "size_bytes": 23131,
+        "valid_before": true,
+        "counts_before": {
+          "solids": 1,
+          "shells": 1,
+          "faces": 8,
+          "edges": 36,
+          "vertices": 72
+        },
+        "defects_before": [
+          "small_edge",
+          "small_face"
+        ],
+        "located_before": {
+          "small_edge": 2,
+          "small_face": 1
+        },
+        "regions_before": {
+          "unknown": 3
+        },
+        "status": "clean",
+        "route": "manual_cleanup",
+        "confidence": 0.6,
+        "targets": [
+          {
+            "entity": "face:6",
+            "code": "small_face",
+            "region": "unknown"
+          }
+        ],
+        "abstain_reason": "",
+        "outcome": "not_attempted:manual_cleanup",
+        "seconds": 0.9
+      },
+      "cpu_seconds": 1.1098350000000001,
+      "max_rss_kb": 306864,
+      "raw_rows_path": "devtools/validation/evidence/2026-10-29-crs-repair-phase0/generated-small-edge-raw/0000-crs-repair-phase0-small-edge-r2/rows.json",
+      "wall_seconds": 1.2069919999994454
+    },
+    {
+      "row": {
+        "file": "/tmp/crs-repair-phase0-small-edge.step",
+        "size_bytes": 23131,
+        "valid_before": true,
+        "counts_before": {
+          "solids": 1,
+          "shells": 1,
+          "faces": 8,
+          "edges": 36,
+          "vertices": 72
+        },
+        "defects_before": [
+          "small_edge",
+          "small_face"
+        ],
+        "located_before": {
+          "small_edge": 2,
+          "small_face": 1
+        },
+        "regions_before": {
+          "unknown": 3
+        },
+        "status": "clean",
+        "route": "manual_cleanup",
+        "confidence": 0.6,
+        "targets": [
+          {
+            "entity": "face:6",
+            "code": "small_face",
+            "region": "unknown"
+          }
+        ],
+        "abstain_reason": "",
+        "outcome": "not_attempted:manual_cleanup",
+        "seconds": 0.74
+      },
+      "cpu_seconds": 0.9594369999999999,
+      "max_rss_kb": 306928,
+      "raw_rows_path": "devtools/validation/evidence/2026-10-29-crs-repair-phase0/generated-small-edge-raw/0000-crs-repair-phase0-small-edge-r3/rows.json",
+      "wall_seconds": 1.0573322499985807
+    }
+  ],
+  "wall_seconds": {
+    "min": 1.0573322499985807,
+    "median": 1.0778779169995687,
+    "max": 1.2069919999994454
+  },
+  "cpu_seconds": {
+    "min": 0.9594369999999999,
+    "median": 0.9897699999999999,
+    "max": 1.1098350000000001
+  },
+  "max_rss_kb": 306928,
+  "determinism": {
+    "deterministic": true,
+    "mismatches": []
+  }
+}

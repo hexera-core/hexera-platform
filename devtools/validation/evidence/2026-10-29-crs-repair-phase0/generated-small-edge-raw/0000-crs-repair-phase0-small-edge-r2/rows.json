@@ -1,0 +1,38 @@
+[
+  {
+    "file": "crs-repair-phase0-small-edge.step",
+    "size_bytes": 23131,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 8,
+      "edges": 36,
+      "vertices": 72
+    },
+    "defects_before": [
+      "small_edge",
+      "small_face"
+    ],
+    "located_before": {
+      "small_edge": 2,
+      "small_face": 1
+    },
+    "regions_before": {
+      "unknown": 3
+    },
+    "status": "clean",
+    "route": "manual_cleanup",
+    "confidence": 0.6,
+    "targets": [
+      {
+        "entity": "face:6",
+        "code": "small_face",
+        "region": "unknown"
+      }
+    ],
+    "abstain_reason": "",
+    "outcome": "not_attempted:manual_cleanup",
+    "seconds": 0.9
+  }
+]
