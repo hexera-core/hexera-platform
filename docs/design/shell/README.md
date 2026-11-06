@@ -226,6 +226,24 @@ Two corrections from the 14th helper's lab-VM sweep (1 Nov):
   - CalculiX: it has no `*SHELL TO SOLID COUPLING`. Candidates, decided by the textbook cases below: the overlap method (the shell edge runs one wall deep into the solid and shares its nodes there, so the moment passes as a force couple), or a `*COUPLING` / `*DISTRIBUTING` over the solid face's thickness band with the shell edge node as the reference node;
   - Nastran: RBE3 from each shell edge node (all six DOFs) to the solid face nodes across the thickness band, or glued shell-to-solid edge contact (BSURF/BCONTACT);
   - Ansys: MPC184 or shell-solid assembly contact (CONTA175 / TARGE170 with the shell-solid KEYOPT).
+- **Decided by the CalculiX cases (29 Oct, `engines/shell_links.py`, SHLINK-1..3, placeholders).** CalculiX's
+  `*DISTRIBUTING` coupling needs element-face surfaces and takes a node into one coupling only, so per-node
+  couplings along a shell edge cannot be written; rotations of shell nodes do not reach `*EQUATION`. What works,
+  with translations only:
+  - **SHLINK-1, edge link: the shell runs into the solid** by one wall (at least one element row), and each of
+    its nodes there is tied (`*EQUATION`) to the mean of the solid nodes on its wall's thickness line (within half
+    the wall along its normal, their foot within a quarter of the shell's element size). The moment crosses as the
+    couple between the overlapped node rows. Wider bands stiffen the join (half an element: 15% stiff), so the
+    solid is meshed with nodes on the overlapped strip.
+  - **SHLINK-2, face link: a solid standing on a shell's face** (a thick web on a shelled plate): each solid node
+    on the contact face rides on the shell point under it, moved rigidly by its offset from the mid-surface.
+  - Measured (`tests/unit/engines/test_shell_textbook.py`, CI's accuracy lane):
+    - half-shell, half-solid cantilever 200 x 20 x 2: tip 0.6% off the pure shell, 1.7% off PL³/3EI;
+    - shell and solid sharing only their meeting line: the tip moved 10^9 times too far (a hinge);
+    - T-joint in bending, web shell into a solid plate: 4.6% off the all-solid T (1.6% off the all-shell T,
+      which is itself 6.3% softer than all-solid: its junction has no corner metal);
+    - T-joint, plate shell under a solid web: 4.0% off the all-solid T.
+  - Nastran (RBE3 / RBE2 on the same node choice) and Ansys (CE) follow in PR 3, with the mixed-part mesher.
 - **The solid region gets at least 2 quadratic elements through the thickness** at the link, so its face can carry the linear stress through the wall that a moment puts on it.
 - **Proved in CalculiX, in the accuracy lane (PR 2):**
   - a cantilever plate, half shell and half solid, tip load: the tip deflection within 2% of the pure-shell model and of beam theory (PL³/3EI);
@@ -234,17 +252,42 @@ Two corrections from the 14th helper's lab-VM sweep (1 Nov):
 
 ## 3. Meshing (PR 2)
 
-**Engine.** gmsh on the sewn mid-surface: Frontal-Delaunay for quads (algorithm 8) plus Blossom recombination, and quad-dominant output. If gmsh leaves too many triangles on a family of parts, Salome SMESH (quadrangle mapping, LGPL) is the second engine. The system recommends one, the user picks, and the plan is engine-neutral as on the FEA path.
+**Engine.** gmsh on the sewn mid-surface: Frontal-Delaunay (algorithm 6) plus Blossom recombination, and quad-dominant output. (Frontal-Delaunay for quads, algorithm 8, left faces of B-spline mid-surfaces up to 7 times coarser than their size, with long thin quads past Nastran's limits; QuadQS, algorithm 11, made 3 to 5 times the elements asked for.) If gmsh leaves too many triangles on a family of parts, Salome SMESH (quadrangle mapping, LGPL) is the second engine. The system recommends one, the user picks, and the plan is engine-neutral as on the FEA path.
 
 **Element size rules** (SHMESH-1..7, placeholders). Each is general and measured:
 
 1. **Base:** the coarsest the sheet allows. At most 1/10 of the sheet's size L, and at least 4 elements across every mid-face's narrowest width.
 2. **Floor:** no element smaller than half the wall. Smaller than that, a shell is the wrong element. Where a rule asks for less, the part is meshed at the floor with a plain note.
-3. **Holes and cut-outs:** 6 elements per quarter-turn (24 around), as PLAN-fea-4. Plus one ring of quads round the hole (a washer) and at least 2 element rows between a hole and a free edge.
+3. **Holes and cut-outs:** 6 elements per quarter-turn (24 around), as PLAN-fea-4. Each arc is refined to its own radius and grown from there; the face's straight edges and wider arcs keep the face's size. (Refining every edge of a face to its smallest hole's size filled a 0.5 x 1.2 m bulkhead plate with 329,000 elements; it now takes 3,100 and 1 second.) Plus one ring of quads round the hole (a washer) and at least 2 element rows between a hole and a free edge.
 4. **Curvature:** at most 15 degrees per element on curved mid-faces (6 per quarter-turn), and at least 3 elements across a bend.
 5. **Small features:** at least 3 elements across any flange, strip or web.
-6. **Growth:** 1.3 at most, as PLAN-fea-6.
+6. **Growth:** 1.3 at most, as PLAN-fea-6. Held by grading fields from every finer face's edges and every refined arc, each growing up to the largest size in the part, never capped below it. gmsh's own spreading of edge sizes into a face is off: it carried a 2.5 mm bend strip's size over the whole of a 1.7 m flange (800,000 elements, over 20 minutes; now 50,000 in 25 s).
 7. **Junction lines:** always meshed with shared nodes. Both sides use the same seeds.
+
+**Sizes for modal accuracy (SHMESH-15, 30 Oct).** A free-free modal check of 14 corpus parts (CalculiX S4 shells against C3D10 solids of the CAD, modes 7 to 12) found the rules above too coarse: 5 parts were 10 to 23% too stiff. A grid study over the base divisions, the elements across, the curve sizes and a panel threshold (`~/shell_lab/modal/g1` to `g11`) showed that one thing matters: the elements across a wide face. The base divisions and the curve sizes changed nothing. 16 across everywhere put all 14 parts within 4.7%, for 2.3 times the elements. The rule kept:
+
+- **A panel gets 20 elements across.** A panel is a face at least 20 walls wide and at least a tenth of the size of its body's largest sheet. It bends across its own width in the part's first modes.
+- **Narrower faces keep 4 across.** These are bends, flanges and strips. They do not bend across in those modes.
+- **Result:** all 14 parts within 4.1% of the solid (the worst, sh0055, is 4% soft at every size: the shell model's own difference, not its mesh), for 1.1 times the elements.
+- **Why "a tenth of the body's largest sheet".** Without it, a corrugated roof sheet's 23 mm flanks (48 walls of 0.49 mm) were panels: 399,000 elements instead of 38,700. The 2 m sheet bends as a whole long before a flank bends across.
+
+**Mapped bends (SHMESH-16, 30 Oct).** A narrow curved strip with four sides is meshed as a mapped grid of quads (gmsh transfinite):
+
+- a bend, or a tube's rounded corner;
+- its two long sides alike within 5%, and its ends alike;
+- the long sides at least 1.5 times the ends;
+- under 20 walls across.
+
+Across, it keeps its planned size. Along, it takes the size of the faces beside it, at most 5 times the size across (Femap's aspect target). Its neighbours grade from its long sides at that size.
+
+**Every count is even.** With an odd count on a strip's side, Blossom left hundreds of triangles in the face next to it: 485 on one sheet-metal flange, 0 with even counts. A count another strip has already set is kept; a strip that cannot agree stays free. Flat strips are not mapped: a lone plate stretched 5 times along was 5 times too coarse (sh0086: 45 elements, 11% stiff).
+
+On the corpus, a floor-sized bend no longer fills its length with floor-sized elements:
+
+- sh0107's 400 tube corners: 1.5 million elements and over 20 minutes before, now 213,000 elements in 201 s;
+- the welded tube frames (sh0106, sh0109 to sh0113): 2 to 8 times fewer elements, and 2 to 6 times faster.
+
+**The sliver merge never folds a corner.** SHMESH-12's guard checked only each element's mean normal. A quad can keep its normal with one corner turned back, and 3 such quads made sh0021's mesh invalid once the panels were finer. A merge is now undone when any corner of an element turns against its old normal. Cost, still open: sh0083 keeps slivers the merge used to close, and 3.6% of its elements are past a Nastran limit (0.8% before).
 
 **Quality** (SHMESH-8, verdict by limits as VER-1..4).
 
@@ -254,14 +297,39 @@ Two corrections from the 14th helper's lab-VM sweep (1 Nov):
 | Measure | Nastran GEOMCHECK default (CQUAD4 / CTRIA3) | Femap / industry target |
 |---|---|---|
 | aspect ratio | IAR 100 (warn) | ≤ 5 |
-| warp | Q4_WARP 0.05 | ≤ 5 degrees (≤ 10 notes) |
+| warp | Q4_WARP 0.05, the warping coefficient 2H / (D1 + D2) | ≤ 10 degrees between the two halves (notes) |
 | skew | Q4_SKEW 30° min, T3_SKEW 10° min | ≥ 45° (quad) |
 | taper | Q4_TAPER 0.5 | ≤ 0.5 |
 | interior angle | Q4_IAMIN 30°, Q4_IAMAX 150°, T3_IAMAX 160° | quad 45 to 135°, tria 20 to 120° |
 | Jacobian | (must be positive) | ≥ 0.6 |
 | triangle share | | ≤ 5% of elements |
 
-The GEOMCHECK figures are as we read MSC's Quick Reference Guide. PR 2 checks them against the guide and cites the page, as `fea_solvers.py` does.
+The GEOMCHECK figures are as we read MSC's Quick Reference Guide; the warping coefficient's formula is Altair's statement of Nastran's (H: the corners' height off the mean plane, D1 and D2 the diagonals). Held as an angle of 5 degrees (as first written here) it was 4.5 times stricter than the solver: a square whose corners stand 0.05 of a diagonal off its plane is 22.6 degrees.
+
+**Every delivered element inside Nastran's own limits** (SHMESH-10..13, placeholders). After gmsh, in this order:
+
+10. **Cut:** a quad past any GEOMCHECK limit becomes two triangles, on the diagonal whose triangles are better (fewer past a limit, then the larger smallest angle). A triangle has no warp or taper.
+11. **Seams:** every closed sewn face (a full ring, a torus) is cut at its seams before meshing and fused back conformal. A face gmsh still cannot mesh as a periodic surface is re-made as a B-spline (the same surface) and meshed again.
+12. **Slivers:** an element edge under the floor and either under a fifth of the longest edge of every element on it or under a fifth of the floor is a CAD sliver; its ends become one node (the one most faces meet at stays put). Run before the cut and once after it (a quad folded nearly flat cuts into two slivers along its short diagonal, which then closes).
+13. **Swaps:** a triangle past a limit swaps its longest edge with the triangle across it (same face, never a face's own edge) when both come out better.
+14. **Relax first:** before any quad is cut, a node inside a flat face (on no CAD edge) of an element past a limit moves to the middle of its neighbours when that leaves fewer of its elements past a limit and none turned over (a tie goes to the larger smallest angle). Nodes sharing no element move together; at most 6 passes. The middle of coplanar points stays in their plane, so the node stays on its face. This halves the cut quads on flat sheet parts.
+14b. **Relax, second pass (30 Oct):** what the middle left past a limit is tried again with two more points per node: where each quad round it would be a parallelogram (b + d - c, averaged), and half-way to it. Tried in one pass with the middle, the parallelogram moves mended quads and left sliver triangles the middle had mended (sh0039: one triangle past T3_SKEW). A past triangle outweighs every quad round a node (a cut quad mostly gives good triangles; a past triangle stays past), and a quad that no cut can mend counts as a triangle. After the cut, one more pass for the triangles the cut left past, where no quad may come out past a limit.
+14c. **Relax on curved faces (30 Oct, 11th helper):** the nodes inside a cylinder, cone or any curved face move too; each point tried is laid back onto the face's own surface (its closest point) before it is judged. sh0007's slotted cylinder: 11.3% to 7.2% triangles; sh0004: 5.8% to 2.7%. Every node stays on its surface (a test holds a relaxed cylinder's nodes on its radius to 1e-6 mm).
+11b. **A boundary gmsh cannot recover (30 Oct, 11th helper):** gmsh's 2D mesher stopped on a ship's 3 m hull cylinder with 25 mm slots (sh0048: "impossible to recover the edge", algorithms 6, 1 and 5 alike). The same face scaled down 10 times meshed, and so did the same surface made a B-spline at full size: gmsh's handling of the large periodic analytic surface, not the face's shape. The face gmsh was meshing when it stopped (read from its log) is re-made as a B-spline and the part meshed again, as for a periodic failure (SHMESH-11). Only failing faces change, and with each one every sewn face on the same surface (the hull's four slotted halves each stopped gmsh in turn: four whole re-meshes). Still open: sh0048 meshed that way runs past an hour on the lab machine, so it does not yet finish inside the sweep's 20 minutes.
+11c. **A loop gmsh cannot close (30 Oct, 12th helper):** "the 1D mesh seems not to be forming a closed loop" on an analytic or trimmed face (a tee's run, a mitred bend's pieces, a nozzle's saddle) is handled as 11b: that face is re-made as a B-spline and the part meshed again. A face gmsh already names a B-spline is not re-made again: the old guard compared "BSplineSurface" with gmsh's "BSpline surface", never matched, and re-made a failing B-spline face up to 16 times. At most 4 faces are re-made for loops in one mesh; past that it stops in words (fresh fr017, a PVC tee: its faces failed one after another, 14 were re-made, then gmsh hung; now it stops in 4 s).
+11d. **Closed faces that will not fuse back:** the pieces of the closed faces are fused back exactly, then with a fuzzy value of twice the surface's own largest tolerance; if they still will not fuse (a 45 degree cone's pieces), the surface is meshed as sewn, said in the notes.
+11e. **A budget on re-made faces:** no face is re-made once the meshes so far have taken 300 s; the mesh stops and says why.
+11g. **Offset faces as B-splines:** faces on OCC offset surfaces (a drafted wall's mid-face) are re-made as B-splines before the closed faces are cut. Cut at the seam as offsets, a printed cone's halves came out invalid, the fuse dropped them, and the mesh had 0 elements (fresh fr018; now 338 elements, valid).
+20. **A plan too big stops before gmsh (SHMESH-20):** a plan asking for over 1.5 million elements (each face's area over its size squared, summed) fails at once, in words. gmsh makes about 1,000 elements a second here, and its counts run 0.4 to 3.3 times the plan's on the corpus. sh0048 (a ship's slotted hull, about 3.2 million planned, over an hour of gmsh) now stops in seconds and the solid mesh is delivered.
+21. **A deadline on every shell mesh (SHMESH-21):** the mesh runs in a forked child stopped after 15 minutes (gmsh can hang in one 2D mesh with no way back to Python). Never reached on the corpus.
+Repeatability (30 Oct, 11th helper): 65 of 66 meshed training files byte-identical run to run. sh0038 is not: gmsh hands back the same nodes but its quad recombination differs between runs (2 quads, 2 triangles), and it does at the 10th helper's head too; open.
+12b. **Sliver fold guard, local (30 Oct):** a merge that folds an element's corner in is undone at that element's own moved nodes, not over its whole cluster; the last round still undoes whole clusters. Undoing whole clusters (as added on 29 Oct for sh0021) kept 2,600 sliver edges of sh0083 and doubled its triangles (8% to 20%). sh0021 stays valid.
+17. **Pairs (SHMESH-17):** two triangles of one face across an edge theirs alone become one quad when that quad is valid and inside every Nastran quad limit; best pairs first.
+18. **Walks (SHMESH-18):** a triangle walks through at most 6 quads of its face to the nearest other triangle: each step re-cuts the triangle and the quad ahead (a pentagon) into a quad and a triangle that touches the next element; the last step joins the two triangles. A walk is kept only when every quad it leaves is valid, turns as the face does and is inside every limit; nodes never move and the outline stays.
+19. **Even boundaries (SHMESH-19):** Blossom pairs every triangle of a face only when the face's boundary has an even number of segments. After the 1D mesh, each odd face gets one segment more on one of its own free curves (the most evenly divided, then the most segments; never one whose segments would come out under the floor - a 0.7 mm spline cut in 3 left slivers), else on a curve shared with another odd face. sh0019: 13.5% triangles to 0.7%.
+20. **Speed for very large parts:** one size field per size, not per face; past 48 grading sizes, sizes are taken down to quarter-octave steps (finer, never coarser); gmsh integrates sizes along curves to 1e-3 (its 1e-9 held a ship's 1D mesh, 24,000 curves, past 30 minutes; counts move under 0.2%).
+
+What was tried and dropped for the triangle share (29 Oct, 8th helper): Frontal-Delaunay-for-quads on flat faces only (better on some parts, worse on as many); QuadQS (3 to 5 times slower, no fewer triangles); gmsh's transfinite-automatic (maps wide faces from a narrow neighbour's count: 15 times the elements); mapping only floor-width four-sided strips (left skewed triangles at their ends); meshing a strip narrower than the floor as one compound with its neighbour (gmsh crashed on one part - a whole-process crash). gmsh's Laplace smoothing helped less than rule 14. (30 Oct) Mapped flat strips (no stretch) did not help either: most flat strips have more than four sides. (30 Oct, 10th helper) gmsh's packing of parallelograms (algorithm 9) on flat faces: 2 to 4% triangles on holed plates, but it ignored the sizes on one part (2.3 times the elements, sh0059), ran past 20 minutes on B-spline parts and failed boundary recovery on the ship; dropped. A tri-plus-quad re-cut for past triangles mended 2 elements corpus-wide; dropped. gmsh's full-quad recombination needs every curve even and its sub-quads were cut more; Blossom options (minimum quality, topology passes, recombine angle) changed nothing.
 
 **Normals.** Every sheet's normals point one way. They point from face B toward face A of each pair, and outward on closed sections. Offsets and pressures in the user's solver then mean the same thing everywhere.
 
@@ -274,6 +342,10 @@ The GEOMCHECK figures are as we read MSC's Quick Reference Guide. PR 2 checks th
   - ties exist only where there is a gap, as PLAN-fea-18;
   - solid links (mixed parts) get a node group per link.
 
+**Walls that vary, and offset mid-planes (30 Oct, 11th helper).**
+- A mid-face whose wall varies (SHELL-9b) gives each of its nodes its own wall: a plane through the 8 wall readings nearest the node, kept within the readings' range. Its elements are written per corner (CQUAD4 / CTRIA3 T1 to T4, `*NODAL THICKNESS` in a section of their own, an Ansys section per element at its corners' mean). A varying mid-face with no readings is never meshed at one wall: the mesh stops and says why.
+- A plate snapped onto a thicker neighbour's mid-plane (SHELL-7: steps, laps) carries its true mid-plane's distance from its nodes along each element's normal: Nastran ZOFFS, Abaqus and CalculiX `OFFSET` (in walls, the nodes off the mid-surface), Ansys `SECOFFSET,USER`. Offsets and varying walls each get their own property (`..._z0p25`, `..._varies`). A varying wall is sized by its thinnest point (SHMESH-1/2/15 read that wall). Synthetic failure map, free-free modes 7 to 12 against the solid: a 2-degree wedge +67.5% to +2.8%, a printed tapered cone +146.7% to +5.9%; steps and laps with offsets unchanged at 3 to 4%.
+
 ## 5. Export (PR 2; Ansys in PR 2 too)
 
 **Nastran bulk data (.bdf), first-class for FEMAP.**
@@ -283,7 +355,7 @@ The GEOMCHECK figures are as we read MSC's Quick Reference Guide. PR 2 checks th
 - **The FEMAP-native route is a neutral file (.neu)**, whose group block is public. We offer it as soon as the prospect confirms the import in their FEMAP. Until then the BDF says "not yet tested in the real solver", as the solid writers do.
 
 **Abaqus and CalculiX (.inp).**
-- Elements: `*ELEMENT, TYPE=S4R` and `S3`.
+- Elements: `*ELEMENT, TYPE=S4R` and `S3` for Abaqus; **`S4` and `S3` for CalculiX** (29 Oct). CalculiX expands shells into solids: S4R into one layer of C3D8R, which has next to no bending stiffness (the 200 x 20 x 2 cantilever bent 96 mm for 9.4); S4 into C3D8I, 0.6% off.
 - Sections: `*SHELL SECTION, ELSET=…, MATERIAL=…` with the thickness, or `*NODAL THICKNESS`.
 - Sets: an ELSET per group and an NSET per junction.
 - CalculiX solves for real. It expands shells into solid elements, and we check it against the textbook cases.
