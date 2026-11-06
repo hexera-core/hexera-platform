@@ -67,3 +67,6 @@ tests/fixtures/external/corpus
 runs/
 # the millimetre staging area the CAD authoring scripts write to; the corpus is cad/semiconductor
 devtools/semiconductor/cad/
+
+# handover bundle: a build output of devtools/handover.sh, never a second source of truth
+/handover/
