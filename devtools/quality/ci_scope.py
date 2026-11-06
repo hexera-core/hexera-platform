@@ -38,6 +38,7 @@ IMAGE_PATHS = {
     "alembic.ini",
     "deploy/verify_install.py",
     "devtools/quality/shard_tests.py",
+    "devtools/quality/test_durations.json",
     "docker-compose.yml",
     "pyproject.toml",
 }

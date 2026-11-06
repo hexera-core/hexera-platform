@@ -102,6 +102,18 @@ if [ -n "${WORKER_MIG:-}" ] || [ -n "${WORKER_MIG_ZONE:-}" ]; then
   fi
   [ "${WORKER_JOBS_PER_INSTANCE:-1}" != "0" ] \
     || add "WORKER_JOBS_PER_INSTANCE is 0 - the autoscaler divides the queue depth by it"
+  # The provisioning model is an ENUM, and the one typo worth catching here is a lowercase or
+  # misspelled value: gcloud would reject it at the template, twenty minutes into a deploy.
+  case "${WORKER_PROVISIONING_MODEL:-STANDARD}" in
+    STANDARD|SPOT) ;;
+    *) add "WORKER_PROVISIONING_MODEL '${WORKER_PROVISIONING_MODEL:-}' is not STANDARD or SPOT" ;;
+  esac
+  # A Spot fleet in PRODUCTION is not a typo this gate may assume away, but it is one worth saying
+  # out loud: a reclaimed VM hands its job back and the job starts over, which is a customer's run.
+  if [ "${WORKER_PROVISIONING_MODEL:-STANDARD}" = SPOT ] && [ "${APP_ENV:-dev}" = prod ]; then
+    add "WORKER_PROVISIONING_MODEL is SPOT while APP_ENV is prod - a reclaimed worker restarts a
+   customer's run from the beginning. State STANDARD for production."
+  fi
 fi
 
 # THE API SERVICE. Empty CLOUDRUN_API_SERVICE means this deployment serves no API and the stage is

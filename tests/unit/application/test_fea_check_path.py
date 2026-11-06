@@ -113,3 +113,30 @@ def test_a_gentle_curve_is_not_a_fillet_hot_spot():
     assert ff.kind_of(blade, diag=320.0) is None                  # the blade's own camber
     assert ff.kind_of(blend, diag=320.0) == (ff.FILLET, "fillet")  # a real blend
     assert ff.kind_of(blade) == (ff.FILLET, "fillet")              # no size known: as before
+
+
+def test_an_fea_check_serves_no_flow_openings():
+    """The 2 Nov dry run's stud punch came back from its FEA check with 18 "openings", the knuckle
+    with 7 - the scout's flow reading, made before the purpose was known. An FEA stage serves none;
+    the stored proposal keeps them, for a user who turns the part to CFD."""
+    import inspect
+
+    from meshpipeline.api.v1 import geometry as geo
+    stored = {"part": "C5 Corvette Knuckle", "size_mm": [263.6, 120.9, 317.2], "unit": "mm",
+              "openings": [{"name": "inlet", "role": "inlet", "diameter_mm": 54.0}],
+              "openings_reason": "measured", "seed_point_mm": [0, 0, 0]}
+    served = fea_check.without_flow_openings(stored)
+    assert served["openings"] == [] and "openings_reason" not in served and "seed_point_mm" not in served
+    assert served["part"] == stored["part"] and served["size_mm"] == stored["size_mm"]
+    assert stored["openings"], "the stored proposal was changed"
+    # NO FLOW AT ALL: the card follows the analysis the user chose (Areen, shared dev, 3 Nov: an FEA
+    # shaft-impeller's card said "the fluid flows around the part", "+x", the far field, the ground)
+    flowish = {**stored, "flow": "external", "flow_axis": "+x", "flow_axis_guessed": True, "grounded": True,
+               "reference_length_mm": 500.0, "extents": {"upstream": 5}, "up_axis": "+z",
+               "notes": ["The flow is proposed along +x"]}
+    served = fea_check.without_flow_openings(flowish)
+    assert not set(served) & (set(fea_check.FLOW_ONLY_KEYS) - {"openings"})
+    assert served["up_axis"] == "+z" and served["unit"] == "mm"
+    src = inspect.getsource(geo.get_check)
+    assert 'payload["route"] != fea_check.STAGE_FEA' in src, "an FEA check must not serve the flow form"
+    assert "fea_check.without_flow_openings(payload[\"proposal\"])" in inspect.getsource(geo)

@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from meshpipeline.api import pagination
 from meshpipeline.api.schemas import listing
 from meshpipeline.api.security import owner_dep, principal_dep
-from meshpipeline.application import api_key_service
+from meshpipeline.application import api_key_service, audit
 from meshpipeline.contracts.identity import Credential, Principal
 from meshpipeline.persistence.session import get_db
 
@@ -99,6 +99,8 @@ async def create_key(body: CreateKeyIn,
     async with get_db() as db:
         issued = await api_key_service.issue(db, owner_id=owner_id, name=body.name,
                                              organization_id=organization)
+    audit.record("api_key.created", actor="console",
+                 organization_id=principal.organization_id, target=str(issued.key_id))
     # `presented` IS THE SECRET. It exists in this response and nowhere else - not in the row,
     # not in the list, not in a log. A lost key is replaced, never looked up.
     return {"id": issued.key_id, "name": issued.name, "key_prefix": issued.key_prefix,
@@ -113,6 +115,9 @@ async def revoke_key(key_id: uuid.UUID,
     async with get_db() as db:
         revoked = await api_key_service.revoke(db, owner_id=owner_id, key_id=key_id,
                                                organization_id=principal.organization_id)
+    if revoked:
+        audit.record("api_key.revoked", actor="console",
+                     organization_id=principal.organization_id, target=str(key_id))
     # False for a key that does not exist AND for one already revoked - the repository's
     # `revoked_at is null` predicate makes a repeat revocation report False rather than rewriting
     # the moment it happened. Another tenant's key id is indistinguishable from a missing one.

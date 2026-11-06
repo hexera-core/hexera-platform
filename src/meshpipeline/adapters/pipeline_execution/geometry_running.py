@@ -130,5 +130,15 @@ def queue_state(task_id: str, *, client_factory: Callable[[], Any] | None = None
     return None
 
 
-__all__ = ["QUEUE", "RUNNING_CHECK_KEY_TEMPLATE", "queue_state", "RUNNING_REFRESH_S", "RUNNING_TTL_S", "count_running", "running",
+def waiting(*, client_factory: Callable[[], Any] | None = None, prefix: str | None = None) -> int:
+    """How many geometry tasks wait in the queue for a slot now; 0 when Redis cannot say (never raises)."""
+    try:
+        pre = _prefix() if prefix is None else prefix
+        return int((client_factory or _default_client)().llen(pre + QUEUE))
+    except Exception as exc:  # noqa: BLE001 - unread: nothing is waiting, as far as this can tell
+        logger.info("geometry queue length: not read (%s)", type(exc).__name__)
+        return 0
+
+
+__all__ = ["QUEUE", "waiting", "RUNNING_CHECK_KEY_TEMPLATE", "queue_state", "RUNNING_REFRESH_S", "RUNNING_TTL_S", "count_running", "running",
            "running_key", "running_pattern"]

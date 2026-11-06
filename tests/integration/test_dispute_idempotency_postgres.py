@@ -17,8 +17,11 @@ if not os.getenv("DATABASE_URL"):
 def _tenant(tag: str = "") -> str:
     # A FRESH tenant per test. The suite shares one database, so an owner that outlived its test
     # would make these assertions depend on execution order - which is exactly what an idempotency
-    # suite must not do.
-    return f"dispute-{tag}{uuid.uuid4().hex[:12]}"
+    # suite must not do. Provisioned a users row because the signed path refuses an identity that
+    # has none (an erased account's cookie); see harness_provisioning.ensure_signed_owner.
+    from tests.harness_provisioning import ensure_signed_owner
+
+    return ensure_signed_owner(f"dispute-{tag}{uuid.uuid4().hex[:12]}")
 
 
 class CountingLauncher:
@@ -58,6 +61,13 @@ def _not_gated_by_another_suites_jobs(monkeypatch):
     # Raising that one too made it ask for a million disputes.
     import meshpipeline.settings.policy as polcfg
     monkeypatch.setattr(polcfg, "MAX_CONCURRENT_JOBS", 1_000_000, raising=False)
+    # Nor by the spend gate: it reads a users row with no organisation as an account awaiting email
+    # verification and refuses it a run, and these tenants carry that row only because the signed
+    # path requires one. They are legacy owner-only tenants; admission is proven in its own suite.
+    from unittest.mock import AsyncMock
+
+    from meshpipeline.application import spend_gate
+    monkeypatch.setattr(spend_gate.user_repo, "get_by_email", AsyncMock(return_value=None))
 
 
 @pytest.fixture(autouse=True)

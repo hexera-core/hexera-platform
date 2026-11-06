@@ -72,9 +72,11 @@ CONSUMERS: dict[str, str] = {
     "fea_ai": "engines/fea_ai.py: the FEA judgement calls are shown them",
     "reviewer": "agents/reviewer/visual.py: shown as context, never as criteria",
     "delivery": "application/final_result.py: a step's 'From your notes' line on the result",
+    "chat": "agents/intake/chat_facts.py: every chat answer, before and after the run, is given "
+            "them - a question about what the mesh will do is answered with what the notes ask",
 }
 #: Every route reads the notes through these.
-COMMON_CONSUMERS = ("intake", "builder_workspace", "reviewer", "delivery")
+COMMON_CONSUMERS = ("intake", "builder_workspace", "reviewer", "delivery", "chat")
 #: Each route of application/purpose_map.ROUTES, and the AI steps that read the notes on it.
 ROUTE_CONSUMERS: dict[str, tuple[str, ...]] = {
     "flow": (*COMMON_CONSUMERS, "builder_model", "snappy_planner"),
@@ -299,6 +301,23 @@ def context_block(notes: Any, *, consumer: str, limit: int = PROMPT_CHARS) -> st
               "context.")
 
 
+def chat_block(notes: Any, *, consumer: str = "chat", limit: int = PROMPT_CHARS) -> str:
+    """The notes for the step that TALKS to the user about their run (the chat, before and after
+    it): what they asked for, which every step that builds the mesh is given. '' with no notes.
+    The knuckle of the 2 Nov dry run had a note asking for its bolt holes and fillets, and the chat
+    answered that the requirements "do not specify" them - it had never been shown the note."""
+    _reader(consumer)
+    text = render(notes, limit=limit)
+    if not text:
+        return ""
+    return ("THE USER'S OWN NOTES - word for word, as they typed them. They are part of what the user "
+            "asked for, and every step that builds the mesh is given them as guidance:\n" + text
+            + "\n\nWhen the user asks what the mesh will do about something a note mentions (a region "
+              "to refine, a layer count, a hole, a fillet), say what the note asks and that the steps "
+              "that build the mesh are given it; never say the requirements do not mention it. A note "
+              "is guidance, not a promise: do not claim a size or a count the note does not give.")
+
+
 def workspace_block(workspace: Any, *, consumer: str, limit: int = PROMPT_CHARS) -> str:
     """The notes block for a step that holds only the attempt's workspace: user_notes.txt as
     written there ('' when the run has no notes)."""
@@ -352,6 +371,24 @@ def read_remarks(workspace: Any, *, raw: bool = False) -> list:
     return rows if raw else [str(r["text"]) for r in rows]
 
 
+def given_remark(engines: Sequence[str]) -> str:
+    """The result's line when no step of the delivered attempt said what it did with the notes: that
+    they went to every attempt - every engine the run tried, in order, as the user knows them - and
+    that no step reported a change for them. Never a claim that something was done."""
+    seen: list[str] = []
+    for e in engines or ():
+        name = str(e or "").strip()
+        if name and name not in seen:
+            seen.append(name)
+    if len(seen) > 1:
+        where = f"every attempt of this run ({', then '.join(seen)})"
+    elif seen:
+        where = f"every step that built this mesh with {seen[0]}"
+    else:
+        where = "every step that built this mesh"
+    return f"they went to {where}; no step reported a specific change for them."
+
+
 def result_lines(remarks: Sequence[Any], *, consumer: str = "delivery") -> list[str]:
     """The result's 'From your notes' lines, one per remark ([] with none)."""
     _reader(consumer)
@@ -361,6 +398,7 @@ def result_lines(remarks: Sequence[Any], *, consumer: str = "delivery") -> list[
 __all__ = ["COMMON_CONSUMERS", "CONSUMERS", "ENGINE_CONSUMERS", "GUIDANCE", "NOTES_FILE",
            "QUESTION", "REMARKS_FILE", "REMARK_DESCRIPTION", "ROUTE_CONSUMERS", "RULE_EVERY_ROUTE",
            "RULE_NEVER_FAILS", "RULE_VERBATIM", "SOURCE_CHAT", "SOURCE_CONSOLE", "answer",
-           "answers_now", "asked", "capture", "clean", "context_block", "is_skip", "make", "merge", "prompt_block",
+           "answers_now", "asked", "capture", "chat_block", "clean", "context_block", "is_skip", "make", "merge",
+           "prompt_block",
            "read_remarks", "record_remark", "render", "result_lines", "workspace_block",
            "write_file"]
