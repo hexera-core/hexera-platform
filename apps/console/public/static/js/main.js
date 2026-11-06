@@ -20,7 +20,7 @@ import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCo
 import { CheckProgress } from "./render/check_progress.js";
 import { Notice } from "./render/notice.js";
 import { openRepairPanel } from "./render/repair.js";
-import { Stage, closeLightbox, openLightbox, setCancelHandler, setResultHandler }
+import { Stage, closeLightbox, openLightbox, setCancelHandler, setMeshPartialHandler, setResultHandler }
   from "./render/stage.js";
 import { configure as configureStream, lastSeq, replay, start as startStream, terminalResult }
   from "./realtime/stream.js";
@@ -32,6 +32,7 @@ import { configureDispute } from "./viewer/dispute.js";
 import { offerReview, openParked } from "./review/review.js";
 import { openGeometryStage } from "./viewer/geometry_stage.js";
 import { openViewer } from "./viewer/viewer.js";
+import { dropMeshPartial, showMeshPartial } from "./viewer/mesh_partial.js";
 
 /* the HTTP layer's two shared failures, given a voice */
 setNotifier({
@@ -133,16 +134,29 @@ function parkedRun(job) {
   openParked(id, Stage.col(), opts).then((el) => { el?.querySelector("button")?.click(); });
 }
 
+/* THE MESH WHILE IT IS STILL BEING BUILT. The run published a pointer to a frame of its own
+   mesh-so-far; the viewer reads that one frame and shows it where the user is already looking,
+   without moving the camera and without claiming anything about the delivered mesh. It is a
+   progress nicety: when the route has nothing, the screen keeps what it had. */
+setMeshPartialHandler((phase, key) => {
+  showMeshPartial(getState.jobId(), phase, key,
+    { anchorEl: Stage.col(), sessionId: getState.sessionId() });
+});
+
 /* what "a run finished" means: attach the viewer, or do not */
 setResultHandler((data, anchor) => {
   const job = data.job || getState.jobId();
   if (!job) return;
+  // THE DELIVERED MESH WINS. Whatever frame of the mesh-so-far is on screen is dropped before the
+  // terminal surface opens, and a frame still in flight can no longer land over it.
+  dropMeshPartial(job);
   const surface = resultSurface(data);
   if (surface === "mesh") {
     // THE RESULT SURFACE IS THE MESH: open it inline, with the deliverables and the
     // flag -> re-review controls attached to the thing they describe.
     openViewer(job, anchor,
       { metrics: { attempts: data.attempts, pass: true }, files: data.files || [],
+        createdAt: data.createdAt, endedAt: data.endedAt,
         concerns: data.reviewOutcome === "delivered_with_concerns" ? (data.concerns || []) : null,
         reasoning: data.reviewOutcome === "delivered_with_concerns" ? (data.reasoning || "") : "",
         // passed by the measured limits, with figures past a limit: listed as notes, as on the result screen
@@ -151,6 +165,7 @@ setResultHandler((data, anchor) => {
   } else if (surface === "unreviewed") {
     openViewer(job, anchor,
       { metrics: { attempts: data.attempts, pass: false }, files: data.files || [],
+        createdAt: data.createdAt, endedAt: data.endedAt,
         unreviewed: true, findings: data.findings || [], reasoning: data.reasoning || "" });
   } else {
     // A TERMINAL failure - no valid mesh was ever produced. Any mesh file left in the workspace

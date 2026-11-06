@@ -39,6 +39,7 @@ class CallOutcome:
 
     payload: Any = None
     terminal: bool = False
+    ends_loop: bool = False
     timed_out: bool = False
     raised: BaseException | None = None
     superseded: bool = False
@@ -121,7 +122,8 @@ class ToolExecution:
                           ("blocked" if malformed else
                            "success" if outcome.accepted else "failure"), t0)
         self.append_tool_result(messages, call.id, outcome.content)
-        return CallOutcome(payload=outcome.payload, terminal=outcome.terminal)
+        return CallOutcome(payload=outcome.payload, terminal=outcome.terminal,
+                           ends_loop=outcome.ends_loop)
 
     def _count(self, inv: ToolInvocation, call: ToolCallRequest, *, accepted: bool) -> None:
         self.acct.record_tool_call(inv, category=self.driver.category_of(call.name),

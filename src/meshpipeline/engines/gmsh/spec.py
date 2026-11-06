@@ -328,7 +328,11 @@ SPEC = EngineSpec(
             solvers=("CalculiX", "Abaqus", "Nastran", "SU2", "Elmer", "FEniCS/dolfinx"),
         ),
         # a conformal tetrahedral deck; no prism-layer inflation on this path
-        delivered_mesh=DeliveredMesh(cells="tetrahedral", walls="body-fitted", prism_layers=False),
+        # ELEMENTS, not cells: what gmsh hands over is an FEA deck (mesh.inp/.bdf/.cdb), and the
+        # solvers and the engineers who read it count elements. Every other engine here delivers a
+        # polyMesh or a VTK volume mesh, which count cells.
+        delivered_mesh=DeliveredMesh(cells="tetrahedral", walls="body-fitted", prism_layers=False,
+                                     counted_as="elements"),
         run_policy=RunPolicy(
             required_files=("gmsh_spec.json",),
             # AN ESTIMATE of a long CFD run now (the fallback ladder's "does another engine still

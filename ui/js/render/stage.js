@@ -50,12 +50,32 @@ export function setResultHandler(fn) { onResult = fn || (() => {}); }
 let onCancel = () => {};
 export function setCancelHandler(fn) { onCancel = fn || (() => {}); }
 
+/* Installed by the entrypoint. A frame of the mesh-so-far exists: the stage says so and hands the
+   pointer on. Reading the bytes and drawing them is the application's (viewer/mesh_partial.js) -
+   this module renders and does not fetch. */
+let onMeshPartial = () => {};
+export function setMeshPartialHandler(fn) { onMeshPartial = fn || (() => {}); }
+
 /* What each lane mark means, in words: the dot's title and its name for a screen reader. The
    marks themselves are drawn by css/theme.css; `Stage.markOf` decides which one a lane earns. */
 const MARKS = {
   done: "finished", bad: "did not pass", back: "sent back for a rebuild",
   warn: "finished with a warning", nomesh: "no mesh was built here", ended: "stopped",
 };
+
+/** A tool call in words: the backend's public label, else its name with the underscores gone
+ *  ("zoom_to_region" -> "Zoom to region"). */
+export function toolWords(ev){
+  const s=String((ev&&(ev.public_label||ev.tool_name))||'').replace(/[_-]+/g,' ').trim();
+  return s?s.charAt(0).toUpperCase()+s.slice(1):'';}
+/** True for text that is a JSON object or list, whole or in part - never shown as reasoning. */
+export function looksLikeJson(text){
+  const t=String(text||'').trim();
+  return /^[\[{]/.test(t)||(t.match(/"[^"\n]{1,60}"\s*:/g)||[]).length>=2;}
+/** Reasoning as a person reads it: no JSON drafts, no markdown stars. '' when nothing is left. */
+export function plainReasoning(text){
+  if(!text||looksLikeJson(text))return '';
+  return String(text).replace(/\*\*([^*]+)\*\*/g,'$1').trim();}
 
 export const Stage = {
   // The empty state names no formats. It used to say "(STL or STEP)" while the server accepted
@@ -134,11 +154,13 @@ export const Stage = {
         +`<span>${esc(c.label)}${c.detail?` <span class="rc-d">${esc(c.detail)}</span>`:''}</span></div>`;}).join('');
     // THE USER'S OWN NOTES, exactly as typed (a pasted spec keeps its lines), and the box that adds
     // one. Guidance for the mesh, never a check: the plan above is what is approved.
-    const notes=(b.user_notes||[]).map(n=>`<div class="rc-note">${esc(n.text)}</div>`).join('');
-    const box=addNote?`<div class="rc-notes-box"><textarea class="rc-notes-in" rows="3" maxlength="20000"
-        placeholder="Anything specific about this simulation? Paste a spec if you have one."></textarea>
-        <div class="rc-notes-act"><button type="button" class="rc-notes-add">Add note</button>
-        <span class="rc-notes-msg" role="status"></span></div></div>`:'';
+    // A short list, then one quiet line that grows as it is used: Enter adds, Shift+Enter starts a line.
+    const items=(b.user_notes||[]).map(n=>`<li class="rc-note">${esc(n.text)}</li>`).join('');
+    const notes=items?`<ul class="rc-notes-list">${items}</ul>`:'';
+    const box=addNote?`<div class="rc-notes-box"><div class="rc-notes-row"><textarea class="rc-notes-in" rows="1" maxlength="20000"
+        aria-label="Add a note" placeholder="Add a note, or paste a spec…"></textarea>
+        <button type="button" class="rc-notes-add" disabled>Add</button></div>
+        <span class="rc-notes-msg" role="status"></span></div>`:'';
     const html=`<div class="who">Hexera · your request, as understood</div>
       <div class="req-card${(b.checks||[]).every(c=>c.status==='pass')?' ok':''}">
         ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
@@ -151,12 +173,20 @@ export const Stage = {
       const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
       this.col().appendChild(g);this._briefEl=g;}
     const add=this._briefEl.querySelector('.rc-notes-add');
-    if(add)add.onclick=async()=>{
-      const inp=this._briefEl.querySelector('.rc-notes-in'),msg=this._briefEl.querySelector('.rc-notes-msg');
-      const text=inp.value;if(!text.trim())return;
-      add.disabled=true;msg.textContent='';
-      try{this._briefSig='';await addNote(text);}
-      catch(e){add.disabled=false;msg.textContent=(e&&e.message)||'The note was not saved.';}};
+    const inp=this._briefEl.querySelector('.rc-notes-in');
+    if(add&&inp){
+      const msg=this._briefEl.querySelector('.rc-notes-msg');
+      // the box is one line until it holds more: it grows with what is typed or pasted
+      const fit=()=>{inp.style.height='';if(inp.value)inp.style.height=Math.min(inp.scrollHeight+2,240)+'px';
+        add.disabled=!inp.value.trim();};
+      inp.addEventListener('input',fit);
+      const send=async()=>{
+        const text=inp.value;if(!text.trim()||add.dataset.busy)return;
+        add.dataset.busy='1';add.disabled=true;msg.textContent='';
+        try{this._briefSig='';await addNote(text);}
+        catch(e){delete add.dataset.busy;add.disabled=false;msg.textContent=(e&&e.message)||'The note was not saved.';}};
+      add.onclick=send;
+      inp.addEventListener('keydown',(e)=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send();}});}
     this.scrollBottom();},
 
   /* THE ENGINE CHOICE, under the one engine question. Every engine that can take the uploaded file,
@@ -201,6 +231,8 @@ export const Stage = {
      vision model, not for people - and the form is the same one the stage shows. One card per
      session, replaced if the check is shown again. */
   geometryCheck(d,confirm){
+    // the card follows the analysis the user chose: geometryCheckUpdate re-draws it as another kind
+    this._gcConfirm=confirm;this._gcKind=d&&d.thermal?'thermal':d&&d.fea?'fea':'flow';
     if(d&&d.thermal)return this.thermalCheck(d,confirm);
     if(d&&d.fea)return this.feaCheck(d,confirm);
     const p=d.proposal||{},pics=d.pictures||[];
@@ -322,6 +354,9 @@ export const Stage = {
 
   geometryCheckUpdate(d){
     const g=this._gcEl,p=this._gcP;if(!g||!p||g.querySelector('.gc-done'))return;
+    // AN FEA PART NEVER KEEPS THE FLOW CARD: a check served for another analysis re-draws the card
+    if(d&&(d.route||d.thermal)&&this._gcConfirm&&(d.thermal?'thermal':d.fea?'fea':'flow')!==this._gcKind)
+      return this.geometryCheck(d,this._gcConfirm);
     const q=(d&&d.proposal)||{};
     if(d&&d.proposal)this._gcServed=servedProposal(this._gcServed,d.proposal);
     followUnit(g,p,q.unit,q.unit_basis);followSuggestion(g,p,q.unit_suggestion);
@@ -404,7 +439,7 @@ export const Stage = {
     const ref=hasHist?history.typical_s*1000:budget*1000;
     const sub=hasHist
       ?`similar runs take about ${fmtDur(history.typical_s*1000)} (usually ${fmtDur(history.p10_s*1000)} to ${fmtDur(history.p90_s*1000)})`
-      :`no similar runs yet · stops by itself after ${fmtDur(budget*1000)} at most`;
+      :`no similar runs yet · stops by itself at ${fmtDur(budget*1000)}`;
     const w=document.createElement('div');w.className='meshbar';
     w.innerHTML=`<div class="mb-top"><span class="mb-lbl">meshing · ${esc(engine||'')}</span>
         <span class="mb-num">0:00</span></div>
@@ -415,8 +450,24 @@ export const Stage = {
     RunLine.model.meshing(engine,budget,history,this.now());RunLine.draw();},
   // WHAT THE RUNNING MESHER SAYS IT IS DOING ("adding wall layers"), under its bar and on the line
   meshStage(label){
-    const m=this.meshBar;if(m&&label){const l=m.el.querySelector('.mb-lbl');if(l)l.textContent=`meshing · ${label}`;}
+    // a narrated run says the stage in the user's words (narrate below); the mesher's label can name a tool
+    const m=this.meshBar;if(m&&label&&!m.narrated){const l=m.el.querySelector('.mb-lbl');if(l)l.textContent=`meshing · ${label}`;}
     RunLine.model.meshStage(label,this.now());RunLine.draw();},
+  // THE RUN'S NARRATION: what it is doing now and what it decided, in plain words, on the line
+  narrate(agent,ev){if(!ev||!ev.text)return;
+    const m=this.meshBar;
+    if(m&&ev.kind!=='say'&&!/^Still /.test(ev.text)){m.narrated=true;
+      const l=m.el.querySelector('.mb-lbl');if(l)l.textContent=String(ev.text);}
+    RunLine.model.narrate(ev,this.now());RunLine.draw();},
+  // A FRAME OF THE MESH-SO-FAR was published: a pointer, never geometry. The stage holds no
+  // viewer and reads no bytes - it passes the pointer to whoever was installed to draw it, and a
+  // build with nobody installed renders exactly what it did before.
+  meshPartial(phase,key){onMeshPartial(phase,key);},
+  // THE RECEIPT a phase published: deterministic rows the user opens on that step of the live line.
+  // It is detail, not narration - the step's own one-line summary is untouched, and a receipt for a
+  // stage this build has no step for is dropped by the model.
+  receipt(agent,ev){if(!ev)return;
+    RunLine.model.receipt({...ev,stage:ev.stage||agent},this.now());RunLine.draw();},
   // THE PLAN the run will build (cells, wall layers, where it refines), in its lane and on the line
   plan(agent,summary){if(summary)this.info(agent,'Plan: '+summary);
     RunLine.model.plan(summary,this.now());RunLine.draw();},
@@ -540,10 +591,15 @@ export const Stage = {
     n.body.appendChild(r);this.scroll(n);this.paint(n);},
   // `tone` is the note's own (info | warn | error): an error marks its lane failed, a warning
   // marks it warned. A caller that names no tone is read by `warn` alone, as before.
-  info(agent,text,warn,tone){const n=this.node(agent);this.bump(n);const r=document.createElement('div');r.className='row';
+  info(agent,text,warn,tone){const n=this.node(agent);
+    n.worst=Math.max(n.worst||0,tone==='error'?2:warn?1:0);
+    // the repair check's one line ("Your part needed no repair", "Repaired 3 defects: ...") sits on
+    // the lane's own row beside its name, in sight when the lane is folded; a warning marks it "!"
+    if(agent==='repair'){const t=String(text||'').trim();n.ct.textContent=t;n.ct.title=t;
+      n.ct.classList.add('said');this.paint(n);this.scrollBottom();return;}
+    this.bump(n);const r=document.createElement('div');r.className='row';
     // the engine lane's own sentence ("Mesh engine: cfMesh - ...") is the line's engine step, as said
     if(agent==='engine_select'){RunLine.model.engine(text,this.now());RunLine.draw();}
-    n.worst=Math.max(n.worst||0,tone==='error'?2:warn?1:0);
     r.innerHTML=`<div class="e-info${warn?' warn':''}">${esc(text)}</div>`;n.body.appendChild(r);this.scroll(n);this.paint(n);},
   // `action` arrives already in plain words - the tool roster is named on the backend,
   // beside the tools themselves. The UI does not know what a tool is called.
@@ -595,7 +651,8 @@ export const Stage = {
     // only an explicitly RUNNING card pulses; a phaseless one is static
     card.querySelector('.e-think').classList.toggle('active',head.running);
     const body=card.querySelector('.body');
-    if(ev.content){body.textContent=ev.content;body.style.display='';}
+    const said=plainReasoning(ev.content);
+    if(said){body.textContent=said;body.style.display='';}
     else{body.textContent='';body.style.display='none';}
     this.scroll(n);},
 
@@ -603,6 +660,9 @@ export const Stage = {
   // label and nothing else; in raw mode the real name, arguments and result come
   // too. The browser never maps a tool name to a label: a browser that could has
   // already been told the name.
+  // NEVER RAW JSON ON THE PAGE (dev-areen 2026-10-30: the open Review lane showed the reviewer's
+  // arguments, results and JSON drafts). A call shows its name in words; its arguments and its
+  // result stay out of the page; a reasoning text that is a JSON draft shows only its header.
   toolCall(agent,ev){
     const n=this.node(agent);this.bump(n);
     n.tools=n.tools||{};
@@ -610,10 +670,8 @@ export const Stage = {
     const r=document.createElement('div');r.className='row';
     const blocked=ev.status==='blocked';
     r.innerHTML=`<div class="e-tool${blocked?' bad':''}"><span class="tag">${blocked?'blocked':'tool call'}</span>`
-      +`<span class="call">${esc(ev.tool_name||ev.public_label||'')}</span></div>`;
+      +`<span class="call">${esc(toolWords(ev))}</span></div>`;
     n.body.appendChild(r);
-    if(ev.arguments!=null){const d=document.createElement('div');d.className='e-detail';
-      d.textContent=JSON.stringify(ev.arguments,null,1);n.body.appendChild(d);}
     if(ev.id)n.tools[ev.id]={el:r};
     this.scroll(n);},
   toolResult(agent,ev){
@@ -630,12 +688,10 @@ export const Stage = {
     }else if(!t){
       this.bump(n);const r=document.createElement('div');r.className='row';
       r.innerHTML=`<div class="e-tool${ev.status==='success'?'':' bad'}"><span class="tag">result</span>`
-        +`<span class="call">${esc(ev.tool_name||ev.public_label||'')}</span>`
+        +`<span class="call">${esc(toolWords(ev))}</span>`
         +(bits.length?`<span class="tres"> · ${esc(bits.join(' · '))}</span>`:'')+`</div>`;
       n.body.appendChild(r);
     }
-    if(ev.result!=null){const d=document.createElement('div');d.className='e-detail';
-      d.textContent=JSON.stringify(ev.result,null,1);n.body.appendChild(d);}
     this.scroll(n);},
 
   // RATIONALE - the application's own conclusion. Always shown: it was written for
@@ -722,10 +778,10 @@ export const Stage = {
     // verdict row in the timeline. A cancelled run has no verdict: nobody judged a mesh.
     if(this.proc){const n=this.node('result');const v=document.createElement('div');v.className='tl-verd';
       const pill=concerns?'DELIVERED WITH CONCERNS':notes?'PASSED, WITH NOTES':data.pass?'PASS':cancelled?'CANCELLED':'FAIL';
-      v.innerHTML=`<span class="pill${concerns||notes?' concerns':data.pass?'':cancelled?' cancelled':' fail'}">${pill}</span><span class="mt">${esc(att)}</span>`;
+      v.innerHTML=`<span class="pill${concerns?' concerns':notes?' notes':data.pass?'':cancelled?' cancelled':' fail'}">${pill}</span><span class="mt">${esc(att)}</span>`;
       if(cancelled&&data.cancelReason){const r=document.createElement('span');r.className='mt';r.textContent=`reason: ${data.cancelReason}`;v.appendChild(r);}
       // the result lane's mark is the verdict's: never a tick beside a FAIL
-      n.mark={pass:'done',notes:'warn',concerns:'warn',cancelled:'ended',fail:'bad'}[outcome];
+      n.mark={pass:'done',notes:'done',concerns:'warn',cancelled:'ended',fail:'bad'}[outcome];
       n.body.appendChild(v);this.done('result');}
     if(opened)data={...data,attempts:this._built.size};    // the viewer says the same number
 

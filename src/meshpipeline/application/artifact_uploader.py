@@ -374,8 +374,52 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
     verify_workspace_contract(workspace, spec)
     _recipe = spec.deliverable
 
+    # The VIEWER payload, rendered here because this process owns the engine workspace. The API
+    # has no workspace in a hosted deployment, so anything it needs to show must become durable
+    # before this one is cleaned up.
+    from meshpipeline.application.viewer_payload import (
+        VIEWER_LOGICAL_KEY,
+        ViewerPayloadError,
+        build_viewer_payload,
+    )
+    # AN FEA MESH is delivered whether or not its 3D view can be built: the deck and the solver
+    # files are the deliverable, and the result screen says the view is missing (Areen, 24 Oct)
+    _fea = is_fea_workspace(workspace)
+    try:
+        _payload = build_viewer_payload(workspace)
+    except ViewerPayloadError as exc:
+        if not _fea:
+            raise BundleContractError(
+                f"{spec.name}: the delivered mesh produces no viewer payload ({exc})") from exc
+        _payload = fea_viewer_fallback(workspace, str(exc))
+    except Exception as exc:  # noqa: BLE001 - only for FEA: a view that cannot be built is a note
+        if not _fea:
+            raise
+        _payload = fea_viewer_fallback(workspace, f"{type(exc).__name__}: {exc}")
+    _vfd, _vname = tempfile.mkstemp(prefix="viewer_", suffix=".json", dir=str(workspace))
+    os.close(_vfd)
+    _vpath = Path(_vname)
+    _vpath.write_text(json.dumps(_payload, sort_keys=True, default=str))
+    scratch.append(_vpath)
+    plan.append(_Planned(ArtifactType.viewer_data, VIEWER_LOGICAL_KEY,
+                         f"jobs/{job_id}/{VIEWER_LOGICAL_KEY}.json",
+                         "application/json", _vpath,
+                         required=is_required_class(spec.name, VIEWER_LOGICAL_KEY,
+                                                    "structural" if _fea else "")))
+
+    # THE MESH REPORT (render/mesh_report.py): every limit, place, hot spot, solver check and joint the short
+    # result screen leaves out, as one page in the Everything bundle - written from the same payload the
+    # viewer is served, so the copy in the bundle and the one the result screen downloads are the same.
+    # A report that cannot be written never costs the user their mesh: the bundle ships without it.
     _bundle: _Planned | None = None
     _members = [m.path for m in _recipe.members]
+    try:
+        from meshpipeline.render.mesh_report import REPORT_FILE, mesh_report_html
+        (workspace / REPORT_FILE).write_text(mesh_report_html(json.loads(_vpath.read_text())), encoding="utf-8")
+        if REPORT_FILE not in _members:
+            _members.append(REPORT_FILE)
+    except Exception:  # noqa: BLE001 - the report is a reading aid; the mesh is the deliverable
+        logger.warning("mesh report: not written; the bundle ships without it", exc_info=True)
     if any(Path(r).as_posix() in held or any(k.startswith(f"{Path(r).as_posix()}/") for k in held)
            for r in _members):
         # A BIG RESULT (RUN-7): some members stayed in the exchange bucket. The bundle is streamed
@@ -419,38 +463,6 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
                            required=is_required_class(spec.name,
                                                       ArtifactType.mesh_bundle.value))
 
-    # The VIEWER payload, rendered here because this process owns the engine workspace. The API
-    # has no workspace in a hosted deployment, so anything it needs to show must become durable
-    # before this one is cleaned up.
-    from meshpipeline.application.viewer_payload import (
-        VIEWER_LOGICAL_KEY,
-        ViewerPayloadError,
-        build_viewer_payload,
-    )
-    # AN FEA MESH is delivered whether or not its 3D view can be built: the deck and the solver
-    # files are the deliverable, and the result screen says the view is missing (Areen, 24 Oct)
-    _fea = is_fea_workspace(workspace)
-    try:
-        _payload = build_viewer_payload(workspace)
-    except ViewerPayloadError as exc:
-        if not _fea:
-            raise BundleContractError(
-                f"{spec.name}: the delivered mesh produces no viewer payload ({exc})") from exc
-        _payload = fea_viewer_fallback(workspace, str(exc))
-    except Exception as exc:  # noqa: BLE001 - only for FEA: a view that cannot be built is a note
-        if not _fea:
-            raise
-        _payload = fea_viewer_fallback(workspace, f"{type(exc).__name__}: {exc}")
-    _vfd, _vname = tempfile.mkstemp(prefix="viewer_", suffix=".json", dir=str(workspace))
-    os.close(_vfd)
-    _vpath = Path(_vname)
-    _vpath.write_text(json.dumps(_payload, sort_keys=True, default=str))
-    scratch.append(_vpath)
-    plan.append(_Planned(ArtifactType.viewer_data, VIEWER_LOGICAL_KEY,
-                         f"jobs/{job_id}/{VIEWER_LOGICAL_KEY}.json",
-                         "application/json", _vpath,
-                         required=is_required_class(spec.name, VIEWER_LOGICAL_KEY,
-                                                    "structural" if _fea else "")))
     plan.append(_bundle)
     return plan
 

@@ -141,6 +141,27 @@ def faces_words(acc: Mapping) -> str:
     return said + "."
 
 
+def faces_short(acc: Mapping) -> str:
+    """The face accounting in a few words, for the result screen: "41 of 44 CAD faces are named; 3 skins of
+    no thickness were left out. Every face is accounted for." The whole account is faces_words."""
+    a = _m(acc)
+    cad, named = a.get("cad"), a.get("named")
+    if not cad or not named:
+        return ""
+    bits = []
+    if a.get("skins"):
+        n = len(a["skins"])
+        bits.append(f"{n} skin{'s' if n != 1 else ''} of no thickness {'were' if n != 1 else 'was'} left out")
+    if a.get("merged"):
+        n = len(a["merged"])
+        bits.append(f"{n} tiny face{'s' if n != 1 else ''} {'were' if n != 1 else 'was'} meshed with the face beside "
+                    + ("them" if n != 1 else "it"))
+    said = f"{named} of {cad} CAD faces are named" + ("; " + "; ".join(bits) if bits else "") + "."
+    missing = a.get("missing") or []
+    return said + (f" {len(missing)} {'is' if len(missing) == 1 else 'are'} NOT accounted for." if missing
+                   else " Every face is accounted for.")
+
+
 def facts(workspace) -> dict:
     """The measured facts of the FEA mesh in `workspace`, {} when it holds no FEA mesh."""
     # a solver file kept in the bucket is part of the mesh all the same (engines/bucket_files, RUN-7)
@@ -270,4 +291,4 @@ def facts_text(workspace) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["face_accounting", "faces_words", "FEA_PURPOSE", "assembly_checklist", "ONE_PREVIEW_GROUP", "SOLVER_FILES", "facts", "facts_text", "is_fea", "measured_valid"]
+__all__ = ["face_accounting", "faces_short", "faces_words", "FEA_PURPOSE", "assembly_checklist", "ONE_PREVIEW_GROUP", "SOLVER_FILES", "facts", "facts_text", "is_fea", "measured_valid"]

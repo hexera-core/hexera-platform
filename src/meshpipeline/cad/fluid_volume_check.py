@@ -37,18 +37,55 @@ def triangle_parts(source: Path) -> int:
         return 0
 
 
+def _task(source: Path, scale: float, kind: str) -> dict:
+    return {"task": "propose", "source": str(source), "scale": float(scale), "kind": kind}
+
+
+def start_fluid_volume(source: Path, *, work: Path, scale: float = 1.0, kind: str = "cad",
+                       budget_s: float | None = None):
+    """THE SPLIT, STARTED EARLY (cad/beside): the same child read_fluid_volume runs, begun as soon as the
+    scout knows it will want it, so it works beside the skin's holes and the clean check instead of after
+    them. Hand the handle to read_fluid_volume(started=...). None when it could not start."""
+    from meshpipeline.cad.beside import Beside
+    from meshpipeline.cad.fluid_volume import CHECK_BUDGET_S
+
+    budget = float(budget_s or CHECK_BUDGET_S)
+    handle = Beside("meshpipeline.cad.fluid_volume", _task(source, scale, kind), Path(work) / "fluid_volume",
+                    name="fluid_volume", timeout_s=budget)
+    handle.task = _task(source, scale, kind)  # type: ignore[attr-defined]
+    return handle if handle.proc is not None else None
+
+
+def _answer_of(handle, budget: float) -> dict:
+    """The started child's answer, worded as run_bounded words the same outcomes."""
+    got = handle.result()
+    if got is None:
+        return {"error": "finding the fluid inside the parts stopped without an answer"}
+    if got.get("timed_out") and set(got) == {"error", "timed_out"}:
+        return {"error": f"finding the fluid inside the parts took over {budget:.0f} s"}
+    return got
+
+
 def read_fluid_volume(facts: dict, source: Path, *, work: Path, scale: float = 1.0,
-                      kind: str = "cad", budget_s: float | None = None) -> None:
+                      kind: str = "cad", budget_s: float | None = None, started=None) -> None:
     """Split the space the parts of `source` bound (a child process, time-boxed) and fold what it
     found into `facts`. Never raises: a split that fails or runs out of time is a note, and the
-    scout's own reading stands."""
+    scout's own reading stands. `started` is the same split begun earlier (start_fluid_volume): its
+    answer is used when it is for this very task, and it is stopped when the split is not wanted."""
     from meshpipeline.cad.fluid_volume import CHECK_BUDGET_S, run_bounded
 
+    budget = float(budget_s or CHECK_BUDGET_S)
     if not (triangle_parts(source) >= MIN_PARTS if kind == "triangles" else wants_fluid_volume(facts)):
+        if started is not None:
+            started.close()
         return
     try:
-        answer = run_bounded({"task": "propose", "source": str(source), "scale": float(scale), "kind": kind},
-                             Path(work) / "fluid_volume", budget_s or CHECK_BUDGET_S)
+        if started is not None and getattr(started, "task", None) == _task(source, scale, kind):
+            answer = _answer_of(started, budget)
+        else:
+            if started is not None:
+                started.close()
+            answer = run_bounded(_task(source, scale, kind), Path(work) / "fluid_volume", budget)
     except Exception as exc:  # noqa: BLE001 - the scout's reading stands
         answer = {"error": f"{type(exc).__name__}: {exc}"[:300]}
     fold(facts, answer)
@@ -156,4 +193,4 @@ def _litres(v: float) -> str:
     return f"{v * 1000.0:.0f} ml"
 
 
-__all__ = ["MIN_PARTS", "fold", "read_fluid_volume", "triangle_parts", "wants_fluid_volume"]
+__all__ = ["MIN_PARTS", "fold", "read_fluid_volume", "start_fluid_volume", "triangle_parts", "wants_fluid_volume"]

@@ -1,5 +1,6 @@
 # Responsibility: Turn a verified Identity Platform token into the account it names, provisioning one the first time.
-# Owns: the rule that a new account is a user, an organisation, a membership and one grant - all or none of them.
+# Owns: the rule that a new account is a user first, and an organisation, a membership and one grant only
+#       once its address is verified - those three all or none of them.
 # Boundaries: it decides identity and tenancy, never authorisation.
 from __future__ import annotations
 
@@ -56,12 +57,18 @@ class Account:
     #: whether THIS call created the account. The caller uses it for nothing but logging; it is
     #: here because a test cannot otherwise tell "provisioned" from "found" without counting rows.
     provisioned: bool
+    #: Audit events this resolution earned, as (action, kwargs) pairs for audit.record. CARRIED,
+    #: NOT EMITTED: everything here ran inside the caller's uncommitted transaction, and a line
+    #: describing a rolled-back grant or provisioning would record something that never happened.
+    #: api/auth.py emits them once get_db has committed.
+    audit_events: tuple = ()
 
 
 async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
                                now: datetime | None = None,
                                organization_name: str = "") -> Account:
     at = now or datetime.now(UTC)
+    events: list = []
 
     # 1. THE UID PATH: the ordinary case, every sign-in after the first.
     user = await user_repo.get_by_firebase_uid(db, token.uid)
@@ -79,33 +86,35 @@ async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
         # register any address in Identity Platform without verifying it, so without this gate an
         # attacker who knows a victim's address takes over every account 0004 backfilled. Proving
         # control of the mailbox is the only evidence that distinguishes the veteran returning
-        # from the stranger claiming to be them. Provisioning a genuinely NEW account stays
-        # ungated (spec section 4): there is no victim to take over, and nothing costly is behind
-        # it yet.
+        # from the stranger claiming to be them.
         existing = await user_repo.get_by_email(db, token.email)
         if existing is not None:
-            user = await _link(db, existing, token)
+            user = await _link(db, existing, token, events)
         else:
-            # 3. THE SIGNUP PATH.
+            # 3. THE SIGNUP PATH. Only the users row is written here - the person exists, but no
+            # organisation, membership or credit does until the address is verified (step 4).
             if not polcfg.CONSOLE_SIGNUP_ENABLED:
                 raise SignupDisabled("this deployment does not provision new accounts")
             try:
-                user = await _provision(db, token, organization_name=organization_name)
-                provisioned = True
+                user = await user_repo.create(
+                    db, email=token.email, name=token.name, firebase_uid=token.uid,
+                    pending_organization_name=(organization_name or "").strip() or None)
             except IntegrityError:
-                # A concurrent first sign-in won the unique index on firebase_uid. Roll back to
-                # the savepoint the failed insert poisoned and read the row the winner wrote -
-                # the loser must not answer with a refusal for an account that now exists.
-                #
-                # THE UID CONFLICT IS THE ONLY ONE THIS CAN BE. The other unique index this
-                # transaction touches is `organizations.slug`, and `_slug_for` is injective in
-                # the uid, so a slug conflict implies a uid conflict that the users insert has
-                # already refused. If the re-read still finds nothing the assumption was wrong
-                # and the original error is re-raised rather than mistranslated.
+                # A concurrent first sign-in won one of the two unique indexes this insert can
+                # hit. Roll back to the savepoint the failed insert poisoned and read what the
+                # winner wrote - the loser must not answer with a refusal for an account that now
+                # exists. The SAME uid (a duplicate of this very request) resolves by uid; a
+                # DIFFERENT uid that won `users.email` goes through `_link`, which applies the
+                # same verified-mailbox rules as if the row had been found at step 2. If neither
+                # re-read finds anything the assumption was wrong and the original error is
+                # re-raised rather than mistranslated.
                 await db.rollback()
                 user = await user_repo.get_by_firebase_uid(db, token.uid)
                 if user is None:
-                    raise
+                    existing = await user_repo.get_by_email(db, token.email)
+                    if existing is None:
+                        raise
+                    user = await _link(db, existing, token, events)
 
     # `token.name` travels with the login stamp so a display name changed in Identity Platform
     # reaches `users.name`, which every reader of this column - the organisation page's member
@@ -114,6 +123,15 @@ async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
                                  email_verified=token.email_verified, name=token.name)
 
     organization_id = await membership_repo.organization_id_for_email(db, token.email)
+    if organization_id is None and token.email_verified and polcfg.CONSOLE_SIGNUP_ENABLED:
+        # 4. THE PROVISIONING STEP, reached on the first sign-in whose token proves the address -
+        # usually the console re-minting its session after the verification link is clicked.
+        # BEFORE THIS, AN ACCOUNT IS WORTH NOTHING: no organisation means no ledger, no grant and
+        # no admission (application/spend_gate.py refuses an organisation-less account). That is
+        # what turns "create Identity Platform accounts in a loop" from a credit tap into a list
+        # of inert rows.
+        organization_id = await _provision_organization(db, user, token, events)
+        provisioned = organization_id is not None
     return Account(
         user_id=str(user.id),
         owner_id=token.email,
@@ -121,10 +139,11 @@ async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
         email_verified=token.email_verified,
         name=token.name or user.name or token.email,
         provisioned=provisioned,
+        audit_events=tuple(events),
     )
 
 
-async def _link(db: AsyncSession, existing, token: VerifiedToken):
+async def _link(db: AsyncSession, existing, token: VerifiedToken, events: list | None = None):
     """Attach `token.uid` to an existing row for the same address, or refuse.
 
     Every refusal here raises the SAME exception with no detail the caller can use: the attacker
@@ -139,6 +158,21 @@ async def _link(db: AsyncSession, existing, token: VerifiedToken):
         # at step 1 lost a race with the link that has since committed.
         if existing.firebase_uid == token.uid:
             return existing
+        # A SQUATTED ADDRESS. Somebody registered this address without ever verifying it, and no
+        # organisation was created for it (step 4 never ran). A token that DOES prove the mailbox
+        # is better evidence than one that never did, so the row moves to it. Anything verified,
+        # or anything that already owns a tenant, is still refused below.
+        if (token.email_verified and existing.email_verified_at is None
+                and await membership_repo.organization_id_for_email(db, existing.email) is None
+                and await user_repo.repoint_unverified(db, user_id=existing.id,
+                                                       from_uid=existing.firebase_uid,
+                                                       to_uid=token.uid)):
+            logger.info("sign-in: an unverified, unprovisioned registration was replaced by a "
+                        "verified one for the same address")
+            if events is not None:
+                events.append(("account.unverified_registration_replaced",
+                               {"actor": str(existing.id)}))
+            return await user_repo.get_by_firebase_uid(db, token.uid)
         logger.warning("sign-in refused: a token presented a uid for an address that is already "
                        "linked to a different account")
         raise LinkRefused("this address is already linked to another account")
@@ -162,28 +196,35 @@ async def _link(db: AsyncSession, existing, token: VerifiedToken):
     return existing
 
 
-async def _provision(db: AsyncSession, token: VerifiedToken, *, organization_name: str = ""):
-    # ONE TRANSACTION, four writes. The session this runs in is committed by the caller's
-    # `get_db()` context, so a failure anywhere here leaves no user without an organisation and
-    # no organisation without its grant. That atomicity is the whole reason the grant is issued
+async def _provision_organization(db: AsyncSession, user, token: VerifiedToken,
+                                  events: list | None = None):
+    # ONE TRANSACTION, three writes and the grant. The session this runs in is committed by the
+    # caller's `get_db()` context, so a failure anywhere here leaves no organisation without its
+    # owner and no owner half-provisioned. That atomicity is the whole reason the grant is issued
     # here rather than by a later, separately-failing step.
     #
-    # `organization_name` IS CALLER-SUPPLIED and reaches this function on the provision path
-    # ALONE (design decision 6). The uid path resolves an account that already exists and the
-    # linking path attaches a uid to somebody else's backfilled tenant; honouring a name on
-    # either would let any token rename an organisation it did not create. Blank falls back to
-    # the address, which is the behaviour every account provisioned before this cycle got.
-    name = (organization_name or "").strip() or token.email
-    user = await user_repo.create(db, email=token.email, name=token.name,
-                                  firebase_uid=token.uid)
-    organization = await organization_repo.create(db, name=name,
-                                                  slug=_slug_for(token.uid))
+    # THE ROW LOCK serialises two concurrent verified sign-ins for the same person - two tabs
+    # re-minting at once. Both saw "no membership"; the second waits here, then sees the first's.
+    await user_repo.lock(db, user.id)
+    existing = await membership_repo.organization_id_for_email(db, token.email)
+    if existing is not None:
+        return existing
+
+    # The NAME was typed at sign-up and held on the users row (design decision 6: caller-supplied
+    # names are honoured on the provisioning path alone). Blank falls back to the address.
+    name = (user.pending_organization_name or "").strip() or token.email
+    organization = await organization_repo.create(db, name=name, slug=_slug_for(token.uid))
     await membership_repo.create(db, user_id=user.id, organization_id=organization.id,
                                  role=MembershipRole.owner)
-    granted = await credit_service.grant_signup_credits(db, organization_id=organization.id)
-    logger.info("provisioned organisation %s for a new account, granted %s credits",
+    granted = await credit_service.grant_signup_credits(db, organization_id=organization.id,
+                                                        email=token.email, events=events)
+    await user_repo.clear_pending_organization_name(db, user_id=user.id)
+    logger.info("provisioned organisation %s for a verified account, granted %s credits",
                 organization.id, granted)
-    return user
+    # NOT audited here: this still sits inside the caller's uncommitted transaction, and a line
+    # describing a rolled-back provisioning would record something that never happened. The
+    # committed fact reaches the trail through api/auth.py's auth.session line (provisioned=true).
+    return organization.id
 
 
 #: `organizations.slug` is String(64) with a unique index. "org-" + 40 + "-" + 8 = 53.
@@ -196,13 +237,11 @@ def _slug_for(firebase_uid: str) -> str:
     # not, and two people at the same domain must not collide. The uid is already unique and
     # already URL-safe.
     #
-    # THE DIGEST IS WHAT MAKES THIS INJECTIVE, and that is what keeps the IntegrityError handler
-    # in `_provision` honest. Lowercasing and truncating alone are not: two distinct uids that
-    # differ only in case, or only after the 48th character, produced the SAME slug and so a
-    # second unique-index conflict the handler cannot recover from - it re-reads by uid, finds
-    # nothing (nothing was inserted), and re-raises as an opaque 500. Hashing the EXACT uid means
-    # a slug collision implies a uid collision, which the users insert refuses first, so the only
-    # conflict `_provision` can now see is the concurrent-signup one it is written for.
+    # THE DIGEST IS WHAT MAKES THIS INJECTIVE. Lowercasing and truncating alone are not: two
+    # distinct uids that differ only in case, or only after the 40th character, produced the SAME
+    # slug and so a unique-index conflict between two different people that surfaced as an opaque
+    # 500. Hashing the EXACT uid means a slug collision implies the same uid - and the same uid is
+    # serialised on its users row lock in `_provision_organization`.
     digest = hashlib.sha256(firebase_uid.encode("utf-8")).hexdigest()[:_SLUG_DIGEST_CHARS]
     return f"org-{firebase_uid.lower()[:_SLUG_UID_CHARS]}-{digest}"
 

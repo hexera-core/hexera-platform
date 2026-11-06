@@ -27,27 +27,28 @@ import { bindFeaPanel, bindMeasure, effectiveMeshAs, feaPanelHtml, followAssembl
   lightSpotRow, pickedMeshAs, shellMarks, wallColour } from "../render/fea_form.js";
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
-import { bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
+import { b64f32, b64u32, loadVtk } from "./scene/vtk_load.js";
+import { mountCanvas } from "./scene/canvas.js";
+import { makeOverlay } from "./scene/overlay.js";
+import { UP_AXES, VIEW_PRESETS, isUpAxis, orient, presetView, saveUp, savedUp, shield, upVector } from "./view_controls.js";
+// the viewer's floating toolbar (View, Measure, Snapshot here) and the part's theme colours
+import { bindSeg, bindToolbar, optRow, savePng, segHtml, snapshotPng, themeRgb, toolbarHtml } from "./toolbar.js";
 
-let _vtkP = null;
-export function loadVtk() {
-  if (window.vtk) return Promise.resolve();
-  if (!_vtkP) _vtkP = new Promise((res, rej) => {
-    const s = document.createElement("script"); s.src = "/static/vendor/vtk.js";
-    s.onload = res; s.onerror = () => rej(new Error("vtk.js failed to load"));
-    document.head.appendChild(s); });
-  return _vtkP;
-}
-export function b64f32(b) { const bin = atob(b), n = bin.length, u = new Uint8Array(n);
-  for (let i = 0; i < n; i++) u[i] = bin.charCodeAt(i); return new Float32Array(u.buffer); }
-export function b64u32(b) { const bin = atob(b), n = bin.length, u = new Uint8Array(n);
-  for (let i = 0; i < n; i++) u[i] = bin.charCodeAt(i); return new Uint32Array(u.buffer); }
+// the loader and the decoders moved to the one module every scene shares; they are re-exported
+// here because this file is where the progressive mesh and the review view have always imported
+// them from, and the move is not meant to be a change to anyone's imports
+export { b64f32, b64u32, loadVtk } from "./scene/vtk_load.js";
 
-/* the console's own palette: the mesh viewer's dark background, a light grey part with soft
-   highlights, darker hairlines on the sharp corners; stickers in the yellow of the pictures, the
-   selected one in the product's orange, which nothing else on the stage wears */
-const BACKGROUND = [0.035, 0.055, 0.075];
-const BODY = [0.74, 0.78, 0.84], EDGE = [0.30, 0.34, 0.40];
+/* the console's own palette: the theme's viewer canvas behind a matte mid-tone grey part (the
+   theme's --part-body: soft on the eyes, so the orange selection and the steel edges stand out),
+   darker hairlines on the sharp corners; stickers in the yellow of the pictures, the selected one
+   in the product's orange, which nothing else on the stage wears. The two theme colours are read
+   when a stage opens; the values here are only the fallback. */
+const BACKGROUND_FALLBACK = [0.035, 0.055, 0.075], BODY_FALLBACK = [0.49, 0.51, 0.54];
+const background = () => themeRgb("--viewer-canvas", BACKGROUND_FALLBACK);
+const body = () => themeRgb("--part-body", BODY_FALLBACK);
+const AMBIENT = 0.22, DIFFUSE = 0.76, SPECULAR = 0.06;
+const EDGE = [0.30, 0.34, 0.40];
 const STICKER = [1.0, 0.83, 0.0], SEL = [1.0, 0.31, 0.0];
 // an FEA part's hot spots: a quiet steel blue, apart from the stickers' yellow
 const SPOT = [0.42, 0.62, 0.86];
@@ -92,6 +93,89 @@ function takeOver(box, anchorEl) {
   };
 }
 
+/* THE STAGE'S TOOLBAR - the mesh viewer's own pattern (viewer/toolbar.js): one bar floating at the
+   top of the canvas, each button opening one small overlay, Esc or a click outside closing it.
+   View always (fit, set views, which way is up, the camera, and for a thermal model whether the
+   case is see-through), Measure where the part is measured by clicking it, Snapshot always. The
+   ids the stage has always used (gs-up-, gs-fit-) live on inside the View overlay. */
+function stageToolsHtml(sessionId, upAxis, { measure = false, xray = false } = {}) {
+  const upOpts = UP_AXES.map(([v, l]) => `<option value="${v}"${v === upAxis ? " selected" : ""}>${l}</option>`).join("");
+  const view = `<div class="vo-list">
+      <button type="button" class="vo-item" id="gs-fit-${sessionId}">Fit to screen<span class="vo-kbd">F</span></button>
+      ${Object.entries(VIEW_PRESETS).map(([k, v]) => `<button type="button" class="vo-item" data-view="${k}">${v.label}</button>`).join("")}
+    </div>
+    ${optRow("Up", `<select class="vo-select" id="gs-up-${sessionId}" aria-label="Which axis points up">${upOpts}</select>`)}
+    ${optRow("Camera", segHtml("camera", [["persp", "Perspective"], ["flat", "Flat"]], "persp", "Camera"))}
+    ${xray ? optRow("See inside the case", segHtml("xray", [["on", "On"], ["off", "Off"]], "on", "See inside the case")) : ""}`;
+  const tools = [{ key: "view", body: view }];
+  if (measure) tools.push({ key: "measure", body: `<p class="vo-tag">Distance between two points</p>
+    ${optRow("Distance", `<span class="vo-num" id="gs-meas-val-${sessionId}">-</span>`)}
+    <div class="vo-foot"><span class="vo-note" id="gs-meas-note-${sessionId}">Click two points on the part. A hole's edge pulls the click onto it.</span>
+      <button type="button" class="vo-pill" id="gs-meas-clear-${sessionId}">Clear</button></div>` });
+  tools.push({ key: "snapshot", body: `${optRow("Background", segHtml("snap-bg", [["scene", "Scene"], ["transparent", "Transparent"], ["white", "White"]], "scene", "Background"))}
+    ${optRow("Size", segHtml("snap-scale", [["1", "1×"], ["2", "2×"], ["4", "4×"]], "2", "Size"))}
+    <button type="button" class="vo-save" id="gs-snap-save-${sessionId}">Save picture</button>` });
+  return toolbarHtml("gs-" + sessionId, tools)
+    + (measure ? `<svg class="v-mline" aria-hidden="true" hidden><line x1="0" y1="0" x2="0" y2="0"/></svg>` : "")
+    + `<svg class="gc-axes" viewBox="0 0 84 84" aria-hidden="true">
+        ${["x", "y", "z"].map((k) => `<line class="ax ax-${k}" x1="42" y1="42" x2="42" y2="42"/><text class="ax-l ax-${k}" x="42" y="42">${k.toUpperCase()}</text>`).join("")}
+      </svg>`;
+}
+
+/** Wire the stage's toolbar. `s` is the scene: {ren, rw, apiRW, cam, sceneBg, upAxis(), fit(),
+ *  iso(), measure(on)?, xray(on)?}. Returns the toolbar ({open, close, current, snapshot}). */
+function bindStageTools(box, sessionId, s) {
+  const host = box.querySelector(".v-canvas");
+  host.querySelectorAll(".vt,.v-ov").forEach(shield);
+  const tb = bindToolbar(host, {
+    onOpen: (k) => { if (k === "measure" && s.measure) s.measure(true); },
+    onClose: (k) => { if (k === "measure" && s.measure) s.measure(false); },
+  });
+  const ov = (k) => host.querySelector(`.v-ov[data-tool="${k}"]`);
+  ov("view").querySelectorAll(".vo-item[data-view]").forEach((b) => {
+    b.onclick = () => {
+      if (b.dataset.view === "corner") s.iso();
+      else { presetView(s.cam, s.upAxis(), b.dataset.view); s.fit(); }
+    };
+  });
+  bindSeg(ov("view"), "camera", (v) => { s.cam.setParallelProjection(v === "flat"); s.fit(); });
+  if (s.xray) bindSeg(ov("view"), "xray", (v) => s.xray(v === "on"));
+  // F frames the whole part from anywhere on the page that is not a text box
+  const onKey = (e) => {
+    if (!document.body.contains(host)) { document.removeEventListener("keydown", onKey); return; }
+    if ((e.key !== "f" && e.key !== "F") || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (!host.offsetParent) return;
+    e.preventDefault();
+    const fitBtn = document.getElementById("gs-fit-" + sessionId);
+    if (fitBtn) fitBtn.click();
+  };
+  document.addEventListener("keydown", onKey);
+  // SNAPSHOT: the part as a PNG, on the scene's background, a transparent one or white, 1x to 4x
+  const snap = { bg: "scene", scale: "2" };
+  bindSeg(ov("snapshot"), "snap-bg", (v) => { snap.bg = v; });
+  bindSeg(ov("snapshot"), "snap-scale", (v) => { snap.scale = v; });
+  const shoot = (o) => {
+    o = Object.assign({}, snap, o || {});
+    return snapshotPng({ ren: s.ren, rw: s.rw, apiRW: s.apiRW, background: o.bg, scale: Number(o.scale) || 1, sceneBg: s.sceneBg });
+  };
+  const save = document.getElementById("gs-snap-save-" + sessionId);
+  save.onclick = async () => {
+    if (save.disabled) return;
+    save.disabled = true; save.textContent = "Saving…";
+    try { const r = await shoot(); savePng(r.blob, `part_${String(sessionId).slice(0, 8)}.png`); save.textContent = "Saved"; }
+    catch (err) { console.warn("snapshot", err); save.textContent = "Could not save. Try 1×."; }
+    finally { setTimeout(() => { save.disabled = false; save.textContent = "Save picture"; }, 1600); }
+  };
+  // the browser tier reads a picture through this
+  tb.snapshot = async (o) => {
+    const r = await shoot(o), g = r.canvas.getContext("2d");
+    return { width: r.width, height: r.height, corner: Array.from(g.getImageData(1, 1, 1, 1).data), canvas: s.apiRW.getSize().slice() };
+  };
+  return tb;
+}
+
 function leadHtml(p) {
   const size = (p.size_mm || []).map((v) => shown(v, p)).join(" x ");
   return `<div class="gc-part"><b>${esc(p.part || "the part")}</b>${size ? `<span class="gc-size">${esc(size)} <span class="gc-u">${unitOf(p)}</span></span>` : ""}</div>
@@ -127,10 +211,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     </div>
     <div class="v-canvas gc-canvas" id="gs-canvas-${sessionId}">
       <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the part…</div></div>
-      <div class="v-tools">${upSelectHtml("gs-up-" + sessionId, savedUp("session", sessionId) || (isUpAxis(p.up_axis) ? p.up_axis : "+z"))}<button class="v-btn v-tool" id="gs-fit-${sessionId}" type="button" title="Frame the whole part">Fit</button></div>
-      <svg class="gc-axes" viewBox="0 0 84 84" aria-hidden="true">
-        ${["x", "y", "z"].map((k) => `<line class="ax ax-${k}" x1="42" y1="42" x2="42" y2="42"/><text class="ax-l ax-${k}" x="42" y="42">${k.toUpperCase()}</text>`).join("")}
-      </svg>
+      ${stageToolsHtml(sessionId, savedUp("session", sessionId) || (isUpAxis(p.up_axis) ? p.up_axis : "+z"), { measure: true })}
     </div>`;
   const release = takeOver(box, opts.anchorEl);
   const panel = box.querySelector(".gc-panel");
@@ -351,7 +432,7 @@ function partsLegend(patches) {
     + "border-radius:6px;background:rgba(255,255,255,0.88);color:#2a2f36;font-size:11px;line-height:1.5;z-index:2";
   const named = patches.filter((pt) => pt.name), rows = named.slice(0, 40);
   el.innerHTML = rows.map((pt) => {
-    const c = (Array.isArray(pt.color) ? pt.color : BODY).map((v) => Math.round(v * 255)).join(",");
+    const c = (Array.isArray(pt.color) ? pt.color : body()).map((v) => Math.round(v * 255)).join(",");
     return `<div><span style="display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;background:rgb(${c})"></span>${esc(pt.name)}</div>`;
   }).join("") + (named.length > rows.length ? `<div>and ${named.length - rows.length} more</div>` : "");
   return el;
@@ -359,31 +440,17 @@ function partsLegend(patches) {
 
 function initScene(sessionId, box, surf, p) {
   const host = document.getElementById("gs-canvas-" + sessionId);
-  const grw = vtk.Rendering.Misc.vtkGenericRenderWindow.newInstance({ background: BACKGROUND });
-  grw.setContainer(host);
-  const ren = grw.getRenderer(), rw = grw.getRenderWindow();
-  const apiRW = grw.getApiSpecificRenderWindow ? grw.getApiSpecificRenderWindow() : grw.getOpenGLRenderWindow();
-  const DPR = Math.min(window.devicePixelRatio || 1, 2);
-  function setRenderScale() { const r = host.getBoundingClientRect();
-    apiRW.setSize(Math.max(2, Math.round(r.width * DPR)), Math.max(2, Math.round(r.height * DPR))); }
-  grw.resize();
-  host.addEventListener("contextmenu", (e) => e.preventDefault());
-  bindMouse(grw);                     // left-drag turns, right-drag pans, the wheel zooms
-
-  /* THE LIGHTS: a key from the upper left, a fill from the right and a faint rim from behind,
-     all riding with the camera, so a turned part is always lit the way a CAD viewer lights it */
-  if (vtk.Rendering.Core.vtkLight) {
-    [[-0.7, 0.9, 1.0, 0.62], [0.9, 0.25, 0.7, 0.28], [0.0, -0.4, -1.0, 0.14]].forEach(([x, y, z, i]) => {
-      const l = vtk.Rendering.Core.vtkLight.newInstance();
-      if (l.setLightTypeToCameraLight) l.setLightTypeToCameraLight();
-      l.setPosition(x, y, z); l.setFocalPoint(0, 0, 0); l.setIntensity(i); l.setColor(1, 1, 1);
-      ren.addLight(l);
-    });
-  }
+  const sceneBg = background();
+  // the boot, the DPR, the resize policy, the mouse and the three-light rig all live in one
+  // module now; this file keeps only what is about a PART
+  const canvas = mountCanvas(host, { background: sceneBg });
+  const { ren, rw, apiRW, cam } = canvas;
+  const setRenderScale = canvas.setRenderScale;
+  const overlay = makeOverlay(canvas);
 
   /* THE SKIN - shared vertices, smooth normals broken at sharp corners, from the worker; the
      older soup form still draws, flat */
-  const skins = [];
+  const skins = [], BODY = body();
   (surf.patches || []).forEach((pt) => {
     let pts, polys, normals = null;
     if (pt.polys_b64) { pts = b64f32(pt.points_b64); polys = b64u32(pt.polys_b64);
@@ -403,7 +470,7 @@ function initScene(sessionId, box, surf, p) {
     const col = Array.isArray(pt.color) && pt.color.length === 3 ? pt.color : BODY;
     pr.setColor(col[0], col[1], col[2]); pr.setEdgeVisibility(false);
     pr.setInterpolationToPhong();
-    pr.setAmbient(0.32); pr.setDiffuse(0.76); pr.setSpecular(0.12); pr.setSpecularPower(20);
+    pr.setAmbient(AMBIENT); pr.setDiffuse(DIFFUSE); pr.setSpecular(SPECULAR); pr.setSpecularPower(20);
     ren.addActor(actor);
     skins.push({ actor, pd, pts, polys });
   });
@@ -420,7 +487,6 @@ function initScene(sessionId, box, surf, p) {
     const pp = ac.getProperty(); pp.setColor(...EDGE); pp.setLineWidth(1); pp.setLighting(false); pp.setOpacity(0.9);
     ren.addActor(ac);
   }
-  const cam = ren.getActiveCamera();
   cam.azimuth(45); cam.elevation(25);
   ren.resetCamera(); rw.render();
   const bs = ren.computeVisiblePropBounds();
@@ -433,7 +499,6 @@ function initScene(sessionId, box, surf, p) {
   // THE FRAMING FOLLOWS THE CANVAS. The workbench grid gives the canvas its size a tick after
   // the stage is appended, so the first fit is made against a placeholder box; every size change
   // until the user has moved the camera re-fits, and after that only "Fit" does.
-  let touched = false;
   function fit() {
     ren.resetCamera(partBounds);
     // resetCamera fits the part to the view's HEIGHT; a canvas taller than it is wide (the
@@ -452,14 +517,13 @@ function initScene(sessionId, box, surf, p) {
     orient(cam, upAxis, [-1, -1, 0.8]);
     fit();
   }
-  const ro = new ResizeObserver(() => { setRenderScale(); if (!touched) fit(); else rw.render(); });
-  ro.observe(host);
-  host.addEventListener("pointerdown", (e) => { if (!(e.target.closest && e.target.closest(".v-tools"))) touched = true; }, true);
-  const tools = box.querySelector(".v-tools");
-  shield(tools);
+  canvas.fit = fit;             // re-frame on a size change until the user takes the camera
   if (upSel) upSel.onchange = () => { upAxis = upSel.value; saveUp("session", sessionId, upAxis); iso(); };
   const fitBtn = box.querySelector("#gs-fit-" + sessionId);
   if (fitBtn) fitBtn.onclick = () => iso();
+  // THE TOOLBAR: View and Snapshot here, Measure wired below where the ruler is
+  const tb = bindStageTools(box, sessionId, { ren, rw, apiRW, cam, sceneBg, upAxis: () => upAxis, fit, iso,
+    measure: (on) => { if (on !== measuring) setMeasure(on); } });
 
   /* THE STICKERS - a ball on every opening, at the position the check measured, and an HTML pin
      with its number that follows it every frame. The pin is the thing to click: it is never
@@ -483,11 +547,17 @@ function initScene(sessionId, box, surf, p) {
     el.title = "opening " + o.id + " - click to select";
     el.onclick = (ev) => { ev.stopPropagation(); select(o.id); };
     host.appendChild(el);
-    pins.push({ id: o.id, o: { id: o.id, c, n }, actor: ac, el });
+    const pn = { id: o.id, o: { id: o.id, c, n }, actor: ac, el };
+    // the pin follows its point from the panel's one overlay loop; it is never occluded by the
+    // part, only dimmed when its mouth faces away, and it is gone entirely on an external case
+    pn.off = overlay.anchor(el, () => pn.o.c, {
+      hidden: () => (form.querySelector(".gc-flow") || {}).value === "external",
+      normal: () => pn.o.n });
+    pins.push(pn);
   }
   function removePin(id) {
     const k = pins.findIndex((pn) => pn.id === id); if (k < 0) return;
-    ren.removeActor(pins[k].actor); pins[k].el.remove(); pins.splice(k, 1);
+    ren.removeActor(pins[k].actor); pins[k].off(); pins[k].el.remove(); pins.splice(k, 1);
     if (sel === id) sel = null;
     rw.render();
   }
@@ -512,7 +582,7 @@ function initScene(sessionId, box, surf, p) {
   const SPOT_TAGS = 40;
   let spotMarks = false;
   function setSpots(list) {
-    spots.forEach((s) => { ren.removeActor(s.actor); s.el.remove(); });
+    spots.forEach((s) => { ren.removeActor(s.actor); s.off(); s.el.remove(); });
     spots = [];
     spotMarks = (list || []).length > SPOT_TAGS;
     (list || []).forEach(addSpot);
@@ -537,7 +607,9 @@ function initScene(sessionId, box, surf, p) {
     el.title = `${h.id}: ${h.shape || h.type}${h.capped ? " (refinement capped)" : ""}`;
     el.onclick = (ev) => { ev.stopPropagation(); lightSpot(h.id); };
     host.appendChild(el);
-    spots.push({ id: h.id, c, el, actor: ac });
+    const sp = { id: h.id, c, el, actor: ac };
+    sp.off = overlay.anchor(el, () => sp.c);
+    spots.push(sp);
   }
   function lightSpot(id) {
     spots.forEach((s) => s.el.classList.toggle("sel", s.id === id));
@@ -603,7 +675,7 @@ function initScene(sessionId, box, surf, p) {
     const u = upVector(upAxis), along = Math.abs(n[0] * u[0] + n[1] * u[1] + n[2] * u[2]);
     cam.setViewUp(...(along < 0.9 ? u : (Math.abs(u[2]) > 0.5 ? [0, 1, 0] : [0, 0, 1])));
     ren.resetCameraClippingRange(); cam.zoom(1.6); rw.render();
-    touched = true;
+    canvas.touched = true;
     if (sel !== id) select(id);
   }
 
@@ -783,7 +855,7 @@ function initScene(sessionId, box, surf, p) {
   host.addEventListener("pointerdown", (e) => { downXY = [e.clientX, e.clientY]; }, true);
   host.addEventListener("pointerup", (e) => {
     if (!(addMode || measuring) || !downXY) return;
-    if (e.target && e.target.closest && e.target.closest(".gc-pin,.v-tools")) return;
+    if (e.target && e.target.closest && e.target.closest(".gc-pin,.vt,.v-ov")) return;
     if (Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 6) return;
     if (measuring) measureAt(e.clientX, e.clientY);
     else addAt(rayAt(e.clientX, e.clientY));
@@ -798,21 +870,34 @@ function initScene(sessionId, box, surf, p) {
   const measurePts = [], measureActors = [];
   let measureLabel = null;
   const RIM_SNAP_PX = 8;
+  const measVal = box.querySelector("#gs-meas-val-" + sessionId), measNote = box.querySelector("#gs-meas-note-" + sessionId);
+  const MEASURE_NOTE = measNote ? measNote.textContent : "";
   function setMeasure(on) {
     measuring = on;
     clearMeasure();
     if (on && addMode) setAddMode(false);
-    const b = form.querySelector(".gc-measure");
-    if (b) { b.classList.toggle("armed", on); b.textContent = on ? "Measuring…" : "Measure"; }
+    // the toolbar's Measure is the switch: ending the ruler any other way closes its overlay too
+    if (!on && tb && tb.current() === "measure") tb.close();
+    if (on && tb && tb.current() !== "measure") tb.open("measure");
     host.style.cursor = on ? "crosshair" : "";
-    hint(on ? "click two points on the part (a hole's edge pulls the click onto it); Esc ends" : ADD_HINT);
+    hint(ADD_HINT);
   }
   function clearMeasure() {
     measurePts.length = 0;
     measureActors.splice(0).forEach((a) => ren.removeActor(a));
     if (measureLabel) { measureLabel.remove(); measureLabel = null; }
+    showMeasured();
     rw.render();
   }
+  /** The overlay says the distance, and what to click next. */
+  function showMeasured() {
+    if (!measVal) return;
+    const m = measuredNow();
+    measVal.textContent = m.label || "-";
+    if (measNote) measNote.textContent = m.label ? "Click again to start a new one." : (measurePts.length ? "Now click the second point." : MEASURE_NOTE);
+  }
+  const measClear = box.querySelector("#gs-meas-clear-" + sessionId);
+  if (measClear) measClear.onclick = () => clearMeasure();
   /** Whether a point is in front of the camera (whatever the clipping planes say). */
   function inFront(pt) {
     const cp = cam.getPosition(), dop = cam.getDirectionOfProjection();
@@ -850,6 +935,7 @@ function initScene(sessionId, box, surf, p) {
     if (!pt) return null;
     if (measurePts.length >= 2) clearMeasure();               // a third click starts again
     measurePts.push(pt);
+    showMeasured();
     const dotPd = spherePd(pt[0], pt[1], pt[2], 0.004 * diag);
     const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(dotPd);
     const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
@@ -879,13 +965,19 @@ function initScene(sessionId, box, surf, p) {
     const mm = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) * 1000;
     return { points: measurePts.slice(), mm, label: `${shown(mm, p)} ${unitOf(p)}` };
   }
+  const mline = box.querySelector(".v-mline");
   function placeMeasureLabel(aspect, rect) {
-    if (!measureLabel || measurePts.length < 2) return;
-    const [a, b] = measurePts, m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
-    const nd = ren.worldToNormalizedDisplay(m[0], m[1], m[2], aspect);
-    const ok = inFront(m);
+    const two = !!measureLabel && measurePts.length === 2;
+    const ok = two && measurePts.every(inFront);
+    if (mline) mline.toggleAttribute("hidden", !ok);
+    if (!measureLabel) return;
     measureLabel.style.display = ok ? "" : "none";
-    if (ok) { measureLabel.style.left = (nd[0] * rect.width) + "px"; measureLabel.style.top = ((1 - nd[1]) * rect.height) + "px"; }
+    if (!ok) return;
+    const [a, b] = measurePts.map((pt) => { const nd = ren.worldToNormalizedDisplay(pt[0], pt[1], pt[2], aspect);
+      return [nd[0] * rect.width, (1 - nd[1]) * rect.height]; });
+    if (mline) { const ln = mline.firstElementChild;
+      ln.setAttribute("x1", a[0]); ln.setAttribute("y1", a[1]); ln.setAttribute("x2", b[0]); ln.setAttribute("y2", b[1]); }
+    measureLabel.style.left = ((a[0] + b[0]) / 2) + "px"; measureLabel.style.top = ((a[1] + b[1]) / 2) + "px";
   }
 
   /* the form is re-drawn when the model's labels arrive, so its controls are re-bound then */
@@ -896,8 +988,6 @@ function initScene(sessionId, box, surf, p) {
       if (!tr.dataset.bound) { tr.dataset.bound = "1"; tr.addEventListener("focusin", () => { const id = Number(tr.dataset.id); if (sel !== id) select(id); }); }
     });
     const addBtn = form.querySelector(".gc-add"); if (addBtn) addBtn.onclick = () => setAddMode(!addMode);
-    const mBtn = form.querySelector(".gc-measure");
-    if (mBtn) { mBtn.onclick = () => setMeasure(!measuring); mBtn.classList.toggle("armed", measuring); }
     // pins follow the rows: a row without a pin gets one, a pin without a row goes
     const ids = new Set(rows().map((tr) => Number(tr.dataset.id)));
     pins.slice().forEach((pn) => { if (!ids.has(pn.id)) removePin(pn.id); });
@@ -986,36 +1076,9 @@ function initScene(sessionId, box, surf, p) {
     });
   }
 
-  let alive = true;
-  (function pinLoop() {
-    if (!alive || !document.body.contains(host)) return;
-    drawAxes();
-    const size = apiRW.getSize(), aspect = size[0] / size[1], rect = host.getBoundingClientRect();
-    const cp = cam.getPosition();
-    const externalNow = (form.querySelector(".gc-flow") || {}).value === "external";
-    pins.forEach((pn) => {
-      if (externalNow) { pn.el.style.display = "none"; return; }
-      const [x, y, z] = pn.o.c;
-      const nd = ren.worldToNormalizedDisplay(x, y, z, aspect);
-      const ok = nd[2] > 0 && nd[2] < 1 && nd[0] >= 0 && nd[0] <= 1 && nd[1] >= 0 && nd[1] <= 1;
-      pn.el.style.display = ok ? "" : "none";
-      if (!ok) return;
-      pn.el.style.left = (nd[0] * rect.width) + "px";
-      pn.el.style.top = ((1 - nd[1]) * rect.height) + "px";
-      const n = pn.o.n, facing = (n[0] * (x - cp[0]) + n[1] * (y - cp[1]) + n[2] * (z - cp[2])) < 0;
-      pn.el.classList.toggle("back", !facing);
-    });
-    spots.forEach((s) => {
-      const nd = ren.worldToNormalizedDisplay(s.c[0], s.c[1], s.c[2], aspect);
-      const ok = nd[2] > 0 && nd[2] < 1 && nd[0] >= 0 && nd[0] <= 1 && nd[1] >= 0 && nd[1] <= 1;
-      s.el.style.display = ok ? "" : "none";
-      if (!ok) return;
-      s.el.style.left = (nd[0] * rect.width) + "px";
-      s.el.style.top = ((1 - nd[1]) * rect.height) + "px";
-    });
-    placeMeasureLabel(aspect, rect);
-    requestAnimationFrame(pinLoop);
-  })();
+  // the stickers and the hot-spot tags place themselves, as anchors; what is left is the work
+  // that is not a single point - the axes gizmo and the two-ended measure line
+  overlay.each((aspect, rect) => { drawAxes(); placeMeasureLabel(aspect, rect); });
 
   setRenderScale(); iso();
 
@@ -1032,10 +1095,12 @@ function initScene(sessionId, box, surf, p) {
     camera: () => cam.getPosition(), cam: () => cam, edges: () => edgeCount, axes: () => { drawAxes(); return axesNow; },
     smooth: () => skins.some((s) => !!s.pd.getPointData().getNormals()),
     upAxis: () => upAxis, setUp: (a) => { if (upSel) { upSel.value = a; upSel.onchange(); } },
-    render: () => rw.render(),
+    render: () => rw.render(), tools: tb, dir: () => cam.getDirectionOfProjection().slice(),
+    material: () => { const pp = skins[0].actor.getProperty(); return { color: pp.getDiffuseColor().slice(), ambient: pp.getAmbient(), specular: pp.getSpecular() }; },
+    background: () => ren.getBackground().slice(),
   };
   return {
-    stop: () => { alive = false; ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
+    stop: () => { overlay.stop(); canvas.ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
     rebind, refresh: refreshExternal, setSpots, setShell, showShell,
   };
 }
@@ -1063,10 +1128,7 @@ async function openFeaStage(sessionId, d, confirm, opts) {
   box.innerHTML = `<div class="v-bar gc-panel fea-panel">${feaPanelHtml(f, p)}</div>
     <div class="v-canvas gc-canvas" id="gs-canvas-${sessionId}">
       <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the part…</div></div>
-      <div class="v-tools">${upSelectHtml("gs-up-" + sessionId, savedUp("session", sessionId) || (isUpAxis(p.up_axis) ? p.up_axis : "+z"))}<button class="v-btn v-tool" id="gs-fit-${sessionId}" type="button" title="Frame the whole part">Fit</button></div>
-      <svg class="gc-axes" viewBox="0 0 84 84" aria-hidden="true">
-        ${["x", "y", "z"].map((k) => `<line class="ax ax-${k}" x1="42" y1="42" x2="42" y2="42"/><text class="ax-l ax-${k}" x="42" y="42">${k.toUpperCase()}</text>`).join("")}
-      </svg>
+      ${stageToolsHtml(sessionId, savedUp("session", sessionId) || (isUpAxis(p.up_axis) ? p.up_axis : "+z"), { measure: true })}
     </div>`;
   const release = takeOver(box, opts.anchorEl);
   const panel = box.querySelector(".fea-panel");
@@ -1155,11 +1217,9 @@ async function openThermalStage(sessionId, d, confirm, opts) {
   box.innerHTML = `<div class="v-bar gc-panel tm-panel">${thermalPanelHtml(t)}</div>
     <div class="v-canvas gc-canvas" id="gs-canvas-${sessionId}">
       <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the model…</div></div>
-      <div class="v-tools">${upSelectHtml("gs-up-" + sessionId, savedUp("session", sessionId) || "+z")}${hasCase ? `<button class="v-btn v-tool on" id="gs-xray-${sessionId}" type="button" aria-pressed="true" title="See through the case to the parts inside">See inside</button>` : ""}<button class="v-btn v-tool" id="gs-all-${sessionId}" type="button" hidden title="Show every part again">Show all</button><button class="v-btn v-tool" id="gs-fit-${sessionId}" type="button" title="Frame the whole model">Fit</button></div>
+      ${stageToolsHtml(sessionId, savedUp("session", sessionId) || "+z", { xray: hasCase })}
+      <button type="button" class="vp-b v-showall" id="gs-all-${sessionId}" hidden>Show every part</button>
       <div class="tm-tip" hidden></div>
-      <svg class="gc-axes" viewBox="0 0 84 84" aria-hidden="true">
-        ${["x", "y", "z"].map((k) => `<line class="ax ax-${k}" x1="42" y1="42" x2="42" y2="42"/><text class="ax-l ax-${k}" x="42" y="42">${k.toUpperCase()}</text>`).join("")}
-      </svg>
     </div>`;
   const release = takeOver(box, opts.anchorEl);
   const panelEl = box.querySelector(".tm-panel");
@@ -1200,24 +1260,13 @@ async function openThermalStage(sessionId, d, confirm, opts) {
 
 function initThermalScene(sessionId, box, surf, t, panel) {
   const host = document.getElementById("gs-canvas-" + sessionId);
-  const grw = vtk.Rendering.Misc.vtkGenericRenderWindow.newInstance({ background: BACKGROUND });
-  grw.setContainer(host);
-  const ren = grw.getRenderer(), rw = grw.getRenderWindow();
-  const apiRW = grw.getApiSpecificRenderWindow ? grw.getApiSpecificRenderWindow() : grw.getOpenGLRenderWindow();
-  const DPR = Math.min(window.devicePixelRatio || 1, 2);
-  function setRenderScale() { const r = host.getBoundingClientRect();
-    apiRW.setSize(Math.max(2, Math.round(r.width * DPR)), Math.max(2, Math.round(r.height * DPR))); }
-  grw.resize();
-  host.addEventListener("contextmenu", (e) => e.preventDefault());
-  bindMouse(grw);
-  if (vtk.Rendering.Core.vtkLight) {
-    [[-0.7, 0.9, 1.0, 0.62], [0.9, 0.25, 0.7, 0.28], [0.0, -0.4, -1.0, 0.14]].forEach(([x, y, z, i]) => {
-      const l = vtk.Rendering.Core.vtkLight.newInstance();
-      if (l.setLightTypeToCameraLight) l.setLightTypeToCameraLight();
-      l.setPosition(x, y, z); l.setFocalPoint(0, 0, 0); l.setIntensity(i); l.setColor(1, 1, 1);
-      ren.addLight(l);
-    });
-  }
+  const sceneBg = background();
+  // the same shared boot the flow stage gets; the showall chip is on-canvas furniture, so a
+  // press on it is not the user taking the camera
+  const canvas = mountCanvas(host, { background: sceneBg, ignore: ".vt,.v-ov,.v-showall" });
+  const { ren, rw, apiRW, cam } = canvas;
+  const setRenderScale = canvas.setRenderScale;
+  const overlay = makeOverlay(canvas);
   const rows = new Map((t.tree || []).filter((r) => r.region).map((r) => [r.region, r]));
 
   /* THE PARTS - one actor each, under the region name the list's rows carry */
@@ -1238,10 +1287,10 @@ function initThermalScene(sessionId, box, surf, t, panel) {
     const actor = vtk.Rendering.Core.vtkActor.newInstance(); actor.setMapper(mapper);
     const row = rows.get(pt.name) || {};
     // the list's colour is the part's colour: the same table on both sides (ecxml_place.PART_COLOURS)
-    const col = Array.isArray(row.color) ? row.color : Array.isArray(pt.color) ? pt.color : BODY;
+    const col = Array.isArray(row.color) ? row.color : Array.isArray(pt.color) ? pt.color : body();
     const pr = actor.getProperty();
     pr.setColor(col[0], col[1], col[2]); pr.setInterpolationToPhong();
-    pr.setAmbient(0.32); pr.setDiffuse(0.76); pr.setSpecular(0.12); pr.setSpecularPower(20);
+    pr.setAmbient(AMBIENT); pr.setDiffuse(DIFFUSE); pr.setSpecular(SPECULAR); pr.setSpecularPower(20);
     ren.addActor(actor);
     parts.set(pt.name, { actor, pd, pts, polys, index: null, isCase: (row.kind || "") === "enclosure" || pt.kind === "enclosure", row });
   });
@@ -1254,7 +1303,6 @@ function initThermalScene(sessionId, box, surf, t, panel) {
     const pp = edges.getProperty(); pp.setColor(...EDGE); pp.setLineWidth(1); pp.setLighting(false); pp.setOpacity(0.9);
     ren.addActor(edges);
   }
-  const cam = ren.getActiveCamera();
   ren.resetCamera(); rw.render();
   const bs = ren.computeVisiblePropBounds();
   const partBounds = bs.slice();
@@ -1288,7 +1336,7 @@ function initThermalScene(sessionId, box, surf, t, panel) {
      goes through it to them. Its own row still lights it fully. */
   let xray = [...parts.values()].some((p) => p.isCase);
   // `selected`: the one part picked; `lit`: every part shown (that part, or a whole group)
-  let selected = null, lit = null, hovered = null, outline = null, touched = false;
+  let selected = null, lit = null, hovered = null, outline = null;
   function paint() {
     parts.forEach((p, region) => {
       const pr = p.actor.getProperty();
@@ -1297,7 +1345,7 @@ function initThermalScene(sessionId, box, surf, t, panel) {
       if (lit) op = lit.has(region) ? 1 : (p.isCase ? FADED / 2.5 : FADED);
       else if (xray && p.isCase) op = XRAY;
       pr.setOpacity(op);
-      pr.setAmbient(region === hovered || region === selected ? 0.55 : 0.32);
+      pr.setAmbient(region === hovered || region === selected ? 0.55 : AMBIENT);
       p.actor.setPickable(op >= 0.5);
     });
     if (edges) edges.getProperty().setOpacity(lit ? 0.12 : (xray ? 0.55 : 0.9));
@@ -1325,7 +1373,7 @@ function initThermalScene(sessionId, box, surf, t, panel) {
     const p = parts.get(region); if (!p) return;
     select(region); panel.select(region);
     ren.resetCamera(p.pd.getBounds()); cam.zoom(0.7); ren.resetCameraClippingRange(); rw.render();
-    touched = true;
+    canvas.touched = true;
   }
 
   /* PICKING: the ray through the pixel, against each part the user can see (a faded or
@@ -1364,12 +1412,9 @@ function initThermalScene(sessionId, box, surf, t, panel) {
     tip.style.top = Math.min(clientY - rect.top + 14, rect.height - 60) + "px";
   }
   let downXY = null, moveAt = null;
-  host.addEventListener("pointerdown", (e) => {
-    downXY = [e.clientX, e.clientY];
-    if (!(e.target.closest && e.target.closest(".v-tools"))) touched = true;
-  }, true);
+  host.addEventListener("pointerdown", (e) => { downXY = [e.clientX, e.clientY]; }, true);
   host.addEventListener("pointerup", (e) => {
-    if (!downXY || (e.target.closest && e.target.closest(".v-tools,.tm-probe"))) return;
+    if (!downXY || (e.target.closest && e.target.closest(".vt,.v-ov,.v-showall,.tm-probe"))) return;
     if (Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 6) return;
     const region = pickAt(e.clientX, e.clientY);
     const next = region && region === selected ? null : region;
@@ -1418,16 +1463,14 @@ function initThermalScene(sessionId, box, surf, t, panel) {
     orient(cam, upAxis, [-1, -1, 0.8]);
     fit();
   }
-  const ro = new ResizeObserver(() => { setRenderScale(); if (!touched) fit(); else rw.render(); });
-  ro.observe(host);
-  const tools = box.querySelector(".v-tools"); shield(tools);
+  canvas.fit = fit;             // re-frame on a size change until the user takes the camera
   if (upSel) upSel.onchange = () => { upAxis = upSel.value; saveUp("session", sessionId, upAxis); iso(); };
-  const fitBtn = box.querySelector("#gs-fit-" + sessionId); if (fitBtn) fitBtn.onclick = () => { touched = false; iso(); };
-  const allBtn = box.querySelector("#gs-all-" + sessionId); if (allBtn) allBtn.onclick = () => { select(null); panel.select(null); };
-  const xrayBtn = box.querySelector("#gs-xray-" + sessionId);
-  if (xrayBtn) xrayBtn.onclick = () => {
-    xray = !xray; xrayBtn.classList.toggle("on", xray); xrayBtn.setAttribute("aria-pressed", xray ? "true" : "false"); paint();
-  };
+  const fitBtn = box.querySelector("#gs-fit-" + sessionId); if (fitBtn) fitBtn.onclick = () => { canvas.touched = false; iso(); };
+  const allBtn = box.querySelector("#gs-all-" + sessionId);
+  if (allBtn) { shield(allBtn); allBtn.onclick = () => { select(null); panel.select(null); }; }
+  // THE TOOLBAR: View (with "See inside the case" when the model has one) and Snapshot
+  const tb = bindStageTools(box, sessionId, { ren, rw, apiRW, cam, sceneBg, upAxis: () => upAxis, fit, iso,
+    xray: (on) => { xray = on; paint(); } });
 
   const axesEl = box.querySelector(".gc-axes");
   const axesLines = ["x", "y", "z"].map((k) => [axesEl.querySelector("line.ax-" + k), axesEl.querySelector("text.ax-" + k)]);
@@ -1446,25 +1489,15 @@ function initThermalScene(sessionId, box, surf, t, panel) {
       line.classList.toggle("back", sz < 0); label.classList.toggle("back", sz < 0);
     });
   }
-  let alive = true;
-  (function loop() {
-    if (!alive || !document.body.contains(host)) return;
-    drawAxes();
-    const size = apiRW.getSize(), aspect = size[0] / size[1], rect = host.getBoundingClientRect();
-    probes.forEach((p) => {
-      const nd = ren.worldToNormalizedDisplay(p.c[0], p.c[1], p.c[2], aspect);
-      const ok = nd[2] > 0 && nd[2] < 1 && nd[0] >= 0 && nd[0] <= 1 && nd[1] >= 0 && nd[1] <= 1;
-      p.el.style.display = ok ? "" : "none";
-      if (ok) { p.el.style.left = (nd[0] * rect.width) + "px"; p.el.style.top = ((1 - nd[1]) * rect.height) + "px"; }
-    });
-    requestAnimationFrame(loop);
-  })();
+  probes.forEach((pr) => overlay.anchor(pr.el, () => pr.c));
+  overlay.each(() => drawAxes());
 
   setRenderScale(); iso(); paint();
 
   /* support/debug hook - the browser tier drives the stage through it, without pixel picking */
   window._vdbg = window._vdbg || {};
   window._vdbg["gstage:" + sessionId] = {
+    tools: tb,
     thermal: true, parts: () => [...parts.keys()], selected: () => selected, lit: () => (lit ? [...lit] : []),
     select: (r) => { select(r); panel.select(r); },
     opacity: (r) => (parts.get(r) ? parts.get(r).actor.getProperty().getOpacity() : null),
@@ -1482,7 +1515,7 @@ function initThermalScene(sessionId, box, surf, t, panel) {
   };
   return {
     select, hover, frame, probe,
-    stop: () => { alive = false; ro.disconnect(); delete window._vdbg["gstage:" + sessionId]; },
+    stop: () => { overlay.stop(); canvas.ro.disconnect(); delete window._vdbg["gstage:" + sessionId]; },
   };
 }
 

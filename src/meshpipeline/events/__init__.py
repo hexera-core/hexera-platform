@@ -9,7 +9,7 @@ from typing import Any, Final
 
 # the pipeline stages a user sees, in order
 STAGES: Final[tuple[str, ...]] = (
-    "intake", "engine_select", "geometry_admission", "builder",
+    "intake", "engine_select", "repair", "geometry_admission", "builder",
     "executor", "classifier", "reviewer", "outcome",
 )
 
@@ -30,13 +30,17 @@ MESHING:    Final = "meshing"     # the mesher started, with the engine's declar
 MESHED:     Final = "meshed"      # the mesher finished, with the cell count
 PLAN:       Final = "plan"        # the mesh the run will build: cells, wall layers, refinement
 MESH_STAGE: Final = "mesh_stage"  # what the running mesher is doing now, as it reports it
+NARRATE:    Final = "narrate"     # a step row or a commentary line, in plain words (contracts/narration)
+MESH_PARTIAL: Final = "mesh_partial"  # a boundary surface of the mesh-so-far exists: where it is, and of which phase
+RECEIPT:    Final = "receipt"     # what a stage did, as rows of measured fact - including what it refused
 VERDICT:    Final = "verdict"     # the reviewer's decision
 CLOSING:    Final = "closing"     # the run's final word to the user
 
 EVENT_TYPES: Final[frozenset[str]] = frozenset({
     STAGE, ATTEMPT, NOTE, CHECK, ACTION, SEARCH, FILE,
     SCREENSHOT, MESHING, MESHED, VERDICT, CLOSING,
-    REASONING, RATIONALE, TOOL_CALL, TOOL_RESULT, PLAN, MESH_STAGE,
+    REASONING, RATIONALE, TOOL_CALL, TOOL_RESULT, PLAN, MESH_STAGE, NARRATE, RECEIPT,
+    MESH_PARTIAL,
 })
 
 # A reasoning operation's lifecycle. One id, one card, three possible ends.
@@ -240,6 +244,82 @@ def mesh_stage(stage_: str, key: str, label: str) -> UiEvent:
     from meshpipeline.trace.sanitizer import scrub_text
     return UiEvent(MESH_STAGE, stage_, {"key": scrub_text(str(key), limit=40),
                                         "label": scrub_text(str(label), limit=120)})
+
+
+def mesh_partial(stage_: str, phase: str, object_key: str) -> UiEvent:
+    """A boundary surface of the mesh-so-far has been stored: which phase it is a frame of, and
+    the object it is stored as.
+
+    A POINTER, never the payload. A decimated boundary of a 2M-cell mesh is megabytes; the durable
+    log is a replayed Redis list, and this codebase already refuses to put an image over 4 MB on
+    the stream at all (trace/policy). The browser asks the API for the bytes, which is also what
+    keeps a bucket URL - and therefore a bucket CORS rule - out of the page.
+
+    `object_key` is scrubbed and length-bounded like every other string, and the route that serves
+    it does not trust it: it matches it against what this job itself published.
+    """
+    from meshpipeline.trace.sanitizer import scrub_text
+    return UiEvent(MESH_PARTIAL, stage_, {"phase": scrub_text(str(phase), limit=40),
+                                          "object_key": scrub_text(str(object_key), limit=200)})
+
+
+def narrate(stage_: str, kind: str, text: str, n: int | None = None, of: int | None = None,
+            unit: str = "") -> UiEvent:
+    """A step row (kind = the work) or a commentary line (kind "say"). The text has passed
+    contracts/narration.plain already; it is scrubbed again here, as every free text is."""
+    from meshpipeline.contracts.narration import KINDS
+    from meshpipeline.trace.sanitizer import scrub_text
+    if kind not in KINDS:
+        raise ValueError(f"{kind!r} is not a narration kind")
+    data: dict[str, Any] = {"kind": kind, "text": scrub_text(str(text), limit=240)}
+    if n is not None:
+        data["n"] = int(n)
+    if of is not None:
+        data["of"] = int(of)
+    if unit:
+        data["unit"] = scrub_text(str(unit), limit=24)
+    return UiEvent(NARRATE, stage_, data)
+
+
+#: A receipt is a RECORD, not a report. Twelve rows is what a reader takes in without scrolling,
+#: and each field is short because each one is a measured fact rather than prose.
+MAX_RECEIPT_ROWS: Final = 12
+MAX_RECEIPT_TITLE: Final = 40
+MAX_RECEIPT_LABEL: Final = 60
+MAX_RECEIPT_VALUE: Final = 40
+MAX_RECEIPT_WHY: Final = 160
+
+
+def receipt(stage_: str, title: str, rows: list[dict]) -> UiEvent:
+    """What a stage did, row by row: the thing, its value, and - optionally - why.
+
+    A row whose `label` or `why` fails the narration leak guard is DROPPED rather than published,
+    exactly as a leaking narration line is. `value` is exempt from the guard because it carries
+    measured numbers and units (an underscore-free "2.4 mm", but also a bare count a regex meant
+    for prose has no business judging); it is still scrubbed. A receipt whose rows all fall away
+    still constructs - whether an empty receipt is worth sending is the caller's decision.
+    """
+    from meshpipeline.contracts.narration import leaks
+    from meshpipeline.trace.sanitizer import scrub_text
+
+    out: list[dict[str, Any]] = []
+    for row in rows if isinstance(rows, (list, tuple)) else ():
+        if not isinstance(row, dict):
+            continue
+        label = " ".join(str(row.get("label") or "").split())
+        value = " ".join(str(row.get("value") or "").split())
+        why = " ".join(str(row.get("why") or "").split())
+        if not label or leaks(label) or (why and leaks(why)):
+            continue
+        item: dict[str, Any] = {"label": scrub_text(label, limit=MAX_RECEIPT_LABEL),
+                                "value": scrub_text(value, limit=MAX_RECEIPT_VALUE)}
+        if why:
+            item["why"] = scrub_text(why, limit=MAX_RECEIPT_WHY)
+        out.append(item)
+        if len(out) >= MAX_RECEIPT_ROWS:
+            break
+    return UiEvent(RECEIPT, stage_, {"title": scrub_text(str(title), limit=MAX_RECEIPT_TITLE),
+                                     "rows": out})
 
 
 def verdict(stage_: str, verdict_: str, summary: str = "") -> UiEvent:

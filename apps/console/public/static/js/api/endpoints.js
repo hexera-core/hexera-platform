@@ -225,6 +225,19 @@ export async function getSurface(jobId) {
   return r.json();
 }
 
+/** The boundary of the mesh as it is BEING built - the newest frame this run published, in the
+ *  same structure a delivered surface has but marked `partial: true, is_mesh: false`. The key is
+ *  never passed: the route resolves it from the run's own event log.
+ *
+ *  Answers null instead of throwing when the server has none - 404 (this deployment publishes no
+ *  frames, nothing is published yet, or the exchange was tidied) and 503 (the exchange could not
+ *  be read) both mean "show what you have". It is a progress nicety and may never fail a run. */
+export async function getMeshPartial(jobId) {
+  const r = await apiFetch(`/api/v1/simulation/${jobId}/mesh/partial`, { headers: headers() });
+  if (!r.ok) return null;
+  return r.json();
+}
+
 /** Build the stream URL. Only the ticket and the cursor go in the query string. */
 export function streamUrl(jobId, ticket, since) {
   const apiBase = globalThis.__HEXERA_API_WS_BASE_URL__;

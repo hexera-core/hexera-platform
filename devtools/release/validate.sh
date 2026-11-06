@@ -9,6 +9,13 @@
 # the source checkout, and records what was validated in deploy/output/release.json so a later
 # promotion can prove it is shipping the same bytes.
 #
+# Production uses the default RELEASE_VALIDATION_PROFILE=full. Development deploys may set
+# RELEASE_VALIDATION_PROFILE=dev-fast: that still requires a clean source identity, wheel identity,
+# all four image builds, and image-reported version/schema facts, then writes a promotable record
+# for digest publication. It deliberately skips the entrypoint smoke, browser smoke, native tiers
+# and pricing audit so personal and shared dev deploys can iterate quickly. Do not use dev-fast for
+# production release tags.
+#
 # The distinction this gate exists to enforce: everything before it tests the SOURCE, and source
 # passing says nothing about whether the packaged distribution imports, whether the image has the
 # toolchain, or whether the tests were quietly reading src/ off a bind mount. Every check below
@@ -19,9 +26,9 @@
 #   - every native tier runs inside the image with ZERO bind mounts: fixtures are pushed into a
 #     STOPPED container with `docker cp`, so nothing on the host can shadow the installed package.
 #     `docker inspect` records Mounts=[] and Binds=null for each container as evidence;
-#   - the native-to-terminal matrix is MANDATORY. Gate C provisions its own isolated Postgres,
-#     Redis and MinIO, health-checks them, runs the tier, and removes them from a trap. It cannot
-#     be skipped into a PASS.
+#   - in the full profile, the native-to-terminal matrix is MANDATORY. Gate C provisions its own
+#     isolated Postgres, Redis and MinIO, health-checks them, runs the tier, and removes them from
+#     a trap. It cannot be skipped into a PASS.
 #
 # COMPONENTS. Four images are deployable, each a Dockerfile target:
 #     app     = Dockerfile target `pipeline`  - serves BOTH the API service and the pipeline job
@@ -45,6 +52,9 @@
 #
 #   RELEASE_ALLOW_INCOMPLETE=1  debugging escape hatch: skip the native tiers. Produces an
 #                               INCOMPLETE verdict that can never be promoted. Never a PASS.
+#   RELEASE_VALIDATION_PROFILE=dev-fast
+#                               development deploy path: build and publish the images by digest
+#                               without the full artifact validation matrix.
 #   KEEP_VENV=1                 keep the throwaway install venv
 #   KEEP_WORK=1                 keep this run's scratch directory (build/test logs, evidence)
 #                               instead of removing it. Must be set BY THE CALLER for that
@@ -54,6 +64,14 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${REPO_ROOT}"
+
+case "${RELEASE_VALIDATION_PROFILE:-full}" in
+  full|dev-fast) ;;
+  *)
+    printf 'unknown RELEASE_VALIDATION_PROFILE=%s (expected full or dev-fast)\n' \
+      "${RELEASE_VALIDATION_PROFILE}" >&2
+    exit 2 ;;
+esac
 
 RECORD_SCHEMA=2
 OUT_DIR="${REPO_ROOT}/deploy/output"
@@ -258,6 +276,87 @@ stage "images: build each DEPLOYABLE component exactly once"
 declare -A TARGET=( [app]=pipeline [mesh]=mesh [console]=console [admin]=admin )
 declare -A IMAGE_ID=() IMAGE_TAG=()
 
+_write_release_record() {
+  stage "release record"
+  # Read from the IMAGE - the artifact that gets promoted - not from the checkout and not from the
+  # bare wheel (which declares no runtime pins by design: requirements/runtime.txt is the single
+  # pinned environment). -i attaches stdin; without it `python -` gets EOF, runs nothing, exits 0.
+  ARTIFACT_FACTS="{}"
+  if [ -n "${IMAGE_ID[app]}" ]; then
+    ARTIFACT_FACTS="$(docker run --rm -i --label "amp-release=${STAMP}" --network none \
+        -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x \
+        --entrypoint python "${IMAGE_TAG[app]}" - 2>/dev/null <<'PY' || echo '{}'
+import json, meshpipeline
+from meshpipeline.application.final_result import FINAL_RESULT_SCHEMA_VERSION
+from meshpipeline.contracts.pipeline_state import STATE_SCHEMA_VERSION
+print(json.dumps({"product_version": meshpipeline.__version__,
+                  "final_result": FINAL_RESULT_SCHEMA_VERSION,
+                  "pipeline_state": STATE_SCHEMA_VERSION}))
+PY
+)"
+  fi
+  [ -n "${ARTIFACT_FACTS}" ] || ARTIFACT_FACTS="{}"
+  if [ "${ARTIFACT_FACTS}" = "{}" ]; then
+    record "artifact reports its version and schema versions" failed 1 \
+      "could not read them from the image - the record cannot name what shipped"
+  else
+    record "artifact reports its version and schema versions" passed 1 "${ARTIFACT_FACTS}"
+  fi
+
+  mkdir -p "${OUT_DIR}"
+  REC="${OUT_DIR}/release.json"
+  COMPONENTS="$(python3 - "${TARGET[app]}" "${IMAGE_TAG[app]:-}" "${IMAGE_ID[app]:-}" \
+                          "${TARGET[mesh]}" "${IMAGE_TAG[mesh]:-}" "${IMAGE_ID[mesh]:-}" \
+                          "${TARGET[console]}" "${IMAGE_TAG[console]:-}" "${IMAGE_ID[console]:-}" \
+                          "${TARGET[admin]}" "${IMAGE_TAG[admin]:-}" "${IMAGE_ID[admin]:-}" <<'PY'
+import json, sys
+at, atag, aid, mt, mtag, mid, ct, ctag, cid, dt, dtag, did = sys.argv[1:13]
+print(json.dumps({
+  "app":     {"dockerfile_target": at, "local_tag": atag, "local_image_id": aid,
+              "workloads": ["api-service", "pipeline-job"]},
+  "mesh":    {"dockerfile_target": mt, "local_tag": mtag, "local_image_id": mid,
+              "workloads": ["mesh-job"]},
+  "console": {"dockerfile_target": ct, "local_tag": ctag, "local_image_id": cid,
+              "workloads": ["console-service"]},
+  "admin":   {"dockerfile_target": dt, "local_tag": dtag, "local_image_id": did,
+              "workloads": ["admin-service"]},
+}))
+PY
+)"
+  "${GATE_PY}" "${REPO_ROOT}/devtools/release/record.py" write \
+    --out "${REC}" --schema "${RECORD_SCHEMA}" --results "${RESULTS}" \
+    --commit "${COMMIT}" --tree "${TREE}" --branch "${BRANCH}" \
+    --wheel-name "${WHEEL_NAME}" --wheel-sha256 "${WHEEL_SHA}" --wheel-bytes "${WHEEL_BYTES}" \
+    --image-tag "${SHORT}" --components "${COMPONENTS}" --artifact-facts "${ARTIFACT_FACTS}"
+
+  VERDICT="$("${GATE_PY}" "${REPO_ROOT}/devtools/release/record.py" verdict --record "${REC}" 2>/dev/null)"
+  printf '\n%s' "${c_bold}"
+  case "${VERDICT}" in
+    passed)
+      if [ "${RELEASE_VALIDATION_PROFILE:-full}" = "dev-fast" ]; then
+        printf 'DEV RELEASE BUILD PASSED%s - dev-fast artifact record written to deploy/output/release.json\n' \
+          "${c_off}"
+      else
+        printf 'GATE C PASSED%s - artifacts validated and recorded in deploy/output/release.json\n' \
+          "${c_off}"
+      fi
+      printf '   the record is state=validated and NOT yet promotable: nothing has been published,\n'
+      printf '   so there is no immutable registry digest to deploy.\n'
+      printf '   next: %smake release-publish%s\n\n' "${c_bold}" "${c_off}"
+      exit 0 ;;
+    incomplete)
+      printf '%sGATE C INCOMPLETE%s - a required check was skipped or never ran\n' "${c_yel}" "${c_off}"
+      printf '   this record can never be promoted. See deploy/output/release.json.\n\n'
+      exit 1 ;;
+    *)
+      printf '%sGATE C FAILED%s - which checks failed, and why, is recorded in\n' \
+        "${c_red}" "${c_off}"
+      printf '   deploy/output/release.json\n\n'
+      KEEP_WORK=1
+      exit 1 ;;
+  esac
+}
+
 #: THE product version, read textually from its one authority so the build needs no interpreter
 #: and no installed package. The Dockerfile refuses any image whose label disagrees with what the
 #: wheel actually installs, so this is a transported assertion rather than a second source.
@@ -343,6 +442,15 @@ for comp in app mesh console admin; do
       "see ${WORK}/build-${comp}.log"
   fi
 done
+
+if [ "${RELEASE_VALIDATION_PROFILE:-full}" = "dev-fast" ]; then
+  stage "development deploy profile"
+  note "RELEASE_VALIDATION_PROFILE=dev-fast - skipping exhaustive artifact validation for a development deployment"
+  note "the release record is promotable only if source identity, wheel identity, image builds, and artifact version/schema read all passed"
+  record "development deploy fast profile" passed 1 \
+    "skipped entrypoint smoke, browser smoke, native tiers and pricing audit for dev deployment speed"
+  _write_release_record
+fi
 
 stage "images: entrypoints and in-image behaviour"
 _img_run() { docker run --rm --label "amp-release=${STAMP}" --network none \
@@ -943,76 +1051,4 @@ else
   record "every configured route model has a confirmed price" skipped 0 "unpriced, metering at 0.00: ${UNPRICED} - DEFERRED by decision, not resolved. Restore to required before metered billing ships"
 fi
 
-stage "release record"
-# Read from the IMAGE - the artifact that gets promoted - not from the checkout and not from the
-# bare wheel (which declares no runtime pins by design: requirements/runtime.txt is the single
-# pinned environment). -i attaches stdin; without it `python -` gets EOF, runs nothing, exits 0.
-ARTIFACT_FACTS="{}"
-if [ -n "${IMAGE_ID[app]}" ]; then
-  ARTIFACT_FACTS="$(docker run --rm -i --label "amp-release=${STAMP}" --network none \
-      -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x \
-      --entrypoint python "${IMAGE_TAG[app]}" - 2>/dev/null <<'PY' || echo '{}'
-import json, meshpipeline
-from meshpipeline.application.final_result import FINAL_RESULT_SCHEMA_VERSION
-from meshpipeline.contracts.pipeline_state import STATE_SCHEMA_VERSION
-print(json.dumps({"product_version": meshpipeline.__version__,
-                  "final_result": FINAL_RESULT_SCHEMA_VERSION,
-                  "pipeline_state": STATE_SCHEMA_VERSION}))
-PY
-)"
-fi
-[ -n "${ARTIFACT_FACTS}" ] || ARTIFACT_FACTS="{}"
-if [ "${ARTIFACT_FACTS}" = "{}" ]; then
-  record "artifact reports its version and schema versions" failed 1 \
-    "could not read them from the image - the record cannot name what shipped"
-else
-  record "artifact reports its version and schema versions" passed 1 "${ARTIFACT_FACTS}"
-fi
-
-mkdir -p "${OUT_DIR}"
-REC="${OUT_DIR}/release.json"
-COMPONENTS="$(python3 - "${TARGET[app]}" "${IMAGE_TAG[app]:-}" "${IMAGE_ID[app]:-}" \
-                        "${TARGET[mesh]}" "${IMAGE_TAG[mesh]:-}" "${IMAGE_ID[mesh]:-}" \
-                        "${TARGET[console]}" "${IMAGE_TAG[console]:-}" "${IMAGE_ID[console]:-}" \
-                        "${TARGET[admin]}" "${IMAGE_TAG[admin]:-}" "${IMAGE_ID[admin]:-}" <<'PY'
-import json, sys
-at, atag, aid, mt, mtag, mid, ct, ctag, cid, dt, dtag, did = sys.argv[1:13]
-print(json.dumps({
-  "app":     {"dockerfile_target": at, "local_tag": atag, "local_image_id": aid,
-              "workloads": ["api-service", "pipeline-job"]},
-  "mesh":    {"dockerfile_target": mt, "local_tag": mtag, "local_image_id": mid,
-              "workloads": ["mesh-job"]},
-  "console": {"dockerfile_target": ct, "local_tag": ctag, "local_image_id": cid,
-              "workloads": ["console-service"]},
-  "admin":   {"dockerfile_target": dt, "local_tag": dtag, "local_image_id": did,
-              "workloads": ["admin-service"]},
-}))
-PY
-)"
-"${GATE_PY}" "${REPO_ROOT}/devtools/release/record.py" write \
-  --out "${REC}" --schema "${RECORD_SCHEMA}" --results "${RESULTS}" \
-  --commit "${COMMIT}" --tree "${TREE}" --branch "${BRANCH}" \
-  --wheel-name "${WHEEL_NAME}" --wheel-sha256 "${WHEEL_SHA}" --wheel-bytes "${WHEEL_BYTES}" \
-  --image-tag "${SHORT}" --components "${COMPONENTS}" --artifact-facts "${ARTIFACT_FACTS}"
-
-VERDICT="$("${GATE_PY}" "${REPO_ROOT}/devtools/release/record.py" verdict --record "${REC}" 2>/dev/null)"
-printf '\n%s' "${c_bold}"
-case "${VERDICT}" in
-  passed)
-    printf 'GATE C PASSED%s - artifacts validated and recorded in deploy/output/release.json\n' \
-      "${c_off}"
-    printf '   the record is state=validated and NOT yet promotable: nothing has been published,\n'
-    printf '   so there is no immutable registry digest to deploy.\n'
-    printf '   next: %smake release-publish%s\n\n' "${c_bold}" "${c_off}"
-    exit 0 ;;
-  incomplete)
-    printf '%sGATE C INCOMPLETE%s - a required check was skipped or never ran\n' "${c_yel}" "${c_off}"
-    printf '   this record can never be promoted. See deploy/output/release.json.\n\n'
-    exit 1 ;;
-  *)
-    printf '%sGATE C FAILED%s - which checks failed, and why, is recorded in\n' \
-      "${c_red}" "${c_off}"
-    printf '   deploy/output/release.json\n\n'
-    KEEP_WORK=1
-    exit 1 ;;
-esac
+_write_release_record

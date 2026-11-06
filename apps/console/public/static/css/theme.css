@@ -158,14 +158,30 @@ th,td{border-color:var(--border)}
 .req-card .rc-ck.bad .ic{background:var(--danger-soft);color:var(--danger)}
 .req-card .rc-ck.bad{color:var(--text)}
 .req-card .rc-d{color:var(--text-faint);font-size:var(--fs-sm)}
-.req-card .rc-note{margin:2px 16px 6px;padding:6px 10px;border-left:2px solid var(--divider);
-  color:var(--text);font-size:var(--fs-md);white-space:pre-wrap;overflow-wrap:anywhere}
-.req-card .rc-notes-box{padding:4px 16px 6px}
-.req-card .rc-notes-in{width:100%;box-sizing:border-box;min-height:64px;resize:vertical;padding:8px 10px;
-  font:inherit;font-size:var(--fs-md);color:var(--text);background:transparent;border:1px solid var(--border);
-  border-radius:6px}
-.req-card .rc-notes-act{display:flex;align-items:center;gap:10px;margin-top:6px}
-.req-card .rc-notes-msg{color:var(--text-faint);font-size:var(--fs-sm)}
+/* the user's own notes: a short list, then one quiet line that grows as it is used */
+.req-card .rc-notes-list{margin:0;padding:0 16px 2px;list-style:none}
+.req-card .rc-note{position:relative;padding:3px 0 3px 14px;color:var(--text);font-size:var(--fs-md);
+  line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
+.req-card .rc-note::before{content:'';position:absolute;left:2px;top:.72em;width:4px;height:4px;
+  border-radius:50%;background:var(--steel-muted)}
+.req-card .rc-notes-box{padding:6px 16px 4px}
+.req-card .rc-notes-row{display:flex;align-items:flex-end;gap:8px}
+.req-card .rc-notes-in{flex:1;min-width:0;box-sizing:border-box;height:34px;min-height:34px;max-height:240px;
+  resize:none;overflow-y:auto;padding:7px 10px;font:var(--fs-md)/1.45 var(--sans);color:var(--text);
+  background:var(--surface-2);border:1px solid transparent;border-radius:var(--r-md);
+  transition:border-color .12s,background .12s,min-height .16s cubic-bezier(.25,1,.5,1)}
+.req-card .rc-notes-in::placeholder{color:var(--text-faint)}
+/* a placeholder that wraps in a narrow card never shows a scrollbar; the box grows with typed text */
+.req-card .rc-notes-in:placeholder-shown{overflow-y:hidden;white-space:nowrap;text-overflow:ellipsis}
+.req-card .rc-notes-in:hover{border-color:var(--border)}
+.req-card .rc-notes-in:focus{outline:none;min-height:64px;border-color:var(--accent-line);background:var(--surface-1)}
+.req-card .rc-notes-add{flex:none;height:34px;padding:0 12px;border:1px solid var(--border);border-radius:var(--r-md);
+  background:var(--surface-2);color:var(--text);font:500 var(--fs-sm)/1 var(--sans);cursor:pointer;
+  transition:background .12s,border-color .12s,opacity .12s}
+.req-card .rc-notes-add:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-raised)}
+.req-card .rc-notes-add:disabled{opacity:.45;cursor:default}
+.req-card .rc-notes-msg{display:block;margin-top:4px;color:var(--danger);font-size:var(--fs-sm)}
+.req-card .rc-notes-msg:empty{display:none}
 .req-card .rc-ck code{font-family:var(--mono);font-size:.9em;color:var(--steel-bright)}
 
 /* the engine choice under the one engine question: every engine that can take the file, its fit
@@ -349,6 +365,7 @@ th,td{border-color:var(--border)}
 .tl-verd .pill.fail,.v-pill.fail{background:var(--danger-soft);color:var(--danger)}
 .tl-verd .pill.cancelled{background:var(--surface-2);color:var(--text-faint)}
 .tl-verd .pill.concerns,.v-pill.concerns{background:var(--warn-soft);color:var(--warn)}
+.tl-verd .pill.notes,.v-pill.notes{background:var(--surface-2);color:var(--text-muted)}
 .v-concern-list{margin:6px 0 4px 18px;padding:0;color:var(--warn)}
 .tl-verd .mt{color:var(--text-faint);font:var(--fs-sm)/1 var(--sans)}
 
@@ -1141,11 +1158,106 @@ th,td{border-color:var(--border)}
 .proc-sub:empty+.proc-clock{margin-left:auto}
 .proc-title{white-space:nowrap}
 .v-bar b.v-title{white-space:nowrap}
-/* a narrow screen: the live line keeps its mark, words, time and toggle on one row, the words wrap */
+/* a narrow screen: the live line keeps its mark, words, time and toggle on one row (the grid in
+   css/chat.css already does that), and the words wrap against the top of the row */
 @media(max-width:560px){
-  .gp-head{flex-wrap:nowrap;align-items:flex-start}
-  .gp-now{flex:1 1 0;min-width:0}
-  .gp-time,.gp-toggle{flex:none}
+  .gp-head{align-items:start}
   .proc-head{flex-wrap:wrap}
   #empty{padding-top:10vh}
 }
+
+/* ── THE RESULT SCREEN (revamp 5/5): a verdict in one line, the key numbers, the downloads as one
+   list (Everything first), then two folded lists. Existing tokens only. ── */
+.rp-head{display:flex;flex-direction:column;gap:12px;padding-bottom:14px}
+.rp-verdict{display:flex;align-items:center;gap:10px;margin:0;line-height:1.35}
+.rp-verdict .rp-vm{flex:none;width:22px;height:22px;border-radius:50%;display:grid;place-items:center}
+.rp-verdict .rp-vm svg{width:12px;height:12px}
+.rp-verdict.pass .rp-vm{background:var(--ok-soft);color:var(--ok)}
+/* passed with notes: a pass, told calmly - neutral tick, no amber */
+.rp-verdict.notes .rp-vm{background:var(--surface-2);color:var(--text-muted)}
+.rp-verdict.fail .rp-vm{background:var(--danger-soft);color:var(--danger)}
+.v-bar .rp-verdict b.v-title{font:600 var(--fs-lg)/1.3 var(--sans);color:var(--text-bright,var(--text));white-space:normal}
+.rp-vsub{color:var(--text-muted);font-size:var(--fs-md)}
+.rp-keys-host:empty{display:none}
+.rp-keys{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px;margin:0}
+.rp-keys div{min-width:0}
+.rp-keys dt{font-size:var(--fs-xs);color:var(--text-faint);margin-bottom:3px}
+.rp-keys dd{margin:0;font:500 var(--fs-xl)/1.2 var(--sans);color:var(--text-bright,var(--text));font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.rp-keys dd small{margin-left:4px;font:400 var(--fs-sm)/1 var(--sans);color:var(--text-faint)}
+.rp-keys .bad dd{color:var(--warn)}
+.rp-head .v-row{margin-top:-4px}
+.rp-head .v-status{margin-top:0;font-size:var(--fs-xs)}
+/* a delivered mesh's own line is the verdict's tooltip; the line shows only for news (an error) */
+.rp-head .v-row.rp-quiet{display:none}
+
+/* THE PANEL NEVER SCROLLS SIDEWAYS: every row may shrink, long names end in an ellipsis */
+.v-bar{overflow-x:hidden;min-width:0}
+.v-bar>*{min-width:0;max-width:100%}
+
+/* downloads: ONE button. It opens a short menu - Everything first, then each file by its short
+   name and size, then the Mesh report - in the panel's flow, so it can never hang off the edge. */
+.v-sec.v-dl{gap:4px}
+.rp-dltrig{display:flex;align-items:center;gap:10px;width:100%;min-width:0;height:38px;padding:0 12px;
+  border:1px solid var(--accent);border-radius:var(--r-md);background:var(--accent);color:var(--accent-ink);
+  font:600 var(--fs-md)/1 var(--sans);cursor:pointer;transition:background .12s,border-color .12s}
+.rp-dltrig:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+.rp-dltrig:focus-visible{outline:2px solid var(--accent-line);outline-offset:2px}
+.rp-dltrig>svg{flex:none;width:14px;height:14px}
+.v-bar .rp-dltrig b{color:inherit;font-weight:600}
+.rp-dltrig span{margin-left:auto;opacity:.7;font:500 var(--fs-sm)/1 var(--sans);font-variant-numeric:tabular-nums}
+.rp-dlcaret{flex:none;width:6px;height:6px;margin:-3px 2px 0 0;border-right:1.6px solid currentColor;
+  border-bottom:1.6px solid currentColor;transform:rotate(45deg);transition:transform .16s cubic-bezier(.25,1,.5,1)}
+.rp-dltrig span+.rp-dlcaret{margin-left:4px}
+.rp-dltrig b+.rp-dlcaret{margin-left:auto}
+.rp-dltrig[aria-expanded="true"] .rp-dlcaret{margin-top:3px;transform:rotate(-135deg)}
+.rp-dlmenu{display:flex;flex-direction:column;gap:1px;min-width:0;padding:4px;
+  border:1px solid var(--divider);border-radius:var(--r-md);animation:rise .16s ease}
+.rp-dlmenu[hidden]{display:none}
+.v-dl .v-dlbtn{min-width:0;height:32px;padding:0 8px;border-color:transparent;background:transparent;
+  justify-content:flex-start;gap:9px}
+.v-dl .v-dlbtn:hover{background:var(--hover);border-color:transparent}
+.v-dl .v-dlbtn>svg{flex:none;width:14px;height:14px;color:var(--text-faint)}
+.v-dl .v-dlbtn b::before{display:none}
+.v-dl .v-dlbtn b{display:block;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.v-dl .v-dlbtn.rp-all b{font-weight:600}
+.v-dl .v-dlbtn.rp-all>svg{color:var(--accent)}
+.v-dl .v-dlbtn em{flex:none;font-style:normal;color:var(--text-faint);font-size:var(--fs-xs);white-space:nowrap}
+.v-dl .v-dlbtn em.rp-tag{padding:1px 5px;border-radius:var(--r-sm);background:var(--surface-2)}
+.v-dl .v-dlbtn span{flex:none;margin-left:auto;padding-left:6px;white-space:nowrap}
+.v-dl .rp-report>svg{color:var(--steel-bright)}
+/* a plain list of downloads (the CAD repair panel) still leads with one filled row */
+.v-dl .v-dlbtn.primary{height:38px;margin-bottom:4px;background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.v-dl .v-dlbtn.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+.v-dl .v-dlbtn.primary span{color:var(--accent-ink);opacity:.75}
+
+/* Notes and Hot spots: each one folded list, grouped by kind */
+.rp-lists{display:flex;flex-direction:column;gap:8px}
+.rp-lists:not(:has(details)){display:none}
+.rp-drop{border:1px solid var(--divider);border-radius:var(--r-md)}
+.rp-drop>summary{display:flex;align-items:center;gap:8px;height:38px;padding:0 12px;cursor:pointer;
+  list-style:none;color:var(--text);font-size:var(--fs-md);border-radius:var(--r-md)}
+.rp-drop>summary::-webkit-details-marker{display:none}
+.rp-drop>summary:hover{background:var(--hover)}
+.rp-drop>summary:focus-visible{outline:2px solid var(--accent-line,var(--accent));outline-offset:-2px}
+.rp-chev{width:10px;height:10px;color:var(--text-faint);transition:transform .16s cubic-bezier(.25,1,.5,1)}
+.rp-drop[open]>summary .rp-chev{transform:rotate(90deg)}
+.rp-n{font:500 var(--fs-sm)/1 var(--sans);color:var(--text-muted);font-variant-numeric:tabular-nums}
+.rp-hint{margin-left:auto;font-size:var(--fs-xs);color:var(--text-faint)}
+.rp-body{padding:0 12px 10px 30px}
+.rp-gh{margin:8px 0 0;font-size:var(--fs-xs);color:var(--text-faint)}
+.rp-kind{display:grid;grid-template-columns:1fr auto;column-gap:10px;align-items:baseline;width:100%;
+  padding:8px 0;border:0;border-top:1px solid var(--divider);background:none;text-align:left;
+  font:inherit;color:var(--text-muted);line-height:1.45}
+.rp-gh+.rp-kind,.rp-body>.rp-kind:first-child{border-top:0}
+.rp-kind b{font-weight:500;color:var(--text);font-size:var(--fs-md)}
+.rp-c{font:var(--fs-sm)/1 var(--sans);color:var(--text-faint);font-variant-numeric:tabular-nums}
+.rp-why{grid-column:1/3;font-size:var(--fs-sm);color:var(--text-faint)}
+.rp-at{grid-column:1/3;font-size:var(--fs-xs);color:var(--accent)}
+.rp-at:empty{display:none}
+button.rp-kind{cursor:pointer;border-radius:var(--r-sm,6px)}
+button.rp-kind:hover b,button.rp-kind.on b{color:var(--accent)}
+button.rp-kind:focus-visible{outline:2px solid var(--accent-line,var(--accent));outline-offset:2px}
+.rp-foot{margin:8px 0 0;font-size:var(--fs-xs);color:var(--text-faint)}
+.rp-body .oc-more{margin-top:8px}
+.fe .fe-faces-short{margin-top:6px}
+@media (prefers-reduced-motion:reduce){.rp-chev{transition:none}}

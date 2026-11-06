@@ -79,7 +79,7 @@ def test_a_delivered_thermal_model_reads_part_by_part(live, tmp_path):
       return {{rows, status: document.getElementById('v-status-{JOB}').textContent,
                panel: document.querySelector('#viewer-{JOB} .v-bar').innerText,
                csv: !!document.getElementById('v-csv-{JOB}'), model: !!document.getElementById('v-tm-{JOB}'),
-               groups: [...document.querySelectorAll('#viewer-{JOB} .v-bnd-gl')].map(g => g.textContent)}};
+               groups: [...document.querySelectorAll('#viewer-{JOB} .vo-gl')].map(g => g.textContent)}};
     }})()""")
     assert seen["rows"] == [p["name"] for p in t["parts"]]
     assert seen["status"].startswith("your delivered thermal mesh") and t["summary"] in seen["status"]

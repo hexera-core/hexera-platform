@@ -69,3 +69,28 @@ def enqueue_shell_check(**kwargs: Any) -> bool:
         return False
     _shell_enqueuer(**kwargs)
     return True
+
+
+QueueReader = Callable[[str], Any]
+"""Where one geometry task stands: reader(task_id) -> {"ahead": N} while it waits in the queue (N checks will
+be taken before it), {"running": True} once a worker has it, or None when the queue cannot say."""
+
+_queue_reader: QueueReader | None = None
+
+
+def set_queue_reader(reader: QueueReader | None) -> None:
+    global _queue_reader
+    _queue_reader = reader
+
+
+def queue_state(task_id: str) -> dict | None:
+    """Where the task stands in the queue (QueueReader); None when nothing is configured to say, or it
+    could not. Never raises: the live line is said without it."""
+    if _queue_reader is None:
+        return None
+    try:
+        got = _queue_reader(task_id)
+    except Exception as exc:  # noqa: BLE001 - the line says less, never fails
+        logger.info("geometry queue state unavailable (%s) for %s", type(exc).__name__, task_id)
+        return None
+    return got if isinstance(got, dict) else None
