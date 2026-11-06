@@ -80,7 +80,9 @@ _KINDS: tuple[tuple[str, str, float, float], ...] = (
     (r"\bwings?\b|airfoil|aerofoil", "a wing", 0.05, 100.0),
     (r"\bcars?\b|vehicle|automobile|\btrucks?\b|\blorry\b|\bbus\b|\bahmed\b|drivaer|windsor|notchback|"
      r"fastback|squareback", "a car", 0.1, 25.0),
-    (r"buildings?|skyscraper|\bcity\b|urban|\bstreets?\b|\btown\b|stadium|\bbridge\b", "a building", 2.0, 5000.0),
+    # a building as a word of its own: never the verb in "the mesh-building steps" or "rebuilding",
+    # which made a 63.9 cm stud punch "far too small for a building" (PR #393 real-path test, 3 Nov)
+    (r"(?<![\w-])buildings?\b|skyscraper|\bcity\b|urban|\bstreets?\b|\btown\b|stadium|\bbridge\b", "a building", 2.0, 5000.0),
     (r"\bships?\b|\bhull\b|\bboat\b|\byacht\b|submarine|\btanker\b|\bferry\b", "a ship", 0.3, 500.0),
     (r"motor ?bike|motorcycle|bicycle|\bcyclist\b", "a bike", 0.2, 4.0),
     (r"\bpipes?\b|\belbow|\btee\b|\bwye\b|reducer|fitting|\bvalves?\b|\bducts?\b|manifold|nozzle|venturi|"
@@ -220,6 +222,10 @@ FLAT_LIFTING = ExpectedSize("a thin flat body like a wing or aircraft", 0.03, 10
 #: 0.2 of it (so a slender rod is not "flat").
 CAR_LENGTH_TO_WIDTH = (1.5, 6.0)
 CAR_HEIGHT_TO_WIDTH_MAX = 1.6
+#: Before the ground is known (the unit question can come first) a body of car proportions that
+#: is at least this tall for its width is still car-like: a wing of the same plan-form is far
+#: thinner (a 10 x 2 x 0.24 wing is 0.12 of its width), and a car is 0.5 to 1 (the Camaro 0.69).
+CAR_HEIGHT_TO_WIDTH_MIN = 0.4
 FLAT_THICKNESS_MAX = 0.35
 FLAT_MIDDLE_MIN = 0.2
 
@@ -249,9 +255,13 @@ def shape_kind(flow: str, size, *, grounded: bool = False, up_axis: str | None =
     height = sides[up]
     flat = sorted((sides[i] for i in range(3) if i != up), reverse=True)
     length, width = flat[0], flat[1]
-    if grounded and width > 0 and length >= height:
+    if width > 0 and length >= height:
         ratio = length / width
-        if CAR_LENGTH_TO_WIDTH[0] <= ratio <= CAR_LENGTH_TO_WIDTH[1] and height <= CAR_HEIGHT_TO_WIDTH_MAX * width:
+        car_like = (CAR_LENGTH_TO_WIDTH[0] <= ratio <= CAR_LENGTH_TO_WIDTH[1]
+                    and height <= CAR_HEIGHT_TO_WIDTH_MAX * width)
+        # on the ground it is car-like at any height; not yet known to be, only when it is tall
+        # enough that no wing has that section (the Camaro was "a thin flat body like a wing")
+        if car_like and (grounded or height >= CAR_HEIGHT_TO_WIDTH_MIN * width):
             return GROUND_VEHICLE
     a, b, c = sorted(sides, reverse=True)
     if not grounded and c <= FLAT_THICKNESS_MAX * a and b >= FLAT_MIDDLE_MIN * a:

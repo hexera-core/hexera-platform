@@ -28,13 +28,20 @@ def test_the_pipeline_task_holds_its_slot_until_it_is_done():
     assert app_mod.celery_app.conf.worker_prefetch_multiplier == 1
 
 
-def test_only_the_pipeline_task_acks_late():
-    # Everything else keeps the early ack the application chose: a geometry check is seconds of
-    # work, and the cleanup and export tasks have no worker loss worth a redelivery.
+def test_a_running_geometry_check_holds_its_slot_too():
+    # The same defect on the check queue (dev-areen, 2 Nov): a check is minutes of work, not seconds, and
+    # acked early the busy geometry worker reserved the next two checks - out of the queue, so the console
+    # could not say how many were ahead and the autoscaler's demand did not count them. Acked late, the
+    # waiting checks stay in the list.
+    for task in (tasks.scout_geometry, tasks.name_geometry):
+        assert task.task_options.get("acks_late") is True, task
+
+
+def test_only_the_pipeline_and_geometry_tasks_ack_late():
+    # Everything else keeps the early ack the application chose: the cleanup and export tasks have no
+    # worker loss worth a redelivery.
     assert app_mod.celery_app.conf.task_acks_late is False
     assert app_mod.celery_app.conf.task_reject_on_worker_lost is False
-    for other in (tasks.scout_geometry, tasks.name_geometry):
-        assert not other.task_options.get("acks_late"), other
 
 
 def test_the_broker_never_redelivers_a_job_that_can_still_be_running():

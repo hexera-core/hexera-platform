@@ -172,3 +172,27 @@ def test_a_pending_job_says_it_is_waiting_for_a_worker(live):
     assert out[1] == "waiting for a worker to start (about 1 minute)"
     assert out[2] == "waiting for a worker to start", "no estimate on the wire: no invented number"
     assert out[3] == "" and out[4] == "" and out[5] == "", "a worker has it: the line steps aside"
+
+
+def test_the_review_lane_never_shows_raw_json(live):
+    # dev-areen 2026-10-30 (job 94b8c76d): the open Review lane showed the reviewer's tool arguments,
+    # its tool results and its JSON drafts as they ran
+    out = live.evaluate("""(async () => {
+      const { Stage } = await import('/static/js/render/stage.js');
+      Stage.mount();
+      Stage.toolCall('reviewer', {id:'t1', tool_name:'zoom_to_region',
+                                  arguments:{screen_x:0.52, screen_y:0.56, magnification:4}});
+      Stage.toolResult('reviewer', {tool_call_id:'t1', status:'success', duration_ms:2100,
+                                    result:[{type:'text', text:'Render crop at (0.52, 0.56)'}]});
+      Stage.reasoning('reviewer', {id:'r1', phase:'completed', duration_ms:9400,
+                                   content:'{"axis_key": "fea_detail", "finding": "fine", "cites": ["v-001"]}'});
+      Stage.reasoning('reviewer', {id:'r2', phase:'completed', duration_ms:2600,
+                                   content:'**Resubmitting corrected material** I need to cite the iso view.'});
+      const lane = document.getElementById('stage').innerText;
+      const bodies = [...document.querySelectorAll('.e-think .body')].map(b => b.style.display === 'none' ? '' : b.textContent);
+      return {lane, call: document.querySelector('.e-tool .call').textContent, bodies};
+    })()""")
+    assert out["call"] == "Zoom to region", out
+    for raw in ('"screen_x"', "magnification", '"axis_key"', "{", "Render crop", "**"):
+        assert raw not in out["lane"], (raw, out["lane"])
+    assert out["bodies"] == ["", "Resubmitting corrected material I need to cite the iso view."], out

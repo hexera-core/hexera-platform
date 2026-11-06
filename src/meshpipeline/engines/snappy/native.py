@@ -324,9 +324,38 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             for pd in ws.glob("processor*"):                # (preserve processor dirs on timeout as evidence)
                 shutil.rmtree(pd, ignore_errors=True)
     else:
-        sm = _sh("snappyHexMesh -overwrite", "snappyHexMesh.log",
-                 expected=("constant/polyMesh/owner",))
-        if sm.ok:
+        # PROGRESSIVE SNAPSHOTS (engines/snappy/progressive): with the deployment's switch on, the
+        # serial run is invoked WITHOUT `-overwrite`, so each phase's mesh is kept in its own
+        # numbered time directory and the runner can publish a frame of the castellated one while
+        # snappy is still working. With the switch off this is `snappyHexMesh -overwrite`, exactly
+        # as it has always been, and no branch below it runs.
+        from meshpipeline.engines.snappy import progressive as prog
+        snapshotting = prog.snapshots_enabled(nproc=nproc)
+        sm = _sh(prog.snappy_command(nproc=nproc), "snappyHexMesh.log",
+                 expected=() if snapshotting else ("constant/polyMesh/owner",))
+        if sm.ok and snapshotting:
+            # AUTHORITATIVE: the phase meshes are in `1/`, `2/`, `3/` and `constant/polyMesh` still
+            # holds blockMesh's background box, which every gate downstream would read as the
+            # delivered mesh. Promotion moves the last phase's mesh into place and removes the
+            # intermediates; when it cannot, it removes `constant/polyMesh` so the run fails on a
+            # missing mesh rather than delivering the box.
+            promoted = ps.StageResult(
+                name="promote_phase_mesh", command="(progressive snapshots: promote phase mesh)",
+                log="snappyHexMesh.log", rc=0 if prog.promote_final_mesh(ws) else -1,
+                timed_out=False, dt_s=0.0, authoritative=True,
+                expected_outputs=("constant/polyMesh/owner",),
+                outputs_present={"constant/polyMesh/owner":
+                                 (ws / "constant" / "polyMesh" / "owner").exists()})
+            stages.append(promoted)
+            if promoted.ok:
+                _merge_class_patches()
+        elif snapshotting:
+            # A run that failed or was stopped still has its intermediates on disk, and they ride
+            # home in the archive (engines/return_scope: a 1M-cell polyMesh is about 42 MB and the
+            # extraction ceiling is 512 MiB). The logs are the evidence of a failed phase; a second
+            # copy of the mesh is not.
+            prog.drop_time_dirs(ws)
+        elif sm.ok:
             _merge_class_patches()
 
     return _finish()

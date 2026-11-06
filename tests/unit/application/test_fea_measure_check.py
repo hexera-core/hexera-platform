@@ -79,9 +79,9 @@ def test_a_part_that_cannot_be_measured_says_why_and_the_check_lands(monkeypatch
 def test_the_naming_step_keeps_the_record_in_the_facts(monkeypatch):
     stored = _stored(None, ".step")
     landed: dict = {}
-    monkeypatch.setattr(gc, "_wait_for_scout", lambda sid: stored)
+    monkeypatch.setattr(gc, "_wait_for_scout", lambda sid, **_k: stored)
     monkeypatch.setattr(gc, "store_status", lambda sid, status, step, **kw: landed.update(status=status, **kw) or landed)
-    monkeypatch.setattr(gc, "fea_measurements", lambda s, facts, interp: {"measured": True, "hot_spots": []})
+    monkeypatch.setattr(gc, "fea_measurements", lambda s, facts, interp, **_k: {"measured": True, "hot_spots": []})
     out = gc._name(session_id="s1", owner_id="o", purpose_text="stress testing", interpretation=None)
     assert out["status"] == gc.STATUS_READY
     assert out["facts"][FACT_KEY] == {"measured": True, "hot_spots": []}

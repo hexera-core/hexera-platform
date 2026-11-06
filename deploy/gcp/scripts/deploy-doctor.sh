@@ -181,6 +181,49 @@ PY
       miss_remote "the mesh job's runtime identity (${_runtime_sa}) cannot read or write gs://${GCP_MESH_BUCKET} - dispatched meshes will fail after they start"
       suggest "bash deploy/gcp/scripts/apply-iam.sh   (grants the runtime identity storage.objectUser on the exchange bucket)"
     fi
+
+    # THE API'S READ ON THE SAME BUCKET, which the check above cannot speak for: it asks whether
+    # the MESH identity can read AND write, and deliberately refuses objectViewer as a pass. So a
+    # deployment whose API cannot read a byte of that bucket satisfies it completely. The API
+    # serves the job's progress and partial-mesh objects to the browser, and without this binding
+    # that route answers 403 in an environment every other check calls healthy.
+    #
+    # A deployment with no API service is not a fault: this repository automates the mesh job on
+    # its own, so the check is skipped rather than failed when no API identity resolves.
+    _api_sa=""
+    if [ -n "${CLOUDRUN_API_SERVICE:-}" ]; then
+      _api_sa="$(gcloud --project "${GCP_PROJECT_ID}" run services describe "${CLOUDRUN_API_SERVICE}" \
+        --region "${GCP_REGION:-us-central1}" \
+        --format='value(spec.template.spec.serviceAccountName)' 2>/dev/null || true)"
+    fi
+    if [ -z "${_api_sa}" ]; then
+      :
+    elif [ -z "${_bucket_policy}" ] && [ -z "${_project_policy}" ]; then
+      note "cannot read the IAM policies that would show whether the API reaches the exchange bucket"
+    elif python3 - "${_api_sa}" "${_bucket_policy}" "${_project_policy}" <<'PY'
+import json, sys
+member = "serviceAccount:" + sys.argv[1]
+# READ IS ENOUGH HERE, and is all the API should hold: it serves one object and never writes or
+# deletes. objectViewer therefore passes, unlike in the mesh check above.
+sufficient = {"roles/storage.objectViewer", "roles/storage.objectUser",
+              "roles/storage.objectAdmin", "roles/storage.admin",
+              "roles/storage.legacyObjectReader", "roles/owner", "roles/editor"}
+for document in sys.argv[2:]:
+    try:
+        policy = json.loads(document or "{}")
+    except ValueError:
+        continue
+    for binding in policy.get("bindings") or []:
+        if binding.get("role") in sufficient and member in (binding.get("members") or []):
+            sys.exit(0)
+sys.exit(1)
+PY
+    then
+      ok "API identity can read gs://${GCP_MESH_BUCKET}"
+    else
+      miss_remote "the API's runtime identity (${_api_sa}) cannot read gs://${GCP_MESH_BUCKET} - mesh progress and partial-mesh reads will answer 403"
+      suggest "bash deploy/gcp/scripts/apply-iam.sh   (grants the API storage.objectViewer on the exchange bucket)"
+    fi
   fi
 fi
 

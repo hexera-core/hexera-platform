@@ -152,3 +152,4 @@ def collection_enabled(monkeypatch):
         ProductModes(data_collection_enabled=True,
                      trace_disclosure=polcfg.MODES.trace_disclosure))
     return polcfg.MODES
+

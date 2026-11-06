@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,12 +26,39 @@ class UserRepository:
         return res.scalar_one_or_none()
 
     async def create(self, db: AsyncSession, *, email: str, name: str,
-                     firebase_uid: str | None) -> User:
+                     firebase_uid: str | None,
+                     pending_organization_name: str | None = None) -> User:
         row = User(email=email.strip().lower()[:256], name=name[:256],
-                   firebase_uid=(firebase_uid or None))
+                   firebase_uid=(firebase_uid or None),
+                   pending_organization_name=(pending_organization_name or None) and
+                   pending_organization_name[:256])
         db.add(row)
         await db.flush()
         return row
+
+    async def lock(self, db: AsyncSession, user_id: uuid.UUID) -> None:
+        await db.execute(select(User.id).where(User.id == user_id).with_for_update())
+
+    async def clear_pending_organization_name(self, db: AsyncSession, *,
+                                              user_id: uuid.UUID) -> None:
+        await db.execute(update(User).where(User.id == user_id)
+                         .values(pending_organization_name=None))
+
+    async def repoint_unverified(self, db: AsyncSession, *, user_id: uuid.UUID, from_uid: str,
+                                 to_uid: str) -> bool:
+        # Guarded in the predicate, not just by the caller: only a row that still names the uid
+        # the caller saw AND has never been verified moves. A verified row is never re-pointed.
+        res = await db.execute(
+            update(User)
+            .where(User.id == user_id, User.firebase_uid == from_uid,
+                   User.email_verified_at.is_(None))
+            # The squatter's typed organisation name goes with their uid: the verified owner's
+            # organisation must not be named by attacker-chosen text.
+            .values(firebase_uid=to_uid, pending_organization_name=None))
+        return bool(res.rowcount)
+
+    async def delete(self, db: AsyncSession, *, user_id: uuid.UUID) -> None:
+        await db.execute(sa_delete(User).where(User.id == user_id))
 
     async def attach_firebase_uid(self, db: AsyncSession, *, user_id: uuid.UUID,
                                   firebase_uid: str) -> bool:

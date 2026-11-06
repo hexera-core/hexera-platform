@@ -46,3 +46,32 @@ def test_a_vetting_never_leaves_a_part_with_fewer_than_two_openings(monkeypatch,
     facts = _facts()
     vet_openings(facts, tmp_path / "skin.stl")
     assert all(o["role"] != "not_an_opening" for o in facts["openings"]) and not facts["notes"]
+
+
+def test_a_body_read_in_a_flow_is_not_staged_at_check_time(monkeypatch, tmp_path):
+    # the Camaro on dev (4 Nov): a car read as a body in a flow spent 4 of the check's 6 minutes
+    # staging a dozen wheel-arch and grille openings that are never drawn on a body
+    import meshpipeline.application.geometry_check as gc
+
+    ran = []
+    monkeypatch.setattr(gc, "keep_a_stageable_proposal", lambda f, *a: ran.append("keep") or f)
+    monkeypatch.setattr(gc, "vet_openings", lambda f, skin: ran.append("vet"))
+    car = {**_facts(), "flow": "external"}
+    out = gc.hold_openings_to_the_staging(car, tmp_path / "car.stl", tmp_path / "skin.stl", 0.001)
+    assert ran == [] and out["openings_vetted"] is False
+    assert [o["role"] for o in out["openings"]] == ["inlet", "outlet", "outlet", "outlet"]   # kept for a flip
+    pipe = {**_facts(), "flow": "internal"}
+    out = gc.hold_openings_to_the_staging(pipe, tmp_path / "pipe.stl", tmp_path / "skin.stl", 0.001)
+    assert ran == ["keep", "vet"] and out["openings_vetted"] is True
+
+
+def test_a_flip_to_through_it_with_an_opening_into_nothing_is_stopped_before_any_mesher(tmp_path):
+    # the openings a body kept unvetted reach the mesher's staging if the user says the fluid flows
+    # through it: one that opens into nothing is said there, with the way out, before a mesher runs
+    import numpy as np
+
+    from meshpipeline.cad.fluid_passages import PassagePlan, PassageReading
+
+    plan = PassagePlan(meshed=[], left_out=[], stranded={"outlet_2": "it closes no passage"},
+                       reading=PassageReading(passages=[], labels=np.zeros(0), patch_of=[], triangles=np.zeros((0, 3, 3))))
+    assert "outlet_2" in plan.refusal() and "Mark it as not an opening" in plan.refusal()

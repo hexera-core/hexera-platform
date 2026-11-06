@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 GATE_RULE = "MESH-3"
 #: A solid with more faces than this is not given the second (Boolean) check: the suspect stays a note.
 MAX_CONFIRM_FACES = 4000
+#: THE BOOLEAN CHECK RUNS ON EVERY CORE (1 Nov): it was the whole of the geometry check's slowest step - an
+#: 11 x 27 x 15 in IGES landing gear spent 169 s of its 186 s FEA measurement in one single-threaded
+#: BRepAlgoAPI_Check (424 s on a shared-dev worker). What it answers is a SET of faulty faces, which does
+#: not depend on the order OpenCASCADE's threads find them in, so the parallel run is repeatable: the
+#: same faces, 2.5 times sooner on 16 threads (tests/unit/cad/test_suspect_defects_speed.py).
+BOOLEAN_PARALLEL = True
 
 
 def _face_names(shape, record: dict) -> list[str]:
@@ -64,7 +70,10 @@ def _boolean_faces(shape, body: int) -> set[int] | None:
             return None
         fmap = TopTools_IndexedMapOfShape()
         TopExp.MapShapes_s(shape, TopAbs_FACE, fmap)
-        chk = BRepAlgoAPI_Check(target, True, True)
+        chk = BRepAlgoAPI_Check()
+        chk.SetData(target, True, True)
+        chk.SetRunParallel(BOOLEAN_PARALLEL)
+        chk.Perform()
         out: set[int] = set()
         for r in chk.Result():
             for s in r.GetFaultyShapes1():
@@ -113,10 +122,18 @@ def find(shape, record: dict, *, validity: dict | None = None, check_overlaps: b
                        key=lambda s: index.get(s, 0))
         out.append({"kind": "self_overlap", "body": bodies[0] if len(bodies) == 1 else 0, "faces": faces[:12],
                     "evidence": [f"{len(pairs)} pair(s) of its faces meet away from their shared edges"]})
-    # THE SECOND MEASURE: the Boolean check on that solid alone names one of the faces
+    # THE SECOND MEASURE: the Boolean check on that solid alone names one of the faces - run ONCE per
+    # solid however many suspects lie on it (the answer is the solid's, not the suspect's)
+    checked: dict[int, set[int] | None] = {}
+
+    def boolean(body: int) -> set[int] | None:
+        if body not in checked:
+            checked[body] = _boolean_faces(shape, body)
+        return checked[body]
+
     for s in out:
         want = {index[n] for n in s["faces"] if n in index}
-        hit = _boolean_faces(shape, int(s["body"] or 1)) if want else None
+        hit = boolean(int(s["body"] or 1)) if want else None
         s["confirmed"] = bool(hit and (hit & want))
         if s["confirmed"]:
             s["evidence"].append("OpenCASCADE's Boolean self-interference check names the same faces")
@@ -125,7 +142,7 @@ def find(shape, record: dict, *, validity: dict | None = None, check_overlaps: b
     # its frame crosses itself where the tessellated crossing search saw nothing). In the run only (no
     # stored check given): the stage stays as quick as it was
     if check_overlaps and validity is None:
-        out.extend(_boolean_only(shape, names, {int(s["body"] or 0) for s in out}))
+        out.extend(_boolean_only(shape, names, {int(s["body"] or 0) for s in out}, known=checked))
     return out
 
 
@@ -133,7 +150,8 @@ def find(shape, record: dict, *, validity: dict | None = None, check_overlaps: b
 BOOLEAN_BUDGET_S = 60.0
 
 
-def _boolean_only(shape, names: list[str], covered: set[int]) -> list[dict]:
+def _boolean_only(shape, names: list[str], covered: set[int],
+                  known: dict[int, set[int] | None] | None = None) -> list[dict]:
     import time
 
     from OCP.TopAbs import TopAbs_SOLID
@@ -147,7 +165,7 @@ def _boolean_only(shape, names: list[str], covered: set[int]) -> list[dict]:
     for k in range(1, solids.Extent() + 1):
         if k in covered or time.monotonic() - t0 > BOOLEAN_BUDGET_S:
             continue
-        hit = _boolean_faces(shape, k)
+        hit = known[k] if known is not None and k in known else _boolean_faces(shape, k)
         if not hit:
             continue
         faces = [names[i - 1] for i in sorted(hit) if 0 < i <= len(names)][:12]

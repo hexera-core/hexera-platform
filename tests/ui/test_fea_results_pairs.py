@@ -1,4 +1,4 @@
-# Responsibility: Verify a delivered FEA assembly's result screen names an OPEN bonded pair in red, with the pair and the way on (PLAN-fea-21), lists every pair as it was joined (PLAN-fea-19/20), and shows no warning when every tied pair is closed.
+# Responsibility: Verify a delivered FEA assembly's result screen names an OPEN bonded pair in red, with the pair and the way on (PLAN-fea-21), says how the parts are joined in one line while the Mesh report lists every pair as it was joined (PLAN-fea-19/20), and shows no warning when every tied pair is closed.
 # Boundaries: the assembly block is the server's own (engines/fea_results.assembly_block) over an adapter record shaped as engines/gmsh/fea_adapter writes it; the panel is the viewer's own module (viewer/fea_results.js) in a real browser. Only the network is stood in for.
 from __future__ import annotations
 
@@ -67,10 +67,13 @@ def test_an_open_bonded_pair_is_named_in_red_and_a_closed_run_is_quiet(live):
     assert "Tie2 (Part_1 and Part_3)" in got["alert"] and "Part_3_Face_4" in got["alert"]
     assert "switch this pair to Contact or Off on the stage, or set its reach to at least" in got["alert"]
     assert _reddish(got["colour"]) and _reddish(got["border"]), (got["colour"], got["border"])
-    # every pair as it was joined, the one the user set among them
-    assert [c for c, _t in got["pairs"]] == ["fe-pair bonded", "fe-pair bonded", "fe-pair contact"]
-    assert "Part_2 and Part_3: Contact - set to Contact on the stage" in got["pairs"][2][1]
+    # the screen keeps the short form: how the parts are joined, in one line. Every pair as it was
+    # joined is in the Mesh report (tests/unit/render/test_mesh_report.py), never a list here
+    assert got["pairs"] == []
     assert "Pairs: 2 bonded, 1 contact, 0 off (1 set on the stage)." in got["summary"]
+    from meshpipeline.render.mesh_report import mesh_report_html
+    page = mesh_report_html({"surface": {"fea": {"assembly": assembly_block(_asm([OPEN]))}}})
+    assert "Part_2 and Part_3: Contact - set to Contact on the stage" in page and 'class="alert"' in page
     quiet = _render(live, assembly_block(_asm([])), "fea-closed-run")
     assert quiet["alert"] is None
     assert_clean(live, "an FEA assembly's result screen with an open bonded pair")

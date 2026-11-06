@@ -1,7 +1,21 @@
 # Security and privacy
 
 What the code enforces today. Nothing here is a certification or a compliance claim; each
-statement names a mechanism you can find in the source.
+statement names a mechanism you can find in the source. The SOC 2 / GDPR readiness record - control
+matrix, records of processing, retention schedule and runbooks - is in `docs/compliance/`.
+
+## Account data rights
+
+- **Export:** `GET /api/v1/account/export` returns every row this service holds for the caller's
+  account and organisation (credential hashes excluded). Console session only; an API key is refused.
+- **Erasure:** `POST /api/v1/account/erasure` with the typed address. Keys revoked, conversation
+  content scrubbed, profile and memberships deleted, `owner_id` pseudonymised, all at once; the
+  hourly erasure sweep cancels unresolvable parked reviews, removes stored bytes (uploads,
+  results, geometry-check pictures and skins) and the scrubbed conversation rows, then marks the
+  erasure complete. The credit ledger and billing identity are kept as accounting records.
+- **Training data is opt-in:** `DATA_COLLECTION_ENABLED` defaults to `false`.
+- **Audit trail:** `application/audit.py`, routed to a retention-locked bucket; see
+  `docs/compliance/audit-logging.md`.
 
 ## Credentials
 

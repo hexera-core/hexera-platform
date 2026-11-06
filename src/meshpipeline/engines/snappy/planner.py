@@ -581,8 +581,11 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
         from meshpipeline.contracts import user_notes as _un
         _notes = _un.workspace_block(workspace, consumer="snappy_planner")
         if _notes:
-            user += ("\n\n" + _notes + "\nYou may add \"notes_remark\": \"<one plain line on what "
-                     "the plan did with the notes>\" to your JSON.")
+            # asked of EVERY plan, the first engine's and the one a switch hands over to: the line on
+            # the result is the user's only sign their notes reached the mesh they got
+            user += ("\n\n" + _notes + "\nAdd \"notes_remark\": \"<one plain line on what the plan "
+                     "did with the notes>\" to your JSON - this plan's own, even when an earlier "
+                     "engine already planned this part.")
         if prior_feedback and previous_plan:
             user += ("\n\nYour PREVIOUS plan (which you must REVISE, not repeat) was:\n"
                      + json.dumps(previous_plan, indent=1)

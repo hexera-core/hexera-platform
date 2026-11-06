@@ -68,6 +68,79 @@ per-developer instance bill.
 What it does **not** mean is shared state. Your migrations move your schema only, and your Celery
 queues are keyed under `dev-pranav:` so your jobs cannot be picked up by somebody else's workers.
 
+### Your worker fleet scales to zero, and that is the part that matters for the bill
+
+Your fleet's **floor** — `WORKER_MIG_MIN_REPLICAS` — is the number of `e2-standard-4` VMs the
+autoscaler holds even when your queue is empty. In a dev environment the floor is **0**. Nothing is
+kept warm, because the queue-depth publisher runs *off* the fleet (§4) specifically so a group
+sitting at zero can still be woken by the next job. Your first job after an idle night waits for a
+VM to boot and an image to pull; that is the trade.
+
+Production defaults to a floor of 1 and keeps it. The default is chosen by `APP_ENV`, which the
+workflow pins per target — `prod` for a `v*` tag, `dev` for shared dev and for every slug — so this
+is not something you select.
+
+If you genuinely need a warm worker, **state it**: set `WORKER_MIG_MIN_REPLICAS` for your
+deployment, or raise the floor on the Fleet page of the admin console. A stated floor wins over the
+default and survives every later deploy (`create-queue-depth-publisher.sh` reads the live
+autoscaler's sizing rather than re-asserting the env's). Turn it back down when you are done.
+
+That last property cuts both ways: **lowering the default does not pull an already-warm fleet down
+to zero**, because the deploy preserves what the live autoscaler says. An environment that was
+built when the floor defaulted to 1 keeps paying for that VM until somebody resets it. One command
+per group:
+
+```bash
+# what each fleet in the project is currently holding against an empty queue
+gcloud compute instance-groups managed list --project hexera-dev \
+  --format='table(name,zone,targetSize,autoscaler.autoscalingPolicy.minNumReplicas)'
+
+# reset YOUR fleet's floor to zero (the group keeps its metric, its ceiling and its mode)
+gcloud compute instance-groups managed update-autoscaling dev-<slug>-workers \
+  --project hexera-dev --zone <zone> --min-num-replicas 0
+```
+
+Only against a slug you own. Shared dev's fleet is a human's to reset, like every other shared-dev
+change.
+
+### Your workers are Spot VMs, and what that costs you
+
+A dev fleet runs on **Spot** VMs — the same `e2-standard-4` at roughly a third of the price, on the
+condition that Compute Engine may reclaim one at any time. Production runs `STANDARD`. The default
+is chosen by `APP_ENV` exactly as the warm floor is, so this is not something you select, and a
+stated `WORKER_PROVISIONING_MODEL` wins either way if you need to override it.
+
+**What happens when a worker is reclaimed.** You get about thirty seconds' notice, not the ninety a
+deleted on-demand VM gets. The VM's shutdown stops the containers, Celery marks the worker draining,
+and the running job releases its lease and goes back on the queue — the same hand-back that already
+happens on a scale-in or a rolling update. The next free worker picks it up and the console tells
+the user the run moved.
+
+**The part to plan around: a handed-back job starts over, it does not resume.** `relaunch()`
+re-dispatches the run the way the API first launched it. So a reclaimed worker costs you whatever
+that run had already done. Over the fourteen days to 2026-11-05 the median dev busy period was
+26 minutes and 57% were under half an hour, which is why this trade is worth taking — but the p90
+was about three hours, and a three-hour run that restarts is a genuinely annoying afternoon.
+
+If you are about to do a long or demo-critical run, ask for on-demand for the duration:
+
+```bash
+gh workflow run deploy.yml --ref "$(git branch --show-current)" \
+  -f slug=<slug> -f fleet=true          # with WORKER_PROVISIONING_MODEL=STANDARD stated
+```
+
+The drain budget is tied to the model and you should not set it by hand: `create-worker-fleet.sh`
+gives a Spot worker 25 seconds and an on-demand worker 75, passes the number to the VM as metadata
+so `startup.sh` and `shutdown.sh` cannot disagree about it, and **refuses a Spot fleet with a budget
+over 25 seconds**. That guard exists because the failure is quiet — a budget that does not fit the
+reclaim window means the hand-back is killed partway, the job waits out its full 900-second lease,
+and the run surfaces as `worker_lost`, which reads as flakiness rather than as a misconfiguration.
+
+**One more Spot property worth knowing:** a managed instance group can only add Spot VMs when spare
+capacity exists in the zone. When `us-central1-a` is tight your jobs queue instead of starting, and
+the group cannot scale out until capacity returns. In dev that is a wait; it is the reason
+production is not on Spot.
+
 ## 4. Why the first deploy is two runs
 
 **The console needs the API's URL.** A console is given the origin of the API it proxies to, that

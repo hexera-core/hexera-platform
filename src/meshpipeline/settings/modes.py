@@ -49,6 +49,9 @@ def load_product_modes() -> ProductModes:
             "ALLOW_PUBLIC_RAW_TRACE=true to confirm, or set PUBLIC_TRACE_MODE=safe to publish "
             "activity without content. (Neither switch affects DATA_COLLECTION_ENABLED.)")
     return ProductModes(
-        data_collection_enabled=bool_env("DATA_COLLECTION_ENABLED", "true"),
+        # OPT-IN. Off unless a deployment says otherwise: a customer's geometry and conversation
+        # reaching a training corpus is a purpose beyond running their job, so it is never the
+        # default (GDPR Article 25, data protection by default).
+        data_collection_enabled=bool_env("DATA_COLLECTION_ENABLED", "false"),
         trace_disclosure=disclosure,
     )
