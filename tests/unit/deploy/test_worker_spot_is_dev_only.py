@@ -166,23 +166,55 @@ def test_neither_worker_script_hardcodes_the_budget():
             f"{script.name} never reads the budget from metadata")
 
 
-def test_the_provisioning_model_rotates_the_template():
-    """An instance template is immutable, so the model has to be part of SPEC_HASH. Without it,
-    flipping dev to Spot would leave the group running STANDARD VMs while every log line and the
-    generated env both claimed SPOT."""
+def test_every_provisioning_flag_rotates_the_template():
+    """An instance template is immutable and is REUSED when its name matches, so anything that
+    changes what the template provisions has to be inside SPEC_HASH - the whole flag list, not
+    just the model.
+
+    The hash covering only the model is how the first Spot deploy got stuck: the template was
+    built with --instance-termination-action DELETE, the group refused it, and REMOVING the flag
+    changed no hashed input - so the next run would have found the same template name, reported
+    "reused - the specification is unchanged", and failed in exactly the same way. A flag that is
+    not hashed is a flag that cannot be fixed.
+    """
     text = FLEET.read_text(encoding="utf-8")
-    spec = text[text.index("SPEC_HASH=\"$("):text.index("TEMPLATE=\"${WORKER_TEMPLATE_PREFIX")]
-    assert "WORKER_PROVISIONING_MODEL" in spec, (
-        "SPEC_HASH does not include WORKER_PROVISIONING_MODEL, so a change of model reuses the "
-        "existing template and the fleet silently keeps its old provisioning")
+    spec = text[text.index('SPEC_HASH="$('):text.index('TEMPLATE="${WORKER_TEMPLATE_PREFIX')]
+    assert "PROVISIONING_FLAGS[@]" in spec, (
+        "SPEC_HASH does not include the provisioning flag ARRAY. Hashing only "
+        "WORKER_PROVISIONING_MODEL leaves any other flag change unable to rotate the template, "
+        "which strands a fleet on a template the group will not accept.")
+    # and the array has to be composed before the hash reads it, or it expands to nothing
+    assert text.index("PROVISIONING_FLAGS=(") < text.index('SPEC_HASH="$('), (
+        "PROVISIONING_FLAGS is defined after SPEC_HASH uses it, so it hashes as empty and the "
+        "rotation it is supposed to guarantee silently does not happen")
 
 
-def test_spot_templates_delete_rather_than_stop_on_reclaim():
-    """A reclaimed VM that merely STOPS stays in the group as a TERMINATED instance to be repaired;
-    a DELETEd one is recreated from the template by the group's own sizing."""
+def test_the_template_states_a_provisioning_model():
+    assert "--provisioning-model" in FLEET.read_text(encoding="utf-8")
+
+
+def test_a_spot_template_never_sets_a_termination_action():
+    """Compute Engine REFUSES --instance-termination-action on a Spot VM that joins a group:
+
+        ERROR: (gcloud.compute.instance-groups.managed.create) Could not fetch resource:
+         - Spot virtual machines with termination action set to DELETE cannot be used with
+           Managed Instance Groups.
+
+    It reads like the right flag - a reclaimed VM that merely STOPS would sit in the group as a
+    TERMINATED instance to be repaired - which is exactly why this test is phrased as a
+    prohibition. The group already owns that decision and deletes its own reclaimed Spot VMs.
+
+    This was NOT caught by a unit test: the earlier version of this file asserted the flag was
+    PRESENT and passed happily, because the template is created without complaint and the refusal
+    only arrives one stage later at the group. Found by deploying it (dev-spotcheck, 2026-11-06).
+    """
     text = FLEET.read_text(encoding="utf-8")
-    assert "--instance-termination-action DELETE" in text
-    assert "--provisioning-model" in text
+    live = [ln for ln in text.splitlines()
+            if "--instance-termination-action" in ln and not ln.strip().startswith("#")]
+    assert not live, (
+        f"create-worker-fleet.sh passes --instance-termination-action: {live}. Compute Engine "
+        f"rejects it for a managed instance group member, so the fleet stage dies at "
+        f"instance-groups managed create - after the template was already built.")
 
 
 def test_the_config_gate_rejects_a_bad_model_and_spot_in_prod():

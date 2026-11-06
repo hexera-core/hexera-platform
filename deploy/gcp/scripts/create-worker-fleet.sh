@@ -667,11 +667,33 @@ if [ "${WORKER_SELF_RETIRE}" = true ]; then
 else
   SELF_RETIRE_LABEL=""
 fi
+
+# THE PROVISIONING FLAGS, composed HERE so that the hash below covers them. A template is reused
+# when its NAME matches, and the name is the digest plus this hash - so a provisioning flag that is
+# not hashed is a flag that cannot be changed. That is not hypothetical: the first Spot deploy
+# (dev-spotcheck, 2026-11-06) built a template carrying --instance-termination-action DELETE, the
+# group refused it, and removing the flag changed no hashed input - so the next run would have
+# found the same name, reported "reused - the specification is unchanged", and failed identically.
+# Hashing the flags makes a change to them a new template, which is the only thing that can fix it.
+#
+# NO --instance-termination-action. It reads like the right thing - a reclaimed VM that merely
+# STOPS would sit in the group as a TERMINATED instance for the group to repair, where a deleted
+# one is just recreated - and Compute Engine REFUSES it outright for a group member:
+#
+#   ERROR: (gcloud.compute.instance-groups.managed.create) Could not fetch resource:
+#    - Spot virtual machines with termination action set to DELETE cannot be used with
+#      Managed Instance Groups.
+#
+# The group already owns that decision: a managed instance group deletes and recreates its own
+# reclaimed Spot VMs. gcloud derives the rest of what SPOT implies - automaticRestart false,
+# onHostMaintenance TERMINATE - so stating those here would only conflict with it.
+PROVISIONING_FLAGS=(--provisioning-model "${WORKER_PROVISIONING_MODEL}")
+
 SPEC_HASH="$(printf '%s\n' "${APP_IMAGE}" "${WORKER_MACHINE_TYPE}" "${WORKER_BOOT_DISK_GB}" \
+  "${PROVISIONING_FLAGS[@]}" \
   "${WORKER_BOOT_DISK_TYPE}" "${WORKER_IMAGE_FAMILY}" "${WORKER_IMAGE_PROJECT}" "${VPC_NETWORK}" \
   "${VPC_SUBNET}" "${WORKER_SA_EMAIL}" "${WORKER_SCOPES}" "${WORKER_METADATA[@]}" \
   "${SELF_RETIRE_LABEL}" \
-  "${WORKER_PROVISIONING_MODEL}" \
   | cat - "${STARTUP}" "${SHUTDOWN}" "${WATCHDOG}" \
   | python3 -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:6])')"
 TEMPLATE="${WORKER_TEMPLATE_PREFIX:-${WORKER_MIG}-tpl}-${DIGEST:0:12}-${SPEC_HASH}"
@@ -692,15 +714,11 @@ else
 # [default]". The fleet's subnet is the one in the deployment's own region.
 WORKER_SUBNET_REF="projects/${GCP_PROJECT_ID}/regions/${GCP_REGION}/subnetworks/${VPC_SUBNET}"
 info "Creating instance template ${TEMPLATE} (${WORKER_PROVISIONING_MODEL})"
-  # THE PROVISIONING FLAGS. --provisioning-model carries STANDARD or SPOT. On SPOT the termination
-  # action is DELETE rather than the default STOP: a reclaimed VM that merely STOPS stays in the
-  # group as a TERMINATED instance for the group to repair, where a deleted one is simply recreated
-  # from this template by the group's own sizing. gcloud derives the rest of what SPOT requires -
-  # no automatic restart, no live migration - so passing those here would only conflict with it.
-  PROVISIONING_FLAGS=(--provisioning-model "${WORKER_PROVISIONING_MODEL}")
-  if [ "${WORKER_PROVISIONING_MODEL}" = SPOT ]; then
-    PROVISIONING_FLAGS+=(--instance-termination-action DELETE)
-  fi
+  # THE PROVISIONING MODEL, and the flag that must NOT accompany it. --provisioning-model carries
+  # STANDARD or SPOT; gcloud derives the rest of what SPOT implies - no automatic restart, no live
+  # migration - so passing those here would only conflict with it.
+  #
+  # The flags were composed ABOVE, before SPEC_HASH, so that changing them rotates the template.
   # --no-address: a worker has no public address and reaches Artifact Registry, Secret Manager and
   # the model providers through Cloud NAT, which is what the live fleet already does.
   gc compute instance-templates create "${TEMPLATE}" \
