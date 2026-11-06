@@ -64,6 +64,15 @@ spec:
                 # visible on the same metric.
                 - name: QUEUE_NAMES
                   value: "${QUEUE_NAMES}"
+                # THE GEOMETRY CHECKS COUNT TOWARDS DEMAND (queue_depth_publisher.demand): their queue, the
+                # check slots one instance carries (startup.sh's geometry container) and how many jobs one
+                # instance is worth to the autoscaler (its single-instance assignment).
+                - name: GEOMETRY_QUEUE_NAME
+                  value: "${GEOMETRY_QUEUE_NAME}"
+                - name: GEOMETRY_SLOTS_PER_INSTANCE
+                  value: "${GEOMETRY_SLOTS_PER_INSTANCE}"
+                - name: JOBS_PER_INSTANCE
+                  value: "${JOBS_PER_INSTANCE}"
                 # The deployment's keyspace, where each RUNNING job's execution fence lives. The
                 # autoscaler sizes the fleet on queued + running (the worker_demand metric), and
                 # the running count is those fences, read under this prefix only.

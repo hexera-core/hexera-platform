@@ -104,3 +104,89 @@ def test_a_mesh_far_past_its_usual_time_says_so(live):
     assert out["longer"] == "Taking longer than similar runs (usually about 4 min)."
     assert out["near"] == "If it's still going at 16 min, it stops by itself."
     assert out["past"].startswith("Past its time limit") and out["live"] is False
+
+
+def test_a_count_with_an_estimate_draws_a_bar_under_the_words_and_a_count_alone_draws_none(live):
+    out = live.evaluate("(async () => {" + SETUP + """
+      const bar = () => { const i = document.querySelector('#run-progress .gp-bar > i');
+        return i ? {width: i.style.width, hidden: document.querySelector('#run-progress .gp-bar').getAttribute('aria-hidden')} : null; };
+      ev({type:'stage', stage:'builder'});
+      ev({type:'meshing', stage:'builder', engine:'cfmesh', budget_s:1800});
+      ev({type:'narrate', stage:'builder', kind:'fill', text:'Filling the volume', n:1220000, unit:'cells'});
+      const countOnly = {now: line().now, bar: bar()};
+      ev({type:'narrate', stage:'builder', kind:'fill', text:'Filling the volume', n:1220000, of:1900000, unit:'cells'});
+      const both = {now: line().now, bar: bar()};
+      // a heartbeat says no numbers of its own: the bar holds where it was
+      ev({type:'narrate', stage:'builder', kind:'fill', text:'Still filling the volume · 12 min'});
+      const beating = {now: line().now, bar: bar()};
+      ev({type:'meshed', stage:'builder', cells:1900000});
+      return {countOnly, both, beating, afterMesh: bar()};
+    })()""", timeout=60)
+    assert out["countOnly"]["now"] == "Filling the volume · 1.2M cells so far…"
+    assert out["countOnly"]["bar"] is None                      # an estimate nobody sent is not 0%
+    assert out["both"]["now"] == "Filling the volume · 1.2M of about 1.9M cells…"
+    assert out["both"]["bar"] == {"width": "64.2%", "hidden": "true"}
+    assert out["beating"]["bar"]["width"] == "64.2%"            # a heartbeat moves nothing
+    assert out["afterMesh"] is None                             # the mesh is done; no bar on a done line
+    assert_clean(live, "the live line with a count and an estimate")
+
+
+def test_the_bar_caps_at_full_and_never_walks_backwards(live):
+    out = live.evaluate("""(async () => {
+      const { createRunProgress } = await import('/static/js/render/run_progress.js');
+      const { progressHtml } = await import('/static/js/render/check_progress.js');
+      let t = 0; const m = createRunProgress(() => t);
+      const say = (n, of) => m.narrate({kind:'fill', text:'Filling the volume', n, of, unit:'cells'}, t);
+      m.lane('builder', 0);
+      m.meshing('cfmesh', 1800, {}, 0);
+      say(900000, 1900000);   const half = m.view().progress;
+      say(820000, 1900000);   const reread = m.view();     // the mesher re-read its log: smaller
+      say(2400000, 1900000);  const over = m.view();       // an `of` smaller than the count
+      const width = (p) => (progressHtml(p, {}).match(/gp-bar[^]*?width:([^"]+)"/) || [])[1] || '';
+      // a rebuild starts the estimate again from nothing
+      m.attempt(2, t); m.lane('builder', t); m.meshing('cfmesh', 1800, {}, t);
+      say(100000, 1900000);
+      return {half, reread: reread.progress, over: over.progress, overWords: over.current,
+              overWidth: width(over), rebuilt: m.view().progress};
+    })()""", timeout=60)
+    assert round(out["half"], 4) == 0.4737
+    assert round(out["reread"], 4) == 0.4737                   # held, not walked back
+    assert out["over"] == 1 and out["overWidth"] == "100.0%"   # capped, never past its track
+    assert out["overWords"] == "Filling the volume · 2.4M of about 1.9M cells…"
+    assert round(out["rebuilt"], 4) == 0.0526                  # a new mesh, a new estimate
+
+
+def test_passing_the_estimate_holds_the_bar_at_full_and_the_next_mesh_starts_with_none(live):
+    out = live.evaluate("(async () => {" + SETUP + """
+      const bar = () => { const i = document.querySelector('#run-progress .gp-bar > i');
+        return i ? i.style.width : null; };
+      const say = (n, of) => ev({type:'narrate', stage:'builder', kind:'fill',
+                                 text:'Filling the volume', n, of, unit:'cells'});
+      ev({type:'stage', stage:'builder'});
+      ev({type:'meshing', stage:'builder', engine:'cfmesh', budget_s:1800});
+      say(1800000, 1900000);
+      const nearly = {now: line().now, bar: bar()};
+      // PAST THE ESTIMATE: contracts/mesh_progress stops sending `of`, so the words drop their
+      // claim - but the bar holds at full rather than vanishing where a user is watching hardest
+      say(2900000, undefined);
+      const past = {now: line().now, bar: bar()};
+      // a stage that counts nothing at all moves it no further and does not take it away
+      ev({type:'narrate', stage:'builder', kind:'check', text:'Finishing up'});
+      const quiet = {now: line().now, bar: bar()};
+      // the rebuild after that overshoot starts empty: it has had no estimate of its own yet
+      ev({type:'meshed', stage:'builder', cells:2900000});
+      ev({type:'attempt', n:2});
+      ev({type:'stage', stage:'builder'});
+      ev({type:'meshing', stage:'builder', engine:'cfmesh', budget_s:1800});
+      const rebuilt = {now: line().now, bar: bar()};
+      say(300000, undefined);
+      return {nearly, past, quiet, rebuilt, countOnlyRebuild: bar()};
+    })()""", timeout=60)
+    assert out["nearly"]["now"] == "Filling the volume · 1.8M of about 1.9M cells…"
+    assert out["nearly"]["bar"] == "94.7%"
+    assert out["past"]["now"] == "Filling the volume · 2.9M cells so far…"
+    assert out["past"]["bar"] == "100%"                   # held at full, not taken away
+    assert out["quiet"]["now"] == "Finishing up…" and out["quiet"]["bar"] == "100%"
+    assert out["rebuilt"]["now"] == "Attempt 2: Meshing on the cloud mesher…"
+    assert out["rebuilt"]["bar"] is None                  # a new mesh inherits no fraction
+    assert out["countOnlyRebuild"] is None                # and a count alone still draws nothing

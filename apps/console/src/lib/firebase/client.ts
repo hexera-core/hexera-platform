@@ -1,7 +1,7 @@
 "use client";
 
 import { getApp, getApps, initializeApp, type FirebaseApp } from "firebase/app";
-import { getAuth, type Auth } from "firebase/auth";
+import { getAuth, initializeRecaptchaConfig, type Auth } from "firebase/auth";
 
 // PUBLIC BY DESIGN. The Firebase web API key identifies the project; it authorises nothing on
 // its own, which is why it ships as plain environment and not as a Secret Manager reference.
@@ -38,8 +38,22 @@ function app(): FirebaseApp {
   return getApps().length ? getApp() : initializeApp(config());
 }
 
+let recaptchaRequested = false;
+
 export function firebaseAuth(): Auth {
-  return getAuth(app());
+  const auth = getAuth(app());
+  // BOT PROTECTION FOR EMAIL/PASSWORD SIGN-UP AND SIGN-IN. Identity Platform's reCAPTCHA
+  // Enterprise integration (deploy/gcp/scripts/configure-identity-platform.sh) scores every
+  // password request; this fetches the project's site key up front so the first sign-up already
+  // carries a token instead of being refused once enforcement is on. Best effort: a project with
+  // reCAPTCHA off answers with nothing to do, and the SDK retries the fetch on demand itself.
+  if (!recaptchaRequested && typeof window !== "undefined") {
+    recaptchaRequested = true;
+    initializeRecaptchaConfig(auth).catch(() => {
+      recaptchaRequested = false;
+    });
+  }
+  return auth;
 }
 
 export function firebaseIsConfigured(): boolean {

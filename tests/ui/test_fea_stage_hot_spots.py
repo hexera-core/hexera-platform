@@ -59,6 +59,7 @@ def _state(live, sid: str) -> dict:
                groups: [...root.querySelectorAll('.fea-spot-group')].map((g) =>
                  [g.dataset.type, Number(g.querySelector('.fea-spot-n').textContent)]),
                opens: [...root.querySelectorAll('.fea-spot-open')].map((b) => b.textContent),
+               sums: [...root.querySelectorAll('.fea-spot-sum')].map((b) => b.textContent),
                unsent: !!root.querySelector('.fea-spot-unsent')}}; }})()""")
 
 
@@ -71,7 +72,10 @@ def test_every_hot_spot_of_a_busy_part_has_a_mark_and_a_line(live):
     assert s["rows"] == 208 and not s["unsent"]               # and every one listed
     assert s["groups"] == [["sharp_corner", 174], ["notch", 1], ["fillet", 29], ["hole", 4]]
     assert s["opens"] == ["Show all 174", "Show all 29"]
-    assert s["shown"] == 8 + 1 + 8 + 4
+    # A LONG GROUP IS FOLDED to its one-line summary (1 Nov: a landing gear listed 570 identical corners):
+    # the 174 corners and 29 fillets show no lines until opened; the short groups show theirs
+    assert s["shown"] == 0 + 1 + 0 + 4
+    assert s["sums"] == ["90°, refinement capped", "radius 2 mm"]
     # a mark past its group's first lines: clicking it opens and lights its line
     hidden = live.evaluate(f"""(() => {{
       const root = document.getElementById('gstage-{sid}');
@@ -83,7 +87,7 @@ def test_every_hot_spot_of_a_busy_part_has_a_mark_and_a_line(live):
     # "Show all" opens its own group whole, and no other
     live.evaluate(f"""document.querySelector('#gstage-{sid} .fea-spot-group[data-type="sharp_corner"] .fea-spot-open').click()""")
     s = _state(live, sid)
-    assert s["shown"] == 174 + 1 + 9 + 4 and s["opens"] == ["Show all 29"]
+    assert s["shown"] == 174 + 1 + 1 + 4 and s["opens"] == ["Show all 29"]
     assert_clean(live, "an FEA stage with 208 hot spots")
 
 

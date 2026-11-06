@@ -140,7 +140,15 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
                             choices=choices_for(outcome.reply))
 
     session = _require_session(outcome.session, session_id)
-    state = _build_intake_state(session, owner_id, previous_run=outcome.previous_run)
+    previous_run = outcome.previous_run
+    if previous_run is not None and previous_run.status == "succeeded":
+        # what the run delivered, measured: the chat answers "how big is it?" from this
+        import dataclasses
+
+        from meshpipeline.application.run_facts import read_delivered_size
+        previous_run = dataclasses.replace(
+            previous_run, cells=await read_delivered_size(previous_run.job_id))
+    state = _build_intake_state(session, owner_id, previous_run=previous_run)
     # The turn after submit_requirements: the user is answering "shall I proceed?".
     state["awaiting_confirmation"] = bool(session.request_txt)
     result = await node_intake(state)
@@ -195,7 +203,12 @@ async def chat_notes(body: ChatNoteIn, owner_id: str = Depends(owner_dep),
     if status is msg.NoteStatus.running:
         raise HTTPException(409, "The run has already started, so a new note cannot reach it. "
                                  "Add it before you approve the next run.")
-    return {"session_id": str(body.session_id), "brief": build_brief(session)}
+    # THE NOTES AS STORED, always: the brief exists only once requirements are submitted, so a note
+    # added before that answered with no brief - and no notes - though it was kept (dry run, 2 Nov)
+    from meshpipeline.contracts.user_notes import clean as _clean_notes
+    notes = [{"id": n["id"], "text": n["text"], "source": n["source"]}
+             for n in _clean_notes(getattr(session, "user_notes", None))]
+    return {"session_id": str(body.session_id), "brief": build_brief(session), "user_notes": notes}
 
 
 #: Typed approval outcome -> HTTP status. The route owns this table and nothing else about
@@ -260,6 +273,8 @@ def _build_intake_state(session, owner_id: str, *, previous_run=None) -> dict:
         purpose=session.purpose or "",
         input_kind=session.input_kind or "",
         requested_mesh_fidelity=getattr(session, "requested_mesh_fidelity", None) or None,
+        # the user's own notes, word for word: the chat answers with what they asked for in them
+        user_notes=list(getattr(session, "user_notes", None) or []),
     )
     if previous_run is not None:
         # An intake-only working key, like `awaiting_confirmation` above: this conversation

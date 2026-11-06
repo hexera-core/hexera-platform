@@ -22,6 +22,11 @@ def purge_expired_geometry_sources() -> dict:
     return _cleanup.purge_expired_geometry_sources()
 
 
+@celery_app.task(name="tasks.cleanup.sweep_account_erasures")
+def sweep_account_erasures() -> dict:
+    return _cleanup.sweep_account_erasures()
+
+
 @celery_app.task(name="tasks.billing.report_pending_usage")
 def report_pending_usage() -> dict:
     return _meter.report_pending_usage()

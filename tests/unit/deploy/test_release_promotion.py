@@ -1165,6 +1165,18 @@ def test_the_deploy_tries_reuse_before_gate_c_and_skips_the_build_when_it_succee
     assert set(steps[reuse]["env"]) >= {"GH_TOKEN", "RELEASE_REGISTRY", "RELEASE_ENVIRONMENT"}
 
 
+def test_dev_deploys_use_the_fast_release_validation_profile():
+    job = _release_job()
+    gate_c = next(s for s in job["steps"] if "make release-validate" in (s.get("run") or ""))
+    assert gate_c["env"]["RELEASE_VALIDATION_PROFILE"] == (
+        "${{ needs.target.outputs.environment == 'dev' && 'dev-fast' || 'full' }}"
+    )
+    install = next(s for s in job["steps"] if s.get("name") == "Install release validation dependencies")
+    assert install["env"]["RELEASE_VALIDATION_PROFILE"] == gate_c["env"]["RELEASE_VALIDATION_PROFILE"]
+    assert "build==1.2.2" in install["run"]
+    assert "-r requirements/runtime.txt -r requirements/dev.txt" in install["run"]
+
+
 def test_publication_still_refuses_to_overwrite_a_published_tag():
     # Reuse is the way around the refusal for a commit that is ALREADY published; the refusal
     # itself must stay for everything else.

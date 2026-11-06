@@ -52,6 +52,22 @@ def test_the_worst_defect_is_addressed_first():
     assert candidate is not None and candidate.defect_fingerprint == "edge:b"
 
 
+def test_an_open_shell_is_closed_before_a_global_invalid_brep_fix():
+    """A whole-shape fixer run while free boundaries exist can create new defects."""
+    fill = _Op("fill_planar_hole", {DefectCode.open_shell}, 5)
+    planner = RulesPlanner(ops=(fill, _GLOBAL))
+    defects = (
+        _defect(DefectCode.invalid_brep, fingerprint="face:invalid", kind="face", index=1),
+        _defect(DefectCode.open_shell, fingerprint="edge:opening", kind="edge", index=2),
+    )
+
+    candidate = planner.propose(defects, RunHistory(), shape=None)
+
+    assert candidate is not None
+    assert candidate.defect_code is DefectCode.open_shell
+    assert candidate.op.name == "fill_planar_hole"
+
+
 def test_the_narrowest_operation_that_claims_a_defect_is_chosen():
     # A narrow fix that fails costs one entity's worth of rollback; a wide one costs the part's.
     planner = RulesPlanner(ops=(_WIDE, _NARROW, _GLOBAL))

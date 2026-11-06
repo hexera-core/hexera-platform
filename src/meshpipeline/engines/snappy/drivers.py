@@ -104,6 +104,11 @@ def _restore_sound_mesh(workspace: Path) -> bool:
         return False
 
 
+def _sound_kept(workspace: Path) -> bool:
+    """Whether an earlier pass's sound mesh is kept aside (_keep_sound_mesh)."""
+    return (Path(workspace) / _SOUND_KEEP / "0" / "owner").exists()
+
+
 def _drop_sound_mesh(workspace: Path) -> None:
     import shutil
     shutil.rmtree(Path(workspace) / _SOUND_KEEP, ignore_errors=True)
@@ -279,32 +284,94 @@ def _stop_on_repeated_case(workspace: Path, reviewed: Path | None, *, job_id: st
     raise ReviewedCaseRepeats(str(reviewed))
 
 
-# ---- a pass that ran out of time is never rebuilt as it was -------------------------------------
-# Job 470c3eb9: pass 1 ran snappyHexMesh for 50 minutes and timed out, the re-plan returned the
-# same plan, and pass 2 spent another 50 minutes on the identical case. After a timeout the next
-# pass is made coarser by arithmetic (planner.coarsen_after_timeout), and - as the review-retry
-# stop above does for a rejected mesh - a case byte-identical to the one that timed out is never
-# run again.
+# ---- a pass this shape cannot take is never rebuilt as it was -----------------------------------
+# A pass that came out broken where its layers were not the cause is a plan this shape cannot take:
+# the next pass is made coarser by arithmetic (planner.coarsen_after_timeout), and - as the
+# review-retry stop above does for a rejected mesh - a case byte-identical to it is never run again.
+#
+# A PASS THAT RAN PAST ITS GUARD CLOCK IS NOT ONE OF THEM (D3, docs/RULES.md TIME-1..3). It used
+# to be: a timed-out pass made every later pass coarser (job 470c3eb9), so how coarse a mesh came
+# out depended on how busy the machine was. Now each pass runs under a guard set from its planned
+# cells (contracts/work_limits: 3x its planned time at snappy's slow rate), a pass the guard stops
+# ends the passes as a guard trip, and the attempt is replayed as an infrastructure failure.
 
-#: The plan of the last pass that RAN OUT OF TIME, kept beside the attempt's plan memory so a
-#: retry attempt (a fresh attempt_N workspace) starts below it too.
+#: The plan of the last pass that came out BROKEN (not by its layers), kept beside the attempt's
+#: plan memory so a retry attempt (a fresh attempt_N workspace) starts below it too. The name is
+#: older than D3; only a record marked `_why: broken` is read.
 _TIMED_OUT_PLAN = ".timed_out_plan.json"
 
 
 class TimedOutCaseRepeats(Exception):
     """Raised between authoring a pass and starting the mesher: the case is byte-identical to the
-    one whose run just ran out of time, and nothing was left to make coarser."""
+    one that just came out broken, and nothing was left to make coarser."""
+
+
+class PassGuardTripped(Exception):
+    """The pass's native run was stopped by its guard clock (TIME-3): the passes stop, and the
+    attempt ends as an infrastructure failure the graph replays."""
+
+
+def pass_guard(budget_cells, *, job_id: str = "", attempt: int = 0, workspace=None):
+    """The planned work and guard of one snappy pass planned to make `budget_cells` cells
+    (contracts/work_limits.guard_for), cited in the run's why record (TIME-2).
+
+    A pass runs WATCHED on its machine (RUN-5, contracts/native_time): with a workspace, its guard
+    is that machine's wall - never shorter than 3 x the planned time - and inside it the run is
+    stopped only when it makes no progress for the stall window. Either stop is a guard trip."""
+    from meshpipeline.contracts import decision_record as dr
+    from meshpipeline.contracts.work_limits import TIME_GUARD, guard_for
+    if workspace is None:
+        work = guard_for("snappy", cells=budget_cells)
+    else:
+        from meshpipeline.contracts.native_time import wall_for
+        wall = float(wall_for(workspace))
+        work = guard_for("snappy", cells=budget_cells, floor_s=wall, ceiling_s=wall)
+    dr.cite(job_id, stage=dr.STAGE_WORK_LIMIT, decided="guard_s", value=work.guard_seconds,
+            rule=TIME_GUARD, inputs=work.as_dict(),
+            words=(f"snappy pass {attempt}: guard {work.guard_seconds // 60} min for "
+                   f"{int(budget_cells or 0):,} planned cells"))
+    return work
+
+
+def _trip_pass(workspace: Path, work, attempt: int) -> None:
+    """A pass its guard stopped, recorded as a guard trip. With an earlier pass's SOUND mesh kept
+    aside (_keep_sound_mesh) the passes end on that mesh (_end_passes puts it back) and the trip
+    does not end the attempt (TIME-8): a valid mesh is never lost to "ran out of time". With none,
+    the attempt is replayed as an infrastructure failure (TIME-3)."""
+    from meshpipeline.contracts.work_limits import TIME_KEEP_VALID, TIME_TRIP
+    from meshpipeline.engines.determinism import note_guard_trip
+    kept = _sound_kept(workspace)
+    note_guard_trip("snappy", workspace=workspace, step=f"pass {attempt}",
+                    rule=(TIME_KEEP_VALID if kept else TIME_TRIP),
+                    kept=("an earlier sound pass" if kept else None), **{
+                        k: v for k, v in work.as_dict().items()
+                        if k in ("amount", "rate", "planned_s", "guard_s")})
+
+
+def _release_size_brake(workspace: Path, oversize: dict, *, attempt: int, job_id: str) -> bool:
+    """RUN-8: the pass after a size-brake stop authored the very case the brake stopped, so the brake
+    could only stop it again and end the run with no mesh. Release it for this case (its plan record
+    says so - engines/size_brake.release_brake), and record why. Returns whether it was released."""
+    from meshpipeline.engines.size_brake import BRAKE_RULE, release_brake
+    cells, budget = oversize.get("cells"), oversize.get("budget")
+    why = (f"the re-plan after the size brake (the {oversize.get('stage') or 'mesh'} count at {cells} "
+           f"cells, budget {budget}) authored the same case - nothing left to make smaller")
+    if not release_brake(workspace, why):
+        return False
+    logger.warning("snappy pass %d: %s - meshing it with the size brake released (%s) job_id=%s",
+                   attempt, why, BRAKE_RULE, job_id)
+    try:
+        from meshpipeline.contracts import decision_record as _dr
+        _dr.cite(str(job_id or ""), stage="size_brake", decided="released", value=cells, rule=BRAKE_RULE,
+                 inputs={"pass": attempt, "budget": budget, "ratio": oversize.get("ratio")}, words=why)
+    except Exception:  # noqa: BLE001 - the why record never stops a mesh
+        logger.debug("RUN-8 not cited", exc_info=True)
+    return True
 
 
 def _write_timed_out_plan(workspace: Path, strategy: dict) -> None:
     import json as _json
 
-    if (strategy or {}).get("_why") != "oversize":
-        # a clock decided (a stall or a machine's wall); the size brake is no clock - its count is
-        # the case's own, the same on every run - so it is not recorded as one
-        from meshpipeline.engines.determinism import note_time_limit
-        note_time_limit("snappy.plan", "a pass ran out of time: every later pass of this run is "
-                        "planned no finer than it")
     try:
         (Path(workspace) / _TIMED_OUT_PLAN).write_text(_json.dumps(strategy, default=str))
     except Exception:  # noqa: BLE001 - durable memory is best-effort; the in-run one still holds
@@ -312,9 +379,10 @@ def _write_timed_out_plan(workspace: Path, strategy: dict) -> None:
 
 
 def _sibling_timed_out_plan(workspace: Path) -> dict | None:
-    """The newest EARLIER attempt's timed-out plan, else None. Siblings only: this workspace's
+    """The newest EARLIER attempt's broken-pass or size-brake plan, else None. Siblings only: this workspace's
     own record belongs to a pass of this very attempt, which the running driver holds in memory,
-    and a re-executed node must re-derive its passes exactly as before."""
+    and a re-executed node must re-derive its passes exactly as before. A record of a pass that
+    ran out of time (written before D3, no `_why`) is not read: a clock never makes a pass coarser."""
     import json as _json
     import re as _re
 
@@ -325,10 +393,14 @@ def _sibling_timed_out_plan(workspace: Path) -> dict | None:
         try:
             plan = _json.loads(
                 (Path(workspace).parent / f"attempt_{n}" / _TIMED_OUT_PLAN).read_text())
-        # an absent record is the ordinary case (that attempt never timed out)
+        # an absent record is the ordinary case (no pass of that attempt came out broken)
         except Exception:  # noqa: BLE001,S112
             continue
-        if isinstance(plan, dict):
+        # a broken pass and a pass the SIZE BRAKE stopped are both measured (the mesher's own count
+        # or its checks), never a clock - the next attempt starts from that lesson (main's size
+        # brake, merged after D3: without this the next attempt repeated the same over-budget
+        # passes and failed - epa_daycab in the full benchmark)
+        if isinstance(plan, dict) and plan.get("_why") in ("broken", "oversize"):
             return plan
     return None
 
@@ -400,20 +472,20 @@ def _mm(metres: float) -> str:
 
 
 def _shortfall(shape: str, reason: str, *, timed_out: bool, minutes: float,
-               repeat: bool, last: bool = False) -> str:
+               repeat: bool, last: bool = False, kept_sound: bool = False) -> str:
     """The rest of "Pass N ..." for a pass that did not produce a production-grade mesh, in
-    plain words. A run that ran out of time says so - it is not "no cells, 0 faces"."""
-    if repeat:
-        return ("not run - it would rebuild, unchanged, a mesh that just ran out of time or came "
-                "out broken, and nothing is left to make coarser; stopping the meshing passes "
-                "here")
+    plain words. A run its guard clock stopped says so - it is not "no cells, 0 faces", and it
+    is not a reason to plan a coarser mesh (TIME-3). With an earlier pass's sound mesh in hand,
+    that mesh is the one kept (TIME-8)."""
+    if timed_out and kept_sound:
+        return (f"stopped by its guard clock after {minutes:.0f} min - an infrastructure stop, "
+                "not a result about the shape; the earlier pass's valid mesh is kept")
     if timed_out:
-        # a run is stopped only when it is STUCK (no new output for the stall window) or at the
-        # wall of the biggest machine (contracts/native_time) - never because it was slow
-        from meshpipeline.contracts.native_time import STALL_WINDOW_S
-        return (f"stopped - snappyHexMesh made no progress for {STALL_WINDOW_S // 60} min (or reached "
-                f"the machine's limit) after {minutes:.0f} min of work; "
-                + ("no meshing passes left" if last else "re-planning a coarser mesh"))
+        return (f"stopped by its guard clock after {minutes:.0f} min - an infrastructure stop, "
+                "not a result about the shape; this attempt is run again as it was")
+    if repeat:
+        return ("not run - it would rebuild, unchanged, a mesh that just came out broken, and "
+                "nothing is left to make coarser; stopping the meshing passes here")
     return f"fell short - {shape}; re-planning ({reason[:60]})"
 
 
@@ -524,9 +596,14 @@ async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
     import asyncio as _a
 
     from meshpipeline.contracts import mesh_progress as _mp
-    # THE MESHER'S OWN STAGE ("adding wall layers"), relayed to the live line while it runs
+    from meshpipeline.engines.live_estimate import planned_live_count as _planned_live
+    # THE MESHER'S OWN STAGE ("adding wall layers"), relayed to the live line while it runs -
+    # counted against THIS case's own planned cells where it recorded them (the plan record
+    # render_snappy_case wrote beside it), in this engine's own word for one of them.
+    _of, _unit = _planned_live(engine, workspace)
     with _mp.relaying(_mp.publishing_sink(publish, _a.get_running_loop(),
-                                          op_prefix=_mp.stage_op_prefix(workspace, native_attempt))):
+                                          op_prefix=_mp.stage_op_prefix(workspace, native_attempt),
+                                          of=_of, unit=_unit)):
         result = await _a.to_thread(R.run_snappy, workspace, timeout=cap)
     # BEFORE the result is judged, published, recorded or delivered. If ownership was
     # lost here, this raises and NO success result is published for the run above.
@@ -989,6 +1066,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     _timeout_ref: dict | None = _sibling_timed_out_plan(workspace)
     _timeout_case: dict[str, bytes] | None = None
     rec: dict | None = None                            # the recommendation the pass planned with
+    _brake_released = False                            # RUN-8: released at most once a build
 
     for attempt in range(1, max_attempts + 1):
         _timed_out_now, _repeat_stop, _mesh_minutes = False, False, 0.0
@@ -1154,7 +1232,18 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                    where=f"external pass {attempt}")
             # ... and the same for a case that just ran out of time
             if _repeats_timed_out_case(workspace, _timeout_case):
-                raise TimedOutCaseRepeats(f"external pass {attempt}")
+                if (_timeout_ref or {}).get("_why") != "oversize" or _brake_released:
+                    raise TimedOutCaseRepeats(f"external pass {attempt}")
+                # ... but a case the SIZE BRAKE stopped is no clock's: when its re-plan can make it
+                # no smaller, stopping it again only ends the run with no mesh (RUN-8) - it runs once
+                # more, the brake released, and its size is said
+                _brake_released = _release_size_brake(
+                    workspace, (_timeout_ref or {}).get("_oversize") or {}, attempt=attempt, job_id=job_id)
+                if not _brake_released:
+                    raise TimedOutCaseRepeats(f"external pass {attempt}")
+                await publish.anote(f"Meshing pass {attempt}: the last pass was stopped as bigger than "
+                                    "its plan, and no re-plan makes it smaller - meshing it at the size "
+                                    "it needs", op_id=f"snappy:brake-released:{attempt}")
             await publish.anote("Carving the body out of the background mesh - refinement level "
                             f"{summary['surface_level']}, {summary['n_layers']} boundary layers"
                             + _sealed_note(_cavities)
@@ -1168,7 +1257,15 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                     wake=bool(summary.get("wake_note")),
                                     boxes=len(strategy.get("local_boxes") or [])),
                                 op_id=f"snappy:plan:{attempt}")
-            # RUN (deterministic; Cloud Run Job / local) + user-facing instrumentation
+            if attempt == 1:
+                from meshpipeline.contracts import narration as _N
+                for _i, _line in enumerate(_N.cfd_plan_lines(
+                        internal=False, cells=strategy.get("max_cells"), layers=summary.get("n_layers"),
+                        wake=bool(summary.get("wake_note")), boxes=len(strategy.get("local_boxes") or []))):
+                    await _N.asay(publish, _line, op_id=f"snappy:say:{attempt}:{_i}")
+            # RUN (deterministic; Cloud Run Job / local) + user-facing instrumentation, under the
+            # GUARD its planned cells give it (TIME-2) - the only clock, and it decides nothing
+            _guard = pass_guard(_budget, job_id=job_id, attempt=attempt, workspace=workspace)
             _t_mesh = _time.monotonic()
             result = await _run_snappy_on_its_machine(
                 R, workspace, publish, state.get("engine", "snappy"),
@@ -1183,11 +1280,10 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 return False
             _meshed_any = True
             if result.get("timed_out"):
-                # ran out of time: no later pass (or attempt) meshes this, or anything as big
-                _timed_out_now = True
-                _timeout_ref = dict(strategy)          # carries the budget actually used
-                _timeout_case = _case_snapshot(workspace)
-                _write_timed_out_plan(workspace, _timeout_ref)
+                # THE GUARD STOPPED THE PASS (TIME-3): no coarser re-plan - the passes stop, and
+                # the attempt is replayed as an infrastructure failure
+                _trip_pass(workspace, _guard, attempt)
+                raise PassGuardTripped(f"external pass {attempt}")
             elif result.get("oversize"):
                 # THE SIZE BRAKE stopped it (engines/size_brake): snappyHexMesh's own count -
                 # castellated, or with its layers before they were added - read far past the budget.
@@ -1233,10 +1329,17 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             continue
         except TimedOutCaseRepeats:
             # nothing was left to make coarser: not run, and the passes stop here
-            logger.warning("snappy pass %d authored the case that just timed out, byte for byte "
-                           "- not meshing it again - job_id=%s", attempt, job_id)
+            logger.warning("snappy pass %d authored the case that just came out broken, byte for "
+                           "byte - not meshing it again - job_id=%s", attempt, job_id)
             production, reason, q, wall_faces = False, "", {}, 0
             _repeat_stop = True
+        except PassGuardTripped:
+            logger.warning("snappy pass %d stopped by its guard clock - the passes stop: an earlier "
+                           "sound pass is kept (TIME-8), else the attempt ends as an "
+                           "infrastructure failure - job_id=%s", attempt, job_id)
+            production, reason, q, wall_faces = False, "", {}, 0
+            _timed_out_now = _repeat_stop = True
+            last_valid = False
         except Exception as exc:  # noqa: BLE001 - a config/run error is just a failed attempt
             logger.exception("snappy attempt %d errored - job_id=%s", attempt, job_id)
             production, reason, q, wall_faces = False, f"attempt errored: {type(exc).__name__}", {}, 0
@@ -1299,6 +1402,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             await publish.anote(f"Pass {attempt} "
                     + (f"fell short - {_shape}; {_esc_note}" if _esc_note else
                        _shortfall(_shape, reason, timed_out=_timed_out_now,
+                                  kept_sound=_sound_kept(workspace),
                                   minutes=_mesh_minutes, repeat=_repeat_stop,
                                   last=attempt == max_attempts)),
                     op_id=f"snappy:pass-outcome:{attempt}")
@@ -2034,7 +2138,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     max_attempts = int(scfg.MAX_SNAPPY_ATTEMPTS)
     _reviewed_ws = _reviewed_workspace(state)   # the mesh a review just rejected, on its retry
     last_valid = False
-    # the plan (and authored case) of the last pass that RAN OUT OF TIME: every later pass is
+    # the plan (and authored case) of the last pass that came out BROKEN: every later pass is
     # held below it, and never rebuilds it byte for byte. Seeded from an earlier attempt's record.
     _timeout_ref: dict | None = _sibling_timed_out_plan(workspace)
     _timeout_case: dict[str, bytes] | None = None
@@ -2089,7 +2193,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 # part is refined now, and the narrow passages keep the target they were raised to
                 strategy = {**strategy, "narrow_retry": True,
                             "narrow_target": _gated_plan.get("narrow_target")}
-        # after a timeout the next mesh is SMALLER, whatever the re-plan proposed
+        # after a pass this shape could not take (an earlier attempt's broken pass) the next mesh
+        # is SMALLER, whatever the re-plan proposed - never after a clock (TIME-1)
         strategy, _coarsened = _coarsen_after_timeout(_timeout_ref, strategy, internal=True)
 
         # strategy → concrete numbers (internal knobs; tolerant of external-style keys)
@@ -2200,8 +2305,6 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         await run.fence("write plan memory")
         _mem = await _op_begin(publish, "author_configuration", run, attempt)
         _write_plan_memory(workspace, strategy)
-        # the values this pass actually meshes with - what a timeout is measured against
-        _effective = {**strategy, "max_cells": _budget, "cells_across_diameter": cells_across}
         _thin_regions: list = []
         try:
             from meshpipeline.cad.stl_io import read_stl_triangles as _read_tris
@@ -2289,7 +2392,15 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                                     cells_across=cells_across, near_wall=bool(_band_note),
                                     boxes=len(strategy.get("local_boxes") or [])),
                                 op_id=f"internal:plan:{attempt}")
+            if attempt == 1:
+                from meshpipeline.contracts import narration as _N
+                for _i, _line in enumerate(_N.cfd_plan_lines(
+                        internal=True, cells=_budget, layers=n_layers, cells_across=cells_across,
+                        boxes=len(strategy.get("local_boxes") or []))):
+                    await _N.asay(publish, _line, op_id=f"internal:say:{attempt}:{_i}")
             run.note_authoring()
+            # the pass's GUARD, from its planned cells (TIME-2) - the only clock
+            _guard = pass_guard(_budget, job_id=job_id, attempt=attempt, workspace=workspace)
             _t_mesh = _time.monotonic()
             result = await _run_snappy_on_its_machine(
                 R, workspace, publish, state.get("engine", "snappy"),
@@ -2300,12 +2411,10 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                              "job_id=%s: %s", attempt, job_id, result.get("log_tail"))
                 return False
             if result.get("timed_out"):
-                # THE MESHER RAN OUT OF TIME. Remember exactly what ran, so no later pass - nor
-                # a later attempt - meshes it, or anything as fine, again.
-                _timed_out_now = True
-                _timeout_ref = dict(_effective)
-                _timeout_case = _case_snapshot(workspace)
-                _write_timed_out_plan(workspace, _timeout_ref)
+                # THE GUARD STOPPED THE PASS (TIME-3): no coarser re-plan - the passes stop, and
+                # the attempt is replayed as an infrastructure failure
+                _trip_pass(workspace, _guard, attempt)
+                raise PassGuardTripped(f"internal pass {attempt}")
             q = R.check_mesh(workspace)
             await publish.ameshed(q.get("cells"))
             fc = R._patch_face_counts(workspace)
@@ -2358,11 +2467,18 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             raise                      # supersession stops the invocation; see the external build
         except TimedOutCaseRepeats:
             # nothing was left to make coarser: the pass would rebuild, byte for byte, the case
-            # that just ran out of time. Not run - the passes stop here instead of burning another.
-            logger.warning("internal pass %d authored the case that just timed out, byte for "
-                           "byte - not meshing it again - job_id=%s", attempt, job_id)
+            # that just came out broken. Not run - the passes stop here instead of burning another.
+            logger.warning("internal pass %d authored the case that just came out broken, byte "
+                           "for byte - not meshing it again - job_id=%s", attempt, job_id)
             production, reason, q, wall_faces = False, "", {}, 0
             _repeat_stop = True
+        except PassGuardTripped:
+            logger.warning("internal pass %d stopped by its guard clock - the passes stop: an earlier "
+                           "sound pass is kept (TIME-8), else the attempt ends as an "
+                           "infrastructure failure - job_id=%s", attempt, job_id)
+            production, reason, q, wall_faces = False, "", {}, 0
+            _timed_out_now = _repeat_stop = True
+            last_valid = False
         except Exception as exc:  # noqa: BLE001
             logger.exception("internal attempt %d errored - job_id=%s", attempt, job_id)
             production, reason, q, wall_faces = False, f"attempt errored: {type(exc).__name__}", {}, 0
@@ -2378,6 +2494,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         else:
             await publish.anote(f"Pass {attempt} "
                                 + _shortfall(_shape, reason, timed_out=_timed_out_now,
+                                             kept_sound=_sound_kept(workspace),
                                              minutes=_mesh_minutes, repeat=_repeat_stop,
                                              last=attempt == max_attempts),
                     op_id=f"internal:pass-outcome:{attempt}")

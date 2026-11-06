@@ -72,7 +72,9 @@ def test_the_running_step_is_named_with_a_moving_mark_and_its_time_counts_up(liv
       const later = snap();
       line.show(col, L.slow, {});
       const slow = snap();
-      return {first, later, slow, anim: getComputedStyle(el().querySelector('.gp-mark'), '::before').animationName};
+      const icon = el().querySelector('.gp-mark svg');
+      return {first, later, slow, icon: icon ? icon.getAttribute('class') : '',
+              anim: icon ? getComputedStyle(icon.querySelector('.wi-live')).animationName : ''};
     """)
     first, later, slow = out["first"], out["later"], out["slow"]
     assert first["state"] == "running" and first["live"] is True and first["role"] == "status"
@@ -80,7 +82,8 @@ def test_the_running_step_is_named_with_a_moving_mark_and_its_time_counts_up(liv
     assert later["time"] in ("9 s", "10 s")                       # counted up between polls
     assert first["last"] is True and first["toggle"] == "1 done"    # queued, then picked up
     assert slow["note"] == "Still reading - big file (180 MB), this can take a few minutes"
-    assert out["anim"] == "gp-pulse"
+    # the mark is the icon of the work running now (reading: a scan line walking down a page)
+    assert out["icon"] == "wi wi-read" and out["anim"] == "wi-scan"
     assert_clean(live, "the live line while a step runs")
 
 
@@ -149,3 +152,94 @@ def test_a_quiet_server_stops_the_count_and_says_so_and_a_cleared_conversation_s
     assert out["offline"]["live"] is False and "Can't reach the server" in out["offline"]["note"]
     assert out["ended"]["live"] is False and "Reload the page" in out["ended"]["note"]
     assert out["gone"] is True
+
+
+def test_a_served_fraction_draws_a_quiet_bar_that_moves_in_place_and_is_not_announced(live):
+    out = _run(live, """
+      const bar = () => el().querySelector('.gp-bar');
+      const read = () => { const b = bar(); return b ? {width: b.querySelector('i').style.width,
+        hidden: b.getAttribute('aria-hidden'), role: b.getAttribute('role'),
+        after: b.previousElementSibling.className} : null; };
+      line.show(col, L.reading, {});
+      const none = read();                                  // no fraction served: nothing drawn
+      line.show(col, {...L.reading, progress: 0.2}, {});
+      const first = read(); const node = bar().querySelector('i');
+      const ease = getComputedStyle(node).transitionProperty;
+      // the same words, a fraction that moved: the fill is eased in place, not redrawn
+      line.show(col, {...L.reading, progress: 0.55}, {});
+      const moved = read(); const same = bar().querySelector('i') === node;
+      line.show(col, {...L.reading, progress: 3}, {});       // a fraction past full is capped
+      const capped = read();
+      line.show(col, null, {offline: true});                 // the server went quiet: nothing live
+      const offline = read();
+      line.show(col, {...L.done, progress: 0.9}, {});
+      return {none, first, moved, same, capped, offline, done: read(), ease};
+    """)
+    assert out["none"] is None
+    assert out["first"] == {"width": "20%", "hidden": "true", "role": None, "after": "gp-head"}
+    assert out["moved"]["width"] == "55%" and out["same"] is True
+    assert out["capped"]["width"] == "100%"
+    assert out["offline"] is None and out["done"] is None
+    assert out["ease"] == "width"
+
+
+def test_the_last_width_written_is_the_width_the_fill_settles_at(live):
+    """A fraction that stops moving (the bar held at full past the estimate) must come to rest on
+    the width it was last given - a transition eases towards a committed value, so the absence of
+    any further write is what lets it arrive, not what strands it part-way."""
+    out = _run(live, """
+      const fill = () => el().querySelector('.gp-bar > i');
+      line.show(col, {...L.reading, progress: 0.1}, {});
+      line.show(col, {...L.reading, progress: 1}, {});   // the same words: eased in place
+      const midFlight = fill().getBoundingClientRect().width / el().querySelector('.gp-bar').getBoundingClientRect().width;
+      await new Promise(r => setTimeout(r, 900));        // and nothing writes to it again
+      return {midFlight, settled: fill().getBoundingClientRect().width / el().querySelector('.gp-bar').getBoundingClientRect().width,
+              width: fill().style.width};
+    """)
+    assert out["midFlight"] < 0.9                 # it really was still easing, not set outright
+    assert out["width"] == "100%" and round(out["settled"], 3) == 1.0
+
+
+def test_a_steps_receipt_is_drawn_and_opens_in_place(live):
+    """THE RUN FEED'S RECEIPT, drawn through this renderer.
+
+    `render/run_progress` draws its line by calling `createCheckProgress`, and its `view()` puts a
+    `receipt` on a step (from `execution_publisher.areceipt`). So the rows below belong to the run
+    lane, not to the geometry check - `application/geometry_progress` publishes no receipt - and
+    this is the only place either lane's receipt reaches the page. A step shape this renderer
+    cannot draw would make the run's receipts silently invisible, which is what this holds.
+    """
+    out = _run(live, """
+      const step = {key: 'plan', state: 'done', label: 'Planned the mesh', seconds: 12,
+                    receipt: {title: 'Plan', rows: [
+                      {label: 'Cell budget', value: '1.2M', why: 'from the brief'},
+                      {label: 'Base size', value: '4 mm'}]}};
+      line.show(col, {state: 'running', live: true, current: 'Meshing…', elapsed_s: 3, steps: [step]}, {open: true});
+      const rc = () => el().querySelector('.gp-rc');
+      const toggle = () => el().querySelector('.gp-rc-toggle');
+      const before = {rows: [...rc().querySelectorAll('.gp-rc-row')].map(
+                        r => r.querySelector('.gp-rc-k').textContent + '=' + r.querySelector('.gp-rc-v').textContent),
+                      why: [...rc().querySelectorAll('.gp-rc-why')].map(w => w.textContent),
+                      hidden: rc().hidden, expanded: toggle().getAttribute('aria-expanded'),
+                      controls: toggle().getAttribute('aria-controls') === rc().id,
+                      label: toggle().getAttribute('aria-label')};
+      const node = rc();
+      toggle().click();
+      const opened = {hidden: rc().hidden, expanded: toggle().getAttribute('aria-expanded'), same: rc() === node};
+      // a later poll that changes a word must not shut a receipt the reader has open
+      line.show(col, {state: 'running', live: true, current: 'Meshing on the cloud mesher…', elapsed_s: 9,
+                      steps: [step]}, {open: true});
+      const kept = {hidden: el().querySelector('.gp-rc').hidden,
+                    expanded: el().querySelector('.gp-rc-toggle').getAttribute('aria-expanded')};
+      el().querySelector('.gp-rc-toggle').click();
+      return {before, opened, kept, closed: el().querySelector('.gp-rc').hidden};
+    """)
+    assert out["before"]["rows"] == ["Cell budget=1.2M", "Base size=4 mm"]
+    assert out["before"]["why"] == ["from the brief"]
+    assert out["before"]["hidden"] is True and out["before"]["expanded"] == "false"
+    assert out["before"]["controls"] is True and out["before"]["label"] == "Plan receipt"
+    # it opens IN PLACE - the same element, no re-draw, so the feed never scrolls under the reader
+    assert out["opened"] == {"hidden": False, "expanded": "true", "same": True}
+    assert out["kept"] == {"hidden": False, "expanded": "true"}
+    assert out["closed"] is True
+    assert_clean(live, "a step's receipt")

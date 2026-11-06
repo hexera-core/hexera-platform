@@ -218,7 +218,8 @@ def results(workspace) -> dict | None:
     spots = []
     for h in plan.get("hot_spots") or []:
         row = {"id": h.get("id"), "type": h.get("type"), "shape": h.get("shape"), "faces": h.get("faces") or [],
-               "at_m": h.get("at_m"), "capped": bool(h.get("capped")), "words": _shape_words(h)}
+               "at_m": h.get("at_m"), "capped": bool(h.get("capped")), "words": _shape_words(h),
+               "radius_mm": h.get("radius_mm")}
         if h.get("id") in spot_rows:
             row["short"] = spot_rows[h["id"]]
         spots.append(row)
@@ -236,7 +237,7 @@ def results(workspace) -> dict | None:
                       "label": f"{n} · {cad}" if cad else n})
 
     # one authority for a delivered mesh's unit (contracts/mesh_units): every deck is written in it
-    from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
+    from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT, export_units_words
     mesh_units = COMPLETED_MESH_UNIT.value
     asm = assembly_block(fea.get("assembly") or {})
     extra: dict[str, Any] = {"assembly": asm} if asm else {}
@@ -251,22 +252,23 @@ def results(workspace) -> dict | None:
                                  for m in tiny["merged"]]
     # MESH-8: the CAD faces left out as skins of no thickness, each with the face it lies on - accounted for, as
     # the merged faces are (engines/fea_review.face_accounting)
-    from meshpipeline.engines.fea_review import face_accounting, faces_words
+    from meshpipeline.engines.fea_review import face_accounting, faces_short, faces_words
     acc = q.get("fea_faces") or face_accounting(q, plan)
     if acc.get("skins"):
         extra["skins_left_out"] = [{"face": s.get("face"), "on": s.get("on"), "words": s.get("words")}
                                    for s in acc["skins"]]
     faces_said = faces_words(acc) if (acc.get("skins") or acc.get("merged") or acc.get("missing")) else ""
+    if faces_said:
+        # the same account in one short line, for the result screen (the whole sentence is in the plan words)
+        extra["faces_short"] = faces_short(acc)
     return {**extra,
         "title": "FEA mesh",
         "summary": (f"{cells:,} quadratic tetrahedra (10-node), a solid mesh"
                     + (f" of {len(asm['parts'])} parts" if asm else "")
                     + (f", {level} level" if level else "") + f"; {len(faces)} named faces."),
         "level": level,
-        "units": {"mesh": mesh_units,
-                  "words": (f"Lengths in the files are in {'metres' if mesh_units == 'm' else mesh_units} "
-                            "(the part's own unit, converted). Use consistent units for loads and materials "
-                            "in your solver (for example N, m, Pa).")},
+        # the one sentence the result screen, the report and the chat all say (contracts/mesh_units)
+        "units": {"mesh": mesh_units, "words": export_units_words()},
         "check": {"outcome": outcome, "words": said, "rows": rows,
                   "solvers": "Limits: the strictest of Abaqus/CalculiX, Nastran and Ansys."},
         "elements": cells,

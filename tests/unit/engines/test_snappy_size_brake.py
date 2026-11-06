@@ -201,3 +201,81 @@ def test_refined_far_past_its_background_still_trips(tmp_path):
     log.write_text("Refined mesh : cells:900000  faces:1  points:1  unbalance:0.01\n")
     brake = SB.SizeBrake(log, SB.case_budget(ws))
     assert brake() and brake.tripped["budget"] == 138_240
+
+
+# RUN-8: THE BRAKE MEASURES WHAT THE CASE WAS PRICED AT (the gap boxes between a body's parts)
+
+_JSM_LOG = "Refined mesh : cells:4967384  faces:1  points:1  unbalance:0.01\n"
+
+
+def _render_with_gaps(tmp_path, monkeypatch, *, raised_to: int | None, plan_cells: int | None = None):
+    """render_snappy_case on a small external body; `raised_to`: the ceiling the gap plan prices the
+    gaps at (None: no gap field at all)."""
+    import json
+    import types
+
+    from meshpipeline.engines.snappy import snappy_runner as R
+    if raised_to is not None:
+        monkeypatch.setattr(R, "_plan_body_gaps",
+                            lambda _f, *, budget, **_k: (types.SimpleNamespace(regions=[], spots=[]),
+                                                         max(int(budget), int(raised_to))))
+    analysis = {"bbox_min": [0.0, 0.0, 0.0], "bbox_max": [1.0, 0.4, 0.3], "L": 1.0,
+                "extent": [1.0, 0.4, 0.3]}
+    rec = {"base_cell": 0.1, "surface_level": [4, 4], "afford_level": 4, "feature_level": 5,
+           "distance_bands": [(0.2, 3), (0.8, 2)], "resolve_feature_angle": 30}
+    strategy = {"domain_margin": {"up": 5, "down": 10, "side": 5, "vert": 5}, "max_cells": 2_000_000}
+    if plan_cells:
+        strategy["_plan_cells"] = plan_cells
+    (tmp_path / "system").mkdir(parents=True, exist_ok=True)
+    dmin, dmax = R.domain_from_strategy(analysis, strategy, flow_axis="+x")
+    R.render_snappy_case(tmp_path, surface_name="body", feature_file="body.eMesh", analysis=analysis,
+                         recommendation=rec, domain_min=dmin, domain_max=dmax, strategy=strategy,
+                         gap_field=None if raised_to is None else ("field",))
+    return json.loads((tmp_path / SB.PLAN_CELLS_FILE).read_text())
+
+
+def test_the_gap_boxes_cells_are_part_of_the_budget_the_brake_reads(tmp_path, monkeypatch):
+    """The JAXA JSM narrow-gap wing (lab, 28 Oct): a 2M plan whose gap boxes raised snappy's ceiling
+    to 6.44M was stopped at 4.97M castellated cells - "2.5 times its budget" - and ended with no
+    mesh; without the brake it meshed production-grade at 6.24M."""
+    rec = _render_with_gaps(tmp_path, monkeypatch, raised_to=6_438_491)
+    assert rec == {"plan_cells": 6_438_491, "planned_cells": 2_000_000, "gap_cells": 4_438_491}
+    assert SB.case_budget(tmp_path) == 6_438_491
+    log = tmp_path / "snappyHexMesh.log"
+    log.write_text(_JSM_LOG)
+    assert SB.SizeBrake(log, SB.case_budget(tmp_path))() is None
+
+
+def test_a_gap_priced_case_far_past_even_that_still_trips(tmp_path, monkeypatch):
+    _render_with_gaps(tmp_path, monkeypatch, raised_to=3_000_000)
+    log = tmp_path / "snappyHexMesh.log"
+    log.write_text("Refined mesh : cells:9000000  faces:1  points:1  unbalance:0.01\n")
+    brake = SB.SizeBrake(log, SB.case_budget(tmp_path))
+    assert brake() and brake.tripped["budget"] == 3_000_000
+
+
+def test_a_re_plan_keeps_the_plans_own_budget_and_adds_this_passs_gap_cells(tmp_path, monkeypatch):
+    # the pass after a trip: the castellation budget cut to 1M, the plan's 2M carried as _plan_cells
+    import json
+    rec = _render_with_gaps(tmp_path, monkeypatch, raised_to=3_500_000, plan_cells=2_000_000)
+    assert rec["plan_cells"] == 2_000_000 + (3_500_000 - 2_000_000)
+    assert json.loads((tmp_path / SB.PLAN_CELLS_FILE).read_text())["gap_cells"] == 1_500_000
+
+
+def test_a_plan_the_gap_boxes_did_not_raise_keeps_its_old_record(tmp_path, monkeypatch):
+    assert _render_with_gaps(tmp_path / "a", monkeypatch, raised_to=None) == {"plan_cells": 2_000_000}
+    assert _render_with_gaps(tmp_path / "b", monkeypatch, raised_to=1_000) == {"plan_cells": 2_000_000}
+    assert _render_with_gaps(tmp_path / "c", monkeypatch, raised_to=None,
+                             plan_cells=6_000_000) == {"plan_cells": 6_000_000}
+
+
+def test_a_released_case_has_no_budget_and_is_never_braked(tmp_path):
+    import json
+    (tmp_path / "system").mkdir()
+    (tmp_path / SB.PLAN_CELLS_FILE).write_text(json.dumps({"plan_cells": 2_000_000}))
+    assert SB.case_budget(tmp_path) == 2_000_000
+    assert SB.release_brake(tmp_path, "nothing left to make smaller")
+    rec = json.loads((tmp_path / SB.PLAN_CELLS_FILE).read_text())
+    assert rec["plan_cells"] == 2_000_000 and rec[SB.BRAKE_RELEASED]
+    assert SB.case_budget(tmp_path) is None
+    assert SB.BRAKE_RULE == "RUN-8"

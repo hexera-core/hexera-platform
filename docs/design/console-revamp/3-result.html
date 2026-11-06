@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hexera console revamp - 3. Result</title>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="mock.css"></head>
+<body>
+<div class="app">
+  <aside class="pane" data-pane="files" data-stage="done"></aside>
+
+  <section class="convo" aria-label="Conversation">
+    <div class="convo-top"><span class="file">pump_housing.step</span><span class="kind">CFD mesh · OpenFOAM</span><span class="spacer"></span>
+      <button class="ghost">Share</button></div>
+    <div class="feed">
+      <details><summary class="fold"><svg class="chev" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3.5 2l3 3-3 3"/></svg>
+        How it went · 12 steps · 9 min 40 s</summary></details>
+
+      <div class="verdict notes" role="status"><span class="vm" data-ic="note"></span>
+        <span>Passed with notes. <span class="vsub">Your mesh is ready.</span></span></div>
+
+      <dl class="facts">
+        <div><dt>Elements</dt><dd>1.87M</dd></div>
+        <div><dt>Worst quality</dt><dd>0.31<small>needs 0.2+</small></dd></div>
+        <div><dt>Walls OK</dt><dd>14 of 14</dd></div>
+        <div><dt>Time</dt><dd>9 min 40 s</dd></div>
+      </dl>
+
+      <div class="dl">
+        <a class="main" href="#"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v8M4.5 7L8 10.5 11.5 7M3 13.5h10"/></svg>Everything<span class="h" style="color:inherit;opacity:.7">case folder, solver files, report</span><span class="s">412 MB</span></a>
+        <a href="#"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.5h4l1.3 1.5H14v6.5H2z"/></svg>OpenFOAM case<span class="s">212 MB</span></a>
+        <a href="#"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 2h5l3 3v9H4z"/></svg>Fluent mesh<span class="s">188 MB</span></a>
+        <a class="report" href="#"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 2h5l3 3v9H4z"/><path d="M6 8h4M6 10.5h4"/></svg>Mesh report<span class="h">every limit, hot spot and place</span><span class="s">PDF · 1.4 MB</span></a>
+      </div>
+
+      <details class="drop"><summary><svg class="chev" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3.5 2l3 3-3 3"/></svg>
+        Notes <span class="c">2</span><span class="hint">nothing to fix</span></summary>
+        <div class="body">
+          <div class="kind"><b>3 cells are a little skewed near the inlet lip</b><span class="c">0.31</span>
+            <span class="why">Still inside every solver's limit. The report shows where.</span></div>
+          <div class="kind"><b>2 tiny edges were left out</b><span class="c">0.02 mm</span>
+            <span class="why">Smaller than any cell. They do not change the flow.</span></div>
+        </div></details>
+
+      <details class="drop" open><summary><svg class="chev" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3.5 2l3 3-3 3"/></svg>
+        Hot spots <span class="c">348</span><span class="hint">all refined</span></summary>
+        <div class="body">
+          <div class="kind"><b>Sharp inside corners</b><span class="c">318</span><span class="why">Kept sharp. Cells are 4× finer there.</span></div>
+          <div class="kind"><b>Fillets</b><span class="c">26</span><span class="why">At least 4 cells round each one.</span></div>
+          <div class="kind"><b>Holes</b><span class="c">3</span><span class="why">At least 12 cells round each one.</span></div>
+          <div class="kind"><b>Thin wall</b><span class="c">1</span><span class="why">1.8 mm, with 3 cells through it.</span></div>
+          <a class="more" href="#">Show them on the part</a> <span style="color:var(--text-faint);font-size:12px">· every place is in the Mesh report</span>
+        </div></details>
+
+      <div class="next">
+        <button class="pill">Make it finer</button><button class="pill">Fewer cells</button><button class="pill">Mesh another part</button>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="box"><span class="ph">Ask about the mesh, or tell Hexera what to change…</span>
+        <button class="send" aria-label="Send"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 13V3M3.5 7.5L8 3l4.5 4.5"/></svg></button></div>
+    </div>
+  </section>
+
+  <section class="viewer" aria-label="Mesh view">
+    <div class="vt" data-vt=""></div>
+    <div class="v-stage" data-part data-mesh></div>
+    <div class="v-left">Your mesh · 1.87M cells · surface shown</div>
+    <div class="v-corner"><span>182 × 120 × 96 mm</span></div>
+  </section>
+</div>
+<script defer src="shell.js"></script><script defer src="icons.js"></script><script defer src="part.js"></script>
+</body></html>

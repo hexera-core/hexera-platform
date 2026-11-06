@@ -52,6 +52,23 @@ Do this once per project, before the console is expected to accept a sign-up:
 There is nothing else to configure in the console for this cycle — no custom sender domain, no
 extra provider, no SMS.
 
+### 2b. Sign-up abuse controls
+
+After initialisation, apply the project's abuse controls. They are project-wide - every personal
+environment in `hexera-dev` shares them - so this is an operator step, never a deploy stage:
+
+```bash
+GCP_PROJECT_ID=hexera-dev  bash deploy/gcp/scripts/configure-identity-platform.sh
+GCP_PROJECT_ID=hexera-prod bash deploy/gcp/scripts/configure-identity-platform.sh
+```
+
+It enables **reCAPTCHA Enterprise** for email/password sign-up and sign-in, **email-enumeration
+protection**, and a server-side 8-character password floor. reCAPTCHA starts in `AUDIT`: read the
+score distribution in the reCAPTCHA console for a week, then re-run with
+`IDP_RECAPTCHA_MODE=ENFORCE`. The console fetches the reCAPTCHA configuration itself
+(`initializeRecaptchaConfig` in `apps/console/src/lib/firebase/client.ts`). Record each run in
+`docs/compliance/evidence-log.md`.
+
 ### 2a. Why the automated check lives in `enable-apis.sh`, not `deploy-preflight.sh`
 
 The signup-and-credits design (§8) originally asked for this check in
@@ -122,7 +139,15 @@ address; this is a known, accepted limitation, not a defect to chase during this
 ## 5. Opening and closing signup: `CONSOLE_SIGNUP_ENABLED`
 
 `CONSOLE_SIGNUP_ENABLED` (default `true`) gates whether an ID token for a uid the API has never
-seen provisions a new organisation, or is refused.
+seen is accepted at all, and whether a verified account without an organisation is given one.
+
+**Provisioning waits for a verified address.** The first `POST /auth/session` for a new uid writes
+only a `users` row (holding the organisation name typed at sign-up). The organisation, its owner
+membership and the signup grant are created on the first sign-in whose token says
+`email_verified` - in practice the console re-minting its session after the verification link is
+clicked. Until then the account has no ledger, and `spend_gate` refuses it a run. An unverified,
+unprovisioned row for an address is replaced if a different uid later proves that mailbox, so a
+squatter cannot block the real owner.
 
 **It is an API setting, passed to the API service by `deploy/gcp/scripts/create-api-service.sh`,
 never a console one.** This is deliberate: the console can only ever decline to *render* the
@@ -139,7 +164,14 @@ one is refused.
 ## 6. The signup credit grant: `SIGNUP_GRANT_CREDITS`
 
 `SIGNUP_GRANT_CREDITS` (default `100`) is the number of credits granted, once, to a newly
-provisioned organisation, at the same time `POST /auth/session` creates it. It is passed to the API
+provisioned organisation, when its owner's address is verified and the organisation is created.
+
+**Once per mailbox, not once per account.** `application/signup_claims.py` normalises the address
+(drops `+tags` everywhere and dots on Gmail) and records a digest in `signup_grant_claims`; a
+second organisation for the same inbox - including one created after erasing the first - is
+provisioned with no grant. Addresses on `SIGNUP_GRANT_WITHHELD_DOMAINS` (disposable inboxes) get
+an account but no grant. The ledger entry id is derived from the organisation, so a replay is a
+no-op. It is passed to the API
 service the same way as `CONSOLE_SIGNUP_ENABLED`, above.
 
 **Nothing in this cycle spends a credit.** The ledger (`credit_ledger`) and `GET /api/v1/credits`
