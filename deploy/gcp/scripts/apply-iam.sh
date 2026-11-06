@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Responsibility: Grant the least privilege the mesh executor needs - invoke the job, and exchange objects.
+# Responsibility: Grant the least privilege the mesh executor needs - invoke the job, exchange objects,
+#                 and let the API read what the job leaves beside the result.
 # Boundaries: every binding is scoped to a named job or bucket; the deployer's own roles are not granted here.
 
 # Apply least-privilege IAM for the mesh executor. Idempotent: add-iam-policy-binding is a no-op
 # when the binding already exists, and every binding is scoped to a named job or bucket rather
 # than granted project-wide.
 #
-# There are exactly two principals and three operations. The LOCAL CALLER submits mesh jobs and
-# trades workspaces through the exchange bucket; the MESH JOB reads its inputs from that bucket
-# and writes its outputs back. Nothing here touches a database, a cache, a model key or an
-# application bucket - those are local and never leave the operator's machine.
+# There are exactly three principals. The LOCAL CALLER submits mesh jobs and trades workspaces
+# through the exchange bucket; the MESH JOB reads its inputs from that bucket and writes its
+# outputs back; the API READS ONLY, for the progress and partial-mesh objects the job leaves
+# beside the result. Nothing here touches a database, a cache, a model key or an application
+# bucket - those are local and never leave the operator's machine.
 set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname "$0")/lib.sh"
@@ -61,5 +63,52 @@ RUNTIME_SA="$(gc run jobs describe "${CLOUDRUN_MESH_JOB}" --region "${GCP_REGION
 RUNTIME_SA="${RUNTIME_SA:-${MESH_SA_EMAIL}}"
 info "Mesh runtime identity: ${RUNTIME_SA} (compute-only)"
 grant_bucket "${GCP_MESH_BUCKET}" "serviceAccount:${RUNTIME_SA}" "roles/storage.objectUser"
+
+# THE API'S READ ON THE EXCHANGE. The mesh job writes progress and, when partial mesh snapshots
+# are enabled, a decimated surface of the mesh-so-far BESIDE the result. The API serves those to
+# the browser from its own origin, so it opens the exchange bucket directly - the only read path
+# into this bucket that is not the worker's.
+#
+# objectViewer, not objectUser: the API reads one object and never creates, deletes or lists for
+# mutation. The worker already holds objectUser and owns every write and every cleanup on this
+# bucket; granting the API the same role would hand a public-facing service the authority to
+# delete another tier's workspaces.
+#
+# The SERVICE is the authority on which identity it runs as, for the same reason the mesh job is
+# above: a configured account name can disagree with what is deployed, and the binding has to
+# follow the identity that will actually open the bucket. The configured name is the fallback for
+# the provisioning order, where IAM is applied against a service this run is still creating.
+#
+# SKIPPED, NOT FAILED, when there is no API. This repository automates the mesh job on its own,
+# and a mesh-only deployment has no API service and no API account - so an absent one is an
+# ordinary state here, not a misconfiguration.
+#
+# THE WHOLE BLOCK HANGS OFF `CLOUDRUN_API_SERVICE`, including the fallback, and that is the point
+# rather than an oversight. Deriving `<deployment-id>-api` from DEPLOYMENT_ID alone invents an
+# account a mesh-only install never created, and `add-iam-policy-binding` against a principal that
+# does not exist FAILS - which under `set -e` takes the whole script down. That turned "this
+# deployment has no API" into "you cannot apply IAM at all", on the one deployment shape this
+# repository automates end to end. A named service is what says an API exists; its account may
+# legitimately not exist YET, which is the provisioning-order case the fallback still serves.
+API_SERVICE="${CLOUDRUN_API_SERVICE:-}"
+API_SA_EMAIL=""
+if [ -n "${API_SERVICE}" ]; then
+  API_SA_EMAIL="$(gc run services describe "${API_SERVICE}" --region "${GCP_REGION}" \
+    --format='value(spec.template.spec.serviceAccountName)' 2>/dev/null || true)"
+  # A name is only derivable with something to derive it FROM. Without either, "-api@project" is
+  # not a principal and the binding would fail the same way the invented account did.
+  API_SA_NAME="${API_SERVICE_ACCOUNT:-}"
+  [ -n "${API_SA_NAME}" ] || [ -z "${DEPLOYMENT_ID:-}" ] || API_SA_NAME="${DEPLOYMENT_ID}-api"
+  if [ -z "${API_SA_EMAIL}" ] && [ -n "${API_SA_NAME}" ]; then
+    API_SA_EMAIL="${API_SA_NAME}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+  fi
+fi
+if [ -n "${API_SA_EMAIL}" ]; then
+  info "API runtime identity: ${API_SA_EMAIL} (read-only on the exchange)"
+  grant_bucket "${GCP_MESH_BUCKET}" "serviceAccount:${API_SA_EMAIL}" "roles/storage.objectViewer"
+else
+  info "No API service or account resolved - skipping the API's read on the exchange bucket."
+  info "A mesh-only deployment has no API. If you expected one, set CLOUDRUN_API_SERVICE."
+fi
 log "done - the deployer's own prerequisites (run.admin, iam.serviceAccountUser on the mesh SA)"
 log "are listed in docs/deployment/overview.md and are NOT granted by this script"

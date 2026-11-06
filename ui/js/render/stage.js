@@ -50,6 +50,12 @@ export function setResultHandler(fn) { onResult = fn || (() => {}); }
 let onCancel = () => {};
 export function setCancelHandler(fn) { onCancel = fn || (() => {}); }
 
+/* Installed by the entrypoint. A frame of the mesh-so-far exists: the stage says so and hands the
+   pointer on. Reading the bytes and drawing them is the application's (viewer/mesh_partial.js) -
+   this module renders and does not fetch. */
+let onMeshPartial = () => {};
+export function setMeshPartialHandler(fn) { onMeshPartial = fn || (() => {}); }
+
 /* What each lane mark means, in words: the dot's title and its name for a screen reader. The
    marks themselves are drawn by css/theme.css; `Stage.markOf` decides which one a lane earns. */
 const MARKS = {
@@ -225,6 +231,8 @@ export const Stage = {
      vision model, not for people - and the form is the same one the stage shows. One card per
      session, replaced if the check is shown again. */
   geometryCheck(d,confirm){
+    // the card follows the analysis the user chose: geometryCheckUpdate re-draws it as another kind
+    this._gcConfirm=confirm;this._gcKind=d&&d.thermal?'thermal':d&&d.fea?'fea':'flow';
     if(d&&d.thermal)return this.thermalCheck(d,confirm);
     if(d&&d.fea)return this.feaCheck(d,confirm);
     const p=d.proposal||{},pics=d.pictures||[];
@@ -346,6 +354,9 @@ export const Stage = {
 
   geometryCheckUpdate(d){
     const g=this._gcEl,p=this._gcP;if(!g||!p||g.querySelector('.gc-done'))return;
+    // AN FEA PART NEVER KEEPS THE FLOW CARD: a check served for another analysis re-draws the card
+    if(d&&(d.route||d.thermal)&&this._gcConfirm&&(d.thermal?'thermal':d.fea?'fea':'flow')!==this._gcKind)
+      return this.geometryCheck(d,this._gcConfirm);
     const q=(d&&d.proposal)||{};
     if(d&&d.proposal)this._gcServed=servedProposal(this._gcServed,d.proposal);
     followUnit(g,p,q.unit,q.unit_basis);followSuggestion(g,p,q.unit_suggestion);
@@ -426,7 +437,7 @@ export const Stage = {
     const ref=hasHist?history.typical_s*1000:budget*1000;
     const sub=hasHist
       ?`similar runs take about ${fmtDur(history.typical_s*1000)} (usually ${fmtDur(history.p10_s*1000)} to ${fmtDur(history.p90_s*1000)})`
-      :`no similar runs yet · stops by itself after ${fmtDur(budget*1000)} at most`;
+      :`no similar runs yet · stops by itself at ${fmtDur(budget*1000)}`;
     const w=document.createElement('div');w.className='meshbar';
     w.innerHTML=`<div class="mb-top"><span class="mb-lbl">meshing · ${esc(engine||'')}</span>
         <span class="mb-num">0:00</span></div>
@@ -446,6 +457,15 @@ export const Stage = {
     if(m&&ev.kind!=='say'&&!/^Still /.test(ev.text)){m.narrated=true;
       const l=m.el.querySelector('.mb-lbl');if(l)l.textContent=String(ev.text);}
     RunLine.model.narrate(ev,this.now());RunLine.draw();},
+  // A FRAME OF THE MESH-SO-FAR was published: a pointer, never geometry. The stage holds no
+  // viewer and reads no bytes - it passes the pointer to whoever was installed to draw it, and a
+  // build with nobody installed renders exactly what it did before.
+  meshPartial(phase,key){onMeshPartial(phase,key);},
+  // THE RECEIPT a phase published: deterministic rows the user opens on that step of the live line.
+  // It is detail, not narration - the step's own one-line summary is untouched, and a receipt for a
+  // stage this build has no step for is dropped by the model.
+  receipt(agent,ev){if(!ev)return;
+    RunLine.model.receipt({...ev,stage:ev.stage||agent},this.now());RunLine.draw();},
   // THE PLAN the run will build (cells, wall layers, where it refines), in its lane and on the line
   plan(agent,summary){if(summary)this.info(agent,'Plan: '+summary);
     RunLine.model.plan(summary,this.now());RunLine.draw();},

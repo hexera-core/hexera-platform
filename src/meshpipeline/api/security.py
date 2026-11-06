@@ -67,10 +67,36 @@ async def resolve_principal(authorization: str | None, x_api_key: str | None,
         return await _principal_from_key(presented)
 
     owner_id = verify_identity(x_api_key, x_user_id, x_user_sig)
+    organization_id = await _organization_for(owner_id)
+    if not organization_id and polcfg.USER_TOKEN_SECRET:
+        # AN ERASED ACCOUNT'S COOKIE DIES HERE. The console's signed session outlives the account
+        # it names: erasure (application/privacy_service) deletes the users row and memberships,
+        # but the HMAC over the address stays valid until the cookie expires. On the signed path
+        # every legitimate owner HAS a users row - sign-in creates it, and 0004's backfill created
+        # one for every pre-existing owner - so a signed identity that resolves to no organisation
+        # AND no users row is an account that no longer exists, not a degraded lookup (those fail
+        # open inside _organization_for and still return "" WITH the row present). Self-asserted
+        # dev (no USER_TOKEN_SECRET) is untouched.
+        await _refuse_unless_account_exists(owner_id)
     return Principal(owner_id=owner_id,
-                     organization_id=await _organization_for(owner_id),
+                     organization_id=organization_id,
                      credential=Credential.signed_header if polcfg.USER_TOKEN_SECRET
                      else Credential.self_asserted)
+
+
+async def _refuse_unless_account_exists(owner_id: str) -> None:
+    from meshpipeline.persistence.repositories.user_repository import UserRepository
+    try:
+        async with get_db() as db:
+            user = await UserRepository().get_by_email(db, owner_id)
+    except Exception as exc:
+        # FAIL OPEN, like _organization_for: a lookup that cannot run must not 500 a proven
+        # caller. Only a DEFINITIVE absence refuses.
+        logger.error("could not check whether a signed account still exists (%s)",
+                     type(exc).__name__)
+        return
+    if user is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
 
 
 async def _organization_for(owner_id: str) -> str:

@@ -374,9 +374,10 @@ def rung_after_switch(state: Mapping, *, attempts_ceiling: int, attempt_seconds:
                       now: float | None = None) -> tuple[bool, str]:
     """LAD-cfd-2: (whether the run gets one more attempt for a rung, why not in words). Only for a
     resolution note on the engine the run switched to, at its first rung, inside the run's ceiling
-    of attempts, and only when a whole attempt still fits in the run's time (a guard clock: a rung
-    that ran the run out of time would lose the sound mesh it has)."""
-    import time as _time
+    of attempts. The time left never decides it (D3, docs/RULES.md TIME-1): the run's deadlines are
+    guards only (TIME-5), and a rung that runs past them is a guard trip (TIME-3), after which the
+    earlier sound mesh is still delivered (LAD-cfd-3). `attempt_seconds` and `now` are kept for
+    callers and are not read."""
     c = resolution_caveat(state)
     if c is None or not switched(state):
         return False, "no switch"
@@ -386,18 +387,6 @@ def rung_after_switch(state: Mapping, *, attempts_ceiling: int, attempt_seconds:
         return False, "no rung fits"
     if int(state.get("retry_count", 0) or 0) >= int(attempts_ceiling):
         return False, "the run's ceiling of attempts is reached"
-    # the EARLIER of the run's two clocks: the builder cuts an attempt short at its own deadline
-    ends = [d for d in (_num(state.get("builder_deadline_epoch")),
-                        _num(state.get("pipeline_deadline_epoch"))) if d is not None and d > 0]
-    deadline = min(ends) if ends else None
-    if deadline is not None:
-        left = deadline - (now if now is not None else _time.time())
-        if left < float(attempt_seconds):
-            from meshpipeline.engines.determinism import note_time_limit
-            note_time_limit("resolution_rung_after_switch", "the rung an engine switch leaves "
-                            "was not started: a whole attempt no longer fits in the run's time",
-                            left_s=left, needed_s=float(attempt_seconds))
-            return False, "too little time left for a whole attempt"
     return True, ""
 
 

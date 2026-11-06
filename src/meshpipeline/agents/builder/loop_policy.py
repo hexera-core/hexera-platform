@@ -15,10 +15,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from meshpipeline.agents.builder.diagnostics import BuilderRunExtension
+from meshpipeline.agents.builder.tool_context import HANDS_OFF
 from meshpipeline.agents.loop.accounting import ToolInvocation
 from meshpipeline.agents.loop.driver import RoundDecision, ToolOutcome
 from meshpipeline.contracts.agent_loop import (
     AgentRole,
+    LoopExit,
     LoopLimits,
     LoopStage,
     LoopTally,
@@ -108,6 +110,8 @@ class BuilderLoopPolicy:
     _pending_note: str | None = None
     _nudged: bool = False
     _valid_mesh_this_round: bool = False
+    #: run_mesh handed the run on to the next engine (tools/meshing.HANDS_OFF): the attempt is over
+    handed_off: bool = False
 
     # LoopDriver: the runner
     def limits(self) -> LoopLimits:
@@ -152,6 +156,11 @@ class BuilderLoopPolicy:
         if result.tool == "run_mesh" and result.result.get("mesh_ok"):
             self.runmesh_ok_without_submit += 1
             self._valid_mesh_this_round = True
+        if result.tool == "run_mesh" and result.result.get(HANDS_OFF):
+            # THE ENGINE HANDED THE RUN ON: no mesh, and none this engine can make of this case. The
+            # loop ends here, at once - the fallback ladder moves the run to the next engine
+            self.handed_off = True
+            return ToolOutcome(content=result.content, accepted=result.accepted, ends_loop=True)
         return ToolOutcome(content=result.content, accepted=result.accepted)
 
     def _note_authoring(self, result) -> None:
@@ -346,6 +355,9 @@ class BuilderLoopPolicy:
         self._pending_note = f"{self._pending_note}\n{note}" if self._pending_note else note
 
     def on_plaintext(self, tally: LoopTally) -> RoundDecision:
+        if self.handed_off:
+            # never "call submit_mesh" after the engine handed the run on: there is nothing to submit
+            return RoundDecision(complete=True, exit=LoopExit.policy_abort)
         notes: list[str] = []
         if self._pending_note:
             notes.append(self._pending_note)

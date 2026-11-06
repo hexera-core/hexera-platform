@@ -70,6 +70,19 @@ def test_the_sweep_removes_an_authored_sliver_and_the_kernel_history_says_it_is_
     assert not [d for d in found if d.code is DefectCode.small_face]
 
 
+def test_the_sweep_precision_is_the_requested_tolerance_not_the_body_scale(
+        tmp_path, _sweep_on, monkeypatch):
+    import meshpipeline.settings.cad_repair as rcfg
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_DEVIATION_RATIO", 0.001)
+    shape, defect = _sliver(tmp_path)
+
+    outcome = FixSmallFaces().apply(shape, FixSmallFaces().targets_for(defect),
+                                    tolerance_mm=0.01)
+
+    assert outcome.evidence["precision_mm"] == pytest.approx(0.01)
+
+
 def test_the_session_keeps_a_real_sweep(tmp_path, _sweep_on):
     from meshpipeline.cad.repair.session import RepairSession
 

@@ -194,6 +194,14 @@ API_ENV_PAIRS=(
   # confirm before the intake asks about it. Off unless the environment says so: the check
   # spends worker time and a vision-model call per upload.
   "GEOMETRY_CHECK_ENABLED=${GEOMETRY_CHECK_ENABLED:-false}"
+  # Whether a mesh that is still running may publish a decimated frame of itself for the viewer.
+  # The API reads it to decide whether its partial route exists at all; the worker reads its own
+  # copy to decide whether to ask the mesher for frames. Off unless the environment says so.
+  "MESH_PROGRESSIVE_SNAPSHOT_ENABLED=${MESH_PROGRESSIVE_SNAPSHOT_ENABLED:-false}"
+  # Carried so the API's own view of the environment matches the mesher's. It gates no route here
+  # - it is the mesher that sizes a run - but an environment whose halves disagree is the thing
+  # the frame switch's documentation warns about.
+  "MESH_SNAPPY_RANKS=${MESH_SNAPPY_RANKS:-}"
 )
 # BILLING'S NON-SECRET HALF, only where this deployment charges (the two Stripe credentials are
 # bound above as references). CONSOLE_BASE_URL is where Stripe returns the browser; left unset it
@@ -243,6 +251,12 @@ fi
   || API_ENV_PAIRS+=("CAD_REPAIR_FILL_NONPLANAR_HOLES=${CAD_REPAIR_FILL_NONPLANAR_HOLES}")
 [ -z "${CAD_REPAIR_HEAL_SELF_INTERSECTIONS:-}" ] \
   || API_ENV_PAIRS+=("CAD_REPAIR_HEAL_SELF_INTERSECTIONS=${CAD_REPAIR_HEAL_SELF_INTERSECTIONS}")
+[ -z "${CAD_REPAIR_FIX_SMALL_FACES:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_FIX_SMALL_FACES=${CAD_REPAIR_FIX_SMALL_FACES}")
+[ -z "${CAD_REPAIR_MAX_OPS:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_MAX_OPS=${CAD_REPAIR_MAX_OPS}")
+[ -z "${CAD_REPAIR_TIMEOUT_S:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_TIMEOUT_S=${CAD_REPAIR_TIMEOUT_S}")
 # The LLM planner posture, only when the workflow's llm_planner input chose shadow or live.
 [ -z "${CAD_REPAIR_LLM_PLANNER:-}" ] \
   || API_ENV_PAIRS+=("CAD_REPAIR_LLM_PLANNER=${CAD_REPAIR_LLM_PLANNER}")
@@ -256,6 +270,9 @@ OPT_IN_DROPPABLE=()
 [ -n "${CAD_REPAIR_FILL_PLANAR_HOLES:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_FILL_PLANAR_HOLES)
 [ -n "${CAD_REPAIR_FILL_NONPLANAR_HOLES:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_FILL_NONPLANAR_HOLES)
 [ -n "${CAD_REPAIR_HEAL_SELF_INTERSECTIONS:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_HEAL_SELF_INTERSECTIONS)
+[ -n "${CAD_REPAIR_FIX_SMALL_FACES:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_FIX_SMALL_FACES)
+[ -n "${CAD_REPAIR_MAX_OPS:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_MAX_OPS)
+[ -n "${CAD_REPAIR_TIMEOUT_S:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_TIMEOUT_S)
 [ -n "${CAD_REPAIR_LLM_PLANNER:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_LLM_PLANNER)
 # The database this deployment migrated. POSTGRES_* and not DATABASE_URL: a DSN carries the
 # password, and DATABASE_URL is declared secret precisely because it does.

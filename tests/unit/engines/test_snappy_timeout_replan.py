@@ -1,11 +1,16 @@
-# Responsibility: Verify a mesh run that ran out of time is reported as a timeout and is never rebuilt as it was.
+# Responsibility: Verify a mesh run that ran out of time is reported as a timeout, and that a snappy pass its guard clock stops is a guard trip - never a coarser re-plan.
 # Boundaries: the Cloud Run exchange's deadline, the snappy judge, the planner's coarsening and both snappy drivers' pass loops; the native toolchain is stubbed at the engine seam.
 """Job 470c3eb9 (shell-and-tube exchanger, internal snappy): pass 1 dispatched snappyHexMesh to
 Cloud Run and no result came back in 50 minutes. The worker reported exit -3, "INFRASTRUCTURE
 failure - the mesh run never started", the judge told the planner to resubmit the plan
-unchanged, and pass 2 rebuilt the identical case for another 50 minutes; pass 3 started the same
-plan again. A dispatched run that does not come back in time is a TIMEOUT, it says so plainly, and
-the next pass is always smaller - and never the same case byte for byte."""
+unchanged, and pass 2 rebuilt the identical case for another 50 minutes. A dispatched run that
+does not come back in time is a TIMEOUT, and it says so plainly.
+
+Since D3 (docs/RULES.md TIME-1..3) a pass that runs past its guard is not re-planned coarser: the
+guard is set from the pass's planned cells, a pass it stops ends the passes as a guard trip, and
+the attempt is replayed as an infrastructure failure - so how coarse a mesh comes out never
+depends on how busy the machine was. A pass that came out BROKEN (measured) is still followed by a
+coarser one, and never rebuilt byte for byte."""
 from __future__ import annotations
 
 import asyncio
@@ -136,14 +141,53 @@ def test_an_external_plan_is_cut_by_its_budget():
     assert cuts == ["cell budget cut from 6 M to 3 M"]
 
 
-def test_the_timed_out_plan_is_remembered_for_the_next_attempt_only(tmp_path):
+def test_a_broken_pass_plan_is_remembered_for_the_next_attempt_only(tmp_path):
     a1, a2 = tmp_path / "attempt_1", tmp_path / "attempt_2"
     a1.mkdir()
     a2.mkdir()
-    drv._write_timed_out_plan(a1, _TIMED_OUT)
-    assert drv._sibling_timed_out_plan(a2) == _TIMED_OUT
+    broken = {**_TIMED_OUT, "_why": "broken"}
+    drv._write_timed_out_plan(a1, broken)
+    assert drv._sibling_timed_out_plan(a2) == broken
     # an attempt never reads its own record: a re-executed node re-derives its passes as before
     assert drv._sibling_timed_out_plan(a1) is None
+    # a record of a pass that ran out of TIME (written before D3) never makes a pass coarser
+    drv._write_timed_out_plan(a1, _TIMED_OUT)
+    assert drv._sibling_timed_out_plan(a2) is None
+
+
+def test_a_size_brake_stop_is_remembered_for_the_next_attempt(tmp_path):
+    # the size brake is a measured count, not a clock: the next attempt starts from its cut budget
+    # (full benchmark, epa_daycab: without it the next attempt repeated the same over-budget passes)
+    a1, a2 = tmp_path / "attempt_1", tmp_path / "attempt_2"
+    a1.mkdir()
+    a2.mkdir()
+    over = {**_TIMED_OUT, "_why": "oversize", "_oversize": {"ratio": 2.3}, "_budget_factor": 0.4}
+    drv._write_timed_out_plan(a1, over)
+    assert drv._sibling_timed_out_plan(a2) == over
+
+
+def test_a_pass_trip_after_a_sound_pass_keeps_that_mesh(tmp_path):
+    # TIME-8: an earlier pass of this attempt left a sound mesh aside; the next pass running past its
+    # guard no longer costs it - the trip does not end the attempt, and the passes end on that mesh
+    from meshpipeline.contracts.work_limits import TIME_KEEP_VALID, TIME_TRIP, ends_attempt, guard_for
+    from meshpipeline.engines import determinism as det
+    pm = tmp_path / "constant" / "polyMesh"
+    pm.mkdir(parents=True)
+    (pm / "owner").write_text("pass 1")
+    assert drv._keep_sound_mesh(tmp_path)
+    (pm / "owner").write_text("pass 2, stopped")
+    drv._trip_pass(tmp_path, guard_for("snappy", cells=2_000_000), 2)
+    trips = det.guard_trips(tmp_path)
+    assert [t["rule"] for t in trips] == [TIME_KEEP_VALID] and not ends_attempt(trips[0])
+    assert drv._end_passes(tmp_path, False, "job") is True
+    assert (pm / "owner").read_text() == "pass 1"
+    assert "valid mesh is kept" in drv._shortfall("", "", timed_out=True, minutes=80, repeat=True,
+                                                   kept_sound=True)
+    # with no sound pass aside, the trip ends the attempt as before (TIME-3)
+    other = tmp_path / "other"
+    (other / "constant" / "polyMesh").mkdir(parents=True)
+    drv._trip_pass(other, guard_for("snappy", cells=2_000_000), 1)
+    assert [t["rule"] for t in det.guard_trips(other)] == [TIME_TRIP]
 
 
 # the drivers, end to end, with the native toolchain stubbed at the engine seam
@@ -217,7 +261,8 @@ def _run(ws: Path, state: dict, monkeypatch, source_path: str = ""):
 def external(monkeypatch, tmp_path):
     import meshpipeline.engines.snappy.layer_policy as LP
     import meshpipeline.engines.snappy.snappy_runner as R
-    w = types.SimpleNamespace(runs=[], fixed_case=False, first=dict(_TIMEOUT))
+    w = types.SimpleNamespace(runs=[], fixed_case=False, first=dict(_TIMEOUT),
+                              later={"rc": 0, "timed_out": False})
 
     def _render(workspace, *, strategy, **_k):
         ws = Path(workspace)
@@ -227,9 +272,12 @@ def external(monkeypatch, tmp_path):
         (ws / "system" / "snappyHexMeshDict").write_text(f"maxGlobalCells {budget};\n")
         return {"surface_level": [3, 3], "n_layers": 5}
 
-    def _run_native(*_a, **_k):
+    w.guards = []
+
+    def _run_native(*_a, **k):
         w.runs.append(len(w.runs) + 1)
-        return dict(w.first) if len(w.runs) == 1 else {"rc": 0, "timed_out": False}
+        w.guards.append(k.get("timeout"))
+        return dict(w.first) if len(w.runs) == 1 else dict(w.later)
 
     stubs = {
         "detect_symmetry_plane": lambda *_a, **_k: None,
@@ -274,30 +322,47 @@ def external(monkeypatch, tmp_path):
     return w
 
 
-def test_the_pass_after_a_timeout_meshes_a_smaller_case(external):
+def _guard_of(cells: int) -> int:
+    from meshpipeline.contracts.work_limits import guard_for
+    return guard_for("snappy", cells=cells).guard_seconds
+
+
+def test_a_pass_its_guard_stops_ends_the_passes_as_a_guard_trip(external):
+    from meshpipeline.engines import determinism as det
     ws, (ok, _value, _outcome), pub = external.go()
-    assert ok is True and external.runs == [1, 2]
+    # no coarser pass 2: the attempt ends on the trip and is replayed as it was (TIME-3)
+    assert ok is False and external.runs == [1]
+    assert not any(n.startswith("Meshing pass 2") for n in pub.notes), pub.notes
     outcome = [n for n in pub.notes if n.startswith("Pass 1 ")]
-    assert outcome and outcome[0].startswith(
-        "Pass 1 stopped - snappyHexMesh made no progress for"), outcome
-    opened = [n for n in pub.notes if n.startswith("Meshing pass 2 of")]
-    assert opened and "made coarser because the last pass made no progress" in opened[0]
-    assert "cell budget cut from 6 M to 3 M" in opened[0]
-    assert json.loads((ws / ".last_plan.json").read_text())["max_cells"] == 3_000_000
-    assert json.loads((ws / ".timed_out_plan.json").read_text())["max_cells"] == 6_000_000
-    # the planner heard a timeout, not "never started, resubmit unchanged"
-    assert external.plans[-1]["prior_feedback"].startswith("TIMEOUT - snappyHexMesh ran out")
+    assert outcome and outcome[0].startswith("Pass 1 stopped by its guard clock"), outcome
+    assert "infrastructure stop" in outcome[0]
+    assert not (ws / ".timed_out_plan.json").exists(), "a clock never makes a later pass coarser"
+    # the pass ran watched to its machine's wall (RUN-5) - its guard - and stopped as stuck
+    # inside it; the trip is beside the case with the pass's planned cells (TIME-2)
+    from meshpipeline.contracts.native_time import wall_for
+    assert external.guards == [wall_for(ws)]
+    trips = det.guard_trips(ws)
+    assert [(t["where"], t["step"], t["amount"]) for t in trips] == [("snappy", "pass 1",
+                                                                       6_000_000.0)]
 
 
-def test_a_case_identical_to_the_one_that_timed_out_is_never_run_again(external):
-    external.fixed_case = True        # whatever the plan says, the authored bytes do not change
-    ws, (ok, _value, _outcome), pub = external.go()
-    assert ok is False
-    assert external.runs == [1], "the identical case was meshed again"
-    assert any(n.startswith("Pass 2 not run - it would rebuild, unchanged, a mesh that just "
-                            "ran out of time") for n in pub.notes), pub.notes
-    assert not any(n.startswith("Meshing pass 3") for n in pub.notes), \
-        "the passes stop instead of burning another"
+def test_a_pass_guard_comes_from_its_planned_cells_alone():
+    # same planned cells in, same guard out - the elapsed time is not an input (TIME-2)
+    assert _guard_of(6_000_000) == 4800                              # the snappy ceiling
+    assert _guard_of(2_000_000) == 4000                              # 3 x 2 M / 1,500 cells/s
+    assert _guard_of(500_000) == 2400                                # never under the old cap
+    work = drv.pass_guard(2_000_000, job_id="", attempt=1)
+    assert work.as_dict()["planned_s"] == pytest.approx(2_000_000 / 1500.0, abs=0.1)
+
+
+def test_a_watched_pass_guard_is_its_machines_wall(tmp_path):
+    # RUN-5: a watched pass is never cut by a guessed limit - its guard is the machine's wall,
+    # whatever its planned cells; the planned work is still what the record carries (TIME-2)
+    from meshpipeline.contracts.native_time import wall_for
+    for cells in (500_000, 2_000_000, 60_000_000):
+        work = drv.pass_guard(cells, job_id="", attempt=1, workspace=tmp_path)
+        assert work.guard_seconds == wall_for(tmp_path)
+        assert work.as_dict()["amount"] == float(cells)
 
 
 _BRAKED = {"rc": -1, "timed_out": False, "oversize": {"stage": "castellated", "cells": 4_967_384,
@@ -317,6 +382,22 @@ def test_a_case_the_size_brake_stopped_that_no_re_plan_can_shrink_meshes_with_th
     assert rec.get(SB.BRAKE_RELEASED)
     assert SB.case_budget(ws) is None, "the released case is braked again"
     assert any("no re-plan makes it smaller" in n for n in pub.notes), pub.notes
+
+
+def test_a_released_case_its_guard_stops_is_a_guard_trip_not_another_release(external):
+    """RUN-8 meets TIME-3: releasing the size brake lifts the SIZE stop only. The released pass
+    still runs under its guard, and a guard stop there ends the passes as a guard trip (replayed
+    as it was) - never a second release, never a coarser pass."""
+    from meshpipeline.engines import determinism as det
+    from meshpipeline.engines import size_brake as SB
+    external.first = dict(_BRAKED)
+    external.later = dict(_TIMEOUT)
+    external.fixed_case = True
+    ws, (ok, _value, _outcome), pub = external.go()
+    assert ok is False and external.runs == [1, 2]
+    assert json.loads((ws / SB.PLAN_CELLS_FILE).read_text()).get(SB.BRAKE_RELEASED)
+    assert not any(n.startswith("Meshing pass 3") for n in pub.notes), pub.notes
+    assert [(t["where"], t["step"]) for t in det.guard_trips(ws)] == [("snappy", "pass 2")]
 
 
 def test_a_case_the_size_brake_stopped_is_still_made_smaller_when_it_can_be(external):
@@ -417,30 +498,26 @@ def internal(monkeypatch, tmp_path):
     return w
 
 
-def test_the_exchanger_re_plan_after_a_timeout_differs_and_meshes(internal):
+def test_an_internal_pass_its_guard_stops_is_a_guard_trip_not_a_coarser_re_plan(internal):
+    from meshpipeline.engines import determinism as det
     ws, (ok, _value, _outcome), pub = internal.go()
-    assert ok is True and internal.runs == [1, 2]
-    assert internal.cases[0] != internal.cases[1], "pass 2 rebuilt the case that timed out"
+    # the exchanger's pass 1 runs past its guard: before D3 pass 2 was re-planned at 28 cells
+    # across the bore. Now the passes stop and the attempt is replayed as it was (TIME-3).
+    assert ok is False and internal.runs == [1]
     filling = [n for n in pub.notes if n.startswith("Filling the cavity")]
-    assert "about 40 cells across the bore" in filling[0]
-    assert "about 28 cells across the bore" in filling[1]
+    assert len(filling) == 1 and "about 40 cells across the bore" in filling[0]
     outcome = [n for n in pub.notes if n.startswith("Pass 1 ")]
-    assert outcome[0].startswith("Pass 1 stopped - snappyHexMesh made no progress for")
+    assert outcome[0].startswith("Pass 1 stopped by its guard clock")
     assert not any("never started" in n or "no cells, 0 faces" in n for n in pub.notes)
-    opened = [n for n in pub.notes if n.startswith("Meshing pass 2 of")]
-    assert "cells across the bore cut from 40 to 28" in opened[0]
-    assert json.loads((ws / ".last_plan.json").read_text())["cells_across_diameter"] == 28
+    assert json.loads((ws / ".last_plan.json").read_text())["cells_across_diameter"] == 40
+    assert [t["where"] for t in det.guard_trips(ws)] == ["snappy"]
 
 
-def test_every_pass_after_a_timeout_is_smaller_than_the_last(internal):
-    internal.timeouts = 3
+def test_an_internal_run_inside_its_guard_meshes_on_the_first_pass(internal):
+    internal.timeouts = 0
     _ws, (ok, _value, _outcome), pub = internal.go()
-    assert ok is False and internal.runs == [1, 2, 3]
-    assert len(set(internal.cases)) == 3, "a pass rebuilt a case that had already timed out"
-    filling = [n for n in pub.notes if n.startswith("Filling the cavity")]
-    assert [f.split("about ")[1].split(" cells")[0] for f in filling] == ["40", "28", "19"]
-    last = [n for n in pub.notes if n.startswith("Pass 3 ")]
-    assert last[0].endswith("no meshing passes left"), last
+    assert ok is True and internal.runs == [1]
+    assert not any("guard clock" in n for n in pub.notes)
 
 
 @pytest.mark.parametrize("kept, says", [
@@ -469,10 +546,11 @@ def test_the_thin_feature_note_never_promises_what_the_budget_cut(internal, monk
     assert "so it is captured" not in thin[0]
 
 
-def test_the_pass_after_a_timeout_never_raises_the_gap_ceiling_again(internal, monkeypatch):
+def test_a_pass_its_guard_stops_never_re_plans_the_gap_ceiling(internal, monkeypatch):
     # a valve cage adapter on a loaded lab VM (2026-10-21): the gap plan raised the ceiling, the
-    # pass ran out of time, and the next pass raised it back to the very case that timed out -
-    # byte for byte, so it was never run. After a timeout the gap plan is held to the pass budget.
+    # pass ran out of time, and the next pass raised it back to the very case that timed out.
+    # Since D3 a pass its guard stops is not re-planned at all (docs/RULES.md TIME-3): the passes
+    # stop and the attempt is replayed as it was, so the gap plan is made once, against the limit.
     from meshpipeline.engines import gap_sizing as G
     calls = []
 
@@ -483,6 +561,5 @@ def test_the_pass_after_a_timeout_never_raises_the_gap_ceiling_again(internal, m
 
     monkeypatch.setattr(drv, "_gap_plan", _plan)
     _ws, (ok, _value, _outcome), _pub = internal.go()
-    assert ok is True and internal.runs == [1, 2]
-    assert calls[0][1] is None, "the first pass is planned against the cell limit"
-    assert calls[1][1] is not None and calls[1][1] <= calls[0][0], calls
+    assert ok is False and internal.runs == [1]
+    assert len(calls) == 1 and calls[0][1] is None, calls

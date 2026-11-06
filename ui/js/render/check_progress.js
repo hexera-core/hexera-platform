@@ -1,6 +1,7 @@
 // Responsibility: Show the geometry check's live line in the conversation - a small working mark
-// with the step running now in plain words, its time counting up, the steps done (ticked, folded
-// away), a "still working" note, and a plain message with the way on when a step fails.
+// with the step running now in plain words, its time counting up, a hairline bar under it when the
+// feed says how far through it is, the steps done (ticked, folded away), a "still working" note,
+// and a plain message with the way on when a step fails.
 // Boundaries: it renders the line the API serves (application/geometry_progress); it fetches
 // nothing and decides nothing about the check. The poll that feeds it lives in shell/composer.js.
 import { esc } from "../core/format.js";
@@ -24,24 +25,62 @@ export function durationWords(seconds) {
 }
 
 const MARK = { done: "✓", failed: "✕", skipped: "–" };
+/** The served fraction as a width, or "" when there is none to draw. A progress a caller sent
+ *  outside 0..1 is clamped rather than dropped: an overshooting mesh must read as full, never as
+ *  a bar that has run off its track. */
+export function barWidth(progress) {
+  if (progress == null) return "";
+  const v = Number(progress);
+  if (!Number.isFinite(v)) return "";
+  return `${(Math.max(0, Math.min(1, v)) * 100).toFixed(1)}%`;
+}
 /* the states a line ends in: nothing on it works any more */
 const SETTLED = ["done", "failed", "unsupported"];
 
+/** A step's RECEIPT, collapsed: the quiet affordance and the two-column rows behind it.
+ *  Shown as published - label, its value, and the one-line derivation under it when there is one.
+ *  Nothing here is computed; a receipt the backend did not send draws nothing at all.
+ *
+ *  WHO SENDS ONE. Not the geometry check: `application/geometry_progress` publishes no `receipt`
+ *  key on a step, and until it does this path draws nothing for the check's own line. The rows
+ *  come from the RUN feed - `execution_publisher.areceipt` -> `render/run_progress.model.receipt`
+ *  -> its `view()`, which is drawn through this very renderer (run_progress imports
+ *  `createCheckProgress`), so a run's receipts reach the page through here and nowhere else. That
+ *  is why the step shape, the open/close state and the `.gp-rc-*` CSS live with the renderer both
+ *  lanes share rather than being duplicated in the run line. */
+function receiptHtml(s, open) {
+  const r = s.receipt;
+  if (!r || !(r.rows || []).length) return "";
+  const id = `gp-rc-${esc(String(s.key))}`;
+  const rows = r.rows.map((row) =>
+    `<li class="gp-rc-row"><span class="gp-rc-k">${esc(row.label)}</span>`
+    + `<span class="gp-rc-v num">${esc(row.value)}</span>`
+    + (row.why ? `<span class="gp-rc-why">${esc(row.why)}</span>` : "")
+    + `</li>`).join("");
+  return `<button type="button" class="gp-rc-toggle" aria-expanded="${open ? "true" : "false"}"`
+    + ` aria-controls="${id}" data-step="${esc(String(s.key))}"`
+    + ` aria-label="${esc(r.title)} receipt">Receipt</button>`
+    + `<ul class="gp-rc" id="${id}"${open ? "" : " hidden"}>${rows}</ul>`;
+}
+
 /** The steps folded under the line: the ones done (or failed), each with its time. */
-function stepsHtml(p) {
+function stepsHtml(p, openReceipts) {
   const shown = (p.steps || []).filter((s) => s.state === "done" || s.state === "failed" || s.state === "active");
+  const isOpen = (k) => !!(openReceipts && openReceipts.has && openReceipts.has(k));
   return shown.map((s) => {
     // a step that failed is named as what it was doing, not as if it had been done
     const label = s.state === "active" ? s.doing : s.state === "failed" ? String(s.doing || "").replace(/…$/, "") : s.label;
     const t = s.seconds == null || s.state === "active" ? "" : durationWords(s.seconds);
     return `<li class="gp-step ${esc(s.state)}"><span class="gp-tick" aria-hidden="true">${MARK[s.state] || "•"}</span>`
-      + `<span class="gp-label">${esc(label)}</span><span class="gp-t num">${esc(t)}</span></li>`;
+      + `<span class="gp-label">${esc(label)}</span><span class="gp-t num">${esc(t)}</span>`
+      + receiptHtml(s, isOpen(s.key)) + `</li>`;
   }).join("");
 }
 
 /** The line's markup for one served progress. Pure, so it is testable without a page.
  *  `opts.open` unfolds the steps; `opts.elapsed` is the running step's time as shown now;
- *  `opts.offline` says the server has not answered for a while. */
+ *  `opts.offline` says the server has not answered for a while; `opts.openReceipts` is the set of
+ *  step keys whose receipt the user has opened (every receipt starts closed). */
 export function progressHtml(p, opts = {}) {
   if (!p) return "";
   const state = String(p.state || "");
@@ -54,7 +93,7 @@ export function progressHtml(p, opts = {}) {
       + `${state === "done" ? "Details" : `${done} done`}<span class="gp-chev" aria-hidden="true"></span></button>`
     : "";
   let note = p.note || "";
-  if (opts.offline) note = "Can't reach the server right now - still trying…";
+  if (opts.offline) note = "Can't reach the server - still trying…";
   if (opts.ended) note = "Stopped checking. Reload the page to see where it got to.";
   const failed = state === "failed" || state === "unsupported";
   const body = failed ? `${p.reason ? `<div class="gp-reason">${esc(p.reason)}</div>` : ""}`
@@ -65,14 +104,21 @@ export function progressHtml(p, opts = {}) {
   const mark = state === "done" ? "✓" : failed ? "✕" : live ? workIcon(runningKind(p)) : "";
   // WHAT HEXERA DECIDED AND WHY, as it decides: the run's own plain sentences, always in view
   const said = (p.said || []).map((t) => `<p class="gp-say">${esc(t)}</p>`).join("");
+  // HOW FAR THROUGH, as a hairline under the running line - drawn only while the line is live and
+  // the feed carries a fraction (run_progress sends one only when the engine's estimate is on the
+  // wire beside the count). It is aria-hidden like the mark and the ticks: the words in .gp-now
+  // already state "1.22M of about 1.9M cells" to a screen reader, and a progressbar role here
+  // would announce the same numbers a second time.
+  const width = live ? barWidth(p.progress) : "";
   return `<div class="gp" data-state="${esc(state)}"${live ? ' data-live="1"' : ""}${p.slow ? ` data-slow="${esc(p.slow)}"` : ""}>`
     + (said ? `<div class="gp-said" aria-live="polite">${said}</div>` : "")
     + `<div class="gp-head"><span class="gp-mark" aria-hidden="true">${mark}</span>`
     + `<span class="gp-now" role="status" aria-live="polite">${esc(p.current || "")}</span>`
     + `<span class="gp-time num" aria-hidden="true">${esc(time)}</span>${toggle}</div>`
+    + (width ? `<div class="gp-bar" aria-hidden="true"><i style="width:${width}"></i></div>` : "")
     + (note ? `<div class="gp-note">${esc(note)}</div>` : "")
     + body
-    + `<ol class="gp-steps"${opts.open ? "" : " hidden"}>${stepsHtml(p)}</ol></div>`;
+    + `<ol class="gp-steps"${opts.open ? "" : " hidden"}>${stepsHtml(p, opts.openReceipts)}</ol></div>`;
 }
 
 /* what a re-draw is for: a change a person can see. The running step's seconds move on every
@@ -80,10 +126,15 @@ export function progressHtml(p, opts = {}) {
    focus off a button the user is on. */
 function signature(p, opts) {
   if (!p) return "";
+  // the bar's WIDTH is not in here on purpose: it moves far more finely than the words (which
+  // round to "1.2M"), and keeping it out lets the fill ease to its new width in place instead of
+  // being replaced mid-transition. Whether there is a bar at all does change the markup.
   return JSON.stringify([p.state, p.current, p.note, p.slow, p.reason, p.advice, p.can_retry, !!p.live, p.kind || "",
+    p.progress == null,
     (p.said || []).length,
     !!opts.offline, !!opts.ended,
-    (p.steps || []).map((s) => [s.key, s.state, s.state === "active" ? null : s.seconds])]);
+    (p.steps || []).map((s) => [s.key, s.state, s.state === "active" ? null : s.seconds,
+      s.receipt ? s.receipt.rows.length : 0])]);
 }
 
 /** THE ONE LINE in the conversation. `show` places it on the first progress and follows it after;
@@ -93,6 +144,9 @@ function signature(p, opts) {
  *  the moment the check is not working, so nothing spins forever. */
 export function createCheckProgress() {
   let el = null, last = null, sig = "", open = false, got = 0, timer = null, flags = {}, retry = null;
+  /* which steps' receipts the user has opened. Kept out of the markup so a re-draw (a new step, a
+     new word on the line) does not shut one the user is reading. */
+  const openReceipts = new Set();
 
   const elapsedNow = () => (last && last.elapsed_s != null ? Number(last.elapsed_s) + (Date.now() - got) / 1000 : null);
   const working = () => !!(last && last.live && !flags.offline && !flags.ended);
@@ -103,7 +157,7 @@ export function createCheckProgress() {
     if (t && working()) t.textContent = durationWords(elapsedNow());
   }
   function draw() {
-    el.innerHTML = progressHtml(last, { ...flags, open, elapsed: elapsedNow() });
+    el.innerHTML = progressHtml(last, { ...flags, open, openReceipts, elapsed: elapsedNow() });
     // folding is done in place: a re-draw would take the focus off the button
     const toggle = el.querySelector(".gp-toggle");
     toggle?.addEventListener("click", () => {
@@ -111,6 +165,14 @@ export function createCheckProgress() {
       toggle.setAttribute("aria-expanded", open ? "true" : "false");
       const list = el.querySelector(".gp-steps"); if (list) list.hidden = !open;
     });
+    // a receipt opens and closes IN PLACE: no re-draw, so the feed never scrolls under the reader
+    el.querySelectorAll(".gp-rc-toggle").forEach((b) => b.addEventListener("click", () => {
+      const key = b.dataset.step, now = !openReceipts.has(key);
+      if (now) openReceipts.add(key); else openReceipts.delete(key);
+      b.setAttribute("aria-expanded", now ? "true" : "false");
+      const panel = el.querySelector("#" + CSS.escape(b.getAttribute("aria-controls")));
+      if (panel) panel.hidden = !now;
+    }));
     const btn = el.querySelector(".gp-retry");
     if (btn) btn.addEventListener("click", () => {
       if (!retry) return;
@@ -145,6 +207,11 @@ export function createCheckProgress() {
       const next = signature(last, flags);
       if (next !== sig) { sig = next; draw(); }
       else tick();
+      // the bar follows the fraction on every poll, in place, so a count that moves without
+      // changing a word still moves it - and so the width eases rather than jumping
+      const fill = el.querySelector(".gp-bar > i");
+      const width = working() ? barWidth(last.progress) : "";
+      if (fill && width) fill.style.width = width;
       if (working()) { if (!timer) timer = setInterval(tick, 1000); } else stopTimer();
       // the conversation follows the line only when it moved, never on a poll that changed a word
       const scroller = col.closest(".scroll");
@@ -152,7 +219,8 @@ export function createCheckProgress() {
     },
     /** What the line holds now: for the ui tier. */
     state() { return { state: last && last.state, live: working(), open, connected: !!(el && el.isConnected) }; },
-    reset() { stopTimer(); el?.remove(); el = null; last = null; sig = ""; open = false; flags = {}; retry = null; },
+    reset() { stopTimer(); el?.remove(); el = null; last = null; sig = ""; open = false; flags = {}; retry = null;
+      openReceipts.clear(); },
   };
 }
 

@@ -145,6 +145,12 @@ _UNAUTHENTICATED_ROUTE_ALLOWED: dict[str, str] = {
         "ungated: it checks MESH_API_KEY before anything else and then refuses any token that "
         "does not verify. test_the_identity_establishing_route_is_still_gated below keeps that "
         "true, so this exception cannot quietly become an open door."),
+    "api/v1/account.py:request_erasure": (
+        "POST /api/v1/account/erasure IS authenticated - principal_dep resolves the same cached "
+        "principal owner_dep would - but deliberately not through owner_dep's string: the route "
+        "must also see WHICH credential proved it, because an API key is refused here outright "
+        "(a leaked key must not be able to destroy the tenant) and the typed address is compared "
+        "against the principal. tests/unit/api/test_account_route.py keeps both refusals true."),
     "api/v1/stripe_webhook.py:receive": (
         "POST /api/v1/webhooks/stripe is called by the PAYMENT PROVIDER, which holds no credential "
         "of ours and cannot present one - requiring owner_dep would require the provider to sign "

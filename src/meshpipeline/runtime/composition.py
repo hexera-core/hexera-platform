@@ -145,6 +145,12 @@ def install_adapters() -> None:
     from meshpipeline.adapters.mesh_execution.gcs_exchange import kept_deleter, kept_reader
     from meshpipeline.contracts import kept_objects
     kept_objects.set_kept_objects(kept_reader, kept_deleter)
+    # THE MESH ARRIVING: a running mesher may leave a boundary surface of the mesh-so-far beside
+    # its result, and the API serves those bytes rather than handing the browser a bucket URL.
+    # Read-only, one key at a time (contracts/mesh_partial).
+    from meshpipeline.adapters.mesh_execution.gcs_exchange import download_exchange_bytes
+    from meshpipeline.contracts import mesh_partial
+    mesh_partial.set_partial_reader(download_exchange_bytes)
     # THE PRE-FLIGHT: the written case is held to the approved patches before any mesher starts,
     # so a name the case does not carry costs seconds and an internal error naming it - never a
     # whole run that ends as "quality".

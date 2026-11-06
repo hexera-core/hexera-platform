@@ -62,9 +62,11 @@ class CavityReading:
 
 
 def _note_overdue(budget_s: float | None) -> None:
-    from meshpipeline.engines.determinism import note_time_limit
-    note_time_limit("sealed_cavities", "the sealed-space reading ran past its budget: the body "
-                    "is meshed without sealing its spaces", budget_s=float(budget_s or 0.0))
+    # THE READING IS PLANNED WORK (MAX_VOXELS, MAX_SAMPLES): its clock is a guard only. A reading
+    # that runs past it is a guard trip (docs/RULES.md TIME-3): the attempt it serves is replayed
+    # as an infrastructure failure, never meshed "without sealing" because time ran out.
+    from meshpipeline.engines.determinism import note_guard_trip
+    note_guard_trip("sealed_cavities", guard_s=float(budget_s or 0.0))
 
 
 def read_cavities(tris, *, cell_m: float, gap_cells: float = SEAL_GAP_CELLS,

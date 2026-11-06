@@ -408,5 +408,11 @@ def test_the_turn_carries_the_block_only_when_a_run_ended_and_nothing_awaits_con
 def test_the_previous_run_is_context_not_state():
     prev = msg.PreviousRun(job_id="j", status="failed", outcome="text")
     assert prev.as_state() == {"job_id": "j", "status": "failed", "outcome": "text"}
-    assert set(msg.PreviousRun.__dataclass_fields__) == {"job_id", "status", "outcome"}, (
+    # beside how it ended, only what it DELIVERED, measured (application/run_facts): the mesh's size,
+    # the engine that built it, what it was for - facts of the result, never a requirement
+    assert set(msg.PreviousRun.__dataclass_fields__) == {
+        "job_id", "status", "outcome", "cells", "engine", "purpose"}, (
         "the previous run grew a field the intake could mistake for a recorded requirement")
+    made = msg.PreviousRun(job_id="j", status="succeeded", outcome="ok", cells=3_660_268,
+                           engine="snappyHexMesh", purpose="external_cfd")
+    assert made.as_state()["cells"] == 3_660_268 and made.as_state()["engine"] == "snappyHexMesh"

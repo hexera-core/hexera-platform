@@ -79,7 +79,8 @@ def test_migration_config_runs_image_lanes():
 
 
 def test_integration_sharder_runs_image_lanes():
-    assert classify(["devtools/quality/shard_tests.py"]).run_images is True
+    for path in ("devtools/quality/shard_tests.py", "devtools/quality/test_durations.json"):
+        assert classify([path]).run_images is True, path
 
 
 def test_container_manifests_keep_repository_contracts():

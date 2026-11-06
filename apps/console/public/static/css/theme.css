@@ -1138,11 +1138,10 @@ th,td{border-color:var(--border)}
 .proc-sub:empty+.proc-clock{margin-left:auto}
 .proc-title{white-space:nowrap}
 .v-bar b.v-title{white-space:nowrap}
-/* a narrow screen: the live line keeps its mark, words, time and toggle on one row, the words wrap */
+/* a narrow screen: the live line keeps its mark, words, time and toggle on one row (the grid in
+   css/chat.css already does that), and the words wrap against the top of the row */
 @media(max-width:560px){
-  .gp-head{flex-wrap:nowrap;align-items:flex-start}
-  .gp-now{flex:1 1 0;min-width:0}
-  .gp-time,.gp-toggle{flex:none}
+  .gp-head{align-items:start}
   .proc-head{flex-wrap:wrap}
   #empty{padding-top:10vh}
 }

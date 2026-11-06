@@ -522,6 +522,16 @@ def _run_scout(session_id: str, owner_id: str, source: dict, interpretation: dic
 PREVIEW_RUNNING, PREVIEW_KEPT = "running", "kept"
 
 
+def scout_still_running(session_id: str) -> bool:
+    """The session's scout has not landed its full reading yet (nothing stored, still pending, or only the
+    preview): a naming started now could only wait for it (the naming queue's yield reads this)."""
+    try:
+        stored = read_check(session_id)
+    except Exception:  # noqa: BLE001 - the store unread: the naming runs as it always did
+        return False
+    return stored is None or stored.get("status") == STATUS_PENDING or is_preview(stored)
+
+
 def is_preview(stored: dict | None) -> bool:
     """Whether the stored check is a preview the scout is still measuring."""
     return bool(stored) and (stored or {}).get("preview") == PREVIEW_RUNNING
@@ -1311,8 +1321,9 @@ def vet_openings(facts: dict, skin: Path) -> None:
     through a plate, a dimple closed into a pocket - would come back from the mesher as a patch
     with no faces. It is proposed as not an opening, with the reason in the notes; the user can
     still make it one. A proposal left without an inlet takes its largest remaining opening. Run
-    for every reading: a body in a flow keeps its openings for a flip to internal flow too. A CAD
-    file is staged on its B-rep, not on this skin, so only a triangle file is vetted this way."""
+    only when the fluid is read as flowing through the part (hold_openings_to_the_staging): a body
+    in a flow keeps its openings unvetted for a flip, which the mesher's own staging still checks.
+    A CAD file is staged on its B-rep, not on this skin, so only a triangle file is vetted this way."""
     from meshpipeline.application.geometry_confirmation import body_of, patches_from
     from meshpipeline.cad.fluid_passages import stranded_openings
 
@@ -1481,9 +1492,26 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
         if facts.get("openings_from") != "fluid_volume":
             # the extracted openings bound the fluid by construction; the skin's own passages
             # (several parts' skins together) say nothing about them
-            facts = keep_a_stageable_proposal(facts, local_path, skin, scale)
-            vet_openings(facts, skin)
+            facts = hold_openings_to_the_staging(facts, local_path, skin, scale)
     return facts, skin
+
+
+def hold_openings_to_the_staging(facts: dict, local_path: Path, skin: Path, scale: float) -> dict:
+    """THE OPENINGS HELD TO THE MESHER'S STAGING (keep_a_stageable_proposal, then vet_openings) -
+    only when the fluid is read as flowing THROUGH the part. Both stage the whole skin, and the
+    first scouts it a second time: minutes on a car with a dozen wheel-arch and grille candidates
+    (the Camaro on dev: 4 of the check's 6 minutes), for openings that are not even drawn on a body
+    in a flow (stickered). A body read as one keeps its openings, unvetted, for a flip to "through
+    it"; a flip that confirms one opening into nothing is still caught before any mesher runs, by
+    the same staging (cad/fluid_passages.PassagePlan.refusal, in the snappy and cfMesh drivers),
+    with the way out said: mark it as not an opening on the picture. `openings_vetted` says which."""
+    if facts.get("flow") == "external":
+        facts["openings_vetted"] = False
+        return facts
+    facts = keep_a_stageable_proposal(facts, local_path, skin, scale)
+    vet_openings(facts, skin)
+    facts["openings_vetted"] = True
+    return facts
 
 
 def _ports_of(facts: dict) -> list[dict]:
@@ -2111,9 +2139,11 @@ def _wait_for_scout(session_id: str, on_poll=None) -> dict | None:
             return stored
         if time.time() >= deadline:
             if stored is None or stored.get("status") == STATUS_PENDING:
-                from meshpipeline.engines.determinism import note_time_limit
-                note_time_limit("geometry_check.naming", "the naming stopped waiting for the scout",
-                                budget_s=float(wait_s))
+                # a guard (docs/RULES.md TIME-4): the step fails and is retried, never answered
+                # from less
+                from meshpipeline.engines.determinism import note_guard_trip
+                note_guard_trip("geometry_check.naming", rule="TIME-4",
+                                guard_s=float(wait_s))
             return stored
         time.sleep(2.0)
 
@@ -2557,11 +2587,13 @@ def _name_with_vision(facts: dict, shots, *, purpose_text: str, session_id: str,
 
 
 def _note_vision_timeout(exc: BaseException, what: str) -> None:
+    # a guard (docs/RULES.md TIME-4): the same path as a provider outage - the code's own reading
+    # stands and the user confirms the proposal; never a different answer chosen by the clock
     if isinstance(exc, TimeoutError):
-        from meshpipeline.engines.determinism import note_time_limit
+        from meshpipeline.engines.determinism import note_guard_trip
         from meshpipeline.settings.geometry_check import GEOMETRY_CHECK_VISION_TIMEOUT_S
-        note_time_limit("geometry_check.vision", f"{what}: the model ran past its time limit",
-                        budget_s=float(GEOMETRY_CHECK_VISION_TIMEOUT_S))
+        note_guard_trip("geometry_check.vision", rule="TIME-4", step=what,
+                        guard_s=float(GEOMETRY_CHECK_VISION_TIMEOUT_S))
 
 
 # ------------------------------------------------------- the model's answer, guarded ----
@@ -2892,9 +2924,20 @@ def weigh_flow_axis(facts: dict, vision: dict | None, flow_axis, up_axis: str) -
 
     if flow_axis not in AXES or (vision or {}).get("flow_from") == "the user's words":
         return flow_axis, ""
-    shaped, reading = axis_from_reading(facts.get("flow_axis_reading"), up_axis)
-    if shaped and float(reading.get("confidence") or 0.0) >= SHAPE_OUTRANKS_NOSE and shaped[1] != flow_axis[1]:
-        return None, f"the pictures' nose said {flow_axis}"
+    # EVERY reading is weighed, not only the first: a car's wheels (an unsure sign, so first and
+    # under the bar) and its mirror plane (sure) are two readings, and either can rule the nose out
+    readings = facts.get("flow_axis_reading")
+    vehicle = ((facts.get("reading") or {}).get("vehicle") or {}).get("axis")
+    for one in ([readings] if isinstance(readings, dict) else readings or []):
+        shaped, reading = axis_from_reading([one], up_axis)
+        if not shaped or shaped[1] == flow_axis[1]:
+            continue
+        # A VEHICLE'S LENGTH IS MEASURED (cad/flow_reading.on_wheels): a nose lies at one end of
+        # it, so a "nose" across it was read off a picture that shows the vehicle end-on. Only
+        # which end leads is unsure, and that is the nose's to say when it lies along the length.
+        along_vehicle = reading.get("rule") == "along" and vehicle in (reading.get("axes") or [])
+        if along_vehicle or float(reading.get("confidence") or 0.0) >= SHAPE_OUTRANKS_NOSE:
+            return None, f"the pictures' nose said {flow_axis}"
     return flow_axis, ""
 
 

@@ -123,12 +123,25 @@ on:
       # declarative, like every other API setting: redeploying the app
       # unticked drops the flags from an environment that had them, which is the point - the
       # workflow, not a hand-edit in the cloud, decides. The fleet only picks the change up when
-      # `fleet` is ticked too, because an instance template is immutable.
+      # `fleet` is ticked too, because an instance template is immutable. SHARED DEV does not need
+      # the tick: it runs every CRS capability on every deploy (see the provision job's env).
       cad_repair:
-        description: "cad_repair - in development, enable the CAD Repair System plus its explicit geometry-invention capabilities (production releases enable the bounded core and review automatically)"
+        description: "cad_repair - in a personal environment, enable the CAD Repair System plus its explicit geometry-invention capabilities (shared dev enables all of it automatically; production releases enable the bounded core and review)"
         required: false
         default: false
         type: boolean
+      # A MESH THAT SHOWS ITSELF WHILE IT BUILDS. Snappy's serial path publishes one decimated
+      # frame of the castellated mesh, which the viewer draws instead of holding the CAD part. It
+      # changes how snappy is invoked (the phase meshes are kept rather than overwritten), so tick
+      # `fleet` with it: the worker holds the decision and passes it to the mesher per execution.
+      # Off everywhere by default, including shared dev and production.
+      # NOT A TICK: the in-progress mesh frame is a repository variable, see
+      # MESH_PROGRESSIVE_SNAPSHOT_ENABLED in the provision job's env. It was a checkbox and is not
+      # one any more, for two reasons. The dispatch input budget is a hard ceiling that GitHub
+      # enforces by refusing the WHOLE workflow, naming neither the cap nor the field that
+      # breached it (tests/unit/deploy/test_personal_environments.py guards it); and a tick that
+      # cannot switch the feature on by itself is a lie told in a UI - a frame needs
+      # MESH_SNAPPY_RANKS=1 beside it, which is not a checkbox either.
       # The review rides the cad_repair tick by default. Unticking THIS while cad_repair is ticked
       # leaves the review at its shipped default (off), so the loop repairs autonomously under its
       # caps - the posture a demonstration of the autonomous pass needs, and nothing else changes.
@@ -180,7 +193,7 @@ jobs:
   # GitHub environment it runs under - which is what applies the environment's protection rules.
   target:
     name: Resolve the deployment target
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     outputs:
       environment: ${{ steps.pick.outputs.environment }}
       deployment_id: ${{ steps.pick.outputs.deployment_id }}
@@ -228,6 +241,11 @@ jobs:
       # environment, unstated on prod (its shipped default, off, stays in force) until dev has run
       # with it. It reaches the workers as template metadata, so a fleet deploy applies it.
       verdict_by_limits: ${{ steps.pick.outputs.verdict_by_limits }}
+      # THE IN-PROGRESS MESH FRAME: 'true' on shared dev and every personal environment, unstated
+      # on prod (its shipped default, off, stays in force) until it is cut there deliberately. The
+      # rank pin travels beside it because the feature is unreachable without both.
+      mesh_snapshots: ${{ steps.pick.outputs.mesh_snapshots }}
+      mesh_snappy_ranks: ${{ steps.pick.outputs.mesh_snappy_ranks }}
       outreach_enabled: ${{ steps.pick.outputs.outreach_enabled }}
       outreach_worker_job: ${{ steps.pick.outputs.outreach_worker_job }}
       outreach_db_host: ${{ steps.pick.outputs.outreach_db_host }}
@@ -248,6 +266,10 @@ jobs:
       # below, and preserved by bootstrap-env.sh's `${APP_ENV:-dev}` idiom.
       app_env: ${{ steps.pick.outputs.app_env }}
       api_cors_origins: ${{ steps.pick.outputs.api_cors_origins }}
+      # The API's self-service signup posture. Production states the launch offer explicitly so a
+      # default change in create-api-service.sh cannot silently close signup or remove its grant.
+      console_signup_enabled: ${{ steps.pick.outputs.console_signup_enabled }}
+      signup_grant_credits: ${{ steps.pick.outputs.signup_grant_credits }}
       cloudsql_instance: ${{ steps.pick.outputs.cloudsql_instance }}
       redis_instance: ${{ steps.pick.outputs.redis_instance }}
       migrate_db_name: ${{ steps.pick.outputs.migrate_db_name }}
@@ -557,6 +579,13 @@ jobs:
               echo "worker_env_uri=gs://${_did}-transfer-${_num}/worker.env"
               # the measured limits decide pass, concerns or fail; the AI review only adds notes
               echo "verdict_by_limits=true"
+              # THE IN-PROGRESS MESH FRAME, on in every dev environment and unstated on prod, the
+              # same posture the verdict above takes. It needs BOTH levers: the flag, and the rank
+              # pin, because a parallel run never snapshots and the flag alone would read as a
+              # feature that does nothing. A repository variable of either name still wins, so an
+              # environment that wants its meshes parallel can say so without editing this.
+              echo "mesh_snapshots=true"
+              echo "mesh_snappy_ranks=1"
               # THE OBJECT STORE. Every field is pinned EXCEPT the access id, and the exception is
               # the point.
               #
@@ -715,6 +744,10 @@ jobs:
               echo "worker_env_uri=gs://dev-transfer-224734058693/worker.env"
               # the measured limits decide pass, concerns or fail; the AI review only adds notes
               echo "verdict_by_limits=true"
+              # the in-progress mesh frame, as on every personal environment: both levers together,
+              # and unstated on prod until it is cut there deliberately
+              echo "mesh_snapshots=true"
+              echo "mesh_snappy_ranks=1"
               # THE OBJECT STORE DEV ALREADY OWNS. Everything below RESTATES live configuration -
               # the bucket, the HMAC key and the secret container all exist and the worker fleet
               # has been reading exactly these values out of worker.env all along. Only the API
@@ -840,6 +873,11 @@ jobs:
             # two lines up, so the edge and the API agree on what the front door is.
             echo "app_env=prod"
             echo "api_cors_origins=https://console.hexera.ai"
+            # Production's launch offer is open self-service signup with one 100-credit grant.
+            # Authentication, the internal /auth/session API-key gate, and request rate limits stay
+            # responsible for access and abuse control; this value controls the product offer.
+            echo "console_signup_enabled=true"
+            echo "signup_grant_credits=100"
             # NOT prod-pg / prod-redis. These two are STATEFUL and already exist under the older
             # naming - hexera-prod-pg has backups, point-in-time recovery, deletion protection and
             # no public IP, and it holds the meshpipeline database. Cloud SQL and Memorystore
@@ -954,7 +992,7 @@ jobs:
   # main already validated. Tagging something else is the case this refuses to ship.
   await-ci:
     name: Wait for CI on this commit
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 75
     permissions:
       contents: read
@@ -978,14 +1016,18 @@ jobs:
           # is what the environment is for, and a branch with no open pull request has no ci-gate
           # at all - so requiring one would make the iteration path depend on remembering to run
           # CI first. The artifact is still validated either way: this job gates the RELEASE
-          # RECORD, and release-validate builds and tests the exact images before any of them are
-          # published. What is given up is ruff, mypy, CodeQL and the dependency audit, on a
-          # sandbox, at the request of a person who typed the branch name.
+          # RECORD. Development deploys still build and publish digest-pinned images from this
+          # commit before anything is provisioned, but they no longer wait for the full release
+          # artifact gate. What is given up is ruff, mypy, CodeQL, the dependency audit and the
+          # exhaustive artifact validation, on a sandbox, at the request of a person who typed the
+          # branch name.
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             echo "manual dev deploy - CI is reported, not required"
+            # A skipped gate is a draft pull request (ci.yml runs nothing on one): no verdict, not a
+            # failed one.
             read -r _t _ok _bad _c _p <<<"$(
               gh api "repos/${REPO}/commits/${SHA}/check-runs?per_page=100" \
-                --jq '[.check_runs[] | select(.name == "hexera/ci-gate")]
+                --jq '[.check_runs[] | select(.name == "hexera/ci-gate" and .conclusion != "skipped")]
                       | "\(length) \([.[] | select(.conclusion == "success")] | length) \([.[] | select(.status == "completed" and .conclusion != "success")] | length) 0 \([.[] | select(.status != "completed")] | length)"' 2>/dev/null || echo "0 0 0 0 0"
             )"
             if [ "${_t}" -eq 0 ]; then
@@ -1198,29 +1240,41 @@ jobs:
           # and a cache is writable by workflows that run on untrusted pull requests - restoring
           # one into the publishing path is how poisoned bytes reach a registry. A deploy runs
           # once per release; the seconds a cache saves are not worth that.
-      # The same single pinned environment ci.yml installs. Gate C runs the UI suite on the host
-      # against the containerised app image, so the host needs the test dependencies; no version
-      # is named here, for the same reason ci.yml names none.
+      # The full profile installs the same pinned environment ci.yml installs. Gate C runs the UI
+      # suite on the host against the containerised app image, so full validation needs the test
+      # dependencies. The dev-fast profile builds a wheel and images only, so it installs just the
+      # pinned PEP 517 frontend instead of minutes of runtime/test wheels.
       #
       # THIS INSTALL IS WHY provision IS A SEPARATE JOB AND NOT JUST A SEPARATE STEP: pyvista and
       # the rest of dev.txt are minutes of wheels that deploy.sh has no use for. Every script under
       # deploy/gcp/scripts uses a bare `python3` and the standard library, so provision runs on the
       # runner's own interpreter with nothing installed into it.
-      - if: steps.reuse.outputs.reused != 'true'
-        run: pip install -c requirements/constraints.txt -r requirements/runtime.txt -r requirements/dev.txt
+      - name: Install release validation dependencies
+        if: steps.reuse.outputs.reused != 'true'
+        env:
+          RELEASE_VALIDATION_PROFILE: ${{ needs.target.outputs.environment == 'dev' && 'dev-fast' || 'full' }}
+        run: |
+          if [ "${RELEASE_VALIDATION_PROFILE}" = "dev-fast" ]; then
+            pip install -c requirements/constraints.txt build==1.2.2
+          else
+            pip install -c requirements/constraints.txt -r requirements/runtime.txt -r requirements/dev.txt
+          fi
       - name: Install the meshpipeline distribution (editable)
         if: steps.reuse.outputs.reused != 'true'
         run: pip install -e . --no-deps
 
-      # GATE C, part 1. Builds the deployable images ONCE from this commit and validates THOSE
-      # artifacts - wheel provenance, both app entrypoints, the mesh toolchain, the vendored
-      # browser assets, the UI in a real browser, and the five-engine native terminal matrix.
+      # GATE C, part 1 for production. Development targets use RELEASE_VALIDATION_PROFILE=dev-fast:
+      # still a clean commit, wheel identity, image builds, digest publication and promotion by
+      # immutable reference, but without entrypoint smoke, browser smoke, native tiers or the
+      # pricing audit. That is the iteration trade: dev deploys quickly; production tags keep the
+      # exhaustive artifact proof.
       # RELEASE_PYTHON is the interpreter set up above: the gate otherwise falls through to the
       # repository virtualenv (absent here) and then to whatever python3 the host resolves to.
-      - name: Validate the release artifact (build the images once, test those exact bytes)
+      - name: Build and validate the release artifact
         if: steps.reuse.outputs.reused != 'true'
         env:
           RELEASE_PYTHON: ${{ steps.python.outputs.python-path }}
+          RELEASE_VALIDATION_PROFILE: ${{ needs.target.outputs.environment == 'dev' && 'dev-fast' || 'full' }}
           # THE LAYER CACHE, in the registry this run is already authenticated to.
           #
           # Every run of this job starts on a fresh runner with an empty local build cache, so the
@@ -1281,7 +1335,7 @@ jobs:
     #
     # A STANDARD RUNNER, not the heavy one. This job builds nothing and tests nothing: it reads a
     # JSON record, talks to gcloud, and waits on Google. The heavy label exists for image builds.
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     # id-token lives here and in release, and nowhere else: these are the only jobs that exchange
     # an OIDC token for Google credentials, and a workflow-wide grant would let the target-selection
     # job mint one too.
@@ -1358,6 +1412,10 @@ jobs:
       # file by another route is gone before stage 2 reads it.
       APP_ENV: ${{ needs.target.outputs.app_env }}
       API_CORS_ORIGINS: ${{ needs.target.outputs.api_cors_origins }}
+      # Explicit launch policy for prod. Empty on dev and personal environments means the API
+      # service script keeps its development defaults (also signup open, 100 signup credits).
+      CONSOLE_SIGNUP_ENABLED: ${{ needs.target.outputs.console_signup_enabled }}
+      SIGNUP_GRANT_CREDITS: ${{ needs.target.outputs.signup_grant_credits }}
       # THE DATA TIER, BY NAME. create-data-tier.sh reconciles these two instances and writes
       # their resolved PRIVATE addresses back into the deployment env, so MIGRATE_DB_HOST and
       # REDIS_URL are outputs of this run rather than literals that go stale in this file.
@@ -1424,9 +1482,6 @@ jobs:
       STRIPE_PRICE_EXTRA_CREDITS: ${{ github.event.inputs.slug == '' && vars.STRIPE_PRICE_EXTRA_CREDITS || '' }}
       EXTRA_CREDITS_AMOUNT: ${{ github.event.inputs.slug == '' && vars.EXTRA_CREDITS_AMOUNT || '' }}
       CONSOLE_BASE_URL: ${{ github.event.inputs.slug == '' && vars.CONSOLE_BASE_URL || '' }}
-      # TEMPORARY: production signup stays open while Stripe is not ready. The API owns this gate,
-      # and pinning it here keeps a missing payment-provider setup from closing account creation.
-      CONSOLE_SIGNUP_ENABLED: ${{ needs.target.outputs.deployment_id == 'prod' && 'true' || '' }}
       # A PERSONAL ENVIRONMENT'S OWN API SETTINGS, stated on purpose so a deploy keeps them. The API
       # service's environment is declarative (create-api-service.sh): a flag set on the live service
       # by hand made the next deploy of that environment refuse to run. Repository variable
@@ -1434,25 +1489,58 @@ jobs:
       # CREDIT_GATE_ENABLED=false. Non-secret settings only: create-api-service.sh refuses any
       # secret-bearing name here. Shared dev and prod (no slug) never read one.
       API_EXTRA_ENV: ${{ github.event.inputs.slug != '' && vars[format('API_EXTRA_ENV_{0}', github.event.inputs.slug)] || '' }}
-      # Production releases ship the bounded core repair loop; development environments retain the
-      # explicit cad_repair opt-in. The geometry-invention flags below remain opt-in everywhere.
-      CAD_REPAIR_ENABLED: ${{ (needs.target.outputs.deployment_id == 'prod' || inputs.cad_repair) && 'true' || '' }}
+      # Production releases ship the bounded core repair loop. SHARED DEV (deployment_id 'dev')
+      # runs every CRS capability on every deploy, merge or dispatch alike: a push to main carries no
+      # inputs, and these settings are declarative, so anything short of keying on the target would
+      # be dropped by the next merge. Personal environments retain the explicit cad_repair opt-in,
+      # and production keeps the geometry-invention flags off.
+      CAD_REPAIR_ENABLED: ${{ (needs.target.outputs.deployment_id == 'prod' || needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && 'true' || '' }}
+      # THE IN-PROGRESS MESH FRAME. A repository variable rather than a dispatch tick: the input
+      # budget is a hard ceiling GitHub enforces by refusing the whole workflow, and this feature
+      # needs TWO levers set together (MESH_SNAPPY_RANKS=1 beside it, or a frame is never read),
+      # which a single checkbox cannot honestly express. Empty means not stated, which leaves
+      # whatever the environment already carries, as every declarative flag here does.
+      #
+      # ON IN EVERY DEV ENVIRONMENT, unstated on prod, which is the posture every optional feature
+      # here takes while it is still being proven: shared dev and the personal environments run it
+      # so it is exercised, and production keeps its shipped default (off) until it is cut there
+      # deliberately. A repository variable of the same name still WINS, so an environment that
+      # wants it off - or prod, if it is ever turned on early - says so without editing this file.
+      MESH_PROGRESSIVE_SNAPSHOT_ENABLED: ${{ vars.MESH_PROGRESSIVE_SNAPSHOT_ENABLED || needs.target.outputs.mesh_snapshots || '' }}
+      # The rank pin that makes the frame reachable at all. Also a variable, for the same reason:
+      # it is only ever set beside the flag above, and forcing a mesh serial is a performance
+      # decision an environment makes once, not something to re-tick per deploy. Flagged in the
+      # spec: on Cloud Run the workspace lives in memory, so a serial snapshotting run there
+      # belongs on a small case or on the big-VM route.
+      MESH_SNAPPY_RANKS: ${{ vars.MESH_SNAPPY_RANKS || needs.target.outputs.mesh_snappy_ranks || '' }}
       # THE REVIEW IS STATED EITHER WAY once repair is on, and this is the one flag here that
       # cannot ride the "empty means not stated" convention. Unticking it is a POSITIVE choice -
       # the autonomous posture - and an empty value does not express it: an environment whose
       # saved worker.env already carries CAD_REPAIR_REVIEW_ENABLED=true would keep parking
       # repairs for a person while the API dropped the flag, so the tick would appear to do
-      # nothing. Production defaults to review-on; development keeps the autonomous override.
-      CAD_REPAIR_REVIEW_ENABLED: ${{ needs.target.outputs.deployment_id == 'prod' && 'true' || inputs.cad_repair && (inputs.cad_repair_review && 'true' || 'false') || '' }}
-      # Planar hole filling rides the same tick. What protects a through-hole is the paired-rim
+      # nothing. Production and shared dev default to review-on; a cad_repair dispatch keeps the
+      # autonomous override.
+      CAD_REPAIR_REVIEW_ENABLED: ${{ needs.target.outputs.deployment_id == 'prod' && 'true' || inputs.cad_repair && (inputs.cad_repair_review && 'true' || 'false') || needs.target.outputs.deployment_id == 'dev' && 'true' || '' }}
+      # Planar hole filling rides the same switch. What protects a through-hole is the paired-rim
       # guard (both ends of a missing passage, any cross-section, refuse filling for the run); the
       # session caps only bound the size and volume drift of a fill that is kept.
-      CAD_REPAIR_FILL_PLANAR_HOLES: ${{ inputs.cad_repair && 'true' || '' }}
-      # The other two geometry-adding flags ride the same tick: the non-planar fill and the heal.
-      CAD_REPAIR_FILL_NONPLANAR_HOLES: ${{ inputs.cad_repair && 'true' || '' }}
-      CAD_REPAIR_HEAL_SELF_INTERSECTIONS: ${{ inputs.cad_repair && 'true' || '' }}
-      # The planner posture, stated only when it is not "off"; empty means "not stated".
-      CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || '' }}
+      CAD_REPAIR_FILL_PLANAR_HOLES: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && 'true' || '' }}
+      # The other geometry-changing flags ride the same switch: the non-planar fill, the heal and
+      # the small-face sweep.
+      CAD_REPAIR_FILL_NONPLANAR_HOLES: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && 'true' || '' }}
+      CAD_REPAIR_HEAL_SELF_INTERSECTIONS: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && 'true' || '' }}
+      CAD_REPAIR_FIX_SMALL_FACES: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && 'true' || '' }}
+      # Development repair carries enough room for a mixed defect case. Production retains the
+      # shipped six-operation default unless a release changes it deliberately.
+      CAD_REPAIR_MAX_OPS: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && '12' || '' }}
+      CAD_REPAIR_TIMEOUT_S: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && '420' || '' }}
+      # The planner posture, stated only when it is not "off"; empty means "not stated". Shared dev
+      # runs the planner LIVE, so model guidance enters the same planner, caps and measurements as
+      # the rule planner's own directives - a push carries no input at all, so the empty value
+      # falls through to this default. The guidance is bounded, not trusted: the posture fails
+      # closed on a typo, a call that times out or returns nothing leaves the rule planner's choice
+      # standing, and every directive still answers to the session caps and the progress rule.
+      CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || needs.target.outputs.deployment_id == 'dev' && 'live' || '' }}
       # The verdict by measured limits, per target (the `target` job): 'true' on dev, empty on prod.
       VERDICT_BY_LIMITS: ${{ needs.target.outputs.verdict_by_limits }}
     steps:
@@ -1462,7 +1550,7 @@ jobs:
       # release.json - all of which a depth-1 clone answers. It refuses to deploy a record built
       # from a different commit, which is the assertion that makes handing the record across a job
       # boundary safe.
-      - uses: useblacksmith/checkout@v1  # v4.3.1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           persist-credentials: false
 
@@ -1601,7 +1689,7 @@ jobs:
     name: Edge address for DNS
     needs: [target, provision]
     if: needs.provision.outputs.edge_ip != ''
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Surface the edge address for DNS
@@ -1676,7 +1764,7 @@ jobs:
     name: Verify the deployed console
     needs: [provision]
     if: needs.provision.outputs.console_url != ''
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: / redirects, /sign-in renders, /api/internal/health 200, /readyz 401, stream upgrade 403
@@ -1787,7 +1875,7 @@ jobs:
     name: Verify the admin console is private
     needs: [target, provision]
     if: needs.provision.outputs.admin_url != ''
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -1851,7 +1939,7 @@ jobs:
     # `always()` would also fire for a run the concurrency group cancelled. `!cancelled()` still
     # runs the gate when a job genuinely fails, which is the entire point of it.
     if: ${{ !cancelled() }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Verify every deploy job
