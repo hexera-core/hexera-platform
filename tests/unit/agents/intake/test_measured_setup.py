@@ -99,7 +99,7 @@ async def test_the_submit_step_says_it_and_saves_nothing(monkeypatch):
     tool = ex.IntakeToolExecutor.__new__(ex.IntakeToolExecutor)
     tool.state = SimpleNamespace(session_id="s-1", submit_attempts=0, recommended_this_turn=False,
                                  submit_rejections=0, val_errors_seen=[], pending={}, owner_id="o",
-                                 revision="r", selection={})
+                                 revision="r", selection={}, answer_only=False)
     tool._trace = None
     tool._job_id = "j"
     args = _ext(("aircraft", "wall"), ("farfield", "farfield"), ("symmetry", "symmetry"), ref=34.38)
