@@ -251,7 +251,10 @@ if [ -n "$(as_field autoscaler.name)" ]; then
   LIVE_SCALE_IN_WINDOW="$(as_field autoscaler.autoscalingPolicy.scaleInControl.timeWindowSec)"
 fi
 
-AS_MIN="${LIVE_MIN:-${WORKER_MIG_MIN_REPLICAS:-1}}"
+# The last fallback is 0, not 1, and matches create-worker-fleet.sh's own default: a floor is a
+# VM billed against an empty queue, so an unstated floor is no floor. A deployment that wants a
+# warm pool states WORKER_MIG_MIN_REPLICAS (bootstrap-env.sh defaults it to 1 for APP_ENV=prod).
+AS_MIN="${LIVE_MIN:-${WORKER_MIG_MIN_REPLICAS:-0}}"
 AS_MAX="${LIVE_MAX:-${WORKER_MIG_MAX_REPLICAS:-5}}"
 AS_COOLDOWN="${LIVE_COOLDOWN:-${WORKER_MIG_COOLDOWN_SECONDS:-180}}"
 AS_ASSIGNMENT="${LIVE_ASSIGNMENT:-${WORKER_JOBS_PER_INSTANCE:-1}}"
@@ -314,7 +317,7 @@ if ! gc compute instance-groups managed describe "${WORKER_MIG}" \
   warn "managed instance group ${WORKER_MIG} does not exist yet, so there is nothing to attach the
        autoscaling policy to. The publisher and its schedule ARE in place and the metric is being
        written. Create the fleet, then reconcile this stage again to attach the policy:
-         DEPLOY_COMPONENTS=workers  (this deploy, stage 17 - or tick `workers`)
+         DEPLOY_COMPONENTS=workers  (this deploy, stage 17 - or tick the fleet box)
          DEPLOY_COMPONENTS=queue    (a later run, once the group exists)"
   log "autoscaler      deferred - ${WORKER_MIG} not created yet"
   exit 0

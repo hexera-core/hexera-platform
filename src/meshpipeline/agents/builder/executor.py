@@ -187,10 +187,13 @@ class BuilderToolExecutor:
                                          op_id=f"meshing:{self._mesh_seq}")
         from meshpipeline.contracts import mesh_progress
         # THE MESHER'S OWN STAGE, relayed to the run's live line while it runs (nowhere without
-        # a publisher)
+        # a publisher) - counted, where the engine recorded an estimate beside its case, against
+        # that estimate and in that engine's own word for one of them ("1.22M of about 1.9M
+        # cells"). Absent, the line says what it has counted and no more.
         sink = None if self._publish is None else mesh_progress.publishing_sink(
             self._publish, asyncio.get_running_loop(),
-            op_prefix=mesh_progress.stage_op_prefix(self._context.workspace, self._mesh_seq))
+            op_prefix=mesh_progress.stage_op_prefix(self._context.workspace, self._mesh_seq),
+            of=prepared.planned, unit=prepared.unit)
         with mesh_progress.relaying(sink):
             return await asyncio.to_thread(dispatch_prepared_mesh, self._context, prepared)
 

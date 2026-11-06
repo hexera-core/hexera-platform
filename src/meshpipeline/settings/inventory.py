@@ -374,6 +374,10 @@ INVENTORY: list[Group] = [
         EnvVar("GEOMETRY_CHECK_VISION_TIMEOUT_S", "60", kind="int", exposure="internal",
                help="seconds the vision naming step may take before the check ships with the code's own names"),
     ]),
+    Group("Progressive mesh snapshots", note="Whether a mesh that is still running publishes a decimated boundary surface of the mesh-so-far, so the console viewer shows the mesh arriving instead of holding the CAD part. Read on the mesher's side only. With it off, nothing about a mesh run changes. NOT REACHABLE ON ITS OWN: a frame is only read from a serial snappyHexMesh, and every deployed environment meshes with 8 ranks, so this must be paired with MESH_SNAPPY_RANKS=1 (a serial mesh, slower) or it changes nothing at all.", vars=[
+        EnvVar("MESH_PROGRESSIVE_SNAPSHOT_ENABLED", "false", kind="bool",
+               help="publish one decimated boundary of snappy's castellated phase mid-run; SERIAL runs only, so pin MESH_SNAPPY_RANKS=1 beside it or nothing is published"),
+    ]),
     Group("CAD repair", note="Whether a customer's geometry may be MUTATED, and the caps a conservative repair must stay inside. Inspection runs regardless and only ever reads; CAD_REPAIR_ENABLED is the switch that separates looking from changing, and with it off a repair is refused before any kernel call.", vars=[
         EnvVar("CAD_REPAIR_ENABLED", "false", kind="bool",
                help="allow repair attempts to write new geometry; inspection is unaffected"),

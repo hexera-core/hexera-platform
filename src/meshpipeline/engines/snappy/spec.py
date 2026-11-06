@@ -61,6 +61,11 @@ def _recommend():
     return recommend
 
 
+def _planned_cells_on_record():
+    from meshpipeline.engines.snappy.snappy_runner import planned_cells_on_record
+    return planned_cells_on_record
+
+
 def _review_rubric():
     from meshpipeline.engines.snappy.criteria import REVIEW_AXES
     return REVIEW_AXES
@@ -285,6 +290,7 @@ SPEC = EngineSpec(
         _load_authoring_tool=_authoring_tool,
         _load_authoring_validate=_authoring_validate,
         _load_recommend=_recommend,
+        _load_planned_cells_on_record=_planned_cells_on_record,
         _load_review_rubric=_review_rubric,
         _load_criteria=_criteria,
         _load_workspace_scaffold=_workspace_scaffold,

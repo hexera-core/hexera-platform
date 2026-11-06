@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -44,6 +45,30 @@ if TYPE_CHECKING:
 #: changes the suffix the builder stages from, so it is left for a later slice rather than
 #: half-handled here.
 _REPAIRABLE_SUFFIXES = {".step", ".stp"}
+
+#: Measurements the attempt record already states as fields of ITS OWN, so carrying them inside
+#: `measurements` as well would store one fact twice and let the two copies disagree.
+_RECORD_FIELDS = frozenset({"refusals", "operations", "resolved", "stopped_because"})
+
+
+def _forwarded(measured: Mapping) -> dict:
+    """Everything the repair loop measured, minus what the record states itself.
+
+    A DENYLIST, AND THAT IS THE POINT. This used to be a whitelist of `before`/`after`, which
+    silently dropped `declared_area_mm2` and `declared_volume_mm3` the day
+    `cad/repair/conservative.py` began recording them - so the receipt, with no declaration to
+    subtract, told customers an approved repair had broken a limit it had actually passed
+    (pipeline/repair_receipt._shape_rows). A key added to the loop's measurements now reaches the
+    receipt without a change here; one disappears only by being named above, on purpose.
+    """
+    def _copy(value):
+        if isinstance(value, Mapping):
+            return dict(value)
+        if isinstance(value, (list, tuple)):
+            return [dict(v) if isinstance(v, Mapping) else v for v in value]
+        return value
+
+    return {k: _copy(v) for k, v in measured.items() if k not in _RECORD_FIELDS}
 
 
 def _derived_source(original, repaired_path: Path):
@@ -272,12 +297,15 @@ async def node_repair_attempt(state: PipelineState) -> dict:
     """Repair the geometry if the evidence supports it, and hand on whichever file should be meshed.
 
     THE RUN SAYS WHAT HAPPENED. Whichever way the attempt ended, the Repair check lane the
-    inspection opened gets its one line (pipeline/repair_words.py), read from what was recorded."""
-    from meshpipeline.pipeline import repair_words
+    inspection opened gets its one line (pipeline/repair_words.py), read from what was recorded -
+    and, where there is detail worth a record, the receipt beside it: what was kept, what was
+    undone, what was REFUSED and why (pipeline/repair_receipt.py)."""
+    from meshpipeline.pipeline import repair_receipt, repair_words
 
+    job_id = str(state.get("job_id", "unknown"))
     out = await _attempt(state)
-    await repair_words.asay(str(state.get("job_id", "unknown")),
-                            repair_words.repair_check_words(state, out))
+    await repair_words.asay(job_id, repair_words.repair_check_words(state, out))
+    await repair_receipt.apublish(job_id, repair_receipt.repair_receipt_rows(state, out))
     return out
 
 
@@ -520,6 +548,14 @@ async def _attempt(state: PipelineState) -> dict:
             # WHAT WAS DELIBERATELY NOT ATTEMPTED AND WHY - the rims of a missing bore wall above
             # all, which used to be a silent skip inside the fill executor.
             "refusals": measured.get("refusals", []),
+            # THE MEASURED SHAPE CHANGE, before and after - and everything else the loop
+            # measured, above all what the kept operations DECLARED they would add. The caps
+            # already refused anything past them, so this is not a check: it is the figure the
+            # receipt states beside the cap it stayed inside, and the receipt cannot separate
+            # accounted-for change from unexplained change without the declarations
+            # (pipeline/repair_receipt._shape_rows). See `_forwarded` for why this is not a
+            # whitelist. The refused path forwards the same dict whole, in `detail.measurements`.
+            "measurements": _forwarded(measured),
             "defects_remaining": [dict(e) for e in repair_report.entities],
             "summary": repair_report.summary,
         },
