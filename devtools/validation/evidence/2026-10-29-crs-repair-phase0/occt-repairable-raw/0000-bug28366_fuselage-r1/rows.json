@@ -1,0 +1,151 @@
+[
+  {
+    "file": "bug28366_fuselage.stp",
+    "size_bytes": 25941,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 0,
+      "shells": 0,
+      "faces": 8,
+      "edges": 32,
+      "vertices": 64
+    },
+    "defects_before": [
+      "open_shell",
+      "small_edge"
+    ],
+    "located_before": {
+      "small_edge": 4,
+      "open_shell": 8
+    },
+    "regions_before": {
+      "unknown": 12
+    },
+    "status": "repairable",
+    "route": "conservative_repair",
+    "confidence": 0.7,
+    "targets": [
+      {
+        "entity": "edge:2",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:6",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:10",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:14",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:18",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:22",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:26",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:30",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:1",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:5",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:9",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:13",
+        "code": "small_edge",
+        "region": "unknown"
+      }
+    ],
+    "abstain_reason": "",
+    "operations": [
+      {
+        "op": "sew_faces",
+        "status": "kept",
+        "reason": "",
+        "basis": "geometric",
+        "defect_code": "open_shell",
+        "targets": [
+          "edge:86b61603a772e72c"
+        ]
+      }
+    ],
+    "operations_attempted": 1,
+    "operations_kept": 1,
+    "stopped_because": "resolved",
+    "resolved": true,
+    "complete_scan": true,
+    "planner": "repair-v1",
+    "refusals": [
+      {
+        "defect": "edge:32e6834b6297bbd8",
+        "reason": "paired_rim",
+        "detail": "this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole"
+      },
+      {
+        "defect": "edge:86b61603a772e72c",
+        "reason": "paired_rim",
+        "detail": "this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole"
+      },
+      {
+        "defect": "edge:e1eaa8c63683197f",
+        "reason": "paired_rim",
+        "detail": "this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole"
+      },
+      {
+        "defect": "edge:fed180fc742129b2",
+        "reason": "paired_rim",
+        "detail": "this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole"
+      }
+    ],
+    "declared_area_mm2": 0.0,
+    "valid_after": true,
+    "counts_after": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 8,
+      "edges": 32,
+      "vertices": 64
+    },
+    "defects_after": [
+      "small_edge"
+    ],
+    "located_after": {
+      "small_edge": 4
+    },
+    "repaired_defects": {
+      "open_shell": 8
+    },
+    "outcome": "repaired",
+    "seconds": 4.62
+  }
+]

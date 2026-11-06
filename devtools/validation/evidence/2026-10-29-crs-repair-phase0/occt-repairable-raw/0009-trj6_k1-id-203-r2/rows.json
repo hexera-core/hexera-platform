@@ -1,0 +1,95 @@
+[
+  {
+    "file": "trj6_k1-id-203.stp",
+    "size_bytes": 157996,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 0,
+      "shells": 1,
+      "faces": 46,
+      "edges": 228,
+      "vertices": 456
+    },
+    "defects_before": [
+      "open_shell",
+      "small_edge"
+    ],
+    "located_before": {
+      "open_shell": 1,
+      "small_edge": 4
+    },
+    "regions_before": {
+      "unknown": 5
+    },
+    "status": "repairable",
+    "route": "conservative_repair",
+    "confidence": 0.7,
+    "targets": [
+      {
+        "entity": "edge:55",
+        "code": "open_shell",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:113",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:115",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:116",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:117",
+        "code": "small_edge",
+        "region": "unknown"
+      }
+    ],
+    "abstain_reason": "",
+    "operations": [
+      {
+        "op": "sew_faces",
+        "status": "kept",
+        "reason": "",
+        "basis": "geometric",
+        "defect_code": "open_shell",
+        "targets": [
+          "edge:e8b28a1a1853808a"
+        ]
+      }
+    ],
+    "operations_attempted": 1,
+    "operations_kept": 1,
+    "stopped_because": "resolved",
+    "resolved": true,
+    "complete_scan": true,
+    "planner": "repair-v1",
+    "refusals": [],
+    "declared_area_mm2": 0.0,
+    "valid_after": true,
+    "counts_after": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 46,
+      "edges": 228,
+      "vertices": 456
+    },
+    "defects_after": [
+      "small_edge"
+    ],
+    "located_after": {
+      "small_edge": 4
+    },
+    "repaired_defects": {
+      "open_shell": 1
+    },
+    "outcome": "repaired",
+    "seconds": 8.87
+  }
+]
