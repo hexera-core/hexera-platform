@@ -164,6 +164,19 @@ on:
           - "off"
           - shadow
           - live
+      # THE FIX-MEMORY POSTURE, chosen here like llm_planner. "off" exports nothing and the
+      # shipped default (no retrieval work at all) stays in force; "shadow" records, per attempt
+      # the repair loop makes, what the baked fix memory predicted beside what the session judged
+      # - and never acts on it. There is no "live" choice yet on purpose. Only meaningful with
+      # cad_repair.
+      cad_repair_rag:
+        description: "cad_repair_rag - the posture of the CAD repair surface's fix-memory retrieval on the targeted environment: off (no retrieval) or shadow (predictions recorded beside verdicts, never acted on)"
+        required: false
+        default: "off"
+        type: choice
+        options:
+          - "off"
+          - shadow
 
 # A deploy MUTATES a cloud project through an 18-stage provisioner. Cancelling one mid-flight
 # leaves the project half-reconciled - the stages are individually idempotent, the sequence is
@@ -1541,6 +1554,9 @@ jobs:
       # closed on a typo, a call that times out or returns nothing leaves the rule planner's choice
       # standing, and every directive still answers to the session caps and the progress rule.
       CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || needs.target.outputs.deployment_id == 'dev' && 'live' || '' }}
+      # The fix-memory posture, same convention: stated only when it is not "off". No default
+      # on shared dev: shadow is chosen per dispatch while the slice is proven.
+      CAD_REPAIR_RAG: ${{ inputs.cad_repair_rag != 'off' && inputs.cad_repair_rag || '' }}
       # The verdict by measured limits, per target (the `target` job): 'true' on dev, empty on prod.
       VERDICT_BY_LIMITS: ${{ needs.target.outputs.verdict_by_limits }}
     steps:

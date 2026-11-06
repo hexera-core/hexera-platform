@@ -429,6 +429,10 @@ INVENTORY: list[Group] = [
                help="seconds one planner model call may take before the rule planner's choice stands"),
         EnvVar("CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE", "0.5", kind="float", exposure="internal",
                help="confidence below which the model's plan is not acted on and the rule planner's choice stands"),
+        EnvVar("CAD_REPAIR_RAG", "off", exposure="internal",
+               help="the fix memory's seat in the repair loop: off (byte-for-byte the prior behaviour, no retrieval work) or shadow (P(kept) predicted per proposed attempt and recorded beside the verdict, never acted on); anything else reads as off"),
+        EnvVar("CAD_REPAIR_RAG_MEMORY_PATH", "", exposure="internal",
+               help="path of the baked fix-memory snapshot; empty means the one shipped beside the engine (cad/repair/data), and an unreadable or descriptor-mismatched file disables shadow with a warning"),
     ]),
     Group("Quotas", vars=[
         EnvVar("MAX_JOBS_PER_OWNER", "5"),

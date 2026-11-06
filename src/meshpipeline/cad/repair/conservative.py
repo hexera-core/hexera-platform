@@ -837,6 +837,10 @@ def repair_step_file(source: Path, destination: Path, *,
         "operations_attempted": len(result.verdicts),
         "operations_kept": sum(1 for v in result.verdicts if v.kept),
     }
+    if result.shadow:
+        # WHAT THE FIX MEMORY PREDICTED beside what the session judged - shadow evidence only,
+        # absent byte-for-byte when CAD_REPAIR_RAG is off.
+        measurements["rag_shadow"] = [dict(s) for s in result.shadow]
 
     # THE AFTER-CHECKS STILL HAVE THE LAST WORD. The session already refused any individual
     # operation that left the caps, so reaching here with a refusal would mean a bug - but the

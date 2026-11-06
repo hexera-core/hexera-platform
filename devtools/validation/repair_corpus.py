@@ -719,6 +719,8 @@ def _one(path: Path, scratch: Path, *, mode: str = "off") -> dict:
                    operations=_operation_rows(measured.get("operations") or ()),
                    result_discarded=bool(measured.get("result_discarded")),
                    seconds=round(time.monotonic() - started, 2))
+        if measured.get("rag_shadow"):
+            row["rag_shadow"] = list(measured["rag_shadow"])
         return row
     except Exception as exc:  # noqa: BLE001
         row.update(outcome="repair_failed", error=f"{type(exc).__name__}: {exc}")
@@ -743,6 +745,9 @@ def _one(path: Path, scratch: Path, *, mode: str = "off") -> dict:
         refusals=list(measured.get("refusals", []) or []),
         declared_area_mm2=float(measured.get("declared_area_mm2", 0.0) or 0.0),
     )
+    if measured.get("rag_shadow"):
+        # The fix memory's predictions beside the session's verdicts (CAD_REPAIR_RAG=shadow).
+        row["rag_shadow"] = list(measured["rag_shadow"])
 
     after = _inspect(destination)
     row.update(valid_after=after["valid"], counts_after=after["counts"],

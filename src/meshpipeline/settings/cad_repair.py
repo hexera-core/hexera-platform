@@ -191,3 +191,26 @@ CAD_REPAIR_LLM_PLANNER_TIMEOUT_S: float = float(
 #: The confidence below which the model's plan is not acted on and the rule planner's choice stands.
 CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE: float = float(
     optional_env("CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE", "0.5"))
+
+
+def _rag_posture() -> str:
+    """The fix-memory posture, FAILING CLOSED: anything but exactly shadow reads as off."""
+    raw = optional_env("CAD_REPAIR_RAG", "off").strip().lower()
+    return raw if raw == "shadow" else "off"
+
+
+#: Where the fix memory sits in the repair loop. "off" is byte-for-byte the prior behaviour: no
+#: snapshot load, no patch isolation, no prediction. "shadow" predicts P(kept) for every attempt
+#: the planner proposes and records the prediction beside the session's verdict, without acting on
+#: it - geometry, caps and the progress rule are untouched. There is deliberately no "live" value
+#: yet: acting on a prediction (ordering or skipping attempts) is a later slice with its own
+#: design, and a typo must not create it early. See cad/repair/fixmemory.py and
+#: docs/superpowers/specs/2026-10-29-defect-cad-rag-design.md.
+CAD_REPAIR_RAG: str = _rag_posture()
+
+#: Where the baked fix-memory snapshot lives. Empty - the default - means the one shipped beside
+#: the engine (cad/repair/data/, exported by labs/defect_cad_rag/export_memory.py from the lab
+#: action sweeps); a deployment may point at another file. Unreadable, missing or
+#: descriptor-mismatched snapshots disable shadow with a logged warning - never an error, because
+#: the memory is advisory.
+CAD_REPAIR_RAG_MEMORY_PATH: str = optional_env("CAD_REPAIR_RAG_MEMORY_PATH", "")
