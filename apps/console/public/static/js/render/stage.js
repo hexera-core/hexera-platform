@@ -16,7 +16,9 @@
  */
 import { esc, fmtDur, mdBlock } from "../core/format.js";
 import { prettyText } from "../core/engineering_text.js";
-import { SENT_BACK, attemptsLabel, laneLabel, reasoningHeader } from "../core/events.js";
+import { attemptsLabel, reasoningHeader } from "../core/events.js";
+// the run box's four rows and which backend stage feeds which: the one table, for every route
+import { DESIGNS_IN, ROWS, ROW_KEYS, STAGE_ROW, engineWords, rowDef, rowFor, startsBuild } from "../core/run_rows.js";
 import { applyFlow, bindAxis, bindUnit, displayText, followAxis, followSuggestion, followUnit, formHtml, markConfirmed,
   readForm, shown, unitChoiceHint, unitChoiceNeeded, unitOf } from "./geometry_form.js";
 // the card keeps the user's answers through a re-draw and says back what they changed
@@ -25,11 +27,12 @@ import { changedAnswers, editsLine, noteDrawn, servedProposal } from "./geometry
 import { bindThermalPanel, thermalPanelHtml } from "./thermal_form.js";
 // an FEA part has its own panel too: its size, unit, bodies and clean check, and no flow form
 import { bindFeaPanel, feaPanelHtml, followAssembly, followClean, followMeasure } from "./fea_form.js";
-// the run card's live line: the step running now, in plain words
-import { createRunLine } from "./run_progress.js";
+// the run box's live line: what the running row is doing now, in plain words
+import { countWords, createRunProgress } from "./run_progress.js";
+import { barWidth } from "./check_progress.js";
 // the closing message of a finished run, as a summary rather than a wall of lines
 import { outcomeHtml } from "./outcome.js";
-const RunLine = createRunLine();
+const Run = createRunProgress();
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
 export function openLightbox(src) {
@@ -58,9 +61,13 @@ export function setMeshPartialHandler(fn) { onMeshPartial = fn || (() => {}); }
 
 /* What each lane mark means, in words: the dot's title and its name for a screen reader. The
    marks themselves are drawn by css/theme.css; `Stage.markOf` decides which one a lane earns. */
+/* how many design decisions the design row shows folded: the rest open with the row */
+const DESIGN_SHOWN = 4;
+
 const MARKS = {
   done: "finished", bad: "did not pass", back: "sent back for a rebuild",
   warn: "finished with a warning", nomesh: "no mesh was built here", ended: "stopped",
+  skip: "nothing to do here",
 };
 
 /** A tool call in words: the backend's public label, else its name with the underscores gone
@@ -84,14 +91,14 @@ export const Stage = {
   // list now comes from the capability response through `setSupportedCopy`, and until that
   // arrives the copy stays format-neutral rather than guessing.
   mount(){document.getElementById('stage').innerHTML='<div class="scroll"><div class="chat-col" id="cc"><div id="empty"><p id="empty-lead">Upload geometry to begin.</p><p id="empty-formats"></p><p class="empty-sub">Hexera will guide you through the simulation setup.</p></div></div></div>';
-    this.nodes={};this.proc=null;this.tl=null;this._briefEl=null;this._briefSig='';
+    this.nodes={};this.rows=null;this._activeKey=null;this._building=false;this._ev=null;this._unit='';this.proc=null;this.tl=null;this._briefEl=null;this._briefSig='';
     // A NEW RUN STARTS CLEAN. The attempt the last run ended on, the attempts that built and a
     // mesh bar a run left open when it ended mid-mesh all belonged to that run: kept, the next
     // run's "Attempt 1" header went missing and its mesh bar never appeared (the old, detached
     // one still counted as open).
     this._att=null;this._attSep=null;this._built=new Set();this._seq=0;this.meshBar=null;this._ended=false;
     // ...and so did the stopped clock and the last event's time
-    this.finished=false;this._evt=0;RunLine.reset();},
+    this.finished=false;this._evt=0;Run.reset();},
   // Fill the empty state's format line from the SERVER's capability description. Advisory and
   // best-effort: when capabilities are unavailable the line stays empty and the neutral lead
   // sentence still invites an upload, because the server is the authority on what it accepts.
@@ -366,6 +373,12 @@ export const Stage = {
     if(d&&d.fea){fol(()=>followClean(g,d.fea));if(d.fea.assembly)fol(()=>followAssembly(g,d.fea.assembly));}
     if(d&&d.fea&&d.fea.measure)fol(()=>followMeasure(g,d.fea.measure,p,null));},
 
+  /* THE RUN BOX: a header (what the run is doing, its one total time, Cancel) and FOUR ROWS - choosing the
+     engine, designing the mesh, creating it, reviewing it - the same four for every route (core/run_rows.js
+     holds the one table that says which backend stage feeds which row). Each row has ONE time (how long it
+     ran, summed over rebuilds), a few plain lines that are always in view (what was chosen, the design's
+     decisions, what was built, what the review found), the live line while it runs, and its steps folded
+     away under it. */
   ensureProc(){if(this.proc)return;this.clearEmpty();
     const p=document.createElement('div');p.className='proc';
     p.innerHTML=`<div class="proc-head"><svg class="proc-orb" viewBox="0 0 24 24" aria-hidden="true"><circle class="sp-arm" cx="12" cy="12" r="7.2"/><path class="sp-hd" d="M19.20 8.16L22.40 14.56L16.00 14.56Z"/><path class="sp-hd" d="M4.80 15.84L1.60 9.44L8.00 9.44Z"/></svg>
@@ -373,42 +386,50 @@ export const Stage = {
       <span class="proc-sub" id="proc-sub"></span>
       <span class="proc-clock" id="proc-clock">0:00</span>
       <button class="proc-cancel" id="proc-cancel" type="button" hidden>Cancel run</button></div>
-      <div class="proc-live" id="proc-live"></div>
-      <div class="tl" id="tl"></div>`;
+      <div class="tl rr-box" id="tl"></div>`;
     this.col().appendChild(p);this.proc=p;this.tl=p.querySelector('#tl');
-    RunLine.attach(p.querySelector('#proc-live'));RunLine.draw();
+    this.rows={};ROWS.forEach(d=>{this.rows[d.key]=this._row(d);});this.nodes=this.rows;
     p.querySelector('#proc-cancel').onclick=()=>onCancel();
     this.t0=Date.now();
-    // one ticker drives every live duration - the run's total and the active stage's
+    // one ticker drives every live time - the run's total and the running row's
     clearInterval(this._tick);
     this._tick=setInterval(()=>{
       const c=document.getElementById('proc-clock');
       if(c&&!this.finished)c.textContent=fmtDur(Date.now()-this.t0);
-      Object.values(this.nodes).forEach(n=>{
-        if(n.t0&&!n.tEnd&&n.dur)n.dur.textContent=fmtDur(Date.now()-n.t0);});
-      if(this.meshBar)this.tickMesh();
-      // the live line's notes follow the clock ("taking longer than similar runs")
-      if(!this.finished&&(this._lineTick=(this._lineTick||0)+1)%10===0)RunLine.draw();
-    },500);},
+      Object.values(this.rows||{}).forEach(r=>{if(r.state==='active')r.dur.textContent=fmtDur(r.spent+Math.max(0,Date.now()-r.t0));});
+      if(!this.finished&&(this._lineTick=(this._lineTick||0)+1)%2===0)this.drawLive();
+    },500);
+    this.drawLive();},
+  _row(d){
+    const n=document.createElement('div');n.className='tl-node rr';n.dataset.row=d.key;
+    n.innerHTML=`<div class="tl-dot"></div>
+      <div class="tl-name"><span class="nm">${esc(d.title)}</span><span class="ct"></span>
+        <span class="dur"></span><span class="tl-chev" hidden title="Show the steps">∨</span></div>
+      <div class="rr-said"></div><div class="rr-live" hidden></div>
+      <div class="tl-body"><div class="tl-inner"></div></div>`;
+    const row={key:d.key,agent:d.key,el:n,body:n.querySelector('.tl-inner'),dot:n.querySelector('.tl-dot'),
+      ct:n.querySelector('.ct'),dur:n.querySelector('.dur'),chev:n.querySelector('.tl-chev'),
+      saidEl:n.querySelector('.rr-said'),liveEl:n.querySelector('.rr-live'),
+      state:'todo',t0:null,tEnd:null,spent:0,count:0,worst:0,seq:0,built:false,
+      lines:new Map(),receipt:null,checks:{n:0,bad:[]}};
+    // the steps are there when wanted and folded by default: the row's name opens them
+    n.querySelector('.tl-name').onclick=()=>{if(row.count||row.hasMore)n.classList.toggle('open');};
+    this.tl.appendChild(n);
+    return row;},
 
-  // WAITING FOR A WORKER. The sub-line under "Generating mesh" said "working…" from the
-  // moment a job was created, including the five to ten minutes a job can sit `pending`
-  // while the fleet wakes from zero - a silent spinner that read as a hang. The poller hands
-  // every status here; a non-empty text is the wait (with the backend's estimate), an empty one
-  // means a worker has it and the sub-line empties: the live line under the header says what is
-  // running, so a filler word there only repeated it. A finished run is left alone.
+  // WAITING FOR A WORKER. The poller hands every status here; a non-empty text is the wait (with the
+  // backend's estimate), an empty one means a worker has it. A finished run is left alone.
   waiting(text){if(!this.proc||this.proc.classList.contains('done'))return;
     const s=this.proc.querySelector('#proc-sub');if(!s)return;
     s.textContent=text||'';
-    RunLine.model.waiting(text);RunLine.draw();},
+    Run.waiting(text);this.drawLive();},
   // The Cancel control is shown ONLY for a run this page is attached to live. A replayed run
   // renders the same card, and a control that could stop nothing must not be on it.
   showCancel(){const b=this.proc?.querySelector('#proc-cancel');if(b)b.hidden=false;},
 
   // THE RUN'S CLOCK IS THE SERVER'S. It counts from when the job was created, not from when this
-  // page opened it - a reload, or a run opened from a link, used to start it again at 0:00 - and it
-  // stops at the time the job ended. Before, it never stopped at all: a finished run kept counting.
-  // A start ahead of this machine's own clock is held at now, so the clock never runs backwards.
+  // page opened it, and it stops at the time the job ended. A start ahead of this machine's own
+  // clock is held at now, so the clock never runs backwards.
   clock(createdAt,endedAt){
     const t0=Date.parse(createdAt||''),t1=Date.parse(endedAt||'');
     if(this.finished&&!(t1>0))return;
@@ -416,189 +437,225 @@ export const Stage = {
     if(t1>0)this.finished=true;
     const c=this.proc&&this.proc.querySelector('.proc-clock');
     if(c&&this.t0)c.textContent=fmtDur((t1>0?t1:Date.now())-this.t0);},
-  // WHEN, BY THE SERVER'S CLOCK. Every event says when it happened; a lane opens and closes at
-  // those times, so a replayed run's stages last as long as they did - not the instant the replay
-  // took, which read "0:00" on every stage after a reload. Live, it is the moment the event left.
+  // WHEN, BY THE SERVER'S CLOCK. Every event says when it happened; a row opens and closes at those
+  // times, so a replayed run's rows last as long as they did - not the instant the replay took.
   at(ts){const t=Date.parse(ts||'');this._evt=t>0?Math.min(t,Date.now()):0;},
   now(){return this._evt||Date.now();},
 
-  // MESH RUN - bounded by the engine's DECLARED budget (published by the backend).
-  // We bar elapsed against that real cap; we do not invent a percentage.
+  /* WHICH ROW. The dispatch shows the renderer every event first (`seen`); the one table
+     (core/run_rows.js) says which row its stage feeds, and the builder's work is its design until
+     the mesher starts. */
+  seen(ev,stage){this._ev=ev;
+    if(ev&&ev.type!=='attempt'&&stage===DESIGNS_IN&&startsBuild(ev))this._building=true;},
+  rowKey(agent){return ROW_KEYS.includes(agent)?agent:rowFor(agent,this._ev,this._building,this._activeKey||'engine');},
+  // the row an event of `agent` goes to, open and running
+  node(agent){this.ensureProc();return this._activate(this.rowKey(agent),agent);},
+  stage(agent){return this.node(agent);},
+  _activate(key,agent){
+    const row=this.rows[key],i=ROW_KEYS.indexOf(key);
+    // A LATE WORD FOR A FINISHED ROW (the design's receipt said again once the mesh is built) joins
+    // that row without opening it again: the run does not step backwards
+    if(row.state==='done'&&ROW_KEYS.slice(i+1).some(k=>this.rows[k].state!=='todo'&&!this.rows[k].skipped))return row;
+    ROW_KEYS.forEach((k,j)=>{const r=this.rows[k];if(k===key)return;
+      if(r.state==='active')this._close(r);
+      // a row the run went past without a word (a pinned engine, an engine that designs nothing)
+      // still shows, as done with nothing to do; its own words come from ROWS[].none at the end
+      else if(j<i&&r.state==='todo'){r.state='done';r.skipped=true;r.tEnd=this.now();this.paint(r);this._drawSaid(r);}});
+    if(row.state!=='active'){
+      Object.assign(row,{state:'active',t0:this.now(),tEnd:null,skipped:false,seq:++this._seq});
+      if(row.mark==='back')row.mark=null;
+      row.dot.className='tl-dot active';this._activeKey=key;
+      if(key!=='build')Run.lane(agent||key,this.now());this.drawLive();}
+    else if(agent&&agent!==row.lane&&key!=='build'){Run.lane(agent,this.now());this.drawLive();}
+    row.lane=agent||row.lane;
+    return row;},
+  _close(r){if(!r||r.state!=='active')return;
+    r.spent+=Math.max(0,this.now()-r.t0);r.state='done';r.tEnd=this.now();
+    r.dur.textContent=fmtDur(r.spent);if(this._activeKey===r.key)this._activeKey=null;
+    this.paint(r);this._drawSaid(r);this.drawLive();},
+  done(a){const r=this.rows&&this.rows[ROW_KEYS.includes(a)?a:(STAGE_ROW[a]||'')];if(r)this._close(r);},
+
+  /* WHAT A ROW SAYS, always in view: a few plain lines, each kept under a key so a newer word on the
+     same thing replaces the older one instead of piling up. */
+  _line(row,key,text){const t=String(text||'').trim();if(!t)return;row.lines.set(key,t);this._drawSaid(row);},
+  _drawSaid(row){
+    const lines=[...row.lines.values()];
+    let html='';
+    if(row.key==='review'&&row.checks.n){const b=row.checks.bad.length;
+      const n=row.checks.n,first=row.checks.bad[0];
+      html+=`<p class="rr-line${b?' bad':''}">${esc(n===1?(b?`The check failed: ${first}`:'The check passed.')
+        :b?`${b} of ${n} checks failed: ${first}`:`All ${n} checks passed.`)}</p>`;}
+    if(row.key==='design'){
+      // THE DESIGN'S DECISIONS: what the run said about its design as it decided, then the rows of its
+      // design receipt (contracts/mesh_design) it did not already say. The one-line plan is shown only
+      // when nothing else says the design: it is the same plan, said shorter.
+      const rec=(row.receipt&&row.receipt.rows)||[];
+      const says=[...row.lines.entries()].filter(([k])=>k!=='plan').map(([,t])=>t);
+      const seen=new Set(says);
+      // what was done with the user's own notes leads: it is the line they look for
+      const li=r=>`<li title="${esc(r.label)}">${esc(r.why||r.value)}</li>`,fresh=rec.filter(r=>!seen.has(r.why||r.value));
+      const items=fresh.filter(r=>r.label==='Your notes').map(li).concat(says.map(t=>`<li>${esc(t)}</li>`),
+        fresh.filter(r=>r.label!=='Your notes').map(li));
+      if(!items.length&&row.lines.has('plan'))items.push(`<li>${esc(row.lines.get('plan'))}</li>`);
+      // the first few in view; the rest open with the row, like its steps
+      const more=items.length-DESIGN_SHOWN;
+      if(items.length)html+=`<ul class="rr-dec">${items.map((h,i)=>i<DESIGN_SHOWN?h:h.replace('<li','<li class="rr-more"')).join('')}`
+        +(more>0?`<li class="rr-count">and ${more} more</li>`:'')+`</ul>`;
+      row.hasMore=more>0;if(row.hasMore)row.chev.hidden=false;}
+    else html+=lines.map(t=>`<p class="rr-line">${esc(t)}</p>`).join('');
+    if(!html&&row.state==='done'&&(this._ended||row.skipped||row.key==='design')){
+      const d=rowDef(row.key),none=row.worked&&d.quiet?d.quiet:d.none;
+      if(none)html=`<p class="rr-line none">${esc(none)}</p>`;}
+    row.saidEl.innerHTML=html;},
+  // a step under the row, folded away: the row's name opens them
+  _step(row,html){this.bump(row);const r=document.createElement('div');r.className='row';r.innerHTML=html;
+    row.body.appendChild(r);this.scroll(row);return r;},
+  bump(n){n.count++;n.chev.hidden=false;},
+  scroll(n){n.body.scrollTop=n.body.scrollHeight;this.scrollBottom();},
+
+  /* THE LIVE LINE, inside the row that is running: what it is doing now in plain words, a note when it
+     runs long, and a hairline bar when the mesher's count has an estimate beside it (render/run_progress). */
+  drawLive(){if(!this.rows)return;
+    const v=Run.view(),ended=this._ended;
+    let key=null;
+    if(!ended&&v.live)key=this._activeKey&&this.rows[this._activeKey].state==='active'?this._activeKey
+      :(v.state==='queued'?(ROW_KEYS.find(k=>this.rows[k].state==='todo')||null):null);
+    ROW_KEYS.forEach(k=>{const r=this.rows[k],el=r.liveEl;
+      if(k!==key){if(!el.hidden){el.hidden=true;el.innerHTML='';el.dataset.sig='';}return;}
+      const w=barWidth(v.progress);
+      const sig=JSON.stringify([v.current,v.note,!!w]);
+      el.hidden=false;
+      if(el.dataset.sig!==sig){el.dataset.sig=sig;
+        el.innerHTML=`<span class="rr-now" role="status">${esc(v.current||'')}</span>`
+          +(v.note?`<span class="rr-note">${esc(v.note)}</span>`:'')
+          +(w?`<span class="rr-bar" aria-hidden="true"><i style="width:${w}"></i></span>`:'');}
+      else if(w){const f=el.querySelector('.rr-bar > i');if(f)f.style.width=w;}});},
+
+  // MESH RUN: the mesher started, in this attempt. What the row's mark and the attempt count are about.
   startMesh(engine,budget,history){
-    const n=this.node('builder');   // meshing IS the builder's run_mesh call
-    // A MESHER RAN, in this lane and in this attempt: what the lane's mark and the attempt count
-    // are about. The event is published just before the mesher starts, after every refusal.
+    const n=this.node('builder');
     n.built=true;this._built.add(this._att||1);
+    // a pinned engine opens no engine lane: the engine row still names the engine that ran
+    const e=this.rows.engine;if(!e.lines.size&&engine){this._line(e,'engine',`Engine: ${engine}`);this.paint(e);}
     if(this.meshBar)return;
-    // What we bar elapsed against. When we have MEASURED history for this engine+purpose
-    // we bar against the TYPICAL time and say the honest range; otherwise we bar against
-    // the engine's kill-deadline budget and say so. Never a fabricated percentage.
-    const hasHist=history&&history.typical_s>0;
-    const ref=hasHist?history.typical_s*1000:budget*1000;
-    const sub=hasHist
-      ?`similar runs take about ${fmtDur(history.typical_s*1000)} (usually ${fmtDur(history.p10_s*1000)} to ${fmtDur(history.p90_s*1000)})`
-      :`no similar runs yet · stops by itself at ${fmtDur(budget*1000)}`;
-    const w=document.createElement('div');w.className='meshbar';
-    w.innerHTML=`<div class="mb-top"><span class="mb-lbl">meshing · ${esc(engine||'')}</span>
-        <span class="mb-num">0:00</span></div>
-      <div class="mb-track"><div class="mb-fill"></div></div>
-      <div class="mb-sub">${esc(sub)}</div>`;
-    n.body.appendChild(w);this.scroll(n);
-    this.meshBar={el:w,t0:Date.now(),ref:ref,budget:budget*1000,hasHist:hasHist};
-    RunLine.model.meshing(engine,budget,history,this.now());RunLine.draw();},
-  // WHAT THE RUNNING MESHER SAYS IT IS DOING ("adding wall layers"), under its bar and on the line
-  meshStage(label){
-    // a narrated run says the stage in the user's words (narrate below); the mesher's label can name a tool
-    const m=this.meshBar;if(m&&label&&!m.narrated){const l=m.el.querySelector('.mb-lbl');if(l)l.textContent=`meshing · ${label}`;}
-    RunLine.model.meshStage(label,this.now());RunLine.draw();},
-  // THE RUN'S NARRATION: what it is doing now and what it decided, in plain words, on the line
+    this.meshBar={t0:this.now(),engine};
+    Run.meshing(engine,budget,history,this.now());this.drawLive();},
+  // WHAT THE RUNNING MESHER SAYS IT IS DOING ("adding wall layers"), on the live line
+  meshStage(label){Run.meshStage(label,this.now());this.drawLive();},
+  // THE RUN'S NARRATION: a decision said in plain words is a line of its row; work being done is a
+  // folded step and the live line
   narrate(agent,ev){if(!ev||!ev.text)return;
-    const m=this.meshBar;
-    if(m&&ev.kind!=='say'&&!/^Still /.test(ev.text)){m.narrated=true;
-      const l=m.el.querySelector('.mb-lbl');if(l)l.textContent=String(ev.text);}
-    RunLine.model.narrate(ev,this.now());RunLine.draw();},
-  // A FRAME OF THE MESH-SO-FAR was published: a pointer, never geometry. The stage holds no
-  // viewer and reads no bytes - it passes the pointer to whoever was installed to draw it, and a
-  // build with nobody installed renders exactly what it did before.
+    const row=this.node(agent),t=String(ev.text).trim();
+    if(ev.unit)this._unit=String(ev.unit);
+    if(ev.kind==='say'){
+      // the build keeps its latest word (why a pass runs again); the design and the review keep each one
+      this._line(row,row.key==='build'?'say':'say:'+t,t);
+      if(agent==='reviewer')row.reviewSaid=true;}
+    else if(!/^Still /.test(t)&&row.lastStep!==t){row.lastStep=t;
+      this._step(row,`<div class="e-info">${esc(t)}</div>`);}
+    Run.narrate(ev,this.now());this.drawLive();},
+  // A FRAME OF THE MESH-SO-FAR was published: a pointer, never geometry - handed on to whoever draws it.
   meshPartial(phase,key){onMeshPartial(phase,key);},
-  // THE RECEIPT a phase published: deterministic rows the user opens on that step of the live line.
-  // It is detail, not narration - the step's own one-line summary is untouched, and a receipt for a
-  // stage this build has no step for is dropped by the model.
+  // THE RECEIPT a phase published: deterministic rows. The design's is the row's decisions (in view);
+  // any other row's is a folded step.
   receipt(agent,ev){if(!ev)return;
-    RunLine.model.receipt({...ev,stage:ev.stage||agent},this.now());RunLine.draw();},
-  // THE PLAN the run will build (cells, wall layers, where it refines), in its lane and on the line
-  plan(agent,summary){if(summary)this.info(agent,'Plan: '+summary);
-    RunLine.model.plan(summary,this.now());RunLine.draw();},
-  tickMesh(){const m=this.meshBar;if(!m)return;
-    const el=Date.now()-m.t0;
-    // Progress is against the reference time, capped at 100%. Past the typical time the
-    // bar holds full and the label keeps counting up - a run CAN take longer than usual,
-    // and pretending otherwise (or racing to a fake 100%) would be the lie we are avoiding.
-    const pct=Math.min(100,(el/m.ref)*100);
-    // THIS bar's parts, not a page-wide id: a retry keeps attempt 1's finished bar in the
-    // timeline, and an id lookup found that one - attempt 2's bar sat at 0:00, empty.
-    const f=m.el.querySelector('.mb-fill'),num=m.el.querySelector('.mb-num');
-    if(f)f.style.width=pct+'%';
-    if(f&&el>=m.ref)f.classList.add('over');
-    if(num)num.textContent=fmtDur(el)+(el>=m.ref&&m.hasHist?' · longer than usual':'');},
-  endMesh(cells){const m=this.meshBar;if(!m)return;
-    this.tickMesh();m.el.classList.add('done');
-    const el=Date.now()-m.t0;
-    // The run FINISHED. While it runs the bar is elapsed against the engine's
-    // budget, but a delivered mesh is 100% of the work - a run that lands well
-    // inside its budget must not be left as a 3% sliver that has turned green.
-    const f=m.el.querySelector('.mb-fill');
-    if(f){f.classList.remove('over');f.style.width='100%';}
-    // and the sub-line stops predicting a run that already happened
-    const sub=m.el.querySelector('.mb-sub');
-    if(sub)sub.textContent=`finished in ${fmtDur(el)}`;
-    const num=m.el.querySelector('.mb-num');
-    if(num&&cells)num.textContent=`${fmtDur(el)} · ${cells}`;
+    const row=this.node(agent);
+    const rows=(ev.rows||[]).filter(r=>r&&typeof r==='object').slice(0,12)
+      .map(r=>({label:String(r.label??''),value:String(r.value??''),why:String(r.why??'')}));
+    if(rows.length){
+      if(row.key==='design'){row.receipt={title:String(ev.title||''),rows};this._drawSaid(row);}
+      else this._step(row,`<div class="e-rc"><div class="e-rc-h">${esc(String(ev.title||''))}</div>${rows.map(r=>
+        `<div class="e-rc-r"><span class="rr-k">${esc(r.label)}</span>${esc([r.value,r.why].filter(Boolean).join(' - '))}</div>`).join('')}</div>`);}
+    Run.receipt({...ev,stage:ev.stage||agent},this.now());this.drawLive();},
+  // THE PLAN the run will build (cells, wall layers, where it refines): a line of the design
+  plan(agent,summary){const row=this.node(agent);
+    if(summary)this._line(row,'plan','Plan: '+summary);
+    Run.plan(summary,this.now());this.drawLive();},
+  endMesh(cells){this.ensureProc();
+    const n=Number(cells);
+    const words=Number.isFinite(n)&&n>0?`${countWords(n)} ${this._unit||'cells'}`:'';
+    if(words)this._line(this.rows.build,'built',`Mesh built: ${words}.`);
     this.meshBar=null;
-    RunLine.model.meshed(cells,this.now());RunLine.draw();},
-  node(agent){this.ensureProc();
-    if(this.nodes[agent])return this.nodes[agent];
-    const n=document.createElement('div');n.className='tl-node open';
-    n.innerHTML=`<div class="tl-dot active"></div>
-      <div class="tl-name"><span class="nm">${esc(laneLabel(agent))}</span><span class="ct"></span>
-        <span class="dur"></span><span class="tl-chev">∨</span></div>
-      <div class="tl-body"><div class="tl-inner"></div></div>`;
-    n.querySelector('.tl-name').onclick=()=>n.classList.toggle('open');
-    this.tl.appendChild(n);
-    this.nodes[agent]={el:n,body:n.querySelector('.tl-inner'),dot:n.querySelector('.tl-dot'),
-                       ct:n.querySelector('.ct'),dur:n.querySelector('.dur'),
-                       t0:this.now(),tEnd:null,count:0,
-                       // what the lane's mark is read from: see markOf
-                       agent,seq:++this._seq,worst:0};
-    RunLine.model.lane(agent,this.now());RunLine.draw();
-    return this.nodes[agent];},
-  done(a){const n=this.nodes[a];if(n&&!n.tEnd){n.dot.classList.remove('active');
-    n.el.classList.remove('open');n.tEnd=Math.max(n.t0,this.now());
-    if(n.dur)n.dur.textContent=fmtDur(n.tEnd-n.t0);this.paint(n);}},
-  /* THE LANE'S MARK SAYS HOW IT ENDED. A tick is earned: it used to be every closed lane's, so a
-     review that failed the mesh and sent it back for a rebuild closed with a green tick beside its
-     FAIL, and "Mesh creation" was ticked on runs where nothing was built.
+    // the count said again once the checks have started (the measured one) moves the line, not the run
+    if(!this.rows||this.rows.build.state==='active')Run.meshed(words,this.now());
+    this.drawLive();},
+
+  /* THE ROW'S MARK SAYS HOW IT ENDED. A tick is earned:
        bad    ✕  a check failed, an error was reported, or the review failed the mesh
        back   ↺  the attempt was sent back for a rebuild from here (set by `attempt`)
        warn   !  it only warned - or a delivered mesh's review left points open
-       nomesh –  a mesh lane in which no mesher ran: nothing was built there
+       nomesh –  the build row with no mesher run: nothing was built
+       skip   –  a row the run had nothing to do in
        ended  –  the run was cancelled while it was open
        done   ✓  it finished and nothing in it went wrong
-     The mark is read from what the lane showed (failed checks, a note's tone, the verdict), never
+     The mark is read from what the row showed (failed checks, a note's tone, the verdict), never
      from the words of a note. */
   markOf(n){
     if(n.mark)return n.mark;
     if(n.verdict)return n.verdict==='PASS'?'done':'bad';
     if(n.worst>=2)return 'bad';
     if(n.worst===1)return 'warn';
-    if(n.agent==='builder'&&!n.built)return 'nomesh';
+    if(n.agent==='build'&&!n.built)return 'nomesh';
+    // a row the run went past, or a design that decided nothing it said, had nothing to do
+    if((n.skipped||n.agent==='design')&&!n.lines.size&&!n.receipt&&!n.worked)return 'skip';
     return 'done';},
-  paint(n){if(!n||!n.tEnd)return;
+  paint(n){if(!n)return;
+    if(n.state==='todo'){n.dot.className='tl-dot'+(n.mark?' '+n.mark:'');if(n.mark){n.dot.title=MARKS[n.mark];}return;}
+    if(n.state==='active'){n.dot.className='tl-dot active';return;}
     const m=this.markOf(n);
-    Object.keys(MARKS).forEach(k=>n.dot.classList.remove(k));
-    n.dot.classList.add(m);n.dot.title=MARKS[m];
+    n.dot.className='tl-dot '+m;n.dot.title=MARKS[m];
     n.dot.setAttribute('role','img');n.dot.setAttribute('aria-label',MARKS[m]);},
-  stage(agent){Object.keys(this.nodes).forEach(k=>{if(k!==agent)this.done(k);});this.node(agent);},
-  bump(n){n.count++;n.ct.textContent=n.count+(n.count===1?' step':' steps');},
-  scroll(n){n.body.scrollTop=n.body.scrollHeight;this.scrollBottom();},
-  // A REBUILD starts the stages over. Appending attempt 2's checks under attempt 1's
-  // produced "Mesh validation · 16 steps" - three attempts smeared into one lane.
-  // Each retry re-opens the stages and marks which attempt they belong to.
+
+  // A REBUILD runs the design, the build and the review again. The rows stay the same four: their times
+  // add up, the build row says in one line why it is building again, and the steps of each attempt are
+  // set apart under a small "Attempt N" in the fold.
   attempt(n){
     if(this._att===n)return;
     this.ensureProc();
-    // THE LANE THAT SENT THE RUN BACK - the last one the attempt opened: the review that failed
-    // the mesh, or the validation it did not pass. It reads "sent back for a rebuild", never a
-    // tick, and a failed verdict is reworded as the request it turned out to be.
-    const lanes=['builder','executor','classifier','reviewer'].map(a=>this.nodes[a]).filter(Boolean);
-    const last=lanes.reduce((m,x)=>(!m||x.seq>m.seq?x:m),null);
-    if(last){last.mark='back';
-      if(last.verdict==='FAIL'&&last.verdictRow){const t=last.verdictRow.querySelector('.e-info');if(t)t.textContent=SENT_BACK;}}
-    this._closeAttempt();
-    this._att=n;
-    // RETIRE the previous attempt's stages - close them and unregister the lane so the
-    // next attempt opens fresh ones INSIDE the new group. The rows STAY in the DOM:
-    // "why did attempt 1 fail" is the whole reason a user reads this timeline.
-    lanes.forEach(x=>{this.done(x.agent);this.paint(x);delete this.nodes[x.agent];});
-    const sep=document.createElement('div');sep.className='tl-att';
-    sep.textContent=`Attempt ${n}`;
-    // A run that passes first time has no "attempts" - it just has stages. Grouping is
-    // only meaningful once there IS a second attempt, so attempt 1's header stays hidden
-    // until one arrives, and then both appear together.
-    if(n===1)sep.hidden=true;
-    else this.tl.querySelectorAll('.tl-att[hidden]').forEach(e=>e.hidden=false);
-    this.tl.appendChild(sep);this._attSep=sep;
-    RunLine.model.attempt(n,this.now());RunLine.draw();},
-  // AN ATTEMPT THAT BUILT NOTHING SAYS SO on its header: "Attempt 2" alone read as a second mesh
-  // on runs where every attempt was refused before a mesher ever started.
-  _closeAttempt(){const s=this._attSep;if(!s||s.dataset.closed)return;s.dataset.closed='1';
-    if(!this._built.has(this._att))s.textContent+=' · no mesh built';},
-  // THE REVIEW'S VERDICT, kept on its lane: it decides the lane's mark (a FAIL is never a tick),
-  // and a rebuild that follows rewords it as the request it was.
-  verdict(agent,ok,text){this.info(agent,text,!ok);const n=this.node(agent);
-    n.verdict=ok?'PASS':'FAIL';n.verdictRow=n.body.lastElementChild;this.paint(n);
-    RunLine.model.verdict(ok,this.now());RunLine.draw();},
+    const prev=this._att;
+    if(prev!=null&&n>prev){
+      const rv=this.rows.review,b=this.rows.build;
+      const why=rv.verdict==='FAIL'?'the review asked for changes'
+        :rv.checks.bad.length?'the mesh did not pass its checks'
+          :!this._built.has(prev)?'nothing was built':'the last attempt did not finish';
+      // THE ROW THAT SENT THE RUN BACK - the review, or the build when the run never got that far
+      const last=rv.state!=='todo'&&rv.seq>b.seq?rv:b;
+      ['design','build','review'].forEach(k=>{const r=this.rows[k];this._close(r);
+        Object.assign(r,{state:'todo',worst:0,verdict:null,mark:null,lastStep:null});
+        if(k==='review'){r.checks={n:0,bad:[]};r.lines.clear();r.reviewSaid=false;}
+        if(k==='build'){r.lines.delete('built');r.lines.delete('say');r.built=false;}
+        const sep=document.createElement('div');sep.className='tl-att';sep.textContent=`Attempt ${n}`;
+        r.body.appendChild(sep);});
+      last.mark='back';
+      this._line(b,'attempt',`Attempt ${n}: ${why} in attempt ${prev}, so it is built again.`);
+      ['design','build','review'].forEach(k=>{this.paint(this.rows[k]);this._drawSaid(this.rows[k]);});}
+    this._att=n;this._building=false;
+    Run.attempt(n,this.now());this.drawLive();},
+  // THE REVIEW'S VERDICT, kept on its row: it decides the row's mark (a FAIL is never a tick). Its words
+  // are the review's own line when the run said one, else the verdict's.
+  verdict(agent,ok,text){const n=this.node(agent);
+    this._step(n,`<div class="e-info${ok?'':' warn'}">${esc(text)}</div>`);
+    if(!n.reviewSaid)this._line(n,'verdict',text);
+    n.verdict=ok?'PASS':'FAIL';this.paint(n);
+    Run.verdict(ok,this.now());this.drawLive();},
 
-  // a passed/failed CHECK - the evidence the user is owed. The STATEMENT comes from
-  // the engine (GateSpec.proves); the UI never translates an internal key.
-  check(agent,text,ok){const n=this.node(agent);this.bump(n);
-    if(!ok)n.worst=2;     // a failed check is never under a ticked lane
-    const r=document.createElement('div');r.className='row';
-    r.innerHTML=`<div class="e-check${ok?'':' bad'}"><span class="ic">${ok?'✓':'✕'}</span>`
-      +`<span class="ct">${esc(text)}</span></div>`;
-    n.body.appendChild(r);this.scroll(n);this.paint(n);},
-  // `tone` is the note's own (info | warn | error): an error marks its lane failed, a warning
-  // marks it warned. A caller that names no tone is read by `warn` alone, as before.
+  // a passed/failed CHECK - the evidence the user is owed. The STATEMENT comes from the engine; the row
+  // says how many passed, and the first that did not
+  check(agent,text,ok){const n=this.node(agent);
+    n.checks.n++;if(!ok){n.worst=2;n.checks.bad.push(String(text||''));}
+    this._step(n,`<div class="e-check${ok?'':' bad'}"><span class="ic">${ok?'✓':'✕'}</span><span class="ct">${esc(text)}</span></div>`);
+    this._drawSaid(n);this.paint(n);},
+  // `tone` is the note's own (info | warn | error): an error marks its row failed, a warning marks it
+  // warned, and either is said on the row. The engine's sentence and the repair check's line are the
+  // engine row's own words.
   info(agent,text,warn,tone){const n=this.node(agent);
     n.worst=Math.max(n.worst||0,tone==='error'?2:warn?1:0);
-    // the repair check's one line ("Your part needed no repair", "Repaired 3 defects: ...") sits on
-    // the lane's own row beside its name, in sight when the lane is folded; a warning marks it "!"
-    if(agent==='repair'){const t=String(text||'').trim();n.ct.textContent=t;n.ct.title=t;
-      n.ct.classList.add('said');this.paint(n);this.scrollBottom();return;}
-    this.bump(n);const r=document.createElement('div');r.className='row';
-    // the engine lane's own sentence ("Mesh engine: cfMesh - ...") is the line's engine step, as said
-    if(agent==='engine_select'){RunLine.model.engine(text,this.now());RunLine.draw();}
-    r.innerHTML=`<div class="e-info${warn?' warn':''}">${esc(text)}</div>`;n.body.appendChild(r);this.scroll(n);this.paint(n);},
+    const t=String(text||'').trim();
+    if(agent==='engine_select'){Run.engine(t,this.now());this._line(n,'engine',engineWords(t));}
+    else if(agent==='repair')this._line(n,'repair',t);
+    else if(warn||tone==='error')this._line(n,'warn:'+t,t);
+    if(agent!=='repair'&&agent!=='engine_select')this._step(n,`<div class="e-info${warn?' warn':''}">${esc(text)}</div>`);
+    this.paint(n);this.drawLive();},
   // `action` arrives already in plain words - the tool roster is named on the backend,
   // beside the tools themselves. The UI does not know what a tool is called.
   tool(agent,action,detail){const n=this.node(agent);this.bump(n);const r=document.createElement('div');r.className='row';
@@ -614,7 +671,7 @@ export const Stage = {
   // is past tense and comes from the backend - the UI does not decide what happened.
   // Delivery is at-least-once and a reconnect replays the backlog, so the same file at
   // the same size renders once however many times it arrives.
-  file(agent,path,bytes,op){const n=this.node(agent);
+  file(agent,path,bytes,op){const n=this.node(agent);n.worked=true;
     const key=`${path}|${bytes}|${op||''}`;
     n.files=n.files||new Set();
     if(n.files.has(key))return;
@@ -628,7 +685,7 @@ export const Stage = {
   // arrived. Nothing is estimated here: a duration or a token count that is not in
   // the event does not appear, because an invented "8.4s" is worse than silence.
   reasoning(agent,ev){
-    const n=this.node(agent);
+    const n=this.node(agent);n.worked=true;
     n.think=n.think||{};
     const id=ev.id||('anon-'+n.count);
     let card=n.think[id];
@@ -662,7 +719,7 @@ export const Stage = {
   // arguments, results and JSON drafts). A call shows its name in words; its arguments and its
   // result stay out of the page; a reasoning text that is a JSON draft shows only its header.
   toolCall(agent,ev){
-    const n=this.node(agent);this.bump(n);
+    const n=this.node(agent);this.bump(n);n.worked=true;
     n.tools=n.tools||{};
     if(ev.id&&n.tools[ev.id])return;                 // replay: one card per call
     const r=document.createElement('div');r.className='row';
@@ -733,7 +790,7 @@ export const Stage = {
     this.scrollBottom();},
   final(data){
     // ONE ENDING PER RUN: two status polls in flight can both see the job end, and a second
-    // ending drew a second verdict row and a second closing message under the first.
+    // ending drew a second closing message under the first.
     if(this._ended)return;this._ended=true;
     const cancelled=!!data.cancelled;
     // a delivered mesh whose review left points open is never stamped PASS
@@ -743,44 +800,42 @@ export const Stage = {
     const notes=data.pass&&data.reviewOutcome==='passed_with_notes';
     const failed=!data.pass&&!cancelled;
     const outcome=concerns?'concerns':notes?'notes':data.pass?'pass':cancelled?'cancelled':'fail';
-    // THE MARKS FOLLOW HOW THE RUN ENDED (see markOf). A cancelled run's open lane stopped; a
-    // failed run shows its failure where it stopped, unless a lane already shows it; a delivered
-    // mesh whose review left points open is a warning on that review, not a failure.
-    const lanes=Object.values(this.nodes);
-    if(cancelled)lanes.filter(n=>!n.tEnd).forEach(n=>{n.mark='ended';});
-    else if(failed&&!lanes.some(n=>this.markOf(n)==='bad'))lanes.filter(n=>!n.tEnd).forEach(n=>{n.mark='bad';});
-    if(concerns&&this.nodes.reviewer&&this.nodes.reviewer.verdict==='FAIL')this.nodes.reviewer.mark='warn';
-    this._closeAttempt();
-    // A MESH BAR STILL RUNNING when the run ended stops where it is: it counted on for ever after a
-    // run cancelled mid-mesh. It does not turn green either - nothing finished.
-    if(this.meshBar){const s=this.meshBar.el.querySelector('.mb-sub');
-      if(s)s.textContent='stopped when the run ended';this.meshBar.el.classList.add('stopped');this.meshBar=null;}
-    // the open lanes close when the job ended, and the run's clock stops there
+    // THE MARKS FOLLOW HOW THE RUN ENDED (see markOf). A cancelled run's open row stopped; a failed
+    // run shows its failure where it stopped, unless a row already shows it; a delivered mesh whose
+    // review left points open is a warning on that review, not a failure.
+    const rows=this.rows?ROW_KEYS.map(k=>this.rows[k]):[];
+    const open=rows.filter(n=>n.state==='active');
+    if(cancelled)open.forEach(n=>{n.mark='ended';});
+    else if(failed&&!rows.some(n=>n.state!=='todo'&&this.markOf(n)==='bad'))open.forEach(n=>{n.mark='bad';});
+    if(concerns&&this.rows&&this.rows.review.verdict==='FAIL')this.rows.review.mark='warn';
+    // a mesh still running when the run ended stops where it is
+    this.meshBar=null;
+    // the open rows close when the job ended, and the run's clock stops there
     this.at(data.endedAt);
     {const t0=Date.parse(data.createdAt||''),t1=Date.parse(data.endedAt||'');
-     RunLine.model.final({...data,concerns,notes,totalMs:t0>0&&t1>0?t1-t0:(this.t0?this.now()-this.t0:null)},this.now());
-     RunLine.draw();}
-    Object.keys(this.nodes).forEach(k=>this.done(k));
-    lanes.forEach(n=>this.paint(n));
+     Run.final({...data,concerns,notes,totalMs:t0>0&&t1>0?t1-t0:(this.t0?this.now()-this.t0:null)},this.now());}
+    open.forEach(n=>this._close(n));
     this.clock(data.createdAt,data.endedAt);
     if(!this.finished){this.finished=true;
       const c=this.proc&&this.proc.querySelector('.proc-clock');if(c&&this.t0)c.textContent=fmtDur(Date.now()-this.t0);}
-    // HOW MANY ATTEMPTS, as the timeline counted them: only one that ran a mesher counts
+    // HOW MANY ATTEMPTS, as the run counted them: only one that ran a mesher counts. Said on the build
+    // row when there was more than one, or when none built anything.
     const opened=this._att!=null||this._built.size>0;
     const att=attemptsLabel(opened,this._built.size,data.attempts);
+    const b=this.rows&&this.rows.build;
+    // an engine that reports no final count still says it built one - never a live count passed off as it
+    if(b&&b.built&&!b.lines.has('built')&&!failed&&!cancelled)this._line(b,'built','Mesh built.');
+    if(b&&this._built.size>1)this._line(b,'attempts',`Took ${att}.`);
+    // a row the run never reached says so; every other row says its own words (ROWS[].none when silent)
+    rows.forEach(n=>{if(n.state==='todo'&&!n.lines.size&&(failed||cancelled)){n.saidEl.innerHTML='<p class="rr-line none">Not reached.</p>';}
+      else this._drawSaid(n);this.paint(n);});
     if(this.proc){this.proc.classList.add('done','r-'+outcome);   // the header's mark takes the verdict's colour
-      // ONE STATEMENT OF THE ENDING: the title says it; the live line under it gives the time
+      // ONE STATEMENT OF THE ENDING: the title says it; the clock beside it is the run's one total time
       this.proc.querySelector('.proc-title').textContent=concerns?'Mesh ready, with concerns':notes?'Mesh ready, with notes':data.pass?'Mesh ready':cancelled?'Run cancelled':'Run failed';
-      this.proc.querySelector('#proc-sub').textContent='';
+      this.proc.querySelector('#proc-sub').textContent=cancelled&&data.cancelReason?`reason: ${data.cancelReason}`:'';
+      this.proc.dataset.attempts=att;
       const cb=this.proc.querySelector('#proc-cancel');if(cb)cb.hidden=true;}
-    // verdict row in the timeline. A cancelled run has no verdict: nobody judged a mesh.
-    if(this.proc){const n=this.node('result');const v=document.createElement('div');v.className='tl-verd';
-      const pill=concerns?'DELIVERED WITH CONCERNS':notes?'PASSED, WITH NOTES':data.pass?'PASS':cancelled?'CANCELLED':'FAIL';
-      v.innerHTML=`<span class="pill${concerns?' concerns':notes?' notes':data.pass?'':cancelled?' cancelled':' fail'}">${pill}</span><span class="mt">${esc(att)}</span>`;
-      if(cancelled&&data.cancelReason){const r=document.createElement('span');r.className='mt';r.textContent=`reason: ${data.cancelReason}`;v.appendChild(r);}
-      // the result lane's mark is the verdict's: never a tick beside a FAIL
-      n.mark={pass:'done',notes:'done',concerns:'warn',cancelled:'ended',fail:'bad'}[outcome];
-      n.body.appendChild(v);this.done('result');}
+    this.drawLive();
     if(opened)data={...data,attempts:this._built.size};    // the viewer says the same number
 
     // FINAL RESULT - one turn in the SAME conversation that took the request, so the

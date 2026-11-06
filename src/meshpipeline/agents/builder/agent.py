@@ -162,6 +162,9 @@ async def node_builder(state: PipelineState) -> dict:
     # partway through.
     await _publish.aattempt(attempt.retry_count, bcfg.BUILDER_MAX_TOTAL_ATTEMPTS)
     await _publish.anote("Designing the mesh", op_id=f"designing:{attempt.retry_count}")
+    # this attempt has not said its design yet (contracts/mesh_design)
+    from meshpipeline.contracts import mesh_design
+    mesh_design.begin(job_id)
 
     # THE ATTEMPT'S RECORD OF NATIVE RUNS opens here: every mesher this attempt starts is recorded
     # (contracts/mesh_execution.run_mesh), so the executor can tell "no mesher was started" from "a
@@ -243,6 +246,13 @@ async def node_builder(state: PipelineState) -> dict:
     # steps only where there are steps to count. And only a mesh is "built": an attempt that
     # stopped before its mesher said "Mesh built" too (jobs d20ad762, 26f5429a).
     _steps = len(attempt.tool_calls)
+    # THE DESIGN THIS ATTEMPT MESHED, for every engine (contracts/mesh_design): the engine's own
+    # path says it as its mesher starts; this catches a path that never did.
+    if _staging is None and not stopped:
+        from meshpipeline.engines.live_estimate import planned_live_count
+        await mesh_design.apublish(_publish, job_id=job_id, workspace=attempt.workspace,
+                                   planned=planned_live_count(attempt.engine, attempt.workspace),
+                                   attempt=attempt.retry_count, unsaid_only=True)
     await _publish.anote(
         _REVIEWED_CASE_REPEATS_NOTE if stopped
         else _staging_note(attempt, _staging) if _staging is not None

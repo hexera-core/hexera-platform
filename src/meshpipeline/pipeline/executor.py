@@ -506,6 +506,22 @@ async def node_executor(state: PipelineState) -> dict:
                     _q = json.loads((Path(workspace) / "quality.json").read_text())
                 except Exception:  # noqa: BLE001 - a line not said, never a run failed
                     _q = None
+            # WHAT WAS BUILT, counted once from the same record, for every route: an engine that
+            # never said its final count (the FEA driver) gets it said here; one that did is said again
+            # with the measured number, which is the one delivered
+            try:
+                _cells = int(float((_q or {}).get("cells") or 0)) if isinstance(_q, dict) else 0
+            except (TypeError, ValueError):
+                _cells = 0
+            _meshed = getattr(_pub, "ameshed", None)
+            if _cells > 0 and _meshed is not None:
+                from meshpipeline.contracts.event_stream import EventStreamError as _ESE
+                try:
+                    await _meshed(_cells, op_id=f"meshed:{_manifest_stamp(workspace)}")
+                except _ESE:
+                    raise
+                except Exception:  # noqa: BLE001 - a count not said, never a run failed
+                    logger.debug("executor: built count not said", exc_info=True)
             _line = _N.quality_line(_q, past_limits=_fea_past_limits(_q))
             if _line:
                 await _N.asay(_pub, _line, op_id=f"quality:{_manifest_stamp(workspace)}")
