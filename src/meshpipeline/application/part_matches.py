@@ -318,7 +318,7 @@ def rows_of(reading: Mapping, seen: Mapping, session_id: str) -> dict | None:
     # so the console can read the id picture under the cursor; the first view always, the second only when the
     # first hides a part
     stored = {p.get("name") for p in seen.get("pictures") or []}
-    views = [{k: v[k] for k in ("name", "w", "h", "tags", "hidden") if k in v} for v in seen.get("views") or []
+    views = [{k: v[k] for k in ("name", "w", "h", "tags", "hidden", "rings") if k in v} for v in seen.get("views") or []
              if v.get("name") in stored and f"{v.get('name')}_ids" in stored]
     if views:
         out["views"] = views if views[0].get("hidden") else views[:1]

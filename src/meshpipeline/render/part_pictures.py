@@ -153,6 +153,34 @@ def _draw_tags(img, tags: list[dict], labels: list[str]):
     return im
 
 
+#: the card's room round the model (pixels): the numbers and rings stay inside the picture
+CARD_MARGIN = 34
+#: an area under this share of the model's seen pixels is small: the console rings each separate piece of it
+SMALL_SHARE = 0.02
+
+
+def small_spots(ids, n_parts: int) -> list[tuple[int, dict]]:
+    """Each separately seen piece of a SMALL part or area (under SMALL_SHARE of what is seen): its centre and a ring
+    radius, so the console can circle it - one ring per hole, not one round both holes of a pair."""
+    from scipy import ndimage
+
+    seen = int((ids >= 0).sum()) or 1
+    out: list[tuple[int, dict]] = []
+    for k in range(n_parts):
+        mask = ids == k
+        n = int(mask.sum())
+        if n == 0 or n > SMALL_SHARE * seen:
+            continue
+        lab, m = ndimage.label(mask, structure=[[1, 1, 1], [1, 1, 1], [1, 1, 1]])
+        for sl in ndimage.find_objects(lab)[:12]:
+            if sl is None:
+                continue
+            h, w = sl[0].stop - sl[0].start, sl[1].stop - sl[1].start
+            out.append((k, {"x": int((sl[1].start + sl[1].stop) / 2), "y": int((sl[0].start + sl[0].stop) / 2),
+                            "r": int(max(h, w) / 2 + 9)}))
+    return out
+
+
 def _crop_box(alpha, margin: int = 12):
     import numpy as np
     ys, xs = np.nonzero(alpha > 0)
@@ -261,7 +289,8 @@ def render_parts(surface, part_ids: list[str], out_dir, *, card: bool = False) -
             c = cam(d)
             shaded = np.asarray(_shot(pieces, lambda _p: neutral, c, CARD_WINDOW, flat=False, transparent=True))
             ids = decode_ids(_shot(pieces, ids_of, c, CARD_WINDOW, flat=True, transparent=True))
-            y0, y1, x0, x1 = _crop_box(shaded[:, :, 3])
+            # room round the model for the numbers and the rings the console draws
+            y0, y1, x0, x1 = _crop_box(shaded[:, :, 3], CARD_MARGIN)
             shaded, ids = shaded[y0:y1, x0:x1], ids[y0:y1, x0:x1]
             tags, hidden = tag_places(ids, len(part_ids), labels)
             enc = np.zeros(ids.shape + (4,), dtype=np.uint8)
@@ -276,7 +305,8 @@ def render_parts(surface, part_ids: list[str], out_dir, *, card: bool = False) -
             (out / f"{name}.json").write_text(json.dumps({
                 "w": int(ids.shape[1]), "h": int(ids.shape[0]),
                 "tags": [{"part": part_ids[t["k"]], "n": labels[t["k"]], "x": t["x"], "y": t["y"]} for t in tags],
-                "hidden": [part_ids[k] for k in hidden]}))
+                "hidden": [part_ids[k] for k in hidden],
+                "rings": [{"part": part_ids[k], **r} for k, r in small_spots(ids, len(part_ids))]}))
             paths += [out / f"{name}.png", out / f"{name}_ids.png", out / f"{name}.json"]
     return paths
 

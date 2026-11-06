@@ -261,7 +261,7 @@ export const Stage = {
     const fig=views.length?`<div class="rc-pm-fig"><canvas class="rc-pm-pic" role="img"
         aria-label="Your model; the parts each note means are in its colour"></canvas>${views.length>1
         ?'<button type="button" class="rc-pm-flip" title="Other side" aria-label="Show the other side"></button>':''}</div>`:'';
-    return `<div class="rc-pm-h">Parts in your notes</div>${fig}`
+    return `<div class="rc-pm-h">In your notes</div>${fig}`
       +(m.rows||[]).map((r,k)=>row(r,k,false)).join('')+(m.unsure||[]).map(r=>row(r,0,true)).join('');},
 
   _pmColour(m,r){const k=(m.rows||[]).indexOf(r);return k>=0?this._PM_COL[k%this._PM_COL.length]:'#E3A23B';},
@@ -318,16 +318,34 @@ export const Stage = {
       if(t){const f=0.28+0.9*L;px[o]=Math.min(255,t[0]*f);px[o+1]=Math.min(255,t[1]*f);px[o+2]=Math.min(255,t[2]*f);}
       else{const v=actSet?60+70*L:85+95*L;px[o]=px[o+1]=px[o+2]=v;}}
     g.putImageData(img,0,0);
-    // the numbers: where the part is seen; faded when another row is looked at
+    // a SMALL area the open or hovered row means gets a soft ring round each piece of it, so it can be found
+    if(actSet){
+      g.strokeStyle=actCol;g.lineWidth=2;g.fillStyle=actCol;
+      for(const r of view.rings||[]){
+        if(!actSet.has(r.part)||!String(r.part).startsWith('Feature_'))continue;
+        g.globalAlpha=0.16;g.beginPath();g.arc(r.x,r.y,r.r,0,2*Math.PI);g.fill();
+        g.globalAlpha=0.9;g.beginPath();g.arc(r.x,r.y,r.r,0,2*Math.PI);g.stroke();}
+      g.globalAlpha=1;}
+    // THE NUMBERS that mean something here: the parts and areas a row names (the open or hovered row's alone while
+    // one is looked at); never a single part's own "1"; inside the frame; one that would touch another is left out
+    const named=new Set(rows.flatMap(r=>r.parts||[]));
+    const onePart=(m.parts||[]).filter(p=>!String(p.n).startsWith('F')).length===1;
+    const shown=(view.tags||[]).filter(t=>(actSet?actSet.has(t.part):named.has(t.part))
+      &&!(onePart&&!String(t.n).startsWith('F')));
     g.font='600 14px Geist, system-ui, sans-serif';g.textAlign='center';g.textBaseline='middle';
-    for(const t of view.tags||[]){
-      const lit=!actSet||actSet.has(t.part);
-      const tw=12+9*String(t.n).length;
-      g.globalAlpha=lit?1:0.35;
+    const boxes=[];
+    for(const t of shown){
+      const tw=12+9*String(t.n).length,th=22;
+      // a ringed area: its number just above its first ring, never over the spot it marks
+      const ring=actSet&&(view.rings||[]).find(r=>r.part===t.part);
+      const tx=ring?ring.x:t.x,ty=ring?ring.y-ring.r-th/2-2:t.y;
+      const x=Math.min(Math.max(tx,tw/2+1),w-tw/2-1),y=Math.min(Math.max(ty,th/2+1),h-th/2-1);
+      const b=[x-tw/2-3,y-th/2-3,x+tw/2+3,y+th/2+3];
+      if(boxes.some(o=>!(b[2]<=o[0]||o[2]<=b[0]||b[3]<=o[1]||o[3]<=b[1])))continue;
+      boxes.push(b);
       g.fillStyle='rgba(255,255,255,0.92)';g.strokeStyle='rgba(0,0,0,0.55)';g.lineWidth=1;
-      g.beginPath();g.roundRect(t.x-tw/2,t.y-11,tw,22,6);g.fill();g.stroke();
-      g.fillStyle='#111';g.fillText(String(t.n),t.x,t.y+0.5);}
-    g.globalAlpha=1;
+      g.beginPath();g.roundRect(x-tw/2,y-th/2,tw,th,6);g.fill();g.stroke();
+      g.fillStyle='#111';g.fillText(String(t.n),x,y+0.5);}
     // the picture answers the cursor: which part is here, and a click picks it for the open row
     const at=(e)=>{const r=cv.getBoundingClientRect();
       const x=Math.floor((e.clientX-r.left)*w/r.width),y=Math.floor((e.clientY-r.top)*h/r.height);
