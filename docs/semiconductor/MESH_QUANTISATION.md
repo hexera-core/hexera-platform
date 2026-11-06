@@ -11,7 +11,7 @@ Measured 5 November 2026 on the delivered 413.27M cell coupled mesh (`cbox2`) an
 | channel width, mean | 100.7 um | 103.14 um |
 | 93.7% of channels lie in | 96 to 104 um | nothing lies there |
 | widths actually present | one population, CV 0.89% in the core | 88.014 (36.1%), 110.017 (52.7%), 132.021 (6.4%) |
-| distance from a whole number of cells | 0.437 cells | 0.0008 cells |
+| distance from a whole number of cells | 0.4535 cells | 0.0007 cells |
 | w^3 conductance spread, p95/p5 | 1.09x | 3.38x |
 
 The cell is 22.0035 um. A 100.04 um channel is 4.546 cells. The conjugate interface sits on
@@ -20,12 +20,14 @@ existing octree cell faces, so every channel has to be a whole number of cells. 
 part is actually built to, and which of the two a given channel gets depends only on where it
 happens to fall on the grid.
 
-Slot flow goes as width cubed. 88.014 um carries 0.673x the flow of a 100.04 um channel and
-110.017 um carries 1.331x. Two channels the CAD made identical come out 1.98x apart.
+Slot flow goes as width cubed. 88.014 um carries 0.681x the flow of a 100.04 um channel and
+110.017 um carries 1.330x. The two lattice widths are exactly 4 and 5 cells, so two channels the CAD
+made identical come out exactly (5/4)^3 = 1.953x apart.
 
-The mean width is only +2.4% off, so this is not a bias. It is scatter. The grid imposes about
-three times the channel-to-channel variation that the part's own manufacturing does, in a
-topology-optimised network whose entire purpose is to control flow split.
+The mean width is +2.42% off, which is small beside the scatter. The grid imposes about fourteen
+times the channel-to-channel variation that the part's own manufacturing does, CV 12.59% against
+0.89%, in a topology-optimised network whose entire purpose is to control flow split. The 3.1x that
+stood here was the ratio of the two w^3 p95/p5 spreads, which is not a ratio of variations.
 
 ## The array is uniform, so this is free to fix
 
@@ -66,8 +68,10 @@ amplitude but never removes the area inflation.
 `devtools/semiconductor/chan_quant.py` reads the 21,708,529 `fluid_to_solid` face centres and points out of
 the boundary index sidecar, recovers each face's outward normal from its winding, keeps the
 axis-aligned x-normal faces in a 200 um slab at mid channel depth, and pairs each inward-facing
-wall with the next outward-facing one. 284,906 gaps. Every face in the slab was an axis-aligned
-quad, so no approximation enters.
+wall with the next outward-facing one. 566,274 gaps, of which 538,564 are in the 70 to 145 um
+microchannel band. Every face in the slab was an axis-aligned quad, so no approximation enters. The
+284,906 that stood here came from the lost 5 November script and does not reproduce; see Method at
+the end of this file.
 
 `scratchpad/cad_quant.py` and `scratchpad/cad_pitch.py` run the identical rule on the STL
 triangles, with no mesh involved, on 35 and 62 independent scan lines through the dense part of
@@ -86,45 +90,122 @@ same way. `cbox2b`, 506,362,044 cells, 3.00 h.
 | median width | 100.04 um | 110.000 um | **100.630 um** |
 | error on the median | | +9.96% | **+0.59%** |
 | widths present | one population | 88.0 / 110.0 / 132.0 | 80.5 / 100.6 / 120.8 |
-| share at the right width | 93.7% | 55.39% | **85.00%** |
+| share at the modal lattice width | 93.7% lies within 96 to 104 um | 55.39%, and nothing within 96 to 104 um | **85.00%** |
 | coefficient of variation | 0.89% | 12.59% | **7.31%** |
 | w^3 flow spread, p95/p5 | 1.09x | 3.375x | **1.730x** |
 
 The prediction in the table above was "exactly 5 cells everywhere". That is not what happened.
 85.00% came out at exactly 5 cells, 12.67% a cell wide and 2.33% a cell narrow.
 
-**Why.** An even cell count per pitch fixes the width a channel is aiming at. It does not fix where
-the channel sits on the grid, and each wall snaps to its nearest lattice plane on its own. The
-pitch has CV 0.46%, which is 0.046 of a cell per pitch, so the grid phase wanders along a row of
-sixty pitches and only has to cross one half-plane for a channel to gain or lose a cell. Channel
-width variation is not the cause: at CV 0.89% it is eleven standard deviations inside the half-cell
-tolerance.
+### The cause, corrected after an audit
 
-Finer cells do help this one, unlike the staircase. At ten cells per channel the same wander is
-half as large against the same tolerance. The next even pitch is 12 cells at 16.772 um and that is
-775M cells on the measured h^-2.28 scaling, over the ceiling. So 20.1263 um is the floor and 85% is
-what a grid-aligned mesh of this part gives.
+I first wrote that the grid phase causes this. **That is impossible and the claim is withdrawn.**
+If a gap is exactly n cells wide then both of its walls sit at the same phase, so
+`round(p + n) - round(p) = n` for every p: sliding a commensurate channel along the lattice cannot
+change its cell count. Checked analytically and by Monte Carlo at the measured pitch CV, which
+returns 0.0000% miscounts.
 
-**The residual is one-sided, and that part is not the grid.** Both meshes put the mean channel the
-same tenth of a cell too wide: 5.1036 cells against 5.0034 in the CAD at 20.1263 um, 4.6871 against
-4.5766 at 22.0035 um. That is about 2 um of fin counted as coolant on every channel, the same
-amount at either cell size. The coolant volume agrees independently, against the CAD shell at
-53,692.22 mm3: `cbox2` came in at 53,419.40 mm3, which is -0.51%, and `cbox2b` at 55,102.60 mm3,
-which is +2.63%. So fixing the width made the volume slightly worse.
+The cause is the width the mesher actually sees, which is the 2 um bias in the next section. I had
+measured that on this same page and was treating it as a separate effect.
 
-Offsetting the coolant surface inward by about 1 um would move the mean onto 5.000 cells, collapse
-the wide group and take the volume error back to roughly zero, at no meshing cost. It changes how
-we represent the geometry rather than how we grid it, so it is a decision and not a fix I have
-taken.
+| | |
+|---|---|
+| mesh mean channel, `cbox2b` | 5.1036 cells |
+| what that mean alone predicts | 89.64% at 5 cells, 10.36% at 6 cells, **0% at 4 cells** |
+| measured | 85.00% at 5, 12.67% at 6, 2.33% at 4 |
+| the excess over that prediction | +2.31 points at 6 and +2.33 at 4: symmetric, and mean-preserving |
 
-**Cell count.** 506,362,044 against 413,273,323 over a 1.0933x cell-size ratio fits h^-2.2795. The
-dx^-3 used above predicted 540M and was 6.6% high.
+So the bias sets how far off a whole number the typical channel is, and that fixes the split between
+two adjacent counts and nothing more. A third group can only come from width dispersion. The
+dispersion the mesher sees has a standard deviation of about 3.1 um, 3.5x the CAD's own 0.89 um,
+because the wall positions carry the staircase as well as the part.
 
-**Method.** the 5 November copy of this script was lost from the scratchpad, so I rewrote it, put it in the
-repo as `devtools/semiconductor/chan_quant.py` where it cannot be lost again, and ran the rewrite
-against the shipped mesh before trusting it on the new one. It returned 88.001 / 110.000 / 132.002 um at
-36.09 / 52.68 / 6.34% and a w^3 spread of 3.383x, which reproduces the numbers at the top of this
-file, so the same script on the new mesh is comparable. It reports twice, all gaps and then the microchannel band
-only, so the wider manifold and plenum channels, which are 4.9% and 7.4% of gaps on the two meshes,
-are not counted as scatter. `devtools/semiconductor/stl_shells.py` is the surface-side companion
-that counts shells and checks closedness.
+One exact identity makes the floor model-free. With only three counts present,
+`P(n+1) - P(n-1) = mean cells - n`. Measured: 12.6733 - 2.3292 = 10.344 points against
+5.1036 - 5 = 0.1036 cells, the same number. So the off-target share can never be smaller than
+`|mean width / dx - n|`.
+
+### Finer cells make this worse, not better
+
+The opposite of what I first wrote, and the identity above is why: the bias is a fixed length, so in
+cell units it grows as the cells shrink.
+
+| | dx | channel | floor on the off-target share | modelled share at exactly n cells |
+|---|---|---|---|---|
+| pitch 8 | 25.1578 um | 4 cells | >= 8.28% | about 88% |
+| **pitch 10, built** | **20.1263 um** | **5 cells** | **>= 10.36%** | **85.00% measured** |
+| pitch 12 | 16.7719 um | 6 cells | >= 12.43% | about 82% |
+| ten cells per channel | 10.0631 um | 10 cells | >= 20.72% | about 70% |
+
+The per-pitch phase wander says the same thing: 0.046 of a cell today, 0.055 at pitch 12, 0.092 at
+ten cells per channel, against a half-cell tolerance that shrinks with the cell. Twice as large, not
+half.
+
+**So 85% is not a property of the part, and 20.1263 um is not a floor that 85% sits on.** 85% is a
+property of this surface representation. The free 1 um inward offset below would put it at roughly
+88 to 96%.
+
+**And the coarser commensurate row is the better one on this measure.** pitch 8 at 25.1578 um gives
+exactly the same 100.631 um channel, because 4 x 25.1578 = 5 x 20.12625, and projects to about 88%
+at exactly 4 cells for about 276M cells rather than 506M. It is not a free win: at 4.08 cells across
+instead of 5.10 the 2/N^2 flow-rate error grows from +7.7% to +12.0%. That is the trade. I had
+called pitch 10 "the better deliverable" on reasoning that was wrong.
+
+### The residual is one-sided, and that part is not the grid
+
+| | mesh | CAD mean | bias |
+|---|---|---|---|
+| `cbox2` at 22.0035 um | 4.6871 cells | 4.5766 | +0.1105 cells, +2.43 um |
+| `cbox2b` at 20.1263 um | 5.1036 cells | 5.0034 | +0.1002 cells, +2.02 um |
+
+Two points cannot establish that this is independent of cell size, and the two do not agree closely:
+10% apart measured in cells, 21% apart measured in microns, so the cell-invariant reading fits
+marginally better. Against the CAD median rather than its mean the bias is larger, +0.1330 and
++0.1406 cells.
+
+It is **not** a one-sided cell-inclusion test, which I had offered as the mechanism. That would bias
+the gap by a full cell, +20.1 um, which over-predicts by a factor of ten and would put the channel
+mass at 6 or 7 cells. The signature is a sub-cell outward offset of the coolant surface, about 1.0
+to 1.2 um per wall.
+
+Nor is it "about 2 um on every channel". 85% of channels are +0.59 um out, 12.67% are +20.1 um and
+2.33% are -20.1 um. The 2 um exists only as a population mean.
+
+### What the volume and the area do NOT say
+
+I first wrote that the coolant volume and the wetted area corroborate the width bias independently.
+**Withdrawn, on both counts.**
+
+| | coolant volume | against the CAD shell at 53,692.22 mm3 |
+|---|---|---|
+| `cbox2` | 53,419.40 mm3 | -0.51% |
+| `cbox2b` | 55,102.60 mm3 | +2.63% |
+
+The microchannel array is at most 5.7% of the coolant volume, so a 2% width bias can account for at
+most 0.11 of the 2.63 points, 23x short. And the signs run the wrong way: `cbox2` has the LARGER
+over-width and a volume DEFICIT. Between the two meshes the median width fell 8.5% while the volume
+rose 3.1%. So the +2.63% coolant volume on the new mesh is a separate defect that nothing here
+explains, and it should be carried as one.
+
+The wetted area is the same story. The 2 um bias accounts for about 0.13 of the 8.3 points of area
+excess and predicts the two meshes in the wrong order. That excess is the staircase.
+
+**The lever is still worth pulling, but it is a smaller lever than I first claimed.** A 1 um inward
+offset moves the mean by about half the residual, so it would shrink the 6-cell group rather than
+collapse it, and it would take roughly 0.1 of the 2.63 points off the volume. It still costs nothing
+to mesh, and it is still a geometry decision rather than a gridding one.
+
+**Cell count.** 506,362,044 against 413,273,323 over a 1.09327x cell-size ratio fits h^-2.27798. The
+dx^-3 used above predicted 540M and was 6.6% high. pitch 12 at 16.772 um is 767M cells on that
+exponent, not the 775M I first wrote.
+
+**Method.** The 5 November copy of this script was lost from the scratchpad, so I rewrote it, put it
+in the repo as `devtools/semiconductor/chan_quant.py` where it cannot be lost again, and ran the
+rewrite against the shipped mesh before trusting it on the new one. It reproduces the three widths
+and their shares to four digits, and the w^3 spread as 3.375x against the 3.383x printed above, but
+it returns 566,274 gaps where the lost script reported 284,906, a factor of 1.99. So it reproduces
+the distribution and not the sample, and "to three decimals" was stronger than the check earns. It
+reports twice, all gaps and then the microchannel band only, so the wider manifold and plenum
+channels, 4.9% and 7.4% of gaps on the two meshes, are not counted as scatter.
+`devtools/semiconductor/stl_shells.py` is the surface-side companion that counts shells and checks
+closedness.

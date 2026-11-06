@@ -7,10 +7,10 @@ Internal. Every number here is read off a run that finished, out of the logs in
 
 | run | cells | mesher | everything after it | total |
 |---|---|---|---|---|
-| `ws_par336` | 336,666,582 | 2,399.6 s on 8 ranks | 12,831.9 s in **one process** | 4 h 50 |
+| `ws_par336` | 336,666,582 | 2,399.6 s on 8 ranks | 15,389.5 s, 12,831.9 of it in **one process** | 4 h 56 |
 | `ws_par182` | 182,269,914 | 727 s on 8 ranks | 2,909 s | about 1 h 0 |
 | `ws_shell` | 270,531,894 | **139,230.5 s = 38.7 h** | 4,686 s | 39 h 58 |
-| **`cbox2`** | **413,273,323** | **652 s** | 1,800 s to a checked mesh, 4,079 s to reconstruct | **1 h 49** |
+| **`cbox2`** | **413,273,323** | **652 s** | 2,452 s to a checked mesh, 4,179 s to reconstruct, 2,728 s serial checkMesh | **2 h 36** |
 
 `ws_shell`'s mesher took 139,230 seconds. `cbox2`'s took 652, on **1.53x as many cells**. That is
 213 times faster, and it is one setting.
@@ -58,8 +58,9 @@ The reproducer lied about scaleY 4. It had to be run on the real geometry to see
 
 ## The other half: the tail was serial
 
-`ws_par336` is the clearest case. The mesher is 40 minutes of a 4 h 50 run, and the three stages
-behind it are 4.4x the mesher, all in one process:
+`ws_par336` is the clearest case. The mesher is 40 minutes of a 4 h 56 run, and the three stages
+behind it are 5.35x the mesher, all in one process. (4.4x, which stood here, is `splitMeshRegions`
+plus `reconstructParMesh` only, 10,591.7 s; all three are 12,831.9 s.)
 
 | stage | processes | seconds |
 |---|---|---|
@@ -111,24 +112,30 @@ n2-highmem-96:
 
 | stage | seconds | share |
 |---|---|---|
-| cartesianMesh | 652 | 10% |
-| topoSet | 467 | 7% |
-| splitMeshRegions | 817 | 13% |
-| checkMesh, 4 regions, parallel | 515 | 8% |
+| cartesianMesh | 652 | 7.0% |
+| topoSet | 467 | 5.0% |
+| splitMeshRegions | 817 | 8.7% |
+| checkMesh, 4 regions, parallel | 515 | 5.5% |
 | **to a checked four-region mesh** | **2,452 = 0.68 h** | |
-| reconstructParMesh, fluid + chip + solid | 4,079 | 62% |
-| **total** | **6,531 s = 1.81 h** | |
+| reconstructParMesh, fluid + chip + solid | 4,179 | 44.7% |
+| checkMesh, 3 regions, serial | 2,728 | 29.2% |
+| **total** | **9,359 s = 2.60 h** | |
 
-**The mesher is 10% of the run.** The single largest item is now `reconstructParMesh`, at 62%,
-and it is serial by nature: it merges per-rank meshes into one. That is the thing to attack next
-if this ever needs to be faster.
+**The mesher is 7.0% of the run.** The single largest item is `reconstructParMesh` at 44.7%, and
+it is serial by nature: it merges per-rank meshes into one. The three serial `checkMesh` runs that
+follow it are another 29.2%, so the serial tail is 73.8% of the whole chain. That tail is the thing
+to attack next if this ever needs to be faster.
+
+An earlier version of this table omitted the serial `checkMesh` row entirely and so reported a
+6,531 s total, 1.81 h, with reconstruct at 62%. Both were wrong, and the 1.81 h propagated into the
+forecast two sections below.
 
 Memory, measured, because it is the constraint that actually bites:
 
 | stage | peak | per cell |
 |---|---|---|
-| cartesianMesh | 23.22 GB for one rank of eight | 688 B/cell against the engine's assumed 748.1 |
-| topoSet | 125,125 MB | 400 B/cell, a number nobody had before |
+| cartesianMesh | 23.22 GB for one rank of eight | about 450 B/cell per rank, against the engine's assumed 748.1 |
+| topoSet | 125,125 MB | about 303 B/cell, a number nobody had before |
 | splitMeshRegions | 215,399 MB | |
 | reconstructParMesh, metal | 145,046 MB | |
 | checkMesh | serial | about 1,050 B/cell |
@@ -144,14 +151,16 @@ cells at `maxCellSize 322.020`:
 | | cbox2 (413M) | next run (about 496M) |
 |---|---|---|
 | to a checked four-region mesh | 2,452 s | about 2,940 s = 0.82 h |
-| reconstruct, three regions | 4,079 s | about 4,890 s = 1.36 h |
-| **total** | **1.81 h** | **about 2.2 h** |
+| reconstruct, three regions | 4,179 s | about 5,010 s = 1.39 h |
+| **total** | **2.60 h** | **about 2.2 h, and this was 28% low** |
 
 Tightening the chip band should pull the cell count toward 440M, so 2.2 h is an upper bound.
 
-**I said 3 to 3.5 hours earlier and that was wrong twice over.** It scaled a 2.6 h figure that was
-not this chain, and it used dx^-3 for cell count when the measured exponent on this part is 2.038.
-The right basis is the table above.
+**Corrected 6 November.** I had written that an earlier 3 to 3.5 hour estimate "was wrong twice
+over". It was not: the run took 3.00 h, inside that band, and the 2.2 h that replaced it was 28%
+low. The 2.2 h was built by scaling only the reconstruct and omitting the three serial `checkMesh`
+runs, the same omission as in the stage table above. The dismissed 2.6 h figure is in fact `cbox2`'s
+own total.
 
 ## The rules this leaves
 
@@ -190,9 +199,10 @@ Stage by stage against the mesh we shipped:
 | checkMesh, serial, three regions | 2,728 s | 3,075 s | 1.13 | |
 | **total** | **9,359 s, 2.60 h** | **10,796 s, 3.00 h** | **1.15** | |
 
-**Where the 2.2 h prediction went wrong.** It was built on `cbox2`'s reconstruct and the three
-serial checkMesh runs being 4,079 s. In `cbox2`'s own stage table those two together are 6,907 s,
-and I scaled only the reconstruct. The front half was right to 2.6%: 0.80 h against 0.82 h
+**Where the 2.2 h prediction went wrong.** It was built on `cbox2`'s reconstruct alone, and on a
+figure of 4,079 s which is itself a transcription error for 4,179 s. In `cbox2`'s own stage table
+the reconstruct and the three serial checkMesh runs together are 6,907 s, and I scaled only the
+first of them. The front half was right to 2.6%: 0.80 h against 0.82 h
 predicted. The error is entirely in the tail and it is an arithmetic error of mine, not a
 behaviour change.
 

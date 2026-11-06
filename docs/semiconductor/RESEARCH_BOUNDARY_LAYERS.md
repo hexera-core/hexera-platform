@@ -169,13 +169,27 @@ from 11.0 um off the wall to 0.49 to 2.0 um depending on the recipe.
 
 | | |
 |---|---|
-| 4 layers, fluid side only | +86.8M cells, 413.3M to 500.1M (71% of my ceiling, 1.510B faces = 70% of 2^31) |
-| 2 layers, fluid side only, at measured 1.73 cells/face | +37.6M, to 450.9M |
-| 4 layers both sides | +173.7M, to 586.9M. Measured worse: average non-orthogonality 16.03 against 12.78 one-sided |
+| 4 layers, fluid side only | +86.8M cells, 413.3M to 500.1M. **Both parenthetical figures are wrong, corrected 6 November: see the note under this table.** |
+| 2 layers, fluid side only | +43.4M, to 456.7M, at exactly 2 cells per extruded face. The 1.73 cells/face this row used is not measured anywhere |
+| 4 layers both sides | +173.7M, to 586.9M on the cbox2 interface. Measured worse: average non-orthogonality 16.03 against 12.78 one-sided |
 | non-orthogonality on a staircased interface | max 0 to 48.8-53.3, average 0 to 7-17 |
 | max skewness | about 0 to 1.75-2.84 |
 | max aspect ratio | 3.70 to about 20-52 |
 | hexahedra | stays 100% at full coverage; partial coverage is what manufactures polyhedra |
+
+**Corrected 6 November, two errors in the table above.** First, the cell costs are all computed on
+`cbox2`'s 21,708,529-face interface and the phase-1 mesh has 25,685,941, so at 1 added cell per
+extruded face per layer the real costs are +51.4M / +77.1M / +102.7M at 2 / 3 / 4 layers, giving
+557.7M / 583.4M / 609.1M total. 4 fluid-side layers therefore break the 600M line, and 4 layers both
+sides is +205.5M to 711.8M.
+
+Second, "1.510B faces = 70% of 2^31" is not a label load and neither is the 1.84 billion figure I
+later derived from it. Both sum several post-split meshes, each of which carries its OWN 32-bit
+label space and none of which is ever recombined. The genuine single-mesh loads on the phase-1 mesh
+are: the pre-split mesh at 1.53 billion faces, 71.3% of 2^31, which has already been built and
+split and is completely independent of layer count; the layered coolant region alone at 0.59
+billion, 27.5%; and the plate at 1.00 billion, 46.7%, untouched by fluid-side layers. So the face
+label size does not constrain the layer count at all. The cell budget does.
 
 We lose "zero faces over 50 degrees". `COUPLED_MESH_DELIVERY.md:43` says the real bar is 70
 degrees and our measured max is 51.46, so the 50-degree line was never true anyway. See section 11.
@@ -1018,3 +1032,73 @@ External, verified:
 - Xu et al., IJHMT 48:1662-1674 (2005), interrupted microchannels
 - LLNL/Colorado State SiC microchannels, LLNL-JRNL-844626
 - Shah and London rectangular-duct correlations at alpha* = 0.06718
+
+---
+
+## PHASE 2a RAN ON 6 NOVEMBER AND THE GATE PASSES
+
+Two subsets of the phase-1 coolant region, `snappyHexMesh` addLayers-only on each, keyed on
+`fluid_to_solid`: 3 layers, expansion ratio 1.5, `firstLayerThickness` 4.63e-06,
+`maxThicknessToMedialRatio` 0.6, `minVol 1e-20`.
+
+| | A, entirely in the fine zone | B, straddling the refinement cliff |
+|---|---|---|
+| cells in | 1,616,182 | 738,470 |
+| layer patch | 495,965 faces | 176,211 faces |
+| **faces extruded** | **495,055 = 99.82%** | **158,050 = 89.69%** |
+| cells added | 1,298,207 of 1,487,895 = 87.25% | 435,609 of 528,633 = 82.40% |
+| layers achieved of 3 | 2.62 | 2.47 |
+| overall thickness | 1.85e-05 m, 84.1% of target | 1.76e-05 m, 80.1% |
+| faces in error | **0, "finished without any errors"** | 101 |
+| hexahedra / polyhedra / prisms | 2,827,271 / 87,118 / 0 | 1,142,707 / 31,372 / 0 |
+| non-orthogonality max | 53.13 | 64.56 |
+| skewness max | 1.711 | 2.878 |
+| aspect max | 46.32 | 78.31 |
+| checkMesh | Mesh OK | Mesh OK |
+| interface faces | 495,965, unchanged | 176,211, unchanged |
+| wall clock | 136 s | 465 s |
+
+The kill condition in the plan was under 60% coverage in the fine zone. It returned 99.82%, so the
+route is alive on the real part.
+
+**Section 3's fatal case did not reproduce.** It measured a 2:1 transition on the layer patch
+collapsing coverage to 384 of 12,992 faces, 2.96%, with three rescue attempts going to 0%. The
+straddling subset here got 89.69%. The shortfall, 18,161 faces, is of the same order as the coarse
+faces in that window, so the mechanism is real. It costs about 10% here rather than everything,
+because on this part the coarse faces are 4.37% of the interface and are not interleaved with the
+fine ones across the whole patch.
+
+**Two things this adds to section 3.** Coverage counted in faces is not the same as cells delivered:
+99.82% of faces extruded but only 87.25% of the requested cells appeared, the stack reaching 2.62 of
+3 layers at 84.1% of target thickness, because the medial-axis limiter thins it wherever the channel
+is locally narrow. And partial coverage does manufacture polyhedra exactly as section 3 says, 2.99%
+of cells even in the clean zone, with `checkMesh` still reporting Mesh OK and zero faces in error.
+
+**Where the cliff is**, classified by shortest edge rather than area, because `scaleY 3` makes the
+cells 20.102 x 60.400 x 20.102 um and area alone reads that 3:1 as a refinement level:
+
+| shortest edge | faces | share |
+|---|---|---|
+| 20.102 um | 24,564,561 | 95.63% |
+| 40.301 um | 43,145 | 0.17% |
+| 80.500 um | 171,323 | 0.67% |
+| 161.000 um | 906,912 | 3.53% |
+
+So the wetted surface is 95.63% at the finest cell, which revises section 3's "95.2% at 22 um, 3.5%
+at 176 um and 0.6% at 88 um" onto the phase-1 mesh with essentially the same proportions. Every
+coarse face centroid is at y >= 24.092 mm, but the fine faces run up to y = 33.494 mm, so no y plane
+separates the two sets: a cut at 24.092 gives one-sided containment only, discarding 5.0% of the
+fine faces, and since these are centroids a 161 um coarse face centred on the line reaches 80 um
+below it. The `topoSet`-by-cell-level split section 3 proposes is the robust form, not a plane.
+
+**Three mechanical traps hit while running this**, all of which cost a failed attempt:
+
+| | |
+|---|---|
+| the mesh image runs as uid 1000 | a root-owned case refuses every log write and each tool dies before it starts. `couple_box.sh` chowns for exactly this reason |
+| `snappyHexMesh` has no `-constant` | nor does `splitMeshRegions`, though `checkMesh` does. It exits in 1 second |
+| `subsetMesh` exposes internal faces on a patch of type `empty` | a 2D construct. It makes `checkMesh` report "not 1D or 2D", 478,849 misaligned edges and `Max aspect ratio = -1`. Turn it into a wall before reading anything off a subset |
+
+And one planning trap: my first straddling subset was not one. It shared the fine subset's x and z
+window and differed only in y, so both came out with an identical 495,965-face interface, because
+the cliff is not in that window at all.

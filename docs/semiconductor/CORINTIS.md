@@ -106,7 +106,7 @@ All three findings below postdate the delivery note and the quality assessment, 
 from those two alone is out of date.
 
 - The channel quantisation defect. The grid rounds every 100 um channel to 88, 110 or 132 um, so
-  two channels the CAD made identical come out 1.98x apart on flow. On a part whose purpose is
+  two channels the CAD made identical come out exactly (5/4)^3 = 1.953x apart on flow. On a part whose purpose is
   controlling flow split, this is the finding that matters most.
 - The measured error budget: chip-to-coolant dT about 1.4% low, Nusselt about 4% high, pressure
   drop about 10% low, staircase wetted area 7.8% high overall and 11.6% on the channels.

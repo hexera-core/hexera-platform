@@ -33,12 +33,16 @@ Every boundary face in all three regions, measured with `checkMesh -writeFields`
 | solid | 1.647 | 0 | 3.000 | 3.663 | 0 |
 | chip | 1.3e-12 | 0 | 1.000 | 1.001 | 0 |
 
-915,659 of 47,672,886 measured cells (1.92%) exceed 20 degrees, 102,876 (0.216%) exceed 40, and
-**nothing anywhere exceeds 50** against checkMesh's 70 degree bar. The aspect ratio plateau at
+915,659 of 47,672,886 measured cells (1.92%) exceed 20 degrees and 102,876 (0.216%) exceed 40,
+against checkMesh's 70 degree bar. **Nothing in this measured population exceeds 50, but the mesh
+does**: the per-region maxima are 49.31 on the coolant, 51.46 on the plate and 54.19 on the air, so
+two regions are over 50 and the air is the worst. An earlier version of this line said nothing
+anywhere exceeds 50, which was true only of the boundary-adjacent cells it had measured. The aspect ratio plateau at
 exactly 3.000 is the `scaleY 3` stretch and costs nothing numerically.
 
 The plate mesh previously shipped to this customer had non-orthogonality 84.08 with 41,700 faces
-over 70. This one has none over 50.
+over 70. This one has **none over 55, and none over the 70 bar at all**, with a worst region maximum
+of 54.19.
 
 **Caveat on what was measured.** These are boundary-adjacent cell values. They cover most of the
 fluid's cells but at most 8.7% of the solid's, and the solid's worst face at 51.4648 degrees is
@@ -89,16 +93,25 @@ are at 176 um, eight times coarser. That is fine for plenum pressure drop and th
 **flow maldistribution between branches**, which is the most likely way a real branching plate
 underperforms.
 
-### Staircasing inflates the wetted area by 7.8%
+### Staircasing inflates the wetted area by 8.3%
 
 | | area |
 |---|---|
-| mesh `fluid_to_solid` | 653.14 cm2 |
-| CAD `fluid.stl` | 605.88 cm2 |
-| **inflation** | **+7.80%** |
+| mesh `fluid_to_solid` plus its port mouths | 654.21 cm2 |
+| CAD `clean_fluid.stl` | 604.10 cm2 |
+| **inflation** | **+8.29%** |
 
-It checks out analytically. A staircased facet's area is multiplied by `|nx|+|ny|+|nz|`; summing
-that over the real facet angles predicts **+6.5%** against +7.8% measured.
+**Corrected 6 November.** The +7.80% that stood here was computed against `/mnt/work/fluid.stl`,
+the broken TWO-PIECE coolant surface. Splitting it added cut-closure faces, so its area reads
+605.88 cm2 against the verified single-shell `clean_fluid.stl`'s 604.10 cm2: 177.6 mm2 of surface
+that is not wetted at all. The broken STL therefore did two things, not one. It split the coolant
+region, and it flattered this figure by 0.5 points. On `cbox2b` the same measurement gives +8.46%.
+
+The analytic model is weaker than this once said. A staircased facet's area is multiplied by
+`|nx|+|ny|+|nz|`; summing that over the real facet angles predicts **+6.5%** against +8.29%
+measured, so it is 1.8 points light on the whole surface, and on the microchannel core it predicts
++2.9% against +11.6% measured, which is out by a factor of four. "It checks out analytically" was
+too strong; the model gets the order of magnitude and not the number.
 
 | surface | axis-aligned area | predicted inflation |
 |---|---|---|
@@ -123,24 +136,34 @@ A theoretical staircase over randomly oriented walls would inflate by 4/pi, +27%
 
 For OpenFOAM's wall stencil on a plane channel with N uniform cells, the discrete flow rate at
 fixed pressure gradient is high by exactly 2/N^2. At N = 4.58 that is +9.5%, so fRe is low by 8.7%
-and by the thermal analogue Nu is low by about **8.7%**.
+and the pressure drop with it.
 
-Against that the wetted area is high: +11.6% on the channels, +7.8% over the whole coolant
-surface. Heat transfer goes as `h x A`:
+**The thermal step that used to follow this is wrong and is withdrawn.** It read "by the thermal
+analogue Nu is low by about 8.7%", and 2/N^2 governs the FLOW RATE, not the Nusselt number. No-slip
+forces the second derivative of temperature to zero at the wall, which kills the leading term of the
+two-point gradient error, so the wall heat flux error is O(h^3) and Nusselt comes out about **4%
+HIGH**, not 8.7% low.
+
+So the two errors do not oppose each other. They compound:
 
 ```
-  1.116  (channel area, high)  x  0.913  (h, low)  =  1.019     +1.9% net
-  1.078  (whole surface)       x  0.913            =  0.984     -1.6% net
+  1.083  (whole surface area, high)  x  1.04  (h, high)  =  1.126     +12.6%
+  1.116  (channel area, high)        x  1.04             =  1.161     +16.1%
 ```
 
-so **the net sits inside +/-2% either way**. The errors genuinely cancel, and that is only
-visible because both were measured rather than one being assumed. This was the single number an
-adversarial review flagged three times as unmeasured and as the thing that could flip the sign of
-the heat-transfer error; it does not flip it, and it bounds it tightly.
+**The net is about +12% to +16% on total heat, in one direction.** The repo's own error budget in
+ROUTE_TO_FINAL_MESH.md and RESEARCH_BOUNDARY_LAYERS.md already carries "about +10% on total heat",
+which is the same statement; this section was the last place still claiming a cancellation. There is
+no cancellation and no sign ambiguity, and that makes the near-wall gradient worth fixing rather
+than worth leaving alone.
 
-Two things keep this from being "great". There is **no grid convergence study**, and none is
-possible on this part: 22.0035 um is the 32-bit label floor. And the **thermally developing
-entrance region is unresolved** (the thermal layer is a few um shortly past a bifurcation against
+Two things keep this from being "great". There is **no grid convergence study**. 22.0035 um is not
+a floor of any kind, which is what this used to say: it is just `maxCellSize`/16 for the one recipe
+that shipped, and 20.1263 um has since been built as `cbox2b` at 506,362,044 cells, Mesh OK on all
+four regions, at the same octree depth. The limit is cell count, not label size: the next
+commensurate step, 16.772 um, is about 767M cells. The 1.09x size ratio between the two meshes is
+also not a clean h-family, since channel occupancy changes from 4/5/6 cells to 85% at 5, so the pair
+is not a Richardson study either. And the **thermally developing entrance region is unresolved** (the thermal layer is a few um shortly past a bifurcation against
 a 22 um cell), which is exactly the enhancement a branching plate is designed around.
 
 ## 3. Cell budget: okayish
