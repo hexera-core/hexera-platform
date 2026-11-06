@@ -14,21 +14,12 @@
  * liftable onto a CDN.
  */
 import { fmtBytes } from "./format.js";
+import { STAGE_ROW, rowDef } from "./run_rows.js";
 
-/** Stage lanes, in the order the pipeline runs them. Presentation only - a stage the UI has
- *  no word for still renders, via `laneLabel`. */
-const LANE_LABELS = {
-  intake: "Requirements", engine_select: "Engine selection", repair: "Repair check",
-  geometry_admission: "Input validation", builder: "Mesh creation",
-  executor: "Mesh validation", classifier: "Diagnostics",
-  reviewer: "Review", outcome: "Outcome", result: "Result",
-};
-
-/** A stage with no label must NEVER render as a raw key. The backend owns the stage list;
- *  this degrades an unknown one to readable English instead. */
+/** The title of the row a stage feeds (core/run_rows.js), so a stage is never shown as a raw key.
+ *  A stage the table does not know joins the run's current row, and reads as that row. */
 export function laneLabel(agent) {
-  return LANE_LABELS[agent]
-    || String(agent).replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+  return rowDef(STAGE_ROW[agent] || "engine").title;
 }
 
 /** The verdict line the timeline shows. Kept here, not in the renderer, because it is a
@@ -57,16 +48,12 @@ export function attemptsLabel(opened, built, serverCount) {
   return opened ? "no mesh was built" : "";
 }
 
-/** Which lane an event belongs to, given the lane the stream was last in.
- *  Pure: (event, cursor) -> {stage, cursor, closed}. `closed` is the lane this event
- *  retires, if any - a stage becoming active closes the one before it. */
+/** Which stage an event belongs to, given the stage the stream was last in.
+ *  Pure: (event, cursor) -> {stage, cursor}. Which of the four rows that stage feeds, and when a
+ *  row closes, is the renderer's (core/run_rows.js holds the one table). */
 function resolveStage(ev, cursor) {
   const stage = ev.stage || cursor;
-  if (ev.stage && ev.stage !== cursor) {
-    const closed = cursor && cursor !== "result" ? cursor : null;
-    return { stage, cursor: ev.stage, closed };
-  }
-  return { stage, cursor, closed: null };
+  return { stage, cursor: ev.stage || cursor };
 }
 
 /** Every event type this UI knows how to render, and what it does with it.
@@ -89,7 +76,8 @@ const HANDLERS = {
   tool_result: (ev, r, st) => r.toolResult(st, ev),
   rationale:   (ev, r, st) => r.rationale(st, ev),
   meshing:     (ev, r, st) => { r.node(st); r.startMesh(ev.engine, ev.budget_s, ev.history); },
-  meshed:      (ev, r) => r.endMesh(ev.cells ? ev.cells.toLocaleString() + " cells" : ""),
+  // the count, as a number: the renderer says it in the engine's own word for one (cells, elements)
+  meshed:      (ev, r) => r.endMesh(ev.cells || 0),
   // the mesh the run will build, and what the running mesher says it is doing
   plan:        (ev, r, st) => r.plan(st, ev.summary || ""),
   mesh_stage:  (ev, r) => r.meshStage(ev.label || ""),
@@ -155,8 +143,9 @@ export function dispatch(ev, renderer, cursor) {
   // WHEN IT HAPPENED, by the server's clock - before anything closes or opens, so a replayed
   // run's lanes last as long as they did then
   if (typeof ev.ts === "string" && typeof renderer.at === "function") renderer.at(ev.ts);
-  const { stage, cursor: next, closed } = resolveStage(ev, cursor);
-  if (closed) renderer.done(closed);
+  const { stage, cursor: next } = resolveStage(ev, cursor);
+  // the renderer sees every event first: it is what moves the run from designing to creating
+  if (typeof renderer.seen === "function") renderer.seen(ev, stage);
   const handler = HANDLERS[ev.type];
   if (handler) handler(ev, renderer, stage);
   return next;

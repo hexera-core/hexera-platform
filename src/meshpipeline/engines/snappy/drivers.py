@@ -566,6 +566,24 @@ def plan_refinements(*, surface_level=None, wake: bool = False, boxes: int = 0,
     return out
 
 
+def _cell_sizes(summary: dict | None) -> tuple[float | None, float | None]:
+    """(base cell, finest wall cell) in metres, from the authored case's own numbers: the background
+    box over its divisions, halved once per surface refinement level. (None, None) when the case
+    does not carry them - the plan is then said without its sizes, never with guessed ones."""
+    s = summary or {}
+    lo, hi, div, level = s.get("domain_min"), s.get("domain_max"), s.get("divisions"), s.get("surface_level")
+    if not (isinstance(lo, (list, tuple)) and isinstance(hi, (list, tuple)) and isinstance(div, (list, tuple))):
+        return None, None
+    try:
+        base = max((float(h) - float(lo_)) / float(d) for lo_, h, d in zip(lo, hi, div, strict=True) if float(d) > 0)
+        top = max(int(v) for v in level) if isinstance(level, (list, tuple)) else int(str(level))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None, None
+    if not (base > 0):
+        return None, None
+    return base, base / (2 ** max(0, top))
+
+
 async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
                             engine, purpose, *, run,
                             native_attempt: int = 1):
@@ -1259,10 +1277,16 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                 op_id=f"snappy:plan:{attempt}")
             if attempt == 1:
                 from meshpipeline.contracts import narration as _N
+                _base_m, _wall_m = _cell_sizes(summary)
                 for _i, _line in enumerate(_N.cfd_plan_lines(
                         internal=False, cells=strategy.get("max_cells"), layers=summary.get("n_layers"),
-                        wake=bool(summary.get("wake_note")), boxes=len(strategy.get("local_boxes") or []))):
+                        wake=bool(summary.get("wake_note")), boxes=len(strategy.get("local_boxes") or []),
+                        base_m=_base_m, wall_m=_wall_m)):
                     await _N.asay(publish, _line, op_id=f"snappy:say:{attempt}:{_i}")
+            # THE WHOLE DESIGN as one receipt, as every route says it (contracts/mesh_design)
+            from meshpipeline.contracts import mesh_design as _MD
+            # (its size is in its own plan lines above, so the receipt does not say it twice)
+            await _MD.apublish(publish, job_id=job_id, workspace=workspace, attempt=attempt)
             # RUN (deterministic; Cloud Run Job / local) + user-facing instrumentation, under the
             # GUARD its planned cells give it (TIME-2) - the only clock, and it decides nothing
             _guard = pass_guard(_budget, job_id=job_id, attempt=attempt, workspace=workspace)
@@ -2394,10 +2418,15 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                                 op_id=f"internal:plan:{attempt}")
             if attempt == 1:
                 from meshpipeline.contracts import narration as _N
+                _base_m, _wall_m = _cell_sizes(summary)
                 for _i, _line in enumerate(_N.cfd_plan_lines(
                         internal=True, cells=_budget, layers=n_layers, cells_across=cells_across,
-                        boxes=len(strategy.get("local_boxes") or []))):
+                        boxes=len(strategy.get("local_boxes") or []), base_m=_base_m, wall_m=_wall_m)):
                     await _N.asay(publish, _line, op_id=f"internal:say:{attempt}:{_i}")
+            # THE WHOLE DESIGN as one receipt, as every route says it (contracts/mesh_design)
+            from meshpipeline.contracts import mesh_design as _MD
+            # (its size is in its own plan lines above, so the receipt does not say it twice)
+            await _MD.apublish(publish, job_id=job_id, workspace=workspace, attempt=attempt)
             run.note_authoring()
             # the pass's GUARD, from its planned cells (TIME-2) - the only clock
             _guard = pass_guard(_budget, job_id=job_id, attempt=attempt, workspace=workspace)

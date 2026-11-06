@@ -133,6 +133,8 @@ async def asay(publish: Any, text: str, *, op_id: str = "") -> bool:
 #: Words in a decision's own sentence that read better for a user.
 # the plan says "87 walls zone(s)" (its own group names are plural): one plural is enough - "87 wall areas"
 _SOFTEN = [(re.compile(r"^Version \d+ meshes"), "Meshing"),
+           (re.compile(r"^An element curving would leave worse than straight keeps straight sides\.?$"),
+            "Elements stay straight wherever curving them onto the surface would make them worse."),
            (re.compile(r"\b(wall|hot spot|capped corner|round)s zone\(s\)"), r"\1 areas"), (re.compile(r"\bzone\(s\)"), "areas"), (re.compile(r"\belement\(s\)"), "elements"),
            (re.compile(r"\bpair\(s\)"), "pairs"), (re.compile(r"\bface\(s\)"), "faces")]
 
@@ -164,13 +166,24 @@ def retry_line(n: int, lever: dict | None) -> str:
     return f"Pass {n - 1} did not pass every check, so pass {n} changes the sizes where it fell short."
 
 
+def _length_words(m: float) -> str:
+    """A cell size as an engineer reads it: "160 mm", "0.42 mm", "1.2 m"."""
+    return f"{m:.3g} m" if m >= 1 else f"{m * 1e3:.3g} mm"
+
+
 def cfd_plan_lines(*, internal: bool, cells: int | None = None, layers: int | None = None,
-                   wake: bool = False, boxes: int = 0, cells_across: int | None = None) -> list[str]:
-    """What a CFD plan decided, in plain words, from its own numbers (engines/snappy/drivers)."""
+                   wake: bool = False, boxes: int = 0, cells_across: int | None = None,
+                   base_m: float | None = None, wall_m: float | None = None) -> list[str]:
+    """What a CFD plan decided, in plain words, from its own numbers (engines/snappy/drivers):
+    the base cell and the finest wall cell when the case carries them."""
     from meshpipeline.events import cells_words
 
     out = ["The fluid fills the inside of your part, so I'm meshing the space within it." if internal
            else "The flow goes around your part, so I'm meshing the space around it."]
+    if base_m and base_m > 0:
+        finer = (f", refined down to about {_length_words(wall_m)} at the walls"
+                 if wall_m and 0 < wall_m < base_m else "")
+        out.append(f"Base cells about {_length_words(base_m)} across{finer}.")
     if internal and cells_across:
         out.append(f"At least {int(cells_across)} cells go across the narrowest passage, so the flow there is resolved.")
     if layers:
@@ -181,6 +194,39 @@ def cfd_plan_lines(*, internal: bool, cells: int | None = None, layers: int | No
         out.append(f"{int(boxes)} more {'area gets' if int(boxes) == 1 else 'areas get'} finer cells where the flow needs them.")
     if cells:
         out.append(f"I expect about {cells_words(cells)} cells.")
+    return [line for line in (plain(x) for x in out) if line]
+
+
+def grid_plan_lines(plan: dict | None) -> list[str]:
+    """What a thermal model's grid plan decided (engines/snapgrid/runner.plan_for), in plain words,
+    from its own numbers: the detail level and cell limit, the cells through thin layers and across
+    gaps, heat sources and openings, and how fast the cells may grow."""
+    from meshpipeline.events import cells_words
+
+    p = plan if isinstance(plan, dict) else {}
+
+    def n(key):
+        v = _num(p.get(key))
+        return int(v) if v is not None and v > 0 else None
+
+    def cells(k: int) -> str:
+        return f"{k} cell{'s' if k != 1 else ''}"
+
+    out: list[str] = []
+    fid, top = str(p.get("fidelity") or "").strip().lower(), n("max_cells")
+    if top:
+        out.append(f"{fid.capitalize() + ' detail' if fid else 'The plan'}: up to {cells_words(top)} cells.")
+    if n("min_cells_across"):
+        out.append(f"At least {cells(n('min_cells_across'))} through every thin layer.")
+    if n("gap_cells"):
+        out.append(f"{cells(n('gap_cells'))} across every gap between parts.".capitalize())
+    if n("hot_cells_across"):
+        out.append(f"{cells(n('hot_cells_across'))} across every heat source.".capitalize())
+    if n("opening_cells"):
+        out.append(f"{cells(n('opening_cells'))} across every opening and fan.".capitalize())
+    growth = _num(p.get("growth"))
+    if growth and growth > 1:
+        out.append(f"Cells grow by at most {growth:g} times from one to the next.")
     return [line for line in (plain(x) for x in out) if line]
 
 
@@ -275,5 +321,6 @@ def pass_words(n: int, most: int) -> str:
 
 
 __all__ = ["KINDS", "MAX_CHARS", "STAGES", "UNKNOWN_STAGE", "asay", "astep", "leaks", "machine_words",
-           "pass_words", "plain", "plan_lines", "quality_line", "retry_line", "review_line", "cfd_plan_lines", "soften",
+           "pass_words", "plain", "plan_lines", "quality_line", "retry_line", "review_line", "cfd_plan_lines",
+           "grid_plan_lines", "soften",
            "stage_words", "still_words"]
