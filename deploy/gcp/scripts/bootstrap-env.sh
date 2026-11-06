@@ -245,6 +245,14 @@ emit_env() {
   # slices emit_env whole rather than just its body.
   local _worker_min_default=0
   if [ "${APP_ENV:-dev}" = prod ]; then _worker_min_default=1; fi
+  # THE PROVISIONING MODEL, decided by the same lever for the same kind of reason. A Spot VM is the
+  # same machine at about a third of the price, on the condition that Compute Engine may reclaim it
+  # with roughly thirty seconds notice. Dev work is bursty and restartable, so dev takes the trade;
+  # production does not, because relaunch() re-dispatches a job rather than resuming it, and a
+  # reclaimed prod VM means a customer's run starts over. create-worker-fleet.sh holds the drain
+  # budget that makes the reclaim window survivable, and refuses a budget that does not fit it.
+  local _worker_model_default=SPOT
+  if [ "${APP_ENV:-dev}" = prod ]; then _worker_model_default=STANDARD; fi
   cat <<ENVFILE
 # deploy/gcp/generated.env - GENERATED deployment state (scripts/bootstrap-env.sh).
 # DO NOT HAND-EDIT: rerunning discovery preserves existing values, and deploy stages write the
@@ -355,6 +363,7 @@ REDIS_URL=${REDIS_URL:-}
 WORKER_MIG=${WORKER_MIG:-}
 WORKER_MIG_ZONE=${WORKER_MIG_ZONE:-}
 WORKER_MIG_MIN_REPLICAS=${WORKER_MIG_MIN_REPLICAS:-${_worker_min_default}}
+WORKER_PROVISIONING_MODEL=${WORKER_PROVISIONING_MODEL:-${_worker_model_default}}
 WORKER_MIG_MAX_REPLICAS=${WORKER_MIG_MAX_REPLICAS:-5}
 WORKER_MIG_COOLDOWN_SECONDS=${WORKER_MIG_COOLDOWN_SECONDS:-180}
 WORKER_JOBS_PER_INSTANCE=${WORKER_JOBS_PER_INSTANCE:-1}
