@@ -87,8 +87,8 @@ def promote(state, *, repaired, engine: str = "", attempt: int = 0) -> dict:
     the upload it names is immutable and still in the catalogue, so the customer's bytes remain
     retrievable and provable after the run has moved on.
     """
+    import meshpipeline.settings.cad_repair as rcfg
     from meshpipeline.pipeline.geometry_state import materialized as _materialized
-    from meshpipeline.settings import repair_config as rcfg
 
     original = _materialized(state)
     if original is None:

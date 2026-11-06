@@ -74,7 +74,7 @@ def repairs(monkeypatch):
 
     monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file", _repair)
     monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for",
-                        lambda geometry, engine="": (True, ""))
+                        lambda geometry, engine="", budget_s=None: (True, ""))
     return calls
 
 
@@ -239,7 +239,7 @@ def test_a_repair_that_crashes_does_not_fail_the_run(tmp_path, monkeypatch):
 
 def test_geometry_that_does_not_stage_after_repair_is_not_promoted(tmp_path, monkeypatch, repairs):
     monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for",
-                        lambda geometry, engine="": (False, "RuntimeError: empty shape"))
+                        lambda geometry, engine="", budget_s=None: (False, "RuntimeError: empty shape"))
 
     out = _run(_state(tmp_path))
 
@@ -331,7 +331,7 @@ def _looped(monkeypatch, *, operations=(), entities=(), **measured):
 
     monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file", _repair)
     monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for",
-                        lambda geometry, engine="": (True, ""))
+                        lambda geometry, engine="", budget_s=None: (True, ""))
 
 
 def test_the_run_records_every_operation_the_loop_tried(monkeypatch, tmp_path):
@@ -519,7 +519,7 @@ def test_the_staging_proof_runs_off_the_event_loop_and_on_a_clock(tmp_path, monk
 
     monkeypatch.setattr(rcfg, "CAD_REPAIR_TIMEOUT_S", 0.3)
 
-    def _slow(geometry, engine=""):
+    def _slow(geometry, engine="", budget_s=None):
         time.sleep(1.0)
         return True, ""
 
