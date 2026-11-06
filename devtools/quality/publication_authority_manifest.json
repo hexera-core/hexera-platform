@@ -5454,6 +5454,36 @@
   "roots": []
  },
  {
+  "context": "render/part_pictures.py::render_parts::screenshot#1|NotAPublisher|not-a-publisher|render/part_pictures.py::result of pv.Plotter(off_screen=True, window_size=list(WINDOW))",
+  "path": "render/part_pictures.py",
+  "qualname": "render_parts",
+  "semantic": "screenshot",
+  "method": "screenshot",
+  "ordinal": 1,
+  "receiver": "pl",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "render/part_pictures.py::result of pv.Plotter(off_screen=True, window_size=list(WINDOW))"
+  ]
+ },
+ {
+  "context": "render/part_pictures.py::render_parts::screenshot#2|NotAPublisher|not-a-publisher|render/part_pictures.py::result of pv.Plotter(off_screen=True, window_size=list(WINDOW))",
+  "path": "render/part_pictures.py",
+  "qualname": "render_parts",
+  "semantic": "screenshot",
+  "method": "screenshot",
+  "ordinal": 2,
+  "receiver": "pl",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "render/part_pictures.py::result of pv.Plotter(off_screen=True, window_size=list(WINDOW))"
+  ]
+ },
+ {
   "context": "render/scout_snapshots.py::render_snapshots.shoot::screenshot#1|NotAPublisher|not-a-publisher|render/scout_snapshots.py::result of pv.Plotter(off_screen=True, window_size=list(WINDOW))",
   "path": "render/scout_snapshots.py",
   "qualname": "render_snapshots.shoot",

@@ -62,14 +62,15 @@ def test_the_base_grows_to_a_fifth_of_the_part_at_most():
 
 
 # ------------------------------------------------------------------ the solve, on a count model -----------
-def _model(monkeypatch, *, fine: float, floor: float = 0.0, limit: int = 50_000_000):
+def _model(monkeypatch, *, fine: float, floor: float = 0.0, limit: int = 50_000_000, valid: float = 0.0):
     """make_plan whose estimate is floor + fine / s^3 (`floor`: elements the minimums hold whatever s)."""
     calls = []
 
-    def fake(record, surface, diag_m, *, levers=None, limit=0, ai=None, scale=None, **_k):
-        s = float(scale or 1.0)
-        calls.append(s)
-        n = floor + fine / s ** 3
+    def fake(record, surface, diag_m, *, levers=None, limit=0, ai=None, scale=None, beyond=None, **_k):
+        s, u = float(scale or 1.0), float(beyond or 1.0)
+        calls.append(s if u == 1.0 else (s, u))
+        # past the accuracy minimums (PLAN-fea-30) every size grows again, the held ones too
+        n = max(valid, (floor + fine / s ** 3) / u ** 3)      # the count what the validity limits hold
         zones = [dict(WALL, held="PLAN-fea-3")] if (floor and s > 1) else []
         return {"estimate": {"elements": int(n)}, "fits": n <= P.LIMIT_AIM * limit, "zones": zones,
                 "base_size_m": P.base_size(diag_m, s), "limit": {"elements": limit}}
@@ -99,12 +100,34 @@ def test_where_the_minimums_hold_the_rest_takes_up_the_slack_and_the_stop_is_sai
     plan = _solve({"elements": 700_000, "mode": "about"}, limit=50_000_000)
     assert abs(plan["estimate"]["elements"] / 700_000 - 1.0) <= P.TARGET_TOLERANCE
     assert plan["target"]["scale"] > (1_000_000 / 700_000) ** (1 / 3)        # went further than the plain guess
-    # ... 300k is not: the plan stops near the minimums' floor and says so
+    # ... 300k is not inside them: PLAN-fea-30 goes past the accuracy minimums, as far as valid elements allow, and
+    # lands on it - said
     _model(monkeypatch, fine=400_000, floor=600_000)
     low = _solve({"elements": 300_000, "mode": "about"}, limit=50_000_000)
-    assert low["target"]["held_by_minimums"] and low["estimate"]["elements"] < 750_000
-    words = " ".join(P.target_words({**low, "plan": None}))
-    assert "The minimums stop it" in words and "2 elements through the 4 mm wall under Face_3" in words
+    assert low["target"]["hit"] and low["target"]["beyond"] > 1.0 and not low["target"]["lowest"]
+    assert abs(low["estimate"]["elements"] / 300_000 - 1.0) <= P.TARGET_TOLERANCE
+    assert "past the sizes accuracy asks for" in " ".join(P.target_words(low))
+    # ... 50k is past even the validity limits: the lowest valid plan, and "the lowest this part can go"
+    _model(monkeypatch, fine=400_000, floor=600_000, valid=140_000)
+    lowest = _solve({"elements": 50_000, "mode": "about"}, limit=50_000_000)
+    assert lowest["target"]["lowest"] and lowest["estimate"]["elements"] > 50_000
+    assert "The lowest this part can go is about" in " ".join(P.target_words(lowest))
+    assert "not reached" in P.count_line(lowest["target"], lowest["estimate"]["elements"], 140_000)
+
+
+@pytest.mark.parametrize("fine,floor", [(1_000_000, 0), (400_000, 600_000), (50_000, 3_000_000)])
+def test_a_smaller_count_never_plans_more(monkeypatch, fine, floor):
+    """The cofounder's rule: asking for fewer elements never gives more - every ask, from far over the rules' plan to
+    far under the lowest valid one, plans a count that falls (or stays) as the ask falls, and each is within the
+    tolerance of the ask or at the stated lowest."""
+    got = []
+    for asked in (5_000_000, 2_000_000, 1_000_000, 750_000, 500_000, 300_000, 100_000, 10_000, 1_000):
+        _model(monkeypatch, fine=fine, floor=floor)
+        plan = _solve({"elements": asked, "mode": "about"}, limit=50_000_000)
+        t, n = plan["target"], plan["estimate"]["elements"]
+        assert t.get("kept_rules") or t["hit"] or t["lowest"] or abs(n / asked - 1.0) <= 0.1
+        got.append(n)
+    assert got == sorted(got, reverse=True)
 
 
 def test_a_count_past_the_largest_machine_is_aimed_at_the_most_it_holds(monkeypatch):
@@ -146,20 +169,25 @@ def test_a_real_part_is_scaled_to_the_count_both_ways_with_its_words_and_why(tmp
     for z in finer["zones"]:
         if z["kind"] != "corner":
             assert z["size_m"] == pytest.approx(by_rules[z["id"]]["size_m"] * s, rel=1e-3)
-    assert any(w.startswith("You asked for about") and f"x{s:.3g} (finer)" in w for w in finer["words"])
+    assert any(w.startswith("You asked for about") and f"{1 / s:.3g} times finer" in w for w in finer["words"])
     assert any(d["rule"] == "PLAN-fea-27" for d in finer["decisions"])
     assert finer["limit"]["elements"] == rules["limit"]["elements"]
-    # coarser: the plate's walls hold it (2 through the 4 mm plate) and that is said
-    coarse = FD.choose_plan(record, surface, diag, target={"elements": n0 // 5, "mode": "about", "source": "notes",
-                                                           "quote": "x elements"})
-    for z in coarse["zones"]:
-        if z["kind"] in ("wall", "wall_spot"):
-            assert z["size_m"] <= z["thickness_m"] / P.WALL_ELEMENTS * (1 + 1e-6)
-        if z["kind"] in ("hole", "fillet", "notch", "round"):
-            assert Q * z["radius_m"] / z["size_m"] >= P.ROUND_PER_QUARTER * (1 - 1e-3)
-    assert coarse["target"]["held_by_minimums"]
-    assert any("The minimums stop it" in w for w in coarse["words"])
-    assert P.target_remark(coarse).startswith("you asked for about")
+    # coarser past what the accuracy minimums allow: PLAN-fea-30 goes past them (said), down to the validity
+    # limits - every curve keeps 3 per quarter-turn - and a lower count never plans more
+    counts = []
+    for k in (2, 5, 20):
+        coarse = FD.choose_plan(record, surface, diag, target={"elements": n0 // k, "mode": "about",
+                                                               "source": "notes", "quote": "x elements"})
+        for z in coarse["zones"]:
+            if z["kind"] in ("hole", "fillet", "notch", "round"):
+                assert Q * z["radius_m"] / z["size_m"] >= P.VALID_PER_QUARTER * (1 - 1e-3)
+        t = coarse["target"]
+        assert t["hit"] or t["lowest"]
+        if t["lowest"]:
+            assert any("The lowest this part can go is about" in w for w in coarse["words"])
+        assert P.target_remark(coarse).startswith("you asked for about")
+        counts.append(coarse["estimate"]["elements"])
+    assert counts == sorted(counts, reverse=True)
 
 
 def test_a_range_is_aimed_at_its_middle_and_any_estimate_inside_it_is_a_hit(monkeypatch):
@@ -167,7 +195,7 @@ def test_a_range_is_aimed_at_its_middle_and_any_estimate_inside_it_is_a_hit(monk
     plan = _solve({"elements": 450_000, "mode": "range", "low": 300_000, "high": 600_000}, limit=limit)
     t = plan["target"]
     assert 300_000 <= plan["estimate"]["elements"] <= 600_000 and t["hit"]
-    assert len(calls) == 2                                      # the first step landed inside: no more estimates
+    assert len(calls) <= 3                                      # the end of the range, then one step inside it
     assert any("between 300k and 600k elements" in w and "inside your range" in w for w in P.target_words(plan))
     # the rules' own plan inside the range is kept as it is
     calls, limit = _model(monkeypatch, fine=1_000_000)

@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 from meshpipeline.engines import bucket_files as BF
 from meshpipeline.engines import fea_ai as FA
 from meshpipeline.engines import fea_ladder as L
+from meshpipeline.engines import fea_part_sizes as PS
 from meshpipeline.engines import fea_plan as P
 
 if TYPE_CHECKING:
@@ -498,15 +499,33 @@ def restage_tied(ws: Path, record: dict) -> dict:
 MAX_CUBES_CEILING = 12_000_000
 
 
+def walls_of(record: dict) -> dict[str, float]:
+    """PLAN-fea-31: every face's measured wall in metres (the wall most of it agrees on, else its median)."""
+    out: dict[str, float] = {}
+    for name, row in (record.get("faces") or {}).items():
+        row = row or {}
+        t = row.get("thickness_wall_mm") or row.get("thickness_median_mm") or row.get("thickness_min_mm")
+        if t is None:
+            continue
+        try:
+            v = float(t)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(v) and v > 0:
+            out[str(name)] = v * 1e-3
+    return out
+
+
 def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float, *, limit: float | None = None,
-               recount: bool = True, scale: float = 1.0):
+               recount: bool = True, scale: float = 1.0, walls: dict[str, float] | None = None,
+               base_m: float | None = None):
     """The zones' volume histogram (engines/fea_size_field). With `limit`, it is counted to 1.5 times it
     (never less than STOP_ELEMENTS), and a count that ran out of cubes under the limit is counted again
     with more (MAX_CUBES_CEILING). `scale`: PLAN-fea-27's factor on the base size."""
     from meshpipeline.engines import fea_size_field as SF
 
-    field = SF.SizeField(surface, zone_list, growth=L.growth(levers), scale_to_m=1e-3)
-    coarsest = P.base_size(diag_m, scale)
+    field = SF.SizeField(surface, zone_list, growth=L.growth(levers), scale_to_m=1e-3, walls=walls)
+    coarsest = float(base_m) if base_m else P.base_size(diag_m, scale)
     stop = STOP_ELEMENTS if limit is None else max(STOP_ELEMENTS, 1.5 * float(limit))
     cubes = SF.MAX_CUBES
     while True:
@@ -522,28 +541,39 @@ def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None
               limit: int = P.ELEMENT_LIMIT, zone_floor_m: float | None = None, hist=None,
               through: float | None = None, ai: dict | None = None,
               zone_floors: dict[str, float] | None = None, recount: bool = True,
-              scale: float | None = None) -> dict:
+              scale: float | None = None, beyond: float | None = None, sizes: dict | None = None) -> dict:
     """The plan for this part, with the ladder's levers applied: the zones the rules ask for, the
     coarsest base the part allows, the estimate against `limit`. `zone_floor_m`: PLAN-fea-8's
     coarsening (the finest zones floored, never past their validity minimums); `hist`: the zones'
     histogram when the caller already has it; `ai`: the AI's checked decision (engines/fea_ai), made
     exact by the rules before any coarsening. `zone_floors`: PLAN-fea-8's coarsening kind by kind (zone
     kind -> floor), the low-stress zones first (COARSEN_ORDER). `scale`: PLAN-fea-27's one factor on
-    every size (the base and every zone, the minimums re-applied) for the user's element count."""
+    every size (the base and every zone, the minimums re-applied) for the user's element count; beyond:
+    PLAN-fea-30's factor past those minimums, as far as valid elements allow. sizes: PLAN-fea-29's sizes the
+    user asked for, part by part (engines/fea_part_sizes.per_part), held before any count moves the rest."""
     levers = list(levers or [])
     zone_list, applied = FA.apply_zones(P.zones(record, tighten=L.tightened(levers)), _used(ai), record,
                                         diag_m=diag_m)
-    s = float(scale or 1.0)
-    if s != 1.0:
-        zone_list = P.scaled(zone_list, s)
+    s, u = float(scale or 1.0), float(beyond or 1.0)
+    if sizes:
+        zone_list = P.user_sized(zone_list, sizes)
+    if s != 1.0 or u != 1.0:
+        zone_list = P.scaled(zone_list, s, u)
+    base_m = P.base_size(diag_m, s, u)
+    ub = P.user_base(sizes or {})
+    if ub:
+        base_m = ub if not record.get("part_bases") else max(base_m, ub)
     for kind, f in sorted((zone_floors or {}).items()):
         zone_list = P.floored(zone_list, float(f), through or P.KEEP_THROUGH, kinds=(kind,))
     if zone_floor_m:
         zone_list = P.floored(zone_list, float(zone_floor_m), through or P.KEEP_THROUGH)
     if hist is None:
-        hist = _histogram(surface, zone_list, levers, diag_m, limit=limit, recount=recount, scale=s)
+        hist = _histogram(surface, zone_list, levers, diag_m, limit=limit, recount=recount, scale=s,
+                          walls=walls_of(record), base_m=base_m)
     plan = P.finish(record, zone_list, hist, diag_m=diag_m, limit=limit, levers=levers, growth=L.growth(levers),
-                    scale=s)
+                    scale=s, beyond=u, base_m=base_m)
+    if sizes:
+        plan["user_sizes"] = {k: dict(v) for k, v in sorted(sizes.items())}
     if zone_floors:
         plan["zone_floors_m"] = {k: float(v) for k, v in sorted(zone_floors.items())}
     if zone_floor_m:
@@ -582,7 +612,7 @@ COARSEN_ORDER: tuple[tuple[str, ...], ...] = (("round",), ("corner",), ("wall", 
 
 
 def _coarsen_group(record: dict, surface, diag_m: float, *, levers: list[dict], limit: int, ai, group,
-                   zone_list: list[dict], floors_done: dict[str, float]):
+                   zone_list: list[dict], floors_done: dict[str, float], sizes: dict | None = None):
     """One step of PLAN-fea-8's coarsening: the first floor for `group`'s zones (the others as `floors_done`
     already floors them) under which the plan fits, found by halving the list of floors - each twice the
     last, from the group's finest zone, while it still changes a zone's size - then one step back where
@@ -599,10 +629,10 @@ def _coarsen_group(record: dict, surface, diag_m: float, *, levers: list[dict], 
     last: list[float] | None = None
     for _ in range(FLOOR_STEPS):
         floor *= 2.0
-        sizes = [float(z["size_m"]) for z in P.floored(base, floor, kinds=group)]
-        if sizes == last:
+        got = [float(z["size_m"]) for z in P.floored(base, floor, kinds=group)]
+        if got == last:
             break
-        last = sizes
+        last = got
         floors.append(floor)
     if not floors:
         return None
@@ -610,7 +640,7 @@ def _coarsen_group(record: dict, surface, diag_m: float, *, levers: list[dict], 
 
     def at(k: int) -> dict:
         if k not in tried:
-            tried[k] = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, recount=False,
+            tried[k] = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes, recount=False,
                                  zone_floors=floors_with(floors[k]))
         return tried[k]
 
@@ -625,7 +655,7 @@ def _coarsen_group(record: dict, surface, diag_m: float, *, levers: list[dict], 
         else:
             lo = mid + 1
     best, f = at(hi), floors[hi]
-    finer = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, zone_floors=floors_with(0.75 * f),
+    finer = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes, zone_floors=floors_with(0.75 * f),
                       recount=False)
     if finer["fits"]:
         best, f = finer, 0.75 * f
@@ -739,20 +769,85 @@ def _gap(n: float, t: float) -> float:
     return abs(math.log(max(float(n), 1.0) / max(float(t), 1.0)))
 
 
+def _solve(at, lo: float, hi: float, n_lo: float, n_hi: float, aim: float, hit, steps: int) -> list:
+    """PLAN-fea-27/30's search on ONE factor x whose count falls as x grows, with f(lo) = n_lo over the aim and
+    f(hi) = n_hi under it: the line through the bracket's ends (log count against log x), kept inside the bracket
+    (its geometric middle when the line leaves it or is flat), until an estimate is a hit or the steps run out.
+    Returns [(x, count, plan)] tried."""
+    tried: list = []
+    side = [0, 0]                   # how many steps in a row moved the low end, the high end
+    for _ in range(steps):
+        if hi / lo < 1.0 + 1e-3:
+            break
+        ln_lo, ln_hi = math.log(max(n_lo, 1.0)), math.log(max(n_hi, 1.0))
+        slope = (ln_hi - ln_lo) / (math.log(hi) - math.log(lo))
+        x = math.exp(math.log(lo) + (math.log(aim) - ln_lo) / slope) if slope < -1e-6 else math.sqrt(lo * hi)
+        if not (lo * (1 + 1e-6) < x < hi * (1 - 1e-6)) or max(side) >= 2:
+            # the line keeps landing on one side (a count far from straight in log-log): halve the bracket
+            x = math.sqrt(lo * hi)
+            side = [0, 0]
+        plan = at(x)
+        n = float(plan["estimate"]["elements"])
+        tried.append((x, n, plan))
+        if hit(n):
+            break
+        if n > aim:
+            lo, n_lo = x, n
+            side = [side[0] + 1, 0]
+        else:
+            hi, n_hi = x, n
+            side = [0, side[1] + 1]
+    return tried
+
+
+def _full_scale(zone_list: list[dict]) -> float:
+    """PLAN-fea-27: the factor past which no zone moves (each at its accuracy minimum) - the base reaches its
+    fifth of the part at 2."""
+    out = TARGET_FULL
+    for z in zone_list:
+        cap = P.scale_cap(z)
+        if cap is not None and not z.get("user") and float(z["size_m"]) > 0:
+            out = max(out, cap[0] / float(z["size_m"]))
+    return min(out, 1.0 / P.SCALE_MIN) * (1.0 + 1e-6)
+
+
+def beyond_full(zone_list: list[dict], base_m: float, diag_m: float) -> float:
+    """PLAN-fea-30: the second factor past which nothing moves - every zone at its validity limit (a curve at 3 per
+    quarter-turn, a part's own base at a third of the part) or, with no such limit (a wall), at a third of the whole
+    part, and the base at a third of the part. The search runs all the way there: only validity stops a count."""
+    top = float(diag_m) / P.VALID_DIVISIONS
+    out = top / float(base_m) if base_m else 1.0
+    for z in zone_list:
+        if z.get("user") or float(z.get("size_m") or 0.0) <= 0.0:
+            continue
+        vc = P.valid_cap(z)
+        out = max(out, min(vc[0] if vc else top, top) / float(z["size_m"]))
+    return max(1.0, out) * (1.0 + 1e-6)
+
+
+#: PLAN-fea-27: the base reaches PLAN-fea-28's fifth at twice its tenth
+TARGET_FULL = P.MIN_DIVISIONS / P.TARGET_MIN_DIVISIONS
+
+
 def target_plan(record: dict, surface, diag_m: float, *, levers: list[dict], ai: dict | None, target: dict,
-                limit: int, rules: dict) -> dict:
-    """PLAN-fea-27: the plan scaled to the user's element count. `rules` is the rules' own plan (its estimate N0).
-    ONE factor s on every size - the base (PLAN-fea-28's fifth of the part at most) and every zone, the minimums
-    re-applied after (fea_plan.scaled) - solved on the REAL estimate: the first guess from count ~ 1/size^3,
-    then secant steps on log(count) against log(s), kept inside the bracket found (a halving there when a step
-    leaves it). Where a minimum holds a zone, its count stops falling and the other sizes take up the slack: the
-    secant's slope follows that. Both ways: under N0 coarser, over it finer - never past the largest machine
-    (the count is aimed at LIMIT_AIM of `limit` at most). Returns the plan with its `target` record."""
+                limit: int, rules: dict, sizes: dict | None = None, correction: float | None = None) -> dict:
+    """PLAN-fea-27/30: the plan sized to the user's element count. `rules` is the rules' own plan (its estimate
+    N0). Over the count, in this order, each solved on the REAL estimate (the size field's histogram):
+      1. ONE factor s on every size - the base (to a fifth of the part) and every zone - inside the accuracy
+         minimums (2 through every wall, 4 per quarter-turn of every curve, the corner cap);
+      2. still over: a second factor past those minimums, as far as valid elements allow (PLAN-fea-30: 3 per
+         quarter-turn of every curve, 3 elements across every part) - the minimums crossed are named;
+      3. still over at the validity limits: that plan, the lowest this part can go, and said so.
+    Under the count, s < 1: finer, never past the largest machine (the count is aimed at LIMIT_AIM of `limit` at
+    most). The count only ever moves the sizes the user did not set (PLAN-fea-29: their sizes per part come
+    first). The factors are monotone in the count, so a smaller count never plans more. `correction`: built over
+    planned on a pass already built of this count (PLAN-fea-31's re-aim) - the estimates are read times it. Returns
+    the plan with its `target` record."""
     asked = int(target["elements"])
     mode = str(target.get("mode") or "about")
     # the most the largest machine holds, with the solve's own tolerance to spare (an estimate near it still fits)
     cap = int(P.LIMIT_AIM * float(limit) / (1.0 + P.TARGET_TOLERANCE))
-    aim = min(asked, cap)
+    aim: float = min(asked, cap)
     if mode == "range":
         # A RANGE: aimed at its middle, and any estimate inside it is a hit (the solve stops there)
         low, high = int(target["low"]), int(target["high"])
@@ -762,87 +857,84 @@ def target_plan(record: dict, surface, diag_m: float, *, levers: list[dict], ai:
     else:
         ok_lo, ok_hi = aim / (1.0 + P.TARGET_TOLERANCE), aim * (1.0 + P.TARGET_TOLERANCE)
 
+    k = float(correction or 1.0)
+
     def hit(n: float) -> bool:
-        return ok_lo <= n <= ok_hi
+        return ok_lo <= n * k <= ok_hi
 
     def miss(n: float) -> float:
-        """How far outside what counts as a hit (0 inside), then how far from the aim."""
-        return 0.0 if hit(n) else min(_gap(n, ok_lo), _gap(n, ok_hi))
+        """How far outside what counts as a hit (0 inside)."""
+        return 0.0 if hit(n) else min(_gap(n * k, ok_lo), _gap(n * k, ok_hi))
 
     n0 = float(rules["estimate"]["elements"])
     rec = {"asked": asked, "mode": mode, "source": target.get("source"), "quote": target.get("quote") or "",
            "aim": aim, "machine": aim < asked or (mode == "range" and int(target["low"]) > cap),
            "rules_elements": int(n0), "rules_base_m": rules["base_size_m"],
+           **({"sizes_first": True} if sizes else {}), **({"correction": round(k, 4)} if k != 1.0 else {}),
            **{k: target[k] for k in ("low", "high") if target.get(k)}}
-    if ((mode == "at_most" and n0 <= asked) or (mode == "at_least" and n0 >= asked)
-            or (mode == "range" and int(target["low"]) <= n0 <= int(target["high"]) and rules["fits"])):
+    if ((mode == "at_most" and n0 * k <= asked) or (mode == "at_least" and n0 * k >= asked)
+            or (mode == "range" and int(target["low"]) <= n0 * k <= int(target["high"]) and rules["fits"])):
         rules["target"] = {**rec, "scale": 1.0, "kept_rules": True, "steps": 0}
         return rules
-    tried: list[tuple[float, float, dict]] = [(1.0, n0, rules)]
-    s = 1.0
-    if not hit(n0):
-        lo, hi = P.SCALE_MIN, P.SCALE_MAX            # lo: a factor whose count is over the aim; hi: under it
-        if n0 > aim:
-            lo = 1.0
-        else:
-            hi = 1.0
-        s_next = min(max((n0 / aim) ** (1.0 / 3.0), P.SCALE_MIN), P.SCALE_MAX)
-        for _ in range(P.TARGET_STEPS):
-            if s_next in [x[0] for x in tried]:
-                break
-            plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, scale=s_next)
-            n = float(plan["estimate"]["elements"])
-            tried.append((s_next, n, plan))
-            if hit(n):
-                break
-            if n > aim:
-                lo = max(lo, s_next)
+
+    def at(s: float, u: float = 1.0) -> dict:
+        return make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, scale=s, beyond=u, sizes=sizes)
+
+    tried: list[tuple[float, float, float, dict]] = [(1.0, 1.0, n0, rules)]       # (s, u, count, plan)
+    lowest = False
+    aim = aim / k                                   # the estimate that builds the count (PLAN-fea-31's re-aim)
+    if not hit(n0) and n0 < aim:
+        # FINER: s under 1, down to SCALE_MIN
+        p_min = at(P.SCALE_MIN)
+        n_min = float(p_min["estimate"]["elements"])
+        tried.append((P.SCALE_MIN, 1.0, n_min, p_min))
+        if n_min > aim and not hit(n_min):
+            tried += [(x, 1.0, n, p) for x, n, p in _solve(at, P.SCALE_MIN, 1.0, n_min, n0, aim, hit, P.TARGET_STEPS)]
+    elif not hit(n0):
+        # 1. COARSER INSIDE THE ACCURACY MINIMUMS
+        zs = FA.apply_zones(P.zones(record, tighten=L.tightened(levers)), _used(ai), record, diag_m=diag_m)[0]
+        if sizes:
+            zs = P.user_sized(zs, sizes)
+        s_full = _full_scale(zs)
+        p_a = at(s_full)
+        n_a = float(p_a["estimate"]["elements"])
+        tried.append((s_full, 1.0, n_a, p_a))
+        if not hit(n_a) and n_a < aim:
+            tried += [(x, 1.0, n, p) for x, n, p in _solve(at, 1.0, s_full, n0, n_a, aim, hit, P.TARGET_STEPS)]
+        elif not hit(n_a):
+            # 2. PAST THE ACCURACY MINIMUMS, to the validity limits
+            base_a = P.base_size(diag_m, s_full)
+            u_full = beyond_full(p_a.get("zones") or [], base_a, diag_m)
+            if u_full > 1.0 + 1e-3:
+                p_b = at(s_full, u_full)
+                n_b = float(p_b["estimate"]["elements"])
+                tried.append((s_full, u_full, n_b, p_b))
+                if not hit(n_b) and n_b < aim:
+                    tried += [(s_full, x, n, p) for x, n, p in _solve(lambda u: at(s_full, u), 1.0, u_full, n_a, n_b,
+                                                                      aim, hit, P.TARGET_STEPS)]
+                elif not hit(n_b):
+                    lowest = True              # 3. even at the validity limits: the lowest this part can go
             else:
-                hi = min(hi, s_next)
-            if n > aim and s_next >= P.SCALE_MAX * (1 - 1e-9):
-                break                                   # every zone at its minimum: no factor goes lower
-            over = [x for x in tried if x[1] > aim]
-            under = [x for x in tried if x[1] <= aim]
-            if over and under:
-                # BRACKETED: the line through the nearest estimate on each side (log count against log factor)
-                (s1, n1, _p1), (s2, n2, _p2) = max(over, key=lambda x: x[0]), min(under, key=lambda x: x[0])
-            else:
-                # the secant through the last two estimates
-                (s1, n1, _p1), (s2, n2, _p2) = tried[-2], tried[-1]
-            slope = (math.log(max(n2, 1.0)) - math.log(max(n1, 1.0))) / (math.log(s2) - math.log(s1)) \
-                if s1 != s2 else -3.0
-            if over and under:
-                s_cand = (math.exp(math.log(s2) + (math.log(aim) - math.log(max(n2, 1.0))) / slope)
-                          if slope < -1e-6 else math.sqrt(lo * hi))
-            elif slope > -FLAT_SLOPE and n > aim:
-                # FLAT: the minimums hold nearly every element - the end of the range once, then stop
-                if any(x[0] >= P.SCALE_MAX * (1 - 1e-9) for x in tried) or len(tried) > 2:
-                    break
-                s_cand = P.SCALE_MAX
-            elif slope > -FLAT_SLOPE:
-                s_cand = math.sqrt(lo * hi)
-            else:
-                s_cand = math.exp(math.log(s2) + (math.log(aim) - math.log(max(n2, 1.0))) / slope)
-            if not (lo <= s_cand <= hi):
-                s_cand = math.sqrt(lo * hi)
-            s_next = min(max(s_cand, P.SCALE_MIN), P.SCALE_MAX)
-            if hi / lo < 1.0 + 1e-3:
-                break
-    fitting = [x for x in tried if x[2]["fits"]] or tried
-    s, n, best = min(fitting, key=lambda x: (miss(x[1]), _gap(x[1], aim), x[0]))
+                lowest = True
+    fitting = [x for x in tried if x[3]["fits"]] or tried
+    if lowest:
+        s, u, n, best = max(fitting, key=lambda x: (x[1], x[0]))
+    else:
+        s, u, n, best = min(fitting, key=lambda x: (miss(x[2]), _gap(x[2], aim), x[0], x[1]))
+    rec["aim"] = int(round(aim * k))
     zs = best.get("zones") or []
-    # the minimums held it: the count stays over the aim, coarser than the rules, and a held zone sizes the mesh
-    held_min = bool(n > ok_hi and s > 1.0
-                    and P.held_zones(list(zs), float(best["base_size_m"])))
-    best["target"] = {**rec, "scale": round(float(s), 4), "steps": len(tried) - 1, "held_by_minimums": held_min,
-                      "hit": hit(n),
-                      "base_capped": bool(s > 1.0 and P.base_size(diag_m, s) < P.base_size(diag_m) * s * (1 - 1e-9)),
-                      "tried": [[round(x[0], 4), int(x[1])] for x in tried]}
+    best["target"] = {**rec, "scale": round(float(s), 4), "beyond": round(float(u), 4), "steps": len(tried) - 1,
+                      "hit": hit(n), "lowest": bool(lowest and not hit(n)),
+                      "held_by_minimums": False,
+                      "crossed": sorted({str(z["crossed"]) for z in zs if z.get("crossed") and not z.get("user")}),
+                      "base_capped": bool(s > 1.0 and u <= 1.0 and P.base_size(diag_m, s) < P.base_size(diag_m) * s * (1 - 1e-9)),
+                      "tried": [[round(x[0], 4), round(x[1], 4), int(x[2])] for x in tried]}
     return best
 
 
 def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
-                ceiling_s: float | None = None, ai: dict | None = None, target: dict | None = None) -> dict:
+                ceiling_s: float | None = None, ai: dict | None = None, target: dict | None = None,
+                sizes: dict | None = None, correction: float | None = None) -> dict:
     """PLAN-fea-8, NEVER A STOP BEFORE MESHING (Areen, 21 Oct): the rules' own plan when it fits under
     the limit; else the finest zones coarsened until it fits, never past what keeps elements valid,
     what that leaves short named (resolution_short); else - every zone at its validity minimum and
@@ -852,7 +944,7 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
     machine goes on to PLAN-fea-8's coarsening, as any plan over its limit does."""
     levers = list(levers or [])
     limit, why = element_limit(record, ceiling_s)
-    plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai)
+    plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes)
     missed: dict | None = None
     # AI-fea-4: the AI gave no answer and the user left notes - a count in them is not applied, and said
     unread = bool(target and target.get("unread"))
@@ -860,20 +952,22 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
         target = None
     if target:
         scaled_plan = target_plan(record, surface, diag_m, levers=levers, ai=ai, target=target, limit=limit,
-                                  rules=plan)
+                                  rules=plan, sizes=sizes, correction=correction)
         if scaled_plan["fits"]:
             scaled_plan["limit"].update(why=why, memory=limit_facts())
             return _restate(record, scaled_plan)
         missed = {k: v for k, v in scaled_plan["target"].items() if k != "tried"}
-        plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai)
+        plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes)
     if not plan["fits"] and FA.refines(_used(ai)):
         # AI-fea-5: THE AI'S REFINEMENTS NEVER COST THE RULES' OWN ZONES. Over the limit, they are
         # left out first (its other choices stand) - the limit's coarsening is only ever for what
         # the rules themselves need (lab, 24 Oct: three parts the rules meshed whole came back with
         # walls short of 2 elements because a refinement had pushed the plan over the limit)
         ai = FA.without_refines(ai or {})
-        plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai)
+        plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes)
     zone_list, _ = FA.apply_zones(P.zones(record, tighten=L.tightened(levers)), _used(ai), record, diag_m=diag_m)
+    if sizes:
+        zone_list = P.user_sized(zone_list, sizes)
     plan["limit"].update(why=why, memory=limit_facts())
     if missed:
         plan["target_missed"] = missed
@@ -896,7 +990,7 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
         if not sel:
             continue
         found = _coarsen_group(record, surface, diag_m, levers=levers, limit=limit, ai=ai, group=group,
-                               zone_list=zone_list, floors_done=floors_done)
+                               zone_list=zone_list, floors_done=floors_done, sizes=sizes)
         if found is None:
             continue
         best, floors_done, fitted = found
@@ -909,13 +1003,13 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
                 if not any(k in floors_done for k in back):
                     continue
                 others = {k: v for k, v in floors_done.items() if k not in back}
-                whole = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, zone_floors=others,
+                whole = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes, zone_floors=others,
                                   recount=False)
                 if whole["fits"]:
                     best, floors_done = whole, others          # this kind needs no coarsening at all
                     continue
                 again = _coarsen_group(record, surface, diag_m, levers=levers, limit=limit, ai=ai, group=back,
-                                       zone_list=zone_list, floors_done=others)
+                                       zone_list=zone_list, floors_done=others, sizes=sizes)
                 if again is not None and again[2]:
                     best, floors_done = again[0], again[1]
             break
@@ -928,7 +1022,7 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
     if floors_done and not best.get("histogram_complete", True):
         # THE CHOSEN PLAN, COUNTED IN FULL ONCE (the search compared the candidates on the plain count)
         fits = best["fits"]
-        best = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, zone_floors=floors_done)
+        best = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes, zone_floors=floors_done)
         best["fits"] = best["fits"] or fits or at_minimums
     best["limit"].update(why=why, memory=limit_facts())
     best["coarsened"] = {"needed": needed, "needed_words": said, "zone_floor_m": floor, "at_minimums": at_minimums,
@@ -945,6 +1039,50 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
     return _restate(record, best)
 
 
+#: PLAN-fea-31: a built count further than this share from the count asked is re-aimed once
+REAIM_SHARE = 0.10
+#: PLAN-fea-31: the share of the measured built-over-planned (in log) the rebuild corrects by
+REAIM_DAMP = 0.6
+
+
+def closer_of_reaimed(passes: list[dict], asked) -> None:
+    """PLAN-fea-31: after a re-aim, of the valid passes the one whose built count is closer to what was asked is
+    delivered (the other is marked `off_count`, which LAD-fea-5 ranks after) - a re-aim never delivers a worse miss."""
+    if not asked or not any(f.get("off_count") for f in passes):
+        return
+    valid = [f for f in passes if f.get("valid") and f.get("cells")]
+    if len(valid) < 2:
+        return
+    best = min(valid, key=lambda f: _gap(float(f["cells"]), float(asked)))
+    for f in valid:
+        f["off_count"] = f is not best
+
+
+def reaim_factor(plan: dict, facts: dict) -> float | None:
+    """PLAN-fea-31: built over planned when a VALID pass of a plan sized to the user's count built a count off what
+    they asked by more than REAIM_SHARE and another plan can move it (not the lowest valid plan, not the most the
+    machine holds, not the rules' own plan kept); else None."""
+    t = plan.get("target") or {}
+    cells, est = int(facts.get("cells") or 0), int((plan.get("estimate") or {}).get("elements") or 0)
+    if not t or not facts.get("valid") or not cells or not est or t.get("kept_rules") or t.get("lowest"):
+        return None
+    asked = float(t["asked"])
+    mode = t.get("mode")
+    if mode == "range":
+        off = not (float(t["low"]) <= cells <= float(t["high"]))
+    elif mode == "at_most":
+        off = cells > asked * (1 + REAIM_SHARE)
+    elif mode == "at_least":
+        off = cells < asked / (1 + REAIM_SHARE)
+    else:
+        off = abs(cells / asked - 1.0) > REAIM_SHARE
+    if not off or (t.get("machine") and cells < asked):
+        return None
+    # 0.6 OF THE MEASURED RATIO (in log): built over planned moves with the plan itself (a coarser plan reads a little
+    # differently), and the full ratio overshot as often as it landed (corpus sweep, 6 Nov: -16% then +17%)
+    return (cells / est) ** REAIM_DAMP
+
+
 def _restate(record: dict, plan: dict) -> dict:
     """The plan's words and decisions again, now that it says what was coarsened."""
     plan["words"] = P.words(record, plan)
@@ -953,7 +1091,51 @@ def _restate(record: dict, plan: dict) -> dict:
         # MESH-1: the spot a check flagged, said beside the mesh (meshed anyway)
         plan["words"] = [*plan["words"], note]
     plan["decisions"] = P.decisions(record, plan)
-    return _with_ai(plan)
+    plan = _with_ai(plan)
+    # AI-fea-9: how the sizes in the notes were tied to the parts, and what was not applied
+    plan["words"] = [*plan["words"], *PS.words(plan.get("part_sizes"))]
+    if plan.get("by_choice_failed"):
+        plan["words"] = [*plan["words"], BY_CHOICE_WORDS[str(plan["by_choice_failed"])]]
+    return plan
+
+
+#: PLAN-fea-29/30: what is said when the plan the user's choices made could not be built valid
+BY_CHOICE_WORDS = {
+    "sizes": ("The sizes you asked for could not be built as a valid mesh on any pass, so this mesh is the rules' "
+              "own plan instead; your sizes were not applied."),
+    "count": ("The element count you asked for could not be built as a valid mesh on any pass, so this mesh is the "
+              "rules' own plan instead; your count was not applied."),
+}
+
+
+def built_remark(ws: Path, record: dict | None = None) -> None:
+    """PLAN-fea-27: the result's "From your notes" line says what was asked, planned AND built (the delivered
+    pass's count), and whether the count was reached; the sizes per part too (PLAN-fea-29). The delivered plan's
+    words say the built count as well (a plan at the lowest valid sizes that built under the count is not said to
+    have missed it)."""
+    from meshpipeline.contracts.user_notes import record_remark
+    try:
+        plan = json.loads((ws / P.PLAN_FILE).read_text())
+        cells = int(json.loads((ws / "quality.json").read_text()).get("cells") or 0)
+    except (OSError, ValueError, TypeError):
+        return
+    if plan.get("target") and cells and record is not None:
+        plan["target"]["built"] = cells
+        try:
+            write_plan(ws, _restate(record, plan))
+        except Exception:  # noqa: BLE001 - the words are a courtesy; the delivered mesh stands
+            logger.warning("fea driver: the plan's words were not restated with the built count", exc_info=True)
+    line = P.target_remark(plan, built=cells or None)
+    if plan.get("by_choice_failed") == "count":
+        line = BY_CHOICE_WORDS["count"]
+    if line:
+        record_remark(ws, line, by="fea_target")
+    if plan.get("user_sizes") or (plan.get("part_sizes") or {}).get("status") not in (None, "none"):
+        said = P.user_words(plan)[:1] or PS.words(plan.get("part_sizes"))[:1]
+        if plan.get("by_choice_failed") == "sizes":
+            said = [BY_CHOICE_WORDS["sizes"]]
+        if said:
+            record_remark(ws, said[0], by="fea_part_sizes")
 
 
 #: PLAN-fea-13: THE FILL RATE BY COMPLEXITY - elements per second of one native gmsh pass, at the
@@ -1582,6 +1764,19 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         record_remark(ws, ai["decision"]["notes_remark"], by="fea_ai")
     # PLAN-fea-27: an element count the user named, as the AI read it from their notes (AI-fea-4)
     target = element_target(state, ai)
+    # AI-fea-9 / PLAN-fea-29: the element sizes the user asked for, part by part, tied to the parts by the vision
+    # model from the parts' facts and pictures, checked by the rules; nothing applied when it cannot be read
+    part_sizes = await PS.decide(ws, record, surface, state or {}, job_id=job_id, run=run, wait_s=ai_wait_s(run))
+    sizes = PS.per_part(part_sizes.get("entries") or []) if part_sizes.get("status") == "used" else {}
+    if part_sizes.get("status") != "none":
+        _cite(job_id, PS.decisions(part_sizes))
+    # A COUNT OR SIZES THE USER ASKED FOR NEVER FAIL THE RUN: when no pass builds a valid mesh of the plan their
+    # choices made, the rules' own plan is meshed instead, and said (PLAN-fea-29)
+    by_choice_failed = ""
+    # PLAN-fea-31: the count the user asked for is checked on the BUILT mesh; off by more than REAIM_SHARE, the plan
+    # is solved again once with the measured built-over-planned and built again
+    correction: float | None = None
+    reaim = False
     levers: list[dict] = []
     passes: list[dict] = []
     tripped: dict | None = None
@@ -1599,11 +1794,17 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 # PLAN-fea-8: the rules' own plan, coarsened to fit under the limit when it must - never a
                 # stop before meshing
                 plan = await asyncio.to_thread(choose_plan, record, surface, diag_m, levers=levers,
-                                               ceiling_s=ceiling_for(run), ai=ai, target=target)
+                                               ceiling_s=ceiling_for(run), ai=ai, target=target, sizes=sizes or None,
+                                               correction=correction)
+                plan["part_sizes"] = part_sizes
+                if by_choice_failed:
+                    plan["by_choice_failed"] = by_choice_failed
+                plan = _restate(record, plan)
                 chosen = {"limit": plan["limit"], "zone_floor_m": plan.get("zone_floor_m"),
                           "zone_floors": plan.get("zone_floors_m"), "coarsened": plan.get("coarsened"),
                           # PLAN-fea-27: every later pass keeps the factor the user's count gave
-                          "scale": plan.get("scale"), "target": plan.get("target"),
+                          "scale": plan.get("scale"), "beyond": plan.get("beyond"), "target": plan.get("target"),
+                          "sizes": sizes or None, "by_choice_failed": by_choice_failed,
                           "target_missed": plan.get("target_missed"), "target_unread": plan.get("target_unread")}
                 first_plan = plan
                 if P.target_remark(plan):
@@ -1624,8 +1825,12 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                     floor_m = start / L.coarse_factor(levers)
                 plan = await asyncio.to_thread(make_plan, record, surface, diag_m, levers=levers,
                                                limit=int(chosen["limit"]["elements"]), zone_floor_m=floor_m, ai=ai,
-                                               zone_floors=chosen.get("zone_floors"), scale=chosen.get("scale"))
+                                               zone_floors=chosen.get("zone_floors"), scale=chosen.get("scale"),
+                                               beyond=chosen.get("beyond"), sizes=chosen.get("sizes"))
                 plan["limit"] = chosen["limit"]
+                plan["part_sizes"] = part_sizes
+                if chosen.get("by_choice_failed"):
+                    plan["by_choice_failed"] = chosen["by_choice_failed"]
                 for key in ("target", "target_missed", "target_unread"):
                     if chosen.get(key):
                         plan[key] = chosen[key]
@@ -1787,6 +1992,20 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                 "rule": "PLAN-fea-17", "inputs": {"pass": n},
                                 "words": "The fused parts could not be filled as one, so the parts are tied now."}])
                 break
+            k_built = reaim_factor(plan, passes[-1]) if correction is None else None
+            if k_built is not None:
+                # PLAN-fea-31: the mesh is valid but its count is off what the user asked by more than REAIM_SHARE -
+                # the plan is solved again with the measured built-over-planned, and built again (once)
+                passes[-1]["off_count"] = True
+                correction, reaim = k_built, True
+                _cite(job_id, [{"stage": "fea_plan", "decided": "re-aimed on the built count", "value": round(k_built, 4),
+                                "rule": "PLAN-fea-31",
+                                "inputs": {"asked": (plan.get("target") or {}).get("asked"), "pass": n,
+                                           "planned": plan["estimate"]["elements"], "built": passes[-1]["cells"]},
+                                "words": (f"Pass {n} built {passes[-1]['cells']:,} elements where about "
+                                          f"{plan['estimate']['elements']:,} were planned, off the count you asked for; "
+                                          "the plan is solved again with that measured and built again.")}])
+                break
             # AI-fea-8: the AI may pick among the levers this failure allows; the ladder's own first else
             lever, picked = await FA.choose_lever(L.lever_options(passes[-1], levers, plan), passes[-1], ai=ai,
                                                   state=state or {}, job_id=job_id, run=run,
@@ -1823,6 +2042,26 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                             "inputs": {"passes": len(passes)},
                             "words": ("No pass built the bonded parts as one mesh, so each part is meshed on its "
                                       "own and tied where they meet.")}])
+            n0, levers = len(passes), []
+            continue
+        if reaim:
+            reaim = False
+            n0, levers = len(passes), []
+            continue
+        oom_bigger = bool(passes and passes[-1].get("out_of_memory")
+                          and (sizes or int((first_plan.get("target") or {}).get("rules_elements") or 0)
+                               >= int((first_plan.get("estimate") or {}).get("elements") or 0)))
+        if (tripped is None and too_big is None and unrun is None and passes and first_plan
+                and not any(f["valid"] for f in passes) and not by_choice_failed and not oom_bigger
+                and (sizes or L.by_choice(first_plan))):
+            # PLAN-fea-29/30: THE USER'S CHOICES NEVER FAIL THE RUN. No pass built a valid mesh of the plan their
+            # count or sizes made: the rules' own plan is meshed instead, and said
+            by_choice_failed = ("sizes" if sizes else "count")
+            _cite(job_id, [{"stage": "fea_ladder", "decided": "the rules' own plan", "value": by_choice_failed,
+                            "rule": "PLAN-fea-30", "inputs": {"passes": len(passes)},
+                            "words": ("No pass built a valid mesh of the plan your " + ("sizes" if sizes else "element count")
+                                      + " made, so the rules' own plan is meshed instead.")}])
+            target, sizes = None, {}
             n0, levers = len(passes), []
             continue
         break
@@ -1873,6 +2112,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         await run.fence("deliver builder outcome")
         outcome = run.outcome(produced_deliverable=False, exhausted=False, failure_marker=GUARD_TRIP)
         return False, GUARD_TRIP, outcome
+    closer_of_reaimed(passes, (first_plan.get("target") or {}).get("asked"))
     best, rule = L.best_pass(passes)
     _cite(job_id, [{"stage": "fea_ladder", "decided": "delivered pass", "value": best, "rule": "LAD-fea-5",
                     "inputs": {"passes": passes, "deciding": rule},
@@ -1881,6 +2121,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if best is not None:
         _restore_pass(ws, best)
         _cite(job_id, open_pairs_decision(ws))
+        built_remark(ws, record)
     (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": best, "levers": levers}, indent=1))
     if not ok and passes:
         # THE LADDER RAN OUT on a mesh it built: every pass this plan allows was tried, so the same

@@ -261,13 +261,21 @@ def results(workspace) -> dict | None:
     # PLAN-fea-27: the element count the user named, beside the count the mesh has
     tgt = plan.get("target") or {}
     if tgt.get("asked"):
-        from meshpipeline.engines.fea_plan import asked_words
+        from meshpipeline.engines.fea_plan import count_line
+        planned = int((plan.get("estimate") or {}).get("elements") or 0)
+        line = count_line(tgt, planned, int(cells))
         extra["target"] = {"asked": int(tgt["asked"]), "mode": tgt.get("mode") or "about",
-                           "planned": int((plan.get("estimate") or {}).get("elements") or 0), "built": cells,
-                           "scale": float(tgt.get("scale") or 1.0),
+                           "planned": planned, "built": cells,
+                           "scale": float(tgt.get("scale") or 1.0), "beyond": float(tgt.get("beyond") or 1.0),
+                           "lowest": bool(tgt.get("lowest")),
                            **{k: int(tgt[k]) for k in ("low", "high") if tgt.get(k) is not None},
-                           "words": (f"You asked for {asked_words(tgt)} elements; the mesh has "
-                                     f"{cells:,} (every size x{float(tgt.get('scale') or 1.0):.3g}).")}
+                           "words": line[:1].upper() + line[1:]}
+    # PLAN-fea-29 / AI-fea-9: the sizes the user asked for per part, how their words were tied to parts, and the
+    # pictures that showed the model the parts (kept for the console)
+    ps = plan.get("part_sizes") or {}
+    if ps.get("status") == "used" and (ps.get("entries") or ps.get("dropped")):
+        extra["part_sizes"] = {"entries": list(ps.get("entries") or []), "dropped": list(ps.get("dropped") or []),
+                               "pictures": list(ps.get("pictures") or []), "sizes": plan.get("user_sizes") or {}}
     if faces_said:
         # the same account in one short line, for the result screen (the whole sentence is in the plan words)
         extra["faces_short"] = faces_short(acc)
