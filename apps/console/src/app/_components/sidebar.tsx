@@ -98,10 +98,12 @@ export function Sidebar({ credits, email, files = null, recent, signOut }: Sideb
             ))}
           </nav>
         </details>
-        <div className="sidebar__stat">
+        {/* The balance is a link, not a label: it is the question "what do I have left", and the
+            answer - and the ledger behind it - lives on the billing page. */}
+        <Link className="sidebar__stat sidebar__credits" href="/settings/billing">
           <span className="label">Credits</span>
           <b>{credits}</b>
-        </div>
+        </Link>
         <div className="sidebar__account">
           <small title={email}>{email}</small>
           {signOut}

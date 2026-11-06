@@ -43,6 +43,9 @@ export default async function RunsPage({
         <div>
           <p className="page__eyebrow">Runs</p>
           <h1 className="page__title">Mesh runs</h1>
+          <p className="page__intro">
+            Upload a part, answer a few questions, and get a mesh ready for your solver.
+          </p>
         </div>
         <Link className="btn btn--gold" href="/runs/new">
           New run

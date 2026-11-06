@@ -24,25 +24,23 @@ test("currentSection matches a nested path to the section that owns it", () => {
   assert.equal(currentSection("/runs/8f14e45f-ceea-467a-9b1e-2c1d0e4a1b22"), "/runs");
   assert.equal(currentSection("/runs/new"), "/runs");
   assert.equal(currentSection("/settings/api-keys"), "/settings/api-keys");
-  assert.equal(currentSection("/conversations/abc"), "/conversations");
-});
-
-test("currentSection matches the overview only on the root itself", () => {
-  // "/" is a prefix of every path; a naive startsWith would mark the overview current forever.
-  assert.equal(currentSection("/"), "/");
-  assert.notEqual(currentSection("/usage"), "/");
 });
 
 test("currentSection returns an empty string for a path no section owns", () => {
   assert.equal(currentSection("/sign-in"), "");
+  // Retired routes own no section either - they redirect before a mark could matter.
+  assert.equal(currentSection("/usage"), "");
+  assert.equal(currentSection("/conversations/abc"), "");
+  assert.equal(currentSection("/repair"), "");
+  assert.equal(currentSection("/"), "");
 });
 
-test("the CAD Repair System is present in the sidebar", () => {
-  const shown = CONSOLE_SECTIONS.map((section) => section.href);
-  assert.ok(shown.includes("/repair"));
-});
-
-test("the repair route resolves as its own section, not Overview", () => {
-  assert.equal(currentSection("/repair"), "/repair");
-  assert.equal(currentSection("/"), "/");
+test("the sidebar exposes one product surface and the settings fold", () => {
+  const product = CONSOLE_SECTIONS.filter((section) => section.group === "product");
+  const account = CONSOLE_SECTIONS.filter((section) => section.group === "account");
+  assert.deepEqual(
+    product.map((section) => section.href),
+    ["/runs"],
+  );
+  assert.ok(account.some((section) => section.href === "/settings/billing"));
 });

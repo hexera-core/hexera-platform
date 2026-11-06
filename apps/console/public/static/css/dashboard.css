@@ -80,6 +80,9 @@
 .sidebar__stat{display:flex;align-items:baseline;justify-content:space-between;gap:.5rem}
 .sidebar__stat b{font-family:var(--sans);font-weight:500;font-size:var(--fs-sm);color:var(--text);
   font-variant-numeric:tabular-nums}
+.sidebar__credits{color:inherit;text-decoration:none;border-radius:var(--radius);
+  margin:0 -.35rem;padding:0 .35rem}
+.sidebar__credits:hover{background:var(--hover)}
 .sidebar__account{display:flex;align-items:center;justify-content:space-between;gap:.5rem}
 .sidebar__account .chip{white-space:nowrap;flex:none}
 .sidebar__account small{color:var(--text-faint);font-size:var(--fs-xs);overflow:hidden;
