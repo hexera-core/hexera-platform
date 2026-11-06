@@ -146,11 +146,22 @@ def test_a_stopped_container_is_not_restarted_by_the_watchdog(watchdog):
     assert ga["worker-health"] == "unhealthy"
 
 
-def test_the_simulation_worker_gets_its_75_seconds_to_hand_its_job_back(watchdog):
+def test_a_restarted_worker_gets_the_full_drain_budget_to_hand_its_job_back(watchdog):
+    """A restart stops the container first, so an unhealthy worker holding a job must get the same
+    drain any other stop would give it - and that budget is now the template's, not a literal.
+
+    On an on-demand fleet that is the 75 s it has always been; the watchdog falls back to it when
+    the metadata is absent, which is what this exercises. On a Spot fleet the same key carries the
+    ~25 s the reclaim window allows, and the watchdog must honour that too rather than hold a
+    reclaimed VM open for 75.
+    """
     _, docker, _, _ = watchdog(FAKE_WORKER_STATE="true unhealthy")
-    assert "restart -t 75 hexera-worker" in docker
-    budget = re.search(r"docker stop --time (\d+) hexera-worker\b", SHUTDOWN)
-    assert budget and budget.group(1) == "75"
+    assert "restart -t 75 hexera-worker" in docker, (
+        "the watchdog did not fall back to the on-demand 75 s budget when no "
+        "worker-stop-timeout metadata was served")
+    assert "worker-stop-timeout" in (WORKER / "watchdog.sh").read_text(encoding="utf-8"), (
+        "the watchdog hard-codes its budget instead of reading the one the template set, so a "
+        "Spot fleet's shorter budget would never reach a restart")
 
 
 # ---------------------------------------------------------------------------------------------

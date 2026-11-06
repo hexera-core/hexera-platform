@@ -29,8 +29,22 @@ SHUTDOWN_MARK="${WATCHDOG_SHUTDOWN_MARK:-/run/hexera-shutting-down}"
 GA="http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes/hexera"
 RESTARTS=0
 
-# container : guest-attribute prefix : stop budget (the same as startup.sh's --stop-timeout)
-CONTAINERS=("hexera-worker:worker:75" "hexera-geometry-worker:geometry:30")
+# THE STOP BUDGET, the same number startup.sh gives the container as its --stop-timeout and
+# shutdown.sh gives its docker stop. A restart stops the container first, so an unhealthy worker
+# holding a job gets exactly the drain it would get from any other stop - and on a SPOT fleet that
+# budget is the ~25 s the reclaim window allows, not the 75 s an on-demand VM can afford. Read from
+# the template's metadata for that reason; the defaults are the on-demand values, for an instance
+# whose template predates this key.
+md() { curl -sf -H 'Metadata-Flavor: Google' \
+  "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1"; }
+WORKER_STOP_TIMEOUT="$(md worker-stop-timeout || true)"
+GEOMETRY_STOP_TIMEOUT="$(md geometry-stop-timeout || true)"
+[[ "${WORKER_STOP_TIMEOUT}" =~ ^[0-9]+$ ]] || WORKER_STOP_TIMEOUT=75
+[[ "${GEOMETRY_STOP_TIMEOUT}" =~ ^[0-9]+$ ]] || GEOMETRY_STOP_TIMEOUT=30
+
+# container : guest-attribute prefix : stop budget
+CONTAINERS=("hexera-worker:worker:${WORKER_STOP_TIMEOUT}"
+            "hexera-geometry-worker:geometry:${GEOMETRY_STOP_TIMEOUT}")
 
 say() { logger -t hexera-watchdog -- "$*" 2>/dev/null || true; echo "hexera-watchdog: $*"; }
 
