@@ -350,7 +350,7 @@ def test_a_promotion_refusal_keeps_what_the_operations_did_and_says_promotion_re
     session rolled back is still a rolled-back operation. Calling every directive not_reached told
     the training log and the review history they were never tried."""
     monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for",
-                        lambda geometry, engine="": (False, "RuntimeError: empty shape"))
+                        lambda geometry, engine="", budget_s=None: (False, "RuntimeError: empty shape"))
     other = str(uuid.uuid4())
     out = _run(tmp_path, monkeypatch, _report(
         operations=[_directed("merge_faces", "kept", "small_face", "fa"),

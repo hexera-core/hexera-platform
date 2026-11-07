@@ -46,7 +46,17 @@ def _occ_to_metres(prepared):
 
 
 def tessellate_to_stl(geom_path, out_stl, *, prepared=None, angular_deflection: float = 0.2,
-                      linear_deflection: float | None = None) -> Path:
+                      linear_deflection: float | None = None,
+                      stage_timeout_s: float | None = None) -> Path:
+    """`stage_timeout_s` IS ACCEPTED AND IGNORED, and that is the contract.
+
+    The promotion proof divides its budget across the staging ladder and hands each attempt its
+    bound (cad/staging.prepare_surface). A bundle that stages in a guarded subprocess enforces it;
+    this one tessellates in-process, where there is no child to bound. The caller cannot know
+    which bundle it reached, so every tessellator must take the keyword - snappy and cfMesh both
+    re-export this function, and without it a repaired file raised TypeError inside promotion and
+    ended the whole run as an internal failure with no mesh at all.
+    """
     import shutil as _sh
     geom_path, out_stl = Path(geom_path), Path(out_stl)
     if geom_path.suffix.lower() == ".stl":

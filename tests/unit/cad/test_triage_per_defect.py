@@ -6,7 +6,6 @@ import pytest
 import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair.triage import (
     ROUTE_CONSERVATIVE_REPAIR,
-    ROUTE_MANUAL_CLEANUP,
     recommend,
     split,
 )
@@ -36,10 +35,12 @@ def review(monkeypatch):
     return _set
 
 
-def test_with_review_off_triage_is_unchanged(review):
+def test_with_review_off_a_sliver_does_not_hold_up_what_can_be_repaired(review):
+    # The same answer review gives below: the sliver stays, the written defect is repaired.
     review(False)
     advice = recommend(repair_status="repairable", report=_mixed())
-    assert advice.route == ROUTE_MANUAL_CLEANUP
+    assert advice.route == ROUTE_CONSERVATIVE_REPAIR
+    assert [t["code"] for t in advice.targets] == ["open_shell"]
 
 
 def test_with_review_on_a_mixed_part_is_repaired_for_what_it_can_be(review):

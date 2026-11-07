@@ -15,6 +15,7 @@ from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.identity import EntityMapping
 from meshpipeline.cad.repair.localize import EntityDefect
 from meshpipeline.cad.repair.operations import (
+    MAX_DEBRIS_REMOVALS,
     MAX_SMALL_FACE_REMOVALS,
     OPERATIONS,
     FixSmallFaces,
@@ -331,8 +332,39 @@ def test_more_slivers_than_one_sweep_may_remove_still_go_to_a_person(sweep_on):
     # operation itself would decline the sweep - so the advice says person, not an attempt that
     # is known in advance to refuse.
     many = [_entity("small_face", entity=f"face:{i}")
+            for i in range(MAX_DEBRIS_REMOVALS + 1)]
+    advice = recommend(repair_status="clean", report=_located(*many))
+    assert advice.route == ROUTE_MANUAL_CLEANUP
+
+
+def test_slivers_past_the_wide_face_cap_are_left_for_the_sweep_to_measure(sweep_on):
+    # A finding carries no width, so triage cannot apply the tighter cap: the operation does, on
+    # what it actually removed (tests/native/test_native_repair_small_faces.py).
+    many = [_entity("small_face", entity=f"face:{i}")
             for i in range(MAX_SMALL_FACE_REMOVALS + 1)]
     advice = recommend(repair_status="clean", report=_located(*many))
+    assert advice.route == ROUTE_CONSERVATIVE_REPAIR
+
+
+def test_a_gap_is_still_repaired_when_the_slivers_beside_it_cannot_be_swept():
+    # Sweep off. One sliver used to send the whole part to a person, gap and all.
+    gap = _entity("wire_gap", entity="wire:2", severity="error")
+    advice = recommend(repair_status="repairable", report=_located(gap, _entity("small_face")))
+    assert advice.route == ROUTE_CONSERVATIVE_REPAIR
+    assert [t["entity"] for t in advice.targets] == ["wire:2"]
+
+
+def test_a_gap_is_still_repaired_beside_more_slivers_than_any_sweep_may_consider(sweep_on):
+    many = [_entity("small_face", entity=f"face:{i}") for i in range(MAX_DEBRIS_REMOVALS + 1)]
+    gap = _entity("wire_gap", entity="wire:2", severity="error")
+    advice = recommend(repair_status="repairable", report=_located(gap, *many))
+    assert advice.route == ROUTE_CONSERVATIVE_REPAIR
+    assert [t["entity"] for t in advice.targets] == ["wire:2"]
+
+
+def test_a_slivers_own_edges_do_not_count_as_something_else_to_repair():
+    advice = recommend(repair_status="clean", report=_located(
+        _entity("small_face"), _entity("small_edge", entity="edge:3")))
     assert advice.route == ROUTE_MANUAL_CLEANUP
 
 
