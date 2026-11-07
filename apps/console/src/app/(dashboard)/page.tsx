@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { NavLink } from "@/app/_components/nav-link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
@@ -40,9 +41,9 @@ export default async function OverviewPage() {
             Upload a part, answer a few questions, and get a mesh ready for your solver.
           </p>
         </div>
-        <Link className="btn btn--gold" href="/runs/new">
+        <NavLink className="btn btn--gold" href="/runs/new">
           New run
-        </Link>
+        </NavLink>
       </div>
 
       <div className="summary-grid summary-grid--compact">
@@ -93,7 +94,7 @@ export default async function OverviewPage() {
                     </span>
                   </td>
                   <td>
-                    <Link href={`/runs/${run.id}`}>{runTitle(run)}</Link>
+                    <NavLink href={`/runs/${run.id}`}>{runTitle(run)}</NavLink>
                   </td>
                   <td>{formatDuration(run.created_at, run.ended_at)}</td>
                 </tr>
