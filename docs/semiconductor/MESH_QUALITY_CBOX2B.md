@@ -390,5 +390,28 @@ the fix is 2.3%. This should go into the build.
 | `gs://dev-rehaan-artifacts-224734058693/corintis/mesh/bl3p/` | `fluid_layered.tar.gz` 5,453,801,464 B from 33.81 GB, `logs.tar.gz` 8,044 B |
 
 Both sets were verified by streaming back out of the bucket and walking the archive, because an
-archive that has not been read is not a backup. The `cbox2b` set holds the pre-fix `mappedWall`
-boundary files and needs the two corrected ones re-uploaded.
+archive that has not been read is not a backup.
+
+**And reading them back found a real defect in them.** The three `cbox2b` region archives were
+streamed before the dead-region patches were retyped, so `solid.tar.gz` and `chip.tar.gz` hold
+`solid_to_air` and `chip_to_air` as `mappedWall` with `sampleRegion air`. The air region was split
+off during the build and deliberately never delivered, so those patches point at a region that does
+not exist and nothing can resolve them. Anyone restoring the archive gets a mesh that fails
+differently from the one on disk. `fluid.tar.gz` is clean, because the coolant has no air patch.
+
+Corrected: `boundary.fluid`, `boundary.solid`, `boundary.chip` and a `README.txt` are now uploaded
+beside the archives, and the README says to overwrite `<region>/polyMesh/boundary` after extracting.
+Re-streaming 17.8 GB to correct 2 kB would not have been the fix.
+
+The correct state, for the record, is four `mappedWall` patches each pointing at a region that IS
+delivered, and the two dead air patches as plain walls:
+
+| region | patch | type | sampleRegion |
+|---|---|---|---|
+| fluid | `fluid_to_solid` | `mappedWall` | solid |
+| fluid | `port_a`, `port_b` | `patch` | |
+| solid | `solid_to_fluid` | `mappedWall` | fluid |
+| solid | `solid_to_chip` | `mappedWall` | chip |
+| solid | `solid_to_air` | `wall` | |
+| chip | `chip_to_solid` | `mappedWall` | solid |
+| chip | `chip_to_air` | `wall` | |

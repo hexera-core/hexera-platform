@@ -3,15 +3,18 @@
 Written 7 November 2026 off the measurements in [MESH_QUALITY_CBOX2B.md](MESH_QUALITY_CBOX2B.md) and
 [MESH_TIME_TO_ONE_HOUR.md](MESH_TIME_TO_ONE_HOUR.md). Ranked by value, not by effort.
 
-Each row says whether the gain is measured or projected. Four of the top five are measured, which is
-the reason this list is worth acting on rather than discussing.
+Each row says whether the gain is measured or projected. Everything on it is now measured one way or
+the other, and **two of the items I originally ranked in the top five turned out to be refuted** once
+I measured instead of reasoning: the grid-origin shift, and coarsening the solid. Both are kept here
+with the measurement that killed them, because they are the obvious ideas and the next person will
+have them too.
 
 | # | change | time | accuracy | basis |
 |---|---|---|---|---|
 | 1 | drop the boundary layer pass | **-5,843 s** | **Nusselt -4.02% to +2.18%** | measured |
 | 2 | deliver decomposed, drop reconstructs and serial checks | **-12,377 s** | none | measured |
 | 3 | retype `mappedWall` to `wall` on a check-time copy | +14 s | enables 9 checks never run before | measured |
-| 4 | coarsen the solid away from the interface | large | none expected | projected |
+| 4 | ~~coarsen the solid away from the interface~~ | large | **nothing** | **refuted** |
 | 5 | ~~align the grid origin to the channel array~~ | 0 s | **nothing** | **refuted** |
 | 6 | `writeFormat binary` in the mesher | -118 s per read | none | measured |
 | 7 | repair `fluid_fine.stl` | 0 s | where refinement lands | measured defect |
@@ -89,26 +92,43 @@ I had previously guessed the dead `air` region was responsible. **That was refut
 Arm B passes everything the flag adds: patch topology ok on both patches, face interpolation weight
 check OK, face volume ratio minimum 0.998759, average 0.999859.
 
-## 4. Coarsen the solid away from the interface
+## 4. Coarsen the solid away from the interface: REFUTED
 
-**Projected.** The largest single lever, and the only one on this list I have not measured.
+I ranked this the largest single lever on the premise that the solid sits at 20.1263 um because the
+coolant interface needs to and nowhere else. **That premise is wrong. The solid is already graded
+exactly like the fluid.**
 
-| region | cells | share | physics |
-|---|---|---|---|
-| solid | 327,126,204 | **74.2%** | conduction in copper |
-| fluid | 82,529,515 | 18.7% | all the flow, all the convection |
-| chip | 31,012,960 | 7.0% | conduction in silicon |
+| region | cells | share | min cell vol m3 | max cell vol m3 | total vol m3 | **mean cell vol m3** |
+|---|---|---|---|---|---|---|
+| solid | 327,126,204 | 74.2% | 7.30955e-15 | 1.10727e-10 | 2.22527e-04 | **6.803e-13** |
+| fluid | 82,529,515 | 18.7% | 2.09433e-14 | 1.11352e-10 | 5.51026e-05 | **6.676e-13** |
+| chip | 31,012,960 | 7.0% | 5.21595e-13 | 5.23607e-13 | 1.61816e-05 | 5.218e-13 |
 
-Three quarters of the mesh is solving the easiest equation in the problem. The solid needs 20.1263 um
-cells at the coolant interface and nowhere else. Every stage in the chain scales with total cells, as
-does the solver run that follows, so this shortens everything at once.
+Same coarsest cell to within 0.6%, same mean cell to within 1.9%, spanning the same four levels of
+refinement. The solid is 327M cells for exactly one reason: **it is 4.04x the volume of the coolant
+at the same average refinement**, and 82,529,515 x 4.039 = 333M against 327M measured. There is no
+over-refined bulk to find.
 
-I have not measured what a banded solid costs to build or saves to solve, so there is no number here.
-Getting one is a single `couple_box.sh` run with a refinement band on the solid side.
+And the part that is fine cannot be coarsened. The channel walls ARE the conjugate interface, so the
+metal between channels is pinned to the coolant side's resolution by conformity. Coarsening the fins
+means coarsening the channels.
 
-A caution from the record: a 4x coarser far field changed cell count by 0.9%, and no-stretch gave
-2.73x more cells. Octree cell counts on this part have repeatedly failed to move the way the geometry
-suggests they should. Measure before believing.
+**So there is no large cell-budget lever here, and the 440.7M live cells are close to what 5 cells
+across a channel costs on this geometry.** The two things that remain are both small or structural:
+
+- **The chip is uniform and could drop a level.** Its min and max cell volumes differ by 0.4%, so it
+  is a single level throughout, for pure conduction in silicon that only needs detail at its 424,080
+  face contact with the plate. One level coarser is 8x fewer cells, saving about 27M, which is 6.1%
+  of the mesh. Worth doing, not worth celebrating.
+- **The only structural answer is not an octree at all.** The research sweep proved a Gmsh 2.5D swept
+  route on the real dimensions including a branching T junction: 2.0 um first cells, conformal by
+  construction, zero tets, 4.6x lighter per mm2, and it kills the staircase outright rather than
+  mitigating it. `gmshToFoam` is ASCII MSH2 only and serial, which is the obstacle.
+
+The caution from the record stands and is now better evidenced: a 4x coarser far field changed cell
+count by 0.9%, no-stretch gave 2.73x more cells, and now the solid turns out to be already graded.
+**Octree cell counts on this part have never once moved the way the geometry suggested they should.
+Measure before believing, including when I am the one asserting it.**
 
 ## 5. Align the grid origin to the channel array: REFUTED
 
@@ -197,6 +217,8 @@ convergence study that would put error bars on everything in the quality documen
    bars on the whole quality assessment.
 2. Land items 2 and 3 in `couple_box.sh`. Both are measured, neither costs accuracy, and together
    they take the chain from 3.00 h to 46 min.
-3. Run item 4's banded-solid test. One run, and it is the largest lever on everything. It is also
-   the prerequisite for item 8, because item 8 needs the cell budget item 4 frees.
-4. Do **not** spend a run on item 5. The phase is uniform and an origin shift provably does nothing.
+3. Do **not** spend a run on item 4 or item 5. Both are refuted: the wall phase is uniform so an
+   origin shift provably does nothing, and the solid is already graded like the fluid so there is no
+   bulk to coarsen.
+4. Decide on the `WM_LABEL_SIZE=64` image. It is now the only route to the biggest fidelity defect,
+   which is a different and stronger reason than the one it was cancelled on.

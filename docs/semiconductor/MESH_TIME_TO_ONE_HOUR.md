@@ -151,23 +151,32 @@ much I trust them:
 3. **More ranks.** 16 of 96 cores were used. Projected only, and layer addition rebalances twice, so
    I would not promise better than 1.5x from a 3x rank increase.
 
-## Cell budget, which is the lever nobody has pulled
+## Cell budget: there is no lever here, which I had to measure to believe
 
-| region | cells | share of live mesh | physics in it |
-|---|---|---|---|
-| solid | 327,126,204 | **74.2%** | conduction in copper, smooth gradients |
-| fluid | 82,529,515 | 18.7% | all of the flow and all of the convection |
-| chip | 31,012,960 | 7.0% | conduction in silicon, uniform block |
+| region | cells | share | mean cell vol m3 | max cell vol m3 | total vol m3 |
+|---|---|---|---|---|---|
+| solid | 327,126,204 | **74.2%** | **6.803e-13** | 1.10727e-10 | 2.22527e-04 |
+| fluid | 82,529,515 | 18.7% | **6.676e-13** | 1.11352e-10 | 5.51026e-05 |
+| chip | 31,012,960 | 7.0% | 5.218e-13 | 5.23607e-13 | 1.61816e-05 |
 
-The solid is three quarters of the mesh and carries the least demanding physics in the problem. It is
-at 20.1263 um because the coolant interface needs to be, but away from the interface it does not.
-Every stage above scales with total cells, so coarsening the solid away from the interface is the one
-change that shortens the mesher, `topoSet`, the split, every check, and the solver run as well.
+The solid is three quarters of the mesh, so I expected it to be the big win: coarsen it away from the
+coolant interface and the mesher, `topoSet`, the split, every check and the solver run all shorten at
+once.
 
-The far field air region, 64,047,269 cells, is already dropped. That was 12.7%.
+**It is already graded.** Same coarsest cell as the fluid to within 0.6%, same mean cell to within
+1.9%, over the same four levels of refinement. The solid is 327M cells because it is 4.04x the
+coolant's volume at the same average refinement: 82,529,515 x 4.039 = 333M against 327M measured.
+There is no over-refined bulk to find, and the metal between channels cannot be coarsened at all,
+because the channel walls ARE the conjugate interface and conformity pins the metal side to the
+coolant side.
 
-I have not measured what a banded solid would cost or save, so it is a recommendation and not a
-number. It is the largest one on the list.
+So **440.7M live cells is close to what 5 cells across a channel costs on this geometry.** What is
+left is small: the chip is a single level throughout, its min and max cell volumes differing by 0.4%,
+and dropping it one level would save about 27M cells or 6.1%. The far field air region, 64,047,269
+cells or 12.7%, is already dropped.
+
+Getting materially below that needs a different kind of mesh rather than a better octree. See
+[MESH_IMPROVEMENT_PLAN.md](MESH_IMPROVEMENT_PLAN.md) item 4.
 
 ## Recommended chain
 
@@ -175,8 +184,7 @@ number. It is the largest one on the list.
 cfMesh 8 ranks, writeFormat binary          799 s
 topoSet                                     575 s
 splitMeshRegions -cellZonesOnly             869 s
-checkMesh -parallel, 3 regions              492 s   with chip_to_solid retyped to wall,
-                                                    so -allGeometry finally runs
+checkMesh -parallel, 3 regions              492 s
 deliver decomposed                            0 s
                                            ------
                                           2,735 s = 46 min
@@ -185,3 +193,9 @@ deliver decomposed                            0 s
 Add 5,843 s for layers if and only if the operating Reynolds number turns out to be above about 226,
 which is the point at which the thermal entrance length exceeds the longest straight channel run and
 layers start earning their cost.
+
+To run `checkMesh -allGeometry`, which has never once passed on a conjugate mesh, retype the
+`mappedWall` interface on a **throwaway copy** of the boundary file and check that. Measured on the
+chip region: rc 1 to 0, 610 s to 624 s. Never retype the delivered mesh, because
+`chtMultiRegionFoam` couples the regions through those patches and a plain wall silently decouples
+the solve.
