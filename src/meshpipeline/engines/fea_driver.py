@@ -290,6 +290,75 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
     return record, surface, diag_m
 
 
+def staged_mm_per_unit(step: Path) -> float:
+    """The staged solid's millimetres per unit as OpenCASCADE reads it - measure_staged's own reading (the two
+    readers' boxes, the ratio snapped to a power of ten) - for the shell run (SHSTAGE-6)."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    from meshpipeline.cad.scout import read_cad
+
+    _box, diag_m = _metre_box(step)
+    b = Bnd_Box()
+    BRepBndLib.AddOptimal_s(read_cad(step), b, False, False)
+    x0, y0, z0, x1, y1, z1 = b.Get()
+    diag_read = math.dist((x0, y0, z0), (x1, y1, z1))
+    if diag_read <= 0 or diag_m <= 0:
+        raise ValueError("the staged solid has no size")
+    ratio = 1000.0 * diag_m / diag_read
+    return 10.0 ** round(math.log10(ratio))
+
+
+#: SHSTAGE-6: THE SHELL RUN's time limit, seconds (the extraction takes up to about ten minutes on the biggest
+#: corpus parts, the shell mesh up to about nine) - and never more than half of what the attempt has left, so
+#: the solid mesh beside it keeps its time.
+SHELL_RUN_LIMIT_S = 2400
+SHELL_GATE = "fea_shell"
+
+
+def mesh_as_of(state) -> str:
+    """SHSTAGE-5: "shell" when the stage settled Mesh as: Shell (state fea_mesh_as), else "solid"."""
+    return "shell" if str((state or {}).get("fea_mesh_as") or "").strip().lower() == "shell" else "solid"
+
+
+async def shell_pass(ws: Path, state, *, job_id: str, run=None) -> dict | None:
+    """SHSTAGE-6: when the stage settled Mesh as: Shell, the staged solid's shell mesh and its solver files
+    (engines/shell_run, in a process of its own), beside the solid deck. The solid path is unchanged: a shell
+    that cannot be made is said, and the solid mesh is still delivered. None when Solid was settled."""
+    if mesh_as_of(state) != "shell":
+        return None
+    import subprocess
+    import sys
+
+    from meshpipeline.engines import shell_run
+
+    step = staged_solid(ws)
+    limit = float(SHELL_RUN_LIMIT_S)
+    left = attempt_left_s(run)
+    if left is not None:
+        limit = max(120.0, min(limit, 0.5 * left))
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run, [sys.executable, "-m", "meshpipeline.engines.shell_run", str(ws), str(step), "staged"],
+            capture_output=True, text=True, timeout=limit, check=False)
+        rec = shell_run.read(ws)
+        if not rec:
+            rec = {"made": False, "why": f"the shell run stopped (exit {proc.returncode})"}
+    except subprocess.TimeoutExpired:
+        rec = {"made": False, "why": f"it took longer than the {int(limit) // 60} minutes allowed"}
+    except Exception as exc:  # noqa: BLE001 - the solid mesh is still delivered
+        rec = {"made": False, "why": f"it could not be started ({type(exc).__name__})"}
+    if not rec.get("words"):
+        rec["words"] = shell_run.words(rec)
+        (ws / shell_run.RECORD).write_text(json.dumps(rec, indent=1, sort_keys=True, default=float))
+    _cite(job_id, [{"stage": SHELL_GATE, "decided": "shell mesh" if rec.get("made") else "no shell mesh",
+                    "value": rec.get("elements"), "rule": "SHSTAGE-6",
+                    "inputs": {k: rec.get(k) for k in ("bodies", "open_edges", "solid_bodies", "walls_mm", "seconds",
+                                                         "why")},
+                    "words": rec["words"]}])
+    return rec
+
+
 def _surface_again(shape, mm_per_unit: float, *, healed: bool):
     """The labelled surface measure_cad_surface measured `shape` on (healed first when it was), tessellated
     again; None when it cannot be (the solid is then measured as before)."""
@@ -1753,6 +1822,9 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         outcome = run.outcome(produced_deliverable=False, failure_marker=BUILD_FAILED)
         return False, BUILD_FAILED, outcome
 
+    # SHSTAGE-6: MESH AS: SHELL - the shell mesh and its solver files first, from the staged solid as read; the
+    # solid deck is made as always beside it
+    await shell_pass(ws, state, job_id=job_id, run=run)
     if skins and skins.get("origin"):
         _cite(job_id, [{"stage": "fea_plan", "decided": "skins left out", "rule": "MESH-8",
                         "value": sum(len(sk["faces"]) for sk in skins["skins"]), "inputs": {"skins": skins["skins"]},
@@ -2254,7 +2326,8 @@ def applies(state) -> bool:
     s = state or {}
     if str(s.get("purpose") or "").strip() != "structural":
         return False
-    if str(s.get("dimensionality") or "").strip().upper() == "2D":
+    if str(s.get("dimensionality") or "").strip().upper() == "2D" and mesh_as_of(s) != "shell":
+        # (a shell asked for in words like "2D elements" is still this driver's: SHSTAGE-1)
         return False
     return not any(isinstance(p, dict) and str(p.get("name") or "").strip() for p in s.get("intake_patches") or [])
 
@@ -2264,6 +2337,6 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["connection_of", "element_target", "target_plan", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
+__all__ = ["SHELL_RUN_LIMIT_S", "mesh_as_of", "shell_pass", "connection_of", "element_target", "target_plan", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
            "complexity", "element_limit", "fill_rate", "watchdog_words", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "NOT_RUN", "NOT_RUN_GATE", "not_run", "not_run_words", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

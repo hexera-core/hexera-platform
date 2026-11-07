@@ -419,6 +419,14 @@ Every writer is engine-neutral. They read one internal shell mesh (nodes, quads 
 
 The system recommends and the user picks. Nothing here blocks meshing. A part we cannot shell is meshed solid, with the reason.
 
+**As built (PR 4 draft, rule numbers SHSTAGE-1..6 are placeholders until merge):**
+- SHSTAGE-1, words: `application/purpose_map.mesh_as_of` is the word table; `application/mesh_as` asks the model only for words the table cannot read (a paraphrase, both kinds, a word taken back) and keeps its answer only when it is shell, solid or none. Read once, in the FEA naming step, and stored with the check's facts. Shell-model words (CQUAD4, Femap, mid-surface, plate model, shell mesh) are FEA words too, so they take the FEA path with no question.
+- SHSTAGE-2, the shell check: started with the FEA measurement, run on the geometry-check queue in a child process (`cad/shell_preview`, limit 15 min). The stage opens at once and says the walls are being measured.
+- SHSTAGE-3, Auto: Shell when every body is a shell, the plates meet everywhere (no open edge) and the thin walls are at least 90% of the surface; otherwise Solid, with the reason. Mixed parts are Solid until PR 3.
+- SHSTAGE-4, the stage: the mid-surface over the part (wall colours on a muted ramp, legend in mm), open edges in red, solid regions and open places tagged (S1.., O1..) and listed.
+- SHSTAGE-5, Proceed settles it: the user's pick (a click, else their words) stands; Auto takes the recommendation, or Solid while still measuring. A triangle file, or a part with no thin wall, is meshed solid with the reason. Stored in `confirmed.json` (`fea_mesh_as`) and read into the run.
+- SHSTAGE-6, the run: when Shell was settled, the FEA driver makes the shell (`engines/shell_run`, child process, extraction on the staged solid) and the downloads offer shell.bdf (first), shell.inp, shell_abaqus.inp and shell.cdb. In this draft the solid mesh is still made beside it, so the result screen, the verdict and the 3D view are unchanged; a shell-only run needs those taught about shells.
+
 ## 8. Plan: five PRs, each to the deep-test bar
 
 The deep-test bar for every PR:

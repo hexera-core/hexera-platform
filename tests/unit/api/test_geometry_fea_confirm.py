@@ -134,3 +134,79 @@ async def test_a_file_of_several_bodies_is_confirmed_as_an_assembly_joined_as_as
     assert object_storage.get_object_store() is store
     assert fea_check.confirmed_connection(SID) == "contact"
     assert fea_check.confirmed_connection("") == ""
+
+
+def _cad(store, status=None):
+    """The stored check as a STEP part (a mid-surface can be extracted), with a shell check status."""
+    key = f"sessions/{SID}/geometry_check/scout.json"
+    scout = json.loads(store.objects[key])
+    scout["facts"]["source_format"] = "step"
+    store.objects[key] = json.dumps(scout).encode()
+    if status is not None:
+        store.objects[f"sessions/{SID}/geometry_check/shell/status.json"] = json.dumps(status).encode()
+
+
+_SHELL_PART = {"status": "ready", "scale_to_m": 0.001, "summary": {
+    "bodies": [{"body": "Part_1", "verdict": "shell"}], "share": 0.97, "t_min_mm": 2.0, "t_max_mm": 2.0,
+    "solid_regions": [], "open_edges": 0, "open_places": [], "open_at_mm": [], "overlay": True,
+    "t_min_drawn_mm": 2.0, "t_max_drawn_mm": 2.0}}
+
+
+@pytest.mark.asyncio
+async def test_the_fea_stage_serves_mesh_as_with_the_recommendation(stage):
+    session, store = stage(["stress testing"])
+    _cad(store, _SHELL_PART)
+    served = await route.get_check(SID, "alice", "org-1")
+    shell = served["fea"]["shell"]
+    assert shell["question"] == "Mesh as" and [o["key"] for o in shell["options"]] == ["auto", "shell", "solid"]
+    assert shell["recommend"] == "shell" and shell["reason"].startswith("97% of this part is plate 2 mm thick")
+    assert shell["default"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_proceed_settles_the_choice_and_stores_it_for_the_run(stage):
+    from meshpipeline.application import shell_check
+
+    session, store = stage(["stress testing"])
+    _cad(store, _SHELL_PART)
+    out = await route.confirm_check(SID, route.ConfirmIn(unit="mm", fea_mesh_as="auto"), "alice", "org-1")
+    assert "Meshed as: a shell" in out["message"]
+    record = json.loads(store.objects[f"sessions/{SID}/geometry_check/confirmed.json"])
+    assert record["fea_mesh_as"] == "shell" and record["fea_mesh_as_picked"] == "auto (auto)"
+    assert shell_check.confirmed_mesh_as(str(SID)) == "shell"
+    # the user's click stands over Auto
+    out = await route.confirm_check(SID, route.ConfirmIn(unit="mm", fea_mesh_as="solid"), "alice", "org-1")
+    assert "Meshed as: a solid. You picked a solid mesh." in out["message"]
+    assert shell_check.confirmed_mesh_as(str(SID)) == "solid"
+
+
+@pytest.mark.asyncio
+async def test_proceed_while_measuring_settles_now_and_never_waits(stage):
+    import time as _t
+
+    session, store = stage(["stress testing"])
+    _cad(store, {"status": "measuring", "started_at": _t.time()})
+    out = await route.confirm_check(SID, route.ConfirmIn(unit="mm"), "alice", "org-1")
+    assert "Meshed as: a solid. The walls were still being measured" in out["message"]
+    # shell words in the chat are the user's choice, measured or not
+    session, store = stage(["stress testing, CQUAD4 shell model"])
+    _cad(store, {"status": "measuring", "started_at": _t.time()})
+    served = await route.get_check(SID, "alice", "org-1")
+    assert served["fea"]["shell"]["default"] == "shell"
+    out = await route.confirm_check(SID, route.ConfirmIn(unit="mm"), "alice", "org-1")
+    assert "Meshed as: a shell" in out["message"] and "You asked for a shell mesh in the chat." in out["message"]
+    record = json.loads(store.objects[f"sessions/{SID}/geometry_check/confirmed.json"])
+    assert record["fea_mesh_as"] == "shell" and record["fea_mesh_as_picked"] == "shell (words)"
+
+
+@pytest.mark.asyncio
+async def test_the_mid_surface_drawing_is_served_once_stored(stage):
+    from fastapi import HTTPException
+
+    session, store = stage(["stress testing"])
+    with pytest.raises(HTTPException) as no:
+        await route.get_check_shell_surface(SID, "alice", "org-1")
+    assert no.value.status_code == 404
+    store.objects[f"sessions/{SID}/geometry_check/shell/overlay.json"] = b'{"version": 1}'
+    got = await route.get_check_shell_surface(SID, "alice", "org-1")
+    assert got.body == b'{"version": 1}'

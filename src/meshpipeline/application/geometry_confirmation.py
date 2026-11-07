@@ -348,6 +348,10 @@ def fea_confirmation_message(body) -> str:
         pairs_said = str(getattr(body, "pairs_summary", "") or "").strip()
         if pairs_said:
             parts.append(pairs_said)
+    # SHSTAGE-5: shell or solid, as settled at Proceed, and why
+    mesh_as = str(getattr(body, "mesh_as_summary", "") or "").strip()
+    if mesh_as:
+        parts.append(mesh_as)
     clean = str(getattr(body, "clean_summary", "") or "").strip().rstrip(".")
     if clean:
         parts.append(f"Clean check: {clean}.")

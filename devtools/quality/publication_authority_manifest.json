@@ -2675,6 +2675,32 @@
   "roots": []
  },
  {
+  "context": "application/mesh_as.py::answer_of::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/mesh_as.py",
+  "qualname": "answer_of",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/mesh_as.py::needs_model::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/mesh_as.py",
+  "qualname": "needs_model",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_HINT",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/native_submission.py::_infrastructure_failure::error#1|NotAPublisher|not-a-publisher|",
   "path": "application/native_submission.py",
   "qualname": "_infrastructure_failure",
@@ -3004,6 +3030,21 @@
   "lifecycle": "not-a-publisher",
   "gated_required": false,
   "roots": []
+ },
+ {
+  "context": "application/purpose_map.py::mesh_as_of::search#1|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
+  "path": "application/purpose_map.py",
+  "qualname": "mesh_as_of",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_NEGATED",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/purpose_map.py::re.Pattern"
+  ]
  },
  {
   "context": "application/purpose_map.py::read_purpose::search#1|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
