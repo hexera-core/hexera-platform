@@ -1024,6 +1024,10 @@ async def _run_async(req: JobRequest) -> dict:
         # file that states none is the likely cause, and only the user can say which it is
         from meshpipeline.application.final_result import physical_scale_caveat
         _scale_caveat = physical_scale_caveat(_run_outcome)
+        # and the wrapped-surface note: a mesh the CFD ladder's last rung built on a wrapped copy
+        # of the surface (LAD-cfd-5) says how far the wrap lies from the CAD, and where it bridged
+        from meshpipeline.application.final_result import wrapped_surface_caveat
+        _wrap_caveat = wrapped_surface_caveat(_run_outcome)
         # and, once the measured limits decide (VERDICT_BY_LIMITS), their verdict and the AI
         # reviewer's notes - the notes shown, labelled, deciding nothing. Both None in shadow.
         from meshpipeline.application.final_result import (
@@ -1297,6 +1301,7 @@ async def _run_async(req: JobRequest) -> dict:
                                      + ([_review_caveat] if _review_caveat else [])
                                      + ([_narrow_caveat] if _narrow_caveat else [])
                                      + ([_scale_caveat] if _scale_caveat else [])
+                                     + ([_wrap_caveat] if _wrap_caveat else [])
                                      + ([_verdict_caveat] if _verdict_caveat else [])
                                      + ([_notes_caveat] if _notes_caveat else [])),
                 review_blocking=list(_review_blocking),
