@@ -272,7 +272,8 @@ async function watchGeometryCheck(sessionId) {
     }
     if (d && d.confirmed) {
       // answered, on the stage or the card, whatever the naming did afterwards
-      _checkState = "done"; releaseHold(); if (stage) stage.release(); return;
+      // the part stays on the stage, settled, beside the rest of the intake (viewer/intake_view.js)
+      _checkState = "done"; releaseHold(); if (stage) (stage.settle || stage.release)(); return;
     }
     if (stage && d && d.skin && (d.thermal || d.route) && kindOf(d) !== stageKind) {
       try { stage.release(); } catch (e) { console.warn("geometry stage: release failed", e); }

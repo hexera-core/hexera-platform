@@ -91,10 +91,30 @@ export async function mountPartsView(host, payload, opts = {}) {
   const centre = [(bs[0] + bs[1]) / 2, (bs[2] + bs[3]) / 2, (bs[4] + bs[5]) / 2];
   const diag = Math.max(Math.hypot(bs[1] - bs[0], bs[3] - bs[2], bs[5] - bs[4]), 1e-9);
   const upAxis = opts.upAxis || "+z";
+  /* THE WHOLE MODEL IN VIEW, with a margin, from where the camera looks: the box's eight corners measured across
+     and up the screen, the camera stepped back until both fit (a big assembly used to open cut off: the old fit
+     zoomed past the bounding sphere). Called again whenever the viewer is resized, until the user takes the camera. */
+  const MARGIN = 1.06;
   function fit() {
-    ren.resetCamera(bs);
-    const [w, h] = apiRW.getSize(), a = w / Math.max(h, 1);
-    cam.zoom(a < 1 ? a * 1.15 : 1.15);
+    const [w, h] = apiRW.getSize(), aspect = w / Math.max(h, 1);
+    const dop = cam.getDirectionOfProjection(), up = cam.getViewUp();
+    const right = [dop[1] * up[2] - dop[2] * up[1], dop[2] * up[0] - dop[0] * up[2], dop[0] * up[1] - dop[1] * up[0]];
+    const rl = Math.hypot(...right) || 1; right.forEach((v, i) => { right[i] = v / rl; });
+    const upn = [right[1] * dop[2] - right[2] * dop[1], right[2] * dop[0] - right[0] * dop[2], right[0] * dop[1] - right[1] * dop[0]];
+    let hw = 0, hh = 0, hd = 0;
+    for (let k = 0; k < 8; k++) {
+      const c = [bs[k & 1 ? 1 : 0] - centre[0], bs[k & 2 ? 3 : 2] - centre[1], bs[k & 4 ? 5 : 4] - centre[2]];
+      hw = Math.max(hw, Math.abs(c[0] * right[0] + c[1] * right[1] + c[2] * right[2]));
+      hh = Math.max(hh, Math.abs(c[0] * upn[0] + c[1] * upn[1] + c[2] * upn[2]));
+      hd = Math.max(hd, Math.abs(c[0] * dop[0] + c[1] * dop[1] + c[2] * dop[2]));
+    }
+    hw = Math.max(hw, 1e-9) * MARGIN; hh = Math.max(hh, 1e-9) * MARGIN;
+    const half = Math.max(hh, hw / aspect);                 // the half-height the view must hold
+    const t = Math.tan((cam.getViewAngle() * Math.PI / 180) / 2);
+    const dist = half / t + hd;                             // the nearest face of the box fits, not only its middle
+    cam.setFocalPoint(...centre);
+    cam.setPosition(centre[0] - dop[0] * dist, centre[1] - dop[1] * dist, centre[2] - dop[2] * dist);
+    cam.setParallelScale(half);
     ren.resetCameraClippingRange(); rw.render();
   }
   function iso() {

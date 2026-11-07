@@ -32,6 +32,7 @@ import { refreshHealth } from "./shell/settings.js";
 import { configureDispute } from "./viewer/dispute.js";
 import { offerReview, openParked } from "./review/review.js";
 import { openGeometryStage } from "./viewer/geometry_stage.js";
+import { dropPartsHost, endIntake, partsHost } from "./viewer/intake_view.js";
 import { mountPartsView } from "./viewer/parts_view.js";
 import { savedUp } from "./viewer/view_controls.js";
 import { openViewer } from "./viewer/viewer.js";
@@ -191,6 +192,8 @@ setResultHandler((data, anchor) => {
 function attachJob(id, { replayHistory = false, message = "", origin = getState.sessionId() } = {}) {
   clearNewRunOffer();      // a run is starting; the "run again" offer belonged to the last one
   Stage.mount();
+  // THE INTAKE'S VIEWER GOES as the mesher starts: the run's own view takes over from here
+  endIntake();
   // the message goes on the NEW stage: said before the mount, it was wiped the instant it was
   // drawn, so "re-review started" never reached the user
   if (message) Stage.chat("assistant", message);
@@ -223,6 +226,9 @@ const briefParts = {
   model: () => getPartModel(getState.sessionId()),
   mount: (host, model, opts) => mountPartsView(host, model,
     { ...opts, upAxis: savedUp("session", getState.sessionId()) || "+z" }),
+  // WHERE the model is drawn: the intake's one viewer, beside the conversation (never a second one in the card)
+  host: () => partsHost(),
+  drop: (el) => dropPartsHost(el),
   // Finalize notes: the parts the words name are read now
   finalize: () => finalizePartMatches(getState.sessionId()),
 };

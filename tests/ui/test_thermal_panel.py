@@ -168,14 +168,25 @@ def test_mesh_this_model_sends_only_the_detail_level(live, served):
       root.querySelector('.tm-mesh').click();
     }})()""")
     live.wait_for("window.__confirmed !== null", timeout=30, what="the confirmation to be sent")
+    live.wait_for(f"document.getElementById('gstage-{SESSION}').classList.contains('iv-plain')", timeout=10,
+                  what="the stage to settle")
     done = live.evaluate(f"""(() => ({{
       body: window.__confirmed,
-      gone: !document.getElementById('gstage-{SESSION}'),
-      wb: document.getElementById('app').classList.contains('wb'),
-      hook: !!(window._vdbg && window._vdbg['gstage:{SESSION}'])}}))()""")
+      kept: !!document.getElementById('gstage-{SESSION}'),
+      panel: !document.querySelector('#gstage-{SESSION} .tm-panel').hidden,
+      wb: document.getElementById('app').classList.contains('wb')}}))()""")
     # the server knows it is a thermal model from its own stored check and fills the rest
     assert done["body"] == {"detail": "max", "openings": []}, done
-    assert done["gone"] is True and done["wb"] is False and done["hook"] is False, done
+    # THE INTAKE'S ONE VIEWER: the panel goes, the model stays beside the conversation until the run starts
+    assert done["kept"] is True and done["panel"] is False and done["wb"] is True, done
+    gone = live.evaluate(f"""(async () => {{
+      const {{ endIntake }} = await import('/static/js/viewer/intake_view.js');
+      endIntake();
+      return {{gone: !document.getElementById('gstage-{SESSION}'),
+               wb: document.getElementById('app').classList.contains('wb'),
+               hook: !!(window._vdbg && window._vdbg['gstage:{SESSION}'])}};
+    }})()""")
+    assert gone == {"gone": True, "wb": False, "hook": False}, gone
 
 
 def test_the_panel_never_speaks_of_openings_roles_or_triangles(live, served):

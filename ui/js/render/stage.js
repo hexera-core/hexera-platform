@@ -27,6 +27,7 @@ import { bindThermalPanel, thermalPanelHtml } from "./thermal_form.js";
 import { bindFeaPanel, feaPanelHtml, followAssembly, followClean, followMeasure } from "./fea_form.js";
 // the run card's live line: the step running now, in plain words
 import { createRunLine } from "./run_progress.js";
+import { durationWords } from "./check_progress.js";
 // the closing message of a finished run, as a summary rather than a wall of lines
 import { outcomeHtml } from "./outcome.js";
 const RunLine = createRunLine();
@@ -87,6 +88,7 @@ export const Stage = {
     this.nodes={};this.proc=null;this.tl=null;this._briefEl=null;this._briefSig='';
     // the run started (or a new conversation): the card's model gives its GL context back
     clearTimeout(this._pmTimer);if(this._pmDrop)this._pmDrop();this._pm=null;this._pmOpen=null;this._pmHover=null;this._pmHoverPart=null;this._pm3dFailed=false;
+    if(this._pmSaves){this._pmSaves.forEach(t=>clearTimeout(t));this._pmSaves.clear();}
     // A NEW RUN STARTS CLEAN. The attempt the last run ended on, the attempts that built and a
     // mesh bar a run left open when it ended mid-mesh all belonged to that run: kept, the next
     // run's "Attempt 1" header went missing and its mesh bar never appeared (the old, detached
@@ -192,14 +194,14 @@ export const Stage = {
       inp.addEventListener('keydown',(e)=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send();}});}
     this.scrollBottom();},
 
-  /* THE PARTS YOUR NOTES MEAN, under the notes, before Approve: the user's model in 3D (drag turns it, the wheel
-     zooms, a double-click frames it), then a row per phrase ("frame rail · part 9 · 3–4 mm") with its colour, and
-     a line per phrase that could not be placed. Each row's parts wear the row's colour and carry their numbers;
-     hovering a row (or a part on the model) lights that row's parts and fades the rest. A row opens the part list;
-     a click on a part - in the list or on the model - keeps it at once (no save button: the normal Approve takes
-     it). The model stays put while the rows redraw. Without WebGL (or the model) the picture is shown instead.
-     Nothing at all when the notes name no part. `parts`: {get(), pick(phrase, ids), picture(name), model(),
-     mount(host, model, opts)}. */
+  /* THE PARTS YOUR NOTES MEAN, under the notes, before the yes: a row per size request ("frame rail · 3–4 mm")
+     in its colour with its parts as small chips ("Part 7 · Bracket ✕"), and a row per phrase that could not be
+     placed. The model is drawn on the intake's one viewer beside the conversation (`parts.host()`), each row's
+     parts in its colour with their numbers. Hovering a row lights its parts and fades the rest; clicking a row
+     makes it the active one, and a click on a part of the model then adds it to that row or takes it out - the
+     chip follows at once, and the pick is kept at once (no save button: the yes takes it). ✕ on a chip takes that
+     part out. Without WebGL the picture is shown in the card instead. Nothing at all when the notes name no part.
+     `parts`: {get(), pick(phrase, ids), picture(name), model(), mount(host, model, opts), host(), drop(host)}. */
   _partMatches(m,parts,ask){
     clearTimeout(this._pmTimer);
     const el=this._briefEl&&this._briefEl.querySelector('.rc-pm');
@@ -223,9 +225,11 @@ export const Stage = {
       this._pmTimer=setTimeout(poll,2500);};
     if(m&&(m.status==='reading'||m.status==='waiting')&&parts)this._pmPoll();
     const rowOf=(i)=>{const m=this._pm;return m&&[...(m.rows||[]),...(m.unsure||[])].find(x=>x.phrase===i);};
-    // a part toggled for the open row: kept at once, the card redrawn from the server's checked answer
-    this._pmToggle=(id)=>{
-      const i=this._pmOpen,r=rowOf(i);if(!r||!parts)return;
+    // a part put in or taken out of a row: the chip follows at once, the pick is kept at once (one save per row),
+    // and the card is redrawn from the server's checked answer once every row's save is in
+    this._pmSaves=this._pmSaves||new Map();
+    this._pmToggle=(id,phrase)=>{
+      const i=phrase==null?this._pmOpen:phrase,r=rowOf(i);if(!r||!parts||!id)return;
       const on=new Set(r.parts||[]);
       if(on.has(id))on.delete(id);else on.add(id);
       // the row lights its parts and the areas inside them no row names, as the server will say
@@ -233,14 +237,15 @@ export const Stage = {
       const named=new Set([...(this._pm.rows||[]),...(this._pm.unsure||[])].flatMap(x=>x.parts||[]));
       const areas=Object.entries(this._pm.inside||{}).filter(([f,p])=>on.has(p)&&!named.has(f)).map(([f])=>f);
       if(areas.length)r.lit=[...on,...areas];else delete r.lit;
-      el.querySelectorAll(`.rc-pm-part[data-part="${CSS.escape(id)}"]`).forEach(c=>{
-        c.classList.toggle('on',on.has(id));c.setAttribute('aria-pressed',String(on.has(id)));});
+      const rowsEl=el.querySelector('.rc-pm-rows');if(rowsEl)rowsEl.innerHTML=this._pmRowsHtml(this._pm);
       this._pmPaint(el);
-      clearTimeout(this._pmSave);
-      this._pmSave=setTimeout(async()=>{
-        try{const got=await parts.pick(i,[...on]);if(got&&this._pmOpen===i){this._pm=got;draw();}}
-        catch(err){const msg=el.querySelector('.rc-pm-msg');if(msg)msg.textContent=(err&&err.message)||'Not saved.';}},450);};
-    // a part clicked on the model or the picture: picked for the open row, else its own row opens
+      clearTimeout(this._pmSaves.get(i));
+      this._pmSaves.set(i,setTimeout(async()=>{
+        try{const got=await parts.pick(i,[...on]);
+          this._pmSaves.delete(i);
+          if(got&&!this._pmSaves.size){this._pm=got;draw();}}
+        catch(err){this._pmSaves.delete(i);const msg=el.querySelector('.rc-pm-msg');if(msg)msg.textContent=(err&&err.message)||'Not saved.';}},450));};
+    // a part clicked on the model or the picture: put in or taken out of the active row, else its own row is made active
     this._pmClick=(raw)=>{
       const id=this._pmResolve(raw);
       if(!id)return;
@@ -250,12 +255,16 @@ export const Stage = {
     el.onclick=(e)=>{
       if(e.target.closest('.rc-fin-btn')){this._pmFinalize();return;}
       const m=this._pm;if(!m||m.status!=='done')return;
-      const chip=e.target.closest('.rc-pm-part');
-      if(chip){this._pmToggle(chip.dataset.part);return;}
-      const row=e.target.closest('.rc-pm-row');if(!row)return;
-      const i=Number(row.dataset.phrase);
+      const item=e.target.closest('.rc-pm-item');if(!item)return;
+      const i=Number(item.dataset.phrase);
+      const x=e.target.closest('.rc-pm-x');
+      if(x){this._pmToggle(x.dataset.part,i);return;}
+      if(!e.target.closest('.rc-pm-row'))return;
       this._pmOpen=this._pmOpen===i?null:i;draw();};
-    el.onmouseover=(e)=>{const row=e.target.closest('.rc-pm-row');const i=row?Number(row.dataset.phrase):null;
+    el.onkeydown=(e)=>{
+      const row=e.target.closest&&e.target.closest('.rc-pm-row');
+      if(row&&(e.key==='Enter'||e.key===' ')){e.preventDefault();row.click();}};
+    el.onmouseover=(e)=>{const it=e.target.closest('.rc-pm-item');const i=it?Number(it.dataset.phrase):null;
       if(i!==this._pmHover){this._pmHover=i;this._pmPaint(el);}};
     el.onmouseleave=()=>{if(this._pmHover!=null){this._pmHover=null;this._pmPaint(el);}};},
 
@@ -263,13 +272,14 @@ export const Stage = {
   _PM_COL:['#5B9BD5','#E3A23B','#62B66C','#D9675F','#A37FCB','#4FB0AC','#CDB447','#E08DB0'],
 
   /* the block's frame: Finalize notes (or "Reading your notes…"), then - only when the reading found parts - the
-     heading, the model (kept across redraws: not re-made when a row opens or the card is redrawn for a new note)
-     and the rows. Rows of an older reading stay, quiet, until the new one lands. */
+     heading and the rows. The model goes on the intake's viewer (kept across redraws: not re-made when a row is
+     made active or the card is redrawn for a new note); only without one does it sit in the card. Rows of an
+     older reading stay, quiet, until the new one lands. */
   _pmDrawIn(el){
     const m=this._pm;
     if(!m){el.innerHTML='';this._pmDrop();return;}     // nothing to read: nothing at all
     if(!el.querySelector('.rc-pm-top'))
-      el.innerHTML='<div class="rc-pm-top"></div><div class="rc-pm-body" hidden><div class="rc-pm-h">In your notes</div><div class="rc-pm-rows"></div></div>';
+      el.innerHTML='<div class="rc-pm-top"></div><div class="rc-pm-body" hidden><div class="rc-pm-h">In your notes</div><div class="rc-pm-rows"></div><span class="rc-pm-msg" role="status"></span></div>';
     const top=el.querySelector('.rc-pm-top'),body=el.querySelector('.rc-pm-body'),rowsEl=el.querySelector('.rc-pm-rows');
     top.innerHTML=this._pmHtml(m);
     const has=!!m&&((m.rows||[]).length+(m.unsure||[]).length>0);
@@ -279,10 +289,14 @@ export const Stage = {
     const want=!!(m.model||(m.views||[]).length);
     if(this._pmFig&&this._pmFigKey!==key)this._pmDrop();
     if(want&&!this._pmFig){
-      const fig=document.createElement('div');fig.className='rc-pm-fig';
-      fig.setAttribute('role','img');fig.setAttribute('aria-label','Your model; the parts each note means are in its colour');
-      this._pmFig=fig;this._pmFigKey=key;}
-    if(this._pmFig&&this._pmFig.parentNode!==body)body.insertBefore(this._pmFig,rowsEl);
+      const parts=this._pmParts;
+      // THE ONE VIEWER: the model is drawn where the part already is, beside the conversation
+      const out=m.model&&parts&&parts.host&&parts.mount&&parts.model&&!this._pm3dFailed?parts.host():null;
+      const fig=out||document.createElement('div');
+      if(!out){fig.className='rc-pm-fig';fig.setAttribute('role','img');}
+      fig.setAttribute('aria-label','Your model; the parts each note means are in its colour');
+      this._pmFig=fig;this._pmFigOut=!!out;this._pmFigKey=key;}
+    if(this._pmFig&&!this._pmFigOut&&this._pmFig.parentNode!==body)body.insertBefore(this._pmFig,rowsEl);
     rowsEl.innerHTML=this._pmRowsHtml(m);},
 
   /* FINALIZE NOTES: the parts the words name are read now (the first answer and every note); the card follows */
@@ -305,11 +319,14 @@ export const Stage = {
     this._pmAskDue=false;
     if(this._pmAskLine)this.chat('assistant',this._pmAskLine);},
 
-  // the model given up: its GL context released (a new file, or the notes no longer name a part)
+  // the model given up: its GL context released, and the viewer back to the plain part (a new file, the run
+  // started, or the notes no longer name a part)
   _pmDrop(){
     if(this._pm3d&&this._pm3d.dispose)try{this._pm3d.dispose();}catch{/* gone already */}
-    if(this._pmFig)this._pmFig.remove();
-    this._pm3d=null;this._pm3dP=null;this._pmFig=null;this._pmFigKey=null;this._pmCache=null;},
+    if(this._pmFig){
+      if(this._pmFigOut&&this._pmParts&&this._pmParts.drop)try{this._pmParts.drop(this._pmFig);}catch{/* gone already */}
+      else this._pmFig.remove();}
+    this._pm3d=null;this._pm3dP=null;this._pmFig=null;this._pmFigOut=false;this._pmFigKey=null;this._pmCache=null;},
 
   _pmHtml(m){
     if(m&&m.status==='reading')return '<div class="rc-pm-wait" role="status">Reading your notes…</div>';
@@ -317,18 +334,31 @@ export const Stage = {
       +'<button type="button" class="gc-proceed rc-fin-btn">Finalize notes</button></div>';
     return '';},
 
+  // what a part is called on a chip and under the cursor: "Part 9 · Rail", an area inside a part "F3 · 4 holes"
+  _pmName(id){
+    const m=this._pm||{},p=(m.parts||[]).find(q=>q.id===id),n=String(id).split('_').pop();
+    if(this._isArea(id))return `F${n}${p&&p.name?` · ${p.name}`:''}`;
+    return `Part ${n}${p&&p.name?` · ${p.name}`:''}`;},
+
+  /* the rows: one per size request with its parts as chips, then one per phrase no part could be found for. The
+     active row says how to change it; a phrase with no parts says how to give it some. */
   _pmRowsHtml(m){
     const open=this._pmOpen;
+    const onModel=!!this._pmFig;
     const row=(r,k,unsure)=>{
-      const i=r.phrase,isOpen=open===i;
-      const what=unsure?esc(r.text):`<span class="rc-pm-w" title="${esc(r.quote)}">${esc(r.words)}</span>`;
-      const where=unsure?'Pick parts'
-        :`${esc(r.parts_text)}${r.size?`<span class="rc-pm-s">${esc(r.size)}</span>`:''}`;
-      const dot=unsure?'<span class="rc-pm-dot none"></span>'
-        :`<span class="rc-pm-dot" style="background:${this._PM_COL[k%this._PM_COL.length]}"></span>`;
-      return `<button type="button" class="rc-pm-row${unsure?' unk':''}${isOpen?' open':''}" data-phrase="${i}"`
-        +` aria-expanded="${isOpen}">${dot}<span class="rc-pm-q">${what}</span><span class="rc-pm-v">${where}</span>`
-        +`<span class="rc-pm-c" aria-hidden="true"></span></button>`+(isOpen?this._pmPicker(m,r):'');};
+      const i=r.phrase,act=open===i,c=unsure?'#E3A23B':this._PM_COL[k%this._PM_COL.length];
+      const ids=r.parts||[];
+      const head=`<div class="rc-pm-row" role="button" tabindex="0" aria-pressed="${act}">`
+        +`<span class="rc-pm-dot${unsure&&!ids.length?' none':''}"></span>`
+        +`<span class="rc-pm-q" title="${esc(r.quote||r.text||'')}">${esc(unsure?r.text:r.words)}</span>`
+        +`${r.size?`<span class="rc-pm-s">${esc(r.size)}</span>`:''}</div>`;
+      const chips=ids.map(id=>{const nm=this._pmName(id);
+        return `<span class="rc-pm-chip" data-part="${esc(id)}">${esc(nm)}`
+          +`<button type="button" class="rc-pm-x" data-part="${esc(id)}" aria-label="Take ${esc(nm)} out" title="Take it out">✕</button></span>`;}).join('');
+      const hint=!onModel?'':act?'Click parts on the model to add or take them out.'
+        :(unsure&&!ids.length?'Click here, then click its parts on the model.':'');
+      return `<div class="rc-pm-item${act?' active':''}${unsure?' unk':''}" data-phrase="${i}" style="--pm-c:${c}">${head}`
+        +`${chips?`<div class="rc-pm-chips">${chips}</div>`:''}${hint?`<div class="rc-pm-hint">${hint}</div>`:''}</div>`;};
     return (m.rows||[]).map((r,k)=>row(r,k,false)).join('')+(m.unsure||[]).map(r=>row(r,0,true)).join('');},
 
   _pmColour(m,r){const k=(m.rows||[]).indexOf(r);return k>=0?this._PM_COL[k%this._PM_COL.length]:'#E3A23B';},
@@ -338,25 +368,13 @@ export const Stage = {
   _pmAreaRow(m,r){
     const solids=(m.order||(m.parts||[]).map(p=>p.id)).filter(id=>!this._isArea(id)).length;
     return solids===1||!!(r&&(r.parts||[]).some(id=>this._isArea(id)));},
-  /* WHAT A POINT ON THE MODEL MEANS: an area inside a part is itself where the open row is about areas (or, with no
-     row open, where a row names it); anywhere else it is the part it is in */
+  /* WHAT A POINT ON THE MODEL MEANS: an area inside a part is itself where the active row is about areas (or, with
+     no row active, where a row names it); anywhere else it is the part it is in */
   _pmResolve(id){
     const m=this._pm;if(!id||!m||!this._isArea(id))return id||null;
     const open=this._pmOpen!=null?[...(m.rows||[]),...(m.unsure||[])].find(r=>r.phrase===this._pmOpen):null;
     const own=open?this._pmAreaRow(m,open):(m.rows||[]).some(r=>(r.parts||[]).includes(id));
     return own?id:((m.inside||{})[id]||id);},
-
-  _pmPicker(m,r){
-    const on=new Set(r.parts||[]),c=this._pmColour(m,r);
-    // the list holds what a click on the model would pick: the parts, or the areas for a row about areas
-    const areas=this._pmAreaRow(m,r),solid=(p)=>!this._isArea(p.id);
-    const list=(m.parts||[]).filter(p=>on.has(p.id)||(areas?!solid(p)||(m.parts||[]).filter(solid).length===1:solid(p)));
-    return `<div class="rc-pm-pick" role="group" aria-label="Which parts" style="--pm-c:${c}">`
-      +list.map(p=>`<button type="button" class="rc-pm-part${on.has(p.id)?' on':''}" data-part="${esc(p.id)}"`
-        +` aria-pressed="${on.has(p.id)}"><span class="dot"></span>${esc(p.n)}`
-        +`${p.name?`<span class="nm">${esc(p.name)}</span>`:''}</button>`).join('')
-      +`${this._pmFig?'<span class="rc-pm-hint">or click parts on the model</span>':''}`
-      +'<span class="rc-pm-msg" role="status"></span></div>';},
 
   /* WHAT THE MODEL SHOWS NOW: each row's parts in its colour, the row looked at (a row hovered, the row of the
      part under the cursor, else the open row) lit and the rest faded, and the numbers of the parts the rows name -
@@ -388,23 +406,24 @@ export const Stage = {
     if(!m||m.status!=='done'||!fig||!parts)return;
     const look=this._pmLook();
     // the row of the part under the cursor answers it
-    el.querySelectorAll('.rc-pm-row').forEach(b=>b.classList.toggle('hot',!!look.hpRow&&Number(b.dataset.phrase)===look.hpRow.phrase));
+    el.querySelectorAll('.rc-pm-item').forEach(b=>b.classList.toggle('hot',!!look.hpRow&&Number(b.dataset.phrase)===look.hpRow.phrase));
     if(m.model&&parts.model&&parts.mount&&!this._pm3dFailed){
       if(!this._pm3dP){
-        const name=(id)=>{const p=(m.parts||[]).find(q=>q.id===id);const n=String(id).split('_').pop();
-          if(String(id).startsWith('Feature_'))return `F${n}${p&&p.name?` · ${p.name}`:''}`;
-          return `Part ${n}${p&&p.name?` · ${p.name}`:''}`;};
-        fig.classList.add('rc-pm-3d');fig.innerHTML='';
+        if(!this._pmFigOut)fig.classList.add('rc-pm-3d');
+        fig.innerHTML='';
         this._pm3dP=(async()=>{
           const model=await parts.model();
           if(this._pmFig!==fig)return null;
-          return parts.mount(fig,model,{label:(id)=>name(this._pmResolve(id)),
+          return parts.mount(fig,model,{label:(id)=>this._pmName(this._pmResolve(id)),
             onHover:(id)=>{if(id!==this._pmHoverPart){this._pmHoverPart=id;this._pmPaint(el);}},
-            onClick:(id)=>this._pmClick(id)});})().then(v=>{this._pm3d=v;return v;}).catch(e=>{
+            onClick:(id)=>this._pmClick(id)});})().then(v=>{
+            // dropped while it was mounting (the run started, the rows went): its context goes too
+            if(v&&this._pmFig!==fig){try{v.dispose();}catch{/* gone */}return null;}
+            this._pm3d=v;return v;}).catch(e=>{
+            // no WebGL: the picture, in the card
             console.warn('parts model unavailable, showing the picture:',e&&e.message);
-            this._pm3dFailed=true;this._pm3dP=null;fig.classList.remove('rc-pm-3d');fig.innerHTML='';
-            const rowsEl=el.querySelector('.rc-pm-rows');if(rowsEl)rowsEl.innerHTML=this._pmRowsHtml(this._pm);
-            this._pmPaint(el);return null;});}
+            this._pmDrop();this._pm3dFailed=true;
+            if(this._pmDraw)this._pmDraw();return null;});}
       const v=await this._pm3dP;
       if(v&&this._pmFig===fig)v.set(this._pmLook());
       return;}
@@ -472,7 +491,7 @@ export const Stage = {
     const at=(e)=>{const r=cv.getBoundingClientRect();
       const x=Math.floor((e.clientX-r.left)*w/r.width),y=Math.floor((e.clientY-r.top)*h/r.height);
       const k=(x>=0&&y>=0&&x<w&&y<h)?ids[y*w+x]:-1;return k>=0?order[k]:null;};
-    const name=(id)=>{const p=(m.parts||[]).find(q=>q.id===id);return p?`Part ${p.n}${p.name?` · ${p.name}`:''}`:'';};
+    const name=(id)=>id?this._pmName(id):'';
     cv.onmousemove=(e)=>{const id=at(e);cv.title=id?name(id):'';cv.style.cursor=id&&this._pmOpen!=null?'pointer':'';};
     cv.onclick=(e)=>{e.stopPropagation();this._pmClick(at(e));};},
 
@@ -724,7 +743,7 @@ export const Stage = {
     const ref=hasHist?history.typical_s*1000:budget*1000;
     const sub=hasHist
       ?`similar runs take about ${fmtDur(history.typical_s*1000)} (usually ${fmtDur(history.p10_s*1000)} to ${fmtDur(history.p90_s*1000)})`
-      :`no similar runs yet · stops by itself at ${fmtDur(budget*1000)}`;
+      :`no similar runs yet · Time limit ${durationWords(budget)}`;
     const w=document.createElement('div');w.className='meshbar';
     w.innerHTML=`<div class="mb-top"><span class="mb-lbl">meshing · ${esc(engine||'')}</span>
         <span class="mb-num">0:00</span></div>
