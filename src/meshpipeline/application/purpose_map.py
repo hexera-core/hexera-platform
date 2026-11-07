@@ -78,6 +78,9 @@ _FEA = _rx(
     r"\belastic", r"\bcontact (analysis|pressure)", r"\btopology optimi[sz]", r"\b\d+(\.\d+)?\s?k?n\b",
     r"\bsag\b", r"how much (load|weight|force)", r"\bhold \d", r"\bthick enough\b", r"\bsol ?1\d\d\b",
     r"\bcrashworth",
+    # SHSTAGE-1: the words of a shell model are FEA words too ("a CQUAD4 model for Femap")
+    r"\bfemap\b", r"\bcquad4?\b", r"\bctria3?\b", r"\bpshell\b", r"\bmid-?surfaces?\b", r"\bplate model",
+    r"\bshell (mesh|model|elements?)\b",
 )
 #: WORDS FOR A FLUID: what CFD answers.
 _FLOW = _rx(
@@ -173,6 +176,69 @@ def analysis_of(text: str) -> str:
         if rx.search(said):
             return key
     return ""
+
+
+#: SHSTAGE-1: HOW THE PART IS MESHED, when the user's words say it ("Mesh as" on the FEA stage). A shell
+#: is the part's mid-surface meshed with plate elements; a solid is the part's volume meshed with
+#: tetrahedra. Said words set the choice with no follow-up question; "" when the words do not say.
+MESH_SHELL, MESH_SOLID, MESH_AUTO = "shell", "solid", "auto"
+#: MIXED-4: shell where thin, solid where thick - only ever Auto's recommendation (engines/mixed_run.recommend), never
+#: read from words or offered as a pick of its own: a part Auto does not call mixed is not accurate mixed (MIXED-8)
+MESH_MIXED = "mixed"
+MESH_AS_SAID = (MESH_SHELL, MESH_SOLID)
+#: Words for a shell model (an FEA engineer's: "2D elements", Femap's CQUAD4, a plate model).
+_SHELL_WORDS = _rx(
+    r"\bshells?\b(?![- ]and[- ]tube)(?! side)", r"\b2-?d\b(?! (drawing|sketch|plane|axisym|section|profile))",
+    r"\bmid-?surfaces?\b", r"\bmid-?planes?\b", r"\bplate (model|elements?|mesh)\b", r"\bfemap shell",
+    r"\bcquad4?\b", r"\bctria3?\b", r"\bpshell\b", r"\bshell ?181\b", r"\bs4r?\b",
+    r"\bsheet[- ]metal shell", r"\bthin[- ]shell")
+#: Words for a solid model: tetrahedra or hexahedra through the volume.
+_SOLID_WORDS = _rx(
+    r"\bsolid\b(?! (mechanics|part\b))(?!works)", r"\bsolid (mesh|model|elements?)\b",
+    r"\b3-?d (mesh|elements?|tets?|tetra\w*|hex\w*|bricks?|solid)\b", r"\btets?\b", r"\btetra(s|hedral?|hedra|hedrons?)?\b",
+    r"\bhex(a|es)?[- ](mesh|elements?|dominant)\b", r"\bhexes\b", r"\bhexahedr\w*", r"\bbrick elements?\b", r"\bc3d\d+\w*\b",
+    r"\bctetra\b", r"\bchexa\b", r"\bsolid ?18[57]\b")
+#: A word that takes the next one back ("no tets", "not a solid mesh"): the words are then left to
+#: the paraphrase reading, never read as the word they deny.
+_NEGATED = _rx(r"\b(no|not|without|never|don'?t|do not|instead of|rather than|avoid)\b(\s+\w+){0,3}?\s+"
+               r"(shells?|2-?d|mid-?surfaces?|plates?|solids?|3-?d|tets?|tetra\w*|hex\w*|bricks?)\b")
+
+
+@dataclass(frozen=True)
+class MeshAsReading:
+    """What the words say about meshing the part as a shell or a solid. `value` is "shell", "solid"
+    or "" (nothing said); `by` is "table" (the fixed word table), "model" (a paraphrase the model
+    read, checked against the allowed values) or ""; `unsure` marks words the table could not read
+    alone (both kinds, or a word taken back) - the only words handed to the model."""
+
+    value: str = ""
+    by: str = ""
+    why: str = ""
+    unsure: bool = False
+
+
+def mesh_as_of(text: str) -> MeshAsReading:
+    """SHSTAGE-1: THE FIXED WORD TABLE. Shell words alone set Shell, solid words alone set Solid; both
+    kinds, or a word taken back ("no tets"), leave it to the paraphrase reading (`unsure`)."""
+    said = " ".join(str(text or "").split())
+    if not said:
+        return MeshAsReading()
+    shell, solid = _hits(_SHELL_WORDS, said), _hits(_SOLID_WORDS, said)
+    if _NEGATED.search(said):
+        return MeshAsReading(why="taken back: " + ", ".join(_hits(_NEGATED, said)), unsure=True)
+    if shell and not solid:
+        return MeshAsReading(value=MESH_SHELL, by="table", why="shell words: " + ", ".join(shell))
+    if solid and not shell:
+        return MeshAsReading(value=MESH_SOLID, by="table", why="solid words: " + ", ".join(solid))
+    if shell and solid:
+        return MeshAsReading(why="both: " + ", ".join(shell + solid), unsure=True)
+    return MeshAsReading(why="no mesh-as words")
+
+
+def mesh_as_answer(value) -> str:
+    """A model's or a form's answer, checked against the allowed values: "shell", "solid", or ""."""
+    v = str(value or "").strip().lower().strip(".\"' ")
+    return v if v in MESH_AS_SAID else ""
 
 
 def _topology(text: str) -> str:
@@ -326,7 +392,8 @@ def fea_hold_text(reading: PurposeReading) -> str:
 
 __all__ = ["ANALYSES", "ANALYSIS_KEYS", "ANALYSIS_LABELS", "ANALYSIS_QUESTION", "ASK_DOMAIN",
            "ASK_THERMAL", "COMING_SOON", "DOMAIN_QUESTION", "ELECTRONICS_NOTE", "FEA_HOLD",
-           "HEAT_IN_SOLID_NOTE", "PurposeReading", "ROUTES", "ROUTE_ELECTRONICS", "ROUTE_FEA",
+           "HEAT_IN_SOLID_NOTE", "MESH_AS_SAID", "MESH_AUTO", "MESH_MIXED", "MESH_SHELL", "MESH_SOLID", "MeshAsReading",
+           "PurposeReading", "ROUTES", "ROUTE_ELECTRONICS", "ROUTE_FEA",
            "ROUTE_FLOW", "THERMAL_QUESTION", "V1_ANALYSES", "analysis_of", "choices_for",
-           "coming_soon_note", "fea_hold_text", "question_asked", "question_for", "read_purpose",
+           "coming_soon_note", "fea_hold_text", "mesh_as_answer", "mesh_as_of", "question_asked", "question_for", "read_purpose",
            "reading_for"]

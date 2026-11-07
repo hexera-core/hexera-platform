@@ -474,6 +474,9 @@ STATE_FIELDS: dict[str, str] = {
     "part_matches":          "the user's words about particular parts tied to the parts before approval (NOTE-4, the "
                              "request card's checklist), with the parts the user picked; None when there was none "
                              "for the notes as they stand - the route then reads the notes itself",
+    "fea_mesh_as":           "an FEA part meshed as a shell (its mid-surface, plate elements), mixed (Auto only: thin "
+                             "walls shell, thick regions solid, joined; MIXED-4) or a solid, as "
+                             "settled on the stage at Proceed (SHSTAGE-5); 'solid' when nothing says",
     "flow_topology":         "internal/external flow regime DERIVED from the purpose - a neutral "
                              "fact read by the executor/runners, NOT an engine-native param",
     "leak_closing":          "the leak size the user confirmed on the stage (INS-8): every leak of the "

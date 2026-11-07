@@ -24,7 +24,7 @@ import { changedAnswers, editsLine, noteDrawn, servedProposal } from "./geometry
 // a thermal model (an ECXML upload) has its own panel, card or stage alike
 import { bindThermalPanel, thermalPanelHtml } from "./thermal_form.js";
 // an FEA part has its own panel too: its size, unit, bodies and clean check, and no flow form
-import { bindFeaPanel, feaPanelHtml, followAssembly, followClean, followMeasure } from "./fea_form.js";
+import { bindFeaPanel, feaPanelHtml, followAssembly, followClean, followMeasure, followMeshAs } from "./fea_form.js";
 // the run card's live line: the step running now, in plain words
 import { createRunLine } from "./run_progress.js";
 import { durationWords } from "./check_progress.js";
@@ -131,7 +131,7 @@ export const Stage = {
     // file's own numbers, then only what the sheet does not already say
     const thermal=b.check_mode==='thermal'&&b.job_sheet;
     const ROWS=thermal?[['engine','Engine'],['mesh_fidelity','Detail level'],['label','Case']]
-      :[['purpose','Purpose'],['engine','Engine'],['input_kind','Input'],
+      :[['purpose','Purpose'],['engine','Engine'],['mesh_as','Mesh as'],['input_kind','Input'],
         ['dimensionality','Dimensions'],['mesh_fidelity','Detail level'],
         ['label','Case']];
     // Prefer the server's display label. A field may be label-ONLY: the fidelity tier always
@@ -140,9 +140,10 @@ export const Stage = {
     const fea=b.purpose==='structural';
     let rows=ROWS.filter(([k])=>(b[k]||b[k+'_label'])&&!(fea&&k==='mesh_fidelity')).map(([k,l])=>
       `<div class="rc-row"><div class="rc-k">${esc(l)}</div><div class="rc-v">${esc(b[k+'_label']||b[k])}</div></div>`).join('');
+    // the server's words when it has them (a shell run: the plates are linear, the order is the solid's beside them)
     if(b.engine_params&&Object.keys(b.engine_params).length)
       rows+=`<div class="rc-row"><div class="rc-k">Engine settings</div>`
-           +`<div class="rc-v">${esc(Object.entries(b.engine_params).map(([k,v])=>
+           +`<div class="rc-v">${esc(b.engine_params_label||Object.entries(b.engine_params).map(([k,v])=>
              `${String(k).replace(/_/g,' ')}: ${typeof v==='object'?JSON.stringify(v):v}`).join(', '))}</div></div>`;
     (b.boundary_assignments||[]).forEach(p=>{
       rows+=`<div class="rc-row"><div class="rc-k">${esc(p.name)}</div>`
@@ -670,7 +671,9 @@ export const Stage = {
     // the bodies, the clean check and the parts' joints follow too, each on its own
     const fol=(fn)=>{try{fn();}catch(e){console.warn('FEA card: not redrawn',e);}};
     if(d&&d.fea){fol(()=>followClean(g,d.fea));if(d.fea.assembly)fol(()=>followAssembly(g,d.fea.assembly));}
-    if(d&&d.fea&&d.fea.measure)fol(()=>followMeasure(g,d.fea.measure,p,null));},
+    if(d&&d.fea&&d.fea.measure)fol(()=>followMeasure(g,d.fea.measure,p,null));
+    // SHSTAGE-2: the shell check lands minutes later; "Mesh as" follows in place, the pick kept
+    if(d&&d.fea&&d.fea.shell)fol(()=>followMeshAs(g,d.fea.shell));},
 
   ensureProc(){if(this.proc)return;this.clearEmpty();
     const p=document.createElement('div');p.className='proc';
