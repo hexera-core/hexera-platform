@@ -157,7 +157,14 @@ identical filter discarding any scanline that does not cross the array at least 
 | channel p95 | 121.487 um | 140.900 um | +15.98% |
 | channel CV | 12.38% | 18.94% | |
 | fin p50 | 101.255 um | 100.630 um | -0.62% |
-| implied pitch | 201.702 um | 201.263 um | -0.22% |
+| **pitch** | **201.2625 um** | **201.263 um** | **-0.0002%** |
+
+The pitch is worth dwelling on because `maxCellSize 322.020` was chosen to make ten cells equal it,
+and it did: the CAD pitch measured wall-to-wall over two steps is 201.26253 um, which is 9.999977
+cells. Core n=103,980, mean 201.403 um, sd 0.771 um, CV 0.383%. **The mesh pitch is right to two
+parts in a million.** An earlier line in this document gave the CAD pitch as 201.702 um and the mesh
+as 0.22% short; that came from adding the coolant median to the fin median, which is not a pitch
+because it pairs quantities by rank rather than by position. Discard it.
 
 The mesh population is purely discrete, because the interface sits on octree cell faces and a
 channel has to be a whole number of cells. **So is the part's**, once it is binned the same way, and
@@ -211,15 +218,22 @@ Two defects remain, and neither is the one I expected:
   and its narrowest in-window run is 97.963 um. The mesh puts 1.85% of its channels at 80.5 um, a
   full cell narrower than anything in the part, which is a -20% width and -49% flow error on those
   channels. That is worse per channel than anything on the wide side.
-- **The pitch is not the cause of the tail, so `maxCellSize` cannot fix it.** Ten cells is 201.263 um
-  against a CAD pitch of 201.702 um, 0.22% short, drifting 0.44 um per channel and so one whole cell
-  only after about 46 channels. That is far too slow to move 11 points of channels out of nominal.
-  What is left is phase: a channel 5.0 cells wide captures 5 cells or 6 depending on where its two
-  walls fall relative to cell centres. I have not measured the phase distribution and I am not going
-  to assert the mechanism beyond that.
+- **Neither the pitch nor the grid origin can fix the tail.** The pitch is already exact to two parts
+  in a million, so there is no drift to remove. And the phase of channel walls within a cell is
+  **uniform**: binned into 20 bins across the 20.1263 um cell, the counts run 290 to 482 about a mean
+  of 370, with no peak anywhere. A flat phase distribution means no single translation of the octree
+  can put walls on cell faces; shifting the origin only permutes which channels land on 5 cells and
+  which on 6, leaving the off-nominal fraction unchanged.
 
-The levers are one more refinement level, which the 32-bit label wall blocks, or aligning the grid
-origin to the array, which is free and untested.
+So the mechanism, finally, is this: **the part's own channel width spread straddles the cell-count
+boundaries, and with uniform wall phase every channel near a boundary goes either way.** The CAD's
+5-cell bin runs 97.963 to 110.533 um while 5 cells is 100.632 um, so a substantial part of that bin
+sits above the boundary and rounds up. The part's 12.38% width CV against a 20.1263 um quantum is the
+whole story, and the only lever that touches it is a smaller quantum.
+
+That leaves exactly one real fix: one more refinement level in the channels, which halves the quantum
+relative to the width spread. The 32-bit label wall blocks it until there is a `WM_LABEL_SIZE=64`
+image.
 
 ## 6. What the resolution costs
 

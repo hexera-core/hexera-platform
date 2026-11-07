@@ -10,12 +10,12 @@ the reason this list is worth acting on rather than discussing.
 |---|---|---|---|---|
 | 1 | drop the boundary layer pass | **-5,843 s** | **Nusselt -4.02% to +2.18%** | measured |
 | 2 | deliver decomposed, drop reconstructs and serial checks | **-12,377 s** | none | measured |
-| 3 | retype `mappedWall` to `wall` before checking | +14 s | enables 9 checks never run before | measured |
+| 3 | retype `mappedWall` to `wall` on a check-time copy | +14 s | enables 9 checks never run before | measured |
 | 4 | coarsen the solid away from the interface | large | none expected | projected |
-| 5 | align the grid origin to the channel array | 0 s | off-nominal 18.86% toward the part's 9.13% | untested |
+| 5 | ~~align the grid origin to the channel array~~ | 0 s | **nothing** | **refuted** |
 | 6 | `writeFormat binary` in the mesher | -118 s per read | none | measured |
 | 7 | repair `fluid_fine.stl` | 0 s | where refinement lands | measured defect |
-| 8 | one more refinement level in the channels | very large | flow +8.0% to +2.0% | blocked |
+| 8 | one more refinement level in the channels | very large | flow +8.0% to +2.0%, **and the only fix for the quantisation** | blocked |
 
 ---
 
@@ -63,9 +63,14 @@ criteria as the `checkMesh -parallel` that already passed, at 3,075 s against 62
 One thing to carry over: the serial pass is what currently writes the quality fields the boundary
 sidecars are built from. The parallel pass has to write them instead, or the viewer loses its input.
 
-## 3. Retype `mappedWall` to `wall` before checking
+## 3. Retype `mappedWall` to `wall` on a COPY before checking
 
 **Measured.** Costs 14 s on a 610 s check, 2.3%.
+
+**On a copy, and never on the delivered mesh.** `chtMultiRegionFoam` needs `mappedWall` on both
+sides of the conjugate interface to couple the regions at all, so retyping the mesh we ship would
+silently decouple the solve. The retype is a check-time transformation of a throwaway copy of the
+boundary file, which is why it costs seconds.
 
 `checkMesh -allGeometry` has FOAM-fatalled on every conjugate mesh we have ever built, so `mesh_ok`
 has never been true and nine geometry checks have never run on any mesh we have shipped. Two arms on
@@ -105,9 +110,10 @@ A caution from the record: a 4x coarser far field changed cell count by 0.9%, an
 2.73x more cells. Octree cell counts on this part have repeatedly failed to move the way the geometry
 suggests they should. Measure before believing.
 
-## 5. Align the grid origin to the channel array
+## 5. Align the grid origin to the channel array: REFUTED
 
-**Untested, and free if it works.**
+**Measured, and it cannot work.** Leaving it here rather than deleting it, because it is the obvious
+idea and the next person will have it too.
 
 The channel population is purely discrete, because the conjugate interface sits on octree cell faces.
 Binned the same way, so is the part's:
@@ -129,17 +135,24 @@ about +19% in total.
 It also invents a width the part does not contain: 1.85% of channels at 80.5 um, where the CAD's
 narrowest in-window run is 97.963 um. That is -20% on width and -49% on flow for those channels.
 
-**It is not a pitch problem and `maxCellSize` cannot fix it.** Ten cells is 201.263 um against a CAD
-pitch of 201.702 um, 0.22% short, which drifts one whole cell only after about 46 channels. That is
-far too slow to produce 10.79% at six cells. What remains is phase: a channel 5.0 cells wide captures
-5 or 6 cells depending on where its two walls fall relative to cell centres. Translating the octree
-origin so that cell faces land on channel walls should collapse the population onto one width.
+**It is not a pitch problem.** The CAD pitch measured wall-to-wall over two steps is 201.26253 um,
+which is 9.999977 cells, so `maxCellSize 322.020` already hit it to two parts in a million. Core
+n=103,980, mean 201.403 um, sd 0.771 um, CV 0.383%. There is no drift to remove.
 
-I have not measured the phase distribution and I am not going to assert the mechanism beyond this.
-The test is cheap: one short mesher run with a shifted origin, then re-run the width measurement.
+**And it is not an origin problem.** The phase of channel walls within a cell is uniform. Binned into
+20 bins across the 20.1263 um cell, the counts run 290 to 482 about a mean of 370, with no peak
+anywhere. A flat phase distribution means no translation of the octree can put walls on cell faces.
+An origin shift only permutes which channels land on 5 cells and which on 6, and the off-nominal
+fraction is invariant under it. **That is why this item is refuted rather than untested.**
 
-The part's own 9.13% off-nominal is the floor an origin shift could reach. Getting below that needs
-item 8.
+**What it actually is:** the part's own width spread straddles the cell-count boundaries. The CAD's
+5-cell bin runs 97.963 to 110.533 um while 5 cells is 100.632 um, so a large part of that bin sits
+above the boundary and rounds up, and the narrow end rounds down to a 4-cell width the part does not
+contain. A 12.38% width CV against a 20.1263 um quantum produces the observed population, and the
+only lever that touches it is a smaller quantum.
+
+So item 8 is not one option among several. **It is the only fix for this defect**, which raises its
+priority well above where I first put it.
 
 ## 6. `writeFormat binary` in the mesher
 
@@ -163,8 +176,10 @@ refinement region with holes in it refines the wrong cells and nobody will notic
 
 ## 8. One more refinement level in the channels
 
-**Blocked, and expensive.** Would take the channel from 5 cells to 10, flow error from +8.0% to
-+2.0%, Nusselt from +2.18% to +0.67%, and would halve the cost of a one-cell snapping error.
+**Blocked, and expensive, and now the only route to the biggest fidelity defect.** Would take the
+channel from 5 cells to 10, flow error from +8.0% to +2.0%, Nusselt from +2.18% to +0.67%, and would
+halve the quantum relative to the part's own 12.38% width spread, which item 5 shows is the one thing
+that can reduce the off-nominal population.
 
 Two obstacles. The 32-bit label wall makes microchannels +5 impossible with the current image by any
 route, in the parallel load balancer and in serial octree node addressing both, so it needs a
@@ -182,5 +197,6 @@ convergence study that would put error bars on everything in the quality documen
    bars on the whole quality assessment.
 2. Land items 2 and 3 in `couple_box.sh`. Both are measured, neither costs accuracy, and together
    they take the chain from 3.00 h to 46 min.
-3. Run item 5's origin-shift test. One short run, and it addresses the largest fidelity error.
-4. Run item 4's banded-solid test. One run, and it is the largest lever on everything.
+3. Run item 4's banded-solid test. One run, and it is the largest lever on everything. It is also
+   the prerequisite for item 8, because item 8 needs the cell budget item 4 frees.
+4. Do **not** spend a run on item 5. The phase is uniform and an origin shift provably does nothing.

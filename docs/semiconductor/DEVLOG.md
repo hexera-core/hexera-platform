@@ -5054,6 +5054,17 @@ cell each. The coolant circuit is intact and the warning is cosmetic.
 | 55.8% flow CV inside the channel array | plenum crossings. 18.94% with the array filter |
 | the mesh adds 1.45x of conductance spread, 1.89x to 2.75x | mixed bins. Binning both sides by cell count: the part is 90.87% on nominal and the mesh 79.91%, so the mesh doubles the off-nominal share from 9.13% to 18.86% and passes 10.1% too much flow |
 | the mesh rounds sub-100 um channels up and passes 8% too much | wrong direction. It rounds 1.85% of them DOWN to 80.5 um, a width the part does not contain at all, which is -49% on flow for those channels |
+| the CAD pitch is 201.702 um so the mesh pitch is 0.22% short | adding the coolant median to the fin median is not a pitch, it pairs by rank not by position. Measured wall-to-wall over two steps the CAD pitch is 201.26253 um = 9.999977 cells, so the mesh is right to two parts in a million |
+| shifting the octree origin is a free fix for the off-nominal tail | refuted. The wall phase within a cell is uniform, so a shift only permutes which channels land on 5 cells and which on 6 |
+
+**The quantisation mechanism is finally pinned, and both free fixes are refuted.** The CAD pitch
+measured wall-to-wall over two steps is 201.26253 um = 9.999977 cells, so `maxCellSize 322.020` hit it
+to two parts in a million and there is no drift to remove. And the phase of channel walls within a
+cell is uniform, 290 to 482 counts across 20 bins about a mean of 370, so no translation of the octree
+origin can put walls on cell faces either. What remains is the part's own 12.38% width CV straddling
+the cell-count boundaries: the CAD's 5-cell bin runs 97.963 to 110.533 um while 5 cells is 100.632 um.
+The only lever left is a smaller quantum, which makes the cancelled `WM_LABEL_SIZE=64` rebuild worth
+re-opening on grounds it was never considered on.
 
 The channel width is **+0.18%** on the CAD median, measured on both sides with the same definition.
 The part has its own tail near 119 um, 6.77% of it, so the mesh is not inventing the wide channels.

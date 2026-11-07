@@ -1125,9 +1125,17 @@ Result: 143,236,900 cells from 82,529,515, 2.36 layers achieved of 3, total thic
 75.9% of target. Total volume identical to pre-layer at 5.51026e-05 m3 to seven figures, which is the
 check that layers only subdivide and never move a wall.
 
-**And the finding that matters: the layers degrade the thermal answer.** Solving the same
-discretisation OpenFOAM uses on the real cell distribution, verified against the textbook
-parallel-plate Nu of 8.2353 to 0.002% at 200 cells:
+**And the finding that matters: the layers degrade the thermal answer, exactly as this sweep already
+said they would.** Section 1's y+ angle measured uniform 8 cells at +2.02% and geometric r=1.6 at
+-4.05% on a model slot, and concluded to buy layers for pressure drop and the entry region rather
+than for Nusselt. That was a model problem with an assumed grading. Below is the same question asked
+of the delivered resolution and the layer stack that actually got built, and it lands in the same
+place to within a fifth of a point. **So this confirms the sweep rather than discovering anything**,
+and the sweep's recommendation should have been followed before the 14.4 hour serial layer run was
+started. That is on me.
+
+Solving the same discretisation OpenFOAM uses on the real cell distribution, verified against the
+textbook parallel-plate Nu of 8.2353 to 0.002% at 200 cells:
 
 | grid across the 100.630 um channel | flow rate | wall shear | Nusselt |
 |---|---|---|---|

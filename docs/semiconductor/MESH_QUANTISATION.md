@@ -238,8 +238,7 @@ filter, gives:
 | channel p50 | **100.446 um** | **100.630 um** | **+0.18%** |
 | channel p95 | 121.487 um | 140.900 um | +15.98% |
 | CV | 12.38% | 18.94% | |
-| w^3 p95/p5 | 1.89x | 2.75x | |
-| implied pitch | 201.702 um | 201.263 um | -0.22% |
+| **pitch** | **201.2625 um** | **201.263 um** | **-0.0002%** |
 
 So the median width is right to +0.18%. Earlier today I published +0.63% for this, computed against
 an assumed 100.000 um nominal, and then -0.074%, computed from the dominant periodicity of wall
@@ -284,8 +283,25 @@ its narrowest in-window run is 97.963 um. The mesh puts 1.85% of channels at 80.
 narrower than anything in the part, a -20% width and -49% flow error. I had this the wrong way round
 earlier today, writing that sub-100 um channels round up and pass 8% too much. They round down.
 
-And **`maxCellSize` cannot fix the remaining tail.** Ten cells is 201.263 um against a CAD pitch of
-201.702 um, 0.22% short, drifting one whole cell only after about 46 channels, which is far too slow
-to explain 10.79% of the array landing at six cells. The cause is phase rather than pitch: a channel
-5.0 cells wide captures 5 or 6 cells depending on where its walls fall relative to cell centres. The
-untested free fix is shifting the octree origin, not changing the cell size.
+**The pitch prediction at the top of this document was right.** `maxCellSize 322.020` was chosen so
+that ten cells equals the measured 201.263 um pitch, and it does. Measured wall-to-wall over two
+steps on `fluid.stl`, the CAD pitch is 201.26253 um, which is 9.999977 cells: core n=103,980, mean
+201.403 um, sd 0.771 um, CV 0.383%. Right to two parts in a million.
+
+**But the prediction that every channel would then be exactly 5 cells was wrong, and here is why.**
+The phase of channel walls within a cell is uniform. Binned into 20 bins across the 20.1263 um cell,
+the counts run 290 to 482 about a mean of 370, with no peak anywhere. There is no preferred phase for
+an exact pitch to lock onto, and so **no translation of the octree origin helps either**: a shift
+only permutes which channels land on 5 cells and which on 6, leaving the off-nominal fraction alone.
+
+What is left is the part's own width spread straddling the cell-count boundaries. The CAD's 5-cell
+bin runs 97.963 to 110.533 um while 5 cells is 100.632 um, so a large part of that bin sits above the
+boundary and rounds up, while the narrow end rounds down to a 4-cell width the part does not contain.
+A 12.38% width CV against a 20.1263 um quantum produces exactly the observed population.
+
+So the remaining lever is neither the cell size nor the origin. It is a smaller quantum, meaning one
+more refinement level, which the 32-bit label wall blocks until there is a `WM_LABEL_SIZE=64` image.
+[RESEARCH_BOUNDARY_LAYERS.md](RESEARCH_BOUNDARY_LAYERS.md) cancelled that rebuild on the grounds that
+the overflow diagnosis was wrong and a 64-bit build halves the box ceiling. That still stands, but the
+decision now has a second and stronger reason to go the other way, so it is worth re-opening on these
+grounds rather than the ones it was closed on.
