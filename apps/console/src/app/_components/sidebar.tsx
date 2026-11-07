@@ -4,6 +4,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { NavLink } from "@/app/_components/nav-link";
 import { FilesPanel } from "@/app/_components/files-panel";
 import { RecentRunsList } from "@/app/_components/recent-runs-list";
 import type { RecentRun } from "@/app/_components/recent-runs";
@@ -62,13 +63,13 @@ export function Sidebar({ credits, email, files = null, recent, signOut }: Sideb
       ) : null}
 
       {showFiles ? <FilesPanel initial={files} /> : (<>
-      <Link className="sidebar__new" href="/runs/new">
+      <NavLink className="sidebar__new" href="/runs/new">
         <svg aria-hidden="true" className="sidebar__icon" fill="none" focusable="false"
           stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" viewBox="0 0 16 16">
           <path d="M8 3v10M3 8h10" />
         </svg>
         <span>New run</span>
-      </Link>
+      </NavLink>
 
       <nav aria-label="Console sections" className="sidebar__nav">
         {product.map((section) => (

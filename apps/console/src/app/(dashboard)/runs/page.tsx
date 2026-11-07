@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { NavLink } from "@/app/_components/nav-link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
@@ -44,9 +45,9 @@ export default async function RunsPage({
           <p className="page__eyebrow">Runs</p>
           <h1 className="page__title">Mesh runs</h1>
         </div>
-        <Link className="btn btn--gold" href="/runs/new">
+        <NavLink className="btn btn--gold" href="/runs/new">
           New run
-        </Link>
+        </NavLink>
       </div>
 
       {page === null ? (
@@ -89,7 +90,7 @@ export default async function RunsPage({
                     </span>
                   </td>
                   <td>
-                    <Link href={`/runs/${run.id}`}>{runTitle(run)}</Link>
+                    <NavLink href={`/runs/${run.id}`}>{runTitle(run)}</NavLink>
                   </td>
                   <td>
                     {run.created_at ? new Date(run.created_at).toLocaleString() : "—"}

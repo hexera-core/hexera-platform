@@ -2,6 +2,7 @@
 import Script from "next/script";
 
 import { sessionScript } from "./session-script";
+import { WorkbenchGuard } from "./workbench-guard";
 
 export function Workbench({
   bootJobId,
@@ -82,6 +83,7 @@ export function Workbench({
         </div>
       </div>
 
+      <WorkbenchGuard />
       <Script src="/static/js/main.js" strategy="afterInteractive" type="module" />
     </>
   );

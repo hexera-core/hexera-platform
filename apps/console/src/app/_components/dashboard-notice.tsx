@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { NavLink } from "@/app/_components/nav-link";
 import React from "react";
 
 import { DashboardRetryButton } from "@/app/_components/dashboard-retry-button";
@@ -35,9 +35,9 @@ export function DashboardNotice({
         <div className="dashboard-notice__actions">
           {retryLabel ? <DashboardRetryButton label={retryLabel} /> : null}
           {action ? (
-            <Link className="btn" href={action.href}>
+            <NavLink className="btn" href={action.href}>
               {action.label}
-            </Link>
+            </NavLink>
           ) : null}
         </div>
       ) : null}
