@@ -11,38 +11,49 @@ have them too.
 
 | # | change | time | accuracy | basis |
 |---|---|---|---|---|
-| 1 | drop the boundary layer pass | **-5,843 s** | **Nusselt -4.02% to +2.18%** | measured |
+| 1 | drop the boundary layer pass | **-5,843 s** | **a trade, not a win**: fine on mean Nu below Re 152, worse on every local metric at every Re | measured, **corrected** |
 | 2 | deliver decomposed, drop reconstructs and serial checks | **-12,377 s** | none | measured |
 | 3 | retype `mappedWall` to `wall` on a check-time copy | +14 s | enables 9 checks never run before | measured |
 | 4 | ~~coarsen the solid away from the interface~~ | large | **nothing** | **refuted** |
 | 5 | ~~align the grid origin to the channel array~~ | 0 s | **nothing** | **refuted** |
 | 6 | `writeFormat binary` in the mesher | -118 s per read | none | measured |
 | 7 | repair `fluid_fine.stl` | 0 s | where refinement lands | measured defect |
-| 8 | one more refinement level in the channels | very large | flow +8.0% to +2.0%, **and the only fix for the quantisation** | blocked |
+| 8 | one more refinement level in the channels | very large | flow +8.0% to +2.0%, cuts the 43-90% entrance error, **and the only fix for the quantisation** | blocked |
 
 ---
 
-## 1. Drop the boundary layer pass
+## 1. Drop the boundary layer pass: a trade, not the free win I claimed
 
-**Measured.** Saves 5,843 s of the 7,483 s the layer step costs, and moves Nusselt from -4.02% to
-+2.18%, a 6.2 point improvement. Wall shear is exact either way.
+**Corrected.** The earlier version of this item said dropping the layers saves 5,843 s *and* moves
+Nusselt from -4.02% to +2.18%, a 6.2 point improvement, so it cost nothing. Both figures were wrong
+and the accuracy half reverses. MESH_QUALITY_CBOX2B.md section 7 has the full correction, the three
+verification checks, and the reason: the wall-gradient exactness argument is a momentum result and
+the energy equation has a quartic solution, not a parabolic one, so it does not transfer.
 
-The reasoning is in MESH_QUALITY_CBOX2B.md section 7 and it is worth restating because it inverts
-the usual instinct. For fully developed laminar duct flow the cell-centred one-sided wall gradient is
-**exact at any resolution**, because the discrete solution is the exact parabola plus a constant
-offset and the offset cancels in the gradient. There is no wall gradient error for a boundary layer
-to fix. What the layer stack does instead is move cells away from the core, and Nusselt depends on
-the bulk temperature, which the core carries. So refining the wall degrades the only part of the
-calculation that was in error.
+The time saving is real and unchanged at **5,843 s**, and sub-one-hour is only reachable without the
+layers. What changed is the price:
 
-Removing the 3.43 um sliver does not rescue it: grading 3 layers to fill the first cell exactly gives
--4.41%, marginally worse. It is the layers, not the sliver.
+| metric | crossover, plain mesh against the layer stack as built |
+|---|---|
+| mean Nusselt over the 12.8 mm run | **Re 152** |
+| length-weighted RMS local error | **Re 23** |
+| **worst local error** | **none in 1 to 1e6; layers win at every Reynolds number** |
 
-**The one condition.** This holds while the flow is thermally developed. The longest straight channel
-run is 12.8 mm = 67.8 Dh, and the thermal entrance length exceeds that above **Re 226** at Pr 6.0.
-Above that the flow is developing everywhere, the near-wall thermal gradient is steep and not
-parabolic, and layers do earn their cost. We do not have the operating flow rate. **This is the
-single most valuable number to ask the customer for**, because it decides item 1 outright.
+Fully developed, the plain mesh is **+0.54%** and the layered variants -0.73% to -1.54%, so the
+plain mesh is the better of them but by under a point, not by six. Developing, the plain mesh's
+worst local error runs from **42.9% at Re 10 to 90.0% at Re 2000**, against 2.1% to 44.3% for the
+layered one. Mean Nusselt hides this because a coarse mesh under-predicts in the entrance and
+over-predicts downstream: at Re 1000 it is -54.1% at 0.05 mm and +8.5% at 3 mm, averaging to +4.7%.
+
+**So this is now a judgement with a price attached rather than a free saving.** Drop the layers to
+reach the hour and accept an entrance-region error the mean does not show; keep them at 2.38 h if
+local wall temperature is what the customer is buying. Wall shear is exact either way, and that part
+was never in doubt because it is a momentum result.
+
+**And fix coverage before adding layers.** The pass achieved 2.36 of 3 layers and 1.67e-05 m of
+2.2e-05 m, which is 75.9%, at 90.71% coverage. The uncovered **9.29% of the interface is plain
+5-cell mesh carrying the plain mesh's 43 to 90% local error**, so the worst case for the patch as a
+whole does not improve until that fraction does, however good the other 90.71% is.
 
 If layers are kept, keep them parallel: 16 ranks ran 11.0x faster than serial for 0.94 points more
 coverage, and the illegal face count rose to 23,833 of 446,465,029, which is 0.053 ppm.
@@ -201,7 +212,8 @@ refinement region with holes in it refines the wrong cells and nobody will notic
 ## 8. One more refinement level in the channels
 
 **Blocked, and expensive, and now the only route to the biggest fidelity defect.** Would take the
-channel from 5 cells to 10, flow error from +8.0% to +2.0%, Nusselt from +2.18% to +0.67%, and would
+channel from 5 cells to 10, flow error from +8.0% to +2.0%, developed Nusselt from +0.54% to +0.14%,
+and would cut the 43 to 90% thermal-entrance error that no layer stack fully removes, and would
 halve the quantum relative to the part's own 12.38% width spread, which item 5 shows is the one thing
 that can reduce the off-nominal population.
 
@@ -217,8 +229,11 @@ convergence study that would put error bars on everything in the quality documen
 
 ## What to do first
 
-1. Ask the customer for the **flow rate and fluid**. One number decides item 1 and sets the error
-   bars on the whole quality assessment.
+1. Ask the customer for the **flow rate and fluid**, and ask what they are buying: a mean heat
+   transfer coefficient or a peak junction temperature. The flow rate sets Reynolds number against
+   the Re 152 and Re 23 thresholds in item 1, and the metric decides which threshold applies. The
+   metric question matters more than the flow rate, which is the opposite of what this list said
+   before.
 2. Land items 2 and 3 in `couple_box.sh`. Both are measured, neither costs accuracy, and together
    they take the chain from 3.00 h to 46 min.
 3. Do **not** spend a run on item 4 or item 5. Both are refuted: the wall phase is uniform so an

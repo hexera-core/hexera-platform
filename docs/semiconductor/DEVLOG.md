@@ -5049,7 +5049,7 @@ cell each. The coolant circuit is intact and the warning is cosmetic.
 | 8,652,419 interface gaps over 1 nm | sorted float32 centroids on 1 nm keys, below the precision of the data; it measured my method. The interface is 100% matched one to one, max gap 1.707e-8 m |
 | channel width +0.63% | computed against an assumed 100.000 um nominal. The CAD median is 100.446 um |
 | channel width -0.074% | used the dominant periodicity of STL wall positions as the channel width. That fundamental is the mean of channel and fin spacing |
-| 9% low on Nusselt | wrong in sign and subject. Wall shear is exact at any resolution; Nusselt is +2.18% high without layers |
+| 9% low on Nusselt | wrong in sign and subject. Wall shear is exact at any resolution; Nusselt is ~~+2.18%~~ **+0.54%** high without layers. **CORRECTED, see MESH_QUALITY_CBOX2B.md section 7.** |
 | the dead air region causes the `-allGeometry` fatal | refuted by the control arm |
 | 55.8% flow CV inside the channel array | plenum crossings. 18.94% with the array filter |
 | the mesh adds 1.45x of conductance spread, 1.89x to 2.75x | mixed bins. Binning both sides by cell count: the part is 90.87% on nominal and the mesh 79.91%, so the mesh doubles the off-nominal share from 9.13% to 18.86% and passes 10.1% too much flow |
@@ -5072,6 +5072,9 @@ What it does is move about 11 points of channels out of nominal and bias total f
 compounds with the +8.0% from having 5 cells across for roughly +19%. Per channel the forced snapping
 is -6.2% to +8.5% on width, so -17% to +28% on flow.
 
+**[CORRECTED: the layers are a TRADE, not a defect. **CORRECTED, see MESH_QUALITY_CBOX2B.md section 7.** The figures in this paragraph are
+wrong and its conclusion reverses on every local metric.]**
+
 **The layers are a defect, not a feature.** Nusselt goes from +2.18% without them to -4.02% with
 them, because for fully developed flow the wall gradient was already exact and the layer stack takes
 cells out of the core that the bulk temperature depends on. Conditional on Re below about 226, which
@@ -5081,3 +5084,29 @@ rate is unknown and decides it.
 **Archived and verified.** `gs://.../corintis/mesh/bl3p/fluid_layered.tar.gz`, 5,453,801,464 B from
 33.81 GB, streamed back out of the bucket and walked. The `cbox2b` set still holds the pre-fix
 `mappedWall` boundary files and needs the two corrected ones re-uploaded.
+
+
+---
+
+## CORRECTION, 7 November 2026: the Nusselt figures above are wrong
+
+The +2.18% without layers and -4.02% with them, and the 6.2 point gap between them, are wrong. So is
+the argument that produced them, which held that the cell-centred one-sided wall gradient is exact at
+any resolution. That is true for momentum, whose uniform source gives a parabola that a second-order
+finite volume scheme reproduces exactly, and it is why the flow rate error is exactly +2/N squared.
+It is false for energy, whose source is proportional to u(y) and whose exact solution is therefore a
+quartic. Measured, the discrete first cell deviates from the exact cell average by -2.02% at N=5.
+
+Corrected, fully developed: **5 cells +0.54%**, 3 nominal layers -0.73%, the 16.7 um actually
+achieved -1.41%. Verified by a grid-convergence sequence of observed order 2.0003 whose error times N
+squared goes to 3/17 and which extrapolates to 140/17, by reproducing this record's own flow figure
+of exactly +2/N squared to ratio 1.000000, and by a brute-force march agreeing to 0.000%.
+
+Solving the developing problem rather than estimating an entrance length also moves the threshold and
+reverses the conclusion on local metrics: mean Nusselt crosses over at **Re 152**, RMS local error at
+**Re 23**, and worst local error **never** crosses, so the layers are better there at every Reynolds
+number. The plain mesh runs 42.9% to 90.0% wrong locally in the thermal entrance.
+
+Flow rate +8.00% and wall shear exact both survive; they are momentum results.
+
+The authoritative version is MESH_QUALITY_CBOX2B.md section 7.

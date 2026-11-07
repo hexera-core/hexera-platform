@@ -15,7 +15,7 @@ reports maxima, and a maximum over 25.7M faces cannot tell one bad face from one
 | conjugate interface | **great** | 25,685,941 faces matched one to one, max centroid gap 0.00085 cells |
 | connectivity | **fine** | both ports in the same piece, proved; the 2 stray cells are 0.0000024% |
 | channel fidelity | **okayish** | median width +0.18% on CAD, but quantisation passes 10.1% too much flow and doubles the off-nominal share |
-| resolution for CHT | **okayish** | 5 cells across a channel; flow +8.0%, Nusselt +2.2%, wall shear exact |
+| resolution for CHT | **okayish** | 5 cells across a channel; flow +8.0%, wall shear exact, Nusselt +0.54% developed. Local error up to 43-90% in the thermal entrance, see section 7 |
 | layers | **a defect, not a feature** | they moved Nusselt from +2.2% to **-4.0%** |
 | cell budget | **poor** | the solid is 74% of the mesh and carries almost no physics |
 
@@ -248,9 +248,9 @@ number of 8.2353 to 0.002% at 200 cells, which is what licenses the rest of the 
 
 | grid across the channel | flow rate | wall shear | Nusselt |
 |---|---|---|---|
-| 5 uniform cells, as shipped | **+8.00%** | **exact** | **+2.18%** |
-| plus layers as built, 16.7 um in 2 cells, 3.43 um sliver | +5.28% | exact | **-4.02%** |
-| plus layers with no sliver, 3 graded cells | +5.18% | exact | -4.41% |
+| 5 uniform cells, as shipped | **+8.00%** | **exact** | **+0.54%** (was +2.18%, corrected in section 7) |
+| plus layers as built, 16.7 um | +5.28% | exact | **-1.41%** (was -4.02%) |
+| plus layers with no sliver, 3 graded cells | +5.18% | exact | -0.73% (was -4.41%) |
 | 10 uniform cells | +2.00% | exact | +0.67% |
 | 20 uniform cells | +0.50% | exact | +0.17% |
 | 200 uniform cells, reference | +0.005% | exact | +0.002% |
@@ -268,78 +268,133 @@ every N tested. It is identical in every channel, so it shifts the total hydraul
 does not redistribute flow between channels. The channel-to-channel maldistribution is the 2.75x
 conductance spread in section 5, which is a separate and larger effect.
 
-**Nusselt is over-predicted by 2.18% without layers.** Which is small, and better than the layered
+**Nusselt is over-predicted by 0.54% without layers, in the fully developed limit.** (This read 2.18% and was wrong; **CORRECTED, see MESH_QUALITY_CBOX2B.md section 7.** The developing-flow local error is far larger, 43 to 90% in the thermal entrance.) Which is small, and better than the layered
 mesh manages.
 
-## 7. The layered mesh, and why the layers are a defect
+## 7. The layered mesh, and the Nusselt numbers I got wrong
 
-`bl3p` is the fluid region with 3 boundary layers requested on `fluid_to_solid`.
+**This section replaces an earlier version that reported the 5-cell mesh at +2.18% and the layered
+mesh at -4.02%, a 6.2 point gap, and concluded from it that the layers are a defect. Both figures
+are wrong, the gap is 1.27 points, and the conclusion reverses on every local metric. The reasoning
+behind it was a correct result for momentum applied to energy, where it does not hold.**
 
-| | serial, as first run | parallel, 16 ranks |
+### What was wrong, and why it looked right
+
+The old argument: for fully developed laminar duct flow the cell-centred one-sided wall gradient is
+exact at any resolution, because the discrete solution is the exact parabola plus a constant offset
+and the offset cancels in the gradient. Therefore there is no wall gradient error for a boundary
+layer to fix, and the layer stack can only take cells out of the core that the bulk temperature
+needs.
+
+**That is exactly true for momentum and false for energy.** Momentum has a uniform source, the
+constant pressure gradient, so its exact solution is a parabola, and a second-order finite volume
+scheme reproduces a parabola's cell averages exactly. Nothing is left but the flow-rate quadrature,
+which is why the flow error is *exactly* +2/N squared with no fitted constant. The energy equation's
+source is `rho cp u(y) dT/dz`, which is itself a parabola, so the exact temperature profile is a
+**quartic**. A second-order scheme does not reproduce a quartic exactly, the first cell's value
+carries a real error, and the one-sided wall gradient inherits it.
+
+Measured. The discrete first-cell value against the exact profile's average over that same cell,
+both extrapolated to the wall the same way:
+
+| N | deviation of the discrete first cell |
+|---|---|
+| 5 | **-2.0172%** |
+| 10 | -0.3627% |
+| 20 | -0.0687% |
+
+Not zero, and converging away at better than second order. So the wall gradient was never exact in
+the energy problem, and the sentence that carried the old conclusion does not apply to it.
+
+### The corrected figures
+
+Solved in closed form rather than marched. The semi-discrete system is `M dT/dz = -D T + b`, so
+expanding in the eigenvectors of `D phi = lambda M phi` gives the whole streamwise behaviour exactly
+and leaves no streamwise discretisation error to argue about. Fully developed limit:
+
+| grid across the 100.6315 um channel | Nu | error |
 |---|---|---|
-| wall clock | 52,021 s = 14.4 h, one core | **4,714 s = 1.31 h** |
-| passes | 34 | 10 |
-| faces extruded | 23,046,797 of 25,685,941 = 89.77% | 23,300,896 of 25,685,941 = **90.71%** |
-| illegal faces at exit | 4,022 | 23,833 |
+| 400 uniform, the reference | 8.23530 | 0.00% |
+| **5 uniform cells, as shipped** | 8.27938 | **+0.54%** |
+| 3 layers per wall, nominal 21.9925 um | 8.17536 | **-0.73%** |
+| 3 layers, the 16.7 um actually achieved | 8.11941 | **-1.41%** |
+| 2 layers per wall | 8.10862 | -1.54% |
 
-11.0x faster, with slightly better coverage, at 5.9x the illegal faces. The illegal count is the
-price of cutting `nLayerIter` from 50 to 10 and `nRelaxedIter` from 20 to 3, and it is a price worth
-paying: 23,833 illegal faces out of 446,465,029 is 0.053 ppm.
+Three checks, because this overturns a published number and one solver's word is not enough:
 
-The result:
-
-| | |
+| check | result |
 |---|---|
-| cells | 143,236,900, up from 82,529,515 |
-| cells added | 60,707,385 of 77,057,823 requested, 78.78% |
-| faces | 446,465,029 |
-| layers achieved | 2.36 of 3 requested |
-| total layer thickness | 1.67e-05 m, 75.9% of target |
-| total volume | 5.51026e-05 m3, **identical to pre-layer** |
-| max aspect ratio | 345.071 |
-| non-orthogonality | max 77.6263, average 6.87631 |
-| max skewness | 3.475 |
-| min cell volume | 3.14951e-16, down from 2.09433e-14 |
-| verdict | `Mesh OK`, then **Failed 1 mesh check** |
+| Nu grid convergence, N = 5 to 1280 | observed order **2.0003**, error x N squared to **0.17647 = 3/17**, extrapolating to **140/17** |
+| flow rate against the record's exactly +2/N squared | ratio **1.000000** at N = 5, 10, 20, 40, 80 |
+| one wall heated, other adiabatic | **140/26** to four decimals |
+| closed form against a brute-force march | agree to **0.000%** |
 
-The volume being identical to seven figures is the check that layers only subdivide existing cells
-and never move a wall. It passed.
+The flow check is the important one. It shares every piece of machinery with the energy solve except
+the boundary condition, and it reproduces the record's own figure exactly, which puts the fault in
+the energy boundary treatment of the old solver and nowhere else. A clean second-order sequence
+converging to 3/17 cannot pass through 0.545, which is what +2.18% at N=5 would require.
 
-Faces in error, 23,814 of 446,465,029:
+**What survives unchanged:** flow rate +8.00% at 5 cells, and wall shear exact at any resolution.
+Both are momentum results and both are confirmed above. Only the Nusselt figures move.
 
-| criterion | faces |
+### The layer stack that actually exists
+
+| | layers | overall thickness |
+|---|---|---|
+| requested by the dict | 3 | 2.2e-05 m |
+| **achieved over all 25,685,941 faces** | **2.36** | **1.67e-05 m, 75.9% of target** |
+
+Coverage was 90.71%, so **9.29% of the conjugate interface has no layers at all.** That matters more
+than the average: on those faces the mesh is the plain 5-cell mesh, with the plain mesh's errors. A
+90.71% covered layer mesh does not remove the worst-case local error, it removes it from 90.71% of
+the wall. The `lay3 achieved` row above models the covered part and is not the patch as a whole.
+
+### Developing flow, which the old section only reasoned about
+
+The old section said the conclusion holds while the flow is thermally developed and that layers
+start earning their cost above Re 226. That was an estimate from an entrance-length formula, not a
+solution. Solving the Graetz problem on the same grids, fully developed velocity with developing
+temperature, which is the right model at Pr 6 because the thermal entrance length is Pr times the
+hydrodynamic one:
+
+| Re | x*_exit | mesh mean | mesh worst local | lay3 ach mean | lay3 ach worst local |
+|---|---|---|---|---|---|
+| 10 | 1.0600 | +0.59% | **42.9%** | -1.41% | 2.1% |
+| 100 | 0.1060 | +1.08% | **72.9%** | -1.39% | 6.5% |
+| 226 | 0.0469 | +1.82% | **79.3%** | -1.37% | 6.5% |
+| 1000 | 0.0106 | +4.67% | **87.4%** | -1.60% | 31.4% |
+| 2000 | 0.0053 | +4.57% | **90.0%** | -1.88% | 44.3% |
+
+And the crossover depends entirely on which metric is asked for:
+
+| metric | crossover, plain mesh against the stack as built |
 |---|---|
-| interpolation weights < 0.02 | **16,363** |
-| non-orthogonality > 65 deg | 4,917 |
-| cells with determinant < 0.001 | 1,124 |
-| volume ratio of neighbours < 0.01 | 1,054 |
-| face twist < 0.02 | 352 |
-| face-decomposition tet quality < 1e-30 | 4 |
+| mean Nusselt over the 12.8 mm run | **Re 152** |
+| length-weighted RMS local error | **Re 23** |
+| **worst local error** | **none anywhere in 1 to 1e6; layers win at every Reynolds number** |
 
-The dominant mode, interpolation weight below 0.02, means one cell is at least 49 times its
-neighbour. That is the signature of the sliver: the layer stack fills 16.7 um of a 20.126 um cell
-and leaves a 3.43 um remnant wedged against a full-size cell, a 5.87x jump on average and far worse
-where the layer nearly filled the cell.
+Mean Nusselt is a generous metric for a coarse mesh, because a coarse mesh under-predicts Nusselt in
+the entrance and over-predicts it downstream and the two cancel. At Re 1000 the plain mesh is -54.1%
+at 0.05 mm and +8.5% at 3 mm, and those average to +4.7%. A cold plate with chip hot spots does not
+average them: it feels the local wall temperature, and the entrance is where the coolant is coldest
+and the flux highest.
 
-**But the sliver is not the real problem.** Removing it entirely, by grading 3 layers to fill the
-first cell exactly, makes Nusselt slightly worse still, -4.41% against -4.02%. The problem is the
-layers themselves. On a mesh whose wall gradient was already exact, moving cells to the wall while
-leaving only 3 coarse cells to carry the core degrades the bulk temperature that Nusselt divides by.
-The layer pass bought 2.7 points of flow accuracy and cost 6.2 points of Nusselt.
+### So what the layers actually are
 
-That verdict is conditional on the flow being thermally developed, and the condition is tight:
+Not a defect. A trade worth 5,843 s:
 
-| | |
-|---|---|
-| Dh | 188.678 um |
-| longest straight channel run | 12.8 mm = 67.8 Dh |
-| thermal entrance length exceeds that run above | **Re 226** at Pr 6.0, Re 316 at Pr 4.3 |
+- **On mean Nusselt the plain mesh is adequate below Re 152** and better than any layered variant,
+  though by 0.1 to 0.8 points rather than the 6.2 I published.
+- **On any local measure the layered mesh is better at every Reynolds number tested**, and the gap
+  widens with Re: 42.9% against 2.1% at Re 10, and 90.0% against 44.3% at Re 2000.
+- **The time case for dropping them is untouched.** They cost 5,843 s and sub-one-hour is only
+  reachable without them. That is a real engineering trade now, not a free win.
+- **Fixing coverage is worth more than adding layers.** 9.29% of the interface carries the plain
+  mesh's 43 to 90% local error no matter how good the other 90.71% is, so the worst-case number for
+  the patch as a whole does not improve until that fraction does.
 
-At Re 200 the thermal entrance length is already 11.3 mm of the 12.8 mm available. So below roughly
-Re 226 the flow is thermally developed over most of its run and layers hurt; above it the flow is
-developing everywhere, the near-wall gradient is steep and transient, and layers help. **We do not
-know the operating flow rate**, and that single unknown decides whether the layer pass belongs in
-the chain at all.
+The customer's flow rate still matters, and the threshold is Re 152 rather than 226. But it no
+longer decides the question on its own, because the metric decides it first.
 
 ## 8. What I corrected while doing this
 
@@ -348,7 +403,7 @@ the chain at all.
 | 8,652,419 interface gaps over 1 nm | **wrong, my method** | 100% matched, max gap 1.707e-8 m |
 | channel width +0.63% | **wrong, assumed a 100.000 um part** | +0.18% on the CAD median of 100.446 um |
 | channel width -0.074% | **wrong, used the wall-spacing fundamental as the width** | as above |
-| mesh runs 9% low on Nusselt | **wrong in sign and subject** | +2.18% high without layers, wall shear exact |
+| mesh runs 9% low on Nusselt | **wrong in sign and subject** | +0.54% high without layers developed, wall shear exact. My own +2.18% replacement was also wrong, see section 7 |
 | the dead air region causes the `-allGeometry` fatal | **refuted** | `chip_to_solid` being a `mappedWall` whose `sampleRegion` is not loaded |
 | 55.8% flow CV inside the array | **measurement artefact** | plenum crossings; 18.94% with the array filter |
 | the mesh adds 1.45x of conductance spread, 1.89x to 2.75x | **wrong comparison, mixed bins** | the part has its own tail; the mesh doubles the off-nominal share from 9.13% to 18.86% and passes 10.1% too much flow |

@@ -304,7 +304,33 @@ Four claims in this document are corrected there:
 
 | claim | replacement |
 |---|---|
-| the central physics number rests on 4.6 cells across a channel | 5.00 cells at the new cell size, and the error is now solved rather than estimated: flow +8.0%, wall shear **exact**, Nusselt +2.18% |
-| the mesh runs about 9% low on Nusselt | wrong in sign and in subject; for fully developed flow the one-sided wall gradient is exact at any resolution |
+| the central physics number rests on 4.6 cells across a channel | 5.00 cells at the new cell size, and the error is now solved rather than estimated: flow +8.0%, wall shear **exact**, Nusselt ~~+2.18%~~ **+0.54%** developed and 43-90% locally in the entrance. **CORRECTED, see MESH_QUALITY_CBOX2B.md section 7.** |
+| the mesh runs about 9% low on Nusselt | wrong in sign and in subject, but so was my replacement: the one-sided wall gradient is exact for MOMENTUM, not for energy. **CORRECTED, see MESH_QUALITY_CBOX2B.md section 7.** |
 | 8,652,419 interface gaps over 1 nm | an artefact of sorting float32 centroids on 1 nm keys; the interface is 100% matched one to one, max gap 1.707e-8 m |
 | the dead air region causes the `-allGeometry` fatal | refuted; it is `chip_to_solid` being a `mappedWall` whose `sampleRegion` is not loaded when one region is checked alone |
+
+
+---
+
+## CORRECTION, 7 November 2026: the Nusselt figures above are wrong
+
+The +2.18% without layers and -4.02% with them, and the 6.2 point gap between them, are wrong. So is
+the argument that produced them, which held that the cell-centred one-sided wall gradient is exact at
+any resolution. That is true for momentum, whose uniform source gives a parabola that a second-order
+finite volume scheme reproduces exactly, and it is why the flow rate error is exactly +2/N squared.
+It is false for energy, whose source is proportional to u(y) and whose exact solution is therefore a
+quartic. Measured, the discrete first cell deviates from the exact cell average by -2.02% at N=5.
+
+Corrected, fully developed: **5 cells +0.54%**, 3 nominal layers -0.73%, the 16.7 um actually
+achieved -1.41%. Verified by a grid-convergence sequence of observed order 2.0003 whose error times N
+squared goes to 3/17 and which extrapolates to 140/17, by reproducing this record's own flow figure
+of exactly +2/N squared to ratio 1.000000, and by a brute-force march agreeing to 0.000%.
+
+Solving the developing problem rather than estimating an entrance length also moves the threshold and
+reverses the conclusion on local metrics: mean Nusselt crosses over at **Re 152**, RMS local error at
+**Re 23**, and worst local error **never** crosses, so the layers are better there at every Reynolds
+number. The plain mesh runs 42.9% to 90.0% wrong locally in the thermal entrance.
+
+Flow rate +8.00% and wall shear exact both survive; they are momentum results.
+
+The authoritative version is MESH_QUALITY_CBOX2B.md section 7.

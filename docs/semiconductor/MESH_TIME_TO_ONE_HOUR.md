@@ -16,10 +16,14 @@ extrapolated. Where I projected rather than measured, it says so.
 | optimised, no layers | **2,735 s = 46 min** | **under the hour** |
 
 Sub-one-hour is reachable, and the thing standing in the way is the boundary layer pass, which costs
-7,483 s on its own and which [MESH_QUALITY_CBOX2B.md](MESH_QUALITY_CBOX2B.md) section 7 shows makes
-the thermal answer worse rather than better. So the sub-hour chain is not a compromise reached by
-cutting quality. It is the better mesh as well as the faster one, conditional on the flow being
-thermally developed, which is the one thing we cannot check without the customer's flow rate.
+7,483 s on its own.
+
+**Corrected.** This paragraph used to say the sub-hour chain is the better mesh as well as the faster
+one, because the layers made the thermal answer worse. That rested on Nusselt figures of +2.18% and
+-4.02% which are both wrong; see [MESH_QUALITY_CBOX2B.md](MESH_QUALITY_CBOX2B.md) section 7. The
+corrected position: the plain mesh is better on mean Nusselt below Re 152, by under a point rather
+than six, and worse on every local metric at every Reynolds number, by a wide margin in the thermal
+entrance. **The hour is real and it costs accuracy.**
 
 With layers kept, the floor is 2.38 h and the layer step alone is 1.31 h of it. **There is no route
 to one hour that includes a 3-layer boundary layer on 25.7M faces on this hardware with this
@@ -144,7 +148,10 @@ The cost is intrinsic to the size of the job: 25,685,941 faces to extrude, 60,70
 and a final balance over 143,236,900 cells. Three things could reduce it, in descending order of how
 much I trust them:
 
-1. **Do not add layers.** Measured, free, and it improves Nusselt from -4.02% to +2.18%.
+1. **Do not add layers**, if a mean heat transfer coefficient is what is wanted and Re is below
+   about 152. Measured, and it saves the whole 5,843 s. It is **not** free: see
+   MESH_QUALITY_CBOX2B.md section 7, which corrects my earlier claim that it also improves
+   accuracy. On any local metric the layers are better at every Reynolds number.
 2. **Layer only the channel walls** rather than all 25.7M interface faces. The chip footprint and the
    channel array are a fraction of the interface. Not attempted, and it needs a faceZone the current
    chain does not build.
@@ -190,9 +197,12 @@ deliver decomposed                            0 s
                                           2,735 s = 46 min
 ```
 
-Add 5,843 s for layers if and only if the operating Reynolds number turns out to be above about 226,
-which is the point at which the thermal entrance length exceeds the longest straight channel run and
-layers start earning their cost.
+Add 5,843 s for layers unless both of these hold: the operating Reynolds number is below about
+**152**, and what the customer wants is a mean heat transfer coefficient rather than a peak junction
+temperature. On a worst-local-error metric the layers win at **every** Reynolds number, so the hour
+is bought at a price rather than for free. MESH_QUALITY_CBOX2B.md section 7 has the corrected
+numbers; the 226 that used to be here came from an entrance-length estimate and the solved value is
+152.
 
 To run `checkMesh -allGeometry`, which has never once passed on a conjugate mesh, retype the
 `mappedWall` interface on a **throwaway copy** of the boundary file and check that. Measured on the
