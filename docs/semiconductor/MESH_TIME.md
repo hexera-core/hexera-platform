@@ -213,3 +213,26 @@ and it is unchanged from what this document already says about it.
 
 A corrected forecast for anything larger: take the front half as 0.80 h scaled by cells, and the
 tail as 2.20 h scaled by cells. Both were measured on these two runs rather than on one.
+
+---
+
+## 7 November 2026: the tail, measured and removed
+
+Full stage timings for `cbox2b` plus the layer pass, and the route to 46 minutes, are in
+[MESH_TIME_TO_ONE_HOUR.md](MESH_TIME_TO_ONE_HOUR.md). The headline against what this document says
+above:
+
+| chain | wall clock |
+|---|---|
+| as run, with layers | 20,834 s = 5.79 h |
+| optimised, with layers | 8,578 s = 2.38 h |
+| optimised, no layers | **2,735 s = 46 min** |
+
+The 73% tail this document identified is confirmed and now itemised: 6,497 s in three
+`reconstructParMesh` calls and 5,583 s re-checking serially what `checkMesh -parallel` had already
+passed. Both are removable at no cost in accuracy by delivering the mesh decomposed.
+
+Two levers were tested and one died. Binary `polyMesh` is a real 1.74x on reads and 1.64x on disk,
+but `foamFormatConvert` costs 157 s to save 118 s, so it only pays as the mesher's own `writeFormat`.
+Running the three serial checks concurrently does not work at all: the solid arm was OOM-killed on a
+768 GB box, and binary cannot help because it shrinks the file and not the in-memory footprint.

@@ -291,3 +291,20 @@ the physics is and less of it where it is not.
 - The flow rate and fluid, which are unknown. Every error estimate above scales with them.
 - A grid convergence study, which needs a `WM_LABEL_SIZE=64` image before it can be run.
 - Measuring the interior cell quality rather than only the boundary ring.
+
+---
+
+## Superseded for `cbox2b`
+
+This document assesses `cbox2`, the 413.27M cell mesh at a 22.0035 um cell. For `cbox2b` at 20.1263
+um, with the ports split and a boundary layer added, see
+[MESH_QUALITY_CBOX2B.md](MESH_QUALITY_CBOX2B.md), measured 7 November 2026.
+
+Four claims in this document are corrected there:
+
+| claim | replacement |
+|---|---|
+| the central physics number rests on 4.6 cells across a channel | 5.00 cells at the new cell size, and the error is now solved rather than estimated: flow +8.0%, wall shear **exact**, Nusselt +2.18% |
+| the mesh runs about 9% low on Nusselt | wrong in sign and in subject; for fully developed flow the one-sided wall gradient is exact at any resolution |
+| 8,652,419 interface gaps over 1 nm | an artefact of sorting float32 centroids on 1 nm keys; the interface is 100% matched one to one, max gap 1.707e-8 m |
+| the dead air region causes the `-allGeometry` fatal | refuted; it is `chip_to_solid` being a `mappedWall` whose `sampleRegion` is not loaded when one region is checked alone |

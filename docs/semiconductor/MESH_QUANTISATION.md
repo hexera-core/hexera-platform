@@ -209,3 +209,55 @@ reports twice, all gaps and then the microchannel band only, so the wider manifo
 channels, 4.9% and 7.4% of gaps on the two meshes, are not counted as scatter.
 `devtools/semiconductor/stl_shells.py` is the surface-side companion that counts shells and checks
 closedness.
+
+---
+
+## 7 November 2026: the pitch-10 cell fixed the split, and the CAD was not 100 um
+
+Re-measured on `cbox2b`, built at `maxCellSize` 322.020 um for a 20.1263 um cell, against the same
+`fluid.stl`. Full detail in [MESH_QUALITY_CBOX2B.md](MESH_QUALITY_CBOX2B.md) section 5.
+
+**The three-way split is gone.**
+
+| | `cbox2` as delivered | `cbox2b` |
+|---|---|---|
+| widths present | 88.014 (36.1%), 110.017 (52.7%), 132.021 (6.4%) | 100.6 to 100.7 (**79.91%**), then whole-cell steps |
+| share on the nominal width | **none** | **79.91%** |
+| conductance spread, w^3 p95/p5 | 3.38x | 2.75x |
+
+88 um does not appear anywhere in the new distribution.
+
+**And a correction to this document.** The table at the top gives the CAD channel as 100.04 um
+median, 100.7 um mean. Measuring the CAD by exactly the method used on the mesh, casting rays along
+the pitch axis and reading coolant runs off the surface crossings with the same at-least-20-crossings
+filter, gives:
+
+| | CAD | `cbox2b` | error |
+|---|---|---|---|
+| channel p5 | 98.295 um | 100.598 um | +2.34% |
+| channel p50 | **100.446 um** | **100.630 um** | **+0.18%** |
+| channel p95 | 121.487 um | 140.900 um | +15.98% |
+| CV | 12.38% | 18.94% | |
+| w^3 p95/p5 | 1.89x | 2.75x | |
+| implied pitch | 201.702 um | 201.263 um | -0.22% |
+
+So the median width is right to +0.18%. Earlier today I published +0.63% for this, computed against
+an assumed 100.000 um nominal, and then -0.074%, computed from the dominant periodicity of wall
+positions in the STL. Both are wrong. The 100.000 um nominal is not what the part is built to, and
+the wall-position fundamental is the mean of channel and fin spacing, not the channel width. The
+table above is the number.
+
+The part's own conductance spread is 1.89x, not the 1.09x in the table at the top of this document,
+because that figure was restricted to the microchannel band and this one is not.
+
+**Two defects this re-measurement exposed that the old framing hid.**
+
+The mesh cannot represent the CAD's narrow channels at all. The CAD p1 is 97.97 um, the lattice
+offers 80.5 um or 100.6 um, so every sub-100 um channel rounds up to 100.6 and passes about 8% too
+much flow. The mesh p5 is pinned at exactly 5 cells.
+
+And **`maxCellSize` cannot fix the remaining tail.** Ten cells is 201.263 um against a CAD pitch of
+201.702 um, 0.22% short, drifting one whole cell only after about 46 channels, which is far too slow
+to explain 10.79% of the array landing at six cells. The cause is phase rather than pitch: a channel
+5.0 cells wide captures 5 or 6 cells depending on where its walls fall relative to cell centres. The
+untested free fix is shifting the octree origin, not changing the cell size.

@@ -1102,3 +1102,52 @@ below it. The `topoSet`-by-cell-level split section 3 proposes is the robust for
 And one planning trap: my first straddling subset was not one. It shared the fine subset's x and z
 window and differed only in y, so both came out with an identical 495,965-face interface, because
 the cliff is not in that window at all.
+
+---
+
+## 7 November 2026: the layers were built, and they made the answer worse
+
+The sweep's conclusion that `addLayers` works post-split is confirmed end to end on the full part.
+3 layers were requested on `fluid_to_solid`, 25,685,941 faces.
+
+| | serial, as first run | parallel, 16 ranks |
+|---|---|---|
+| wall clock | 52,021 s = 14.4 h, one core | **4,714 s = 1.31 h** |
+| passes | 34 | 10 |
+| coverage | 89.77% | **90.71%** |
+| illegal faces at exit | 4,022 | 23,833 of 446,465,029 = 0.053 ppm |
+
+11.0x faster with slightly better coverage, from cutting `nLayerIter` 50 to 10 and `nRelaxedIter` 20
+to 3. Pass 1 of the parallel run reproduces the serial run to within 9 faces extruded and 4 illegal
+faces, so the two are doing the same work.
+
+Result: 143,236,900 cells from 82,529,515, 2.36 layers achieved of 3, total thickness 1.67e-05 m at
+75.9% of target. Total volume identical to pre-layer at 5.51026e-05 m3 to seven figures, which is the
+check that layers only subdivide and never move a wall.
+
+**And the finding that matters: the layers degrade the thermal answer.** Solving the same
+discretisation OpenFOAM uses on the real cell distribution, verified against the textbook
+parallel-plate Nu of 8.2353 to 0.002% at 200 cells:
+
+| grid across the 100.630 um channel | flow rate | wall shear | Nusselt |
+|---|---|---|---|
+| 5 uniform cells, no layers | +8.00% | **exact** | **+2.18%** |
+| plus layers as built | +5.28% | exact | **-4.02%** |
+| plus layers, sliver removed | +5.18% | exact | -4.41% |
+
+For fully developed laminar flow the cell-centred one-sided wall gradient is exact at any resolution,
+because the discrete solution is the exact parabola plus a constant offset and the offset cancels in
+the gradient. There is no wall gradient error for a boundary layer to fix. The layer stack instead
+moves cells out of the core, and Nusselt depends on the bulk temperature that the core carries. So
+the layer pass bought 2.7 points of flow accuracy and cost 6.2 points of Nusselt.
+
+Removing the 3.43 um sliver between the last layer and the first background cell does not rescue it,
+so it is the layers and not the sliver. The sliver is still a real conditioning defect: it is a 5.87x
+neighbour jump and it accounts for 16,363 of the 23,814 faces in error, all of them interpolation
+weights below 0.02.
+
+The whole verdict is conditional on the flow being thermally developed, and the margin is thin. The
+longest straight channel run is 12.8 mm = 67.8 Dh, and the thermal entrance length exceeds that above
+**Re 226** at Pr 6.0. At Re 200 it is already 11.3 mm of the 12.8 mm available. Above Re 226 the flow
+is developing everywhere and layers do earn their cost. The operating flow rate is unknown and
+decides this outright.

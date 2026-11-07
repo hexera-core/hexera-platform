@@ -5013,3 +5013,54 @@ mechanism I asserted rather than derived. The grid-phase explanation, the one-si
 the volume and area corroboration, the face-label ceiling and "finer cells help" were all narrative
 fitted to real numbers, and four of the five pointed the next run in the wrong direction. The
 measurements were sound and the stories about them were not.
+
+---
+
+## 2026-11-07: cbox2b measured end to end, layers built in parallel, and three of my own claims withdrawn
+
+Ran the layer pass to completion in parallel, archived both meshes, and did the deep quality and time
+analysis. Three new documents: [MESH_QUALITY_CBOX2B.md](MESH_QUALITY_CBOX2B.md),
+[MESH_TIME_TO_ONE_HOUR.md](MESH_TIME_TO_ONE_HOUR.md), [MESH_IMPROVEMENT_PLAN.md](MESH_IMPROVEMENT_PLAN.md).
+
+**What was built.** `bl3p`, the fluid region with 3 layers requested on `fluid_to_solid`:
+143,236,900 cells from 82,529,515, 2.36 layers achieved, 4,714 s on 16 ranks against 52,021 s serial
+for the same work, 11.0x. `Mesh OK` with 1 failed quality check, 23,814 faces in error of
+446,465,029.
+
+**Time.** As run the full chain is 20,834 s = 5.79 h. Optimised it is 8,578 s = 2.38 h with layers
+and **2,735 s = 46 min** without. 59% of the run is three `reconstructParMesh` calls and a serial
+re-check of a mesh `checkMesh -parallel` had already passed, and both go away by delivering the mesh
+decomposed. Binary `polyMesh` is 1.74x on reads and 1.64x on disk but only pays as the mesher's own
+`writeFormat`. Running the three serial checks concurrently does not work: the solid arm was
+OOM-killed on 768 GB.
+
+**The `-allGeometry` gap is closed.** Retyping `chip_to_solid` from `mappedWall` to `wall` makes
+`checkMesh -allGeometry` pass, rc=0 in 624 s against rc=1 in 610 s. The cause is that checking one
+region alone cannot resolve a `mappedWall` patch's `sampleRegion`. `mesh_ok` can finally be true.
+
+**Ports.** Both ports are in the same connected piece, proved by intersecting port owner cells with
+each piece: `port_a` 1,924 of 1,924 in piece 0, `port_b` 1,927 of 1,927. The other two pieces are one
+cell each. The coolant circuit is intact and the warning is cosmetic.
+
+**Things I got wrong and have withdrawn.**
+
+| claim | why it was wrong |
+|---|---|
+| 8,652,419 interface gaps over 1 nm | sorted float32 centroids on 1 nm keys, below the precision of the data; it measured my method. The interface is 100% matched one to one, max gap 1.707e-8 m |
+| channel width +0.63% | computed against an assumed 100.000 um nominal. The CAD median is 100.446 um |
+| channel width -0.074% | used the dominant periodicity of STL wall positions as the channel width. That fundamental is the mean of channel and fin spacing |
+| 9% low on Nusselt | wrong in sign and subject. Wall shear is exact at any resolution; Nusselt is +2.18% high without layers |
+| the dead air region causes the `-allGeometry` fatal | refuted by the control arm |
+| 55.8% flow CV inside the channel array | plenum crossings. 18.94% with the array filter |
+
+The channel width is **+0.18%** on the CAD median, measured on both sides with the same definition.
+
+**The layers are a defect, not a feature.** Nusselt goes from +2.18% without them to -4.02% with
+them, because for fully developed flow the wall gradient was already exact and the layer stack takes
+cells out of the core that the bulk temperature depends on. Conditional on Re below about 226, which
+is where the thermal entrance length exceeds the longest straight channel run. The operating flow
+rate is unknown and decides it.
+
+**Archived and verified.** `gs://.../corintis/mesh/bl3p/fluid_layered.tar.gz`, 5,453,801,464 B from
+33.81 GB, streamed back out of the bucket and walked. The `cbox2b` set still holds the pre-fix
+`mappedWall` boundary files and needs the two corrected ones re-uploaded.
