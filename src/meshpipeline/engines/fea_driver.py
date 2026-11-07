@@ -320,8 +320,8 @@ MIXED_GATE = "fea_mixed"
 
 
 def mesh_as_of(state) -> str:
-    """SHSTAGE-5: "shell" when the stage settled Mesh as: Shell, "mixed" when Auto settled shell + solid (MIXED-4),
-    else "solid" (state fea_mesh_as)."""
+    """SHSTAGE-5: "shell" when the user's words asked for a shell (settled at Proceed), "mixed" from a confirmation
+    stored before shell + solid left the stage (MIXED-4), else "solid" (state fea_mesh_as)."""
     got = str((state or {}).get("fea_mesh_as") or "").strip().lower()
     return got if got in ("shell", "mixed") else "solid"
 

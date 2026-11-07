@@ -25,7 +25,7 @@ import { applyFlow, bindAxis, bindUnit, changedAnswers, editsLine, extentAlong, 
   markConfirmed, noteDrawn, readExternal, readForm, rowHtml, servedProposal, shown, tableHead, unitChoiceHint,
   unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
 import { bindFeaPanel, bindMeasure, effectiveMeshAs, feaPanelHtml, followAssembly, followClean, followMeasure, followMeshAs, interfaceMarks,
-  lightSpotRow, pickedMeshAs, shellLegendHtml, shellMarks, showsShell, wallColour } from "../render/fea_form.js";
+  lightSpotRow, shellLegendHtml, shellMarks, showsShell, wallColour } from "../render/fea_form.js";
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
 import { b64f32, b64u32, loadVtk } from "./scene/vtk_load.js";
@@ -1121,14 +1121,14 @@ async function openFeaStage(sessionId, d, confirm, opts) {
   holdIntake(box, stopAll);
   const release = () => { if (intakeBox() === box) endIntake(); else stopAll(); };
   const panel = box.querySelector(".fea-panel");
-  /* SHSTAGE-4: the mid-surface is fetched once the shell check is ready, and shown while the effective
-     choice is Shell (Shell picked, or Auto recommending it). THE CHECK TAKES MINUTES and the user may have
-     pressed Proceed long before: the part stays in this one viewer until the run starts, so the surface is
-     drawn there whenever it lands - by the choice SETTLED at Proceed (the confirmation's fea_mesh_as: Auto
-     while measuring is a solid, and draws nothing). With the panel gone, its legend (or a line saying the
-     surface is still being made) sits on the part. */
+  /* SHSTAGE-4: the mid-surface is fetched once the shell check is ready, and shown only when the user's words
+     asked for a shell (the server's view says "shell"; a plain solid has no view and draws nothing). THE CHECK
+     TAKES MINUTES and the user may have pressed Proceed long before: the part stays in this one viewer until
+     the run starts, so the surface is drawn there whenever it lands - by the choice SETTLED at Proceed (the
+     confirmation's fea_mesh_as). With the panel gone, its legend (or a line saying the surface is still being
+     made) sits on the part. */
   let overlay = null, fetching = false, missed = false, settledAs = "";
-  const effective = () => (closed && settledAs ? settledAs : effectiveMeshAs(f.shell, pickedMeshAs(panel)));
+  const effective = () => (closed && settledAs ? settledAs : effectiveMeshAs(f.shell));
   const note = box.querySelector(".iv-shell-note");
   function drawNote() {
     const s = f.shell || {}, on = closed && showsShell(effective());
@@ -1149,7 +1149,6 @@ async function openFeaStage(sessionId, d, confirm, opts) {
   bindFeaPanel(panel, f, p, {
     confirm: (body, edits) => confirm(body, edits),
     done: () => { closed = true; settleIntake(box); drawNote(); },
-    meshAsChanged,
   });
   try {
     await loadVtk();
@@ -1186,7 +1185,8 @@ async function openFeaStage(sessionId, d, confirm, opts) {
       if (d2 && d2.confirmed) { closed = true; settledAs = String(d2.confirmed.fea_mesh_as || "") || settledAs; }
       if (d2 && d2.fea) { Object.assign(f, d2.fea); follow(() => followClean(panel, f)); }
       const movedA = !!a && follow(() => followAssembly(panel, a));
-      // SHSTAGE-2: the shell check lands minutes after the stage opened - "Mesh as" and its marks follow
+      // SHSTAGE-2: the shell check lands minutes after the stage opened (or a shell is asked for later) - the
+      // shell row and its marks follow
       const movedS = !!(d2 && d2.fea && d2.fea.shell) && follow(() => followMeshAs(panel, d2.fea.shell, meshAsChanged));
       const moved = (!!m && follow(() => followMeasure(panel, m, p, null))) || movedA || movedS;
       if (moved) {
@@ -1196,12 +1196,12 @@ async function openFeaStage(sessionId, d, confirm, opts) {
       if (movedS) { loadOverlay(); meshAsChanged(); } else if (settledAs !== was) meshAsChanged();
     },
     isNaming: () => false,
-    /** Whether the watch should go on once the check itself is done: the shell check still at work (or its surface
-     *  still to fetch) and the viewer still on the page - while the panel is open, for "Mesh as" to follow it;
-     *  after Proceed, only when the settled choice draws the mid-surface. */
+    /** Whether the watch should go on once the check itself is done: a shell asked for, its check still at work (or
+     *  its surface still to fetch) and the viewer still on the page - while the panel is open, for the shell row to
+     *  follow it; after Proceed, only when the settled choice draws the mid-surface. */
     awaitsShell: () => {
       const s = f.shell;
-      if (!box.isConnected || !s) return false;
+      if (!box.isConnected || !s || !showsShell(effectiveMeshAs(s))) return false;
       const pending = s.state === "measuring" || (s.state === "ready" && !!s.overlay && !overlay && !missed);
       return pending && (!closed || showsShell(effective()));
     },

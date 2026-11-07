@@ -406,14 +406,13 @@ export function followClean(root, f) {
 }
 
 /* ======================================================================================
- * SHSTAGE-2..4: "MESH AS: Auto (recommended) / Shell / Solid".
+ * SHSTAGE-2..4: A SHELL, ONLY WHEN THE USER ASKED FOR ONE IN WORDS.
  *
- * A shell is the part's mid-surface meshed with plate elements; a solid is its volume meshed with
- * tetrahedra. Auto recommends one from the measured walls, with the reason in plain words. What the
- * user said in the chat opens checked and is never overridden; a click is theirs too. While the walls
- * are still measured the stage says so, and what Proceed does then (Auto: a solid). Below: what stays
- * solid if it is meshed as a shell, where the plates do not meet (red on the part), and the legend of
- * the mid-surface's colours - the wall in mm.
+ * A shell is the part's mid-surface meshed with plate elements. The stage never offers or suggests one:
+ * the server sends a `shell` view only when the user's words asked for a shell, and the panel then says
+ * so in one row - with a line while the mid-surface is still being made, the one-sentence reason when no
+ * shell can be made (the part is meshed solid), what is not in the shell, where plates do not meet (red
+ * on the part) and the legend of the mid-surface's colours, the wall in mm. No view: nothing at all.
  * ====================================================================================== */
 
 /** The mid-surface's colours: a muted sequential ramp (cividis-like), thin walls dark blue to thick
@@ -453,92 +452,55 @@ export function shellMarks(s) {
     shape: r.kind === "open" ? "plates do not meet" : "stays solid", at_mm: r.at_mm }));
 }
 
-/** What Auto means now, in the option's own words. */
-function autoWords(s) {
-  if (s.state === "measuring") return "measuring the walls…";
-  if (s.recommend === "shell") return "Shell";
-  if (s.recommend === "mixed") return "Shell + solid";
-  if (s.recommend === "solid") return "Solid";
-  return "";
-}
+/** One string for what a shell view shows: a later view that says more is drawn again. */
+const meshAsSig = (s) => `${s.state}/${s.mesh_as || ""}/${(s.not_shelled || []).length}/${s.reason || ""}/${s.overlay ? 1 : 0}`;
 
-/** One string for what a "Mesh as" view shows: a later view that says more is drawn again. */
-const meshAsSig = (s) => `${s.state}/${s.recommend || ""}/${(s.not_shelled || []).length}/${s.said || ""}/${s.overlay ? 1 : 0}`;
-
-/** Whether the effective choice draws the mid-surface: a shell, or Auto's shell + solid (MIXED-4). */
+/** Whether the choice draws the mid-surface: a shell (or a shell + solid confirmed before it left the stage). */
 export const showsShell = (eff) => eff === "shell" || eff === "mixed";
 
-/** The list's head: what is not shelled, for the effective choice. */
-const shellListHead = (eff) => (eff === "mixed" ? "Kept solid, joined to the shell" : "If it is meshed as a shell");
-
-/** The effective choice the stage shows: the picked option, Auto read as its recommendation. */
-export function effectiveMeshAs(s, picked) {
-  const k = picked || (s && s.default) || "auto";
-  return k === "auto" ? ((s && s.recommend) || "") : k;
+/** What the part is meshed as, by the server's view: "shell", "solid" (a shell asked for that cannot be made),
+ *  or "" with no view (a plain solid). */
+export function effectiveMeshAs(s) {
+  return (s && s.mesh_as) || "";
 }
 
-function meshAsBody(s, picked) {
-  const pick = picked || s.default || "auto";
-  const opts = (s.options || []).map((o) => {
-    const off = o.key === "shell" && s.shell_ok === false;
-    const label = o.key === "auto" ? `${esc(o.label)}${autoWords(s) ? `: <span class="fea-meshas-auto">${esc(autoWords(s))}</span>` : ""}`
-      : `<b>${esc(o.label)}</b>${o.words ? ` <span class="fea-conn-words">${esc(o.words)}</span>` : ""}`;
-    return `<label class="fea-meshas-opt${off ? " off" : ""}"${off ? ` title="${esc(s.shell_off || "")}"` : ""}><input type="radio" name="fea-mesh-as" value="${esc(o.key)}"${o.key === pick ? " checked" : ""}${off ? " disabled" : ""}> ${label}</label>`;
-  }).join("");
-  const said = s.said_words ? `<div class="gc-note fea-meshas-said">${esc(s.said_words)}</div>` : "";
-  const measuring = s.state === "measuring"
-    ? `<div class="gc-note fea-meshas-measuring"><span class="gc-spin" aria-hidden="true"></span> ${esc(s.measuring_words || "")} ${esc(s.early_proceed || "")}</div>` : "";
+function meshAsBody(s) {
+  const shell = showsShell(effectiveMeshAs(s));
+  const measuring = shell && s.state === "measuring"
+    ? `<div class="gc-note fea-meshas-measuring"><span class="gc-spin" aria-hidden="true"></span> ${esc(s.measuring_words || "")}</div>` : "";
   const reason = s.reason ? `<div class="gc-note fea-meshas-why">${esc(s.reason)}</div>` : "";
-  const rows = (s.not_shelled || []).map((r) => r.id
+  const rows = shell ? (s.not_shelled || []).map((r) => r.id
     ? `<li class="fea-spot-row fea-shell-row ${esc(r.kind)}" data-spot="${esc(r.id)}"><span class="fea-spot-id">${esc(r.id)}</span><span>${esc(r.words)}</span></li>`
-    : `<li class="fea-shell-head ${esc(r.kind)}">${esc(r.words)}</li>`).join("");
-  const eff = effectiveMeshAs(s, pick);
-  const list = rows ? `<div class="fea-shell-list"${showsShell(eff) ? "" : " hidden"}><div class="fea-spot-head">${shellListHead(eff)}</div><ul class="fea-spots fea-shell-rows" aria-label="What is not shelled">${rows}</ul></div>` : "";
-  const legend = s.overlay ? `<div class="fea-shell-show"${showsShell(eff) ? "" : " hidden"}>${shellLegendHtml(s)}<div class="gc-note">The coloured surface on the part is the mid-surface the shell is meshed on.</div></div>` : "";
-  return `<div class="rc-row"><div class="rc-k">${esc(s.question || "Mesh as")}</div><div class="rc-v"><div class="fea-meshas-opts" role="radiogroup" aria-label="${esc(s.question || "Mesh as")}">${opts}</div></div></div>
-    ${said}${measuring}${reason}${list}${legend}`;
+    : `<li class="fea-shell-head ${esc(r.kind)}">${esc(r.words)}</li>`).join("") : "";
+  const list = rows ? `<div class="fea-shell-list"><div class="fea-spot-head">Not in the shell</div><ul class="fea-spots fea-shell-rows" aria-label="Not in the shell">${rows}</ul></div>` : "";
+  const legend = shell && s.overlay ? `<div class="fea-shell-show">${shellLegendHtml(s)}<div class="gc-note">The coloured surface on the part is the mid-surface the shell is meshed on.</div></div>` : "";
+  const said = shell && s.said_words ? ` <span class="fea-conn-words fea-meshas-said">${esc(s.said_words)}</span>` : "";
+  return `<div class="rc-row"><div class="rc-k">${esc(s.question || "Mesh as")}</div><div class="rc-v fea-meshas-v"><b>${esc(s.label || "")}</b>${said}</div></div>
+    ${measuring}${reason}${list}${legend}`;
 }
 
-/** "Mesh as" for the panel; nothing without a `shell` view (a server from before it). */
+/** The shell row for the panel; nothing without a `shell` view (a solid, as before shell existed). */
 export function meshAsHtml(s) {
   if (!s) return "";
   return `<div class="fea-meshas" data-sig="${esc(meshAsSig(s))}">${meshAsBody(s)}</div>`;
 }
 
-/** The radio the user has checked ("auto", "shell", "solid"), or "". */
-export function pickedMeshAs(root) {
-  const r = root && root.querySelector ? root.querySelector('input[name="fea-mesh-as"]:checked') : null;
-  return r ? r.value : "";
-}
-
-/** Show the list and the legend that belong to the effective choice. */
-function showForPick(root, s) {
-  const eff = effectiveMeshAs(s, pickedMeshAs(root));
-  root.querySelectorAll(".fea-shell-list,.fea-shell-show").forEach((el) => { el.hidden = !showsShell(eff); });
-  root.querySelectorAll(".fea-shell-list .fea-spot-head").forEach((el) => { el.textContent = shellListHead(eff); });
-  return eff;
-}
-
-/** Wire "Mesh as": `changed(effective)` runs when the pick changes (the stage shows or hides the
- *  mid-surface). */
-export function bindMeshAs(root, s, changed) {
-  const box = root.querySelector(".fea-meshas");
-  if (!box || !s) return;
-  box.querySelectorAll('input[name="fea-mesh-as"]').forEach((r) => {
-    r.addEventListener("change", () => { const eff = showForPick(box, s); if (changed) changed(eff); });
-  });
-}
-
-/** THE SHELL CHECK LANDS AFTER THE PANEL WAS DRAWN (it takes minutes): "Mesh as" is drawn again in
- *  place, the user's pick kept. True when it changed. */
+/** THE SHELL CHECK LANDS AFTER THE PANEL WAS DRAWN (it takes minutes): the shell row is drawn again in place (or
+ *  added, for a shell asked for after the stage opened). True when it changed. */
 export function followMeshAs(root, s, changed) {
-  const box = root.querySelector(".fea-meshas");
-  if (!box || !s || box.dataset.sig === meshAsSig(s)) return false;
-  const picked = pickedMeshAs(box);
-  box.dataset.sig = meshAsSig(s);
-  box.innerHTML = meshAsBody(s, picked);
-  bindMeshAs(root, s, changed);
-  showForPick(box, s);
+  if (!root || !s) return false;
+  let box = root.querySelector(".fea-meshas");
+  if (!box) {
+    const at = root.querySelector(".fea-assembly") || root.querySelector(".fea-blocked") || root.querySelector(".fea-q");
+    if (!at) return false;
+    at.insertAdjacentHTML("beforebegin", meshAsHtml(s));
+    box = root.querySelector(".fea-meshas");
+  } else if (box.dataset.sig === meshAsSig(s)) return false;
+  else {
+    box.dataset.sig = meshAsSig(s);
+    box.innerHTML = meshAsBody(s);
+  }
+  if (changed) changed(effectiveMeshAs(s));
   return true;
 }
 
@@ -547,10 +509,11 @@ export function feaPanelHtml(f, p) {
   const blocked = f.single_part_only || "";
   const why = f.clean === false
     ? `<div class="gc-note">The part can still go ahead: the mesh is made from the file as it is.</div>` : "";
-  const how = f.shell ? "meshed as a shell or a solid (below)" : "meshed as itself, as a solid";
+  const asShell = showsShell(effectiveMeshAs(f.shell));
+  const how = asShell ? "meshed as a shell (below)" : "meshed as itself, as a solid";
   return `<div class="v-row v-titlerow"><b class="v-title">Your part</b><span class="v-meta">for structural analysis (FEA)</span></div>
     <div class="gc-lead">${p.part ? `<div class="gc-part"><b>${esc(p.part)}</b></div>` : ""}
-      <p>${f.assembly ? `The parts are ${f.shell ? "meshed together, as a shell or a solid (below)" : "meshed as solids, together"}. Every face of every part is kept as a named group (Part_k_Face_j), so you set the supports, loads and materials in your own solver.` : `The part is ${how}. Every face is kept as a named group, so you set the supports and loads in your own solver.`}</p></div>
+      <p>${f.assembly ? `The parts are ${asShell ? "meshed together, as a shell (below)" : "meshed as solids, together"}. Every face of every part is kept as a named group (Part_k_Face_j), so you set the supports, loads and materials in your own solver.` : `The part is ${how}. Every face is kept as a named group, so you set the supports and loads in your own solver.`}</p></div>
     <div class="gc-form fea-form">
       <div class="rc-row"><div class="rc-k">Size</div><div class="rc-v fea-size">${sizeHtml(p)}</div></div>
       <div class="rc-row"><div class="rc-k">The file's unit</div><div class="rc-v">${unitBoxHtml(p)}</div></div>
@@ -578,9 +541,6 @@ export function readFeaForm(root, p) {
   if (gapBox) body.fea_gap_joins = !!gapBox.checked;
   // PLAN-fea-19/20: each pair as it is set (the server keeps the ones that differ from the rule)
   if (root.querySelector && root.querySelector(".fea-pair")) body.fea_pairs = readPairs(root);
-  // SHSTAGE-5: the pick as it stands; the server settles it (Auto while measuring: a solid)
-  const meshAs = pickedMeshAs(root);
-  if (meshAs) body.fea_mesh_as = meshAs;
   const upSel = root.closest ? root.closest(".gc-stage")?.querySelector(".v-up select") : null;
   const up = (upSel && upSel.value) || p.up_axis;
   if (up) body.up_axis = up;
@@ -589,7 +549,7 @@ export function readFeaForm(root, p) {
 
 /** Wire the panel: the unit box follows every size shown, and Proceed confirms - after the unit is
  *  picked when the size makes it doubtful. `done()` runs once the server has the answer. */
-export function bindFeaPanel(root, f, p, { confirm, done, meshAsChanged }) {
+export function bindFeaPanel(root, f, p, { confirm, done }) {
   bindUnit(root, p);
   const form = root.querySelector(".fea-form") || root;
   bindMeasure(form);
@@ -610,7 +570,6 @@ export function bindFeaPanel(root, f, p, { confirm, done, meshAsChanged }) {
       followPairDefaults(form);
     }
   });
-  bindMeshAs(form, f.shell, meshAsChanged);
   const btn = form.querySelector(".gc-proceed"), hint = form.querySelector(".gc-hint");
   if (!btn) return;
   btn.onclick = async () => {

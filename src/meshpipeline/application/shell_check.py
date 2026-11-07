@@ -1,16 +1,18 @@
-# Responsibility: "MESH AS: Auto / Shell / Solid" on the FEA stage (SHSTAGE-2..5). Runs the shell check of an
-# FEA part in the geometry-check worker (cad/shell_preview in a process of its own, up to SHELL_CHECK_LIMIT_S)
-# after the part is measured, keeps a short summary of it, and says what the stage shows: the recommendation
-# with its reason in plain words, what stays solid and why, where plates do not meet - and settles the choice
-# when the user presses Proceed, so the run never waits on the user.
-# Boundaries: the choice is the user's. Words they said (application/mesh_as) or a click are never overridden;
-# only a shell nothing can be made of (a triangle file, a part with no thin wall) is meshed solid instead, said
-# plainly. Auto recommends; it never decides past the measurement. The view functions are pure.
+# Responsibility: SHELL MESHING ON THE FEA STAGE, ONLY WHEN THE USER SAID IT (SHSTAGE-2..5). Words the user wrote
+# (application/mesh_as, purpose_map: "shell", "mid-surface", "plate elements", "CQUAD4", "S4", "SHELL181" ...) are
+# the only way to a shell: plain "FEA" is a solid mesh, exactly as before shell existed. When they asked for a
+# shell, this runs the shell check of the part in the geometry-check worker (cad/shell_preview in a process of its
+# own, up to SHELL_CHECK_LIMIT_S), keeps a short summary of it, and says what the stage shows: the mid-surface,
+# what is not in the shell and where plates do not meet - and settles the choice when the user presses Proceed, so
+# the run never waits on the user.
+# Boundaries: never guesses or suggests a shell - no recommendation, no pick on the stage. A shell asked for on a
+# part nothing can be made of (a triangle file, a part with no thin wall) is meshed solid, said in one sentence;
+# never a refusal. The view functions are pure.
 # Collaborates with: cad/shell_preview.py (the extraction and the drawing), application/geometry_check.py (the
 # store, the upload's reading, the FEA naming that starts this), application/fea_check.py (the FEA view this
-# joins), api/v1/geometry.py (serves the view and the drawing, takes the answer), application/pipeline_run.py
-# (reads the settled choice into the run), engines/fea_driver.py (meshes the shell), contracts/geometry_check.py
-# (the worker seam), ui/js/render/fea_form.js and ui/js/viewer/geometry_stage.js (draw it).
+# joins), api/v1/geometry.py (serves the view and the drawing, starts a check asked for later, settles it),
+# application/pipeline_run.py (reads the settled choice into the run), engines/fea_driver.py (meshes the shell),
+# contracts/geometry_check.py (the worker seam), ui/js/render/fea_form.js and ui/js/viewer/geometry_stage.js.
 from __future__ import annotations
 
 import json
@@ -33,47 +35,27 @@ OVERLAY_FILE = "shell/overlay.json"
 #: Its states.
 MEASURING, READY, UNAVAILABLE = "measuring", "ready", "unavailable"
 #: SHSTAGE-2: the shell check's own time limit, seconds. The extraction takes up to about ten minutes on the
-#: biggest parts of the training corpus (sh0020/21: 528 s); past this the stage says it took too long, and Auto
-#: meshes the part solid.
+#: biggest parts of the training corpus (sh0020/21: 528 s); past this the stage says the mid-surface could not be
+#: drawn, and the run still makes the shell itself.
 SHELL_CHECK_LIMIT_S = 900
 #: ... and a check still "measuring" this long after it started is read as stopped (a worker that died).
 STALE_AFTER_S = SHELL_CHECK_LIMIT_S + 300
-#: SHSTAGE-3: AUTO RECOMMENDS SHELL when every body is a shell (cad/midsurface 1.4: every face paired, a rim or a
-#: blend), its plates meet everywhere (no open edge), and the thin walls are at least this share of the part's
-#: surface. A part of thin walls and thick regions is recommended Mixed only when engines/mixed_run.recommend says so
-#: with every wall's reach measured (MIXED-4, MIXED-8: cad/shell_preview.mixed_auto); otherwise Solid, with its reason.
-AUTO_SHELL_SHARE = 0.9
 #: The CAD formats a mid-surface is extracted from (a triangle file has no faces to pair).
 CAD_FORMATS = ("step", "stp", "iges", "igs", "brep")
 
 QUESTION = "Mesh as"
-OPTIONS = (
-    {"key": pm.MESH_AUTO, "label": "Auto (recommended)"},
-    {"key": pm.MESH_SHELL, "label": "Shell", "words": "the mid-surface, meshed with plate elements"},
-    {"key": pm.MESH_SOLID, "label": "Solid", "words": "the whole volume, meshed with tetrahedra"},
-)
-MEASURING_WORDS = "Measuring the walls to see if a shell mesh fits this part. This can take a few minutes."
-EARLY_PROCEED = "If you proceed before this is done, Auto meshes the part as a solid. Shell and Solid work any time."
-SHELL_WHY = ("{share}% of this part is plate {thin}, so a shell mesh needs far fewer elements than a solid one, "
-             "and it is what engineers use for sheet metal and plate structures.")
-MIXED_WHY = ("{share}% of this part is plate {thin}, but it also has thick regions that must stay solid, so Auto "
-             "meshes the whole part as a solid.")
-#: MIXED-4/6: Auto's Mixed when mixed_run gave no words of its own
-MIXED_OK_WHY = "Thin walls meshed as shell, thick regions kept solid and joined to them."
-OPEN_WHY = ("This part is plate {thin}, but its mid-surfaces do not meet at {n} place{s} yet, so a shell mesh "
-            "would have gaps there. Auto meshes it as a solid.")
-SOLID_WHY = "No wall of this part is thin against its size, so it is meshed as a solid."
-#: SHSTAGE-3b: the same with the measured reason the shell check gave (cad/midsurface SHELL-2c)
-SOLID_DETAIL_WHY = "No wall of this part is thin against its size: {detail}. So it is meshed as a solid."
-LOW_SHARE_WHY = ("Only {share}% of this part is thin plate, so it is meshed as a solid.")
-TRIANGLES_WHY = ("Shell meshes need a CAD file (STEP or IGES): this file is triangles, with no faces to find the "
-                 "mid-surface on. It is meshed as a solid.")
-NOT_RUN_WHY = "The walls could not be measured ({reason}), so Auto meshes the part as a solid."
-EARLY_WHY = "The walls were still being measured when you proceeded, so Auto meshes the part as a solid."
-NOTHING_TO_SHELL = ("You asked for a shell, but no wall of this part is thin enough to be one. It is meshed as a "
-                    "solid instead.")
-SAID_WORDS = {pm.MESH_SHELL: "You asked for a shell mesh in the chat.",
-              pm.MESH_SOLID: "You asked for a solid mesh in the chat."}
+SHELL_LABEL = "Shell: the mid-surface, meshed with plate elements"
+SOLID_LABEL = "Solid"
+MEASURING_WORDS = "Making the mid-surface. This can take a few minutes; you can proceed now."
+SAID_SHELL = "You asked for a shell mesh."
+#: A shell asked for that cannot be made: one plain sentence each, and the part is meshed solid (never a refusal)
+TRIANGLES_WHY = ("You asked for a shell, but this file is triangles with no faces to find the mid-surface on, so it "
+                 "is meshed as a solid.")
+NOTHING_TO_SHELL = "You asked for a shell, but no wall of this part is thin enough for one, so it is meshed as a solid."
+NOTHING_TO_SHELL_DETAIL = ("You asked for a shell, but no wall of this part is thin enough for one ({detail}), so it "
+                           "is meshed as a solid.")
+#: The check could not draw the mid-surface: the run makes the shell itself (engines/fea_driver.shell_pass)
+NOT_DRAWN = "The mid-surface could not be drawn here ({reason}); the run still meshes the part as a shell."
 
 
 def key(session_id: str, name: str) -> str:
@@ -110,8 +92,9 @@ def is_cad(facts: dict | None) -> bool:
 
 
 def start(session_id: str, owner_id: str, *, facts: dict | None, interpretation: dict | None) -> bool:
-    """SHSTAGE-2: start the shell check of an FEA part once it is measured: the status says "measuring" at
-    once (the stage shows it), and the worker runs it. A triangle file is not checked (no faces to pair)."""
+    """SHSTAGE-2: start the shell check of an FEA part the user asked to mesh as a shell (wants_shell): the
+    status says "measuring" at once (the stage shows it), and the worker runs it. A triangle file is not
+    checked (no faces to pair). Only ever called for a said shell: a solid FEA part costs no worker time."""
     if not is_cad(facts):
         _store_json(key(session_id, STATUS_FILE), {"status": UNAVAILABLE, "reason": "triangles",
                                                    "written_at": time.time()})
@@ -130,7 +113,7 @@ def start(session_id: str, owner_id: str, *, facts: dict | None, interpretation:
 def run_shell_check(*, session_id: str, owner_id: str = "", interpretation: dict | None = None) -> dict:
     """The worker task body: read the upload as the FEA measurement reads it (the same coordinates, so the
     drawing lands on the stage's part), extract and draw it in a child process, store what it wrote and a
-    short summary. Never raises: a check that cannot run says why, and Auto then meshes the part solid."""
+    short summary. Never raises: a check that cannot run says why (the run still makes the shell)."""
     from meshpipeline.application import geometry_check as gc
     from meshpipeline.contracts.object_storage import get_object_store
 
@@ -159,7 +142,7 @@ def run_shell_check(*, session_id: str, owner_id: str = "", interpretation: dict
     except subprocess.TimeoutExpired:
         status = {"status": UNAVAILABLE, "reason": "it took longer than the time allowed",
                   "written_at": time.time(), "seconds": round(time.time() - started, 1)}
-    except Exception as exc:  # noqa: BLE001 - Auto then meshes it solid, with the reason
+    except Exception as exc:  # noqa: BLE001 - said on the stage; the run still makes the shell
         logger.warning("shell check failed - session=%s (%s: %s)", session_id, type(exc).__name__, str(exc)[:300])
         status = {"status": UNAVAILABLE, "reason": f"the part could not be read for it ({type(exc).__name__})",
                   "written_at": time.time(), "seconds": round(time.time() - started, 1)}
@@ -227,10 +210,7 @@ def summarise(record: dict, drawn: dict | None = None) -> dict:
             "open_at_mm": opened[:400], "connected": bool((record.get("checks") or {}).get("connected", True)),
             "complete": bool(record.get("complete", False)), "notes": list(record.get("notes") or [])[:6],
             "overlay": bool(drawn.get("triangles")), "t_min_drawn_mm": drawn.get("t_min"),
-            "t_max_drawn_mm": drawn.get("t_max"),
-            # MIXED-4/8: whether Auto offers shell + solid, measured in the check's child (cad/shell_preview)
-            "mixed_ok": bool((record.get("mixed_auto") or {}).get("ok")),
-            "mixed_why": str((record.get("mixed_auto") or {}).get("why") or "")}
+            "t_max_drawn_mm": drawn.get("t_max")}
 
 
 # ------------------------------------------------------------------------------------------------ the stage
@@ -241,16 +221,6 @@ def _mm(v) -> str:
     return f"{v:.2g} mm" if v < 1 else f"{v:.3g} mm"
 
 
-def _thin_words(s: dict) -> str:
-    """"under 6 mm thick", "2 mm thick", "2 to 6 mm thick"."""
-    lo, hi = s.get("t_min_mm"), s.get("t_max_mm")
-    if hi is None:
-        return "thin"
-    if lo is None or abs(float(hi) - float(lo)) <= 0.02 * float(hi):
-        return f"{_mm(hi)} thick"
-    return f"{_mm(lo)} to {_mm(hi)} thick"
-
-
 def _solid_detail(summary: dict | None, body: str | None = None) -> str:
     """SHSTAGE-3b: the measured reason a whole body stays solid ("its most plate-like wall is 8 mm thick and spans
     about 42 mm, ..."), read from the shell check's words after its colon; "" when there is none. With no body
@@ -259,35 +229,6 @@ def _solid_detail(summary: dict | None, body: str | None = None) -> str:
             if r.get("whole") and (body is None or r.get("body") == body)}
     details = {w.split(": ", 1)[1].strip() for w in whys if ": " in w}
     return details.pop() if len(details) == 1 else ""
-
-
-def recommendation(summary: dict | None, *, cad: bool = True, status: str = READY, reason: str = "") -> tuple[str, str]:
-    """SHSTAGE-3: what Auto meshes the part as, and why, in plain words: ("shell" | "mixed" | "solid", the
-    reason), or ("", "") while the walls are still being measured. Mixed only as mixed_run.recommend measured it."""
-    if not cad:
-        return pm.MESH_SOLID, TRIANGLES_WHY
-    if status == MEASURING:
-        return "", ""
-    if status != READY or not isinstance(summary, dict):
-        return pm.MESH_SOLID, NOT_RUN_WHY.format(reason=reason or "the shell check did not run")
-    verdicts = {b["verdict"] for b in summary.get("bodies") or []}
-    share = float(summary.get("share") or 0.0)
-    pct = max(0, min(100, int(round(100 * share))))
-    if not verdicts or verdicts == {"solid"}:
-        detail = _solid_detail(summary)
-        return pm.MESH_SOLID, SOLID_DETAIL_WHY.format(detail=detail) if detail else SOLID_WHY
-    if verdicts != {"shell"}:
-        if summary.get("mixed_ok"):
-            return pm.MESH_MIXED, str(summary.get("mixed_why") or "") or MIXED_OK_WHY
-        if summary.get("mixed_why"):
-            return pm.MESH_SOLID, str(summary["mixed_why"])
-        return pm.MESH_SOLID, MIXED_WHY.format(share=pct, thin=_thin_words(summary))
-    if summary.get("open_edges"):
-        n = len(summary.get("open_places") or []) or int(summary["open_edges"])
-        return pm.MESH_SOLID, OPEN_WHY.format(thin=_thin_words(summary), n=n, s="" if n == 1 else "s")
-    if share < AUTO_SHELL_SHARE:
-        return pm.MESH_SOLID, LOW_SHARE_WHY.format(share=pct)
-    return pm.MESH_SHELL, SHELL_WHY.format(share=pct, thin=_thin_words(summary))
 
 
 def _is_wall(pair: dict) -> bool:
@@ -358,24 +299,31 @@ def state_of(status: dict | None, *, cad: bool, now: float | None = None) -> tup
 
 
 def shell_view(status: dict | None, facts: dict | None, said: dict | None = None, *,
-               now: float | None = None) -> dict:
-    """SHSTAGE-2..4: what the stage shows under "Mesh as". `said` is the words' reading
-    (application/mesh_as.as_record) - the stage opens on it, and it is never overridden. Pure."""
+               now: float | None = None) -> dict | None:
+    """SHSTAGE-2..4: what the stage shows when the user asked for a shell (`said`: application/mesh_as.as_record);
+    None otherwise - a solid FEA part's stage is the one from before shell existed. What it will be meshed as
+    ("shell", or "solid" with the one-sentence reason when no shell can be made), and once the check is ready,
+    what is not in the shell and the mid-surface's legend. Pure."""
+    if pm.mesh_as_answer((said or {}).get("value")) != pm.MESH_SHELL:
+        return None
     cad = is_cad(facts)
     state, reason = state_of(status, cad=cad, now=now)
     summary = (status or {}).get("summary") if state == READY else None
     if isinstance(summary, dict):
         summary = _in_unit(summary, (status or {}).get("scale_to_m"), (facts or {}).get("scale_to_m"))
-    rec, why = recommendation(summary, cad=cad, status=state, reason=reason)
-    said_value = pm.mesh_as_answer((said or {}).get("value"))
-    if said_value == pm.MESH_SHELL and not cad:
-        said_value = ""
-    out = {"question": QUESTION, "state": state, "options": [dict(o) for o in OPTIONS],
-           "default": said_value or pm.MESH_AUTO, "said": said_value, "said_words": SAID_WORDS.get(said_value, ""),
-           "recommend": rec, "reason": why, "shell_ok": cad, "shell_off": "" if cad else TRIANGLES_WHY,
-           "measuring_words": MEASURING_WORDS if state == MEASURING else "",
-           "early_proceed": EARLY_PROCEED if state == MEASURING else ""}
-    if isinstance(summary, dict):
+    mesh_as, why = pm.MESH_SHELL, ""
+    if not cad:
+        mesh_as, why = pm.MESH_SOLID, TRIANGLES_WHY
+    elif isinstance(summary, dict) and {b.get("verdict") for b in summary.get("bodies") or []} <= {"solid"}:
+        detail = _solid_detail(summary)
+        mesh_as = pm.MESH_SOLID
+        why = NOTHING_TO_SHELL_DETAIL.format(detail=detail) if detail else NOTHING_TO_SHELL
+    elif state == UNAVAILABLE:
+        why = NOT_DRAWN.format(reason=reason or "the check did not run")
+    out: dict = {"question": QUESTION, "state": state, "said": pm.MESH_SHELL, "said_words": SAID_SHELL,
+           "mesh_as": mesh_as, "label": SHELL_LABEL if mesh_as == pm.MESH_SHELL else SOLID_LABEL, "reason": why,
+           "measuring_words": MEASURING_WORDS if state == MEASURING and mesh_as == pm.MESH_SHELL else ""}
+    if isinstance(summary, dict) and mesh_as == pm.MESH_SHELL:
         out.update(share=summary.get("share"), t_min_mm=summary.get("t_min_mm"), t_max_mm=summary.get("t_max_mm"),
                    bodies=summary.get("bodies"), not_shelled=not_shelled(summary),
                    open_edges=int(summary.get("open_edges") or 0),
@@ -385,29 +333,60 @@ def shell_view(status: dict | None, facts: dict | None, said: dict | None = None
     return out
 
 
+def _user_texts(messages) -> list[str]:
+    return [str(m.get("content") or "") for m in messages or []
+            if isinstance(m, dict) and m.get("role") == "user"]
+
+
 def said_of(facts: dict | None, messages=None) -> dict:
-    """What the user's words said about shell or solid: the FEA naming's stored reading (the table, and the
-    model for a paraphrase); for a check named before that reading existed, the word table over the
-    user's messages."""
+    """What the user's words said about shell or solid. THE LATEST WORD STANDS: the newest message of the user's
+    the word table reads as shell or solid (a shell asked for in a note after the check, or taken back), else the
+    FEA naming's stored reading (the table, and the model for a paraphrase), else nothing said."""
     from meshpipeline.application.geometry_check import MESH_AS_KEY
 
+    for text in reversed(_user_texts(messages)):
+        reading = pm.mesh_as_of(text)
+        if reading.value:
+            return {"value": reading.value, "by": reading.by, "why": reading.why}
     got = (facts or {}).get(MESH_AS_KEY)
     if isinstance(got, dict):
         return got
-    texts = [str(m.get("content") or "") for m in messages or []
-             if isinstance(m, dict) and m.get("role") == "user"]
-    reading = pm.mesh_as_of("\n".join(texts))
-    return {"value": reading.value, "by": reading.by, "why": reading.why}
+    return {"value": "", "by": "", "why": "nothing said"}
 
 
-def view_for(session_id: str, facts: dict | None, messages=None) -> dict:
-    """The stage's "Mesh as" view for a session: its stored shell check and what the words said."""
+def wants_shell(facts: dict | None, messages=None) -> bool:
+    """Whether the user's words asked for a shell mesh - the only way to one."""
+    return pm.mesh_as_answer(said_of(facts, messages).get("value")) == pm.MESH_SHELL
+
+
+def _status_of(session_id: str) -> dict | None:
     try:
-        status = read_status(session_id)
-    except Exception as exc:  # noqa: BLE001 - an unreadable store is "not measured", never a broken stage
+        return read_status(session_id)
+    except Exception as exc:  # noqa: BLE001 - an unreadable store is "not drawn", never a broken stage
         logger.warning("shell check: status unreadable (%s)", type(exc).__name__)
-        status = {"status": UNAVAILABLE, "reason": "it could not be read"}
-    return shell_view(status, facts, said_of(facts, messages))
+        return {"status": UNAVAILABLE, "reason": "it could not be read"}
+
+
+def view_for(session_id: str, facts: dict | None, messages=None) -> dict | None:
+    """The stage's shell view for a session (None unless the user asked for a shell): its stored shell check and
+    what the words said."""
+    said = said_of(facts, messages)
+    if pm.mesh_as_answer(said.get("value")) != pm.MESH_SHELL:
+        return None
+    return shell_view(_status_of(session_id), facts, said)
+
+
+def start_if_asked(session_id: str, owner_id: str, *, facts: dict | None, messages=None,
+                   interpretation: dict | None = None) -> bool:
+    """A SHELL ASKED FOR AFTER THE FEA NAMING (a later message, a note): the shell check starts now, once - only for a
+    measured FEA part (the naming's reading stored), and only when no check was started yet. True when started."""
+    from meshpipeline.application.geometry_check import MESH_AS_KEY
+
+    if not isinstance((facts or {}).get(MESH_AS_KEY), dict) or not wants_shell(facts, messages):
+        return False
+    if _status_of(session_id) is not None:
+        return False
+    return start(session_id, owner_id, facts=facts, interpretation=interpretation)
 
 
 def _k(measured_under, now_in) -> float:
@@ -428,35 +407,18 @@ def _in_unit(summary: dict, measured_under, now_in) -> dict:
     return rescaled_lengths(summary, k)
 
 
-def settle(view: dict | None, answer: str | None) -> dict:
-    """SHSTAGE-5: THE CHOICE, SETTLED WHEN THE USER PRESSES PROCEED - the run never waits on the user. The
-    user's pick (the form's, else the words') stands; Auto takes the recommendation, or Solid while the walls
-    are still being measured. A shell nothing can be made of is meshed solid, said plainly.
-    {"mesh_as": "shell" | "mixed" | "solid", "picked": "auto" | "shell" | "solid", "by": "user" | "words" | "auto",
-     "why": plain words}"""
+def settle(view: dict | None) -> dict:
+    """SHSTAGE-5: THE CHOICE, SETTLED WHEN THE USER PRESSES PROCEED - the run never waits on the user. A shell only
+    when the user's words asked for one (the view is None otherwise: a solid, as before shell existed); a shell
+    asked for that cannot be made is a solid, with its one-sentence reason. Pressed while the check still measures,
+    a said shell is a shell: the run makes it itself.
+    {"mesh_as": "shell" | "solid", "picked": "shell" | "", "by": "words" | "", "why": plain words}"""
     v = view or {}
-    picked = str(answer or "").strip().lower()
-    by = "user"
-    if picked not in (pm.MESH_AUTO, pm.MESH_SHELL, pm.MESH_SOLID):
-        picked, by = (str(v["said"]), "words") if v.get("said") else (pm.MESH_AUTO, "auto")
-    elif picked == pm.MESH_AUTO:
-        by = "auto"
-    elif picked == v.get("said"):
-        by = "words"
-    if picked == pm.MESH_SOLID:
-        return {"mesh_as": pm.MESH_SOLID, "picked": picked, "by": by, "why": "You picked a solid mesh."
-                if by == "user" else SAID_WORDS[pm.MESH_SOLID]}
-    if picked == pm.MESH_SHELL:
-        if not v.get("shell_ok", True):
-            return {"mesh_as": pm.MESH_SOLID, "picked": picked, "by": by, "why": TRIANGLES_WHY}
-        if v.get("state") == READY and {b.get("verdict") for b in v.get("bodies") or []} <= {"solid"}:
-            return {"mesh_as": pm.MESH_SOLID, "picked": picked, "by": by, "why": NOTHING_TO_SHELL}
-        return {"mesh_as": pm.MESH_SHELL, "picked": picked, "by": by,
-                "why": "You picked a shell mesh." if by == "user" else SAID_WORDS[pm.MESH_SHELL]}
-    rec = v.get("recommend") or ""
-    if rec in (pm.MESH_SHELL, pm.MESH_MIXED, pm.MESH_SOLID):
-        return {"mesh_as": rec, "picked": pm.MESH_AUTO, "by": "auto", "why": str(v.get("reason") or "")}
-    return {"mesh_as": pm.MESH_SOLID, "picked": pm.MESH_AUTO, "by": "auto", "why": EARLY_WHY}
+    if v.get("said") != pm.MESH_SHELL:
+        return {"mesh_as": pm.MESH_SOLID, "picked": "", "by": "", "why": ""}
+    if v.get("mesh_as") == pm.MESH_SOLID:
+        return {"mesh_as": pm.MESH_SOLID, "picked": pm.MESH_SHELL, "by": "words", "why": str(v.get("reason") or "")}
+    return {"mesh_as": pm.MESH_SHELL, "picked": pm.MESH_SHELL, "by": "words", "why": SAID_SHELL}
 
 
 #: The declaration's heads, one per settled choice (declaration_words); the request card reads them back
@@ -476,7 +438,8 @@ def declaration_words(settled: dict | None) -> str:
         head = SHELL_HEAD
     elif s.get("mesh_as") == pm.MESH_MIXED:
         head = MIXED_HEAD
-    elif s.get("mesh_as") == pm.MESH_SOLID:
+    elif s.get("mesh_as") == pm.MESH_SOLID and s.get("picked") == pm.MESH_SHELL:
+        # a shell asked for that could not be made: said; a plain solid says nothing, as before shell existed
         head = "Meshed as: a solid."
     else:
         return ""
@@ -518,9 +481,11 @@ def card_engine_settings(mesh_as_label: str, params: dict | None) -> str:
     return "; ".join(parts)
 
 
-def confirmed_mesh_as(session_id: str) -> str:
-    """The settled choice as confirmed on the stage (the stored confirmation's fea_mesh_as): "shell", "mixed"
-    or "solid"; "solid" when nothing says (no confirmation, an unreadable store) - today's path."""
+def confirmed_mesh_as(session_id: str, notes=None) -> str:
+    """The settled choice as confirmed on the stage (the stored confirmation's fea_mesh_as): "shell" (or "mixed",
+    from a confirmation stored before shell + solid was taken off the stage) or "solid"; "solid" when nothing says
+    (no confirmation, an unreadable store) - today's path. A SHELL ASKED FOR IN A NOTE AFTER PROCEED (the request
+    card's notes, `notes`: contracts/user_notes) is a shell, unless the stage already found it could not be one."""
     if not session_id:
         return pm.MESH_SOLID
     from meshpipeline.contracts.object_storage import get_object_store
@@ -529,11 +494,21 @@ def confirmed_mesh_as(session_id: str) -> str:
         record = json.loads(get_object_store().get_bytes(object_key=key(session_id, "confirmed.json")))
     except Exception:  # noqa: BLE001 - unknown is today's solid path, never a refusal
         return pm.MESH_SOLID
-    got = record.get("fea_mesh_as") if isinstance(record, dict) else None
-    return got if got in (pm.MESH_SHELL, pm.MESH_MIXED) else pm.MESH_SOLID
+    record = record if isinstance(record, dict) else {}
+    got = record.get("fea_mesh_as")
+    if got in (pm.MESH_SHELL, pm.MESH_MIXED):
+        return str(got)
+    if str(record.get("fea_mesh_as_picked") or "").startswith(pm.MESH_SHELL):
+        return pm.MESH_SOLID
+    texts = [str(n.get("text") or "") for n in notes or [] if isinstance(n, dict)]
+    for text in reversed(texts):
+        reading = pm.mesh_as_of(text)
+        if reading.value:
+            return pm.MESH_SHELL if reading.value == pm.MESH_SHELL else pm.MESH_SOLID
+    return pm.MESH_SOLID
 
 
-__all__ = ["AUTO_SHELL_SHARE", "CARD_LABELS", "MEASURING", "MIXED_ELEMENTS", "SHELL_ELEMENTS", "card_engine_settings",
-           "card_mesh_as", "OPTIONS", "QUESTION", "READY", "SHELL_CHECK_LIMIT_S", "UNAVAILABLE",
-           "confirmed_mesh_as", "declaration_words", "is_cad", "not_shelled", "read_status", "recommendation",
-           "run_shell_check", "settle", "shell_view", "start", "state_of", "summarise"]
+__all__ = ["CARD_LABELS", "MEASURING", "MIXED_ELEMENTS", "NOTHING_TO_SHELL", "QUESTION", "READY", "SHELL_CHECK_LIMIT_S",
+           "SHELL_ELEMENTS", "TRIANGLES_WHY", "UNAVAILABLE", "card_engine_settings", "card_mesh_as", "confirmed_mesh_as",
+           "declaration_words", "is_cad", "not_shelled", "read_status", "run_shell_check", "said_of", "settle",
+           "shell_view", "start", "start_if_asked", "state_of", "summarise", "view_for", "wants_shell"]

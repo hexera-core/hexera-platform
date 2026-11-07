@@ -1143,13 +1143,9 @@ th,td{border-color:var(--border)}
 /* many hot spots: each a small mark without its number, until it is pointed at or chosen */
 .fea-spot.mark{min-width:0;width:9px;height:9px;padding:0;font-size:0;line-height:0;border-width:1.5px}
 .fea-spot.mark:hover,.fea-spot.mark.sel{width:auto;min-width:26px;height:22px;padding:0 4px;font-size:11px;line-height:22px;z-index:8}
-/* SHSTAGE-2..4: "Mesh as: Auto / Shell / Solid", what stays solid (a muted amber mark), where the
+/* SHSTAGE-2..4: a shell the user asked for: what is not in the shell (a muted amber mark), where the
    plates do not meet (red), and the legend of the mid-surface's wall colours */
 .fea-meshas{margin:6px 0}
-.fea-meshas-opts{display:flex;flex-direction:column;gap:6px}
-.fea-meshas-opt{display:flex;gap:6px;align-items:baseline;font-size:var(--fs-sm);line-height:1.45;cursor:pointer}
-.fea-meshas-opt.off{opacity:.5;cursor:not-allowed}
-.fea-meshas-auto{font-weight:600}
 .fea-meshas-measuring{display:flex;gap:6px;align-items:baseline}
 .fea-shell-list{margin:4px 0 0}
 .fea-shell-rows{list-style:none;margin:0;padding:0}
@@ -1162,7 +1158,6 @@ th,td{border-color:var(--border)}
 .fea-shell-legend-k{color:var(--text-faint)}
 .fea-shell-ramp{flex:0 0 120px;height:10px;border-radius:2px}
 .fea-shell-legend-v{font-variant-numeric:tabular-nums}
-.fea-shell-list[hidden],.fea-shell-show[hidden]{display:none}
 
 /* ------------------------------------------------------- run outcome ---- */
 /* a finished run's closing account (render/outcome.js) and the review's points on the mesh panel:

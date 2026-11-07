@@ -1814,13 +1814,15 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
 
         facts[MESH_AS_KEY] = mesh_as.as_record(mesh_as.read_mesh_as_sync(purpose_text, session_id=session_id,
                                                                           owner_id=owner_id))
-        # SHSTAGE-2: THE SHELL CHECK starts with the measured part: its status says "measuring" before the stage
-        # opens, and the stage never waits on it (application/shell_check)
+        # SHSTAGE-2: THE SHELL CHECK, ONLY WHEN THE USER'S WORDS ASKED FOR A SHELL (plain FEA is a solid, and costs
+        # the worker nothing): its status says "measuring" before the stage opens, and the stage never waits on it.
+        # A shell asked for later is started by the stage's read (application/shell_check.start_if_asked)
         try:
             from meshpipeline.application import shell_check
 
-            shell_check.start(session_id, owner_id, facts=facts, interpretation=interpretation)
-        except Exception as exc:  # noqa: BLE001 - no shell check is Auto = solid, never a failed naming
+            if shell_check.wants_shell(facts):
+                shell_check.start(session_id, owner_id, facts=facts, interpretation=interpretation)
+        except Exception as exc:  # noqa: BLE001 - no shell check: the run still makes a said shell
             logger.warning("geometry naming: the shell check was not started (%s)", type(exc).__name__)
         proposal = _proposal(facts, {})
         result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}

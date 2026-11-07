@@ -152,51 +152,97 @@ _SHELL_PART = {"status": "ready", "scale_to_m": 0.001, "summary": {
     "t_min_drawn_mm": 2.0, "t_max_drawn_mm": 2.0}}
 
 
-@pytest.mark.asyncio
-async def test_the_fea_stage_serves_mesh_as_with_the_recommendation(stage):
-    session, store = stage(["stress testing"])
-    _cad(store, _SHELL_PART)
-    served = await route.get_check(SID, "alice", "org-1")
-    shell = served["fea"]["shell"]
-    assert shell["question"] == "Mesh as" and [o["key"] for o in shell["options"]] == ["auto", "shell", "solid"]
-    assert shell["recommend"] == "shell" and shell["reason"].startswith("97% of this part is plate 2 mm thick")
-    assert shell["default"] == "auto"
+def _named(store):
+    """The FEA naming has landed: its reading of the words is stored with the facts."""
+    key = f"sessions/{SID}/geometry_check/scout.json"
+    scout = json.loads(store.objects[key])
+    scout["facts"]["mesh_as_words"] = {"value": "", "by": "", "why": "no mesh-as words"}
+    store.objects[key] = json.dumps(scout).encode()
 
 
 @pytest.mark.asyncio
-async def test_proceed_settles_the_choice_and_stores_it_for_the_run(stage):
+async def test_plain_fea_serves_no_shell_and_confirms_a_solid_as_before(stage):
+    """(a) "FEA" alone, even on a part that is all plate: no shell view, no shell check started, a solid confirmed
+    with no shell words in the declaration."""
     from meshpipeline.application import shell_check
+    from meshpipeline.contracts import geometry_check as seam
 
-    session, store = stage(["stress testing"])
-    _cad(store, _SHELL_PART)
-    out = await route.confirm_check(SID, route.ConfirmIn(unit="mm", fea_mesh_as="auto"), "alice", "org-1")
-    assert "Meshed as: a shell" in out["message"]
+    session, store = stage(["FEA of this bracket"])
+    _cad(store, None)
+    _named(store)
+    got = []
+    seam.set_shell_check_enqueuer(lambda **kw: got.append(kw) or True)
+    try:
+        served = await route.get_check(SID, "alice", "org-1")
+        assert "shell" not in served["fea"] and got == []
+        # an old console's pick is ignored: only words make a shell
+        out = await route.confirm_check(SID, route.ConfirmIn(unit="mm", fea_mesh_as="shell"), "alice", "org-1")
+    finally:
+        seam.set_shell_check_enqueuer(None)
+    assert got == [] and f"sessions/{SID}/geometry_check/shell/status.json" not in store.objects
+    assert "Meshed as" not in out["message"] and "shell" not in out["message"].lower()
     record = json.loads(store.objects[f"sessions/{SID}/geometry_check/confirmed.json"])
-    assert record["fea_mesh_as"] == "shell" and record["fea_mesh_as_picked"] == "auto (auto)"
-    assert shell_check.confirmed_mesh_as(str(SID)) == "shell"
-    # the user's click stands over Auto
-    out = await route.confirm_check(SID, route.ConfirmIn(unit="mm", fea_mesh_as="solid"), "alice", "org-1")
-    assert "Meshed as: a solid. You picked a solid mesh." in out["message"]
+    assert record["fea_mesh_as"] == "solid" and record["fea_mesh_as_picked"] == ""
     assert shell_check.confirmed_mesh_as(str(SID)) == "solid"
 
 
 @pytest.mark.asyncio
-async def test_proceed_while_measuring_settles_now_and_never_waits(stage):
-    import time as _t
+async def test_a_said_shell_serves_the_shell_and_confirms_it(stage):
+    """(b) "FEA, shell meshing": the shell view with the mid-surface's legend; Proceed settles a shell."""
+    from meshpipeline.application import shell_check
 
-    session, store = stage(["stress testing"])
-    _cad(store, {"status": "measuring", "started_at": _t.time()})
-    out = await route.confirm_check(SID, route.ConfirmIn(unit="mm"), "alice", "org-1")
-    assert "Meshed as: a solid. The walls were still being measured" in out["message"]
-    # shell words in the chat are the user's choice, measured or not
-    session, store = stage(["stress testing, CQUAD4 shell model"])
-    _cad(store, {"status": "measuring", "started_at": _t.time()})
+    session, store = stage(["FEA, shell meshing"])
+    _cad(store, _SHELL_PART)
     served = await route.get_check(SID, "alice", "org-1")
-    assert served["fea"]["shell"]["default"] == "shell"
+    shell = served["fea"]["shell"]
+    assert shell["mesh_as"] == "shell" and shell["said_words"] == "You asked for a shell mesh."
+    assert shell["overlay"] and shell["legend_mm"] == [2.0, 2.0] and "options" not in shell
     out = await route.confirm_check(SID, route.ConfirmIn(unit="mm"), "alice", "org-1")
-    assert "Meshed as: a shell" in out["message"] and "You asked for a shell mesh in the chat." in out["message"]
+    assert "Meshed as: a shell" in out["message"]
     record = json.loads(store.objects[f"sessions/{SID}/geometry_check/confirmed.json"])
     assert record["fea_mesh_as"] == "shell" and record["fea_mesh_as_picked"] == "shell (words)"
+    assert shell_check.confirmed_mesh_as(str(SID)) == "shell"
+
+
+@pytest.mark.asyncio
+async def test_a_shell_asked_for_after_the_naming_starts_the_check_and_proceed_never_waits(stage):
+    """A shell said in a later message: the stage's read starts the check then; Proceed while it measures is a
+    shell all the same (the run makes it)."""
+    from meshpipeline.contracts import geometry_check as seam
+
+    session, store = stage(["stress testing", "and mesh it as a mid-surface shell"])
+    _cad(store, None)
+    _named(store)
+    got = []
+    seam.set_shell_check_enqueuer(lambda **kw: got.append(kw) or True)
+    try:
+        served = await route.get_check(SID, "alice", "org-1")
+        assert len(got) == 1 and served["fea"]["shell"]["state"] == "measuring"
+        assert served["fea"]["shell"]["measuring_words"].startswith("Making the mid-surface")
+        out = await route.confirm_check(SID, route.ConfirmIn(unit="mm"), "alice", "org-1")
+    finally:
+        seam.set_shell_check_enqueuer(None)
+    assert len(got) == 1                                          # started once
+    assert "Meshed as: a shell" in out["message"] and "You asked for a shell mesh." in out["message"]
+    record = json.loads(store.objects[f"sessions/{SID}/geometry_check/confirmed.json"])
+    assert record["fea_mesh_as"] == "shell"
+
+
+@pytest.mark.asyncio
+async def test_a_shell_asked_on_a_chunky_part_confirms_a_solid_with_the_reason(stage):
+    """(d) No wall thin enough: a solid, said in one sentence; never a refusal."""
+    session, store = stage(["FEA, shell meshing"])
+    _cad(store, {"status": "ready", "scale_to_m": 0.001, "summary": {
+        "bodies": [{"body": "Part_1", "verdict": "solid"}], "share": 0.0, "solid_regions": [
+            {"body": "Part_1", "whole": True, "why": "no wall is thin against its size"}],
+        "open_edges": 0, "open_places": [], "open_at_mm": [], "overlay": False}})
+    served = await route.get_check(SID, "alice", "org-1")
+    assert served["fea"]["shell"]["mesh_as"] == "solid"
+    out = await route.confirm_check(SID, route.ConfirmIn(unit="mm"), "alice", "org-1")
+    assert ("Meshed as: a solid. You asked for a shell, but no wall of this part is thin enough for one, so it is "
+            "meshed as a solid.") in out["message"]
+    record = json.loads(store.objects[f"sessions/{SID}/geometry_check/confirmed.json"])
+    assert record["fea_mesh_as"] == "solid" and record["fea_mesh_as_picked"] == "shell (words)"
 
 
 @pytest.mark.asyncio
