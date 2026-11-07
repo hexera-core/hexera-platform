@@ -12,7 +12,7 @@ the reason this list is worth acting on rather than discussing.
 | 2 | deliver decomposed, drop reconstructs and serial checks | **-12,377 s** | none | measured |
 | 3 | retype `mappedWall` to `wall` before checking | +14 s | enables 9 checks never run before | measured |
 | 4 | coarsen the solid away from the interface | large | none expected | projected |
-| 5 | align the grid origin to the channel array | 0 s | up to 2.75x spread to ~1.9x | untested |
+| 5 | align the grid origin to the channel array | 0 s | off-nominal 18.86% toward the part's 9.13% | untested |
 | 6 | `writeFormat binary` in the mesher | -118 s per read | none | measured |
 | 7 | repair `fluid_fine.stl` | 0 s | where refinement lands | measured defect |
 | 8 | one more refinement level in the channels | very large | flow +8.0% to +2.0% | blocked |
@@ -109,18 +109,25 @@ suggests they should. Measure before believing.
 
 **Untested, and free if it works.**
 
-The channel population is purely discrete, because the conjugate interface sits on octree cell faces:
+The channel population is purely discrete, because the conjugate interface sits on octree cell faces.
+Binned the same way, so is the part's:
 
-| width | cells | share |
-|---|---|---|
-| 80.5 um | 4 | 1.85% |
-| 100.6 to 100.7 um | 5 | **79.91%** |
-| 120.7 to 120.8 um | 6 | 10.79% |
-| 140.8 to 140.9 um | 7 | 3.17% |
-| wider | 8 to 9 | 2.26% |
+| width | cells | CAD | mesh |
+|---|---|---|---|
+| 80.5 um | 4 | **0.00%** | **1.85%** |
+| 100.6 um | 5 | **90.87%** | **79.91%** |
+| 120.8 um | 6 | 6.77% | 10.79% |
+| 140.9 um | 7 | 1.29% | 3.17% |
+| 161.0 um | 8 | 0.45% | 1.45% |
+| 181.1 um | 9 | **0.00%** | 0.81% |
 
-This inflates the channel-to-channel conductance spread from the part's own 1.89x to 2.75x, which is
-a larger error than anything in the resolution budget.
+The part has its own tail near 119 um, so the mesh is not inventing it, but the mesh **doubles the
+off-nominal share from 9.13% to 18.86% and passes 10.1% too much flow** conductance-weighted. That
+net bias is larger than anything in the resolution budget and compounds with the +8.0% there for
+about +19% in total.
+
+It also invents a width the part does not contain: 1.85% of channels at 80.5 um, where the CAD's
+narrowest in-window run is 97.963 um. That is -20% on width and -49% on flow for those channels.
 
 **It is not a pitch problem and `maxCellSize` cannot fix it.** Ten cells is 201.263 um against a CAD
 pitch of 201.702 um, 0.22% short, which drifts one whole cell only after about 46 channels. That is
@@ -131,9 +138,8 @@ origin so that cell faces land on channel walls should collapse the population o
 I have not measured the phase distribution and I am not going to assert the mechanism beyond this.
 The test is cheap: one short mesher run with a shifted origin, then re-run the width measurement.
 
-Note also that the mesh **cannot represent the CAD's narrow channels at all.** The CAD p5 is 98.295
-um and the lattice offers 80.5 or 100.6, so every sub-100 um channel rounds up and passes about 8%
-too much flow. Only item 8 fixes that.
+The part's own 9.13% off-nominal is the floor an origin shift could reach. Getting below that needs
+item 8.
 
 ## 6. `writeFormat binary` in the mesher
 

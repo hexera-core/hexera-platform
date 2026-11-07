@@ -5052,8 +5052,14 @@ cell each. The coolant circuit is intact and the warning is cosmetic.
 | 9% low on Nusselt | wrong in sign and subject. Wall shear is exact at any resolution; Nusselt is +2.18% high without layers |
 | the dead air region causes the `-allGeometry` fatal | refuted by the control arm |
 | 55.8% flow CV inside the channel array | plenum crossings. 18.94% with the array filter |
+| the mesh adds 1.45x of conductance spread, 1.89x to 2.75x | mixed bins. Binning both sides by cell count: the part is 90.87% on nominal and the mesh 79.91%, so the mesh doubles the off-nominal share from 9.13% to 18.86% and passes 10.1% too much flow |
+| the mesh rounds sub-100 um channels up and passes 8% too much | wrong direction. It rounds 1.85% of them DOWN to 80.5 um, a width the part does not contain at all, which is -49% on flow for those channels |
 
 The channel width is **+0.18%** on the CAD median, measured on both sides with the same definition.
+The part has its own tail near 119 um, 6.77% of it, so the mesh is not inventing the wide channels.
+What it does is move about 11 points of channels out of nominal and bias total flow +10.1%, which
+compounds with the +8.0% from having 5 cells across for roughly +19%. Per channel the forced snapping
+is -6.2% to +8.5% on width, so -17% to +28% on flow.
 
 **The layers are a defect, not a feature.** Nusselt goes from +2.18% without them to -4.02% with
 them, because for fully developed flow the wall gradient was already exact and the layer stack takes

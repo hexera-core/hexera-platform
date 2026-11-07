@@ -14,7 +14,7 @@ reports maxima, and a maximum over 25.7M faces cannot tell one bad face from one
 | conditioning | **great** | 0 faces in error on all 9 criteria, all three regions, before layers |
 | conjugate interface | **great** | 25,685,941 faces matched one to one, max centroid gap 0.00085 cells |
 | connectivity | **fine** | both ports in the same piece, proved; the 2 stray cells are 0.0000024% |
-| channel fidelity | **pretty good** | median width +0.18% on CAD, but conductance spread 2.75x against the part's 1.89x |
+| channel fidelity | **okayish** | median width +0.18% on CAD, but quantisation passes 10.1% too much flow and doubles the off-nominal share |
 | resolution for CHT | **okayish** | 5 cells across a channel; flow +8.0%, Nusselt +2.2%, wall shear exact |
 | layers | **a defect, not a feature** | they moved Nusselt from +2.2% to **-4.0%** |
 | cell budget | **poor** | the solid is 74% of the mesh and carries almost no physics |
@@ -156,43 +156,70 @@ identical filter discarding any scanline that does not cross the array at least 
 | channel **p50** | **100.446 um** | **100.630 um** | **+0.18%** |
 | channel p95 | 121.487 um | 140.900 um | +15.98% |
 | channel CV | 12.38% | 18.94% | |
-| conductance spread, w^3 p95/p5 | **1.89x** | **2.75x** | mesh adds 1.45x |
 | fin p50 | 101.255 um | 100.630 um | -0.62% |
 | implied pitch | 201.702 um | 201.263 um | -0.22% |
 
 The mesh population is purely discrete, because the interface sits on octree cell faces and a
-channel has to be a whole number of cells:
+channel has to be a whole number of cells. **So is the part's**, once it is binned the same way, and
+putting the two side by side is the only comparison that separates what the mesh invents from what it
+inherits:
 
-| width | cells | share of wall area | flow vs nominal |
+| width | cells | CAD share | mesh share | CAD mean width | flow vs nominal |
+|---|---|---|---|---|---|
+| 80.5 um | 4 | **0.00%** | **1.85%** | nothing there | 0.51x |
+| **100.6 um** | **5** | **90.87%** | **79.91%** | 100.495 | **1.00x** |
+| 120.8 um | 6 | 6.77% | 10.79% | 119.335 | 1.73x |
+| 140.9 um | 7 | 1.29% | 3.17% | 143.035 | 2.74x |
+| 161.0 um | 8 | 0.45% | 1.45% | 158.756 | 4.10x |
+| 181.1 um | 9 | **0.00%** | 0.81% | nothing there | 5.83x |
+| 201.3 um | 10 | 0.11% | 0.00% | 205.055 | 8.00x |
+| 221.4 um | 11 | 0.45% | 0.51% | 220.436 | 10.65x |
+
+The part has a real tail. 6.77% of its channels are genuinely near 119 um, which are the wider
+distribution channels, so the mesh is not inventing them. But it does not reproduce them faithfully
+either:
+
+| | CAD | mesh |
+|---|---|---|
+| on the 5-cell nominal | **90.87%** | **79.91%** |
+| off nominal | 9.13% | **18.86%** |
+| conductance, mean w^3 against a 5-cell channel | 1.1467 | **1.2620** |
+| conductance CV | 86.94% | 75.46% |
+
+**The mesh doubles the off-nominal share and passes 10.1% too much flow.** That net bias is the
+figure that matters, and it is separate from and larger than the per-channel scatter. It is on top of
+the +8.0% discretisation error in section 6, so the two compound to about +19%.
+
+Per-channel, the error is the forced snapping within each bin:
+
+| cells | CAD range forced onto one width | mesh width | width error p5 / p50 / p95 |
 |---|---|---|---|
-| 80.5 um | 4 | 1.85% | 0.51x |
-| **100.6 to 100.7 um** | **5** | **79.91%** | **1.00x** |
-| 120.7 to 120.8 um | 6 | 10.79% | 1.73x |
-| 140.8 to 140.9 um | 7 | 3.17% | 2.74x |
-| 161.0 um | 8 | 1.45% | 4.10x |
-| 181.1 um | 9 | 0.81% | 5.83x |
+| 5 | 97.963 to 110.533 um | 100.632 um | -4.05% / +0.19% / +2.49% |
+| 6 | 110.734 to 130.787 um | 120.758 um | -6.21% / +0.76% / +8.54% |
+| 7 | 130.838 to 150.736 um | 140.884 um | -6.08% / -3.98% / +7.68% |
+
+So an individual channel is wrong by -6.2% to +8.5% on width, which is -17% to +28% on the flow it
+passes. That is the channel-to-channel maldistribution the solver will see.
 
 Against the delivered `cbox2` mesh, which put 36.1% of channels at 88.014 um, 52.7% at 110.017 um
-and 6.4% at 132.021 um, with **nothing** at the nominal width and a 3.38x conductance spread, this
-is a large improvement. 79.91% now sits on nominal and the three-way split is gone. 88 um does not
-appear anywhere in the distribution.
+and 6.4% at 132.021 um, with **nothing** at the nominal width, this is still a large improvement.
+79.91% now sits on nominal and 88 um does not appear anywhere in the new distribution.
 
-Two defects remain, and they are not the one I expected:
+Two defects remain, and neither is the one I expected:
 
-- **The mesh cannot represent the CAD's narrow channels at all.** The CAD's p1 is 97.97 um and its
-  p5 is 98.295 um. The nearest widths the lattice admits are 80.5 um and 100.6 um, so every channel
-  below 100 um is rounded up to 100.6 and passes about 8% more flow than it should. The mesh's p5 is
-  pinned at exactly 5 cells. There is no lattice width between 4 and 5 cells.
-- **The pitch is not the cause of the off-nominal tail.** Ten cells is 201.263 um against a CAD pitch
-  of 201.702 um, which is 0.22% short, drifting 0.44 um per channel and so one whole cell only after
-  about 46 channels. That is too slow to produce 10.79% at six cells. The tail is a phase effect:
-  a channel 5.0 cells wide captures 5 cells or 6 depending on where its two walls fall relative to
-  cell centres. I have not established the exact distribution of that phase, and I am not going to
-  assert a mechanism I have not measured.
+- **The mesh invents narrow channels the part does not have.** The CAD has nothing at 4 cells at all,
+  and its narrowest in-window run is 97.963 um. The mesh puts 1.85% of its channels at 80.5 um, a
+  full cell narrower than anything in the part, which is a -20% width and -49% flow error on those
+  channels. That is worse per channel than anything on the wide side.
+- **The pitch is not the cause of the tail, so `maxCellSize` cannot fix it.** Ten cells is 201.263 um
+  against a CAD pitch of 201.702 um, 0.22% short, drifting 0.44 um per channel and so one whole cell
+  only after about 46 channels. That is far too slow to move 11 points of channels out of nominal.
+  What is left is phase: a channel 5.0 cells wide captures 5 cells or 6 depending on where its two
+  walls fall relative to cell centres. I have not measured the phase distribution and I am not going
+  to assert the mechanism beyond that.
 
-Consequently **changing `maxCellSize` cannot fix this.** The cell is already within 0.22% of a tenth
-of the CAD pitch. The levers are one more refinement level, which the 32-bit label wall blocks, or
-aligning the grid origin to the array, which is free and untested.
+The levers are one more refinement level, which the 32-bit label wall blocks, or aligning the grid
+origin to the array, which is free and untested.
 
 ## 6. What the resolution costs
 
@@ -310,6 +337,8 @@ the chain at all.
 | mesh runs 9% low on Nusselt | **wrong in sign and subject** | +2.18% high without layers, wall shear exact |
 | the dead air region causes the `-allGeometry` fatal | **refuted** | `chip_to_solid` being a `mappedWall` whose `sampleRegion` is not loaded |
 | 55.8% flow CV inside the array | **measurement artefact** | plenum crossings; 18.94% with the array filter |
+| the mesh adds 1.45x of conductance spread, 1.89x to 2.75x | **wrong comparison, mixed bins** | the part has its own tail; the mesh doubles the off-nominal share from 9.13% to 18.86% and passes 10.1% too much flow |
+| the mesh rounds sub-100 um channels up and passes 8% too much | **wrong direction** | it rounds 1.85% of them DOWN to 80.5 um, a width the part does not contain at all |
 | wetted area +8.29% | superseded | +8.28%, against a surface that is actually closed |
 
 ## 9. The `-allGeometry` gap, closed

@@ -247,14 +247,42 @@ positions in the STL. Both are wrong. The 100.000 um nominal is not what the par
 the wall-position fundamental is the mean of channel and fin spacing, not the channel width. The
 table above is the number.
 
-The part's own conductance spread is 1.89x, not the 1.09x in the table at the top of this document,
+The part's own conductance spread is wider than the 1.09x in the table at the top of this document,
 because that figure was restricted to the microchannel band and this one is not.
 
-**Two defects this re-measurement exposed that the old framing hid.**
+**Bin both sides by cell count and the real defect appears.** This is the only comparison that
+separates what the mesh invents from what it inherits, and it overturns a claim I made earlier today
+that the mesh adds 1.45x of spread over the part:
 
-The mesh cannot represent the CAD's narrow channels at all. The CAD p1 is 97.97 um, the lattice
-offers 80.5 um or 100.6 um, so every sub-100 um channel rounds up to 100.6 and passes about 8% too
-much flow. The mesh p5 is pinned at exactly 5 cells.
+| width | cells | CAD share | mesh share | CAD mean width |
+|---|---|---|---|---|
+| 80.5 um | 4 | **0.00%** | **1.85%** | nothing there |
+| **100.6 um** | **5** | **90.87%** | **79.91%** | 100.495 |
+| 120.8 um | 6 | 6.77% | 10.79% | 119.335 |
+| 140.9 um | 7 | 1.29% | 3.17% | 143.035 |
+| 161.0 um | 8 | 0.45% | 1.45% | 158.756 |
+| 181.1 um | 9 | **0.00%** | 0.81% | nothing there |
+
+The part genuinely has wider distribution channels near 119 um, so the mesh is not inventing the
+tail. But it does not reproduce it either: off-nominal goes from **9.13% in the CAD to 18.86% in the
+mesh**, and conductance-weighted the array goes from 1.1467 to 1.2620, so **quantisation alone passes
+10.1% too much flow.** That net bias compounds with the +8.0% from having only 5 cells across, for
+about +19% in total.
+
+Per channel, the forced snapping is:
+
+| cells | CAD range forced onto one width | mesh width | width error p5 / p50 / p95 |
+|---|---|---|---|
+| 5 | 97.963 to 110.533 um | 100.632 um | -4.05% / +0.19% / +2.49% |
+| 6 | 110.734 to 130.787 um | 120.758 um | -6.21% / +0.76% / +8.54% |
+| 7 | 130.838 to 150.736 um | 140.884 um | -6.08% / -3.98% / +7.68% |
+
+So -6.2% to +8.5% on width, which is -17% to +28% on flow.
+
+**And the mesh invents narrow channels the part does not have.** The CAD has nothing at 4 cells and
+its narrowest in-window run is 97.963 um. The mesh puts 1.85% of channels at 80.5 um, a full cell
+narrower than anything in the part, a -20% width and -49% flow error. I had this the wrong way round
+earlier today, writing that sub-100 um channels round up and pass 8% too much. They round down.
 
 And **`maxCellSize` cannot fix the remaining tail.** Ten cells is 201.263 um against a CAD pitch of
 201.702 um, 0.22% short, drifting one whole cell only after about 46 channels, which is far too slow
