@@ -69,11 +69,18 @@ def words(rec: dict) -> str:
         said += f" {rec['solid_bodies']} part(s) or region(s) stay solid and are not in the shell files."
     if rec.get("open_edges"):
         said += f" The plates do not meet at {rec['open_edges']} edge(s): the shell has gaps there."
+    from meshpipeline.engines.shell_plan import count_words
+
+    counted = count_words(rec.get("target"))
+    if counted:
+        said += " " + counted
     return said
 
 
-def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: str = "") -> dict:
-    """Extract, mesh and write the shell of `step` (coordinates `mm_per_unit` mm each) into `workspace`."""
+def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: str = "",
+        target: dict | None = None) -> dict:
+    """Extract, mesh and write the shell of `step` (coordinates `mm_per_unit` mm each) into `workspace`. `target`: the
+    element count the user asked for (engines/fea_driver.element_target), which the shell's sizes follow (SHMESH-23)."""
     from meshpipeline.cad import midsurface as ms
     from meshpipeline.engines import shell_writers as sw
     from meshpipeline.engines.gmsh import shell_adapter as sa
@@ -94,7 +101,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
             rec["why"] = no_shell_why(record)
         else:
             t1 = time.time()
-            mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit)
+            mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target)
             rec["mesh_s"] = round(time.time() - t1, 1)
             exports = sw.write_all(ws, mesh, units="m", source=source)
             q = applied.get("quality") if isinstance(applied, dict) else None
@@ -104,6 +111,8 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
                        walls_mm=sorted({round(float(w), 3) for w in mesh.wall}),
                        quality=q if isinstance(q, dict) else None, exports={k: v for k, v in exports.items()
                                                                             if isinstance(v, dict)})
+            if isinstance(applied, dict) and isinstance(applied.get("target"), dict):
+                rec["target"] = applied["target"]
             if not rec["made"]:
                 rec["why"] = "the solver files could not all be written"
         for name in (ms.RECORD_FILE, ms.SURFACE_FILE):
@@ -128,9 +137,17 @@ def read(workspace: Path | str) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """python -m meshpipeline.engines.shell_run <workspace> <staged step> <mm per unit | staged>
-    ("staged": read as the FEA driver reads the staged solid, engines/fea_driver.staged_mm_per_unit)"""
+    """python -m meshpipeline.engines.shell_run <workspace> <staged step> <mm per unit | staged> [<count JSON>]
+    ("staged": read as the FEA driver reads the staged solid, engines/fea_driver.staged_mm_per_unit; the count is
+    fea_driver.element_target's, SHMESH-23)"""
     args = list(sys.argv[1:] if argv is None else argv)
+    target = None
+    if len(args) == 4:
+        try:
+            got = json.loads(args.pop())
+            target = got if isinstance(got, dict) else None
+        except ValueError:
+            target = None
     if len(args) != 3:
         print(main.__doc__, file=sys.stderr)
         return 2
@@ -147,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     else:
         mm = float(args[2])
-    run(args[0], args[1], mm_per_unit=mm, source=Path(args[1]).name)
+    run(args[0], args[1], mm_per_unit=mm, source=Path(args[1]).name, target=target)
     return 0
 
 

@@ -25,7 +25,7 @@ import { applyFlow, bindAxis, bindUnit, changedAnswers, editsLine, extentAlong, 
   markConfirmed, noteDrawn, readExternal, readForm, rowHtml, servedProposal, shown, tableHead, unitChoiceHint,
   unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
 import { bindFeaPanel, bindMeasure, effectiveMeshAs, feaPanelHtml, followAssembly, followClean, followMeasure, followMeshAs, interfaceMarks,
-  lightSpotRow, pickedMeshAs, shellMarks, showsShell, wallColour } from "../render/fea_form.js";
+  lightSpotRow, pickedMeshAs, shellLegendHtml, shellMarks, showsShell, wallColour } from "../render/fea_form.js";
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
 import { b64f32, b64u32, loadVtk } from "./scene/vtk_load.js";
@@ -1112,6 +1112,7 @@ async function openFeaStage(sessionId, d, confirm, opts) {
     <div class="v-canvas gc-canvas" id="gs-canvas-${sessionId}">
       <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the part…</div></div>
       ${stageToolsHtml(sessionId, savedUp("session", sessionId) || (isUpAxis(p.up_axis) ? p.up_axis : "+z"), { measure: true })}
+      <div class="iv-shell-note" role="status" hidden></div>
     </div>`;
   let scene = null, closed = false;
   // THE INTAKE'S ONE VIEWER: answered, the panel goes and the part stays until the run starts
@@ -1121,20 +1122,33 @@ async function openFeaStage(sessionId, d, confirm, opts) {
   const release = () => { if (intakeBox() === box) endIntake(); else stopAll(); };
   const panel = box.querySelector(".fea-panel");
   /* SHSTAGE-4: the mid-surface is fetched once the shell check is ready, and shown while the effective
-     choice is Shell (Shell picked, or Auto recommending it) */
-  let overlay = null, fetching = false;
-  const meshAsChanged = () => { if (scene) scene.showShell(showsShell(effectiveMeshAs(f.shell, pickedMeshAs(panel)))); };
+     choice is Shell (Shell picked, or Auto recommending it). THE CHECK TAKES MINUTES and the user may have
+     pressed Proceed long before: the part stays in this one viewer until the run starts, so the surface is
+     drawn there whenever it lands - by the choice SETTLED at Proceed (the confirmation's fea_mesh_as: Auto
+     while measuring is a solid, and draws nothing). With the panel gone, its legend (or a line saying the
+     surface is still being made) sits on the part. */
+  let overlay = null, fetching = false, missed = false, settledAs = "";
+  const effective = () => (closed && settledAs ? settledAs : effectiveMeshAs(f.shell, pickedMeshAs(panel)));
+  const note = box.querySelector(".iv-shell-note");
+  function drawNote() {
+    const s = f.shell || {}, on = closed && showsShell(effective());
+    const html = !on ? "" : overlay && scene ? shellLegendHtml(s)
+      : s.state === "measuring" ? "Making the mid-surface…" : "";
+    if (note.innerHTML !== html) note.innerHTML = html;
+    note.hidden = !html;
+  }
+  const meshAsChanged = () => { if (scene) scene.showShell(showsShell(effective())); drawNote(); };
   async function loadOverlay() {
     const s = f.shell;
     if (overlay || fetching || !s || s.state !== "ready" || !s.overlay) return;
     fetching = true;
-    try { overlay = await getShellSurface(sessionId); } catch (e) { console.warn("mid-surface not drawn:", e && e.message); }
+    try { overlay = await getShellSurface(sessionId); } catch (e) { missed = true; console.warn("mid-surface not drawn:", e && e.message); }
     fetching = false;
-    if (overlay && scene && !closed) { scene.setShell(overlay, s.scale); meshAsChanged(); }
+    if (overlay && scene && box.isConnected) { scene.setShell(overlay, s.scale); meshAsChanged(); }
   }
   bindFeaPanel(panel, f, p, {
     confirm: (body, edits) => confirm(body, edits),
-    done: () => { closed = true; settleIntake(box); },
+    done: () => { closed = true; settleIntake(box); drawNote(); },
     meshAsChanged,
   });
   try {
@@ -1167,6 +1181,9 @@ async function openFeaStage(sessionId, d, confirm, opts) {
       // each line followed on its own: one that cannot be drawn never keeps the others stale (26 Oct: the
       // clean check was redrawn and the parts' joints were not)
       const follow = (fn) => { try { return !!fn(); } catch (e) { console.warn("FEA stage: not redrawn", e); return false; } };
+      // ANSWERED (here, on the card or in the chat): what was settled at Proceed is what the run meshes
+      const was = settledAs;
+      if (d2 && d2.confirmed) { closed = true; settledAs = String(d2.confirmed.fea_mesh_as || "") || settledAs; }
       if (d2 && d2.fea) { Object.assign(f, d2.fea); follow(() => followClean(panel, f)); }
       const movedA = !!a && follow(() => followAssembly(panel, a));
       // SHSTAGE-2: the shell check lands minutes after the stage opened - "Mesh as" and its marks follow
@@ -1176,9 +1193,18 @@ async function openFeaStage(sessionId, d, confirm, opts) {
         p.hot_spots = marks();
         if (scene) scene.setSpots(p.hot_spots);
       }
-      if (movedS) { loadOverlay(); meshAsChanged(); }
+      if (movedS) { loadOverlay(); meshAsChanged(); } else if (settledAs !== was) meshAsChanged();
     },
     isNaming: () => false,
+    /** Whether the watch should go on once the check itself is done: the shell check still at work (or its surface
+     *  still to fetch) and the viewer still on the page - while the panel is open, for "Mesh as" to follow it;
+     *  after Proceed, only when the settled choice draws the mid-surface. */
+    awaitsShell: () => {
+      const s = f.shell;
+      if (!box.isConnected || !s) return false;
+      const pending = s.state === "measuring" || (s.state === "ready" && !!s.overlay && !overlay && !missed);
+      return pending && (!closed || showsShell(effective()));
+    },
   };
 }
 

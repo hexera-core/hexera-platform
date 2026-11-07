@@ -494,6 +494,30 @@ def card_mesh_as(declaration: str) -> str:
     return ""
 
 
+#: The request card's "Engine settings" for a shell run (engines/shell_writers: CQUAD4 / S4 / SHELL181 plates, linear,
+#: a few 3-node triangles where quads do not fit) - the element order the FEA path sets is the solid mesh's, made
+#: beside it (fea_driver.shell_pass), and in a shell + solid run the thick regions' too (engines/mixed_mesh: C3D10)
+SHELL_ELEMENTS = "Shell: linear plates (4-node quads, a few 3-node triangles)"
+MIXED_ELEMENTS = "Thin walls: linear plates (4-node quads, a few 3-node triangles)"
+
+
+def card_engine_settings(mesh_as_label: str, params: dict | None) -> str:
+    """The request card's "Engine settings" row for a shell or shell + solid run, true to what is written: the plates
+    are linear, and the element order applies to the solid made beside them (and to the thick regions kept solid).
+    "" for a solid run (the card shows the settings as they are). Pure."""
+    kind = next((k for k, label in CARD_LABELS.items() if label == mesh_as_label), "")
+    if not kind:
+        return ""
+    p = dict(params or {})
+    order = p.pop("element_order", None)
+    parts = [SHELL_ELEMENTS if kind == pm.MESH_SHELL else MIXED_ELEMENTS]
+    if order not in (None, ""):
+        parts.append(f"{'the solid mesh made beside it' if kind == pm.MESH_SHELL else 'thick regions and the solid mesh made beside it'}"
+                     f": element order {order}")
+    parts += [f"{str(k).replace('_', ' ')}: {v}" for k, v in p.items()]
+    return "; ".join(parts)
+
+
 def confirmed_mesh_as(session_id: str) -> str:
     """The settled choice as confirmed on the stage (the stored confirmation's fea_mesh_as): "shell", "mixed"
     or "solid"; "solid" when nothing says (no confirmation, an unreadable store) - today's path."""
@@ -509,6 +533,7 @@ def confirmed_mesh_as(session_id: str) -> str:
     return got if got in (pm.MESH_SHELL, pm.MESH_MIXED) else pm.MESH_SOLID
 
 
-__all__ = ["AUTO_SHELL_SHARE", "CARD_LABELS", "MEASURING", "card_mesh_as", "OPTIONS", "QUESTION", "READY", "SHELL_CHECK_LIMIT_S", "UNAVAILABLE",
+__all__ = ["AUTO_SHELL_SHARE", "CARD_LABELS", "MEASURING", "MIXED_ELEMENTS", "SHELL_ELEMENTS", "card_engine_settings",
+           "card_mesh_as", "OPTIONS", "QUESTION", "READY", "SHELL_CHECK_LIMIT_S", "UNAVAILABLE",
            "confirmed_mesh_as", "declaration_words", "is_cad", "not_shelled", "read_status", "recommendation",
            "run_shell_check", "settle", "shell_view", "start", "state_of", "summarise"]

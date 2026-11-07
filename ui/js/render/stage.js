@@ -140,9 +140,10 @@ export const Stage = {
     const fea=b.purpose==='structural';
     let rows=ROWS.filter(([k])=>(b[k]||b[k+'_label'])&&!(fea&&k==='mesh_fidelity')).map(([k,l])=>
       `<div class="rc-row"><div class="rc-k">${esc(l)}</div><div class="rc-v">${esc(b[k+'_label']||b[k])}</div></div>`).join('');
+    // the server's words when it has them (a shell run: the plates are linear, the order is the solid's beside them)
     if(b.engine_params&&Object.keys(b.engine_params).length)
       rows+=`<div class="rc-row"><div class="rc-k">Engine settings</div>`
-           +`<div class="rc-v">${esc(Object.entries(b.engine_params).map(([k,v])=>
+           +`<div class="rc-v">${esc(b.engine_params_label||Object.entries(b.engine_params).map(([k,v])=>
              `${String(k).replace(/_/g,' ')}: ${typeof v==='object'?JSON.stringify(v):v}`).join(', '))}</div></div>`;
     (b.boundary_assignments||[]).forEach(p=>{
       rows+=`<div class="rc-row"><div class="rc-k">${esc(p.name)}</div>`

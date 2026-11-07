@@ -290,6 +290,34 @@ def test_the_request_card_says_a_shell_or_shell_and_solid(settled, row):
     assert sc.card_mesh_as("") == "" and sc.card_mesh_as("Meshed as: a solid.") == ""
 
 
+@pytest.mark.parametrize("settled,words", [
+    ("shell", "Shell: linear plates (4-node quads, a few 3-node triangles); the solid mesh made beside it: "
+              "element order 2"),
+    ("mixed", "Thin walls: linear plates (4-node quads, a few 3-node triangles); thick regions and the solid mesh "
+              "made beside it: element order 2"),
+    ("solid", None)])
+def test_the_request_cards_engine_settings_are_true_to_a_shell(settled, words):
+    """A shell run's plates are linear (CQUAD4 / S4 / SHELL181): the card never says "element order: 2" as if they
+    were quadratic - that order is the solid mesh's, made beside them. A solid run keeps the settings as they are."""
+    from types import SimpleNamespace
+
+    from meshpipeline.application.geometry_confirmation import CONFIRMED_MARK
+    from meshpipeline.application.intake_brief import build_brief
+
+    said = sc.declaration_words({"mesh_as": settled, "why": "Because."})
+    session = SimpleNamespace(request_txt="Static analysis, as a shell.", purpose="structural", mesh_engine="gmsh",
+                              engine_params={"element_order": "2"},
+                              messages=[{"role": "user", "content": "Static analysis, as a shell."},
+                                        {"role": "assistant", "content": f"{CONFIRMED_MARK} a solid part. {said}"}],
+                              user_notes=[], intake_submitted=False)
+    brief = build_brief(session)
+    assert brief.get("engine_params_label") == words
+    assert brief["engine_params"] == {"element_order": "2"}       # the settings themselves are unchanged
+    assert sc.card_engine_settings(sc.CARD_LABELS["shell"], {"element_order": 2, "optimize": "netgen"}).endswith(
+        "element order 2; optimize: netgen")
+    assert sc.card_engine_settings(sc.CARD_LABELS["shell"], {}) == sc.SHELL_ELEMENTS
+
+
 def test_two_small_faces_far_apart_are_a_length_not_a_wall_thickness():
     """A bar's two end caps pair across its length (255 mm apart, 25 mm wide): that is not a wall, so no
     "255 mm thick" is said for the region that stays solid."""

@@ -474,8 +474,11 @@ def _reference_normal(face) -> np.ndarray | None:
     return -n if face.Orientation() == TopAbs_REVERSED else n
 
 
-def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None) -> tuple[ShellMesh, dict]:
+def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None,
+               target: dict | None = None, correction: float = 1.0) -> tuple[ShellMesh, dict]:
     """Mesh the sewn mid-surface: (the shell mesh in millimetres, the plan as applied: one row per face).
+    `target`: the user's element count (SHMESH-23, fea_driver.element_target); `correction`: the built-over-planned a
+    first mesh measured (mesh_run aims again with it).
 
     SHMESH-21: run in a forked child stopped after MESH_DEADLINE_S (ValueError, in words): gmsh can hang on a face
     with no way back to Python (fresh fr017's re-made faces: over 20 minutes on one 2D mesh), and a hung mesh must
@@ -484,13 +487,14 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
     import os
 
     if MESH_DEADLINE_S <= 0 or "fork" not in mp.get_all_start_methods():
-        return _mesh_shell(brep, record, mm_per_unit=mm_per_unit, log=log)
+        return _mesh_shell(brep, record, mm_per_unit=mm_per_unit, log=log, target=target, correction=correction)
     recv, send = mp.get_context("fork").Pipe(duplex=False)
 
     def child() -> None:
         try:
             got: list = []
-            mesh, applied = _mesh_shell(brep, record, mm_per_unit=mm_per_unit, log=got)
+            mesh, applied = _mesh_shell(brep, record, mm_per_unit=mm_per_unit, log=got, target=target,
+                                        correction=correction)
             send.send(("ok", (mesh, applied), got))
         except BaseException as exc:  # noqa: BLE001 - told to the parent, which raises it there
             send.send(("error", f"{type(exc).__name__}: {exc}", None))
@@ -517,7 +521,8 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
     return out
 
 
-def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None) -> tuple[ShellMesh, dict]:
+def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None,
+                target: dict | None = None, correction: float = 1.0) -> tuple[ShellMesh, dict]:
     """mesh_shell, unbounded, in this process."""
     import tempfile
 
@@ -537,7 +542,8 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
         started = time.monotonic()
         while True:
             try:
-                mesh, applied = _mesh_once(Path(brep), record, owners, float(mm_per_unit), log)
+                mesh, applied = _mesh_once(Path(brep), record, owners, float(mm_per_unit), log, target=target,
+                                           correction=correction)
             except _Periodic as p:
                 if resplined >= RESPLINE_MAX:
                     raise ValueError(f"gmsh could not mesh {resplined + 1} periodic faces") from p
@@ -566,7 +572,8 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
             return mesh, applied
 
 
-def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list | None) -> tuple[ShellMesh, dict]:
+def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list | None, *,
+               target: dict | None = None, correction: float = 1.0) -> tuple[ShellMesh, dict]:
     import gmsh
 
     facts = _faces_and_facts(Path(brep), mm)
@@ -581,6 +588,11 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     # SHMESH-20: a plan far past what a shell mesh is made in within the time allowed stops before gmsh starts, and
     # says so (a ship's 3 m slotted hull, sh0048: about 3 million planned, over an hour of gmsh)
     planned = sum(f["area"] * mm * mm / r["size_mm"] ** 2 for f, r in zip(facts, rows, strict=True))
+    # SHMESH-23: THE USER'S ELEMENT COUNT scales every size by one factor (their count beats our minimums: said, never
+    # refused), aimed on the built-over-planned a first mesh measured
+    counted, sz = _count_plan(rows, planned, target, correction)
+    if counted is not None:
+        planned = counted["planned"]
     if planned > PLANNED_MAX:
         raise ValueError(f"the shell mesh plan asks for about {planned / 1e6:.1f} million elements over {len(facts)} "
                          f"faces, past the {PLANNED_MAX / 1e6:.1f} million a shell mesh is made of in the time allowed "
@@ -598,7 +610,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         # narrow neighbour's size over the whole of a wide face (one 2.5 mm strip: 800,000 elements)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-        gmsh.option.setNumber("Mesh.MeshSizeMin", plan_rules.FLOOR_WALLS * min(walls) / mm)
+        gmsh.option.setNumber("Mesh.MeshSizeMin", plan_rules.FLOOR_WALLS * min(walls) * min(sz, 1.0) / mm)
         gmsh.option.setNumber("Mesh.MeshSizeMax", max(r["size_mm"] for r in rows) / mm)
         gmsh.option.setNumber("Mesh.Smoothing", 5)
         gmsh.option.setNumber("Mesh.LcIntegrationPrecision", LC_PRECISION)
@@ -683,6 +695,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     if r is None:
                         continue
                     h0, _rule = plan_rules.curve_size(r * mm, wall=rows[k]["wall_mm"])
+                    h0 *= sz
                     if h0 < rows[k]["size_mm"]:
                         arcs_by.setdefault(float(f"{h0:.6g}"), []).append(abs(c))
         for h_mm, surfs in sorted(const_by.items()):
@@ -710,7 +723,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         evened = 0
         if EVEN_FACES:
             fixed = {abs(c) for t in mapped for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)}
-            evened = _even_faces(gmsh, tag_of, fixed, {t: plan_rules.FLOOR_WALLS * rows[k]["wall_mm"] / mm
+            evened = _even_faces(gmsh, tag_of, fixed, {t: plan_rules.FLOOR_WALLS * rows[k]["wall_mm"] * min(sz, 1.0) / mm
                                                        for t, k in tag_of.items()})
         _generate(gmsh, tag_of)
         node_tags, coords, _p = gmsh.model.mesh.getNodes()
@@ -755,7 +768,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     merged = 0
     if COLLAPSE_SHORT:
         # SHMESH-12: an edge under the floor, far shorter than its elements' others, is a CAD sliver: one node
-        limit = np.array([plan_rules.FLOOR_WALLS * r["wall_mm"] / mm for r in rows])
+        limit = np.array([plan_rules.FLOOR_WALLS * r["wall_mm"] * min(sz, 1.0) / mm for r in rows])
         Q, T, q_face, t_face, merged = shell_mesh.collapse_short(xyz / mm, Q, T, q_face, t_face, limit)
     relaxed = 0
     project = _projector(facts, on_face, mm) if RELAX_CURVED and (on_face >= 0).any() else None
@@ -881,7 +894,42 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     if floored:
         mesh.notes.append(f"{len(floored)} face(s) asked for elements finer than half their wall; they are meshed at "
                           "half the wall (SHMESH-2).")
-    return mesh, {"faces": rows, "quality": quality, "per_turn": PER_TURN, "growth": plan_rules.GROWTH}
+    out = {"faces": rows, "quality": quality, "per_turn": PER_TURN, "growth": plan_rules.GROWTH}
+    if counted is not None:
+        out["target"] = counted
+    return mesh, out
+
+
+def _count_plan(rows: list[dict], planned: float, target: dict | None, correction: float) -> tuple[dict | None, float]:
+    """SHMESH-23: the plan's rows scaled in place to the user's element count: (what was done, the factor on every
+    size); (None, 1.0) with no count asked. `planned` is the rules' own estimate, `correction` the built-over-planned
+    measured on a first mesh (1.0 before one)."""
+    if not target or int(target.get("elements") or 0) <= 0:
+        return None, 1.0
+    corr = float(correction) if correction and correction > 0 else 1.0
+    rules = planned * corr
+    aim = plan_rules.count_aim(rules, target)
+    out = {"asked": int(target["elements"]), "mode": str(target.get("mode") or "about"),
+           "rules_elements": int(round(rules)), "correction": round(corr, 4)}
+    if aim is None:
+        out.update(kept_rules=True, scale=1.0, planned=int(round(planned)))
+        return out, 1.0
+    sz = plan_rules.count_scale(rules, aim)
+    held = sz in plan_rules.SCALE_RANGE
+    # past what a shell mesh is made of in the time allowed (SHMESH-20), the count is held there, and said
+    if planned / sz ** 2 > PLANNED_MAX:
+        sz, held = math.sqrt(planned / (0.95 * PLANNED_MAX)), True
+    under = False
+    for r in rows:
+        r["size_mm"] = float(f"{r['size_mm'] * sz:.6g}")
+        if "curve_mm" in r:
+            r["curve_mm"] = float(f"{r['curve_mm'] * sz:.6g}")
+        r["floored"] = False
+        finest = min(r["size_mm"], r.get("curve_mm", r["size_mm"]))
+        under = under or finest < plan_rules.FLOOR_WALLS * r["wall_mm"] * (1 - 1e-6)
+        r["rule"] = f"{r['rule']}+SHMESH-23"
+    out.update(scale=round(sz, 4), planned=int(round(planned / sz ** 2)), under_floor=under, held=held)
+    return out, sz
 
 
 def _projector(facts: list[dict], on_face: np.ndarray, mm: float):
@@ -996,13 +1044,37 @@ def element_offsets(mesh: ShellMesh, mids: dict[str, dict]) -> int:
     return int(np.count_nonzero(z))
 
 
-def mesh_run(out_dir: Path | str, *, mm_per_unit: float = 1.0) -> tuple[ShellMesh, dict]:
-    """Mesh the mid-surface cad/midsurface wrote into `out_dir`, and write shell_plan.json there."""
+def mesh_run(out_dir: Path | str, *, mm_per_unit: float = 1.0, target: dict | None = None) -> tuple[ShellMesh, dict]:
+    """Mesh the mid-surface cad/midsurface wrote into `out_dir`, and write shell_plan.json there. `target`: the
+    user's element count (SHMESH-23), met on the built mesh - aimed again once when the first mesh missed it."""
     from meshpipeline.cad import midsurface as ms
 
     out = Path(out_dir)
     record = json.loads((out / ms.RECORD_FILE).read_text())
-    mesh, applied = mesh_shell(out / ms.SURFACE_FILE, record, mm_per_unit=mm_per_unit)
+    mesh, applied = mesh_shell(out / ms.SURFACE_FILE, record, mm_per_unit=mm_per_unit, target=target)
+    t = applied.get("target")
+    if t and not t.get("kept_rules") and not plan_rules.count_met(mesh.n_elements, target):
+        # SHMESH-23: the built count missed the user's: aimed again once on the built-over-planned it measured, and
+        # the closer of the two kept
+        corr = float(t.get("correction") or 1.0) * mesh.n_elements / max(float(t.get("planned") or 1), 1.0)
+        try:
+            again, applied2 = mesh_shell(out / ms.SURFACE_FILE, record, mm_per_unit=mm_per_unit, target=target,
+                                         correction=corr)
+        except ValueError as exc:
+            logger.info("shell mesh: the count was not aimed again (%s)", exc)
+        else:
+            aim = float(t["asked"])
+
+            def gap(n: int) -> float:
+                return abs(math.log(max(n, 1) / aim))
+
+            if gap(again.n_elements) < gap(mesh.n_elements):
+                mesh, applied = again, applied2
+            applied["target"]["reaimed"] = True
+    if applied.get("target"):
+        tt = applied["target"]
+        tt["built"] = int(mesh.n_elements)
+        tt["held"] = bool(tt.get("held")) or (not tt.get("kept_rules") and not plan_rules.count_met(mesh.n_elements, target))
     (out / "shell_plan.json").write_text(json.dumps(applied, indent=1, sort_keys=True, default=float))
     return mesh, applied
 

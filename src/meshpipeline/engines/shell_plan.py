@@ -92,5 +92,79 @@ def face_plan(record: Mapping, mid_id: str, *, width: float, radii: list[float],
     return out
 
 
-__all__ = ["BASE_DIVISIONS", "CURVE_PER_QUARTER", "FLOOR_WALLS", "GROWTH", "MIN_ACROSS", "PANEL_ACROSS", "PANEL_WALLS",
-           "base_size", "curve_size", "face_plan"]
+#: SHMESH-23: THE USER'S ELEMENT COUNT (engines/fea_driver.element_target, the same count the solid mesh is sized to)
+#: scales every size of the plan by one factor. The user's count beats our minimums - finer than half the wall, or
+#: coarser than the rules, is said, never refused - but the factor stays inside SCALE_RANGE (a count read wrongly
+#: by a thousand times must not ask for a billion elements).
+SCALE_RANGE = (0.02, 50.0)
+#: SHMESH-23: an "about" count is met when the built mesh is within this share of it; past it, the plan is aimed
+#: again once with the built-over-planned it measured
+COUNT_SHARE = 0.25
+
+
+def count_aim(planned: float, target: Mapping | None) -> float | None:
+    """SHMESH-23: the element count the plan is aimed at, or None when the rules' own plan already meets the user's
+    count (or there is none). `target` is fea_driver.element_target's {"elements", "mode", "low"/"high"}."""
+    t = target or {}
+    n = int(t.get("elements") or 0)
+    if n <= 0 or planned <= 0:
+        return None
+    mode = str(t.get("mode") or "about")
+    if mode == "range" and int(t.get("low") or 0) <= planned <= int(t.get("high") or n):
+        return None
+    if mode == "at_most":
+        return None if planned <= n else 0.9 * n      # a little inside the bound, for the built count to stay in
+    if mode == "at_least":
+        return None if planned >= n else 1.1 * n
+    return float(n)
+
+
+def count_scale(planned: float, aim: float | None) -> float:
+    """SHMESH-23: the factor on every element size that brings `planned` elements to `aim` (the count goes as the
+    inverse square of the size on a surface), held inside SCALE_RANGE; 1.0 with no aim."""
+    if not aim or planned <= 0:
+        return 1.0
+    lo, hi = SCALE_RANGE
+    return min(hi, max(lo, math.sqrt(float(planned) / float(aim))))
+
+
+def count_met(built: int, target: Mapping | None) -> bool:
+    """SHMESH-23: whether a built count meets the user's: inside the range, under the most, over the least, or
+    within COUNT_SHARE of an "about" count."""
+    t = target or {}
+    n = int(t.get("elements") or 0)
+    if n <= 0:
+        return True
+    mode = str(t.get("mode") or "about")
+    if mode == "range":
+        return int(t.get("low") or 0) <= built <= int(t.get("high") or n)
+    if mode == "at_most":
+        return built <= n
+    if mode == "at_least":
+        return built >= n
+    return abs(built - n) <= COUNT_SHARE * n
+
+
+def count_words(t: Mapping | None) -> str:
+    """The shell's line for the user's count (SHMESH-23), in plain words; "" with none asked."""
+    t = t or {}
+    asked = int(t.get("asked") or 0)
+    if asked <= 0:
+        return ""
+    built = int(t.get("built") or 0)
+    if t.get("kept_rules"):
+        return f"Your count ({asked:,} elements) was already met by our rules' own sizes."
+    said = f"Sized to the {asked:,} elements you asked for ({built:,} made)."
+    if t.get("held"):
+        said += " That was as far as the sizes could go."
+    rules = int(t.get("rules_elements") or 0)
+    if t.get("scale", 1.0) > 1.0 and rules:
+        said += f" This is coarser than our accuracy rules ask for (about {rules:,} elements): results may be less exact."
+    if t.get("under_floor"):
+        said += " Some elements are smaller than half the wall, finer than a shell usually needs."
+    return said
+
+
+__all__ = ["BASE_DIVISIONS", "COUNT_SHARE", "CURVE_PER_QUARTER", "FLOOR_WALLS", "GROWTH", "MIN_ACROSS", "PANEL_ACROSS",
+           "PANEL_WALLS", "SCALE_RANGE", "base_size", "count_aim", "count_met", "count_scale", "count_words",
+           "curve_size", "face_plan"]

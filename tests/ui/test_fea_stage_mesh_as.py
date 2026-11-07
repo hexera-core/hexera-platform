@@ -204,3 +204,96 @@ def test_auto_shell_and_solid_draws_the_mid_surface_and_what_stays_solid(live):
     live.wait_for(f"window.__confirmed['{sid}']", timeout=20, what="the confirmation")
     assert live.evaluate(f"window.__confirmed['{sid}'].fea_mesh_as") == "auto"
     assert_clean(live, "the FEA stage's shell + solid")
+
+
+def _after(live, sid: str) -> dict:
+    return live.evaluate(f"""(() => {{
+      const root = document.getElementById('gstage-{sid}'), n = root.querySelector('.iv-shell-note');
+      return {{plain: root.classList.contains('iv-plain'), note: n.hidden ? '' : n.textContent.replace(/\\s+/g, ' ').trim(),
+               waits: window.__stages['{sid}'].awaitsShell(), shell: window._vdbg['gstage:{sid}'].shell()}}; }})()""")
+
+
+def test_the_mid_surface_lands_in_the_same_viewer_after_proceed(live):
+    # the user asked for a shell and pressed Proceed in seconds; the shell check lands minutes later, while they are
+    # on the mesh plan: the part is still in the intake's one viewer, and the surface is drawn there, with its legend
+    sid = "feaafter"
+    said = _shell("measuring", default="shell", said="shell", said_words="You asked for a shell mesh in the chat.")
+    _open(live, sid, _check(said))
+    live.evaluate(f"document.querySelector('#gstage-{sid} .gc-proceed').click()")
+    live.wait_for(f"window.__confirmed['{sid}']", timeout=20, what="the confirmation")
+    live.wait_for(f"document.getElementById('gstage-{sid}').classList.contains('iv-plain')", timeout=10,
+                  what="the panel to go")
+    settled = {"fea_mesh_as": "shell"}
+    live.evaluate(f"window.__stages['{sid}'].update({json.dumps(dict(_check(said), confirmed=settled))})")
+    a = _after(live, sid)
+    assert a["plain"] and a["note"] == "Making the mid-surface…" and a["waits"] and not a["shell"]["shown"]
+    live.evaluate(f"window.__stages['{sid}'].update({json.dumps(dict(_check(_ready()), confirmed=settled))})")
+    live.wait_for(f"window._vdbg['gstage:{sid}'].shell().shown", timeout=30, what="the mid-surface after Proceed")
+    a = _after(live, sid)
+    assert a["shell"]["actors"] == 2 and not a["waits"]
+    assert a["note"] == "Wall 8 mm – 12 mm"
+    assert_clean(live, "the mid-surface after Proceed")
+
+
+def test_the_watch_follows_the_shell_check_after_the_check_is_ready(live):
+    # dev, 7 Nov: the check was ready (FEA naming done) while the shell check still measured; it landed on the worker
+    # 10 s later, but the watch had stopped at "ready" and the panel said "measuring the walls…" for good. The watch
+    # now goes on, quietly, until the shell view lands - the panel and the mid-surface follow with no reload
+    sid = "feawatch"
+    live.evaluate("""(async () => {
+      const SKIN = __SKIN__, MEASURING = __MEASURING__, READY = __READY__, OVERLAY = __OVERLAY__;
+      const real = window.fetch.bind(window);
+      const json = (x) => Promise.resolve(new Response(JSON.stringify(x), {status: 200, headers: {'Content-Type': 'application/json'}}));
+      window.__polls = 0; window.__landAt = 1e9;
+      window.fetch = (u, o) => {
+        const s = String(u);
+        if (s.includes('/geometry/__S__/check/skin')) return json(SKIN);
+        if (s.includes('/geometry/__S__/check/shell-surface')) return json(OVERLAY);
+        if (s.endsWith('/geometry/__S__/check')) { window.__polls++; return json(window.__polls >= window.__landAt ? READY : MEASURING); }
+        return real(u, o);
+      };
+      const { openGeometryStage } = await import('/static/js/viewer/geometry_stage.js');
+      const c = await import('/static/js/shell/composer.js');
+      const st = await import('/static/js/core/state.js');
+      window.__stages = window.__stages || {};
+      c.configureComposer({
+        notice: {show() {}, clear() {}}, chat() {}, checkProgress() {}, geometryCard() {},
+        geometryCheck: async (sid, d, confirm) => (window.__stages[sid] = await openGeometryStage(sid, d, confirm,
+          {anchorEl: document.getElementById('stage'), fallback: () => {}})),
+      });
+      st.set.sessionId('__S__');
+      window.__watch = c.watchGeometryCheck('__S__').then(() => { window.__watchDone = true; });
+    })()""".replace("__SKIN__", json.dumps(_skin(_tube(R_OUT, R_IN))))
+                  .replace("__MEASURING__", json.dumps(_check(_shell("measuring"))))
+                  .replace("__READY__", json.dumps(_check(_ready())))
+                  .replace("__OVERLAY__", json.dumps(_overlay())).replace("__S__", sid), timeout=60)
+    live.wait_for(f"window._vdbg && window._vdbg['gstage:{sid}']", timeout=90, what="the FEA stage to initialise")
+    s = _state(live, sid)
+    assert s["auto"] == "measuring the walls…" and s["measuring"] and not s["shell"]["shown"]
+    # the check is ready and the watch still runs: the shell check lands two polls on
+    live.wait_for("window.__polls >= 2", timeout=20, what="the watch to keep polling past ready")
+    assert not live.evaluate("!!window.__watchDone")
+    live.evaluate("window.__landAt = window.__polls + 1")
+    live.wait_for(f"window._vdbg['gstage:{sid}'].shell().shown", timeout=30, what="the mid-surface without a reload")
+    s = _state(live, sid)
+    assert s["auto"] == "Shell" and not s["measuring"] and s["legend"] and s["legendText"] == "8 mm – 12 mm"
+    # drawn: the watch stops by itself
+    live.wait_for("window.__watchDone === true", timeout=20, what="the watch to stop once the surface is drawn")
+    assert_clean(live, "the watch following the shell check")
+
+
+def test_auto_settled_solid_while_measuring_draws_no_mid_surface_after_proceed(live):
+    # Proceed while the walls were measured, on Auto: the run is a solid (said on the stage), so the surface that
+    # lands later is not drawn and nothing waits for it
+    sid = "feaaftersolid"
+    _open(live, sid, _check(_shell("measuring")))
+    live.evaluate(f"document.querySelector('#gstage-{sid} .gc-proceed').click()")
+    live.wait_for(f"window.__confirmed['{sid}']", timeout=20, what="the confirmation")
+    settled = {"fea_mesh_as": "solid"}
+    live.evaluate(f"window.__stages['{sid}'].update({json.dumps(dict(_check(_shell('measuring')), confirmed=settled))})")
+    a = _after(live, sid)
+    assert a["note"] == "" and not a["waits"]
+    live.evaluate(f"window.__stages['{sid}'].update({json.dumps(dict(_check(_ready()), confirmed=settled))})")
+    a = _after(live, sid)
+    assert a["note"] == "" and not a["waits"] and not a["shell"]["shown"]
+    assert_clean(live, "a solid settled while measuring")

@@ -326,11 +326,13 @@ def mesh_as_of(state) -> str:
     return got if got in ("shell", "mixed") else "solid"
 
 
-async def shell_pass(ws: Path, state, *, job_id: str, run=None) -> dict | None:
+async def shell_pass(ws: Path, state, *, job_id: str, run=None, target: dict | None = None) -> dict | None:
     """SHSTAGE-6: when the stage settled Mesh as: Shell, the staged solid's shell mesh and its solver files
     (engines/shell_run, in a process of its own), beside the solid deck. The solid path is unchanged: a shell
     that cannot be made is said, and the solid mesh is still delivered. None when Solid was settled.
-    MIXED-5: when Auto settled Mixed, the same in engines/mixed_run (thin walls shell, thick regions solid, joined)."""
+    MIXED-5: when Auto settled Mixed, the same in engines/mixed_run (thin walls shell, thick regions solid, joined).
+    `target`: the element count the user asked for (element_target) - the shell's sizes follow it as the solid's do
+    (SHMESH-23)."""
     kind = mesh_as_of(state)
     if kind == "solid":
         return None
@@ -347,8 +349,11 @@ async def shell_pass(ws: Path, state, *, job_id: str, run=None) -> dict | None:
     if left is not None:
         limit = max(120.0, min(limit, 0.5 * left))
     try:
+        argv = [sys.executable, "-m", mod.__name__, str(ws), str(step), "staged"]
+        if kind == "shell" and target and int(target.get("elements") or 0) > 0:
+            argv.append(json.dumps({k: target[k] for k in ("elements", "mode", "low", "high") if k in target}))
         proc = await asyncio.to_thread(
-            subprocess.run, [sys.executable, "-m", mod.__name__, str(ws), str(step), "staged"],
+            subprocess.run, argv,
             capture_output=True, text=True, timeout=limit, check=False)
         rec = mod.read(ws)
         if not rec:
@@ -371,7 +376,7 @@ async def shell_pass(ws: Path, state, *, job_id: str, run=None) -> dict | None:
     _cite(job_id, [{"stage": SHELL_GATE, "decided": "shell mesh" if rec.get("made") else "no shell mesh",
                     "value": rec.get("elements"), "rule": "SHSTAGE-6",
                     "inputs": {k: rec.get(k) for k in ("bodies", "open_edges", "solid_bodies", "walls_mm", "seconds",
-                                                         "why")},
+                                                         "why", "target")},
                     "words": rec["words"]}])
     return rec
 
@@ -1839,9 +1844,6 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         outcome = run.outcome(produced_deliverable=False, failure_marker=BUILD_FAILED)
         return False, BUILD_FAILED, outcome
 
-    # SHSTAGE-6: MESH AS: SHELL - the shell mesh and its solver files first, from the staged solid as read; the
-    # solid deck is made as always beside it
-    await shell_pass(ws, state, job_id=job_id, run=run)
     if skins and skins.get("origin"):
         _cite(job_id, [{"stage": "fea_plan", "decided": "skins left out", "rule": "MESH-8",
                         "value": sum(len(sk["faces"]) for sk in skins["skins"]), "inputs": {"skins": skins["skins"]},
@@ -1917,6 +1919,10 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         record_remark(ws, ai["decision"]["notes_remark"], by="fea_ai")
     # PLAN-fea-27: an element count the user named, as the AI read it from their notes (AI-fea-4)
     target = element_target(state, ai)
+    # SHSTAGE-6: MESH AS: SHELL - the shell mesh and its solver files first, from the staged solid as read (the
+    # assembly staging above never rewrites it); the solid deck is made as always beside it. SHMESH-23: once the
+    # user's element count is read, so the shell's sizes follow it as the solid's do.
+    await shell_pass(ws, state, job_id=job_id, run=run, target=target)
     # AI-fea-9 / PLAN-fea-29: the element sizes the user asked for, part by part, tied to the parts by the vision
     # model from the parts' facts and pictures, checked by the rules; nothing applied when it cannot be read
     part_sizes = await PS.decide(ws, record, surface, state or {}, job_id=job_id, run=run, wait_s=ai_wait_s(run))

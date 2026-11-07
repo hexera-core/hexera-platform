@@ -142,3 +142,46 @@ def test_a_part_with_no_shell_says_why_in_numbers():
                       {"verdict": "shell", "why": "every wall is thin against its size"},
                       {"verdict": "solid", "why": "the mid-surface extraction ran past 780 s and was stopped"}]}
     assert sr.no_shell_why(two) == "a; the mid-surface extraction ran past 780 s and was stopped"
+
+
+@pytest.fixture(scope="module")
+def rules_count(tmp_path_factory, tjoint):
+    """The T-joint's shell count by the rules alone (no count asked)."""
+    ws = tmp_path_factory.mktemp("tjoint_rules")
+    (ws / "geometry.step").write_bytes((tjoint / "geometry.step").read_bytes())
+    rec = shell_run.run(ws, ws / "geometry.step", mm_per_unit=FD.staged_mm_per_unit(ws / "geometry.step"))
+    assert rec["made"] and "target" not in rec
+    return int(rec["elements"])
+
+
+def test_the_shell_follows_the_users_element_count(tmp_path, tjoint, rules_count):
+    # SHMESH-23: the count the user named (fea_driver.element_target) sizes the shell as it sizes the solid - here
+    # four times the rules' own count, finer than the rules: said, never refused
+    ask = 4 * rules_count
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "geometry.step").write_bytes((tjoint / "geometry.step").read_bytes())
+    target = {"elements": ask, "mode": "about"}
+    assert shell_run.main([str(ws), str(ws / "geometry.step"), "staged", json.dumps(target)]) == 0
+    rec = shell_run.read(ws)
+    assert rec["made"] is True
+    assert abs(rec["elements"] - ask) <= 0.25 * ask, (rec["elements"], ask, rules_count)
+    assert rec["target"]["asked"] == ask and rec["target"]["built"] == rec["elements"]
+    assert rec["target"]["scale"] < 1.0
+    assert f"Sized to the {ask:,} elements you asked for" in rec["words"]
+    plan = json.loads((ws / "_shell" / "shell_plan.json").read_text())
+    assert all(r["rule"].endswith("+SHMESH-23") for r in plan["faces"])
+
+
+def test_the_driver_hands_the_count_to_the_shell(tmp_path, tjoint, rules_count, monkeypatch):
+    cited: list = []
+    monkeypatch.setattr(FD, "_cite", lambda job_id, entries: cited.extend(entries))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "geometry.step").write_bytes((tjoint / "geometry.step").read_bytes())
+    ask = 3 * rules_count
+    rec = asyncio.run(FD.shell_pass(ws, {"fea_mesh_as": "shell"}, job_id="j", run=_Run(),
+                                    target={"elements": ask, "mode": "about", "quote": "", "source": "ai"}))
+    assert rec["made"] is True and rec["target"]["asked"] == ask
+    assert abs(rec["elements"] - ask) <= 0.25 * ask
+    assert cited[0]["inputs"]["target"]["asked"] == ask
