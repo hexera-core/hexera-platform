@@ -4043,6 +4043,19 @@
   "roots": []
  },
  {
+  "context": "engines/gmsh/shell_adapter.py::_generate::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/gmsh/shell_adapter.py",
+  "qualname": "_generate",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/layer_census.py::_body::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/layer_census.py",
   "qualname": "_body",
