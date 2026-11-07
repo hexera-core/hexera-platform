@@ -15,8 +15,9 @@
  * The stage opens the moment the part is measured, with the measuring step's own labels under a
  * banner that says what is happening, and fills in the model's labels when they arrive - the
  * user is already turning the part while the model thinks, and can fix the labels and proceed
- * without waiting for it. Proceeding hands the workbench back, and the conversation carries on
- * where it was.
+ * without waiting for it. Proceeding settles the stage: its panel goes, the part stays beside the
+ * conversation for the rest of the intake (the notes' parts are drawn on it), and the conversation
+ * carries on where it was. The stage goes when the run starts (viewer/intake_view.js).
  */
 import { getGeometrySkin } from "../api/endpoints.js";
 import { esc } from "../core/format.js";
@@ -29,6 +30,8 @@ import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
 import { b64f32, b64u32, loadVtk } from "./scene/vtk_load.js";
 import { mountCanvas } from "./scene/canvas.js";
 import { makeOverlay } from "./scene/overlay.js";
+// the intake keeps ONE viewer: the stage takes the workbench through it and stays, settled, once answered
+import { endIntake, holdIntake, intakeBox, settleIntake, takeOver } from "./intake_view.js";
 import { UP_AXES, VIEW_PRESETS, isUpAxis, orient, presetView, saveUp, savedUp, shield, upVector } from "./view_controls.js";
 // the viewer's floating toolbar (View, Measure, Snapshot here) and the part's theme colours
 import { bindSeg, bindToolbar, optRow, savePng, segHtml, snapshotPng, themeRgb, toolbarHtml } from "./toolbar.js";
@@ -65,29 +68,6 @@ function spherePd(cx, cy, cz, r) {
   pd.getPoints().setData(Float32Array.from(pts), 3);
   pd.getPolys().setData(Uint32Array.from(polys));
   return pd;
-}
-
-/* THE WORKBENCH TAKEOVER, the same move the mesh viewer makes: with a workbench on the page the
-   stage fills it and the conversation becomes the drawer; without one it opens inline. Releasing
-   gives the page back exactly as it was unless another viewer is still waiting in the workbench. */
-function takeOver(box, anchorEl) {
-  const wb = document.getElementById("workbench"), app = document.getElementById("app");
-  if (!(wb && app)) { if (anchorEl) anchorEl.after(box); return () => box.remove(); }
-  wb.querySelectorAll(".viewer").forEach((v) => { v.hidden = true; });
-  wb.appendChild(box);
-  app.classList.add("wb"); app.classList.remove("wb-collapsed");
-  const tg = document.getElementById("wb-toggle");
-  if (tg) { tg.hidden = false;
-    tg.onclick = () => { const on = app.classList.toggle("wb-collapsed");
-      tg.textContent = on ? "Show conversation" : "Hide conversation";
-      tg.setAttribute("aria-pressed", on ? "true" : "false"); }; }
-  return () => {
-    box.remove();
-    const left = [...wb.querySelectorAll(".viewer")];
-    if (left.length) { left[left.length - 1].hidden = false; return; }
-    app.classList.remove("wb", "wb-collapsed");
-    if (tg) { tg.hidden = true; tg.textContent = "Hide conversation"; tg.setAttribute("aria-pressed", "false"); }
-  };
 }
 
 /* THE STAGE'S TOOLBAR - the mesh viewer's own pattern (viewer/toolbar.js): one bar floating at the
@@ -210,7 +190,11 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
       <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the part…</div></div>
       ${stageToolsHtml(sessionId, savedUp("session", sessionId) || (isUpAxis(p.up_axis) ? p.up_axis : "+z"), { measure: true })}
     </div>`;
-  const release = takeOver(box, opts.anchorEl);
+  const taken = takeOver(box, opts.anchorEl);
+  // THE INTAKE'S ONE VIEWER: the stage stays, settled, after Proceed, until the run starts (intake_view.js)
+  const stopAll = () => { clearTimeout(stallTimer); if (scene) scene.stop(); taken(); };
+  holdIntake(box, stopAll);
+  const release = () => { if (intakeBox() === box) endIntake(); else stopAll(); };
   const panel = box.querySelector(".gc-panel");
   const form = panel.querySelector(".gc-form");
   applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form);
@@ -304,8 +288,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
       try {
         await confirm(body, editsLine(served, body, p));     // the chat says back what the user changed
         markConfirmed(form);
-        scene.stop();
-        release();                       // the workbench goes back; the conversation carries on
+        settleIntake(box);               // the form goes; the part stays beside the conversation
       } catch (e) {
         btn.disabled = false; btn.textContent = "Looks right, proceed";
         hint.textContent = "Could not confirm: " + ((e && e.message) || "try again");
@@ -419,7 +402,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     scene.refresh();
   }
 
-  return { release: () => { clearTimeout(stallTimer); scene.stop(); release(); }, update, isNaming: () => naming };
+  return { release, settle: () => settleIntake(box), update, isNaming: () => naming };
 }
 
 /** The names of a thermal model's placed parts beside their colours, in the stage's corner. */
@@ -1077,28 +1060,32 @@ async function openFeaStage(sessionId, d, confirm, opts) {
       <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the part…</div></div>
       ${stageToolsHtml(sessionId, savedUp("session", sessionId) || (isUpAxis(p.up_axis) ? p.up_axis : "+z"), { measure: true })}
     </div>`;
-  const release = takeOver(box, opts.anchorEl);
-  const panel = box.querySelector(".fea-panel");
   let scene = null, closed = false;
+  // THE INTAKE'S ONE VIEWER: answered, the panel goes and the part stays until the run starts
+  const taken = takeOver(box, opts.anchorEl);
+  const stopAll = () => { if (scene) scene.stop(); taken(); };
+  holdIntake(box, stopAll);
+  const release = () => { if (intakeBox() === box) endIntake(); else stopAll(); };
+  const panel = box.querySelector(".fea-panel");
   bindFeaPanel(panel, f, p, {
     confirm: (body, edits) => confirm(body, edits),
-    done: () => { closed = true; if (scene) scene.stop(); release(); },
+    done: () => { closed = true; settleIntake(box); },
   });
   try {
     await loadVtk();
     const surf = await getGeometrySkin(sessionId);
-    if (closed) return null;
+    if (!box.isConnected) return null;   // the run started while the part loaded: nothing left to draw
     scene = initScene(sessionId, box, surf, p);
     document.getElementById("gs-load-" + sessionId)?.remove();
   } catch (e) {
-    if (closed) return null;
     console.warn("FEA stage unavailable, showing the card instead:", e && e.message);
     release();
+    if (closed) return null;
     if (opts.fallback) opts.fallback();
     return null;
   }
   return {
-    release: () => { if (scene) scene.stop(); release(); },
+    release, settle: () => settleIntake(box),
     // a unit settled in the chat reaches an untouched box; nothing else moves
     update: (d2) => {
       const q = (d2 && d2.proposal) || {};
@@ -1151,9 +1138,13 @@ async function openThermalStage(sessionId, d, confirm, opts) {
       <button type="button" class="vp-b v-showall" id="gs-all-${sessionId}" hidden>Show every part</button>
       <div class="tm-tip" hidden></div>
     </div>`;
-  const release = takeOver(box, opts.anchorEl);
-  const panelEl = box.querySelector(".tm-panel");
   let scene = null, closed = false;
+  // THE INTAKE'S ONE VIEWER: answered, the panel goes and the model stays until the run starts
+  const taken = takeOver(box, opts.anchorEl);
+  const stopAll = () => { if (scene) scene.stop(); taken(); };
+  holdIntake(box, stopAll);
+  const release = () => { if (intakeBox() === box) endIntake(); else stopAll(); };
+  const panelEl = box.querySelector(".tm-panel");
   const panel = bindThermalPanel(panelEl, t, {
     select: (region) => scene && scene.select(region),
     hover: (region) => scene && scene.hover(region),
@@ -1162,26 +1153,25 @@ async function openThermalStage(sessionId, d, confirm, opts) {
     confirm: async (body) => {
       await confirm(body, "");
       closed = true;
-      if (scene) scene.stop();
-      release();                         // the workbench goes back; the conversation carries on
+      settleIntake(box);                 // the panel goes; the model stays beside the conversation
     },
   });
   try {
     await loadVtk();
     const surf = await getGeometrySkin(sessionId);
-    if (closed) return null;             // confirmed while the model loaded: nothing left to draw
+    if (!box.isConnected) return null;   // the run started while the model loaded: nothing left to draw
     scene = initThermalScene(sessionId, box, surf, t, panel);
     document.getElementById("gs-load-" + sessionId)?.remove();
   } catch (e) {
     // the panel works without the picture: the card carries it instead
+    release();
     if (closed) return null;             // confirmed already: no card for a model that is done
     console.warn("thermal stage unavailable, showing the card instead:", e && e.message);
-    release();
     if (opts.fallback) opts.fallback();
     return null;
   }
   return {
-    release: () => { if (scene) scene.stop(); release(); },
+    release, settle: () => settleIntake(box),
     // the file's model does not move while the page waits: nothing to follow
     update: () => {},
     isNaming: () => false,

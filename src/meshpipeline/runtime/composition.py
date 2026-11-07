@@ -66,6 +66,13 @@ def _enqueue_geometry_naming(**kwargs) -> None:
                               soft_time_limit=soft, time_limit=hard)
 
 
+def _enqueue_part_words(**kwargs) -> None:
+    from meshpipeline.adapters.pipeline_execution.celery import read_part_words
+    # one task per session and reading: the same notes queued twice run once
+    read_part_words.apply_async(kwargs=kwargs,
+                                task_id=f"part-words-{kwargs.get('session_id', '')}-{kwargs.get('key', '')}")
+
+
 def _route_model(step: str) -> str:
     """The model a step's route asks (the decision cache keys by it: a new model is a new key)."""
     if step == "builder":
@@ -136,6 +143,7 @@ def install_adapters() -> None:
     training_export.set_export_enqueuer(_enqueue_training_export)
     geometry_check.set_scout_enqueuer(_enqueue_geometry_scout)
     geometry_check.set_naming_enqueuer(_enqueue_geometry_naming)
+    geometry_check.set_part_words_enqueuer(_enqueue_part_words)
     # where a waiting check stands in its queue, for the console's line ("queued behind 2 other checks")
     from meshpipeline.adapters.pipeline_execution.geometry_running import queue_state as _geometry_queue_state
     geometry_check.set_queue_reader(_geometry_queue_state)

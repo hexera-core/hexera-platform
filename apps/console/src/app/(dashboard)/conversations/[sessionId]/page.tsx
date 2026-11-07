@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { NavLink } from "@/app/_components/nav-link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
@@ -42,9 +42,9 @@ export default async function ConversationPage({
           <h1 className="page__title">What was said</h1>
         </div>
         {history?.job_id ? (
-          <Link className="btn" href={`/runs/${history.job_id}`}>
+          <NavLink className="btn" href={`/runs/${history.job_id}`}>
             Open the run
-          </Link>
+          </NavLink>
         ) : null}
       </div>
 

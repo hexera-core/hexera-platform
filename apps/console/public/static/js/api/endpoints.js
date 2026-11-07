@@ -112,6 +112,43 @@ export async function addNote(sessionId, text) {
   return r.json();
 }
 
+/** The parts checklist under the notes: which parts the notes mean ({status: "none" | "waiting" | "reading" |
+ *  "done", rows, unsure, parts, picture}). */
+export async function getPartMatches(sessionId) {
+  const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/parts`, { headers: headers() });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
+/** The parts the user picked for one phrase of their notes; resolves to the checklist as it now stands. */
+export async function pickPartMatch(sessionId, phrase, parts) {
+  const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/parts`,
+    { method: "POST", headers: headers(), body: JSON.stringify({ phrase, parts }) });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
+/** One of the checklist card's pictures (a side of the model, shaded or its part ids), as a Blob. */
+export async function getPartPicture(sessionId, name) {
+  const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/parts/${name}.png`, { headers: headers() });
+  if (!r.ok) throw await readError(r);
+  return r.blob();
+}
+
+/** Finalize notes: the parts the user's words name are read now; resolves to the checklist ("reading" at first). */
+export async function finalizePartMatches(sessionId) {
+  const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/parts/finalize`, { method: "POST", headers: headers() });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
+/** The checklist's model in 3D (each triangle's part), for the console to turn and pick parts on. */
+export async function getPartModel(sessionId) {
+  const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/parts/model`, { headers: headers() });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
 /** The job's current durable facts. `throwOnError` is false for the poller, which treats a
  *  transient 5xx as normal, and true for the deep link, which must know it failed. */
 export async function getJob(jobId, { throwOnError = true } = {}) {

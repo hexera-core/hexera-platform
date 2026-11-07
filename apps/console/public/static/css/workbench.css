@@ -96,3 +96,31 @@
   #app.wb>#stage{max-height:50vh}
   #workbench .viewer:not(.tm-stage) .v-bar{max-height:none;overflow:visible}
 }
+
+/* THE INTAKE: one viewer beside the conversation from the moment the part is drawn until the mesher starts
+   (viewer/intake_view.js). The conversation takes a third by default; the line between them is dragged to give
+   either more room (the width is kept), and the part's framing follows it. */
+#app.wb.intake:not(.wb-collapsed){grid-template-columns:var(--intake-w,33.333%) minmax(0,1fr)}
+#app.wb.intake>#workbench{position:relative}
+#app.wb.intake .im.assistant>.req-card{align-self:stretch}
+.iv-split{position:absolute;top:0;bottom:0;left:-5px;width:10px;z-index:30;cursor:col-resize;touch-action:none;outline:none}
+.iv-split::before{content:"";position:absolute;top:0;bottom:0;left:4px;width:2px;background:transparent;transition:background .15s}
+.iv-split::after{content:"";position:absolute;top:50%;left:3px;width:4px;height:32px;margin-top:-16px;border-radius:2px;
+  background:var(--border-strong);opacity:0;transition:opacity .15s}
+.iv-split:hover::before,.iv-split:focus-visible::before,#app.iv-dragging .iv-split::before{background:var(--accent-line)}
+.iv-split:hover::after,.iv-split:focus-visible::after,#app.iv-dragging .iv-split::after{opacity:1;background:var(--accent)}
+#app.iv-dragging,#app.iv-dragging *{cursor:col-resize!important;user-select:none}
+#app.wb-collapsed .iv-split{display:none}
+/* answered, the stage keeps the part alone: no panel beside it */
+#workbench .viewer.iv-plain,#workbench .viewer.gc-stage.iv-plain,#workbench .viewer.tm-stage.iv-plain{grid-template-columns:minmax(0,1fr)}
+#workbench .viewer.iv-plain>.v-bar{display:none}
+/* the notes' parts, drawn in the same place over the part (parts mode) */
+#workbench .viewer>.iv-parts{grid-column:1;grid-row:1/3;position:relative;min-width:0;min-height:0;overflow:hidden;
+  background:var(--viewer-canvas);cursor:grab;touch-action:none}
+#workbench .viewer>.iv-parts:active{cursor:grabbing}
+.iv-parts canvas{display:block}
+#workbench .viewer.iv-parts-on>.v-canvas{visibility:hidden}
+@media(max-width:900px){
+  #app.wb.intake:not(.wb-collapsed){grid-template-columns:minmax(0,1fr)}
+  .iv-split{display:none}
+}

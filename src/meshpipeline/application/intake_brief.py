@@ -184,7 +184,10 @@ def _is_fea(purpose: Any) -> bool:
     return bool(fea_review.is_fea(purpose))
 
 
-def build_brief(session: Any) -> dict[str, Any] | None:
+def build_brief(session: Any, *, part_matches: dict | None = None) -> dict[str, Any] | None:
+    """The request card. `part_matches`: the parts checklist (application/part_matches.view, read off the event
+    loop by the caller): "Reading your notes…" while the notes are tied to the parts, then the rows
+    "words → parts → size" and the phrases it could not place; left out when the notes name no part."""
     if session is None or not _clean(getattr(session, "request_txt", None)):
         return None
 
@@ -226,9 +229,34 @@ def build_brief(session: Any) -> dict[str, Any] | None:
     from meshpipeline.contracts.user_notes import clean as _clean_notes
     brief["user_notes"] = [{"id": n["id"], "text": n["text"], "source": n["source"]}
                            for n in _clean_notes(getattr(session, "user_notes", None))]
+    # NOTE-4 BEFORE APPROVAL: which parts the notes mean, for the user to see (and fix) before Approve
+    if part_matches:
+        brief["part_matches"] = part_matches
+        # a row's words that came from the request (the first answer), not the notes box, are listed with the
+        # notes, so every row's quote is in front of the user
+        brief["user_notes"] += _request_notes(part_matches, brief["user_notes"],
+                                              str(getattr(session, "request_txt", None) or ""))
     brief["checks"] = build_checks(brief)
     _add_display_labels(brief)
     return brief
+
+
+def _request_notes(part_matches: dict, notes: list[dict], request_txt: str) -> list[dict]:
+    """The request's sentences that hold a checklist row's words the notes do not: one each, as written."""
+    from meshpipeline.cad.part_words import sentences, squash
+    said = " ".join(squash(n.get("text") or "") for n in notes)
+    out: list[dict] = []
+    seen: set[str] = set()
+    for r in [*(part_matches.get("rows") or []), *(part_matches.get("unsure") or [])]:
+        q = squash(r.get("quote") or "")
+        if not q or q in said:
+            continue
+        for k, s in enumerate(sentences(request_txt)):
+            if q in squash(s) and s not in seen:
+                seen.add(s)
+                out.append({"id": f"request-{k}", "text": s, "source": "request"})
+                break
+    return out
 
 
 def _thermal_view(session: Any) -> dict | None:

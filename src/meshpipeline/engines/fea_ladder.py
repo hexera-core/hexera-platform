@@ -195,6 +195,13 @@ def pass_facts(n: int, rc, q: Mapping, plan: Mapping, log: str = "", killed: boo
             "out_of_memory": bool(killed and not built)}
 
 
+def by_choice(plan: Mapping) -> bool:
+    """A plan whose sizes are the user's choice: scaled to their element count, or sized per part as they asked."""
+    t = plan.get("target") or {}
+    return bool(plan.get("user_sizes") or (t and not t.get("kept_rules")
+                                           and (float(t.get("scale") or 1.0) != 1.0 or float(t.get("beyond") or 1.0) != 1.0)))
+
+
 def next_lever(facts: Mapping, levers: list[dict], plan: Mapping) -> dict | None:
     """The lever this pass's failure pulls, or None (nothing failed, or its lever was pulled)."""
     options = lever_options(facts, levers, plan)
@@ -260,9 +267,10 @@ def lever_options(facts: Mapping, levers: list[dict], plan: Mapping) -> list[dic
                  "words": (f"{facts['cells']:,} elements, over the {facts['limit']:,} limit, so the next pass makes the "
                            f"finest zones {1 / factor:.3g} times coarser - never past what keeps elements valid.")}]
     if facts["short"]:
-        if "LAD-fea-3" in pulled or plan.get("coarsened"):
+        if "LAD-fea-3" in pulled or plan.get("coarsened") or by_choice(plan):
             # a plan coarsened to fit is short where it says, by choice: tightening those zones only
-            # puts it over the limit again (PLAN-fea-8)
+            # puts it over the limit again (PLAN-fea-8); so is a plan sized to the user's count or to the sizes
+            # they asked for (PLAN-fea-27/29): finer would only break what they asked
             return []
         zones = sorted(facts["short"])
         return [{"lever": "LAD-fea-3", "zones": zones, "inputs": {"short": zones},
@@ -305,10 +313,12 @@ def rung_words(parts: list[int] | None, rung: int, crossing: Mapping | None = No
 
 
 def _rank(f: Mapping) -> tuple:
-    return (not f["valid"], bool(f["short"]), f["over"], -float(f["min_sicn"] or 0.0), f["pass"])
+    # PLAN-fea-31: a pass whose count was off what the user asked (and so was re-aimed) after any that is not
+    return (not f["valid"], bool(f.get("off_count")), bool(f["short"]), f["over"], -float(f["min_sicn"] or 0.0),
+            f["pass"])
 
 
-_DECIDING = ("a valid mesh", "every rule met", "within the limit", "the better worst element", "the earlier pass")
+_DECIDING = ("a valid mesh", "the count asked for", "every rule met", "within the limit", "the better worst element", "the earlier pass")
 
 
 def best_pass(passes: list[dict]) -> tuple[int | None, str]:
@@ -325,4 +335,4 @@ def best_pass(passes: list[dict]) -> tuple[int | None, str]:
 
 
 __all__ = ["AI_LEVERS", "MAX_PASSES", "SURFACE_STALL", "stalled_surface", "surface_stall_lever", "best_pass", "coarse_factor", "failed_surfaces", "growth", "mesh_settings",
-           "lever_options", "next_lever", "pass_facts", "rung_words", "tightened"]
+           "by_choice", "lever_options", "next_lever", "pass_facts", "rung_words", "tightened"]

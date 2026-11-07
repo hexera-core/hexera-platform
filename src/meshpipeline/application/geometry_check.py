@@ -1839,6 +1839,9 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
             if "error" in seen:
                 seen = {"up_error": seen["error"]}
             vision.update(seen)
+    # NOTE-5 ON THE FLOW ROUTE: a surface of several named parts (or a CAD file of several solids) keeps its parts
+    # for the checklist before approval, as the FEA route's measurement does
+    _keep_flow_parts(session_id, stored, facts, interpretation)
     proposal = _proposal(facts, vision)
     # what the scout stored, minus the fields write_status writes itself: the status, the clock,
     # and the session id - which it also takes as its first argument
@@ -1928,6 +1931,7 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None, ear
     started = time.time()
     validity = facts.get("validity")
     key = None
+    session_id = str(stored.get("session_id") or "")
     try:
         from meshpipeline.cad.ingest import canonicalise
         from meshpipeline.cad.scout_mesh import read_triangles
@@ -1941,6 +1945,9 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None, ear
             if early is not None:
                 early.stop()
             logger.info("geometry check: FEA measurement reused from an earlier check of the same file")
+            from meshpipeline.application import part_matches as PM
+            if known.get(PM.PARTS_KEY) and session_id:
+                known = {**known, PM.PARTS_KEY: PM.copy_parts(known.get(PM.PARTS_KEY), session_id)}
             return known
         interp_ref = GeometryInterpretationRef.from_payload(interpretation) if interpretation else None
         record = None
@@ -1956,10 +1963,13 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None, ear
                 _too_big(fetched)
                 canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
                 if canonical.kind is GeometryKind.cad:
-                    shape, record = _fea_measure_cad(canonical.path, interp_ref, ref)
+                    shape, record, surface = _fea_measure_cad(canonical.path, interp_ref, ref)
                     record["suspects"] = _fea_suspects(shape, record, validity)
+                    _keep_parts(session_id, record, surface)
                 else:
                     record = measure_triangles(read_triangles(canonical.path) * scale * 1000.0)
+        else:
+            _keep_parts(session_id, record, early.surface() if early is not None else None)
         record.update(measured=True, scale_to_m=scale)
     except Exception as exc:  # noqa: BLE001 - the measurement informs the plan; the check still lands
         logger.warning("geometry check: the FEA measurement did not run (%s: %s)", type(exc).__name__,
@@ -1987,7 +1997,7 @@ def _too_big(fetched: Path) -> None:
 def _fea_measure_cad(path: Path, interp_ref, ref):
     """(the shape, its FEA record) for a CAD file - everything but the suspected defects, which read the
     clean verdict (_fea_suspects)."""
-    from meshpipeline.cad.fea_measure import measure_cad
+    from meshpipeline.cad.fea_measure import measure_cad_surface
     from meshpipeline.cad.normalise import occ_scale_transform
     from meshpipeline.cad.scout import read_cad
 
@@ -1995,13 +2005,76 @@ def _fea_measure_cad(path: Path, interp_ref, ref):
     prepared, _note = _prepared_coordinates(path, interp_ref, ref)
     mm_per_unit = 1000.0 * float(occ_scale_transform(prepared).ScaleFactor())
     shape = read_cad(path)
-    record = measure_cad(shape, mm_per_unit=mm_per_unit)
+    record, surface = measure_cad_surface(shape, mm_per_unit=mm_per_unit)
     if int(record.get("bodies") or 0) > 1:
         # AN ASSEMBLY: its parts, where they touch or pass into each other, and every
         # face named Part_k_Face_j - the names the delivered files use
-        from meshpipeline.cad.fea_assembly import measure_assembly
+        from meshpipeline.cad.fea_assembly import global_face_names, measure_assembly
         record = measure_assembly(shape, record, source=path, mm_per_unit=mm_per_unit)
-    return shape, record
+        # the labelled surface named the same way: the parts checklist draws and measures each part on it
+        names = global_face_names(shape)
+        if len(names) == len(surface.names):
+            surface.names = list(names)
+    return shape, record, surface
+
+
+def _keep_flow_parts(session_id: str, stored: dict, facts: dict, interpretation: dict | None) -> None:
+    """NOTE-5 on the flow route: the parts of an upload of several named surfaces (an STL's named solids, in the
+    order the mesher stages them) or several CAD solids (Part_k in OpenCASCADE's order), kept for the checklist
+    (application/part_matches, its CFD route). Never fails the naming; a single part keeps nothing."""
+    try:
+        from meshpipeline.application import part_matches as PM
+        from meshpipeline.cad.ingest import canonicalise
+        from meshpipeline.contracts.geometry_source import GeometrySourceRef
+        from meshpipeline.contracts.intake_formats import GeometryKind
+        from meshpipeline.engines.snappy import part_levels as PL
+
+        if not session_id or not isinstance(stored.get("source"), dict):
+            return
+        ref = GeometrySourceRef.from_payload(stored["source"])
+        scale = float(facts.get("scale_to_m") or 0.001)
+        with tempfile.TemporaryDirectory(prefix="flow_parts_") as tmp:
+            work = Path(tmp)
+            fetched = _fetch(ref, work)
+            _too_big(fetched)
+            canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
+            if canonical.kind is GeometryKind.cad:
+                from meshpipeline.cad.fea_assembly import global_face_names, solids
+                from meshpipeline.cad.fea_measure import _brep_surface
+                from meshpipeline.cad.scout import read_cad
+                shape = read_cad(canonical.path)
+                n = len(solids(shape))
+                if n < 2:
+                    return
+                surface = _brep_surface(shape, 1000.0 * scale)[0]
+                names = global_face_names(shape)
+                if len(names) != len(surface.names):
+                    return
+                surface.names = list(names)
+                record: dict = {"part_bases": [{"id": f"Part_{k}", "name": ""} for k in range(1, n + 1)]}
+            else:
+                from meshpipeline.cad.stl_io import read_stl_solids
+                got = {k: v for k, v in read_stl_solids(canonical.path).items() if v}
+                if len(got) < 2:
+                    return
+                surface, record, _by_id = PL.surface_of(
+                    {k: [[[c * scale for c in p] for p in t] for t in v] for k, v in got.items()})
+        kept = PM.store_parts(session_id, record, surface, route=PM.ROUTE_CFD)
+        if kept is not None:
+            facts[PM.PARTS_KEY] = kept
+    except Exception as exc:  # noqa: BLE001 - no checklist, never a failed naming
+        logger.info("geometry naming: the flow parts were not kept (%s: %s)", type(exc).__name__, str(exc)[:200])
+
+
+def _keep_parts(session_id: str, record: dict, surface) -> None:
+    """NOTE-4/6, BEFORE APPROVAL: an assembly's parts and the areas inside a part kept for the checklist (application/part_matches) - its facts
+    table and pictures, drawn on the labelled surface that exists only here. Never fails the measurement."""
+    if surface is None or not session_id:
+        return
+    from meshpipeline.application import part_matches as PM
+    kept = PM.store_parts(session_id, record, surface)
+    if kept is not None:
+        record[PM.PARTS_KEY] = kept
 
 
 def _fea_suspects(shape, record: dict, validity) -> list:
@@ -2040,6 +2113,7 @@ class _EarlyFea:
         self._done = threading.Event()
         self._stop = threading.Event()
         self._shape = None
+        self._surface = None
         self._record: dict | None = None
         self._error: BaseException | None = None
         self._suspects: list | None = None
@@ -2053,6 +2127,10 @@ class _EarlyFea:
 
     def stop(self) -> None:
         self._stop.set()
+
+    def surface(self):
+        """The labelled surface the early measurement measured on (None before, or when it did not run)."""
+        return self._surface
 
     def _run(self) -> None:
         try:
@@ -2069,7 +2147,7 @@ class _EarlyFea:
                 canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
                 if canonical.kind is not GeometryKind.cad:
                     raise _NotEarly("a triangle file is measured once the scout lands")
-                self._shape, self._record = _fea_measure_cad(canonical.path, interp_ref, ref)
+                self._shape, self._record, self._surface = _fea_measure_cad(canonical.path, interp_ref, ref)
             # THE SUSPECTED DEFECTS, as soon as the clean verdict is known
             while True:
                 validity = early_validity(self.session_id, self.sha256)

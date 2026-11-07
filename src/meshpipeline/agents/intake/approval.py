@@ -102,7 +102,8 @@ def classify(message: str, engine: str = "") -> str:
 
 
 #: The question under every summary, with the one plain answer that starts the run: the user types
-#: the answer (the console has no approve button), so the question names it.
+#: the answer (the console has no approve button), so the question names it. The console says it
+#: again under the card once the user's notes are finalized and the parts they name are shown.
 PROCEED_ASK = "Shall I proceed with mesh generation? Reply yes to start it, or tell me what to change."
 #: Said above the question when the user's last message was read as a change and changed nothing -
 #: a chatty yes ("ha, we're going in circles - yes, go ahead!") is not a bare yes, and without this

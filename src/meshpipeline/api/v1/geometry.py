@@ -543,6 +543,80 @@ async def get_check_skin(session_id: uuid.UUID, owner_id: str = Depends(owner_de
     return Response(content=raw, media_type="application/json")
 
 
+class PartPickIn(BaseModel):
+    #: the phrase of the notes the row stands for (its index in the reading), and the parts the user picked for it
+    phrase: int = Field(ge=0, le=500)
+    parts: list[str] = Field(default_factory=list, max_length=500)
+
+
+@router.get("/{session_id}/check/parts")
+async def get_check_parts(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                          organization_id: str = Depends(org_dep)) -> dict:
+    """The parts checklist on the request card (NOTE-4 before approval): which parts the notes mean.
+    {"status": "none"} when the notes name no part; "waiting" / "reading" while it is worked out; "done" with
+    the rows, the parts and a link to the picture."""
+    session = await _owned_session(session_id, owner_id, organization_id)
+    from meshpipeline.application import part_matches as PM
+    got = await asyncio.to_thread(lambda: PM.view(session, owner_id=owner_id))
+    return got or {"status": "none"}
+
+
+@router.get("/{session_id}/check/parts/{name}.png")
+async def get_check_parts_picture(session_id: uuid.UUID, name: str, owner_id: str = Depends(owner_dep),
+                                  organization_id: str = Depends(org_dep)) -> Response:
+    """One of the checklist card's pictures (a side of the model, shaded or its part ids), served from the API so the
+    console can read which part is under the cursor. 404 when there is none."""
+    await _owned_session(session_id, owner_id, organization_id)
+    from meshpipeline.application import part_matches as PM
+    data = await asyncio.to_thread(PM.card_picture, str(session_id), name)
+    if data is None:
+        raise HTTPException(404, "No such picture for this session's parts")
+    return Response(content=data, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
+
+
+@router.get("/{session_id}/check/parts/model")
+async def get_check_parts_model(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                                organization_id: str = Depends(org_dep)) -> Response:
+    """The checklist's model in 3D (render/part_model): the measured surface, simplified for the browser, each
+    triangle's part or area, for the console to turn and pick parts on. The stored JSON is handed through as it is
+    (the gzip middleware compresses it). 404 when there is none (the console shows the pictures)."""
+    await _owned_session(session_id, owner_id, organization_id)
+    from meshpipeline.application import part_matches as PM
+    data = await asyncio.to_thread(PM.model_bytes, str(session_id))
+    if data is None:
+        raise HTTPException(404, "No parts model for this session")
+    return Response(content=data, media_type="application/json", headers={"Cache-Control": "private, max-age=3600"})
+
+
+@router.post("/{session_id}/check/parts/finalize")
+async def finalize_check_parts(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                               organization_id: str = Depends(org_dep)) -> dict:
+    """The user finalized their notes: the parts their words name (the first answer and every note) are read now,
+    once for the words as they stand; answers with the checklist ("reading", then the rows on the next poll)."""
+    session = await _owned_session(session_id, owner_id, organization_id)
+    if session.job_id is not None:
+        raise HTTPException(409, "The run has already started, so its notes cannot change.")
+    from meshpipeline.application import part_matches as PM
+    got = await asyncio.to_thread(lambda: PM.finalize(session, owner_id=owner_id))
+    return got or {"status": "none"}
+
+
+@router.post("/{session_id}/check/parts")
+async def pick_check_parts(session_id: uuid.UUID, body: PartPickIn, owner_id: str = Depends(owner_dep),
+                           organization_id: str = Depends(org_dep)) -> dict:
+    """Fix one row of the parts checklist: the parts the user picked for one phrase of their notes, kept for the
+    run (the normal Approve takes it). Checked by the same rules as the model's reading."""
+    session = await _owned_session(session_id, owner_id, organization_id)
+    if session.job_id is not None:
+        raise HTTPException(409, "The run has already started, so its parts cannot be changed. "
+                                 "Change them before you approve the next run.")
+    from meshpipeline.application import part_matches as PM
+    got = await asyncio.to_thread(lambda: PM.pick(session, body.phrase, body.parts))
+    if got is None:
+        raise HTTPException(409, "Your notes changed since this list was made. Press Finalize notes, then pick again.")
+    return got
+
+
 @router.post("/{session_id}/check/confirm")
 async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = Depends(owner_dep),
                         organization_id: str = Depends(org_dep)) -> dict:

@@ -132,6 +132,25 @@ def name_geometry(**kwargs) -> dict:
         return run_geometry_naming(**kwargs)
 
 
+@celery_app.task(
+    name="worker.tasks.read_part_words",
+    bind=False,
+    max_retries=0,
+    acks_late=True,
+    # the vision model's own limit is 3 minutes (cad/part_words.TIMEOUT_S); the pictures and the store besides
+    soft_time_limit=300,
+    time_limit=360,
+)
+def read_part_words(**kwargs) -> dict:
+    # THE PARTS CHECKLIST BEFORE APPROVAL (application/part_matches): the user's words about parts tied to the
+    # check's parts by the vision model, while the user waits on the card. The geometry queue: the same worker
+    # slot as the naming, the same toolchain-free model call.
+    from meshpipeline.adapters.pipeline_execution.geometry_running import running
+    from meshpipeline.application.part_matches import run_reading
+    with running(_task_id(read_part_words, f"part-words-{kwargs.get('session_id', '')}")):
+        return run_reading(**kwargs)
+
+
 #: the naming's yields so far (a task argument the naming body never sees), and how many it may make: each
 #: one lets a waiting task run first, so a busy queue can never keep a naming from its turn for long
 NAMING_YIELDED = "naming_yielded"

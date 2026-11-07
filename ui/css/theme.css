@@ -182,6 +182,62 @@ th,td{border-color:var(--border)}
 .req-card .rc-notes-add:disabled{opacity:.45;cursor:default}
 .req-card .rc-notes-msg{display:block;margin-top:4px;color:var(--danger);font-size:var(--fs-sm)}
 .req-card .rc-notes-msg:empty{display:none}
+/* the parts the notes mean: one picture, a quiet row per phrase that opens the part list */
+.req-card .rc-pm:empty{display:none}
+.req-card .rc-pm{padding:6px 16px 2px}
+.req-card .rc-pm-h{margin:2px 0 6px;color:var(--text-faint);font-size:var(--fs-sm)}
+.req-card .rc-pm-wait{padding:2px 0 4px;color:var(--text-faint);font-size:var(--fs-md);
+  animation:rc-pm-pulse 1.6s ease-in-out infinite}
+@keyframes rc-pm-pulse{50%{opacity:.45}}
+@media (prefers-reduced-motion:reduce){.req-card .rc-pm-wait{animation:none}}
+.req-card .rc-pm-fig{position:relative;margin:4px 0 10px;text-align:center}
+.req-card .rc-pm-pic{display:inline-block;max-width:100%;max-height:250px;vertical-align:top}
+/* the model in 3D: drag turns it, the wheel zooms; the tags ride on it */
+.req-card .rc-pm-fig.rc-pm-3d{height:300px;overflow:hidden;cursor:grab;touch-action:none}
+.req-card .rc-pm-fig.rc-pm-3d:active{cursor:grabbing}
+.req-card .rc-pm-3d canvas{display:block}
+.pv-tags{position:absolute;inset:0;pointer-events:none;z-index:1}
+.pv-tag{position:absolute;left:0;top:0;margin:-9px 0 0 0;translate:-50% 0;height:18px;min-width:18px;
+  padding:0 5px;box-sizing:border-box;border:1.5px solid var(--c);border-radius:9px;background:rgba(255,255,255,.94);
+  color:#111;font:600 11px/15px var(--sans);text-align:center;white-space:nowrap;font-variant-numeric:tabular-nums;
+  transition:opacity .15s}
+.pv-ring{position:absolute;left:0;top:0;width:18px;height:18px;margin:-9px 0 0 -9px;box-sizing:border-box;
+  border:1.5px solid var(--c);border-radius:50%;background:color-mix(in srgb,var(--c) 18%,transparent);transition:opacity .15s}
+.pv-tag.dim,.pv-ring.dim{opacity:.28}
+.pv-tip{position:absolute;left:0;top:0;z-index:2;padding:3px 8px;border:1px solid var(--border);
+  border-radius:var(--r-sm,6px);background:var(--surface-raised);color:var(--text);font:500 var(--fs-sm)/1.35 var(--sans);
+  white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+/* Finalize notes: under the notes box, the one step that reads the parts the words name */
+.req-card .rc-fin{display:flex;align-items:center;justify-content:flex-end;gap:12px;padding:2px 0 8px}
+.req-card .rc-fin-msg{color:var(--danger);font-size:var(--fs-sm)}
+.req-card .rc-fin-msg:empty{display:none}
+/* an older reading's rows wait, quiet, while the notes changed since */
+.req-card .rc-pm-body.stale .rc-pm-rows{opacity:.55}
+/* a row per size request: its colour, its words and its size, its parts as small chips under it. Hovered it lights
+   its parts on the model; the active one (clicked) carries its colour on the edge and takes clicks on the model. */
+.req-card .rc-pm-item{margin:0 -8px;padding:1px 8px 3px;border-radius:var(--r-md);transition:background .12s,box-shadow .12s}
+.req-card .rc-pm-item:hover,.req-card .rc-pm-item.hot{background:var(--surface-2)}
+.req-card .rc-pm-item.active{background:var(--surface-2);box-shadow:inset 2px 0 0 var(--pm-c)}
+.req-card .rc-pm-row{display:grid;grid-template-columns:8px minmax(0,1fr) auto;align-items:center;gap:10px;
+  padding:5px 0;color:var(--text);font:var(--fs-md)/1.45 var(--sans);cursor:pointer;outline:none}
+.req-card .rc-pm-row:focus-visible{outline:2px solid var(--accent-line);outline-offset:1px;border-radius:var(--r-sm)}
+.req-card .rc-pm-dot{width:8px;height:8px;border-radius:50%;background:var(--pm-c)}
+.req-card .rc-pm-dot.none{box-sizing:border-box;background:transparent;border:1.5px dashed var(--warn)}
+.req-card .rc-pm-q{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.req-card .rc-pm-s{white-space:nowrap;color:var(--text-muted);font-variant-numeric:tabular-nums}
+.req-card .rc-pm-item.unk .rc-pm-q{color:var(--warn)}
+.req-card .rc-pm-chips{display:flex;flex-wrap:wrap;gap:4px;padding:0 0 4px 18px;max-height:84px;overflow-y:auto}
+.req-card .rc-pm-chip{display:inline-flex;align-items:center;gap:1px;height:22px;padding:0 1px 0 8px;box-sizing:border-box;
+  border:1px solid var(--border);border-radius:11px;background:var(--surface-1);color:var(--text-muted);
+  font:500 var(--fs-xs)/1 var(--sans);white-space:nowrap;font-variant-numeric:tabular-nums}
+.req-card .rc-pm-item.active .rc-pm-chip{border-color:color-mix(in srgb,var(--pm-c) 45%,var(--border))}
+.req-card .rc-pm-x{display:inline-grid;place-items:center;width:18px;height:18px;padding:0;border:0;border-radius:50%;
+  background:transparent;color:var(--text-faint);font:9px/1 var(--sans);cursor:pointer;transition:background .12s,color .12s}
+.req-card .rc-pm-x:hover{background:var(--surface-raised);color:var(--text)}
+.req-card .rc-pm-x:focus-visible{outline:2px solid var(--accent-line);outline-offset:0}
+.req-card .rc-pm-hint{padding:0 0 4px 18px;color:var(--text-faint);font-size:var(--fs-sm)}
+.req-card .rc-pm-msg{display:block;color:var(--danger);font-size:var(--fs-sm)}
+.req-card .rc-pm-msg:empty{display:none}
 .req-card .rc-ck code{font-family:var(--mono);font-size:.9em;color:var(--steel-bright)}
 
 /* the engine choice under the one engine question: every engine that can take the file, its fit

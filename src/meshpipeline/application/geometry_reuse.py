@@ -31,7 +31,9 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 #: Bumped when what a stored scout means changes, so an older record is never reused under a new rule.
-SCOUT_REUSE_VERSION = 1
+SCOUT_REUSE_VERSION = 2
+#: 2 (6 Nov): checks now keep the parts and the areas inside them for the parts checklist (NOTE-5/6); every
+#: check stored before is measured again rather than reused without them.
 #: Where a landed scout keeps its own record (beside the check, so it lives and goes with the session).
 SCOUTED_COPY = "scouted.json"
 FEA_COPY = "fea_measure.json"

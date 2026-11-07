@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { NavLink } from "@/app/_components/nav-link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
@@ -86,7 +87,7 @@ export default async function ConversationsPage({
                   </td>
                   <td>
                     {conversation.job_id ? (
-                      <Link href={`/runs/${conversation.job_id}`}>Open</Link>
+                      <NavLink href={`/runs/${conversation.job_id}`}>Open</NavLink>
                     ) : (
                       "—"
                     )}

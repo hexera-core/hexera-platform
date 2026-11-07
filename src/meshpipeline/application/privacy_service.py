@@ -390,6 +390,10 @@ async def _erase_bytes(db: AsyncSession, store, org_id: uuid.UUID, at: datetime)
             scout = {}
         picture_keys = [s.get("object_key") for s in (scout.get("snapshots") or [])]
         picture_keys.append((scout.get("upright_sheet") or {}).get("object_key"))
+        # the parts checklist's pictures and records (application/part_matches)
+        from meshpipeline.application import part_matches as _pm
+        picture_keys.extend(_pm.picture_keys(sid))
+        picture_keys.extend(check_object_key(sid, n) for n in (_pm.MATCHES, _pm.PICKS))
         for key in picture_keys + [check_object_key(sid, name) for name in _CHECK_RECORDS]:
             if key:
                 _delete_if_present(store, key)

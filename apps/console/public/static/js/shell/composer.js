@@ -40,6 +40,8 @@ let deps = {
   // the buttons under an application question (what the mesh is for, an FEA part's analysis
   // type), and the function that sends the picked answer
   choices() {},
+  // resolves once the notes' reading has landed (or after a minute): a yes given before Finalize notes waits on it
+  notesRead() { return Promise.resolve(); },
 };
 export function configureComposer(d) { deps = { ...deps, ...d }; }
 
@@ -270,7 +272,8 @@ async function watchGeometryCheck(sessionId) {
     }
     if (d && d.confirmed) {
       // answered, on the stage or the card, whatever the naming did afterwards
-      _checkState = "done"; releaseHold(); if (stage) stage.release(); return;
+      // the part stays on the stage, settled, beside the rest of the intake (viewer/intake_view.js)
+      _checkState = "done"; releaseHold(); if (stage) (stage.settle || stage.release)(); return;
     }
     if (stage && d && d.skin && (d.thermal || d.route) && kindOf(d) !== stageKind) {
       try { stage.release(); } catch (e) { console.warn("geometry stage: release failed", e); }
@@ -387,13 +390,13 @@ async function send() {
   await sendText(inp.value.trim());
 }
 
-async function sendText(txt) {
+async function sendText(txt, { again = false } = {}) {
   const inp = $("chat-input");
   const sessionId = getState.sessionId();
   if (!txt || !sessionId) return;
   clearNewRunOffer();
   inp.value = ""; autoResize(inp);
-  deps.chat("user", txt);
+  if (!again) deps.chat("user", txt);
   disableInput();
   try {
     const d = await sendMessage(sessionId, txt);
@@ -401,6 +404,13 @@ async function sendText(txt) {
     deps.engineChoice(d.engine_choice || null, sendText);
     deps.choices(d.choices || [], sendText);
     deps.brief(d.brief);
+    if (d.yes_after_reading && !again) {
+      // A YES BEFORE THE NOTES WERE FINALIZED: the card shows the reading and the parts it finds, and the same
+      // yes is sent again once it lands (a minute at most) - the run then starts, never asked twice
+      await deps.notesRead();
+      if (getState.sessionId() === sessionId) return sendText(txt, { again: true });
+      return;
+    }
     if (d.done && d.job_id) deps.onJobStarted(d.job_id);
     else if (String(d.reply || "").startsWith(DRAWING_PREFIX)) holdForDrawing();
     else enableInput();

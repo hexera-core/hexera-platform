@@ -211,7 +211,9 @@ def test_the_stage_opens_greyed_out_while_naming_then_takes_the_models_labels_an
     assert body["openings"][3]["diameter_mm"] == 55 and body["openings"][3]["centroid_mm"] == [200.0, 0.0, 100.0]
     assert body["part"] == "test duct" and body["flow"] == "internal"
     assert body["unit"] == "mm" and body["scale_to_m"] is None      # the unit box, untouched, says what was assumed
-    assert live.evaluate(f"!document.getElementById('gstage-{SESSION}')") is True
+    # answered, the stage settles: the form goes, the part stays beside the conversation until the run starts
+    live.wait_for(f"document.getElementById('gstage-{SESSION}').classList.contains('iv-plain')", timeout=10,
+                  what="the stage to settle")
     assert_clean(live, "the naming-mode geometry stage")
 
 
