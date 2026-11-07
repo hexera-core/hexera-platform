@@ -182,6 +182,9 @@ def analysis_of(text: str) -> str:
 #: is the part's mid-surface meshed with plate elements; a solid is the part's volume meshed with
 #: tetrahedra. Said words set the choice with no follow-up question; "" when the words do not say.
 MESH_SHELL, MESH_SOLID, MESH_AUTO = "shell", "solid", "auto"
+#: MIXED-4: shell where thin, solid where thick - only ever Auto's recommendation (engines/mixed_run.recommend), never
+#: read from words or offered as a pick of its own: a part Auto does not call mixed is not accurate mixed (MIXED-8)
+MESH_MIXED = "mixed"
 MESH_AS_SAID = (MESH_SHELL, MESH_SOLID)
 #: Words for a shell model (an FEA engineer's: "2D elements", Femap's CQUAD4, a plate model).
 _SHELL_WORDS = _rx(
@@ -389,7 +392,7 @@ def fea_hold_text(reading: PurposeReading) -> str:
 
 __all__ = ["ANALYSES", "ANALYSIS_KEYS", "ANALYSIS_LABELS", "ANALYSIS_QUESTION", "ASK_DOMAIN",
            "ASK_THERMAL", "COMING_SOON", "DOMAIN_QUESTION", "ELECTRONICS_NOTE", "FEA_HOLD",
-           "HEAT_IN_SOLID_NOTE", "MESH_AS_SAID", "MESH_AUTO", "MESH_SHELL", "MESH_SOLID", "MeshAsReading",
+           "HEAT_IN_SOLID_NOTE", "MESH_AS_SAID", "MESH_AUTO", "MESH_MIXED", "MESH_SHELL", "MESH_SOLID", "MeshAsReading",
            "PurposeReading", "ROUTES", "ROUTE_ELECTRONICS", "ROUTE_FEA",
            "ROUTE_FLOW", "THERMAL_QUESTION", "V1_ANALYSES", "analysis_of", "choices_for",
            "coming_soon_note", "fea_hold_text", "mesh_as_answer", "mesh_as_of", "question_asked", "question_for", "read_purpose",

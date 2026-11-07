@@ -83,11 +83,17 @@ def test_auto_recommends_shell_for_a_part_that_is_all_plate(parts):
     assert sc.settle(view, "auto") == {"mesh_as": "shell", "picked": "auto", "by": "auto", "why": view["reason"]}
 
 
-def test_a_mixed_part_is_recommended_solid_and_says_what_stays_solid(parts):
+def test_a_mixed_part_is_recommended_shell_and_solid_and_says_what_stays_solid(parts):
+    """MIXED-4: a plate with a thick boss (its plate reaches far past 10 walls: MIXED-8 holds) is Auto's shell +
+    solid, with mixed_run's words; the boss is listed as kept solid."""
     rec, drawn, _ = parts["boss"]
-    view = sc.shell_view(_ready(sc.summarise(rec, drawn)), CAD)
-    assert view["recommend"] == "solid"
-    assert "90% of this part is plate 4 mm thick, but it also has thick regions" in view["reason"]
+    assert rec["mixed_auto"]["ok"] is True and rec["mixed_auto"]["too_thick"] == []
+    summary = sc.summarise(rec, drawn)
+    assert summary["mixed_ok"] is True
+    view = sc.shell_view(_ready(summary), CAD)
+    assert view["recommend"] == "mixed"
+    assert view["reason"].startswith("Thin walls meshed as shell (") and view["reason"].endswith(
+        "1 thick region kept solid and joined to them.")
     (row,) = view["not_shelled"]
     assert row["id"] == "S1" and row["kind"] == "solid"
     assert row["words"] == ("A thick region of the part (5 faces) stays solid: it is 30 mm thick or more, too "
@@ -95,7 +101,44 @@ def test_a_mixed_part_is_recommended_solid_and_says_what_stays_solid(parts):
     assert row["at_mm"] == pytest.approx([100.0, 50.0, 22.0], abs=0.5)
     # the user's pick stands: Shell on a mixed part is a shell (its solid region said on the stage)
     assert sc.settle(view, "shell")["mesh_as"] == "shell"
-    assert sc.settle(view, "auto")["mesh_as"] == "solid"
+    assert sc.settle(view, "solid")["mesh_as"] == "solid"
+    settled = sc.settle(view, "auto")
+    assert settled == {"mesh_as": "mixed", "picked": "auto", "by": "auto", "why": view["reason"]}
+    assert sc.declaration_words(settled).startswith("Meshed as: shell where thin, solid where thick")
+
+
+def test_a_mixed_part_whose_walls_are_too_thick_for_shells_is_recommended_solid(tmp_path):
+    """MIXED-8 on the stage: the box with thick corners (4 mm walls reaching 5 to 6.7 walls: its back wall read +23%
+    mixed), the stiffened panel (7.8 to 8.3 walls) and the casting (a mode -6.8%) are never offered as shell + solid;
+    Auto says solid, with the reason (the casting's thin walls hold under half its metal: said first)."""
+    from tests import shell_fixtures as sf
+    from tests.unit.engines import test_mixed_families as fam
+
+    from meshpipeline.cad import shell_preview
+
+    for name, said in (("box_corners", "Walls too thick for shells: "), ("stiff_panel_mount", "Walls too thick for "
+                       "shells: "), ("casting_ribs_block", "Only 42% of this part is thin wall")):
+        step = sf.write_step(fam._family(name)[0], tmp_path / f"{name}.step")
+        assert shell_preview.main([str(step), str(tmp_path / name), "1.0"]) == 0
+        rec = json.loads((tmp_path / name / "shell.json").read_text())
+        drawn = json.loads((tmp_path / name / "overlay.json").read_text())
+        assert rec["mixed_auto"]["ok"] is False, name
+        view = sc.shell_view(_ready(sc.summarise(rec, drawn)), CAD)
+        assert view["recommend"] == "solid", name
+        assert view["reason"].startswith(said), (name, view["reason"])
+        assert sc.settle(view, "auto")["mesh_as"] == "solid"
+
+
+def test_mixed_is_never_offered_without_every_wall_s_reach():
+    """MIXED-8 is read only with the reach; a summary whose check could not measure it (or a record from before it)
+    is never Auto's shell + solid."""
+    summary = {"bodies": [{"body": "Part_1", "verdict": "mixed"}], "share": 0.8, "t_min_mm": 2.0, "t_max_mm": 2.0,
+               "solid_regions": [], "open_edges": 0, "open_places": []}
+    assert sc.recommendation(summary)[0] == "solid"
+    assert sc.recommendation({**summary, "mixed_ok": False, "mixed_why": "Walls too thick for shells: x."}) == (
+        "solid", "Walls too thick for shells: x.")
+    assert sc.recommendation({**summary, "mixed_ok": True, "mixed_why": "Thin walls meshed as shell."}) == (
+        "mixed", "Thin walls meshed as shell.")
 
 
 def test_a_solid_reason_without_numbers_keeps_the_plain_words():
@@ -219,6 +262,8 @@ def test_the_confirmed_choice_is_read_into_the_run(store):
     assert sc.confirmed_mesh_as(SID) == "solid"
     store.objects[f"sessions/{SID}/geometry_check/confirmed.json"] = json.dumps({"fea_mesh_as": "shell"}).encode()
     assert sc.confirmed_mesh_as(SID) == "shell"
+    store.objects[f"sessions/{SID}/geometry_check/confirmed.json"] = json.dumps({"fea_mesh_as": "mixed"}).encode()
+    assert sc.confirmed_mesh_as(SID) == "mixed"
     store.objects[f"sessions/{SID}/geometry_check/confirmed.json"] = json.dumps({"fea_mesh_as": "beam"}).encode()
     assert sc.confirmed_mesh_as(SID) == "solid"
     assert sc.confirmed_mesh_as("") == "solid"

@@ -40,7 +40,8 @@ SHELL_CHECK_LIMIT_S = 900
 STALE_AFTER_S = SHELL_CHECK_LIMIT_S + 300
 #: SHSTAGE-3: AUTO RECOMMENDS SHELL when every body is a shell (cad/midsurface 1.4: every face paired, a rim or a
 #: blend), its plates meet everywhere (no open edge), and the thin walls are at least this share of the part's
-#: surface. Mixed shell-and-solid parts are recommended Solid until the shell-solid joints land (design PR 3).
+#: surface. A part of thin walls and thick regions is recommended Mixed only when engines/mixed_run.recommend says so
+#: with every wall's reach measured (MIXED-4, MIXED-8: cad/shell_preview.mixed_auto); otherwise Solid, with its reason.
 AUTO_SHELL_SHARE = 0.9
 #: The CAD formats a mid-surface is extracted from (a triangle file has no faces to pair).
 CAD_FORMATS = ("step", "stp", "iges", "igs", "brep")
@@ -55,8 +56,10 @@ MEASURING_WORDS = "Measuring the walls to see if a shell mesh fits this part. Th
 EARLY_PROCEED = "If you proceed before this is done, Auto meshes the part as a solid. Shell and Solid work any time."
 SHELL_WHY = ("{share}% of this part is plate {thin}, so a shell mesh needs far fewer elements than a solid one, "
              "and it is what engineers use for sheet metal and plate structures.")
-MIXED_WHY = ("{share}% of this part is plate {thin}, but it also has thick regions that must stay solid. A mesh "
-             "that joins shell and solid is coming; for now Auto meshes the whole part as a solid.")
+MIXED_WHY = ("{share}% of this part is plate {thin}, but it also has thick regions that must stay solid, so Auto "
+             "meshes the whole part as a solid.")
+#: MIXED-4/6: Auto's Mixed when mixed_run gave no words of its own
+MIXED_OK_WHY = "Thin walls meshed as shell, thick regions kept solid and joined to them."
 OPEN_WHY = ("This part is plate {thin}, but its mid-surfaces do not meet at {n} place{s} yet, so a shell mesh "
             "would have gaps there. Auto meshes it as a solid.")
 SOLID_WHY = "No wall of this part is thin against its size, so it is meshed as a solid."
@@ -222,7 +225,10 @@ def summarise(record: dict, drawn: dict | None = None) -> dict:
             "open_at_mm": opened[:400], "connected": bool((record.get("checks") or {}).get("connected", True)),
             "complete": bool(record.get("complete", False)), "notes": list(record.get("notes") or [])[:6],
             "overlay": bool(drawn.get("triangles")), "t_min_drawn_mm": drawn.get("t_min"),
-            "t_max_drawn_mm": drawn.get("t_max")}
+            "t_max_drawn_mm": drawn.get("t_max"),
+            # MIXED-4/8: whether Auto offers shell + solid, measured in the check's child (cad/shell_preview)
+            "mixed_ok": bool((record.get("mixed_auto") or {}).get("ok")),
+            "mixed_why": str((record.get("mixed_auto") or {}).get("why") or "")}
 
 
 # ------------------------------------------------------------------------------------------------ the stage
@@ -254,8 +260,8 @@ def _solid_detail(summary: dict | None, body: str | None = None) -> str:
 
 
 def recommendation(summary: dict | None, *, cad: bool = True, status: str = READY, reason: str = "") -> tuple[str, str]:
-    """SHSTAGE-3: what Auto meshes the part as, and why, in plain words: ("shell" | "solid", the reason), or
-    ("", "") while the walls are still being measured."""
+    """SHSTAGE-3: what Auto meshes the part as, and why, in plain words: ("shell" | "mixed" | "solid", the
+    reason), or ("", "") while the walls are still being measured. Mixed only as mixed_run.recommend measured it."""
     if not cad:
         return pm.MESH_SOLID, TRIANGLES_WHY
     if status == MEASURING:
@@ -269,6 +275,10 @@ def recommendation(summary: dict | None, *, cad: bool = True, status: str = READ
         detail = _solid_detail(summary)
         return pm.MESH_SOLID, SOLID_DETAIL_WHY.format(detail=detail) if detail else SOLID_WHY
     if verdicts != {"shell"}:
+        if summary.get("mixed_ok"):
+            return pm.MESH_MIXED, str(summary.get("mixed_why") or "") or MIXED_OK_WHY
+        if summary.get("mixed_why"):
+            return pm.MESH_SOLID, str(summary["mixed_why"])
         return pm.MESH_SOLID, MIXED_WHY.format(share=pct, thin=_thin_words(summary))
     if summary.get("open_edges"):
         n = len(summary.get("open_places") or []) or int(summary["open_edges"])
@@ -410,7 +420,7 @@ def settle(view: dict | None, answer: str | None) -> dict:
     """SHSTAGE-5: THE CHOICE, SETTLED WHEN THE USER PRESSES PROCEED - the run never waits on the user. The
     user's pick (the form's, else the words') stands; Auto takes the recommendation, or Solid while the walls
     are still being measured. A shell nothing can be made of is meshed solid, said plainly.
-    {"mesh_as": "shell" | "solid", "picked": "auto" | "shell" | "solid", "by": "user" | "words" | "auto",
+    {"mesh_as": "shell" | "mixed" | "solid", "picked": "auto" | "shell" | "solid", "by": "user" | "words" | "auto",
      "why": plain words}"""
     v = view or {}
     picked = str(answer or "").strip().lower()
@@ -432,7 +442,7 @@ def settle(view: dict | None, answer: str | None) -> dict:
         return {"mesh_as": pm.MESH_SHELL, "picked": picked, "by": by,
                 "why": "You picked a shell mesh." if by == "user" else SAID_WORDS[pm.MESH_SHELL]}
     rec = v.get("recommend") or ""
-    if rec in (pm.MESH_SHELL, pm.MESH_SOLID):
+    if rec in (pm.MESH_SHELL, pm.MESH_MIXED, pm.MESH_SOLID):
         return {"mesh_as": rec, "picked": pm.MESH_AUTO, "by": "auto", "why": str(v.get("reason") or "")}
     return {"mesh_as": pm.MESH_SOLID, "picked": pm.MESH_AUTO, "by": "auto", "why": EARLY_WHY}
 
@@ -443,6 +453,10 @@ def declaration_words(settled: dict | None) -> str:
     if s.get("mesh_as") == pm.MESH_SHELL:
         head = ("Meshed as: a shell - the mid-surface with plate elements, in Nastran, CalculiX, Abaqus and Ansys "
                 "files. The solid mesh is made beside it, as before.")
+    elif s.get("mesh_as") == pm.MESH_MIXED:
+        head = ("Meshed as: shell where thin, solid where thick - plate elements on the thin walls joined to "
+                "tetrahedra in the thick regions, in Nastran, CalculiX, Abaqus and Ansys files. The solid mesh is made "
+                "beside it, as before.")
     elif s.get("mesh_as") == pm.MESH_SOLID:
         head = "Meshed as: a solid."
     else:
@@ -452,8 +466,8 @@ def declaration_words(settled: dict | None) -> str:
 
 
 def confirmed_mesh_as(session_id: str) -> str:
-    """The settled choice as confirmed on the stage (the stored confirmation's fea_mesh_as): "shell" or
-    "solid"; "solid" when nothing says (no confirmation, an unreadable store) - today's path."""
+    """The settled choice as confirmed on the stage (the stored confirmation's fea_mesh_as): "shell", "mixed"
+    or "solid"; "solid" when nothing says (no confirmation, an unreadable store) - today's path."""
     if not session_id:
         return pm.MESH_SOLID
     from meshpipeline.contracts.object_storage import get_object_store
@@ -463,7 +477,7 @@ def confirmed_mesh_as(session_id: str) -> str:
     except Exception:  # noqa: BLE001 - unknown is today's solid path, never a refusal
         return pm.MESH_SOLID
     got = record.get("fea_mesh_as") if isinstance(record, dict) else None
-    return pm.MESH_SHELL if got == pm.MESH_SHELL else pm.MESH_SOLID
+    return got if got in (pm.MESH_SHELL, pm.MESH_MIXED) else pm.MESH_SOLID
 
 
 __all__ = ["AUTO_SHELL_SHARE", "MEASURING", "OPTIONS", "QUESTION", "READY", "SHELL_CHECK_LIMIT_S", "UNAVAILABLE",

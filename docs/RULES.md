@@ -4,7 +4,7 @@ Every decision a mesh run makes on its own is made by a written rule. Each rule 
 and each decision the run records in its "why" record names the rule behind it
 (`contracts/decision_record.py`). This file is the one home for those rules.
 
-Rulebook version: **57**
+Rulebook version: **58**
 
 How the book is kept honest:
 
@@ -429,3 +429,4 @@ may cite them before then.
 | `LAD-<engine>-n` | each engine's fixed ladder of approved levers | D4 to D8 |
 | `SHELL-n`, `SHMESH-n` | shell meshing: wall pairs, shell or solid, mid-surfaces and their sizing (`docs/design/shell/README.md`); the numbers in the note are placeholders until the rulebook numbers them | the shell PRs 1 to 5 |
 | `MIXED-n`, `SHLINK-n` | mixed shell and solid parts: the thick cores, the cut into the walls, the shell-to-solid join, Auto's Mixed, and walls too thick for shells kept solid (MIXED-8: a wall reaching under 10 of its walls from its nearest joint or thick region) (`docs/design/shell/README.md` 2.6); placeholders until the rulebook numbers them | shell PR 3 |
+| `SHSTAGE-n` | the FEA stage's "Mesh as: Auto / Shell / Solid" and the run it settles (rulebook 58): the shell check after the part is measured, Auto's recommendation with its reason (Shell when every body is a shell with no open edge and 90% of the surface thin; Shell + solid only when MIXED-4 and MIXED-8 pass with every wall's reach measured; Solid otherwise), the user's pick or words never overridden, the choice settled at Proceed, and the shell or mixed files made beside the solid deck, which is always delivered (`docs/design/shell/README.md` 7); placeholders until the rulebook numbers them | the shell land PR |

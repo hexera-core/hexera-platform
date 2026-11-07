@@ -157,6 +157,40 @@ def solid_places(shape, record: dict, names: list[str], *, mm_per_unit: float) -
     return out
 
 
+def mixed_auto(shape, surface, record: dict, *, mm_per_unit: float) -> dict:
+    """MIXED-4 / MIXED-8 for the stage's Auto: {"ok": Auto recommends Mixed, "why": the reason in words, "too_thick":
+    the walls kept solid}. Mixed is recommended only with every shell wall's reach measured (engines/mixed_run
+    .recommend reads MIXED-8 only when given it): a reach that cannot be measured, or one wall without it, is no
+    Mixed - the box and the casting the reach keeps solid would otherwise be offered."""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import mixed_split as mx
+    from meshpipeline.engines import mixed_run as mr
+
+    started = time.time()
+    ok, why = mr.recommend(record)
+    out: dict = {"ok": False, "why": why, "too_thick": []}
+    if not ok:
+        return out
+    try:
+        solids = mx._solids(ms.solidify(shape, float(mm_per_unit))[0])
+        if len(solids) != 1:
+            out["why"] = f"The part reads as {len(solids)} solids, not one closed body. It is meshed as a solid."
+            return out
+        reach = mr.reach_of(record, solids[0], surface, float(mm_per_unit))
+    except Exception as exc:  # noqa: BLE001 - no reach, no Mixed: Auto says solid
+        logger.warning("shell check: the walls' reach could not be measured (%s)", type(exc).__name__)
+        reach = {}
+    shell_ids = {str(m.get("id")) for m in record.get("mids") or [] if m.get("shell")}
+    if not reach or not shell_ids <= set(reach):
+        out["why"] = ("Its walls' reach from their joints could not be measured, so a shell-and-solid mesh is not "
+                      "offered. It is meshed as a solid.")
+        return out
+    ok, why = mr.recommend(record, reach)
+    bad, _share, _stop = mr.too_thick(record, reach)
+    out.update(ok=bool(ok), why=why, too_thick=list(bad), seconds=round(time.time() - started, 2))
+    return out
+
+
 def run(path: Path | str, out_dir: Path | str, *, mm_per_unit: float) -> dict:
     """Extract, draw and write: shell.json, midsurface.brep and overlay.json in `out_dir`. Returns the record."""
     from OCP.BRepTools import BRepTools
@@ -175,6 +209,8 @@ def run(path: Path | str, out_dir: Path | str, *, mm_per_unit: float) -> dict:
         logger.warning("shell check: the extraction failed (%s)", exc)
         record = ms.solid_record(shape, f"the mid-surface could not be extracted ({type(exc).__name__})")
         surface = ms._compound([])
+    if any(str(b.get("verdict")) == "mixed" for b in record.get("bodies") or []):
+        record["mixed_auto"] = mixed_auto(shape, surface, record, mm_per_unit=mm_per_unit)
     BRepTools.Write_s(surface, str(out / ms.SURFACE_FILE))
     (out / ms.RECORD_FILE).write_text(json.dumps(record, indent=1, sort_keys=True))
     diag = float(record.get("diag_mm") or 0.0)
@@ -212,4 +248,4 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["MAX_TRIANGLES", "OVERLAY_FILE", "VERSION", "face_names", "main", "overlay", "run", "solid_places"]
+__all__ = ["MAX_TRIANGLES", "OVERLAY_FILE", "VERSION", "face_names", "main", "mixed_auto", "overlay", "run", "solid_places"]

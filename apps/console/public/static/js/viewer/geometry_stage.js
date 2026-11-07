@@ -25,7 +25,7 @@ import { applyFlow, bindAxis, bindUnit, changedAnswers, editsLine, extentAlong, 
   markConfirmed, noteDrawn, readExternal, readForm, rowHtml, servedProposal, shown, tableHead, unitChoiceHint,
   unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
 import { bindFeaPanel, bindMeasure, effectiveMeshAs, feaPanelHtml, followAssembly, followClean, followMeasure, followMeshAs, interfaceMarks,
-  lightSpotRow, pickedMeshAs, shellMarks, wallColour } from "../render/fea_form.js";
+  lightSpotRow, pickedMeshAs, shellMarks, showsShell, wallColour } from "../render/fea_form.js";
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
 import { b64f32, b64u32, loadVtk } from "./scene/vtk_load.js";
@@ -1123,7 +1123,7 @@ async function openFeaStage(sessionId, d, confirm, opts) {
   /* SHSTAGE-4: the mid-surface is fetched once the shell check is ready, and shown while the effective
      choice is Shell (Shell picked, or Auto recommending it) */
   let overlay = null, fetching = false;
-  const meshAsChanged = () => { if (scene) scene.showShell(effectiveMeshAs(f.shell, pickedMeshAs(panel)) === "shell"); };
+  const meshAsChanged = () => { if (scene) scene.showShell(showsShell(effectiveMeshAs(f.shell, pickedMeshAs(panel)))); };
   async function loadOverlay() {
     const s = f.shell;
     if (overlay || fetching || !s || s.state !== "ready" || !s.overlay) return;

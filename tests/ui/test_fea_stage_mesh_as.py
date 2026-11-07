@@ -3,7 +3,8 @@
 # lands, the panel follows in place - Auto's recommendation and its reason, what stays solid (S1) and where the
 # plates do not meet (O1), each marked on the part, the legend in mm - and the mid-surface is drawn over the
 # part coloured by its wall; picking Solid hides it, Shell shows it, and Proceed sends the pick. Words said in
-# the chat open checked; a triangle file cannot be shelled.
+# the chat open checked; a triangle file cannot be shelled. Auto's shell + solid (MIXED-4) draws the mid-surface and
+# lists what is kept solid; Proceed sends Auto, which the server settles.
 # Boundaries: the skin is built through the worker's own code from a tube made here; the FEA view and the drawing
 # are the server's shapes, built here. Only the network is stood in for.
 from __future__ import annotations
@@ -109,6 +110,7 @@ def _state(live, sid: str) -> dict:
                said: (root.querySelector('.fea-meshas-said') || {{}}).textContent || '',
                rows: [...root.querySelectorAll('.fea-shell-row')].map((r) => r.dataset.spot),
                list: vis('.fea-shell-list'), legend: vis('.fea-shell-legend'),
+               head: (root.querySelector('.fea-shell-list .fea-spot-head') || {{}}).textContent || '',
                legendText: (root.querySelector('.fea-shell-legend-v') || {{}}).textContent || '',
                pins: [...root.querySelectorAll('.fea-shell-pin')].map((p) => p.dataset.spot),
                shell: h.shell(), fetches: window.__overlayFetches}}; }})()""")
@@ -171,3 +173,34 @@ def test_a_triangle_file_cannot_be_shelled(live):
     assert s["radios"] == [["auto", True, False], ["shell", False, True], ["solid", False, False]]
     assert s["auto"] == "Solid" and s["why"] == off
     assert_clean(live, "the FEA stage of a triangle file")
+
+
+def test_auto_shell_and_solid_draws_the_mid_surface_and_what_stays_solid(live):
+    sid = "feamixed"
+    ox, oy, oz = (1000 * v for v in ORIGIN)
+    mixed = _shell("ready", recommend="mixed",
+                   reason="Thin walls meshed as shell (63% of the part, 8 mm thick); 1 thick region kept solid and "
+                          "joined to them.",
+                   share=0.63, t_min_mm=8.0, t_max_mm=12.0, bodies=[{"body": "Part_1", "verdict": "mixed"}],
+                   not_shelled=[{"id": "S1", "kind": "solid", "words": "A thick region of the part (4 faces) stays "
+                                 "solid: it is 30 mm thick or more, too thick for a shell.",
+                                 "at_mm": [ox + 50, oy + 1000 * R_OUT, oz], "faces": []}],
+                   open_edges=0, open_at_mm=[], overlay=True, legend_mm=[8.0, 12.0], scale=1.0)
+    _open(live, sid, _check(mixed))
+    live.wait_for(f"window._vdbg['gstage:{sid}'].shell().shown", timeout=30, what="the mid-surface to be drawn")
+    s = _state(live, sid)
+    assert s["radios"] == [["auto", True, False], ["shell", False, False], ["solid", False, False]]
+    assert s["auto"] == "Shell + solid" and s["why"].startswith("Thin walls meshed as shell (63% of the part")
+    assert s["rows"] == ["S1"] and s["list"] and s["legend"] and s["head"] == "Kept solid, joined to the shell"
+    # Shell says what a plain shell leaves out; Solid hides it all
+    _pick(live, sid, "shell")
+    s = _state(live, sid)
+    assert s["shell"]["shown"] and s["head"] == "If it is meshed as a shell"
+    _pick(live, sid, "solid")
+    assert not _state(live, sid)["shell"]["shown"]
+    _pick(live, sid, "auto")
+    assert _state(live, sid)["shell"]["shown"]
+    live.evaluate(f"document.querySelector('#gstage-{sid} .gc-proceed').click()")
+    live.wait_for(f"window.__confirmed['{sid}']", timeout=20, what="the confirmation")
+    assert live.evaluate(f"window.__confirmed['{sid}'].fea_mesh_as") == "auto"
+    assert_clean(live, "the FEA stage's shell + solid")

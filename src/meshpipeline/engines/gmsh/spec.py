@@ -319,6 +319,12 @@ SPEC = EngineSpec(
                 M("shell_abaqus.inp", required=False),
                 M("shell.cdb", required=False),
                 M("shell_run.json", required=False),
+                # MIXED-5: a part Auto settled as shell + solid (engines/mixed_run); written only on that path
+                M("mixed.bdf", required=False),
+                M("mixed.inp", required=False),
+                M("mixed_abaqus.inp", required=False),
+                M("mixed.cdb", required=False),
+                M("mixed_run.json", required=False),
                 M("mesh.unv", required=False),
             ),
         ),

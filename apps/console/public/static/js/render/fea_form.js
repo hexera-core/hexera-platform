@@ -453,12 +453,19 @@ export function shellMarks(s) {
 function autoWords(s) {
   if (s.state === "measuring") return "measuring the walls…";
   if (s.recommend === "shell") return "Shell";
+  if (s.recommend === "mixed") return "Shell + solid";
   if (s.recommend === "solid") return "Solid";
   return "";
 }
 
 /** One string for what a "Mesh as" view shows: a later view that says more is drawn again. */
 const meshAsSig = (s) => `${s.state}/${s.recommend || ""}/${(s.not_shelled || []).length}/${s.said || ""}/${s.overlay ? 1 : 0}`;
+
+/** Whether the effective choice draws the mid-surface: a shell, or Auto's shell + solid (MIXED-4). */
+export const showsShell = (eff) => eff === "shell" || eff === "mixed";
+
+/** The list's head: what is not shelled, for the effective choice. */
+const shellListHead = (eff) => (eff === "mixed" ? "Kept solid, joined to the shell" : "If it is meshed as a shell");
 
 /** The effective choice the stage shows: the picked option, Auto read as its recommendation. */
 export function effectiveMeshAs(s, picked) {
@@ -482,8 +489,8 @@ function meshAsBody(s, picked) {
     ? `<li class="fea-spot-row fea-shell-row ${esc(r.kind)}" data-spot="${esc(r.id)}"><span class="fea-spot-id">${esc(r.id)}</span><span>${esc(r.words)}</span></li>`
     : `<li class="fea-shell-head ${esc(r.kind)}">${esc(r.words)}</li>`).join("");
   const eff = effectiveMeshAs(s, pick);
-  const list = rows ? `<div class="fea-shell-list"${eff === "shell" ? "" : " hidden"}><div class="fea-spot-head">If it is meshed as a shell</div><ul class="fea-spots fea-shell-rows" aria-label="What is not shelled">${rows}</ul></div>` : "";
-  const legend = s.overlay ? `<div class="fea-shell-show"${eff === "shell" ? "" : " hidden"}>${shellLegendHtml(s)}<div class="gc-note">The coloured surface on the part is the mid-surface the shell is meshed on.</div></div>` : "";
+  const list = rows ? `<div class="fea-shell-list"${showsShell(eff) ? "" : " hidden"}><div class="fea-spot-head">${shellListHead(eff)}</div><ul class="fea-spots fea-shell-rows" aria-label="What is not shelled">${rows}</ul></div>` : "";
+  const legend = s.overlay ? `<div class="fea-shell-show"${showsShell(eff) ? "" : " hidden"}>${shellLegendHtml(s)}<div class="gc-note">The coloured surface on the part is the mid-surface the shell is meshed on.</div></div>` : "";
   return `<div class="rc-row"><div class="rc-k">${esc(s.question || "Mesh as")}</div><div class="rc-v"><div class="fea-meshas-opts" role="radiogroup" aria-label="${esc(s.question || "Mesh as")}">${opts}</div></div></div>
     ${said}${measuring}${reason}${list}${legend}`;
 }
@@ -503,7 +510,8 @@ export function pickedMeshAs(root) {
 /** Show the list and the legend that belong to the effective choice. */
 function showForPick(root, s) {
   const eff = effectiveMeshAs(s, pickedMeshAs(root));
-  root.querySelectorAll(".fea-shell-list,.fea-shell-show").forEach((el) => { el.hidden = eff !== "shell"; });
+  root.querySelectorAll(".fea-shell-list,.fea-shell-show").forEach((el) => { el.hidden = !showsShell(eff); });
+  root.querySelectorAll(".fea-shell-list .fea-spot-head").forEach((el) => { el.textContent = shellListHead(eff); });
   return eff;
 }
 

@@ -50,6 +50,15 @@ EXPORT_ARTIFACTS: tuple[tuple[str, str, str], ...] = (
     ("export_shell_abaqus", "shell_abaqus.inp",
      "Shell mesh: Abaqus deck (.inp), S4R / S3 - not yet tested in the real solver"),
     ("export_shell_ansys", "shell.cdb", "Shell mesh: Ansys MAPDL archive (.cdb), SHELL181 - not yet tested in the real solver"),
+    # MIXED-5: a part Auto settled as shell + solid also gets its mixed files (engines/mixed_run), Nastran first
+    ("export_mixed_nastran", "mixed.bdf",
+     "Shell + solid mesh: Nastran bulk data (.bdf), CQUAD4 / CTRIA3 and CTETRA joined by MPC set 1 - not yet tested in "
+     "the real solver"),
+    ("export_mixed_calculix", "mixed.inp", "Shell + solid mesh: CalculiX deck (.inp), S4 / S3 and C3D10 - solved in CalculiX"),
+    ("export_mixed_abaqus", "mixed_abaqus.inp",
+     "Shell + solid mesh: Abaqus deck (.inp), S4R / S3 and C3D10 - not yet tested in the real solver"),
+    ("export_mixed_ansys", "mixed.cdb",
+     "Shell + solid mesh: Ansys MAPDL archive (.cdb), SHELL181 and SOLID187 - not yet tested in the real solver"),
     ("export_calculix_abaqus", "mesh.inp",
      "CalculiX / Abaqus deck (.inp) - solved in CalculiX; Abaqus not yet tested in the real solver"),
     ("export_nastran", "mesh.bdf", "Nastran bulk data (.bdf) - not yet tested in the real solver"),

@@ -349,12 +349,26 @@ def read(workspace: Path | str) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """python -m meshpipeline.engines.mixed_run <workspace> <step> <mm per unit>"""
+    """python -m meshpipeline.engines.mixed_run <workspace> <step> <mm per unit | staged>
+    ("staged": read as the FEA driver reads the staged solid, engines/fea_driver.staged_mm_per_unit, as shell_run)"""
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) != 3:
         print(main.__doc__, file=sys.stderr)
         return 2
-    rec = run(args[0], args[1], mm_per_unit=float(args[2]))
+    logging.basicConfig(level=logging.WARNING)
+    if args[2] == "staged":
+        from meshpipeline.engines.fea_driver import staged_mm_per_unit
+
+        try:
+            mm = staged_mm_per_unit(Path(args[1]))
+        except Exception as exc:  # noqa: BLE001 - said in the record, the solid is still delivered
+            rec = {"made": False, "why": f"the staged part could not be read ({type(exc).__name__})"}
+            rec["words"] = words(rec)
+            (Path(args[0]) / RECORD).write_text(json.dumps(rec, indent=1))
+            return 1
+    else:
+        mm = float(args[2])
+    rec = run(args[0], args[1], mm_per_unit=mm, source=Path(args[1]).name)
     print(rec["words"])
     return 0 if rec.get("made") else 1
 

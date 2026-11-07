@@ -316,21 +316,30 @@ SHELL_RUN_LIMIT_S = 2400
 SHELL_GATE = "fea_shell"
 
 
+MIXED_GATE = "fea_mixed"
+
+
 def mesh_as_of(state) -> str:
-    """SHSTAGE-5: "shell" when the stage settled Mesh as: Shell (state fea_mesh_as), else "solid"."""
-    return "shell" if str((state or {}).get("fea_mesh_as") or "").strip().lower() == "shell" else "solid"
+    """SHSTAGE-5: "shell" when the stage settled Mesh as: Shell, "mixed" when Auto settled shell + solid (MIXED-4),
+    else "solid" (state fea_mesh_as)."""
+    got = str((state or {}).get("fea_mesh_as") or "").strip().lower()
+    return got if got in ("shell", "mixed") else "solid"
 
 
 async def shell_pass(ws: Path, state, *, job_id: str, run=None) -> dict | None:
     """SHSTAGE-6: when the stage settled Mesh as: Shell, the staged solid's shell mesh and its solver files
     (engines/shell_run, in a process of its own), beside the solid deck. The solid path is unchanged: a shell
-    that cannot be made is said, and the solid mesh is still delivered. None when Solid was settled."""
-    if mesh_as_of(state) != "shell":
+    that cannot be made is said, and the solid mesh is still delivered. None when Solid was settled.
+    MIXED-5: when Auto settled Mixed, the same in engines/mixed_run (thin walls shell, thick regions solid, joined)."""
+    kind = mesh_as_of(state)
+    if kind == "solid":
         return None
     import subprocess
     import sys
 
-    from meshpipeline.engines import shell_run
+    from meshpipeline.engines import mixed_run, shell_run
+
+    mod = mixed_run if kind == "mixed" else shell_run
 
     step = staged_solid(ws)
     limit = float(SHELL_RUN_LIMIT_S)
@@ -339,18 +348,26 @@ async def shell_pass(ws: Path, state, *, job_id: str, run=None) -> dict | None:
         limit = max(120.0, min(limit, 0.5 * left))
     try:
         proc = await asyncio.to_thread(
-            subprocess.run, [sys.executable, "-m", "meshpipeline.engines.shell_run", str(ws), str(step), "staged"],
+            subprocess.run, [sys.executable, "-m", mod.__name__, str(ws), str(step), "staged"],
             capture_output=True, text=True, timeout=limit, check=False)
-        rec = shell_run.read(ws)
+        rec = mod.read(ws)
         if not rec:
-            rec = {"made": False, "why": f"the shell run stopped (exit {proc.returncode})"}
+            rec = {"made": False, "why": f"the {kind} run stopped (exit {proc.returncode})"}
     except subprocess.TimeoutExpired:
         rec = {"made": False, "why": f"it took longer than the {int(limit) // 60} minutes allowed"}
     except Exception as exc:  # noqa: BLE001 - the solid mesh is still delivered
         rec = {"made": False, "why": f"it could not be started ({type(exc).__name__})"}
     if not rec.get("words"):
-        rec["words"] = shell_run.words(rec)
-        (ws / shell_run.RECORD).write_text(json.dumps(rec, indent=1, sort_keys=True, default=float))
+        rec["words"] = mod.words(rec)
+        (ws / mod.RECORD).write_text(json.dumps(rec, indent=1, sort_keys=True, default=float))
+    if kind == "mixed":
+        c = rec.get("counts") or {}
+        _cite(job_id, [{"stage": MIXED_GATE, "decided": "mixed mesh" if rec.get("made") else "no mixed mesh",
+                        "value": (int(c.get("shell_elements") or 0) + int(c.get("solid_elements") or 0)) or None,
+                        "rule": "MIXED-5",
+                        "inputs": {k: rec.get(k) for k in ("thin_share", "too_thick", "regions", "seconds", "why")},
+                        "words": rec["words"]}])
+        return rec
     _cite(job_id, [{"stage": SHELL_GATE, "decided": "shell mesh" if rec.get("made") else "no shell mesh",
                     "value": rec.get("elements"), "rule": "SHSTAGE-6",
                     "inputs": {k: rec.get(k) for k in ("bodies", "open_edges", "solid_bodies", "walls_mm", "seconds",
@@ -2337,6 +2354,6 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["SHELL_RUN_LIMIT_S", "mesh_as_of", "shell_pass", "connection_of", "element_target", "target_plan", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
+__all__ = ["MIXED_GATE", "SHELL_RUN_LIMIT_S", "mesh_as_of", "shell_pass", "connection_of", "element_target", "target_plan", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
            "complexity", "element_limit", "fill_rate", "watchdog_words", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "NOT_RUN", "NOT_RUN_GATE", "not_run", "not_run_words", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]
