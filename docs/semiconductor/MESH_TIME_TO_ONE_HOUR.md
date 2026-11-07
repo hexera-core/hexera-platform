@@ -251,11 +251,14 @@ I also deleted that run's log files while trying to archive them, because the ar
 on `/mnt/work` ownership and I did not check its exit status before the `rm -rf`. The numbers survive
 in this document and the oom evidence is in `dmesg`, which never lived in those files.
 
-## The far field, settled across a 4x range
+## The far field, and why killing those two runs cost nothing
 
-Three runs that could never finish still answered the question they were asked, because cfMesh fixes
-the cell count during refinement and only then spends hours in the optimiser. The counts were already
-sitting in their logs.
+Correcting myself before this gets quoted: these three cell counts were **already in the record**
+before I went looking. I framed them as salvaged from doomed runs, which made them sound new. They
+are not. What is new is only the reading in the last paragraph, and the operational point that both
+surviving runs had already produced everything they were ever going to produce, hours before I killed
+them, because cfMesh fixes the cell count during refinement and only then spends hours in the
+optimiser.
 
 | run | `maxCellSize` m | vs ff1 | cells | vs ff1 |
 |---|---|---|---|---|
@@ -273,8 +276,13 @@ All three hold the channel resolution fixed by adding levels as the background c
 each other and not to cbox2b's 504,715,948. The question was always a relative one and that
 comparison is clean.
 
-This closes the far field as a lever, with three points instead of the single 0.9% the record carried
-before. Neither surviving run could ever have reported: ff4 lost its rank 1 to the 10:57 oom kill
-above, and ff1 at `scaleY 6` was on the 38.5 hour path, which starting at 10:21 lands at 00:51 on 9
-November against a box that expires at 10:21 on the 8th. I killed both and took the answer out of
-their logs.
+The sharper reading, which is the part that was not already written down: **the first doubling takes
+0.83 of the 0.88 points and the second takes 0.06.** It saturates on the first step rather than
+declining steadily, which is a stronger statement than a single -0.88% and is what makes the far
+field dead as a lever rather than merely weak.
+
+Neither surviving run could ever have reported anything further. ff4 lost its rank 1 to the 10:57 oom
+kill above, and ff1 at `scaleY 6` was on the 38.5 hour path, which starting at 10:21 lands at 00:51
+on 9 November against a box that expires at 10:21 on the 8th. So the two of them were spending 382 GB
+and 16 cores re-deriving a recorded result they could not reach, which is what made them worth
+killing on sight.

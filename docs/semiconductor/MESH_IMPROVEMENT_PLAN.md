@@ -125,10 +125,14 @@ across a channel costs on this geometry.** The two things that remain are both s
   construction, zero tets, 4.6x lighter per mm2, and it kills the staircase outright rather than
   mitigating it. `gmshToFoam` is ASCII MSH2 only and serial, which is the obstacle.
 
-The caution from the record stands and is now better evidenced: a 4x coarser far field changed cell
-count by 0.9%, no-stretch gave 2.73x more cells, and now the solid turns out to be already graded.
-**Octree cell counts on this part have never once moved the way the geometry suggested they should.
-Measure before believing, including when I am the one asserting it.**
+The caution from the record stands and is now better evidenced. The far field rests on three points
+spanning a 4x range, 269,516,428 then 267,282,301 then 267,133,252 cells at 1x, 2x and 4x background
+cell size with the channel resolution held fixed. Read as a whole that is -0.88% for 4x coarser, and
+the useful reading is the decomposition: **the first doubling takes 0.83 of the 0.88 points and the
+second takes 0.06**, so it saturates on the first step rather than declining steadily. Alongside it:
+no-stretch gave 2.73x more cells, and now the solid turns out to be already graded. **Octree cell
+counts on this part have never once moved the way the geometry suggested they should. Measure before
+believing, including when I am the one asserting it.**
 
 ## 5. Align the grid origin to the channel array: REFUTED
 
