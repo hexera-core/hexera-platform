@@ -428,3 +428,4 @@ may cite them before then.
 | `PLAN-<engine>-n` | the numbers of each engine's computed plan (`PLAN-fea` above is the FEA path's) | D4 to D8 |
 | `LAD-<engine>-n` | each engine's fixed ladder of approved levers | D4 to D8 |
 | `SHELL-n`, `SHMESH-n` | shell meshing: wall pairs, shell or solid, mid-surfaces and their sizing (`docs/design/shell/README.md`); the numbers in the note are placeholders until the rulebook numbers them | the shell PRs 1 to 5 |
+| `MIXED-n`, `SHLINK-n` | mixed shell and solid parts: the thick cores, the cut into the walls, the shell-to-solid join, Auto's Mixed, and walls too thick for shells kept solid (MIXED-8: a wall reaching under 10 of its walls from its nearest joint or thick region) (`docs/design/shell/README.md` 2.6); placeholders until the rulebook numbers them | shell PR 3 |
