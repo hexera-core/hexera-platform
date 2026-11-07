@@ -235,7 +235,8 @@ convergence study that would put error bars on everything in the quality documen
    metric question matters more than the flow rate, which is the opposite of what this list said
    before.
 2. Land items 2 and 3 in `couple_box.sh`. Both are measured, neither costs accuracy, and together
-   they take the chain from 3.00 h to 46 min.
+   they take the chain from 3.00 h to a MEASURED 30.9 min, which includes the port split the
+   chain was missing. See MESH_TIME_TO_ONE_HOUR.md.
 3. Do **not** spend a run on item 4 or item 5. Both are refuted: the wall phase is uniform so an
    origin shift provably does nothing, and the solid is already graded like the fluid so there is no
    bulk to coarsen.

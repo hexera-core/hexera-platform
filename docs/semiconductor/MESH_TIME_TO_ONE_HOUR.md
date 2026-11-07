@@ -14,11 +14,14 @@ extrapolated. Where I projected rather than measured, it says so.
 | as actually run, with layers | **20,834 s = 5.79 h** | |
 | optimised, with layers | 8,578 s = 2.38 h, projected | 2.43x faster |
 | optimised, no layers, projected | 2,735 s = 46 min | the projection |
-| **optimised, no layers, MEASURED end to end** | **1,772 s = 29.5 min** | **11.76x faster** |
+| optimised, no layers, MEASURED, mesh only | 1,772 s = 29.5 min | 11.76x |
+| **the same, plus the port split, so it can take a boundary condition** | **1,852 s = 30.9 min** | **11.25x** |
 
-The last row is run `cbox2g` and it is a wall clock, not a sum. The projection above it was 35%
-pessimistic. Details, the reproducibility check against the delivered mesh, and the one step the
-optimised chain turned out to be missing are in the measured section below.
+The last two rows are run `cbox2g` and they are wall clocks, not sums. The projection above them was
+35% pessimistic. 1,772 s is the mesh; 1,852 s is the deliverable, because the chain turned out to be
+missing the step that makes the two ports separate patches, and a mesh that cannot take an inlet is
+not a deliverable however fast it was built. Details, the reproducibility check against the
+delivered mesh, that missing step and the deadlock found while adding it are below.
 
 Sub-one-hour is reachable, and the thing standing in the way is the boundary layer pass, which costs
 7,483 s on its own.
@@ -130,6 +133,86 @@ plate's outer surface, far from the channel walls where the 23,281-cell non-dete
 
 This is the thing a sum of stage timings could never have surfaced. The stages were all measured
 correctly and the chain was still incomplete.
+
+
+### The port split, in parallel, and the deadlock on the way
+
+The split has to work on the decomposed mesh, because the optimised chain never reconstructs. It
+does, in 78 s, but not on the first attempt.
+
+| stage | rc | s | |
+|---|---|---|---|
+| `topoSet -parallel -constant` | **137** | 940 | **deadlocked, killed** |
+| `createPatch -overwrite -noZero -constant -parallel` | 1 | 1 | `createPatch` takes neither flag |
+| `topoSet -parallel -constant -noZero` | 0 | **15** | the fix |
+| `createPatch -overwrite -parallel -region fluid` | 0 | **63** | |
+| `checkMesh -parallel` on the repatched region | 0 | 72 | |
+
+**`-constant` adds constant to the time list rather than restricting to it.** So the first run did
+the constant pass correctly, writing `portA` at 2,092 faces and `portB` at 2,048, and then started a
+second pass on `Time = 0` and hung inside `patchToFace` with all 8 ranks in state `R` at full CPU.
+That is the same OpenMPI busy-wait signature as the orphaned ranks above, and the log stopped dead
+at 17:00 and had not moved fifteen minutes later. `-noZero` drops time 0 and the stage takes **15 s**
+with exactly one `Time =` line. 940 s of hang against 15 s of work.
+
+It was recoverable because the constant pass had already written the sets, so `createPatch` could
+read them without `topoSet` running again. Which is also why the stage cannot be honestly re-timed:
+it reads `patch fluid_to_air`, and `createPatch` consumes that patch. The 15 s above is the identical
+operation keyed on `port_a` instead, where the cost is dominated by reading the decomposed 82.5M
+cell region rather than by set algebra on 4,140 faces.
+
+The result:
+
+| patch | faces | type | cbox2b |
+|---|---|---|---|
+| `port_a` | **2,092** | `patch` | 2,092 |
+| `port_b` | **2,048** | `patch` | 2,048 |
+| `fluid_to_air` | 0, auto-removed as zero-sized | | absent |
+| `fluid_to_solid` | 25,684,168, unchanged by the repatch | `mappedWall` | 25,685,941 |
+
+Both ports at exactly cbox2b's counts, both typed `patch` so a solver can put an inlet on one and an
+outlet on the other, and the conjugate interface untouched. `Mesh OK`, coolant volume still
+5.51021e-05.
+
+### Both ports are in the same circuit, which checkMesh cannot tell you
+
+`checkMesh` reports the coolant in 3 pieces. That is harmless if and only if the two ports are in the
+**same** piece: an inlet and an outlet in different circuits is a mesh that cannot carry flow at all,
+and it passes every geometric criterion in `checkMesh` while doing so. So it was walked directly,
+cell to cell through `owner`/`neighbour`, stitching the processor boundaries by pairing each
+`processorAtoB` patch with its twin face for face, 306,540 faces stitched.
+
+| piece | cells | share |
+|---|---|---|
+| root 0 | 82,506,232 | **99.999998%** |
+| root 29727350 | 1 | 0.000001% |
+| root 76292997 | 1 | 0.000001% |
+
+**port_a's 2,092 faces and port_b's 2,048 faces all sit on cells in piece root 0.** One circuit from
+inlet to outlet. The two stray pieces are single cells, as they were in cbox2b.
+
+### The complete deliverable chain
+
+| stage | s |
+|---|---|
+| cfMesh, 8 ranks, `writeFormat binary` | 618 |
+| `topoSet` | 392 |
+| `splitMeshRegions -cellZonesOnly` | 471 |
+| `topoSet -noZero` for the ports | 15 |
+| `createPatch -overwrite -parallel` | 63 |
+| `checkMesh -parallel` fluid | 72 |
+| `checkMesh -parallel` solid | 198 |
+| `checkMesh -parallel` chip | 23 |
+| **TOTAL** | **1,852 s = 30.9 min** |
+
+The port split is placed before the checks, so the coolant region is checked once rather than twice.
+As actually executed, in the order the stages were discovered, it was 1,922 s = 32.0 min, and the
+940 s deadlock and the 1 s flag error are excluded from both because neither is part of a chain that
+works.
+
+**So the deliverable chain, producing a mesh that can take a boundary condition, is 30.9 minutes
+against 20,834 s = 5.79 h for the chain that built the delivered mesh. 11.25x, and half the
+one-hour target.**
 
 ## What actually ran, stage by stage
 
@@ -290,14 +373,20 @@ Getting materially below that needs a different kind of mesh rather than a bette
 ## Recommended chain
 
 ```
-cfMesh 8 ranks, writeFormat binary          799 s
-topoSet                                     575 s
-splitMeshRegions -cellZonesOnly             869 s
-checkMesh -parallel, 3 regions              492 s
+cfMesh 8 ranks, writeFormat binary          618 s
+topoSet                                     392 s
+splitMeshRegions -cellZonesOnly             471 s
+topoSet -noZero, carve the two ports         15 s
+createPatch -overwrite -parallel             63 s
+checkMesh -parallel, 3 regions              293 s
 deliver decomposed                            0 s
                                            ------
-                                          2,735 s = 46 min
+                                          1,852 s = 30.9 min
 ```
+
+Every line measured on run `cbox2g`, 7 November, on an idle box. The earlier version of this block
+carried the ASCII timings and summed to 2,735 s = 46 min; it was a projection and it was 48%
+pessimistic.
 
 Add 5,843 s for layers unless both of these hold: the operating Reynolds number is below about
 **152**, and what the customer wants is a mean heat transfer coefficient rather than a peak junction
