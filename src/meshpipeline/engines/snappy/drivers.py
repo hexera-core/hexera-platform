@@ -426,7 +426,7 @@ async def _say_part_levels(workspace, publish, got: dict, levels: dict | None, *
         if lines:
             from meshpipeline.contracts.user_notes import record_remark
             record_remark(Path(workspace), lines[0], by=PL.CONSUMER)
-            await publish.anote("From your notes: " + " ".join(lines[:4]))
+            await publish.anote("From your notes: " + " ".join(lines[:4]), op_id="internal:part-levels-notes")
     except StaleExecutionPublish:
         raise
     except Exception:  # noqa: BLE001 - the words never stop a mesh
