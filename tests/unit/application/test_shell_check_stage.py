@@ -288,3 +288,13 @@ def test_the_request_card_says_a_shell_or_shell_and_solid(settled, row):
     brief = build_brief(session)
     assert brief.get("mesh_as") == row
     assert sc.card_mesh_as("") == "" and sc.card_mesh_as("Meshed as: a solid.") == ""
+
+
+def test_two_small_faces_far_apart_are_a_length_not_a_wall_thickness():
+    """A bar's two end caps pair across its length (255 mm apart, 25 mm wide): that is not a wall, so no
+    "255 mm thick" is said for the region that stays solid."""
+    from meshpipeline.application.shell_check import _is_wall
+    assert _is_wall({"thickness_mm": 5.0, "width_mm": 80.0})
+    assert not _is_wall({"thickness_mm": 255.0, "width_mm": 25.0})
+    assert _is_wall({"thickness_mm": 30.0})          # no width measured: a wall, as before
+    assert not _is_wall({"width_mm": 25.0})

@@ -212,8 +212,10 @@ def summarise(record: dict, drawn: dict | None = None) -> dict:
                             "at_mm": places.get(body)})
         for k, reg in enumerate(row.get("solid_regions") or [], start=1):
             names = [str(n) for n in reg.get("faces") or []]
+            # a "thickness" only when the two faces are a wall: as wide as they are apart at least. Two small
+            # faces far apart (a bar's two end caps) are a length, not a thickness - no number is said then
             thick = sorted({float(pairs[p]["thickness_mm"]) for n in names for p in (faces.get(n) or {}).get("pairs") or []
-                            if p in pairs and pairs[p].get("thickness_mm")})
+                            if p in pairs and _is_wall(pairs[p])})
             regions.append({"body": body, "whole": False, "faces": names[:12], "n_faces": len(names),
                             "thick_mm": _r(thick[0]) if thick else None, "at_mm": places.get(f"{body}:{k}")})
     opened = [q for row in record.get("sewn") or [] for q in row.get("open_at_mm") or []]
@@ -286,6 +288,16 @@ def recommendation(summary: dict | None, *, cad: bool = True, status: str = READ
     if share < AUTO_SHELL_SHARE:
         return pm.MESH_SOLID, LOW_SHARE_WHY.format(share=pct)
     return pm.MESH_SHELL, SHELL_WHY.format(share=pct, thin=_thin_words(summary))
+
+
+def _is_wall(pair: dict) -> bool:
+    """A face pair that reads as a wall: it has a thickness, and its faces are at least as wide as they are
+    apart (no width measured: taken as a wall, as before)."""
+    t = pair.get("thickness_mm")
+    if not t:
+        return False
+    w = pair.get("width_mm")
+    return w is None or float(w) >= float(t)
 
 
 def not_shelled(summary: dict | None) -> list[dict]:

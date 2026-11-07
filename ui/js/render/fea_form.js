@@ -329,7 +329,10 @@ function measureBody(m, p) {
   const unsent = m.more ? `<li class="fea-spot-unsent">${m.more} more found than the measurement keeps</li>` : "";
   const capped = spots.some((h) => h.capped)
     ? `<div class="gc-note">A perfectly sharp inside corner's stress never settles however fine the mesh, so refinement there stops at a set level.</div>` : "";
-  return `<div class="rc-row"><div class="rc-k">Thinnest wall</div><div class="rc-v fea-wall">${wall}</div></div>
+  // no wall measured: no row (a "not measured" line beside a shell card that names its walls reads as a contradiction)
+  const wallRow = m.thickness_min_mm == null ? ""
+    : `<div class="rc-row"><div class="rc-k">Thinnest wall</div><div class="rc-v fea-wall">${wall}</div></div>`;
+  return `${wallRow}
     <div class="rc-row"><div class="rc-k">Hot spots</div><div class="rc-v fea-spots-sum">${esc(m.summary || "")}</div></div>
     ${m.contacts ? `<div class="rc-row"><div class="rc-k">Contacts</div><div class="rc-v fea-contacts">${esc(String(m.contacts))} place${m.contacts === 1 ? "" : "s"} where parts touch (not corners)</div></div>` : ""}
     ${spots.length ? `<ul class="fea-spots" aria-label="Hot spots the mesh will be refined at">${list}${unsent}</ul>
