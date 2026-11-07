@@ -423,7 +423,9 @@ the same box two days earlier. The oom-killer log says why:
 | 14:27:52 | `splitMeshRegion` | `splitMeshRegion` rank 5 | 47.3 GB |
 
 At 10:21:40 I started two far field meshes, 8 ranks each. At 10:57 the 16-rank layer pass put the box
-under enough memory pressure that the kernel killed one rank of one of them. **The other ranks did
+under enough memory pressure that the kernel killed one rank of one of them.
+**(That first sentence is wrong. There were three, the machine launched them, not me, and they
+started before the layer pass rather than during it. See the root-cause correction below.)** **The other ranks did
 not exit.** Six hours later `ps` still showed 16 `cartesianMesh` processes, 381.9 GB resident, state
 `R`, each burning 375% CPU. OpenMPI busy-waits inside collectives rather than sleeping, so a rank
 with nowhere to send its next message spins at full tilt indefinitely. The box reported 387 of 755 GB
@@ -451,6 +453,66 @@ Three things follow for anyone running this chain:
 I also deleted that run's log files while trying to archive them, because the archive `mkdir` failed
 on `/mnt/work` ownership and I did not check its exit status before the `rm -rf`. The numbers survive
 in this document and the oom evidence is in `dmesg`, which never lived in those files.
+
+
+### Correcting the root cause: extending the box relaunched its own startup script
+
+The section above says I started two far field meshes at 10:21:40 while the layer pass was running.
+That is wrong in three ways and the truth is a better warning.
+
+| time, 7 Nov UTC | what happened |
+|---|---|
+| **10:21:01** | the box **booted** |
+| 10:21:26 | `google-startup-scripts.service` ran and wrote its own results header |
+| **10:21:38** | it launched **three** 8-rank far field meshes, ff1, ff2 and ff4, all three `t0` identical to the second |
+| 10:21:39.077 and .078 | two of the containers started, **one millisecond apart** |
+| **10:31:43** | I started the layer chain, ten minutes **after** the box was already committed |
+| 10:57:10 | `snappyHexMesh` memory demand triggered the oom-killer, which killed an ff4 rank |
+| 12:09 | the layer pass finished writing |
+| 16:25:02 | the startup script reported ALL DONE, because killing the containers released its wait loop |
+
+So: **three, not two; launched by the machine, not by me; and before the layer pass, not during
+it.** A millisecond between two container starts is not a person issuing commands.
+
+**The mechanism is the part worth keeping.** This box carries the far field experiment as its
+`startup-script` metadata, and that script is written to saturate the machine on purpose: three
+concurrent cases at `--cpus=32` each, which is 96 of 96 cores, and its own header says THREE RUNS
+CONCURRENT. Extending the box's `maxRunDuration` restarted it, and **a restart re-runs
+`startup-script` from the beginning.** The box re-armed a full-machine experiment, silently, and
+nothing in my session said so. I then put a 16-rank layer chain on top of it.
+
+That is what left 755 GB oversubscribed, what made the oom-killer pick an innocent rank, and
+therefore what killed the split six hours later. The orphaned-rank defect above is real and still
+worth knowing, but it was the second link in the chain and not the first.
+
+**How to apply.** On any box whose work is launched from `startup-script`, a restart relaunches that
+work. So before extending, restarting or resizing such a box, read its `startup-script` metadata and
+know what will fire on boot, and after any restart check what is already running before adding to
+it. The one `ps` that would have caught the whole cascade was cheap and I did not run it.
+
+### What happened to the box
+
+It has a GCP-native expiry rather than anything on the machine, which is why looking on the machine
+found no timer, no `at` job and no cron:
+
+```
+scheduling:
+  maxRunDuration:            86400s      # 24 hours
+  instanceTerminationAction: DELETE
+```
+
+24 hours from the 10:21:01 boot, so **Compute Engine deletes it, and its disk, at about 10:21 UTC on
+8 November.** `DELETE` rather than `STOP`, so nothing is left behind to pay for.
+
+I tried to delete it early, since the work is finished and archived, and the repository's own
+`gcp-spend-guard.sh` refused at DESTROY tier and said to ask Rehaan rather than work around it. So I
+left it alone, and deliberately did not reach for `stop` instead: stopping a box whose termination
+action is DELETE cancels its own cleanup and would leave both the instance and the 2.4 TB disk
+sitting there indefinitely. Doing nothing is strictly better than that.
+
+The guard's stated reason is that the Corintis meshes are only on mesh-bench's scratch disk, which
+the record says was completed on 2026-10-31: the whole 257 GB disk is in `dev-rehaan` as 71
+archives. So the reason looks stale, but a stale guard on an irreversible action is still a guard.
 
 ## The far field, and why killing those two runs cost nothing
 
