@@ -199,3 +199,82 @@ To run `checkMesh -allGeometry`, which has never once passed on a conjugate mesh
 chip region: rc 1 to 0, 610 s to 624 s. Never retype the delivered mesh, because
 `chtMultiRegionFoam` couples the regions through those patches and a plain wall silently decouples
 the solve.
+
+## Why the first end-to-end attempt produced no number
+
+I ran the optimised chain end to end to replace the sum above with a measured whole. It died, and the
+cause was not the chain. It is worth writing down because the symptom appeared three stages and six
+hours away from the defect, and nothing in the stage table pointed at it.
+
+| stage | rc | s | against ASCII |
+|---|---|---|---|
+| mesh, 8 ranks | 0 | 778 | 799 |
+| topoSet | 0 | 422 | 575, so 1.36x from binary |
+| split | **137** | 357 | 869, and 137 is SIGKILL |
+
+`splitMeshRegions` was OOM-killed on a 755 GB box doing work that had already succeeded in 869 s on
+the same box two days earlier. The oom-killer log says why:
+
+| time | invoked by | killed | RSS |
+|---|---|---|---|
+| 10:57:10 | `snappyHexMesh` | a `cartesianMesh` rank | 26.6 GB |
+| 11:34:21 | `snappyHexMesh` | `checkMesh` | 181.4 GB |
+| 14:27:52 | `splitMeshRegion` | `splitMeshRegion` rank 5 | 47.3 GB |
+
+At 10:21:40 I started two far field meshes, 8 ranks each. At 10:57 the 16-rank layer pass put the box
+under enough memory pressure that the kernel killed one rank of one of them. **The other ranks did
+not exit.** Six hours later `ps` still showed 16 `cartesianMesh` processes, 381.9 GB resident, state
+`R`, each burning 375% CPU. OpenMPI busy-waits inside collectives rather than sleeping, so a rank
+with nowhere to send its next message spins at full tilt indefinitely. The box reported 387 of 755 GB
+used and a load average of 43 with nothing of mine supposed to be running on it.
+
+So the chain at 14:02 started with 352 GB available and 16 of 96 cores already gone. The mesh and
+`topoSet` fit anyway. The split wanted 8 ranks at 47 GB, which is 378 GB, and 378 + 382 does not fit
+in 755.
+
+**The defect is that a partially killed mpirun leaves the survivors running forever.** There is no
+reaper. One rank dying converts the box into a box with half the memory and a permanent load of 16,
+and the next job to need real memory dies instead, in a stage that has nothing to do with it. Killing
+the two containers took memory from 387 GB used to 5 GB and the load average to near zero within
+twelve seconds.
+
+Three things follow for anyone running this chain:
+
+1. **Check for stray ranks before trusting any timing.** One `ps` filtered to `cartesianMesh` is
+   enough. A clean box is part of the measurement.
+2. **Never run a mesh concurrently with the layer pass.** The layer job is the memory hog that
+   triggered both earlier kills, and what it killed was an innocent bystander both times.
+3. The 778 s and 422 s above are **pessimistic**, not optimistic, because they were measured on the
+   degraded box. They are not reported as the answer. A clean full re-run is.
+
+I also deleted that run's log files while trying to archive them, because the archive `mkdir` failed
+on `/mnt/work` ownership and I did not check its exit status before the `rm -rf`. The numbers survive
+in this document and the oom evidence is in `dmesg`, which never lived in those files.
+
+## The far field, settled across a 4x range
+
+Three runs that could never finish still answered the question they were asked, because cfMesh fixes
+the cell count during refinement and only then spends hours in the optimiser. The counts were already
+sitting in their logs.
+
+| run | `maxCellSize` m | vs ff1 | cells | vs ff1 |
+|---|---|---|---|---|
+| ff1 | 0.000352056 | 1.00x | 269,516,428 | |
+| ff2 | 0.000704112 | 2.00x | 267,282,301 | **-0.83%** |
+| ff4 | 0.001408224 | 4.00x | 267,133,252 | **-0.88%** |
+
+**A 4x coarser far field buys 0.88% of the cells, and the first doubling buys 0.83 of that 0.88.** It
+saturates immediately. The reason is that refinement here is banded around the channels rather than
+graded outward from the domain boundary, so the far field holds almost no cells to begin with and
+doubling its cell size removes almost nothing.
+
+All three hold the channel resolution fixed by adding levels as the background coarsens, +1, +2 and
++3 against ff1. All three are `scaleY 6` on `block.stl` without the chip band, so they compare to
+each other and not to cbox2b's 504,715,948. The question was always a relative one and that
+comparison is clean.
+
+This closes the far field as a lever, with three points instead of the single 0.9% the record carried
+before. Neither surviving run could ever have reported: ff4 lost its rank 1 to the 10:57 oom kill
+above, and ff1 at `scaleY 6` was on the 38.5 hour path, which starting at 10:21 lands at 00:51 on 9
+November against a box that expires at 10:21 on the 8th. I killed both and took the answer out of
+their logs.
