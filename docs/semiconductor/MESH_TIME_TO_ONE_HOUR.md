@@ -12,8 +12,13 @@ extrapolated. Where I projected rather than measured, it says so.
 | chain | wall clock | |
 |---|---|---|
 | as actually run, with layers | **20,834 s = 5.79 h** | |
-| optimised, with layers | **8,578 s = 2.38 h** | 2.43x faster |
-| optimised, no layers | **2,735 s = 46 min** | **under the hour** |
+| optimised, with layers | 8,578 s = 2.38 h, projected | 2.43x faster |
+| optimised, no layers, projected | 2,735 s = 46 min | the projection |
+| **optimised, no layers, MEASURED end to end** | **1,772 s = 29.5 min** | **11.76x faster** |
+
+The last row is run `cbox2g` and it is a wall clock, not a sum. The projection above it was 35%
+pessimistic. Details, the reproducibility check against the delivered mesh, and the one step the
+optimised chain turned out to be missing are in the measured section below.
 
 Sub-one-hour is reachable, and the thing standing in the way is the boundary layer pass, which costs
 7,483 s on its own.
@@ -28,6 +33,103 @@ entrance. **The hour is real and it costs accuracy.**
 With layers kept, the floor is 2.38 h and the layer step alone is 1.31 h of it. **There is no route
 to one hour that includes a 3-layer boundary layer on 25.7M faces on this hardware with this
 toolchain.** I want to be plain about that rather than quote a number I cannot stand behind.
+
+
+## MEASURED END TO END: 29.5 minutes
+
+Run `cbox2g`, 16:26:29 to 16:56:01 UTC on 7 November, on an idle box with 753 GB free, identical
+arguments to the failed attempt above. Every line is a stage that ran and exited, and the total is a
+wall clock rather than a sum of parts measured separately.
+
+| stage | s | the same stage in ASCII |
+|---|---|---|
+| cfMesh, 8 ranks, `writeFormat binary` | **618** | 799 |
+| `topoSet` | **392** | 575 |
+| `splitMeshRegions -cellZonesOnly` | **471** | 869 |
+| `regionDicts` | 0 | |
+| `checkMesh -parallel` fluid | **70** | |
+| `checkMesh -parallel` solid | **198** | |
+| `checkMesh -parallel` chip | **23** | |
+| | | |
+| **TOTAL** | **1,772 s = 29.5 min** | 20,834 s = 5.79 h as first run |
+
+**11.76x faster than the chain that produced the delivered mesh, and half the one-hour target
+rather than scraping under it.**
+
+### Why it beat its own 2,735 s projection
+
+The projection took measured ASCII timings for every stage and credited binary with 1.74x on reads
+alone, on one stage. That was too conservative, because every stage in this chain both reads and
+writes a 504,715,948 cell mesh:
+
+| stage | ASCII | binary | gain |
+|---|---|---|---|
+| mesh | 799 | 618 | 1.29x |
+| `topoSet` | 575 | 392 | 1.47x |
+| split | 869 | 471 | **1.84x** |
+| the three parallel checks | 492 | 291 | 1.69x |
+
+So the honest reading of the earlier note that "a sum of measured parts is not a measured whole" is
+that it was right to insist on the run, and wrong about the direction of the error. The whole came
+in 35% under the sum.
+
+### It is the same mesh, to 0.028%
+
+| | cbox2g | cbox2b | delta |
+|---|---|---|---|
+| total cells | 504,715,948 | 504,715,948 | **0** |
+| chip cells | 31,012,960 | 31,012,960 | **0** |
+| `solid_to_chip` = `chip_to_solid` | 424,080 | 424,080 | **0** |
+| `chip_to_air` | 2,331,836 | 2,331,836 | **0** |
+| fluid cells | 82,506,234 | 82,529,515 | -23,281 |
+| solid cells | 327,149,486 | 327,126,204 | +23,282 |
+| `fluid_to_solid` = `solid_to_fluid` | 25,684,168 | 25,685,941 | -1,773 |
+| `solid_to_air` | 1,904,632 | 1,904,636 | -4 |
+| coolant volume m3 | 5.51021e-05 | 5.51026e-05 | **-0.0009%** |
+
+The octree is bit-identical and so is everything about the chip. The zone assignment is not:
+**23,281 cells changed sides at the conjugate interface, 0.028% of the coolant.** Every one of them
+is a minimum-size cell, and the arithmetic closes: 23,281 x 2.08984e-14 = 4.87e-10 m3 against a
+measured coolant volume difference of 5e-10 m3. So the non-determinism lives entirely in the finest
+cells on the channel walls and moves nine ten-thousandths of a percent of the coolant.
+
+The cause is in the chain by design. `scotch` is a heuristic decomposition and is not reproducible
+run to run, and every `surfaceToCell` in the `topoSetDict` uses `useSurfaceOrientation`, which is the
+only parallel-safe form and classifies cells rank by rank. A cell lying exactly on the surface can
+be claimed differently depending on which rank ends up owning it. The chip is immune because it is a
+solid block away from any cut, which is why its contact with the plate is identical to the face.
+
+Worth knowing rather than worth fixing. Both meshes pass every check; conformality is exact in both,
+25,684,168 = 25,684,168 here and 25,685,941 = 25,685,941 there. But **a solver result on this mesh is
+not bit-reproducible across a rebuild**, and anyone chasing a 0.001% discrepancy between two runs
+should look here first.
+
+Quality, from the parallel checks, against cbox2b in brackets:
+
+| region | cells | non-ortho max | max skew | max aspect | regions | |
+|---|---|---|---|---|---|---|
+| fluid | 82,506,234 | 49.4575 (49.451) | 1.65759 (1.657) | 3.70715 (3.660) | 3 | Mesh OK |
+| solid | 327,149,486 | 50.3684 | 1.64662 | 3.69051 | 1 | Mesh OK |
+| chip | 31,012,960 | 0 | 1.4e-12 | 1 | 2 by design | Mesh OK |
+
+### The chain was missing a step, and finding it is the reason to run things end to end
+
+cbox2b's deliverable carries `port_a` at 2,092 faces and `port_b` at 2,048 as separate patches of
+type `patch`, so a solver can put an inlet on one and an outlet on the other. **`couple_box.sh`
+never made them.** A separate script, `/mnt/work/bin/port_split.sh`, did, with `topoSet` and
+`createPatch` on the reconstructed single-piece region, cutting at z = 60 mm, which sits between
+port_a at z 73.507 to 81.252 mm and port_b at z 39.357 to 47.279 mm with 13 mm of clearance.
+
+The optimised chain delivers decomposed and never reconstructs, so that script cannot run on its
+output. cbox2g therefore shipped **one `fluid_to_air` patch of 4,140 faces**, which is 2,092 + 2,048
+exactly, and **could not carry a flow boundary condition at all.** A mesh that cannot take an inlet
+is not a deliverable, however fast it was built.
+
+That the count is 4,140 in both runs, identically, is itself informative: the ports sit on the
+plate's outer surface, far from the channel walls where the 23,281-cell non-determinism lives.
+
+This is the thing a sum of stage timings could never have surfaced. The stages were all measured
+correctly and the chain was still incomplete.
 
 ## What actually ran, stage by stage
 
