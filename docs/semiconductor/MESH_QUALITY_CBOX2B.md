@@ -9,14 +9,19 @@ reports maxima, and a maximum over 25.7M faces cannot tell one bad face from one
 
 ## Verdict
 
+The layer row and the Nusselt figure in the resolution row were both corrected on 7 November after
+the first version of this table was published. Section 7 carries the correction and the three
+independent checks behind it. Nothing else in this table moved.
+
 | dimension | grade | the number behind it |
 |---|---|---|
-| conditioning | **great** | 0 faces in error on all 9 criteria, all three regions, before layers |
+| conditioning, **before** layers | **great** | 0 faces in error on all 9 criteria, all three regions |
+| conditioning, **after** layers | **good** | 1 of the 9 criteria fails: 23,814 faces in error, 16,363 of them interpolation weights under 0.02 across a 3.43 um sliver with a 5.87x volume jump. Max non-ortho 77.63, 1,488 faces over the 70 degree bar. `Mesh OK` still, which is the trap |
 | conjugate interface | **great** | 25,685,941 faces matched one to one, max centroid gap 0.00085 cells |
 | connectivity | **fine** | both ports in the same piece, proved; the 2 stray cells are 0.0000024% |
 | channel fidelity | **okayish** | median width +0.18% on CAD, but quantisation passes 10.1% too much flow and doubles the off-nominal share |
 | resolution for CHT | **okayish** | 5 cells across a channel; flow +8.0%, wall shear exact, Nusselt +0.54% developed. Local error up to 43-90% in the thermal entrance, see section 7 |
-| layers | **a defect, not a feature** | they moved Nusselt from +2.2% to **-4.0%** |
+| layers | **a trade, not a defect** | better on every local metric at every Re, 2.1% against 42.9% worst local at Re 10; worse on mean Nu below Re 152 by 0.1 to 0.8 points; cost 5,843 s. Corrected, see section 7 |
 | cell budget | **poor** | the solid is 74% of the mesh and carries almost no physics |
 
 ## 1. What the mesh is
@@ -249,11 +254,23 @@ number of 8.2353 to 0.002% at 200 cells, which is what licenses the rest of the 
 | grid across the channel | flow rate | wall shear | Nusselt |
 |---|---|---|---|
 | 5 uniform cells, as shipped | **+8.00%** | **exact** | **+0.54%** (was +2.18%, corrected in section 7) |
+
+**The 10, 20 and 200 cell Nusselt figures were stale until 7 November and are corrected above.**
+When section 7 replaced the 5-cell number I corrected only the row I was looking at, and left the
+rest of the column holding the retracted solver's output. An independent review caught it from the
+shape alone: +0.67% at 10 cells sitting above +0.54% at 5 is error RISING under refinement, which
+a second-order scheme cannot do. Re-running `solvers/verify_discretisation.py` gives +0.5353%,
++0.1661% and +0.0435% at 5, 10 and 20, falling as they must, with observed order 2.0001 by N=1280.
+The reviewer read the same inconsistency as evidence against the +0.54%, which is the wrong
+direction: err x N^2 is 0.13383 at N=5 and climbs to 0.17647 = 3/17 asymptotically, so applying
+the limiting constant at N=5 under-predicts the error by 6.25x. The 5-cell figure stands.
+
 | plus layers as built, 16.7 um | +5.28% | exact | **-1.41%** (was -4.02%) |
 | plus layers with no sliver, 3 graded cells | +5.18% | exact | -0.73% (was -4.41%) |
-| 10 uniform cells | +2.00% | exact | +0.67% |
-| 20 uniform cells | +0.50% | exact | +0.17% |
-| 200 uniform cells, reference | +0.005% | exact | +0.002% |
+| 10 uniform cells | +2.00% | exact | **+0.17%** (was +0.67%) |
+| 20 uniform cells | +0.50% | exact | **+0.04%** (was +0.17%) |
+| 200 uniform cells | +0.005% | exact | **+0.00005%** (was +0.002%) |
+| 400 uniform cells, the reference | | | 0, by definition |
 
 Three results, in order of how much they change what we do.
 

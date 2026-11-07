@@ -1115,7 +1115,7 @@ The sweep's conclusion that `addLayers` works post-split is confirmed end to end
 | wall clock | 52,021 s = 14.4 h, one core | **4,714 s = 1.31 h** |
 | passes | 34 | 10 |
 | coverage | 89.77% | **90.71%** |
-| illegal faces at exit | 4,022 | 23,833 of 446,465,029 = 0.053 ppm |
+| illegal faces at exit | 4,022 | 23,833 of 446,465,029 = **53.4 ppm** (published as 0.053 ppm, wrong by 1000x; 927 ppm of the layer patch) |
 
 11.0x faster with slightly better coverage, from cutting `nLayerIter` 50 to 10 and `nRelaxedIter` 20
 to 3. Pass 1 of the parallel run reproduces the serial run to within 9 faces extruded and 4 illegal

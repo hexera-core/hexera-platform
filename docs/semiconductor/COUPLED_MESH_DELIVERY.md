@@ -141,8 +141,13 @@ unpacking 38 GB.
 than the machine. OpenFOAM in that image is built with **32-bit labels** (`Arch: label=32`), and one
 more refinement level overflows them in two different places: in parallel the octree's load balancer
 computes a negative destination rank, and in serial the octree's node addressing asks for a negative
-allocation. No rank count, buffer size, domain box or serial run gets past it. The fix is a
-`WM_LABEL_SIZE=64` image, which is a rebuild.
+allocation. No rank count, buffer size, domain box or serial run gets past it.
+
+**The `WM_LABEL_SIZE=64` fix this paragraph used to recommend is refuted.** Our own
+`BUFFER_PROBE.txt` of 5 November, recorded at `DEVLOG.md:4649`, shows the parallel failure is
+`MPI_ERR_BUFFER`, and `MPI_Buffer_attach` takes an `int` that `WM_LABEL_SIZE` cannot widen, so a
+64-bit rebuild is a regression rather than an unlock. The floor is real; the stated cause and the
+stated remedy were both wrong and no remedy is currently known.
 
 It is not under-resolving anything on this part. The narrowest facing-wall gap anywhere on the
 coolant surface is **99.03 um**, which gets 4.5 cells, and the coolant comes out as one connected

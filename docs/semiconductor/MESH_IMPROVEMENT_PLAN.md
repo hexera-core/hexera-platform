@@ -56,7 +56,9 @@ was never in doubt because it is a momentum result.
 whole does not improve until that fraction does, however good the other 90.71% is.
 
 If layers are kept, keep them parallel: 16 ranks ran 11.0x faster than serial for 0.94 points more
-coverage, and the illegal face count rose to 23,833 of 446,465,029, which is 0.053 ppm.
+coverage, and the illegal face count rose to 23,833 of 446,465,029, which is **53.4 ppm**
+(published as 0.053 ppm, wrong by a factor of 1000). Against the 25,685,941-face layer patch
+itself it is 927 ppm, which is the fraction that matters, since that is where the layers are.
 
 ## 2. Deliver the mesh decomposed
 
