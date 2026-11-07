@@ -26,7 +26,7 @@ CLOSURE = {
     # that cannot produce the approved boundaries stopped before the mesher ran
     # 16th note: a case the size brake stopped, which no re-plan can make smaller, is meshed with
     # the brake released (RUN-8) - said once, instead of the run ending with no mesh
-    "engines/snappy/drivers.py": {"ameshing": 1, "aerror": 4, "anote": 16, "ameshed": 2, "aplan": 2,
+    "engines/snappy/drivers.py": {"ameshing": 1, "aerror": 4, "anote": 17, "ameshed": 2, "aplan": 2,
                                   "atool_call": 1, "atool_result": 1},
     "engines/snappy/planner.py": {"areasoning": 2},
     "contracts/rationale.py": {"arationale": 1},
