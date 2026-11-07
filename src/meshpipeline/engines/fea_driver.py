@@ -327,9 +327,9 @@ def mesh_as_of(state) -> str:
 
 
 async def shell_pass(ws: Path, state, *, job_id: str, run=None, target: dict | None = None) -> dict | None:
-    """SHSTAGE-6: when the stage settled Mesh as: Shell, the staged solid's shell mesh and its solver files
-    (engines/shell_run, in a process of its own), beside the solid deck. The solid path is unchanged: a shell
-    that cannot be made is said, and the solid mesh is still delivered. None when Solid was settled.
+    """SHSTAGE-6: when the user's words asked for a shell, the staged solid's shell mesh and its solver files
+    (engines/shell_run, in a process of its own) - delivered as THE result by drive() (SHSTAGE-7, no solid beside
+    it); a shell that cannot be made is said, and a solid mesh is delivered instead. None when Solid was settled.
     MIXED-5: when Auto settled Mixed, the same in engines/mixed_run (thin walls shell, thick regions solid, joined).
     `target`: the element count the user asked for (element_target) - the shell's sizes follow it as the solid's do
     (SHMESH-23)."""
@@ -1920,9 +1920,26 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # PLAN-fea-27: an element count the user named, as the AI read it from their notes (AI-fea-4)
     target = element_target(state, ai)
     # SHSTAGE-6: MESH AS: SHELL - the shell mesh and its solver files first, from the staged solid as read (the
-    # assembly staging above never rewrites it); the solid deck is made as always beside it. SHMESH-23: once the
-    # user's element count is read, so the shell's sizes follow it as the solid's do.
-    await shell_pass(ws, state, job_id=job_id, run=run, target=target)
+    # assembly staging above never rewrites it). SHMESH-23: once the user's element count is read, so the shell's
+    # sizes follow it as the solid's do.
+    shelled = await shell_pass(ws, state, job_id=job_id, run=run, target=target)
+    if mesh_as_of(state) == "shell" and shelled and shelled.get("made"):
+        # SHSTAGE-7: THE SHELL IS THE RESULT - no solid tet mesh beside it (one element through a 1 mm wall is poor
+        # and reads as the shell extruded); a shell that could not be made falls through to the solid, said
+        from meshpipeline.engines import shell_delivery as SD
+        from meshpipeline.engines.shell_plan import count_words
+
+        if await asyncio.to_thread(SD.deliver, ws, shelled, target=target):
+            counted = count_words(shelled.get("target"))
+            if counted:
+                from meshpipeline.contracts.user_notes import record_remark
+                record_remark(ws, counted, by="fea_target")
+            _cite(job_id, [{"stage": SHELL_GATE, "decided": "shell delivered", "value": shelled.get("elements"),
+                            "rule": "SHSTAGE-7", "inputs": {"solid_made": False},
+                            "words": "The shell is the delivered mesh: no solid mesh is made beside it."}])
+            await run.fence("deliver builder outcome")
+            outcome = run.outcome(produced_deliverable=True, exhausted=False, failure_marker="")
+            return outcome.produced_deliverable, (outcome.terminal_value or BUILD_FAILED), outcome
     # AI-fea-9 / PLAN-fea-29: the element sizes the user asked for, part by part, tied to the parts by the vision
     # model from the parts' facts and pictures, checked by the rules; nothing applied when it cannot be read
     part_sizes = await PS.decide(ws, record, surface, state or {}, job_id=job_id, run=run, wait_s=ai_wait_s(run))

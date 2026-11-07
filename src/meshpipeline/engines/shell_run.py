@@ -58,7 +58,8 @@ def no_shell_why(record: dict) -> str:
 def words(rec: dict) -> str:
     """What the shell run made, in plain words, for the decision record and the result."""
     if not rec.get("made"):
-        return f"No shell mesh was made: {rec.get('why') or 'it could not be made'}. The solid mesh is delivered."
+        return (f"No shell mesh was made: {rec.get('why') or 'it could not be made'}. A solid mesh is delivered "
+                "instead.")
     n, q, t = int(rec.get("elements") or 0), int(rec.get("quads") or 0), int(rec.get("trias") or 0)
     said = f"Shell mesh: {n:,} elements ({q:,} quads, {t:,} triangles) on the mid-surface"
     walls = rec.get("walls_mm") or []
@@ -75,6 +76,37 @@ def words(rec: dict) -> str:
     if counted:
         said += " " + counted
     return said
+
+
+#: the shell mesh as the result viewer reads it (gmsh MSH 2.2, metres, one physical group per mid-face)
+MSH = "shell.msh"
+
+
+def write_msh(path: Path, mesh) -> list[dict]:
+    """The shell mesh as a gmsh MSH 2.2 ASCII file in metres: 4-node quads and 3-node triangles, each mid-face its own
+    surface entity and physical group (k, named Mid_k), so the viewer draws one part per mid-face. Returns the faces:
+    [{"tag", "name", "wall_mm", "elements"}] in tag order."""
+    import numpy as np
+
+    mids = sorted(set(mesh.mid), key=lambda m: (len(m), m))
+    tag_of = {m: k for k, m in enumerate(mids, start=1)}
+    walls: dict[str, list[float]] = {}
+    lines = ["$MeshFormat", "2.2 0 8", "$EndMeshFormat", "$PhysicalNames", str(len(mids))]
+    lines += [f'2 {tag_of[m]} "{m}"' for m in mids]
+    lines += ["$EndPhysicalNames", "$Nodes", str(len(mesh.xyz))]
+    xyz = np.asarray(mesh.xyz, dtype=float) / 1000.0
+    lines += [f"{i} {x:.9g} {y:.9g} {z:.9g}" for i, (x, y, z) in enumerate(xyz, start=1)]
+    lines += ["$EndNodes", "$Elements", str(mesh.n_elements)]
+    for e, conn in enumerate(mesh.elements()):
+        m = mesh.mid[e]
+        k = tag_of[m]
+        walls.setdefault(m, []).append(float(mesh.wall[e]))
+        kind = 3 if len(conn) == 4 else 2
+        lines.append(f"{e + 1} {kind} 2 {k} {k} " + " ".join(str(int(n) + 1) for n in conn))
+    lines.append("$EndElements")
+    Path(path).write_text("\n".join(lines) + "\n")
+    return [{"tag": tag_of[m], "name": m, "elements": len(walls.get(m) or []),
+             "wall_mm": round(float(np.median(walls[m])), 4) if walls.get(m) else None} for m in mids]
 
 
 def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: str = "",
@@ -104,6 +136,11 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
             mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target)
             rec["mesh_s"] = round(time.time() - t1, 1)
             exports = sw.write_all(ws, mesh, units="m", source=source)
+            # THE SHELL IS THE RESULT (engines/shell_delivery): the viewer's picture of it, one group per mid-face
+            faces = write_msh(ws / MSH, mesh)
+            xyz_m = mesh.xyz / 1000.0
+            rec.update(nodes=int(len(mesh.xyz)), faces=faces,
+                       bounds_m=[float(v) for v in (*xyz_m.min(axis=0), *xyz_m.max(axis=0))] if len(xyz_m) else None)
             q = applied.get("quality") if isinstance(applied, dict) else None
             (ws / "shell_quality.json").write_text(json.dumps(applied, indent=1, sort_keys=True, default=float))
             rec.update(made=all((ws / f).exists() and (ws / f).stat().st_size > 0 for f in FILES),
@@ -172,4 +209,4 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["FILES", "RECORD", "main", "read", "run", "words"]
+__all__ = ["FILES", "MSH", "RECORD", "main", "read", "run", "words", "write_msh"]

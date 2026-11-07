@@ -30,6 +30,11 @@ def quality_shortfalls(q: dict) -> list[dict]:
     floor = CFD_SICN_FLOOR if cfd else SICN_FLOOR
     out = []
     sicn = q.get("min_sicn")
+    if (q.get("fea") or {}).get("shell"):
+        # A DELIVERED SHELL (engines/shell_delivery): plates have no SICN; it fails only when an element is folded
+        bad = int(q.get("fea_inverted") or 0)
+        return [{"key": "fea_inverted", "label": "folded or flat shell elements", "measured": bad, "op": "==",
+                 "threshold": 0}] if bad else []
     if (q.get("fea") or {}).get("plan") and sicn is not None:
         # AN FEA PLAN'S MESH fails only when it is not valid (a degenerate element); under the 0.1
         # floor is a note on the delivery (Areen, 21 Oct)

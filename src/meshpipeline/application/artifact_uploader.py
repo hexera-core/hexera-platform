@@ -321,7 +321,12 @@ def fea_export_plan(job_id: uuid.UUID, workspace: Path) -> list[_Planned]:
     from meshpipeline.engines.bucket_files import kept
     held = kept(workspace)
     out = []
+    from meshpipeline.engines.shell_delivery import is_shell_workspace
+    shell = is_shell_workspace(workspace)
     for logical, file_name, _label in EXPORT_ARTIFACTS:
+        if shell and file_name.startswith("mesh."):
+            # SHSTAGE-7: a delivered shell's mesh.inp is its own shell.inp, the delivery's marker - offered once
+            continue
         src = workspace / file_name
         if src.exists() and src.stat().st_size > 0:
             out.append(_Planned(ArtifactType.mesh, logical, export_key(str(job_id), file_name),

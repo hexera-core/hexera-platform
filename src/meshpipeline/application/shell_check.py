@@ -422,8 +422,8 @@ def settle(view: dict | None) -> dict:
 
 
 #: The declaration's heads, one per settled choice (declaration_words); the request card reads them back
-SHELL_HEAD = ("Meshed as: a shell - the mid-surface with plate elements, in Nastran, CalculiX, Abaqus and Ansys files. "
-              "The solid mesh is made beside it, as before.")
+SHELL_HEAD = ("Meshed as: a shell - the mid-surface with plate elements, each with its wall thickness, in Nastran, "
+              "CalculiX, Abaqus and Ansys files.")
 MIXED_HEAD = ("Meshed as: shell where thin, solid where thick - plate elements on the thin walls joined to tetrahedra in "
               "the thick regions, in Nastran, CalculiX, Abaqus and Ansys files. The solid mesh is made beside it, as before.")
 #: The request card's "Mesh as" row for a settled shell or shell + solid (a solid needs no row: it is the default)
@@ -458,8 +458,8 @@ def card_mesh_as(declaration: str) -> str:
 
 
 #: The request card's "Engine settings" for a shell run (engines/shell_writers: CQUAD4 / S4 / SHELL181 plates, linear,
-#: a few 3-node triangles where quads do not fit) - the element order the FEA path sets is the solid mesh's, made
-#: beside it (fea_driver.shell_pass), and in a shell + solid run the thick regions' too (engines/mixed_mesh: C3D10)
+#: a few 3-node triangles where quads do not fit) - no solid is made beside a shell (SHSTAGE-7), so an element order
+#: is said only for a shell + solid run's thick regions (engines/mixed_mesh: C3D10)
 SHELL_ELEMENTS = "Shell: linear plates (4-node quads, a few 3-node triangles)"
 MIXED_ELEMENTS = "Thin walls: linear plates (4-node quads, a few 3-node triangles)"
 
@@ -474,9 +474,8 @@ def card_engine_settings(mesh_as_label: str, params: dict | None) -> str:
     p = dict(params or {})
     order = p.pop("element_order", None)
     parts = [SHELL_ELEMENTS if kind == pm.MESH_SHELL else MIXED_ELEMENTS]
-    if order not in (None, ""):
-        parts.append(f"{'the solid mesh made beside it' if kind == pm.MESH_SHELL else 'thick regions and the solid mesh made beside it'}"
-                     f": element order {order}")
+    if order not in (None, "") and kind == pm.MESH_MIXED:
+        parts.append(f"thick regions and the solid mesh made beside it: element order {order}")
     parts += [f"{str(k).replace('_', ' ')}: {v}" for k, v in p.items()]
     return "; ".join(parts)
 

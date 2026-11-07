@@ -84,6 +84,9 @@ def viewer_face_names(workspace) -> dict[int, str] | None:
     other side is inside the mesh); None for a single part."""
     q = _read(Path(workspace) / "quality.json")
     tags = ((q.get("fea") or {}).get("assembly") or {}).get("face_tags") or {}
+    if not tags and (q.get("fea") or {}).get("shell"):
+        # a delivered shell: its mid-faces by name (Mid_k), as shell.msh groups them (engines/shell_run.write_msh)
+        tags = (q.get("fea") or {}).get("face_tags") or {}
     if not tags:
         return None
     out: dict[int, str] = {}
@@ -173,6 +176,10 @@ def results(workspace) -> dict | None:
     q = _read(ws / "quality.json")
     if not plan or not (q.get("fea") or {}).get("plan"):
         return None
+    if (q.get("fea") or {}).get("shell"):
+        # SHSTAGE-7: the delivered shell's own block (its count, quality, the user's count, one plain line)
+        from meshpipeline.engines.shell_delivery import results as shell_results
+        return shell_results(ws, q, plan)
     fea = q.get("fea") or {}
     rules = fea.get("rules") or {}
     cells = int(q.get("cells") or 0)

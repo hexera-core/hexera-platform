@@ -309,14 +309,14 @@ def test_the_request_card_says_a_shell_or_shell_and_solid(settled, row):
 
 
 @pytest.mark.parametrize("settled,words", [
-    ("shell", "Shell: linear plates (4-node quads, a few 3-node triangles); the solid mesh made beside it: "
-              "element order 2"),
+    ("shell", "Shell: linear plates (4-node quads, a few 3-node triangles)"),
     ("mixed", "Thin walls: linear plates (4-node quads, a few 3-node triangles); thick regions and the solid mesh "
               "made beside it: element order 2"),
     ("solid", None)])
 def test_the_request_cards_engine_settings_are_true_to_a_shell(settled, words):
     """A shell run's plates are linear (CQUAD4 / S4 / SHELL181): the card never says "element order: 2" as if they
-    were quadratic - that order is the solid mesh's, made beside them. A solid run keeps the settings as they are."""
+    were quadratic - and no solid is made beside a shell (SHSTAGE-7), so no order is said for it. A solid run keeps
+    the settings as they are."""
     from types import SimpleNamespace
 
     from meshpipeline.application.geometry_confirmation import CONFIRMED_MARK
@@ -331,8 +331,8 @@ def test_the_request_cards_engine_settings_are_true_to_a_shell(settled, words):
     brief = build_brief(session)
     assert brief.get("engine_params_label") == words
     assert brief["engine_params"] == {"element_order": "2"}       # the settings themselves are unchanged
-    assert sc.card_engine_settings(sc.CARD_LABELS["shell"], {"element_order": 2, "optimize": "netgen"}).endswith(
-        "element order 2; optimize: netgen")
+    assert sc.card_engine_settings(sc.CARD_LABELS["shell"], {"element_order": 2, "optimize": "netgen"}) == (
+        f"{sc.SHELL_ELEMENTS}; optimize: netgen")
     assert sc.card_engine_settings(sc.CARD_LABELS["shell"], {}) == sc.SHELL_ELEMENTS
 
 

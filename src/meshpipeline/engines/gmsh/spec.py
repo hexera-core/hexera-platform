@@ -312,8 +312,9 @@ SPEC = EngineSpec(
                 # an FEA mesh's Ansys MAPDL archive (engines/fea_writers.py; the .bdf above is its
                 # Nastran file on that path)
                 M("mesh.cdb", required=False),
-                # SHSTAGE-6: a part settled as a shell on the stage - its shell files and how they were made
-                # (engines/shell_run); written only on that path
+                # SHSTAGE-6/7: a part the user asked to mesh as a shell - its shell files and how they were made
+                # (engines/shell_run); written only on that path, where the shell is the delivered mesh (mesh.inp is
+                # then its shell.inp and mesh.msh its plates: engines/shell_delivery)
                 M("shell.bdf", required=False),
                 M("shell.inp", required=False),
                 M("shell_abaqus.inp", required=False),

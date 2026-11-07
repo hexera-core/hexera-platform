@@ -218,6 +218,10 @@ def fea_limits(quality: Mapping) -> list[dict]:
     fea = quality.get("fea") if isinstance(quality.get("fea"), Mapping) else {}
     if not (fea or {}).get("plan"):
         return []
+    if (fea or {}).get("shell"):
+        # A DELIVERED SHELL: the shell's own rows (engines/shell_delivery), never a solid's walls or SICN
+        from meshpipeline.engines.shell_delivery import limits as shell_limits
+        return shell_limits(quality)
     from meshpipeline.engines.fea_quality import limits_for
     order = quality.get("element_order")
     fea_rows = limits_for(int(order) if isinstance(order, (int, float)) and not isinstance(order, bool) else 1)

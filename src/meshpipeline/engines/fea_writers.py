@@ -42,8 +42,8 @@ NOT_TESTED = "not yet tested in the real solver"
 #: The downloads an FEA mesh offers, one per solver file: (logical key, file, label). The labels say
 #: which solver has really run the file (design 13: no Abaqus, Nastran or Ansys licence).
 EXPORT_ARTIFACTS: tuple[tuple[str, str, str], ...] = (
-    # SHSTAGE-6: a part settled as a SHELL on the stage also gets its shell files, Nastran first (FEMAP) - offered
-    # only when the run wrote them (engines/shell_run)
+    # SHSTAGE-6/7: a part the user asked to mesh as a SHELL gets its shell files, Nastran first (FEMAP) - offered only
+    # when the run wrote them (engines/shell_run); the solid files below are then not offered (engines/shell_delivery)
     ("export_shell_nastran", "shell.bdf",
      "Shell mesh: Nastran bulk data (.bdf), CQUAD4 / CTRIA3 with a PSHELL per wall - not yet tested in the real solver"),
     ("export_shell_calculix", "shell.inp", "Shell mesh: CalculiX deck (.inp), S4 / S3 - solved in CalculiX"),
