@@ -267,3 +267,24 @@ def test_the_confirmed_choice_is_read_into_the_run(store):
     store.objects[f"sessions/{SID}/geometry_check/confirmed.json"] = json.dumps({"fea_mesh_as": "beam"}).encode()
     assert sc.confirmed_mesh_as(SID) == "solid"
     assert sc.confirmed_mesh_as("") == "solid"
+
+
+@pytest.mark.parametrize("settled,row", [("shell", "Shell (mid-surface, plate elements)"),
+                                         ("mixed", "Shell + solid (thin walls shell, thick regions solid)"),
+                                         ("solid", None)])
+def test_the_request_card_says_a_shell_or_shell_and_solid(settled, row):
+    """SHSTAGE-5 on the request card: the settled choice read back from the declaration's own head; a solid (the
+    default) adds no row."""
+    from types import SimpleNamespace
+
+    from meshpipeline.application.geometry_confirmation import CONFIRMED_MARK
+    from meshpipeline.application.intake_brief import build_brief
+
+    said = sc.declaration_words({"mesh_as": settled, "why": "Because."})
+    session = SimpleNamespace(request_txt="Modal analysis of this hopper.", purpose="structural", mesh_engine="gmsh",
+                              messages=[{"role": "user", "content": "Modal analysis of this hopper."},
+                                        {"role": "assistant", "content": f"{CONFIRMED_MARK} a solid part. {said}"}],
+                              user_notes=[], intake_submitted=False)
+    brief = build_brief(session)
+    assert brief.get("mesh_as") == row
+    assert sc.card_mesh_as("") == "" and sc.card_mesh_as("Meshed as: a solid.") == ""

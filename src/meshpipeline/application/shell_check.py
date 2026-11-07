@@ -447,22 +447,39 @@ def settle(view: dict | None, answer: str | None) -> dict:
     return {"mesh_as": pm.MESH_SOLID, "picked": pm.MESH_AUTO, "by": "auto", "why": EARLY_WHY}
 
 
+#: The declaration's heads, one per settled choice (declaration_words); the request card reads them back
+SHELL_HEAD = ("Meshed as: a shell - the mid-surface with plate elements, in Nastran, CalculiX, Abaqus and Ansys files. "
+              "The solid mesh is made beside it, as before.")
+MIXED_HEAD = ("Meshed as: shell where thin, solid where thick - plate elements on the thin walls joined to tetrahedra in "
+              "the thick regions, in Nastran, CalculiX, Abaqus and Ansys files. The solid mesh is made beside it, as before.")
+#: The request card's "Mesh as" row for a settled shell or shell + solid (a solid needs no row: it is the default)
+CARD_LABELS = {pm.MESH_SHELL: "Shell (mid-surface, plate elements)",
+               pm.MESH_MIXED: "Shell + solid (thin walls shell, thick regions solid)"}
+
+
 def declaration_words(settled: dict | None) -> str:
     """The declaration's line for the settled choice: "Meshed as: a shell (the mid-surface ...). <why>"."""
     s = settled or {}
     if s.get("mesh_as") == pm.MESH_SHELL:
-        head = ("Meshed as: a shell - the mid-surface with plate elements, in Nastran, CalculiX, Abaqus and Ansys "
-                "files. The solid mesh is made beside it, as before.")
+        head = SHELL_HEAD
     elif s.get("mesh_as") == pm.MESH_MIXED:
-        head = ("Meshed as: shell where thin, solid where thick - plate elements on the thin walls joined to "
-                "tetrahedra in the thick regions, in Nastran, CalculiX, Abaqus and Ansys files. The solid mesh is made "
-                "beside it, as before.")
+        head = MIXED_HEAD
     elif s.get("mesh_as") == pm.MESH_SOLID:
         head = "Meshed as: a solid."
     else:
         return ""
     why = str(s.get("why") or "").strip()
     return f"{head} {why}".strip()
+
+
+def card_mesh_as(declaration: str) -> str:
+    """The request card's "Mesh as" row, read from the conversation's FEA declaration (its head, written by
+    declaration_words at Proceed): a label for a shell or shell + solid, "" for a solid or none. Pure."""
+    text = str(declaration or "")
+    for kind, head in ((pm.MESH_MIXED, MIXED_HEAD), (pm.MESH_SHELL, SHELL_HEAD)):
+        if head in text:
+            return CARD_LABELS[kind]
+    return ""
 
 
 def confirmed_mesh_as(session_id: str) -> str:
@@ -480,6 +497,6 @@ def confirmed_mesh_as(session_id: str) -> str:
     return got if got in (pm.MESH_SHELL, pm.MESH_MIXED) else pm.MESH_SOLID
 
 
-__all__ = ["AUTO_SHELL_SHARE", "MEASURING", "OPTIONS", "QUESTION", "READY", "SHELL_CHECK_LIMIT_S", "UNAVAILABLE",
+__all__ = ["AUTO_SHELL_SHARE", "CARD_LABELS", "MEASURING", "card_mesh_as", "OPTIONS", "QUESTION", "READY", "SHELL_CHECK_LIMIT_S", "UNAVAILABLE",
            "confirmed_mesh_as", "declaration_words", "is_cad", "not_shelled", "read_status", "recommendation",
            "run_shell_check", "settle", "shell_view", "start", "state_of", "summarise"]

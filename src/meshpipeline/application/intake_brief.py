@@ -221,6 +221,9 @@ def build_brief(session: Any, *, part_matches: dict | None = None) -> dict[str, 
     if _is_fea(brief.get("purpose")):
         # an FEA mesh has no detail level (one rules-based plan, PLAN-fea-14): no row for it
         brief["mesh_fidelity"] = None
+        # SHSTAGE-5: a part settled as a shell, or as shell + solid, says so on the card (a solid is the default)
+        from meshpipeline.application.shell_check import card_mesh_as
+        brief["mesh_as"] = _clean(card_mesh_as(_fea_declaration(getattr(session, "messages", None) or [])))
     # absent stays absent: a field Intake never settled is not a blank row
     brief = {k: v for k, v in brief.items() if v is not None}
     brief["submitted"] = bool(getattr(session, "intake_submitted", False))
@@ -239,6 +242,15 @@ def build_brief(session: Any, *, part_matches: dict | None = None) -> dict[str, 
     brief["checks"] = build_checks(brief)
     _add_display_labels(brief)
     return brief
+
+
+def _fea_declaration(messages: list) -> str:
+    """The conversation's latest geometry declaration, "" when there is none."""
+    from meshpipeline.application.geometry_confirmation import _is_declaration
+    for m in reversed(list(messages)):
+        if isinstance(m, dict) and _is_declaration(m):
+            return str(m.get("content") or "")
+    return ""
 
 
 def _request_notes(part_matches: dict, notes: list[dict], request_txt: str) -> list[dict]:

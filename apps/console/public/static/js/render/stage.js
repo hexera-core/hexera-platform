@@ -131,7 +131,7 @@ export const Stage = {
     // file's own numbers, then only what the sheet does not already say
     const thermal=b.check_mode==='thermal'&&b.job_sheet;
     const ROWS=thermal?[['engine','Engine'],['mesh_fidelity','Detail level'],['label','Case']]
-      :[['purpose','Purpose'],['engine','Engine'],['input_kind','Input'],
+      :[['purpose','Purpose'],['engine','Engine'],['mesh_as','Mesh as'],['input_kind','Input'],
         ['dimensionality','Dimensions'],['mesh_fidelity','Detail level'],
         ['label','Case']];
     // Prefer the server's display label. A field may be label-ONLY: the fidelity tier always

@@ -417,10 +417,11 @@ export function followClean(root, f) {
  *  walls sand. Stops are [r, g, b] in 0..1. */
 export const SHELL_RAMP = [[0.15, 0.24, 0.42], [0.30, 0.36, 0.45], [0.48, 0.48, 0.47], [0.68, 0.62, 0.45], [0.86, 0.79, 0.47]];
 
-/** The colour of a wall `t` between `lo` and `hi` (mm), on SHELL_RAMP. */
+/** The colour of a wall `t` between `lo` and `hi` (mm), on SHELL_RAMP. A part of one wall takes the ramp's
+ *  light end: the ramp's middle is the part's own grey, and its mid-surface could not be told from it. */
 export function wallColour(t, lo, hi) {
   const span = Number(hi) - Number(lo);
-  const u = !(span > 1e-9) ? 0.5 : Math.min(1, Math.max(0, (Number(t) - Number(lo)) / span));
+  const u = !(span > 1e-9) ? 1 : Math.min(1, Math.max(0, (Number(t) - Number(lo)) / span));
   const x = u * (SHELL_RAMP.length - 1), i = Math.min(SHELL_RAMP.length - 2, Math.floor(x)), f = x - i;
   return SHELL_RAMP[i].map((a, k) => a + (SHELL_RAMP[i + 1][k] - a) * f);
 }
