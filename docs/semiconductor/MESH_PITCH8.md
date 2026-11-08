@@ -20,7 +20,7 @@ is read off a run that finished. Where a figure corrects something published ear
 | delivered cells | 440,668,679 | **270,424,307** |
 | layered coolant | 143,236,900 | **102,536,327** |
 | **layer coverage** | 90.7146% | **95.5530%** |
-| **faces in error after layers** | 23,833 | **471** |
+| **faces in error after layers** | 23,833 | **2,936** |
 | end to end, no layers | 1,852 s binary / 10,796 s as run | **1,174 s** |
 | **end to end WITH layers** | 10,796 + 10,038 = 5.79 h | **3,925 s = 65.4 min** |
 
@@ -151,23 +151,53 @@ Final quality on the layered coolant, nine criteria:
 | face twist < 0.02 | 352 | 55 |
 | volume ratio < 0.01 | 1,044 | 5 |
 | tet quality < 1e-30 | 3 | 6 |
-| determinant < 0.001 | 1,141 | 0 |
-| non-orthogonality > 65 | 4,914 | 0 |
-| **total faces in error** | **23,833** | **471** |
+| determinant < 0.001 | 1,141 | **117** |
+| non-orthogonality > 65 | 4,914 | **2,348** |
+| **total faces in error** | **23,833** | **2,936** |
 | max aspect ratio | 345.071 | **322.161** |
 | max skewness | 3.475 | **3.256** |
 | max non-orthogonality | 77.6263 | **76.6676** |
 
-**50x fewer faces in error**, and the interpolation-weight failure that was 69% of the old defect
-fell by 40x. It still reports `Failed 1 mesh checks`, so this is not a clean sheet; 471 faces of
-102,536,327 cells is 4.6 per million cells.
+**8.12x fewer faces in error**, and the interpolation-weight failure that was 69% of the old
+defect fell by 40x. It still reports `Failed 1 mesh checks`, so this is not a clean sheet;
+2,936 faces of 102,536,327 cells is 28.6 per million.
+
+> **Corrected 2026-11-08.** This table said 471, with zeroes against determinant and
+> non-orthogonality, and claimed 50x. None of those is in the log. `bl8/check.log` ends
+> `<<Writing 2936 faces in error to set meshQualityFaces`, and its own breakdown sums to exactly
+> that: 2,348 + 405 + 117 + 55 + 6 + 5. The only "471" anywhere in the bl8 logs is inside
+> `snappy.log`'s `Detected 604471 illegal faces`, which is a different stage counting a different
+> thing - so the published figure was the tail of a six-digit number. The improvement over bl3p
+> is real and is 8.12x, not 50x.
 
 ## 5. What pitch 8 costs, which is not only the discretisation term
 
-**The coolant volume is 5.28057e-05 m3 against cbox2b's 5.51021e-05, which is 4.17% smaller.** The
-coarser lattice fits less fluid into the narrow passages. This is a geometric fidelity loss, not a
-discretisation error, and it does not divide out. It is the strongest argument for pitch 10 and it
+**The coolant volume is 52,805.7576 mm3 against the CAD's 53,692.2192, which is 1.651%
+small.** That is the fidelity figure, and it is a mean inward wall offset of 14.67 um - 0.583 of
+a background cell - spread over the 60,410.4513 mm2 of CAD surface. It does not divide out and it
 should be stated to the customer rather than buried next to the speed figure.
+
+> **Corrected 2026-11-08, and the correction reverses the conclusion.** This paragraph said
+> "4.17% smaller" and called it the strongest argument for pitch 10. The 4.17% is the ratio
+> between two MESHES, not a comparison with the CAD, and against the CAD it runs the other way:
+>
+> | | volume | vs CAD |
+> |---|---|---|
+> | CAD, `clean_stl/cb_fluid.stl`, 52,466 tris | 53,692.2192 mm3 | - |
+> | **cbox8** | 52,805.7576 mm3 | **-1.651%** |
+> | cbox2b | 55,102.6013 mm3 | **+2.627%** |
+> | cbox2 | 53,419.4018 mm3 | -0.508% |
+>
+> cbox8 is 1.59x CLOSER to the CAD than the mesh it replaced. Computed by the divergence theorem
+> over each closed boundary, with the method checked against checkMesh's own cellVolume sum for
+> cbox8, which it reproduces to 0.00000%.
+>
+> Two further things this kills. "The coarser lattice fits less fluid into the narrow passages" is
+> false: both lattices produce the IDENTICAL 100.631 um channel by construction, since
+> 4 x 25.1578 = 5 x 20.12625, so the channels cannot carry a volume difference between them at
+> all - the deficit is in the plenums and headers. And net coolant volume does not rank meshes:
+> cbox2, which puts NOTHING at the nominal channel width, has the smallest volume error of the
+> three at -0.508%.
 
 ## 6. Where it is
 
@@ -239,4 +269,11 @@ moved this mesh from 440,668,679 cells to 270,424,307.
   Graetz work in `MESH_QUALITY_CBOX2B.md` section 7 was done at 5.
 - The 4.17% coolant volume loss is measured and unexplained in detail: it is known to be the
   coarser lattice in the narrow passages, but not apportioned between the channels and the plenums.
-- `Failed 1 mesh checks` on the layered coolant. 471 faces, cause not localised.
+- `Failed 1 mesh checks` on the layered coolant. **2,936 faces** of 102,536,327 cells, 28.6 per
+  million. No longer un-localised: 2,348 of them - **80%** - are the single criterion
+  `non-orthogonality > 65`, against a mesh-wide maximum of 76.6676 and an average of 7.85233, and
+  a further 405 are interpolation weights below 0.02. Both are what a layer stack extruded off a
+  staircased interface produces, so the shape of the failure is understood even though the
+  individual faces have not been located in space. checkMesh wrote them to the set
+  `meshQualityFaces`, and the 2,096 severely non-orthogonal faces to `nonOrthoFaces`, so locating
+  them is a read of those sets rather than new work.
