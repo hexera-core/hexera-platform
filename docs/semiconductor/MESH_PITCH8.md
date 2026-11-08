@@ -176,8 +176,13 @@ section of `MESH_TIME_TO_ONE_HOUR.md`.
 
 ## 7. What is still open
 
-- **No solver has run on this mesh**, as on every mesh in this record. The 65 minutes produce a
-  mesh, not a validated answer.
+- **Running the solve is not ours and never was.** We deliver a mesh; the customer solves on it.
+  So "no solver has been run here" is a statement of scope, not a defect, and earlier drafts of
+  this record were wrong to file it under what is open. Two things in that neighbourhood ARE ours
+  and both are met: the mesh must be *solvable*, which is why the port split, the conformal
+  25,685,941-face interface and `Mesh OK` on every region matter; and the error figures we hand
+  over must be honest, which is why the flow bias is stated as +13.61% with the clean and messy
+  parts separated rather than quoted as a single number.
 - **4 cells across is the thinnest resolution anyone here has delivered.** +12.50% on flow is
   exact and correctable, but the thermal entrance error at 4 cells has not been computed; the
   Graetz work in `MESH_QUALITY_CBOX2B.md` section 7 was done at 5.
