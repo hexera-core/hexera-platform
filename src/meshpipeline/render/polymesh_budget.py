@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 
 import numpy as np
 
@@ -23,7 +24,14 @@ logger = logging.getLogger(__name__)
 #: raw and 555.8 MB base64 - past the 512 MiB cap `sandbox.safe_extract` puts on a workspace
 #: archive before any browser is asked to parse it. At this budget the same mesh packs to about
 #: 24 MB.
-DRAWN_MAX_TRIANGLES = 800_000
+#: OVERRIDABLE PER BUILD, because 800,000 is a transport figure and the transport changed.
+#: Measured 2026-11-07, one actor at 1:1: 1,904,636 faces / 3,810,902 triangles drew in 0.30 ms of
+#: CPU per frame at 55.2 fps on Intel UHD via ANGLE/D3D11, and the binary path carried the same
+#: payload in 574 ms against base64's 1,379 ms. What actually binds is VRAM, about 92 B per
+#: delivered face, so a whole 36 M-face boundary would be ~3.3 GB and is out of reach - but several
+#: million faces is not. The default is unchanged so no existing page moves; a build that has been
+#: measured sets HEXERA_DRAWN_MAX_TRIANGLES.
+DRAWN_MAX_TRIANGLES = int(os.environ.get("HEXERA_DRAWN_MAX_TRIANGLES") or 800_000)
 
 #: A patch is never reduced below this. A six-face block side would otherwise vanish entirely at a
 #: coarse cluster size, and a boundary that is not drawn reads to a user as a boundary that is not

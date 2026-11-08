@@ -182,7 +182,50 @@ cannot be indexed, viewed or given per-face quality: `boundary_index.py:88` refu
 polyMesh by design. The layered coolant was written ASCII deliberately and can be. See the binary
 section of `MESH_TIME_TO_ONE_HOUR.md`.
 
-## 7. What is still open
+## 7. The grading, measured per cell
+
+Asked 2026-11-08 whether the mesh is uniform or actually coarse where it can be. It is graded, and
+the grading is the single biggest thing keeping the cell count down. Measured with
+`checkMesh -writeFields "(cellVolume)"` run `-parallel` on the decomposed mesh, cube root of each
+cell's volume as its equivalent edge. All three regions `Mesh OK` on that run.
+
+| region | cells | volume m3 | finest cell | median edge |
+|---|---|---|---|---|
+| fluid | 55,303,441 | 5.280576e-05 | 34.696 um | 36.284 um |
+| solid | 199,394,482 | 2.280566e-04 | 24.231 um | 36.284 um |
+| chip | 15,726,384 | 1.602614e-05 | 100.630 um | 100.631 um |
+| **total** | **270,424,307** | 2.968885e-04 | 24.231 um | 36.284 um |
+
+**The headline.** A uniform mesh at the finest delivered cell would need **20,867,373,888 cells**
+to fill the same volume. We deliver 270,424,307. The grading is worth **77.2x**. Against the
+nominal 25.1578 um background cell it is 68.9x.
+
+**Where the cells are, and where the volume is.** These two columns are the whole point: the cell
+budget goes to the channels, and the volume is covered by a handful of huge cells.
+
+| | 1x 25.16 um | 2x | 4x | 8x 201 um | 16x+ 402 um |
+|---|---|---|---|---|---|
+| fluid, share of CELLS | 92.0% | 2.2% | 2.6% | 3.1% | 0.1% |
+| fluid, share of VOLUME | 4.6% | 0.9% | 8.3% | **69.6%** | 16.6% |
+| solid, share of CELLS | 92.1% | 1.6% | 2.9% | 2.5% | 0.9% |
+| solid, share of VOLUME | 3.0% | 0.3% | 4.9% | 31.9% | **59.8%** |
+
+In the metal, **0.9% of the cells cover 59.8% of the volume**, and 92.1% of the cells are packed
+into 3.0% of it - the channel walls. That is what "coarse where it can be" looks like when it is
+measured rather than asserted. The chip is deliberately one uniform size, 100.631 um, because it
+is a plain block with no gradient to resolve.
+
+**The median cell is anisotropic and that is the stretch doing its job.** 36.284 um equivalent
+edge is exactly `cbrt(25.1578 x 25.1578 x 75.4734)`, i.e. the background cell with `scaleY 3`
+applied. So the median delivered cell is 25.16 x 25.16 x 75.47 um: three times fewer cells along
+the axis the geometry does not vary on. That is a separate 3x on top of the 77.2x above.
+
+**What has already been refuted as a further lever,** so it is not re-attempted: a 4x coarser far
+field changes cell count by 0.9% (`MESH_IMPROVEMENT_PLAN.md`), and `scaleY 4` is 7.5x slower for
+7% fewer cells (`project_hexera_deliverable_220h`). The lattice choice, not the grading, is what
+moved this mesh from 440,668,679 cells to 270,424,307.
+
+## 8. What is still open
 
 - **Running the solve is not ours and never was.** We deliver a mesh; the customer solves on it.
   So "no solver has been run here" is a statement of scope, not a defect, and earlier drafts of
