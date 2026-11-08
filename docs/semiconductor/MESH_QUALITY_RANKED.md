@@ -415,15 +415,100 @@ against an average of 7.85233.
 2,936 of 102,536,327 cells is 28.6 per million. It is 8.12x better than `bl3p`, which had 23,833.
 It is not zero and the mesh does not pass clean.
 
-What I can say about the shape of it: 2,348 of the 2,936, which is 80%, are the single criterion
-non-orthogonality over 65, and 405 more are interpolation weights. Both are what a layer stack
-extruded off a staircased interface produces. 80% of one cause is not a scattered mesh failure.
+2,348 of the 2,936, which is 80%, are the single criterion non-orthogonality over 65, and 405 more
+are interpolation weights. 80% of one cause is not a scattered mesh failure.
 
-What I cannot yet say is where they are, and that is the gap. `checkMesh` wrote them to
-`meshQualityFaces` and the 2,096 severe ones to `nonOrthoFaces`, so locating them is a read of those
-sets rather than new work, and the question it answers decides whether this matters: if they sit in
-the plenums and headers they are outside the flow the customer cares about, and if they sit on
-channel walls they are not.
+### Where they are
+
+`reconstructParMesh` did not carry `meshQualityFaces` or `nonOrthoFaces` into the archive, so I
+recomputed them from the reconstructed ASCII mesh using OpenFOAM's own algorithms and gated the
+result against what `checkMesh` printed:
+
+| gate | checkMesh | recomputed |
+|---|---|---|
+| total volume | 5.28057e-05 m3 | 5.280574e-05 |
+| min cell volume | 4.72424e-16 | 4.724238e-16 |
+| max cell volume | 2.19804e-10 | 2.198042e-10 |
+| max non-orthogonality | 76.6676 deg | **76.6676** |
+| faces over 70 deg | 2,096 | **2,096** |
+| faces over 65 deg | 2,348 | 2,349 |
+
+The one extra face over 65 is a face sitting within rounding of exactly 65 degrees: `checkMesh`
+compares cosines, I compared the angle. Everything else reproduces to the printed digit, so the
+2,349 face positions are good.
+
+**They are on the plenum wall, at the two z ends of the anisotropic stretch box, and they are not in
+the channels.**
+
+| group | faces | share | angle min | angle max | thinner cell | within 1.2 mm of a z box face |
+|---|---|---|---|---|---|---|
+| coarse wall, level +2 | 2,094 | 89.14% | 65.057 | **76.668** | 4.05 um | **96.9%** |
+| channel wall, level +4 | 232 | 9.88% | 65.001 | 71.805 | 1.92 um | 7.8% |
+| other | 23 | 0.98% | 65.362 | 69.470 | 2.76 um | 8.7% |
+
+96.68% of all 2,349 lie within 1.2 mm of a face of the anisotropic refinement box, and 87.3% of
+them on its two z faces specifically:
+
+| | |
+|---|---|
+| within 1.2 mm of the z lower box face, +0.016734 | 1,034, 44.02% |
+| within 1.2 mm of the z upper box face, +0.068072 | 1,016, 43.25% |
+| within 1.2 mm of either x box face | 80, 3.41% |
+| within 1.2 mm of either y box face | 157, 6.68% |
+
+They collapse onto two planes. 43.12% sit at z = +0.0679 and 42.78% at z = +0.0160, which are the
+box's own z limits, and no face outside the box is further than 1.95 background cells from it.
+
+The angle is one tight spike, not scatter:
+
+| | faces | share |
+|---|---|---|
+| 73.1 deg | 1,010 | 43.00% |
+| 72.5 deg | 708 | 30.14% |
+| 73.3 deg | 270 | 11.49% |
+| the 72 to 74 group | 2,051 | 87.31% |
+
+Mean of that group 72.9230 degrees, spread 72.2595 to 73.8063. One mechanism, not a sick mesh.
+
+### What the mechanism is
+
+The shared face carries the full base area of a layer cell, 3.0380e-08 m2, which is 100.63 x 301.89
+um: a level-2 cell face stretched 3x in y. So the two cells are consecutive cells in the layer
+stack, and the thinner of them is 4.05 um, against a requested `firstLayerThickness` of 4.15e-06.
+The angle then says the two cell centres are offset sideways by
+
+```
+4.05 um x tan(72.923 deg) = 13.51 um
+```
+
+on a cell 301.89 um wide. That is a 4.5% lateral drift of the stack, and it reads as 73 degrees only
+because the step between the centres is 4 um. A thin layer turns a mild sideways drift into a large
+angle. On the channel wall the same drift is 4.21 um on a 75.47 um wide cell, and the angle tops out
+at 71.8 degrees.
+
+Two other things fall out of the measurement. The neighbour volume ratio is 1.86 across every group,
+against an `expansionRatio` of 1.2 in the dict, so the stack is not grading as asked where it goes
+wrong. And `nSmoothSurfaceNormals 1` with `nSmoothNormals 3` is exactly the knob that produces a
+lateral drift of the extrusion direction, which we already know not to do over a staircase.
+
+### What this changes
+
+The channel walls carry 232 of the 2,936 faces. That is 7.9% of the defect, 2.3 per million cells,
+and none of the worst ones: the channel-wall group stops at 71.805 degrees, below the 72.9 spike and
+well below the 76.668 maximum. **The mesh is clean where the heat transfer happens.** The defect is
+on the distribution volume wall, in the band where the octree grades down from the channel field,
+at the two ends of the stretch region.
+
+It also kills the fix I was going to propose. This is not a layer-thickness problem to be reprofiled
+and it has nothing to do with the staircase on the channel walls. The two candidates it does point
+at are splitting `fluid_to_solid` so that layers are requested on the channel surface and not on the
+plenum wall, which removes 89% of the defect and a large number of cells that are doing nothing, and
+padding the anisotropic box in z so its faces do not land on wetted surface at all.
+
+One honest limit. I localised the 2,349 non-orthogonality faces. The other 588 faces in error are
+the five remaining criteria and I did not compute those, so I am assuming rather than measuring that
+the 405 interpolation-weight faces are the same faces. A sheared thin layer gives bad interpolation
+weights for the same reason it gives a bad angle, but I have not checked it.
 
 Max aspect ratio in this region is 322.161, against 3.74 before layers. That is the boundary layer
 and `checkMesh` passes it as OK. It is not a defect, it is what a 4.15 um near-wall cell on a
@@ -560,15 +645,19 @@ this document has its inputs shown for that reason.
 
 ## What to do next, in order of value per hour
 
-1. **Read `meshQualityFaces` and `nonOrthoFaces` and find out where the 2,936 faces are.** No new
-   mesh, no VM meshing time. It is the only thing standing between section 14 and a clean sheet, and
-   the answer either closes it as irrelevant or points the fix at a specific surface.
+1. **Split `fluid_to_solid` and ask for layers only on the channel surface.** Done 2026-11-08: the
+   2,349 bad angles are 89% on the plenum wall at the ends of the stretch box and only 232 on
+   channel-resolution wall, so this removes most of section 14 and takes cells out of a place where
+   they are doing no thermal work. Needs one `topoSet` and one `createPatch` before the layer pass,
+   and the layer pass rerun. No remesh.
 2. **Run `checkMesh -meshQuality` on the three unlayered regions.** 185 s. Closes section 16, which
    is currently an absence of evidence that I have been quoting as evidence.
 3. **Settle whether the chip's two blocks are two real thermal masses.** A read of the STEP part
    names against the two `cellSet` bounding boxes. Closes section 15 either way.
 4. **Pipe the tars through `pigz` and skip the reconstruct.** Takes about an hour off a 2.28 h
    delivery for no change to the mesh at all.
+5. **Localise the remaining 588 faces in error**, the five criteria other than non-orthogonality.
+   Cheaper than it sounds now that the reader exists.
 
 Not on this list: a new mesh. 25 proposals were analysed on 2026-11-08, 10 were adversarially
 verified, 3 survived and none of the three changes the mesh.
