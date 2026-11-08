@@ -1409,6 +1409,20 @@ function initViewer(job,surf,uiCfg){
     function camDist(){const f=cam.getFocalPoint(),q=cam.getPosition();
       return Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||1e-12;}
     function viewRadius(){return camDist()*Math.tan(cam.getViewAngle()*Math.PI/360);}
+    /* WHAT IS UNDER THE MIDDLE OF THE SCREEN, or null if that is empty space. `pickCell` reads
+       nothing from the event but clientX and clientY, so the centre can be handed to it without
+       a real one. It answers through a callback that is simply not called on a miss, hence the
+       timeout: a Follow that never resolved would hold the busy lock for good. */
+    function pickCentre(){
+      return new Promise(function(res){
+        let done=false;
+        const fin=v=>{if(!done){done=true;res(v);}};
+        try{
+          const r=host.getBoundingClientRect();
+          pickCell({clientX:r.left+r.width/2,clientY:r.top+r.height/2},
+                   function(en,cid){fin(cellCenter(en,cid));});
+        }catch(_e){fin(null);}
+        setTimeout(function(){fin(null);},900);});}
     function cellPx(){
       if(!stats||!(stats.typ>0))return 0;
       return stats.typ*(apiRW.getSize()[1]/(2*Math.tan(cam.getViewAngle()*Math.PI/360)))/camDist();}
@@ -1423,8 +1437,15 @@ function initViewer(job,surf,uiCfg){
       /* THE SAME VIEW IS NOT RE-FETCHED. An orbit that ends where it started, or a render
          triggered by something other than the camera, would otherwise cost a round trip and a
          redraw for an identical answer. */
-      const f=cam.getFocalPoint(),r0=viewRadius();
-      const key=f[0].toFixed(7)+','+f[1].toFixed(7)+','+f[2].toFixed(7)+'|'+r0.toFixed(7);
+      const hit=await pickCentre();
+      const f=hit||cam.getFocalPoint(),r0=viewRadius();
+      /* KEYED ON THE CAMERA, not on `f`. `f` is the point under the middle of the screen, which
+         is where the cut is centred; the key is what the debounce and the re-ping in `finally`
+         both compare, and that one has to describe the camera or the two never agree. They did
+         not, once the screen-centre pick landed: every fit then scheduled another and none ever
+         got past its first pass. */
+      const fp=cam.getFocalPoint();
+      const key=fp[0].toFixed(7)+','+fp[1].toFixed(7)+','+fp[2].toFixed(7)+'|'+r0.toFixed(7);
       if(key===folKey)return;
       folKey=key;folBusy=true;
       try{
@@ -1432,24 +1453,40 @@ function initViewer(job,surf,uiCfg){
            Faces on a surface go as radius squared, so sqrt(returned / in_range) is the factor
            that makes the next ball fit. 0.92 is slack against the ball not being a sphere's
            worth of surface. */
+        /* A BRACKET, NOT A FORMULA. `lo` is the largest radius known to fit, `hi` the smallest
+           known to truncate, and the next guess is their geometric mean. Face density on this
+           part is not uniform - measured at one point, 6 mm holds 2,804 faces and 19.42 mm holds
+           3,482,098, because the larger ball reaches the channel array - so any rule that infers
+           a radius from a count assumes something false. A bracket assumes nothing. */
         let r=r0,at=[f[0],f[1],f[2]],capSeen=0;
+        let lo=0,hi=Infinity,bestR=0;
         for(let pass=0;pass<FOLLOW_FIT_PASSES;pass++){
           await recut(at,r);
-          if(!(lastReturned>0))break;
           const last=pass===FOLLOW_FIT_PASSES-1;
+          if(lastReturned===0){
+            /* NOTHING THERE. Tested before the generic guard below, which used to catch this
+               first and leave the message unreachable. */
+            if(lastInRange===0){
+              lbl.textContent=hit?'no cells in view':'nothing under the middle of the view';
+              rw.render();}
+            break;}
           if(lastInRange>lastReturned){
-            /* TRUNCATED, so the cap is exactly what came back - the only place it is visible
-               from here. Shrink by the area rule and try again. */
-            capSeen=lastReturned;
-            if(last)break;
-            const nr=r*0.92*Math.sqrt(lastReturned/lastInRange);
-            if(!(nr>0)||nr<1e-9)break;
+            capSeen=lastReturned;hi=r;
+            if(last){
+              /* NEVER LEAVE A SAMPLE ON SCREEN. Go back to the biggest ball that came back
+                 whole, if one was found. */
+              if(bestR>0){await recut(at,bestR);r=bestR;}
+              break;}
+            const nr=(lo>0)?Math.sqrt(lo*hi):r*0.92*Math.sqrt(lastReturned/lastInRange);
+            if(!(nr>0)||nr<1e-9||nr>=r)break;
             r=nr;continue;}
-          /* THE WHOLE BALL CAME BACK. If a shrink overshot it - under a third of the cap, and
-             the ball is smaller than the view - reach back toward the view radius once. */
-          if(capSeen>0&&!last&&r<r0*0.999&&lastReturned<capSeen*0.35){
-            const nr=Math.min(r0,r*0.8*Math.sqrt(capSeen/Math.max(lastReturned,1)));
-            if(nr>r*1.05){r=nr;continue;}}
+          /* THE WHOLE BALL CAME BACK. Record it, and if it is far under the cap and there is a
+             known-truncating radius above, try the geometric mean of the two. */
+          lo=r;bestR=r;
+          if(last)break;
+          if(capSeen>0&&hi<Infinity&&lastReturned<capSeen*0.35){
+            const nr=Math.sqrt(lo*hi);
+            if(nr>r*1.05&&nr<hi*0.999){r=nr;continue;}}
           break;}
         folFitR=r;
       }
