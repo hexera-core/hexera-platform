@@ -9,12 +9,14 @@ import { FilesPanel } from "@/app/_components/files-panel";
 import { RecentRunsList } from "@/app/_components/recent-runs-list";
 import type { RecentRun } from "@/app/_components/recent-runs";
 import type { RunRead } from "@/app/_components/run-files";
+import { formatCredits } from "@/app/_components/ledger";
 import { CONSOLE_SECTIONS, currentSection } from "@/app/_components/sections";
 import { PanelIcon, useSidebar } from "@/app/_components/shell";
 
 type SidebarProps = {
   email: string;
-  credits: string;
+  /** The credit balance, or null when the API could not say. */
+  credits: number | null;
   /** The first read of the recent runs, done by the layout; null when the API could not say. */
   recent: RecentRun[] | null;
   /** Rendered, never imported: SignOutButton's inline "use server" action cannot be reached
@@ -24,14 +26,20 @@ type SidebarProps = {
   files?: RunRead | null;
 };
 
+/** One stroke weight and one box for every mark in the sidebar, so the column lines up. */
+const NEW_RUN_ICON = "M12 5v14M5 12h14";
+const SETTINGS_ICON = "M4 7h9m4 0h3M4 17h3m4 0h9M15 5v4M9 15v4";
+
 /** The slim sidebar: the brand and the hide switch, New run, the product sections, the recent
  *  runs, and the account tucked into one Settings fold at the foot. */
 export function Sidebar({ credits, email, files = null, recent, signOut }: SidebarProps) {
   const pathname = usePathname();
-  const current = currentSection(pathname);
+  // a new run is New run's page, not a run in the list: no section is marked while it is open
+  const onNewRun = pathname === "/runs/new";
+  const current = onNewRun ? "" : currentSection(pathname);
   const { pane, setHidden, setPane } = useSidebar();
   // ON A RUN PAGE the slot has two jobs: the runs, or this run's files. Elsewhere it is the nav.
-  const onRun = /^\/runs\/.+/.test(pathname);
+  const onRun = /^\/runs\/(?!new$).+/.test(pathname);
   const showFiles = onRun && pane === "files";
   const product = CONSOLE_SECTIONS.filter((section) => section.group === "product");
   const account = CONSOLE_SECTIONS.filter((section) => section.group === "account");
@@ -63,11 +71,9 @@ export function Sidebar({ credits, email, files = null, recent, signOut }: Sideb
       ) : null}
 
       {showFiles ? <FilesPanel initial={files} /> : (<>
-      <NavLink className="sidebar__new" href="/runs/new">
-        <svg aria-hidden="true" className="sidebar__icon" fill="none" focusable="false"
-          stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" viewBox="0 0 16 16">
-          <path d="M8 3v10M3 8h10" />
-        </svg>
+      <NavLink aria-current={onNewRun ? "page" : undefined}
+        className={`sidebar__new${onNewRun ? " sidebar__new--current" : ""}`} href="/runs/new">
+        <Mark d={NEW_RUN_ICON} />
         <span>New run</span>
       </NavLink>
 
@@ -86,11 +92,7 @@ export function Sidebar({ credits, email, files = null, recent, signOut }: Sideb
             user is on one of them */}
         <details className="sidebar__settings" open={inSettings || undefined}>
           <summary>
-            <svg aria-hidden="true" className="sidebar__icon" fill="none" focusable="false"
-              stroke="currentColor" strokeLinecap="round" strokeWidth="1.4" viewBox="0 0 16 16">
-              <circle cx="8" cy="8" r="2" />
-              <path d="M8 2.5v1.6M8 11.9v1.6M2.5 8h1.6M11.9 8h1.6M4.1 4.1l1.1 1.1M10.8 10.8l1.1 1.1M4.1 11.9l1.1-1.1M10.8 5.2l1.1-1.1" />
-            </svg>
+            <Mark d={SETTINGS_ICON} />
             <span>Settings</span>
           </summary>
           <nav aria-label="Account settings" className="sidebar__nav sidebar__nav--settings">
@@ -99,11 +101,9 @@ export function Sidebar({ credits, email, files = null, recent, signOut }: Sideb
             ))}
           </nav>
         </details>
-        <div className="sidebar__stat">
-          <span className="label">Credits</span>
-          <b>{credits}</b>
-        </div>
+        <Credits balance={credits} />
         <div className="sidebar__account">
+          <span aria-hidden="true" className="sidebar__avatar">{(email.trim()[0] ?? "?").toUpperCase()}</span>
           <small title={email}>{email}</small>
           {signOut}
         </div>
@@ -142,7 +142,28 @@ function Item({
   );
 }
 
+/** The balance, said plainly. A balance at or below zero is shown as it is - in the warning
+ *  tone, with a true minus sign - and beside it the one thing to do about it. */
+function Credits({ balance }: { balance: number | null }) {
+  const low = balance !== null && balance <= 0;
+  return (
+    <div className={`sidebar__credits${low ? " sidebar__credits--low" : ""}`}>
+      <Link className="sidebar__credits-main" href="/usage" title="See usage">
+        <span>Credits</span>
+        <b>{balance === null ? "—" : formatCredits(balance)}</b>
+      </Link>
+      {low ? (
+        <Link className="sidebar__topup" href="/settings/billing">Top up</Link>
+      ) : null}
+    </div>
+  );
+}
+
 function Icon({ section }: { section: (typeof CONSOLE_SECTIONS)[number] }) {
+  return <Mark d={section.icon} />;
+}
+
+function Mark({ d }: { d: string }) {
   return (
     <svg
       aria-hidden="true"
@@ -152,10 +173,10 @@ function Icon({ section }: { section: (typeof CONSOLE_SECTIONS)[number] }) {
       stroke="currentColor"
       strokeLinecap="round"
       strokeLinejoin="round"
-      strokeWidth="1.5"
+      strokeWidth="1.6"
       viewBox="0 0 24 24"
     >
-      <path d={section.icon} />
+      <path d={d} />
     </svg>
   );
 }

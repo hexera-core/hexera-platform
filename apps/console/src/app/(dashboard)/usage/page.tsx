@@ -3,7 +3,10 @@ import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
 import { DashboardNotice } from "@/app/_components/dashboard-notice";
-import { formatSigned } from "@/app/_components/ledger";
+import { formatCredits, formatSigned, ledgerReason, shortRunId } from "@/app/_components/ledger";
+import { NavLink } from "@/app/_components/nav-link";
+import { runTitle } from "@/app/_components/run-status";
+import { When } from "@/app/_components/when-time";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
 
@@ -17,6 +20,12 @@ type Entry = {
 
 type LedgerPage = { items: Entry[]; next_cursor: string | null };
 
+type RunName = { id: string; task_label: string | null; is_rerun?: boolean };
+
+/** The most runs one read names (the API's page limit). An older run beyond it is shown by its
+ *  short id, still linked. */
+const NAMED_RUNS = 100;
+
 export default async function UsagePage({
   searchParams,
 }: {
@@ -29,35 +38,46 @@ export default async function UsagePage({
   const params = await searchParams;
   const cursor = Array.isArray(params?.cursor) ? params.cursor[0] : params?.cursor;
 
-  // Two independent soft reads: a failing ledger must not blank the balance, and vice versa.
-  const [credits, ledger] = await Promise.all([
+  // Independent soft reads: a failing ledger must not blank the balance, and vice versa; the run
+  // names only dress the ledger, so without them each run is shown by its short id.
+  const [credits, ledger, runs] = await Promise.all([
     consoleFetch<{ balance: number; unit: string }>("credits", ownerId),
     consoleFetch<LedgerPage>(
       `credits/history${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
       ownerId,
     ),
+    consoleFetch<{ items: RunName[] }>(`simulation?limit=${NAMED_RUNS}`, ownerId),
   ]);
+  const names = new Map<string, string>();
+  for (const run of runs?.items ?? []) {
+    if (run.task_label || run.is_rerun) {
+      names.set(run.id, runTitle(run));
+    }
+  }
+  const low = credits !== null && credits.balance <= 0;
 
   return (
     <div className="page">
       <div className="page__head">
         <div>
-          <p className="page__eyebrow">Capacity</p>
-          <h1 className="page__title">Credits and usage</h1>
-          <p className="page__intro">
-            Track your balance and activity. Credits are charged only for completed runs.
-          </p>
+          <h1 className="page__title">Usage</h1>
+          <p className="page__intro">Credits are charged only for completed runs.</p>
         </div>
-        <Link className="btn" href="/settings/billing">
-          Billing
-        </Link>
       </div>
 
       <div className="summary-grid summary-grid--compact">
-        <div className="metric-card">
+        <div className={`metric-card balance${low ? " balance--low" : ""}`}>
           <p className="label">Balance</p>
-          <b>{credits ? credits.balance.toLocaleString() : "--"}</b>
-          <span>{credits ? credits.unit : "unavailable"} remaining</span>
+          <div className="balance__row">
+            <b>{credits ? formatCredits(credits.balance) : "—"}</b>
+            <span>{credits ? credits.unit : "unavailable"}</span>
+          </div>
+          <div className="balance__foot">
+            {low ? <span className="balance__warn">Below zero</span> : <span />}
+            <Link className={low ? "btn btn--gold btn--sm" : "btn btn--sm"} href="/settings/billing">
+              {low ? "Top up" : "Billing"}
+            </Link>
+          </div>
         </div>
       </div>
 
@@ -74,43 +94,55 @@ export default async function UsagePage({
           title="No credit activity yet"
         />
       ) : (
-        <section className="panel">
-          <div className="panel__head">
-            <div>
-              <p className="label">Credit ledger</p>
-              <p className="page__sub">Credits added or used by this workspace.</p>
-            </div>
-          </div>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>When</th>
-                <th>Type</th>
-                <th>Amount</th>
-                <th>Reason</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ledger.items.map((entry) => (
-                <tr key={entry.id}>
-                  <td>
-                    {entry.created_at ? new Date(entry.created_at).toLocaleString() : "—"}
-                  </td>
-                  <td>
-                    <span className="label">{entry.entry_type}</span>
-                  </td>
-                  <td>{formatSigned(entry.amount)}</td>
-                  <td>{entry.reason || "—"}</td>
+        <section aria-labelledby="ledger-title" className="section">
+          <h2 className="section__title" id="ledger-title">History</h2>
+          <div className="panel">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th className="col-when">When</th>
+                  <th className="col-main">For</th>
+                  <th className="col-num col-right">Credits</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {ledger.items.map((entry) => {
+                  const reason = ledgerReason(entry.reason);
+                  return (
+                    <tr key={entry.id}>
+                      <td className="col-when">
+                        <When iso={entry.created_at} />
+                      </td>
+                      <td className="col-main">
+                        {reason.text ? <span>{reason.text}</span> : null}
+                        {reason.text && reason.runId ? <span className="cell-faint"> · </span> : null}
+                        {reason.runId ? (
+                          names.has(reason.runId) ? (
+                            <NavLink className="cell-link" href={`/runs/${reason.runId}`}>
+                              {names.get(reason.runId)}
+                            </NavLink>
+                          ) : (
+                            <NavLink className="cell-link" href={`/runs/${reason.runId}`}
+                              title={reason.runId}>
+                              Run <span className="cell-id">{shortRunId(reason.runId)}</span>
+                            </NavLink>
+                          )
+                        ) : null}
+                        {!reason.text && !reason.runId ? <span className="cell-faint">—</span> : null}
+                      </td>
+                      <td className={`col-num col-right amount${entry.amount > 0 ? " amount--in" : ""}`}
+                        title={entry.entry_type}>
+                        {formatSigned(entry.amount)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
           {ledger.next_cursor ? (
-            <div className="panel__body">
-              <Link
-                className="btn"
-                href={`/usage?cursor=${encodeURIComponent(ledger.next_cursor)}`}
-              >
+            <div className="section__more">
+              <Link className="btn btn--sm" href={`/usage?cursor=${encodeURIComponent(ledger.next_cursor)}`}>
                 Older movements
               </Link>
             </div>

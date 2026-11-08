@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { formatSigned } from "./ledger";
+import { formatCredits, formatSigned, ledgerReason, shortRunId } from "./ledger";
 
 test("a grant reads as an explicit credit", () => {
   // The column is SIGNED in the database so a client sums it rather than branching on the type.
@@ -10,9 +10,32 @@ test("a grant reads as an explicit credit", () => {
 });
 
 test("a debit keeps its own sign rather than gaining a second one", () => {
-  assert.equal(formatSigned(-20), "-20");
+  assert.equal(formatSigned(-20), "−20");
 });
 
 test("zero carries no sign", () => {
   assert.equal(formatSigned(0), "0");
+});
+
+test("large amounts are grouped", () => {
+  assert.equal(formatSigned(-12787), "−12,787");
+  assert.equal(formatSigned(1000), "+1,000");
+});
+
+test("a negative balance shows a true minus and grouping, never a raw -12787", () => {
+  assert.equal(formatCredits(-12787), "−12,787");
+  assert.equal(formatCredits(4500), "4,500");
+  assert.equal(formatCredits(0), "0");
+});
+
+test("a run charge names the run, not the raw reason", () => {
+  const id = "5c2e43fe-9a1b-4c2d-8e3f-00174876e800";
+  assert.deepEqual(ledgerReason(`mesh job ${id}`), { text: "", runId: id });
+  assert.deepEqual(ledgerReason(`billed as overage: ${id}`), { text: "Billed as overage", runId: id });
+  assert.equal(shortRunId(id), "5c2e43fe");
+});
+
+test("any other reason is shown as written", () => {
+  assert.deepEqual(ledgerReason("signup grant"), { text: "Signup grant", runId: null });
+  assert.deepEqual(ledgerReason(""), { text: "", runId: null });
 });

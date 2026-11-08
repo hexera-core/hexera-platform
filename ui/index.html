@@ -31,15 +31,15 @@
     </div>
     <div class="h-spacer"></div>
     <button class="chip" id="wb-toggle" type="button" hidden aria-pressed="false">Hide conversation</button>
-    <div class="chip chip-status" id="api-status" role="status" aria-live="polite"><div class="dot" id="dot"></div><span id="api-lbl">checking…</span></div>
+    <div class="chip chip-status" id="api-status" data-state="checking" role="status" aria-live="polite"><div class="dot" id="dot"></div><span id="api-lbl">Checking connection</span></div>
   </header>
 
   <div id="notice" role="status" aria-live="polite"></div>
 
   <div id="upload-bar">
     <input type="file" id="step-file-input" data-accept-from-capabilities="" class="sr-only" aria-label="Upload a geometry file">
-    <span id="file-label">No geometry file selected</span>
-    <button id="upload-btn" type="button">Upload geometry</button>
+    <span id="file-label"></span>
+    <button id="upload-btn" type="button">Browse files</button>
   </div>
 
   <div id="stage"></div>
