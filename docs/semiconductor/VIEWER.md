@@ -502,3 +502,105 @@ at all.
 **No guard tying the badge to reality.** `cut_regions` should open the index rather than glob for a
 boundary file, and `detail_at` should refuse one region rather than the whole cut. Both are small,
 and between them they are the entire plate failure in section 4.
+
+## The 800,000-triangle budget is a transport artifact, not a rendering limit
+
+Measured 2026-11-08 in the app's own browser pane, with the **vendored** vtk.js bundle (sha256
+`393d9391b926ade6c59fda061eca0043bccba85e157e2ede5df11607085d8b7a`, matching
+`apps/console/public/static/vendor/SHA256SUMS`), on an Intel UHD iGPU via ANGLE/D3D11, WebGL2,
+canvas 1897x1200.
+
+`polymesh_budget.py:14-26` states the reason for the budget in its own words: packing the whole
+coolant came to "555.8 MB base64 - past the 512 MiB cap" with "one to three seconds of JSON parse".
+That is a statement about **base64 in JSON**, and it has been read ever since as a statement about
+what a browser can draw. It is not.
+
+### One patch at 1:1, with real per-face colour
+
+`solid_to_air`, **1,904,636 faces / 3,810,902 triangles**, one actor, per-face `non_ortho` colour:
+
+| | |
+|---|---|
+| draw calls per frame | **1**, `GL_TRIANGLES`, 11,432,706 vertices = **exactly 3,810,902 triangles** |
+| the per-face guard at `viewer.js:1363` | `1,904,636 === 1,904,636` -> **PASS** |
+| construct + first frame | 1,066 ms, of which polydata/mapper/actor is **2.4 ms** |
+| median frame, 119 frames | **18.10 ms = 55.2 fps**, vsync-bound |
+| **median `render()` CPU** | **0.30 ms**, p95 0.60 ms |
+| GL buffers | 174.4 MB in 2 `bufferData` calls |
+| context lost | no |
+
+**0.30 ms of CPU to re-issue 3.81 M triangles is the number that settles it.** There is no
+per-polygon cost in vtk.js worth decimating 48:1 to avoid. Nothing was dropped: the draw call was
+hooked and the triangle count matched exactly.
+
+That the colours reach the screen was proved rather than asserted. Swapping only the per-face
+scalar array on identical geometry moved the framebuffer from 37 distinct colour bins and 0 warm
+pixels to 616 bins and 315,820 warm pixels. Lighting scales all three channels together and cannot
+turn a blue ramp stop warm, so those pixels can only have come from per-face scalars.
+
+### Binary against base64, same geometry, same construction path
+
+| | binary | base64 JSON |
+|---|---|---|
+| wire | 60.0 MB | 87.2 MB |
+| fetch | 551 ms | 682 ms |
+| `JSON.parse` | | 58 ms |
+| `atob` + three char loops | | **518 ms** |
+| scalars to RGB | 23 ms, uint8 LUT | 121 ms, `rp.color` on float32 |
+| **to the same polydata** | **574 ms** | **1,379 ms** |
+
+Identical on the GPU side and a 0.14% pixel difference from uint8 quantisation. **Binary is 1.45x
+smaller and 2.4x faster, and the 518 ms of `atob` is pure overhead the budget was set to avoid.**
+
+### The ceiling is VRAM, and it is ~92 bytes per delivered face
+
+Same patch as N independent actors:
+
+| faces | triangles | VBO | draw calls | frame | first render |
+|---|---|---|---|---|---|
+| 1.90 M | 3.81 M | 174 MB | 1 | 11.4-14.8 ms | 1.10 s |
+| 7.62 M | 15.24 M | 698 MB | 4 | 35.9 ms | 4.30 s |
+| 15.24 M | 30.49 M | 1,396 MB | 8 | 71.5 ms | 8.68 s |
+
+Linear, at **~92 B of VRAM per delivered face and ~2.3 ms per million triangles**. The cause is that
+vtk.js **de-indexes** when cell scalars are in play: `drawArrays`, six vertices per quad, 12 B of
+position plus 4 B of RGBA each, and no normals buffer because the fragment shader takes derivatives.
+Per-face colour itself is +4 B per vertex, i.e. +43.6 MB per 1.9 M faces.
+
+Extrapolated to all **30,350,633** delivered boundary faces (note: the often-quoted 56,460,654
+double-counts, because `fluid_to_solid` and `solid_to_fluid` are one conformal interface stored
+twice): ~60.7 M triangles, **~2.8 GB of VBO at roughly 7 fps.** Interactive but not smooth, and
+2.8 GB would fail on a 4 GB discrete card. **So the honest answer is whole-patch streaming in
+binary, not server-side rendering** - which no comparable product needs at this size either, though
+Luminary Cloud did ship exactly that for >100 M CVs in February 2026.
+
+### A latent bug: edge visibility loses the WebGL context
+
+`viewer.js:1375` sets `setEdgeVisibility(true)` on every cut actor. At 1.9 M faces that adds a
+second draw call of **7,620,174 line segments**, takes the VBO from 174.4 to 348.9 MB, and:
+
+- frame time 18 ms -> **302.8 ms (3.3 fps)**
+- **the context was lost**: `gl.isContextLost()` true, `getError()` **37442 `CONTEXT_LOST_WEBGL`**
+
+Repeated losses then poisoned the GPU process for several later page loads, with `get3DContext`
+refusing a context until the tab was replaced. **Edges must be switched off above a few hundred
+thousand faces.** Today this is latent only because a cut is capped at `MAX_RETURN_FACES` = 150,000
+(`detail_window.py:45`); it becomes a crash the moment a patch is streamed at 1:1.
+
+### What this means for the roster
+
+- The 48:1 decimation is not required by the renderer and can be removed patch by patch, binary
+  first.
+- The per-face quality heatmap on the **main** surface, which `viewer.js:1701` refuses because the
+  array length never equals the drawn polygon count, becomes available as soon as a patch is drawn
+  unmerged. That guard is correct and should stay; it just stops being binding.
+- A camera-driven tile scheme is **not** the route. The bucket grid is not a balanced tile index:
+  1,440 of 2,016 candidate tiles are empty (71.4%), the median tile holds 0 faces, the largest holds
+  911,168, and the top 16 hold half of all faces. `_grid` sizes buckets by bounding VOLUME while a
+  boundary is a SURFACE, so `TARGET_FACES_PER_BUCKET = 32` is never achieved (92.7% of fluid buckets
+  empty, non-empty mean 427). Worse, full detail inside the 800 k budget reaches only **W = 4 mm on
+  a 170.19 mm part**, and a cut at r = 4 mm already returns the 150,000-face cap today. Tiles would
+  have removed the click, not the window.
+
+Harness and artifacts: `/home/rehaan/vtkbench/`, served on port 8790,
+`?src=bin|b64&ramp=true|eq|none&edges=0|1&copies=N`.
