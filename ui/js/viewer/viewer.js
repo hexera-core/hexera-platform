@@ -54,6 +54,45 @@ const _POOR_COL=[0.93,0.27,0.22];
 const _PATCH_COLS=[[0.80,0.78,0.72],[0.64,0.77,0.75],[0.83,0.76,0.60],
                    [0.72,0.72,0.70],[0.66,0.71,0.73],[0.76,0.70,0.66]];
 const _EDGE=[0.27,0.25,0.22];          /* hairline edges at rest */
+/* EDGES ARE A SECOND DRAW CALL, AND PAST A CERTAIN SIZE THEY DO NOT SLOW THE FRAME, THEY TAKE THE
+   CONTEXT AWAY. Measured 2026-11-08 on solid_to_air drawn at 1:1, 1,904,636 faces / 3,810,902
+   triangles in one actor, Intel UHD via ANGLE/D3D11, WebGL2:
+
+     edges off   1 draw call    174.4 MB VBO    18.1 ms/frame   context fine
+     edges on    2 draw calls   348.9 MB VBO   302.8 ms/frame   gl.getError() 37442
+                 the second being 7,620,174 line segments       CONTEXT_LOST_WEBGL
+
+   and the loss outlived the page: repeated losses left the browser refusing a new context until
+   the tab was replaced. WebGL exposes no way to ask how much video memory is left, so this cannot
+   be detected and has to be bounded instead.
+
+   WHERE THE CAP IS SET, AND WHAT IS AND IS NOT KNOWN. The largest actor the viewer draws today is
+   bl3's fluid_to_solid at 590,990 polygons, and every page in the roster works, so everything at
+   or below that is empirically fine. The only measured failure is at 1,904,636. The true boundary
+   is somewhere in between and has not been measured, so the cap sits just above what ships rather
+   than pretending to know: it changes nothing today and it bounds the case that actually broke,
+   a patch streamed at 1:1.
+
+   Measured per-patch polygon counts behind that choice, counted the way _countPolys does:
+     bl3 / cbox2b / cbox2 / plate  fluid_to_solid   590,990 / 518,038 / 478,388 / 459,608
+     chip                          zMax, zMin       287,448 / 252,222
+     slabw                         oldInternalFaces 174,086
+     slab8                         oldInternalFaces  25,149
+
+   Note it is not purely a memory limit: 15.2M triangles at 1,396 MB rendered fine with edges off,
+   while 3.8M triangles plus 7.6M LINE SEGMENTS at 349 MB did not. Line rendering is the expensive
+   part, and a quad contributes four segments, so segments run about 4x the face count. */
+const _EDGE_MAX_POLYS=750000;
+/* Count the polygons actually in a VTK connectivity array, [n, i0..in-1] repeated - the same walk
+   the surface builder does, because a patch's face_count is its count in the MESH and a decimated
+   surface does not ship one polygon per delivered face. */
+function _countPolys(polys){let n=0;for(let q=0;q<polys.length;q+=polys[q]+1)n++;return n;}
+/* Edge visibility from the polygon count. Returns whether they went on. */
+function setEdges(pr,nPolys,col){
+  const on=nPolys>0&&nPolys<=_EDGE_MAX_POLYS;
+  if(pr.setEdgeVisibility)pr.setEdgeVisibility(on);
+  if(on){const c=col||_EDGE;pr.setEdgeColor(c[0],c[1],c[2]);pr.setLineWidth(1);}
+  return on;}
 /* How much of the merged surface is left showing behind an inspect window, so a cut has a part
    around it instead of black. Low enough that it cannot be mistaken for the cells. */
 const GHOST_OPACITY=0.10;
@@ -245,6 +284,25 @@ function initViewer(job,surf,uiCfg){
   const ren=grw.getRenderer(),rw=grw.getRenderWindow();
   const apiRW=grw.getApiSpecificRenderWindow?grw.getApiSpecificRenderWindow():grw.getOpenGLRenderWindow();
   grw.resize();
+  /* A LOST CONTEXT USED TO BE A DEAD CANVAS. The browser takes the context away rather than
+     degrading the frame when video memory runs out, and the DEFAULT behaviour on the event is to
+     make that permanent - so preventDefault is most of the fix, and redrawing when the browser
+     hands it back is the rest. Measured losing it on 8 November with edges on at 1.9M faces. The
+     cap in setEdges stops that particular cause; this stops the next one leaving a black
+     rectangle with no explanation. */
+  const _canvas=(apiRW&&apiRW.getCanvas)?apiRW.getCanvas():null;
+  if(_canvas&&_canvas.addEventListener){
+    _canvas.addEventListener('webglcontextlost',e=>{
+      e.preventDefault();                       // without this it is never restored
+      const s=document.getElementById('v-status-'+job);
+      if(s)s.textContent='The 3D view ran out of video memory. It will redraw shortly.';
+      console.warn('viewer: webgl context lost',job);},false);
+    _canvas.addEventListener('webglcontextrestored',()=>{
+      console.warn('viewer: webgl context restored',job);
+      const s=document.getElementById('v-status-'+job);
+      try{grw.resize();rw.render();if(s)s.textContent='';}
+      catch(err){if(s)s.textContent='The 3D view could not redraw after losing video memory.';
+                 console.warn('viewer: redraw after restore failed',err);}},false);}
   const ro=new ResizeObserver(()=>{setRenderScale();rw.render();});ro.observe(host);
   host.addEventListener('contextmenu',e=>e.preventDefault());
   bindMouse(grw);                     // left-drag turns, right-drag pans, the wheel zooms
@@ -308,7 +366,7 @@ function initViewer(job,surf,uiCfg){
     const base=poor?_POOR_COL:_PATCH_COLS[i%_PATCH_COLS.length];
     const pr=actor.getProperty();
     pr.setColor(base[0],base[1],base[2]);
-    pr.setEdgeVisibility(true);pr.setEdgeColor(_EDGE[0],_EDGE[1],_EDGE[2]);pr.setLineWidth(1);
+    setEdges(pr,nCells);
     // lit flat and hot rather than shaded, so a set of a few hundred cells inside a mesh of
     // millions reads as a mark on it and not as another surface
     pr.setAmbient(poor?0.75:0.30);pr.setDiffuse(poor?0.35:0.78);
@@ -1102,12 +1160,13 @@ function initViewer(job,surf,uiCfg){
       sliceActors[s.name]=(s.pieces||[]).map(pc=>{
         const pd=vtk.Common.DataModel.vtkPolyData.newInstance();
         pd.getPoints().setData(b64f32(pc.points_b64),3);
-        pd.getPolys().setData(b64u32(pc.polys_b64));
+        const _slicePolys=b64u32(pc.polys_b64);
+        pd.getPolys().setData(_slicePolys);
         const mapper=vtk.Rendering.Core.vtkMapper.newInstance();mapper.setInputData(pd);
         const actor=vtk.Rendering.Core.vtkActor.newInstance();actor.setMapper(mapper);
         const c=sliceColour(thermal,pc.region);
         const pr=actor.getProperty();pr.setColor(c[0],c[1],c[2]);
-        pr.setEdgeVisibility(true);pr.setEdgeColor(0.16,0.16,0.15);pr.setLineWidth(1);
+        setEdges(pr,_countPolys(_slicePolys),[0.16,0.16,0.15]);
         pr.setAmbient(0.55);pr.setDiffuse(0.55);
         if(pr.setBackfaceCulling)pr.setBackfaceCulling(false);
         actor.setVisibility(false);if(actor.setPickable)actor.setPickable(false);
@@ -1372,7 +1431,7 @@ function initViewer(job,surf,uiCfg){
                 mapper.setInterpolateScalarsBeforeMapping(false);
               mapper.setScalarVisibility(true);
               painted++;paintedLabel=qm[dm].label||dm;paintedMetric=dm;}}
-          pr.setEdgeVisibility(true);pr.setEdgeColor(_EDGE[0],_EDGE[1],_EDGE[2]);pr.setLineWidth(1);
+          setEdges(pr,p.face_count||_countPolys(b64u32(p.polys_b64)));
           pr.setAmbient(0.30);pr.setDiffuse(0.78);
           if(pr.setBackfaceCulling)pr.setBackfaceCulling(false);
           ren.addActor(ac);shown.push(ac);shownNames.push(String(p.name||''));});
