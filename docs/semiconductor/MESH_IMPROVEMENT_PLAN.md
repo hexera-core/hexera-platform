@@ -244,3 +244,91 @@ convergence study that would put error bars on everything in the quality documen
    bulk to coarsen.
 4. Decide on the `WM_LABEL_SIZE=64` image. It is now the only route to the biggest fidelity defect,
    which is a different and stronger reason than the one it was cancelled on.
+
+
+## The 8 November research pass: four things the corpus had wrong
+
+Three open questions were put to independent investigators, each answer then challenged by a
+reviewer briefed to find the strongest case against it. Two of the three challenges landed and
+changed what got built. These are the findings, with the corpus claim each one replaces.
+
+### 1. The resolution floor is 16.43 um, not 22.0035 um, and the wall is FACES not cells
+
+| | |
+|---|---|
+| this corpus said | floor = maxCellSize/16 = 22.0035 um, caused by 32-bit labels, fixed by a `WM_LABEL_SIZE=64` image |
+| measured | the lowest root/span ratio cfMesh has accepted on this part is **1.5233** (`ws_plate`, root 0.270379 m, listed in `DEVLOG.md:4009` as one of two configurations that WORK at level 14), which puts the floor at 1.5 x span / 2^14 = **16.43 um** |
+
+So pitch-12 at 16.7719 um is **octree-reachable with no image rebuild**, and the floor this
+document has quoted four times is wrong.
+
+It is still not deliverable, for a different reason entirely: at the measured production exponent
+`h^-2.27798` it is **767.1M cells = 2.317e9 faces = 107.9% of the 2^31 face label**, before any
+layers, and 878M with 3 layers. **700M cells and the 32-bit face wall are the same number**: at
+the measured 3.02 faces per cell, 2^31 faces is about 711M cells. The real ceiling is 600-650M.
+
+Two consequences worth stating plainly:
+
+- **The customer's own 700M figure sits within 2% of overflowing this build.** We have been
+  quoting their number back at them. Tell them 600-650M.
+- **The failure would be expensive, not cheap.** A root that lands wrong fails in 102-148 s. A
+  cell count that overflows fails after `cartesianMesh` completes, so an attempt costs 1 to 4.5 h
+  and returns nothing.
+
+And the root-HALVING route is dead: `ROOT_PROBE.txt`'s own four-arm table shows x pads from
+1.0 mm down to 0.1 mm all returning root 0.360505 m, and the implied ratio 1.0155 is far below the
+1.5233 minimum. The paragraph beneath that table reads the file the other way; the table wins.
+
+### 2. The removable chip band holds 18.3M cells, not 55-57M
+
+Four documents disagreed about this and none had it right.
+
+| source | claim |
+|---|---|
+| `RESEARCH_BOUNDARY_LAYERS.md` | about 63M cells, recover 55-57M, ranked #2 of 10, OPEN |
+| `MESH_QUALITY_ASSESSMENT.md` s3 | about 104M two-sided, "the biggest avoidable cost" |
+| `ROUTE_TO_FINAL_MESH.md` | left in deliberately, "at 506M cells the band costs nothing we need" |
+| `MESH_IMPROVEMENT_PLAN.md` item 4 | "there is no over-refined bulk to find", "no lever here" |
+| **measured** | **the band holds 91.8M level-2 cells, of which 31.2M ARE the chip region and 42.3M are in the discarded air. Only 18.3M are in the delivered solid.** |
+
+So the headline number was about 3x too high. The plan's counter-argument was also wrong, and
+wrong in an instructive way: `82,529,515 x 4.039 = 333M against 327M measured` is an **algebraic
+identity**, not a measurement. `N_solid = V_solid/vbar_solid` and `N_fluid = V_fluid/vbar_fluid`,
+so `N_fluid x (V_solid/V_fluid) = N_solid x (vbar_solid/vbar_fluid)` for any mesh whatsoever. It
+restates the mean-cell-volume parity printed in the row above it and can never fail.
+
+**Not done on the deadline run**, and that is the recommendation: the return is 45-130 s of a
+2.14 h chain, against changing the only configuration with a complete measured quality record.
+
+### 3. The anisotropic stretch box is not a defect
+
+`MESH_QUALITY_ASSESSMENT.md` s3 calls it "a real bug in the dict" and "the cheapest quality lever
+in the file", measured at -0.313 mm in x and -0.759 mm in z against the surface it stretches.
+
+Refuted. **Zero channel geometry lies beyond the two faces flagged** - the nearest channel is
+0.183 mm and 0.176 mm inside them - and the shortfall is measured against a bounding box set by
+**8 triangles, 0.008% of the surface**, in the manifold above the channel array. Change nothing.
+
+### 4. The `bl3` sidecar is the unlayered coolant under a layered name
+
+`gs://dev-rehaan-artifacts-224734058693/corintis/sidecar/bl3/` is a byte-identical copy of
+`cbox2b`'s fluid region. Four independent proofs, none of which needs the 5.45 GB mesh:
+
+| | |
+|---|---|
+| its own `LAYER_TIMES.txt` | `snappy 1 689` - **that layer pass exited 1**, and the `index 0 166` stage after it indexed the unlayered mesh |
+| its `check.log` | 82,529,515 cells, not 143,236,900 |
+| its `meta.json` | `first_face` 237,313,600, which is cbox2b's fluid exactly; the layered mesh is 420,774,788 |
+| the files | all nine md5-identical to `sidecar/cbox2b/constant/fluid` |
+
+`bl3p`, the 16-rank parallel run, is the real layered mesh and is unaffected: 143,236,900 cells,
+`Mesh OK`, verified separately including all 13 files of its archive. Two runs, one failed, and the
+failed one's index was filed under the layered name.
+
+### 5. A boundary index can never show the layers, and that is not a defect
+
+Worth recording because it was asked for directly. The index carries "the boundary and nothing
+else", and the 3 layers are **interior cells**. `fluid_to_solid` is 25,685,941 faces in the
+layered mesh and in the unlayered one, differing by 160 port-rim faces out of 25,690,241. So the
+layered mesh renders identically in the viewer and only the figures printed beside the drawing
+change. A layer stack can only be seen in **section**, not in the viewer.

@@ -549,3 +549,57 @@ kill above, and ff1 at `scaleY 6` was on the 38.5 hour path, which starting at 1
 on 9 November against a box that expires at 10:21 on the 8th. So the two of them were spending 382 GB
 and 16 cores re-deriving a recorded result they could not reach, which is what made them worth
 killing on sight.
+
+
+### The binary chain cannot be viewed, and I published it as a clean win
+
+`writeFormat binary` is the single biggest lever in the measured chain above: it gained on every
+stage, 1.29x on the mesher, 1.47x on topoSet, 1.84x on the split, and it is most of the reason
+1,852 s beat a 2,735 s projection. **It also makes the mesh unreadable to everything downstream
+that the customer actually opens, and I did not know that when I wrote the rest of this document.**
+
+The engine says so in its own source, deliberately:
+
+```
+src/meshpipeline/engines/cfmesh_conjugate/case_scaffold.py:7
+#: ASCII, on purpose. The delivered mesh is read back face by face - the per-region boundary
+#: files, the surface the reviewer opens, the viewer's own surfaces - and a binary polyMesh makes
+#: every one of those readers fall back or fail.
+```
+
+And the readers enforce it rather than degrading:
+
+```
+src/meshpipeline/render/boundary_index.py:67  _HEADER_ASCII_RE = re.compile(rb"format\s+ascii\s*;")
+src/meshpipeline/render/boundary_index.py:88  raise IndexUnavailable(f"{path.name}: not an ascii foam file")
+src/meshpipeline/render/face_quality.py:56    # a binary polyMesh is refused loudly
+```
+
+Measured on the box, 8 November:
+
+| mesh | `writeFormat` | boundary index | viewer | per-face quality |
+|---|---|---|---|---|
+| `cbox2b` | ascii | yes | yes | yes |
+| `bl3p`, the layered coolant | ascii | yes | yes | yes |
+| **`cbox2g`, the 30.9 min chain** | **binary** | **no** | **no** | **no** |
+| **`cbox8`, pitch 8** | **binary** | **no** | **no** | **no** |
+
+**So the 11.25x figure in the answer table is real as a time, and it is not a deliverable.** It
+produces a mesh a solver can run and a mesh nobody can look at, and the looking is half of what
+was asked for. The failure mode is the nasty kind: `cartesianMesh`, `splitMeshRegions` and
+`checkMesh` all succeed, the port split succeeds, every number in the table above is honestly
+measured, and the refusal arrives only when the index is built afterwards.
+
+**The fix is cheap and it is not a rebuild.** `writeFormat` governs what OpenFOAM WRITES; every
+reader takes the format from each file's own header. So a layer pass, or any later stage, run with
+`writeFormat ascii` in `controlDict` emits ASCII from binary input with no conversion pass, and
+`foamFormatConvert` is in the image for the stages already written. What is not yet measured is
+the time cost of ASCII on the chain itself, so the honest position is:
+
+- 1,852 s = 30.9 min is the **solver-only** chain, binary, not viewable.
+- The viewable chain is the same stages at `writeFormat ascii`, and its cost is **unmeasured**.
+  The 1.29x to 1.84x per-stage gains are what it gives back, so expect roughly 2,700 to 3,400 s.
+
+Nothing above this section is retracted. The timings stand, the reproducibility check stands, the
+port split stands. What changes is the label: that chain was never the whole deliverable, and I
+presented it as though it were.

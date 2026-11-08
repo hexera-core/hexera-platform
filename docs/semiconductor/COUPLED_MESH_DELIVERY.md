@@ -137,8 +137,12 @@ unpacking 38 GB.
 
 ## Resolution, and why it stops here
 
-22.0035 um in the microchannels is the floor with the current mesh image, and it is the tool rather
-than the machine. OpenFOAM in that image is built with **32-bit labels** (`Arch: label=32`), and one
+22.0035 um in the microchannels is the floor OF THE RECIPE THAT RAN, not of the tool. **The tool's floor
+is 16.43 um** (lowest root/span ratio cfMesh has accepted on this part is 1.5233, `DEVLOG.md:4009`), so
+pitch-12 at 16.7719 um is octree-reachable with no image rebuild. It is still undeliverable, because at
+767.1M cells it is 2.317e9 faces = **107.9% of the 2^31 face label**. The binding wall is FACES, not
+cells, and 700M cells is the same number: at 3.02 faces/cell, 2^31 faces is about 711M cells, so the
+real ceiling is 600-650M and the customer's own 700M figure is within 2% of overflowing this build. OpenFOAM in that image is built with **32-bit labels** (`Arch: label=32`), and one
 more refinement level overflows them in two different places: in parallel the octree's load balancer
 computes a negative destination rank, and in serial the octree's node addressing asks for a negative
 allocation. No rank count, buffer size, domain box or serial run gets past it.

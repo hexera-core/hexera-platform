@@ -19,7 +19,7 @@ independent checks behind it. Nothing else in this table moved.
 | conditioning, **after** layers | **good** | 1 of the 9 criteria fails: 23,814 faces in error, 16,363 of them interpolation weights under 0.02 across a 3.43 um sliver with a 5.87x volume jump. Max non-ortho 77.63, 1,488 faces over the 70 degree bar. `Mesh OK` still, which is the trap |
 | conjugate interface | **great** | 25,685,941 faces matched one to one, max centroid gap 0.00085 cells |
 | connectivity | **fine** | both ports in the same piece, proved; the 2 stray cells are 0.0000024% |
-| channel fidelity | **okayish** | median width +0.18% on CAD, but quantisation passes 10.1% too much flow and doubles the off-nominal share |
+| channel fidelity | **good** | median width +0.18% on CAD, off-nominal share doubled 9.13% to 18.86% (stands), but the quantisation flow bias is **+0.80%, not the +10.1% published**: see MESH_QUANTISATION.md, 8 November. 91% of the +8.86% total is the clean 2/N^2 term, which divides out exactly |
 | resolution for CHT | **okayish** | 5 cells across a channel; flow +8.0%, wall shear exact, Nusselt +0.54% developed. Local error up to 43-90% in the thermal entrance, see section 7 |
 | layers | **a trade, not a defect** | better on every local metric at every Re, 2.1% against 42.9% worst local at Re 10; worse on mean Nu below Re 152 by 0.1 to 0.8 points; cost 5,843 s. Corrected, see section 7 |
 | cell budget | **poor** | the solid is 74% of the mesh and carries almost no physics |

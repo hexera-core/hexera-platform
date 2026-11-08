@@ -305,3 +305,92 @@ more refinement level, which the 32-bit label wall blocks until there is a `WM_L
 the overflow diagnosis was wrong and a 64-bit build halves the box ceiling. That still stands, but the
 decision now has a second and stronger reason to go the other way, so it is worth re-opening on these
 grounds rather than the ones it was closed on.
+
+
+## 2026-11-08: the quantisation flow bias is +0.80%, not +10.1%
+
+This document's headline number is wrong by an order of magnitude, and so is the conclusion drawn
+from it in `MESH_QUALITY_CBOX2B.md` and `MESH_IMPROVEMENT_PLAN.md`.
+
+### Why the published number could not be reproduced
+
+The +10.1% is a ratio of two conductance columns, `mean(w^3)` against a 5-cell channel: 1.2620 for
+the mesh and 1.1467 for the CAD. The mesh column reproduces to five figures. **The CAD column does
+not reproduce by any method tried:**
+
+| method | CAD conductance column |
+|---|---|
+| this document, published | 1.1467 |
+| an independent recomputation by the same method | 1.13691 |
+| this document's own CAD bin-mean widths | 1.12995 |
+| a fresh raycast of `fluid.stl`, 70,040 channel gaps | 1.20326 |
+
+Four values spanning 6.5%, on the single load-bearing number. The two columns were measured on
+different populations, so their ratio is not a measurement of anything.
+
+### The model that does reproduce, with no free parameter
+
+The mechanism is not "the width is rounded". **Each WALL snaps to a cell face independently**, so
+with the wall phase inside a cell measured as uniform (20 bins, 290 to 482 about a mean of 370),
+the cell count across a channel is
+
+```
+n = round((p + w)/dx) - round(p/dx),     p uniform on [0, dx)
+```
+
+That has **no fitted constant**. Run against this document's own measured mesh histogram:
+
+| | 4 cells | 5 cells | 6 cells |
+|---|---|---|---|
+| predicted, nothing fitted | **2.63%** | **80.32%** | **11.88%** |
+| measured | 2.33% | 85.00% | 12.67% |
+
+A width-rounding model with one fitted bias parameter fits the 5- and 6-cell shares slightly
+better and predicts **0.00%** at 4 cells, i.e. it cannot produce a channel narrower than anything
+in the CAD and so cannot explain the 2.33% that exists. The phase model produces it from the
+mechanism alone. That is the discriminating test and the phase model passes it.
+
+**It also breaks a tie this corpus never resolved.** The on-nominal share is measured twice here
+and never reconciled: 79.91% from 103,980 scanlines and 85.00% from 791,205 gaps. The model, which
+was fitted to neither, lands on **80.32%**. That is 0.4 points from the first figure and 4.7 from
+the second, so the 79.91% pass is the one to believe.
+
+### The answer
+
+| term | value | nature |
+|---|---|---|
+| discretisation, 5 cells across | **+8.00%** | exactly `2/N^2`, verified to ratio 1.000000 at N = 5, 10, 20, 40, 80 |
+| quantisation | **+0.80%** | the part that varies channel to channel |
+| total, too much coolant | **+8.86%** | |
+
+Positive, as convexity requires for a population centred on the lattice, and an order of magnitude
+smaller than published. **91% of the flow bias is now the clean term**, which is uniform across
+every channel and divides out exactly. The messy term that redistributes flow between branches,
+the only one a topology-optimised plate cannot absorb, is +0.80%.
+
+### The free inward offset is refuted
+
+`project_corintis_channel_quantisation` and this document both propose a 1 um inward offset on
+`fluid.stl` as a free fix. Re-tested against the phase mechanism:
+
+| offset | on nominal | quantisation | total |
+|---|---|---|---|
+| 0.0 um | **80.32%** | +0.80% | +8.86% |
+| 0.5 um | 77.94% | -1.71% | +6.15% |
+| 1.0 um | 75.04% | -4.13% | +3.54% |
+| 1.5 um | 71.85% | -6.62% | +0.85% |
+
+It makes the on-nominal share **worse at every offset**, and the only way it improves the total is
+by driving the quantisation negative to cancel the discretisation term. That is cancelling a
+numerical error with a deliberate geometry error: it would mean meshing a part 1 to 2 um narrower
+than the customer's on every channel wall, and reporting the agreement as accuracy. Do not do it.
+
+### What this changes upstream
+
+`MESH_QUALITY_CBOX2B.md` grades channel fidelity "okayish" on the strength of "quantisation passes
+10.1% too much flow and doubles the off-nominal share", and an 8 November review graded the mesh
+down to "bad" overall largely on the claim that pressure drop reads 10-16% low. The off-nominal
+doubling stands. The 10.1% does not, and the pressure-drop conclusion that rested on it does not.
+
+Scripts: `solvers/quant_phase.py` (the mechanism and the test), `solvers/quant_fit.py` (the
+one-parameter model it replaces, kept because its failure at 4 cells is the evidence).
