@@ -43,17 +43,31 @@ def derived_interpretation(original, *, source_id: str):
     )
 
 
-def stages_for(geometry, *, engine: str) -> tuple[bool, str]:
+def stages_for(geometry, *, engine: str, budget_s: float | None = None) -> tuple[bool, str]:
     """Whether `geometry` can be staged for `engine`. The one proof promotion rests on.
 
     Staged into a throwaway directory and thrown away: this asks a question, it does not prepare
     the run. The builder stages again for real, from the geometry this call decided on.
+
+    THE PROOF RUNS INSIDE SOMEBODY ELSE'S CLOCK. The caller allows promotion `budget_s` in total,
+    and a staging ladder that degrades across several attempts has to fit the whole ladder inside
+    it: with a per-attempt bound larger than the budget, the caller's timeout fires during the
+    FIRST attempt and the run never reaches the degraded attempt that would have staged. That is
+    not a slow part being refused, it is a good repair being thrown away for want of arithmetic.
+    So the budget is divided across the rungs and handed down.
     """
     from meshpipeline.cad.staging import prepare_surface
+    from meshpipeline.engines.gmsh.gmsh_runner import STAGE_MODES
+
+    per_attempt = None
+    if budget_s and budget_s > 0:
+        # A margin, so the ladder finishes inside the budget rather than exactly on it.
+        per_attempt = max(60.0, (float(budget_s) * 0.9) / max(1, len(STAGE_MODES)))
 
     with tempfile.TemporaryDirectory(prefix="repair-stage-") as td:
         try:
-            prepare_surface(geometry, Path(td) / "input.stl", engine=engine)
+            prepare_surface(geometry, Path(td) / "input.stl", engine=engine,
+                            stage_timeout_s=per_attempt)
         except Exception as exc:  # noqa: BLE001 - every failure here is "it did not stage"
             return False, f"{type(exc).__name__}: {exc}"
     return True, ""
@@ -73,6 +87,7 @@ def promote(state, *, repaired, engine: str = "", attempt: int = 0) -> dict:
     the upload it names is immutable and still in the catalogue, so the customer's bytes remain
     retrievable and provable after the run has moved on.
     """
+    import meshpipeline.settings.cad_repair as rcfg
     from meshpipeline.pipeline.geometry_state import materialized as _materialized
 
     original = _materialized(state)
@@ -98,7 +113,8 @@ def promote(state, *, repaired, engine: str = "", attempt: int = 0) -> dict:
             f"the repaired geometry claims {repaired.interpretation.unit!r} where the approved "
             f"unit is {original.interpretation.unit!r}; repair does not reinterpret scale")
 
-    staged, why = stages_for(repaired, engine=engine)
+    staged, why = stages_for(repaired, engine=engine,
+                             budget_s=rcfg.CAD_REPAIR_TIMEOUT_S)
     if not staged:
         # It did not stage, so it is not an improvement the mesher can use. The run stays on the
         # original and an operator decides what to do with the repair.

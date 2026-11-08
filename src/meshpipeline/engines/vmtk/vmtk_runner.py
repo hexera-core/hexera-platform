@@ -293,7 +293,8 @@ def _read_surface(path: Path):
     return pv.read(str(path))
 
 
-def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Path:
+def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None,
+                      stage_timeout_s: float | None = None) -> Path:
     import pyvista as pv
     geom_path, out_stl = Path(geom_path), Path(out_stl)
     ws = out_stl.parent

@@ -249,8 +249,8 @@ def _refusal_rows(record: Mapping) -> list[dict]:
 #: `attempted: False` for every decline, but the refused one is the only one that carries the
 #: loop it ran - its attempts, its refusals and its caps evidence - and that run is the one a
 #: customer most needs an account of: we changed your part too far and threw the result away. The
-#: rest (no_report, no_geometry, off, format, triage, timeout, unavailable, failed, not_promoted)
-#: measured nothing a row could state, and the lane's one line already says which it was.
+#: rest (no_report, no_geometry, off, format, triage, timeout, unavailable, failed, not_promoted,
+#: not_proved) measured nothing a row could state, and the lane's one line already says which it was.
 _ACCOUNTABLE_DECLINES = ("refused",)
 
 

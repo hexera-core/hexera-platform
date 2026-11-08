@@ -23,7 +23,8 @@ class UnsupportedSurfaceSource(RuntimeError):
     pass
 
 
-def prepare_surface(geometry, destination, *, engine: str = "") -> PreparedSurface:
+def prepare_surface(geometry, destination, *, engine: str = "",
+                    stage_timeout_s: float | None = None) -> PreparedSurface:
     if geometry is None:
         raise ValueError(
             "surface preparation needs verified execution geometry; a run carrying none has "
@@ -46,7 +47,7 @@ def prepare_surface(geometry, destination, *, engine: str = "") -> PreparedSurfa
         if kind is GeometryKind.surface and suffix == ".stl":
             _prepare_stl(src, dest, consumed)
         elif kind is GeometryKind.cad:
-            _prepare_cad(src, dest, consumed, engine=engine)
+            _prepare_cad(src, dest, consumed, engine=engine, stage_timeout_s=stage_timeout_s)
         elif suffix in _native_surface_suffixes(engine):
             # an engine's own surface format (vmtk's .vtp): that bundle's tessellator consumes
             # the interpretation and emits metres - the shared analysis surface and the native
@@ -138,10 +139,12 @@ def _prepare_stl(src: Path, dest: Path, consumed: PreparedCoordinates) -> None:
     scale_stl_file(src, dest, consumed)
 
 
-def _prepare_cad(src: Path, dest: Path, consumed: PreparedCoordinates, *, engine: str) -> None:
+def _prepare_cad(src: Path, dest: Path, consumed: PreparedCoordinates, *, engine: str,
+                 stage_timeout_s: float | None = None) -> None:
     from meshpipeline.engines.runtime import get_engine
 
-    get_engine(engine).tessellate_to_stl(str(src), dest, prepared=consumed)
+    get_engine(engine).tessellate_to_stl(str(src), dest, prepared=consumed,
+                                         stage_timeout_s=stage_timeout_s)
 
 
 def _prepare_via_engine(src: Path, dest: Path, consumed: PreparedCoordinates, *,

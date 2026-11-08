@@ -26,6 +26,28 @@ FORMULA_OPENINGS = (
     FaceSelector("rear_wing_starboard_panel", (2986.2, 115.1, 470.0), 89790.5),
 )
 
+#: THE RECORDING'S CAR, and why it is three solids out of the donor's eight.
+#:
+#: The donor body is 107 MB and 421 faces. Read and scanned whole it costs ~59 s, which is inside
+#: CAD_INSPECT_TIMEOUT_S only on a fast laptop - on a worker it would come back inconclusive, and an
+#: inconclusive inspection means triage aims at nothing and no repair is attempted at all. These
+#: three solids - the body shell, the floor and the rear wing - are the car's whole silhouette and
+#: read in ~5 s. The five dropped solids are the airbox, the mirrored sidepods and the mirrored
+#: front wing; they also carry the donor's OWN 2 invalid_brep and 2 self_intersection errors, which
+#: CRS refuses on purpose ("a judgement no bounded operation makes"), so a recording that wants a
+#: CLEAN repaired verdict must not include them.
+DEMO_SOLIDS = (1, 7, 8)
+
+#: ONE OPENING PER SOLID, each a planar panel chosen by measurement off DEMO_SOLIDS. Removing one
+#: face from every solid takes the part to ZERO closed solids, which is what makes the control run
+#: fail outright rather than mesh a bit worse: gmsh meshes the B-rep itself and an FEA or
+#: external-flow case with no solid cannot be built at all.
+DEMO_OPENINGS = (
+    FaceSelector("nose_underpanel", (0.385, 136.0, 0.0), 15149.805),
+    FaceSelector("floor_edge_port", (1661.902, 55.301, -736.932), 29485.325),
+    FaceSelector("rear_wing_mainplane", (2936.828, 127.69, 477.0), 116357.993),
+)
+
 
 def _read_step(path: Path):
     from OCP.IFSelect import IFSelect_RetDone
@@ -124,12 +146,44 @@ def _prior_demo_solid(shape):
     return matches[0]
 
 
+def keep_solids(shape, keep: Iterable[int]):
+    """The 1-based solids in `keep`, in document order, as one compound.
+
+    Face selection stays by MEASUREMENT (centroid and area), so dropping solids cannot silently
+    re-point a selector at a different face the way an index would.
+    """
+    from OCP.BRep import BRep_Builder
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS_Compound
+
+    wanted = {int(index) for index in keep}
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    explorer, seen, kept = TopExp_Explorer(shape, TopAbs_SOLID), 0, 0
+    while explorer.More():
+        seen += 1
+        if seen in wanted:
+            builder.Add(compound, explorer.Current())
+            kept += 1
+        explorer.Next()
+    missing = sorted(wanted - set(range(1, seen + 1)))
+    if missing:
+        raise ValueError(f"solids {missing} were asked for but the source holds only {seen}")
+    if kept != len(wanted):
+        raise ValueError(f"kept {kept} solids, expected {len(wanted)}")
+    return compound
+
+
 def build_fixture(source: Path, output: Path, manifest: Path, *,
                   selectors: Iterable[FaceSelector], remove_prior_demo_solid: bool = False,
-                  vehicle: str = "test fixture") -> None:
+                  vehicle: str = "test fixture", solids: Iterable[int] | None = None) -> None:
     from OCP.ShapeBuild import ShapeBuild_ReShape
 
     shape = _read_step(source)
+    if solids is not None:
+        shape = keep_solids(shape, solids)
     faces, defects = _selected_faces(shape, tuple(selectors))
     reshape = ShapeBuild_ReShape()
     for face in faces:
@@ -144,6 +198,7 @@ def build_fixture(source: Path, output: Path, manifest: Path, *,
         "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
         "output_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
         "removed_prior_demo_solid": remove_prior_demo_solid,
+        "kept_solids": list(solids) if solids is not None else None,
         "defects": defects,
     }
     manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -155,13 +210,25 @@ def build_formula_fixture(source: Path, output: Path, manifest: Path) -> None:
                   vehicle="Formula 1000 CFD body")
 
 
+def build_demo_fixture(source: Path, output: Path, manifest: Path) -> None:
+    """The recording's car: DEMO_SOLIDS, one opening per solid, zero closed solids left."""
+    build_fixture(source, output, manifest, selectors=DEMO_OPENINGS, solids=DEMO_SOLIDS,
+                  vehicle="Formula 1000 body, floor and rear wing")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--demo", action="store_true",
+                        help="build the recording's car (DEMO_SOLIDS + DEMO_OPENINGS) instead of "
+                             "the whole-body multi-defect fixture")
     args = parser.parse_args()
-    build_formula_fixture(args.source, args.output, args.manifest)
+    if args.demo:
+        build_demo_fixture(args.source, args.output, args.manifest)
+    else:
+        build_formula_fixture(args.source, args.output, args.manifest)
     return 0
 
 
