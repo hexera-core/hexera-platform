@@ -25,7 +25,8 @@ class ENGINE:
         return {"solids": sorted(solids), "solid_count": len(solids),
                 "bbox_min": lo, "bbox_max": hi, "units": "m"}
 
-    def tessellate_to_stl(self, geom_path, out_stl, *, context=None, prepared=None) -> Path:
+    def tessellate_to_stl(self, geom_path, out_stl, *, context=None, prepared=None,
+                          stage_timeout_s: float | None = None) -> Path:
         # The placed parts, written from the ECXML beside the canonical file, in the file's
         # metres - whatever form the canonical took (a fused STEP or the placed STL).
         from meshpipeline.cad.ingest.ecxml import read_ecxml

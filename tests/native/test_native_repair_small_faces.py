@@ -29,6 +29,100 @@ def _read(path):
     return _read_shape(path)
 
 
+def _prism(corners, height, z):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    polygon = BRepBuilderAPI_MakePolygon()
+    for x, y in corners:
+        polygon.Add(gp_Pnt(x, y, z))
+    polygon.Close()
+    return BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(polygon.Wire(), True).Face(),
+                                 gp_Vec(0.0, 0.0, height)).Shape()
+
+
+def _plate_cut_by(tools, length):
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopoDS import TopoDS_Compound
+
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    for tool in tools:
+        builder.Add(compound, tool)
+    return BRepAlgoAPI_Cut(BRepPrimAPI_MakeBox(length, 100.0, 10.0).Shape(), compound).Shape()
+
+
+def _debris_plate(count):
+    """`count` of the authored wedge notches along one plate: 0.002 mm strips, nothing else."""
+    return _plate_cut_by([_prism([(30.0 * i, -1.0), (30.0 * i + 20.0, -1.0),
+                                  (30.0 * i + 20.0, 0.002), (30.0 * i, 0.0)], 12.0, -1.0)
+                          for i in range(count)], 30.0 * count)
+
+
+def _engraved_plate(count, depth):
+    """`count` square pockets `depth` deep: a real feature, walls under the sweep's precision."""
+    return _plate_cut_by([_prism([(30.0 * i + 5.0, 40.0), (30.0 * i + 10.0, 40.0),
+                                  (30.0 * i + 10.0, 45.0), (30.0 * i + 5.0, 45.0)],
+                                 1.0, 10.0 - depth)
+                          for i in range(count)], 30.0 * count)
+
+
+def _sweep_of_every_small_face(shape):
+    found, complete = localize_scan(shape)
+    assert complete
+    op = FixSmallFaces()
+    targets = tuple(ref for d in found if d.code is DefectCode.small_face
+                    for ref in op.targets_for(d))
+    assert targets, "the part carries no small_face defect to aim at"
+    return op.apply(shape, targets, tolerance_mm=0.1)
+
+
+def test_debris_past_the_wide_face_cap_is_swept_and_the_part_keeps_its_size(_sweep_on):
+    from meshpipeline.cad.repair.caps import cumulative_refusal, measure, sanity_refusal
+
+    count = operations.MAX_SMALL_FACE_REMOVALS + 10
+    shape = _debris_plate(count)
+    before = measure(shape)
+
+    outcome = _sweep_of_every_small_face(shape)
+    after = measure(outcome.shape)
+
+    assert outcome.evidence.get("faces_removed") == before.faces - after.faces == count
+    assert after.valid and after.solids == before.solids
+    assert sanity_refusal(before, after, declared_faces_removed=count) == ""
+    assert cumulative_refusal(before, after, declared_area_mm2=0.0, declared_volume_mm3=0.0) == ""
+
+
+def test_engraving_past_the_wide_face_cap_is_declined_not_erased(_sweep_on):
+    # THE REASON THE CAP HAS TWO TIERS. A 0.05 mm pocket's walls are strips the fixer will take,
+    # and every cap passes the erased part; only the removed faces' width says it was a feature.
+    from meshpipeline.cad.repair.caps import measure
+
+    shape = _engraved_plate(6, 0.05)
+    before = measure(shape)
+
+    outcome = _sweep_of_every_small_face(shape)
+
+    assert "swept_too_many" in str(outcome.evidence.get("declined"))
+    assert outcome.shape is shape, "a decline must hand back the input object itself"
+    assert measure(outcome.shape).faces == before.faces
+
+
+def test_more_small_faces_than_a_sweep_may_consider_decline_before_the_kernel_runs(
+        _sweep_on, monkeypatch):
+    shape = _debris_plate(3)
+    monkeypatch.setattr(operations, "MAX_DEBRIS_REMOVALS", 2)
+
+    outcome = _sweep_of_every_small_face(shape)
+
+    assert "too_many_small_faces" in str(outcome.evidence.get("declined"))
+    assert outcome.shape is shape
+
+
 def _sliver(tmp_path):
     """The authored Boolean sliver: the small-edge fixture's notch ends in a 0.002 mm wide face,
     which `localize_scan` reports as `small_face` - the same fixture, read for its other defect."""
@@ -141,6 +235,7 @@ def test_a_sweep_over_its_removal_cap_declines_and_the_shape_is_untouched(
     from meshpipeline.cad.repair.caps import measure
 
     monkeypatch.setattr(operations, "MAX_SMALL_FACE_REMOVALS", 0)
+    monkeypatch.setattr(operations, "DEBRIS_WIDTH_MM", 0.0)
     shape, defect = _sliver(tmp_path)
     before = measure(shape)
     op = FixSmallFaces()

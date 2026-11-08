@@ -74,7 +74,7 @@ def repairs(monkeypatch):
 
     monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file", _repair)
     monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for",
-                        lambda geometry, engine="": (True, ""))
+                        lambda geometry, engine="", budget_s=None: (True, ""))
     return calls
 
 
@@ -239,7 +239,7 @@ def test_a_repair_that_crashes_does_not_fail_the_run(tmp_path, monkeypatch):
 
 def test_geometry_that_does_not_stage_after_repair_is_not_promoted(tmp_path, monkeypatch, repairs):
     monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for",
-                        lambda geometry, engine="": (False, "RuntimeError: empty shape"))
+                        lambda geometry, engine="", budget_s=None: (False, "RuntimeError: empty shape"))
 
     out = _run(_state(tmp_path))
 
@@ -331,7 +331,7 @@ def _looped(monkeypatch, *, operations=(), entities=(), **measured):
 
     monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file", _repair)
     monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for",
-                        lambda geometry, engine="": (True, ""))
+                        lambda geometry, engine="", budget_s=None: (True, ""))
 
 
 def test_the_run_records_every_operation_the_loop_tried(monkeypatch, tmp_path):
@@ -514,12 +514,13 @@ def test_the_runs_repair_directives_reach_the_repair_step(monkeypatch, tmp_path,
 def test_the_staging_proof_runs_off_the_event_loop_and_on_a_clock(tmp_path, monkeypatch, repairs):
     """Promotion's staging proof is a tessellation. Run synchronously on the loop it blocked the
     job's heartbeat and cancellation checks for as long as it took, outside the repair's timeout.
-    Now it runs in a thread, the loop keeps beating, and a proof past the bound is a refusal."""
+    Now it runs in a thread, the loop keeps beating, and a proof past the bound leaves the run on
+    the original as a time limit of ours - never as a verdict on the repaired geometry."""
     import time
 
     monkeypatch.setattr(rcfg, "CAD_REPAIR_TIMEOUT_S", 0.3)
 
-    def _slow(geometry, engine=""):
+    def _slow(geometry, engine="", budget_s=None):
         time.sleep(1.0)
         return True, ""
 
@@ -542,8 +543,13 @@ def test_the_staging_proof_runs_off_the_event_loop_and_on_a_clock(tmp_path, monk
 
     out, beats = asyncio.run(_both())
     assert beats >= 3, "the event loop was blocked while staging"
-    assert out["repair_attempt"]["attempted"] is False
-    assert "not promoted" in out["repair_attempt"]["reason"]
+    record = out["repair_attempt"]
+    assert record["attempted"] is False
+    # OUR CLOCK, NOT A VERDICT. The proof judged nothing, so this is not `not_promoted` - which
+    # told a customer whose repair was sound that their file "failed our checks".
+    assert record["outcome"] == "not_proved"
+    assert "did not finish" in record["reason"]
+    # and the run still carries on with the file the customer sent: unproved bytes are not promoted
     assert "geometry" not in out
 
 

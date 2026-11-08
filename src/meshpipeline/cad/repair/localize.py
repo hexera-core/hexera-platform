@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 # So both are used, and neither is trusted to find what the other finds.
 
 #: A face smaller than this fraction of the part's total surface area is reported as small. Not a
-#: defect by itself - a legitimate chamfer can be tiny - which is why it is a warning that routes
-#: to a person rather than something an automatic repair acts on.
+#: defect by itself - a legitimate chamfer can be tiny - which is why it is a warning. Only the
+#: consented sweep (`operations.FixSmallFaces`) acts on one; without it a person decides.
 SMALL_FACE_AREA_FRACTION = 1e-5
 
 #: An edge shorter than this fraction of the part's diagonal is reported as small. Short edges are

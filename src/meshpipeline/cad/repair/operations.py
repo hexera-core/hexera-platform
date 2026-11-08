@@ -379,6 +379,29 @@ class FixFaceBoundary:
 #: operation's own isolation bound, like MAX_HEAL_FACES, not a cap.
 MAX_SMALL_FACE_REMOVALS = 20
 
+#: THE COUNT IS NOT WHAT KEEPS THE SWEEP SAFE FOR DEBRIS, AND IT IS ALL THAT DOES FOR A FEATURE.
+#: Measured on the pinned kernel: 500 strips 0.002 mm wide swept valid with the box unchanged, while
+#: 21 pockets engraved 0.05 mm deep were ERASED - 84 walls, every cap passing - because a wall that
+#: shallow is a strip under the 0.1 mm precision, and no area, validity or tolerance check can tell
+#: it from debris. So a sweep may pass MAX_SMALL_FACE_REMOVALS only when every face it removed is
+#: under DEBRIS_WIDTH_MM (width as MESH-9 reads it: twice the area over the perimeter): narrower
+#: than anything cut on purpose. The ceiling is run time, not damage: the fixer is about quadratic
+#: in strips (200 took 6.5 s, 500 took 52 s) and holds a thread with no await point.
+MAX_DEBRIS_REMOVALS = 200
+DEBRIS_WIDTH_MM = 0.01
+
+
+def _face_width(face) -> float:
+    """A face's width: twice its area over its perimeter. A face no perimeter can be read for is
+    infinitely wide, which fails closed: it cannot qualify as debris."""
+    from OCP.TopAbs import TopAbs_EDGE
+
+    from meshpipeline.cad.repair.localize import _edge_length, _face_area, _indexed
+
+    edges = _indexed(face, TopAbs_EDGE)
+    perimeter = sum(_edge_length(edges.FindKey(i)) for i in range(1, edges.Extent() + 1))
+    return 2.0 * _face_area(face) / perimeter if perimeter > 0 else float("inf")
+
 
 def _sliver_owner_faces(shape, edge) -> list:
     """The faces beside `edge` - the candidates a sliver edge's defect is answered through."""
@@ -450,8 +473,9 @@ class FixSmallFaces:
                   neighbours they merge the sliver into, exactly `fix_small_edges`' constraint),
                   so what it REMOVED is read back from its history (`_swept_away`) and judged:
                   every removed face must be sliver-sized by the same criterion, and there may be
-                  at most MAX_SMALL_FACE_REMOVALS of them. Either failure declines with the input
-                  handed back unchanged.
+                  at most MAX_SMALL_FACE_REMOVALS of them, or MAX_DEBRIS_REMOVALS when every one
+                  is under DEBRIS_WIDTH_MM. Either failure declines with the input handed back
+                  unchanged.
       ACCOUNT   - the kept outcome declares `faces_removed`, and the session's sanity cap accepts
                   a face-count drop of exactly that many and refuses anything beyond it - so a
                   strip fix that quietly took a neighbour with it is rolled back as damage even
@@ -465,13 +489,11 @@ class FixSmallFaces:
     and stays `fix_small_edges`' question.
 
     THE DETECTION SCALE. The fixer finds a strip by its width against the precision it is given.
-    A sliver is sliver-sized relative to the PART (the localiser's criterion is an area fraction),
-    so a fixed precision misses every strip on a large part. The sweep therefore detects up to
-    `diagonal x CAD_REPAIR_MAX_DEVIATION_RATIO` - merging a strip moves the boundary by about the
-    strip's width, and that ratio is precisely how far this deployment has said a repair may move
-    the surface. The kernel may still inflate a tolerance past CAD_REPAIR_MAX_TOLERANCE_MM to make
-    a merge close (it does not obey SetMaxTolerance here, measured); the cumulative cap then rolls
-    the attempt back, which is the right verdict on a merge that needed a geometry lie.
+    That precision is the run's tolerance, an absolute removal width: scaled by the diagonal it
+    turned a 0.1 mm sweep into millimetres on a vehicle. The kernel may still inflate a tolerance
+    past CAD_REPAIR_MAX_TOLERANCE_MM to make a merge close (it does not obey SetMaxTolerance here,
+    measured); the cumulative cap then rolls the attempt back, which is the right verdict on a
+    merge that needed a geometry lie.
 
     AREA IS DELIBERATELY NOT DECLARED. Removing a strip extends the neighbouring faces to close
     the gap, so the net surface change is not the sliver's own area and has either sign; each
@@ -502,12 +524,14 @@ class FixSmallFaces:
     def apply(self, shape, targets: tuple[EntityRef, ...], *,
               tolerance_mm: float) -> OpOutcome:
         from OCP.ShapeFix import ShapeFix_FixSmallFace
+        from OCP.TopAbs import TopAbs_FACE
 
         import meshpipeline.settings.cad_repair as rcfg
         from meshpipeline.cad.repair.localize import (
             SMALL_FACE_AREA_FRACTION,
             _diagonal,
             _face_area,
+            _indexed,
         )
 
         if not rcfg.CAD_REPAIR_FIX_SMALL_FACES:
@@ -527,6 +551,18 @@ class FixSmallFaces:
         # area fraction is what makes "this is debris, not a feature" defensible. An edge target
         # is answered through the sliver face beside it, so that face is what must be small.
         threshold = SMALL_FACE_AREA_FRACTION * _total_face_area(shape)
+
+        # BEFORE THE KERNEL, because the fixer's cost is what MAX_DEBRIS_REMOVALS bounds: running
+        # it on thousands of slivers only to decline the result would hold the thread for minutes.
+        all_faces = _indexed(shape, TopAbs_FACE)
+        small_count = sum(1 for i in range(1, all_faces.Extent() + 1)
+                          if _face_area(all_faces.FindKey(i)) < threshold)
+        if small_count > MAX_DEBRIS_REMOVALS:
+            return OpOutcome(shape=shape, evidence={
+                "declined": f"too_many_small_faces ({small_count} under the sliver threshold, "
+                            f"over the {MAX_DEBRIS_REMOVALS} one sweep may consider)",
+                "faces_targeted": len(targets)})
+
         for ref, sub in resolved:
             if ref.entity_type == "face":
                 small = _face_area(sub) < threshold
@@ -567,10 +603,12 @@ class FixSmallFaces:
             # honest "target_remains".
             return OpOutcome(shape=shape, evidence={"faces_targeted": len(targets),
                                                     "faces_removed": 0})
-        if len(removed_areas) > MAX_SMALL_FACE_REMOVALS:
+        widest = max(_face_width(face) for face in swept)
+        limit = MAX_DEBRIS_REMOVALS if widest < DEBRIS_WIDTH_MM else MAX_SMALL_FACE_REMOVALS
+        if len(removed_areas) > limit:
             return OpOutcome(shape=shape, evidence={
-                "declined": f"swept_too_many ({len(removed_areas)} faces removed, over the "
-                            f"{MAX_SMALL_FACE_REMOVALS} one sweep may)",
+                "declined": f"swept_too_many ({len(removed_areas)} faces removed, the widest "
+                            f"{widest:.6g} mm, over the {limit} one sweep may)",
                 "faces_targeted": len(targets)})
         overswept = [a for a in removed_areas if a >= threshold]
         if overswept:

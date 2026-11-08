@@ -46,7 +46,7 @@ def _repaired(tmp_path, original, *, marker="repaired", unit=None, scale=None, f
 def staging_ok(monkeypatch):
     seen: list = []
 
-    def _prepare(geometry, destination, *, engine=""):
+    def _prepare(geometry, destination, *, engine="", stage_timeout_s=None):
         seen.append((geometry.ref.sha256, engine))
         from pathlib import Path
 
@@ -60,7 +60,7 @@ def staging_ok(monkeypatch):
 
 @pytest.fixture
 def staging_fails(monkeypatch):
-    def _prepare(geometry, destination, *, engine=""):
+    def _prepare(geometry, destination, *, engine="", stage_timeout_s=None):
         raise RuntimeError("OpenCASCADE produced an empty shape")
 
     monkeypatch.setattr("meshpipeline.cad.staging.prepare_surface", _prepare)

@@ -55,7 +55,7 @@ def _opted_in(monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_ENABLED", True)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_AUTONOMOUS", True)
     monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for",
-                        lambda geometry, engine="": (True, ""))
+                        lambda geometry, engine="", budget_s=None: (True, ""))
 
 
 def _loop(monkeypatch, **measured):

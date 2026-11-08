@@ -400,6 +400,52 @@ _SADDLE_NORMAL_RESULTANT = 0.5
 _SADDLE_FLATNESS = 0.25
 
 
+def _loop_bodies(shape, loops: list) -> list:
+    """Which SHELL each loop belongs to, as an index per loop - None when it cannot be resolved.
+
+    WHY THE GUARD NEEDS THIS. A missing tube wall leaves its two rims as free boundaries of ONE
+    shell: taking the cylindrical faces out of a closed body leaves the rest of its surface
+    connected, so both ends are on the same shell. Two free loops on DIFFERENT shells therefore
+    cannot be the two ends of one passage, whatever the geometry between them says.
+
+    Without this the passage test compares every loop with every other across the whole compound,
+    and on a multi-body part it pairs loops that no drill could connect - a panel opening on the
+    floor with one on the rear wing, because the line between them happens to leave within 70
+    degrees of both normals. Each such false pair refuses filling FOR THE RUN, so on an assembly
+    the guard stopped repairing anything long before it protected anything.
+
+    An unresolved loop returns None and is compared against everything, which is the fail-closed
+    reading: a loop whose owning shell cannot be named has not been ruled out.
+    """
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_SHELL
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
+
+    owners = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_SHELL, owners)
+    shells = TopTools_IndexedMapOfShape()
+    explorer = TopExp_Explorer(shape, TopAbs_SHELL)
+    while explorer.More():
+        shells.Add(explorer.Current())
+        explorer.Next()
+
+    bodies: list = []
+    for wire in loops:
+        key = None
+        edges = TopExp_Explorer(wire, TopAbs_EDGE)
+        while edges.More() and key is None:
+            edge = edges.Current()
+            if owners.Contains(edge):
+                owning = owners.FindFromKey(edge)
+                if owning.Extent() >= 1:
+                    # A free boundary edge has exactly one owning shell; take the first either way,
+                    # because an edge shared by two shells cannot separate them.
+                    key = shells.FindIndex(owning.First()) or None
+            edges.Next()
+        bodies.append(key)
+    return bodies
+
+
 def _edge_faces(shape):
     """Edge -> owning faces, the map `_rim_fit` reads wall normals from."""
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
@@ -607,6 +653,12 @@ def _paired_rims(loops: list, shape=None) -> set[int]:
     """
     lone = _lone_face_boundaries(shape, loops) if shape is not None else set()
     candidates = [index for index in range(len(loops)) if index not in lone]
+    # ONE PASSAGE CANNOT SPAN TWO SHELLS (`_loop_bodies`). An unresolved loop (None) is compared
+    # against everything, so this narrows the test without ever widening what may be filled.
+    bodies = _loop_bodies(shape, loops) if shape is not None else [None] * len(loops)
+
+    def _same_body(left: int, right: int) -> bool:
+        return bodies[left] is None or bodies[right] is None or bodies[left] == bodies[right]
     rims = {}
     curved: list[int] = []
     for index in candidates:
@@ -628,11 +680,16 @@ def _paired_rims(loops: list, shape=None) -> set[int]:
         # curved candidate BEFORE any pair is answered.
         ancestors = _edge_faces(shape) if shape is not None else None
         fits = {index: _rim_fit(loops[index], ancestors) for index in curved}
-        unfit = [index for index, fit in fits.items() if fit is None]
+        # UNDECIDABLE WHERE IT COULD PAIR, not everywhere. A rim with no usable normal cannot be
+        # ruled out against the candidates on ITS OWN shell, so the guard still fails closed for
+        # those. It says nothing about a rim on another body, and refusing those too meant one
+        # unfittable loop anywhere on an assembly refused every fill on it.
+        unfit = [index for index, fit in fits.items() if fit is None
+                 and any(other != index and _same_body(index, other) for other in candidates)]
         if unfit:
             raise RimsUndecidable(
                 f"{len(unfit)} candidate rim(s) are not planar loops and have no best-fit normal, "
-                f"beside {len(candidates) - len(unfit)} other candidate(s)")
+                f"beside other candidate(s) on the same shell")
         for index in candidates:
             if index not in fits:
                 # a planar rim keeps its exact plane normal
@@ -642,12 +699,17 @@ def _paired_rims(loops: list, shape=None) -> set[int]:
                 fits[index] = fit
         for i, left in enumerate(candidates):
             for right in candidates[i + 1:]:
-                if (left in curved or right in curved) and _fits_pair(fits[left], fits[right]):
+                if not _same_body(left, right):
+                    continue
+                if (left in curved or right in curved) and fits.get(left) is not None \
+                        and fits.get(right) is not None and _fits_pair(fits[left], fits[right]):
                     paired.update((left, right))
 
     indices = sorted(rims)
     for i, left in enumerate(indices):
         for right in indices[i + 1:]:
+            if not _same_body(left, right):
+                continue
             n1, (c1, s1) = rims[left]
             n2, (c2, s2) = rims[right]
             if _passage_leaves_both(c1, n1, s1, c2, n2, s2):
