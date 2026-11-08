@@ -130,6 +130,15 @@ export const INSPECT_HELP = [
    "Turn it on and click anywhere on the mesh. It fetches the REAL cells in a ball around the "
    + "spot you clicked and draws them in place of the stand-in. Those are the actual cells the "
    + "mesher wrote, one drawn polygon per face, so what you measure on them is the mesh."],
+  ["Follow",
+   "The same real cells, but wherever you look instead of wherever you clicked. Turn it on and "
+   + "zoom: while a cell is too small to see, it keeps the stand-in and tells you how many pixels "
+   + "a cell is worth; once they are worth looking at it reads the cells in front of you and "
+   + "draws them, and re-reads whenever you stop moving. It sizes its own window - if what you "
+   + "are looking at holds more cells than can be drawn it narrows until every cell in the "
+   + "window comes back, rather than handing you a sample of them. The whole boundary is "
+   + "19,599,615 faces and cannot be drawn at once on this machine; this is how you reach all "
+   + "of it."],
   ["The dial",
    "How big that ball is. All the way left is a few of the finest cells; all the way right is "
    + "the whole part. The number beside it is the real size, and the count tells you how many "
@@ -160,6 +169,9 @@ export function inspectorHtml(job, { xray = false, clip = false, fly = false, wo
       <button class="v-insp-act" id="${id('arm')}" type="button" aria-pressed="false"
               title="Turn on, then click the mesh to read the real cells there">
         <span class="v-insp-dot"></span><b>Inspect</b></button>
+      <button class="v-insp-b" id="${id('follow')}" type="button" aria-pressed="false"
+              title="Keep reading the real cells wherever you look, instead of clicking one spot">
+        Follow</button>
       <label class="v-insp-dial" title="how big a ball of real cells to read">
         <input type="range" id="${id('dial')}" min="0" max="100" value="38"
                aria-label="inspect window size">

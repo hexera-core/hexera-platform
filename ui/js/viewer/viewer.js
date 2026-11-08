@@ -1374,11 +1374,115 @@ function initViewer(job,surf,uiCfg){
     function radiusNow(){return dialRadius(dial?dial.value:38,{fine,diag});}
     function showR(){if(rEl)rEl.textContent=fmtLen(radiusNow());}
     showR();
-    async function cut(at){
+
+    /* FOLLOW: THE CUT TRACKS THE CAMERA.
+
+       WHY THIS IS NOT A REVERSAL. The header above records that this window USED to cut at
+       `cam.getFocalPoint()` and that it was changed to a click, because "to read a place you had
+       to first aim the entire camera at it". That reasoning stands and the click is untouched.
+       What was wrong was camera-cutting as the ONLY way in, not camera-cutting as such. Asked for
+       "show everything, no corners cut", clicking one ball at a time is the corner being cut.
+
+       WHAT IT CANNOT DO, said here so nobody tries. The whole drawn boundary at 1:1 is 19,599,615
+       faces, and at the measured ~92 B of VRAM per delivered face that is about 1.8 GB - the
+       context died below that with edges on (see _EDGE_MAX_POLYS). There is no setting that draws
+       all of it at once on this class of machine. But a reader only ever LOOKS at one
+       neighbourhood, and `boundary_index` was built for exactly that: a ball becomes the buckets
+       it touches and nothing else is read. So this draws all of what is in front of you, at 1:1,
+       and refreshes when you stop moving. Every cell is reachable; they are just not all on
+       screen at once, which they could not be anyway at any screen size.
+
+       WHEN IT ENGAGES is decided by how big a cell is ON SCREEN, not by a distance threshold,
+       because the first is what the reader can actually see and the second depends on the part.
+       `gridPx` already computes it. Below about 1.5 px a real cell is smaller than the pixel that
+       would draw it: the merged surface is then the honest thing to show, and the round trip
+       would be work nobody can see. The readout says which of the two states it is in and why,
+       rather than looking idle. */
+    const FOLLOW_MIN_PX=1.5;
+    const FOLLOW_SETTLE_MS=260;
+    //: How many times the window may halve itself down to fit. Two passes of the area rule land
+    //: inside the cap from 77x over it, which is the worst case measured; the third is slack.
+    const FOLLOW_FIT_PASSES=3;
+    const fol=document.getElementById('v-insp-follow-'+job);
+    let following=false,folTimer=null,folBusy=false,folKey='';
+    let lastInRange=0,lastReturned=0,folFitR=0;
+    function camDist(){const f=cam.getFocalPoint(),q=cam.getPosition();
+      return Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||1e-12;}
+    function viewRadius(){return camDist()*Math.tan(cam.getViewAngle()*Math.PI/360);}
+    function cellPx(){
+      if(!stats||!(stats.typ>0))return 0;
+      return stats.typ*(apiRW.getSize()[1]/(2*Math.tan(cam.getViewAngle()*Math.PI/360)))/camDist();}
+    async function followNow(){
+      if(!following||folBusy)return;
+      const px=cellPx();
+      if(px<FOLLOW_MIN_PX){
+        if(shown.length)dropShown();
+        folKey='';
+        lbl.textContent='zoom in for real cells - '+px.toFixed(1)+' px per cell';
+        rw.render();return;}
+      /* THE SAME VIEW IS NOT RE-FETCHED. An orbit that ends where it started, or a render
+         triggered by something other than the camera, would otherwise cost a round trip and a
+         redraw for an identical answer. */
+      const f=cam.getFocalPoint(),r0=viewRadius();
+      const key=f[0].toFixed(7)+','+f[1].toFixed(7)+','+f[2].toFixed(7)+'|'+r0.toFixed(7);
+      if(key===folKey)return;
+      folKey=key;folBusy=true;
+      try{
+        /* SHRINK UNTIL IT FITS, rather than hand back a sample and ask the reader to narrow it.
+           Faces on a surface go as radius squared, so sqrt(returned / in_range) is the factor
+           that makes the next ball fit. 0.92 is slack against the ball not being a sphere's
+           worth of surface. */
+        let r=r0,at=[f[0],f[1],f[2]],capSeen=0;
+        for(let pass=0;pass<FOLLOW_FIT_PASSES;pass++){
+          await recut(at,r);
+          if(!(lastReturned>0))break;
+          const last=pass===FOLLOW_FIT_PASSES-1;
+          if(lastInRange>lastReturned){
+            /* TRUNCATED, so the cap is exactly what came back - the only place it is visible
+               from here. Shrink by the area rule and try again. */
+            capSeen=lastReturned;
+            if(last)break;
+            const nr=r*0.92*Math.sqrt(lastReturned/lastInRange);
+            if(!(nr>0)||nr<1e-9)break;
+            r=nr;continue;}
+          /* THE WHOLE BALL CAME BACK. If a shrink overshot it - under a third of the cap, and
+             the ball is smaller than the view - reach back toward the view radius once. */
+          if(capSeen>0&&!last&&r<r0*0.999&&lastReturned<capSeen*0.35){
+            const nr=Math.min(r0,r*0.8*Math.sqrt(capSeen/Math.max(lastReturned,1)));
+            if(nr>r*1.05){r=nr;continue;}}
+          break;}
+        folFitR=r;
+      }
+      catch(_e){folKey='';}
+      finally{
+        folBusy=false;
+        /* WHERE THE CAMERA IS NOW, against where this fit was for. A fit is up to three round
+           trips and the reader keeps scrolling through them; every ping that arrived in that
+           window was dropped by the busy guard, so without this the last one - the one they
+           stopped on - is the one that never gets drawn. */
+        const g=cam.getFocalPoint(),gr=viewRadius();
+        const now=g[0].toFixed(7)+','+g[1].toFixed(7)+','+g[2].toFixed(7)+'|'+gr.toFixed(7);
+        if(following&&now!==folKey)folPing();}}
+    function folPing(){
+      if(!following)return;
+      if(folTimer)clearTimeout(folTimer);
+      folTimer=setTimeout(function(){folTimer=null;followNow();},FOLLOW_SETTLE_MS);}
+    function setFollow(on){
+      following=!!on;
+      if(fol){fol.setAttribute('aria-pressed',following?'true':'false');
+              fol.classList.toggle('on',following);}
+      if(following){setArmed(false);folKey='';followNow();}
+      else{folKey='';if(folTimer){clearTimeout(folTimer);folTimer=null;}
+           dropShown();lbl.textContent=was;rw.render();}}
+    if(fol){
+      fol.onclick=function(){setFollow(!following);};
+      if(cam.onModified)cam.onModified(folPing);}
+
+    async function cut(at,rOverride){
       if(a.dataset.busy)return;
       a.dataset.busy='1';lbl.textContent='reading…';
       try{
-        const r=radiusNow();
+        const r=(rOverride>0)?rOverride:radiusNow();
         centre=at.slice();
         const q=`x=${at[0]}&y=${at[1]}&z=${at[2]}&radius=${r}`;
         const res=await fetch(`/api/v1/simulation/${job}/detail?${q}`,{headers:headers()});
@@ -1389,6 +1493,9 @@ function initViewer(job,surf,uiCfg){
           lbl.textContent=why?String(why).slice(0,90):('detail '+res.status);
           return;}
         const got=await res.json();
+        /* WHAT THE BALL ACTUALLY HELD, kept so Follow can size its next one. The click path
+           ignores these - a reader who picked a radius meant it. */
+        lastInRange=+got.faces_in_range||0;lastReturned=+got.faces_returned||0;
         if(!(got.patches||[]).length){lbl.textContent='no cells there';return;}
         /* THE REST OF THE MESH STAYS, AS A GHOST. It used to be switched off outright, on the
            grounds that two coincident surfaces at different resolutions fight for the same depth
@@ -1477,7 +1584,7 @@ function initViewer(job,surf,uiCfg){
     function dropShown(){
       shown.forEach(ac=>ren.removeActor(ac));shown=[];shownNames=[];
       shownPainted=0;shownMetric='';}
-    async function recut(at){dropShown();await cut(at);}
+    async function recut(at,r){dropShown();await cut(at,r);}
 
     /* ARMED IS A MODE, and it says so three ways - the button's own state, the cursor, and the
        hint under the canvas - because a mode a reader cannot see is a mode they will click out of
@@ -1735,6 +1842,10 @@ function initViewer(job,surf,uiCfg){
                                    clip:clipAx||null,xray:xEl?+xEl.value:0,
                                    scale:sLbl?sLbl.textContent:'',odometer:sOdo?sOdo.textContent:'',
                                    cut:at=>recut(at),arm:on=>setArmed(on),
+                                   follow:on=>setFollow(on),following:()=>following,
+                                   cellPx:()=>cellPx(),viewRadius:()=>viewRadius(),
+                                   fitRadius:()=>folFitR,inRange:()=>lastInRange,
+                                   returned:()=>lastReturned,
                                    // whether what is on screen carries the METRIC'S colours or
                                    // the flat per-patch tint: both are colours, and a test that
                                    // only counted actors could not tell them apart

@@ -21,6 +21,7 @@ with it so they know whether they are seeing all of it.
 from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -42,7 +43,7 @@ logger = logging.getLogger(__name__)
 MAX_SOURCE_FACES = 2_000_000
 #: How many faces come back. A detail view is a few cell widths across, so this is a backstop for
 #: a radius asked carelessly, not a budget anyone should meet.
-MAX_RETURN_FACES = 150_000
+MAX_RETURN_FACES = int(os.environ.get("HEXERA_DETAIL_MAX_FACES") or 150_000)
 #: How many boundaries stay parsed. A reader opens several details of ONE mesh, and the parse is
 #: the whole cost: measured on the coupon, 8.0 s to answer the first ball and 0.05 s to answer the
 #: next. Each entry is the compact form - the connectivity as one int64 array, the points as
