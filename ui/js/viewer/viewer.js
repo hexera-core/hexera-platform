@@ -1263,8 +1263,19 @@ function initViewer(job,surf,uiCfg){
     if(surf.kind!=='polymesh'&&!(surf.kind==='stl'&&surf.is_mesh===true))return;
     const bar=document.querySelector('#viewer-'+job+' .v-dl');if(!bar)return;
     const a=document.createElement('a');a.className='v-dlbtn';a.href='#';a.id='v-vtk-'+job;
-    a.title='the boundary with its quality fields, for ParaView';
-    a.innerHTML='<b>ParaView</b><span>.vtk with quality fields</span>';
+    /* WHAT THE FILE WILL ACTUALLY CONTAIN. `vtk_export` writes a quality SCALAR only for a
+       metric it finds PER-FACE values for, in surface.quality_fields.patches. A MERGED
+       surface has none: one drawn triangle stands for about 34 delivered faces and those
+       faces do not share a value, so the payload carries the summary metrics and no arrays.
+       The export is then patch_id and the geometry, and the old label promised a file the
+       user would not get. Measured across the roster 2026-11-08: 7 of the 9 pages are
+       reduced and exported patch_id alone; only the two section pages, which are unreduced,
+       carried non_ortho, skewness and aspect_ratio. */
+    const perFace=Object.keys((surf.quality_fields||{}).patches||{}).length>0;
+    a.title=perFace?'the boundary with its per-face quality fields, for ParaView'
+                   :'the boundary and its patch ids, for ParaView. This surface is merged, so '
+                    +'it carries no per-face quality - a section page does.';
+    a.innerHTML='<b>ParaView</b><span>'+(perFace?'.vtk with quality fields':'.vtk, patches only')+'</span>';
     a.onclick=async e=>{e.preventDefault();if(a.dataset.busy)return;a.dataset.busy='1';
       const lbl=a.querySelector('span'),was=lbl.textContent;lbl.textContent='building…';
       try{const r=await fetch(`/api/v1/simulation/${job}/surface.vtk`,{headers:headers()});

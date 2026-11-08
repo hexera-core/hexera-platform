@@ -5,6 +5,14 @@ is read off a run that finished. Where a figure corrects something published ear
 
 ## Verdict
 
+> **The conjugate interface is 16,619,777 faces**, `fluid_to_solid` matched one to one against
+> `solid_to_fluid`, and the chip contact is **270,816**, `chip_to_solid` against `solid_to_chip`.
+> Both are read from the mesh's own decomposed boundary files and cross-checked against
+> checkMesh's global counts: real patches plus `processor` patches equals (faces - internal faces)
+> exactly on all three regions. An earlier draft of this file quoted 25,685,941, which is
+> `cbox2b`'s interface - the pitch-10 mesh, not this one.
+
+
 | | cbox2b + bl3p, what was delivered | cbox8 + bl8 |
 |---|---|---|
 | background cell | 20.1263 um | **25.1578 um** |
@@ -180,7 +188,7 @@ section of `MESH_TIME_TO_ONE_HOUR.md`.
   So "no solver has been run here" is a statement of scope, not a defect, and earlier drafts of
   this record were wrong to file it under what is open. Two things in that neighbourhood ARE ours
   and both are met: the mesh must be *solvable*, which is why the port split, the conformal
-  25,685,941-face interface and `Mesh OK` on every region matter; and the error figures we hand
+  16,619,777-face interface and `Mesh OK` on every region matter; and the error figures we hand
   over must be honest, which is why the flow bias is stated as +13.61% with the clean and messy
   parts separated rather than quoted as a single number.
 - **4 cells across is the thinnest resolution anyone here has delivered.** +12.50% on flow is
