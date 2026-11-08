@@ -30,6 +30,8 @@ import { createRunLine } from "./run_progress.js";
 import { durationWords } from "./check_progress.js";
 // the closing message of a finished run, as a summary rather than a wall of lines
 import { outcomeHtml } from "./outcome.js";
+// the empty stage seats the upload button in its drop zone, and hands it back when it fills
+import { returnUploadButton, seatUploadButton } from "./dropzone.js";
 const RunLine = createRunLine();
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
@@ -84,7 +86,13 @@ export const Stage = {
   // it - the picker offered it, the server accepted it, and only this sentence disagreed. The
   // list now comes from the capability response through `setSupportedCopy`, and until that
   // arrives the copy stays format-neutral rather than guessing.
-  mount(){document.getElementById('stage').innerHTML='<div class="scroll"><div class="chat-col" id="cc"><div id="empty"><p id="empty-lead">Upload geometry to begin.</p><p id="empty-formats"></p><p class="empty-sub">Hexera will guide you through the simulation setup.</p></div></div></div>';
+  // The empty stage is a drop zone: one invitation, the upload button (seated by dropzone.js) and
+  // the server's own format line in small type.
+  mount(){returnUploadButton();document.getElementById('stage').innerHTML='<div class="scroll"><div class="chat-col" id="cc"><div id="empty" class="drop"><div class="drop-box">'
+      +'<svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V4M8 8l4-4 4 4M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>'
+      +'<p id="empty-lead">Drop a CAD or mesh file here</p><p class="empty-sub">Hexera will guide you through the simulation setup.</p>'
+      +'<span class="drop-slot"></span><p id="empty-formats"></p></div></div></div></div>';
+    seatUploadButton();
     this.nodes={};this.proc=null;this.tl=null;this._briefEl=null;this._briefSig='';
     // the run started (or a new conversation): the card's model gives its GL context back
     clearTimeout(this._pmTimer);if(this._pmDrop)this._pmDrop();this._pm=null;this._pmOpen=null;this._pmHover=null;this._pmHoverPart=null;this._pm3dFailed=false;
@@ -103,7 +111,7 @@ export const Stage = {
     if(el)el.innerHTML=text?String(text).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])):'';},
   col(){return document.getElementById('cc');},
   scrollBottom(){const s=document.querySelector('#stage .scroll');if(s)s.scrollTop=s.scrollHeight;},
-  clearEmpty(){document.getElementById('empty')?.remove();},
+  clearEmpty(){returnUploadButton();document.getElementById('empty')?.remove();},
   // There is ONE assistant identity in this product and it is Hexera - the same
   // one that took the request also delivers the result, so the default names it
   // rather than leaving a generic "Assistant" to sign off the run. `who` only

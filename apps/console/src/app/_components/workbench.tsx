@@ -42,9 +42,10 @@ export function Workbench({
             Hide conversation
           </button>
           <div className="h-spacer" />
-          <div aria-live="polite" className="chip chip-status" id="api-status" role="status">
+          {/* quiet while connected: it shows only when the connection is actually down */}
+          <div aria-live="polite" className="chip chip-status" data-state="checking" id="api-status" role="status">
             <div className="dot" id="dot" />
-            <span id="api-lbl">checking...</span>
+            <span id="api-lbl">Checking connection</span>
           </div>
         </header>
 
@@ -58,9 +59,11 @@ export function Workbench({
             id="step-file-input"
             type="file"
           />
-          <span id="file-label">No geometry file selected</span>
-          <button className="btn btn--gold" id="upload-btn" type="button">
-            Upload geometry
+          {/* the file's name, once there is one; until then the button sits in the drop zone
+              the stage draws (render/stage.js) */}
+          <span id="file-label" />
+          <button id="upload-btn" type="button">
+            Browse files
           </button>
         </div>
 

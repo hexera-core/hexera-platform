@@ -1,62 +1,75 @@
 /* Responsibility: Style the authenticated shell - the sidebar, the page frame and its tables. */
 /* Boundaries: the shell only; the conversation, timeline, viewer and workbench keep their sheets. */
 
-.shell{display:grid;grid-template-columns:14.5rem 1fr;min-height:100svh;
+.shell{display:grid;grid-template-columns:15rem 1fr;min-height:100svh;
   position:relative;z-index:2;background:var(--canvas)}
 
 /* Sidebar. Slim, sentence case, one column: brand and the hide switch, New run, the sections,
-   the recent runs, and the account folded into Settings at the foot. */
-.sidebar{display:flex;flex-direction:column;gap:.15rem;padding:.6rem 0 .75rem;min-height:0;
+   the recent runs, and the account at the foot. Every mark is the same 16px box and stroke. */
+.sidebar{display:flex;flex-direction:column;gap:.125rem;padding:.625rem 0 .625rem;min-height:0;
   background:var(--background);border-right:1px solid var(--border);
   position:sticky;top:0;height:100svh}
-.sidebar__top{display:flex;align-items:center;gap:.5rem;height:2.25rem;padding:0 .5rem 0 .95rem;
-  margin-bottom:.35rem}
+/* NOTHING IN THE SIDEBAR IS TEXT TO COPY. A drag that strayed over it (from the viewer, or a
+   triple click) used to select "New run" and "Overview" and paint them in solid orange. */
+.sidebar__top,.sidebar__new,.sidebar__nav,.sidebar__group,.sidebar__switch,
+.sidebar__settings > summary,.sidebar__credits,.sidebar__run{user-select:none;-webkit-user-select:none}
+.sidebar__top{display:flex;align-items:center;gap:.5rem;height:2.25rem;padding:0 .5rem 0 1.125rem;
+  margin-bottom:.5rem}
 /* text-decoration: the sidebar's brand is its own class, so chrome.css's reset for `.brand`
    does not reach it. Without this the wordmark renders browser-underlined. */
 .sidebar__brand{display:flex;align-items:center;gap:.5rem;color:var(--text);text-decoration:none;
-  margin-right:auto}
+  margin-right:auto;border-radius:var(--r-sm)}
 .sidebar__brand img{height:18px;width:auto;display:block;flex:none}
 .sidebar__brand span{font-family:var(--sans);font-weight:600;letter-spacing:.2em;font-size:.75rem}
-.sidebar__hide,.shell__show{display:grid;place-items:center;width:1.75rem;height:1.75rem;
-  border:0;border-radius:var(--r-md);background:transparent;color:var(--text-faint);cursor:pointer}
-.sidebar__hide:hover,.shell__show:hover{background:var(--hover);color:var(--text)}
-.sidebar__hide svg,.shell__show svg{width:16px;height:16px}
+.sidebar__hide,.shell__show,.icon-btn{display:grid;place-items:center;width:1.75rem;height:1.75rem;
+  flex:none;border:0;border-radius:var(--r-md);background:transparent;color:var(--text-faint);
+  cursor:pointer;transition:color .15s cubic-bezier(.16,1,.3,1),background .15s cubic-bezier(.16,1,.3,1)}
+.sidebar__hide:hover,.shell__show:hover,.icon-btn:hover{background:var(--hover);color:var(--text)}
+.sidebar__hide svg,.shell__show svg,.icon-btn svg{width:16px;height:16px}
 
-.sidebar__nav{display:flex;flex-direction:column;gap:1px;padding:0 .4rem}
-.sidebar__group{padding:1.1rem .95rem .3rem;color:var(--text-faint)}
-/* the sidebar's small labels (Recent, Credits) are plain sentence-case captions, not the
-   tracked mono kicker chrome.css gives `.label` elsewhere */
-.sidebar .label{font:400 var(--fs-xs)/1.3 var(--sans);letter-spacing:0;text-transform:none;
+.sidebar__nav{display:flex;flex-direction:column;gap:1px;padding:0 .5rem}
+.sidebar__group{padding:1.25rem 1.125rem .375rem;color:var(--text-faint)}
+/* the sidebar's small labels (Recent, Credits) are plain sentence-case captions */
+.sidebar .label{font:500 var(--fs-xs)/1.3 var(--sans);letter-spacing:0;text-transform:none;
   color:var(--text-faint)}
 
-.sidebar__item,.sidebar__new,.sidebar__settings > summary{display:flex;align-items:center;gap:.6rem;
-  height:1.9rem;padding:0 .55rem;border-radius:var(--r-md);color:var(--text-muted);
+.sidebar__item,.sidebar__settings > summary{display:flex;align-items:center;gap:.625rem;
+  height:2rem;padding:0 .625rem;border-radius:var(--r-md);color:var(--text-muted);
   text-decoration:none;font:500 var(--fs-md)/1 var(--sans);letter-spacing:0;text-transform:none;
   transition:color .15s cubic-bezier(.16,1,.3,1),background .15s cubic-bezier(.16,1,.3,1)}
-.sidebar__item .sidebar__icon,.sidebar__settings > summary .sidebar__icon{color:var(--text-faint)}
+.sidebar__item .sidebar__icon,.sidebar__settings > summary .sidebar__icon{color:var(--text-faint);
+  transition:color .15s cubic-bezier(.16,1,.3,1)}
 .sidebar__item:hover,.sidebar__settings > summary:hover{color:var(--text);background:var(--hover)}
+.sidebar__item:hover .sidebar__icon,.sidebar__settings > summary:hover .sidebar__icon{color:var(--text-muted)}
 /* The current section is marked by a filled row AND by aria-current on the element. Colour
    alone never carries it. */
-.sidebar__item--current{color:var(--text-bright);background:var(--surface-2)}
-.sidebar__item--current .sidebar__icon{color:var(--text)}
+.sidebar__item--current,.sidebar__item--current:hover{color:var(--text-bright);background:var(--surface-2)}
+.sidebar__item--current .sidebar__icon,.sidebar__item--current:hover .sidebar__icon{color:var(--text)}
 /* A section whose data does not exist yet is TEXT, not a link - saying why it is absent beats
    linking to a page that cannot render. Carried from the admin console's own sections.ts. */
 .sidebar__item--unavailable{color:var(--text-faint);cursor:default;opacity:.55}
 .sidebar__item--unavailable:hover{background:transparent;color:var(--text-faint)}
 
-/* the one action the sidebar leads with */
-.sidebar__new{margin:0 .4rem .3rem;color:var(--text)}
-.sidebar__new .sidebar__icon{color:var(--accent)}
-.sidebar__new:hover{background:var(--hover);color:var(--text-bright)}
+/* THE ONE ACTION THE SIDEBAR LEADS WITH: a real button, quiet - the accent is kept for the
+   page's own primary action */
+.sidebar__new{display:flex;align-items:center;gap:.625rem;height:2rem;margin:0 .5rem .625rem;
+  padding:0 .625rem;border:1px solid var(--border);border-radius:var(--r-md);
+  background:var(--surface-1);color:var(--text);text-decoration:none;font:500 var(--fs-md)/1 var(--sans);
+  box-shadow:var(--shadow-1);
+  transition:background .15s cubic-bezier(.16,1,.3,1),border-color .15s cubic-bezier(.16,1,.3,1)}
+.sidebar__new .sidebar__icon{color:var(--text-muted)}
+.sidebar__new:hover{background:var(--surface-2);border-color:var(--border-strong);color:var(--text-bright)}
+.sidebar__new:active{background:var(--surface-raised)}
+.sidebar__new--current{background:var(--surface-2);border-color:var(--border-strong);color:var(--text-bright)}
 
 /* THE ICON. Never decorative: on a narrow screen the sidebar becomes a bar and the icon is what
    the eye finds first. */
 .sidebar__icon{width:16px;height:16px;flex:none;display:block}
 
 /* the recent runs: a dot, the title, how long ago */
-.sidebar__runs{list-style:none;flex:1 1 auto;min-height:0;overflow-y:auto;padding:0 .4rem;margin:0}
-.sidebar__run{display:grid;grid-template-columns:.85rem minmax(0,1fr) auto;align-items:center;
-  gap:.5rem;height:1.9rem;padding:0 .55rem;border-radius:var(--r-md);color:var(--text-muted);
+.sidebar__runs{list-style:none;flex:1 1 auto;min-height:0;overflow-y:auto;padding:0 .5rem;margin:0}
+.sidebar__run{display:grid;grid-template-columns:16px minmax(0,1fr) auto;align-items:center;
+  gap:.625rem;height:1.875rem;padding:0 .625rem;border-radius:var(--r-md);color:var(--text-muted);
   text-decoration:none;font:400 var(--fs-md)/1 var(--sans)}
 .sidebar__run:hover{background:var(--hover);color:var(--text)}
 .sidebar__run--current{background:var(--surface-2);color:var(--text-bright)}
@@ -69,21 +82,38 @@
 .sidebar__dot--live{background:var(--accent);animation:sidebar-live 1.8s cubic-bezier(.16,1,.3,1) infinite}
 @keyframes sidebar-live{0%{box-shadow:0 0 0 0 var(--accent-line)}100%{box-shadow:0 0 0 6px transparent}}
 @media (prefers-reduced-motion:reduce){.sidebar__dot--live{animation:none}}
-.sidebar__empty{padding:.3rem .95rem;font-size:var(--fs-sm);color:var(--text-faint)}
+.sidebar__empty{padding:.25rem 1.125rem;font-size:var(--fs-sm);color:var(--text-faint)}
 
-.sidebar__foot{margin-top:auto;display:flex;flex-direction:column;gap:.55rem;
-  padding:.65rem .95rem 0;border-top:1px solid var(--divider)}
-.sidebar__settings{margin:0 -.55rem}
+/* THE FOOT: settings, the balance, and who is signed in - three quiet rows */
+.sidebar__foot{margin-top:auto;display:flex;flex-direction:column;gap:.125rem;
+  padding:.5rem .5rem 0;border-top:1px solid var(--divider)}
+.sidebar__settings{margin:0}
 .sidebar__settings > summary{list-style:none;cursor:pointer}
 .sidebar__settings > summary::-webkit-details-marker{display:none}
-.sidebar__nav--settings{padding:.1rem 0 .2rem 1.1rem}
-.sidebar__stat{display:flex;align-items:baseline;justify-content:space-between;gap:.5rem}
-.sidebar__stat b{font-family:var(--sans);font-weight:500;font-size:var(--fs-sm);color:var(--text);
-  font-variant-numeric:tabular-nums}
-.sidebar__account{display:flex;align-items:center;justify-content:space-between;gap:.5rem}
-.sidebar__account .chip{white-space:nowrap;flex:none}
-.sidebar__account small{color:var(--text-faint);font-size:var(--fs-xs);overflow:hidden;
+.sidebar__nav--settings{padding:.125rem 0 .25rem 1.625rem}
+
+.sidebar__credits{display:flex;align-items:center;gap:.25rem;height:2rem;padding:0 .25rem 0 .625rem;
+  border-radius:var(--r-md)}
+.sidebar__credits-main{flex:1;display:flex;align-items:center;justify-content:space-between;gap:.5rem;
+  min-width:0;height:100%;color:var(--text-muted);text-decoration:none;font:500 var(--fs-md)/1 var(--sans);
+  border-radius:var(--r-sm)}
+.sidebar__credits-main b{font:500 var(--fs-sm)/1 var(--sans);color:var(--text);font-variant-numeric:tabular-nums;
+  padding-right:.375rem}
+.sidebar__credits-main:hover,.sidebar__credits-main:hover b{color:var(--text-bright)}
+.sidebar__credits--low .sidebar__credits-main b{color:var(--warn)}
+.sidebar__topup{flex:none;display:inline-flex;align-items:center;height:1.375rem;padding:0 .5rem;
+  border:1px solid rgba(241,189,99,.28);border-radius:var(--r-sm);background:var(--warn-soft);
+  color:var(--warn);text-decoration:none;font:500 var(--fs-xs)/1 var(--sans)}
+.sidebar__topup:hover{border-color:rgba(241,189,99,.5);color:#f6d08f}
+
+.sidebar__account{display:flex;align-items:center;gap:.625rem;height:2.5rem;padding:0 .125rem 0 .5rem}
+.sidebar__account form{display:contents}
+.sidebar__avatar{flex:none;display:grid;place-items:center;width:1.25rem;height:1.25rem;
+  border-radius:50%;background:var(--surface-raised);border:1px solid var(--border);
+  color:var(--text-muted);font:600 .625rem/1 var(--sans)}
+.sidebar__account small{flex:1;color:var(--text-faint);font-size:var(--fs-sm);overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.sidebar__account .chip{white-space:nowrap;flex:none}
 
 /* HIDDEN: the user took the whole width. One small button brings the sidebar back; it sits in
    the corner the pages leave empty. */
@@ -94,36 +124,71 @@
 .shell--hidden .main > .page{padding-left:clamp(3.25rem,3vw,2.6rem)}
 .shell--hidden #app > header{padding-left:3rem}
 
-/* Page frame. */
+/* Page frame. One type scale: a 20px title, 14px section titles, 13px body and cells,
+   12px captions. Sentence case throughout; mono only for ids and file names. */
 .main{min-width:0;display:flex;flex-direction:column}
-.page{padding:2.2rem clamp(1.25rem,3vw,2.6rem);display:flex;flex-direction:column;gap:1.35rem;
-  max-width:76rem;width:100%}
-.page__head{display:flex;align-items:flex-end;justify-content:space-between;gap:1.2rem;
-  flex-wrap:wrap;padding:0 0 1rem;border-bottom:1px solid var(--border)}
-.page__title{font-family:var(--display);font-weight:700;letter-spacing:.02em;
-  text-transform:uppercase;
-  font-size:clamp(1.55rem,1.1rem+1.2vw,2.2rem);line-height:1.02;color:var(--text-bright)}
-.page__sub{color:var(--text-muted);font-size:.9rem}
-.page__intro{max-width:44rem;color:var(--text-muted);font-size:.92rem;line-height:1.65}
-.page__eyebrow{font-family:var(--mono);font-size:.6rem;letter-spacing:.18em;text-transform:uppercase;
-  color:var(--accent);margin-bottom:.45rem}
+.page{padding:1.75rem clamp(1.25rem,3vw,2.5rem) 3rem;display:flex;flex-direction:column;gap:1.25rem;
+  max-width:72rem;width:100%}
+.page__head{display:flex;align-items:center;justify-content:space-between;gap:1rem;
+  flex-wrap:wrap;min-height:2.25rem}
+.page__title{font:600 1.25rem/1.25 var(--sans);letter-spacing:-.01em;text-transform:none;
+  color:var(--text-bright);text-wrap:balance}
+.page__sub{color:var(--text-muted);font-size:var(--fs-md)}
+.page__intro{max-width:62ch;margin-top:.375rem;color:var(--text-muted);font-size:var(--fs-md);
+  line-height:1.6;text-wrap:pretty}
+/* a page that still names its area above the title says it quietly, in words */
+.page__eyebrow{font:500 var(--fs-sm)/1.3 var(--sans);letter-spacing:0;text-transform:none;
+  color:var(--text-faint);margin-bottom:.25rem}
 
-.card{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--radius);
-  padding:1.15rem 1.25rem}
-.card--accent{border-left:2px solid var(--accent)}
+/* the console's small labels: sentence-case captions, not chrome.css's tracked mono kicker */
+.shell .label{font:500 var(--fs-sm)/1.3 var(--sans);letter-spacing:0;text-transform:none;
+  color:var(--text-muted)}
 
-.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));gap:1rem}
-.summary-grid--compact{grid-template-columns:minmax(14rem,22rem)}
+/* Buttons inside the console: the site's shapes, at tool size - no lift, no glow */
+.shell .btn{height:2rem;padding:0 .875rem;font:500 var(--fs-md)/1 var(--sans);letter-spacing:0;
+  text-transform:none;border-radius:var(--r-md);border-color:var(--border);background:var(--surface-1);
+  color:var(--text);transform:none;box-shadow:none;backdrop-filter:none;
+  transition:background .15s cubic-bezier(.16,1,.3,1),border-color .15s cubic-bezier(.16,1,.3,1)}
+.shell .btn:hover{transform:none;box-shadow:none;background:var(--surface-2);border-color:var(--border-strong)}
+.shell .btn--gold{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.shell .btn--gold:hover{background:var(--accent-hover);border-color:var(--accent-hover);box-shadow:none}
+.shell .btn--sm{height:1.75rem;padding:0 .75rem;font-size:var(--fs-sm)}
+
+/* a titled block inside a page */
+.section{display:flex;flex-direction:column;gap:.625rem}
+.section__head{display:flex;align-items:baseline;justify-content:space-between;gap:1rem}
+.section__title{font:600 var(--fs-base)/1.3 var(--sans);color:var(--text)}
+.section__link{font-size:var(--fs-sm);color:var(--text-muted);text-decoration:none}
+.section__link:hover{color:var(--text)}
+.section__more{display:flex}
+
+.card{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r-md);
+  padding:1.125rem 1.25rem}
+/* the chosen card: a full hairline in the accent, never a stripe down one side */
+.card--accent{border-color:var(--accent-line)}
+
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));gap:.75rem}
+.summary-grid--compact{grid-template-columns:minmax(16rem,22rem)}
 .metric-card{background:var(--surface-1);border:1px solid var(--border);
-  border-radius:var(--radius);padding:1rem 1.1rem;display:grid;gap:.45rem}
-.metric-card b{font-family:var(--mono);font-weight:500;font-size:1.45rem;color:var(--text-bright);
+  border-radius:var(--r-md);padding:1rem 1.125rem;display:grid;gap:.5rem}
+.metric-card b{font:600 1.5rem/1.1 var(--sans);letter-spacing:-.01em;color:var(--text-bright);
   font-variant-numeric:tabular-nums}
-.metric-card span{color:var(--text-muted);font-size:.82rem;line-height:1.5}
-.panel{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--radius);
-  overflow:hidden}
-.panel__head{display:flex;align-items:flex-end;justify-content:space-between;gap:1rem;
-  padding:1rem 1.15rem;border-bottom:1px solid var(--border)}
-.panel__body{padding:1rem 1.15rem}
+.metric-card span{color:var(--text-muted);font-size:var(--fs-md);line-height:1.5}
+
+/* the balance: the number, its unit, and - when it is spent - the one thing to do */
+.balance__row{display:flex;align-items:baseline;gap:.5rem}
+.balance__row span{font-size:var(--fs-md);color:var(--text-faint)}
+.balance__foot{display:flex;align-items:center;justify-content:space-between;gap:.75rem;
+  margin-top:.25rem;padding-top:.75rem;border-top:1px solid var(--divider)}
+.balance__foot .balance__warn{display:inline-flex;align-items:center;gap:.4rem;font-size:var(--fs-sm);color:var(--warn)}
+.balance__warn::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--warn)}
+.balance--low .balance__row b{color:var(--warn)}
+
+.panel{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r-md);
+  overflow:clip}
+.panel__head{display:flex;align-items:center;justify-content:space-between;gap:1rem;
+  padding:.875rem 1rem;border-bottom:1px solid var(--border)}
+.panel__body{padding:.875rem 1rem;border-top:1px solid var(--divider)}
 .billing-layout{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(17rem,.8fr);gap:1rem;
   align-items:start}
 .billing-plan-grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr))}
@@ -131,47 +196,87 @@
 .billing-actions{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap}
 .message-stack{display:grid;gap:.85rem;padding:1rem 1.15rem}
 .message-card{background:var(--surface-2);border:1px solid var(--border);
-  border-radius:var(--radius);padding:1rem 1.1rem;display:grid;gap:.45rem}
+  border-radius:var(--r-md);padding:1rem 1.1rem;display:grid;gap:.45rem}
 .message-card p:last-child{color:var(--text);line-height:1.65}
 
-/* Feedback is a compact state, not a second page heading. The left rule gives failures a second
-   signal beyond copy and colour; actions stay beside the explanation on wide screens. */
+/* Feedback is a compact state, not a second page heading. A failure is told by its words, a
+   mark and a tinted hairline all round - never a stripe down one side. */
 .dashboard-notice{display:flex;align-items:center;justify-content:space-between;gap:1.25rem;
-  padding:1.1rem 1.2rem;background:var(--surface-1);border:1px solid var(--border);
-  border-radius:var(--radius)}
-.dashboard-notice h2{font-family:var(--sans);font-size:.95rem;font-weight:600;color:var(--text-bright)}
-.dashboard-notice p{max-width:44rem;margin-top:.2rem;color:var(--text-muted);font-size:.84rem;
+  padding:1rem 1.125rem;background:var(--surface-1);border:1px solid var(--border);
+  border-radius:var(--r-md)}
+.dashboard-notice h2{font:600 var(--fs-base)/1.35 var(--sans);color:var(--text-bright)}
+.dashboard-notice p{max-width:62ch;margin-top:.2rem;color:var(--text-muted);font-size:var(--fs-md);
   line-height:1.55}
-.dashboard-notice--error{border-left:2px solid var(--danger)}
-.dashboard-notice--loading{border-left:2px solid var(--steel)}
+.dashboard-notice--error{border-color:rgba(255,107,94,.32);
+  background:color-mix(in srgb,var(--danger) 5%,var(--surface-1))}
+.dashboard-notice--error h2,.dashboard-notice--loading h2{display:flex;align-items:center;gap:.5rem}
+.dashboard-notice--error h2::before,.dashboard-notice--loading h2::before{content:"";width:6px;height:6px;
+  border-radius:50%;flex:none;background:var(--danger)}
+.dashboard-notice--loading h2::before{background:var(--steel)}
 .panel>.dashboard-notice{border:0;border-radius:0;background:transparent}
-.panel>.dashboard-notice--error{border-left:2px solid var(--danger)}
-.panel>.dashboard-notice--loading{border-left:2px solid var(--steel)}
-.dashboard-notice__actions{display:flex;align-items:center;gap:.55rem;flex-wrap:wrap}
+.dashboard-notice__actions{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
 
-/* Tables. The header row is the mono readout voice; the cells are Geist with tabular numerals
-   so a column of counts lines up. */
-.table{width:100%;border-collapse:collapse;font-size:.87rem}
-.table th{text-align:left;padding:.55rem .75rem;border-bottom:1px solid var(--border);
-  font-family:var(--mono);font-weight:500;font-size:.62rem;letter-spacing:.16em;
-  text-transform:uppercase;color:var(--text-faint);white-space:nowrap}
-.table td{padding:.7rem .75rem;border-bottom:1px solid var(--border);color:var(--text-muted);
-  font-variant-numeric:tabular-nums}
-.table tbody tr:hover td{background:var(--surface-1);color:var(--text)}
+/* Tables. Sentence-case headers that stay put while the list scrolls; tight rows that answer
+   the pointer; tabular numerals so a column of numbers lines up. */
+.table{width:100%;margin:0;border-collapse:separate;border-spacing:0;font-size:var(--fs-md)}
+/* result.css boxes every cell of the conversation's tables; a console list has row rules only */
+.table th,.table td{border:0}
+.table th{position:sticky;top:0;z-index:2;text-align:left;height:2.25rem;padding:0 1rem;
+  background:var(--surface-1);border-bottom:1px solid var(--border);
+  font:500 var(--fs-sm)/1 var(--sans);letter-spacing:0;text-transform:none;color:var(--text-faint);
+  white-space:nowrap}
+.table td{height:2.75rem;padding:0 1rem;vertical-align:middle;border-bottom:1px solid var(--divider);color:var(--text-muted);
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.table tbody tr:last-child td{border-bottom:0}
+.table tbody tr{transition:background .12s cubic-bezier(.16,1,.3,1)}
+.table tbody tr:hover{background:var(--hover)}
+.table tbody tr:hover td{color:var(--text)}
 .table a{color:var(--text);text-decoration:none}
-.table a:hover{color:var(--accent)}
+.table a:hover{color:var(--text-bright)}
+.table .col-main{width:100%;max-width:0;overflow:hidden;text-overflow:ellipsis}
+.table td.col-main,.table td.col-main a{font-weight:500;color:var(--text)}
+.table .col-num{font-variant-numeric:tabular-nums}
+.table .col-right{text-align:right}
+.table .col-icon{width:3rem;padding:0 .5rem;text-align:right}
+.cell-faint{color:var(--text-faint);font-weight:400}
+.table .cell-link{color:var(--text);text-decoration:underline;text-decoration-color:var(--border-strong);
+  text-underline-offset:3px}
+.table .cell-link:hover{text-decoration-color:var(--text-muted)}
+.table .cell-id{font-family:var(--mono);font-size:var(--fs-sm);font-weight:400}
+.table .amount{color:var(--text);font-weight:500}
+.table .amount--in{color:var(--ok)}
 
-/* Status. A WORD and a mark, never a colour alone. */
-.status{display:inline-flex;align-items:center;gap:.42rem;font-family:var(--mono);
-  font-weight:500;font-size:.62rem;letter-spacing:.16em;text-transform:uppercase}
-.status::before{content:"";width:6px;height:6px;border-radius:var(--radius-tight);flex:none;
+/* A WHOLE ROW OPENS: the title's link is stretched over its row (a positioned <tr> is the
+   containing block), and any second action in the row sits above it. */
+.table--rows tbody tr{position:relative;cursor:pointer}
+.row-link::after{content:"";position:absolute;inset:0;z-index:0}
+.row-link:focus-visible{outline:0}
+.row-link:focus-visible::after{outline:2px solid var(--focus);outline-offset:-2px;border-radius:var(--r-sm)}
+.table .row-action{position:relative;z-index:1;display:inline-grid;place-items:center;width:1.75rem;
+  height:1.75rem;border-radius:var(--r-md);color:var(--text-faint)}
+.table .row-action:hover{background:var(--surface-raised);color:var(--text)}
+.row-action svg{width:15px;height:15px}
+
+/* Status: a WORD and a mark, never a colour alone. Sentence case, the body face. */
+.status{display:inline-flex;align-items:center;gap:.5rem;vertical-align:middle;font:500 var(--fs-md)/1.2 var(--sans);
+  letter-spacing:0;text-transform:none;color:var(--text-muted)}
+.status::before{content:"";width:6px;height:6px;border-radius:50%;flex:none;
   background:var(--text-faint)}
 .status--ok::before{background:var(--ok)}
-.status--run::before{background:var(--accent)}
+.status--run{color:var(--text)}
+.status--run::before{background:var(--accent);animation:sidebar-live 1.8s cubic-bezier(.16,1,.3,1) infinite}
+.status--wait::before{background:var(--steel-bright)}
+.status--fail{color:var(--danger)}
 .status--fail::before{background:var(--danger)}
 .status--warn::before{background:var(--warn)}
+@media (prefers-reduced-motion:reduce){.status--run::before{animation:none}}
 
-.empty{padding:2.6rem 0;color:var(--text-faint);font-size:.88rem;line-height:1.75}
+.empty{padding:2.6rem 0;color:var(--text-faint);font-size:var(--fs-md);line-height:1.75}
+
+/* keyboard focus inside the console: the accent ring, inset where a row would clip it */
+.shell :where(a,button,summary,input,select,textarea):focus-visible{outline:2px solid var(--focus);
+  outline-offset:2px;border-radius:var(--r-sm)}
+.sidebar :where(a,button,summary):focus-visible{outline-offset:-2px;border-radius:var(--r-md)}
 
 @media (max-width:980px){
   .billing-layout{grid-template-columns:1fr}
@@ -192,21 +297,27 @@
     gap:.25rem;overflow-x:auto;scrollbar-width:none}
   .sidebar__nav::-webkit-scrollbar{display:none}
   .sidebar__item{white-space:nowrap}
-  .sidebar__foot{flex-direction:row;align-items:center;gap:.9rem;margin:0 0 0 auto;padding:0;
+  .sidebar__foot{flex-direction:row;align-items:center;gap:.5rem;margin:0 0 0 auto;padding:0;
     border-top:0}
   .sidebar__settings{margin:0;position:relative}
   .sidebar__settings[open] > .sidebar__nav--settings{position:absolute;right:0;top:100%;z-index:20;
     flex-direction:column;flex:none;order:0;min-width:11rem;padding:.3rem;
     background:var(--surface-raised);border:1px solid var(--border);border-radius:var(--r-md)}
+  .sidebar__credits-main > span{display:none}
+  .sidebar__account{height:auto;padding:0}
   .sidebar__account small{max-width:11rem}
   .shell--hidden .main > .page{padding-left:clamp(1.25rem,3vw,2.6rem)}
+  .table .col-when{display:none}
 }
 
 @media (max-width:520px){
   /* The address is the first thing to go: the sign-out control it sits beside is the one part of
      the footer a user can be stuck without. */
-  .sidebar__account small{display:none}
+  .sidebar__account small,.sidebar__avatar{display:none}
   .dashboard-notice{align-items:flex-start;flex-direction:column}
+  /* a phone keeps the name and the state; the optional columns step aside */
+  .table .col-opt{display:none}
+  .table td.col-main{white-space:normal;line-height:1.35;padding-top:.5rem;padding-bottom:.5rem}
 }
 
 /* THE SIDEBAR SWITCH on a run page: one slot, two jobs - the runs, or the files of this run */

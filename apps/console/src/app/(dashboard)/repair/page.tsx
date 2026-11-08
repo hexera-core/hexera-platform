@@ -104,9 +104,9 @@ export default async function RepairPage() {
 
       <div className="summary-grid">
         {CORPUS_STATS.map((stat) => (
-          <div className="metric-card" key={stat.label}>
-            <p className="label">{stat.label}</p>
+          <div className="metric-card repair-poc__stat" key={stat.label}>
             <b>{stat.value}</b>
+            <p>{stat.label}</p>
           </div>
         ))}
       </div>
@@ -115,8 +115,10 @@ export default async function RepairPage() {
         <section className="repair-poc__case" key={show.slug}>
           <div className="repair-poc__case-head">
             <h2>{show.title}</h2>
-            <p className="label">
-              {show.corpus} · {show.file}
+            <p className="repair-poc__source">
+              <span>{show.corpus}</span>
+              <span aria-hidden="true">·</span>
+              <span className="repair-poc__file" title={show.file}>{show.file}</span>
             </p>
           </div>
           <div className="repair-poc__pair">
@@ -158,23 +160,38 @@ export default async function RepairPage() {
 
       {/* Scoped styling on top of the dashboard sheets: tokens come from tokens.css/theme.css. */}
       <style>{`
-        .repair-poc__case{margin-top:2rem;display:grid;gap:1rem}
-        .repair-poc__case-head h2{font-family:var(--display);font-weight:600;font-size:1.15rem;margin:0 0 .25rem}
-        .repair-poc__pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(20rem,1fr));gap:1rem}
-        .repair-poc__panel{margin:0;background:rgba(18,20,20,.78);border:1px solid var(--border);
-          border-radius:var(--radius);overflow:hidden}
-        .repair-poc__panel video{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;background:#0b0e14}
-        .repair-poc__panel figcaption{padding:.9rem 1.1rem;display:grid;gap:.4rem}
-        .repair-poc__panel ul{margin:0;padding-left:1.05rem;color:var(--text-muted);
-          font-size:.85rem;line-height:1.55}
-        .repair-poc__phase{font-family:var(--mono);font-size:.6rem;letter-spacing:.18em;text-transform:uppercase}
-        .repair-poc__panel--before .repair-poc__phase{color:#e5484d}
-        .repair-poc__panel--after .repair-poc__phase{color:#46a758}
-        .repair-poc__receipt{margin:0;padding:0;list-style:none;display:flex;flex-wrap:wrap;gap:.5rem}
-        .repair-poc__receipt li{font-family:var(--mono);font-size:.72rem;padding:.35rem .7rem;
-          border:1px solid var(--border);border-radius:999px;color:var(--text-muted)}
-        .repair-poc__rule{margin-top:2rem;max-width:44rem;color:var(--text-muted);
-          font-size:.9rem;line-height:1.65;border-left:2px solid var(--border);padding-left:1rem}
+        .repair-poc__stat{gap:.3rem}
+        .repair-poc__stat b{font:600 1.5rem/1.1 var(--sans);letter-spacing:-.01em;color:var(--text-bright)}
+        .repair-poc__stat p{margin:0;color:var(--text-muted);font-size:var(--fs-md);line-height:1.45}
+        .repair-poc__case{margin-top:1.25rem;display:grid;gap:.875rem}
+        .repair-poc__case-head{display:grid;gap:.3rem;min-width:0}
+        .repair-poc__case-head h2{font:600 var(--fs-lg)/1.3 var(--sans);color:var(--text-bright);margin:0}
+        .repair-poc__source{display:flex;align-items:baseline;gap:.5rem;min-width:0;margin:0;
+          color:var(--text-faint);font-size:var(--fs-sm)}
+        .repair-poc__source>span{flex:none}
+        .repair-poc__file{flex:0 1 auto!important;min-width:0;max-width:13rem;cursor:help;overflow:hidden;
+          text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:var(--fs-xs);
+          color:var(--text-muted)}
+        .repair-poc__pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(20rem,1fr));gap:.875rem}
+        .repair-poc__panel{margin:0;background:var(--surface-1);border:1px solid var(--border);
+          border-radius:var(--r-md);overflow:hidden}
+        .repair-poc__panel video{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;
+          background:var(--viewer-canvas);border-bottom:1px solid var(--divider)}
+        .repair-poc__panel figcaption{padding:.875rem 1rem 1rem;display:grid;gap:.375rem}
+        .repair-poc__panel figcaption b{font:600 var(--fs-base)/1.35 var(--sans);color:var(--text-bright)}
+        .repair-poc__panel ul{margin:0;padding-left:1rem;color:var(--text-muted);
+          font-size:var(--fs-md);line-height:1.55}
+        .repair-poc__phase{display:inline-flex;align-items:center;gap:.4rem;width:max-content;
+          font:500 var(--fs-sm)/1 var(--sans);color:var(--text-muted);text-transform:capitalize}
+        .repair-poc__phase::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--text-faint)}
+        .repair-poc__panel--before .repair-poc__phase::before{background:var(--danger)}
+        .repair-poc__panel--after .repair-poc__phase::before{background:var(--ok)}
+        .repair-poc__receipt{margin:0;padding:0;list-style:none;display:flex;flex-wrap:wrap;gap:.375rem}
+        .repair-poc__receipt li{font-family:var(--mono);font-size:var(--fs-xs);line-height:1;
+          padding:.4rem .55rem;border:1px solid var(--divider);border-radius:var(--r-sm);
+          background:var(--surface-1);color:var(--text-muted)}
+        .repair-poc__rule{margin-top:1.5rem;max-width:62ch;color:var(--text-faint);
+          font-size:var(--fs-md);line-height:1.6;padding-top:1rem;border-top:1px solid var(--divider)}
       `}</style>
     </div>
   );

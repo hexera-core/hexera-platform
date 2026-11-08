@@ -26,16 +26,29 @@ header{height:48px;padding:0 16px;gap:12px;background:var(--background);color:va
 /* the drawer control carries a small panel mark, so it reads as a layout switch */
 #wb-toggle::before{content:'';width:13px;height:10px;flex:none;border:1.3px solid currentColor;
   border-radius:2px;background:linear-gradient(90deg,currentColor 0 4px,transparent 4px)}
-.chip-status,.chip-status:hover{border-color:transparent;background:transparent;
-  color:var(--text-faint);cursor:default}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--steel-muted)}
+.chip-status,.chip-status:hover{height:24px;padding:0 9px 0 8px;gap:7px;border-color:var(--border);
+  background:var(--surface-1);color:var(--text-muted);font-size:var(--fs-xs);cursor:default}
+/* QUIET WHEN CONNECTED: the readiness chip shows only when something is actually wrong
+   (shell/settings.js sets data-state); its words stay in the DOM for a screen reader */
+.chip-status[data-state="ok"],.chip-status[data-state="checking"]{display:none}
+.chip-status[data-state="down"]{color:var(--warn);border-color:rgba(241,189,99,.28);background:var(--warn-soft)}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--steel-muted)}
 .dot.online{background:var(--ok)}
-.dot.error{background:var(--danger)}
+.dot.error{background:var(--warn);animation:dot-wait 1.6s ease-in-out infinite}
+@keyframes dot-wait{50%{opacity:.35}}
+/* the console's header holds only the drawer switch and the status chip: when neither has
+   anything to say the bar takes no room (ui/index.html's own header keeps its brand) */
+#app>header:not(:has(.brand)):not(:has(#wb-toggle:not([hidden]))):not(:has(.chip-status[data-state="down"],.chip-status[data-state="unknown"])){display:none}
 
-#upload-bar{min-height:48px;padding:8px 16px;gap:12px;background:var(--background);
+/* the file bar names the file once there is one; before that the drop zone holds the button */
+#upload-bar{min-height:44px;padding:6px 16px;gap:12px;background:var(--background);
   border-bottom:1px solid var(--border)}
+#upload-bar:not(:has(#upload-btn)):not(:has(#file-label.ready)){display:none}
 #file-label{font:var(--fs-md)/1.4 var(--sans);color:var(--text-faint);letter-spacing:0}
-#file-label.ready{font:var(--fs-sm)/1.4 var(--mono);color:var(--text)}
+#file-label:not(.ready){display:none}
+#file-label.ready{display:inline-flex;align-items:center;gap:8px;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;font:var(--fs-sm)/1.4 var(--mono);color:var(--text)}
+#file-label.ready::before{content:'';flex:none;width:6px;height:6px;border-radius:50%;background:var(--ok)}
 
 /* THE PRIMARY ACTION, wherever it is: one look, the accent, no lift and no glow */
 #upload-btn,#send-btn,.gc-proceed,.v-btn.primary{height:32px;padding:0 14px;
@@ -47,6 +60,10 @@ header{height:48px;padding:0 16px;gap:12px;background:var(--background);color:va
   transform:none;box-shadow:none;opacity:1}
 #upload-btn.done{background:var(--surface-2);border-color:var(--border);color:var(--text);font-weight:500}
 #upload-btn.done:hover{background:var(--surface-raised);border-color:var(--border-strong)}
+/* in the file bar (a reopened run) the upload is a quiet secondary action, not the page's lead */
+#upload-bar #upload-btn{background:var(--surface-2);border-color:var(--border);color:var(--text);font-weight:500}
+#upload-bar #upload-btn:hover:not(:disabled){background:var(--surface-raised);border-color:var(--border-strong)}
+#upload-btn:disabled{opacity:.7;cursor:progress}
 
 /* THE SECONDARY ACTION: a quiet filled button; .v-quiet drops even that until hovered */
 .v-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;
@@ -65,12 +82,30 @@ header{height:48px;padding:0 16px;gap:12px;background:var(--background);color:va
    thing in it; the prose itself keeps a reading measure */
 .chat-col{max-width:1060px;padding:32px 28px 44px;gap:22px}
 
-/* the empty console: one invitation, the formats, and what happens next */
-#empty{padding:18vh 0 0;text-align:center;color:var(--text-faint);font-size:var(--fs-md);line-height:1.6}
+/* THE EMPTY CONSOLE IS A DROP ZONE: one invitation, one button, the formats in small type */
+#empty{padding:12vh 0 0;text-align:center;color:var(--text-faint);font-size:var(--fs-md);line-height:1.6}
 #empty p{max-width:560px;margin:0 auto}
-#empty-lead{margin-bottom:8px!important;color:var(--text);font-size:var(--fs-lg);font-weight:500}
+#empty .drop-box{display:flex;flex-direction:column;align-items:center;gap:6px;max-width:600px;margin:0 auto;
+  padding:44px 32px 30px;border:1px dashed var(--border-strong);border-radius:10px;background:var(--surface-1);
+  transition:border-color .18s cubic-bezier(.16,1,.3,1),background .18s cubic-bezier(.16,1,.3,1)}
+#empty .drop-icon{width:36px;height:36px;margin-bottom:10px;padding:8px;border-radius:8px;
+  color:var(--text-muted);background:var(--surface-2);border:1px solid var(--border)}
+#empty-lead{margin:0!important;color:var(--text-bright);font-size:var(--fs-lg);font-weight:500}
+#empty .empty-sub{margin:0!important;color:var(--text-muted)}
+#empty .drop-slot{display:flex;margin:16px 0 4px}
+#empty .drop-slot:empty{display:none}
+#empty #upload-btn{display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 14px}
+#empty #upload-btn::before{content:'';width:14px;height:14px;background:currentColor;
+  -webkit-mask:var(--upload-mark) center/contain no-repeat;mask:var(--upload-mark) center/contain no-repeat}
+#empty-formats{max-width:52ch!important;margin-top:14px!important;font-size:var(--fs-xs);line-height:1.55;
+  color:var(--text-faint);text-wrap:pretty}
 #empty-formats:empty{display:none}
-#empty .empty-sub{margin-top:2px!important;color:var(--text-muted)}
+:root{--upload-mark:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 15V4M8 8l4-4 4 4M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4'/%3E%3C/svg%3E")}
+/* a file held over the page: the zone answers, the rest of the stage stays still */
+.dragover #stage:has(#empty){outline:0}
+.dragover #empty .drop-box{border-color:var(--accent-line);background:color-mix(in srgb,var(--accent) 5%,var(--surface-1))}
+.dragover #empty .drop-icon{color:var(--accent)}
+@media (prefers-reduced-motion:reduce){.dot.error{animation:none}}
 
 #notice.show{margin:8px 16px 0;padding:10px 14px;border:1px solid var(--border);
   border-radius:var(--r-md);background:var(--surface-2);color:var(--text);box-shadow:none;
