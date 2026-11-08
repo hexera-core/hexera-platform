@@ -107,8 +107,10 @@ export const Stage = {
   // Fill the empty state's format line from the SERVER's capability description. Advisory and
   // best-effort: when capabilities are unavailable the line stays empty and the neutral lead
   // sentence still invites an upload, because the server is the authority on what it accepts.
-  setSupportedCopy(text){const el=document.getElementById('empty-formats');
-    if(el)el.innerHTML=text?String(text).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])):'';},
+  // one short line (e.g. "STEP, IGES, STL, OBJ and 20 more"); the full list opens under it
+  setSupportedCopy(text,short){const el=document.getElementById('empty-formats');if(!el)return;
+    const esc=t=>String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+    el.innerHTML=!text?'':short?`<details class="drop-formats"><summary>${esc(short)}</summary>${esc(text)}</details>`:esc(text);},
   col(){return document.getElementById('cc');},
   scrollBottom(){const s=document.querySelector('#stage .scroll');if(s)s.scrollTop=s.scrollHeight;},
   clearEmpty(){returnUploadButton();document.getElementById('empty')?.remove();},

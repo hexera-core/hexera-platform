@@ -12,7 +12,7 @@
  */
 import { ASSEMBLY_UPLOAD_MAX_BYTES, confirmGeometryCheck, getGeometryCheck, retryGeometryCheck, sendMessage, uploadAssembly, uploadGeometry }
   from "../api/endpoints.js";
-import { acceptAttribute, isOfferable, loadIntakeFormats, refusalCopy, supportedCopy }
+import { acceptAttribute, isOfferable, loadIntakeFormats, refusalCopy, shortSupportedCopy, supportedCopy }
   from "./intake_formats.js";
 import { get as getState, set as setState } from "../core/state.js";
 
@@ -464,7 +464,7 @@ export function mountComposer() {
     if (input) input.setAttribute("accept", acceptAttribute(intake));
     // The same response drives the empty state's format line, so the picker's accept list and
     // the sentence a user reads can never name different formats.
-    if (intake) deps.supportedCopy(supportedCopy(intake));
+    if (intake) deps.supportedCopy(supportedCopy(intake), shortSupportedCopy(intake));
   });
   // several files picked together are one assembly (each part its own file)
   $("step-file-input").multiple = true;

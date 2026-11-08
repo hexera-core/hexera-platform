@@ -100,6 +100,12 @@ header{height:48px;padding:0 16px;gap:12px;background:var(--background);color:va
 #empty-formats{max-width:52ch!important;margin-top:14px!important;font-size:var(--fs-xs);line-height:1.55;
   color:var(--text-faint);text-wrap:pretty}
 #empty-formats:empty{display:none}
+#empty-formats .drop-formats summary{cursor:pointer;list-style:none;color:var(--text-faint)}
+#empty-formats .drop-formats summary::-webkit-details-marker{display:none}
+#empty-formats .drop-formats summary::after{content:" \00B7  all formats";opacity:.7}
+#empty-formats .drop-formats[open] summary::after{content:""}
+#empty-formats .drop-formats[open] summary{margin-bottom:6px}
+#empty-formats .drop-formats summary:hover{color:var(--text)}
 :root{--upload-mark:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 15V4M8 8l4-4 4 4M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4'/%3E%3C/svg%3E")}
 /* a file held over the page: the zone answers, the rest of the stage stays still */
 .dragover #stage:has(#empty){outline:0}
