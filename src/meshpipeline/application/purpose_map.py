@@ -80,7 +80,8 @@ _FEA = _rx(
     r"\bcrashworth",
     # SHSTAGE-1: the words of a shell model are FEA words too ("a CQUAD4 model for Femap")
     r"\bfemap\b", r"\bcquad4?\b", r"\bctria3?\b", r"\bpshell\b", r"\bmid-?surfaces?\b", r"\bplate model",
-    r"\bshell (mesh|model|elements?)\b",
+    r"\bshell (mesh|model|elements?)\b", r"\bshell ?(181|63|281)\b", r"\bplate[- ]elements?\b",
+    r"\bmid-?planes?\b", r"\bthin[- ]shell model",
 )
 #: WORDS FOR A FLUID: what CFD answers.
 _FLOW = _rx(
@@ -187,10 +188,17 @@ MESH_SHELL, MESH_SOLID = "shell", "solid"
 MESH_MIXED = "mixed"
 MESH_AS_SAID = (MESH_SHELL, MESH_SOLID)
 #: Words for a shell model (an FEA engineer's: "2D elements", Femap's CQUAD4, a plate model).
+#: Only words that ASK for elements or a mesh type count: "a thin plate part" or "a thin sheet metal bracket" describe
+#: the part and say nothing about how to mesh it.
 _SHELL_WORDS = _rx(
     r"\bshells?\b(?![- ]and[- ]tube)(?! side)", r"\b2-?d\b(?! (drawing|sketch|plane|axisym|section|profile))",
-    r"\bmid-?surfaces?\b", r"\bmid-?planes?\b", r"\bplate (model|elements?|mesh)\b", r"\bfemap shell",
-    r"\bcquad4?\b", r"\bctria3?\b", r"\bpshell\b", r"\bshell ?181\b", r"\bs4r?\b",
+    r"\bmid-?surfaces?\b", r"\bmid-?planes?\b", r"\bplate[- ](model|elements?|mesh)\b", r"\bfemap shell",
+    r"\bcquad4?\b", r"\bctria3?\b", r"\bpshell\b", r"\bshell ?(181|63|281|93|208|209)\b", r"\bs4r?\b",
+    # Abaqus's 3-node shell, said as an element ("S3 elements", "S3/S4R"), never alone (an S3 bucket)
+    r"\bs3r?\b(?=\s*(elements?\b|/\s*s4|,\s*s4|\s+(and|or)\s+s4))",
+    # plates as the elements: "mesh it as plates", "model the deck with plates" - never "a bracket of two plates"
+    r"\b(mesh\w*|model\w*|ideali[sz]\w*|represent\w*|treat\w*)\b(\s+[\w-]+){0,3}?\s+(as|with|using|by|into)\s+"
+    r"(\w+\s+)?plates\b",
     r"\bsheet[- ]metal shell", r"\bthin[- ]shell")
 #: Words for a solid model: tetrahedra or hexahedra through the volume.
 _SOLID_WORDS = _rx(
@@ -365,8 +373,7 @@ def choices_for(reply: str) -> list[dict]:
 
 #: THE HOLD LINE an FEA part is checked under (after the drawing mark, which the intake never
 #: reads as declared and the console holds the chat box on).
-FEA_HOLD = ("thanks - I'm checking your part now. It will appear beside this chat with its size, "
-            "its unit and the result of the clean check. Check them and press Proceed.")
+FEA_HOLD = "checking your part - confirm it on the right and press Proceed."
 #: Said with the hold for heat in a solid part, which version 1 does not mesh as its own kind yet.
 HEAT_IN_SOLID_NOTE = ("Heat moving through a solid part is coming soon. For now I'll mesh it as for "
                       "static stress: the same solid mesh, with every face named.")

@@ -175,7 +175,7 @@ let _checkState = null;
 let _checkMode = "";
 function stageWait() {
   if (_checkMode === "thermal") return "Check the thermal model beside this chat and press Mesh this model…";
-  if (_checkMode === "fea") return "Check your part and its unit beside this chat and press Proceed…";
+  if (_checkMode === "fea") return "Confirm your part on the right and press Proceed…";
   return "Check the openings beside this chat and press Proceed…";
 }
 let _holdMs = 0;

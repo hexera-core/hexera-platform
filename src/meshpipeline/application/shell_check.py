@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import sys
 import tempfile
@@ -241,39 +242,68 @@ def _is_wall(pair: dict) -> bool:
     return w is None or float(w) >= float(t)
 
 
+#: The measured reason a body stays solid (cad/midsurface._solid_words), in a few words for the stage's one line.
+_SPAN_WHY = re.compile(r"is ([\d.]+) mm thick and spans about [\d.]+ mm, only ([\d.]+) times")
+_WIDTH_WHY = re.compile(r"is ([\d.]+) mm thick but only [\d.]+ mm wide, ([\d.]+) times")
+
+
+def solid_short(detail: str) -> str:
+    """A whole body's reason to stay solid in a few words: "too thick (4 mm wall, 9.7× span)", "too narrow (6 mm
+    wall, 2× width)", "no thin wall"; "" when the words are none of these."""
+    d = str(detail or "")
+    m = _SPAN_WHY.search(d)
+    if m:
+        return f"too thick ({m.group(1)} mm wall, {m.group(2)}× span)"
+    m = _WIDTH_WHY.search(d)
+    if m:
+        return f"too narrow ({m.group(1)} mm wall, {m.group(2)}× width)"
+    if "no two of its faces run side by side" in d:
+        return "no thin wall"
+    if "belong to a sheet with thicker walls" in d:
+        return "part of a thicker sheet"
+    return ""
+
+
 def not_shelled(summary: dict | None) -> list[dict]:
     """What stays solid if the part is meshed as a shell, and where the plates do not meet, each in plain
-    words with a tag and a place to mark: S1, S2 ... for solid regions, O1, O2 ... for open places."""
+    words with a tag and a place to mark: S1, S2 ... for solid regions, O1, O2 ... for open places. Each also
+    carries `short`, the same in a few words for the stage's one line (the full words stay for its tooltip)."""
     s = summary or {}
     many = len(s.get("bodies") or []) > 1
     out = []
     for k, reg in enumerate(s.get("solid_regions") or [], start=1):
         who = reg.get("body") if many else "The part"
+        name = reg.get("body") if many else "Whole part"
         if reg.get("whole"):
             words = (f"{reg.get('body')} stays solid: no wall of it is thin against its size." if many
                      else "The whole part stays solid: no wall is thin against its size.")
             detail = _solid_detail(s, reg.get("body"))
             if detail:
                 words = f"{words[:-1]}: {detail}."
+            short = f"{name} · {solid_short(detail) or 'no thin wall'}"
         else:
             n = int(reg.get("n_faces") or len(reg.get("faces") or []))
             where = f"A thick region of {who if many else 'the part'} ({n} face{'s' if n != 1 else ''})"
             words = (f"{where} stays solid: it is {_mm(reg['thick_mm'])} thick or more, too thick for a shell."
                      if reg.get("thick_mm") else f"{where} stays solid: it is not a thin wall.")
-        out.append({"id": f"S{k}", "kind": "solid", "words": words, "at_mm": reg.get("at_mm"),
+            faces = f"{n} face{'s' if n != 1 else ''}"
+            short = (f"{reg.get('body') if many else 'Thick region'} · "
+                     + (f"{_mm(reg['thick_mm'])}+ thick, {faces}" if reg.get("thick_mm") else f"not a thin wall, {faces}"))
+        out.append({"id": f"S{k}", "kind": "solid", "words": words, "short": short, "at_mm": reg.get("at_mm"),
                     "faces": list(reg.get("faces") or [])})
     if s.get("solid_more"):
         out.append({"id": "", "kind": "solid", "words": f"And {s['solid_more']} more regions stay solid.",
-                    "at_mm": None, "faces": []})
+                    "short": f"+{s['solid_more']} more stay solid", "at_mm": None, "faces": []})
     places = s.get("open_places") or []
     if s.get("open_edges"):
         n = len(places) or int(s["open_edges"])
         out.append({"id": "", "kind": "open_head", "at_mm": None, "faces": [],
                     "words": (f"The plates do not meet at {n} place{'s' if n != 1 else ''}: shown in red. A shell mesh "
-                              "has a gap there.")})
+                              "has a gap there."),
+                    "short": f"Plates don't meet at {n} place{'s' if n != 1 else ''} (red)"})
         for k, p in enumerate(places, start=1):
             out.append({"id": f"O{k}", "kind": "open", "words": f"Plates do not meet here ({k} of {n}).",
-                        "at_mm": p.get("at_mm"), "faces": []})
+                        "short": "plates don't meet", "at_mm": p.get("at_mm"), "faces": []})
     return out
 
 
@@ -509,5 +539,5 @@ def confirmed_mesh_as(session_id: str, notes=None) -> str:
 
 __all__ = ["CARD_LABELS", "MEASURING", "MIXED_ELEMENTS", "NOTHING_TO_SHELL", "QUESTION", "READY", "SHELL_CHECK_LIMIT_S",
            "SHELL_ELEMENTS", "TRIANGLES_WHY", "UNAVAILABLE", "card_engine_settings", "card_mesh_as", "confirmed_mesh_as",
-           "declaration_words", "is_cad", "not_shelled", "read_status", "run_shell_check", "said_of", "settle",
+           "declaration_words", "is_cad", "not_shelled", "solid_short", "read_status", "run_shell_check", "said_of", "settle",
            "shell_view", "start", "start_if_asked", "state_of", "summarise", "view_for", "wants_shell"]

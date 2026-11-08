@@ -556,12 +556,13 @@ class _Preview:
         """Store the skin and the provisional check. Never raises: a preview that cannot be made
         leaves the scout exactly as it was without one."""
         try:
-            from meshpipeline.cad.part_name import part_name
+            from meshpipeline.cad.part_name import file_stem_name, part_name
 
             facts = preview_facts(skin, seed)
             facts.update(canonical.facts())
             facts["notes"].extend(n for n in canonical.notes if n not in facts["notes"])
             facts["part_name"] = part_name(fetched, ref.original_filename)
+            facts["file_name"] = file_stem_name(ref.original_filename)
             skin_key = check_object_key(self.session_id, "skin.json")
             _store_json(skin_key, _placed_skin_payload(fetched) if placed else skin_payload(skin))
             self.skin_key = skin_key
@@ -791,9 +792,11 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         _publish_validity(session_id, ref, facts["validity"])
         # THE PART'S NAME FROM THE FILE (cad/part_name): a STEP's own product name, else the upload's
         # file name - what every stage shows when no model names the part (an FEA part never asks one)
-        from meshpipeline.cad.part_name import part_name
+        from meshpipeline.cad.part_name import file_stem_name, part_name
 
         facts["part_name"] = part_name(fetched, ref.original_filename)
+        # the upload's own file name, for a stage that names a whole assembly (application/fea_check)
+        facts["file_name"] = file_stem_name(ref.original_filename)
         if facts["validity"].get("clean") is not True and facts["validity"].get("kind") != "unchecked":
             facts["notes"].append(facts["validity"]["summary"])
         # a thermal model's physics (ECXML: materials, powers, fans, vents...), kept whole beside

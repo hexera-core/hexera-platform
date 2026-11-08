@@ -54,7 +54,7 @@ def _ready() -> dict:
     return _shell("ready", share=0.95, t_min_mm=8.0, t_max_mm=12.0, bodies=[{"body": "Part_1", "verdict": "shell"}],
                   not_shelled=[
                       {"id": "S1", "kind": "solid", "words": "A thick region of the part (4 faces) stays solid: it is "
-                       "30 mm thick or more, too thick for a shell.", "at_mm": [ox + 50, oy + 1000 * R_OUT, oz], "faces": []},
+                       "30 mm thick or more, too thick for a shell.", "short": "Thick region · 30 mm+ thick, 4 faces", "at_mm": [ox + 50, oy + 1000 * R_OUT, oz], "faces": []},
                       {"id": "", "kind": "open_head", "words": "The plates do not meet at 1 place: shown in red.",
                        "at_mm": None, "faces": []},
                       {"id": "O1", "kind": "open", "words": "Plates do not meet here (1 of 1).",
@@ -96,7 +96,8 @@ def _open(live, sid: str, check: dict) -> None:
 def _state(live, sid: str) -> dict:
     return live.evaluate(f"""(() => {{
       const root = document.getElementById('gstage-{sid}'), h = window._vdbg['gstage:{sid}'];
-      const vis = (sel) => {{ const el = root.querySelector(sel); return !!el && !el.closest('[hidden]'); }};
+      // drawn in the panel - in the shell fold, which opens on a click, or out of it
+      const vis = (sel) => !!root.querySelector(sel);
       return {{radios: root.querySelectorAll('input[type="radio"][name="fea-mesh-as"]').length,
                row: (root.querySelector('.fea-meshas-v') || {{}}).textContent || '',
                measuring: vis('.fea-meshas-measuring'), why: (root.querySelector('.fea-meshas-why') || {{}}).textContent || '',
@@ -105,7 +106,10 @@ def _state(live, sid: str) -> dict:
                head: (root.querySelector('.fea-shell-list .fea-spot-head') || {{}}).textContent || '',
                legendText: (root.querySelector('.fea-shell-legend-v') || {{}}).textContent || '',
                pins: [...root.querySelectorAll('.fea-shell-pin')].map((p) => p.dataset.spot),
-               lead: (root.querySelector('.gc-lead p') || {{}}).textContent || '',
+               tag: root.querySelector('.fea-tag').textContent,
+               sum: (root.querySelector('.fea-sec-shell .fea-sec-sum') || {{}}).textContent || '',
+               said: (root.querySelector('.fea-meshas-said') || {{title: ''}}).title,
+               closed: !root.querySelector('.fea-sec.open'),
                panel: root.querySelector('.fea-panel').textContent,
                shell: h.shell(), fetches: window.__overlayFetches}}; }})()""")
 
@@ -125,7 +129,7 @@ def test_plain_fea_has_no_shell_anywhere(live):
     assert s["radios"] == 0 and s["row"] == "" and not s["measuring"] and not s["legend"] and s["rows"] == []
     assert "shell" not in s["panel"].lower() and "auto" not in s["panel"].lower()
     assert "mid-surface" not in s["panel"].lower()
-    assert s["lead"].startswith("The part is meshed as itself, as a solid.")
+    assert s["tag"] == "FEA" and s["sum"] == ""
     assert s["shell"] == {"actors": 0, "shown": False} and s["fetches"] == 0
     body = _proceed(live, sid)
     assert "fea_mesh_as" not in body
@@ -141,8 +145,9 @@ def test_a_said_shell_follows_the_check_and_draws_the_mid_surface(live):
     _open(live, sid, _check(_shell("measuring")))
     s = _state(live, sid)
     assert s["radios"] == 0 and s["row"].startswith("Shell: the mid-surface, meshed with plate elements")
-    assert "You asked for a shell mesh." in s["row"] and s["measuring"]
-    assert s["lead"].startswith("The part is meshed as a shell (below).")
+    assert s["said"] == "You asked for a shell mesh." and s["measuring"]
+    # one fold, closed at first; its header says the mid-surface is being made, the title's tag says shell
+    assert s["tag"] == "FEA · shell" and s["sum"].strip() == "making the mid-surface…" and s["closed"]
     assert "auto" not in s["panel"].lower() and "recommend" not in s["panel"].lower()
     assert s["shell"] == {"actors": 0, "shown": False} and s["fetches"] == 0
     live.evaluate(f"window.__stages['{sid}'].update({json.dumps(_check(_ready()))})")
@@ -150,6 +155,14 @@ def test_a_said_shell_follows_the_check_and_draws_the_mid_surface(live):
     s = _state(live, sid)
     assert not s["measuring"] and s["head"] == "Not in the shell"
     assert s["rows"] == ["S1", "O1"] and s["list"] and s["legend"] and s["legendText"] == "8 mm – 12 mm"
+    assert s["sum"] == "1 region stays solid · 1 open" and s["closed"]
+    # the mark of what stays solid, clicked on the part, opens the fold and lights its line
+    lit = live.evaluate(f"""(() => {{
+      const root = document.getElementById('gstage-{sid}');
+      root.querySelector('.fea-shell-pin[data-spot="S1"]').click();
+      const row = root.querySelector('.fea-shell-row[data-spot="S1"]');
+      return [!!row.closest('[hidden]'), row.classList.contains('sel'), row.textContent.trim()]; }})()""")
+    assert lit == [False, True, "S1Thick region · 30 mm+ thick, 4 faces"]
     assert s["pins"] == ["S1", "O1"]
     assert s["shell"]["actors"] == 2 and s["fetches"] == 1           # the surface and the open edges
     # a later poll with the same view changes nothing
@@ -180,7 +193,7 @@ def test_a_shell_that_cannot_be_made_says_why_and_draws_nothing(live):
     _open(live, sid, _check(_shell("ready", mesh_as="solid", label="Solid", reason=why)))
     s = _state(live, sid)
     assert s["row"] == "Solid" and s["why"] == why and not s["measuring"] and not s["legend"] and s["rows"] == []
-    assert s["lead"].startswith("The part is meshed as itself, as a solid.")
+    assert s["tag"] == "FEA · solid" and s["sum"] == "not possible · meshed solid"
     assert not s["shell"]["shown"] and s["fetches"] == 0
     assert_clean(live, "a shell that cannot be made")
 

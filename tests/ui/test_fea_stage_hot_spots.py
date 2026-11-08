@@ -1,8 +1,9 @@
 # Responsibility: Verify an FEA part's stage shows EVERY hot spot its measurement found: a part with
 # hundreds of them (Areen's F1 car had 208) has a mark on the part for each - small marks without
-# numbers past the tag limit - and a line for each in the panel, grouped by type with a count; a
-# group's "Show all N" opens the rest of it, and clicking a mark opens and lights its line. A part
-# with a few hot spots keeps its numbered tags.
+# numbers past the tag limit - and a line for each in the panel, in one "Hot spots" fold that is closed
+# at first, grouped by type (each type its own line with its count and range, opening on a click);
+# clicking a mark opens the folds its line sits in and lights it. A part with a few hot spots keeps its
+# numbered tags.
 # Boundaries: the skin is built through the worker's own code from a tube made here; the FEA view is
 # the server's shape, built here. Only the network is stood in for.
 from __future__ import annotations
@@ -54,12 +55,15 @@ def _state(live, sid: str) -> dict:
       const root = document.getElementById('gstage-{sid}');
       const marks = [...root.querySelectorAll('.fea-spot')];
       const rows = [...root.querySelectorAll('.fea-spot-row')];
+      const sec = root.querySelector('.fea-sec-spots');
       return {{marks: marks.length, small: marks.filter((m) => m.classList.contains('mark')).length,
-               rows: rows.length, shown: rows.filter((r) => !r.hidden).length,
+               rows: rows.length, shown: rows.filter((r) => !r.closest('[hidden]')).length,
                groups: [...root.querySelectorAll('.fea-spot-group')].map((g) =>
                  [g.dataset.type, Number(g.querySelector('.fea-spot-n').textContent)]),
-               opens: [...root.querySelectorAll('.fea-spot-open')].map((b) => b.textContent),
+               open: [...root.querySelectorAll('.fea-spot-group.open')].map((g) => g.dataset.type),
                sums: [...root.querySelectorAll('.fea-spot-sum')].map((b) => b.textContent),
+               head: [...sec.querySelectorAll('.fea-sec-btn > span:not(.fea-chev)')].map((e) => e.textContent),
+               secOpen: sec.classList.contains('open'), wall: root.querySelector('.fea-wall').textContent,
                unsent: !!root.querySelector('.fea-spot-unsent')}}; }})()""")
 
 
@@ -71,23 +75,28 @@ def test_every_hot_spot_of_a_busy_part_has_a_mark_and_a_line(live):
     assert s["marks"] == 208 and s["small"] == 208          # every one marked, small past the tag limit
     assert s["rows"] == 208 and not s["unsent"]               # and every one listed
     assert s["groups"] == [["sharp_corner", 174], ["notch", 1], ["fillet", 29], ["hole", 4]]
-    assert s["opens"] == ["Show all 174", "Show all 29"]
-    # A LONG GROUP IS FOLDED to its one-line summary (1 Nov: a landing gear listed 570 identical corners):
-    # the 174 corners and 29 fillets show no lines until opened; the short groups show theirs
-    assert s["shown"] == 0 + 1 + 0 + 4
-    assert s["sums"] == ["90°, refinement capped", "radius 2 mm"]
-    # a mark past its group's first lines: clicking it opens and lights its line
+    # ONE FOLD, CLOSED AT FIRST: its header says how many and that they are refined automatically; each type
+    # is its own line with its range - no line of the 208 shows until it is opened
+    assert s["head"] == ["Hot spots", "208", "refined automatically"] and not s["secOpen"] and s["shown"] == 0
+    assert s["sums"] == ["90°, capped", "radius 2 mm", "radius 2 mm", "radius 2 mm"]
+    assert s["wall"].startswith("10 mm")                       # the thinnest wall is a key fact, outside the fold
+    # a mark clicked on the part opens the folds its line sits in, and lights it
     hidden = live.evaluate(f"""(() => {{
       const root = document.getElementById('gstage-{sid}');
       root.querySelector('.fea-spot[data-spot="H200"]').click();
       const row = root.querySelector('.fea-spot-row[data-spot="H200"]');
-      return [row.hidden, row.classList.contains('sel'),
+      return [!!row.closest('[hidden]'), row.classList.contains('sel'),
               root.querySelector('.fea-spot[data-spot="H200"]').classList.contains('sel')]; }})()""")
     assert hidden == [False, True, True]
-    # "Show all" opens its own group whole, and no other
-    live.evaluate(f"""document.querySelector('#gstage-{sid} .fea-spot-group[data-type="sharp_corner"] .fea-spot-open').click()""")
     s = _state(live, sid)
-    assert s["shown"] == 174 + 1 + 1 + 4 and s["opens"] == ["Show all 29"]
+    assert s["secOpen"] and s["open"] == ["fillet"] and s["shown"] == 29
+    # a type's line opens that type whole, and no other; a second click closes it
+    grp = f"""document.querySelector('#gstage-{sid} .fea-spot-group[data-type="sharp_corner"] .fea-grp-btn').click()"""
+    live.evaluate(grp)
+    s = _state(live, sid)
+    assert s["shown"] == 174 + 29 and s["open"] == ["sharp_corner", "fillet"]
+    live.evaluate(grp)
+    assert _state(live, sid)["shown"] == 29
     assert_clean(live, "an FEA stage with 208 hot spots")
 
 
@@ -96,7 +105,13 @@ def test_a_part_with_a_few_hot_spots_keeps_its_numbered_tags(live):
     spots = _spots((("hole", "hole", 3), ("fillet", "fillet", 2)))
     _open(live, sid, _skin(_tube(R_OUT, R_IN)), _fea_check(spots))
     s = _state(live, sid)
-    assert s["marks"] == 5 and s["small"] == 0 and s["rows"] == 5 and s["opens"] == []
+    assert s["marks"] == 5 and s["small"] == 0 and s["rows"] == 5 and s["shown"] == 0
     tags = live.evaluate(f"[...document.querySelectorAll('#gstage-{sid} .fea-spot')].map((m) => m.textContent)")
     assert tags == ["H1", "H2", "H3", "H4", "H5"]
+    # each line in a few words: its tag, its kind and size
+    live.evaluate(f"document.querySelector('#gstage-{sid} .fea-sec-spots .fea-sec-btn').click()")
+    live.evaluate(f"""document.querySelector('#gstage-{sid} .fea-spot-group[data-type="hole"] .fea-grp-btn').click()""")
+    line = live.evaluate(f"""document.querySelector('#gstage-{sid} .fea-spot-row[data-spot="H1"]').textContent""")
+    assert " ".join(line.split()) == "H1hole · r 2 mm"
+    assert _state(live, sid)["shown"] == 3
     assert_clean(live, "an FEA stage with 5 hot spots")

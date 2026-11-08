@@ -27,6 +27,37 @@ NOTHING = [
     "this is a 3D model of the frame", "a 2D drawing came with it", "solid mechanics problem",
     "hex bolt preload", "shell-and-tube exchanger stress",
 ]
+#: MORE WAYS TO ASK FOR A SHELL (8 Nov): element names and mesh types an FEA engineer says. Only words that ask
+#: for elements or a mesh type count.
+MORE_SHELL_WORDS = [
+    "2D elements", "plate elements", "plate-elements for the deck", "mesh it as plates", "model the walls with plates",
+    "idealise the tank as plates", "CQUAD4", "CTRIA3 only", "PSHELL cards", "S4 elements", "S3 elements",
+    "S4R elements", "S3/S4R mix", "SHELL181", "SHELL63 in APDL", "shell 63 elements", "a thin-shell model",
+    "midplane mesh", "mid-plane mesh", "mid-surface", "midsurface mesh",
+]
+#: Words that DESCRIBE a thin part (or say S3 for something else) and ask nothing about the mesh.
+DESCRIBES_THE_PART = [
+    "thin sheet metal bracket", "this is a thin plate part", "a bracket made of two plates", "welded plates",
+    "the base plate is 10 mm thick", "a steel plate with holes", "stress in the plates", "plates bolted together",
+    "store it in an S3 bucket", "sheet metal part, static stress", "thin plate under load", "a flat plate",
+]
+
+
+@pytest.mark.parametrize("words", MORE_SHELL_WORDS)
+def test_more_ways_to_ask_for_a_shell_set_shell(words):
+    r = pm.mesh_as_of(words)
+    assert (r.value, r.by) == ("shell", "table"), (words, r)
+
+
+@pytest.mark.parametrize("words", DESCRIBES_THE_PART)
+def test_words_that_describe_a_thin_part_never_set_shell(words):
+    assert pm.mesh_as_of(words).value == "", words
+
+
+@pytest.mark.parametrize("words", ["SHELL181 for Ansys", "SHELL63 static", "plate elements on the deck",
+                                   "a mid-plane model", "a thin-shell model"])
+def test_the_new_shell_words_take_the_fea_path_too(words):
+    assert pm.read_purpose(words).route == pm.ROUTE_FEA, words
 
 
 @pytest.mark.parametrize("words", SHELL_WORDS)

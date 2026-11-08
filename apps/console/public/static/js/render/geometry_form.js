@@ -232,7 +232,14 @@ export function applyFlow(root) {
 function showUnit(root, p) {
   root.querySelectorAll(".gc-u").forEach((el) => { el.textContent = unitOf(p); });
   root.querySelectorAll(".gc-dia").forEach((el) => { el.placeholder = `${unitOf(p)} across`; });
-  const hint = root.querySelector(".gc-unit-hint"); if (hint) hint.textContent = unitHint(p);
+  const hint = root.querySelector(".gc-unit-hint");
+  if (hint) {
+    hint.textContent = unitHint(p);
+    // a unit the file states (or the user settled) needs no line under the box where the panel hides it (the FEA
+    // panel): only a guessed or doubtful unit keeps its hint
+    const sure = !unitChoiceNeeded(p) && (p.unit_fixed || ["file_declared", "user_confirmed", "chosen"].includes(p.unit_basis));
+    hint.dataset.sure = sure ? "1" : "";
+  }
   const pick = root.querySelector(".gc-unit-pick");
   if (pick) {
     const html = pickHtml(p), box = document.createElement("span"); box.innerHTML = html;
