@@ -12,7 +12,6 @@ const nextConfig: NextConfig = {
   // /usage?cursor= link still lands on the same ledger page. 307, not 308 - the map may move again.
   redirects() {
     return [
-      { source: "/", destination: "/runs", permanent: false },
       { source: "/usage", destination: "/settings/billing", permanent: false },
       { source: "/conversations/:path*", destination: "/runs", permanent: false },
       { source: "/repair", destination: "/runs", permanent: false },
