@@ -25,10 +25,41 @@ export function displayText(text) {
       return "Confirmed on the thermal model panel: " + r.slice(THERMAL_LEAD.length).trim()
         .replace(/, input_kind [a-z-]+/g, "").replace(/ \(mesh_fidelity [a-z]+\)/g, "");
     if (r.startsWith(FEA_LEAD))
-      return "Confirmed on the stage: " + r.replace(/, input_kind solid-body:/, ":");
+      return feaConfirmedCard(r) || "Confirmed on the stage: " + r.replace(/, input_kind solid-body:/, ":");
     return "Confirmed on the picture: " + r;
   }
   return t;
+}
+
+/** AN FEA PART CONFIRMED ON THE STAGE, as a person reads it: a title and a few short lines (what it is meshed
+ *  as, its size, its parts and joins, the clean check), never the paragraph the intake reads. The words come
+ *  from the declaration itself (application/geometry_confirmation.fea_confirmation_message); "" when its size
+ *  cannot be found, so the caller shows the declaration whole. */
+export function feaConfirmedCard(r) {
+  const size = r.match(/Part size: (\d+) x (\d+) x (\d+) mm/);
+  if (!size) return "";
+  const afterLead = r.slice(FEA_LEAD.length);
+  const cut = afterLead.indexOf(", input_kind");
+  const nameRaw = (cut > 0 ? afterLead.slice(0, cut) : "").trim();
+  const name = nameRaw.startsWith("(") && nameRaw.endsWith(")") ? nameRaw.slice(1, -1).trim() : "";
+  const as = /Meshed as: shell where thin/.test(r) ? "shell where thin, solid where thick"
+    : /Meshed as: a shell/.test(r) ? "shell (mid-surface, plate elements)" : "solid";
+  const unit = (r.match(/The file is in ([a-z]+)/) || [])[1];
+  const lines = [`- **FEA** · ${as} mesh`,
+    `- ${size[1]} × ${size[2]} × ${size[3]} mm${unit && unit !== "millimetres" ? ` (file in ${unit})` : ""}`];
+  const bodies = Number((r.match(/(\d+) bodies\./) || [])[1]) || 0;
+  const conn = (r.match(/Parts connected: (bonded|contact)/) || [])[1];
+  const joints = (r.match(/Where the parts meet: (\d+) joints?/) || [])[1];
+  if (bodies > 1 || conn) {
+    const bits = [`${bodies || "Several"} parts`];
+    if (conn) bits.push(conn);
+    if (joints) bits.push(`${joints} joint${joints === "1" ? "" : "s"}`);
+    lines.push(`- ${bits.join(" · ")}`);
+  }
+  const clean = (r.match(/Clean check: ([^.]*)/) || [])[1] || "";
+  if (clean) lines.push(/^the geometry is clean/i.test(clean) ? "- ✓ Geometry clean" : "- ⚠ Not clean - we'll still try");
+  lines.push("- Every face kept as a named group: set loads and supports in your solver");
+  return `**✓ Confirmed${name ? `: ${name}` : ""}**\n${lines.join("\n")}`;
 }
 
 /** A reason the check gives in lower case ("the file declares ...") as a sentence on the stage. */
