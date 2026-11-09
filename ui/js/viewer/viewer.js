@@ -21,6 +21,7 @@ import { get as getState } from "../core/state.js";
 // vtk.js itself, loaded once for the page, and the decoders for the buffers it is handed
 import { b64f32, b64u32, b64u8, loadVtk } from "./scene/vtk_load.js";
 import { mountCanvas } from "./scene/canvas.js";
+import { setEdges } from "./scene/edge_budget.js";
 import { makeOverlay } from "./scene/overlay.js";
 import { bindFreshDownloads } from "../render/download.js";
 import { MOUSE_HINT, UP_AXES, VIEW_PRESETS, isUpAxis, orient, presetView, saveUp, savedUp, shield, upScope, upVector } from "./view_controls.js";
@@ -286,7 +287,7 @@ function initViewer(job,surf,uiCfg){
     const base=_PATCH_COLS[i%_PATCH_COLS.length];
     const pr=actor.getProperty();
     pr.setColor(base[0],base[1],base[2]);
-    pr.setEdgeVisibility(true);pr.setEdgeColor(_EDGE[0],_EDGE[1],_EDGE[2]);pr.setLineWidth(1);
+    setEdges(pr,pd,true);pr.setEdgeColor(_EDGE[0],_EDGE[1],_EDGE[2]);pr.setLineWidth(1);
     pr.setAmbient(_AMB);pr.setDiffuse(_DIF);
     pr.setSpecular(_SPEC);pr.setSpecularPower(18);pr.setSpecularColor(1,1,1);
     // DOUBLE-SIDED. An OpenFOAM boundary face points out of the FLUID, so a car's wall faces point
@@ -559,7 +560,7 @@ function initViewer(job,surf,uiCfg){
         en.actor.setVisibility(!sliceOn&&!s.hidden&&(!isolated||isSel));
         pr.setOpacity(s.opacity);
         // Solid, Solid + edges, or Wire (Parts > Show > Surface)
-        pr.setEdgeVisibility(surfaceMode!=='solid');
+        setEdges(pr,en.actor.getMapper&&en.actor.getMapper()?en.actor.getMapper().getInputData():null,surfaceMode!=='solid');
         if(surfaceMode==='wire')pr.setRepresentationToWireframe();else pr.setRepresentationToSurface();
         if(isSel){pr.setColor(_SEL[0],_SEL[1],_SEL[2]);
                   pr.setEdgeColor(_SEL_EDGE[0],_SEL_EDGE[1],_SEL_EDGE[2]);pr.setAmbient(0.40);}
@@ -993,7 +994,7 @@ function initViewer(job,surf,uiCfg){
         const actor=vtk.Rendering.Core.vtkActor.newInstance();actor.setMapper(mapper);
         const c=sliceColour(thermal,pc.region);
         const pr=actor.getProperty();pr.setColor(c[0],c[1],c[2]);
-        pr.setEdgeVisibility(true);pr.setEdgeColor(0.16,0.16,0.15);pr.setLineWidth(1);
+        setEdges(pr,pd,true);pr.setEdgeColor(0.16,0.16,0.15);pr.setLineWidth(1);
         pr.setAmbient(0.55);pr.setDiffuse(0.55);
         if(pr.setBackfaceCulling)pr.setBackfaceCulling(false);
         actor.setVisibility(false);if(actor.setPickable)actor.setPickable(false);
