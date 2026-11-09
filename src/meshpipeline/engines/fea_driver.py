@@ -1361,7 +1361,22 @@ def pass_work(plan: dict, *, rate: float, cls: str, machine: dict | None) -> dic
     budget = min(wall, max(BUDGET_FLOOR_S, BUDGET_FACTOR * planned)) if planned else wall
     work = planned_work(plan, rate=rate, cls=cls, ceiling_s=budget)
     work["budget"] = bool(budget < wall)
+    work["wall_s"] = int(wall)
     return work
+
+
+def note_budget(ws: Path, work: dict) -> None:
+    """LAD-fea-15's budget into the workspace, for the mesher's machine (gmsh_runner.FillBudget): it
+    stops a pass still filling past its budget, never one already filled. The mesher's own clock is the
+    machine's wall (work['wall_s']). The payload is noted again so the file travels with the pass."""
+    from meshpipeline.contracts.mesh_execution import note_native_payload
+    from meshpipeline.engines.gmsh.gmsh_runner import BUDGET_FILE
+    f = ws / BUDGET_FILE
+    if work.get("budget"):
+        f.write_text(json.dumps({"budget_s": int(work["ceiling_s"]), "rule": "LAD-fea-15"}))
+    else:
+        f.unlink(missing_ok=True)
+    note_native_payload(ws, [p for p in (*PAYLOAD, BUDGET_FILE) if (ws / p).exists()])
 
 
 def budget_words(work: dict, n: int, surface: int | None) -> str:
@@ -2063,13 +2078,15 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             runs_here = 0
             while True:
                 runs_here += 1
-                result = await _relayed_mesh(publish, ws, seq=n * 10 + runs_here, timeout=work["ceiling_s"],
+                note_budget(ws, work)
+                result = await _relayed_mesh(publish, ws, seq=n * 10 + runs_here,
+                                             timeout=work.get("wall_s") or work["ceiling_s"],
                                              of=int((plan.get("estimate") or {}).get("elements") or 0) or None)
                 if _out_of_memory(result):
                     # RUN-3: OUT OF MEMORY -> THE SAME PLAN ONE MACHINE UP (no lever, no coarsening, no
                     # re-plan), sized from the peak seen when there is one, up to the largest machine
                     moved, rule, decided = MM.step_up(machine, measured_gib=_peak_gib(result)), "RUN-3", "step up"
-                elif result.get("timed_out") and not result.get("stalled") and not work.get("budget"):
+                elif result.get("timed_out") and not result.get("stalled") and not result.get("budget_spent"):
                     # RUN-5: STILL WORKING AT THE CLOUD RUN WALL -> THE SAME PLAN ON A VM, which has no
                     # wall (nothing coarsened, no lever); on a VM already there is nowhere to move. A pass
                     # stopped by its own budget (LAD-fea-15) is not moved: it would only grind on elsewhere
@@ -2102,7 +2119,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             # LAD-fea-15: THE PASS'S OWN BUDGET RAN OUT (the time its estimate allows, not the machine's wall):
             # the part's slowness, not ours - the pass is a fill that failed, and the ladder goes on (a surface
             # stage that ran over: LAD-fea-8 first; then the other 3D algorithm; at the end the last rung)
-            spent = bool(result.get("timed_out") and not result.get("stalled") and work.get("budget"))
+            spent = bool(result.get("budget_spent"))
             stuck_on = (L.stalled_surface(str(result.get("log_tail") or ""))
                         if result.get("stalled") or spent else None)
             stall_lever = L.surface_stall_lever(stuck_on, levers, n=n) if stuck_on is not None else None

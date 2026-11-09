@@ -17,9 +17,11 @@ pytest.importorskip("vtkmodules.vtkFiltersCore")
 from tests import fea_fixtures as fx  # noqa: E402
 
 from meshpipeline.contracts import decision_record as dr  # noqa: E402
+from meshpipeline.contracts.mesh_execution import NATIVE_PAYLOAD_FACT  # noqa: E402
 from meshpipeline.engines import fea_driver as FD  # noqa: E402
 from meshpipeline.engines import fea_plan as P  # noqa: E402
 from meshpipeline.engines.gmsh import fea_adapter  # noqa: E402
+from meshpipeline.engines.gmsh.gmsh_runner import BUDGET_FILE  # noqa: E402
 
 
 def _stage(shape, ws: Path) -> Path:
@@ -187,8 +189,10 @@ def test_a_guard_trip_pulls_no_lever_and_ends_the_attempt(tmp_path, monkeypatch)
     assert not ok and marker == FD.GUARD_TRIP and len(calls) == 1
     rec = json.loads((ws / "fea_passes.json").read_text())
     assert rec["levers"] == [] and rec["guard_trip"]["unit"] == "elements"
-    # LAD-fea-15: the pass's budget, sized from its estimate (a small plate: the budget's floor)
-    assert calls[0] == int(FD.BUDGET_FLOOR_S)
+    # the mesher's clock is the machine's wall; LAD-fea-15's budget (a small plate: its floor) rides in the
+    # workspace for the mesher's machine, where it only stops a pass still filling (gmsh_runner.FillBudget)
+    assert calls[0] == FD.MESH_JOB_LIMIT_S - FD.JOB_MARGIN_S
+    assert json.loads((ws / BUDGET_FILE).read_text())["budget_s"] == int(FD.BUDGET_FLOOR_S)
     assert not any(e["rule"].startswith("LAD-fea-") and e["decided"] == "lever" for e in dr.cited_for("t-trip"))
     from meshpipeline.engines.preflight import read_refusal
 
@@ -235,14 +239,16 @@ def test_a_pass_past_its_budget_goes_on_down_the_ladder(tmp_path, monkeypatch):
     def _run(w, timeout):
         calls.append(timeout)
         if len(calls) == 1:
-            return {"rc": -1, "timed_out": True,
+            return {"rc": -1, "timed_out": True, "budget_spent": True,
                     "log_tail": "Meshing 2D...\nInfo    : Meshing surface 3 (Plane, MeshAdapt)"}
         return {"rc": fea_adapter.mesh(w)}
 
     monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=_run))
     ok, marker, _o = asyncio.run(FD.drive(ws, {}, job_id="t-budget", publish=None, run=_Run()))
     assert ok, marker
-    assert calls[0] == int(FD.BUDGET_FLOOR_S) and len(calls) == 2
+    assert calls[0] == FD.MESH_JOB_LIMIT_S - FD.JOB_MARGIN_S and len(calls) == 2
+    assert json.loads((ws / BUDGET_FILE).read_text())["budget_s"] == int(FD.BUDGET_FLOOR_S)
+    assert BUDGET_FILE in json.loads((ws / NATIVE_PAYLOAD_FACT).read_text())
     cited = dr.cited_for("t-budget")
     spent = [e for e in cited if e["rule"] == "LAD-fea-15"]
     assert spent and spent[0]["inputs"]["surface"] == 3

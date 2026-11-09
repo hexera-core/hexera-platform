@@ -572,19 +572,57 @@ def spin_words(counts) -> str:
             f"rejected {rejected:,} points")
 
 
+#: LAD-fea-15's budget for the pass, written by the driver (fea_driver.note_budget) and read here, on the
+#: machine the mesher runs on.
+BUDGET_FILE = "fea_budget.json"
+#: The mesher's steps up to and including the fill (engines/gmsh/fea_adapter.note_stage keys): the
+#: only steps the budget may stop. Past them the solid is filled - improving, curving, checking and
+#: writing a mesh that exists - and only the stall watch or the machine's wall stops it (dev-areen
+#: 9 Nov: a 2.4M-element helmet filled in 3 hours and its clean-up was due to be cut at 320 minutes,
+#: with nothing delivered).
+FILL_STEPS = frozenset({"", "sizing", "surface", "volume"})
+
+
+class FillBudget:
+    """LAD-fea-15 on the mesher's machine: over budget only while the mesher is still filling."""
+
+    def __init__(self, ws: Path, budget_s: float):
+        self.ws, self.budget_s = Path(ws), float(budget_s)
+
+    def step(self) -> str:
+        try:
+            return str(json.loads((self.ws / "fea_stage.json").read_text()).get("key") or "")
+        except (OSError, ValueError, AttributeError):
+            return ""
+
+    def __call__(self, elapsed_s: float) -> bool:
+        return float(elapsed_s) >= self.budget_s and self.step() in FILL_STEPS
+
+
+def fill_budget(ws: Path) -> FillBudget | None:
+    try:
+        s = float(json.loads((Path(ws) / BUDGET_FILE).read_text()).get("budget_s") or 0)
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None
+    return FillBudget(ws, s) if s > 0 else None
+
+
 def _run_fea_watched(ws: Path, *, timeout: int) -> dict:
     """AN FEA MESH, WATCHED: stopped only after FEA_STALL_WINDOW_S with no progress, or at `timeout`
-    (the hard ceiling). What the watchdog saw is returned (`watchdog`) for the why-record."""
+    (the hard ceiling), or - while it is still filling - past LAD-fea-15's budget (BUDGET_FILE). What
+    the watchdog saw is returned (`watchdog`) for the why-record."""
     from meshpipeline.sandbox.safe_exec import run_watched
     _note_fea_threads(ws)
     spin = RefineSpin(ws / FEA_LOG)
+    budget = fill_budget(ws)
     # -u: its output reaches the log as it is written (the watchdog reads the log growing)
     w = run_watched([sys.executable, "-u", "-m", "meshpipeline.engines.gmsh.driver", str(ws)],
                     log_path=ws / FEA_LOG, hard_timeout=float(timeout), stall_s=stall_window(),
-                    progress_paths=(ws / "fea_stage.json",), spinning=spin)
+                    progress_paths=(ws / "fea_stage.json",), spinning=spin, over_budget=budget)
     seen = {"stopped": w.stopped, "seconds": w.seconds, "longest_silence_s": w.longest_silence_s,
             "silence_at_stop_s": w.silence_at_stop_s, "stall_window_s": stall_window(),
-            "ceiling_s": float(timeout), "cpu_s": w.cpu_s}
+            "ceiling_s": float(timeout), "cpu_s": w.cpu_s,
+            "budget_s": budget.budget_s if budget else None}
     if w.stopped == "spinning" and spin.counts:
         it, kept, rejected = spin.counts
         seen["refine"] = {"iterations": it, "kept": kept, "rejected": rejected}
@@ -603,6 +641,7 @@ def _run_fea_watched(ws: Path, *, timeout: int) -> dict:
         # never a reason to move the same plan to another machine (fea_driver RUN-5)
         out["stalled"] = w.stopped in ("stalled", "spinning")
         out["spinning"] = w.stopped == "spinning"
+        out["budget_spent"] = w.stopped == "budget"
     out["watchdog"] = seen
     return out
 

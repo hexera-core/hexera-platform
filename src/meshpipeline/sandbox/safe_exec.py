@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import functools
 import logging
 import os
 import re
@@ -298,7 +299,7 @@ def _captured_watched(args, *, timeout, stall_s: float, progress_paths, poll_s: 
 @dataclass(frozen=True)
 class Watched:
     """How a watched process ended: its return code, why it stopped (``ok`` / ``stalled`` /
-    ``spinning`` / ``ceiling`` / ``memory``), how long it ran, the longest stretch with no sign of life, and its log's tail.
+    ``spinning`` / ``budget`` / ``ceiling`` / ``memory``), how long it ran, the longest stretch with no sign of life, and its log's tail.
     `cpu_s` is the CPU time its process tree was seen to use (0.0 where that cannot be read)."""
     returncode: int
     stopped: str
@@ -310,7 +311,7 @@ class Watched:
 
 
 def run_watched(args, *, log_path, hard_timeout: float, stall_s: float, progress_paths=(),
-                poll_s: float = 10.0, spinning=None, **kwargs) -> Watched:
+                poll_s: float = 10.0, spinning=None, over_budget=None, **kwargs) -> Watched:
     """Run `args` with its output streamed to `log_path`, killed ONLY when it has shown no sign of
     life for `stall_s` seconds, or at `hard_timeout` (the infrastructure's ceiling). A sign of life is
     new output in the log, a change to any of `progress_paths` (a stage file), or its process tree
@@ -320,7 +321,11 @@ def run_watched(args, *, log_path, hard_timeout: float, stall_s: float, progress
 
     `spinning`, when given, is asked at every look whether the run is busy without getting anywhere
     (a callable returning True): output and CPU are then no sign of progress, and the run is stopped
-    as ``spinning`` (gmsh's 3D refinement rejecting the points it inserts, gmsh_runner.RefineSpin)."""
+    as ``spinning`` (gmsh's 3D refinement rejecting the points it inserts, gmsh_runner.RefineSpin).
+
+    `over_budget`, when given, is asked at every look with the seconds run so far (a callable returning
+    True): the run is then stopped as ``budget`` (gmsh_runner.FillBudget - LAD-fea-15's budget, which
+    only ever stops a fill, never a mesh already filled)."""
     import time as _time
 
     from meshpipeline.sandbox.liveness import LivenessWatch
@@ -355,6 +360,8 @@ def run_watched(args, *, log_path, hard_timeout: float, stall_s: float, progress
                 stopped = "stalled"
             elif spinning is not None and _asked(spinning):
                 stopped = "spinning"
+            elif over_budget is not None and _asked(functools.partial(over_budget, now - t0)):
+                stopped = "budget"
             elif now - t0 >= hard_timeout:
                 stopped = "ceiling"
             if stopped != "ok":
