@@ -38,13 +38,15 @@ Nothing below is marked down for "no solver has been run". That is their half of
 | 12 | Headroom to the label ceiling | **Good** |
 | 13 | Meshing time | **Good** |
 | 14 | Layered coolant quality | **Bad** |
-| 15 | Chip region connectivity | **Bad** |
-| 16 | Quality criteria that were never evaluated | **Bad** |
-| 17 | Delivery time, the serial tail | **Bad** |
-| 18 | The published record | **Really Bad** |
+| 15 | The chip, and what it is bonded to | **Bad** |
+| 16 | Patches pointing at a region we do not ship | **Really Bad** |
+| 17 | Quality criteria that were never evaluated | **Bad** |
+| 18 | Delivery time, the serial tail | **Bad** |
+| 19 | The published record | **Really Bad** |
 
-Six Great, seven Good, four Bad, one Really Bad. The one Really Bad is not in the mesh. It is in
-what I wrote about the mesh.
+Six Great, seven Good, four Bad, two Really Bad. One of the Really Bads is not in the mesh at all,
+it is in what I wrote about the mesh. The other is: 2,706,383 faces of the delivered mesh reference
+a region that is not in the delivery.
 
 ## What ships
 
@@ -519,7 +521,7 @@ which is the whole reason layers worked here at all.
 against `checkMesh`'s 2,936 and 2,348. The two tools disagree by 2%, which is decomposition
 handling, not a discrepancy worth chasing.
 
-## 15. Chip region connectivity: Bad
+## 15. The chip, and what it is bonded to: Bad
 
 ```
 *Number of regions: 2
@@ -528,28 +530,117 @@ The mesh has multiple regions which are not connected by any face.
   <<Writing region 1 with 3208128 cells to cellSet region1
 ```
 
-12,518,256 + 3,208,128 = 15,726,384, so it is the whole chip in two disconnected blocks. At the
-measured pitch of 100.630 um that is 12.756 mm3 and 3.269 mm3.
-
 `checkMesh` still printed `Mesh OK`, because a region count is a starred warning and not a failure.
-That makes it exactly the kind of thing that ships unnoticed.
+That is exactly the kind of thing that ships unnoticed, and it did.
 
-Their STEP has 19 chip solids, so two disconnected thermal masses may well be correct: a die and a
-separate component, both bonded to the plate, conducting through it rather than to each other. If
-that is what it is, the mesh is right and the only thing wrong is that nobody has written it down.
-If it is one physical chip that the lattice has cut in two, it is a defect and the chip refinement
-needs another level.
+### The two regions are correct
 
-I have not established which, and until I do this stays Bad. Note that it does not break the solve
-either way: both blocks touch `solid` through `chip_to_solid`, so both have a thermal path.
+`chip.stl` genuinely contains two disjoint bodies, and both are lattice-aligned rectangular slabs:
 
-The chip is otherwise a perfect lattice and worth describing honestly for that reason. Non-
-orthogonality 0.00241 degrees, aspect ratio 1.00008, every cell volume between 1.01902e-12 and
-1.01907e-12. It is not surface-fitted at all. It is the set of background cells that fall inside the
-chip STL, staircased at 100.630 um. For a rectangular die that is a reasonable choice and the
-contact area it produces is within 0.07% of the CAD, but it is a choice and not an accident.
+| body | volume in the CAD | size | cells across the thin direction |
+|---|---|---|---|
+| 2 | 12,987.260 mm3 | 70.000 x 2.360 x 78.615 mm | 23.45 |
+| 1 | 3,307.595 mm3 | 49.900 x 1.119 x 59.235 mm | 11.12 |
+| sum | 16,294.855 mm3 | | |
 
-## 16. Quality criteria that were never evaluated: Bad
+That sum is the expected chip volume to the digit. The mesh's two regions map onto them by volume:
+12,518,256 cells is 12,756.9 mm3 against body 2's 12,987.260 (-1.774%), and 3,208,128 cells is
+3,269.3 mm3 against body 1's 3,307.595 (-1.158%). Both errors are just the fractional cell in the
+thin direction: 11 whole cells of 11.12 is -1.08%, 23 of 23.45 is -1.92%.
+
+So the mesh is right about the topology. **What is wrong is what the two bodies are connected to.**
+
+### Only one of them is bonded to anything
+
+Measured off the decomposed chip mesh, every face of `chip_to_solid` sits on a single plane:
+
+| patch | faces | area | y range |
+|---|---|---|---|
+| `chip_to_solid` | 270,816 | 2,742.46 mm2 | **+0.02011 to +0.02011** |
+| `chip_to_air` | 1,492,860 | 15,117.67 mm2 | +0.01658 to +0.02011 |
+
+y = +0.02011 is body 1's top face and nothing else. Body 1's top is 2,955.83 mm2 and 2,742.46 of it
+is bonded, 92.8%, the rest trimmed where the plate does not cover its full z footprint.
+
+**Body 2 touches nothing but air.** It is 12,987 mm3, 78% of the chip volume and 12.5 million of
+the 15.7 million chip cells, and in the delivered mesh it has no conduction path to anything. The
+whole surface budget closes on that reading: body 1 and body 2 are 17,863.46 mm2 of box surface
+between them, the mesh reports 17,860.13 mm2 across the two patches, and the `chip_to_air` y
+histogram lands where the two bodies' faces are:
+
+| y | faces | what it is |
+|---|---|---|
+| +0.0166 | 547,228 | body 2 bottom, 5,503 mm2 predicts 543,500 |
+| +0.0189 | 544,272 | body 2 top, facing the gap |
+| +0.0190 | 293,816 | body 1 bottom, facing the gap, 2,955.83 mm2 predicts 291,885 |
+| +0.0201 | 23,000 | the unbonded 213.37 mm2 of body 1's top |
+
+### The 70 um gap, which is the real finding
+
+Body 2's top is at y = +0.01892 and body 1's bottom at +0.01899. The gap is **70 um**, and both of
+its faces are `chip_to_air`, so in our mesh the gap is air. 70 um is **0.70 of a 100.631 um cell**,
+so a uniform lattice at this resolution cannot put a single cell in it.
+
+The stack, read off the mesh, is: plate / body 1, 1.119 mm / 70 um gap / body 2, 2.360 mm / air.
+That is the shape of a spreader bonded under a cold plate with a die beneath it. If that 70 um is a
+bond line, then the thing carrying the die's heat into the plate is modelled here as air that we
+discard, and the die has nowhere to send it. If it is genuinely an air gap, the mesh is right and
+body 2 is a thermally separate part.
+
+**That is the customer's answer, not ours**, which is why this is not being remeshed on a guess. But
+two things are ours. We shipped a mesh in which 78% of the chip volume cannot receive heat and did
+not say so. And at 100.631 um we could not represent that gap even if they told us tomorrow what is
+in it: representing it needs 25.158 um across the band, which is 2.78 cells, and that costs about
++9M cells with an anisotropic y band or +92M isotropic.
+
+### The chip is not surface-fitted at all
+
+Worth stating plainly because it explains every number above. `cfMesh`'s domain is `domain.stl`;
+`chip.stl` appears only as a refinement source and then as a `topoSet surfaceToCell` selector. So
+the chip region is the set of whole background cells that fall inside the STL, with no snapping and
+no surface fitting. Hence non-orthogonality 0.00241 degrees, aspect ratio 1.00008, and every cell
+volume between 1.01902e-12 and 1.01907e-12.
+
+For two lattice-aligned rectangular slabs that is close to exact, and it shows: the contact area is
+2,742.45 mm2 against 2,744.50 in the CAD, which is -0.07%, half a cell, and the total surface is
+within 0.024%. Uniform is also the physically right choice here, because a solid has no boundary
+layer: the near-wall packing in a flow mesh resolves gradients that advection creates, and a
+conduction field has none. The place a solid does need resolution is across a thin layer with a
+steep through-thickness gradient, and that is precisely the 70 um gap.
+
+## 16. Patches pointing at a region we do not ship: Really Bad
+
+The delivery is three regions: `fluid`, `solid`, `chip`. The `air` zone, 32,601,168 cells, is built
+by `topoSet` and then discarded. But the boundary files still say:
+
+```
+    chip_to_air
+    {
+        type            mappedWall;
+        nFaces          1492860;
+        sampleRegion    air;
+        samplePatch     air_to_chip;
+    }
+```
+
+and `solid_to_air` says the same for its 1,213,523 faces. So **2,706,383 faces of the delivered
+mesh are typed `mappedWall` against a region that is not in the delivery.** `chtMultiRegionFoam`
+constructs those mappings in order to exchange temperatures across them, and it cannot construct a
+mapping to a region that does not exist.
+
+`checkMesh` and `snappyHexMesh` do not care, which is how it got this far: neither builds the
+mapping, they only need the topology. That is why every quality number in this document is still
+valid. It is the solver setup that breaks, and the solver setup is the thing we are selling.
+
+The fix is to retype those patches `wall`, which is also what they physically are: the outside of
+the part, where the customer chooses an adiabatic or a convective condition. It is one key per
+patch. The 2.3% of this that showed up as a `checkMesh` return code was recorded on 2026-11-07 and
+closed by retyping on a check-time **copy**, which fixed the check and left the delivery alone.
+
+Really Bad because this is the one thing on this page that stops the case being run at all, it was
+avoidable, and the near-miss was already in the record.
+
+## 17. Quality criteria that were never evaluated: Bad
 
 The three region checks were:
 
@@ -581,7 +672,7 @@ in the plate have never been checked for determinant or face twist.
 This is cheap to close. A `checkMesh -meshQuality` pass on the three regions is 185 s of compute on
 the numbers in section 13. It has simply never been run.
 
-## 17. Delivery time, the serial tail: Bad
+## 18. Delivery time, the serial tail: Bad
 
 | stage | seconds |
 |---|---|
@@ -612,7 +703,7 @@ the reconstruct may not be needed at all: we already build the boundary index an
 sidecar straight off the decomposed mesh in 13 s and 9 s, so 1,105 s of reconstruct exists only to
 make one tarball that a customer may prefer decomposed anyway.
 
-## 18. The published record: Really Bad
+## 19. The published record: Really Bad
 
 Three numbers I published about this mesh were wrong, and I found all three only because something
 else went looking.
@@ -645,19 +736,33 @@ this document has its inputs shown for that reason.
 
 ## What to do next, in order of value per hour
 
-1. **Split `fluid_to_solid` and ask for layers only on the channel surface.** Done 2026-11-08: the
-   2,349 bad angles are 89% on the plenum wall at the ends of the stretch box and only 232 on
-   channel-resolution wall, so this removes most of section 14 and takes cells out of a place where
-   they are doing no thermal work. Needs one `topoSet` and one `createPatch` before the layer pass,
-   and the layer pass rerun. No remesh.
-2. **Run `checkMesh -meshQuality` on the three unlayered regions.** 185 s. Closes section 16, which
-   is currently an absence of evidence that I have been quoting as evidence.
-3. **Settle whether the chip's two blocks are two real thermal masses.** A read of the STEP part
-   names against the two `cellSet` bounding boxes. Closes section 15 either way.
-4. **Pipe the tars through `pigz` and skip the reconstruct.** Takes about an hour off a 2.28 h
-   delivery for no change to the mesh at all.
-5. **Localise the remaining 588 faces in error**, the five criteria other than non-orthogonality.
-   Cheaper than it sounds now that the reader exists.
+Fix run 1 is in flight on `mesh-fix1` as of 2026-11-08 and covers items 1 to 4. None of it is a
+remesh.
+
+1. **Retype the air-facing patches to `wall`.** Section 16. One key per patch, and it is the only
+   item on this page that stops the case running at all. The corrected regions go to
+   `mesh/cbox8fixed/` and the originals are left alone.
+2. **Run `checkMesh -meshQuality` on the three unlayered regions.** Section 17. 185 s. Also run on
+   the chip *before* the retype, so the retype is shown to be what moves the return code rather
+   than assumed to be.
+3. **Three layer variants, measured.** Section 14. The mechanism says the angle is
+   `atan(drift/thickness)` with drift about 4.5% of the cell width, so V1 makes the thickness track
+   the cell size (`relativeSizes true`, predicted about 15 degrees everywhere), V2 removes the
+   normal smoothing that creates the drift, V3 does both. Whichever reports fewest faces in error
+   without losing coverage wins. The patch split is held in reserve: 95.689% of the interface is
+   already level +4, so it would remove the defect but save only about 2M cells, not the large
+   number I first claimed.
+4. **`pigz` the tars and skip the reconstruct entirely.** Section 18.
+
+Still open after that run:
+
+5. **Ask what is in the 70 um gap between the two chip bodies.** Section 15. This is a question for
+   the customer and it gates everything else about the chip. If it is a bond line, body 2 needs a
+   conduction path and the gap needs 25.158 um across it, which is about +9M cells with an
+   anisotropic y band. If it is air, the mesh is already right and only the documentation is
+   missing.
+6. **Localise the remaining 588 faces in error**, the five criteria other than non-orthogonality.
+   Cheap now that the reader exists.
 
 Not on this list: a new mesh. 25 proposals were analysed on 2026-11-08, 10 were adversarially
 verified, 3 survived and none of the three changes the mesh.
