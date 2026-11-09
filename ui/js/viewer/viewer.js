@@ -1508,12 +1508,106 @@ function initViewer(job,surf,uiCfg){
       following=!!on;
       if(fol){fol.setAttribute('aria-pressed',following?'true':'false');
               fol.classList.toggle('on',following);}
-      if(following){setArmed(false);folKey='';followNow();}
+      if(following){setArmed(false);setStream(false);folKey='';followNow();}
       else{folKey='';if(folTimer){clearTimeout(folTimer);folTimer=null;}
-           dropShown();lbl.textContent=was;rw.render();}}
+           /* `clear`, NOT `dropShown`. `dropShown` removes what the mode drew and leaves
+              `hidden` alone, so turning the mode off used to leave the merged surface ghosted at
+              a tenth opacity for good. `clear` is the one that also puts that surface back. */
+           clear();}}
     if(fol){
       fol.onclick=function(){setFollow(!following);};
       if(cam.onModified)cam.onModified(folPing);}
+
+    /* GHOST ONCE PER OPEN WINDOW, not once per cut. `recut` drops the drawn actors but
+       leaves `hidden` alone, so a second cut used to ghost the already-ghosted entries and
+       record GHOST_OPACITY as their true opacity - after which closing the window left the
+       merged surface at a tenth opacity for good, with nothing on screen to say why.
+
+       THE REST OF THE MESH STAYS, AS A GHOST. It used to be switched off outright, on the
+       grounds that two coincident surfaces at different resolutions fight for the same depth
+       and neither reads. True, and the wrong trade: what a reader got was a scrap of cells
+       floating in black with nothing around it and no way to tell where on a 178 mm plate
+       they were looking. Asked what he was getting from it, the owner of this product said
+       exactly that. At a tenth opacity and with its edges off the merged surface cannot
+       compete with the cut - the cut is opaque and wins the depth test wherever they touch -
+       but it still says where the cut IS. */
+    function ghostOnce(){
+      if(hidden.length)return;
+      entries.forEach(en=>{
+        if(!en.actor.getVisibility())return;
+        const pr=en.actor.getProperty();
+        hidden.push({en,op:pr.getOpacity?pr.getOpacity():1,
+                     ev:pr.getEdgeVisibility?pr.getEdgeVisibility():true});
+        if(pr.setOpacity)pr.setOpacity(GHOST_OPACITY);
+        if(pr.setEdgeVisibility)pr.setEdgeVisibility(false);});}
+
+    /* ONE WINDOW, FETCHED. Split out of `cut` so a tile can be asked for without taking the busy
+       flag, the label and the camera move, which belong to a reader's own click and not to the
+       thirty-odd tiles of a streaming pass. The refusal comes back as words because the backend
+       refuses in words - too big to read, no workspace left on this machine - and the words are
+       the useful part. */
+    async function fetchTile(at,r){
+      const q=`x=${at[0]}&y=${at[1]}&z=${at[2]}&radius=${r}`;
+      const res=await fetch(`/api/v1/simulation/${job}/detail?${q}`,{headers:headers()});
+      if(!res.ok){
+        let why='';try{why=((await res.json())||{}).detail||'';}catch(_e){why='';}
+        return {ok:false,why:why?String(why).slice(0,90):('detail '+res.status)};}
+      return {ok:true,got:await res.json()};}
+
+    /* ONE WINDOW'S PATCHES, DRAWN, accumulating into `shown`. `ix` says which colour a patch
+       takes: the click path leaves it alone and gets the route's own order, the stream passes a
+       name-keyed one so a patch is the same colour in every tile - the route sends only the
+       patches that have a face in range, so tile order is not patch order. `edgeOff` is the
+       whole-screen edge budget described below. */
+    function drawCut(got,ix,edgeOff){
+      let painted=0,paintedLabel='',paintedMetric='';
+      (got.patches||[]).forEach((p,i)=>{
+        const pd=vtk.Common.DataModel.vtkPolyData.newInstance();
+        pd.getPoints().setData(b64f32(p.points_b64),3);
+        pd.getPolys().setData(b64u32(p.polys_b64));
+        const mapper=vtk.Rendering.Core.vtkMapper.newInstance();mapper.setInputData(pd);
+        const ac=vtk.Rendering.Core.vtkActor.newInstance();ac.setMapper(mapper);
+        const base=_PATCH_COLS[(ix?ix(p,i):i)%_PATCH_COLS.length],pr=ac.getProperty();
+        pr.setColor(base[0],base[1],base[2]);
+        /* THE COLOURS A CUT CAN HAVE THAT THE MAIN SURFACE CANNOT. Nothing here is merged -
+           one delivered face is one polygon, in the order the route packed it - so a per-face
+           number is a per-polygon number and painting it is honest. On the drawn surface it
+           is not: the mesh is reduced to fit the triangle budget, one drawn face stands for
+           about sixteen delivered ones, and a colour on it was measured on none of them.
+           The values are checkMesh's own, and the bar comes with them: skewness is judged
+           against 20 here, checkMesh's bar for a BOUNDARY face, not the internal 4. */
+        const qb=p.quality_b64||{},qm=p.quality_metrics||{};
+        /* WHICH METRIC. The one the reader picked, when they have picked one. When they have
+           not - and on the meshes this exists for they CANNOT, because the payload carries no
+           metrics block to make controls out of - the first the cut brought, in the order the
+           route sends them. A colour nobody can reach is not a feature, and the button below
+           names which metric it is showing so neither case is a guess. */
+        const dm=(activeMetric&&qb[activeMetric])?activeMetric
+                 :['non_ortho','skewness','aspect_ratio'].find(k=>qb[k]&&qm[k]);
+        if(dm&&qb[dm]&&qm[dm]){
+          const v=b64f32(qb[dm]);
+          const rp=v.length===p.face_count?rampOf(qm[dm]):null;
+          if(rp){
+            const rgb=new Uint8Array(v.length*3);
+            for(let k=0;k<v.length;k++)rp.color(v[k],rgb,k*3);
+            pd.getCellData().setScalars(vtk.Common.Core.vtkDataArray.newInstance(
+              {name:'quality',values:rgb,numberOfComponents:3}));
+            mapper.setScalarModeToUseCellData();mapper.setColorModeToDirectScalars();
+            if(mapper.setInterpolateScalarsBeforeMapping)
+              mapper.setInterpolateScalarsBeforeMapping(false);
+            mapper.setScalarVisibility(true);
+            painted++;paintedLabel=qm[dm].label||dm;paintedMetric=dm;}}
+        setEdges(pr,p.face_count||_countPolys(b64u32(p.polys_b64)));
+        /* EDGES ARE A WHOLE-SCREEN BUDGET, NOT A PER-ACTOR ONE. `setEdges` caps one actor at
+           750,000 polygons and every tile is far under that, but the stream puts dozens of them
+           up and edge drawing is what loses the WebGL context - measured on this viewer at about
+           1.9 million faces. So past one actor's worth of faces IN TOTAL the stream draws its
+           tiles without edges, and takes the edges off the ones already up. */
+        if(edgeOff&&pr.setEdgeVisibility)pr.setEdgeVisibility(false);
+        pr.setAmbient(0.30);pr.setDiffuse(0.78);
+        if(pr.setBackfaceCulling)pr.setBackfaceCulling(false);
+        ren.addActor(ac);shown.push(ac);shownNames.push(String(p.name||''));});
+      return {painted,paintedLabel,paintedMetric};}
 
     async function cut(at,rOverride){
       if(a.dataset.busy)return;
@@ -1521,79 +1615,16 @@ function initViewer(job,surf,uiCfg){
       try{
         const r=(rOverride>0)?rOverride:radiusNow();
         centre=at.slice();
-        const q=`x=${at[0]}&y=${at[1]}&z=${at[2]}&radius=${r}`;
-        const res=await fetch(`/api/v1/simulation/${job}/detail?${q}`,{headers:headers()});
-        if(!res.ok){
-          // the backend refuses in words - too big to read, no workspace left on this machine -
-          // and the words are the useful part
-          let why='';try{why=((await res.json())||{}).detail||'';}catch(_e){why='';}
-          lbl.textContent=why?String(why).slice(0,90):('detail '+res.status);
-          return;}
-        const got=await res.json();
+        const hit=await fetchTile(at,r);
+        if(!hit.ok){lbl.textContent=hit.why;return;}
+        const got=hit.got;
         /* WHAT THE BALL ACTUALLY HELD, kept so Follow can size its next one. The click path
            ignores these - a reader who picked a radius meant it. */
         lastInRange=+got.faces_in_range||0;lastReturned=+got.faces_returned||0;
         if(!(got.patches||[]).length){lbl.textContent='no cells there';return;}
-        /* THE REST OF THE MESH STAYS, AS A GHOST. It used to be switched off outright, on the
-           grounds that two coincident surfaces at different resolutions fight for the same depth
-           and neither reads. True, and the wrong trade: what a reader got was a scrap of cells
-           floating in black with nothing around it and no way to tell where on a 178 mm plate
-           they were looking. Asked what he was getting from it, the owner of this product said
-           exactly that. At a tenth opacity and with its edges off the merged surface cannot
-           compete with the cut - the cut is opaque and wins the depth test wherever they touch -
-           but it still says where the cut IS. */
-        /* GHOST ONCE PER OPEN WINDOW, not once per cut. `recut` drops the drawn actors but
-           leaves `hidden` alone, so a second cut used to ghost the already-ghosted entries and
-           record GHOST_OPACITY as their true opacity - after which closing the window left the
-           merged surface at a tenth opacity for good, with nothing on screen to say why. */
-        if(!hidden.length)entries.forEach(en=>{
-          if(!en.actor.getVisibility())return;
-          const pr=en.actor.getProperty();
-          hidden.push({en,op:pr.getOpacity?pr.getOpacity():1,
-                       ev:pr.getEdgeVisibility?pr.getEdgeVisibility():true});
-          if(pr.setOpacity)pr.setOpacity(GHOST_OPACITY);
-          if(pr.setEdgeVisibility)pr.setEdgeVisibility(false);});
-        let painted=0,paintedLabel='',paintedMetric='';
-        (got.patches||[]).forEach((p,i)=>{
-          const pd=vtk.Common.DataModel.vtkPolyData.newInstance();
-          pd.getPoints().setData(b64f32(p.points_b64),3);
-          pd.getPolys().setData(b64u32(p.polys_b64));
-          const mapper=vtk.Rendering.Core.vtkMapper.newInstance();mapper.setInputData(pd);
-          const ac=vtk.Rendering.Core.vtkActor.newInstance();ac.setMapper(mapper);
-          const base=_PATCH_COLS[i%_PATCH_COLS.length],pr=ac.getProperty();
-          pr.setColor(base[0],base[1],base[2]);
-          /* THE COLOURS A CUT CAN HAVE THAT THE MAIN SURFACE CANNOT. Nothing here is merged -
-             one delivered face is one polygon, in the order the route packed it - so a per-face
-             number is a per-polygon number and painting it is honest. On the drawn surface it
-             is not: the mesh is reduced to fit the triangle budget, one drawn face stands for
-             about sixteen delivered ones, and a colour on it was measured on none of them.
-             The values are checkMesh's own, and the bar comes with them: skewness is judged
-             against 20 here, checkMesh's bar for a BOUNDARY face, not the internal 4. */
-          const qb=p.quality_b64||{},qm=p.quality_metrics||{};
-          /* WHICH METRIC. The one the reader picked, when they have picked one. When they have
-             not - and on the meshes this exists for they CANNOT, because the payload carries no
-             metrics block to make controls out of - the first the cut brought, in the order the
-             route sends them. A colour nobody can reach is not a feature, and the button below
-             names which metric it is showing so neither case is a guess. */
-          const dm=(activeMetric&&qb[activeMetric])?activeMetric
-                   :['non_ortho','skewness','aspect_ratio'].find(k=>qb[k]&&qm[k]);
-          if(dm&&qb[dm]&&qm[dm]){
-            const v=b64f32(qb[dm]);
-            const rp=v.length===p.face_count?rampOf(qm[dm]):null;
-            if(rp){
-              const rgb=new Uint8Array(v.length*3);
-              for(let k=0;k<v.length;k++)rp.color(v[k],rgb,k*3);
-              pd.getCellData().setScalars(vtk.Common.Core.vtkDataArray.newInstance(
-                {name:'quality',values:rgb,numberOfComponents:3}));
-              mapper.setScalarModeToUseCellData();mapper.setColorModeToDirectScalars();
-              if(mapper.setInterpolateScalarsBeforeMapping)
-                mapper.setInterpolateScalarsBeforeMapping(false);
-              mapper.setScalarVisibility(true);
-              painted++;paintedLabel=qm[dm].label||dm;paintedMetric=dm;}}
-          setEdges(pr,p.face_count||_countPolys(b64u32(p.polys_b64)));
-          pr.setAmbient(0.30);pr.setDiffuse(0.78);
-          if(pr.setBackfaceCulling)pr.setBackfaceCulling(false);
-          ren.addActor(ac);shown.push(ac);shownNames.push(String(p.name||''));});
+        ghostOnce();
+        const _dc=drawCut(got);
+        const painted=_dc.painted,paintedLabel=_dc.paintedLabel,paintedMetric=_dc.paintedMetric;
         // SAID, NOT IMPLIED. A reader given 150,000 of 404,725 faces with no word about it reads
         // the gap as mesh that is not there.
         // SAID, so a reader knows whether the colours they are looking at are the metric they
@@ -1626,6 +1657,310 @@ function initViewer(job,surf,uiCfg){
       shown.forEach(ac=>ren.removeActor(ac));shown=[];shownNames=[];
       shownPainted=0;shownMetric='';}
     async function recut(at,r){dropShown();await cut(at,r);}
+
+    /* ─── STREAMING: COVER THE SCREEN WITH REAL CELLS ──────────────────────────────────────────
+       Inspect reads one ball where a reader clicks; Follow moves that ball to the middle of the
+       view. Both answer "what is the mesh like HERE", and neither answers "show me the mesh" -
+       which is the question that was actually being asked. The drawn surface answers it, but the
+       drawn surface is MERGED: about sixteen delivered faces to one drawn polygon on this plate,
+       so nothing a reader looks at on it is a delivered face.
+
+       THE BUDGET IS THE SCREEN'S, NOT THE MESH'S, and that is the whole idea rather than a
+       compromise. A 4K display is 8,294,400 pixels, so even at one pixel per face a screen runs
+       out at eight million faces, and at a readable two or three pixels a face the ceiling is
+       around two million - for ANY mesh. So a 317-million-cell plate and a 300-thousand-cell
+       coupon stream exactly the same way; what differs is how much of each one screen holds, and
+       the readout says which.
+
+       HOW IT COVERS. The screen is cut into tiles and a ball of real cells is read into each one.
+       Where the surface IS, per tile, comes from the drawn mesh's own cell centres projected in
+       the browser - not from the renderer's picker, which answers one screen position per round
+       trip and only for whatever is drawn in front, and this pass draws in front of itself, so by
+       its second tile the picker would be reading its own output. A tile the route truncates is
+       NOT drawn: it is split into four and each quarter read instead. Four splits take 4x4 to
+       32x32, and whatever the budget could not reach is counted and said out loud. */
+    //: how many delivered faces one pass puts on screen. 1.5 million is about 3 million triangles,
+    //: and 3.81 million triangles is where this viewer was measured drawing at 55.2 fps.
+    const STREAM_MAX_FACES=1500000;
+    //: and how many round trips it will spend getting them. Each is capped server side at
+    //: detail_window.MAX_RETURN_FACES, so a view that needs more tiles than this is a view too
+    //: wide to read at real-cell resolution - which the readout then says.
+    const STREAM_MAX_TILES=96;
+    const STREAM_POOL=4;              // round trips in flight at once
+    const STREAM_N0=4;                // the first grid: 4x4 of the screen
+    const STREAM_GRID=32;            // and the finest it can split to, so three splits
+    const STREAM_LEVELS=1+Math.round(Math.log2(STREAM_GRID/STREAM_N0));
+    const STREAM_SETTLE_MS=320;
+    const STREAM_SAMPLE_CAP=120000;   // cell centres kept per region, to find the front with
+    /* PIXELS PER DELIVERED CELL before the mode will open, which is NOT the gate Follow uses.
+       Follow's is 1.5 px of `stats.typ`, and typ is the AREA-WEIGHTED median face - on this
+       delivery 100.631 um, exactly 4.00x the 25.149 um tenth percentile, which is the pitch-8
+       lattice cell to within 0.03%. So Follow's gate is 0.37 px per lattice cell: not a cell
+       anyone can see, and a view holding far more faces than the budget can draw. The budget is
+       spent on face COUNT and the count is dominated by the fine faces, so this gate is on p10.
+
+       MEASURED through the route the page uses, on four real points of the delivered plate, with
+       a level-0 tile's ball at each candidate:
+           px/cell   view height   tile ball   faces returned   whole   slowest
+             1.5       16.77 mm     3.954 mm         18,199      4/4     1.39 s
+             2.0       12.57 mm     2.966 mm          5,761      4/4     0.50 s
+             3.0        8.38 mm     1.977 mm          1,866      4/4     0.23 s
+       At 1.5 every tile comes back WHOLE at the first grid and a 4x4 pass draws about 291,000
+       faces, five times inside the budget - so the threshold was right and the statistic under
+       it was not. */
+    const STREAM_MIN_PX=1.5;
+    /* and how many pixels one DELIVERED cell covers, as against `cellPx`, which answers the same
+       question about the drawn surface's own merged polygons. */
+    function realCellPx(){
+      const e=(stats&&stats.p10>0)?stats.p10:0;
+      if(!(e>0))return cellPx();     // a payload with no cell_stats: fall back to the drawn one
+      return e*(apiRW.getSize()[1]/(2*Math.tan(cam.getViewAngle()*Math.PI/360)))/camDist();}
+    const str=document.getElementById('v-insp-stream-'+job);
+    let streaming=false,strTimer=null,strBusy=false,strKey='';
+    let strFaces=0,strTiles=0,strRead=0,strLeft=0,strDense=0;
+
+    /* THE CAMERA'S THREE AXES, SQUARED UP. `getViewUp` is not promised to be square to the view
+       direction - an orbit leaves it off - so the part of it running along the view is taken out
+       before it is used as a screen axis, and the third axis is their cross product. */
+    function camBasis(){
+      const p=cam.getPosition(),f=cam.getFocalPoint(),u=cam.getViewUp();
+      let dx=f[0]-p[0],dy=f[1]-p[1],dz=f[2]-p[2];
+      const dl=Math.hypot(dx,dy,dz)||1;dx/=dl;dy/=dl;dz/=dl;
+      const k=u[0]*dx+u[1]*dy+u[2]*dz;
+      let ux=u[0]-dx*k,uy=u[1]-dy*k,uz=u[2]-dz*k;
+      const ul=Math.hypot(ux,uy,uz)||1;ux/=ul;uy/=ul;uz/=ul;
+      return {p,d:[dx,dy,dz],u:[ux,uy,uz],
+              r:[dy*uz-dz*uy,dz*ux-dx*uz,dx*uy-dy*ux]};}
+
+    /* THE DRAWN MESH'S OWN CELL CENTRES, thinned, cached on the region. This is the one thing a
+       streaming pass needs that the server cannot give it: which point to ask about, per tile.
+       They are already in the browser - the merged surface was built from them - so the whole
+       question is answered without a round trip. */
+    function samplesOf(en){
+      if(en.strPts)return en.strPts;
+      const step=Math.max(1,Math.ceil(en.nCells/STREAM_SAMPLE_CAP));
+      const out=new Float32Array(Math.ceil(en.nCells/step)*3);let w=0;
+      for(let c=0;c<en.nCells;c+=step){const q=cellCenter(en,c);
+        out[w++]=q[0];out[w++]=q[1];out[w++]=q[2];}
+      en.strPts=out.subarray(0,w);return en.strPts;}
+
+    /* WHERE THE FRONT OF THE SURFACE IS, over a fine grid of the screen, in one pass over those
+       samples. Each bin keeps the NEAREST sample that projected into it and how many did:
+       nearest, because that is the face of the part the reader is looking at rather than its far
+       side, and the count because an empty bin is empty screen and must not cost a round trip.
+       A tile at any level is a block of these bins, so splitting one costs nothing. */
+    function viewCloud(){
+      const b=camBasis(),th=tanHalf(),G=STREAM_GRID,nb=G*G,sz=apiRW.getSize();
+      const W=sz[0]||host.clientWidth||800,H=sz[1]||host.clientHeight||600;
+      const asp=W/Math.max(H,1);
+      const bz=new Float32Array(nb).fill(Infinity);
+      const px=new Float32Array(nb),py=new Float32Array(nb),pz=new Float32Array(nb);
+      const bn=new Int32Array(nb);let seen=0;
+      entries.forEach(en=>{
+        if(!en.actor.getVisibility())return;
+        const s=samplesOf(en);
+        for(let k=0;k<s.length;k+=3){
+          const ax=s[k]-b.p[0],ay=s[k+1]-b.p[1],az=s[k+2]-b.p[2];
+          const z=ax*b.d[0]+ay*b.d[1]+az*b.d[2];
+          if(!(z>1e-9))continue;                      // behind the camera
+          const u=(ax*b.r[0]+ay*b.r[1]+az*b.r[2])/(z*th*asp);
+          if(u<-1||u>1)continue;
+          const v=(ax*b.u[0]+ay*b.u[1]+az*b.u[2])/(z*th);
+          if(v<-1||v>1)continue;
+          let gx=(u+1)*0.5*G|0;if(gx<0)gx=0;if(gx>=G)gx=G-1;
+          let gy=(1-v)*0.5*G|0;if(gy<0)gy=0;if(gy>=G)gy=G-1;
+          const i=gy*G+gx;bn[i]++;seen++;
+          if(z<bz[i]){bz[i]=z;px[i]=s[k];py[i]=s[k+1];pz[i]=s[k+2];}}});
+      return {G,bz,px,py,pz,bn,b,th,asp,seen};}
+
+    /* ONE TILE: its nearest sample, and whether it holds any at all. */
+    function tileFront(c,x0,y0,x1,y1){
+      let best=Infinity,bx=0,by=0,bzz=0,n=0;
+      for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){
+        const i=y*c.G+x;if(!c.bn[i])continue;n+=c.bn[i];
+        if(c.bz[i]<best){best=c.bz[i];bx=c.px[i];by=c.py[i];bzz=c.pz[i];}}
+      return n?{at:[bx,by,bzz],z:best,n:n}:null;}
+
+    /* AND HOW BIG A BALL COVERS IT. At the depth of its nearest sample the tile's rectangle is
+       this wide and this tall in the part's own units, and a ball of half that diagonal covers the
+       whole rectangle - so neighbouring tiles overlap and there is no seam between them. The
+       centre is pushed a quarter of a radius away from the camera so the ball straddles the
+       surface rather than sitting half in front of it: a cold plate seen face-on is thicker than
+       one tile is wide, and a ball centred exactly on the front face reads only the front face. */
+    function tileBall(c,f,x0,y0,x1,y1){
+      const w=2*f.z*c.th*c.asp*(x1-x0)/c.G,h=2*f.z*c.th*(y1-y0)/c.G;
+      const r=0.5*Math.hypot(w,h);
+      return {r:r,at:[f.at[0]+c.b.d[0]*r*0.25,
+                      f.at[1]+c.b.d[1]*r*0.25,
+                      f.at[2]+c.b.d[2]*r*0.25]};}
+
+    async function streamPass(key){
+      const c=viewCloud();
+      if(!c.seen)return {none:true};
+      const step=c.G/STREAM_N0;
+      let tiles=[];
+      for(let gy=0;gy<STREAM_N0;gy++)for(let gx=0;gx<STREAM_N0;gx++)
+        tiles.push([gx*step,gy*step,(gx+1)*step,(gy+1)*step]);
+      const o={faces:0,drew:0,read:0,dense:0,split:0,left:0,range:0,painted:0,pLabel:'',pMetric:'',why:''};
+      /* ONE PATCH, ONE COLOUR, ACROSS EVERY TILE. The route sends only the patches with a face in
+         range, so the third patch of one tile is not the third patch of the next, and numbering
+         them per tile would paint the same wall three different colours across a screen. */
+      const colIx={};let colN=0;
+      const ixOf=(p,i)=>{const k=String(p.name||i);
+        if(colIx[k]===undefined)colIx[k]=colN++;return colIx[k];};
+      let noEdges=false;
+      ghostOnce();
+      for(let L=0;L<STREAM_LEVELS&&tiles.length;L++){
+        const next=[],want=[];
+        tiles.forEach(q=>{const f=tileFront(c,q[0],q[1],q[2],q[3]);if(f)want.push({q:q,f:f});});
+        let i=0;
+        while(i<want.length){
+          // the reader kept moving, or switched the mode off, while this pass was in flight
+          if(!streaming||key!==strKey)return {aborted:true};
+          if(o.faces>=STREAM_MAX_FACES||o.read>=STREAM_MAX_TILES){o.left+=want.length-i;break;}
+          /* THE FIRST TILE GOES ALONE. The route parses a region's boundary on its first ball and
+             answers from a cache after that - measured on this delivery at 5.42 s cold and 0.02 s
+             warm, across six patches in four regions - so four cold tiles at once is four parses
+             at once, for four times the memory in the API process and none of the benefit. One
+             tile first warms what the rest of the pass needs. */
+          const slab=want.slice(i,i+((o.read===0)?1:STREAM_POOL));i+=slab.length;
+          const outs=await Promise.all(slab.map(async j=>{
+            const b=tileBall(c,j.f,j.q[0],j.q[1],j.q[2],j.q[3]);
+            try{return {j:j,res:await fetchTile(b.at,b.r)};}
+            catch(_e){return {j:j,res:{ok:false,why:'could not read a tile'}};}}));
+          o.read+=outs.length;
+          outs.forEach(x=>{
+            if(!x.res.ok){if(!o.why)o.why=x.res.why;return;}
+            const got=x.res.got,ret=+got.faces_returned||0;
+            /* HOW MUCH MESH IS IN VIEW AT ALL, from the first grid only - a split tile's ball
+               covers ground its parent already counted, so counting the deeper levels too would
+               count the same faces four times over. */
+            if(L===0)o.range+=+got.faces_in_range||0;
+            if(!ret||!(got.patches||[]).length)return;
+            /* A TRUNCATED TILE IS NEVER DRAWN. What comes back then is a SAMPLE of that
+               ball - the route shares its cap out across the patches - and a sample drawn beside
+               whole neighbours does not read as a dense tile, it reads as holes in the mesh,
+               which is the exact failure this mode came out of. So it is split into four and the
+               quarters read instead; at the finest grid, where there is nothing left to split, it
+               is counted and dropped. A tile of the finest grid is about fifty pixels by thirty,
+               and one that truncates holds 150,000 faces in them - there is no sample of that a
+               reader can read, so drawing one would only be inventing holes by hand. */
+            const q=x.j.q,mx=(q[0]+q[2])>>1,my=(q[1]+q[3])>>1;
+            if((+got.faces_in_range||0)>ret){
+              if(mx>q[0]&&my>q[1]){
+                next.push([q[0],q[1],mx,my],[mx,q[1],q[2],my],
+                          [q[0],my,mx,q[3]],[mx,my,q[2],q[3]]);
+                o.split++;}
+              else o.dense++;
+              return;}
+            const d=drawCut(got,ixOf,noEdges);
+            o.painted+=d.painted;
+            if(d.painted&&!o.pLabel){o.pLabel=d.paintedLabel;o.pMetric=d.paintedMetric;}
+            o.faces+=ret;o.drew++;});
+          /* THE EDGE BUDGET IS THE SCREEN'S TOO. `setEdges` caps one actor at 750,000 polygons
+             and every tile is far under that, but a pass puts dozens of them up and edge drawing
+             is what loses the WebGL context - measured on this viewer at about 1.9 million faces.
+             So once a pass is past one actor's worth in TOTAL, the rest of its tiles are drawn
+             without edges and the ones already up have theirs taken away. */
+          if(!noEdges&&o.faces>_EDGE_MAX_POLYS){
+            noEdges=true;
+            shown.forEach(ac=>{const pr=ac.getProperty();
+              if(pr.setEdgeVisibility)pr.setEdgeVisibility(false);});}
+          rw.render();}
+        tiles=next;}
+      o.left+=tiles.length;
+      return o;}
+
+    async function streamNow(){
+      if(!streaming||strBusy)return;
+      const cpx=realCellPx();
+      if(cpx<STREAM_MIN_PX){
+        if(shown.length)dropShown();
+        strKey='';
+        // NAMED, because this is the measure that matters and it is not the one the odometer
+        // beside it reports: one drawn polygon on this delivery stands for about sixteen
+        // delivered faces, so "px per cell" has to say WHICH cell.
+        lbl.textContent='zoom in for real cells - '+cpx.toFixed(2)+' px per delivered cell';
+        rw.render();return;}
+      /* THE SAME VIEW IS NOT RE-STREAMED, and the key describes the CAMERA rather than any point
+         on the mesh - the same thing Follow had to be corrected about, for the same reason: the
+         debounce and the re-ping in `finally` both compare against this, so if it described
+         anything else the two would never agree and every pass would schedule another. */
+      const fp=cam.getFocalPoint(),r0=viewRadius();
+      const key=fp[0].toFixed(7)+','+fp[1].toFixed(7)+','+fp[2].toFixed(7)+'|'+r0.toFixed(7);
+      if(key===strKey)return;
+      strKey=key;strBusy=true;a.dataset.busy='1';
+      centre=null;lbl.textContent='streaming the view…';
+      const t0=(window.performance&&performance.now)?performance.now():0;
+      try{
+        dropShown();
+        const o=await streamPass(key);
+        if(o.aborted)return;
+        strFaces=o.faces||0;strTiles=o.drew||0;strRead=o.read||0;strLeft=o.left||0;
+        strDense=o.dense||0;
+        shownPainted=o.painted||0;shownMetric=o.painted?o.pMetric:'';
+        if(o.none)lbl.textContent='nothing in view to read';
+        /* READ BUT NOT DRAWN IS NOT THE SAME AS NOT THERE. Every tile truncating means
+           the view holds more mesh than any tile of it can return whole, which is a real answer
+           and the opposite of "no cells in view": the reader is looking at too much mesh, not at
+           none of it. */
+        else if(!o.drew)lbl.textContent=o.why||((o.split||o.dense)
+          ?'too much mesh in view to read a tile of it whole - zoom in'
+          :'no cells in view');
+        else{
+          const dt=((window.performance&&performance.now)?performance.now():0)-t0;
+          /* WHAT IS ON SCREEN AGAINST WHAT IS THERE. A part-covered screen that only says
+             how much it drew reads as the whole mesh, which is the one thing this viewer must
+             never let a reader believe. The estimate divides the first grid's faces_in_range by
+             how much those balls overlap - each covers its tile plus the corners, so
+             pi*(w^2+h^2)/4 against w*h, which is pi/2 for a square tile - and is called "about"
+             because that is what it is. */
+          const inView=Math.round(o.range/1.5708);
+          let s=o.faces.toLocaleString()+' real cells';
+          if((o.left||o.dense)&&inView>o.faces)
+            s+=' of about '+inView.toLocaleString()+' in view ('+
+               Math.round(100*o.faces/inView)+'%)';
+          s+=' in '+o.drew+(o.drew===1?' tile':' tiles');
+          if(dt>0)s+=' · '+(dt/1000).toFixed(1)+' s';
+          if(o.painted&&o.pLabel)s+=' · '+o.pLabel;
+          // SAID, NOT IMPLIED: a view holding more mesh than a screen can show says so, and says
+          // what to do about it, rather than letting a reader take a part-covered screen for the
+          // whole mesh.
+          if(o.left||o.dense)s+=' · zoom in for the rest';
+          lbl.textContent=s;}
+        applyClip();rw.render();legendSoon();}
+      catch(_e){strKey='';lbl.textContent='could not stream the view';}
+      finally{
+        strBusy=false;delete a.dataset.busy;
+        /* WHERE THE CAMERA IS NOW, against where this pass was for - the same re-ping Follow
+           needs and for the same reason. A pass is up to twenty-four round trips and the reader
+           keeps scrolling through them; every ping that arrived in that window was dropped by the
+           busy guard, so without this the view they stopped on is the one never drawn. */
+        const g=cam.getFocalPoint(),gr=viewRadius();
+        const now=g[0].toFixed(7)+','+g[1].toFixed(7)+','+g[2].toFixed(7)+'|'+gr.toFixed(7);
+        if(streaming&&now!==strKey)strPing();}}
+    function strPing(){
+      if(!streaming)return;
+      if(strTimer)clearTimeout(strTimer);
+      strTimer=setTimeout(function(){strTimer=null;streamNow();},STREAM_SETTLE_MS);}
+    /* THE THREE MODES ARE ONE MODE. Inspect, Follow and Stream all own `shown` and all three draw
+       in front of the same ghosted surface, so two of them on at once is two passes fighting over
+       one set of actors. Turning one on turns the others off; only the `on` branch does that, so
+       nothing here recurses. */
+    function setStream(on){
+      streaming=!!on;
+      if(str){str.setAttribute('aria-pressed',streaming?'true':'false');
+              str.classList.toggle('on',streaming);}
+      if(streaming){setArmed(false);setFollow(false);strKey='';streamNow();}
+      else{strKey='';if(strTimer){clearTimeout(strTimer);strTimer=null;}
+           strFaces=0;strTiles=0;strRead=0;strLeft=0;strDense=0;
+           /* `clear`, NOT `dropShown`. `dropShown` removes what the mode drew and leaves
+              `hidden` alone, so turning the mode off used to leave the merged surface ghosted at
+              a tenth opacity for good. `clear` is the one that also puts that surface back. */
+           clear();}}
+    if(str){
+      str.onclick=function(){setStream(!streaming);};
+      if(cam.onModified)cam.onModified(strPing);}
 
     /* ARMED IS A MODE, and it says so three ways - the button's own state, the cursor, and the
        hint under the canvas - because a mode a reader cannot see is a mode they will click out of
@@ -1884,6 +2219,15 @@ function initViewer(job,surf,uiCfg){
                                    scale:sLbl?sLbl.textContent:'',odometer:sOdo?sOdo.textContent:'',
                                    cut:at=>recut(at),arm:on=>setArmed(on),
                                    follow:on=>setFollow(on),following:()=>following,
+                                   // the streaming mode, and what its last pass covered. A pass
+                                   // is keyed on the camera and will not repeat itself, so a test
+                                   // that wants one asks for it by clearing that key.
+                                   stream:on=>setStream(on),streaming:()=>streaming,
+                                   streamAgain:()=>{strKey='';return streamNow();},
+                                   streamFaces:()=>strFaces,streamTiles:()=>strTiles,
+                                   streamRead:()=>strRead,streamLeft:()=>strLeft,
+                                   streamDense:()=>strDense,
+                                   realCellPx:()=>realCellPx(),
                                    cellPx:()=>cellPx(),viewRadius:()=>viewRadius(),
                                    fitRadius:()=>folFitR,inRange:()=>lastInRange,
                                    returned:()=>lastReturned,
