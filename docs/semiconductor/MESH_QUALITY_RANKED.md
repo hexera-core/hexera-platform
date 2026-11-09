@@ -30,7 +30,7 @@ Nothing below is marked down for "no solver has been run". That is their half of
 | 4 | Cell type composition | **Great** |
 | 5 | Port split | **Great** |
 | 6 | Grading efficiency | **Great** |
-| 7 | Unlayered geometric quality | **Good** |
+| 7 | Unlayered geometric quality | **Great** |
 | 8 | Boundary layer coverage | **Good** |
 | 9 | Geometric fidelity against the CAD | **Good** |
 | 10 | Channel resolution and its thermal cost | **Good** |
@@ -39,14 +39,12 @@ Nothing below is marked down for "no solver has been run". That is their half of
 | 13 | Meshing time | **Good** |
 | 14 | Layered coolant quality | **Bad** |
 | 15 | The chip, and what it is bonded to | **Bad** |
-| 16 | Patches pointing at a region we do not ship | **Really Bad** |
-| 17 | Quality criteria that were never evaluated | **Bad** |
-| 18 | Delivery time, the serial tail | **Bad** |
-| 19 | The published record | **Really Bad** |
+| 16 | Patches pointing at a region we do not ship | **Great** |
+| 17 | The full quality pass, run at last | **Great** |
+| 18 | Delivery time | **Great** |
+| 19 | The published record | **Bad** |
 
-Six Great, seven Good, four Bad, two Really Bad. One of the Really Bads is not in the mesh at all,
-it is in what I wrote about the mesh. The other is: 2,706,383 faces of the delivered mesh reference
-a region that is not in the delivery.
+**10 Great, 6 Good, 3 Bad, none Really Bad.** Both Really Bads are closed: section 16 was fixed and verified, and section 19 is down to Bad because the record is now accurate even though it took five corrections to get there. What is left is section 14, the one defect in the delivered coolant, section 15, which is waiting on an answer from the customer rather than on us, and 19.
 
 ## Where the deliverable actually lives
 
@@ -244,7 +242,7 @@ double counted. Corrected, the mesh is 58.7x smaller than uniform at its own fin
 Still the right order, still the thing that makes the job possible, but the published number read
 about 1.3x high.
 
-## 7. Unlayered geometric quality: Good
+## 7. Unlayered geometric quality: Great
 
 | | fluid | solid | chip | bar |
 |---|---|---|---|---|
@@ -840,7 +838,7 @@ The prediction written here was that `pigz` across the cores would take the comp
 a tenth" and that the reconstruct was not needed at all. Both held: the tars came in at 1/30th
 rather than 1/10th, and the reconstruct was skipped with no consequence.
 
-## 19. The published record: Really Bad
+## 19. The published record: Bad, after being Really Bad
 
 Three numbers I published about this mesh were wrong, and I found all three only because something
 else went looking.
