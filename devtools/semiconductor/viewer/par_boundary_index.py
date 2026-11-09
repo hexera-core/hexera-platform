@@ -53,7 +53,7 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, "/opt/mp/src")
+sys.path.insert(0, os.environ.get("MP_SRC") or "/opt/mp/src")
 
 from meshpipeline.engines.cfmesh_conjugate.polymesh_surface import read_boundary_patches  # noqa: E402
 from meshpipeline.render.boundary_index import (  # noqa: E402
@@ -63,9 +63,11 @@ from meshpipeline.render.boundary_index import (  # noqa: E402
     _grid,
 )
 
-CASE = Path("/mnt/work/cbox8")
-OUT = Path("/home/rehaan/cb8")
-NPROC = 8
+#: WHERE IT READS AND WRITES. The defaults are the box this was written on; both read an
+#: environment variable first so the same script can be pointed at a mesh pulled anywhere.
+CASE = Path(os.environ.get("INDEX_CASE") or "/mnt/work/cbox8")
+OUT = Path(os.environ.get("INDEX_OUT") or "/home/rehaan/cb8")
+NPROC = int(os.environ.get("INDEX_NPROC") or 8)
 
 #: What the real (non-`processor`) patches must come to, per region. From the processors' own
 #: boundary files, cross-checked against checkMesh's global counts before this script was written.
@@ -94,13 +96,27 @@ def _after_header(fh) -> int:
     i = head.find(b"}")
     if i < 0:
         raise SystemExit("no FoamFile block")
-    if not re.search(rb"format\s+binary\s*;", head[:i]):
-        raise SystemExit("not a binary foam file - use the ascii path")
     return i + 1
 
 
+def is_binary(path: Path) -> bool:
+    """Which format this file is in, from its own FoamFile block. Neither is refused: the ascii
+    path exists because the delivered mesh is written ascii on purpose (binary is unreadable to
+    the viewer, the index and the quality sidecar)."""
+    with path.open("rb") as fh:
+        head = fh.read(4096)
+    i = head.find(b"}")
+    if i < 0:
+        raise SystemExit("%s: no FoamFile block" % path)
+    return bool(re.search(rb"format\s+binary\s*;", head[:i]))
+
+
 def read_faces_slice(path: Path, first: int, n: int):
-    """Faces [first, first+n) as (sizes uint8, conn int32), by seeking. No scan of the file."""
+    """Faces [first, first+n) as (sizes uint8, conn). Two seeks on a binary mesh; on an ascii one
+    the internal faces before `first` have to be walked, which is a sequential read."""
+    if not is_binary(path):
+        from meshpipeline.render.boundary_index import _stream_boundary_faces
+        return _stream_boundary_faces(path, first, n)
     with path.open("rb") as fh:
         off1, n1 = _list_at(fh, _after_header(fh))
         if first + n + 1 > n1:
@@ -118,7 +134,12 @@ def read_faces_slice(path: Path, first: int, n: int):
 
 
 def map_points(path: Path):
-    """The whole points array as a memmap, so only the points a face touches are ever read."""
+    """The points, as something that can be indexed by point id. Binary is memmapped so only the
+    points a face touches are ever read; ascii has to be parsed, so it comes back as a real array
+    (float32 from the platform streamer, which is enough for a surface drawn at micron scale)."""
+    if not is_binary(path):
+        from meshpipeline.render.boundary_index import _stream_points
+        return _stream_points(path)
     with path.open("rb") as fh:
         off, cnt = _list_at(fh, _after_header(fh))
     return np.memmap(path, dtype=SCALAR, mode="r", offset=off, shape=(cnt, 3))
