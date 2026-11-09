@@ -129,11 +129,11 @@ def _state(live, job: str = JOB) -> dict:
     and the words on the button."""
     return live.evaluate("""(() => {
       const d = window._vdbg['__JOB__'].detail();
-      const el = document.getElementById('v-detail-__JOB__');
+      const el = document.getElementById('v-insp-arm-__JOB__');
       return {shown: d.shown, names: d.names, hidden: d.hidden, radius: d.radius,
               painted: d.painted, metric: d.metric,
               hits: window.__detail.hits, urls: window.__detail.urls,
-              label: el.querySelector('span').textContent,
+              label: document.getElementById('v-insp-read-__JOB__').textContent,
               pressed: el.getAttribute('aria-pressed')};
     })()""".replace("__JOB__", job))
 
@@ -147,12 +147,18 @@ def _press(live, job: str = JOB) -> dict:
     rather than on a timeout with nothing to read.
     """
     live.evaluate("""(async () => {
-      const el = document.getElementById('v-detail-__JOB__');
+      // ARM, THEN CUT - the two steps a reader takes. The button no longer fetches on its own
+      // click: it turns the mode on, and the fetch happens where the reader clicks the mesh.
+      const el = document.getElementById('v-insp-arm-__JOB__');
+      const d = window._vdbg['__JOB__'].detail();
       const before = window.__detail.hits;
-      el.click();
+      // OPEN IS ARM-THEN-CUT, CLOSE IS DISARM. The old button did both on one click; the
+      // inspector arms, and the fetch happens where the reader clicks the mesh.
+      if (d.shown > 0 || d.armed) { d.arm(false); }
+      else { d.arm(true); d.cut([0.5, 0.5, 0.5]); }
       for (let i = 0; i < 200; i++) {
         if (!el.dataset.busy && window.__detail.hits > before) return;
-        if (!el.dataset.busy && i > 8) return;   // a toggle off asks for nothing
+        if (!el.dataset.busy && i > 8) return;   // a window that asks for nothing
         await new Promise(r => setTimeout(r, 25));
       }
     })()""".replace("__JOB__", job), timeout=60)
@@ -171,7 +177,7 @@ def test_the_detail_button_asks_the_server_and_draws_the_cells(live, tmp_path):
     # the hook reads the radius the button would ask for, which is the call that used to throw
     rest = _state(live)
     assert rest["radius"] > 0, rest
-    assert rest["shown"] == 0 and rest["hidden"] == 0 and rest["label"] == "the cells here"
+    assert rest["shown"] == 0 and rest["hidden"] == 0 and rest["label"] == "click the mesh"
 
     opened = _press(live)
     # THE REQUEST ITSELF. The defect never got here: it threw while working out how big a ball to
@@ -185,14 +191,16 @@ def test_the_detail_button_asks_the_server_and_draws_the_cells(live, tmp_path):
     assert opened["shown"] == PATCHES_PER_REGION, opened
     assert sorted(opened["names"]) == ["inlet", "outlet", "wall"], opened
     assert opened["hidden"] > 0, opened
-    assert opened["label"] == f"{FACES_PER_REGION} cells, unmerged", opened
+    assert opened["label"] == f"{FACES_PER_REGION} real cells, unmerged", opened
     assert opened["pressed"] == "true", opened
     assert_clean(live, "the detail window")
 
     # and it is a toggle: the merged surface comes back and nothing further is asked for
     closed = _press(live)
     assert closed["shown"] == 0 and closed["hidden"] == 0, closed
-    assert closed["pressed"] is None and closed["label"] == "the cells here", closed
+    # closed means closed: the toggle is off and the readout is back to its resting
+    # prompt. The inspector always sets aria-pressed, where the old button left it absent.
+    assert closed["pressed"] == "false" and closed["label"] == "click the mesh", closed
     assert closed["hits"] == 1, closed
 
 
@@ -216,7 +224,7 @@ def test_a_truncated_cut_still_draws_every_region(live, tmp_path, monkeypatch):
     assert opened["shown"] == 2 * PATCHES_PER_REGION, opened
     assert {n.split("/")[0] for n in opened["names"]} == {"fluid", "solid"}, opened
     # and it is SAID, not implied: both numbers, so a sample is not read as the whole thing
-    assert opened["label"] == (f"{TRUNCATING_BUDGET} of {2 * FACES_PER_REGION} faces - zoom in"), \
+    assert opened["label"] == (f"{TRUNCATING_BUDGET} of {2 * FACES_PER_REGION} faces here · narrow the window for all of them"), \
         opened
     assert_clean(live, "a truncated detail window")
 
@@ -234,10 +242,10 @@ def test_painting_a_metric_puts_the_merged_surface_back(live, tmp_path):
       const h = window._vdbg['__JOB__:heat'];
       h.set('non_ortho');
       const d = window._vdbg['__JOB__'].detail();
-      const el = document.getElementById('v-detail-__JOB__');
+      const el = document.getElementById('v-insp-arm-__JOB__');
       return {active: h.active(), legend: h.legend(), colour: h.colorOf('wall', 0),
               shown: d.shown, hidden: d.hidden, names: d.names,
-              label: el.querySelector('span').textContent,
+              label: document.getElementById('v-insp-read-__JOB__').textContent,
               pressed: el.getAttribute('aria-pressed')};
     })()""".replace("__JOB__", JOB))
 
@@ -248,7 +256,7 @@ def test_painting_a_metric_puts_the_merged_surface_back(live, tmp_path):
     # camera was, so it does not survive the reader moving on to a metric either.
     assert painted["shown"] == 0 and painted["names"] == [], painted
     assert painted["hidden"] == 0, painted
-    assert painted["pressed"] is None and painted["label"] == "the cells here", painted
+    assert painted["pressed"] == "false" and painted["label"] == "click the mesh", painted
     assert_clean(live, "a metric painted over an open detail window")
 
 
@@ -318,7 +326,7 @@ def test_with_no_metric_picked_a_cut_shows_the_first_it_carries_and_names_it(liv
     assert opened["shown"] == PATCHES_PER_REGION, opened
     assert opened["painted"] == PATCHES_PER_REGION, opened
     assert opened["metric"] == "non_ortho", opened
-    assert opened["label"] == f"{FACES_PER_REGION} cells, unmerged - non-orthogonality", opened
+    assert opened["label"] == f"{FACES_PER_REGION} real cells, unmerged · non-orthogonality", opened
     assert_clean(live, "a cut painted with the metric it chose")
 
 

@@ -1542,7 +1542,11 @@ function initViewer(job,surf,uiCfg){
            exactly that. At a tenth opacity and with its edges off the merged surface cannot
            compete with the cut - the cut is opaque and wins the depth test wherever they touch -
            but it still says where the cut IS. */
-        entries.forEach(en=>{
+        /* GHOST ONCE PER OPEN WINDOW, not once per cut. `recut` drops the drawn actors but
+           leaves `hidden` alone, so a second cut used to ghost the already-ghosted entries and
+           record GHOST_OPACITY as their true opacity - after which closing the window left the
+           merged surface at a tenth opacity for good, with nothing on screen to say why. */
+        if(!hidden.length)entries.forEach(en=>{
           if(!en.actor.getVisibility())return;
           const pr=en.actor.getProperty();
           hidden.push({en,op:pr.getOpacity?pr.getOpacity():1,
