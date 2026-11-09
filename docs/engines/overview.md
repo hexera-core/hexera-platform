@@ -40,6 +40,8 @@ Two standing rules:
 | gmsh | fluid-domain → fluid-volume | mesh a supplied fluid domain for CFD |
 | gmsh | planar-domain → surface-mesh | 2D plane-stress FEA from a flat face |
 | snappy_multiregion | solid-assembly → multiregion-volume | coupled conformal regions (CHT/multi-material); no undeclared region may ship (reconciliation-gated) |
+| snapgrid | solid-assembly → multiregion-volume | FloTHERM ECXML electronics assemblies; every region its own mesh with conformal interfaces (9 regions delivered on set_top_box) |
+| cfmesh_conjugate | solid-assembly → multiregion-volume | carves the coolant out of the CAD itself rather than being handed it, then splits regions with a conformal `mappedWall` interface both sides; cfMesh's anisotropic stretch and a two-scale cell budget. **Tier T4: the graph is stubbed and the reviewer a deterministic PASS, and it adds NO boundary layers (`finalize.py:383`, `NEAR_WALL_LAYERS = 0`).** Read [cfmesh-conjugate-handoff.md](cfmesh-conjugate-handoff.md) before building on it |
 | vmtk | body-surface → fluid-volume; fluid-domain → fluid-volume | radius-adaptive tets with wall layers inside a tubular or branching lumen; a CAD body with declared ports is opened and sized by the engine itself (`engines/vmtk/lumen_staging.py`); defaults put ~13 cells across each passage with 5 wall layers over 10% of the radius, and a fill under 12 across is rejected; the bundle carries the volume as `mesh.vtu` and as an OpenFOAM case |
 
 ## Rejected boundaries (enforced in code)
