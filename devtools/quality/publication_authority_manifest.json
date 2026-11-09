@@ -3092,6 +3092,32 @@
   ]
  },
  {
+  "context": "application/shell_check.py::solid_short::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/shell_check.py",
+  "qualname": "solid_short",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_SPAN_WHY",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/shell_check.py::solid_short::search#2|NotAPublisher|not-a-publisher|",
+  "path": "application/shell_check.py",
+  "qualname": "solid_short",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_WIDTH_WHY",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/terminal_finalize.py::finalize_crash::error#1|NotAPublisher|not-a-publisher|application/terminal_finalize.py::callers of finalize_crash()",
   "path": "application/terminal_finalize.py",
   "qualname": "finalize_crash",
