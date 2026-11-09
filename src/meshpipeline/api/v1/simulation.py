@@ -395,6 +395,10 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                            else None),
             worker_wake_minutes=worker_wake_estimate(job),
             geometry_filename=geometry_filename_of(job),
+            session_id=(str(job.dispatch_payload["session_id"])
+                        if isinstance(getattr(job, "dispatch_payload", None), dict)
+                        and job.dispatch_payload.get("session_id")
+                        else None),
         )
 
 

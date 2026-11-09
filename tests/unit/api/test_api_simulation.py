@@ -67,6 +67,24 @@ async def test_malformed_job_id_returns_422():
     assert resp.status_code == 422
 
 
+async def test_a_job_names_the_session_it_came_from():
+    # The session's own job link is rewritten by later runs, so the durable direction is
+    # job -> session through the dispatch payload - how a run page finds the intake it replays.
+    mock_job = _make_mock_job()
+    mock_job.dispatch_payload = {"session_id": "8f14e45f-ceea-467a-9b1e-2c1d0e4a1b22"}
+    resp = await _get(mock_job)
+    assert resp.status_code == 200
+    assert resp.json()["session_id"] == "8f14e45f-ceea-467a-9b1e-2c1d0e4a1b22"
+
+
+async def test_a_job_without_a_dispatch_payload_names_no_session():
+    mock_job = _make_mock_job()
+    mock_job.dispatch_payload = None
+    resp = await _get(mock_job)
+    assert resp.status_code == 200
+    assert resp.json()["session_id"] is None
+
+
 async def _get(mock_job):
     with patch.object(sim_module, "get_db", _mock_get_db):
         with patch.object(sim_module.svc, "get_job", new=AsyncMock(return_value=mock_job)):

@@ -6,6 +6,7 @@ import {
   type Catalogue,
   type Subscription,
   SALES_CONTACT,
+  chargingNote,
   checkoutBanner,
   isPaying,
   planLabel,
@@ -101,10 +102,7 @@ export default async function BillingPage({
           </div>
         </div>
         <div className="panel__body">
-          <p className="page__sub">
-            Credits are charged only for completed runs. A plan adds its credits when it renews,
-            and on a paying plan use beyond them is billed at the end of the month.
-          </p>
+          <p className="page__sub">{chargingNote(subscription, catalogue)}</p>
         </div>
       </section>
 

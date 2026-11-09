@@ -29,7 +29,9 @@ test("billing summary omits payment-provider implementation detail", () => {
 test("billing keeps the charging consequence where the ledger now lives", () => {
   const source = dashboardSource("settings/billing/page.tsx");
 
-  assert.match(source, /Credits are charged only for completed runs\./);
+  // The words live in billing.ts chargingNote - qualified by the plan the API describes, so the
+  // page never promises a metered bill an unmetered plan does not charge.
+  assert.match(source, /chargingNote\(subscription, catalogue\)/);
   assert.match(source, /credits\/history/);
 });
 
