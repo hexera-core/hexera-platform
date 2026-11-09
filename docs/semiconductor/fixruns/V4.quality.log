@@ -1,0 +1,1116 @@
+/*---------------------------------------------------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2412                                  |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+Build  : _b8cf4d35-20260127 OPENFOAM=2412 patch=260127 version=2412
+Arch   : "LSB;label=32;scalar=64"
+Exec   : checkMesh -parallel -constant -meshQuality
+Date   : Nov 09 2026
+Time   : 03:41:35
+Host   : 525238d43e24
+PID    : 218
+I/O    : uncollated
+Case   : /case
+nProcs : 8
+Hosts  :
+(
+    (525238d43e24 8)
+)
+Pstream initialized with:
+    floatTransfer      : false
+    maxCommsSize       : 0
+    nProcsSimpleSum    : 0
+    nonBlockingExchange: 0 (tuning: 0)
+    exchange algorithm : 0
+    commsType          : nonBlocking
+    polling iterations : 0
+trapFpe: Floating point exception trapping enabled (FOAM_SIGFPE).
+fileModificationChecking : Monitoring run-time modified files using timeStampMaster (fileModificationSkew 5, maxFileModificationPolls 20)
+allowSystemOperations : Allowing user-supplied system call operations
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+Create time
+
+Create mesh for time = constant
+[525238d43e24:00219] Read -1, expected 28428, errno = 1
+[525238d43e24:00219] Read -1, expected 317932, errno = 1
+[525238d43e24:00219] Read -1, expected 69916, errno = 1
+[525238d43e24:00219] Read -1, expected 128320, errno = 1
+[525238d43e24:00219] Read -1, expected 122560, errno = 1
+[525238d43e24:00220] Read -1, expected 71904, errno = 1
+[525238d43e24:00220] Read -1, expected 317932, errno = 1
+[525238d43e24:00220] Read -1, expected 142572, errno = 1
+[525238d43e24:00220] Read -1, expected 301856, errno = 1
+[525238d43e24:00220] Read -1, expected 4944, errno = 1
+[525238d43e24:00221] Read -1, expected 69916, errno = 1
+[525238d43e24:00221] Read -1, expected 9020, errno = 1
+[525238d43e24:00221] Read -1, expected 301856, errno = 1
+[525238d43e24:00221] Read -1, expected 204112, errno = 1
+[525238d43e24:00222] Read -1, expected 4944, errno = 1
+[525238d43e24:00222] Read -1, expected 122560, errno = 1
+[525238d43e24:00222] Read -1, expected 47296, errno = 1
+[525238d43e24:00222] Read -1, expected 168448, errno = 1
+[525238d43e24:00222] Read -1, expected 195680, errno = 1
+[525238d43e24:00222] Read -1, expected 204112, errno = 1
+[525238d43e24:00222] Read -1, expected 243628, errno = 1
+[525238d43e24:00223] Read -1, expected 50572, errno = 1
+[525238d43e24:00223] Read -1, expected 72124, errno = 1
+[525238d43e24:00223] Read -1, expected 243628, errno = 1
+[525238d43e24:00224] Read -1, expected 142572, errno = 1
+[525238d43e24:00224] Read -1, expected 189648, errno = 1
+[525238d43e24:00224] Read -1, expected 50572, errno = 1
+[525238d43e24:00224] Read -1, expected 195680, errno = 1
+[525238d43e24:00224] Read -1, expected 72624, errno = 1
+[525238d43e24:00225] Read -1, expected 72124, errno = 1
+[525238d43e24:00225] Read -1, expected 189648, errno = 1
+[525238d43e24:00225] Read -1, expected 168448, errno = 1
+[525238d43e24:00218] Read -1, expected 71904, errno = 1
+[525238d43e24:00218] Read -1, expected 72624, errno = 1
+[525238d43e24:00218] Read -1, expected 28428, errno = 1
+[525238d43e24:00218] Read -1, expected 9020, errno = 1
+[525238d43e24:00218] Read -1, expected 47296, errno = 1
+[525238d43e24:00223] Read -1, expected 128320, errno = 1
+[525238d43e24:00220] Read -1, expected 846168, errno = 1
+[525238d43e24:00220] Read -1, expected 13200, errno = 1
+[525238d43e24:00220] Read -1, expected 409488, errno = 1
+[525238d43e24:00220] Read -1, expected 889800, errno = 1
+[525238d43e24:00221] Read -1, expected 583224, errno = 1
+[525238d43e24:00221] Read -1, expected 25152, errno = 1
+[525238d43e24:00221] Read -1, expected 190896, errno = 1
+[525238d43e24:00222] Read -1, expected 685536, errno = 1
+[525238d43e24:00218] Read -1, expected 126456, errno = 1
+[525238d43e24:00218] Read -1, expected 25152, errno = 1
+[525238d43e24:00218] Read -1, expected 199752, errno = 1
+[525238d43e24:00218] Read -1, expected 75696, errno = 1
+[525238d43e24:00218] Read -1, expected 198384, errno = 1
+[525238d43e24:00223] Read -1, expected 685536, errno = 1
+[525238d43e24:00223] Read -1, expected 135456, errno = 1
+[525238d43e24:00223] Read -1, expected 200256, errno = 1
+[525238d43e24:00223] Read -1, expected 364992, errno = 1
+[525238d43e24:00224] Read -1, expected 533760, errno = 1
+[525238d43e24:00224] Read -1, expected 535488, errno = 1
+[525238d43e24:00225] Read -1, expected 483432, errno = 1
+[525238d43e24:00225] Read -1, expected 200256, errno = 1
+[525238d43e24:00225] Read -1, expected 535488, errno = 1
+[525238d43e24:00219] Read -1, expected 350592, errno = 1
+[525238d43e24:00219] Read -1, expected 364992, errno = 1
+[525238d43e24:00219] Read -1, expected 190896, errno = 1
+[525238d43e24:00219] Read -1, expected 889800, errno = 1
+[525238d43e24:00221] Read -1, expected 846168, errno = 1
+[525238d43e24:00222] Read -1, expected 533760, errno = 1
+[525238d43e24:00224] Read -1, expected 135456, errno = 1
+[525238d43e24:00224] Read -1, expected 199752, errno = 1
+[525238d43e24:00220] Read -1, expected 198384, errno = 1
+[525238d43e24:00222] Read -1, expected 583224, errno = 1
+[525238d43e24:00222] Read -1, expected 350592, errno = 1
+[525238d43e24:00222] Read -1, expected 483432, errno = 1
+[525238d43e24:00224] Read -1, expected 409488, errno = 1
+[525238d43e24:00219] Read -1, expected 75696, errno = 1
+[525238d43e24:00222] Read -1, expected 13200, errno = 1
+[525238d43e24:00222] Read -1, expected 126456, errno = 1
+
+Check mesh...
+    Enabling user-defined geometry checks.
+
+Time = constant
+
+Mesh stats 
+    points:           103540360
+    faces:            288210927
+    internal faces:   271387777
+    cells:            92479375
+    faces per cell:   6.05106
+    boundary patches: 3 (6 10)
+    point zones:      0
+    face zones:       0
+    cell zones:       4
+
+Overall number of cells of each type:
+    hexahedra:     89932743
+    prisms:        0
+    wedges:        0
+    pyramids:      0
+    tet wedges:    0
+    tetrahedra:    0
+    polyhedra:     2546632
+    Breakdown of polyhedra by number of faces:
+        faces   number of cells
+            4   70791
+            6   90460
+            7   1235224
+            8   57533
+            9   1025074
+           10   823
+           11   139
+           12   56670
+           13   2
+           15   8233
+           18   1624
+           21   48
+           24   11
+
+Checking topology...
+    Boundary definition OK.
+    Cell to face addressing OK.
+    Point usage OK.
+    Upper triangular ordering OK.
+    Face vertices OK.
+[525238d43e24:00220] Read -1, expected 22748, errno = 1
+[525238d43e24:00224] Read -1, expected 22748, errno = 1
+[525238d43e24:00224] Read -1, expected 11096, errno = 1
+[525238d43e24:00220] Read -1, expected 11020, errno = 1
+[525238d43e24:00218] Read -1, expected 11020, errno = 1
+[525238d43e24:00218] Read -1, expected 11096, errno = 1
+[525238d43e24:00220] Read -1, expected 49432, errno = 1
+[525238d43e24:00219] Read -1, expected 4204, errno = 1
+[525238d43e24:00218] Read -1, expected 4204, errno = 1
+[525238d43e24:00219] Read -1, expected 49432, errno = 1
+[525238d43e24:00224] Read -1, expected 29748, errno = 1
+[525238d43e24:00225] Read -1, expected 29748, errno = 1
+[525238d43e24:00219] Read -1, expected 10604, errno = 1
+[525238d43e24:00219] Read -1, expected 19476, errno = 1
+[525238d43e24:00221] Read -1, expected 10604, errno = 1
+[525238d43e24:00221] Read -1, expected 47008, errno = 1
+[525238d43e24:00221] Read -1, expected 32400, errno = 1
+[525238d43e24:00225] Read -1, expected 26856, errno = 1
+[525238d43e24:00224] Read -1, expected 29652, errno = 1
+[525238d43e24:00218] Read -1, expected 7024, errno = 1
+[525238d43e24:00220] Read -1, expected 47008, errno = 1
+[525238d43e24:00222] Read -1, expected 7024, errno = 1
+[525238d43e24:00222] Read -1, expected 29652, errno = 1
+[525238d43e24:00222] Read -1, expected 26856, errno = 1
+[525238d43e24:00222] Read -1, expected 32400, errno = 1
+[525238d43e24:00222] Read -1, expected 19476, errno = 1
+[525238d43e24:00225] Read -1, expected 11124, errno = 1
+[525238d43e24:00224] Read -1, expected 7524, errno = 1
+[525238d43e24:00219] Read -1, expected 20276, errno = 1
+[525238d43e24:00222] Read -1, expected 38084, errno = 1
+[525238d43e24:00223] Read -1, expected 20276, errno = 1
+[525238d43e24:00223] Read -1, expected 38084, errno = 1
+[525238d43e24:00223] Read -1, expected 11124, errno = 1
+[525238d43e24:00223] Read -1, expected 7524, errno = 1
+[525238d43e24:00218] Read -1, expected 11096, errno = 1
+[525238d43e24:00224] Read -1, expected 11096, errno = 1
+[525238d43e24:00224] Read -1, expected 7524, errno = 1
+[525238d43e24:00223] Read -1, expected 7524, errno = 1
+[525238d43e24:00225] Read -1, expected 29748, errno = 1
+[525238d43e24:00225] Read -1, expected 11124, errno = 1
+[525238d43e24:00224] Read -1, expected 29748, errno = 1
+[525238d43e24:00218] Read -1, expected 4204, errno = 1
+[525238d43e24:00223] Read -1, expected 11124, errno = 1
+[525238d43e24:00223] Read -1, expected 20276, errno = 1
+[525238d43e24:00221] Read -1, expected 10604, errno = 1
+[525238d43e24:00219] Read -1, expected 4204, errno = 1
+[525238d43e24:00219] Read -1, expected 10604, errno = 1
+[525238d43e24:00219] Read -1, expected 20276, errno = 1
+[525238d43e24:00224] Read -1, expected 22748, errno = 1
+[525238d43e24:00219] Read -1, expected 49432, errno = 1
+[525238d43e24:00220] Read -1, expected 11020, errno = 1
+[525238d43e24:00220] Read -1, expected 47008, errno = 1
+[525238d43e24:00221] Read -1, expected 47008, errno = 1
+[525238d43e24:00218] Read -1, expected 11020, errno = 1
+[525238d43e24:00220] Read -1, expected 49432, errno = 1
+[525238d43e24:00220] Read -1, expected 22748, errno = 1
+[525238d43e24:00222] Read -1, expected 7024, errno = 1
+[525238d43e24:00222] Read -1, expected 38084, errno = 1
+[525238d43e24:00219] Read -1, expected 19476, errno = 1
+[525238d43e24:00218] Read -1, expected 7024, errno = 1
+[525238d43e24:00221] Read -1, expected 32400, errno = 1
+[525238d43e24:00225] Read -1, expected 26856, errno = 1
+[525238d43e24:00223] Read -1, expected 38084, errno = 1
+[525238d43e24:00224] Read -1, expected 29652, errno = 1
+[525238d43e24:00222] Read -1, expected 29652, errno = 1
+[525238d43e24:00222] Read -1, expected 26856, errno = 1
+[525238d43e24:00222] Read -1, expected 32400, errno = 1
+[525238d43e24:00222] Read -1, expected 19476, errno = 1
+[525238d43e24:00224] Read -1, expected 11096, errno = 1
+[525238d43e24:00224] Read -1, expected 7524, errno = 1
+[525238d43e24:00218] Read -1, expected 11096, errno = 1
+[525238d43e24:00218] Read -1, expected 4204, errno = 1
+[525238d43e24:00223] Read -1, expected 7524, errno = 1
+[525238d43e24:00223] Read -1, expected 20276, errno = 1
+[525238d43e24:00219] Read -1, expected 4204, errno = 1
+[525238d43e24:00219] Read -1, expected 20276, errno = 1
+[525238d43e24:00219] Read -1, expected 10604, errno = 1
+[525238d43e24:00223] Read -1, expected 11124, errno = 1
+[525238d43e24:00221] Read -1, expected 10604, errno = 1
+[525238d43e24:00225] Read -1, expected 29748, errno = 1
+[525238d43e24:00224] Read -1, expected 29748, errno = 1
+[525238d43e24:00225] Read -1, expected 11124, errno = 1
+[525238d43e24:00221] Read -1, expected 47008, errno = 1
+[525238d43e24:00218] Read -1, expected 11020, errno = 1
+[525238d43e24:00220] Read -1, expected 11020, errno = 1
+[525238d43e24:00220] Read -1, expected 47008, errno = 1
+[525238d43e24:00219] Read -1, expected 49432, errno = 1
+[525238d43e24:00224] Read -1, expected 22748, errno = 1
+[525238d43e24:00220] Read -1, expected 49432, errno = 1
+[525238d43e24:00220] Read -1, expected 22748, errno = 1
+[525238d43e24:00218] Read -1, expected 7024, errno = 1
+[525238d43e24:00219] Read -1, expected 19476, errno = 1
+[525238d43e24:00223] Read -1, expected 38084, errno = 1
+[525238d43e24:00221] Read -1, expected 32400, errno = 1
+[525238d43e24:00224] Read -1, expected 29652, errno = 1
+[525238d43e24:00225] Read -1, expected 26856, errno = 1
+[525238d43e24:00222] Read -1, expected 7024, errno = 1
+[525238d43e24:00222] Read -1, expected 38084, errno = 1
+[525238d43e24:00222] Read -1, expected 29652, errno = 1
+[525238d43e24:00222] Read -1, expected 26856, errno = 1
+[525238d43e24:00222] Read -1, expected 32400, errno = 1
+[525238d43e24:00222] Read -1, expected 19476, errno = 1
+[525238d43e24:00218] Read -1, expected 11096, errno = 1
+[525238d43e24:00224] Read -1, expected 11096, errno = 1
+[525238d43e24:00224] Read -1, expected 7524, errno = 1
+[525238d43e24:00223] Read -1, expected 7524, errno = 1
+[525238d43e24:00224] Read -1, expected 29748, errno = 1
+[525238d43e24:00223] Read -1, expected 11124, errno = 1
+[525238d43e24:00225] Read -1, expected 29748, errno = 1
+[525238d43e24:00225] Read -1, expected 11124, errno = 1
+[525238d43e24:00223] Read -1, expected 20276, errno = 1
+[525238d43e24:00218] Read -1, expected 4204, errno = 1
+[525238d43e24:00221] Read -1, expected 10604, errno = 1
+[525238d43e24:00219] Read -1, expected 4204, errno = 1
+[525238d43e24:00219] Read -1, expected 10604, errno = 1
+[525238d43e24:00219] Read -1, expected 20276, errno = 1
+[525238d43e24:00219] Read -1, expected 19476, errno = 1
+[525238d43e24:00225] Read -1, expected 26856, errno = 1
+[525238d43e24:00218] Read -1, expected 7024, errno = 1
+[525238d43e24:00222] Read -1, expected 7024, errno = 1
+[525238d43e24:00222] Read -1, expected 38084, errno = 1
+[525238d43e24:00221] Read -1, expected 32400, errno = 1
+[525238d43e24:00223] Read -1, expected 38084, errno = 1
+[525238d43e24:00224] Read -1, expected 29652, errno = 1
+[525238d43e24:00222] Read -1, expected 29652, errno = 1
+[525238d43e24:00218] Read -1, expected 11020, errno = 1
+[525238d43e24:00222] Read -1, expected 26856, errno = 1
+[525238d43e24:00224] Read -1, expected 22748, errno = 1
+[525238d43e24:00221] Read -1, expected 47008, errno = 1
+[525238d43e24:00219] Read -1, expected 49432, errno = 1
+[525238d43e24:00222] Read -1, expected 32400, errno = 1
+[525238d43e24:00220] Read -1, expected 11020, errno = 1
+[525238d43e24:00220] Read -1, expected 47008, errno = 1
+[525238d43e24:00222] Read -1, expected 19476, errno = 1
+[525238d43e24:00220] Read -1, expected 49432, errno = 1
+[525238d43e24:00220] Read -1, expected 22748, errno = 1
+    Number of regions: 1 (OK).
+
+Checking patch topology for multiply connected surfaces...
+                   Patch    Faces   Points  Surface topology
+[525238d43e24:00224] Read -1, expected 720729, errno = 1
+[525238d43e24:00223] Read -1, expected 493513, errno = 1
+[525238d43e24:00223] Read -1, expected 924649, errno = 1
+[525238d43e24:00223] Read -1, expected 268249, errno = 1
+[525238d43e24:00223] Read -1, expected 183865, errno = 1
+[525238d43e24:00222] Read -1, expected 17689, errno = 1
+[525238d43e24:00222] Read -1, expected 168985, errno = 1
+[525238d43e24:00222] Read -1, expected 924649, errno = 1
+[525238d43e24:00220] Read -1, expected 266089, errno = 1
+[525238d43e24:00221] Read -1, expected 255529, errno = 1
+[525238d43e24:00221] Read -1, expected 1143193, errno = 1
+[525238d43e24:00221] Read -1, expected 789433, errno = 1
+[525238d43e24:00221] Read -1, expected 33625, errno = 1
+[525238d43e24:00225] Read -1, expected 720729, errno = 1
+[525238d43e24:00225] Read -1, expected 268249, errno = 1
+[525238d43e24:00225] Read -1, expected 653689, errno = 1
+[525238d43e24:00218] Read -1, expected 266089, errno = 1
+[525238d43e24:00219] Read -1, expected 103513, errno = 1
+[525238d43e24:00219] Read -1, expected 1203961, errno = 1
+[525238d43e24:00219] Read -1, expected 255529, errno = 1
+[525238d43e24:00220] Read -1, expected 1143193, errno = 1
+[525238d43e24:00219] Read -1, expected 493513, errno = 1
+[525238d43e24:00218] Read -1, expected 267961, errno = 1
+[525238d43e24:00218] Read -1, expected 103513, errno = 1
+[525238d43e24:00218] Read -1, expected 168985, errno = 1
+[525238d43e24:00219] Read -1, expected 474169, errno = 1
+[525238d43e24:00218] Read -1, expected 33625, errno = 1
+[525238d43e24:00220] Read -1, expected 1203961, errno = 1
+[525238d43e24:00224] Read -1, expected 267961, errno = 1
+[525238d43e24:00224] Read -1, expected 183865, errno = 1
+[525238d43e24:00222] Read -1, expected 714649, errno = 1
+[525238d43e24:00222] Read -1, expected 653689, errno = 1
+[525238d43e24:00224] Read -1, expected 553321, errno = 1
+[525238d43e24:00224] Read -1, expected 714649, errno = 1
+[525238d43e24:00220] Read -1, expected 553321, errno = 1
+[525238d43e24:00220] Read -1, expected 17689, errno = 1
+[525238d43e24:00222] Read -1, expected 789433, errno = 1
+[525238d43e24:00222] Read -1, expected 474169, errno = 1
+[525238d43e24:00218] Read -1, expected 225305, errno = 1
+[525238d43e24:00222] Read -1, expected 225305, errno = 1
+[525238d43e24:00220] Read -1, expected 354777, errno = 1
+[525238d43e24:00218] Read -1, expected 354777, errno = 1
+[525238d43e24:00222] Read -1, expected 23577, errno = 1
+[525238d43e24:00222] Read -1, expected 871577, errno = 1
+[525238d43e24:00225] Read -1, expected 871577, errno = 1
+[525238d43e24:00220] Read -1, expected 23577, errno = 1
+[525238d43e24:00220] Read -1, expected 1605273, errno = 1
+[525238d43e24:00219] Read -1, expected 138009, errno = 1
+[525238d43e24:00219] Read -1, expected 1605273, errno = 1
+[525238d43e24:00218] Read -1, expected 138009, errno = 1
+[525238d43e24:00218] Read -1, expected 357273, errno = 1
+[525238d43e24:00224] Read -1, expected 737753, errno = 1
+[525238d43e24:00224] Read -1, expected 952857, errno = 1
+[525238d43e24:00224] Read -1, expected 960961, errno = 1
+[525238d43e24:00224] Read -1, expected 357273, errno = 1
+[525238d43e24:00223] Read -1, expected 658009, errno = 1
+[525238d43e24:00223] Read -1, expected 1232857, errno = 1
+[525238d43e24:00223] Read -1, expected 357657, errno = 1
+[525238d43e24:00223] Read -1, expected 245145, errno = 1
+[525238d43e24:00224] Read -1, expected 245145, errno = 1
+[525238d43e24:00225] Read -1, expected 960961, errno = 1
+[525238d43e24:00221] Read -1, expected 340697, errno = 1
+[525238d43e24:00221] Read -1, expected 1524249, errno = 1
+[525238d43e24:00221] Read -1, expected 1052569, errno = 1
+[525238d43e24:00221] Read -1, expected 44825, errno = 1
+[525238d43e24:00218] Read -1, expected 44825, errno = 1
+[525238d43e24:00222] Read -1, expected 1052569, errno = 1
+[525238d43e24:00220] Read -1, expected 737753, errno = 1
+[525238d43e24:00219] Read -1, expected 340697, errno = 1
+[525238d43e24:00220] Read -1, expected 1524249, errno = 1
+[525238d43e24:00219] Read -1, expected 658009, errno = 1
+[525238d43e24:00222] Read -1, expected 632217, errno = 1
+[525238d43e24:00222] Read -1, expected 1232857, errno = 1
+[525238d43e24:00225] Read -1, expected 357657, errno = 1
+[525238d43e24:00219] Read -1, expected 632217, errno = 1
+[525238d43e24:00222] Read -1, expected 952857, errno = 1
+[525238d43e24:00222] Read -1, expected 8320, errno = 1
+[525238d43e24:00222] Read -1, expected 34824, errno = 1
+[525238d43e24:00222] Read -1, expected 20896, errno = 1
+[525238d43e24:00223] Read -1, expected 41888, errno = 1
+[525238d43e24:00223] Read -1, expected 21944, errno = 1
+[525238d43e24:00220] Read -1, expected 12476, errno = 1
+[525238d43e24:00220] Read -1, expected 54800, errno = 1
+[525238d43e24:00224] Read -1, expected 12620, errno = 1
+[525238d43e24:00224] Read -1, expected 8884, errno = 1
+[525238d43e24:00224] Read -1, expected 24260, errno = 1
+[525238d43e24:00224] Read -1, expected 34160, errno = 1
+[525238d43e24:00219] Read -1, expected 4996, errno = 1
+[525238d43e24:00225] Read -1, expected 32556, errno = 1
+[525238d43e24:00225] Read -1, expected 12476, errno = 1
+[525238d43e24:00225] Read -1, expected 28676, errno = 1
+[525238d43e24:00221] Read -1, expected 51992, errno = 1
+[525238d43e24:00221] Read -1, expected 12188, errno = 1
+[525238d43e24:00223] Read -1, expected 24952, errno = 1
+[525238d43e24:00218] Read -1, expected 25240, errno = 1
+[525238d43e24:00223] Read -1, expected 17768, errno = 1
+[525238d43e24:00224] Read -1, expected 65112, errno = 1
+[525238d43e24:00218] Read -1, expected 9992, errno = 1
+[525238d43e24:00219] Read -1, expected 24376, errno = 1
+[525238d43e24:00219] Read -1, expected 43888, errno = 1
+[525238d43e24:00218] Read -1, expected 24952, errno = 1
+[525238d43e24:00219] Read -1, expected 109600, errno = 1
+[525238d43e24:00220] Read -1, expected 103984, errno = 1
+[525238d43e24:00220] Read -1, expected 48520, errno = 1
+[525238d43e24:00218] Read -1, expected 16640, errno = 1
+[525238d43e24:00219] Read -1, expected 41792, errno = 1
+[525238d43e24:00221] Read -1, expected 69648, errno = 1
+[525238d43e24:00222] Read -1, expected 83776, errno = 1
+[525238d43e24:00222] Read -1, expected 68320, errno = 1
+[525238d43e24:00222] Read -1, expected 57352, errno = 1
+[525238d43e24:00225] Read -1, expected 172065, errno = 1
+[525238d43e24:00225] Read -1, expected 195345, errno = 1
+[525238d43e24:00225] Read -1, expected 74865, errno = 1
+[525238d43e24:00223] Read -1, expected 131673, errno = 1
+[525238d43e24:00223] Read -1, expected 251337, errno = 1
+[525238d43e24:00221] Read -1, expected 73137, errno = 1
+[525238d43e24:00221] Read -1, expected 311961, errno = 1
+[525238d43e24:00221] Read -1, expected 9297, errno = 1
+[525238d43e24:00224] Read -1, expected 145569, errno = 1
+[525238d43e24:00224] Read -1, expected 204969, errno = 1
+[525238d43e24:00224] Read -1, expected 75729, errno = 1
+[525238d43e24:00224] Read -1, expected 53313, errno = 1
+[525238d43e24:00219] Read -1, expected 29985, errno = 1
+[525238d43e24:00220] Read -1, expected 74865, errno = 1
+[525238d43e24:00220] Read -1, expected 328809, errno = 1
+[525238d43e24:00222] Read -1, expected 5193, errno = 1
+[525238d43e24:00222] Read -1, expected 49929, errno = 1
+[525238d43e24:00222] Read -1, expected 208953, errno = 1
+[525238d43e24:00222] Read -1, expected 125385, errno = 1
+[525238d43e24:00222] Read -1, expected 173397, errno = 1
+[525238d43e24:00218] Read -1, expected 74821, errno = 1
+[525238d43e24:00218] Read -1, expected 75757, errno = 1
+[525238d43e24:00218] Read -1, expected 29949, errno = 1
+[525238d43e24:00218] Read -1, expected 49949, errno = 1
+[525238d43e24:00218] Read -1, expected 9309, errno = 1
+[525238d43e24:00223] Read -1, expected 75057, errno = 1
+[525238d43e24:00223] Read -1, expected 53237, errno = 1
+[525238d43e24:00221] Read -1, expected 210061, errno = 1
+[525238d43e24:00224] Read -1, expected 196305, errno = 1
+[525238d43e24:00219] Read -1, expected 330173, errno = 1
+[525238d43e24:00219] Read -1, expected 73213, errno = 1
+[525238d43e24:00219] Read -1, expected 131829, errno = 1
+[525238d43e24:00219] Read -1, expected 125901, errno = 1
+[525238d43e24:00220] Read -1, expected 313325, errno = 1
+[525238d43e24:00220] Read -1, expected 146189, errno = 1
+[525238d43e24:00220] Read -1, expected 5221, errno = 1
+[525238d43e24:00222] Read -1, expected 252309, errno = 1
+[525238d43e24:00222] Read -1, expected 205117, errno = 1
+[525238d43e24:00218] Read -1, expected 118785, errno = 1
+[525238d43e24:00218] Read -1, expected 119937, errno = 1
+[525238d43e24:00218] Read -1, expected 46785, errno = 1
+[525238d43e24:00218] Read -1, expected 77897, errno = 1
+[525238d43e24:00218] Read -1, expected 14865, errno = 1
+[525238d43e24:00223] Read -1, expected 119217, errno = 1
+[525238d43e24:00223] Read -1, expected 83297, errno = 1
+[525238d43e24:00221] Read -1, expected 338521, errno = 1
+[525238d43e24:00224] Read -1, expected 314113, errno = 1
+[525238d43e24:00219] Read -1, expected 526201, errno = 1
+[525238d43e24:00219] Read -1, expected 115377, errno = 1
+[525238d43e24:00219] Read -1, expected 212697, errno = 1
+[525238d43e24:00219] Read -1, expected 203273, errno = 1
+[525238d43e24:00220] Read -1, expected 499673, errno = 1
+[525238d43e24:00220] Read -1, expected 236545, errno = 1
+[525238d43e24:00220] Read -1, expected 8105, errno = 1
+[525238d43e24:00222] Read -1, expected 403417, errno = 1
+[525238d43e24:00222] Read -1, expected 322985, errno = 1
+[525238d43e24:00222] Read -1, expected 279473, errno = 1
+[525238d43e24:00225] Read -1, expected 279473, errno = 1
+[525238d43e24:00225] Read -1, expected 314113, errno = 1
+[525238d43e24:00225] Read -1, expected 119217, errno = 1
+[525238d43e24:00223] Read -1, expected 212697, errno = 1
+[525238d43e24:00223] Read -1, expected 403417, errno = 1
+[525238d43e24:00221] Read -1, expected 115377, errno = 1
+[525238d43e24:00221] Read -1, expected 499673, errno = 1
+[525238d43e24:00221] Read -1, expected 14865, errno = 1
+[525238d43e24:00224] Read -1, expected 236545, errno = 1
+[525238d43e24:00224] Read -1, expected 322985, errno = 1
+[525238d43e24:00224] Read -1, expected 119937, errno = 1
+[525238d43e24:00224] Read -1, expected 83297, errno = 1
+[525238d43e24:00219] Read -1, expected 46785, errno = 1
+[525238d43e24:00220] Read -1, expected 118785, errno = 1
+[525238d43e24:00220] Read -1, expected 526201, errno = 1
+[525238d43e24:00222] Read -1, expected 8105, errno = 1
+[525238d43e24:00222] Read -1, expected 77897, errno = 1
+[525238d43e24:00222] Read -1, expected 338521, errno = 1
+[525238d43e24:00222] Read -1, expected 203273, errno = 1
+[525238d43e24:00225] Read -1, expected 501585, errno = 1
+[525238d43e24:00225] Read -1, expected 563105, errno = 1
+[525238d43e24:00225] Read -1, expected 213473, errno = 1
+[525238d43e24:00223] Read -1, expected 381497, errno = 1
+[525238d43e24:00223] Read -1, expected 723049, errno = 1
+[525238d43e24:00221] Read -1, expected 206369, errno = 1
+[525238d43e24:00221] Read -1, expected 895353, errno = 1
+[525238d43e24:00221] Read -1, expected 26625, errno = 1
+[525238d43e24:00224] Read -1, expected 424561, errno = 1
+[525238d43e24:00224] Read -1, expected 577641, errno = 1
+[525238d43e24:00224] Read -1, expected 214625, errno = 1
+[525238d43e24:00224] Read -1, expected 148817, errno = 1
+[525238d43e24:00219] Read -1, expected 83569, errno = 1
+[525238d43e24:00220] Read -1, expected 212609, errno = 1
+[525238d43e24:00220] Read -1, expected 942793, errno = 1
+[525238d43e24:00222] Read -1, expected 14473, errno = 1
+[525238d43e24:00222] Read -1, expected 139145, errno = 1
+[525238d43e24:00222] Read -1, expected 607385, errno = 1
+[525238d43e24:00222] Read -1, expected 364745, errno = 1
+[525238d43e24:00225] Read -1, expected 23564, errno = 1
+[525238d43e24:00225] Read -1, expected 55528, errno = 1
+[525238d43e24:00225] Read -1, expected 62248, errno = 1
+[525238d43e24:00223] Read -1, expected 42200, errno = 1
+[525238d43e24:00223] Read -1, expected 79908, errno = 1
+[525238d43e24:00222] Read -1, expected 15312, errno = 1
+[525238d43e24:00222] Read -1, expected 67216, errno = 1
+[525238d43e24:00222] Read -1, expected 40368, errno = 1
+[525238d43e24:00224] Read -1, expected 47004, errno = 1
+[525238d43e24:00224] Read -1, expected 63664, errno = 1
+[525238d43e24:00224] Read -1, expected 23672, errno = 1
+[525238d43e24:00224] Read -1, expected 16380, errno = 1
+[525238d43e24:00220] Read -1, expected 23456, errno = 1
+[525238d43e24:00220] Read -1, expected 104148, errno = 1
+[525238d43e24:00221] Read -1, expected 22748, errno = 1
+[525238d43e24:00221] Read -1, expected 98920, errno = 1
+[525238d43e24:00219] Read -1, expected 9196, errno = 1
+[525238d43e24:00223] Read -1, expected 12476, errno = 1
+[525238d43e24:00218] Read -1, expected 12620, errno = 1
+[525238d43e24:00223] Read -1, expected 8884, errno = 1
+[525238d43e24:00224] Read -1, expected 32556, errno = 1
+[525238d43e24:00218] Read -1, expected 12476, errno = 1
+[525238d43e24:00220] Read -1, expected 51992, errno = 1
+[525238d43e24:00220] Read -1, expected 24260, errno = 1
+[525238d43e24:00218] Read -1, expected 8320, errno = 1
+[525238d43e24:00221] Read -1, expected 34824, errno = 1
+[525238d43e24:00222] Read -1, expected 41888, errno = 1
+[525238d43e24:00222] Read -1, expected 34160, errno = 1
+[525238d43e24:00222] Read -1, expected 28676, errno = 1
+[525238d43e24:00218] Read -1, expected 4996, errno = 1
+[525238d43e24:00219] Read -1, expected 54800, errno = 1
+[525238d43e24:00219] Read -1, expected 12188, errno = 1
+[525238d43e24:00219] Read -1, expected 21944, errno = 1
+[525238d43e24:00219] Read -1, expected 20896, errno = 1
+[525238d43e24:00225] Read -1, expected 32556, errno = 1
+[525238d43e24:00225] Read -1, expected 12476, errno = 1
+[525238d43e24:00224] Read -1, expected 12620, errno = 1
+[525238d43e24:00224] Read -1, expected 8884, errno = 1
+[525238d43e24:00221] Read -1, expected 51992, errno = 1
+[525238d43e24:00224] Read -1, expected 24260, errno = 1
+[525238d43e24:00223] Read -1, expected 41888, errno = 1
+[525238d43e24:00224] Read -1, expected 34160, errno = 1
+[525238d43e24:00225] Read -1, expected 28676, errno = 1
+[525238d43e24:00220] Read -1, expected 12476, errno = 1
+[525238d43e24:00220] Read -1, expected 54800, errno = 1
+[525238d43e24:00221] Read -1, expected 12188, errno = 1
+[525238d43e24:00223] Read -1, expected 21944, errno = 1
+[525238d43e24:00222] Read -1, expected 8320, errno = 1
+[525238d43e24:00219] Read -1, expected 4996, errno = 1
+[525238d43e24:00222] Read -1, expected 34824, errno = 1
+[525238d43e24:00222] Read -1, expected 20896, errno = 1
+[525238d43e24:00218] Read -1, expected 5880, errno = 1
+[525238d43e24:00218] Read -1, expected 47344, errno = 1
+[525238d43e24:00223] Read -1, expected 47128, errno = 1
+[525238d43e24:00223] Read -1, expected 32760, errno = 1
+[525238d43e24:00218] Read -1, expected 18392, errno = 1
+[525238d43e24:00218] Read -1, expected 46912, errno = 1
+[525238d43e24:00224] Read -1, expected 124496, errno = 1
+[525238d43e24:00218] Read -1, expected 30624, errno = 1
+[525238d43e24:00221] Read -1, expected 134432, errno = 1
+[525238d43e24:00219] Read -1, expected 208296, errno = 1
+[525238d43e24:00219] Read -1, expected 45496, errno = 1
+[525238d43e24:00219] Read -1, expected 84400, errno = 1
+[525238d43e24:00219] Read -1, expected 80736, errno = 1
+[525238d43e24:00220] Read -1, expected 197840, errno = 1
+[525238d43e24:00220] Read -1, expected 94008, errno = 1
+[525238d43e24:00222] Read -1, expected 159816, errno = 1
+[525238d43e24:00222] Read -1, expected 127328, errno = 1
+[525238d43e24:00222] Read -1, expected 111056, errno = 1
+[525238d43e24:00225] Read -1, expected 124496, errno = 1
+[525238d43e24:00225] Read -1, expected 47128, errno = 1
+[525238d43e24:00224] Read -1, expected 94008, errno = 1
+[525238d43e24:00224] Read -1, expected 47344, errno = 1
+[525238d43e24:00224] Read -1, expected 32760, errno = 1
+[525238d43e24:00221] Read -1, expected 45496, errno = 1
+[525238d43e24:00221] Read -1, expected 197840, errno = 1
+[525238d43e24:00221] Read -1, expected 5880, errno = 1
+[525238d43e24:00223] Read -1, expected 84400, errno = 1
+[525238d43e24:00223] Read -1, expected 159816, errno = 1
+[525238d43e24:00224] Read -1, expected 127328, errno = 1
+[525238d43e24:00225] Read -1, expected 111056, errno = 1
+[525238d43e24:00220] Read -1, expected 46912, errno = 1
+[525238d43e24:00220] Read -1, expected 208296, errno = 1
+[525238d43e24:00219] Read -1, expected 18392, errno = 1
+[525238d43e24:00222] Read -1, expected 30624, errno = 1
+[525238d43e24:00222] Read -1, expected 134432, errno = 1
+[525238d43e24:00222] Read -1, expected 80736, errno = 1
+[525238d43e24:00223] Read -1, expected 23564, errno = 1
+[525238d43e24:00218] Read -1, expected 23672, errno = 1
+[525238d43e24:00218] Read -1, expected 9196, errno = 1
+[525238d43e24:00223] Read -1, expected 16380, errno = 1
+[525238d43e24:00224] Read -1, expected 62248, errno = 1
+[525238d43e24:00219] Read -1, expected 22748, errno = 1
+[525238d43e24:00219] Read -1, expected 42200, errno = 1
+[525238d43e24:00218] Read -1, expected 23456, errno = 1
+[525238d43e24:00219] Read -1, expected 104148, errno = 1
+[525238d43e24:00220] Read -1, expected 98920, errno = 1
+[525238d43e24:00220] Read -1, expected 47004, errno = 1
+[525238d43e24:00218] Read -1, expected 15312, errno = 1
+[525238d43e24:00219] Read -1, expected 40368, errno = 1
+[525238d43e24:00221] Read -1, expected 67216, errno = 1
+[525238d43e24:00222] Read -1, expected 79908, errno = 1
+[525238d43e24:00222] Read -1, expected 63664, errno = 1
+[525238d43e24:00222] Read -1, expected 55528, errno = 1
+[525238d43e24:00225] Read -1, expected 23564, errno = 1
+[525238d43e24:00225] Read -1, expected 62248, errno = 1
+[525238d43e24:00221] Read -1, expected 98920, errno = 1
+[525238d43e24:00220] Read -1, expected 23456, errno = 1
+[525238d43e24:00224] Read -1, expected 47004, errno = 1
+[525238d43e24:00224] Read -1, expected 23672, errno = 1
+[525238d43e24:00224] Read -1, expected 16380, errno = 1
+[525238d43e24:00221] Read -1, expected 22748, errno = 1
+[525238d43e24:00220] Read -1, expected 104148, errno = 1
+[525238d43e24:00223] Read -1, expected 42200, errno = 1
+[525238d43e24:00219] Read -1, expected 9196, errno = 1
+[525238d43e24:00223] Read -1, expected 79908, errno = 1
+[525238d43e24:00224] Read -1, expected 63664, errno = 1
+[525238d43e24:00225] Read -1, expected 55528, errno = 1
+[525238d43e24:00222] Read -1, expected 15312, errno = 1
+[525238d43e24:00222] Read -1, expected 67216, errno = 1
+[525238d43e24:00222] Read -1, expected 40368, errno = 1
+                  port_a     1331     1415  ok (non-closed singly connected)
+[525238d43e24:00218] Read -1, expected 23672, errno = 1
+[525238d43e24:00224] Read -1, expected 62248, errno = 1
+[525238d43e24:00218] Read -1, expected 23456, errno = 1
+[525238d43e24:00223] Read -1, expected 23564, errno = 1
+[525238d43e24:00223] Read -1, expected 16380, errno = 1
+[525238d43e24:00220] Read -1, expected 47004, errno = 1
+[525238d43e24:00218] Read -1, expected 15312, errno = 1
+[525238d43e24:00220] Read -1, expected 98920, errno = 1
+[525238d43e24:00218] Read -1, expected 9196, errno = 1
+[525238d43e24:00221] Read -1, expected 67216, errno = 1
+[525238d43e24:00222] Read -1, expected 79908, errno = 1
+[525238d43e24:00222] Read -1, expected 63664, errno = 1
+[525238d43e24:00222] Read -1, expected 55528, errno = 1
+[525238d43e24:00219] Read -1, expected 104148, errno = 1
+[525238d43e24:00219] Read -1, expected 22748, errno = 1
+[525238d43e24:00219] Read -1, expected 42200, errno = 1
+[525238d43e24:00219] Read -1, expected 40368, errno = 1
+[525238d43e24:00225] Read -1, expected 23564, errno = 1
+[525238d43e24:00225] Read -1, expected 62248, errno = 1
+[525238d43e24:00224] Read -1, expected 23672, errno = 1
+[525238d43e24:00224] Read -1, expected 16380, errno = 1
+[525238d43e24:00221] Read -1, expected 98920, errno = 1
+[525238d43e24:00224] Read -1, expected 47004, errno = 1
+[525238d43e24:00221] Read -1, expected 22748, errno = 1
+[525238d43e24:00223] Read -1, expected 42200, errno = 1
+[525238d43e24:00223] Read -1, expected 79908, errno = 1
+[525238d43e24:00220] Read -1, expected 23456, errno = 1
+[525238d43e24:00220] Read -1, expected 104148, errno = 1
+[525238d43e24:00224] Read -1, expected 63664, errno = 1
+[525238d43e24:00225] Read -1, expected 55528, errno = 1
+[525238d43e24:00219] Read -1, expected 9196, errno = 1
+[525238d43e24:00222] Read -1, expected 15312, errno = 1
+[525238d43e24:00222] Read -1, expected 67216, errno = 1
+[525238d43e24:00222] Read -1, expected 40368, errno = 1
+                  port_b     1308     1390  ok (non-closed singly connected)
+[525238d43e24:00218] Read -1, expected 23672, errno = 1
+[525238d43e24:00223] Read -1, expected 16380, errno = 1
+[525238d43e24:00218] Read -1, expected 23456, errno = 1
+[525238d43e24:00218] Read -1, expected 9196, errno = 1
+[525238d43e24:00220] Read -1, expected 47004, errno = 1
+[525238d43e24:00219] Read -1, expected 104148, errno = 1
+[525238d43e24:00219] Read -1, expected 42200, errno = 1
+[525238d43e24:00223] Read -1, expected 23564, errno = 1
+[525238d43e24:00218] Read -1, expected 15312, errno = 1
+[525238d43e24:00224] Read -1, expected 62248, errno = 1
+[525238d43e24:00219] Read -1, expected 40368, errno = 1
+[525238d43e24:00219] Read -1, expected 22748, errno = 1
+[525238d43e24:00220] Read -1, expected 98920, errno = 1
+[525238d43e24:00222] Read -1, expected 79908, errno = 1
+[525238d43e24:00222] Read -1, expected 63664, errno = 1
+[525238d43e24:00222] Read -1, expected 55528, errno = 1
+[525238d43e24:00221] Read -1, expected 67216, errno = 1
+[525238d43e24:00225] Read -1, expected 23564, errno = 1
+[525238d43e24:00225] Read -1, expected 62248, errno = 1
+[525238d43e24:00221] Read -1, expected 22748, errno = 1
+[525238d43e24:00221] Read -1, expected 98920, errno = 1
+[525238d43e24:00224] Read -1, expected 23672, errno = 1
+[525238d43e24:00224] Read -1, expected 16380, errno = 1
+[525238d43e24:00224] Read -1, expected 47004, errno = 1
+[525238d43e24:00223] Read -1, expected 42200, errno = 1
+[525238d43e24:00223] Read -1, expected 79908, errno = 1
+[525238d43e24:00224] Read -1, expected 63664, errno = 1
+[525238d43e24:00219] Read -1, expected 9196, errno = 1
+[525238d43e24:00220] Read -1, expected 23456, errno = 1
+[525238d43e24:00220] Read -1, expected 104148, errno = 1
+[525238d43e24:00225] Read -1, expected 55528, errno = 1
+[525238d43e24:00222] Read -1, expected 15312, errno = 1
+[525238d43e24:00222] Read -1, expected 67216, errno = 1
+[525238d43e24:00222] Read -1, expected 40368, errno = 1
+          fluid_to_solid 16630309 16664586  ok (non-closed singly connected)
+[525238d43e24:00223] Read -1, expected 16380, errno = 1
+[525238d43e24:00218] Read -1, expected 23672, errno = 1
+[525238d43e24:00218] Read -1, expected 23456, errno = 1
+[525238d43e24:00218] Read -1, expected 15312, errno = 1
+[525238d43e24:00218] Read -1, expected 9196, errno = 1
+[525238d43e24:00220] Read -1, expected 47004, errno = 1
+[525238d43e24:00219] Read -1, expected 104148, errno = 1
+[525238d43e24:00219] Read -1, expected 42200, errno = 1
+[525238d43e24:00219] Read -1, expected 40368, errno = 1
+[525238d43e24:00223] Read -1, expected 23564, errno = 1
+[525238d43e24:00224] Read -1, expected 62248, errno = 1
+[525238d43e24:00219] Read -1, expected 22748, errno = 1
+[525238d43e24:00220] Read -1, expected 98920, errno = 1
+[525238d43e24:00222] Read -1, expected 79908, errno = 1
+[525238d43e24:00222] Read -1, expected 63664, errno = 1
+[525238d43e24:00222] Read -1, expected 55528, errno = 1
+[525238d43e24:00221] Read -1, expected 67216, errno = 1
+[525238d43e24:00219] Read -1, expected 9196, errno = 1
+[525238d43e24:00225] Read -1, expected 23564, errno = 1
+[525238d43e24:00225] Read -1, expected 62248, errno = 1
+[525238d43e24:00224] Read -1, expected 23672, errno = 1
+[525238d43e24:00224] Read -1, expected 16380, errno = 1
+[525238d43e24:00224] Read -1, expected 47004, errno = 1
+[525238d43e24:00223] Read -1, expected 79908, errno = 1
+[525238d43e24:00223] Read -1, expected 42200, errno = 1
+[525238d43e24:00221] Read -1, expected 22748, errno = 1
+[525238d43e24:00221] Read -1, expected 98920, errno = 1
+[525238d43e24:00220] Read -1, expected 23456, errno = 1
+[525238d43e24:00220] Read -1, expected 104148, errno = 1
+[525238d43e24:00224] Read -1, expected 63664, errno = 1
+[525238d43e24:00225] Read -1, expected 55528, errno = 1
+[525238d43e24:00222] Read -1, expected 15312, errno = 1
+[525238d43e24:00222] Read -1, expected 67216, errno = 1
+[525238d43e24:00222] Read -1, expected 40368, errno = 1
+                    ".*" 16632948 16667063      ok (closed singly connected)
+
+
+Checking faceZone topology for multiply connected surfaces...
+    No faceZones found.
+
+Checking basic cellZone addressing...
+                CellZone        Cells       Points       VolumeBoundingBox
+                    air            0            0            0 (1e+150 1e+150 1e+150) (-1e+150 -1e+150 -1e+150)
+                   chip            0            0            0 (1e+150 1e+150 1e+150) (-1e+150 -1e+150 -1e+150)
+                  fluid     92479375    103540360  5.28057e-05 (-0.0595721 0.0216037 -0.00659602) (0.110699 0.0586241 0.0904153)
+                  solid            0            0            0 (1e+150 1e+150 1e+150) (-1e+150 -1e+150 -1e+150)
+
+Checking basic pointZone addressing...
+    No pointZones found.
+
+Checking geometry...
+    Overall domain bounding box (-0.0595721 0.0216037 -0.00659602) (0.110699 0.0586241 0.0904153)
+    Mesh has 3 geometric (non-empty/wedge) directions (1 1 1)
+    Mesh has 3 solution (non-empty) directions (1 1 1)
+    Boundary openness (2.49033e-16 -8.26213e-14 3.26199e-16) OK.
+    Max cell openness = 3.5554e-16 OK.
+    Max aspect ratio = 101.865 OK.
+    Minimum face area = 2.04589e-11. Maximum face area = 4.81127e-07.  Face area magnitudes OK.
+    Min volume = 4.72256e-16. Max volume = 2.19804e-10.  Total volume = 5.28057e-05.  Cell volumes OK.
+[525238d43e24:00224] Read -1, expected 45144, errno = 1
+[525238d43e24:00223] Read -1, expected 45144, errno = 1
+[525238d43e24:00223] Read -1, expected 228504, errno = 1
+[525238d43e24:00224] Read -1, expected 136488, errno = 1
+[525238d43e24:00224] Read -1, expected 177912, errno = 1
+[525238d43e24:00220] Read -1, expected 136488, errno = 1
+[525238d43e24:00222] Read -1, expected 4392, errno = 1
+[525238d43e24:00222] Read -1, expected 228504, errno = 1
+[525238d43e24:00220] Read -1, expected 4392, errno = 1
+[525238d43e24:00222] Read -1, expected 177912, errno = 1
+[525238d43e24:00220] Read -1, expected 296592, errno = 1
+[525238d43e24:00222] Read -1, expected 116856, errno = 1
+[525238d43e24:00223] Read -1, expected 121656, errno = 1
+[525238d43e24:00219] Read -1, expected 296592, errno = 1
+[525238d43e24:00219] Read -1, expected 121656, errno = 1
+[525238d43e24:00219] Read -1, expected 116856, errno = 1
+[525238d43e24:00219] Read -1, expected 25224, errno = 1
+[525238d43e24:00222] Read -1, expected 42144, errno = 1
+[525238d43e24:00224] Read -1, expected 66576, errno = 1
+[525238d43e24:00218] Read -1, expected 66120, errno = 1
+[525238d43e24:00220] Read -1, expected 66120, errno = 1
+[525238d43e24:00218] Read -1, expected 66576, errno = 1
+[525238d43e24:00218] Read -1, expected 25224, errno = 1
+[525238d43e24:00218] Read -1, expected 42144, errno = 1
+[525238d43e24:00218] Read -1, expected 8376, errno = 1
+[525238d43e24:00219] Read -1, expected 63624, errno = 1
+[525238d43e24:00221] Read -1, expected 63624, errno = 1
+[525238d43e24:00222] Read -1, expected 194400, errno = 1
+[525238d43e24:00220] Read -1, expected 282048, errno = 1
+[525238d43e24:00221] Read -1, expected 282048, errno = 1
+[525238d43e24:00221] Read -1, expected 194400, errno = 1
+[525238d43e24:00221] Read -1, expected 8376, errno = 1
+[525238d43e24:00225] Read -1, expected 161136, errno = 1
+[525238d43e24:00223] Read -1, expected 66744, errno = 1
+[525238d43e24:00224] Read -1, expected 178488, errno = 1
+[525238d43e24:00222] Read -1, expected 161136, errno = 1
+[525238d43e24:00225] Read -1, expected 178488, errno = 1
+[525238d43e24:00225] Read -1, expected 66744, errno = 1
+    Mesh non-orthogonality Max: 67.2138 average: 6.04872
+    Non-orthogonality check OK.
+    Face pyramids OK.
+[525238d43e24:00220] Read -1, expected 282048, errno = 1
+[525238d43e24:00220] Read -1, expected 296592, errno = 1
+[525238d43e24:00219] Read -1, expected 296592, errno = 1
+[525238d43e24:00219] Read -1, expected 63624, errno = 1
+[525238d43e24:00221] Read -1, expected 282048, errno = 1
+[525238d43e24:00221] Read -1, expected 63624, errno = 1
+[525238d43e24:00218] Read -1, expected 66120, errno = 1
+[525238d43e24:00219] Read -1, expected 25224, errno = 1
+[525238d43e24:00220] Read -1, expected 66120, errno = 1
+[525238d43e24:00221] Read -1, expected 8376, errno = 1
+[525238d43e24:00218] Read -1, expected 25224, errno = 1
+[525238d43e24:00218] Read -1, expected 8376, errno = 1
+[525238d43e24:00222] Read -1, expected 4392, errno = 1
+[525238d43e24:00222] Read -1, expected 42144, errno = 1
+[525238d43e24:00225] Read -1, expected 161136, errno = 1
+[525238d43e24:00218] Read -1, expected 42144, errno = 1
+[525238d43e24:00220] Read -1, expected 4392, errno = 1
+[525238d43e24:00221] Read -1, expected 194400, errno = 1
+[525238d43e24:00219] Read -1, expected 116856, errno = 1
+[525238d43e24:00222] Read -1, expected 161136, errno = 1
+[525238d43e24:00222] Read -1, expected 194400, errno = 1
+[525238d43e24:00222] Read -1, expected 116856, errno = 1
+[525238d43e24:00225] Read -1, expected 178488, errno = 1
+[525238d43e24:00224] Read -1, expected 136488, errno = 1
+[525238d43e24:00222] Read -1, expected 177912, errno = 1
+[525238d43e24:00218] Read -1, expected 66576, errno = 1
+[525238d43e24:00220] Read -1, expected 136488, errno = 1
+[525238d43e24:00224] Read -1, expected 177912, errno = 1
+[525238d43e24:00224] Read -1, expected 178488, errno = 1
+[525238d43e24:00224] Read -1, expected 66576, errno = 1
+[525238d43e24:00222] Read -1, expected 228504, errno = 1
+[525238d43e24:00223] Read -1, expected 121656, errno = 1
+[525238d43e24:00225] Read -1, expected 66744, errno = 1
+[525238d43e24:00219] Read -1, expected 121656, errno = 1
+[525238d43e24:00224] Read -1, expected 45144, errno = 1
+[525238d43e24:00223] Read -1, expected 228504, errno = 1
+[525238d43e24:00223] Read -1, expected 66744, errno = 1
+[525238d43e24:00223] Read -1, expected 45144, errno = 1
+    Max skewness = 3.23957 OK.
+[525238d43e24:00224] Read -1, expected 780201, errno = 1
+[525238d43e24:00225] Read -1, expected 780201, errno = 1
+[525238d43e24:00220] Read -1, expected 598801, errno = 1
+[525238d43e24:00220] Read -1, expected 288113, errno = 1
+[525238d43e24:00220] Read -1, expected 1237193, errno = 1
+[525238d43e24:00222] Read -1, expected 773937, errno = 1
+[525238d43e24:00222] Read -1, expected 707385, errno = 1
+[525238d43e24:00222] Read -1, expected 19137, errno = 1
+[525238d43e24:00222] Read -1, expected 183017, errno = 1
+[525238d43e24:00222] Read -1, expected 1000801, errno = 1
+[525238d43e24:00219] Read -1, expected 276721, errno = 1
+[525238d43e24:00218] Read -1, expected 290137, errno = 1
+[525238d43e24:00218] Read -1, expected 288113, errno = 1
+[525238d43e24:00221] Read -1, expected 276721, errno = 1
+[525238d43e24:00221] Read -1, expected 1237193, errno = 1
+[525238d43e24:00221] Read -1, expected 36401, errno = 1
+[525238d43e24:00223] Read -1, expected 198897, errno = 1
+[525238d43e24:00223] Read -1, expected 290481, errno = 1
+[525238d43e24:00223] Read -1, expected 534049, errno = 1
+[525238d43e24:00224] Read -1, expected 198897, errno = 1
+[525238d43e24:00223] Read -1, expected 1000801, errno = 1
+[525238d43e24:00219] Read -1, expected 534049, errno = 1
+[525238d43e24:00218] Read -1, expected 111905, errno = 1
+[525238d43e24:00218] Read -1, expected 183017, errno = 1
+[525238d43e24:00218] Read -1, expected 36401, errno = 1
+[525238d43e24:00224] Read -1, expected 598801, errno = 1
+[525238d43e24:00225] Read -1, expected 707385, errno = 1
+[525238d43e24:00225] Read -1, expected 290481, errno = 1
+[525238d43e24:00219] Read -1, expected 513105, errno = 1
+[525238d43e24:00219] Read -1, expected 111905, errno = 1
+[525238d43e24:00219] Read -1, expected 1302809, errno = 1
+[525238d43e24:00224] Read -1, expected 773937, errno = 1
+[525238d43e24:00222] Read -1, expected 854217, errno = 1
+[525238d43e24:00222] Read -1, expected 513105, errno = 1
+[525238d43e24:00220] Read -1, expected 1302809, errno = 1
+[525238d43e24:00224] Read -1, expected 290137, errno = 1
+[525238d43e24:00221] Read -1, expected 854217, errno = 1
+[525238d43e24:00220] Read -1, expected 19137, errno = 1
+    Coupled point location match (average 0) OK.
+Checking faces in error :
+[525238d43e24:00223] Read -1, expected 45144, errno = 1
+[525238d43e24:00224] Read -1, expected 66576, errno = 1
+[525238d43e24:00224] Read -1, expected 45144, errno = 1
+[525238d43e24:00218] Read -1, expected 66576, errno = 1
+[525238d43e24:00220] Read -1, expected 66120, errno = 1
+[525238d43e24:00224] Read -1, expected 136488, errno = 1
+[525238d43e24:00218] Read -1, expected 66120, errno = 1
+[525238d43e24:00220] Read -1, expected 136488, errno = 1
+[525238d43e24:00223] Read -1, expected 121656, errno = 1
+[525238d43e24:00218] Read -1, expected 25224, errno = 1
+[525238d43e24:00220] Read -1, expected 296592, errno = 1
+[525238d43e24:00219] Read -1, expected 25224, errno = 1
+[525238d43e24:00219] Read -1, expected 296592, errno = 1
+[525238d43e24:00219] Read -1, expected 121656, errno = 1
+[525238d43e24:00224] Read -1, expected 178488, errno = 1
+[525238d43e24:00223] Read -1, expected 66744, errno = 1
+[525238d43e24:00225] Read -1, expected 178488, errno = 1
+[525238d43e24:00225] Read -1, expected 66744, errno = 1
+[525238d43e24:00221] Read -1, expected 63624, errno = 1
+[525238d43e24:00218] Read -1, expected 8376, errno = 1
+[525238d43e24:00220] Read -1, expected 282048, errno = 1
+[525238d43e24:00219] Read -1, expected 63624, errno = 1
+[525238d43e24:00221] Read -1, expected 282048, errno = 1
+[525238d43e24:00221] Read -1, expected 8376, errno = 1
+[525238d43e24:00224] Read -1, expected 177912, errno = 1
+[525238d43e24:00221] Read -1, expected 194400, errno = 1
+[525238d43e24:00225] Read -1, expected 161136, errno = 1
+[525238d43e24:00223] Read -1, expected 228504, errno = 1
+[525238d43e24:00219] Read -1, expected 116856, errno = 1
+[525238d43e24:00218] Read -1, expected 42144, errno = 1
+[525238d43e24:00220] Read -1, expected 4392, errno = 1
+[525238d43e24:00222] Read -1, expected 4392, errno = 1
+[525238d43e24:00222] Read -1, expected 42144, errno = 1
+[525238d43e24:00222] Read -1, expected 228504, errno = 1
+[525238d43e24:00222] Read -1, expected 177912, errno = 1
+[525238d43e24:00222] Read -1, expected 161136, errno = 1
+[525238d43e24:00222] Read -1, expected 194400, errno = 1
+[525238d43e24:00222] Read -1, expected 116856, errno = 1
+    non-orthogonality >  65 degrees                        : 7
+    faces with face pyramid volume < 1e-20                 : 0
+[525238d43e24:00223] Read -1, expected 45144, errno = 1
+[525238d43e24:00224] Read -1, expected 45144, errno = 1
+[525238d43e24:00218] Read -1, expected 66576, errno = 1
+[525238d43e24:00224] Read -1, expected 66576, errno = 1
+[525238d43e24:00218] Read -1, expected 25224, errno = 1
+[525238d43e24:00223] Read -1, expected 121656, errno = 1
+[525238d43e24:00219] Read -1, expected 25224, errno = 1
+[525238d43e24:00219] Read -1, expected 121656, errno = 1
+[525238d43e24:00224] Read -1, expected 136488, errno = 1
+[525238d43e24:00218] Read -1, expected 66120, errno = 1
+[525238d43e24:00219] Read -1, expected 296592, errno = 1
+[525238d43e24:00220] Read -1, expected 66120, errno = 1
+[525238d43e24:00220] Read -1, expected 296592, errno = 1
+[525238d43e24:00220] Read -1, expected 136488, errno = 1
+[525238d43e24:00220] Read -1, expected 4392, errno = 1
+[525238d43e24:00223] Read -1, expected 228504, errno = 1
+[525238d43e24:00219] Read -1, expected 116856, errno = 1
+[525238d43e24:00218] Read -1, expected 42144, errno = 1
+[525238d43e24:00224] Read -1, expected 177912, errno = 1
+[525238d43e24:00222] Read -1, expected 4392, errno = 1
+[525238d43e24:00222] Read -1, expected 42144, errno = 1
+[525238d43e24:00222] Read -1, expected 228504, errno = 1
+[525238d43e24:00222] Read -1, expected 177912, errno = 1
+[525238d43e24:00222] Read -1, expected 116856, errno = 1
+[525238d43e24:00225] Read -1, expected 161136, errno = 1
+[525238d43e24:00223] Read -1, expected 66744, errno = 1
+[525238d43e24:00222] Read -1, expected 161136, errno = 1
+[525238d43e24:00224] Read -1, expected 178488, errno = 1
+[525238d43e24:00225] Read -1, expected 178488, errno = 1
+[525238d43e24:00225] Read -1, expected 66744, errno = 1
+[525238d43e24:00221] Read -1, expected 63624, errno = 1
+[525238d43e24:00222] Read -1, expected 194400, errno = 1
+[525238d43e24:00220] Read -1, expected 282048, errno = 1
+[525238d43e24:00219] Read -1, expected 63624, errno = 1
+[525238d43e24:00218] Read -1, expected 8376, errno = 1
+[525238d43e24:00221] Read -1, expected 282048, errno = 1
+[525238d43e24:00221] Read -1, expected 194400, errno = 1
+[525238d43e24:00221] Read -1, expected 8376, errno = 1
+    faces with face-decomposition tet quality < 1e-30      : 0
+    faces with concavity >  80 degrees                     : 0
+[525238d43e24:00224] Read -1, expected 45144, errno = 1
+[525238d43e24:00223] Read -1, expected 45144, errno = 1
+[525238d43e24:00218] Read -1, expected 66576, errno = 1
+[525238d43e24:00224] Read -1, expected 66576, errno = 1
+[525238d43e24:00219] Read -1, expected 25224, errno = 1
+[525238d43e24:00223] Read -1, expected 121656, errno = 1
+[525238d43e24:00218] Read -1, expected 25224, errno = 1
+[525238d43e24:00219] Read -1, expected 121656, errno = 1
+[525238d43e24:00224] Read -1, expected 136488, errno = 1
+[525238d43e24:00219] Read -1, expected 296592, errno = 1
+[525238d43e24:00218] Read -1, expected 66120, errno = 1
+[525238d43e24:00220] Read -1, expected 66120, errno = 1
+[525238d43e24:00220] Read -1, expected 296592, errno = 1
+[525238d43e24:00220] Read -1, expected 136488, errno = 1
+[525238d43e24:00218] Read -1, expected 42144, errno = 1
+[525238d43e24:00224] Read -1, expected 177912, errno = 1
+[525238d43e24:00220] Read -1, expected 4392, errno = 1
+[525238d43e24:00219] Read -1, expected 116856, errno = 1
+[525238d43e24:00223] Read -1, expected 228504, errno = 1
+[525238d43e24:00222] Read -1, expected 4392, errno = 1
+[525238d43e24:00222] Read -1, expected 42144, errno = 1
+[525238d43e24:00222] Read -1, expected 228504, errno = 1
+[525238d43e24:00222] Read -1, expected 177912, errno = 1
+[525238d43e24:00222] Read -1, expected 116856, errno = 1
+[525238d43e24:00218] Read -1, expected 8376, errno = 1
+[525238d43e24:00222] Read -1, expected 194400, errno = 1
+[525238d43e24:00222] Read -1, expected 161136, errno = 1
+[525238d43e24:00220] Read -1, expected 282048, errno = 1
+[525238d43e24:00219] Read -1, expected 63624, errno = 1
+[525238d43e24:00221] Read -1, expected 63624, errno = 1
+[525238d43e24:00223] Read -1, expected 66744, errno = 1
+[525238d43e24:00224] Read -1, expected 178488, errno = 1
+[525238d43e24:00221] Read -1, expected 282048, errno = 1
+[525238d43e24:00225] Read -1, expected 161136, errno = 1
+[525238d43e24:00225] Read -1, expected 178488, errno = 1
+[525238d43e24:00221] Read -1, expected 194400, errno = 1
+[525238d43e24:00225] Read -1, expected 66744, errno = 1
+[525238d43e24:00221] Read -1, expected 8376, errno = 1
+    faces with skewness >   4 (internal) or  20 (boundary) : 0
+[525238d43e24:00224] Read -1, expected 45144, errno = 1
+[525238d43e24:00223] Read -1, expected 45144, errno = 1
+[525238d43e24:00224] Read -1, expected 66576, errno = 1
+[525238d43e24:00218] Read -1, expected 66576, errno = 1
+[525238d43e24:00223] Read -1, expected 121656, errno = 1
+[525238d43e24:00218] Read -1, expected 25224, errno = 1
+[525238d43e24:00219] Read -1, expected 25224, errno = 1
+[525238d43e24:00219] Read -1, expected 121656, errno = 1
+[525238d43e24:00224] Read -1, expected 136488, errno = 1
+[525238d43e24:00219] Read -1, expected 296592, errno = 1
+[525238d43e24:00218] Read -1, expected 66120, errno = 1
+[525238d43e24:00220] Read -1, expected 66120, errno = 1
+[525238d43e24:00220] Read -1, expected 296592, errno = 1
+[525238d43e24:00220] Read -1, expected 136488, errno = 1
+[525238d43e24:00219] Read -1, expected 116856, errno = 1
+[525238d43e24:00223] Read -1, expected 228504, errno = 1
+[525238d43e24:00224] Read -1, expected 177912, errno = 1
+[525238d43e24:00220] Read -1, expected 4392, errno = 1
+[525238d43e24:00218] Read -1, expected 42144, errno = 1
+[525238d43e24:00222] Read -1, expected 4392, errno = 1
+[525238d43e24:00222] Read -1, expected 42144, errno = 1
+[525238d43e24:00222] Read -1, expected 228504, errno = 1
+[525238d43e24:00222] Read -1, expected 177912, errno = 1
+[525238d43e24:00222] Read -1, expected 116856, errno = 1
+[525238d43e24:00225] Read -1, expected 161136, errno = 1
+[525238d43e24:00224] Read -1, expected 178488, errno = 1
+[525238d43e24:00223] Read -1, expected 66744, errno = 1
+[525238d43e24:00222] Read -1, expected 161136, errno = 1
+[525238d43e24:00218] Read -1, expected 8376, errno = 1
+[525238d43e24:00220] Read -1, expected 282048, errno = 1
+[525238d43e24:00219] Read -1, expected 63624, errno = 1
+[525238d43e24:00221] Read -1, expected 63624, errno = 1
+[525238d43e24:00222] Read -1, expected 194400, errno = 1
+[525238d43e24:00225] Read -1, expected 178488, errno = 1
+[525238d43e24:00225] Read -1, expected 66744, errno = 1
+[525238d43e24:00221] Read -1, expected 282048, errno = 1
+[525238d43e24:00221] Read -1, expected 194400, errno = 1
+[525238d43e24:00221] Read -1, expected 8376, errno = 1
+    faces with interpolation weights (0..1)  <  0.02       : 9635
+[525238d43e24:00224] Read -1, expected 15048, errno = 1
+[525238d43e24:00223] Read -1, expected 15048, errno = 1
+[525238d43e24:00218] Read -1, expected 22192, errno = 1
+[525238d43e24:00224] Read -1, expected 22192, errno = 1
+[525238d43e24:00218] Read -1, expected 22040, errno = 1
+[525238d43e24:00220] Read -1, expected 22040, errno = 1
+[525238d43e24:00224] Read -1, expected 45496, errno = 1
+[525238d43e24:00220] Read -1, expected 45496, errno = 1
+[525238d43e24:00221] Read -1, expected 94016, errno = 1
+[525238d43e24:00220] Read -1, expected 94016, errno = 1
+[525238d43e24:00221] Read -1, expected 21208, errno = 1
+[525238d43e24:00219] Read -1, expected 8408, errno = 1
+[525238d43e24:00219] Read -1, expected 98864, errno = 1
+[525238d43e24:00218] Read -1, expected 8408, errno = 1
+[525238d43e24:00220] Read -1, expected 98864, errno = 1
+[525238d43e24:00223] Read -1, expected 40552, errno = 1
+[525238d43e24:00219] Read -1, expected 21208, errno = 1
+[525238d43e24:00219] Read -1, expected 40552, errno = 1
+[525238d43e24:00219] Read -1, expected 38952, errno = 1
+[525238d43e24:00224] Read -1, expected 59304, errno = 1
+[525238d43e24:00218] Read -1, expected 14048, errno = 1
+[525238d43e24:00221] Read -1, expected 64800, errno = 1
+[525238d43e24:00223] Read -1, expected 76168, errno = 1
+[525238d43e24:00222] Read -1, expected 14048, errno = 1
+[525238d43e24:00222] Read -1, expected 76168, errno = 1
+[525238d43e24:00222] Read -1, expected 59304, errno = 1
+[525238d43e24:00222] Read -1, expected 64800, errno = 1
+[525238d43e24:00222] Read -1, expected 38952, errno = 1
+[525238d43e24:00223] Read -1, expected 22248, errno = 1
+[525238d43e24:00224] Read -1, expected 59496, errno = 1
+[525238d43e24:00222] Read -1, expected 53712, errno = 1
+[525238d43e24:00225] Read -1, expected 53712, errno = 1
+[525238d43e24:00225] Read -1, expected 59496, errno = 1
+[525238d43e24:00225] Read -1, expected 22248, errno = 1
+    faces with volume ratio of neighbour cells <  0.01     : 0
+[525238d43e24:00224] Read -1, expected 45144, errno = 1
+[525238d43e24:00223] Read -1, expected 45144, errno = 1
+[525238d43e24:00224] Read -1, expected 66576, errno = 1
+[525238d43e24:00218] Read -1, expected 66576, errno = 1
+[525238d43e24:00219] Read -1, expected 25224, errno = 1
+[525238d43e24:00219] Read -1, expected 121656, errno = 1
+[525238d43e24:00223] Read -1, expected 121656, errno = 1
+[525238d43e24:00218] Read -1, expected 25224, errno = 1
+[525238d43e24:00218] Read -1, expected 66120, errno = 1
+[525238d43e24:00219] Read -1, expected 296592, errno = 1
+[525238d43e24:00224] Read -1, expected 136488, errno = 1
+[525238d43e24:00220] Read -1, expected 66120, errno = 1
+[525238d43e24:00220] Read -1, expected 296592, errno = 1
+[525238d43e24:00224] Read -1, expected 177912, errno = 1
+[525238d43e24:00218] Read -1, expected 42144, errno = 1
+[525238d43e24:00223] Read -1, expected 228504, errno = 1
+[525238d43e24:00222] Read -1, expected 4392, errno = 1
+[525238d43e24:00222] Read -1, expected 42144, errno = 1
+[525238d43e24:00222] Read -1, expected 228504, errno = 1
+[525238d43e24:00220] Read -1, expected 136488, errno = 1
+[525238d43e24:00219] Read -1, expected 116856, errno = 1
+[525238d43e24:00220] Read -1, expected 4392, errno = 1
+[525238d43e24:00222] Read -1, expected 177912, errno = 1
+[525238d43e24:00222] Read -1, expected 116856, errno = 1
+[525238d43e24:00220] Read -1, expected 282048, errno = 1
+[525238d43e24:00219] Read -1, expected 63624, errno = 1
+[525238d43e24:00221] Read -1, expected 63624, errno = 1
+[525238d43e24:00221] Read -1, expected 282048, errno = 1
+[525238d43e24:00222] Read -1, expected 194400, errno = 1
+[525238d43e24:00218] Read -1, expected 8376, errno = 1
+[525238d43e24:00224] Read -1, expected 178488, errno = 1
+[525238d43e24:00225] Read -1, expected 161136, errno = 1
+[525238d43e24:00222] Read -1, expected 161136, errno = 1
+[525238d43e24:00223] Read -1, expected 66744, errno = 1
+[525238d43e24:00225] Read -1, expected 178488, errno = 1
+[525238d43e24:00221] Read -1, expected 194400, errno = 1
+[525238d43e24:00221] Read -1, expected 8376, errno = 1
+[525238d43e24:00225] Read -1, expected 66744, errno = 1
+    faces with face twist <  0.02                          : 1
+    faces on cells with determinant < 0.001                : 4
+  <<Writing 9647 faces in error to set meshQualityFaces
+
+Failed 1 mesh checks.
+
+End
+
+Finalising parallel run

@@ -1,0 +1,194 @@
+################ FIX RUN 1  Mon Nov  9 00:27:43 UTC 2026 ################
+cores 64  mem 503GB  disk 938G
+
+=== 0. restore the three decomposed regions ===
+   fluid extracted
+   solid extracted
+   chip extracted
+   processor dirs: 8
+   regions in processor0: chip fluid solid 
+35G	/mnt/work/case
+
+=== 1. system dicts ===
+   nProcs 8, so RANKS=8
+   patches now:
+   --- fluid
+    fluid_to_solid	        type            mappedWall;	        sampleRegion    solid;
+    port_a	        type            patch;	    port_b
+   --- solid
+    solid_to_air	        type            mappedWall;	        sampleRegion    air;
+    solid_to_fluid	        type            mappedWall;	        sampleRegion    fluid;
+    solid_to_chip	        type            mappedWall;	        sampleRegion    chip;
+   --- chip
+    chip_to_air	        type            mappedWall;	        sampleRegion    air;
+    chip_to_solid	        type            mappedWall;	        sampleRegion    solid;
+
+=== 2. chip -meshQuality BEFORE the retype, to show what the retype does ===
+   rc=0
+Mesh OK.
+
+=== 3. retype *_to_air from mappedWall to wall (they point at a region we do not ship) ===
+retyped 16 patches across 16 boundary files, 2706383 faces
+   chip patches after:
+    chip_to_air	        type            wall;
+    chip_to_solid	        type            mappedWall;
+   solid patches after:
+    solid_to_air	        type            wall;
+    solid_to_fluid	        type            mappedWall;
+    solid_to_chip	        type            mappedWall;
+   any mappedWall left pointing at air:
+0
+
+=== 4. checkMesh -parallel -meshQuality on all three unlayered regions ===
+--- fluid  rc=0
+    cells:            55303441
+    Number of regions: 1 (OK).
+    Max aspect ratio = 3.73923 OK.
+    Min volume = 4.17685e-14. Max volume = 2.19789e-10.  Total volume = 5.28058e-05.  Cell volumes OK.
+    Mesh non-orthogonality Max: 47.9213 average: 6.00697
+    Max skewness = 1.64555 OK.
+Checking faces in error :
+Mesh OK.
+--- solid  rc=0
+    cells:            199394482
+    Number of regions: 1 (OK).
+    Max aspect ratio = 3.75705 OK.
+    Min volume = 1.42274e-14. Max volume = 2.15635e-10.  Total volume = 0.000228057.  Cell volumes OK.
+    Mesh non-orthogonality Max: 50.5129 average: 3.48983
+    Max skewness = 1.64487 OK.
+Checking faces in error :
+Mesh OK.
+--- chip  rc=0
+    cells:            15726384
+   *Number of regions: 2
+    Max aspect ratio = 1.00008 OK.
+    Min volume = 1.01902e-12. Max volume = 1.01907e-12.  Total volume = 1.60261e-05.  Cell volumes OK.
+    Mesh non-orthogonality Max: 0.00241416 average: 5.79057e-06
+    Max skewness = 4.10665e-05 OK.
+Checking faces in error :
+Mesh OK.
+
+=== 5. ports ===
+   already split, nothing to do
+    fluid_to_solid	        type            mappedWall;	        nFaces          1297712;
+    port_a	        type            patch;	        nFaces          0;
+    port_b	        type            patch;	        nFaces          0;
+
+########## 6. LAYER VARIANTS ##########
+   fluid-only base built, 7.4G
+
+
+===== VARIANT V1 : thickness tracks local cell size
+      relativeSizes true  firstLayerThickness 0.165  nSmoothSurfaceNormals 1  nSmoothNormals 3
+      layers rc=0 in 2937s
+      coverage first/last:
+        Extruding 16088834 out of 16619777 faces (96.8054%)
+        Extruding 15858323 out of 16619777 faces (95.4184%)
+        Added 47252525 out of 49859331 cells (94.7717%)
+      layer table:
+        -----          -----    -----    ----     ---       ---
+        fluid_to_solid 16619777 3        2.84     1.13e-05  94.7    
+        
+        Finished meshing with 3179 illegal faces (concave, zero area or negative cell pyramid volume)
+        Finished meshing in = 2866.2 s.
+      --- QUALITY
+            cells:            102555966
+            Number of regions: 1 (OK).
+            Max aspect ratio = 302.1 OK.
+            Min volume = 2.36505e-16. Max volume = 2.19804e-10.  Total volume = 5.28057e-05.  Cell volumes OK.
+            Mesh non-orthogonality Max: 74.1616 average: 7.6718
+           *Number of severely non-orthogonal (> 70 degrees) faces: 48.
+            Max skewness = 3.30293 OK.
+        Checking faces in error :
+        Failed 1 mesh checks.
+        disk /dev/sda1       985G   80G  865G   9% /
+
+===== VARIANT V2 : no normal smoothing, thickness as shipped
+      relativeSizes false  firstLayerThickness 4.15e-06  nSmoothSurfaceNormals 0  nSmoothNormals 0
+      layers rc=0 in 2486s
+      coverage first/last:
+        Extruding 16213497 out of 16619777 faces (97.5554%)
+        Extruding 15909332 out of 16619777 faces (95.7253%)
+        Added 47428503 out of 49859331 cells (95.1246%)
+      layer table:
+        -----          -----    -----    ----     ---       ---
+        fluid_to_solid 16619777 3        2.85     1.44e-05  95      
+        
+        Finished meshing with 2715 illegal faces (concave, zero area or negative cell pyramid volume)
+        Finished meshing in = 2437.43 s.
+      --- QUALITY
+            cells:            102731944
+            Number of regions: 1 (OK).
+            Max aspect ratio = 241.68 OK.
+            Min volume = 4.41007e-16. Max volume = 2.19804e-10.  Total volume = 5.28057e-05.  Cell volumes OK.
+            Mesh non-orthogonality Max: 76.0512 average: 7.42342
+           *Number of severely non-orthogonal (> 70 degrees) faces: 2093.
+            Max skewness = 3.35488 OK.
+        Checking faces in error :
+        Failed 1 mesh checks.
+        disk /dev/sda1       985G  101G  844G  11% /
+
+===== VARIANT V3 : both
+      relativeSizes true  firstLayerThickness 0.165  nSmoothSurfaceNormals 0  nSmoothNormals 0
+      layers rc=0 in 2771s
+      coverage first/last:
+        Extruding 16094761 out of 16619777 faces (96.841%)
+        Extruding 15867583 out of 16619777 faces (95.4741%)
+        Added 47294134 out of 49859331 cells (94.8551%)
+      layer table:
+        -----          -----    -----    ----     ---       ---
+        fluid_to_solid 16619777 3        2.85     1.13e-05  94.8    
+        
+        Finished meshing with 2816 illegal faces (concave, zero area or negative cell pyramid volume)
+        Finished meshing in = 2723.18 s.
+      --- QUALITY
+            cells:            102597575
+            Number of regions: 1 (OK).
+            Max aspect ratio = 302.1 OK.
+            Min volume = 2.37195e-16. Max volume = 2.19804e-10.  Total volume = 5.28057e-05.  Cell volumes OK.
+            Mesh non-orthogonality Max: 75.6483 average: 7.11668
+           *Number of severely non-orthogonal (> 70 degrees) faces: 10.
+            Max skewness = 3.34868 OK.
+        Checking faces in error :
+        Failed 1 mesh checks.
+        disk /dev/sda1       985G  121G  824G  13% /
+
+########## 7. SUMMARY ##########
+variant    faces_in_error   max_nonortho       coverage      verdict
+V1                   3306        74.1616     (95.4184%) Failed 1 mesh checks.
+V2                   2724        76.0512     (95.7253%) Failed 1 mesh checks.
+V3                   2841        75.6483     (95.4741%) Failed 1 mesh checks.
+
+bl8 as shipped, for comparison: 2936 faces in error, max non-ortho 76.6676, coverage (95.553%)
+
+########## 8. RE-TAR THE CORRECTED REGIONS WITH pigz ##########
+the retype in stage 3 is independent of which layer variant wins, so it ships now
+   fluid  2516122466 B in 15s
+   solid  8397501470 B in 51s
+   chip  650934800 B in 4s
+the original cbox8_* objects are untouched; the corrected set is under mesh/cbox8fixed/
+ 650934800  2026-11-09T03:02:10Z  gs://dev-rehaan-artifacts-224734058693/corintis/mesh/cbox8fixed/cbox8_chip.tar.gz
+2516122466  2026-11-09T03:00:58Z  gs://dev-rehaan-artifacts-224734058693/corintis/mesh/cbox8fixed/cbox8_fluid.tar.gz
+8397501470  2026-11-09T03:01:59Z  gs://dev-rehaan-artifacts-224734058693/corintis/mesh/cbox8fixed/cbox8_solid.tar.gz
+TOTAL: 3 objects, 11564558736 bytes (10.77 GiB)
+
+download 0 72
+extract 0 241
+chip_before 0 28
+retype 0 0
+quality_fluid 0 64
+quality_solid 0 181
+quality_chip 0 17
+layers_V1 0 2937
+quality_V1 0 118
+layers_V2 0 2486
+quality_V2 0 119
+layers_V3 0 2771
+quality_V3 0 119
+pigz_fluid 0 15
+upload_fluid 0 5
+pigz_solid 0 51
+upload_solid 0 9
+pigz_chip 0 4
+upload_chip 0 3
+FIX1 DONE Mon Nov  9 03:02:17 UTC 2026

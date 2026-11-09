@@ -48,6 +48,29 @@ Six Great, seven Good, four Bad, two Really Bad. One of the Really Bads is not i
 it is in what I wrote about the mesh. The other is: 2,706,383 faces of the delivered mesh reference
 a region that is not in the delivery.
 
+## Where the deliverable actually lives
+
+Nothing below is in git. The repository holds this document and the tools; the mesh is 10 to 30 GB
+of binary per region and lives in the bucket. As of 2026-11-08 the delivery is:
+
+| what | where | state |
+|---|---|---|
+| solid, chip, unlayered coolant | `corintis/mesh/cbox8fixed/` | **current**, air patches retyped, 10.77 GiB |
+| the same three, before the retype | `corintis/mesh/cbox8/` | superseded, kept for provenance |
+| layered coolant | `corintis/mesh/bl8/bl8_fluid_layered.tar.gz` | **current**, still the 2,936-face mesh |
+| the 2,349 bad face positions | `corintis/mesh/bl8/badfaces.csv` | |
+| fix-run logs for every variant | `corintis/mesh/fix1/` | |
+| rebuild inputs and drivers | `corintis/drivers/`, and `~/rebuild_kit` | |
+
+So the deliverable today is **cbox8fixed plus the original bl8 coolant**. No layer variant has been
+accepted, which means the coolant still carries section 14's defect. That is the one part of the
+delivery this work has not yet replaced.
+
+The V1 to V4 layered meshes no longer exist. Their boxes self-deleted with the meshes on them, so
+only the logs survive and neither V3's nor V4's weight failures can now be located. That was
+avoidable and it is why the V5 driver archives its own mesh and runs the localiser before the box
+is allowed to die.
+
 ## What ships
 
 | region | cells | share |
@@ -493,6 +516,57 @@ against an `expansionRatio` of 1.2 in the dict, so the stack is not grading as a
 wrong. And `nSmoothSurfaceNormals 1` with `nSmoothNormals 3` is exactly the knob that produces a
 lateral drift of the extrusion direction, which we already know not to do over a staircase.
 
+### Four attempts at fixing it, measured
+
+Run 2026-11-08 on `mesh-fix1` and `mesh-fix3`. The layer pass only; nothing upstream changed, so
+every row is comparable.
+
+| | bl8 shipped | V1 | V2 | V3 | V4 |
+|---|---|---|---|---|---|
+| what changed | nothing | `relativeSizes` 0.165 | no normal smoothing | both | layers on channel wall only |
+| non-orthogonality > 65 deg | 2,348 | 485 | 2,229 | 133 | **7** |
+| severely non-orthogonal > 70 | 2,096 | 48 | 2,093 | 10 | **0** |
+| max non-orthogonality | 76.6676 | 74.1616 | 76.0512 | 75.6483 | **67.2138** |
+| interpolation weights < 0.02 | 405 | 2,639 | **298** | 2,516 | 9,635 |
+| tet quality < 1e-30 | 6 | 1 | 15 | 3 | **0** |
+| face twist < 0.02 | 55 | 48 | 65 | 57 | **1** |
+| determinant < 0.001 | 117 | 133 | 112 | 132 | **4** |
+| volume ratio < 0.01 | 5 | 0 | 5 | 0 | **0** |
+| **total faces in error** | 2,936 | 3,306 | **2,724** | 2,841 | 9,647 |
+| max aspect ratio | 322.161 | 302.1 | 241.68 | 302.1 | **101.865** |
+| faces extruded | 95.553% | 95.418% | **95.725%** | 95.474% | 91.900% |
+| cells added | 94.73% | 94.77% | **95.13%** | 94.86% | 77.80% |
+| cells delivered | 102,536,327 | 102,555,966 | 102,731,944 | 102,597,575 | 92,479,375 |
+| layer pass | 2,602 s | 2,937 s | **2,437 s** | 2,771 s | 3,684 s |
+
+**The angle is fully solvable.** V4 put the maximum below the 70 degree severe bar, so zero
+severely non-orthogonal faces against 2,096, and it also won tet quality, face twist, determinant
+and aspect ratio outright.
+
+**Every route to it costs interpolation weight.** Thinning the stack does it (V1 2,639, V3 2,516)
+and terminating the stack does it (V4 9,635). V2 is the only variant that keeps weight low, and V2
+does not fix the angle.
+
+**The two mechanisms compound, which I had wrong.** Removing the normal smoothing on its own did
+nothing at all: V2 moved severe non-orthogonality from 2,096 to 2,093. But removing it on top of
+relative sizing cut the remainder another 3.6x, 485 to 133. So neither explanation works alone and
+"never smooth normals on a staircase" is not what is happening here.
+
+**V4 is rejected on physics, not on its face count.** Its coverage fell to 91.90% and its stack
+filled only 77.80% of the requested cells, and that shortfall is on the channel wall, which is the
+only place the boundary layer exists for. The 10 million fewer cells are not a saving, they are
+layers that failed to go in. Asking for layers on 96% of a surface but not on the interleaved other
+4% fights the mesher, and the mesher backed off over a wide area.
+
+**V1 and V3 carry a cost that is in no checkMesh table.** Both change the near-wall thickness, V3's
+stack coming out at 1.13e-05 against the shipped 1.43e-05 with a 3.26 um first cell. Every thermal
+figure in section 10 was computed for the 4.15 um stack, so neither could ship until those are
+recomputed. Finer wall resolution is very likely better, but likely is not measured.
+
+So on this evidence **no variant wins outright**. V5, running at the time of writing, keeps V3's
+mechanism and raises the coefficient from 0.165 to 0.25 so the stack returns to at least the shipped
+thickness while still scaling with cell width.
+
 ### What this changes
 
 The channel walls carry 232 of the 2,936 faces. That is 7.9% of the defect, 2.3 per million cells,
@@ -608,10 +682,26 @@ layer: the near-wall packing in a flow mesh resolves gradients that advection cr
 conduction field has none. The place a solid does need resolution is across a thin layer with a
 steep through-thickness gradient, and that is precisely the 70 um gap.
 
-## 16. Patches pointing at a region we do not ship: Really Bad
+## 16. Patches pointing at a region we do not ship: Great, after being Really Bad
+
+**Fixed and shipped 2026-11-08 on `mesh-fix1`.** 16 boundary files, 16 patches, **2,706,383 faces**
+retyped from `mappedWall` to `wall`, and zero `mappedWall` left anywhere pointing at `air`. The
+corrected regions are at `mesh/cbox8fixed/`, 10.77 GiB, and the originals are untouched.
+
+Verified by pulling the uploaded archive back down and extracting it rather than trusting the
+upload:
+
+```
+chip_to_air     type   wall;
+chip_to_solid   type   mappedWall;
+```
+
+so the dangling patch is a plain wall and the real coupling is intact.
+
+### What it was, and why no tool caught it
 
 The delivery is three regions: `fluid`, `solid`, `chip`. The `air` zone, 32,601,168 cells, is built
-by `topoSet` and then discarded. But the boundary files still say:
+by `topoSet` and then discarded. But the boundary files said:
 
 ```
     chip_to_air
@@ -632,47 +722,96 @@ mapping to a region that does not exist.
 mapping, they only need the topology. That is why every quality number in this document is still
 valid. It is the solver setup that breaks, and the solver setup is the thing we are selling.
 
-The fix is to retype those patches `wall`, which is also what they physically are: the outside of
-the part, where the customer chooses an adiabatic or a convective condition. It is one key per
-patch. The 2.3% of this that showed up as a `checkMesh` return code was recorded on 2026-11-07 and
-closed by retyping on a check-time **copy**, which fixed the check and left the delivery alone.
+The fix was to retype those patches `wall`, which is also what they physically are: the outside of
+the part, where the customer chooses an adiabatic or a convective condition. One key per patch, and
+it took 0 s of compute.
 
-Really Bad because this is the one thing on this page that stops the case being run at all, it was
-avoidable, and the near-miss was already in the record.
+It was **Really Bad** before the fix, and the grade is kept visible rather than overwritten, for
+two reasons. This was the one thing on this page that stopped the case being run at all. And the
+near-miss was already in the record: the 2.3% of it that showed up as a `checkMesh` return code was
+logged on 2026-11-07 and closed by retyping on a check-time **copy**, which fixed the check and left
+the delivery carrying the fault for another day.
 
-## 17. Quality criteria that were never evaluated: Bad
+The lesson is in 17b. Every tool we gate on was blind to this, so no amount of running them harder
+would have found it. What found it was reading the boundary file against the list of regions we
+actually ship.
 
-The three region checks were:
+## 17. The full quality pass, run at last: Great
 
-```
-Exec : checkMesh -parallel -constant -region fluid
-Exec : checkMesh -parallel -constant -region solid
-Exec : checkMesh -parallel -constant -region chip
-```
+**Closed 2026-11-08 on `mesh-fix1`.** All ten criteria, all three unlayered regions, all zero:
 
-No `-meshQuality`. So on the plate, the chip and the unlayered coolant, these five criteria were
-never evaluated at all:
+| criterion | fluid | solid | chip |
+|---|---|---|---|
+| non-orthogonality > 65 deg | 0 | 0 | 0 |
+| face pyramid volume < 1e-20 | 0 | 0 | 0 |
+| face-decomposition tet quality < 1e-30 | 0 | 0 | 0 |
+| concavity > 80 deg | 0 | 0 | 0 |
+| skewness > 4 internal or 20 boundary | 0 | 0 | 0 |
+| interpolation weights < 0.02 | 0 | 0 | 0 |
+| volume ratio of neighbour cells < 0.01 | 0 | 0 | 0 |
+| face twist < 0.02 | 0 | 0 | 0 |
+| determinant < 0.001 | 0 | 0 | 0 |
+| verdict | **Mesh OK** | **Mesh OK** | **Mesh OK** |
 
-| criterion | evaluated on the unlayered regions |
+55,303,441 + 199,394,482 + 15,726,384 cells, and not one face over any bar. 64 s, 181 s and 17 s.
+
+So "zero faces over the bar" is now a measurement on ten criteria rather than two measured and five
+never looked at, and it is the strongest single statement in this document. It also lifts section 7,
+which was only Good because this evidence was missing.
+
+The text this section replaces is kept below, because the lesson is worth more than the result.
+
+### What it said before, and why
+
+The three region checks were `checkMesh -parallel -constant -region <name>` with no `-meshQuality`.
+Non-orthogonality and skewness were sound, because a reported maximum below a bar does imply nothing
+exceeds it. The other five were not a measurement, they were the absence of one, and I had been
+writing "0 faces over the bar" about all of them. 199 million cells in the plate had never been
+checked for determinant or face twist. It cost 262 s of compute to find out, and it had simply never
+been run.
+
+## 17b. The retype did not move the check, and that is the point
+
+I ran the chip's `-meshQuality` pass **before** the retype as well as after, as a control, so that
+the retype would be shown to change the return code rather than assumed to. It did not:
+
+| | verdict |
 |---|---|
-| non-orthogonality | yes, by maximum |
-| skewness | yes, by maximum |
-| face pyramid volume | no |
-| face-decomposition tet quality | no |
-| interpolation weights | no |
-| volume ratio of neighbour cells | no |
-| face twist | no |
-| determinant | no |
+| chip, before the retype | rc 0, `Mesh OK` |
+| chip, after the retype | rc 0, `Mesh OK` |
 
-I have been writing "0 faces over the bar" about this mesh. For non-orthogonality and skewness that
-is sound, because the reported maximum is below the bar and a maximum below a bar implies nothing
-exceeds it. For the other five it is not a measurement, it is an absence of one. 199 million cells
-in the plate have never been checked for determinant or face twist.
+So `checkMesh` is indifferent to a `mappedWall` pointing at a region that does not exist. So is
+`snappyHexMesh`. Neither of them builds the mapping; they only need the topology.
 
-This is cheap to close. A `checkMesh -meshQuality` pass on the three regions is 185 s of compute on
-the numbers in section 13. It has simply never been run.
+That is worth writing down twice, because it is the whole explanation for how section 16 shipped.
+Every tool we gate on was blind to it. It narrows the claim too: the dangling patches are a
+solver-construction defect and not a mesh defect, and every quality figure measured with those
+patches in place is still valid. An earlier note in the record had a retype moving a return code
+from 1 to 0; that was a different case, and it does not generalise to this one.
 
-## 18. Delivery time, the serial tail: Bad
+## 18. Delivery time: Great
+
+**Closed 2026-11-08 on `mesh-fix1`.** `pigz` across the cores, and no reconstruct at all:
+
+| stage | as shipped | this run |
+|---|---|---|
+| `reconstructParMesh` | 1,105 s | **not run** |
+| tar the coolant | 935 s | **not needed, it is the layer pass output** |
+| tar solid, 8,397,501,470 B | 1,560 s | **51 s** |
+| tar fluid, 2,516,122,466 B | 444 s | **15 s** |
+| tar chip, 650,934,800 B | 124 s | **4 s** |
+| uploads | 171 s | **17 s** |
+| **total** | **4,347 s** | **87 s** |
+
+**50x.** The tars alone went from 2,128 s to 70 s, which is 30.4x, and that is simply gzip on one
+core against gzip on 64. The reconstruct was 1,105 s of single-threaded work whose only purpose was
+to produce one tarball, and since the boundary index and the quality sidecar are both built off the
+decomposed mesh it was never needed.
+
+The delivery is now 87 s against a 1.08 h mesh, so the serial tail has gone from 52.9% of the wall
+clock to 2.2%. Nothing about the mesh changed to achieve it.
+
+### What this section said before, and the prediction that held
 
 | stage | seconds |
 |---|---|
@@ -697,11 +836,9 @@ More than half the wall clock is packaging. `reconstructParMesh` and `tar` are s
 box with 32 cores available, so 4,347 s of a 2.28 h job runs on one of them. The tars alone are
 3,063 s to produce 15.2 GB, which is 5.0 MB/s, and that is gzip on one core.
 
-This is Bad and it is also the cheapest thing on this page to fix. `tar` piped through `pigz`
-across the cores available would take the compression from 3,063 s to roughly a tenth of that. And
-the reconstruct may not be needed at all: we already build the boundary index and the quality
-sidecar straight off the decomposed mesh in 13 s and 9 s, so 1,105 s of reconstruct exists only to
-make one tarball that a customer may prefer decomposed anyway.
+The prediction written here was that `pigz` across the cores would take the compression "to roughly
+a tenth" and that the reconstruct was not needed at all. Both held: the tars came in at 1/30th
+rather than 1/10th, and the reconstruct was skipped with no consequence.
 
 ## 19. The published record: Really Bad
 
