@@ -79,6 +79,31 @@ def _triangles(polys: np.ndarray) -> np.ndarray:
     return np.concatenate(out, axis=0) if out else np.empty((0, 3), dtype=np.int64)
 
 
+def _facing(pts: np.ndarray, tris: np.ndarray) -> np.ndarray:
+    """Which of the six axis sectors each vertex's surface normal points into.
+
+    The normal is the area-weighted sum of the incident triangles' normals, which is the usual
+    vertex normal and needs no connectivity beyond the triangle list. `bincount` rather than
+    `np.add.at`: the same scatter-add, and on 13 million vertices it is the difference between
+    seconds and minutes.
+
+    Six sectors is deliberate. It is the coarsest split that puts two opposing sheets in different
+    buckets, which is all this has to do; a finer split would start separating a merely curved
+    surface from itself and cost detail rather than save it.
+    """
+    v0, v1, v2 = pts[tris[:, 0]], pts[tris[:, 1]], pts[tris[:, 2]]
+    fn = np.cross(v1 - v0, v2 - v0)          # length is twice the triangle's area
+    flat = tris.ravel()
+    acc = np.empty((len(pts), 3), dtype=np.float64)
+    for k in range(3):
+        acc[:, k] = np.bincount(flat, weights=np.repeat(fn[:, k], 3), minlength=len(pts))
+    axis = np.argmax(np.abs(acc), axis=1)
+    sign = (acc[np.arange(len(acc)), axis] >= 0).astype(np.int64)
+    # a vertex no triangle touches has a zero normal; it lands in sector 1 and is harmless,
+    # because no surviving triangle refers to it
+    return axis * 2 + sign
+
+
 def _cluster_once(pts: np.ndarray, tris: np.ndarray, h: float) -> tuple[np.ndarray, np.ndarray]:
     """One pass of vertex clustering: every point snapped to the centre of the `h` cell it falls
     in, triangles reindexed, collapsed and repeated triangles dropped.
@@ -88,7 +113,12 @@ def _cluster_once(pts: np.ndarray, tris: np.ndarray, h: float) -> tuple[np.ndarr
     sort 78 million rows where this sorts 13 million.
     """
     lo = pts.min(axis=0)
-    key = np.floor((pts - lo) / h).astype(np.int64)
+    cell = np.floor((pts - lo) / h).astype(np.int64)
+    # WHICH WAY THE VERTEX FACES, as a fourth key column. Without it a fin thinner than `h` puts
+    # both of its faces in one cell, every triangle on it collapses and the fin is DROPPED - the
+    # reducer does not blur a fine structure, it perforates it. Opposing sheets point opposite
+    # ways, so this separates them however thin the fin is.
+    key = np.concatenate([cell, _facing(pts, tris)[:, None]], axis=1)
     _, inverse, counts = np.unique(key, axis=0, return_inverse=True, return_counts=True)
     inverse = inverse.reshape(-1)
     sums = np.zeros((len(counts), 3), dtype=np.float64)
