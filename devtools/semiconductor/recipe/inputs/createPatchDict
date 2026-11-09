@@ -1,0 +1,7 @@
+FoamFile { version 2.0; format ascii; class dictionary; object createPatchDict; }
+pointSync false;
+patches
+(
+    { name port_a; patchInfo { type patch; } constructFrom set; set portA; }
+    { name port_b; patchInfo { type patch; } constructFrom set; set portB; }
+);

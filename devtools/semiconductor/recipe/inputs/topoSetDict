@@ -1,0 +1,8 @@
+FoamFile { version 2.0; format ascii; class dictionary; object topoSetDict; }
+actions
+(
+    { name portA; type faceSet; action new;    source patchToFace; patch fluid_to_air; }
+    { name portA; type faceSet; action subset; source boxToFace; box (-1 -1 0.060) (1 1 1); }
+    { name portB; type faceSet; action new;    source patchToFace; patch fluid_to_air; }
+    { name portB; type faceSet; action subset; source boxToFace; box (-1 -1 -1) (1 1 0.060); }
+);

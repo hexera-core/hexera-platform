@@ -1,0 +1,45 @@
+FoamFile { version 2.0; format ascii; class dictionary; object meshDict; }
+surfaceFile "constant/triSurface/domain.stl";
+maxCellSize 0.000402525;
+surfaceMeshRefinement
+{
+    plate_skin
+    {
+        surfaceFile "constant/triSurface/block.stl";
+        additionalRefinementLevels 1;
+        refinementThickness 0.000402525;
+    }
+    coolant
+    {
+        surfaceFile "constant/triSurface/fluid.stl";
+        additionalRefinementLevels 1;
+        refinementThickness 0.000402525;
+    }
+    microchannels
+    {
+        surfaceFile "constant/triSurface/fluid_fine.stl";
+        additionalRefinementLevels 4;
+        refinementThickness 8.8014e-05;
+    }
+    chip
+    {
+        surfaceFile "constant/triSurface/chip.stl";
+        additionalRefinementLevels 2;
+        refinementThickness 0.0036;
+    }
+
+}
+anisotropicSources
+{
+    microchannels
+    {
+        type box;
+        centre (0.02267671418 0.02752817822 0.0424025383);
+        lengthX 0.05985824678;
+        lengthY 0.01218805644;
+        lengthZ 0.05133793399;
+        scaleX 1;
+        scaleY 3;
+        scaleZ 1;
+    }
+}
