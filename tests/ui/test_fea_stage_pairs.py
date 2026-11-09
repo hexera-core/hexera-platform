@@ -119,8 +119,9 @@ def test_the_assembly_panel_is_folded_named_for_its_file_and_lists_each_gap_once
       const sec = root.querySelector('.fea-sec-asm');
       const text = root.querySelector('.fea-panel').textContent;
       return {{title: root.querySelector('.fea-title').textContent, tag: root.querySelector('.fea-tag').textContent,
-               folds: [...root.querySelectorAll('.fea-sec')].map((w) => [w.dataset.fold, w.classList.contains('open'),
-                 w.querySelector(':scope > .fea-fold-body').hidden]),
+               folds: [...root.querySelectorAll('.fea-sec')].map((w) => [w.classList.contains('fea-sec-shown'),
+                 !w.querySelector(':scope > .fea-sec-body').closest('[hidden]')]),
+               partsFold: root.querySelector('.fea-parts-fold > .fea-fold-body').hidden,
                head: sec.querySelector('.fea-sec-sum').textContent,
                seg: [...sec.querySelectorAll('.fea-sec-head input[name="fea-connection"]')].map((r) => [r.value, r.checked]),
                gapRows: [...root.querySelectorAll('.fea-gap-rows .fea-pair')].map((r) => r.dataset.key),
@@ -136,8 +137,9 @@ def test_the_assembly_panel_is_folded_named_for_its_file_and_lists_each_gap_once
                question: !!root.querySelector('.fea-q')}}; }})()""")
     # THE TITLE IS THE FILE'S, never the first body's; the purpose beside it
     assert s["title"] == "frame assembly" and "Bolt M8x35" not in s["title"] and s["tag"] == "FEA"
-    # every fold closed at first, its header one line: how many parts and joins, and the one answer as a switch
-    assert s["folds"] == [["asm", False, True]]
+    # THE JOINS ALWAYS SHOWN, no toggle, its header one line: how many parts and joins, and the one answer as a
+    # switch; only the extra (the parts list) folds
+    assert s["folds"] == [[True, True]] and s["partsFold"]
     assert s["head"] == "4 parts · 3 joins" and s["seg"] == [["bonded", True], ["contact", False]]
     # THE SMALL GAPS LISTED ONCE: the gap pair under its one switch, the others apart; no second list, and the
     # fuse's note that says the same gaps again is left out (the note about timing stays, folded)
@@ -153,7 +155,7 @@ def test_the_assembly_panel_is_folded_named_for_its_file_and_lists_each_gap_once
       const root = document.getElementById('gstage-{sid}');
       root.querySelector('.fea-spot.fea-itf[data-spot="I2"]').click();
       const row = root.querySelector('.fea-pair[data-spot="I2"]');
-      const before = [root.querySelector('.fea-sec-asm').classList.contains('open'), !!row.closest('[hidden]'),
+      const before = [!root.querySelector('.fea-sec-asm').closest('[hidden]'), !!row.closest('[hidden]'),
                       row.classList.contains('sel'), row.querySelector('.fea-pair-more').hidden];
       row.querySelector('.fea-pair-name').click();
       return before.concat([row.querySelector('.fea-pair-more').hidden,
@@ -182,9 +184,9 @@ def test_an_assembly_measured_later_lands_as_its_own_fold_and_keeps_what_was_ope
               root.querySelectorAll('.fea-pair').length]; }})()""")
     assert s == [False, True, 3]                     # after the key facts, before Proceed - never among the facts
     # opened, it stays open when a later view says more
-    live.evaluate(f"document.querySelector('#gstage-{sid} .fea-sec-asm .fea-sec-btn').click()")
+    live.evaluate(f"document.querySelector('#gstage-{sid} .fea-parts-fold > .fea-fold-btn').click()")
     more = json.loads(json.dumps(full))
     more["fea"]["assembly"]["notes"] = ["one more note"]
     live.evaluate(f"window.__stages['{sid}'].update({json.dumps(more)})")
-    assert live.evaluate(f"document.querySelector('#gstage-{sid} .fea-sec-asm').classList.contains('open')")
+    assert live.evaluate(f"document.querySelector('#gstage-{sid} .fea-parts-fold').classList.contains('open')")
     assert_clean(live, "an assembly measured after the stage opened")

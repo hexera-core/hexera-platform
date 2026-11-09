@@ -1,7 +1,7 @@
 # Responsibility: Verify an FEA part's stage shows EVERY hot spot its measurement found: a part with
 # hundreds of them (Areen's F1 car had 208) has a mark on the part for each - small marks without
-# numbers past the tag limit - and a line for each in the panel, in one "Hot spots" fold that is closed
-# at first, grouped by type (each type its own line with its count and range, opening on a click);
+# numbers past the tag limit - and a line for each in the panel, in one "Hot spots" section that is always
+# shown, grouped by type (each type its own line with its count and range, opening on a click);
 # clicking a mark opens the folds its line sits in and lights it. A part with a few hot spots keeps its
 # numbered tags.
 # Boundaries: the skin is built through the worker's own code from a tube made here; the FEA view is
@@ -62,8 +62,8 @@ def _state(live, sid: str) -> dict:
                  [g.dataset.type, Number(g.querySelector('.fea-spot-n').textContent)]),
                open: [...root.querySelectorAll('.fea-spot-group.open')].map((g) => g.dataset.type),
                sums: [...root.querySelectorAll('.fea-spot-sum')].map((b) => b.textContent),
-               head: [...sec.querySelectorAll('.fea-sec-btn > span:not(.fea-chev)')].map((e) => e.textContent),
-               secOpen: sec.classList.contains('open'), wall: root.querySelector('.fea-wall').textContent,
+               head: [...sec.querySelectorAll('.fea-sec-title > span')].map((e) => e.textContent),
+               secOpen: !sec.closest('[hidden]'), wall: root.querySelector('.fea-wall').textContent,
                unsent: !!root.querySelector('.fea-spot-unsent')}}; }})()""")
 
 
@@ -75,9 +75,9 @@ def test_every_hot_spot_of_a_busy_part_has_a_mark_and_a_line(live):
     assert s["marks"] == 208 and s["small"] == 208          # every one marked, small past the tag limit
     assert s["rows"] == 208 and not s["unsent"]               # and every one listed
     assert s["groups"] == [["sharp_corner", 174], ["notch", 1], ["fillet", 29], ["hole", 4]]
-    # ONE FOLD, CLOSED AT FIRST: its header says how many and that they are refined automatically; each type
-    # is its own line with its range - no line of the 208 shows until it is opened
-    assert s["head"] == ["Hot spots", "208", "refined automatically"] and not s["secOpen"] and s["shown"] == 0
+    # ONE SECTION, ALWAYS SHOWN: its header says how many and that they are refined automatically; each type
+    # is its own line with its range, and only those folds are closed - no line of the 208 shows until opened
+    assert s["head"] == ["Hot spots", "208", "refined automatically"] and s["secOpen"] and s["shown"] == 0
     assert s["sums"] == ["90°, capped", "radius 2 mm", "radius 2 mm", "radius 2 mm"]
     assert s["wall"].startswith("10 mm")                       # the thinnest wall is a key fact, outside the fold
     # a mark clicked on the part opens the folds its line sits in, and lights it
@@ -109,7 +109,6 @@ def test_a_part_with_a_few_hot_spots_keeps_its_numbered_tags(live):
     tags = live.evaluate(f"[...document.querySelectorAll('#gstage-{sid} .fea-spot')].map((m) => m.textContent)")
     assert tags == ["H1", "H2", "H3", "H4", "H5"]
     # each line in a few words: its tag, its kind and size
-    live.evaluate(f"document.querySelector('#gstage-{sid} .fea-sec-spots .fea-sec-btn').click()")
     live.evaluate(f"""document.querySelector('#gstage-{sid} .fea-spot-group[data-type="hole"] .fea-grp-btn').click()""")
     line = live.evaluate(f"""document.querySelector('#gstage-{sid} .fea-spot-row[data-spot="H1"]').textContent""")
     assert " ".join(line.split()) == "H1hole · r 2 mm"

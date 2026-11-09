@@ -1,11 +1,11 @@
 // Responsibility: Build the FEA part check - the "Your part" panel beside the part: a header (the part's or
 // file's name and a purpose tag), a few key facts (size, the unit box, how many parts, the clean check in one
-// line, the thinnest wall), then folds that open on a click, closed at first: the hot spots the mesh is refined
-// at (shown only: version 1 refines them all automatically), the shell (only when the user's words asked for
-// one) and, for an ASSEMBLY, its parts and joins - the one Bonded / Contact answer in the fold's header, each
-// pair with its own type to pick (PLAN-fea-19/20), its reach and which part keeps an overlap tucked behind the
-// row, and the small-gap switch once with its gaps listed once. Proceed sits at the foot. It also reads the
-// answer back out of the panel.
+// line, the thinnest wall), then sections that are always shown: the hot spots the mesh is refined at (shown
+// only: version 1 refines them all automatically), the shell (only when the user's words asked for one) and,
+// for an ASSEMBLY, its joins - the one Bonded / Contact answer in the section's header, each pair with its own
+// type to pick (PLAN-fea-19/20), and the small-gap switch once with its gaps listed once. Only the extra detail
+// folds: each hot-spot type's list, a pair's reach and which part keeps an overlap, the parts list, the notes,
+// what is not in the shell. Proceed sits at the foot. It also reads the answer back out of the panel.
 // Boundaries: markup and a reading of it. No fluid, no openings, no flow axis and no stickers: an FEA part is
 // meshed as itself. It fetches nothing and starts no run; the stage and the card both use it, and confirming
 // is the callback they were handed.
@@ -37,10 +37,19 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many || one + "s"}`;
  * ====================================================================================== */
 const CHEV = `<span class="fea-chev" aria-hidden="true"></span>`;
 
-function foldHtml(key, head, body, { aside = "", cls = "" } = {}) {
-  return `<section class="fea-sec ${cls}" data-fold="${attr(key)}">
-      <div class="fea-sec-head"><button type="button" class="fea-fold-btn fea-sec-btn" aria-expanded="false">${CHEV}${head}</button>${aside}</div>
-      <div class="fea-sec-body fea-fold-body" hidden>${body}</div></section>`;
+/** A section that is always shown: its header and its body, no toggle. The main facts live in these; only the
+ *  extra detail inside them folds. */
+function secHtml(head, body, { aside = "", cls = "" } = {}) {
+  return `<section class="fea-sec fea-sec-shown ${cls}">
+      <div class="fea-sec-head"><div class="fea-sec-title">${head}</div>${aside}</div>
+      <div class="fea-sec-body">${body}</div></section>`;
+}
+
+/** A small fold inside a section: a muted line that opens its rows (extra detail). */
+function subFoldHtml(key, head, body, cls = "") {
+  return `<div class="fea-subfold ${cls}" data-fold="${attr(key)}">
+      <button type="button" class="fea-fold-btn fea-sub-h" aria-expanded="false">${CHEV}${head}</button>
+      <div class="fea-fold-body" hidden>${body}</div></div>`;
 }
 
 const bodyOf = (w) => w && w.querySelector(":scope > .fea-fold-body");
@@ -324,10 +333,10 @@ export function assemblyHtml(a) {
   const picked = optsList.find((o) => o.key === dflt);
   const head = `<span class="fea-sec-t">Parts &amp; joins</span><span class="fea-sec-sum">${esc(plural(nParts || parseInt(a.summary, 10) || 0, "part"))} · ${esc(plural(nJoins, "join"))}</span>`;
   const body = `${picked ? `<div class="fea-line fea-muted fea-conn-said">${esc(`${picked.label}: ${picked.words}.`)}</div>` : ""}
-      <div class="fea-sub-h">Parts <span class="fea-spot-n">${nParts}</span></div>
-      <ul class="fea-parts" aria-label="The parts of the assembly">${parts}</ul>${free}
-      ${joinsHtml}${gapHtml}${none}${notesHtml}`;
-  return `<div class="fea-assembly" data-sig="${attr(assemblySig(a))}">${foldHtml("asm", head, body, { aside: seg, cls: "fea-sec-asm" })}</div>`;
+      ${joinsHtml}${gapHtml}${none}${free}
+      ${subFoldHtml("asm-parts", `Parts <span class="fea-spot-n">${nParts}</span>`, `<ul class="fea-parts" aria-label="The parts of the assembly">${parts}</ul>`, "fea-parts-fold")}
+      ${notesHtml}`;
+  return `<div class="fea-assembly" data-sig="${attr(assemblySig(a))}">${secHtml(head, body, { aside: seg, cls: "fea-sec-asm" })}</div>`;
 }
 
 /* ======================================================================================
@@ -410,7 +419,7 @@ function measureBody(m, p) {
   const capped = spots.some((h) => h.capped)
     ? `<div class="fea-line fea-muted">Sharp corners: refinement stops at a set level (their stress never settles).</div>` : "";
   const head = `<span class="fea-sec-t">Hot spots</span><span class="fea-sec-n">${spots.length + (m.more || 0)}</span><span class="fea-sec-sum">refined automatically</span>`;
-  return `${wallRow}${foldHtml("spots", head, `<ul class="fea-spots" aria-label="Hot spots the mesh will be refined at">${list}</ul>${unsent}${capped}${contacts}`, { cls: "fea-sec-spots" })}`;
+  return `${wallRow}${secHtml(head, `<ul class="fea-spots" aria-label="Hot spots the mesh will be refined at">${list}</ul>${unsent}${capped}${contacts}`, { cls: "fea-sec-spots" })}`;
 }
 
 /** Wire the hot-spot list (and every other tagged row): `light(id)` (if given) runs when a line is pointed at
@@ -555,12 +564,14 @@ function meshAsBody(s) {
   const rows = shell ? (s.not_shelled || []).map((r) => r.id
     ? `<li class="fea-spot-row fea-shell-row ${attr(r.kind)}" data-spot="${attr(r.id)}" title="${attr(r.words)}"><span class="fea-spot-id">${esc(r.id)}</span><span>${esc(r.short || r.words)}</span></li>`
     : `<li class="fea-shell-head ${attr(r.kind)}" title="${attr(r.words)}">${esc(r.short || r.words)}</li>`).join("") : "";
-  const list = rows ? `<div class="fea-shell-list"><div class="fea-spot-head fea-sub-h">Not in the shell</div><ul class="fea-spots fea-shell-rows" aria-label="Not in the shell">${rows}</ul></div>` : "";
+  const nRows = shell ? (s.not_shelled || []).filter((r) => r.id).length : 0;
+  const list = rows ? subFoldHtml("shell-not", `Not in the shell${nRows ? ` <span class="fea-spot-n">${nRows}</span>` : ""}`,
+    `<ul class="fea-spots fea-shell-rows" aria-label="Not in the shell">${rows}</ul>`, "fea-shell-list") : "";
   const legend = shell && s.overlay ? `<div class="fea-shell-show">${shellLegendHtml(s)}</div>` : "";
   const said = shell && s.said_words ? ` <span class="fea-muted fea-meshas-said" title="${attr(s.said_words)}">· as you asked</span>` : "";
   const head = `<span class="fea-sec-t">Shell</span><span class="fea-sec-sum">${shellSummary(s)}</span>`;
-  return foldHtml("shell", head, `<div class="fea-line fea-meshas-v"><b>${esc(s.label || "")}</b>${said}</div>
-    ${measuring}${reason}${list}${legend}`, { cls: "fea-sec-shell" });
+  return secHtml(head,`<div class="fea-line fea-meshas-v"><b>${esc(s.label || "")}</b>${said}</div>
+    ${measuring}${reason}${legend}${list}`, { cls: "fea-sec-shell" });
 }
 
 /** The shell fold for the panel; nothing without a `shell` view (a solid, as before shell existed). */

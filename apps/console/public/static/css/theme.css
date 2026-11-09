@@ -1172,6 +1172,13 @@ th,td{border-color:var(--border)}
 .fea-sec-body[hidden],.fea-fold-body[hidden]{display:none}
 .fea-sub-h{display:flex;align-items:center;gap:6px;margin:10px 0 3px;color:var(--text-muted);font-size:var(--fs-sm);font-weight:600}
 .fea-sub-h .fea-spot-n{font-weight:400;color:var(--text-faint)}
+/* an always-shown section's title (no toggle), and a small fold inside it for the extra detail */
+.fea-sec-title{flex:1;min-width:0;display:flex;align-items:center;gap:8px;padding:9px 0;font-size:var(--fs-md)}
+.fea-subfold>.fea-fold-btn{width:100%;padding:0;border:0;background:none;font:inherit;font-size:var(--fs-sm);font-weight:600;
+  color:var(--text-muted);text-align:left;cursor:pointer}
+.fea-subfold>.fea-fold-btn:hover{color:var(--text)}
+.fea-subfold.open>.fea-fold-btn .fea-chev{transform:rotate(45deg)}
+.fea-subfold>.fea-fold-body{padding-left:14px}
 /* the tagged lines (hot spots, joins, what is not in the shell): a click lights the mark on the part */
 .fea-spots{list-style:none;margin:2px 0 0;padding:0;font-size:var(--fs-sm);line-height:1.5}
 .fea-spot-row{display:flex;gap:8px;align-items:baseline;padding:2px 6px;border-radius:var(--r-sm,4px);cursor:pointer}

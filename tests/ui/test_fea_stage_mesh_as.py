@@ -96,20 +96,21 @@ def _open(live, sid: str, check: dict) -> None:
 def _state(live, sid: str) -> dict:
     return live.evaluate(f"""(() => {{
       const root = document.getElementById('gstage-{sid}'), h = window._vdbg['gstage:{sid}'];
-      // drawn in the panel - in the shell fold, which opens on a click, or out of it
+      // drawn in the panel - in the shell section (always shown) or its 'Not in the shell' fold
       const vis = (sel) => !!root.querySelector(sel);
       return {{radios: root.querySelectorAll('input[type="radio"][name="fea-mesh-as"]').length,
                row: (root.querySelector('.fea-meshas-v') || {{}}).textContent || '',
                measuring: vis('.fea-meshas-measuring'), why: (root.querySelector('.fea-meshas-why') || {{}}).textContent || '',
                rows: [...root.querySelectorAll('.fea-shell-row')].map((r) => r.dataset.spot),
                list: vis('.fea-shell-list'), legend: vis('.fea-shell-legend'),
-               head: (root.querySelector('.fea-shell-list .fea-spot-head') || {{}}).textContent || '',
+               head: (root.querySelector('.fea-shell-list > .fea-fold-btn') || {{}}).textContent || '',
                legendText: (root.querySelector('.fea-shell-legend-v') || {{}}).textContent || '',
                pins: [...root.querySelectorAll('.fea-shell-pin')].map((p) => p.dataset.spot),
                tag: root.querySelector('.fea-tag').textContent,
                sum: (root.querySelector('.fea-sec-shell .fea-sec-sum') || {{}}).textContent || '',
                said: (root.querySelector('.fea-meshas-said') || {{title: ''}}).title,
-               closed: !root.querySelector('.fea-sec.open'),
+               closed: !root.querySelector('[data-fold].open'),
+               shown: !!root.querySelector('.fea-sec-shell.fea-sec-shown'),
                panel: root.querySelector('.fea-panel').textContent,
                shell: h.shell(), fetches: window.__overlayFetches}}; }})()""")
 
@@ -146,17 +147,17 @@ def test_a_said_shell_follows_the_check_and_draws_the_mid_surface(live):
     s = _state(live, sid)
     assert s["radios"] == 0 and s["row"].startswith("Shell: the mid-surface, meshed with plate elements")
     assert s["said"] == "You asked for a shell mesh." and s["measuring"]
-    # one fold, closed at first; its header says the mid-surface is being made, the title's tag says shell
-    assert s["tag"] == "FEA · shell" and s["sum"].strip() == "making the mid-surface…" and s["closed"]
+    # one section, always shown; its header says the mid-surface is being made, the title's tag says shell
+    assert s["tag"] == "FEA · shell" and s["sum"].strip() == "making the mid-surface…" and s["shown"] and s["closed"]
     assert "auto" not in s["panel"].lower() and "recommend" not in s["panel"].lower()
     assert s["shell"] == {"actors": 0, "shown": False} and s["fetches"] == 0
     live.evaluate(f"window.__stages['{sid}'].update({json.dumps(_check(_ready()))})")
     live.wait_for(f"window._vdbg['gstage:{sid}'].shell().shown", timeout=30, what="the mid-surface to be drawn")
     s = _state(live, sid)
-    assert not s["measuring"] and s["head"] == "Not in the shell"
+    assert not s["measuring"] and " ".join(s["head"].split()) == "Not in the shell 2"
     assert s["rows"] == ["S1", "O1"] and s["list"] and s["legend"] and s["legendText"] == "8 mm – 12 mm"
     assert s["sum"] == "1 region stays solid · 1 open" and s["closed"]
-    # the mark of what stays solid, clicked on the part, opens the fold and lights its line
+    # the mark of what stays solid, clicked on the part, opens its fold and lights its line
     lit = live.evaluate(f"""(() => {{
       const root = document.getElementById('gstage-{sid}');
       root.querySelector('.fea-shell-pin[data-spot="S1"]').click();
