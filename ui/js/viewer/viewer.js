@@ -22,6 +22,7 @@ import { get as getState } from "../core/state.js";
 import { b64f32, b64u32, b64u8, loadVtk } from "./scene/vtk_load.js";
 import { mountCanvas } from "./scene/canvas.js";
 import { setEdges } from "./scene/edge_budget.js";
+import { addCellSizeMetric } from "./scene/cell_size.js";
 import { makeOverlay } from "./scene/overlay.js";
 import { bindFreshDownloads } from "../render/download.js";
 import { MOUSE_HINT, UP_AXES, VIEW_PRESETS, isUpAxis, orient, presetView, saveUp, savedUp, shield, upScope, upVector } from "./view_controls.js";
@@ -1140,6 +1141,14 @@ function initViewer(job,surf,uiCfg){
       avail.forEach(m=>{if(!p[META[m].b64])return;const a=b64f32(p[META[m].b64]);
         if(a.length===en.nCells)en.q[m]=a;});
       if(p.cell_faces_b64){const cf=b64u8(p.cell_faces_b64);if(cf.length===en.nCells)en.cellFaces=cf;}});
+    // HOW BIG IS THE CELL HERE. Computed in the browser from the delivered geometry, so it
+    // costs no payload; it declines to register on a reduced surface, where a merged face's
+    // area is not a cell's area. Added before `avail` is used so the ramp, the legend, the
+    // filter and the probe all treat it as an ordinary metric.
+    const _csWhy=addCellSizeMetric(entries,qf,surf.mesh_units,surf);
+    if(!_csWhy&&qf.metrics.cell_size)META.cell_size={fact:'',b64:''};
+    const avail2=Object.keys(META).filter(m=>qf.metrics[m]);
+    avail.length=0;avail2.forEach(m=>avail.push(m));
     if(!entries.some(en=>Object.keys(en.q).length))return;
 
     /* one ramp per metric: calm below the bar, warm approaching it, red past it. The colours

@@ -93,7 +93,12 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
         .map(c => c.dataset.metric);
       return {{metrics: h.metrics, live, active: h.active(), legend: h.legend()}};
     }})()""")
-    assert state["metrics"] == ["non_ortho", "skewness", "aspect_ratio"]
+    # The three the backend measured, plus cell_size, which the browser computes from the
+    # delivered geometry (scene/cell_size.js) and so costs no payload. It is last because
+    # it is registered after the backend's own metrics are decoded.
+    assert state["metrics"] == ["non_ortho", "skewness", "aspect_ratio", "cell_size"]
+    # `live` is the side panel's FIGURES that became controls, and those come from the
+    # backend's facts. cell_size has no fact of its own, so it must not appear here.
     assert sorted(state["live"]) == ["aspect_ratio", "non_ortho", "skewness"], state
     assert state["active"] is None and state["legend"] is False
 
