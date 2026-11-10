@@ -75,11 +75,11 @@ def test_a_manual_run_can_name_a_personal_environment():
 
 
 def test_the_dispatch_input_budget_is_not_exceeded():
-    """GitHub caps workflow_dispatch at a small number of inputs and rejects the whole workflow
-    past it - a failure that shows up as "workflow does not have workflow_dispatch trigger",
-    naming neither the cap nor the input that breached it. This workflow sits close to it."""
+    """GitHub caps workflow_dispatch at 25 inputs (it was 10 until Dec 2025) and rejects the whole
+    workflow past it - a failure that shows up as "workflow does not have workflow_dispatch
+    trigger", naming neither the cap nor the input that breached it."""
     inputs = _doc()[True]["workflow_dispatch"]["inputs"]
-    assert len(inputs) <= 12, (
+    assert len(inputs) <= 25, (
         f"{len(inputs)} workflow_dispatch inputs. Adding more risks GitHub refusing to dispatch "
         f"the workflow at all; consolidate the checkboxes before adding another field.")
 
