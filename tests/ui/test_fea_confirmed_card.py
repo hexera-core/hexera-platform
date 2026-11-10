@@ -15,10 +15,11 @@ pytestmark = pytest.mark.ui
 
 
 def _declaration(**kw) -> str:
-    body = dict(part="Helmet Model for FEA Simulation", bodies=3, fea_connection="bonded",
-                parts_summary="3 parts: Part_1, Part_2 and Part_3", joints_summary="2 joints: 2 places where parts touch",
-                clean_summary="The geometry is clean. 2 pair(s) of bodies touch without overlapping",
-                size_mm=[235.0, 329.0, 252.0], unit="mm", scale_to_m=0.001)
+    body = {"part": "Helmet Model for FEA Simulation", "bodies": 3, "fea_connection": "bonded",
+            "parts_summary": "3 parts: Part_1, Part_2 and Part_3",
+            "joints_summary": "2 joints: 2 places where parts touch",
+            "clean_summary": "The geometry is clean. 2 pair(s) of bodies touch without overlapping",
+            "size_mm": [235.0, 329.0, 252.0], "unit": "mm", "scale_to_m": 0.001}
     body.update(kw)
     return fea_confirmation_message(SimpleNamespace(**body))
 
