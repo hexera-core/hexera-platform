@@ -183,6 +183,40 @@ def test_the_stages_plans_are_reused_only_for_the_same_solid_and_code(monkeypatc
     assert calls == [None]
 
 
+@pytest.mark.parametrize("pick", ["", "full", "quicker"])
+@pytest.mark.parametrize("asked", ["count", "sizes"])
+def test_a_count_or_sizes_the_user_named_set_the_mesh_over_the_size_choice(monkeypatch, pick, asked):
+    """PLAN-fea-27/29 over PLAN-fea-22: the stage's two sizes were made without the user's own count or sizes, so
+    neither is offered or reused - the plan is the user's (no cap), and a pick made on the stage is said set aside."""
+    seen: list = []
+
+    def choose(record, surface, diag_m, *, ai=None, cap=None, target=None, sizes=None, correction=None, **_kw):
+        seen.append({"cap": cap, "target": target, "sizes": sizes, "correction": correction})
+        return _plan(7_000_000)
+    monkeypatch.setattr(FD, "choose_plan", choose)
+    kept = {"key": "same", "full": _plan(24_000_000), "quicker": _plan(2_900_000, ("round",))}
+    target = {"elements": 7_000_000, "mode": "about", "source": "ai"} if asked == "count" else None
+    sizes = {"Part_1": 0.002} if asked == "sizes" else None
+    plan, said = FD.size_choice({"fea_plan_choice": pick} if pick else {}, {"faces": {}}, None, 0.1, levers=[],
+                                ceiling_s=1.0, ai=None, kept=kept, key="same", target=target, sizes=sizes,
+                                correction=1.1)
+    assert plan["estimate"]["elements"] == 7_000_000
+    assert seen == [{"cap": None, "target": target, "sizes": sizes, "correction": 1.1}]
+    if pick:
+        assert said["rule"] == "PLAN-fea-22" and said["inputs"]["set_aside"] == pick
+        assert said["words"].endswith("so the size picked on the stage is not used.")
+    else:
+        assert said == {}
+
+
+def test_a_count_the_notes_held_but_nobody_read_leaves_the_size_choice_in_force(monkeypatch):
+    calls: list = []
+    _choose_stub(monkeypatch, _plan(25_000_000), _plan(3_000_000, ("corner",)), calls)
+    plan, said = FD.size_choice({"fea_plan_choice": "quicker"}, {"faces": {}}, None, 0.1, levers=[], ceiling_s=1.0,
+                                ai=None, kept=None, key="k", target={"unread": True})
+    assert said["value"] == "quicker" and calls == [PO.standard_elements()]
+
+
 def test_an_ai_decision_that_changes_nothing_keeps_the_stages_plans():
     record = {"faces": {}}
     assert FD._ai_changes_nothing(record, None, 0.1) == (True, [])

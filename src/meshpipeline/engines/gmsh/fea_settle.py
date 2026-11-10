@@ -33,9 +33,6 @@ import numpy as np
 CUSP_REACH = 2.0
 #: ...and a micro detail (PLAN-fea-12) when one of its corners lies this close to a point along it.
 MICRO_REACH = 2.0
-#: PLAN-fea-11: at most this many more rounds of straightening the elements a straightened neighbour turned
-#: inside out (each round straightens at least one curved edge; ox_mc_lid's plates needed 2).
-SETTLE_ROUNDS = 50
 #: gmsh's 10-node tetrahedron: midside node 4+k sits on the edge between these corners (gmsh's own
 #: numbering; engines/gmsh/abaqus_deck.GMSH_TET10_TO_SOLVER reads the same). Matching a midside node
 #: to the nearest edge middle instead goes wrong on exactly the elements curving bent the most.

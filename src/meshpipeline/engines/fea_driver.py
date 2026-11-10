@@ -1910,7 +1910,7 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
     import copy
 
     from meshpipeline.contracts import mesh_machine as MM
-    from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
+    from meshpipeline.contracts.mesh_execution import note_native_pass
     from meshpipeline.engines import fea_tetwild as TW
 
     if (record.get("assembly_plan") or {}).get("mode") == "bonded":
@@ -1963,7 +1963,9 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
         run.note_authoring()
         _clear_outputs(ws)
         note_native_pass(ws, n)
-        note_native_payload(ws, [p for p in PAYLOAD if (ws / p).exists()])
+        # LAD-fea-18 times the rung (fTetWild's own budget, the pass's ceiling): no gmsh pass's LAD-fea-15 fill
+        # budget is left in the workspace to stop it
+        note_budget(ws, {})
         _cite(job_id, [{"stage": "fea_machine", "decided": machine["where"], "value": machine["machine"],
                         "rule": TW.MEMORY_RULE, "inputs": {"pass": n, **machine["ftetwild"]},
                         "words": machine["words"]}])
@@ -2016,7 +2018,8 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
         # finer and held through fTetWild's sizing grid; every other part's run is the one before. The better of
         # the two is delivered, the rung's own when the refinement is no better (or runs out of memory or time)
         refined = await _rung_refine(ws, record, diag_m, first_plan, passes, ran, last, job_id=job_id, run=run,
-                                     kept=kept if last.get("rung") == 1 else None, publish=publish)
+                                     kept=kept if last.get("rung") == 1 else None, publish=publish,
+                                     crossing=crossing)
         if refined is not None:
             ran.append(refined)
     if not any(f["valid"] for f in ran) and gm and (ws / PASS_FOLDER.format(n=gm[-1]["pass"])).exists():
@@ -2034,13 +2037,13 @@ REFINE_TIME_FLOOR_S = 600.0
 
 async def _rung_refine(ws: Path, record: dict, diag_m: float, first_plan: dict, passes: list[dict],
                        ran: list[dict], last: dict, *, job_id: str, run, kept: dict | None = None,
-                       publish=None) -> dict | None:
+                       publish=None, crossing: dict | None = None) -> dict | None:
     """LAD-fea-13: one refinement pass after the rung's valid but short pass `last`. None when no short zone is on
     a part fTetWild meshed (a gmsh part's zone is not this pass's to change)."""
     import copy
 
     from meshpipeline.contracts import mesh_machine as MM
-    from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
+    from meshpipeline.contracts.mesh_execution import note_native_pass
     from meshpipeline.engines import fea_tetwild as TW
 
     parts = last.get("parts")
@@ -2055,7 +2058,8 @@ async def _rung_refine(ws: Path, record: dict, diag_m: float, first_plan: dict, 
         plan["assembly"] = dict(record["assembly_plan"])
     # gmsh's parts made finer the LAD-fea-3 way: their own short zone entries in the plan
     plan["zones"] = TW.tighten_zones(list(plan.get("zones") or []), targets["gmsh"], L.TIGHTEN)
-    settings = TW.params(plan, record, diag_m, parts)
+    # LAD-fea-17: the rung's own sizes, as the rung pass had them (never a crossing face's reading)
+    settings = TW.params(plan, record, diag_m, parts, crossing=crossing)
     settings["refine"] = {"rule": TW.REFINE_RULE, "factor": L.TIGHTEN, "parts": targets["ftetwild"],
                           "gmsh_parts": targets["gmsh"], "after_pass": last["pass"]}
     again = sorted(int(k.split("_")[1]) for k in targets["gmsh"])
@@ -2077,7 +2081,8 @@ async def _rung_refine(ws: Path, record: dict, diag_m: float, first_plan: dict, 
     run.note_authoring()
     _clear_outputs(ws)
     note_native_pass(ws, n)
-    note_native_payload(ws, [p for p in PAYLOAD if (ws / p).exists()])
+    # LAD-fea-13 times the refinement (below): no gmsh pass's LAD-fea-15 fill budget is left in the workspace
+    note_budget(ws, {})
     # RUN-6: the refined parts hold more elements than before - the rung's measured mesh, doubled, at the least
     elements = max(float((plan.get("estimate") or {}).get("elements") or 0), 2.0 * float(last.get("cells") or 0))
     process_gib, files_gib = memory_need(elements)
@@ -2086,7 +2091,12 @@ async def _rung_refine(ws: Path, record: dict, diag_m: float, first_plan: dict, 
     # a mesh is in hand: the refinement may take at most REFINE_TIME_SHARE times the rung's own pass (never less
     # than REFINE_TIME_FLOOR_S), on its machine, and ends there - never a bigger machine, never longer
     budget = max(REFINE_TIME_FLOOR_S, REFINE_TIME_SHARE * float(last.get("native_s") or 0.0))
-    work = planned_work(plan, ceiling_s=min(ceiling_for(run, machine), budget))
+    budget = min(ceiling_for(run, machine), budget)
+    # LAD-fea-18 inside it: fTetWild is asked to finish the mesh it has before the refinement's time is spent
+    settings["budget_s"] = TW.rung_budget(elements, cpus=int(machine.get("cpus") or TW.CLOUD_RUN_CPUS),
+                                          wall_s=budget)["budget_s"]
+    write_plan(ws, plan)
+    work = planned_work(plan, ceiling_s=budget)
     await run.fence("start native mesh")
     t0 = time.monotonic()
     result, machine, work = await _native(ws, machine, work, job_id, n, run, publish=publish, escalate=False)
