@@ -98,7 +98,7 @@ PLATE = {"L": 200.0, "W": 100.0, "t": 5.0, "d": 20.0}
 #: PLAN-fea-22'S EVIDENCE: four 2 mm ribs on the plate near its held end (16 capped sharp corners at their roots),
 #: and the quicker mesh's cap as a share of the full-rules estimate - low enough that the corners are coarsened,
 #: high enough that nothing else is (the plan records it: the case checks it)
-RIBS = {"n": 4, "x0": 8.0, "pitch": 9.0, "w": 4.0, "h": 2.0, "share": 0.6}
+RIBS = {"n": 4, "x0": 8.0, "pitch": 9.0, "w": 4.0, "h": 2.0, "share": 0.7}
 #: the ribs' tops rounded (PLAN-fea-7 rounds, coarsened first by the quicker mesh)
 RIB_ROUND = 1.0
 #: THE STEPPED SHAFT (a quarter, symmetry): d = 40 for half its length, D = 60 for the rest, the shoulder filleted
@@ -111,8 +111,9 @@ SHAFT = {"D": 60.0, "d": 40.0, "r": 5.0, "L": 160.0, "round": 2.0, "kt": 1.878}
 #: THE QUICKER MESH'S CAP in the textbook cases, as a share of the part's full-rules estimate: the lowest share (in
 #: steps of 0.05, searched on the lab, 28 Oct) at which the quicker mesh still coarsens only rounds, relief and capped
 #: corners - so each case coarsens its low-stress zones as far as PLAN-fea-22 ever recommends; the case checks that
-#: the plan coarsened something, and nothing else
-QUICKER_SHARE = {"plate_hole_quicker": RIBS["share"], "plate_hole_rounds_quicker": 0.7, "shaft_fillet_quicker": 0.8,
+#: the plan coarsened something, and nothing else. Searched again on 10 Nov after rulebook 57's fill estimate (#417)
+#: moved the plans: the two plates 0.6 -> 0.7 and 0.7 -> 0.75 (below those their walls are coarsened too)
+QUICKER_SHARE = {"plate_hole_quicker": RIBS["share"], "plate_hole_rounds_quicker": 0.75, "shaft_fillet_quicker": 0.8,
                  "groove_quicker": 0.85}
 CANT = {"L": 300.0, "h": 20.0}
 LAME = {"a": 50.0, "b": 100.0, "h": 20.0, "p": 10e6}
