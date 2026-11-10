@@ -122,7 +122,9 @@ html,body{height:100%;font-family:var(--sans);font-size:14px;line-height:1.65;
 
 :where(a,button,input,textarea,select,[tabindex]):focus-visible{
   outline:2px solid var(--focus);outline-offset:2px;border-radius:2px}
-::selection{background:var(--accent);color:#fff}
+/* A SELECTION IS A QUIET WASH, not a block of the hot accent: a stray drag across the sidebar
+   used to paint "New run" and "Overview" in solid orange, which read as a rendering bug. */
+::selection{background:rgba(255,79,0,.28);color:var(--text-bright)}
 
 *{scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
 ::-webkit-scrollbar{width:10px;height:10px}

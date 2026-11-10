@@ -290,6 +290,97 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
     return record, surface, diag_m
 
 
+def staged_mm_per_unit(step: Path) -> float:
+    """The staged solid's millimetres per unit as OpenCASCADE reads it - measure_staged's own reading (the two
+    readers' boxes, the ratio snapped to a power of ten) - for the shell run (SHSTAGE-6)."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    from meshpipeline.cad.scout import read_cad
+
+    _box, diag_m = _metre_box(step)
+    b = Bnd_Box()
+    BRepBndLib.AddOptimal_s(read_cad(step), b, False, False)
+    x0, y0, z0, x1, y1, z1 = b.Get()
+    diag_read = math.dist((x0, y0, z0), (x1, y1, z1))
+    if diag_read <= 0 or diag_m <= 0:
+        raise ValueError("the staged solid has no size")
+    ratio = 1000.0 * diag_m / diag_read
+    return 10.0 ** round(math.log10(ratio))
+
+
+#: SHSTAGE-6: THE SHELL RUN's time limit, seconds (the extraction takes up to about ten minutes on the biggest
+#: corpus parts, the shell mesh up to about nine) - and never more than half of what the attempt has left, so
+#: the solid mesh beside it keeps its time.
+SHELL_RUN_LIMIT_S = 2400
+SHELL_GATE = "fea_shell"
+
+
+MIXED_GATE = "fea_mixed"
+
+
+def mesh_as_of(state) -> str:
+    """SHSTAGE-5: "shell" when the user's words asked for a shell (settled at Proceed), "mixed" from a confirmation
+    stored before shell + solid left the stage (MIXED-4), else "solid" (state fea_mesh_as)."""
+    got = str((state or {}).get("fea_mesh_as") or "").strip().lower()
+    return got if got in ("shell", "mixed") else "solid"
+
+
+async def shell_pass(ws: Path, state, *, job_id: str, run=None, target: dict | None = None) -> dict | None:
+    """SHSTAGE-6: when the user's words asked for a shell, the staged solid's shell mesh and its solver files
+    (engines/shell_run, in a process of its own) - delivered as THE result by drive() (SHSTAGE-7, no solid beside
+    it); a shell that cannot be made is said, and a solid mesh is delivered instead. None when Solid was settled.
+    MIXED-5: when Auto settled Mixed, the same in engines/mixed_run (thin walls shell, thick regions solid, joined).
+    `target`: the element count the user asked for (element_target) - the shell's sizes follow it as the solid's do
+    (SHMESH-23)."""
+    kind = mesh_as_of(state)
+    if kind == "solid":
+        return None
+    import subprocess
+    import sys
+
+    from meshpipeline.engines import mixed_run, shell_run
+
+    mod = mixed_run if kind == "mixed" else shell_run
+
+    step = staged_solid(ws)
+    limit = float(SHELL_RUN_LIMIT_S)
+    left = attempt_left_s(run)
+    if left is not None:
+        limit = max(120.0, min(limit, 0.5 * left))
+    try:
+        argv = [sys.executable, "-m", mod.__name__, str(ws), str(step), "staged"]
+        if kind == "shell" and target and int(target.get("elements") or 0) > 0:
+            argv.append(json.dumps({k: target[k] for k in ("elements", "mode", "low", "high") if k in target}))
+        proc = await asyncio.to_thread(
+            subprocess.run, argv,
+            capture_output=True, text=True, timeout=limit, check=False)
+        rec = mod.read(ws)
+        if not rec:
+            rec = {"made": False, "why": f"the {kind} run stopped (exit {proc.returncode})"}
+    except subprocess.TimeoutExpired:
+        rec = {"made": False, "why": f"it took longer than the {int(limit) // 60} minutes allowed"}
+    except Exception as exc:  # noqa: BLE001 - the solid mesh is still delivered
+        rec = {"made": False, "why": f"it could not be started ({type(exc).__name__})"}
+    if not rec.get("words"):
+        rec["words"] = mod.words(rec)
+        (ws / mod.RECORD).write_text(json.dumps(rec, indent=1, sort_keys=True, default=float))
+    if kind == "mixed":
+        c = rec.get("counts") or {}
+        _cite(job_id, [{"stage": MIXED_GATE, "decided": "mixed mesh" if rec.get("made") else "no mixed mesh",
+                        "value": (int(c.get("shell_elements") or 0) + int(c.get("solid_elements") or 0)) or None,
+                        "rule": "MIXED-5",
+                        "inputs": {k: rec.get(k) for k in ("thin_share", "too_thick", "regions", "seconds", "why")},
+                        "words": rec["words"]}])
+        return rec
+    _cite(job_id, [{"stage": SHELL_GATE, "decided": "shell mesh" if rec.get("made") else "no shell mesh",
+                    "value": rec.get("elements"), "rule": "SHSTAGE-6",
+                    "inputs": {k: rec.get(k) for k in ("bodies", "open_edges", "solid_bodies", "walls_mm", "seconds",
+                                                         "why", "target")},
+                    "words": rec["words"]}])
+    return rec
+
+
 def _surface_again(shape, mm_per_unit: float, *, healed: bool):
     """The labelled surface measure_cad_surface measured `shape` on (healed first when it was), tessellated
     again; None when it cannot be (the solid is then measured as before)."""
@@ -1270,7 +1361,22 @@ def pass_work(plan: dict, *, rate: float, cls: str, machine: dict | None) -> dic
     budget = min(wall, max(BUDGET_FLOOR_S, BUDGET_FACTOR * planned)) if planned else wall
     work = planned_work(plan, rate=rate, cls=cls, ceiling_s=budget)
     work["budget"] = bool(budget < wall)
+    work["wall_s"] = int(wall)
     return work
+
+
+def note_budget(ws: Path, work: dict) -> None:
+    """LAD-fea-15's budget into the workspace, for the mesher's machine (gmsh_runner.FillBudget): it
+    stops a pass still filling past its budget, never one already filled. The mesher's own clock is the
+    machine's wall (work['wall_s']). The payload is noted again so the file travels with the pass."""
+    from meshpipeline.contracts.mesh_execution import note_native_payload
+    from meshpipeline.engines.gmsh.gmsh_runner import BUDGET_FILE
+    f = ws / BUDGET_FILE
+    if work.get("budget"):
+        f.write_text(json.dumps({"budget_s": int(work["ceiling_s"]), "rule": "LAD-fea-15"}))
+    else:
+        f.unlink(missing_ok=True)
+    note_native_payload(ws, [p for p in (*PAYLOAD, BUDGET_FILE) if (ws / p).exists()])
 
 
 def budget_words(work: dict, n: int, surface: int | None) -> str:
@@ -1828,6 +1934,27 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         record_remark(ws, ai["decision"]["notes_remark"], by="fea_ai")
     # PLAN-fea-27: an element count the user named, as the AI read it from their notes (AI-fea-4)
     target = element_target(state, ai)
+    # SHSTAGE-6: MESH AS: SHELL - the shell mesh and its solver files first, from the staged solid as read (the
+    # assembly staging above never rewrites it). SHMESH-23: once the user's element count is read, so the shell's
+    # sizes follow it as the solid's do.
+    shelled = await shell_pass(ws, state, job_id=job_id, run=run, target=target)
+    if mesh_as_of(state) == "shell" and shelled and shelled.get("made"):
+        # SHSTAGE-7: THE SHELL IS THE RESULT - no solid tet mesh beside it (one element through a 1 mm wall is poor
+        # and reads as the shell extruded); a shell that could not be made falls through to the solid, said
+        from meshpipeline.engines import shell_delivery as SD
+        from meshpipeline.engines.shell_plan import count_words
+
+        if await asyncio.to_thread(SD.deliver, ws, shelled, target=target):
+            counted = count_words(shelled.get("target"))
+            if counted:
+                from meshpipeline.contracts.user_notes import record_remark
+                record_remark(ws, counted, by="fea_target")
+            _cite(job_id, [{"stage": SHELL_GATE, "decided": "shell delivered", "value": shelled.get("elements"),
+                            "rule": "SHSTAGE-7", "inputs": {"solid_made": False},
+                            "words": "The shell is the delivered mesh: no solid mesh is made beside it."}])
+            await run.fence("deliver builder outcome")
+            outcome = run.outcome(produced_deliverable=True, exhausted=False, failure_marker="")
+            return outcome.produced_deliverable, (outcome.terminal_value or BUILD_FAILED), outcome
     # AI-fea-9 / PLAN-fea-29: the element sizes the user asked for, part by part, tied to the parts by the vision
     # model from the parts' facts and pictures, checked by the rules; nothing applied when it cannot be read
     part_sizes = await PS.decide(ws, record, surface, state or {}, job_id=job_id, run=run, wait_s=ai_wait_s(run))
@@ -1951,13 +2078,15 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             runs_here = 0
             while True:
                 runs_here += 1
-                result = await _relayed_mesh(publish, ws, seq=n * 10 + runs_here, timeout=work["ceiling_s"],
+                note_budget(ws, work)
+                result = await _relayed_mesh(publish, ws, seq=n * 10 + runs_here,
+                                             timeout=work.get("wall_s") or work["ceiling_s"],
                                              of=int((plan.get("estimate") or {}).get("elements") or 0) or None)
                 if _out_of_memory(result):
                     # RUN-3: OUT OF MEMORY -> THE SAME PLAN ONE MACHINE UP (no lever, no coarsening, no
                     # re-plan), sized from the peak seen when there is one, up to the largest machine
                     moved, rule, decided = MM.step_up(machine, measured_gib=_peak_gib(result)), "RUN-3", "step up"
-                elif result.get("timed_out") and not result.get("stalled") and not work.get("budget"):
+                elif result.get("timed_out") and not result.get("stalled") and not result.get("budget_spent"):
                     # RUN-5: STILL WORKING AT THE CLOUD RUN WALL -> THE SAME PLAN ON A VM, which has no
                     # wall (nothing coarsened, no lever); on a VM already there is nowhere to move. A pass
                     # stopped by its own budget (LAD-fea-15) is not moved: it would only grind on elsewhere
@@ -1990,7 +2119,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             # LAD-fea-15: THE PASS'S OWN BUDGET RAN OUT (the time its estimate allows, not the machine's wall):
             # the part's slowness, not ours - the pass is a fill that failed, and the ladder goes on (a surface
             # stage that ran over: LAD-fea-8 first; then the other 3D algorithm; at the end the last rung)
-            spent = bool(result.get("timed_out") and not result.get("stalled") and work.get("budget"))
+            spent = bool(result.get("budget_spent"))
             stuck_on = (L.stalled_surface(str(result.get("log_tail") or ""))
                         if result.get("stalled") or spent else None)
             stall_lever = L.surface_stall_lever(stuck_on, levers, n=n) if stuck_on is not None else None
@@ -2254,7 +2383,8 @@ def applies(state) -> bool:
     s = state or {}
     if str(s.get("purpose") or "").strip() != "structural":
         return False
-    if str(s.get("dimensionality") or "").strip().upper() == "2D":
+    if str(s.get("dimensionality") or "").strip().upper() == "2D" and mesh_as_of(s) != "shell":
+        # (a shell asked for in words like "2D elements" is still this driver's: SHSTAGE-1)
         return False
     return not any(isinstance(p, dict) and str(p.get("name") or "").strip() for p in s.get("intake_patches") or [])
 
@@ -2264,6 +2394,6 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["connection_of", "element_target", "target_plan", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
+__all__ = ["MIXED_GATE", "SHELL_RUN_LIMIT_S", "mesh_as_of", "shell_pass", "connection_of", "element_target", "target_plan", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
            "complexity", "element_limit", "fill_rate", "watchdog_words", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "NOT_RUN", "NOT_RUN_GATE", "not_run", "not_run_words", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

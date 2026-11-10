@@ -118,3 +118,33 @@ def test_the_ticker_renotes_its_step_and_stops(tmp_path):
     last = (tmp_path / fea_adapter.STAGE_FILE).stat().st_mtime_ns
     time.sleep(0.3)
     assert (tmp_path / fea_adapter.STAGE_FILE).stat().st_mtime_ns == last
+
+
+def test_the_budget_stops_a_fill_but_never_a_mesh_already_filled(tmp_path):
+    """LAD-fea-15 on the mesher's machine (gmsh_runner.FillBudget): past its budget a pass still filling
+    is stopped as ``budget``; one past the fill - improving, curving, writing a mesh that exists - is
+    stopped only by the stall watch or the wall (dev-areen 9 Nov: a filled 2.4M-element helmet was due to
+    be cut in its clean-up, with nothing delivered)."""
+    from meshpipeline.engines.gmsh import gmsh_runner as G
+
+    (tmp_path / G.BUDGET_FILE).write_text(json.dumps({"budget_s": 1}))
+    budget = G.fill_budget(tmp_path)
+    stage = tmp_path / "fea_stage.json"
+    for key, stops in (("surface", True), ("volume", True), ("optimising", False), ("curving", False),
+                       ("writing", False)):
+        stage.write_text(json.dumps({"key": key}))
+        assert budget(0.5) is False
+        assert budget(2.0) is stops, key
+    stage.unlink()
+    assert budget(2.0) is True                       # not yet started: still before the fill
+    assert G.fill_budget(tmp_path / "none") is None  # no budget file: the wall alone
+
+    busy = "print('x', flush=True)\nimport time\ntime.sleep(60)"
+    stage.write_text(json.dumps({"key": "volume"}))
+    w = run_watched(_py(busy), log_path=tmp_path / "f.log", hard_timeout=60, stall_s=30, poll_s=0.1,
+                    over_budget=budget)
+    assert w.stopped == "budget" and w.seconds < 10
+    stage.write_text(json.dumps({"key": "optimising"}))
+    w = run_watched(_py("print('x', flush=True)\nimport time\ntime.sleep(2)"), log_path=tmp_path / "o.log",
+                    hard_timeout=60, stall_s=30, poll_s=0.1, over_budget=budget)
+    assert w.stopped == "ok"

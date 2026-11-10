@@ -64,6 +64,13 @@ def _gate_gmsh_manifest_valid(ctx: GateCtx) -> tuple[bool, str]:
 def _gate_sicn_floor(ctx: GateCtx) -> tuple[bool, str]:
     q = (ctx.manifest_or_load().get("quality") or {})
     sicn = q.get("min_sicn")
+    if (q.get("fea") or {}).get("shell"):
+        # A DELIVERED SHELL is judged by its own validity (plates have no SICN: engines/shell_delivery)
+        shell_misses = quality_shortfalls(q)
+        if not shell_misses:
+            return True, ""
+        return False, refuse(f"[QUALITY] {shell_misses[0]['measured']} shell elements are folded or flat - no solver "
+                             "can use them", FailureCause.MESH_QUALITY, checks=shell_misses)
     if sicn is None:
         return False, refuse("[QUALITY] min_sicn missing from quality report - the mesh "
                              "was not quality-checked; run_mesh again",

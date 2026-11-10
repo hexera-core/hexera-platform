@@ -21,11 +21,14 @@ export async function refreshHealth() {
   const dot = $("dot"), label = $("api-lbl"), chip = $("api-status");
   // Three distinct states, because "we cannot tell" must not look like "everything is fine".
   if (dot) dot.className = "dot" + (ready ? " online" : status === "unknown" ? "" : " error");
+  // QUIET WHEN CONNECTED: the chip hides itself on "ok" (css/theme.css) and shows only when the
+  // connection is actually down. It retries every few seconds, so "Reconnecting" is the truth.
+  if (chip) chip.dataset.state = ready ? "ok" : status === "unknown" ? "unknown" : "down";
   if (label) {
-    label.textContent = ready ? "Online"
+    label.textContent = ready ? "Connected"
       : down.length ? "Some services are down"
         : status === "unknown" ? "Status unknown"
-          : "Can't reach Hexera";
+          : "Reconnecting…";
   }
   if (chip) {
     chip.title = ready

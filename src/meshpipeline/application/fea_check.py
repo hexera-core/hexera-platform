@@ -303,17 +303,67 @@ def blocker(facts: dict | None) -> tuple[str, str, str]:
     return "", "", ""
 
 
+#: What a suspect is, in the clean check's one line on the stage.
+_SUSPECT_SHORT = {"fold": "a paper-thin fold", "self_overlap": "self-crossing faces"}
+
+
+def clean_line(facts: dict | None, clean: bool | None, blocked: str, found: list[str] | None = None) -> str:
+    """The clean check in ONE short line for the stage ("Clean", "Part_7 may have self-crossing faces - we'll still
+    try", "Not a closed solid"); the full words open under it (fea_view's clean_details)."""
+    from meshpipeline.cad.fea_assembly import FACT_KEY as ASM_KEY
+    from meshpipeline.cad.fea_measure import FACT_KEY
+
+    if blocked:
+        return "Not a closed solid"
+    f = facts or {}
+    raw = f.get(FACT_KEY)
+    measured: dict = raw if isinstance(raw, dict) else {}
+    rec = measured.get(ASM_KEY)
+    names = {str(p.get("id")): str(p.get("name") or "") for p in (rec or {}).get("parts") or [] if isinstance(p, dict)}
+    many = (body_count(f) or 0) > 1
+    whos: dict[str, set] = {}
+    for sus in measured.get("suspects") or []:
+        if not isinstance(sus, dict):
+            continue
+        pid = f"Part_{int(sus.get('body') or 0)}"
+        who = (names.get(pid) or pid) if many and sus.get("body") else ("A part" if many else "The part")
+        whos.setdefault(who, set()).add(str(sus.get("kind") or "self_overlap"))
+    if whos:
+        kinds = set().union(*whos.values())
+        what = _SUSPECT_SHORT.get(next(iter(kinds)), "faces to check") if len(kinds) == 1 else "faces to check"
+        who = next(iter(whos)) if len(whos) == 1 else f"{len(whos)} parts"
+        return f"{who} may have {what} - we'll still try"
+    if clean is True and not (warnings(facts) if found is None else found):
+        return "Clean"
+    if clean is None:
+        return "Not checked"
+    return "Not clean - we'll still try"
+
+
+def clean_details(said: str, clean: bool | None, found: list[str]) -> list[str]:
+    """The clean check's full words, one line each, for the stage to open under its one line: what the check said
+    (nothing for a clean part) and each warning ("we'll still try" is in the line already)."""
+    out = [] if clean is True or not said else [said]
+    out += [w for w in found if w != TRY_ANYWAY]
+    return out
+
+
 def fea_view(facts: dict | None) -> dict:
     """What the FEA stage shows beside the part (the size and unit come with the proposal); for an
     assembly also its parts, their interfaces and the connection question."""
     clean, said = clean_words(facts)
     blocked, kind, way_out = blocker(facts)
     found = [] if blocked else warnings(facts)
+    details = clean_details(said, clean, found)
     if found:
         said = f"{said} {' '.join(found)}".strip()
     out = {"question": QUESTION, "bodies": body_count(facts), "pieces": piece_count(facts),
            "clean": clean, "clean_summary": said, "single_part_only": blocked, "blocked_kind": kind, "way_out": way_out,
-           "can_proceed": not blocked, "warnings": found, "measure": measure_view(facts)}
+           "can_proceed": not blocked, "warnings": found, "measure": measure_view(facts),
+           "clean_short": clean_line(facts, clean, blocked, found), "clean_details": details,
+           # THE PANEL'S TITLE: an assembly is named after its file - the first part's own name would read as the
+           # whole (a bolt's name over an 11-part assembly); "" leaves the stage its own
+           "title": str((facts or {}).get("file_name") or "") if (body_count(facts) or 0) > 1 else ""}
     sewn = sewn_body_count(facts)
     if sewn is not None:
         out["bodies_sewn"] = sewn
@@ -673,5 +723,5 @@ __all__ = ["TRY_ANYWAY", "has_solid", "warnings", "FOLD_BACK", "fold_back_messag
            "QUESTION", "SHOWN_HOT_SPOTS", "GAP_JOIN_QUESTION", "DEFAULT_GAP_JOINS", "gap_words",
            "PAIR_NOTE", "confirmed_pairs", "pair_rows", "pairs_answer", "pairs_summary", "joint_counts", "joint_phrases", "joints_words", "FLOW_ONLY_KEYS", "without_flow_openings",
            "gap_joins_answer", "confirmed_gap_joins", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL", "WAY_OUT_SOLID", "assembly_view",
-           "blocker", "body_count", "sewn_body_count", "clean_words", "confirmed_connection", "connection_answer", "fea_view",
+           "blocker", "body_count", "sewn_body_count", "clean_details", "clean_line", "clean_words", "confirmed_connection", "connection_answer", "fea_view",
            "hot_spot_words", "in_unit", "measure_view", "not_solid_message", "parts_words", "stage_route"]

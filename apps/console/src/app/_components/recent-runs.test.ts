@@ -40,7 +40,7 @@ test("a row links to its run and never shows an empty title", () => {
   assert.equal(row.title, "Untitled run");
   assert.equal(row.dot, "live");
   assert.equal(row.age, "");
-  assert.equal(row.words, "running");
+  assert.equal(row.words, "Running");
   const rerun = recentRow({ id: "x", status: "succeeded", task_label: null, is_rerun: true, created_at: null }, NOW);
   assert.equal(rerun.title, "Re-review of an earlier run");
 });

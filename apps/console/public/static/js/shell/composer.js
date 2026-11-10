@@ -12,7 +12,7 @@
  */
 import { ASSEMBLY_UPLOAD_MAX_BYTES, confirmGeometryCheck, getGeometryCheck, retryGeometryCheck, sendMessage, uploadAssembly, uploadGeometry }
   from "../api/endpoints.js";
-import { acceptAttribute, isOfferable, loadIntakeFormats, refusalCopy, supportedCopy }
+import { acceptAttribute, isOfferable, loadIntakeFormats, refusalCopy, shortSupportedCopy, supportedCopy }
   from "./intake_formats.js";
 import { get as getState, set as setState } from "../core/state.js";
 
@@ -175,7 +175,7 @@ let _checkState = null;
 let _checkMode = "";
 function stageWait() {
   if (_checkMode === "thermal") return "Check the thermal model beside this chat and press Mesh this model…";
-  if (_checkMode === "fea") return "Check your part and its unit beside this chat and press Proceed…";
+  if (_checkMode === "fea") return "Confirm your part on the right and press Proceed…";
   return "Check the openings beside this chat and press Proceed…";
 }
 let _holdMs = 0;
@@ -212,7 +212,8 @@ function safeUpdate(stage, d) {
   try { stage.update(d); } catch (e) { console.warn("geometry stage: update failed", e); }
 }
 
-async function watchGeometryCheck(sessionId) {
+/** Exported for the ui tier only (it drives the watch over a stood-in network); the upload starts it. */
+export async function watchGeometryCheck(sessionId) {
   // THE STAGE OPENS AS SOON AS THE PART IS MEASURED, with the measuring step's own labels under
   // a banner that says what is happening, and takes the model's labels when they arrive. The
   // user is already turning the part while the model thinks - and can proceed without it.
@@ -226,7 +227,17 @@ async function watchGeometryCheck(sessionId) {
   const retryFn = async (step) => { const d = await retryGeometryCheck(sessionId, step); told = ""; return d; };
   // THE LIVE LINE'S OWN "Try again": the step the check last reported, run again, and the line
   // follows the fresh check at once rather than at the next poll
-  let retryAs = null, misses = 0, readySeen = false;
+  let retryAs = null, misses = 0, readySeen = false, confirmedSeen = false, fullDone = false;
+  // SHSTAGE-2: THE SHELL CHECK runs on its own and lands after the check: the stage is told each time its view moves
+  // (and the choice settled at Proceed), and only then
+  const shellSigOf = (d) => JSON.stringify((d && d.fea && d.fea.shell) || null) + "|"
+    + ((d && d.confirmed && d.confirmed.fea_mesh_as) || "");
+  let shellSig = "";
+  const followShell = (d) => {
+    if (!d || !stage) return;
+    const sig = shellSigOf(d);
+    if (sig !== shellSig) { shellSig = sig; safeUpdate(stage, d); }
+  };
   const rowRetry = async () => {
     deps.notice.clear?.();
     let d;
@@ -264,6 +275,13 @@ async function watchGeometryCheck(sessionId) {
     const status = d && d.status;
     if (d) _checkMode = d.check_mode || (d.route === "fea" ? "fea" : "");
     if (d && d.progress && d.progress.live) { n = 0; keepHolding(); }   // at work: not idle
+    if (confirmedSeen) {
+      // AFTER PROCEED THE WATCH IS QUIET: no live line, only the mid-surface the stage still waits on
+      followShell(d);
+      if (!stage.awaitsShell()) return;
+      await new Promise((r) => setTimeout(r, CHECK_POLL_MS));
+      continue;
+    }
     if (d) {
       misses = 0; retryAs = d.retry || null;
       deps.checkProgress(d.progress || null, { retry: rowRetry });
@@ -273,7 +291,13 @@ async function watchGeometryCheck(sessionId) {
     if (d && d.confirmed) {
       // answered, on the stage or the card, whatever the naming did afterwards
       // the part stays on the stage, settled, beside the rest of the intake (viewer/intake_view.js)
-      _checkState = "done"; releaseHold(); if (stage) (stage.settle || stage.release)(); return;
+      _checkState = "done"; releaseHold(); if (stage) (stage.settle || stage.release)();
+      // THE SHELL CHECK TAKES MINUTES and the user may answer in seconds: an FEA stage whose settled choice is a
+      // shell is told the check as it lands, until its mid-surface is drawn (or the run starts)
+      if (stage && stage.awaitsShell) { safeUpdate(stage, d); shellSig = shellSigOf(d); confirmedSeen = stage.awaitsShell(); }
+      if (!confirmedSeen) return;
+      await new Promise((r) => setTimeout(r, CHECK_POLL_MS));
+      continue;
     }
     if (stage && d && d.skin && (d.thermal || d.route) && kindOf(d) !== stageKind) {
       try { stage.release(); } catch (e) { console.warn("geometry stage: release failed", e); }
@@ -333,14 +357,23 @@ async function watchGeometryCheck(sessionId) {
       // until that reading lands, and the stage is handed the check once more when it does - not
       // on every poll, which would re-draw the form under the user
       const waitingFull = !!d.named_on_preview;
-      if (!readySeen || !waitingFull) {
+      if (fullDone) {
+        // THE SHELL CHECK LANDS AFTER THE CHECK IS READY (it starts with the FEA naming): the stage is told
+        // only when the shell view moves, never the whole check on every poll
+        followShell(d);
+      } else if (!readySeen || !waitingFull) {
         _checkState = "ready";
         if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
         if (stage) safeUpdate(stage, d);
         else if (!readySeen) { stageKind = kindOf(d); stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn); }
       }
       readySeen = true;
-      if (!waitingFull) return;
+      if (!waitingFull) {
+        if (!fullDone) { fullDone = true; shellSig = shellSigOf(d); }
+        // the check is done, but an FEA stage still waits on its shell check (dev, 7 Nov: ready on the worker in
+        // 10 s, the panel still "measuring the walls…" 18 minutes later - the watch had stopped here)
+        if (!(stage && stage.awaitsShell && stage.awaitsShell())) return;
+      }
     }
     await new Promise((r) => setTimeout(r, CHECK_POLL_MS));
   }
@@ -431,7 +464,7 @@ export function mountComposer() {
     if (input) input.setAttribute("accept", acceptAttribute(intake));
     // The same response drives the empty state's format line, so the picker's accept list and
     // the sentence a user reads can never name different formats.
-    if (intake) deps.supportedCopy(supportedCopy(intake));
+    if (intake) deps.supportedCopy(supportedCopy(intake), shortSupportedCopy(intake));
   });
   // several files picked together are one assembly (each part its own file)
   $("step-file-input").multiple = true;

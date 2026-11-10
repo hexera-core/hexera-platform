@@ -556,12 +556,13 @@ class _Preview:
         """Store the skin and the provisional check. Never raises: a preview that cannot be made
         leaves the scout exactly as it was without one."""
         try:
-            from meshpipeline.cad.part_name import part_name
+            from meshpipeline.cad.part_name import file_stem_name, part_name
 
             facts = preview_facts(skin, seed)
             facts.update(canonical.facts())
             facts["notes"].extend(n for n in canonical.notes if n not in facts["notes"])
             facts["part_name"] = part_name(fetched, ref.original_filename)
+            facts["file_name"] = file_stem_name(ref.original_filename)
             skin_key = check_object_key(self.session_id, "skin.json")
             _store_json(skin_key, _placed_skin_payload(fetched) if placed else skin_payload(skin))
             self.skin_key = skin_key
@@ -791,9 +792,11 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         _publish_validity(session_id, ref, facts["validity"])
         # THE PART'S NAME FROM THE FILE (cad/part_name): a STEP's own product name, else the upload's
         # file name - what every stage shows when no model names the part (an FEA part never asks one)
-        from meshpipeline.cad.part_name import part_name
+        from meshpipeline.cad.part_name import file_stem_name, part_name
 
         facts["part_name"] = part_name(fetched, ref.original_filename)
+        # the upload's own file name, for a stage that names a whole assembly (application/fea_check)
+        facts["file_name"] = file_stem_name(ref.original_filename)
         if facts["validity"].get("clean") is not True and facts["validity"].get("kind") != "unchecked":
             facts["notes"].append(facts["validity"]["summary"])
         # a thermal model's physics (ECXML: materials, powers, fans, vents...), kept whole beside
@@ -1802,12 +1805,28 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
         return landed
     if _is_fea(purpose_text):
         # AN FEA PART has no openings, no flow and no far field to name: the stage shows the part,
-        # its size and unit, its bodies and the clean check, all measured. No model is asked.
+        # its size and unit, its bodies and the clean check, all measured. No model names anything.
         # What the FEA plan sizes from is measured here, in the unit just settled: the walls and
         # the stress hot spots (FEA build step 3)
         from meshpipeline.cad.fea_measure import FACT_KEY
 
         facts[FACT_KEY] = fea_measurements(stored, facts, interpretation, early=early, owner_id=owner_id)
+        # SHSTAGE-1: SHELL OR SOLID, when the user's words say it: the word table, the model only for a
+        # paraphrase (checked against the allowed values); the stage opens on it and never overrides it
+        from meshpipeline.application import mesh_as
+
+        facts[MESH_AS_KEY] = mesh_as.as_record(mesh_as.read_mesh_as_sync(purpose_text, session_id=session_id,
+                                                                          owner_id=owner_id))
+        # SHSTAGE-2: THE SHELL CHECK, ONLY WHEN THE USER'S WORDS ASKED FOR A SHELL (plain FEA is a solid, and costs
+        # the worker nothing): its status says "measuring" before the stage opens, and the stage never waits on it.
+        # A shell asked for later is started by the stage's read (application/shell_check.start_if_asked)
+        try:
+            from meshpipeline.application import shell_check
+
+            if shell_check.wants_shell(facts):
+                shell_check.start(session_id, owner_id, facts=facts, interpretation=interpretation)
+        except Exception as exc:  # noqa: BLE001 - no shell check: the run still makes a said shell
+            logger.warning("geometry naming: the shell check was not started (%s)", type(exc).__name__)
         proposal = _proposal(facts, {})
         result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
         result.update(named=True, facts=facts, vision={}, proposal=proposal,
@@ -1906,6 +1925,9 @@ def merged_onto_full(named: dict, named_from: dict, full: dict) -> dict:
 #: An upload larger than this is not measured for FEA in the naming step (the record says so; the
 #: plan then sizes from the part's size alone). Version 1's parts are single parts, far smaller.
 FEA_MEASURE_MAX_MB = 80.0
+#: SHSTAGE-1: where an FEA part's facts keep what the user's words said about meshing it as a shell or a
+#: solid (application/mesh_as.as_record).
+MESH_AS_KEY = "mesh_as_words"
 
 
 class _TooBig(ValueError):

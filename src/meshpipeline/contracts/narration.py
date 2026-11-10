@@ -224,7 +224,7 @@ def quality_line(q: dict | None, past_limits: list[str] | None = None) -> str | 
         inverted = int(_num(q.get("fea_inverted")) or 0)
         if inverted > 0:
             return plain(f"{inverted} elements are inside out, so no solver can use this mesh yet.")
-        bits = [f"{cells_words(cells)} elements"] if cells else []
+        bits = [f"{cells_words(cells)} {'shell ' if fea.get('shell') else ''}elements"] if cells else []
         # the worst element is the scaled Jacobian, the figure the result screen and the report
         # show beside its limit (dev-areen 2026-10-30: the line said 0.33, the SICN, beside a 0.198)
         worst = _num(q.get("fea_min_scaled_jacobian"))

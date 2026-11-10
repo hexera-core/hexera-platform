@@ -64,6 +64,17 @@ export function supportedCopy(intake) {
        + `checked after upload.`;
 }
 
+/** The drop zone's one-line summary: the first few formats by name, then how many more.
+ *  The full list (supportedCopy) sits one click away under it. */
+export function shortSupportedCopy(intake, shown = 4) {
+  if (!intake || !intake.formats || !intake.formats.length) return "";
+  const names = intake.formats.map((f) => (f.suffixes[0] || "").replace(/^\./, "").toUpperCase())
+    .filter(Boolean);
+  const head = names.slice(0, shown).join(", ");
+  const more = names.length - Math.min(shown, names.length);
+  return more > 0 ? `${head} and ${more} more` : head;
+}
+
 /** The suffix a refusal talks about: the file's own, or .prt/.asm for a numbered Creo save
  *  (bracket.prt.3). The same rule as refusal_suffix in contracts/intake_formats.py. */
 export function refusalSuffix(filename) {

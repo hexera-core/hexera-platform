@@ -144,6 +144,14 @@ class ConfirmIn(BaseModel):
     fea_gap_joins: bool | None = None
     #: SET BY THE SERVER for an FEA assembly with small-gap joints: what the switch decided, in words.
     gap_summary: str = ""
+    #: SHSTAGE-5: SET BY THE SERVER at Proceed (application/shell_check.settle): "shell" only when the user's words
+    #: asked for one, else "solid" - whatever a client sends here is ignored (the stage has no pick). Said in the
+    #: declaration and read into the run from the stored confirmation.
+    fea_mesh_as: str = ""
+    #: SET BY THE SERVER with the settled choice: "shell (words)" when a shell was asked for ("" otherwise), and
+    #: the declaration line that says it.
+    fea_mesh_as_picked: str = ""
+    mesh_as_summary: str = ""
     #: INS-8: THE LEAK SIZE, in the reading's millimetres, when the check found leaks in the
     #: surface: every leak up to that wide is closed for the mesh (never in the file). Sent by the
     #: stage's switch and box; left out, the check's proposal; 0 switches it off. Checked by the
@@ -305,6 +313,18 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     if payload["route"] == fea_check.STAGE_FEA:
         # the part, its unit and size (the proposal), its bodies and the clean check - no flow form
         payload["fea"] = await asyncio.to_thread(fea_check.fea_view, payload.get("facts"))
+        # SHSTAGE-2: A SHELL ONLY WHEN THE USER'S WORDS ASKED FOR ONE - the shell check as it stands (started now when
+        # it was asked for after the naming); nothing at all for a solid, the stage from before shell existed
+        from meshpipeline.application import shell_check
+        _msgs = getattr(session, "messages", None)
+        try:
+            await asyncio.to_thread(shell_check.start_if_asked, str(session_id), owner_id, facts=payload.get("facts"),
+                                    messages=_msgs, interpretation=interpretation)
+        except Exception as exc:  # noqa: BLE001 - not started: the run still makes a said shell
+            logger.warning("geometry check: the shell check was not started (%s)", type(exc).__name__)
+        _shell = await asyncio.to_thread(shell_check.view_for, str(session_id), payload.get("facts"), _msgs)
+        if _shell is not None:
+            payload["fea"]["shell"] = _shell
         # ...and NO OPENINGS: a solid part for structural analysis has no inlet or outlet, so the
         # scout's flow openings (read before the purpose was known) are not served on its check
         # (the dry run's stud punch carried 18, the knuckle 7). Stored as they were, for a user who
@@ -617,6 +637,25 @@ async def pick_check_parts(session_id: uuid.UUID, body: PartPickIn, owner_id: st
     return got
 
 
+@router.get("/{session_id}/check/shell-surface")
+async def get_check_shell_surface(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                                  organization_id: str = Depends(org_dep)) -> Response:
+    """SHSTAGE-4: an FEA part's mid-surface as the stage draws it over the part - triangles in the reading's
+    millimetres, each with the wall it stands for, and the open edges (cad/shell_preview overlay.json).
+    Fetched once, when the stage's "Mesh as" view says the shell check is ready. 404 until then."""
+    if not gcfg.GEOMETRY_CHECK_ENABLED:
+        raise HTTPException(404, "The geometry check is not enabled on this deployment")
+    await _owned_session(session_id, owner_id, organization_id)
+    from meshpipeline.application.shell_check import OVERLAY_FILE, key
+    from meshpipeline.contracts.object_storage import ObjectNotFound, get_object_store
+
+    try:
+        raw = await asyncio.to_thread(get_object_store().get_bytes, object_key=key(str(session_id), OVERLAY_FILE))
+    except ObjectNotFound:
+        raise HTTPException(404, "No mid-surface has been stored for this session's part") from None
+    return Response(content=raw, media_type="application/json")
+
+
 @router.post("/{session_id}/check/confirm")
 async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = Depends(owner_dep),
                         organization_id: str = Depends(org_dep)) -> dict:
@@ -709,6 +748,20 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
             "gap_summary": (("Joined across small gaps: " if gap_on else "Left open (small gaps not joined): ")
                             + "; ".join(g["words"].split(" - ")[0] for g in gaps[:8])
                             + (f" and {len(gaps) - 8} more" if len(gaps) > 8 else "") + ".") if gaps else ""})
+        # SHSTAGE-5: SHELL OR SOLID, SETTLED NOW - a shell only when the user's words asked for one (never the
+        # form's: it has no pick), else a solid as before shell existed. The run never waits on the user after this.
+        from meshpipeline.application import shell_check
+        try:
+            await asyncio.to_thread(shell_check.start_if_asked, str(session_id), owner_id, facts=facts,
+                                    messages=session.messages, interpretation=interpretation)
+        except Exception as exc:  # noqa: BLE001 - not started: the run still makes a said shell
+            logger.warning("geometry confirm: the shell check was not started (%s)", type(exc).__name__)
+        _view = await asyncio.to_thread(shell_check.view_for, str(session_id), facts, session.messages)
+        _settled = shell_check.settle(_view)
+        body = body.model_copy(update={"fea_mesh_as": _settled["mesh_as"],
+                                       "fea_mesh_as_picked": (f"{_settled['picked']} ({_settled['by']})"
+                                                              if _settled["picked"] else ""),
+                                       "mesh_as_summary": shell_check.declaration_words(_settled)})
         proposed = _stored_check.get("proposal") or {}
         body = body.model_copy(update={
             "input_kind": "solid-body", "flow": None, "openings": [], "seed_point_mm": None,
