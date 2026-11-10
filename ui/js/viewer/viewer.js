@@ -26,8 +26,8 @@ import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml }
 import { bindFeaResults, feaDownloads, feaResultsHtml } from "./fea_results.js";
 // the reading instruments on the mesh: the inspect window's controls, the size legend, and the
 // plain words for what is on screen (viewer/inspect.js)
-import { cutText, dialRadius, fmtLen, inspectorHtml, mergeFactor, odometerText, radiusDial,
-         scaleBar } from "./inspect.js";
+import { cutText, dialRadius, drawingOf, EXACT_HELP_ROW, fmtLen, inspectorHtml,
+         odometerText, radiusDial, scaleBar } from "./inspect.js";
 
 let _vtkP=null;
 function loadVtk(){if(window.vtk)return Promise.resolve();
@@ -421,11 +421,23 @@ function initViewer(job,surf,uiCfg){
      faces" for a mesh whose boundary is 30,011,162 - the drawn figure wearing the mesh's label,
      one step along from the bug above. `reduced` carries both numbers precisely because they are
      different, so the badge says both. */
-  const _red=surf.reduced||null;
+  /* EITHER DRAWING ROUTE CARRIES BOTH NUMBERS, and the badge needs both whichever one was taken.
+     `exact` means nothing was approximated, so the badge says so - "drawn of" would read as a
+     shortfall on a surface that has none. */
+  const _draw=drawingOf(surf),_red=_draw.block;
+  /* THE HELP'S FIRST ROW IS THE ONE CLAIM THAT DEPENDS ON THE PAYLOAD, and the inspector's HTML is
+     written into the shell before the surface has been fetched - so it cannot know then. It is
+     swapped here instead of being left to say "a stand-in" about a surface that is the mesh, which
+     would send a reader to Inspect to check a shape that is already exact. */
+  if(_draw.exact){
+    const _hrow=document.querySelector('#v-insp-helpbox-'+job+' .v-insp-hrow');
+    if(_hrow)_hrow.innerHTML=`<b>${EXACT_HELP_ROW[0]}</b><p>${EXACT_HELP_ROW[1]}</p>`;}
   document.getElementById('v-count-'+job).textContent=
     surf.cell_count?surf.cell_count.toLocaleString()+' cells'
     :_red&&_red.delivered_faces
-      ?`${totalFaces.toLocaleString()} drawn of ${(+_red.delivered_faces).toLocaleString()} faces`
+      ?(_draw.exact
+        ?`${totalFaces.toLocaleString()} polygons, exactly ${(+_red.delivered_faces).toLocaleString()} faces`
+        :`${totalFaces.toLocaleString()} drawn of ${(+_red.delivered_faces).toLocaleString()} faces`)
       :totalFaces.toLocaleString()+' boundary faces';
 
   document.getElementById('v-fitbtn-'+job).onclick=()=>{ren.resetCamera();clampCam();rw.render();};
@@ -1127,16 +1139,22 @@ function initViewer(job,surf,uiCfg){
      for - measured on the first customer cold plate, 608,781 drawn against 13,022,400 built.
      So the per-patch number comes from `reduced` when there is one, and the line says plainly
      that what is on screen is a merged view and at what size. */
-  const reduced=surf.reduced||null;
+  /* AND WHAT IT MEANS WHEN THE MESH IS TOO BIG TO DRAW WHOLE BUT NOTHING WAS APPROXIMATED.
+     The exact route merges only faces that lay flat in the same plane, so there is NO resolution
+     to state - stating one would invite the reader to discount a shape that is exact. It states
+     the collapse instead, which is the thing that is actually true of it. */
+  const reduced=_draw.block;
   const facesOf=p=>{
     const d=reduced&&reduced.patches&&reduced.patches[p.name];
-    const n=d?d.delivered_faces:(p.face_count||p.tri_count||0);
+    const n=d?d.delivered_faces:(p.delivered_faces||p.face_count||p.tri_count||0);
     return `${p.name}: ${(n||0).toLocaleString()} faces`;
   };
-  const drawnNote=reduced
-    ?` · drawn merged at ${(reduced.resolution_m*1000).toLocaleString(undefined,{maximumFractionDigits:2})} mm`
-      +` (${reduced.drawn_triangles.toLocaleString()} of ${reduced.delivered_faces.toLocaleString()} faces on screen)`
-    :'';
+  const drawnNote=!reduced?''
+    :_draw.exact
+      ?` · drawn exactly (${(+reduced.drawn_polygons).toLocaleString()} polygons for all`
+        +` ${(+reduced.delivered_faces).toLocaleString()} faces, nothing approximated)`
+      :` · drawn merged at ${(reduced.resolution_m*1000).toLocaleString(undefined,{maximumFractionDigits:2})} mm`
+        +` (${reduced.drawn_triangles.toLocaleString()} of ${reduced.delivered_faces.toLocaleString()} faces on screen)`;
   const statusEl=document.getElementById('v-status-'+job);
   statusEl.textContent=thermal&&surf.is_mesh
     // a thermal model says what it is in its own words: its parts, its cells, its power
@@ -2181,7 +2199,7 @@ function initViewer(job,surf,uiCfg){
        LABEL is a round number (see inspect.scaleBar), the worth of one pixel, and whether the
        surface under the cursor is the mesh or the merged stand-in for it. Coalesced onto one
        animation frame because a camera fires modified on every mouse move of an orbit. */
-    const MERGE=mergeFactor(surf.reduced);
+    const MERGE=_draw.factor,EXACT=_draw.exact;
     const sBar=document.getElementById('v-scale-i-'+job);
     const sLbl=document.getElementById('v-scale-l-'+job);
     const sOdo=document.getElementById('v-scale-o-'+job);
@@ -2194,7 +2212,8 @@ function initViewer(job,surf,uiCfg){
       const m=perPx(),sb=scaleBar(m,140);
       if(sBar)sBar.style.width=Math.max(6,Math.min(220,sb.px))+'px';
       if(sLbl)sLbl.textContent=sb.label;
-      if(sOdo)sOdo.textContent=odometerText({mPerPx:m,merged:MERGE,real:!!shown.length});}
+      if(sOdo)sOdo.textContent=odometerText({mPerPx:m,merged:MERGE,real:!!shown.length,
+                                             exact:EXACT});}
     function legendSoon(){
       if(legendQ)return;
       legendQ=requestAnimationFrame(()=>{legendQ=0;legend();});}

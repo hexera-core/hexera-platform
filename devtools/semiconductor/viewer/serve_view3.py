@@ -161,6 +161,39 @@ JOBS: dict[str, dict] = {
         "views": [("Coolant", "region:fluid"), ("Metal", "region:solid"),
                   ("Chip", "region:chip"), ("All", None)],
     },
+    #: THE SAME DELIVERED MESH, DRAWN EXACTLY. Everything else on this server draws a plate
+    #: through `polymesh_budget.fit_to_budget`, which clusters faces until the surface fits a
+    #: triangle budget, so the drawn surface approximates the mesh. This page merges only the
+    #: coplanar axis-aligned faces, into the rectangles they already tile, which changes the
+    #: geometry by nothing.
+    #:
+    #: WHAT THAT IS WORTH, measured against /deliver on this machine, not asserted:
+    #:   19,599,615 delivered faces as 1,297,428 polygons = 2,635,540 triangles, against 5,487,927
+    #:   76.2 MB against 152.6 MB
+    #:   5.0 s to load against 18.7 s, in the same browser at the same camera
+    #:   area error 1.0e-12 against the budget route's 1.35% (it draws 98.65% of the coolant)
+    #:
+    #: WHAT IT IS NOT WORTH, so nobody repeats the claim I made first: the two pictures look
+    #: almost the same. At an identical camera they differ in 0.59% to 0.76% of canvas pixels. The
+    #: budget route is a good approximation that is slightly wrong everywhere, NOT a picture with
+    #: the channel array missing. The win here is cost and exactness, not visible detail.
+    #:
+    #: IT IS A SECOND PAGE AND NOT A REPLACEMENT because the lossy one is the evidence, and
+    #: /both puts them side by side. `render/exact_surface.py` has the measurements and, more
+    #: usefully, what it REFUSES to merge and why.
+    "corintis-exact": {
+        "payload": HERE / "exact_viewer_data.json",
+        "slug": "exact",
+        "title": "Delivered mesh, exact",
+        "up": "+y",
+        #: the same 1.9 GB bundle the lossy page cuts from - this is the same mesh
+        "sidecar_slug": "deliver",
+        "where": "the delivered mesh's own boundary indexes, the same ones the lossy page cuts "
+                 "from - this page differs only in how the surface is DRAWN, not in what was "
+                 "measured.",
+        "views": [("Coolant", "region:fluid"), ("Metal", "region:solid"),
+                  ("Chip", "region:chip"), ("All", None)],
+    },
     "corintis-pitch8": {
         "payload": HERE / "cbox8_viewer_data.json",
         "slug": "cbox8",
@@ -542,10 +575,22 @@ def _subtitle(surface: dict, top: dict | None = None) -> str:
                     or sum(int(p.get("face_count") or 0) for p in pats))
         if boundary:
             bits.append(f"{int(boundary):,} boundary faces")
+    # HOW IT IS DRAWN IS PART OF WHAT IT IS, and the two routes are not the same claim. `reduced`
+    # means faces were clustered until the surface fit a budget, so the drawn surface is an
+    # approximation of the mesh and its resolution is the thing a reader needs to know. `exact`
+    # means coplanar faces were merged into the rectangles they already tiled, so the drawn
+    # surface IS the mesh and there is no resolution to state. Printing the second as if it were
+    # the first - or the first as if it were the second - is the whole misunderstanding this page
+    # exists to clear up.
     red = surface.get("reduced") or {}
+    ex = surface.get("exact") or {}
     drawn = red.get("drawn_triangles")
-    if drawn:
-        bits.append(f"drawn as {int(drawn):,} triangles")
+    if ex.get("drawn_triangles"):
+        bits.append(f"drawn EXACTLY as {int(ex['drawn_triangles']):,} triangles")
+    elif drawn:
+        res = red.get("resolution_m")
+        bits.append(f"drawn as {int(drawn):,} triangles"
+                    + (f" at {res * 1e6:.1f} um" if res else ""))
     return " · ".join(b for b in bits if b)
 
 
@@ -569,7 +614,11 @@ for _name, _j in JOBS.items():
     _j["surface"] = _j["data"]["surface"]
     _j["sub"] = _subtitle(_j["surface"], _j["data"].get("quality"))
     _j["span"] = _span(_j["surface"])
-    _j["sidecar"] = SIDECARS / _j["slug"]
+    # `sidecar_slug` lets two PAGES of the same mesh share one 1.9 GB bundle. The exact-surface
+    # page is the same delivered plate drawn differently, so its cuts come from the delivered
+    # bundle; without this it would look for sidecar/exact, find nothing, and refuse every cut on
+    # a mesh whose index is sitting right there.
+    _j["sidecar"] = SIDECARS / _j.get("sidecar_slug", _j["slug"])
     # THE SIDECAR IS WHAT MAKES A CUT POSSIBLE, so try the bucket for it the same way. Absent is
     # not an error: every page still renders and /detail answers 409 naming exactly what is
     # missing, which is the whole reason the `where` string above exists.

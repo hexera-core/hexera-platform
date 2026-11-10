@@ -80,13 +80,39 @@ export function radiusDial(r, { fine, diag }) {
 }
 
 /** How many delivered faces stand behind one drawn one, or 1 when nothing was merged. The viewer
- *  carries both counts in `reduced`; this is the number a reader needs to hear, not the two. */
-export function mergeFactor(reduced) {
-  if (!reduced) return 1;
-  const a = Number(reduced.delivered_faces) || 0;
-  const b = Number(reduced.drawn_triangles) || 0;
+ *  carries both counts in `reduced` (a budget clustered them) or in `exact` (coplanar ones were
+ *  merged losslessly); this is the number a reader needs to hear, not the two.
+ *
+ *  POLYGONS BEFORE TRIANGLES where both are stated. The question behind this number is "how many
+ *  cells is the thing under my cursor", and the thing under the cursor is a polygon - a quad
+ *  drawn as two triangles is still one face of the drawn surface, so counting triangles halves
+ *  the answer. The lossy block states only triangles, so that is what it gets measured on. */
+export function mergeFactor(prov) {
+  if (!prov) return 1;
+  const a = Number(prov.delivered_faces) || 0;
+  const b = Number(prov.drawn_polygons) || Number(prov.drawn_triangles) || 0;
   if (!(a > 0) || !(b > 0)) return 1;
   return Math.max(1, a / b);
+}
+
+/** Which of the two drawing routes a payload took, and its provenance block.
+ *
+ *  THE TWO ARE NOT THE SAME CLAIM AND MUST NOT SHARE A SENTENCE. `reduced` means faces were
+ *  clustered until the surface fit a triangle budget, so the drawn surface APPROXIMATES the mesh -
+ *  measured on the first customer cold plate, it draws 98.65% of the coolant's area. `exact` means
+ *  coplanar axis-aligned faces were merged into the rectangles they already tiled, so the drawn
+ *  surface IS the mesh: same area to 1e-12, and what a polygon loses is only the subdivision
+ *  inside it. Telling a reader the second is a stand-in is as wrong as telling them the first is
+ *  the mesh.
+ *
+ *  The difference is NOT dramatic to look at - the two differ in under 1% of canvas pixels at the
+ *  same camera - so this wording is about being accurate, not about explaining something obvious
+ *  on screen. */
+export function drawingOf(surf) {
+  const s = surf || {};
+  const exact = !!(s.exact && Number(s.exact.drawn_polygons));
+  const block = exact ? s.exact : (s.reduced || null);
+  return { exact, block, factor: mergeFactor(block) };
 }
 
 /** The one line that says what is on screen: how big a pixel is, and whether the surface under
@@ -95,13 +121,20 @@ export function mergeFactor(reduced) {
  *  SAID, NOT IMPLIED - the same rule the cut's own label follows. A merged surface that does not
  *  announce itself reads as the mesh, and then every judgement a reader makes about cell size,
  *  channel width or wall thickness is a judgement about an average they were never shown. */
-export function odometerText({ mPerPx, merged = 1, real = false }) {
+export function odometerText({ mPerPx, merged = 1, real = false, exact = false }) {
   const px = (mPerPx > 0 && isFinite(mPerPx)) ? "1 px = " + fmtLen(mPerPx) : "";
+  // AN EXACT SURFACE MUST NOT SAY "STAND-IN", because it is not one: the shape under the cursor
+  // is the mesh's own to the last nanometre. What it does not show is the subdivision inside a
+  // polygon, so that is what it says, and it says how much of it.
   const what = real
     ? "real cells"
-    : (merged > 1.5
-        ? "merged surface, about " + Math.round(merged) + " faces to one drawn"
-        : "the delivered faces");
+    : exact
+      ? (merged > 1.5
+          ? "the mesh exactly · one polygon spans about " + Math.round(merged) + " cells"
+          : "the mesh exactly, one polygon per cell")
+      : (merged > 1.5
+          ? "merged surface, about " + Math.round(merged) + " faces to one drawn"
+          : "the delivered faces");
   return px ? px + " · " + what : what;
 }
 
@@ -121,6 +154,23 @@ export function cutText(got) {
 
 /** The help, in the order a reader meets the thing. No jargon: a reader who knew what a boundary
  *  index was would not need this panel. */
+/** What the first help row says on an EXACT surface, where the row below it would be false.
+ *
+ *  "A stand-in" is the right word for a budget-clustered surface and the wrong one here. On this
+ *  route the shape on screen is the mesh's own - the coplanar faces that were merged tiled the
+ *  rectangle they became, so nothing moved - and the only thing a reader cannot see is where one
+ *  polygon is subdivided into cells. Saying "stand-in" would send them to Inspect to check a
+ *  shape that is already exact. */
+export const EXACT_HELP_ROW = [
+  "What the mesh on screen is",
+  "The mesh itself. Faces that lay flat in the same plane were merged into the larger rectangles "
+  + "they already tiled, which moves nothing - the whole part is 19,599,615 delivered faces drawn "
+  + "as 1,297,428 polygons covering the same area to eleven decimal places. So every shape here "
+  + "is real: channel widths, wall thicknesses and corners are the mesher's own. What a polygon "
+  + "does not show is the cell boundaries inside it, and the legend at the bottom left says how "
+  + "many cells that is. Inspect and Follow are how you see those.",
+];
+
 export const INSPECT_HELP = [
   ["What the mesh on screen is",
    "A stand-in. The real mesh is far too big to send to a browser, so neighbouring faces are "
@@ -162,8 +212,12 @@ export const INSPECT_HELP = [
 /** The overlay. It sits ON the canvas, not in the panel beside it, because every control here
  *  changes what the canvas shows and a control that lives elsewhere is a control a reader has to
  *  go and find. */
-export function inspectorHtml(job, { xray = false, clip = false, fly = false, worst = false } = {}) {
+export function inspectorHtml(job, { xray = false, clip = false, fly = false, worst = false,
+                                     exact = false } = {}) {
   const id = (k) => `v-insp-${k}-${job}`;
+  // the first row is the one that differs between the two drawing routes; the rest describe the
+  // controls, which behave identically either way
+  const help = exact ? [EXACT_HELP_ROW, ...INSPECT_HELP.slice(1)] : INSPECT_HELP;
   return `<div class="v-insp" id="${id('box')}" data-armed="0">
     <div class="v-insp-main">
       <button class="v-insp-act" id="${id('arm')}" type="button" aria-pressed="false"
@@ -207,7 +261,7 @@ export function inspectorHtml(job, { xray = false, clip = false, fly = false, wo
       </span>` : ""}
     </div>
     <div class="v-insp-help" id="${id('helpbox')}" hidden>
-      ${INSPECT_HELP.map(([h, p]) => `<div class="v-insp-hrow"><b>${h}</b><p>${p}</p></div>`).join("")}
+      ${help.map(([h, p]) => `<div class="v-insp-hrow"><b>${h}</b><p>${p}</p></div>`).join("")}
     </div>
   </div>
   <div class="v-legend-scale" id="v-scale-${job}">
@@ -217,5 +271,5 @@ export function inspectorHtml(job, { xray = false, clip = false, fly = false, wo
   </div>`;
 }
 
-export default { fmtLen, scaleBar, dialRadius, radiusDial, mergeFactor, odometerText, cutText,
-                 inspectorHtml, INSPECT_HELP };
+export default { fmtLen, scaleBar, dialRadius, radiusDial, mergeFactor, drawingOf, odometerText,
+                 cutText, inspectorHtml, INSPECT_HELP, EXACT_HELP_ROW };
