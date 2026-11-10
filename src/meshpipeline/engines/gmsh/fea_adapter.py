@@ -664,10 +664,12 @@ def surface_workers(gmsh, run: dict, *, tiny: bool = False, rung: bool = False) 
     """MESH-23: how many processes mesh the surfaces, each surface on its own (the same mesh on any number):
     the job's cores (the plan's `surface_workers`, else mesh_threads); 0 where the surfaces cannot be meshed
     one by one - MESH-9's compounds (a compound meshes several CAD faces as one), the last rung's part-only
-    pass, a periodic face - and gmsh's own one-call surface stage meshes them, as before."""
+    pass, a periodic face - and gmsh's own one-call surface stage meshes them, as before. So too a pass that
+    meshes only the visible parts (LAD-fea-11: the parts kept from an earlier pass are hidden and held, their
+    meshes read back): the blocks are meshed by visibility of their own, and would mesh the kept parts' faces."""
     from meshpipeline.engines.gmsh import fea_parallel2d as P2D
 
-    if tiny or rung or not P2D.can_split(gmsh):
+    if tiny or rung or gmsh.option.getNumber("Mesh.MeshOnlyVisible") or not P2D.can_split(gmsh):
         return 0
     raw = (run or {}).get("surface_workers")
     n = mesh_threads(run) if raw is None else int(raw)
