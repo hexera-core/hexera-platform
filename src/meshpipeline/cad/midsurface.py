@@ -1688,7 +1688,8 @@ def _bulk_past(p, d, n, t: float, solid: _Solid) -> bool:
 
 
 def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thick_faces: list | None = None,
-                thick_walls: list | None = None, thick_rounds: list | None = None, mixed: bool = False) -> dict:
+                thick_walls: list | None = None, thick_rounds: list | None = None, mixed: bool = False,
+                past: bool = True) -> dict:
     """The sewn surface's edges: shared by two faces (a closed face's seam counts so), a junction (three or
     more), a real boundary (one face, the outside just past it), a SOLID LINK (one face, the material past it
     belonging to a thick region of the same body - where a mixed part's shell meets its solid) or OPEN (one
@@ -1697,7 +1698,9 @@ def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thi
     `thick_faces`: the body's faces of thick regions (cad/shell_pairs SOLID and THICK roles); `thick_walls`: its
     thick pairs (face a, face b, wall, box), whose wall the material past an edge may be, and `thick_rounds` the
     blends that round into its thick regions (SHELL-6b). Such links are also counted apart (blend_link_edges):
-    the joins are chosen as if they were open, so a join that meets the walls themselves is still preferred."""
+    the joins are chosen as if they were open, so a join that meets the walls themselves is still preferred.
+    `mixed`: the body has thick regions; `past`: read what lies past an edge that would be open (SHELL-21) - off
+    while the joins are made and judged, on for the body's last census."""
     from OCP.BRep import BRep_Tool
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp
@@ -1773,7 +1776,7 @@ def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thi
             soft += 1
         elif _length(e) < FLOOR_SHARE * t:
             below_floor += 1
-        elif PAST_EDGE:
+        elif PAST_EDGE and past:
             # SHELL-21: is a shell wall there to meet past this edge? Read at PAST_FRACTIONS of the edge (a hole's
             # circle looks three ways). None anywhere: the wall's own end (at every place read), or in a mixed
             # body a thick region (at any) - else, and with a wall ahead, still open
@@ -4238,7 +4241,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
                                 (np.minimum(lo_a, lo_b), np.maximum(hi_a, hi_b))))
 
         def census_of(fused, images, mine=mine, solid=solid, thick_faces=thick_faces, thick_walls=thick_walls,
-                      thick_rounds=thick_rounds, mixed=bodies[b]["verdict"] == "mixed"):
+                      thick_rounds=thick_rounds, mixed=bodies[b]["verdict"] == "mixed", past=False):
             fmap_f = _map(fused, TopAbs_FACE)
             owner_t = {}
             for m, imgs in zip(mine, images, strict=True):
@@ -4247,7 +4250,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
                     if k > 0:
                         owner_t[k] = m.t
             return edge_census(fused, owner_t, solid, scale=mm, thick_faces=thick_faces, thick_walls=thick_walls,
-                               thick_rounds=thick_rounds, mixed=mixed)
+                               thick_rounds=thick_rounds, mixed=mixed, past=past)
 
         # SHELL-3, BOTH JOINS, THE BETTER KEPT: the straight-edge extension (plane to plane: T, L, box, the bent and
         # slotted sheets of the corpus) and the general join (grow, cut, keep: any surfaces - a tube on a plate,
@@ -4378,6 +4381,11 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
                     fused, images, census = cut[0], cut[1], census_s
                     notes.append(f"{body_names[b]}: {cut[2]} sliver face(s) under a tenth of a wall wide dropped and "
                                  "their neighbours sewn across them (SHELL-16).")
+        if PAST_EDGE and census["open_edges"]:
+            # SHELL-21, LAST: the joins, SHELL-13 and SHELL-22 above saw every edge with metal past it as open, as
+            # they always did (so a part they close is made exactly as before). Only the edges still open now are
+            # read for what lies past them: a wall to meet (open), the wall's own end, a thick region.
+            census = census_of(fused, images, past=True)
         census["body"] = body_names[b]
         census["join"] = method
         sewn_rows.append(census)
