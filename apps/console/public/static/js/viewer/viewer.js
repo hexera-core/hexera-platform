@@ -34,11 +34,11 @@ import { bindFeaResults, feaResultsHtml } from "./fea_results.js";
 import { bindDownloadMenu, bindResultPanel, cfdPastLimit, downloadsHtml, hotSpotsHtml, keyNumbers, keyNumbersHtml, notesHtml, verdictHtml, verdictOf } from "./result_panel.js";
 
 /* geometry fills: a mid-tone grey, each patch a step of tint so the parts read apart without
-   shouting; the ORANGE selection and the edges stand out on every one of them. The values come
+   shouting; the CRIMSON selection and the edges stand out on every one of them. The values come
    from the theme (tokens.css --part-body, --part-tint-1..5), so a new theme recolours the part;
    these are only the fallback. The material is matte: little ambient, little shine. */
-const _PATCH_FALLBACK=[[0.49,0.51,0.54],[0.44,0.53,0.51],[0.54,0.51,0.45],
-                       [0.45,0.49,0.55],[0.52,0.48,0.53],[0.48,0.52,0.46]];
+const _PATCH_FALLBACK=[[0.53,0.52,0.49],[0.47,0.54,0.52],[0.58,0.53,0.42],
+                       [0.49,0.52,0.56],[0.55,0.50,0.54],[0.51,0.54,0.47]];
 function patchColours(){
   return _PATCH_FALLBACK.map((c,i)=>themeRgb(i?`--part-tint-${i}`:'--part-body',c));}
 const _AMB=0.22,_DIF=0.80,_SPEC=0.06;
@@ -46,7 +46,7 @@ const _EDGE=[0.27,0.25,0.22];          /* hairline edges at rest */
 /* darker while the faces carry colour, so every cell still reads against the data (the original
    heatmap's edge, lightened with the calm end of its scale so a whole part does not read dark) */
 const _EDGE_HEAT=[0.24,0.23,0.22];
-const _SEL=[1.0,0.31,0.0],_SEL_EDGE=[0.62,0.22,0.02];
+const _SEL=[0.886,0.173,0.173],_SEL_EDGE=[0.50,0.07,0.08];   /* the site's mesh accent, 226 44 44 */
 const HEAT_HINT='Click a face to see its numbers · Drag still rotates';
 const MEASURE_HINT='Click two points on the part · Drag still rotates';
 // the page's own controls laid over the canvas: a click on one is never a click on the part
@@ -250,7 +250,7 @@ export async function openViewer(job,anchorEl,opts){
 function initViewer(job,surf,uiCfg){
   const host=document.getElementById('v-canvas-'+job);
   // the scene is the theme's viewer canvas, so the part sits on the same black as the page
-  const sceneBg=themeRgb('--viewer-canvas',[0.035,0.055,0.075]);
+  const sceneBg=themeRgb('--viewer-canvas',[0.02,0.02,0.02]);
   // THE SHARED BOOT. Two things change here for the delivered mesh, both deliberate:
   //  - THE LIGHTS. This viewer rode vtk's default headlight while the geometry stage used a
   //    three-camera-light rig, so the same part was lit two ways depending on which panel it was
@@ -1145,11 +1145,11 @@ function initViewer(job,surf,uiCfg){
        are computed here and handed to the mapper as direct per-face RGB, and the legend is
        built from the SAME stops - so the bar on screen is the bar in the colours, and nothing
        depends on which lookup-table classes the vendored bundle happens to export. */
-    /* the console's original ramp, its calm blues about 30% lighter (Areen, 2026-10-01):
-       steel below, the wireframe blue through the calm range, warming to amber and
-       international orange at the bar, crimson past it. The colour is the surface's own - nothing is drawn on top of the mesh. */
-    const STOPS=[[0,[92,120,152]],[0.5,[142,178,218]],[0.8,[255,168,90]],[1.0,[255,88,0]]];
-    const PAST=[168,31,25];
+    /* the ramp in the theme's inks: dim stone below, the wireframe stone through the calm range,
+       warming to amber as it nears the bar, crimson at the bar and a deep crimson past it. The
+       colour is the surface's own - nothing is drawn on top of the mesh. */
+    const STOPS=[[0,[110,109,101]],[0.5,[175,174,162]],[0.8,[236,180,92]],[1.0,[226,44,44]]];
+    const PAST=[140,14,18];
     function ramp(m){const md=qf.metrics[m],lim=md.limit||1,lo=md.floor||0;
       // a metric whose bar sits far above everything the mesh has (aspect ratio: checkMesh's
       // 1000 against layers at 10 to 50) spans its colours over the mesh's own range instead,
@@ -1704,7 +1704,7 @@ function initViewer(job,surf,uiCfg){
        the line where it cuts is drawn on the part. The mesh itself is never changed. */
     const cut={on:false,axis:'x',at:0.5,flip:false,lines:[]};
     const cutOn=document.getElementById('v-cut-on-'+job),cutAt=document.getElementById('v-cut-at-'+job);
-    const CUT_LINE=themeRgb('--part-cut',[0.62,0.71,0.83]);
+    const CUT_LINE=themeRgb('--part-cut',[0.886,0.878,0.831]);
     let cutQueued=false;
     function applyCut(){
       cutQueued=false;
