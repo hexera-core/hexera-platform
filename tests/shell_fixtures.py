@@ -472,15 +472,6 @@ def pipe_branch(R: float = 40.0, ratio: float = 1.0, angle_deg: float = 90.0, t:
     return _cut(_cut(outer, cyl(R - t, run + 2, (0, 0, -run / 2 - 1), z)), cyl(r - t, 130.0, (0, 0, 0), d))
 
 
-def drilled_box(t: float = 2.0, w: float = 120.0, d: float = 80.0, h: float = 50.0):
-    """An open-top box (an enclosure): a floor and four walls `t` thick, a round hole through the floor and through
-    each pair of facing walls. Five plates, each with a hole, meeting at eight L corners."""
-    s = _cut(_box(0, 0, 0, w, d, h), _box(t, t, t, w - 2 * t, d - 2 * t, h))
-    s = _cut(s, _cyl(w / 2, d / 2, -1, 10, t + 2))
-    s = _cut(s, _cyl(-1, d / 2, h / 2, 8, w + 2, axis=(1, 0, 0)))
-    return _unify(_cut(s, _cyl(w / 2, -1, h / 2, 8, d + 2, axis=(0, 1, 0))))
-
-
 def stepped_tube(r_out: float = 20.0, t1: float = 2.0, t2: float = 1.7, length: float = 200.0):
     """A round tube whose wall steps from `t1` to `t2` halfway along, flush outside: two mid-cylinders in line,
     (t1 - t2) / 2 apart."""

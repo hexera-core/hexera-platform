@@ -1240,10 +1240,6 @@ def _foot(x, line):
     return p + u * float(np.dot(x - p, u))
 
 
-#: SHELL-20: a straight extension that comes out invalid on a plate with holes is made again hole by hole
-EXTEND_HOLES = True
-
-
 def extend(m: _Mid, mids: list[_Mid], solid: _Solid, fuzzy: float) -> None:
     """SHELL-3: carry m's straight edges on to the mid-planes they run into (see EXTEND_*). m.face is
     replaced by the extended face; m.extended says which edges went where. An edge already meeting another
@@ -1346,15 +1342,6 @@ def extend(m: _Mid, mids: list[_Mid], solid: _Solid, fuzzy: float) -> None:
     fix = ShapeFix_Face(mf.Face())
     fix.Perform()
     new = fix.Face()
-    if EXTEND_HOLES and len(built) > 1 and not BRepCheck_Analyzer(new).IsValid():
-        # SHELL-20: a plate with holes. Its holes' wires, added as they come, can run the same way round as its
-        # outline; the face is then no face, and the whole plate stayed short of every junction it has (a box
-        # of six drilled plates: no corner met). Each hole is put in the way round that takes area out.
-        from OCP.Geom import Geom_Plane
-
-        holed = _face_with_holes(Geom_Plane(pln), built[0], built[1:])
-        if holed is not None:
-            new = holed
     if not BRepCheck_Analyzer(new).IsValid() or _area(new) < _area(face) * (1 - 1e-9):
         return
     m.face = new

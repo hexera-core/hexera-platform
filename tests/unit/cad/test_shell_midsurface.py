@@ -1079,29 +1079,9 @@ def test_bodies_touching_face_to_face_are_not_read_by_angle():
     assert ms._solids_by_angle(loose, 1e-4, 0.1) is None
 
 
-# ---- SHELL-20 to SHELL-22: junctions the joins left open, and what lies past an edge ----------------------------
+# ---- SHELL-21, SHELL-22: what lies past an edge, and junctions the joins left open -------------------------------
 def _no_general(monkeypatch):
     monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
-
-
-def test_a_box_of_drilled_plates_meets_at_every_corner_by_the_straight_extension(monkeypatch):
-    # SHELL-20: each plate has a hole; redrawn with its hole the wrong way round the plate was no face, and the
-    # whole plate stayed short of every corner. The straight extension alone must close the box.
-    _no_general(monkeypatch)
-    monkeypatch.setattr(ms, "CLOSE_STRIPS", False)
-    monkeypatch.setattr(ms, "CLOSE_GAPS", False)
-    rec, surface = ms.extract(sf.drilled_box(2.0, 120.0, 80.0, 50.0), mm_per_unit=1.0)
-    assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
-    row = _sewn(rec)
-    assert row["open_edges"] == 0 and row["join"] == "straight"
-    # the five mid-planes, each run to the mid-planes it meets, less the holes
-    floor = 118.0 * 78.0 - math.pi * 100.0
-    walls = 2 * (118.0 * 49.0 - math.pi * 64.0) + 2 * (78.0 * 49.0 - math.pi * 64.0)
-    assert _sewn_area(surface) == pytest.approx(floor + walls, rel=REL)
-    _all_checks(rec)
-    monkeypatch.setattr(ms, "EXTEND_HOLES", False)
-    before, _ = ms.extract(sf.drilled_box(2.0, 120.0, 80.0, 50.0), mm_per_unit=1.0)
-    assert _sewn(before)["open_edges"] > 0
 
 
 @pytest.mark.parametrize("t2", [1.98, 1.7, 1.2])
@@ -1199,7 +1179,7 @@ def test_an_edge_with_a_shell_wall_ahead_stays_open_whatever_the_body():
 
 
 def test_the_closed_junctions_are_the_same_twice(tmp_path):
-    for k, shape in enumerate((sf.stepped_tube(20.0, 2.0, 1.7, 200.0), sf.drilled_box())):
+    for k, shape in enumerate((sf.stepped_tube(20.0, 2.0, 1.7, 200.0), sf.round_ended_plate())):
         path = sf.write_step(shape, tmp_path / f"part{k}.step")
         out = []
         for run in range(2):
