@@ -1784,6 +1784,51 @@ def _restore_pass(ws: Path, n: int) -> None:
             (ws / name).unlink(missing_ok=True)      # the delivered pass did not write it
 
 
+def _pass_kept(ws: Path, n: int) -> bool:
+    """Whether pass `n`'s mesh is in its pass folder: its deck there, or named in the folder's own record of the
+    files that stay in the bucket (RUN-7). A folder with only the pass's log and quality (_keep_pass_log) is not."""
+    return BF.present(ws / PASS_FOLDER.format(n=n), "mesh.inp")
+
+
+def _deliver_pass(ws: Path, best: int, passes: list[dict], job_id: str) -> int:
+    """The workspace becomes the chosen pass's; returns the pass it then holds. A PASS WHOSE MESH WAS NEVER KEPT
+    IS NEVER RESTORED FROM ITS FOLDER - that folder holds its log at most, and restoring from it deletes every
+    deliverable in hand (job d03f1bf6, 10 Nov: a refinement pass whose decks stayed in the bucket was read as
+    having made no mesh, so it was not kept; chosen as the better pass, its restore removed the record of the
+    kept decks and the run ended "the mesher stopped before it finished writing the mesh"). Such a pass is
+    delivered from the workspace while that is still its own (no pass ran after it); else the best valid pass
+    that WAS kept is delivered instead; the decision record says which. Only when no valid pass's mesh is held
+    anywhere is the workspace cleared as before, so no other pass's mesh goes out under this pass's name."""
+    if _pass_kept(ws, best):
+        _restore_pass(ws, best)
+        return best
+    held = [{**p, "deliverable": True} for p in passes if p["valid"] and _pass_kept(ws, int(p["pass"]))]
+    in_hand = int(passes[-1]["pass"]) == best and BF.present(ws, "mesh.inp")
+    other = None if in_hand else L.best_pass(held)[0]
+    delivered = best
+    if in_hand:
+        how = "the workspace still holds it (no pass ran after it), so it is delivered from there"
+    elif other is not None:
+        delivered = other
+        how = f"pass {delivered}, the best pass that was kept, is delivered instead"
+        for p in passes:
+            if int(p["pass"]) == best:
+                p.update(deliverable=False, not_kept=True)
+            elif int(p["pass"]) == delivered:
+                p.pop("deliverable", None)
+        _restore_pass(ws, delivered)
+    else:
+        how = "no other valid pass was kept either, so there is no mesh to deliver"
+        _restore_pass(ws, best)
+    logger.warning("fea driver: pass %s was chosen but its mesh was not kept in its pass folder: %s - job_id=%s",
+                   best, how, job_id)
+    _cite(job_id, [{"stage": "fea_ladder", "decided": "delivered pass not kept", "value": delivered,
+                    "rule": "LAD-fea-5",
+                    "inputs": {"pass": best, "delivered": delivered, "kept": sorted(int(p["pass"]) for p in held)},
+                    "words": f"Pass {best} was chosen, but its mesh was not kept in its pass folder: {how}."}])
+    return delivered
+
+
 def _read_failure(ws: Path) -> dict:
     try:
         return json.loads((ws / "fea_failure.json").read_text())
@@ -2102,7 +2147,8 @@ async def _rung_refine(ws: Path, record: dict, diag_m: float, first_plan: dict, 
     result, machine, work = await _native(ws, machine, work, job_id, n, run, publish=publish, escalate=False)
     await run.fence("accept native mesh output")
     q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
-    made = bool(q) and (ws / "mesh.inp").exists()
+    # as every pass: a big deck that stayed in the bucket is this pass's deck all the same (RUN-7)
+    made = bool(q) and BF.present(ws, "mesh.inp")
     run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
     facts = {**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or ""), killed=_killed(result)),
              "budget_s": round(budget, 1),
@@ -2698,7 +2744,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                     "words": (f"Pass {best} of {len(passes)} delivered." if best else "No pass built a valid mesh.")}])
     ok = best is not None
     if best is not None:
-        _restore_pass(ws, best)
+        best = _deliver_pass(ws, best, passes, job_id)
         _cite(job_id, open_pairs_decision(ws))
         built_remark(ws, record)
     (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": best, "levers": levers}, indent=1))

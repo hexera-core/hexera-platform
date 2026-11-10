@@ -147,8 +147,9 @@ def _grid_only_when_held(monkeypatch, *, held: bool):
     stand-in fills at the part's edge). Held (`held`), the refined part gets the real grid with its band."""
     real = TW.sizing_grid
 
-    def grid(xyz, tris, label, names, plan, edge, pad=0.0, band=()):
-        return real(xyz, tris, label, names, plan, edge, pad=pad, band=band) if (band and held) else None
+    def grid(xyz, tris, label, names, plan, edge, pad=0.0, band=(), **more):
+        # (`more`: whatever else the rung hands its grid - the size floor of rulebook 50)
+        return real(xyz, tris, label, names, plan, edge, pad=pad, band=band, **more) if (band and held) else None
 
     monkeypatch.setattr(TW, "sizing_grid", grid)
 
@@ -250,3 +251,63 @@ def test_a_refinement_out_of_time_ends_there_and_the_rungs_pass_is_delivered(tmp
     assert ceilings[0] == pytest.approx(rung[1]["budget_s"], abs=1.0)
     assert rung[1]["deliverable"] is False and "time budget" in rung[1]["rung_error"]
     assert passes["delivered"] == rung[0]["pass"]
+
+
+def _big_machine(monkeypatch, bucket):
+    """A mesher whose every result is a big one (RUN-7): the decks and gmsh's mesh stay in the bucket, the worker
+    gets the record of them and the stand-ins. Returns {pass: {file: its object's key}}."""
+    from tests.unit.engines.test_fea_tetwild import _safe
+
+    from meshpipeline.contracts.mesh_execution import read_native_pass
+    from meshpipeline.engines import bucket_files as BF
+    from meshpipeline.engines import runtime
+    from meshpipeline.engines.gmsh import fea_adapter
+
+    monkeypatch.setattr(BF, "KEEP_FROM_BYTES", 1)
+    monkeypatch.setattr(BF, "packable", BF.keepable)       # only the files that stay: nothing else is packed
+    keys: dict[int, dict[str, str]] = {}
+
+    def mesher(w, timeout):
+        rc = _safe(fea_adapter.mesh, w)
+        if rc == 0 and (Path(w) / "mesh.inp").exists():
+            kept = BF.keep(w, bucket="ex", output_key="ops/job/output.tar.gz", writer=bucket.writer)
+            keys[int(read_native_pass(w))] = {k.rel: k.key for k in kept}
+        return {"rc": rc}
+
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=mesher))
+    return keys
+
+
+@pytest.mark.parametrize("better", [True, False])
+def test_a_refinement_whose_decks_stay_in_the_bucket_is_a_pass_like_any_other(tmp_path, monkeypatch, fake, better):
+    """RUN-7 x LAD-fea-13 (job d03f1bf6, 10 Nov: a 9-part assembly's refinement ran on a big machine and its decks
+    stayed in the bucket; the pass was read as having made no mesh, so its files were never kept - then it was
+    judged the better, chosen, and "restored" from a folder holding only its log, which deleted the record of
+    the kept decks. The run ended "the mesher stopped before it finished writing the mesh", on both attempts).
+    A deck kept in the bucket is the pass's deck: the better pass is delivered with its own kept files."""
+    from tests import fea_fixtures as fx
+    from tests.unit.engines.test_big_results_in_bucket import _Bucket
+    from tests.unit.engines.test_fea_tetwild import _gmsh_fails_on, _Run, _stage
+
+    from meshpipeline.engines import bucket_files as BF
+    from meshpipeline.engines import fea_driver as FD
+    from meshpipeline.engines.gmsh.gmsh_runner import finalize
+
+    _grid_only_when_held(monkeypatch, held=better)
+    ws = _stage(fx.plate_with_hole(), tmp_path / f"refine_kept_{better}")
+    _gmsh_fails_on(monkeypatch, None, ["Face_5"])
+    keys = _big_machine(monkeypatch, _Bucket())
+    ok, marker, _o = asyncio.run(FD.drive(ws, {}, job_id=f"t-{ws.name}", publish=None, run=_Run()))
+    assert ok, marker
+    passes = json.loads((ws / "fea_passes.json").read_text())
+    rung = [p for p in passes["passes"] if p.get("engine") == "ftetwild"]
+    assert len(rung) == 2 and all(p["valid"] for p in rung) and L.refined_better(rung[1], rung[0]) is better
+    delivered = rung[1] if better else rung[0]
+    assert passes["delivered"] == delivered["pass"]
+    # the delivered pass's own decks: none on the worker's disk, each in the bucket under that pass's own run
+    assert not (ws / "mesh.inp").exists() and BF.present(ws, "mesh.inp")
+    assert {rel: k.key for rel, k in BF.read_record(ws).items()} == keys[delivered["pass"]]
+    assert json.loads((ws / "fea_plan.json").read_text())["mesh"]["engine"] == "ftetwild"
+    # the seam that said "the mesher stopped before it finished writing the mesh" finds the deck
+    out = finalize(str(ws), [], "gmsh")
+    assert out["success"], out["output"]

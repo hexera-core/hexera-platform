@@ -26,11 +26,14 @@ if TYPE_CHECKING:
 
 def _mesh_on_disk(engine: str, workspace) -> bool:
     """Whether the engine's declared deliverable marker exists - asked of the spec, never a path
-    guessed here. An engine that cannot be resolved counts as having no mesh."""
+    guessed here. A big deck kept in the bucket is this run's deck all the same (engines/bucket_files,
+    RUN-7: the same rule as engines/manifest and the delivery). An engine that cannot be resolved
+    counts as having no mesh."""
     try:
+        from meshpipeline.engines.bucket_files import present
         from meshpipeline.engines.registry import get_spec
         d = get_spec(engine).deliverable
-        return d is not None and (Path(workspace) / d.marker).exists()
+        return d is not None and ((Path(workspace) / d.marker).exists() or present(workspace, d.marker))
     except Exception:  # noqa: BLE001
         return False
 
