@@ -712,7 +712,8 @@ def ensure_assembly_solids(ws: Path, *, context=None) -> list[dict]:
     return solids
 
 
-def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None):
+def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None,
+                      stage_timeout_s: float | None = None):
     import json
     import shutil
 

@@ -184,7 +184,10 @@ def _is_fea(purpose: Any) -> bool:
     return bool(fea_review.is_fea(purpose))
 
 
-def build_brief(session: Any) -> dict[str, Any] | None:
+def build_brief(session: Any, *, part_matches: dict | None = None) -> dict[str, Any] | None:
+    """The request card. `part_matches`: the parts checklist (application/part_matches.view, read off the event
+    loop by the caller): "Reading your notes…" while the notes are tied to the parts, then the rows
+    "words → parts → size" and the phrases it could not place; left out when the notes name no part."""
     if session is None or not _clean(getattr(session, "request_txt", None)):
         return None
 
@@ -218,6 +221,12 @@ def build_brief(session: Any) -> dict[str, Any] | None:
     if _is_fea(brief.get("purpose")):
         # an FEA mesh has no detail level (one rules-based plan, PLAN-fea-14): no row for it
         brief["mesh_fidelity"] = None
+        # SHSTAGE-5: a part settled as a shell, or as shell + solid, says so on the card (a solid is the default)
+        from meshpipeline.application.shell_check import card_engine_settings, card_mesh_as
+        brief["mesh_as"] = _clean(card_mesh_as(_fea_declaration(getattr(session, "messages", None) or [])))
+        # ...and its engine settings true to it: the plates are linear; the element order is the solid's beside them
+        if brief["mesh_as"] and brief.get("engine_params"):
+            brief["engine_params_label"] = _clean(card_engine_settings(brief["mesh_as"], brief["engine_params"]))
     # absent stays absent: a field Intake never settled is not a blank row
     brief = {k: v for k, v in brief.items() if v is not None}
     brief["submitted"] = bool(getattr(session, "intake_submitted", False))
@@ -226,9 +235,43 @@ def build_brief(session: Any) -> dict[str, Any] | None:
     from meshpipeline.contracts.user_notes import clean as _clean_notes
     brief["user_notes"] = [{"id": n["id"], "text": n["text"], "source": n["source"]}
                            for n in _clean_notes(getattr(session, "user_notes", None))]
+    # NOTE-4 BEFORE APPROVAL: which parts the notes mean, for the user to see (and fix) before Approve
+    if part_matches:
+        brief["part_matches"] = part_matches
+        # a row's words that came from the request (the first answer), not the notes box, are listed with the
+        # notes, so every row's quote is in front of the user
+        brief["user_notes"] += _request_notes(part_matches, brief["user_notes"],
+                                              str(getattr(session, "request_txt", None) or ""))
     brief["checks"] = build_checks(brief)
     _add_display_labels(brief)
     return brief
+
+
+def _fea_declaration(messages: list) -> str:
+    """The conversation's latest geometry declaration, "" when there is none."""
+    from meshpipeline.application.geometry_confirmation import _is_declaration
+    for m in reversed(list(messages)):
+        if isinstance(m, dict) and _is_declaration(m):
+            return str(m.get("content") or "")
+    return ""
+
+
+def _request_notes(part_matches: dict, notes: list[dict], request_txt: str) -> list[dict]:
+    """The request's sentences that hold a checklist row's words the notes do not: one each, as written."""
+    from meshpipeline.cad.part_words import sentences, squash
+    said = " ".join(squash(n.get("text") or "") for n in notes)
+    out: list[dict] = []
+    seen: set[str] = set()
+    for r in [*(part_matches.get("rows") or []), *(part_matches.get("unsure") or [])]:
+        q = squash(r.get("quote") or "")
+        if not q or q in said:
+            continue
+        for k, s in enumerate(sentences(request_txt)):
+            if q in squash(s) and s not in seen:
+                seen.add(s)
+                out.append({"id": f"request-{k}", "text": s, "source": "request"})
+                break
+    return out
 
 
 def _thermal_view(session: Any) -> dict | None:

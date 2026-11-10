@@ -181,6 +181,47 @@ def test_a_micro_detail_is_delivered_as_a_concern_that_says_what_is_not_resolved
     assert row["source"].startswith("docs/RULES.md PLAN-fea-12")
 
 
+# ------------------------------------------------------------- settling to the end ----
+def _two_tets(mids: dict) -> None:
+    """Two 10-node tets sharing the face 0-1-2, with the midside nodes moved by `mids` (edge -> offset)."""
+    corners = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0.3, 0.3, 0.8], [0.3, 0.3, -0.8]], dtype=float)
+    els = ([0, 1, 2, 3], [0, 2, 1, 4])
+    pts, at = [*corners], {}
+    for el in els:
+        for a, b in fea_settle.GMSH_TET10_EDGES:
+            k = tuple(sorted((el[a], el[b])))
+            if k not in at:
+                at[k] = len(pts)
+                pts.append(0.5 * (corners[k[0]] + corners[k[1]]) + np.asarray(mids.get(k, (0, 0, 0)), dtype=float))
+    gmsh.model.add("two")
+    gmsh.model.addDiscreteEntity(3, 1)
+    gmsh.model.mesh.addNodes(3, 1, list(range(1, len(pts) + 1)), np.ravel(pts).tolist())
+    conn = []
+    for el in els:
+        conn += [i + 1 for i in el] + [at[tuple(sorted((el[a], el[b])))] + 1 for a, b in fea_settle.GMSH_TET10_EDGES]
+    gmsh.model.mesh.addElements(3, 1, [11], [[1, 2]], [conn])
+
+
+def test_settling_goes_on_until_straightening_one_element_has_folded_none_of_its_neighbours():
+    """PLAN-fea-11 to the end (dev-areen 9 Nov: one round straightened 590 elements and left 4 of 6.47M
+    inverted - each straight on the 4 edges it shared with them, curved on its other 2 - and the mesh was
+    refused). Here element 1 is inverted by curving; straightening it straightens the shared edge 0-1, and
+    element 2, valid while that edge was curved, folds. The next round straightens element 2 too."""
+    gmsh.initialize(interruptible=False)
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        _two_tets({(0, 1): (0, -0.15, 0.15), (0, 4): (0.15, 0, 0.3), (0, 3): (0, 0, -0.5)})
+        before = dict(zip(*[x.tolist() for x in fea_settle.qualities(gmsh)], strict=True))
+        assert before[1] < 0 < 0.1 < before[2]                   # 1 inverted by curving, 2 fine
+        straight = {1: 0.5, 2: 0.5}                               # both well shaped straight
+        out = fea_settle.settle(gmsh, straight, [], 0.1)
+        after = dict(zip(*[x.tolist() for x in fea_settle.qualities(gmsh)], strict=True))
+        assert out["straightened"] == 2 and out["rounds"] == 2
+        assert min(after.values()) > 0.1                          # nothing left folded
+    finally:
+        gmsh.finalize()
+
+
 #: two 10-node tets on either side of one face; each midside node off its edge's middle by these (found by search:
 #: curving spoils A, B is better curved than straight, and B's shape leans on the midside nodes it shares with A)
 _PAIR_CORNERS = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0.3, 0.3, 0.25], [0.3, 0.3, -0.25]]
@@ -238,9 +279,9 @@ def test_straightening_one_element_never_leaves_its_neighbour_inside_out():
         gmsh.finalize()
 
 
-def test_a_curved_mesh_with_nothing_inside_out_is_settled_in_one_look(monkeypatch):
-    """The rounds after the first only ever touch an element inside out: a mesh the first look leaves valid is
-    looked at once more and not changed."""
+def test_a_curved_mesh_with_nothing_under_the_floor_is_never_touched(monkeypatch):
+    """Settling only ever moves nodes of an element under the floor and worse than straight: a curved mesh with
+    none is left exactly as curving made it."""
     gmsh.initialize()
     try:
         gmsh.option.setNumber("General.Terminal", 0)
@@ -250,9 +291,10 @@ def test_a_curved_mesh_with_nothing_inside_out_is_settled_in_one_look(monkeypatc
         _pair([[0.01 * k, 0.0, 0.0] for k in range(len(_PAIR_OFFSETS))])
         before = gmsh.model.mesh.getNodes()[1].tolist()
         moves = []
-        real = fea_settle.straighten
-        monkeypatch.setattr(fea_settle, "straighten", lambda g, t: moves.append(t) or real(g, t))
-        fea_settle.settle(gmsh, straight, [], 0.1)
-        assert moves == [] and gmsh.model.mesh.getNodes()[1].tolist() == before
+        real = fea_settle._straighten_nodes
+        monkeypatch.setattr(fea_settle, "_straighten_nodes", lambda g, t: moves.append(t) or real(g, t))
+        out = fea_settle.settle(gmsh, straight, [], 0.1)
+        assert moves == [] and out["straightened"] == 0
+        assert gmsh.model.mesh.getNodes()[1].tolist() == before
     finally:
         gmsh.finalize()

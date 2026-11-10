@@ -109,6 +109,11 @@ celery_app.conf.update(
         # tests/unit/deploy/test_geometry_check_queue.py holds the contract end to end.
         "worker.tasks.scout_geometry": {"queue": "geometry_checks"},
         "worker.tasks.name_geometry": {"queue": "geometry_checks"},
+        # the parts checklist's reading of the notes (application/part_matches): the user waits on it too
+        "worker.tasks.read_part_words": {"queue": "geometry_checks"},
+        # SHSTAGE-2: an FEA part's shell check for the stage's "Mesh as" - minutes, not seconds, in a child
+        # process of its own; it holds one of the queue's slots while it runs
+        "worker.tasks.shell_check_geometry": {"queue": "geometry_checks"},
         "tasks.cleanup.purge_expired_workspaces":  {"queue": "cleanup_tasks"},
         "tasks.cleanup.reap_stalled_jobs":         {"queue": "cleanup_tasks"},
         "tasks.cleanup.reconcile_orphan_artifacts": {"queue": "cleanup_tasks"},

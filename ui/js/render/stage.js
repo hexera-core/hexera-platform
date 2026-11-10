@@ -24,11 +24,14 @@ import { changedAnswers, editsLine, noteDrawn, servedProposal } from "./geometry
 // a thermal model (an ECXML upload) has its own panel, card or stage alike
 import { bindThermalPanel, thermalPanelHtml } from "./thermal_form.js";
 // an FEA part has its own panel too: its size, unit, bodies and clean check, and no flow form
-import { bindFeaPanel, feaPanelHtml, followAssembly, followClean, followMeasure, followPlan } from "./fea_form.js";
+import { bindFeaPanel, feaPanelHtml, followAssembly, followClean, followMeasure, followMeshAs, followPlan } from "./fea_form.js";
 // the run card's live line: the step running now, in plain words
 import { createRunLine } from "./run_progress.js";
+import { durationWords } from "./check_progress.js";
 // the closing message of a finished run, as a summary rather than a wall of lines
 import { outcomeHtml } from "./outcome.js";
+// the empty stage seats the upload button in its drop zone, and hands it back when it fills
+import { returnUploadButton, seatUploadButton } from "./dropzone.js";
 const RunLine = createRunLine();
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
@@ -83,8 +86,17 @@ export const Stage = {
   // it - the picker offered it, the server accepted it, and only this sentence disagreed. The
   // list now comes from the capability response through `setSupportedCopy`, and until that
   // arrives the copy stays format-neutral rather than guessing.
-  mount(){document.getElementById('stage').innerHTML='<div class="scroll"><div class="chat-col" id="cc"><div id="empty"><p id="empty-lead">Upload geometry to begin.</p><p id="empty-formats"></p><p class="empty-sub">Hexera will guide you through the simulation setup.</p></div></div></div>';
+  // The empty stage is a drop zone: one invitation, the upload button (seated by dropzone.js) and
+  // the server's own format line in small type.
+  mount(){returnUploadButton();document.getElementById('stage').innerHTML='<div class="scroll"><div class="chat-col" id="cc"><div id="empty" class="drop"><div class="drop-box">'
+      +'<svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V4M8 8l4-4 4 4M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>'
+      +'<p id="empty-lead">Drop a CAD or mesh file here</p><p class="empty-sub">Hexera will guide you through the simulation setup.</p>'
+      +'<span class="drop-slot"></span><p id="empty-formats"></p></div></div></div></div>';
+    seatUploadButton();
     this.nodes={};this.proc=null;this.tl=null;this._briefEl=null;this._briefSig='';
+    // the run started (or a new conversation): the card's model gives its GL context back
+    clearTimeout(this._pmTimer);if(this._pmDrop)this._pmDrop();this._pm=null;this._pmOpen=null;this._pmHover=null;this._pmHoverPart=null;this._pm3dFailed=false;
+    if(this._pmSaves){this._pmSaves.forEach(t=>clearTimeout(t));this._pmSaves.clear();}
     // A NEW RUN STARTS CLEAN. The attempt the last run ended on, the attempts that built and a
     // mesh bar a run left open when it ended mid-mesh all belonged to that run: kept, the next
     // run's "Attempt 1" header went missing and its mesh bar never appeared (the old, detached
@@ -95,11 +107,13 @@ export const Stage = {
   // Fill the empty state's format line from the SERVER's capability description. Advisory and
   // best-effort: when capabilities are unavailable the line stays empty and the neutral lead
   // sentence still invites an upload, because the server is the authority on what it accepts.
-  setSupportedCopy(text){const el=document.getElementById('empty-formats');
-    if(el)el.innerHTML=text?String(text).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])):'';},
+  // one short line (e.g. "STEP, IGES, STL, OBJ and 20 more"); the full list opens under it
+  setSupportedCopy(text,short){const el=document.getElementById('empty-formats');if(!el)return;
+    const esc=t=>String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+    el.innerHTML=!text?'':short?`<details class="drop-formats"><summary>${esc(short)}</summary>${esc(text)}</details>`:esc(text);},
   col(){return document.getElementById('cc');},
   scrollBottom(){const s=document.querySelector('#stage .scroll');if(s)s.scrollTop=s.scrollHeight;},
-  clearEmpty(){document.getElementById('empty')?.remove();},
+  clearEmpty(){returnUploadButton();document.getElementById('empty')?.remove();},
   // There is ONE assistant identity in this product and it is Hexera - the same
   // one that took the request also delivers the result, so the default names it
   // rather than leaving a generic "Assistant" to sign off the run. `who` only
@@ -118,7 +132,7 @@ export const Stage = {
   // THE FINALIZED BRIEF, as the application settled it - not the model's prose
   // re-read here. Rendered once and then updated in place, because a later turn
   // re-sends the same brief and a conversation should not accumulate copies of it.
-  brief(b,addNote){
+  brief(b,addNote,parts){
     if(!b)return;
     const sig=JSON.stringify(b);
     if(this._briefSig===sig)return;
@@ -127,7 +141,7 @@ export const Stage = {
     // file's own numbers, then only what the sheet does not already say
     const thermal=b.check_mode==='thermal'&&b.job_sheet;
     const ROWS=thermal?[['engine','Engine'],['mesh_fidelity','Detail level'],['label','Case']]
-      :[['purpose','Purpose'],['engine','Engine'],['input_kind','Input'],
+      :[['purpose','Purpose'],['engine','Engine'],['mesh_as','Mesh as'],['input_kind','Input'],
         ['dimensionality','Dimensions'],['mesh_fidelity','Detail level'],
         ['label','Case']];
     // Prefer the server's display label. A field may be label-ONLY: the fidelity tier always
@@ -136,9 +150,10 @@ export const Stage = {
     const fea=b.purpose==='structural';
     let rows=ROWS.filter(([k])=>(b[k]||b[k+'_label'])&&!(fea&&k==='mesh_fidelity')).map(([k,l])=>
       `<div class="rc-row"><div class="rc-k">${esc(l)}</div><div class="rc-v">${esc(b[k+'_label']||b[k])}</div></div>`).join('');
+    // the server's words when it has them (a shell run: the plates are linear, the order is the solid's beside them)
     if(b.engine_params&&Object.keys(b.engine_params).length)
       rows+=`<div class="rc-row"><div class="rc-k">Engine settings</div>`
-           +`<div class="rc-v">${esc(Object.entries(b.engine_params).map(([k,v])=>
+           +`<div class="rc-v">${esc(b.engine_params_label||Object.entries(b.engine_params).map(([k,v])=>
              `${String(k).replace(/_/g,' ')}: ${typeof v==='object'?JSON.stringify(v):v}`).join(', '))}</div></div>`;
     (b.boundary_assignments||[]).forEach(p=>{
       rows+=`<div class="rc-row"><div class="rc-k">${esc(p.name)}</div>`
@@ -166,12 +181,13 @@ export const Stage = {
         ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
           :'<div class="rc-h">Mesh plan</div>'}${rows}
         ${ck?`<div class="rc-h rc-h2">Checked</div>${ck}`:''}
-        ${notes||box?`<div class="rc-h rc-h2">Your notes</div>${notes}${box}`:''}
+        ${notes||box?`<div class="rc-h rc-h2">Your notes</div>${notes}${box}<div class="rc-pm"></div>`:''}
       </div>`;
     if(this._briefEl){this._briefEl.innerHTML=html;}
     else{this.clearEmpty();
       const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
       this.col().appendChild(g);this._briefEl=g;}
+    this._partMatches(b.part_matches,parts,b.proceed_ask);
     const add=this._briefEl.querySelector('.rc-notes-add');
     const inp=this._briefEl.querySelector('.rc-notes-in');
     if(add&&inp){
@@ -188,6 +204,307 @@ export const Stage = {
       add.onclick=send;
       inp.addEventListener('keydown',(e)=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send();}});}
     this.scrollBottom();},
+
+  /* THE PARTS YOUR NOTES MEAN, under the notes, before the yes: a row per size request ("frame rail · 3–4 mm")
+     in its colour with its parts as small chips ("Part 7 · Bracket ✕"), and a row per phrase that could not be
+     placed. The model is drawn on the intake's one viewer beside the conversation (`parts.host()`), each row's
+     parts in its colour with their numbers. Hovering a row lights its parts and fades the rest; clicking a row
+     makes it the active one, and a click on a part of the model then adds it to that row or takes it out - the
+     chip follows at once, and the pick is kept at once (no save button: the yes takes it). ✕ on a chip takes that
+     part out. Without WebGL the picture is shown in the card instead. Nothing at all when the notes name no part.
+     `parts`: {get(), pick(phrase, ids), picture(name), model(), mount(host, model, opts), host(), drop(host)}. */
+  _partMatches(m,parts,ask){
+    clearTimeout(this._pmTimer);
+    const el=this._briefEl&&this._briefEl.querySelector('.rc-pm');
+    if(!el)return;
+    this._pm=m||null;this._pmParts=parts||null;this._pmAskLine=ask||'';
+    const draw=()=>{this._pmDrawIn(el);this._pmPaint(el);};
+    this._pmDraw=draw;
+    draw();
+    // WHILE THE NOTES ARE READ the card follows the reading; once it lands after Finalize notes, the approval
+    // question is said again under the card (the user answers it in the chat, as always)
+    this._pmPoll=()=>{
+      clearTimeout(this._pmTimer);
+      const t0=Date.now();
+      const poll=async()=>{
+        let got=null;try{got=await parts.get();}catch{/* try again */}
+        if(got)this._pm=got.status==='none'?null:got;
+        draw();
+        const busy=this._pm&&(this._pm.status==='reading'||this._pm.status==='waiting');
+        if((busy||!got)&&Date.now()-t0<8*60e3){this._pmTimer=setTimeout(poll,3000);return;}
+        this._pmAsked();};
+      this._pmTimer=setTimeout(poll,2500);};
+    if(m&&(m.status==='reading'||m.status==='waiting')&&parts)this._pmPoll();
+    const rowOf=(i)=>{const m=this._pm;return m&&[...(m.rows||[]),...(m.unsure||[])].find(x=>x.phrase===i);};
+    // a part put in or taken out of a row: the chip follows at once, the pick is kept at once (one save per row),
+    // and the card is redrawn from the server's checked answer once every row's save is in
+    this._pmSaves=this._pmSaves||new Map();
+    this._pmToggle=(id,phrase)=>{
+      const i=phrase==null?this._pmOpen:phrase,r=rowOf(i);if(!r||!parts||!id)return;
+      const on=new Set(r.parts||[]);
+      if(on.has(id))on.delete(id);else on.add(id);
+      // the row lights its parts and the areas inside them no row names, as the server will say
+      r.parts=[...on];
+      const named=new Set([...(this._pm.rows||[]),...(this._pm.unsure||[])].flatMap(x=>x.parts||[]));
+      const areas=Object.entries(this._pm.inside||{}).filter(([f,p])=>on.has(p)&&!named.has(f)).map(([f])=>f);
+      if(areas.length)r.lit=[...on,...areas];else delete r.lit;
+      const rowsEl=el.querySelector('.rc-pm-rows');if(rowsEl)rowsEl.innerHTML=this._pmRowsHtml(this._pm);
+      this._pmPaint(el);
+      clearTimeout(this._pmSaves.get(i));
+      this._pmSaves.set(i,setTimeout(async()=>{
+        try{const got=await parts.pick(i,[...on]);
+          this._pmSaves.delete(i);
+          if(got&&!this._pmSaves.size){this._pm=got;draw();}}
+        catch(err){this._pmSaves.delete(i);const msg=el.querySelector('.rc-pm-msg');if(msg)msg.textContent=(err&&err.message)||'Not saved.';}},450));};
+    // a part clicked on the model or the picture: put in or taken out of the active row, else its own row is made active
+    this._pmClick=(raw)=>{
+      const id=this._pmResolve(raw);
+      if(!id)return;
+      if(this._pmOpen!=null){this._pmToggle(id);return;}
+      const r=(this._pm&&this._pm.rows||[]).find(x=>(x.parts||[]).includes(id));
+      if(r){this._pmOpen=r.phrase;this._pmHoverPart=null;draw();}};
+    el.onclick=(e)=>{
+      if(e.target.closest('.rc-fin-btn')){this._pmFinalize();return;}
+      const m=this._pm;if(!m||m.status!=='done')return;
+      const item=e.target.closest('.rc-pm-item');if(!item)return;
+      const i=Number(item.dataset.phrase);
+      const x=e.target.closest('.rc-pm-x');
+      if(x){this._pmToggle(x.dataset.part,i);return;}
+      if(!e.target.closest('.rc-pm-row'))return;
+      this._pmOpen=this._pmOpen===i?null:i;draw();};
+    el.onkeydown=(e)=>{
+      const row=e.target.closest&&e.target.closest('.rc-pm-row');
+      if(row&&(e.key==='Enter'||e.key===' ')){e.preventDefault();row.click();}};
+    el.onmouseover=(e)=>{const it=e.target.closest('.rc-pm-item');const i=it?Number(it.dataset.phrase):null;
+      if(i!==this._pmHover){this._pmHover=i;this._pmPaint(el);}};
+    el.onmouseleave=()=>{if(this._pmHover!=null){this._pmHover=null;this._pmPaint(el);}};},
+
+  // the rows' colours: muted, distinct, the same order every time
+  _PM_COL:['#5B9BD5','#E3A23B','#62B66C','#D9675F','#A37FCB','#4FB0AC','#CDB447','#E08DB0'],
+
+  /* the block's frame: Finalize notes (or "Reading your notes…"), then - only when the reading found parts - the
+     heading and the rows. The model goes on the intake's viewer (kept across redraws: not re-made when a row is
+     made active or the card is redrawn for a new note); only without one does it sit in the card. Rows of an
+     older reading stay, quiet, until the new one lands. */
+  _pmDrawIn(el){
+    const m=this._pm;
+    if(!m){el.innerHTML='';this._pmDrop();return;}     // nothing to read: nothing at all
+    if(!el.querySelector('.rc-pm-top'))
+      el.innerHTML='<div class="rc-pm-top"></div><div class="rc-pm-body" hidden><div class="rc-pm-h">In your notes</div><div class="rc-pm-rows"></div><span class="rc-pm-msg" role="status"></span></div>';
+    const top=el.querySelector('.rc-pm-top'),body=el.querySelector('.rc-pm-body'),rowsEl=el.querySelector('.rc-pm-rows');
+    top.innerHTML=this._pmHtml(m);
+    const has=!!m&&((m.rows||[]).length+(m.unsure||[]).length>0);
+    body.hidden=!has;body.classList.toggle('stale',!!(m&&m.stale));
+    if(!has){this._pmDrop();rowsEl.innerHTML='';return;}
+    const key=(m.order||[]).join('|');
+    const want=!!(m.model||(m.views||[]).length);
+    if(this._pmFig&&this._pmFigKey!==key)this._pmDrop();
+    if(want&&!this._pmFig){
+      const parts=this._pmParts;
+      // THE ONE VIEWER: the model is drawn where the part already is, beside the conversation
+      const out=m.model&&parts&&parts.host&&parts.mount&&parts.model&&!this._pm3dFailed?parts.host():null;
+      const fig=out||document.createElement('div');
+      if(!out){fig.className='rc-pm-fig';fig.setAttribute('role','img');}
+      fig.setAttribute('aria-label','Your model; the parts each note means are in its colour');
+      this._pmFig=fig;this._pmFigOut=!!out;this._pmFigKey=key;}
+    if(this._pmFig&&!this._pmFigOut&&this._pmFig.parentNode!==body)body.insertBefore(this._pmFig,rowsEl);
+    rowsEl.innerHTML=this._pmRowsHtml(m);},
+
+  /* FINALIZE NOTES: the parts the words name are read now (the first answer and every note); the card follows */
+  async _pmFinalize(){
+    const parts=this._pmParts,btn=this._briefEl&&this._briefEl.querySelector('.rc-fin-btn');
+    if(!parts||!parts.finalize||(btn&&btn.disabled))return;
+    if(btn)btn.disabled=true;
+    let got=null;
+    try{got=await parts.finalize();}
+    catch(e){if(btn){btn.disabled=false;const msg=this._briefEl.querySelector('.rc-fin-msg');if(msg)msg.textContent=(e&&e.message)||'Not started. Try again.';}return;}
+    this._pmAskDue=true;
+    this._pm=got&&got.status!=='none'?got:null;
+    if(this._pmDraw)this._pmDraw();
+    if(this._pm&&(this._pm.status==='reading'||this._pm.status==='waiting'))this._pmPoll();
+    else this._pmAsked();},
+
+  // the approval question, said once under the card when a Finalize notes has been read
+  _pmAsked(){
+    if(!this._pmAskDue)return;
+    this._pmAskDue=false;
+    if(this._pmAskLine)this.chat('assistant',this._pmAskLine);},
+
+  // the model given up: its GL context released, and the viewer back to the plain part (a new file, the run
+  // started, or the notes no longer name a part)
+  _pmDrop(){
+    if(this._pm3d&&this._pm3d.dispose)try{this._pm3d.dispose();}catch{/* gone already */}
+    if(this._pmFig){
+      if(this._pmFigOut&&this._pmParts&&this._pmParts.drop)try{this._pmParts.drop(this._pmFig);}catch{/* gone already */}
+      else this._pmFig.remove();}
+    this._pm3d=null;this._pm3dP=null;this._pmFig=null;this._pmFigOut=false;this._pmFigKey=null;this._pmCache=null;},
+
+  _pmHtml(m){
+    if(m&&m.status==='reading')return '<div class="rc-pm-wait" role="status">Reading your notes…</div>';
+    if(m&&m.status==='ready')return '<div class="rc-fin"><span class="rc-fin-msg" role="status"></span>'
+      +'<button type="button" class="gc-proceed rc-fin-btn">Finalize notes</button></div>';
+    return '';},
+
+  // what a part is called on a chip and under the cursor: "Part 9 · Rail", an area inside a part "F3 · 4 holes"
+  _pmName(id){
+    const m=this._pm||{},p=(m.parts||[]).find(q=>q.id===id),n=String(id).split('_').pop();
+    if(this._isArea(id))return `F${n}${p&&p.name?` · ${p.name}`:''}`;
+    return `Part ${n}${p&&p.name?` · ${p.name}`:''}`;},
+
+  /* the rows: one per size request with its parts as chips, then one per phrase no part could be found for. The
+     active row says how to change it; a phrase with no parts says how to give it some. */
+  _pmRowsHtml(m){
+    const open=this._pmOpen;
+    const onModel=!!this._pmFig;
+    const row=(r,k,unsure)=>{
+      const i=r.phrase,act=open===i,c=unsure?'#E3A23B':this._PM_COL[k%this._PM_COL.length];
+      const ids=r.parts||[];
+      const head=`<div class="rc-pm-row" role="button" tabindex="0" aria-pressed="${act}">`
+        +`<span class="rc-pm-dot${unsure&&!ids.length?' none':''}"></span>`
+        +`<span class="rc-pm-q" title="${esc(r.quote||r.text||'')}">${esc(unsure?r.text:r.words)}</span>`
+        +`${r.size?`<span class="rc-pm-s">${esc(r.size)}</span>`:''}</div>`;
+      const chips=ids.map(id=>{const nm=this._pmName(id);
+        return `<span class="rc-pm-chip" data-part="${esc(id)}">${esc(nm)}`
+          +`<button type="button" class="rc-pm-x" data-part="${esc(id)}" aria-label="Take ${esc(nm)} out" title="Take it out">✕</button></span>`;}).join('');
+      const hint=!onModel?'':act?'Click parts on the model to add or take them out.'
+        :(unsure&&!ids.length?'Click here, then click its parts on the model.':'');
+      return `<div class="rc-pm-item${act?' active':''}${unsure?' unk':''}" data-phrase="${i}" style="--pm-c:${c}">${head}`
+        +`${chips?`<div class="rc-pm-chips">${chips}</div>`:''}${hint?`<div class="rc-pm-hint">${hint}</div>`:''}</div>`;};
+    return (m.rows||[]).map((r,k)=>row(r,k,false)).join('')+(m.unsure||[]).map(r=>row(r,0,true)).join('');},
+
+  _pmColour(m,r){const k=(m.rows||[]).indexOf(r);return k>=0?this._PM_COL[k%this._PM_COL.length]:'#E3A23B';},
+
+  _isArea:(id)=>String(id).startsWith('Feature_'),
+  // a row about areas inside a part (holes, fillets): it holds one, or the model is a single part
+  _pmAreaRow(m,r){
+    const solids=(m.order||(m.parts||[]).map(p=>p.id)).filter(id=>!this._isArea(id)).length;
+    return solids===1||!!(r&&(r.parts||[]).some(id=>this._isArea(id)));},
+  /* WHAT A POINT ON THE MODEL MEANS: an area inside a part is itself where the active row is about areas (or, with
+     no row active, where a row names it); anywhere else it is the part it is in */
+  _pmResolve(id){
+    const m=this._pm;if(!id||!m||!this._isArea(id))return id||null;
+    const open=this._pmOpen!=null?[...(m.rows||[]),...(m.unsure||[])].find(r=>r.phrase===this._pmOpen):null;
+    const own=open?this._pmAreaRow(m,open):(m.rows||[]).some(r=>(r.parts||[]).includes(id));
+    return own?id:((m.inside||{})[id]||id);},
+
+  /* WHAT THE MODEL SHOWS NOW: each row's parts in its colour, the row looked at (a row hovered, the row of the
+     part under the cursor, else the open row) lit and the rest faded, and the numbers of the parts the rows name -
+     never a single part's own "1" */
+  _pmLook(){
+    const m=this._pm,rows=m.rows||[],col=this._PM_COL;
+    const colour={},tags=[],tagged=new Set();
+    const num=(id)=>{const n=String(id).split('_').pop();return String(id).startsWith('Feature_')?'F'+n:n;};
+    const onePart=(m.order||(m.parts||[]).map(p=>p.id)).filter(id=>!String(id).startsWith('Feature_')).length===1;
+    rows.forEach((r,k)=>{const c=col[k%col.length];
+      (r.lit||r.parts||[]).forEach(id=>{if(!(id in colour))colour[id]=c;});
+      (r.parts||[]).forEach(id=>{if(tagged.has(id)||(onePart&&!String(id).startsWith('Feature_')))return;
+        tagged.add(id);tags.push({part:id,n:num(id),colour:c,row:r.phrase});});});
+    // an area no row names is seen as part of its part: its pixels count for that part's number
+    const owner={};
+    Object.entries(m.inside||{}).forEach(([f,p])=>{if(!tagged.has(f))owner[f]=p;});
+    const hp=this._pmResolve(this._pmHoverPart);
+    // the part under the cursor lights its row - unless a row is open, which stays the one shown
+    const hpRow=hp!=null&&this._pmOpen==null?rows.find(r=>(r.lit||r.parts||[]).includes(hp)):null;
+    const active=this._pmHover!=null?this._pmHover:hpRow?hpRow.phrase:this._pmOpen;
+    const act=active!=null?[...rows,...(m.unsure||[])].find(r=>r.phrase===active):null;
+    const hoverSet=hp?new Set([hp,...Object.keys(m.inside||{}).filter(f=>owner[f]===hp)]):null;
+    return {colour,tags,owner,hover:hoverSet,picking:this._pmOpen!=null,focusRow:act?act.phrase:null,
+      active:act?new Set(act.lit||act.parts||[]):null,activeColour:act?this._pmColour(m,act):null,hpRow};},
+
+  /* the model (or, without one, the picture) drawn as the user is looking at it */
+  async _pmPaint(el){
+    const m=this._pm,fig=this._pmFig,parts=this._pmParts;
+    if(!m||m.status!=='done'||!fig||!parts)return;
+    const look=this._pmLook();
+    // the row of the part under the cursor answers it
+    el.querySelectorAll('.rc-pm-item').forEach(b=>b.classList.toggle('hot',!!look.hpRow&&Number(b.dataset.phrase)===look.hpRow.phrase));
+    if(m.model&&parts.model&&parts.mount&&!this._pm3dFailed){
+      if(!this._pm3dP){
+        if(!this._pmFigOut)fig.classList.add('rc-pm-3d');
+        fig.innerHTML='';
+        this._pm3dP=(async()=>{
+          const model=await parts.model();
+          if(this._pmFig!==fig)return null;
+          return parts.mount(fig,model,{label:(id)=>this._pmName(this._pmResolve(id)),
+            onHover:(id)=>{if(id!==this._pmHoverPart){this._pmHoverPart=id;this._pmPaint(el);}},
+            onClick:(id)=>this._pmClick(id)});})().then(v=>{
+            // dropped while it was mounting (the run started, the rows went): its context goes too
+            if(v&&this._pmFig!==fig){try{v.dispose();}catch{/* gone */}return null;}
+            this._pm3d=v;return v;}).catch(e=>{
+            // no WebGL: the picture, in the card
+            console.warn('parts model unavailable, showing the picture:',e&&e.message);
+            this._pmDrop();this._pm3dFailed=true;
+            if(this._pmDraw)this._pmDraw();return null;});}
+      const v=await this._pm3dP;
+      if(v&&this._pmFig===fig)v.set(this._pmLook());
+      return;}
+    if((m.views||[]).length&&parts.picture)return this._pmPicture(fig,look);},
+
+  /* THE FALLBACK PICTURE: the neutral shaded side, each pixel's part read off its id picture, tinted by what the
+     user is looking at; the numbers only where a part is seen (placed on the server, clear of each other) */
+  async _pmPicture(fig,look){
+    const m=this._pm;
+    let cv=fig.querySelector('.rc-pm-pic');
+    if(!cv){fig.innerHTML='<canvas class="rc-pm-pic"></canvas>';cv=fig.querySelector('.rc-pm-pic');}
+    const view=m.views[0];
+    this._pmCache=this._pmCache||{};
+    const load=async(name)=>{
+      if(!this._pmCache[name])this._pmCache[name]=this._pmParts.picture(name).then(b=>createImageBitmap(b));
+      return this._pmCache[name];};
+    let shaded,idsImg;
+    try{[shaded,idsImg]=await Promise.all([load(view.name),load(view.name+'_ids')]);}
+    catch{delete this._pmCache[view.name];delete this._pmCache[view.name+'_ids'];return;}
+    if(!cv.isConnected)return;
+    const w=shaded.width,h=shaded.height;
+    cv.width=w;cv.height=h;
+    const g=cv.getContext('2d');
+    const key=view.name+'#ids';
+    if(!this._pmCache[key]){
+      const c2=new OffscreenCanvas(w,h).getContext('2d');c2.drawImage(idsImg,0,0);
+      const d=c2.getImageData(0,0,w,h).data,ids=new Int32Array(w*h);
+      for(let p=0;p<w*h;p++){const o=p*4;ids[p]=(d[o+3]>0&&Math.abs(d[o+2]-200)<=1)?d[o]+256*d[o+1]-1:-1;}
+      this._pmCache[key]=ids;}
+    const ids=this._pmCache[key];
+    g.clearRect(0,0,w,h);g.drawImage(shaded,0,0);
+    const img=g.getImageData(0,0,w,h),px=img.data;
+    const order=m.order||(m.parts||[]).map(p=>p.id);
+    const actSet=look.active,actCol=look.activeColour||'#E3A23B';
+    const rgb=(hex)=>[parseInt(hex.slice(1,3),16),parseInt(hex.slice(3,5),16),parseInt(hex.slice(5,7),16)];
+    const tint=order.map(id=>actSet?(actSet.has(id)?rgb(actCol):null):(look.colour[id]?rgb(look.colour[id]):null));
+    for(let p=0;p<w*h;p++){
+      const k=ids[p];if(k<0)continue;
+      const o=p*4,L=px[o]/255,t=tint[k];
+      if(t){const f=0.28+0.9*L;px[o]=Math.min(255,t[0]*f);px[o+1]=Math.min(255,t[1]*f);px[o+2]=Math.min(255,t[2]*f);}
+      else{const v=actSet?60+70*L:85+95*L;px[o]=px[o+1]=px[o+2]=v;}}
+    g.putImageData(img,0,0);
+    if(actSet){
+      g.strokeStyle=actCol;g.lineWidth=2;g.fillStyle=actCol;
+      for(const r of view.rings||[]){
+        if(!actSet.has(r.part)||!String(r.part).startsWith('Feature_'))continue;
+        g.globalAlpha=0.16;g.beginPath();g.arc(r.x,r.y,r.r,0,2*Math.PI);g.fill();
+        g.globalAlpha=0.9;g.beginPath();g.arc(r.x,r.y,r.r,0,2*Math.PI);g.stroke();}
+      g.globalAlpha=1;}
+    const named=new Set(look.tags.map(t=>t.part));
+    const shown=(view.tags||[]).filter(t=>actSet?actSet.has(t.part)&&named.has(t.part):named.has(t.part));
+    g.font='600 14px Geist, system-ui, sans-serif';g.textAlign='center';g.textBaseline='middle';
+    const boxes=[];
+    for(const t of shown){
+      const tw=12+9*String(t.n).length,th=22;
+      const ring=actSet&&(view.rings||[]).find(r=>r.part===t.part);
+      const tx=ring?ring.x:t.x,ty=ring?ring.y-ring.r-th/2-2:t.y;
+      const x=Math.min(Math.max(tx,tw/2+1),w-tw/2-1),y=Math.min(Math.max(ty,th/2+1),h-th/2-1);
+      const b=[x-tw/2-3,y-th/2-3,x+tw/2+3,y+th/2+3];
+      if(boxes.some(o=>!(b[2]<=o[0]||o[2]<=b[0]||b[3]<=o[1]||o[3]<=b[1])))continue;
+      boxes.push(b);
+      g.fillStyle='rgba(255,255,255,0.92)';g.strokeStyle='rgba(0,0,0,0.55)';g.lineWidth=1;
+      g.beginPath();g.roundRect(x-tw/2,y-th/2,tw,th,6);g.fill();g.stroke();
+      g.fillStyle='#111';g.fillText(String(t.n),x,y+0.5);}
+    const at=(e)=>{const r=cv.getBoundingClientRect();
+      const x=Math.floor((e.clientX-r.left)*w/r.width),y=Math.floor((e.clientY-r.top)*h/r.height);
+      const k=(x>=0&&y>=0&&x<w&&y<h)?ids[y*w+x]:-1;return k>=0?order[k]:null;};
+    const name=(id)=>id?this._pmName(id):'';
+    cv.onmousemove=(e)=>{const id=at(e);cv.title=id?name(id):'';cv.style.cursor=id&&this._pmOpen!=null?'pointer':'';};
+    cv.onclick=(e)=>{e.stopPropagation();this._pmClick(at(e));};},
 
   /* THE ENGINE CHOICE, under the one engine question. Every engine that can take the uploaded file,
      best measured fit first: its fit, the plain-words reason (how it did in the lab on shapes measured
@@ -365,7 +682,9 @@ export const Stage = {
     const fol=(fn)=>{try{fn();}catch(e){console.warn('FEA card: not redrawn',e);}};
     if(d&&d.fea){fol(()=>followClean(g,d.fea));if(d.fea.assembly)fol(()=>followAssembly(g,d.fea.assembly));}
     if(d&&d.fea&&d.fea.measure)fol(()=>followMeasure(g,d.fea.measure,p,null));
-    if(d&&d.fea&&d.fea.plan)fol(()=>followPlan(g,d.fea.plan));},
+    // SHSTAGE-2: the shell check lands minutes later; "Mesh as" follows in place, the pick kept
+    if(d&&d.fea&&d.fea.plan)fol(()=>followPlan(g,d.fea.plan));
+    if(d&&d.fea&&d.fea.shell)fol(()=>followMeshAs(g,d.fea.shell));},
 
   ensureProc(){if(this.proc)return;this.clearEmpty();
     const p=document.createElement('div');p.className='proc';
@@ -438,7 +757,7 @@ export const Stage = {
     const ref=hasHist?history.typical_s*1000:budget*1000;
     const sub=hasHist
       ?`similar runs take about ${fmtDur(history.typical_s*1000)} (usually ${fmtDur(history.p10_s*1000)} to ${fmtDur(history.p90_s*1000)})`
-      :`no similar runs yet · stops by itself at ${fmtDur(budget*1000)}`;
+      :`no similar runs yet · Time limit ${durationWords(budget)}`;
     const w=document.createElement('div');w.className='meshbar';
     w.innerHTML=`<div class="mb-top"><span class="mb-lbl">meshing · ${esc(engine||'')}</span>
         <span class="mb-num">0:00</span></div>

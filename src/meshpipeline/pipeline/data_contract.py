@@ -476,6 +476,12 @@ STATE_FIELDS: dict[str, str] = {
                              "recommended one itself, and says so",
     "fea_plans_object":      "PLAN-fea-22: where the stage kept the plans it made (engines/fea_plan_options.PLANS_FILE); "
                              "the run reuses them when made for its staged solid and code",
+    "part_matches":          "the user's words about particular parts tied to the parts before approval (NOTE-4, the "
+                             "request card's checklist), with the parts the user picked; None when there was none "
+                             "for the notes as they stand - the route then reads the notes itself",
+    "fea_mesh_as":           "an FEA part meshed as a shell (its mid-surface, plate elements) only when the user's "
+                             "words asked for one, else a solid, as settled at Proceed (SHSTAGE-5); 'mixed' only "
+                             "from a confirmation stored before it left the stage; 'solid' when nothing says",
     "flow_topology":         "internal/external flow regime DERIVED from the purpose - a neutral "
                              "fact read by the executor/runners, NOT an engine-native param",
     "up_axis":               "which way is up in the file, as confirmed on the stage (+z, -y, ...): the "

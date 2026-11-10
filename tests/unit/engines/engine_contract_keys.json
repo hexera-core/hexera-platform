@@ -114,7 +114,17 @@
    "mesh.bdf",
    "mesh.cdb",
    "mesh.inp",
-   "mesh.unv"
+   "mesh.unv",
+   "mixed.bdf",
+   "mixed.cdb",
+   "mixed.inp",
+   "mixed_abaqus.inp",
+   "mixed_run.json",
+   "shell.bdf",
+   "shell.cdb",
+   "shell.inp",
+   "shell_abaqus.inp",
+   "shell_run.json"
   ],
   "deliverable_kind": "Deliverable",
   "export_formats": [

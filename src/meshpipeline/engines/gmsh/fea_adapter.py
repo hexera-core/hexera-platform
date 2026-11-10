@@ -31,10 +31,16 @@ ALGORITHMS_3D = {"delaunay": 1, "hxt": 10}
 STAGE_FILE = "fea_stage.json"
 
 
-def note_stage(ws: Path, key: str, label: str) -> None:
+def note_stage(ws: Path, key: str, label: str, *, n: int | None = None, of: int | None = None,
+               unit: str = "") -> None:
+    """The mesher's step for the live line (engines/mesher_stage); `n` of `of` `unit` a count that moves
+    within the step (LAD-fea-18: fTetWild's improvement rounds)."""
     import time
+    step: dict = {"key": key, "label": label, "at": round(time.time(), 1)}
+    if n is not None:
+        step.update(n=int(n), **({"of": int(of)} if of else {}), **({"unit": unit} if unit else {}))
     try:
-        (Path(ws) / STAGE_FILE).write_text(json.dumps({"key": key, "label": label, "at": round(time.time(), 1)}))
+        (Path(ws) / STAGE_FILE).write_text(json.dumps(step))
     except OSError:
         pass
 
@@ -74,7 +80,8 @@ class Ticker:
 
 
 #: the mesher's threads when the plan names none: 0 = every core the job has (the curve and surface
-#: meshing stay on one thread whatever this says - see mesh())
+#: meshing stay on one thread whatever this says - see mesh(); the surfaces use this many worker processes,
+#: MESH-23)
 DEFAULT_THREADS = 0
 #: the 3D algorithm when the plan names none
 DEFAULT_ALGORITHM_3D = "delaunay"
@@ -632,13 +639,59 @@ def _empty_surfaces(gmsh, surfaces: set[int]) -> list[int]:
     return out
 
 
-def surface_mesh(gmsh, surfaces: set[int], remesh: set[int]) -> list[int]:
+#: LAD-fea-6: an analytic face (plane, cylinder, cone, sphere, torus) holding more than this share of the
+#: part's surface area keeps the default 2D algorithm when a lever names it - MeshAdapt on it is very slow
+#: (1 Nov: a 180,000 mm2 cylinder, over 15 minutes and counting) and gmsh's own switch-on-failure still
+#: tries MeshAdapt should the default fail there
+BIG_FACE_SHARE = 0.05
+SMOOTH_TYPES = ("Plane", "Cylinder", "Cone", "Sphere", "Torus")
+
+
+def big_smooth_faces(gmsh, surfaces) -> list[int]:
+    """LAD-fea-6's exception: the large analytic faces among `surfaces` (see BIG_FACE_SHARE)."""
+    if not surfaces:
+        return []
+    try:
+        area = {int(t): float(gmsh.model.occ.getMass(2, int(t))) for _d, t in gmsh.model.getEntities(2)}
+    except Exception:  # noqa: BLE001 - no CAD areas (a discrete model): nothing kept back
+        return []
+    total = sum(area.values()) or 1.0
+    return [s for s in sorted(surfaces) if gmsh.model.getType(2, s) in SMOOTH_TYPES
+            and area.get(s, 0.0) > BIG_FACE_SHARE * total]
+
+
+def surface_workers(gmsh, run: dict, *, tiny: bool = False, rung: bool = False) -> int:
+    """MESH-23: how many processes mesh the surfaces, each surface on its own (the same mesh on any number):
+    the job's cores (the plan's `surface_workers`, else mesh_threads); 0 where the surfaces cannot be meshed
+    one by one - MESH-9's compounds (a compound meshes several CAD faces as one), the last rung's part-only
+    pass, a periodic face - and gmsh's own one-call surface stage meshes them, as before."""
+    from meshpipeline.engines.gmsh import fea_parallel2d as P2D
+
+    if tiny or rung or not P2D.can_split(gmsh):
+        return 0
+    raw = (run or {}).get("surface_workers")
+    n = mesh_threads(run) if raw is None else int(raw)
+    return P2D.workers_for(max(1, n), len(gmsh.model.getEntities(2)))
+
+
+def surface_mesh(gmsh, surfaces: set[int], remesh: set[int], workers: int = 0) -> list[int]:
     """The surface mesh, LAD-fea-6's surfaces on MeshAdapt; a surface the default algorithm leaves
     with no mesh is meshed again the other way at once, in the same pass. Returns the surfaces
-    still left with no mesh."""
-    for s in sorted(remesh & surfaces):
+    still left with no mesh. `workers` >= 1: MESH-23, each surface meshed on its own, over that many
+    processes - the same mesh on any number (engines/gmsh/fea_parallel2d.py); 0: gmsh's one-call stage."""
+    kept = big_smooth_faces(gmsh, remesh & surfaces)
+    if kept:
+        print(f"[GMSH-FEA] surface(s) {kept[:12]} kept on the default 2D algorithm: large smooth faces, where "
+              "MeshAdapt is slow and gmsh switches by itself if the default fails (LAD-fea-6)", file=sys.stderr)
+    for s in sorted((remesh & surfaces) - set(kept)):
         gmsh.model.mesh.setAlgorithm(2, s, MESH_ADAPT)
-    gmsh.model.mesh.generate(2)
+    if workers >= 1:
+        from meshpipeline.engines.gmsh import fea_parallel2d as P2D
+        done = P2D.mesh_surfaces(gmsh, workers)
+        print(f"[GMSH-FEA] {done['surfaces']} surfaces meshed in {done['blocks']} fixed blocks on {done['workers']} "
+              f"process(es), the same mesh on any number ({P2D.RULE})", file=sys.stderr)
+    else:
+        gmsh.model.mesh.generate(2)
     empty = _empty_surfaces(gmsh, surfaces)
     again = [s for s in empty if s not in remesh]
     if again:
@@ -1568,7 +1621,8 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
     # MESH-9: a tiny face merged into its neighbour may rightly hold no triangle of its own
     drawn = surfaces - {int(s) for s in (merges.get("faces") or {})}
     try:
-        empty = surface_mesh(gmsh, drawn, remesh)
+        empty = surface_mesh(gmsh, drawn, remesh,
+                             workers=surface_workers(gmsh, run, tiny=TINY.active(merges), rung=rung is not None))
     except Exception as exc:
         # A SURFACE NO 2D ALGORITHM COULD MESH ("Impossible to mesh periodic surface 26"): gmsh stops
         # there - the surface it names and every one it left empty are where it went wrong
@@ -1610,6 +1664,8 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
             # LAD-fea-11: the parts filled, kept; the ones left empty are the ones to mesh again
             keep_filled(gmsh, ws, (all_vols if (rung is not None or kept) else vols), hollow, rung_vols,
                         scale=scale, tied=tied, part_volumes=part_volumes, tiny=after)
+        # (a volume's whole boundary: the ladder reads a failure that names most of a part as not on those
+        # surfaces, LAD-fea-6)
         named = sorted({abs(int(t)) for v in hollow for _d, t in gmsh.model.getBoundary([(3, v)], oriented=False)
                         if int(t) in surfaces} | set(empty))
         raise _tiny_failed(FillFailed(RuntimeError(f"{EMPTY_VOLUMES} the 3D fill left volume(s) {hollow} with no "
@@ -1782,7 +1838,8 @@ def _mesh(workspace) -> int:
         # gmsh's own parallel work (the optimiser, the curving) on every core, while the curve and
         # surface meshing stay on ONE thread - their parallel versions are not repeatable (0/17 meshes
         # the same twice at 8 threads; and 3 of 5 on 22 Oct). So the mesh is byte-identical to the
-        # one-thread mesh (12/12) and to itself run twice (12/12), about 1.5 times sooner.
+        # one-thread mesh (12/12) and to itself run twice (12/12), about 1.5 times sooner. The surfaces still
+        # use every core: MESH-23 meshes them in worker processes, the same mesh on any number (surface_mesh).
         threads = mesh_threads(run)
         gmsh.option.setNumber("General.NumThreads", threads)
         gmsh.option.setNumber("Mesh.MaxNumThreads1D", 1)

@@ -53,6 +53,9 @@ class MessageStatus(str, enum.Enum):
     #: part's analysis type is still open: the application's one short question, with buttons, is
     #: the whole reply (application/purpose_map)
     purpose_question = "purpose_question"
+    #: a yes before the notes were finalized: they are read first, and the same yes then starts the
+    #: run (NOTE-5)
+    reading_first = "reading_first"
     #: the session does not exist for this owner
     not_found = "not_found"
 
@@ -127,7 +130,8 @@ class MessageOutcome:
     def answered(self) -> bool:
         return self.status in (MessageStatus.approval_deferred, MessageStatus.unit_question,
                                MessageStatus.already_dispatched, MessageStatus.geometry_hold,
-                               MessageStatus.unit_changed, MessageStatus.purpose_question)
+                               MessageStatus.unit_changed, MessageStatus.purpose_question,
+                               MessageStatus.reading_first)
 
     @property
     def continues_to_intake(self) -> bool:
@@ -323,6 +327,20 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
                     status=MessageStatus.approval_deferred, reply=reply, awaiting_confirmation=True,
                     transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
                                               approval_status=ap.AWAITING))
+        if intent == ap.APPROVE_INTENT and not (approval or {}).get("notes_read_first") \
+                and await notes_unread(inbound, locked):
+            # A YES BEFORE THE NOTES WERE FINALIZED (NOTE-5): the words are read now - the card shows
+            # "Reading your notes…" and then the parts they name - and the same yes starts the run once
+            # they land (the console sends it again; a minute at most). Held once: the next yes runs.
+            gate["approval"] = {**(ap.defer(approval) or {}), "notes_read_first": True}
+            await session_repo.set_intake_gate(db, inbound.session_id, gate)
+            await session_repo.append_message(db, inbound.session_id, "assistant", READING_FIRST_REPLY)
+            logger.info("intake message: a yes before the notes were read - read first - session=%s",
+                        inbound.session_id)
+            return MessageOutcome(
+                status=MessageStatus.reading_first, reply=READING_FIRST_REPLY, awaiting_confirmation=True,
+                transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
+                                          approval_status=ap.AWAITING))
         if intent == ap.APPROVE_INTENT:
             logger.info("intake message: application-owned approval - session=%s snapshot=%s",
                         inbound.session_id, (approval or {}).get("id"))
@@ -430,6 +448,23 @@ def _unit_left_unmeasured(inbound: InboundMessage, gate: dict) -> bool:
     from meshpipeline.application import geometry_hold as gh
 
     return gh.measured_size_mm(str(inbound.session_id)) is None
+
+
+#: said while a yes waits for the notes to be read (the run starts the moment they are)
+READING_FIRST_REPLY = "Reading your notes first, then I'll start the run."
+
+
+async def notes_unread(inbound: InboundMessage, locked) -> bool:
+    """Whether the user's words (the first answer and the notes) can name parts of this model and are not read
+    yet for the words as they stand - in which case the reading is started now. Never raises: False when unsure."""
+    try:
+        import asyncio
+
+        from meshpipeline.application import part_matches as PM
+        got = await asyncio.to_thread(lambda: PM.before_run(locked, owner_id=inbound.owner_id))
+    except Exception:  # noqa: BLE001 - the run reads the notes itself
+        return False
+    return got == "read"
 
 
 def fea_words(messages: list) -> bool:

@@ -246,8 +246,37 @@ def _n(v) -> str:
     return "not measured" if v is None else (f"{v:,}" if isinstance(v, int) else str(v))
 
 
+def shell_facts_text(workspace) -> str:
+    """SHSTAGE-7: a delivered shell's facts for the reviewer ('' for any other workspace): it is the user's asked-for
+    mid-surface shell - plates with a wall thickness each, never a solid, so walls are not counted in elements."""
+    from meshpipeline.engines.shell_delivery import is_shell
+    from meshpipeline.engines.shell_writers import SHELL_SOLVERS
+
+    ws = Path(workspace)
+    q = _read(ws / "quality.json")
+    if not is_shell(q):
+        return ""
+    sq = _m(q.get("shell_quality"))
+    from meshpipeline.engines.bucket_files import present
+    lines = ["MEASURED FEA FACTS (taken by the pipeline from the delivered files - judge against these, "
+             "never re-derive them from a picture):",
+             "- This is a SHELL mesh the user asked for: plate elements on the part's mid-surface, each carrying its "
+             "wall thickness in the file. It is not a solid; elements through a wall do not apply.",
+             "- Validity (the hard pass/fail, measured): "
+             + ("VALID - no folded or flat element." if measured_valid(q) else f"NOT VALID - {_n(q.get('fea_inverted'))} "
+                "folded or flat elements."),
+             f"- Elements: {_n(q.get('cells'))} ({_n(sq.get('quads'))} quads, {_n(sq.get('trias'))} triangles), "
+             f"{_n(q.get('nodes'))} nodes; walls {', '.join(str(w) for w in (_m(q.get('fea')).get('walls_mm') or [])[:8])} mm."]
+    for _k, label, file, element, _t in SHELL_SOLVERS:
+        lines.append(f"- {file} ({label}, {element}): " + ("written" if present(ws, file) else "MISSING") + ".")
+    return "\n".join(lines)
+
+
 def facts_text(workspace) -> str:
     """The facts in plain lines for the reviewer's brief; '' for a workspace with no FEA mesh."""
+    shell = shell_facts_text(workspace)
+    if shell:
+        return shell
     f = facts(workspace)
     if not f:
         return ""
@@ -292,4 +321,4 @@ def facts_text(workspace) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["face_accounting", "faces_short", "faces_words", "FEA_PURPOSE", "assembly_checklist", "ONE_PREVIEW_GROUP", "SOLVER_FILES", "facts", "facts_text", "is_fea", "measured_valid"]
+__all__ = ["face_accounting", "faces_short", "faces_words", "FEA_PURPOSE", "assembly_checklist", "ONE_PREVIEW_GROUP", "SOLVER_FILES", "facts", "facts_text", "shell_facts_text", "is_fea", "measured_valid"]

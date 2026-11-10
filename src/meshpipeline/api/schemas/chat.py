@@ -43,3 +43,6 @@ class ChatResponse(BaseModel):
     # mesh is for, when the words did not say, and an FEA part's analysis type. Each is
     # {label, send, soon}; a click sends `send` as an ordinary message. Empty for any other reply.
     choices: list[dict[str, Any]] = []
+    # A YES THAT WAITS FOR THE NOTES TO BE READ (NOTE-5): the console shows the reading on the card and sends the
+    # same yes again once it lands (a minute at most); that second yes starts the run.
+    yes_after_reading: bool = False

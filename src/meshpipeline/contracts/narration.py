@@ -39,6 +39,11 @@ STAGES: dict[str, tuple[str, str]] = {
     "patches":      ("export",  "Naming the boundaries"),
     "checking":     ("check",   "Checking the cells"),
     "returning":    ("export",  "Sending the finished mesh back"),
+    # the FEA ladder's last rung (engines/fea_tetwild): its fill, its improvement rounds, its face names
+    "ftetwild":           ("fill",   "Filling the volume a second way"),
+    "ftetwild_improving": ("check",  "Improving the elements, round by round"),
+    "ftetwild_sizing":    ("refine", "Refining the elements to the sizes asked for"),
+    "ftetwild_faces":     ("export", "Naming the faces after your CAD"),
 }
 #: A stage key this table does not know still narrates - as plain meshing, never as its raw label.
 UNKNOWN_STAGE = ("fill", "Meshing your part")
@@ -219,7 +224,7 @@ def quality_line(q: dict | None, past_limits: list[str] | None = None) -> str | 
         inverted = int(_num(q.get("fea_inverted")) or 0)
         if inverted > 0:
             return plain(f"{inverted} elements are inside out, so no solver can use this mesh yet.")
-        bits = [f"{cells_words(cells)} elements"] if cells else []
+        bits = [f"{cells_words(cells)} {'shell ' if fea.get('shell') else ''}elements"] if cells else []
         # the worst element is the scaled Jacobian, the figure the result screen and the report
         # show beside its limit (dev-areen 2026-10-30: the line said 0.33, the SICN, beside a 0.198)
         worst = _num(q.get("fea_min_scaled_jacobian"))

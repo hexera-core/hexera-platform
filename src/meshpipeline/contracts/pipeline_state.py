@@ -140,6 +140,8 @@ class PipelineState(TypedDict):
     fea_pairs:          dict           # an FEA assembly: the single pairs set on the stage, by pair key (PLAN-fea-19/20); {} = the rule
     fea_plan_choice:    str            # PLAN-fea-22: "full" | "quicker", the size the user picked on the stage ("" when none: the run takes the recommended one)
     fea_plans_object:   str            # PLAN-fea-22: the object key of the plans the stage kept for the run ("" when none)
+    part_matches:       dict | None    # NOTE-4: the notes tied to parts before approval, as the user left it; None = read at run time
+    fea_mesh_as:        str            # an FEA part: "shell" only when the user's words asked for one, else "solid" (SHSTAGE-5); "mixed" from older confirmations
     mesh_manifest:      dict
     reviewer_result:         str
     reviewer_verdict:        str

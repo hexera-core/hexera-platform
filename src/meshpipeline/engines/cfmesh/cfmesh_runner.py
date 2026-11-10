@@ -76,7 +76,8 @@ logger = logging.getLogger(__name__)
 review_surface_is_body_only = True
 
 
-def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None):
+def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None,
+                      stage_timeout_s: float | None = None):
     import shutil as _shutil
 
     from meshpipeline.contracts.intake_formats import is_cad

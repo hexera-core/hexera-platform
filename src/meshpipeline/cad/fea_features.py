@@ -253,7 +253,7 @@ def _numpy_hits(s: Surface, origins: np.ndarray, dirs: np.ndarray, reach: float)
 
 
 def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.ndarray, *, eps: float,
-               lying_on: list | None = None) -> np.ndarray:
+               lying_on: list | None = None, exit_label: np.ndarray | None = None) -> np.ndarray:
     """How far each ray (from `eps` inside a face, along its inward normal) runs through the
     material before it LEAVES it - the wall under its start - or nan where that cannot be read.
 
@@ -268,7 +268,11 @@ def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.nda
     * it is not a TAPER: a face meeting the ray's own at an acute convex edge (TAPER_DEG);
     * it is not a face LYING ON the ray's own (COINCIDENT_BAND): a pair of faces of one body that share
       no edge and were read under the floor somewhere is read through out to their tessellation error
-      (each such pair, as label pairs a < b, is appended to `lying_on` when it is given)."""
+      (each such pair, as label pairs a < b, is appended to `lying_on` when it is given).
+
+    `exit_label`, when given (an int array as long as the rays), is filled with the label of the face each
+    ray left the material through, or -1 where it read no wall: the face across the wall (cad/
+    shell_pairs reads its face pairs off it). It changes no reading."""
     rays = _Rays(s)
     m = len(s.names)
     pairs = edge_pairs(s)
@@ -282,7 +286,7 @@ def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.nda
         # the shallow cone it runs into read a 0.0068 mm "wall" that way, 1.3 billion elements
         t = np.asarray(s.tapers, dtype=np.int64).reshape(-1, 2)
         wedges = np.unique(np.concatenate([wedges, t[:, 0] * m + t[:, 1], t[:, 1] * m + t[:, 0]]))
-    out, lying = _walk(s, rays, origins, dirs, labels, eps=eps, wedges=wedges, m=m)
+    out, lying = _walk(s, rays, origins, dirs, labels, eps=eps, wedges=wedges, m=m, exit_label=exit_label)
     if s.defl_mm is None or not len(lying):
         return out
     # FACES LYING ON EACH OTHER (COINCIDENT_BAND): only pairs that share no edge - two faces that meet
@@ -298,13 +302,14 @@ def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.nda
     keys = np.concatenate([lying, b * m + a])
     vals = np.concatenate([band, band])
     order = np.argsort(keys, kind="stable")
-    out, _ = _walk(s, rays, origins, dirs, labels, eps=eps, wedges=wedges, m=m, band=(keys[order], vals[order]))
+    out, _ = _walk(s, rays, origins, dirs, labels, eps=eps, wedges=wedges, m=m, band=(keys[order], vals[order]),
+                   exit_label=exit_label)
     return out
 
 
 def _walk(s: Surface, rays: _Rays, origins: np.ndarray, dirs: np.ndarray, labels: np.ndarray, *, eps: float,
-          wedges: np.ndarray, m: int, band: tuple[np.ndarray, np.ndarray] | None = None
-          ) -> tuple[np.ndarray, np.ndarray]:
+          wedges: np.ndarray, m: int, band: tuple[np.ndarray, np.ndarray] | None = None,
+          exit_label: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
     """wall_reach's rays, hop by hop: (each ray's wall or nan, the face pairs - start * m + hit - of one
     body met under the floor). `band`: (sorted pair keys, the floor each of those pairs is read past)."""
     n = len(origins)
@@ -313,6 +318,8 @@ def _walk(s: Surface, rays: _Rays, origins: np.ndarray, dirs: np.ndarray, labels
     tol = s.tol_mm if s.tol_mm is not None else no_tol
     travelled = np.zeros(n)
     out = np.full(n, np.nan)
+    if exit_label is not None:
+        exit_label[:] = -1
     live = np.arange(n)
     pos = origins.copy()
     reach = 1.01 * s.diag
@@ -337,6 +344,8 @@ def _walk(s: Surface, rays: _Rays, origins: np.ndarray, dirs: np.ndarray, labels
         taper = np.isin(key, wedges)
         good = ~through & (cos >= GRAZE_COS) & ~taper
         out[live[good]] = total[good]
+        if exit_label is not None:
+            exit_label[live[good]] = hit[good]
         # on through the face that is not this ray's wall, from just past it
         live = live[through]
         travelled[live] = total[through]

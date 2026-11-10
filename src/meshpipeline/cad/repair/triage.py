@@ -17,7 +17,7 @@ from meshpipeline.cad.repair.contracts import (
     RepairStatus,
 )
 from meshpipeline.cad.repair.localize import EntityDefect
-from meshpipeline.cad.repair.operations import MAX_SMALL_FACE_REMOVALS as _MAX_SLIVER_SWEEP
+from meshpipeline.cad.repair.operations import MAX_DEBRIS_REMOVALS as _MAX_SLIVER_SWEEP
 
 # SHADOW MODE, AND WHY IT IS DELIBERATELY NOT A MODEL YET.
 #
@@ -364,12 +364,28 @@ def recommend(*, repair_status: str = "", report: Mapping | None = None,
         # defence: only when the sweep is switched on, only when small_face is the SOLE judgement
         # code present (a self-intersection beside it still needs the person, and repairing the
         # easy half would not settle the hard one), only when the slivers are located, and only
-        # when there are few enough that one sweep may remove them - more is a modelling style,
-        # which is the original caution, preserved.
+        # when there are few enough that one sweep may consider them - more is a modelling style,
+        # which is the original caution, preserved. This count is the sweep's OUTER limit: a
+        # finding does not say how wide the face is, so the operation itself holds anything wider
+        # than debris to MAX_SMALL_FACE_REMOVALS, on what it actually removed.
         small_faces = [e for e in entities if e.get("code") == DefectCode.small_face.value]
         sweepable = (judgement_codes == {DefectCode.small_face.value}
                      and rcfg.CAD_REPAIR_FIX_SMALL_FACES
                      and 0 < len(small_faces) <= _MAX_SLIVER_SWEEP)
+        # A SLIVER THE SWEEP MAY NOT TOUCH IS NOT A REASON TO LEAVE A GAP OPEN. The question a
+        # small face asks is about that face, and the rest of the catalogue never removes one
+        # (the sanity cap refuses it), so the repair goes ahead aimed at the written defects and
+        # the slivers stay for the report. `small_edge` does not count as such a defect: a sliver
+        # face always brings its own, and a file with nothing else wrong still goes to a person.
+        written = [e for e in entities if e.get("code") in _REPAIRABLE
+                   and e.get("code") != DefectCode.small_edge.value]
+        if not sweepable and judgement_codes == {DefectCode.small_face.value} and written:
+            return Recommendation(
+                route=ROUTE_CONSERVATIVE_REPAIR, confidence=0.7,
+                reasons=("the located defects are in how the file was written; the sliver faces "
+                         "beside them are left as they are",),
+                evidence=evidence, profile=RepairProfile.conservative.value,
+                targets=_targets(written))
         if not sweepable:
             return Recommendation(
                 route=ROUTE_MANUAL_CLEANUP, confidence=0.6,

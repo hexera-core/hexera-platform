@@ -196,6 +196,12 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/geometry/{session_id}/check"),          # the geometry check: proposal + pictures
         ("POST", "/api/v1/geometry/{session_id}/check/confirm"),  # what the user confirmed on the picture
         ("GET", "/api/v1/geometry/{session_id}/check/skin"),      # the part's skin, for the 3D stage
+        ("GET", "/api/v1/geometry/{session_id}/check/parts"),     # which parts the notes mean (the checklist)
+        ("POST", "/api/v1/geometry/{session_id}/check/parts"),    # the parts the user picked for one phrase
+        ("GET", "/api/v1/geometry/{session_id}/check/parts/{name}.png"),  # the checklist card's pictures
+        ("GET", "/api/v1/geometry/{session_id}/check/parts/model"),  # the checklist's model, turned in 3D
+        ("POST", "/api/v1/geometry/{session_id}/check/parts/finalize"),  # Finalize notes: read the parts they name
+        ("GET", "/api/v1/geometry/{session_id}/check/shell-surface"),  # SHSTAGE-4: the mid-surface over the part
         ("POST", "/api/v1/geometry/{session_id}/check/retry"),    # run the scout or the naming again
         ("POST", "/api/v1/ws/ticket"),
         # THE DATA-SUBJECT ROUTES (docs/compliance/dsar-runbook.md). Console session only - an API

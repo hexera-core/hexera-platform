@@ -180,7 +180,7 @@ export function drawAxes(svg, cam) {
 /* THE PART'S COLOURS come from the theme (tokens.css), read when a view opens, so a new theme
    recolours the 3D part with the rest of the page. The values passed here are only the fallback
    for a page that does not load the tokens. */
-function parseColour(s) {
+export function parseColour(s) {
   s = String(s || "").trim();
   let m = /^#([0-9a-f]{6})$/i.exec(s);
   if (m) return [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16) / 255);

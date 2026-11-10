@@ -20,6 +20,17 @@ cube's volume is filed under that zone size, so the element count at ANY base si
 
 without measuring again. The histogram is a short list of (size, volume) rows: it is recorded in
 the plan, so the plan can be worked out again from what it recorded.
+
+THIN WALLS AT COARSE SIZES (PLAN-fea-31). Where the element size passes about two-thirds of a wall's
+thickness, the volume count above under-counts: the mesher puts a layer of elements on every surface
+triangle, so a wall of thickness t at size h holds about SLAB_PER_AREA * area / h^2 elements, not
+PER_H3 * area * t / h^3 (a 1 mm plate at 6 mm elements: 523 built, 48 by volume alone). So the surface
+is read too - each triangle's size and its face's measured wall - as (size, wall, area) rows, and each
+face adds what its triangles hold past its share of the wall's volume:
+
+    extra(base) = sum(area / h^2 * max(0, SLAB_PER_AREA - per_h3 / 2 * t / h)),  h = min(h_zone, base)
+
+which is nothing where the size is under about two-thirds of the wall (every rule-sized wall).
 """
 from __future__ import annotations
 
@@ -31,6 +42,8 @@ import numpy as np
 #: Zones whose sizes are within this ratio share one distance structure (their smallest size and
 #: largest reach: never coarser than any of them asked).
 GROUP_RATIO = 1.2
+#: ...and whose reaches, in their own sizes, are within this ratio (PLAN-fea-31)
+REACH_RATIO = 1.5
 #: A cube is a leaf once its edge is at most this share of the zone size at its centre (the field
 #: varies by at most growth-1 per unit length, so the size across such a cube moves by ~15%).
 LEAF_SHARE = 1.0
@@ -47,6 +60,15 @@ EDGE_SAMPLE_SHARE = 0.25
 PARALLEL_MIN_POINTS = 20_000
 #: the most worker processes (1 = one core, as before)
 MAX_WORKERS = 8
+#: PLAN-fea-31: elements per face area / h^2 on a wall thinner than the size there - measured on gmsh's own fill
+#: (lab ~/feabudget_lab/valid: plates 0.5-2 mm thick at 0.5-16 times their thickness gave 3.6-3.8 per area / h^2,
+#: both faces of the plate counted)
+SLAB_PER_AREA = 3.7
+#: PLAN-fea-31: the elements every surface triangle's layer adds, per area / h^2 at the surface (fitted with
+#: engines/fea_plan.PER_H3 on 32 real builds; see there)
+SURFACE_PER_AREA = 2.8
+#: the surface rows' bins for the wall (a ratio between neighbours)
+WALL_BIN_RATIO = 1.1
 
 
 @dataclass
@@ -60,9 +82,15 @@ class Histogram:
     #: why an unfinished histogram stopped: "cubes" (its cube budget) or "elements" (the zones alone past
     #: the count it was asked to reach); "" when it finished
     stopped: str = ""
+    #: PLAN-fea-31: (size_m, wall_m, area_m2) of the surface, binned - the thin walls' own count at coarse
+    #: sizes; empty when no face has a measured wall (the count is the volume's alone, as before)
+    surface: list[tuple[float, float, float]] | None = None
 
     def as_list(self) -> list[list[float]]:
         return [[_sig(h), _sig(v)] for h, v in self.rows]
+
+    def surface_list(self) -> list[list[float]]:
+        return [[_sig(h), _sig(t), _sig(a)] for h, t, a in self.surface or []]
 
     @staticmethod
     def from_list(rows) -> Histogram:
@@ -179,7 +207,7 @@ def group_zones(zones: list[dict]) -> list[dict]:
 
         [{"size": m, "reach": m, "edge": bool, "faces": [names], "edges": [[face_a, face_b], ...]}]
     """
-    buckets: dict[tuple[int, bool], list[dict]] = {}
+    buckets: dict[tuple[int, bool, int], list[dict]] = {}
     spots: dict[tuple[int, str], list[dict]] = {}
     parts: list[dict] = []
     for z in zones:
@@ -193,10 +221,16 @@ def group_zones(zones: list[dict]) -> list[dict]:
         if z.get("kind") == "wall_spot":
             spots.setdefault((b, str((z.get("faces") or [""])[0])), []).append(z)
             continue
-        key = (b, z.get("kind") == "corner")
+        # ...and of like REACH, in the zone's own sizes (PLAN-fea-31): a group holds its smallest size out to its
+        # largest reach, so a zone whose size drifted into a group of far-reaching zones took their reach - the size
+        # field (and the count) jumped as zones crossed size bands (a 9-part assembly: 842k at one factor, 591k at a
+        # factor 0.6% coarser)
+        reach = float(z.get("reach_m") or 0.0)
+        rb = int(math.floor(math.log(reach / size) / math.log(REACH_RATIO))) if reach > 0 else -(10 ** 6)
+        key = (b, z.get("kind") == "corner", rb)
         buckets.setdefault(key, []).append(z)
     out = []
-    for (_b, edge), zs in sorted(buckets.items()):
+    for (_b, edge, _rb), zs in sorted(buckets.items()):
         faces = sorted({str(f) for z in zs for f in z.get("faces") or []}, key=_face_key)
         out.append({"size": min(float(z["size_m"]) for z in zs),
                     "reach": max(float(z.get("reach_m") or 0.0) for z in zs), "edge": edge,
@@ -227,9 +261,13 @@ def _face_key(name: str) -> tuple[str, int]:
 class SizeField:
     """The plan's zones on the part: h_zone(x) for many points at once (inf where no zone reaches)."""
 
-    def __init__(self, surface, zones: list[dict], *, growth: float, scale_to_m: float = 1e-3):
+    def __init__(self, surface, zones: list[dict], *, growth: float, scale_to_m: float = 1e-3,
+                 walls: dict[str, float] | None = None):
         """surface: cad/fea_features.Surface (its own unit; `scale_to_m` turns it into metres).
-        zones: the plan's zones (sizes in metres; faces named as the surface names them)."""
+        zones: the plan's zones (sizes in metres; faces named as the surface names them).
+        walls: face name -> its measured wall in metres, for PLAN-fea-31's surface rows."""
+        self.walls = {str(k): float(v) for k, v in (walls or {}).items()
+                      if v and math.isfinite(float(v)) and float(v) > 0}
         # what a worker process needs to build the same field (plain arrays and lists: they pickle)
         self._spec = ({"xyz": np.asarray(surface.xyz), "tris": np.asarray(surface.tris),
                        "label": np.asarray(surface.label), "names": list(surface.names)},
@@ -382,6 +420,31 @@ class SizeField:
         finally:
             pool.close()
 
+    def _surface_rows(self, pool, coarsest: float) -> list[tuple[float, float, float]]:
+        """PLAN-fea-31: every surface triangle of a face with a measured wall, at the zone size on it,
+        binned by size and wall: [(size_m, wall_m, area_m2)]."""
+        if not len(self.tris):
+            return []
+        wall_of = np.zeros(len(self.index) + 1)
+        for name, k in self.index.items():
+            wall_of[k] = self.walls.get(name, 0.0)
+        lab = np.asarray(self.label, dtype=np.int64)
+        known = (lab >= 0) & (lab < len(self.index))
+        t = np.zeros(len(self.tris))
+        t[known] = wall_of[lab[known]]
+        tri = self.xyz[self.tris]
+        area = 0.5 * np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+        h = np.minimum(np.asarray(self._on(pool, "sizes", tri.mean(axis=1), 0.0)[0], dtype=float), coarsest)
+        kh = np.floor(np.log(h) / math.log(BIN_RATIO)).astype(np.int64)
+        # a face with no measured wall is filed under wall 0 (its slab term is not read)
+        kt = np.where(t > 0, np.floor(np.log(np.where(t > 0, t, 1.0)) / math.log(WALL_BIN_RATIO)), -10**6)
+        rows: dict[tuple[int, int], float] = {}
+        for a, b, v in zip(kh.tolist(), kt.astype(np.int64).tolist(), area.tolist(), strict=True):
+            rows[(a, b)] = rows.get((a, b), 0.0) + v
+        # each bin filed under its smallest size and its largest wall: never more than it holds
+        return sorted((float(BIN_RATIO ** a), float(WALL_BIN_RATIO ** (b + 1)) if b > -10**6 else 0.0, v)
+                      for (a, b), v in rows.items() if v > 0)
+
     def _on(self, pool, what: str, p: np.ndarray, r: float):
         """self.signed(p) or self.sizes(p, r) - in slices on the workers when the level is big enough."""
         if pool is None or len(p) < PARALLEL_MIN_POINTS:
@@ -448,7 +511,8 @@ class SizeField:
             centres = (rest[:, None, :] + offsets[None, :, :] * (e / 2.0)).reshape(-1, 3)
         h = np.concatenate(sizes) if sizes else np.zeros(0)
         v = np.concatenate(vols) if vols else np.zeros(0)
-        return Histogram(rows=_binned(h, v), complete=complete, cubes=int(cubes), stopped=stopped)
+        return Histogram(rows=_binned(h, v), complete=complete, cubes=int(cubes), stopped=stopped,
+                         surface=self._surface_rows(pool, coarsest))
 
 
 def plan_workers() -> int:
@@ -564,10 +628,24 @@ def _binned(h: np.ndarray, v: np.ndarray) -> list[tuple[float, float]]:
     return rows
 
 
-def elements(hist: Histogram | list, base: float, per_h3: float) -> float:
-    """The element estimate at base size `base` (metres)."""
+def elements(hist: Histogram | list, base: float, per_h3: float, surface=None) -> float:
+    """The element estimate at base size `base` (metres): the volume's count, plus PLAN-fea-31's thin walls'
+    surface count past their share of it (`surface`: the rows, when `hist` is a bare list)."""
     rows = hist.rows if isinstance(hist, Histogram) else Histogram.from_list(hist).rows
-    return float(per_h3 * sum(v / min(h, base) ** 3 for h, v in rows))
+    srf = (hist.surface if isinstance(hist, Histogram) else surface) or []
+    n = per_h3 * sum(v / min(h, base) ** 3 for h, v in rows)
+    for h, t, a in srf:
+        hh = min(float(h), float(base))
+        n += float(a) / hh ** 2 * surface_share(float(t), hh, per_h3)
+    return float(n)
+
+
+def surface_share(t: float, h: float, per_h3: float) -> float:
+    """PLAN-fea-31: elements per area / h^2 a surface adds to the volume's count: the layer every surface triangle
+    carries (SURFACE_PER_AREA), or on a wall thinner than the size what the wall holds past its share of the
+    volume, whichever is more."""
+    slab = SLAB_PER_AREA - 0.5 * per_h3 * t / h if t > 0 else 0.0
+    return max(SURFACE_PER_AREA, slab)
 
 
 __all__ = ["Histogram", "SizeField", "elements", "group_zones"]

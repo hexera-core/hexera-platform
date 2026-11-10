@@ -59,7 +59,8 @@ export function keyNumbers(surf = {}, opts = {}) {
   if (cells > 0) out.push({ k: fea ? "Elements" : "Cells", v: compact(cells), title: cells.toLocaleString() });
   if (fea) {
     const rows = (fea.check && fea.check.rows) || [];
-    const sj = rows.find((r) => r.key === "fea_min_scaled_jacobian");
+    // a solid's scaled Jacobian, or a delivered shell's Jacobian ratio (engines/shell_delivery)
+    const sj = rows.find((r) => r.key === "fea_min_scaled_jacobian" || r.key === "shell_jacobian_ratio");
     if (sj && typeof sj.measured === "number")
       out.push({ k: "Worst quality", v: three(sj.measured), sub: `needs ${three(sj.limit)}+`, bad: sj.ok === false });
     const tw = fea.through_wall || {};

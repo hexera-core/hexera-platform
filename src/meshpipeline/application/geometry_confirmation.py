@@ -351,6 +351,10 @@ def fea_confirmation_message(body) -> str:
     plan_said = str(getattr(body, "plan_summary", "") or "").strip()
     if plan_said:
         parts.append(plan_said)       # PLAN-fea-22: the size the user picked
+    # SHSTAGE-5: shell or solid, as settled at Proceed, and why
+    mesh_as = str(getattr(body, "mesh_as_summary", "") or "").strip()
+    if mesh_as:
+        parts.append(mesh_as)
     clean = str(getattr(body, "clean_summary", "") or "").strip().rstrip(".")
     if clean:
         parts.append(f"Clean check: {clean}.")

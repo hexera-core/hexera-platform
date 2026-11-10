@@ -55,6 +55,28 @@ def _geometric_defect_key(defect) -> tuple | None:
     return (defect.code, defect.severity, defect.entity_type, tuple(low), tuple(high))
 
 
+def _same_geometry(left: tuple, right: tuple, *, tol_mm: float) -> bool:
+    """Do two geometric keys name the SAME finding, allowing for the kernel's own rounding?
+
+    WHY THIS IS NOT EQUALITY. The key is built from measured floats, and a rebuild re-approximates
+    geometry it never touched: on the Formula body that found this, two sliver faces nobody aimed
+    at came back with their boxes moved by 0.00037 mm - eight parts in a hundred million of a 4.6 m
+    car. Compared exactly, a finding that had been there all along read as brand new, and since the
+    warning allowance is disabled while any error is still open, the consequence was that no hole
+    fill could ever be kept on a part with more than one error.
+
+    WHY THE OPERATION'S OWN TOLERANCE IS THE RIGHT RULER. It is the distance the operation was
+    permitted to move geometry by. Two findings of the same kind whose measured boxes agree inside
+    it cannot be distinguished by anything this session is allowed to care about, so treating them
+    as one is not a loosening of the check - it is the check stated in the units it is judged in.
+    """
+    if left[:3] != right[:3]:
+        return False
+    return all(abs(a - b) <= tol_mm
+               for side_left, side_right in ((left[3], right[3]), (left[4], right[4]))
+               for a, b in zip(side_left, side_right, strict=False))
+
+
 @dataclass(frozen=True, slots=True)
 class OpVerdict:
     """What happened when one operation was tried, kept or not."""
@@ -308,7 +330,8 @@ class RepairSession:
 
         basis = self._basis(outcome, targets)
         reason = self._progress_refusal(
-            outcome, targets, defect_code, previous, found, op_name=op.name)
+            outcome, targets, defect_code, previous, found, op_name=op.name,
+            tolerance_mm=tolerance_mm)
         if reason:
             self.shape, self._defects, self.complete_scan = snapshot
             return self._record(OpVerdict(
@@ -345,7 +368,7 @@ class RepairSession:
         return any(d.fingerprint in names and d.code.value == wanted for d in self.defects())
 
     def _progress_refusal(self, outcome, targets, defect_code, previous, found, *,
-                           op_name: str) -> str:
+                           op_name: str, tolerance_mm: float = 0.0) -> str:
         """"" if this operation made progress, otherwise why it did not.
 
         PROGRESS IS ABOUT THE DEFECT, NOT THE ENTITY. A hole patch leaves the rim edges exactly
@@ -366,6 +389,10 @@ class RepairSession:
 
         before_names = {(d.fingerprint, d.code.value) for d in previous}
         before_geometry = {key for d in previous if (key := _geometric_defect_key(d)) is not None}
+        # KEPT AS A LIST TOO, because the tolerant comparison cannot be a set lookup: a key whose
+        # floats moved by rounding hashes somewhere else entirely (see _same_geometry). The exact
+        # set stays as the fast path and this is consulted only when it misses.
+        before_boxes = tuple(before_geometry)
         added = set(outcome.added)
         errors = (DefectSeverity.error, DefectSeverity.fatal)
         fewer_non_error_findings = (not any(d.severity in errors for d in found)
@@ -379,6 +406,10 @@ class RepairSession:
                 continue
             geometric_key = _geometric_defect_key(defect)
             if geometric_key is not None and geometric_key in before_geometry:
+                continue
+            if geometric_key is not None and tolerance_mm > 0 and any(
+                    _same_geometry(geometric_key, known, tol_mm=tolerance_mm)
+                    for known in before_boxes):
                 continue
             if defect.severity not in _HELD_AGAINST:
                 continue

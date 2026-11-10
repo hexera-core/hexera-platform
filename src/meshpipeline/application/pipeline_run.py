@@ -781,6 +781,15 @@ async def _run_async(req: JobRequest) -> dict:
         # PLANNED ONCE: where the stage kept the plans it made (the run reuses them for this very staged solid)
         from meshpipeline.application.fea_check import plans_object_key
         initial_state["fea_plans_object"] = plans_object_key(str(session_id or ""))
+        # NOTE-4: the notes tied to parts on the request card before approval, with the parts the user picked
+        from meshpipeline.application.part_matches import for_run as _part_matches
+        initial_state["part_matches"] = await asyncio.to_thread(
+            _part_matches, str(session_id or ""), req.user_notes, request_txt)
+        # SHSTAGE-5: SHELL OR SOLID, as settled on the stage at Proceed (solid when nothing says) - or a shell the
+        # user asked for in a note on the request card after it
+        from meshpipeline.application.shell_check import confirmed_mesh_as
+        initial_state["fea_mesh_as"] = await asyncio.to_thread(confirmed_mesh_as, str(session_id or ""),
+                                                               req.user_notes)
 
         initial_state["repair_directives"] = list(req.repair_directives)
 

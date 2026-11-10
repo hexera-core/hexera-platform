@@ -82,8 +82,9 @@ def _known_stage_keys() -> set[str]:
     keys = {k for k, _ in MS._TOOLS.values()}
     keys |= {k for _, k, _ in MS._SNAPPY} | {k for _, k, _ in MS._CFMESH}
     from pathlib import Path
-    src = Path(__file__).parents[3] / "src" / "meshpipeline" / "engines" / "gmsh" / "fea_adapter.py"
-    keys |= set(re.findall(r'note_stage\(ws, "([a-z_]+)"', src.read_text()))
+    engines = Path(__file__).parents[3] / "src" / "meshpipeline" / "engines"
+    for src in (engines / "gmsh" / "fea_adapter.py", engines / "fea_tetwild.py"):
+        keys |= set(re.findall(r'(?:note_stage|_stage_note)\(ws, "([a-z_]+)"', src.read_text()))
     keys.add(mesh_runner.RETURNING["key"])
     return keys
 

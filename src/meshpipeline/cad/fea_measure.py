@@ -42,8 +42,10 @@ logger = logging.getLogger(__name__)
 #: 2 (21 Oct): a wall is read inside one body, past the model's floor, never across a taper,
 #: and only where a face's rays agree (cad/fea_features.wall_reach); 1 read the first
 #: surface any ray met.
-VERSION = 3
+VERSION = 4
 #: 3 (21 Oct): the record lists the CAD's cusps (cad_cusps, PLAN-fea-10).
+#: 4 (6 Nov): the record keeps the parts and the areas inside them for the parts checklist (NOTE-5/6); a
+#: measurement stored before it has none, and reusing it left the card with no Finalize notes.
 #: Where the record lives in the geometry check's facts.
 FACT_KEY = "fea_measure"
 #: The CAD surface is tessellated for the measurement at a chord of this fraction of the part's

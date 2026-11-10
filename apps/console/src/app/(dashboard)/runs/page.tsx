@@ -1,9 +1,11 @@
 import Link from "next/link";
+import { NavLink } from "@/app/_components/nav-link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
 import { DashboardNotice } from "@/app/_components/dashboard-notice";
 import { formatDuration, runTitle, statusClass, statusLabel } from "@/app/_components/run-status";
+import { When } from "@/app/_components/when-time";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
 
@@ -40,13 +42,10 @@ export default async function RunsPage({
   return (
     <div className="page">
       <div className="page__head">
-        <div>
-          <p className="page__eyebrow">Runs</p>
-          <h1 className="page__title">Mesh runs</h1>
-        </div>
-        <Link className="btn btn--gold" href="/runs/new">
+        <h1 className="page__title">Runs</h1>
+        <NavLink className="btn btn--gold" href="/runs/new">
           New run
-        </Link>
+        </NavLink>
       </div>
 
       {page === null ? (
@@ -65,37 +64,37 @@ export default async function RunsPage({
         />
       ) : (
         <section className="panel">
-          <div className="panel__head">
-            <div>
-              <p className="label">All runs</p>
-            </div>
-          </div>
-          <table className="table">
+          <table className="table table--rows">
             <thead>
               <tr>
-                <th>Status</th>
-                <th>Run</th>
-                <th>Started</th>
-                <th>Duration</th>
-                <th>Tries</th>
+                <th className="col-main">Run</th>
+                <th className="col-status">Status</th>
+                <th className="col-when">Started</th>
+                <th className="col-num col-opt">Duration</th>
               </tr>
             </thead>
             <tbody>
               {page.items.map((run) => (
                 <tr key={run.id}>
+                  <td className="col-main">
+                    {/* the title's link covers the whole row (dashboard.css .row-link) */}
+                    <NavLink className="row-link" href={`/runs/${run.id}`}>{runTitle(run)}</NavLink>
+                  </td>
                   <td>
                     <span className={statusClass(run.status, run.review_outcome)}>
                       {statusLabel(run.status, run.review_outcome)}
                     </span>
                   </td>
-                  <td>
-                    <Link href={`/runs/${run.id}`}>{runTitle(run)}</Link>
+                  <td className="col-when">
+                    <When iso={run.created_at} />
                   </td>
-                  <td>
-                    {run.created_at ? new Date(run.created_at).toLocaleString() : "—"}
+                  <td className="col-num col-opt">
+                    {formatDuration(run.created_at, run.ended_at)}
+                    {/* tries only when there was more than one: the usual case says nothing */}
+                    {run.attempts > 1 ? (
+                      <span className="cell-faint" title={`${run.attempts} tries`}> · {run.attempts} tries</span>
+                    ) : null}
                   </td>
-                  <td>{formatDuration(run.created_at, run.ended_at)}</td>
-                  <td>{run.attempts}</td>
                 </tr>
               ))}
             </tbody>

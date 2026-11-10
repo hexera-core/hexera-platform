@@ -257,6 +257,14 @@ fi
   || API_ENV_PAIRS+=("CAD_REPAIR_MAX_OPS=${CAD_REPAIR_MAX_OPS}")
 [ -z "${CAD_REPAIR_TIMEOUT_S:-}" ] \
   || API_ENV_PAIRS+=("CAD_REPAIR_TIMEOUT_S=${CAD_REPAIR_TIMEOUT_S}")
+# The other two budgets, forwarded for the same reason and by the same rule as the two above.
+# An unforwarded setting is not a smaller version of the feature, it is a silent default: the
+# inspection clock in particular decides how big a part may be demonstrated at all, because an
+# inspection that runs past it reports inconclusive and then no repair is attempted.
+[ -z "${CAD_REPAIR_STALL_LIMIT:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_STALL_LIMIT=${CAD_REPAIR_STALL_LIMIT}")
+[ -z "${CAD_INSPECT_TIMEOUT_S:-}" ] \
+  || API_ENV_PAIRS+=("CAD_INSPECT_TIMEOUT_S=${CAD_INSPECT_TIMEOUT_S}")
 # The LLM planner posture, only when the workflow's llm_planner input chose shadow or live.
 [ -z "${CAD_REPAIR_LLM_PLANNER:-}" ] \
   || API_ENV_PAIRS+=("CAD_REPAIR_LLM_PLANNER=${CAD_REPAIR_LLM_PLANNER}")

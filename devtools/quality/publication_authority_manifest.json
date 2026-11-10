@@ -2688,6 +2688,32 @@
   "roots": []
  },
  {
+  "context": "application/mesh_as.py::answer_of::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/mesh_as.py",
+  "qualname": "answer_of",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/mesh_as.py::needs_model::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/mesh_as.py",
+  "qualname": "needs_model",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_HINT",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/native_submission.py::_infrastructure_failure::error#1|NotAPublisher|not-a-publisher|",
   "path": "application/native_submission.py",
   "qualname": "_infrastructure_failure",
@@ -3019,6 +3045,21 @@
   "roots": []
  },
  {
+  "context": "application/purpose_map.py::mesh_as_of::search#1|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
+  "path": "application/purpose_map.py",
+  "qualname": "mesh_as_of",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_NEGATED",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/purpose_map.py::re.Pattern"
+  ]
+ },
+ {
   "context": "application/purpose_map.py::read_purpose::search#1|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
   "path": "application/purpose_map.py",
   "qualname": "read_purpose",
@@ -3062,6 +3103,32 @@
   "roots": [
    "application/purpose_map.py::re.Pattern"
   ]
+ },
+ {
+  "context": "application/shell_check.py::solid_short::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/shell_check.py",
+  "qualname": "solid_short",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_SPAN_WHY",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/shell_check.py::solid_short::search#2|NotAPublisher|not-a-publisher|",
+  "path": "application/shell_check.py",
+  "qualname": "solid_short",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_WIDTH_WHY",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
  },
  {
   "context": "application/terminal_finalize.py::finalize_crash::error#1|NotAPublisher|not-a-publisher|application/terminal_finalize.py::callers of finalize_crash()",
@@ -3468,6 +3535,36 @@
   "lifecycle": "not-a-publisher",
   "gated_required": false,
   "roots": []
+ },
+ {
+  "context": "cad/midsurface.py::extract::check#1|NotAPublisher|not-a-publisher|cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock",
+  "path": "cad/midsurface.py",
+  "qualname": "extract",
+  "semantic": "check",
+  "method": "check",
+  "ordinal": 1,
+  "receiver": "clock",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock"
+  ]
+ },
+ {
+  "context": "cad/midsurface.py::extract::check#2|NotAPublisher|not-a-publisher|cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock",
+  "path": "cad/midsurface.py",
+  "qualname": "extract",
+  "semantic": "check",
+  "method": "check",
+  "ordinal": 2,
+  "receiver": "clock",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock"
+  ]
  },
  {
   "context": "cad/step_units.py::_unit_metres::search#1|NotAPublisher|not-a-publisher|",
@@ -4016,6 +4113,19 @@
   "context": "engines/gmsh/fea_adapter.py::surfaces_at_point::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/gmsh/fea_adapter.py",
   "qualname": "surfaces_at_point",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/gmsh/shell_adapter.py::_generate::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/gmsh/shell_adapter.py",
+  "qualname": "_generate",
   "semantic": "search",
   "method": "search",
   "ordinal": 1,
@@ -4626,6 +4736,21 @@
   ]
  },
  {
+  "context": "engines/snappy/drivers.py::_say_part_levels::note#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::callers of _say_part_levels()",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_say_part_levels",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 1,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::callers of _say_part_levels()"
+  ]
+ },
+ {
   "context": "engines/snappy/finalize.py::_polymesh_boundary_foam_types::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/snappy/finalize.py",
   "qualname": "_polymesh_boundary_foam_types",
@@ -4806,6 +4931,19 @@
   "method": "error",
   "ordinal": 1,
   "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snappy/snappy_runner.py::render_snappy_case::plan#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy/snappy_runner.py",
+  "qualname": "render_snappy_case",
+  "semantic": "plan",
+  "method": "plan",
+  "ordinal": 1,
+  "receiver": "PL",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -5465,6 +5603,36 @@
   "lifecycle": "not-a-publisher",
   "gated_required": false,
   "roots": []
+ },
+ {
+  "context": "render/part_pictures.py::_shot::screenshot#1|NotAPublisher|not-a-publisher|render/part_pictures.py::result of pv.Plotter(off_screen=True, window_size=list(window))",
+  "path": "render/part_pictures.py",
+  "qualname": "_shot",
+  "semantic": "screenshot",
+  "method": "screenshot",
+  "ordinal": 1,
+  "receiver": "pl",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "render/part_pictures.py::result of pv.Plotter(off_screen=True, window_size=list(window))"
+  ]
+ },
+ {
+  "context": "render/part_pictures.py::render_parts::screenshot#1|NotAPublisher|not-a-publisher|render/part_pictures.py::result of pv.Plotter(off_screen=True, window_size=[260 * cols, 240 * rows], shape=(rows, cols), border=True)",
+  "path": "render/part_pictures.py",
+  "qualname": "render_parts",
+  "semantic": "screenshot",
+  "method": "screenshot",
+  "ordinal": 1,
+  "receiver": "pl",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "render/part_pictures.py::result of pv.Plotter(off_screen=True, window_size=[260 * cols, 240 * rows], shape=(rows, cols), border=True)"
+  ]
  },
  {
   "context": "render/scout_snapshots.py::render_snapshots.shoot::screenshot#1|NotAPublisher|not-a-publisher|render/scout_snapshots.py::result of pv.Plotter(off_screen=True, window_size=list(WINDOW))",

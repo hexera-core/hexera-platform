@@ -557,12 +557,13 @@ class _Preview:
         """Store the skin and the provisional check. Never raises: a preview that cannot be made
         leaves the scout exactly as it was without one."""
         try:
-            from meshpipeline.cad.part_name import part_name
+            from meshpipeline.cad.part_name import file_stem_name, part_name
 
             facts = preview_facts(skin, seed)
             facts.update(canonical.facts())
             facts["notes"].extend(n for n in canonical.notes if n not in facts["notes"])
             facts["part_name"] = part_name(fetched, ref.original_filename)
+            facts["file_name"] = file_stem_name(ref.original_filename)
             skin_key = check_object_key(self.session_id, "skin.json")
             _store_json(skin_key, _placed_skin_payload(fetched) if placed else skin_payload(skin))
             self.skin_key = skin_key
@@ -792,9 +793,11 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         _publish_validity(session_id, ref, facts["validity"])
         # THE PART'S NAME FROM THE FILE (cad/part_name): a STEP's own product name, else the upload's
         # file name - what every stage shows when no model names the part (an FEA part never asks one)
-        from meshpipeline.cad.part_name import part_name
+        from meshpipeline.cad.part_name import file_stem_name, part_name
 
         facts["part_name"] = part_name(fetched, ref.original_filename)
+        # the upload's own file name, for a stage that names a whole assembly (application/fea_check)
+        facts["file_name"] = file_stem_name(ref.original_filename)
         if facts["validity"].get("clean") is not True and facts["validity"].get("kind") != "unchecked":
             facts["notes"].append(facts["validity"]["summary"])
         # a thermal model's physics (ECXML: materials, powers, fans, vents...), kept whole beside
@@ -1803,7 +1806,7 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
         return landed
     if _is_fea(purpose_text):
         # AN FEA PART has no openings, no flow and no far field to name: the stage shows the part,
-        # its size and unit, its bodies and the clean check, all measured. No model is asked.
+        # its size and unit, its bodies and the clean check, all measured. No model names anything.
         # What the FEA plan sizes from is measured here, in the unit just settled: the walls and
         # the stress hot spots (FEA build step 3)
         from meshpipeline.cad.fea_measure import FACT_KEY
@@ -1816,6 +1819,22 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
                 and not fea_blocker(facts)):
             sizing = uuid.uuid4().hex
             facts[PLAN_FACT_KEY] = {"sizing": True, "token": sizing}
+        # SHSTAGE-1: SHELL OR SOLID, when the user's words say it: the word table, the model only for a
+        # paraphrase (checked against the allowed values); the stage opens on it and never overrides it
+        from meshpipeline.application import mesh_as
+
+        facts[MESH_AS_KEY] = mesh_as.as_record(mesh_as.read_mesh_as_sync(purpose_text, session_id=session_id,
+                                                                          owner_id=owner_id))
+        # SHSTAGE-2: THE SHELL CHECK, ONLY WHEN THE USER'S WORDS ASKED FOR A SHELL (plain FEA is a solid, and costs
+        # the worker nothing): its status says "measuring" before the stage opens, and the stage never waits on it.
+        # A shell asked for later is started by the stage's read (application/shell_check.start_if_asked)
+        try:
+            from meshpipeline.application import shell_check
+
+            if shell_check.wants_shell(facts):
+                shell_check.start(session_id, owner_id, facts=facts, interpretation=interpretation)
+        except Exception as exc:  # noqa: BLE001 - no shell check: the run still makes a said shell
+            logger.warning("geometry naming: the shell check was not started (%s)", type(exc).__name__)
         proposal = _proposal(facts, {})
         result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
         result.update(named=True, facts=facts, vision={}, proposal=proposal,
@@ -1849,6 +1868,9 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
             if "error" in seen:
                 seen = {"up_error": seen["error"]}
             vision.update(seen)
+    # NOTE-5 ON THE FLOW ROUTE: a surface of several named parts (or a CAD file of several solids) keeps its parts
+    # for the checklist before approval, as the FEA route's measurement does
+    _keep_flow_parts(session_id, stored, facts, interpretation)
     proposal = _proposal(facts, vision)
     # what the scout stored, minus the fields write_status writes itself: the status, the clock,
     # and the session id - which it also takes as its first argument
@@ -1991,6 +2013,9 @@ def merged_onto_full(named: dict, named_from: dict, full: dict) -> dict:
 #: An upload larger than this is not measured for FEA in the naming step (the record says so; the
 #: plan then sizes from the part's size alone). Version 1's parts are single parts, far smaller.
 FEA_MEASURE_MAX_MB = 80.0
+#: SHSTAGE-1: where an FEA part's facts keep what the user's words said about meshing it as a shell or a
+#: solid (application/mesh_as.as_record).
+MESH_AS_KEY = "mesh_as_words"
 
 
 class _TooBig(ValueError):
@@ -2016,6 +2041,7 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None, ear
     started = time.time()
     validity = facts.get("validity")
     key = None
+    session_id = str(stored.get("session_id") or "")
     try:
         from meshpipeline.cad.ingest import canonicalise
         from meshpipeline.cad.scout_mesh import read_triangles
@@ -2029,6 +2055,9 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None, ear
             if early is not None:
                 early.stop()
             logger.info("geometry check: FEA measurement reused from an earlier check of the same file")
+            from meshpipeline.application import part_matches as PM
+            if known.get(PM.PARTS_KEY) and session_id:
+                known = {**known, PM.PARTS_KEY: PM.copy_parts(known.get(PM.PARTS_KEY), session_id)}
             return known
         interp_ref = GeometryInterpretationRef.from_payload(interpretation) if interpretation else None
         record = None
@@ -2044,10 +2073,13 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None, ear
                 _too_big(fetched)
                 canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
                 if canonical.kind is GeometryKind.cad:
-                    shape, record = _fea_measure_cad(canonical.path, interp_ref, ref)
+                    shape, record, surface = _fea_measure_cad(canonical.path, interp_ref, ref)
                     record["suspects"] = _fea_suspects(shape, record, validity)
+                    _keep_parts(session_id, record, surface)
                 else:
                     record = measure_triangles(read_triangles(canonical.path) * scale * 1000.0)
+        else:
+            _keep_parts(session_id, record, early.surface() if early is not None else None)
         record.update(measured=True, scale_to_m=scale)
     except Exception as exc:  # noqa: BLE001 - the measurement informs the plan; the check still lands
         logger.warning("geometry check: the FEA measurement did not run (%s: %s)", type(exc).__name__,
@@ -2075,7 +2107,7 @@ def _too_big(fetched: Path) -> None:
 def _fea_measure_cad(path: Path, interp_ref, ref):
     """(the shape, its FEA record) for a CAD file - everything but the suspected defects, which read the
     clean verdict (_fea_suspects)."""
-    from meshpipeline.cad.fea_measure import measure_cad
+    from meshpipeline.cad.fea_measure import measure_cad_surface
     from meshpipeline.cad.normalise import occ_scale_transform
     from meshpipeline.cad.scout import read_cad
 
@@ -2083,13 +2115,76 @@ def _fea_measure_cad(path: Path, interp_ref, ref):
     prepared, _note = _prepared_coordinates(path, interp_ref, ref)
     mm_per_unit = 1000.0 * float(occ_scale_transform(prepared).ScaleFactor())
     shape = read_cad(path)
-    record = measure_cad(shape, mm_per_unit=mm_per_unit)
+    record, surface = measure_cad_surface(shape, mm_per_unit=mm_per_unit)
     if int(record.get("bodies") or 0) > 1:
         # AN ASSEMBLY: its parts, where they touch or pass into each other, and every
         # face named Part_k_Face_j - the names the delivered files use
-        from meshpipeline.cad.fea_assembly import measure_assembly
+        from meshpipeline.cad.fea_assembly import global_face_names, measure_assembly
         record = measure_assembly(shape, record, source=path, mm_per_unit=mm_per_unit)
-    return shape, record
+        # the labelled surface named the same way: the parts checklist draws and measures each part on it
+        names = global_face_names(shape)
+        if len(names) == len(surface.names):
+            surface.names = list(names)
+    return shape, record, surface
+
+
+def _keep_flow_parts(session_id: str, stored: dict, facts: dict, interpretation: dict | None) -> None:
+    """NOTE-5 on the flow route: the parts of an upload of several named surfaces (an STL's named solids, in the
+    order the mesher stages them) or several CAD solids (Part_k in OpenCASCADE's order), kept for the checklist
+    (application/part_matches, its CFD route). Never fails the naming; a single part keeps nothing."""
+    try:
+        from meshpipeline.application import part_matches as PM
+        from meshpipeline.cad.ingest import canonicalise
+        from meshpipeline.contracts.geometry_source import GeometrySourceRef
+        from meshpipeline.contracts.intake_formats import GeometryKind
+        from meshpipeline.engines.snappy import part_levels as PL
+
+        if not session_id or not isinstance(stored.get("source"), dict):
+            return
+        ref = GeometrySourceRef.from_payload(stored["source"])
+        scale = float(facts.get("scale_to_m") or 0.001)
+        with tempfile.TemporaryDirectory(prefix="flow_parts_") as tmp:
+            work = Path(tmp)
+            fetched = _fetch(ref, work)
+            _too_big(fetched)
+            canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
+            if canonical.kind is GeometryKind.cad:
+                from meshpipeline.cad.fea_assembly import global_face_names, solids
+                from meshpipeline.cad.fea_measure import _brep_surface
+                from meshpipeline.cad.scout import read_cad
+                shape = read_cad(canonical.path)
+                n = len(solids(shape))
+                if n < 2:
+                    return
+                surface = _brep_surface(shape, 1000.0 * scale)[0]
+                names = global_face_names(shape)
+                if len(names) != len(surface.names):
+                    return
+                surface.names = list(names)
+                record: dict = {"part_bases": [{"id": f"Part_{k}", "name": ""} for k in range(1, n + 1)]}
+            else:
+                from meshpipeline.cad.stl_io import read_stl_solids
+                got = {k: v for k, v in read_stl_solids(canonical.path).items() if v}
+                if len(got) < 2:
+                    return
+                surface, record, _by_id = PL.surface_of(
+                    {k: [[[c * scale for c in p] for p in t] for t in v] for k, v in got.items()})
+        kept = PM.store_parts(session_id, record, surface, route=PM.ROUTE_CFD)
+        if kept is not None:
+            facts[PM.PARTS_KEY] = kept
+    except Exception as exc:  # noqa: BLE001 - no checklist, never a failed naming
+        logger.info("geometry naming: the flow parts were not kept (%s: %s)", type(exc).__name__, str(exc)[:200])
+
+
+def _keep_parts(session_id: str, record: dict, surface) -> None:
+    """NOTE-4/6, BEFORE APPROVAL: an assembly's parts and the areas inside a part kept for the checklist (application/part_matches) - its facts
+    table and pictures, drawn on the labelled surface that exists only here. Never fails the measurement."""
+    if surface is None or not session_id:
+        return
+    from meshpipeline.application import part_matches as PM
+    kept = PM.store_parts(session_id, record, surface)
+    if kept is not None:
+        record[PM.PARTS_KEY] = kept
 
 
 def _fea_suspects(shape, record: dict, validity) -> list:
@@ -2128,6 +2223,7 @@ class _EarlyFea:
         self._done = threading.Event()
         self._stop = threading.Event()
         self._shape = None
+        self._surface = None
         self._record: dict | None = None
         self._error: BaseException | None = None
         self._suspects: list | None = None
@@ -2141,6 +2237,10 @@ class _EarlyFea:
 
     def stop(self) -> None:
         self._stop.set()
+
+    def surface(self):
+        """The labelled surface the early measurement measured on (None before, or when it did not run)."""
+        return self._surface
 
     def _run(self) -> None:
         try:
@@ -2157,7 +2257,7 @@ class _EarlyFea:
                 canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
                 if canonical.kind is not GeometryKind.cad:
                     raise _NotEarly("a triangle file is measured once the scout lands")
-                self._shape, self._record = _fea_measure_cad(canonical.path, interp_ref, ref)
+                self._shape, self._record, self._surface = _fea_measure_cad(canonical.path, interp_ref, ref)
             # THE SUSPECTED DEFECTS, as soon as the clean verdict is known
             while True:
                 validity = early_validity(self.session_id, self.sha256)

@@ -19,6 +19,7 @@ test("hands main.js the API origin, the routing mode and the job to boot", () =>
 
   assert.equal(globals.__HEXERA_API_WS_BASE_URL__, "https://api.example");
   assert.equal(globals.__HEXERA_ROUTED__, true);
+  assert.equal(globals.__HEXERA_FRESH_DOC__, true);
   assert.equal(globals.__HEXERA_BOOT_JOB__, "0f760f95-1111-4222-8333-444455556666");
 });
 

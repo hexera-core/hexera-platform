@@ -150,6 +150,15 @@ on:
         required: false
         default: true
         type: boolean
+      # BUDGETS ONLY, for a demonstration part carrying many defects at once. It raises the number
+      # of operations the loop may try, the two clocks and the stall limit; it changes no cap that
+      # decides whether a repair is ACCEPTABLE. Never ticked for shared dev or production, which
+      # key off their own deployment ids above.
+      cad_repair_demo:
+        description: "cad_repair_demo - raise the CAD repair BUDGETS (operations, stall limit, repair and inspection clocks) for a part with many defects. Changes no acceptance cap: the validity check, solid-count check, cumulative residuals and paired-rim guard all stand"
+        required: false
+        default: false
+        type: boolean
       # OPTIONAL MODEL GUIDANCE INSIDE CAD REPAIR SYSTEM, chosen here like cad_repair. "off" exports
       # nothing, so the API and fleet use the bounded fallback. "shadow" records guidance beside
       # the executed plan without acting; "live" lets it enter the same planner and repair caps.
@@ -1233,7 +1242,7 @@ jobs:
 
       - id: python
         if: steps.reuse.outputs.reused != 'true'
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.11"
           # NO pip cache here, deliberately. This job builds and publishes the release artifacts,
@@ -1532,8 +1541,34 @@ jobs:
       CAD_REPAIR_FIX_SMALL_FACES: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && 'true' || '' }}
       # Development repair carries enough room for a mixed defect case. Production retains the
       # shipped six-operation default unless a release changes it deliberately.
-      CAD_REPAIR_MAX_OPS: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && '12' || '' }}
-      CAD_REPAIR_TIMEOUT_S: ${{ (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && '420' || '' }}
+      #
+      # `cad_repair_demo` RAISES THREE BUDGETS, AND ONLY BUDGETS. A part with many open rims
+      # needs fourteen fills and fourteen re-inspections, and the re-inspection is what costs: at
+      # MAX_OPS=12 the loop runs out of turns less than half way through and the run ends with the
+      # part still unmeshable, which reads as "the repair does not work" when what happened is "the
+      # repair was not allowed to finish". These four numbers are deadline protection - they stop a
+      # pathological part spending a job's time proving it is pathological - so moving them changes
+      # how LONG a repair may take and nothing about what it may do.
+      #
+      # WHAT IT DELIBERATELY DOES NOT TOUCH: the validity cap, the solid-count check, the
+      # cumulative residuals and the paired-rim guard. Those decide WHETHER a result is acceptable,
+      # and a demonstration that switched them off would be demonstrating a different product. The
+      # validity cap in particular cannot be traded for a louder demo: an invalid solid is one gmsh
+      # then refuses, so the success it buys is a failure one stage later.
+      CAD_REPAIR_MAX_OPS: ${{ inputs.cad_repair_demo && '200' || (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && '12' || '' }}
+      CAD_REPAIR_TIMEOUT_S: ${{ inputs.cad_repair_demo && '3600' || (needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair) && '420' || '' }}
+      # THE STALL LIMIT IS NOT RAISED, and that is deliberate. Raising it to 40 on a part with 22
+      # open rims produced 43 attempts in three hours, of which ONE was kept: 38 of the rollbacks
+      # were `sew_faces` returning `target_remains` against rims no sewing could close (the check
+      # measured them: "22 free boundary(ies) that no sewing within 0.458 mm closes; the largest
+      # boundary runs 4780 mm round"). The shipped limit of two stops that after a few minutes
+      # with the same result, which is the honest outcome arriving sooner. A planner that has
+      # proposed two things in a row that did not work has run out of ideas the rules can express.
+      # The inspection's own clock, raised for the same reason: a five-solid car costs ~40 s to read
+      # and scan, and an inspection that runs past its limit reports INCONCLUSIVE - after which
+      # triage aims at nothing and no repair is attempted at all. This is the setting that decides
+      # how big a part may be demonstrated.
+      CAD_INSPECT_TIMEOUT_S: ${{ inputs.cad_repair_demo && '600' || '' }}
       # The planner posture, stated only when it is not "off"; empty means "not stated". Shared dev
       # runs the planner LIVE, so model guidance enters the same planner, caps and measurements as
       # the rule planner's own directives - a push carries no input at all, so the empty value
@@ -1565,7 +1600,7 @@ jobs:
       # not this HEAD - so a download that silently produced the wrong bytes stops the deploy
       # rather than shipping them.
       - name: Fetch the release record
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: release-record-${{ needs.target.outputs.environment }}-${{ github.sha }}
           path: deploy/output

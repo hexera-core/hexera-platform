@@ -338,11 +338,11 @@ def test_a_build_the_merges_break_is_built_again_as_drawn(strip, strip_meshed, t
             merged.append(merges)
         return real_apply(gmsh_, merges)
 
-    def surface(gmsh_, surfaces, remesh):
+    def surface(gmsh_, surfaces, remesh, workers=0):
         if merged and len(merged) == 1 and not getattr(surface, "failed", False):
             surface.failed = True  # type: ignore[attr-defined]
             raise RuntimeError(f"Impossible to mesh surface {next(iter(merged[0]['faces'].values()))}")
-        return real_surface(gmsh_, surfaces, remesh)
+        return real_surface(gmsh_, surfaces, remesh, workers=workers)
 
     monkeypatch.setattr(T, "apply", apply)
     monkeypatch.setattr(A, "surface_mesh", surface)

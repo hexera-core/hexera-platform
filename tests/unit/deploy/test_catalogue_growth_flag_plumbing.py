@@ -23,12 +23,12 @@ def test_each_new_flag_follows_the_planar_fill_path_through_all_four_files():
 def test_development_repair_deploys_get_the_mixed_defect_operation_budget():
     wf, api = _text(".github/workflows/deploy.yml"), _text("deploy/gcp/scripts/create-api-service.sh")
     fleet, boot = _text("deploy/gcp/scripts/create-worker-fleet.sh"), _text("deploy/gcp/worker/startup.sh")
-    assert f"CAD_REPAIR_MAX_OPS: ${{{{ {DEV_OR_OPT_IN} && '12' || '' }}}}" in wf
+    assert f"CAD_REPAIR_MAX_OPS: ${{{{ inputs.cad_repair_demo && '200' || {DEV_OR_OPT_IN} && '12' || '' }}}}" in wf
     assert 'API_ENV_PAIRS+=("CAD_REPAIR_MAX_OPS=${CAD_REPAIR_MAX_OPS}")' in api
     assert "OPT_IN_DROPPABLE+=(CAD_REPAIR_MAX_OPS)" in api
     assert 'WORKER_METADATA+=("cad-repair-max-ops=${CAD_REPAIR_MAX_OPS}")' in fleet
     assert '"cad-repair-max-ops:CAD_REPAIR_MAX_OPS"' in boot
-    assert f"CAD_REPAIR_TIMEOUT_S: ${{{{ {DEV_OR_OPT_IN} && '420' || '' }}}}" in wf
+    assert f"CAD_REPAIR_TIMEOUT_S: ${{{{ inputs.cad_repair_demo && '3600' || {DEV_OR_OPT_IN} && '420' || '' }}}}" in wf
     assert 'API_ENV_PAIRS+=("CAD_REPAIR_TIMEOUT_S=${CAD_REPAIR_TIMEOUT_S}")' in api
     assert "OPT_IN_DROPPABLE+=(CAD_REPAIR_TIMEOUT_S)" in api
     assert 'WORKER_METADATA+=("cad-repair-timeout-s=${CAD_REPAIR_TIMEOUT_S}")' in fleet

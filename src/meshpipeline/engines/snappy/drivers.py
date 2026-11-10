@@ -369,6 +369,70 @@ def _release_size_brake(workspace: Path, oversize: dict, *, attempt: int, job_id
     return True
 
 
+async def _part_sizes(workspace, state, *, job_id: str, run=None) -> dict | None:
+    """PLAN-cfd-4: the notes read on the staged surface's named parts (engines/snappy/part_levels), with the parts'
+    triangles kept for their own refinement surfaces; None when there is nothing to read. Never fails a run."""
+    try:
+        from meshpipeline.engines.snappy import part_levels as PL
+        stl = Path(workspace) / "input.stl"
+        if not stl.exists():
+            return None
+        from meshpipeline.cad.stl_io import drop_degenerate, read_stl_solids
+        solids = {n: drop_degenerate(v) for n, v in read_stl_solids(stl).items()}
+        got = await PL.decide(Path(workspace), solids, state or {}, job_id=job_id, run=run)
+        if (got.get("reading") or {}).get("status") in (None, "none"):
+            return None
+        return {**got, "solids": solids}
+    except StaleExecutionPublish:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the parts keep the surface's levels
+        logger.warning("snappy part levels: not read (%s) - job_id=%s", type(exc).__name__, job_id)
+        return None
+
+
+def _write_part_surfaces(workspace, got: dict | None, regions: list) -> None:
+    """Each part the notes sized that is NOT its own region in the staged surface, written as its own surface
+    (constant/triSurface/partref_<name>.stl) for a distance refinement on it alone. Never raises."""
+    if not got or (got.get("reading") or {}).get("status") != "used":
+        return
+    try:
+        from meshpipeline.cad.stl_io import _write_solid
+        from meshpipeline.engines.snappy import part_levels as PL
+        own = {PL.safe(r) for r in regions or []}
+        by_id = got.get("by_id") or {}
+        named = {by_id[p] for e in got["reading"].get("entries") or []
+                 for p in [*e.get("parts", []), *e.get("rest_parts", [])] if p in by_id}
+        tri = Path(workspace) / "constant" / "triSurface"
+        tri.mkdir(parents=True, exist_ok=True)
+        for name in named:
+            if PL.safe(name) in own or not (got.get("solids") or {}).get(name):
+                continue
+            with (tri / f"partref_{PL.safe(name)}.stl").open("w") as fh:
+                _write_solid(fh, f"partref_{PL.safe(name)}", got["solids"][name])
+    except Exception as exc:  # noqa: BLE001 - that part keeps the surface's level
+        logger.warning("snappy part levels: a part's own surface was not written (%s)", type(exc).__name__)
+
+
+async def _say_part_levels(workspace, publish, got: dict, levels: dict | None, *, job_id: str) -> None:
+    """The notes about parts, said once per run: in the run's words, the "From your notes" line, the why record."""
+    from meshpipeline.engines.snappy import part_levels as PL
+    lines = PL.words(got, levels)
+    try:
+        for d in PL.decisions(got, levels):
+            from meshpipeline.contracts import decision_record as _dr
+            _dr.cite(job_id, stage=str(d.get("stage")), decided=str(d.get("decided")), value=d.get("value"),
+                     rule=str(d.get("rule")), inputs=d.get("inputs") or {},
+                     source=str(d.get("source") or _dr.SOURCE_RULE), words=str(d.get("words") or ""))
+        if lines:
+            from meshpipeline.contracts.user_notes import record_remark
+            record_remark(Path(workspace), lines[0], by=PL.CONSUMER)
+            await publish.anote("From your notes: " + " ".join(lines[:4]), op_id="internal:part-levels-notes")
+    except StaleExecutionPublish:
+        raise
+    except Exception:  # noqa: BLE001 - the words never stop a mesh
+        logger.debug("PLAN-cfd-4 not said", exc_info=True)
+
+
 def _write_timed_out_plan(workspace: Path, strategy: dict) -> None:
     import json as _json
 
@@ -926,6 +990,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     # sealed-space readings, one per wall-cell size this build plans (engines/sealed_cavities),
     # and the thin-feature field re-read with each reading's wetted sides
     _cavity_cache: dict = {}
+    _part_cache: dict = {}
     _field_cache: dict = {}
 
     # SYMMETRY (3D external) comes in two shapes, told apart by how many patches were declared:
@@ -1204,6 +1269,12 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             # faces. Only the policy's split is folded back after meshing.
             _split = _policy is not None and _policy.mode == "split"
             _dict_regions = prep.get("surface_regions") or None
+            # PLAN-cfd-4: THE SIZES THE NOTES ASK FOR ON PARTICULAR PARTS (engines/snappy/part_levels), read once
+            # per run (the reading the user checked before approval first); each pass writes them on its own cell
+            if "got" not in _part_cache:
+                _part_cache["got"] = await _part_sizes(workspace, state, job_id=str(job_id or ""), run=run)
+            _part_got = _part_cache["got"]
+            _write_part_surfaces(workspace, _part_got, prep.get("surface_regions") or [])
             summary = R.render_snappy_case(
                 workspace, surface_name=prep["surface_name"], feature_file=prep["feature_file"],
                 analysis=analysis, recommendation=rec, domain_min=dmin, domain_max=dmax,
@@ -1219,7 +1290,12 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                  or strategy.get("reference_length_m")),
                 contact=_contact,
                 # the gaps between the body's parts, 13 cells across (engines/gap_sizing)
-                gap_field=_gap_field, ground_floor=_floor)
+                gap_field=_gap_field,
+                part_sizes=_part_got, ground_floor=_floor)
+            if _part_got and not _part_cache.get("said"):
+                _part_cache["said"] = True
+                await _say_part_levels(workspace, publish, _part_got, summary.get("part_levels"),
+                                       job_id=str(job_id or ""))
             if int(summary.get("max_cells") or 0) > int(strategy.get("max_cells") or 0):
                 # the gap boxes raised snappy's cell ceiling: the plan memory carries the budget
                 # the pass really used, so an overshoot correction reads it right

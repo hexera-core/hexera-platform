@@ -1,4 +1,4 @@
-# Responsibility: Pin PLAN-fea-12's rounds (27 Oct): a round kept only for its shape (PLAN-fea-7) under 1/1,000 of its own part is an edge break - no zone of its own, named in the plan - while every larger round, and every fillet or hole however small (a stress raiser, PLAN-fea-4), keeps its zone.
+# Responsibility: Pin PLAN-fea-12's rounds (27 Oct): a round kept only for its shape (PLAN-fea-7) under 1/1,000 of its own part is an edge break - no zone of its own, named in the plan - while every larger round, every hole however small, and every fillet over 1/20 of its wall (a stress raiser, PLAN-fea-4; PLAN-fea-24 for the rest) keeps its zone.
 # Boundaries: engines/fea_plan on hand-written measurement records.
 from __future__ import annotations
 
@@ -29,8 +29,19 @@ def test_an_assembly_part_is_judged_by_its_own_size():
 
 
 def test_a_small_fillet_is_still_a_stress_raiser():
+    # 0.06 mm in a 1 mm wall: over 1/20 of the wall it sits in, so a stress raiser however small
+    spot = {"id": "H1", "type": "fillet", "shape": "fillet", "faces": ["Face_1"], "radius_mm": 0.06,
+            "local_thickness_mm": 1.0}
+    rec = _record({"Face_1": 0.06}, spots=[spot])
+    assert "fillet" in [z["kind"] for z in P.zones(rec) if z["faces"] == ["Face_1"]]
+    assert P.micro_rounds(rec) == []
+
+
+def test_a_fillet_under_a_twentieth_of_its_wall_and_a_thousandth_of_its_part_is_cosmetic():
+    # PLAN-fea-24 (rulebook 49): 0.06 mm in a 5 mm wall of a 100 mm part - meshed at the size round it, named
     spot = {"id": "H1", "type": "fillet", "shape": "fillet", "faces": ["Face_1"], "radius_mm": 0.06,
             "local_thickness_mm": 5.0}
     rec = _record({"Face_1": 0.06}, spots=[spot])
-    assert "fillet" in [z["kind"] for z in P.zones(rec) if z["faces"] == ["Face_1"]]
+    assert "fillet" not in [z["kind"] for z in P.zones(rec) if z["faces"] == ["Face_1"]]
+    assert [c["spot"] for c in P.cosmetic_fillets(rec)] == ["H1"]
     assert P.micro_rounds(rec) == []

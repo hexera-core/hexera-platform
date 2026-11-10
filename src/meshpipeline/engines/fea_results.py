@@ -84,6 +84,9 @@ def viewer_face_names(workspace) -> dict[int, str] | None:
     other side is inside the mesh); None for a single part."""
     q = _read(Path(workspace) / "quality.json")
     tags = ((q.get("fea") or {}).get("assembly") or {}).get("face_tags") or {}
+    if not tags and (q.get("fea") or {}).get("shell"):
+        # a delivered shell: its mid-faces by name (Mid_k), as shell.msh groups them (engines/shell_run.write_msh)
+        tags = (q.get("fea") or {}).get("face_tags") or {}
     if not tags:
         return None
     out: dict[int, str] = {}
@@ -173,6 +176,10 @@ def results(workspace) -> dict | None:
     q = _read(ws / "quality.json")
     if not plan or not (q.get("fea") or {}).get("plan"):
         return None
+    if (q.get("fea") or {}).get("shell"):
+        # SHSTAGE-7: the delivered shell's own block (its count, quality, the user's count, one plain line)
+        from meshpipeline.engines.shell_delivery import results as shell_results
+        return shell_results(ws, q, plan)
     fea = q.get("fea") or {}
     rules = fea.get("rules") or {}
     cells = int(q.get("cells") or 0)
@@ -258,6 +265,24 @@ def results(workspace) -> dict | None:
         extra["skins_left_out"] = [{"face": s.get("face"), "on": s.get("on"), "words": s.get("words")}
                                    for s in acc["skins"]]
     faces_said = faces_words(acc) if (acc.get("skins") or acc.get("merged") or acc.get("missing")) else ""
+    # PLAN-fea-27: the element count the user named, beside the count the mesh has
+    tgt = plan.get("target") or {}
+    if tgt.get("asked"):
+        from meshpipeline.engines.fea_plan import count_line
+        planned = int((plan.get("estimate") or {}).get("elements") or 0)
+        line = count_line(tgt, planned, int(cells))
+        extra["target"] = {"asked": int(tgt["asked"]), "mode": tgt.get("mode") or "about",
+                           "planned": planned, "built": cells,
+                           "scale": float(tgt.get("scale") or 1.0), "beyond": float(tgt.get("beyond") or 1.0),
+                           "lowest": bool(tgt.get("lowest")),
+                           **{k: int(tgt[k]) for k in ("low", "high") if tgt.get(k) is not None},
+                           "words": line[:1].upper() + line[1:]}
+    # PLAN-fea-29 / AI-fea-9: the sizes the user asked for per part, how their words were tied to parts, and the
+    # pictures that showed the model the parts (kept for the console)
+    ps = plan.get("part_sizes") or {}
+    if ps.get("status") == "used" and (ps.get("entries") or ps.get("dropped")):
+        extra["part_sizes"] = {"entries": list(ps.get("entries") or []), "dropped": list(ps.get("dropped") or []),
+                               "pictures": list(ps.get("pictures") or []), "sizes": plan.get("user_sizes") or {}}
     if faces_said:
         # the same account in one short line, for the result screen (the whole sentence is in the plan words)
         extra["faces_short"] = faces_short(acc)

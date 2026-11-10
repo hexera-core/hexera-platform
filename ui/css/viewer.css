@@ -131,6 +131,11 @@
 .gc-axes .ax{stroke:#cbd5e1;stroke-width:1.3;stroke-linecap:round}
 .gc-axes .ax-l{fill:#cbd5e1;font:11px/1 Geist,Arial,sans-serif;text-anchor:middle;dominant-baseline:middle}
 .gc-axes .back{opacity:.38}
+/* the mid-surface's one quiet line once the panel has gone: its wall legend, or that it is still being made */
+.iv-shell-note{position:absolute;left:14px;bottom:14px;z-index:6;padding:5px 10px;border:1px solid var(--border);
+  border-radius:var(--r-md);background:var(--toolbar-bg);color:var(--text-faint);font-size:var(--fs-sm);pointer-events:none}
+.iv-shell-note[hidden]{display:none}
+.iv-shell-note .fea-shell-legend{margin:0}
 .gc-banner{display:flex;align-items:center}
 .gc-banner[hidden]{display:none}
 .gc-spin{width:12px;height:12px;border-radius:50%;border:2px solid rgba(255,255,255,.25);border-top-color:#ffd400;animation:vspin .9s linear infinite;flex:none}

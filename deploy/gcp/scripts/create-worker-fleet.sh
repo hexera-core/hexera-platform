@@ -617,6 +617,12 @@ WORKER_METADATA=(
   || WORKER_METADATA+=("cad-repair-max-ops=${CAD_REPAIR_MAX_OPS}")
 [ -z "${CAD_REPAIR_TIMEOUT_S:-}" ] \
   || WORKER_METADATA+=("cad-repair-timeout-s=${CAD_REPAIR_TIMEOUT_S}")
+# The WORKER is where both of these actually bite: node_repair_inspect and node_repair_attempt
+# run here, so an inspection clock set only on the API changes nothing about what gets repaired.
+[ -z "${CAD_REPAIR_STALL_LIMIT:-}" ] \
+  || WORKER_METADATA+=("cad-repair-stall-limit=${CAD_REPAIR_STALL_LIMIT}")
+[ -z "${CAD_INSPECT_TIMEOUT_S:-}" ] \
+  || WORKER_METADATA+=("cad-inspect-timeout-s=${CAD_INSPECT_TIMEOUT_S}")
 [ -z "${CAD_REPAIR_LLM_PLANNER:-}" ] \
   || WORKER_METADATA+=("cad-repair-llm-planner=${CAD_REPAIR_LLM_PLANNER}")
 # The verdict by measured limits (docs/RULES.md VER), only when the target states it (dev does,

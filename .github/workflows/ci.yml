@@ -135,7 +135,7 @@ jobs:
       # With code scanning on, zizmor's findings go to the Security tab as SARIF and its check
       # gates them. With it off (no Advanced Security), zizmor prints them to this log as
       # annotations and fails this job on any high-severity finding itself.
-      - uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
+      - uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
         with:
           advanced-security: ${{ steps.code-scanning.outputs.available == 'true' }}
           annotations: ${{ steps.code-scanning.outputs.available != 'true' }}
@@ -247,7 +247,8 @@ jobs:
     needs: [preflight]
     if: needs.preflight.outputs.run_python == 'true' && needs.preflight.outputs.full_ci == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # 100, not 45 (1 Nov): the mixed shell + solid families (below) solve about 30 minutes
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -262,7 +263,23 @@ jobs:
           FEA_ACCURACY_REQUIRE_CCX: "1"
           FEA_ACCURACY_REPORT: fea_accuracy.jsonl
           FEA_ACCURACY_THREADS: "4"
-        run: python -m pytest -q -p no:cacheprovider -rs tests/unit/engines/test_fea_textbook.py
+        run: python -m pytest -q -p no:cacheprovider -rs tests/unit/engines/test_fea_textbook.py tests/unit/engines/test_shell_textbook.py tests/unit/engines/test_shell_pipeline.py tests/unit/engines/test_mixed_textbook.py
+      - name: Mixed shell + solid families, meshed and solved against the all-solid mesh
+        timeout-minutes: 60
+        env:
+          HEXERA_CCX: /usr/bin/ccx
+          FEA_ACCURACY_REQUIRE_CCX: "1"
+          FEA_ACCURACY_REPORT: fea_accuracy.jsonl
+          MIXED_ACCURACY_FAMILIES: "1"
+        run: |
+          # one family per process (a runner has 8 GB), its rows and the memory printed as each ends
+          rc=0
+          for n in l_bracket_pad tube_flange plate_lip_block; do
+            python -m pytest -q -p no:cacheprovider -rs --tb=short tests/unit/engines/test_mixed_families.py -k "$n" || rc=1
+            grep "mixed_$n" fea_accuracy.jsonl || true
+            free -m | head -2
+          done
+          exit $rc
       - name: The table
         if: ${{ !cancelled() }}
         env:
@@ -600,7 +617,7 @@ jobs:
       # NOT merged: every attempt's report lands in its own integration-report-<shard>-attempt-<n>
       # directory, because merging would lay the attempts' identically named files over each
       # other. The guard below chooses the newest attempt per shard by number.
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: integration-report-*
           path: integration-reports
