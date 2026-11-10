@@ -329,6 +329,31 @@ def test_plates_of_two_thicknesses_butted_in_line_become_one_flat_shell_with_an_
     _all_checks(rec)
 
 
+def test_a_short_plate_whose_thickness_steps_is_judged_as_one_wall():
+    # SHELL-19: each half alone is under 10 of its walls long (solid by SHELL-2); the whole plate is 10.5 of the thicker
+    rec, surface = ms.extract(sf.short_step(3.0, 2.6), mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
+    assert sorted(p["thickness_mm"] for p in _shell_pairs(rec)) == pytest.approx([2.6, 3.0])
+    assert all("thickness changes" in p["why"] for p in _shell_pairs(rec))
+    assert _sewn_area(surface) == pytest.approx(50 * 20, rel=REL)
+    assert _sewn(rec)["open_edges"] == 0
+    _all_checks(rec)
+
+
+def test_a_wall_step_is_not_read_whole_when_the_body_already_has_a_shell():
+    # SHELL-19 reads only a body with no shell sheet: here the 2 mm half passes alone, so the 3 mm half stays solid
+    rec, _ = ms.extract(sf.short_step(3.0, 2.0, a=30.0), mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["mixed"]
+    assert [p["thickness_mm"] for p in _shell_pairs(rec)] == pytest.approx([2.0])
+
+
+def test_a_thick_block_lends_no_size_to_a_short_plate_on_it():
+    # SHELL-19: the 20 mm block fails against the region and is taken out; the 3 mm plate alone is under 10 walls long
+    rec, _ = ms.extract(sf.short_step(20.0, 3.0), mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["solid"]
+    assert not _shell_pairs(rec)
+
+
 def test_where_mid_faces_do_not_meet_the_region_is_meshed_solid_and_said_so(monkeypatch):
     monkeypatch.setattr(ms, "CLOSE_STRIPS", False)   # the join itself under test, no SHELL-13 strips
     monkeypatch.setattr(ms, "snap_steps", lambda *_a, **_k: None)   # leave the butt step open

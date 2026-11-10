@@ -602,6 +602,18 @@ FIT_SAMPLES = 17
 FIT_WIDTH_SLACK = 1.5
 #: SHELL-2b: a pair's width judged over its whole wall (its sheet's CAD faces as one region)
 WALL_WIDTH = True
+#: SHELL-19: A WALL WHOSE THICKNESS CHANGES is judged whole. A sheet (SHELL-2) is one thickness, so a printed or
+#: machined plate with pockets, grooves, a thicker band or a thread is cut into many small sheets, each too short
+#: against its own wall to pass alone (a 60 mm angle with 2.0, 2.4 and 3.7 mm stretches; a 27 mm threaded ring).
+#: Sheets of one body whose faces are the same or meet at a CAD edge, whatever their thickness, form a WALL REGION;
+#: a sheet is a shell when its own thickness passes SHELL-2's two rules against its region's size (the square root
+#: of the region's mid area) and width (the region's CAD faces as one region). A sheet that fails is taken out and
+#: the regions are read again, until none fails: a thick block never lends its size to a thin fin on it. Only
+#: sheets at least REGION_MIN_WIDTH walls wide on their own join a region (a chamfer's or a thread crest's sliver
+#: pair is no wall). Only a body with no shell sheet of its own is read this way: a body shelled where its walls
+#: pass alone keeps its thicker steps solid (mixed), which joins cleanly.
+WALL_REGIONS = True
+REGION_MIN_WIDTH = 1.0
 FIT_ITERATIONS = 3
 FIT_EDGE_SAMPLES = 24
 
@@ -3663,6 +3675,82 @@ def _solid_words(closest: dict | None) -> str:
             "(narrower, it is a bar or a beam)")
 
 
+def _joined(items: list[int], linked) -> dict[int, list[int]]:
+    """The groups of `items` (sorted) joined two by two by `linked(a, b)`, keyed by their first item."""
+    parent = {s: s for s in items}
+
+    def root(s: int) -> int:
+        while parent[s] != s:
+            parent[s] = parent[parent[s]]
+            s = parent[s]
+        return s
+
+    for x, s in enumerate(items):
+        for o in items[x + 1:]:
+            if linked(s, o):
+                a, b = root(s), root(o)
+                if a != b:
+                    parent[max(a, b)] = min(a, b)
+    groups: dict[int, list[int]] = {}
+    for s in items:
+        groups.setdefault(root(s), []).append(s)
+    return groups
+
+
+def _wall_regions(pairs: list, mids: list, faces: list, neighbours: list[set[int]], body_of: list[int],
+                  mm: float) -> None:
+    """SHELL-19: sheets that fail SHELL-2 alone but pass it against their WALL REGION (the sheets of one body, any
+    thickness, whose faces are the same or meet at a CAD edge) are made shells, the reason on each pair. Regions are
+    read again without every sheet that fails, until none fails. Deterministic: in sheet order."""
+    # only a body with no shell sheet at all: one that has one is shelled where its walls pass alone, and a thicker
+    # step added to it brought open edges at the steps (two printed enclosures of the development set, good before)
+    shelled = {body_of[p.a] for p in pairs if p.shell}
+    by_sheet: dict[int, list[int]] = {}
+    for i, p in enumerate(pairs):
+        if p.sheet is not None and p.mids and body_of[p.a] not in shelled:
+            by_sheet.setdefault(p.sheet, []).append(i)
+    info = {}
+    for s, group in sorted(by_sheet.items()):
+        t = max(pairs[i].thickness for i in group)
+        width = pairs[group[0]].width or 0.0
+        if width < REGION_MIN_WIDTH * t:
+            continue
+        ks = sorted({k for i in group for k in (pairs[i].a, pairs[i].b)})
+        info[s] = {"t": t, "area": sum(_area(mids[k].face) for i in group for k in pairs[i].mids) * mm * mm,
+                   "faces": set(ks), "near": set(ks).union(*(neighbours[k] for k in ks)),
+                   "body": body_of[pairs[group[0]].a], "shell": pairs[group[0]].shell}
+    if not any(not v["shell"] for v in info.values()):
+        return
+    live = sorted(info)
+    while True:
+        regions = _joined(live, lambda s, o: info[s]["body"] == info[o]["body"] and bool(info[o]["faces"] & info[s]["near"]))
+        failed: set[int] = set()
+        passed: list[tuple[list[int], float, float]] = []
+        for reg in (regions[k] for k in sorted(regions)):
+            if len(reg) < 2 or all(info[s]["shell"] for s in reg):
+                continue
+            size = math.sqrt(sum(info[s]["area"] for s in reg))
+            try:
+                width = union_width([faces[k] for k in sorted(set().union(*(info[s]["faces"] for s in reg)))]) * mm
+            except Exception:  # noqa: BLE001 - a region whose width cannot be read lends nothing
+                failed.update(s for s in reg if not info[s]["shell"])
+                continue
+            bad = {s for s in reg if info[s]["t"] > sp.SHELL_RATIO * size or info[s]["t"] > sp.SHELL_WIDTH_RATIO * width}
+            failed |= bad
+            passed.append((reg, size, width))
+        if not failed:
+            break
+        live = [s for s in live if s not in failed]
+    for reg, size, width in passed:
+        for s in reg:
+            if info[s]["shell"]:
+                continue
+            for i in by_sheet[s]:
+                pairs[i].shell = True
+                pairs[i].why = (f"a step of a wall whose thickness changes: thin against its whole wall "
+                                f"({size:.3g} mm across, {width:.3g} mm wide)")
+
+
 def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
             budget_s: float | None = None) -> tuple[dict, object]:
     """The shell record and the sewn mid-surface (a compound, the shape's own units) of an OpenCASCADE shape
@@ -3795,6 +3883,8 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
         shell = t <= sp.SHELL_RATIO * size and t <= sp.SHELL_WIDTH_RATIO * width
         for i in group:
             pairs[i].sheet, pairs[i].size, pairs[i].width, pairs[i].shell = s_i, size, width, shell
+    if WALL_REGIONS:
+        _wall_regions(pairs, mids, faces, neighbours, body_of, mm)
     # SHELL-8: a lap (two shell plates stacked and fused) is shelled with the plates it is made of
     for i in sp.laps(pairs):
         pairs[i].shell = True
