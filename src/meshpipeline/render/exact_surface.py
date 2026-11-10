@@ -52,10 +52,15 @@ replacing them changes the geometry by nothing at all. Measured on the delivered
 1,656,006 for the coolant against its 4,445,857. Fewer triangles and no merge error, both at once,
 which is why this is not a trade.
 
-NO TOLERANCES, ANYWHERE, IN THE ADJACENCY. The index holds one point array and every face
-references point ids into it, so two faces that share an edge share the point and their
-coordinates are bit-identical. Exact equality is therefore the CORRECT adjacency test, and it is
-cheaper than a tolerance.
+NO TOLERANCES, ANYWHERE, IN THE ADJACENCY. Two faces that share an edge carry bit-identical
+coordinates for it, so exact equality is the CORRECT adjacency test and is cheaper than a
+tolerance. Measured on the coolant: 15,401,694 adjacent pairs identical, and not one near-miss
+anywhere within a micron.
+
+Note what that argument does NOT rest on. An earlier version of this comment said two such faces
+share a POINT ID, which is false here - this index is the union of eight processor directories and
+holds up to 37,896 duplicate coordinates, so the same corner can carry several ids. Comparing
+coordinates is what makes the test correct; comparing ids would have split real neighbours.
 
 That is not a stylistic preference, it is the bug this was written around. The first version
 grouped rows by a tolerance of 1e-10 m while sorting on the exact value. Two faces 44.9 mm apart in
@@ -102,12 +107,33 @@ MIN_CORNERS = 3
 AXIAL_DOT = 0.9999
 
 #: How far a face's own area may sit from its bounding box's and still count as a rectangle, as a
-#: fraction of that box. THIS IS A FLOAT-ROUNDING GUARD, NOT A SHAPE TOLERANCE. float64 arithmetic
-#: over float32 coordinates lands within about 1e-16 relative; the worst face that passes this on
-#: the delivered coolant is off by 9.75e-10 and the total area it puts at stake is 6.6e-14 m2 out of
-#: 0.0637. An L-shaped face misses it by tens of percent. See the module docstring for what
-#: loosening it would buy and cost.
+#: fraction of that box. THIS IS A FLOAT-ROUNDING GUARD, NOT A SHAPE TOLERANCE, and it is only HALF
+#: the rectangle test - see FLATNESS below, without which it is not a shape test at all. float64
+#: arithmetic over float32 coordinates lands within about 1e-16 relative; an L-shaped face misses
+#: this by tens of percent.
 RECT_TOL = 1e-9
+
+#: How far a face's corners may stray from its plane, ALONG ITS OWN NORMAL, IN METRES. Zero: a face
+#: that is not exactly flat is kept whole.
+#:
+#: THE AREA TEST ALONE IS BLIND TO TWIST, and this is the only reason this constant exists. Take a
+#: quad whose four corners project onto the four corners of its bounding rectangle and lift two
+#: DIAGONALLY OPPOSITE corners by h. Newell's two off-axis components are
+#:     A_u = (W/2)(h0 - h1 - h2 + h3)      A_v = (L/2)(h0 + h1 - h2 - h3)
+#: and both vanish whenever h0 == h2 and h1 == h3. So for a saddle |Newell| IS the bounding box and
+#: |n[axis]| is exactly 1, for ANY h. Swept on a 201.2998 um square from h = 1 pm to 1 cm: the
+#: relative area error is 0.000e+00 at every amplitude, while at h = 1 cm the triangles a renderer
+#: actually draws cover 70x the rectangle. No tolerance on an area can bound a shape this way.
+#:
+#: This is not hypothetical on the delivered plate. 99,295 faces of 36,490,208 pass the area test
+#: without lying in a plane (1,991 fluid, 97,177 solid, 127 chip), carrying 2.37% of the part's
+#: area; drawn flat at `pc`, their high corners move by up to 1,247.97 nm, which is 4.96% of a
+#: 25.1578 um lattice cell. The area book could not report it either: it sums |Newell| on both
+#: sides, so the twist cancels and the residual reads as float noise.
+#:
+#: The guard costs 3.60% more polygons - 2,475,612 to 2,564,696 over the whole boundary - and buys
+#: the claim this module is named for. With it, no drawn vertex moves at all.
+FLATNESS_M = 0.0
 
 #: How many faces' corners are gathered at once. The (faces, corners, 3) float64 gather is the only
 #: array here that is a multiple of the connectivity: at 16.6 M quads it is 1.6 GB in one piece.
@@ -135,7 +161,10 @@ def face_geometry(index, *, block: int = GEOMETRY_BLOCK_FACES):
     """Per face: the axis its normal lies along, that normal's sign, the plane it sits in, its
     extent in the plane, and its true area.
 
-    Returns (axis, sign, plane, ext, area, is_rect) over the index's own face numbering.
+    Returns (axis, sign, plane, ext, area, is_rect, thick, fan) over the index's own face
+    numbering, where `thick` is the spread of the face's corners along its own normal and `fan` is
+    the area a renderer covers when it fans the polygon - the two numbers that make the rectangle
+    test a shape test rather than a scalar coincidence.
     `axis` is -1 for a face whose normal is not along an axis and for a degenerate one. `plane`,
     `ext` are float32 - they are min/max over float32 corner coordinates, so float32 holds them
     exactly, and exactness is the entire basis of the adjacency test downstream. `area` is float64
@@ -160,6 +189,13 @@ def face_geometry(index, *, block: int = GEOMETRY_BLOCK_FACES):
     plane = np.empty(n, dtype=np.float32)
     ext = np.empty((n, 4), dtype=np.float32)
     area = np.empty(n, dtype=np.float64)
+    #: how far this face's corners spread along its own normal. The shape test, as opposed to the
+    #: area test, and the only thing that sees a saddle - see FLATNESS_M.
+    thick = np.empty(n, dtype=np.float64)
+    #: the area a renderer actually covers, fanning the polygon from its first corner and taking
+    #: each triangle's own magnitude. For a planar face this IS |Newell|; for a warped one it is
+    #: larger, which is exactly the difference the area book cannot see.
+    fan = np.empty(n, dtype=np.float64)
 
     for s in range(0, n, block):
         e = min(s + block, n)
@@ -173,6 +209,10 @@ def face_geometry(index, *, block: int = GEOMETRY_BLOCK_FACES):
         av = 0.5 * np.cross(P, np.roll(P, -1, axis=1)).sum(axis=1)
         mag = np.linalg.norm(av, axis=1)
         area[s:e] = mag
+        # the fan a renderer draws: each triangle's OWN magnitude, summed. Taking the magnitude per
+        # triangle rather than of the sum is the whole point - it is what stops a twist cancelling.
+        tri = np.cross(P[:, 1:-1] - P[:, :1], P[:, 2:] - P[:, :1])
+        fan[s:e] = 0.5 * np.linalg.norm(tri, axis=2).sum(axis=1)
         unit = av / np.where(mag > 0.0, mag, 1.0)[:, None]
         k = np.argmax(np.abs(unit), axis=1)
         axial = (np.abs(unit[rows, k]) >= AXIAL_DOT) & (mag > 0.0) & (sz >= MIN_CORNERS)
@@ -180,6 +220,7 @@ def face_geometry(index, *, block: int = GEOMETRY_BLOCK_FACES):
         sign[s:e] = np.where(unit[rows, k] >= 0.0, 1, -1).astype(np.int8)
         lo = P.min(axis=1)
         hi = P.max(axis=1)
+        thick[s:e] = hi[rows, k] - lo[rows, k]
         # the plane is the face's OWN coordinate along its normal, not a bucket: for a face that
         # really lies in that plane lo == hi there, and the value is shared bit-for-bit with every
         # neighbour that shares a vertex with it
@@ -193,8 +234,13 @@ def face_geometry(index, *, block: int = GEOMETRY_BLOCK_FACES):
 
     box = ((ext[:, 1].astype(np.float64) - ext[:, 0]) *
            (ext[:, 3].astype(np.float64) - ext[:, 2]))
-    is_rect = (axis >= 0) & (np.abs(area - box) <= RECT_TOL * np.where(box > 0.0, box, 1.0))
-    return axis, sign, plane, ext, area, is_rect
+    # TWO TESTS, NOT ONE, and the order matters for what each is allowed to conclude. `thick`
+    # settles the SHAPE - whether the face lies in a plane at all - and only then does comparing
+    # its area with its bounding box mean it IS that rectangle. The area test alone cannot see a
+    # saddle, however tight the tolerance; see FLATNESS_M.
+    is_rect = ((axis >= 0) & (thick <= FLATNESS_M)
+               & (np.abs(area - box) <= RECT_TOL * np.where(box > 0.0, box, 1.0)))
+    return axis, sign, plane, ext, area, is_rect, thick, fan
 
 
 def merge_rectangles(u0, u1, v0, v1):
@@ -302,7 +348,7 @@ def exact_surface(polymesh, *, region: str = "", skip_names: tuple[str, ...] = (
     from meshpipeline.render.boundary_quality import QualityUnavailable, open_quality
 
     index = open_index(polymesh)
-    axis, sign, plane, ext, area, is_rect = face_geometry(index)
+    axis, sign, plane, ext, area, is_rect, thick, fan = face_geometry(index)
     patch_of = np.asarray(index.patch_of)
     sizes = index.sizes
     conn = index.conn
@@ -418,12 +464,18 @@ def exact_surface(polymesh, *, region: str = "", skip_names: tuple[str, ...] = (
         polys[mask] = inv
 
         # ---- the accounting, measured and not asserted ---------------------------------------
-        area_in = float(area[drawable].sum())
+        # AGAINST THE FAN, NOT AGAINST |Newell|. The first version compared sum|Newell| on both
+        # sides, and |Newell| of a twisted quad is its bounding box exactly - so the warp appeared
+        # on both sides of the subtraction, cancelled, and the residual read as float noise. The
+        # area a renderer covers is the fan, so that is the book. `max_vertex_shift_m` is the
+        # figure no area book can hide: how far the merge actually moved a corner.
+        area_in = float(fan[drawable].sum())
         rect_area = float(((rect[:, 1].astype(np.float64) - rect[:, 0]) *
                            (rect[:, 3].astype(np.float64) - rect[:, 2])).sum())
-        area_out = rect_area + float(area[kept_ids].sum())
-        merged_in = float(area[rect_ids].sum())
+        area_out = rect_area + float(fan[kept_ids].sum())
+        merged_in = float(fan[rect_ids].sum())
         err = abs(rect_area - merged_in) / merged_in if merged_in > 0 else 0.0
+        shift = float(thick[rect_ids].max()) if rect_ids.size else 0.0
 
         row = {
             "name": f"{region}/{name}" if region else name,
@@ -440,7 +492,7 @@ def exact_surface(polymesh, *, region: str = "", skip_names: tuple[str, ...] = (
                       "kept_faces": int(kept_ids.size),
                       "collapse": drawable.size / n_poly if n_poly else 0.0,
                       "area_delivered_m2": area_in, "area_drawn_m2": area_out,
-                      "area_error": err},
+                      "area_error": err, "max_vertex_shift_m": shift},
         }
 
         if qual is not None:
@@ -485,6 +537,7 @@ def exact_surface(polymesh, *, region: str = "", skip_names: tuple[str, ...] = (
 
         out.append(row)
         delivered_areas.append(area[drawable])
+        totals["max_vertex_shift_m"] = max(totals.get("max_vertex_shift_m", 0.0), shift)
         totals["delivered_faces"] += int(drawable.size)
         totals["drawn_polygons"] += int(n_poly)
         totals["merged"] += int(len(rect))
@@ -499,14 +552,17 @@ def exact_surface(polymesh, *, region: str = "", skip_names: tuple[str, ...] = (
     totals["area_error"] = abs(ao - ai) / ai if ai > 0 else 0.0
     totals["rect_tol"] = RECT_TOL
     totals["axial_dot"] = AXIAL_DOT
+    totals["flatness_m"] = FLATNESS_M
+    totals.setdefault("max_vertex_shift_m", 0.0)
     if delivered_areas:
         from meshpipeline.render.index_surface import _cell_stats
         totals["cell_stats"] = _cell_stats(np.concatenate(delivered_areas))
-    logger.info("exact_surface %s: %s faces -> %s polygons (%.1f:1), area error %.2e",
+    logger.info("exact_surface %s: %s faces -> %s polygons (%.1f:1), area error %.2e, "
+                "no vertex moved more than %.3e m",
                 polymesh, format(d, ","), format(dr, ","), totals["collapse"],
-                totals["area_error"])
+                totals["area_error"], totals["max_vertex_shift_m"])
     return out, totals
 
 
-__all__ = ["AXIAL_DOT", "GEOMETRY_BLOCK_FACES", "MIN_CORNERS", "RECT_TOL",
+__all__ = ["AXIAL_DOT", "FLATNESS_M", "GEOMETRY_BLOCK_FACES", "MIN_CORNERS", "RECT_TOL",
            "exact_surface", "face_geometry", "merge_rectangles"]

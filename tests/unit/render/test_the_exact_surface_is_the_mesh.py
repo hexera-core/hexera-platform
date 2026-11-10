@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 
 from meshpipeline.render.boundary_index import open_index, write_index
-from meshpipeline.render.exact_surface import exact_surface, merge_rectangles
+from meshpipeline.render.exact_surface import (RECT_TOL, exact_surface, merge_rectangles)
 from tests.foam_fixtures import write_row_of_hexes
 
 
@@ -122,6 +122,55 @@ def test_no_faces_is_no_rectangles():
     rect, of_face = merge_rectangles(*_f32(np.empty((0, 4))))
     assert len(rect) == 0
     assert len(of_face) == 0
+
+
+# ------------------------------------------------------ the shape test, where the area test is blind
+def _saddle(w, length, h):
+    """A quad on the four corners of a w x length bbox with the two DIAGONAL corners lifted by h.
+
+    The case no area tolerance can see. Newell's two off-axis components are
+        A_u = (W/2)(h0 - h1 - h2 + h3)     A_v = (L/2)(h0 + h1 - h2 - h3)
+    so with h0 == h2 and h1 == h3 both vanish, |Newell| is exactly the bounding box and the unit
+    normal is exactly the axis - at ANY h. It is a real population on the delivered plate: 99,295
+    faces of 36,490,208 pass the area test without lying in a plane.
+    """
+    return np.array([[0.0, 0.0, h], [w, 0.0, 0.0], [w, length, h], [0.0, length, 0.0]])
+
+
+@pytest.mark.parametrize("h", [1e-12, 1e-9, 1e-7, 1e-6, 1e-4, 1e-2])
+def test_the_area_test_alone_cannot_see_a_saddle(h):
+    """Not a test of the module - a test of WHY it needs a second predicate.
+
+    If this ever starts failing, the area test has become sufficient and FLATNESS_M could go. It
+    will not: the cancellation is exact algebra, not a tolerance.
+    """
+    P = _saddle(201.2998e-6, 201.2998e-6, h)
+    av = 0.5 * np.cross(P, np.roll(P, -1, axis=0)).sum(axis=0)
+    mag = float(np.linalg.norm(av))
+    box = 201.2998e-6 * 201.2998e-6
+    assert abs(mag - box) <= RECT_TOL * box, "the area test was supposed to be fooled"
+    assert abs(av[2] / mag) == pytest.approx(1.0, abs=1e-15), "and the normal to look axis-aligned"
+    # meanwhile the triangles a renderer actually draws cover more and more
+    tri = np.cross(P[1:-1] - P[:1], P[2:] - P[:1])
+    fan = 0.5 * float(np.linalg.norm(tri, axis=1).sum())
+    if h >= 1e-4:
+        assert fan > box * 1.01, "the fan should blow up where the Newell area does not"
+
+
+def test_a_saddle_face_is_kept_whole_not_flattened(tmp_path):
+    """The guard itself, through the real module on a real mesh.
+
+    `shear_last_y` tilts the last cell's side faces; this asserts the stronger property that holds
+    whatever the fixture contains - every face that WAS merged is exactly flat, so the merge moved
+    no vertex at all.
+    """
+    for kw in ({}, {"shear_last_y": 0.3}, {"last_cell_length": 2.0}):
+        pm = _built(tmp_path / ("s%d" % abs(hash(tuple(sorted(kw.items()))))), **kw)
+        _rows, prov = exact_surface(pm, with_quality=False)
+        assert prov["max_vertex_shift_m"] == 0.0, (
+            "a merged rectangle moved a corner by %.3e m with %s"
+            % (prov["max_vertex_shift_m"], kw))
+        assert prov["flatness_m"] == 0.0
 
 
 # ------------------------------------------------------------- the whole thing, on a real mesh
