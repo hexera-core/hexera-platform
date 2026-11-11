@@ -26,7 +26,11 @@ logger = logging.getLogger(__name__)
 #: an edge is an open place, SURF-8), nor than REACH_FACE of the narrower of the two faces, nor than what the user's
 #: notes allow
 REACH_PART = 1e-2
-REACH_FACE = 0.25
+#: ... nor than REACH_SELF of the width of the face that is changed, or the element size the user asked for when that is
+#: more (a gap under one element is one an engineer closes by hand). The first version capped it at a quarter of the
+#: NARROWER of the two faces: a 5 mm fillet patch beside the main panel held every change on the panel to 1.2 mm.
+REACH_SELF = 0.5
+REACH_FACE = REACH_SELF
 #: an extension runs this much past the gap, so the extended face crosses its neighbour and is trimmed there
 EXTEND_PAST = 1.5
 #: two faces are the same surface continued (a gap in one sheet of metal, not a corner) when their normals at the gap
@@ -161,7 +165,7 @@ def _iso_side(face, edge) -> tuple[bool, bool] | None:
     return None
 
 
-def _extended(face, edge, length: float):
+def _extended(face, edge, length: float, fit: float = 0.0):
     """SURF-12: the face continued past `edge` by `length` along its own surface, as one face; None when the face is
     no natural patch or the extension cannot be made exactly enough.
     - On a plane, cylinder, cone, sphere or torus: the same surface over a wider stretch of its own parameters (the
@@ -216,7 +220,7 @@ def _extended(face, edge, length: float):
                 return None
             out = BRepBuilderAPI_MakeFace(surf, u0, u1, v0, v1, 1e-7).Face()
         elif isinstance(surf, Geom_BSplineSurface):
-            out = _extended_bspline(surf, (u0, u1, v0, v1), in_u, after, step)
+            out = _extended_bspline(surf, (u0, u1, v0, v1), in_u, after, step, fit)
             if out is None:
                 return None
         else:
@@ -362,7 +366,7 @@ GRID_MIN = 17
 FIT_SHARE = 0.1
 
 
-def _extended_bspline(bs, bounds, in_u: bool, after: bool, step: float):
+def _extended_bspline(bs, bounds, in_u: bool, after: bool, step: float, fit: float = 0.0):
     """A B-spline patch over `bounds`, continued past one side by `step` of its parameter (second-order: the
     surface's point, first and second derivative at the side), rebuilt through its points; None when the rebuilt
     patch strays from the old one."""
@@ -424,7 +428,9 @@ def _extended_bspline(bs, bounds, in_u: bool, after: bool, step: float):
             if pr.NbPoints() == 0:
                 return None
             worst = max(worst, float(pr.LowerDistance()))
-    if worst > FIT_SHARE * 1e-4 * size:
+    # within a tenth of the sew tolerance (`fit`); with none given, of a sew tolerance of the patch's own size - far
+    # tighter on a small fillet patch than the part's own, and why those were never extended
+    if worst > (fit if fit > 0 else FIT_SHARE * 1e-4 * size):
         return None
     return BRepBuilderAPI_MakeFace(new, 1e-7).Face()
 
@@ -508,11 +514,99 @@ def _try(sewn, k: int, new, old, band: float, nbr: int, tol_join: float, length_
     return got, ""
 
 
-def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None) -> tuple[Any, dict]:
+def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: float):
+    """SURF-12: one side of one place: face k's edge e, `gap` from face nbr. Moved, extended (and cut where it meets
+    its neighbour) or trimmed back, the first that passes: (the new Sewn or None, why not, how, how far it moved)."""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import surface_clean as sc
+    from meshpipeline.cad import surface_model as sm
+
+    a, b = here.faces[k], here.faces[nbr]
+    length_before = sc._free(here.faces)[1]
+    # the most a change may add or take away: a strip as wide as the reach along the edge
+    band = 2.0 * allowed * ms._length(e) + 1e-6 * ms._area(a)
+    fit = 0.1 * here.tol
+    got, why, how, changed = None, "", "", gap
+    mid = sm._edge_points(e, 3)[1]
+    foot = _nearest(b, mid)
+    na = _normal_at(a, mid)
+    off = (abs(float(np.dot(foot - mid, na))) / max(float(np.linalg.norm(foot - mid)), 1e-300)
+           if na is not None and float(np.linalg.norm(foot - mid)) > 0 else 0.0)
+    in_plane = off < math.sin(math.radians(45.0))
+    # 1. MOVED: the two faces sewn alone at the gap (a step, a corner off its neighbour's corner)
+    rows = [] if in_plane else [r for r in sc._couples(
+        sm.Sewn([a, b], ["a", "b"], [[0, 1]], here.tol, here.diag), 1.5 * gap)[1] if not r["bad"]]
+    if rows:
+        local = [dict(r, on=(k, nbr)) for r in rows]
+        got, _rec = sc._one_at_a_time(here, 1.5 * gap, local, {"places": [], "refused": ""}, length_before)
+        how = "moved onto its neighbour"
+        if got is not None:
+            for j in (k, nbr):
+                w = _check(got.faces[j], here.faces[j], band, [f for i, f in enumerate(got.faces) if i not in (k, nbr)],
+                           here.tol)
+                if w:
+                    got, why = None, w
+                    break
+        else:
+            why = "the two faces would not sew at the gap"
+    # 2. EXTENDED along its own surface, and cut where it meets its neighbour
+    if got is None:
+        ext = _extended(a, e, EXTEND_PAST * gap, fit)
+        if ext is None:
+            why = why or "the face could not be continued on its own surface past that edge"
+        else:
+            nb = _normal_at(b, mid)
+            same = na is not None and nb is not None and abs(float(np.dot(na, nb))) > math.cos(math.radians(SAME_SIDE_DEG))
+            if same:
+                # the same sheet continued: past the gap, then cut back along the neighbour's own edge (so the new
+                # edge lies on it, corners and all); a natural patch with no edge to cut along: up to the gap
+                eb = [m[0] for m in p["_members"] if m[1] == nbr]
+                wall = _wall(max(eb, key=ms._length), b, 10.0 * max(gap, here.tol)) if eb else None
+                pieces = _split(ext, wall) if wall is not None else []
+                new = _keep_side(pieces, a, e) if len(pieces) > 1 else _extended(a, e, gap, fit)
+            else:
+                pieces = _split(ext, b)
+                new = _keep_side(pieces, a, e) if len(pieces) > 1 else None
+                if new is None:
+                    why = why or "the continued face does not reach its neighbour"
+            if new is not None:
+                got, w = _try(here, k, new, a, band, nbr, max(2.0 * here.tol, 0.25 * gap), length_before)
+                why = w or why
+                how = "extended along its own surface" + ("" if same else " and trimmed where it meets its neighbour")
+                if got is not None:
+                    changed = abs(ms._area(new) - ms._area(a)) / max(ms._length(e), 1e-300)
+    # 3. TRIMMED back to the neighbour's edge (an overlap: the face runs over its neighbour)
+    if got is None:
+        eb = [m[0] for m in p["_members"] if m[1] == nbr]
+        if eb:
+            wall = _wall(max(eb, key=ms._length), b, 10.0 * max(gap, here.tol))
+            pieces = _split(a, wall) if wall is not None else []
+            new = _keep_side(pieces, a, e) if len(pieces) > 1 else None
+            if new is not None:
+                changed = abs(ms._area(new) - ms._area(a)) / max(ms._length(e), 1e-300)
+                if changed > allowed:
+                    why = why or "the overlap is wider than it may be trimmed by"
+                else:
+                    got, w = _try(here, k, new, a, band, nbr, max(2.0 * here.tol, 1.5 * gap), length_before)
+                    why = w or why
+                    how = "trimmed back to its neighbour's edge"
+    if got is None:
+        return None, why or "no extension, trim or move closes it", "", gap
+    # kept only when it leaves less open (fewer places, or as many with less open edge) and never more places
+    bp = sm.open_places(here, mm_per_unit=1.0, reach=look)
+    ap = sm.open_places(got, mm_per_unit=1.0, reach=look)
+    bl = sum(float(x["length_mm"]) for x in bp)
+    al = sum(float(x["length_mm"]) for x in ap)
+    if len(ap) > len(bp) or (len(ap) == len(bp) and al >= bl - 2.0 * here.tol):
+        return None, "the change would not leave less open", "", gap
+    return got, "", how, changed
+
+
+def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
+         element_mm: float | None = None) -> tuple[Any, dict]:
     """SURF-12: the open places of a surface part's sewn sheets closed one at a time, nearest gap first: (the Sewn,
     the record in mm). `limit_mm`: the reach the user's notes give (None: REACH_PART of the part)."""
     from meshpipeline.cad import midsurface as ms
-    from meshpipeline.cad import surface_clean as sc
     from meshpipeline.cad import surface_model as sm
 
     mm = float(mm_per_unit)
@@ -531,98 +625,35 @@ def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None) -> tuple[An
         p = places[0]
         tried.add(tuple(map(tuple, p["pairs"])))
         gap = float(p["gap_mm"])
-        e, k, _g, nbr = max(p["_members"], key=lambda m: (ms._length(m[0]), -m[1]))
-        a, b = here.faces[k], here.faces[nbr]
-        face_reach = REACH_FACE * min(ms.width_of(a), ms.width_of(b))
-        allowed = min(reach, face_reach) if not limit_mm else reach
-        row = {"at_mm": [_r(c * mm) for c in p["at_mm"]], "gap_mm": _r(gap * mm), "faces": [here.names[k], here.names[nbr]]}
-        if gap > allowed:
-            row["why"] = (f"the gap is wider than the {allowed * mm:.2g} mm the surfaces may be moved here"
-                          + ("" if limit_mm else " (a quarter of the narrower face, or 1/100 of the part)"))
-            left.append(row)
-            continue
-        length_before = sc._free(here.faces)[1]
-        # the most a change may add or take away: a strip as wide as the reach along the edge
-        band = 2.0 * allowed * ms._length(e) + 1e-6 * ms._area(a)
-        got, why, how, changed = None, "", "", gap
-        # which way the neighbour lies: across the face (an edge stopping short, an overlap: extend or trim) or off it
-        # (a step: move)
-        mid = sm._edge_points(e, 3)[1]
-        foot = _nearest(b, mid)
-        na = _normal_at(a, mid)
-        off = (abs(float(np.dot(foot - mid, na))) / max(float(np.linalg.norm(foot - mid)), 1e-300)
-               if na is not None and float(np.linalg.norm(foot - mid)) > 0 else 0.0)
-        in_plane = off < math.sin(math.radians(45.0))
-        # 1. MOVED: the two faces sewn alone at the gap (a step, a corner off its neighbour's corner)
-        rows = [] if in_plane else [r for r in sc._couples(
-            sm.Sewn([a, b], ["a", "b"], [[0, 1]], here.tol, here.diag), 1.5 * gap)[1] if not r["bad"]]
-        if rows:
-            local = [dict(r, on=(k, nbr)) for r in rows]
-            got, _rec = sc._one_at_a_time(here, 1.5 * gap, local, {"places": [], "refused": ""}, length_before)
-            how = "moved onto its neighbour"
+        row = {"at_mm": [_r(c * mm) for c in p["at_mm"]], "gap_mm": _r(gap * mm)}
+        # each side of the gap in turn: the face of the longest edge first, then its neighbour (a fillet's gap to the
+        # main panel may be closed by changing either)
+        sides: dict[int, tuple] = {}
+        for m in sorted(p["_members"], key=lambda m: (-ms._length(m[0]), m[1])):
+            sides.setdefault(m[1], m)
+        got, how, changed, steps = None, "", gap, []
+        for e, k, _g, nbr in list(sides.values())[:2]:
+            a = here.faces[k]
+            allowed = reach if limit_mm else min(reach, max(REACH_SELF * ms.width_of(a), float(element_mm or 0.0) / mm))
+            row["faces"] = [here.names[k], here.names[nbr]]
+            if gap > allowed:
+                steps.append(f"{here.names[k]}: the gap is wider than the {allowed * mm:.2g} mm it may be changed by "
+                             "(half its width, or the element size asked for, or 1/100 of the part)")
+                continue
+            got, why, how, changed = _close_one(here, p, e, k, nbr, gap, allowed, look)
             if got is not None:
-                for j in (k, nbr):
-                    w = _check(got.faces[j], here.faces[j], band, [f for i, f in enumerate(got.faces) if i not in (k, nbr)],
-                               here.tol)
-                    if w:
-                        got, why = None, w
-                        break
-        # 2. EXTENDED along its own surface, and trimmed where it crosses its neighbour
+                break
+            steps.append(f"{here.names[k]}: {why}")
         if got is None:
-            ext = _extended(a, e, EXTEND_PAST * gap)
-            if ext is not None:
-                na = _normal_at(a, sm._edge_points(e, 3)[1])
-                nb = _normal_at(b, sm._edge_points(e, 3)[1])
-                same = na is not None and nb is not None and abs(float(np.dot(na, nb))) > math.cos(
-                    math.radians(SAME_SIDE_DEG))
-                if same:
-                    # the same sheet continued: past the gap, then cut back along the neighbour's own edge (so the
-                    # new edge lies on it, corners and all); a natural patch with no edge to cut along: up to the gap
-                    eb = [m[0] for m in p["_members"] if m[1] == nbr]
-                    wall = _wall(max(eb, key=ms._length), b, 10.0 * max(gap, here.tol)) if eb else None
-                    pieces = _split(ext, wall) if wall is not None else []
-                    new = _keep_side(pieces, a, e) if len(pieces) > 1 else _extended(a, e, gap)
-                else:
-                    pieces = _split(ext, b)
-                    new = _keep_side(pieces, a, e) if len(pieces) > 1 else None
-                if new is not None:
-                    got, why = _try(here, k, new, a, band, nbr, max(2.0 * here.tol, 0.25 * gap), length_before)
-                    how = "extended along its own surface" + ("" if same else " and trimmed where it meets its neighbour")
-                    if got is not None:
-                        changed = abs(ms._area(new) - ms._area(a)) / max(ms._length(e), 1e-300)
-        # 3. TRIMMED back to the neighbour's edge (an overlap: the face runs over its neighbour)
-        if got is None:
-            eb = [m[0] for m in p["_members"] if m[1] == nbr]
-            if eb:
-                wall = _wall(max(eb, key=ms._length), b, 10.0 * max(gap, here.tol))
-                pieces = _split(a, wall) if wall is not None else []
-                new = _keep_side(pieces, a, e) if len(pieces) > 1 else None
-                if new is not None:
-                    changed = abs(ms._area(new) - ms._area(a)) / max(ms._length(e), 1e-300)
-                    if changed > allowed:
-                        why = why or f"the overlap is wider than the {allowed * mm:.2g} mm the surfaces may be trimmed here"
-                    else:
-                        got, why2 = _try(here, k, new, a, band, nbr, max(2.0 * here.tol, 1.5 * gap), length_before)
-                        why = why2 or why
-                        how = "trimmed back to its neighbour's edge"
-        if got is None:
-            row["why"] = why or "no extension, trim or move closes it within the reach"
+            row["why"] = steps[0].split(": ", 1)[1] if len(steps) == 1 else "; ".join(steps)
+            row["tried"] = steps
             left.append(row)
             continue
-        # a change is kept when it leaves less open (by SURF-8's own count: fewer places, or as many with less open
-        # edge - a place of several pieces, a T-meet, is closed piece by piece) and never more places
-        bp = sm.open_places(here, mm_per_unit=1.0, reach=look)
-        ap = sm.open_places(got, mm_per_unit=1.0, reach=look)
-        before_n, after_n = len(bp), len(ap)
-        bl = sum(float(x["length_mm"]) for x in bp)
-        al = sum(float(x["length_mm"]) for x in ap)
-        if after_n > before_n or (after_n == before_n and al >= bl - 2.0 * here.tol):
-            row["why"] = "the change would not leave less open"
-            left.append(row)
-            continue
+        before_n = len(sm.open_places(here, mm_per_unit=1.0, reach=look))
+        after_n = len(sm.open_places(got, mm_per_unit=1.0, reach=look))
         here = got
         tried.discard(tuple(map(tuple, p["pairs"])))       # what is left of a place closed piece by piece is tried again
-        row.update(how=how, face=here.names[k], moved_mm=_r(max(changed, gap) * mm), places_closed=before_n - after_n)
+        row.update(how=how, face=row["faces"][0], moved_mm=_r(max(changed, gap) * mm), places_closed=before_n - after_n)
         done.append(row)
     record = {"reach_mm": _r(reach * mm), "reach_from": "notes" if limit_mm else "rule",
               "closed": int(sum(int(r["places_closed"]) for r in done)),
@@ -634,4 +665,4 @@ def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None) -> tuple[An
     return here, record
 
 
-__all__ = ["EXTEND_PAST", "REACH_FACE", "REACH_PART", "mend"]
+__all__ = ["EXTEND_PAST", "REACH_FACE", "REACH_PART", "REACH_SELF", "mend"]

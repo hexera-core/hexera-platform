@@ -107,19 +107,20 @@ def clean_words(cleaned: dict | None) -> list[str]:
     out = []
     if c.get("duplicates"):
         n = int(c["duplicates"])
-        out.append(f"{n} face(s) were in the file twice: the second copy of each is left out.")
+        out.append(f"{_count(n, 'face was', 'faces were')} in the file twice: the second copy of {'it' if n == 1 else 'each'} is left out.")
     if c.get("closed_places"):
         # SURF-8: said in PLACES, the count the record and gap_words use: places before - closed = places after.
         # (Joins inside a place that stays open - part of its length - are not a place closed.)
         asked = (f", as your notes asked (up to {_gap(c['limit_mm'])})"
                  if c.get("limit_from") == "notes" and not c.get("fell_back") else "")
         widest = float(c.get("closed_places_widest_mm") or 0.0)
-        out.append(f"Closed {int(c['closed_places'])} of the {_count(int(c.get('places_before') or 0), 'place')} where "
+        out.append(f"Closed {_closed_of(int(c['closed_places']), int(c.get('places_before') or 0))} where "
                    f"the surfaces did not meet{f', the widest {_gap(widest)}' if widest > 0 else ''}{asked}.")
     if c.get("pinholes"):
         asked = ", as your notes asked" if c.get("holes_from") == "notes" else ""
-        what = "hole(s)" if c.get("holes_from") == "notes" else "pinhole(s)"
-        out.append(f"Filled {int(c['pinholes'])} {what}, the largest {_gap(c.get('pinhole_widest_mm') or 0.0)} "
+        k = int(c["pinholes"])
+        what = _count(k, "hole") if c.get("holes_from") == "notes" else _count(k, "pinhole")
+        out.append(f"Filled {what}, {'' if k == 1 else 'the largest '}{_gap(c.get('pinhole_widest_mm') or 0.0)} "
                    f"across{asked}.")
     m = c.get("mend") or {}
     if m.get("closed"):
@@ -183,17 +184,26 @@ def gap_words(n: int, cleaned: dict | None) -> list[str]:
     return out
 
 
-def _count(k: int, noun: str) -> str:
-    """ "1 place", "3 places"."""
-    return f"{k} {noun}" if k == 1 else f"{k} {noun}s"
+def _closed_of(k: int, n: int) -> str:
+    """ "the 1 place", "both places", "all 3 places", "2 of the 5 places"."""
+    if n <= 1:
+        return "the 1 place"
+    if k >= n:
+        return "both places" if n == 2 else f"all {n} places"
+    return f"{k} of the {n} places"
+
+
+def _count(k: int, noun: str, nouns: str | None = None) -> str:
+    """ "1 place", "3 places" ("1 face was", "2 faces were" when the plural is given)."""
+    return f"{k} {noun}" if k == 1 else f"{k} {nouns or noun + 's'}"
 
 
 def _of(k: int, n: int) -> str:
-    """ "the 1 place", "2 of these 4 places", "all 3 places"."""
+    """ "that place", "both places", "all 3 places", "2 of these 4 places"."""
     if n == 1:
         return "that place"
     if k == n:
-        return f"all {n} places"
+        return "both places" if n == 2 else f"all {n} places"
     return f"{k} of these {n} places"
 
 
@@ -221,6 +231,16 @@ def requirements_in(workspace: Path | str) -> dict | None:
         return got if isinstance(got, dict) else None
     except Exception as exc:  # noqa: BLE001 - no requirements read is no requirements
         logger.warning("surface run: the notes' mesh requirements were not read (%s)", type(exc).__name__)
+        return None
+
+
+def _global_mm(requirements: dict | None) -> float | None:
+    """SURF-12: the element size the user asked for everywhere (the notes' mesh requirements), in mm: a gap under one
+    element is one the surfaces may be changed by."""
+    try:
+        v = ((requirements or {}).get("sizes") or {}).get("global_mm")
+        return float(v) if v else None
+    except (TypeError, ValueError):
         return None
 
 
@@ -282,7 +302,8 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
         wall = float(thickness_mm or 0.0)
         given = wall > 0
         reading, sewn = sm.read(read_cad(Path(step)), mm_per_unit=mm_per_unit, said_shell=said_shell or given,
-                                stitch=stitch, sew_mm=sew_mm, holes_mm=holes_mm, mend=mend)
+                                stitch=stitch, sew_mm=sew_mm, holes_mm=holes_mm, mend=mend,
+                                element_mm=_global_mm(requirements))
         (ws / READING).write_text(json.dumps(reading, indent=1, sort_keys=True, default=float))
         rec["surface"] = {"kind": reading["kind"], "why": reading.get("why"), "faces": reading.get("faces"),
                           "open_share": reading.get("open_share"), "sheets": len(reading.get("sheets") or []),

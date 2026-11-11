@@ -617,7 +617,8 @@ def classify(sheets: list[dict], *, said_shell: bool = False) -> tuple[str, str,
 
 
 def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = True,
-         sew_mm: float | None = None, holes_mm: float | None = None, mend: bool = True) -> tuple[dict, Sewn | None]:
+         sew_mm: float | None = None, holes_mm: float | None = None, mend: bool = True,
+         element_mm: float | None = None) -> tuple[dict, Sewn | None]:
     """SURF-1: what kind of file this is, with the sheets as measured: (the reading, the sewn faces - None unless
     the reading is "surface" or "gap"). A surface part is then cleaned (SURF-8..10, cad/surface_clean): a face written
     twice is left out, the gaps between neighbouring faces are closed up the sewing ladder, pinholes are filled -
@@ -682,7 +683,7 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = 
                 from meshpipeline.cad import surface_mend as smd
 
                 try:
-                    mended, mrec = smd.mend(sewn, mm_per_unit=mm_per_unit, limit_mm=sew_mm)
+                    mended, mrec = smd.mend(sewn, mm_per_unit=mm_per_unit, limit_mm=sew_mm, element_mm=element_mm)
                 except Exception as exc:  # noqa: BLE001 - the surface as sewn; what is open is said
                     logger.warning("surface: the surfaces were not changed (%s: %s)", type(exc).__name__, str(exc)[:200])
                     mended, mrec = sewn, {"error": type(exc).__name__}

@@ -168,3 +168,61 @@ def test_a_trimmed_face_stopping_short_is_extended_on_its_own_surface():
     assert m["closed"] == 1 and m["extended"] == 1, m
     assert len(reading["sheets"]) == 1 and c["open_places"] == 0
     assert _area(reading) == pytest.approx(300.0 * 200.0, rel=1e-6)
+
+
+def _bspline(fn, u, v, n: int = 9):
+    """A natural B-spline patch through an n x n grid of fn(a, b) over u x v (one wire, four sides)."""
+    import numpy as np
+    from OCP.Approx import Approx_IsoParametric
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface
+    from OCP.gp import gp_Pnt
+    from OCP.TColgp import TColgp_Array2OfPnt
+
+    arr = TColgp_Array2OfPnt(1, n, 1, n)
+    for i, a in enumerate(np.linspace(*u, n)):
+        for j, b in enumerate(np.linspace(*v, n)):
+            arr.SetValue(i + 1, j + 1, gp_Pnt(*map(float, fn(a, b))))
+    api = GeomAPI_PointsToBSplineSurface()
+    api.Interpolate(arr, Approx_IsoParametric, False)
+    return BRepBuilderAPI_MakeFace(api.Surface(), 1e-7).Face()
+
+
+def _fillet_and_bead(gap: float):
+    """A small natural fillet patch (a quarter round of 5 mm radius, 12 mm long) rising from a 200 x 12 mm panel, and a
+    small natural bead patch (10 x 12 mm, bulging 0.5 mm) standing on the fillet's top edge but starting `gap` above
+    it: two 4-sided natural B-spline patches a few millimetres across with a gap between them."""
+    r = 5.0
+    fillet = _bspline(lambda a, b: (r * math.sin(a), b, r - r * math.cos(a)), (0.0, math.pi / 2), (0.0, 12.0))
+    bead = _bspline(lambda a, b: (r + 0.5 * math.sin(math.pi * a / 10.0), b, r + gap + a), (0.0, 10.0), (0.0, 12.0))
+    return sx.compound([sx.rect(-200.0, 0.0, 0.0, 12.0), fillet, bead])
+
+
+def test_small_natural_bspline_patches_a_millimetre_apart_are_made_to_meet():
+    """1 mm between two small natural B-spline patches (a fillet and a bead) is inside the reach: it is closed by
+    extending one of them, the open-place count goes to 0, and the area grows by about the strip added."""
+    reading, _sewn = _read(_fillet_and_bead(1.0))
+    m = reading["cleaned"]["mend"]
+    assert m["closed"] == 1 and m["extended"] >= 1, m
+    assert reading["cleaned"]["open_places"] == 0, m
+    assert len(reading["sheets"]) == 1
+
+
+def test_a_gap_wider_than_a_quarter_of_the_narrower_face_is_still_closed():
+    """A 3.5 mm gap between a 300 x 200 panel and a 12 mm wide strip: more than a quarter of the strip (3 mm), but under
+    1/100 of the part and under half the width of the face that is changed, so it is closed."""
+    reading, _sewn = _read(sx.compound([sx.rect(0, 0, 300, 200), sx.rect(303.5, 0, 315.5, 200)]))
+    m = reading["cleaned"]["mend"]
+    assert m["closed"] == 1 and reading["cleaned"]["open_places"] == 0, m
+
+
+def test_the_users_element_size_widens_the_reach_on_a_small_face():
+    """A 2 mm gap between two 3 mm wide strips: half the width of either strip is 1.5 mm, so it stays open - unless the
+    user asked for 4 mm elements everywhere, then a 2 mm gap is under one element and it is closed."""
+    shape = sx.compound([sx.rect(0, 0, 3, 400), sx.rect(5.0, 0, 8, 400)])
+    plain, _sewn = _read(shape)
+    assert plain["cleaned"]["mend"]["closed"] == 0
+    asked, _sewn = _read(shape, element_mm=4.0)
+    assert asked["cleaned"]["mend"]["closed"] == 1 and asked["cleaned"]["open_places"] == 0
+
+
