@@ -39,6 +39,67 @@ def _skip_for(delivered) -> tuple[str, ...]:
     return tuple(f"{SOLID_REGION}_to_{r}" for r in delivered if r != SOLID_REGION)
 
 
+def _triangles(patch: dict) -> int:
+    """How many triangles this patch's poly stream fans to.
+
+    COUNTED OFF THE STREAM, not assumed from the polygon count. The lossless merge emits 4-corner
+    rectangles beside faces kept whole at 4 to 8 corners, and an n-gon fans to n - 2 - so
+    `2 * polygons` is right only by accident and wrong on every mesh with a hanging node.
+    """
+    import numpy as np
+
+    buf = patch.get("polys")
+    if not buf:
+        return 0
+    vals = np.frombuffer(buf, dtype=np.uint32)
+    at, total = 0, 0
+    n = int(vals.size)
+    while at < n:
+        k = int(vals[at])
+        total += max(k - 2, 0)
+        at += k + 1
+    return total
+
+
+def _exact_total(notes: dict, raw: list[dict], triangles: int) -> dict:
+    """One `exact` block for the whole payload, summed from the regions that produced it.
+
+    `max_vertex_shift_m` is a MAXIMUM over regions and not a sum, and it is the figure that makes
+    this block worth printing: an area ratio can hide a twist - it did, for one commit - and a
+    displacement in metres cannot.
+    """
+    # THE PER-PATCH BLOCK IS KEYED OFF `raw`, NOT OFF THE NOTES. `exact_surface` is called without
+    # `region=` because the prefixing happens in the caller's loop, so its own keys are bare -
+    # `fluid_to_solid` where the payload says `fluid/fluid_to_solid`. viewer.js looks this up by
+    # the drawn patch's name, so bare keys would miss on every patch and every one would silently
+    # fall back to printing the DRAWN count as the mesh's own, which is the exact bug the merged
+    # view's `facesOf` exists to prevent.
+    delivered = sum(int(p.get("face_count") or 0) for p in raw)
+    polys = sum(int(p.get("poly_count") or 0) for p in raw)
+    per_patch = {}
+    for p in raw:
+        got = p.get("exact") or {}
+        per_patch[str(p["name"])] = {
+            "delivered_faces": int(p.get("face_count") or 0),
+            "drawn_polygons": int(p.get("poly_count") or 0),
+            "area_error": float(got.get("area_error") or 0.0),
+            "max_vertex_shift_m": float(got.get("max_vertex_shift_m") or 0.0),
+        }
+    return {
+        "delivered_faces": delivered,
+        "drawn_polygons": polys,
+        "drawn_triangles": triangles,
+        "collapse": (delivered / polys) if polys else 0.0,
+        "lossless": True,
+        "how": "coplanar axis-aligned faces merged into the rectangles they already tile; "
+               "adjacency by exact coordinate equality, no tolerance",
+        "area_error": max((float(n.get("area_error") or 0.0) for n in notes.values()), default=0.0),
+        "max_vertex_shift_m": max((float(n.get("max_vertex_shift_m") or 0.0)
+                                   for n in notes.values()), default=0.0),
+        "patches": per_patch,
+    }
+
+
 def _regions(ws: Path) -> list[tuple[str, Path]]:
     """This workspace's delivered regions, named, each with a readable boundary.
 
@@ -71,6 +132,7 @@ def conjugate_viewer(workspace, *, roles: dict, units: str,
     that was never delivered and shows no split at all.
     """
     from meshpipeline.engines.cfmesh_conjugate.polymesh_surface import boundary_surface
+    from meshpipeline.render.exact_surface import exact_surface
     from meshpipeline.render.index_surface import surface_from_index
     from meshpipeline.render.viewer_pack import polymesh_response
 
@@ -78,6 +140,11 @@ def conjugate_viewer(workspace, *, roles: dict, units: str,
     raw: list[dict] = []
     merged_roles = dict(roles or {})
     stats: list[dict] = []
+    #: per region, what the lossless merge did - or None for a region that fell back to a route
+    #: that cannot report it. ONE region failing is enough to disqualify the claim for the whole
+    #: payload: a surface that is exact on the coolant and clustered on the metal is not an exact
+    #: surface, and saying so would be the merged view's own bug wearing better wording.
+    exact_notes: dict[str, dict] = {}
     # EVERY DELIVERED REGION, not the fluid/solid pair. The coupled plate+chip case delivers
     # three - fluid, solid and chip - and a loop over the pair drops the chip, which is the body
     # the coupled case exists to model. `delivered_regions` also knows to leave out the pre-split
@@ -99,7 +166,22 @@ def conjugate_viewer(workspace, *, roles: dict, units: str,
             #
             # NO `region=`. The prefixing is done below, on purpose, and passing it here as well
             # gives "fluid/fluid/coolant_in".
-            patches, cell_stats = surface_from_index(polymesh, skip_names=skip)
+            #
+            # THE LOSSLESS MERGE FIRST, because the budget below is a last resort and this is not
+            # one. `exact_surface` merges only faces that already lay flat in the same plane, which
+            # moves nothing: on the delivered plate it takes 19,599,615 faces to 1,360,201 polygons
+            # with no vertex displaced at all. That is fewer triangles than `fit_to_budget`
+            # produces AND it is the mesh rather than an approximation of it, so there is no trade
+            # here to weigh - it is better input for the budget even when the budget still has to
+            # run afterwards.
+            try:
+                patches, note = exact_surface(polymesh, skip_names=skip)
+                cell_stats = note.get("cell_stats")
+                exact_notes[region] = note
+            except Exception as exc:  # noqa: BLE001 - anything at all falls back to the old route
+                logger.info("conjugate viewer: %s could not be drawn exactly (%s), merging to "
+                            "the budget instead", region, exc)
+                patches, cell_stats = surface_from_index(polymesh, skip_names=skip)
         except Exception as exc:  # noqa: BLE001 - any trouble with the sidecar falls back
             logger.info("conjugate viewer: %s has no usable boundary index (%s), parsing the "
                         "polyMesh instead", region, exc)
@@ -152,8 +234,35 @@ def conjugate_viewer(workspace, *, roles: dict, units: str,
     # 400,000-triangle budget the INPUT skin path has considered browser-safe all along. The
     # delivered path had no budget of any kind. `fit_to_budget` merges cells FOR DRAWING and
     # returns the record that says so; nothing about the mesh on disk changes.
-    from meshpipeline.render.polymesh_budget import fit_to_budget
-    raw, reduced = fit_to_budget(raw)
+    from meshpipeline.render.polymesh_budget import DRAWN_MAX_TRIANGLES, fit_to_budget
+
+    # WHEN THE LOSSLESS MERGE IS ENOUGH ON ITS OWN, the budget must not run. Every region has to
+    # have taken that route for the claim to hold, and the whole thing has to fit - a payload that
+    # is exact on two regions and clustered on the third is not an exact payload.
+    exact_note = None
+    if len(exact_notes) == len(regions) and exact_notes:
+        tris = sum(_triangles(p) for p in raw)
+        if tris <= DRAWN_MAX_TRIANGLES:
+            exact_note = _exact_total(exact_notes, raw, tris)
+            # `face_count` IS THE DRAWN COUNT IN A SERVED PAYLOAD - the convention `fit_to_budget`
+            # sets on line 186 and that viewer.js reads three ways (the quality ramp applies only
+            # when a value array is this long, the whole-screen edge budget is sized from it, and
+            # the parts roster prints it). Skipping the budget means nothing else sets it, so it
+            # is set here. The mesh's own count is NOT smuggled onto the patch beside it -
+            # `polymesh_response` builds each patch dict explicitly and would drop it anyway. It
+            # lives in `exact.patches[name].delivered_faces`, which is where `reduced` keeps its
+            # copy and where viewer.js already looks.
+            for p in raw:
+                p["face_count"] = int(p.get("poly_count") or p.get("face_count") or 0)
+            logger.info("conjugate viewer: drawn exactly, %s faces as %s polygons (%s triangles, "
+                        "budget %s)", format(exact_note["delivered_faces"], ","),
+                        format(exact_note["drawn_polygons"], ","), format(tris, ","),
+                        format(DRAWN_MAX_TRIANGLES, ","))
+        else:
+            logger.info("conjugate viewer: the exact surface is %s triangles against a budget of "
+                        "%s, so it is merged further", format(tris, ","),
+                        format(DRAWN_MAX_TRIANGLES, ","))
+    raw, reduced = ([p for p in raw], None) if exact_note else fit_to_budget(raw)
 
     # THE POOR CELLS GO IN AFTER THE BUDGET, deliberately, so they are never merged. Corintis
     # asked for a "highlight of poor-quality cells" (2026-10-29) and the two mechanisms that
@@ -165,7 +274,8 @@ def conjugate_viewer(workspace, *, roles: dict, units: str,
     # itself, and a few thousand faces draw exactly whatever the rest of the mesh had to give up.
     raw += _poor_surfaces(ws)
 
-    resp = polymesh_response(raw, cell_stats or None, merged_roles, units, reduced=reduced)
+    resp = polymesh_response(raw, cell_stats or None, merged_roles, units, reduced=reduced,
+                             exact=exact_note)
     if resp:
         # THE COLOURS ARE PER FACE AND THE HOTSPOTS ARE NOT, and that is the whole difference.
         # Once cells have been merged for drawing, one drawn face stands for several delivered

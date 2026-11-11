@@ -25,7 +25,7 @@ def stl_response(patches: dict[str, list], roles: dict, units: str,
 
 
 def polymesh_response(raw: list, cell_stats: Any, roles: dict, units: str,
-                      reduced: dict | None = None) -> dict | None:
+                      reduced: dict | None = None, exact: dict | None = None) -> dict | None:
     """The delivered boundary as the browser receives it.
 
     `reduced` is carried through UNTOUCHED and is the whole of this function's honesty about size:
@@ -33,11 +33,18 @@ def polymesh_response(raw: list, cell_stats: Any, roles: dict, units: str,
     delivered, how many are drawn, and at what resolution. Without it a reader has no way to tell a
     mesh that is coarse from a mesh that is being SHOWN coarse, and the face count is the mesh's
     own measurement of itself.
+
+    `exact` is the same kind of record for the OTHER way of getting under a budget: merging only
+    faces that already lay flat in the same plane, which changes the geometry by nothing. The two
+    are different claims and the viewer words them differently, so they travel in different keys -
+    and BOTH may be present, because a mesh can be merged losslessly first and still be too big,
+    in which case the budget reduces what is left and the payload has to admit both steps.
     """
     if not raw:
         return None
     return {"kind": "polymesh", "mesh_units": units, "cell_stats": cell_stats,
             **({"reduced": reduced} if reduced else {}),
+            **({"exact": exact} if exact else {}),
             "patches": [{
                 "name": p["name"],
                 "type": roles.get(p["name"], p["type"]),
