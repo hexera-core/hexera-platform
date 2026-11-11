@@ -1860,14 +1860,23 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
     return record, ran
 
 
-async def _deliver_surface(ws: Path, rec: dict, *, job_id: str, run):
+async def _deliver_surface(ws: Path, rec: dict, *, job_id: str, run, asked: dict | None = None):
     """SURF-3: a surface file's shell delivered as THE result (as SHSTAGE-7 delivers a said shell); one that could not
-    be made is the run's plain reason - the file holds no solid to mesh instead."""
+    be made is the run's plain reason - the file holds no solid to mesh instead. `asked`: the reading of the notes'
+    mesh requirements (read_requirements), for the result's "From your notes" line (SURF-7)."""
     from meshpipeline.contracts.failure_cause import FailureCause
     from meshpipeline.engines import shell_delivery as SD
     from meshpipeline.engines import surface_run as SR
 
     if rec.get("made") and await asyncio.to_thread(SD.deliver, ws, rec):
+        if asked and asked.get("status") == "used":
+            # SHMESH-26 / NOTE-8 on a surface file: asked against delivered, and what was not applied
+            from meshpipeline.contracts.user_notes import record_remark
+            from meshpipeline.engines import mesh_requirements as MR
+            from meshpipeline.engines.shell_requirements import summary as asked_summary
+            said = asked_summary(rec.get("requirements"), len(MR.not_applied_words(asked)))
+            if said:
+                record_remark(ws, said, by="mesh_requirements")
         _cite(job_id, [{"stage": SR.GATE, "decided": "shell delivered", "value": rec.get("elements"),
                         "rule": "SURF-3", "inputs": {"solid_made": False},
                         "words": "The shell on the surface is the delivered mesh: the file holds no solid to mesh."}])
@@ -1903,15 +1912,20 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                             "words": f"The file's {made} closed shell(s) were read as the solid(s) they bound."}])
     except Exception as exc:  # noqa: BLE001 - the part is meshed, or refused, as it stands
         logger.warning("fea driver: closed shells not read as solids (%s)", type(exc).__name__)
+    asked: dict | None = None
     if seen.get("open"):
         # SURF-3: A FILE THAT IS A SURFACE, NOT A SOLID (no solid, its faces do not close: cad/surface_model) is
         # meshed as a shell on the surface as given, and that shell is the result - there is no solid to measure,
         # plan or fall back to. Any other file with no solid carries on exactly as before.
         from meshpipeline.engines import surface_run as SR
 
+        # SURF-7: the notes' mesh requirements are read BEFORE the surface is meshed (a size, quality limits, a
+        # thickness reach the surface run through the workspace), once: a file that turns out not to be a surface
+        # carries the same reading on. With no words nothing is asked, cited, said or written (NOTE-9).
+        asked = await read_requirements(ws, state, job_id=job_id, run=run, publish=publish)
         surfaced = await SR.surface_pass(ws, state, job_id=job_id, run=run, cite=_cite, left_s=attempt_left_s(run))
         if surfaced is not None:
-            return await _deliver_surface(ws, surfaced, job_id=job_id, run=run)
+            return await _deliver_surface(ws, surfaced, job_id=job_id, run=run, asked=asked)
     # MESH-8 FOR A SINGLE PART: its skins left out, its faces still named for the CAD faces they came from
     skins = await asyncio.to_thread(open_single_skins, ws)
     from meshpipeline.contracts import narration as _N
@@ -2005,7 +2019,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     target = element_target(state, ai)
     # NOTE-7..9: the mesh requirements the notes ask for (a global size, edge lengths, quality limits, the element
     # kind), read once; the shell and mixed runs read them from the workspace, the solid plan takes the sizes below
-    asked = await read_requirements(ws, state, job_id=job_id, run=run, publish=publish)
+    if asked is None:
+        asked = await read_requirements(ws, state, job_id=job_id, run=run, publish=publish)
     # SHSTAGE-6: MESH AS: SHELL - the shell mesh and its solver files first, from the staged solid as read (the
     # assembly staging above never rewrites it). SHMESH-23: once the user's element count is read, so the shell's
     # sizes follow it as the solid's do.

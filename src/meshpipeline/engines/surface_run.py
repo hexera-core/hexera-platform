@@ -9,8 +9,10 @@
 # crash, and a crash must cost the run a plain reason, never a hang. Writes only into the workspace it is given. Never
 # raises from run(). A file that is not a surface (a solid, faces that close, a closed skin with a gap) is left alone:
 # its record says which, and the FEA driver carries on exactly as before.
+# The notes' mesh requirements (NOTE-7) reach it too (SURF-7, engines/surface_requirements): their sizes, limits and
+# element kind are the shell mesher's, and a thickness in them is used when the word table read none.
 # Collaborates with: engines/fea_driver.py (calls surface_pass, cites it), cad/surface_model.py, engines/shell_run.py,
-# engines/shell_delivery.py, contracts/shell_thickness.py.
+# engines/shell_delivery.py, contracts/shell_thickness.py, engines/surface_requirements.py.
 from __future__ import annotations
 
 import json
@@ -88,6 +90,9 @@ def words(rec: dict) -> str:
     counted = count_words(rec.get("target"))
     if counted:
         said.append(counted)
+    if rec.get("count_set_aside"):
+        said.append(f"Your element count ({int(rec['count_set_aside']):,}) was not used: the global size you gave "
+                    "decides the sizes.")
     return " ".join(said)
 
 
@@ -117,11 +122,14 @@ def sizing_wall(size_mm: float) -> float:
 
 def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thickness_mm: float | None = None,
         source: str = "", target: dict | None = None, said_shell: bool = False, others_mm: list | None = None,
-        unread: str = "") -> dict:
+        unread: str = "", requirements: dict | None = None, thickness_how: dict | None = None) -> dict:
     """Read `step` (coordinates `mm_per_unit` mm each); when it is a surface, sew it, mesh it as a shell and write
     every file a shell run writes into `workspace`. Returns the run's record, shell_run.json's shape plus "surface":
     {"kind", "why", "thickness_mm", "thickness_set", "sizing_wall_mm", "sheets", "faces", "open_share", ...}.
-    `thickness_mm`: the user's (None: not given); `said_shell`: their words asked for a shell (SURF-1)."""
+    `thickness_mm`: the user's (None: not given); `said_shell`: their words asked for a shell (SURF-1).
+    `requirements`: the mesh requirements read from the user's notes (engines/mesh_requirements) - applied as on
+    any shell (SHMESH-24..26) and told asked against delivered (SURF-7). `thickness_how`: where the thickness came from (engines/surface_requirements.thickness).
+    None: the rules' own surface shell, exactly as before."""
     import numpy as np
 
     from meshpipeline.cad import midsurface as ms
@@ -129,11 +137,14 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
     from meshpipeline.cad.scout import read_cad
     from meshpipeline.engines import shell_run
     from meshpipeline.engines import shell_writers as sw
+    from meshpipeline.engines import surface_requirements as srq
     from meshpipeline.engines.gmsh import shell_adapter as sa
 
     ws = Path(workspace)
     started = time.time()
     rec: dict = {"made": False, "mm_per_unit": float(mm_per_unit), "surface": {"kind": "unread"}}
+    # the shell mesher is called as before when the notes ask for nothing (no new argument)
+    asked = {"requirements": requirements} if requirements else {}
     try:
         wall = float(thickness_mm or 0.0)
         given = wall > 0
@@ -164,7 +175,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
                        open_edges=int(sum(int(r.get("open_edges") or 0) for r in record["sewn"])),
                        free_edges=int(sum(s["free_edges"] for s in sheets)))
             t1 = time.time()
-            mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target)
+            mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, **asked)
             if not given and _past(applied):
                 # SURF-5: sized again for a thicker sheet while elements are left past Nastran's own limits
                 best = (_past(applied), mesh, applied, record, walls)
@@ -174,7 +185,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
                                                     given=dict.fromkeys(walls_k, False))
                     sm.write(record_k, surface_k, out)
                     try:
-                        mesh_k, applied_k = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target)
+                        mesh_k, applied_k = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, **asked)
                     except ValueError:
                         continue
                     if _past(applied_k) < best[0]:
@@ -186,6 +197,12 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
                 (out / "shell_plan.json").write_text(json.dumps(applied, indent=1, sort_keys=True, default=float))
                 rec["surface"]["sizing_wall_mm"] = sorted(set(walls.values()))
             rec["mesh_s"] = round(time.time() - t1, 1)
+            if requirements and isinstance(applied, dict) and applied.get("requirements"):
+                # SURF-7: asked against delivered, said as a surface file's (its thickness is the user's, applied)
+                applied["requirements"] = srq.told(applied["requirements"], elements=int(mesh.n_elements),
+                                                   thickness_mm=wall if given else None, how=thickness_how,
+                                                   unread=str(unread or ""))
+                (out / "shell_plan.json").write_text(json.dumps(applied, indent=1, sort_keys=True, default=float))
             if not given:
                 # SURF-5: the sizing wall sized the mesh; it is no thickness, and none is written
                 mesh.wall = np.zeros(mesh.n_elements, dtype=float)
@@ -204,6 +221,13 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
                        exports={k: v for k, v in exports.items() if isinstance(v, dict)})
             if isinstance(applied, dict) and isinstance(applied.get("target"), dict):
                 rec["target"] = applied["target"]
+            if isinstance(applied, dict) and requirements:
+                for key in ("requirements", "sizing", "count_set_aside"):
+                    if applied.get(key):
+                        rec[key] = applied[key]
+                rec["surface"]["notes"] = srq.words(thickness_how, requirements, given=given)
+                if thickness_how and thickness_how.get("by"):
+                    rec["surface"]["thickness_by"] = thickness_how["by"]
             if not rec["made"]:
                 rec["why"] = "the solver files could not all be written"
             for name in (ms.RECORD_FILE, ms.SURFACE_FILE):
@@ -276,8 +300,15 @@ async def surface_pass(ws: Path, state, *, job_id: str, run=None, target: dict |
     step = next((ws / n for n in STAGED_SOLIDS if (ws / n).exists()), None)
     if step is None:
         return None
-    got = thickness_for(state)
+    # SURF-7: the notes' mesh requirements, as the driver left them in the workspace (None: nothing asked), and
+    # the ONE thickness - the word table's, else the one in the notes' typed set
+    from meshpipeline.engines import shell_run
+    from meshpipeline.engines import surface_requirements as srq
+
+    req = shell_run.requirements_in(ws)
+    got, how = srq.thickness(thickness_for(state), req)
     args = {"thickness_mm": got.mm, "others_mm": list(got.others_mm), "unread": got.unread,
+            **({"thickness_how": how} if req else {}),
             "said_shell": said_shell(state), "target": {k: target[k] for k in ("elements", "mode", "low", "high")
                                                          if k in target} if target and target.get("elements") else None}
     limit = float(RUN_LIMIT_S)
@@ -308,7 +339,8 @@ async def surface_pass(ws: Path, state, *, job_id: str, run=None, target: dict |
                        "words": f"The file is a surface, not a solid: {s.get('why')}."},
                       {"stage": GATE, "decided": "thickness", "value": s.get("thickness_mm"), "rule": "SURF-4",
                        "inputs": {"quote": got.quote, "others_mm": list(got.others_mm), "unread": got.unread,
-                                  "sizing_wall_mm": s.get("sizing_wall_mm")},
+                                  "sizing_wall_mm": s.get("sizing_wall_mm"),
+                                  **({"read_by": how["by"]} if req else {})},
                        "words": (f"The wall thickness is the user's: {_mm(s['thickness_mm'])} (\"{got.quote}\")."
                                  if s.get("thickness_mm") else
                                  "No thickness was given: the mesh is sized as for a thin sheet and no thickness is "
@@ -316,13 +348,19 @@ async def surface_pass(ws: Path, state, *, job_id: str, run=None, target: dict |
                       {"stage": GATE, "decided": "shell mesh" if rec.get("made") else "no shell mesh",
                        "value": rec.get("elements"), "rule": "SURF-3",
                        "inputs": {k: rec.get(k) for k in ("open_edges", "free_edges", "seconds", "why", "target")},
-                       "words": rec["words"]}])
+                       "words": rec["words"]}]
+             + ([{"stage": GATE, "decided": "notes applied", "value": len(req.get("rows") or []),
+                  "rule": srq.RULE,
+                  "inputs": {"sizes": req.get("sizes"), "thickness_by": how["by"], "thickness_set_mm": how["set_mm"]},
+                  "words": s.get("notes") or srq.words(how, req, given=bool(s.get("thickness_mm")))}]
+                if req and rec.get("made") else []))
     return rec
 
 
 def main(argv: list[str] | None = None) -> int:
     """python -m meshpipeline.engines.surface_run <workspace> <staged file> <mm per unit | staged> [<JSON: thickness_mm,
-    others_mm, unread, said_shell, target>]"""
+    others_mm, unread, said_shell, target, thickness_how>] (the requirements read from the notes are the workspace's
+    own file, as the shell run reads them)"""
     args = list(sys.argv[1:] if argv is None else argv)
     more: dict = {}
     if len(args) == 4:
@@ -349,10 +387,13 @@ def main(argv: list[str] | None = None) -> int:
     else:
         mm = float(args[2])
     t = more.get("thickness_mm")
+    from meshpipeline.engines import shell_run
+
     run(ws, args[1], mm_per_unit=mm, thickness_mm=float(t) if t else None, source=Path(args[1]).name,
         target=more.get("target") if isinstance(more.get("target"), dict) else None,
         said_shell=bool(more.get("said_shell")), others_mm=list(more.get("others_mm") or []),
-        unread=str(more.get("unread") or ""))
+        unread=str(more.get("unread") or ""), requirements=shell_run.requirements_in(ws),
+        thickness_how=more.get("thickness_how") if isinstance(more.get("thickness_how"), dict) else None)
     return 0
 
 
