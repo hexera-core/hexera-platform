@@ -1037,10 +1037,17 @@ def multiregion_sizes(ask: Ask, base_cell: float, surface_level, *, extent, regi
         if field == "global" and ask.max_m is not None:
             ask.done("max_edge", f"the largest cells are {_mm(new)}")
     if ask.wall_m is not None:
+        if want is None:
+            # a wall size alone: the background nudged (under 1.42 times either way) so the walls land on it
+            base = float(ask.wall_m) * 2.0 ** round(math.log2(base / float(ask.wall_m)))
         lv = level_for(base, ask.wall_m)
         lo = hi = lv
-        ask.done("near_wall", f"cells of {_mm(base / 2 ** lv)} at the walls (the nearest size the background cell "
-                              "halves to)", built_m=base / 2 ** lv)
+        got = base / 2 ** lv
+        if abs(got - ask.wall_m) / ask.wall_m > 0.05:
+            ask.nearest("near_wall", f"cells of {_mm(got)} at the walls: the {_mm(base)} background cell halves to "
+                                     f"{_mm(got)}, the nearest to {_mm(ask.wall_m)}", built_m=got)
+        else:
+            ask.done("near_wall", f"cells of {_mm(got)} at the walls", built_m=got)
     levels: dict = {}
     for e in ask.local:
         where = str(e.get("where") or "")

@@ -447,6 +447,31 @@ def test_a_cube_grid_measures_as_checkmesh_does(tmp_path):
     assert np.allclose(f["min_volume"], 1.0) and np.allclose(f["orthogonal_quality"], 1.0)
 
 
+def test_a_binary_polymesh_measures_as_its_ascii_twin(tmp_path):
+    _box_mesh(tmp_path / "a", shear=0.5)
+    m = CM.read(tmp_path / "a")
+    pm = tmp_path / "b" / "constant" / "polyMesh"
+    pm.mkdir(parents=True)
+
+    def head(cls, obj):
+        return (f'FoamFile\n{{ version 2.0; format binary; arch "LSB;label=32;scalar=64"; class {cls}; '
+                f'object {obj}; }}\n').encode()
+
+    def blist(a, dtype):
+        a = np.asarray(a, dtype=dtype)
+        n = len(a) if a.ndim == 1 else a.shape[0]
+        return f"\n{n}\n(".encode() + a.tobytes() + b")\n"
+
+    offs = np.r_[0, np.cumsum(m["size"])]
+    (pm / "points").write_bytes(head("vectorField", "points") + blist(m["points"], "<f8"))
+    (pm / "faces").write_bytes(head("faceCompactList", "faces") + blist(offs, "<i4") + blist(m["verts"], "<i4"))
+    (pm / "owner").write_bytes(head("labelList", "owner") + blist(m["owner"], "<i4"))
+    (pm / "neighbour").write_bytes(head("labelList", "neighbour") + blist(m["neighbour"], "<i4"))
+    fa, fb = CM.measure(tmp_path / "a"), CM.measure(tmp_path / "b")
+    assert fb is not None and fb["n_cells"] == fa["n_cells"] == 27
+    assert np.allclose(fa["non_orthogonality"], fb["non_orthogonality"]) and np.allclose(fa["skewness"], fb["skewness"])
+
+
 def test_a_multi_region_case_is_measured_region_by_region(tmp_path):
     import shutil
 
