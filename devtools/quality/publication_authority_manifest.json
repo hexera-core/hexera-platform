@@ -3785,6 +3785,45 @@
   ]
  },
  {
+  "context": "contracts/shell_thickness.py::read_text::search#1|NotAPublisher|not-a-publisher|",
+  "path": "contracts/shell_thickness.py",
+  "qualname": "read_text",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_RANGE_BEFORE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "contracts/shell_thickness.py::read_text::search#2|NotAPublisher|not-a-publisher|",
+  "path": "contracts/shell_thickness.py",
+  "qualname": "read_text",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_NOT_A_WALL",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "contracts/shell_thickness.py::read_text::search#3|NotAPublisher|not-a-publisher|",
+  "path": "contracts/shell_thickness.py",
+  "qualname": "read_text",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 3,
+  "receiver": "_BARE_GAUGE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "contracts/unit_plausibility.py::expected_from_words::search#1|NotAPublisher|not-a-publisher|",
   "path": "contracts/unit_plausibility.py",
   "qualname": "expected_from_words",
