@@ -408,7 +408,7 @@ OPEN_REACH = 100.0
 
 def open_places(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
     """SURF-8: the places where the surfaces do not meet (OPEN_REACH): [{"sheet", "edges", "length_mm", "gap_mm",
-    "at_mm"}], the widest gap first. A gap is the farthest an edge of the place lies from the face beside it. One
+    "at_mm"}], the widest gap first. A place's gap is how far its longest edge lies from the face beside it. One
     place is one gap: the free edges joined end to end, and the two sides of it (face A's edges along face B and
     B's along A) - so an edge the sewing cut into pieces, or a gap seen from both sides, is counted once. Its length
     is the free edge on both sides."""
@@ -497,8 +497,12 @@ def open_places(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
         es = [found[n][0] for n in ns]
         mid = _edge_points(max(es, key=ms._length), 3)[1]
         out.append({"sheet": int(sheet_of[found[ns[0]][1]]), "edges": len(ns),
+                    "pairs": sorted({(min(found[n][1], found[n][3]), max(found[n][1], found[n][3])) for n in ns}),
                     "length_mm": _r(sum(ms._length(e) for e in es) * mm),
-                    "gap_mm": _r(max(found[n][2] for n in ns) * mm), "at_mm": [_r(c * mm) for c in mid]})
+                    # the place's gap is the gap along its longest edge: a stub at a corner (as long as the gap is
+                    # wide) does not make a 3-tolerance seam read as a wider one
+                    "gap_mm": _r(found[max(ns, key=lambda n: (ms._length(found[n][0]), -n))][2] * mm),
+                    "at_mm": [_r(c * mm) for c in mid]})
     out.sort(key=lambda r: (-float(r["gap_mm"]), list(r["at_mm"])))
     return out
 

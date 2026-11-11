@@ -230,7 +230,8 @@ def test_small_gaps_are_closed_by_rule_and_said(tmp_path):
     assert rec["made"] and rec["open_edges"] == 0 and rec["surface"]["sheets"] == 1
     c = rec["surface"]["cleaned"]
     assert c["closed_edges"] == 2 and c["limit_from"] == "rule" and c["wider_gaps"] == 0
-    assert f"Closed 2 gap(s) between the surfaces, the widest {3.0 * tol:.2g} mm." in rec["words"]
+    assert c["places_before"] == 2 and c["closed_places"] == 2
+    assert f"Closed 2 of the 2 place(s) where the surfaces did not meet, the widest {3.0 * tol:.2g} mm." in rec["words"]
     q = rec["quality"]
     assert q["invalid"] == 0 and q["within_nastran"] is True
     # one sheet: the mesh's only free edges are the panel's rim, as for the panel written whole
@@ -539,9 +540,9 @@ def test_the_cleanup_is_cited_when_it_did_something(tmp_path, monkeypatch):
     assert ok is True
     (entry,) = [c for c in cited if c["decided"] == "surface cleaned"]
     assert entry["rule"] == "SURF-8" and entry["value"] == 2 and entry["inputs"]["limit_from"] == "rule"
-    assert entry["words"].startswith("Closed 2 gap(s) between the surfaces")
+    assert entry["words"].startswith("Closed 2 of the 2 place(s) where the surfaces did not meet")
     res = shell_run.read(ws)
-    assert "Closed 2 gap(s) between the surfaces" in res["words"]
+    assert "Closed 2 of the 2 place(s) where the surfaces did not meet" in res["words"]
 
 
 # ------------------------------------------------------------------- SHELL-15j / SHELL-15k: MESH-1's reading

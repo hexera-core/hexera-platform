@@ -108,11 +108,14 @@ def clean_words(cleaned: dict | None) -> list[str]:
     if c.get("duplicates"):
         n = int(c["duplicates"])
         out.append(f"{n} face(s) were in the file twice: the second copy of each is left out.")
-    if c.get("closed_edges"):
+    if c.get("closed_places"):
+        # SURF-8: said in PLACES, the count the record and gap_words use: places before - closed = places after.
+        # (Joins inside a place that stays open - part of its length - are not a place closed.)
         asked = (f", as your notes asked (up to {_gap(c['limit_mm'])})"
                  if c.get("limit_from") == "notes" and not c.get("fell_back") else "")
-        out.append(f"Closed {int(c['closed_edges'])} gap(s) between the surfaces, the widest "
-                   f"{_gap(c.get('closed_widest_mm') or 0.0)}{asked}.")
+        widest = float(c.get("closed_places_widest_mm") or 0.0)
+        out.append(f"Closed {int(c['closed_places'])} of the {int(c.get('places_before') or 0)} place(s) where the "
+                   f"surfaces did not meet{f', the widest {_gap(widest)}' if widest > 0 else ''}{asked}.")
     if c.get("pinholes"):
         asked = ", as your notes asked" if c.get("holes_from") == "notes" else ""
         what = "hole(s)" if c.get("holes_from") == "notes" else "pinhole(s)"
@@ -443,8 +446,9 @@ def _clean_cites(cleaned: dict | None, sewing) -> list[dict]:
     did = clean_words(c)
     if not did and not c.get("left_open") and not getattr(sewing, "given", False):
         return []
-    return [{"stage": GATE, "decided": "surface cleaned", "value": int(c.get("closed_edges") or 0), "rule": "SURF-8",
+    return [{"stage": GATE, "decided": "surface cleaned", "value": int(c.get("closed_places") or 0), "rule": "SURF-8",
              "inputs": {"limit_mm": c.get("limit_mm"), "limit_from": c.get("limit_from"), "rung_mm": c.get("rung_mm"),
+                        "places_before": c.get("places_before"), "joined_edge_pairs": c.get("closed_edges"),
                         "closed_widest_mm": c.get("closed_widest_mm"), "duplicates": c.get("duplicates"),
                         "pinholes": c.get("pinholes"), "left_open": c.get("left_open"),
                         "left_widest_mm": c.get("left_widest_mm"), "refused": c.get("refused"),

@@ -705,9 +705,14 @@ def clean(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
     under which the user asked for holes to be filled (None: only pinholes no bigger than the gaps closed).
     A stated tolerance never leaves more open than the rule's: when it would, the rule's result is kept and said.
     A tolerance is offered to the user only once it has been tried and closes what it is offered for."""
+    from meshpipeline.cad import surface_model as sm
+
     mm = float(mm_per_unit)
     stated = limit_mm is not None and limit_mm > 0
     rule = GAP_RULE * sewn.tol
+    # SURF-8: the places open BEFORE anything is stitched, by the one count: what the user is told was closed is
+    # these less those left, so the words add up (places before - closed = places after)
+    before = sm.open_places(sewn, mm_per_unit=1.0)
     limit = float(limit_mm) / mm if limit_mm is not None and stated else rule
     out, rec = ladder(sewn, limit, stated=stated)
     fell_back = False
@@ -722,10 +727,12 @@ def clean(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
     applied = rule if fell_back else limit
     # the tolerance to offer: tried on the file first, and offered only when it leaves no place wider than what
     # was applied open up to it
-    from meshpipeline.cad import surface_model as sm
-
     advice = 0.0
     places = sm.open_places(out, mm_per_unit=1.0)
+    # a place is closed when none of the face pairs it lay between is open any more
+    still = {pair for p in places for pair in p["pairs"]}
+    gone = [p for p in before if not any(pair in still for pair in p["pairs"])]
+    closed_places = max(0, len(before) - len(places))
     wide = [float(p["gap_mm"]) for p in places if float(p["gap_mm"]) > applied]
     if wide:
         ask = _ask(max(wide) * mm) / mm
@@ -743,7 +750,9 @@ def clean(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
                "closed_at_mm": [[_r(c * mm) for c in p] for _g, p in rec["places"][:MAX_PLACES]],
                "pinholes": len(holes), "pinhole_widest_mm": _r(max(holes) * mm) if holes else 0.0,
                "holes_limit_mm": _r(hole_limit * mm), "holes_from": "notes" if holes_mm else "rule",
-               "refused": rec["refused"], "skipped": int(rec.get("skipped") or 0), "advice_mm": _r(advice)}
+               "refused": rec["refused"], "skipped": int(rec.get("skipped") or 0), "advice_mm": _r(advice),
+               "places_before": len(before), "closed_places": closed_places,
+               "closed_places_widest_mm": _r(max([float(p["gap_mm"]) for p in gone] + [0.0]) * mm)}
     return out, cleaned
 
 
