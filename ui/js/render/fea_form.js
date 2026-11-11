@@ -339,6 +339,45 @@ export function assemblyHtml(a) {
   return `<div class="fea-assembly" data-sig="${attr(assemblySig(a))}">${secHtml(head, body, { aside: seg, cls: "fea-sec-asm" })}</div>`;
 }
 
+/* PLAN-fea-22: THE SIZE CHOICE. The check sizes the mesh once the part is shown: while it does, the
+   panel says so; then, when the full-rules mesh needs a bigger machine than the standard one, the two
+   meshes - full rules, and a quicker one sized to the standard machine - each with its size, machine
+   and time, the one the evidence recommends picked, and why. `pl` is the server's `fea.plan`. */
+const planSig = (pl) => (pl ? `${pl.state}/${(pl.options || []).length}/${pl.recommended || ""}` : "none");
+
+export function planHtml(pl) {
+  if (!pl) return "";
+  const head = `<div class="rc-row"><div class="rc-k">Mesh size</div>`;
+  if (pl.state !== "sized" || !pl.choice) {
+    return `<div class="fea-plan" data-sig="${esc(planSig(pl))}">${head}<div class="rc-v fea-plan-words">${esc(pl.words || "")}</div></div>${pl.why && pl.state === "sized" ? `<div class="gc-note">${esc(pl.why)}</div>` : ""}</div>`;
+  }
+  const opts = (pl.options || []).map((o) => `<label class="fea-plan-opt"><input type="radio" name="fea-plan" value="${esc(o.key)}"${o.recommended ? " checked" : ""}> <b>${esc(o.label)}</b>${o.recommended ? ' <span class="fea-plan-rec">recommended</span>' : ""} <span class="fea-plan-words">${esc(o.words)}</span>${(o.short || []).length ? `<ul class="fea-plan-short">${o.short.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}</label>`).join("");
+  return `<div class="fea-plan" data-sig="${esc(planSig(pl))}">${head}<div class="rc-v">${esc(pl.question || "Which mesh?")}</div></div>
+      <div class="fea-plan-opts" role="radiogroup" aria-label="${esc(pl.question || "Which mesh?")}">${opts}</div>
+      ${pl.why ? `<div class="gc-note">${esc(pl.why)}</div>` : ""}</div>`;
+}
+
+/** The size choice landing after the panel was drawn (the check sizes the mesh once the part is shown):
+ *  drawn in place, a pick already made kept. True when it changed. */
+export function followPlan(root, pl) {
+  if (!pl) return false;
+  const box = root.querySelector(".fea-plan");
+  if (box && box.dataset.sig === planSig(pl)) return false;
+  const picked = root.querySelector('input[name="fea-plan"]:checked');
+  const html = planHtml(pl);
+  if (box) box.outerHTML = html;
+  else {
+    const after = root.querySelector(".fea-assembly") || root.querySelector(".fea-measure");
+    if (!after) return false;
+    after.insertAdjacentHTML("afterend", html);
+  }
+  if (picked) {
+    const again = root.querySelector(`input[name="fea-plan"][value="${picked.value}"]`);
+    if (again) again.checked = true;
+  }
+  return true;
+}
+
 /* ======================================================================================
  * THE HOT SPOTS: shown only - version 1 refines every one automatically.
  * ====================================================================================== */
@@ -638,6 +677,7 @@ export function feaPanelHtml(f, p) {
       </div>
       ${meshAsHtml(f.shell)}
       ${assemblyHtml(f.assembly)}
+      ${planHtml(f.plan)}
       ${blocked ? `<div class="fea-blocked" role="alert">${esc(blocked)}</div>` : ""}
       <div class="gc-actions fea-foot"><button class="gc-proceed" type="button"${blocked ? " disabled" : ""} title="${attr(f.question || "Is this your part and are the units right?")}">Yes, proceed</button>
         <span class="gc-hint">${blocked ? esc(f.way_out || "Upload a single part to go on.") : "Right part, right unit?"}</span></div>
@@ -655,6 +695,8 @@ export function readFeaForm(root, p) {
   if (gapBox) body.fea_gap_joins = !!gapBox.checked;
   // PLAN-fea-19/20: each pair as it is set (the server keeps the ones that differ from the rule)
   if (root.querySelector && root.querySelector(".fea-pair")) body.fea_pairs = readPairs(root);
+  const plan = root.querySelector ? root.querySelector('input[name="fea-plan"]:checked') : null;
+  if (plan) body.fea_plan = plan.value;
   const upSel = root.closest ? root.closest(".gc-stage")?.querySelector(".v-up select") : null;
   const up = (upSel && upSel.value) || p.up_axis;
   if (up) body.up_axis = up;
