@@ -1323,6 +1323,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         index = np.full(int(tags.max()) + 1 if len(tags) else 1, -1, dtype=np.int64)
         index[tags] = np.arange(len(tags))
         xyz = np.asarray(coords, dtype=float).reshape(-1, 3) * mm
+        ring_faces = {w.annulus for w in rings}
         if check_maps and grids:
             # SHMESH-39: a grid with a quad past the solver's own limits (a face mapped where its shape bends the
             # rows too far) is meshed free on the next pass
@@ -1336,6 +1337,20 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     cq = index[np.asarray(conn, dtype=np.int64)].reshape(-1, 4)
                     if len(cq) and shell_quality._quad_past(shell_quality.quad_measures(xyz, cq)).any():
                         bad.add(t)
+            # ... and so is every grid beside a free face that came out with an element past them (the grid's counts
+            # on their shared curves did not suit that face)
+            for t in sorted(set(tag_of) - set(grids) - set(ring_faces)):
+                beside = {int(x) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)
+                          for x in gmsh.model.getAdjacencies(1, abs(c))[0] if int(x) in grids} - bad
+                if not beside:
+                    continue
+                types, _tags, conns = gmsh.model.mesh.getElements(2, t)
+                for et, conn in zip(types, conns, strict=True):
+                    c_ = index[np.asarray(conn, dtype=np.int64)]
+                    if et == 3 and shell_quality._quad_past(shell_quality.quad_measures(xyz, c_.reshape(-1, 4))).any():
+                        bad |= beside
+                    elif et == 2 and shell_quality._tria_past(shell_quality.tria_measures(xyz, c_.reshape(-1, 3))).any():
+                        bad |= beside
             if bad:
                 raise _Unmap(bad)
         quads, trias, q_face, t_face = [], [], [], []
