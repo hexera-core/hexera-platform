@@ -366,3 +366,17 @@
 @keyframes files-arrive{from{background:var(--selected)}to{background:transparent}}
 @media (prefers-reduced-motion:reduce){.files__row{animation:none}}
 @media (max-width:860px){.sidebar__switch,.files{display:none}}
+
+/* Brand voice: on hexera.ai every functional word is uppercase - chrome in Geist Mono caps with
+   a wide track, display words in Saira caps. The page shell and sidebar take the same rule:
+   nothing lowercase anywhere; the label set takes the mono face and the site's tracking, and the
+   page title takes the display face the tokens already declare. Free-running prose (chat inside
+   the workbench) keeps its own voice - this is the chrome. */
+.sidebar,.page,.auth{text-transform:uppercase}
+.page__title{font-family:var(--display);font-weight:600;letter-spacing:-.01em}
+.auth__title{letter-spacing:-.01em}
+.label,.page__eyebrow,.section__title,.section__head .page__sub,.chart-legend,.chart__label,
+.chart__value,.sidebar__group,.sidebar__item,.sidebar__new,.sidebar__run,.sidebar__credits,
+.sidebar__settings>summary,.table th,.metric-card .label,.metric-card span,.status,.btn,
+.billing-plan-card .label,.dashboard-notice h2,.auth__alt,.auth__foot{
+  font-family:var(--mono);letter-spacing:.12em}
