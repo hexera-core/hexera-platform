@@ -830,10 +830,13 @@ def repair_step_file(source: Path, destination: Path, *,
         # (`as_repair_run`), so a package's operations answer to the same caps, the same
         # accountability and the same refusals as an operation-at-a-time run's.
         #
-        # DIRECTIVES ARE NOT PLAYED HERE YET. An engineer's answer to a held defect is the
-        # `answered_held` exemption, which a package deliberately cannot carry (session.try_package)
-        # - so with directives in hand this posture would silently drop them, and the posture is
-        # off by default until the model author arrives with its own provenance (Plan 2).
+        # DIRECTIVES ARE NOT PLAYED HERE YET, and each one is REPORTED rather than dropped. An
+        # engineer's answer to a held defect is `try_op`'s `answered_held` exemption, which a
+        # package deliberately cannot carry (session.try_package), so this driver has no way to
+        # play one - and an answer a person gave that simply vanished is worse than a refusal.
+        # The posture stays off by default until a package can carry that provenance (Plan 2).
+        from dataclasses import replace as _replace
+
         from meshpipeline.cad.repair.region_loop import as_repair_run, run_regions
         from meshpipeline.cad.repair.rules_author import LABEL, rules_author
 
@@ -843,6 +846,10 @@ def repair_step_file(source: Path, destination: Path, *,
         final = measure(regions_run.shape)
         result = as_repair_run(regions_run, original=original.to_dict(), final=final.to_dict(),
                                planner_label=LABEL)
+        if directives:
+            result = _replace(result, refusals=result.refusals + tuple(
+                {"refusal": "directive_unplayable", "reason": "region_loop_posture",
+                 "directive": dict(item)} for item in directives))
     else:
         planner = RepairPlanner(directives or (), reserved=reserved)
         result = run_loop(before_shape, planner=planner, tolerance_mm=tolerance,

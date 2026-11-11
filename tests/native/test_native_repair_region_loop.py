@@ -203,3 +203,22 @@ def test_the_posture_selects_the_region_loop_in_the_entry_point(tmp_path, monkey
     assert measurements["timings"]["verification_scans"] == 2
     assert measurements["operations_kept"] == 1
     assert destination.exists()
+
+
+def test_a_directive_this_driver_cannot_play_is_reported_rather_than_dropped(tmp_path,
+                                                                              monkeypatch):
+    """An engineer's answer is `try_op`'s `answered_held` exemption, and a package cannot carry
+    one - so this driver cannot play a directive. What it must not do is lose it silently."""
+    from meshpipeline.cad.repair.conservative import _write_step, repair_step_file
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_REGION_LOOP", "live")
+    source, destination = tmp_path / "in.step", tmp_path / "out.step"
+    _write_step(_two_notched_plates(tmp_path), source)
+
+    report = repair_step_file(source, destination,
+                              directives=({"item_id": "i-1", "op": "fix_small_faces"},))
+    measurements = {m.name: m.value for m in report.measurements}
+
+    assert [r["refusal"] for r in measurements["refusals"]] == ["directive_unplayable"]
+    assert measurements["refusals"][0]["reason"] == "region_loop_posture"
+    assert measurements["refusals"][0]["directive"]["item_id"] == "i-1"
