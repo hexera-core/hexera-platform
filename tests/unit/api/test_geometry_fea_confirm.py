@@ -239,7 +239,7 @@ async def test_a_shell_asked_on_a_chunky_part_confirms_a_solid_with_the_reason(s
     served = await route.get_check(SID, "alice", "org-1")
     assert served["fea"]["shell"]["mesh_as"] == "solid"
     out = await route.confirm_check(SID, route.ConfirmIn(unit="mm"), "alice", "org-1")
-    assert ("Meshed as: a solid. You asked for a shell, but no wall of this part is thin enough for one, so it is "
+    assert ("Meshed as: a solid. You asked for a shell, but this part has no plate or thin wall to make one from, so it is "
             "meshed as a solid.") in out["message"]
     record = json.loads(store.objects[f"sessions/{SID}/geometry_check/confirmed.json"])
     assert record["fea_mesh_as"] == "solid" and record["fea_mesh_as_picked"] == "shell (words)"

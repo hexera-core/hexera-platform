@@ -53,6 +53,11 @@ TAPER_MIN_POINTS = 6
 #: shell element there can be several walls wide.
 SHELL_RATIO = 0.1
 SHELL_WIDTH_RATIO = 0.25
+#: EVERY PLATE IS A SHELL (SHELL-23): a shell is only made because the user asked for one, so a sheet that is not
+#: thin by the two ratios above is still a shell when it is PLATE-LIKE - its thickness at most PLATE_WIDTH_RATIO of
+#: its width (twice as wide as thick, on its own mid-faces), not a thick ring, its middle in the metal
+#: (cad/midsurface). SHELL_RATIO and SHELL_WIDTH_RATIO then only say which walls get a line of advice.
+PLATE_WIDTH_RATIO = 0.5
 #: A face that pairs with nothing is a plate's RIM (its edge face, a hole's bore through the plate) when its
 #: own width is at most RIM_FACTOR times the thickness of a shell wall it touches, and a BLEND (a fillet or a
 #: chamfer where walls meet) when it is round with radius at most BLEND_FACTOR times that thickness, or flat
@@ -418,5 +423,5 @@ def face_roles(names: list[str], pairs: list[Pair], *, kinds: list[str], widths:
     return out
 
 
-__all__ = ["BLEND", "PAIRED", "RIM", "SHELL_RATIO", "SHELL_WIDTH_RATIO", "SOLID", "TAPER_DEG", "THICK", "Pair",
+__all__ = ["BLEND", "PAIRED", "PLATE_WIDTH_RATIO", "RIM", "SHELL_RATIO", "SHELL_WIDTH_RATIO", "SOLID", "TAPER_DEG", "THICK", "Pair",
            "even_wall", "face_roles", "sheets", "ray_partners", "tapered_wall"]
