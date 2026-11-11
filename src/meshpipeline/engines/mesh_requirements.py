@@ -186,13 +186,13 @@ def tool() -> dict:
 
 def notes_text(state: Mapping) -> str:
     """THE USER'S OWN WORDS, and only those (NOTE-7): what they typed in the notes box and their own chat messages
-    as kept (contracts/user_notes.own_notes), word for word. Never the intake's summary of the request
-    (request_txt, a model's rewrite: on a shell run it read "Generate a quadratic tetrahedral structural mesh ...",
-    and was told back to the user as a note "not applied"), the geometry declaration, the confirmation card or any
-    text the application wrote - so a "Not applied" line can only ever quote the user."""
-    from meshpipeline.contracts.user_notes import own_notes, render
+    as kept, word for word (cad/part_words.notes_text, contracts/user_notes.own_notes). Never the intake's summary
+    of the request (request_txt, a model's rewrite: on a shell run it read "Generate a quadratic tetrahedral
+    structural mesh ...", and was told back to the user as a note "not applied"), the geometry declaration, the
+    confirmation card or any text the application wrote - so a "Not applied" line can only ever quote the user."""
+    from meshpipeline.cad.part_words import notes_text as _words
 
-    return render(own_notes((state or {}).get("user_notes") or []))
+    return _words(state)
 
 
 def wanted(state: Mapping) -> bool:
