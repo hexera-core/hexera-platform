@@ -261,6 +261,15 @@ def test_the_same_part_twice_gives_the_same_files(boss, tmp_path):
         assert (tmp_path / "x" / f).read_bytes() == (tmp_path / "y" / f).read_bytes(), f
 
 
+def test_the_patches_are_stopped_at_their_budget_and_the_shell_is_made_as_before(boss, tmp_path, monkeypatch):
+    """MIXED-9g: a hard deadline - past it, today's shell, the reason said."""
+    monkeypatch.setattr(SP, "PATCH_BUDGET_S", 1.0)
+    rec = _run(boss, tmp_path / "late")
+    assert rec["made"] is True and not rec.get("patches")
+    assert "longer than the 0 minutes they are given" in rec["patch_why"]
+    assert "TYPE=C3D10" not in (tmp_path / "late" / "shell.inp").read_text()
+
+
 def test_a_part_with_nothing_solid_is_today_s_shell(tmp_path):
     from tests import shell_fixtures as sf
 

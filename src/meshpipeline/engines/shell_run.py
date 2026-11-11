@@ -142,8 +142,8 @@ def _patched(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_unit:
         return None
     t1 = time.time()
     try:
-        return SP.build(step, out, record, mm_per_unit=mm_per_unit, requirements=requirements, target=target,
-                        requirements_file=ws / MR.FILE)
+        return SP.build_bounded(step, out, record, mm_per_unit=mm_per_unit, requirements=requirements, target=target,
+                                requirements_file=ws / MR.FILE)
     except SP.Stop as stop:
         rec["patch_why"] = str(stop)
     except Exception as exc:  # noqa: BLE001 - the shell is still made, as before; the reason is kept

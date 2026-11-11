@@ -53,9 +53,11 @@ RULE = "MIXED-9"
 SHELL_ONLY = "shell_only"
 #: the shell trimmed round the regions, as written for the mesher
 TRIMMED_FILE = "shell_patched.brep"
-#: MIXED-9g: the most the solid patches may add to a shell run, seconds. Past it the shell is made as before and the
-#: regions are said as left out: a shell run is held to engines/fea_driver.SHELL_RUN_LIMIT_S (2400 s, extraction up
-#: to 1800 of it), and a run that ran out would deliver no shell at all
+#: MIXED-9g: the most the solid patches may add to a shell run, seconds - a hard deadline (build_bounded: the work
+#: runs in a forked child, stopped there). Past it the shell is made as before and the regions are said as left out:
+#: a shell run is held to engines/fea_driver.SHELL_RUN_LIMIT_S (2400 s, extraction up to 1800 of it), and a run that
+#: ran out would deliver no shell at all. Measured 11 Nov: grown patches take 8 to 50 s on the look-alikes and 50 to
+#: 420 s on real parts; the unheld metal of a part with tens of pieces ran past 30 minutes before this deadline
 PATCH_BUDGET_S = 420.0
 
 
@@ -552,6 +554,49 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
                    solid_quality=[p["quality"] for p in patches], seconds=seconds)
 
 
+def build_bounded(step, out: Path, record: dict, *, budget_s: float | None = None, **kw) -> Patched:
+    """MIXED-9g: build() in a forked child stopped after `budget_s` (PATCH_BUDGET_S) - Stop with the reason when it
+    ran out or the child failed. Without fork (not Linux), build() here, its own soft checks only."""
+    import multiprocessing as mp
+    import os
+
+    budget = PATCH_BUDGET_S if budget_s is None else float(budget_s)
+    if budget <= 0 or "fork" not in mp.get_all_start_methods():
+        return build(step, out, record, budget_s=budget_s, **kw)
+    recv, send = mp.get_context("fork").Pipe(duplex=False)
+
+    def child() -> None:
+        try:
+            send.send(("ok", build(step, out, record, budget_s=budget, **kw)))
+        except Stop as stop:
+            send.send(("stop", str(stop)))
+        except BaseException as exc:  # noqa: BLE001 - told to the parent, which says it
+            send.send(("error", f"{type(exc).__name__}: {str(exc)[:300]}"))
+        finally:
+            send.close()
+            os._exit(0)
+
+    proc = mp.get_context("fork").Process(target=child, daemon=False)
+    proc.start()
+    send.close()
+    try:
+        if not recv.poll(budget + min(30.0, 0.1 * budget)):
+            raise Stop(f"the solid patches would take longer than the {budget / 60:.0f} minutes they are given")
+        status, got = recv.recv()
+    except EOFError as exc:
+        raise Stop("the solid patches stopped before they were made") from exc
+    finally:
+        if proc.is_alive():
+            proc.kill()
+        proc.join()
+        recv.close()
+    if status == "ok":
+        return got
+    if status == "stop":
+        raise Stop(got)
+    raise Stop(f"the solid patches could not be made ({got.split(':')[0]})")
+
+
 # ------------------------------------------------------------------------------------------- the viewer ----
 def write_msh(path: Path, joined, patches: list[dict]) -> list[dict]:
     """The shell run's viewer mesh with its solid patches (gmsh MSH 2.2, metres): the shell's mid-faces as
@@ -611,5 +656,5 @@ def record_of(p: Patched, *, bodies: int) -> dict:
             "patch_seconds": p.seconds, **({"left": p.left} if p.left else {})}
 
 
-__all__ = ["RULE", "SHELL_ONLY", "Patched", "Region", "Stop", "build", "left_words", "record_of", "shell_only",
+__all__ = ["PATCH_BUDGET_S", "RULE", "SHELL_ONLY", "Patched", "Region", "Stop", "build", "build_bounded", "left_words", "record_of", "shell_only",
            "solid_rows", "trim", "words", "write_msh"]
