@@ -1127,7 +1127,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         washers: list = []
         washer_skipped: dict[str, int] = {}
         block_skipped: dict[str, int] = {}
-        gridded: list = []                  # washers inside a gridded face (SHMESH-40): mapped with it
+        gridded: list = []                  # O-grid washers inside a gridded face (SHMESH-40): mapped with it
+        boxed: list = []                    # washers in a gridded face's free boxes: their own ring
         rings: list = []                    # washers in a free face: their own ring mesh (ST.ring_mesh)
         block_preset: dict[int, int] = {}
         block_holes: set[int] = set()
@@ -1137,11 +1138,12 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 gmsh, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm)
             if ST.BLOCKS and ST.MAPPED and structure != "free":
                 # SHMESH-40: a face whose holes all have washers is cut into a grid of cells, mapped below
-                gridded, block_preset, block_holes, block_skipped = ST.block_faces(
+                gridded, boxed, block_preset, block_holes, block_skipped = ST.block_faces(
                     gmsh, washers, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
-                    cuts=cut_curves)
-            rings = [w for w in washers if w not in gridded]
+                    cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"))
+            rings = [w for w in washers if w not in gridded and w not in boxed]
             ST.imprint(gmsh, rings, tag_of)
+            rings += boxed
         washer_holes = {c for w in rings for c in w.hole_after} | block_holes
         # SHMESH-1/2: a constant size per face; SHMESH-3/4/6: curves sized by curvature, grown at GROWTH
         fields = []
@@ -1531,7 +1533,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                             "washers_shrunk": sum(1 for w in washers if w.shrunk),
                             "no_washer": dict(sorted(washer_skipped.items())),
                             "around": dict(sorted(Counter(w.n for w in washers).items())),
-                            "washers_in_grid": len(gridded), "not_gridded": dict(sorted(block_skipped.items())),
+                            "washers_ogrid": len(gridded), "washers_boxed": len(boxed),
+                            "not_gridded": dict(sorted(block_skipped.items())),
                             "switched_off": structure}
     if grids or mapped:
         mesh.notes.append(f"Mapped quads (a regular grid) on {len(grids) + len(mapped)} of {len(tag_of) - len(rings)} "
