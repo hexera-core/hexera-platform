@@ -62,7 +62,7 @@ def test_the_criteria_list_is_read_into_sizes_and_limits():
     assert dropped == [] and not_applied == []
     assert req["sizes"] == {"global_mm": 10.0, "min_edge_mm": 5.0, "max_edge_mm": 15.0, "growth": None,
                             "thickness_mm": None}
-    assert req["kind"] == {"shell": None, "tria_percent_max": None, "order": None}
+    assert req["kind"] == {"shell": None, "tria_percent_max": None, "order": None, "shell_only": None}
     got = {(lim["measure"], lim["shape"]): (lim["op"], lim["target"], lim["share"], lim["outer"])
            for lim in req["limits"]}
     assert got == {("warpage", "any"): ("<=", 15.0, 0.01, 30.0), ("aspect_ratio", "any"): ("<=", 4.0, 0.01, 6.0),
@@ -203,7 +203,7 @@ def test_the_element_kind_and_its_contradictions():
     req, dropped, _na = _one("at most 5% trias, second order", element_kind=[
         {"what": "max_triangle_percent", "value": 5, "quote": "at most 5% trias"},
         {"what": "quadratic", "value": 0, "quote": "second order"}])
-    assert req["kind"] == {"shell": None, "tria_percent_max": 5.0, "order": "quadratic"} and dropped == []
+    assert req["kind"] == {"shell": None, "tria_percent_max": 5.0, "order": "quadratic", "shell_only": None} and dropped == []
 
 
 def test_a_wall_thickness_is_kept_in_the_set():
@@ -267,7 +267,7 @@ def test_quads_with_a_triangle_share_is_the_share():
     req, dropped, _na = _one("Use quads, trias <5%", element_kind=[
         {"what": "quads_only", "value": 0, "quote": "Use quads"},
         {"what": "max_triangle_percent", "value": 5, "quote": "trias <5%"}])
-    assert req["kind"] == {"shell": None, "tria_percent_max": 5.0, "order": None} and dropped == []
+    assert req["kind"] == {"shell": None, "tria_percent_max": 5.0, "order": None, "shell_only": None} and dropped == []
     assert [r["field"] for r in req["rows"]] == ["max_triangle_percent"]
 
 
