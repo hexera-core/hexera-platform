@@ -241,7 +241,6 @@ def _extended_trimmed(face, edge, length: float):
     from OCP.BRepClass import BRepClass_FaceClassifier
     from OCP.BRepLib import BRepLib
     from OCP.GCE2d import GCE2d_MakeSegment
-    from OCP.Geom2d import Geom2d_Curve
     from OCP.gp import gp_Pnt, gp_Pnt2d, gp_Vec, gp_Vec2d
     from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
     from OCP.TopAbs import TopAbs_FORWARD, TopAbs_OUT, TopAbs_REVERSED
@@ -278,21 +277,22 @@ def _extended_trimmed(face, edge, length: float):
         speed = float(np.linalg.norm(d[0] * np.array([su.X(), su.Y(), su.Z()]) + d[1] * np.array([sv.X(), sv.Y(), sv.Z()])))
         if speed <= 1e-300:
             return None
-        shift = gp_Vec2d(*(d * float(length) / speed))
-        # the surface must run on that far (a patch cut from a larger one does)
-        u0, u1, v0, v1 = surf.Bounds()
-        for t in (t0, tm, t1):
-            w = c2.Value(t).Translated(shift)
-            if not (u0 - 1e-9 <= w.X() <= u1 + 1e-9 and v0 - 1e-9 <= w.Y() <= v1 + 1e-9):
-                return None
+        reach_uv = float(length) / speed
         pc = BRep_Tool.CurveOnSurface_s(edge, fwd, 0.0, 0.0)
         if pc is None:
             return None
-        moved = Geom2d_Curve.DownCast(pc.Translated(shift))
         a0, a1 = c2.Value(t0), c2.Value(t1)
-        b0, b1 = a0.Translated(shift), a1.Translated(shift)
+        # the strip's sides CONTINUE THE FACE'S OWN NEIGHBOURING EDGES past the edge's ends (a rim stays a straight
+        # rim), straight out from the edge where a neighbouring edge runs nearly along it
+        b0 = _corner(fwd, edge, a0, d, reach_uv)
+        b1 = _corner(fwd, edge, a1, d, reach_uv)
+        # the surface must run on that far (a patch cut from a larger one does)
+        u0, u1, v0, v1 = surf.Bounds()
+        for w in (b0, b1):
+            if not (u0 - 1e-9 <= w.X() <= u1 + 1e-9 and v0 - 1e-9 <= w.Y() <= v1 + 1e-9):
+                return None
         e_in = BRepBuilderAPI_MakeEdge(pc, surf, t0, t1).Edge()
-        e_out = BRepBuilderAPI_MakeEdge(moved, surf, t0, t1).Edge()
+        e_out = BRepBuilderAPI_MakeEdge(GCE2d_MakeSegment(b0, b1).Value(), surf).Edge()
         s0 = BRepBuilderAPI_MakeEdge(GCE2d_MakeSegment(a0, b0).Value(), surf).Edge()
         s1 = BRepBuilderAPI_MakeEdge(GCE2d_MakeSegment(a1, b1).Value(), surf).Edge()
         mk = BRepBuilderAPI_MakeWire()
@@ -319,8 +319,41 @@ def _extended_trimmed(face, edge, length: float):
             return None
         return TopoDS.Face_s(out.Reversed()) if face.Orientation() == TopAbs_REVERSED else out
     except Exception as exc:  # noqa: BLE001 - not extended: the place is told
-        logger.debug("surface mend: a trimmed face was not extended (%s)", type(exc).__name__)
+        logger.debug("surface mend: a trimmed face was not extended (%s: %s)", type(exc).__name__, exc)
         return None
+
+
+def _corner(face, edge, at, out_dir: np.ndarray, reach_uv: float):
+    """Where a strip's side ends: from the edge's end `at` (in the face's parameters), along the face's neighbouring
+    edge there continued past it, as far as reaches `reach_uv` out from the edge; straight out (`out_dir`) when no
+    neighbouring edge leaves that end at an angle."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve2d
+    from OCP.gp import gp_Pnt2d, gp_Vec2d
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad import midsurface as ms
+
+    best = None
+    em = ms._map(face, TopAbs_EDGE)
+    for i in range(1, em.Extent() + 1):
+        g = TopoDS.Edge_s(em.FindKey(i))
+        if g.IsSame(edge):
+            continue
+        c = BRepAdaptor_Curve2d(g, face)
+        for t, sgn in ((c.FirstParameter(), -1.0), (c.LastParameter(), 1.0)):
+            if c.Value(t).Distance(at) > 1e-7 * max(1.0, abs(at.X()) + abs(at.Y())):
+                continue
+            p, v = gp_Pnt2d(), gp_Vec2d()
+            c.D1(t, p, v)
+            if v.Magnitude() < 1e-14:
+                continue
+            w = sgn * np.array([v.X(), v.Y()]) / v.Magnitude()      # on past the end, away from the edge's body
+            along = float(np.dot(w, out_dir))
+            if along > 0.2 and (best is None or along > best[0]):
+                best = (along, w)
+    w, k = (out_dir, 1.0) if best is None else (best[1], best[0])
+    return gp_Pnt2d(at.X() + w[0] * reach_uv / k, at.Y() + w[1] * reach_uv / k)
 
 
 #: SURF-12: a B-spline patch is rebuilt through this many points a side (more where it has more poles)
@@ -543,8 +576,12 @@ def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None) -> tuple[An
                 same = na is not None and nb is not None and abs(float(np.dot(na, nb))) > math.cos(
                     math.radians(SAME_SIDE_DEG))
                 if same:
-                    ext = _extended(a, e, gap)                    # the same sheet continued: up to its edge
-                    new = ext
+                    # the same sheet continued: past the gap, then cut back along the neighbour's own edge (so the
+                    # new edge lies on it, corners and all); a natural patch with no edge to cut along: up to the gap
+                    eb = [m[0] for m in p["_members"] if m[1] == nbr]
+                    wall = _wall(max(eb, key=ms._length), b, 10.0 * max(gap, here.tol)) if eb else None
+                    pieces = _split(ext, wall) if wall is not None else []
+                    new = _keep_side(pieces, a, e) if len(pieces) > 1 else _extended(a, e, gap)
                 else:
                     pieces = _split(ext, b)
                     new = _keep_side(pieces, a, e) if len(pieces) > 1 else None
