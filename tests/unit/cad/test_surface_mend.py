@@ -188,20 +188,27 @@ def _bspline(fn, u, v, n: int = 9):
     return BRepBuilderAPI_MakeFace(api.Surface(), 1e-7).Face()
 
 
-def _fillet_and_bead(gap: float):
+def _fillet_and_bead(gap: float, short: bool = False):
     """A small natural fillet patch (a quarter round of 5 mm radius, 12 mm long) rising from a 200 x 12 mm panel, and a
     small natural bead patch (10 x 12 mm, bulging 0.5 mm) standing on the fillet's top edge but starting `gap` above
-    it: two 4-sided natural B-spline patches a few millimetres across with a gap between them."""
+    it: two 4-sided natural B-spline patches a few millimetres across with a gap between them. With `short`, the bead is
+    the clean bead's own surface stopping `gap` short instead (its lower edge on the same curve, higher up)."""
     r = 5.0
     fillet = _bspline(lambda a, b: (r * math.sin(a), b, r - r * math.cos(a)), (0.0, math.pi / 2), (0.0, 12.0))
-    bead = _bspline(lambda a, b: (r + 0.5 * math.sin(math.pi * a / 10.0), b, r + gap + a), (0.0, 10.0), (0.0, 12.0))
+    if short:
+        bead = _bspline(lambda a, b: (r + 0.5 * math.sin(math.pi * a / 10.0), b, r + a), (gap, 10.0), (0.0, 12.0))
+    else:
+        bead = _bspline(lambda a, b: (r + 0.5 * math.sin(math.pi * a / 10.0), b, r + gap + a), (0.0, 10.0), (0.0, 12.0))
     return sx.compound([sx.rect(-200.0, 0.0, 0.0, 12.0), fillet, bead])
 
 
-def test_small_natural_bspline_patches_a_millimetre_apart_are_made_to_meet():
-    """1 mm between two small natural B-spline patches (a fillet and a bead) is inside the reach: it is closed by
-    extending one of them, the open-place count goes to 0, and the area grows by about the strip added."""
-    reading, _sewn = _read(_fillet_and_bead(1.0))
+@pytest.mark.parametrize("gap,short", [(1.0, False), (0.6, True), (2.0, True)])
+def test_small_natural_bspline_patches_a_millimetre_apart_are_made_to_meet(gap, short):
+    """0.6 to 2 mm between two small natural B-spline patches (a fillet and a bead) is inside the reach: the fillet's own
+    curve bends away from the bead, so the BEAD is continued down onto the fillet's edge (both faces of a place are
+    tried), and the continued bead, rebuilt through its own points, is found again after the cut (it lies within the
+    fit, not on the old patch to the last digit). The open-place count goes to 0, one sheet."""
+    reading, _sewn = _read(_fillet_and_bead(gap, short=short))
     m = reading["cleaned"]["mend"]
     assert m["closed"] == 1 and m["extended"] >= 1, m
     assert reading["cleaned"]["open_places"] == 0, m

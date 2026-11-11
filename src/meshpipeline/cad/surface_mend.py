@@ -433,19 +433,19 @@ def _extended_bspline(bs, bounds, in_u: bool, after: bool, step: float, fit: flo
     return BRepBuilderAPI_MakeFace(new, 1e-7).Face()
 
 
-def _keep_side(pieces: list, face, edge):
-    """Of the pieces a face was split into, the one that holds the face's inside (a point well inside it)."""
+def _keep_side(pieces: list, face, edge, tol: float = 0.0):
+    """Of the pieces a face was split into, the one that holds the face's inside (a point well inside it): the nearest
+    to that point, within `tol` - a B-spline continued past its edge is rebuilt through its own points, so it lies
+    within the fit check (a tenth of the sew tolerance) of the old patch, not on it to the last digit (11 Nov: a bead
+    patch continued down to its fillet found no piece of its own and was left open)."""
     from meshpipeline.cad import midsurface as ms
 
     q = ms._inner_point(face)
     if q is None:
         return None
-    best = None
-    for p in pieces:
-        d = ms._dist(ms._vertex(q), p)
-        if d <= 1e-6 * max(math.sqrt(ms._area(face)), 1.0):
-            best = p if best is None or ms._area(p) > ms._area(best) else best
-    return best
+    near = max(1e-6 * max(math.sqrt(ms._area(face)), 1.0), float(tol))
+    scored = sorted(((ms._dist(ms._vertex(q), p), -ms._area(p), i) for i, p in enumerate(pieces)))
+    return pieces[scored[0][2]] if scored and scored[0][0] <= near else None
 
 
 def _split(face, tool) -> list:
@@ -561,10 +561,10 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
                 eb = [m[0] for m in p["_members"] if m[1] == nbr]
                 wall = _wall(max(eb, key=ms._length), b, 10.0 * max(gap, here.tol)) if eb else None
                 pieces = _split(ext, wall) if wall is not None else []
-                new = _keep_side(pieces, a, e) if len(pieces) > 1 else _extended(a, e, gap, fit)
+                new = _keep_side(pieces, a, e, here.tol) if len(pieces) > 1 else _extended(a, e, gap, fit)
             else:
                 pieces = _split(ext, b)
-                new = _keep_side(pieces, a, e) if len(pieces) > 1 else None
+                new = _keep_side(pieces, a, e, here.tol) if len(pieces) > 1 else None
                 if new is None:
                     why = why or "the continued face does not reach its neighbour"
             if new is not None:
@@ -579,7 +579,7 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
         if eb:
             wall = _wall(max(eb, key=ms._length), b, 10.0 * max(gap, here.tol))
             pieces = _split(a, wall) if wall is not None else []
-            new = _keep_side(pieces, a, e) if len(pieces) > 1 else None
+            new = _keep_side(pieces, a, e, here.tol) if len(pieces) > 1 else None
             if new is not None:
                 changed = abs(ms._area(new) - ms._area(a)) / max(ms._length(e), 1e-300)
                 if changed > allowed:
