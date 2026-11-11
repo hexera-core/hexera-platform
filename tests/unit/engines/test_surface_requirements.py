@@ -127,6 +127,7 @@ def test_the_thickness_row_is_told_as_a_surface_files():
                                            "in mm")
     assert out["rows"][0]["delivered"] == "elements are about 3.9 mm"
     assert srq.told(None, elements=0, thickness_mm=None) is None
+    assert srq.told({"rows": []}, elements=0, thickness_mm=1.2) is None      # nothing to say: the caller keeps its own
 
 
 # ---------------------------------------------------------------------------------------- the surface run

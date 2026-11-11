@@ -311,9 +311,10 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
             rec["mesh_s"] = round(time.time() - t1, 1)
             if requirements and isinstance(applied, dict) and applied.get("requirements"):
                 # SURF-7: asked against delivered, said as a surface file's (its thickness is the user's, applied)
+                # (a report with no rows to say is kept as the mesher gave it)
                 applied["requirements"] = srq.told(applied["requirements"], elements=int(mesh.n_elements),
                                                    thickness_mm=wall if given else None, how=thickness_how,
-                                                   unread=str(unread or ""))
+                                                   unread=str(unread or "")) or applied["requirements"]
                 (out / "shell_plan.json").write_text(json.dumps(applied, indent=1, sort_keys=True, default=float))
             if not given:
                 # SURF-5: the sizing wall sized the mesh; it is no thickness, and none is written
