@@ -30,6 +30,11 @@ GATE = "fea_surface"
 #: parts in four are at least this thick, and their own floor (half the wall) would be no finer. The wall is used
 #: for the sizes only (the floor, what counts as a panel, the sliver clean-up): no thickness is written.
 SIZING_DIVISIONS = 300.0
+#: ... and when the mesh sized so leaves elements past Nastran's own limits (the sliver clean-up works in walls: a
+#: thin wall cleans little), the sheet is sized again at each of these multiples of that wall, and the first mesh
+#: inside the limits is kept - else the one with the fewest elements past them. Measured on the lab's parts of known
+#: wall: 4 of 28 left 2 to 5 triangles past the limits at the thin wall.
+SIZING_AGAIN = (2.0, 4.0)
 #: SURF-4: a thickness past this share of its sheet's size is said (shell theory holds to about 1/10, SHELL-2);
 #: the user's number still stands
 THICK_SHARE = 0.1
@@ -97,6 +102,14 @@ def deck_notes(thickness_mm: float | None) -> list[str]:
     return out
 
 
+def _past(applied: dict) -> int:
+    """How many elements of a mesh are folded or past Nastran's own limits (the plan as applied, shell_adapter)."""
+    q = applied.get("quality") if isinstance(applied, dict) else None
+    if not isinstance(q, dict):
+        return 0
+    return int(q.get("invalid") or 0) + sum(int(v) for v in (q.get("nastran_past") or {}).values())
+
+
 def sizing_wall(size_mm: float) -> float:
     """SURF-5: the wall a sheet is sized with when no thickness was given (mm)."""
     return float(f"{float(size_mm) / SIZING_DIVISIONS:.6g}")
@@ -152,6 +165,26 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
                        free_edges=int(sum(s["free_edges"] for s in sheets)))
             t1 = time.time()
             mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target)
+            if not given and _past(applied):
+                # SURF-5: sized again for a thicker sheet while elements are left past Nastran's own limits
+                best = (_past(applied), mesh, applied, record, walls)
+                for factor in SIZING_AGAIN:
+                    walls_k = {p: float(f"{w * factor:.6g}") for p, w in walls.items()}
+                    record_k, surface_k = sm.record(reading, sewn, mm_per_unit=mm_per_unit, walls_mm=walls_k,
+                                                    given=dict.fromkeys(walls_k, False))
+                    sm.write(record_k, surface_k, out)
+                    try:
+                        mesh_k, applied_k = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target)
+                    except ValueError:
+                        continue
+                    if _past(applied_k) < best[0]:
+                        best = (_past(applied_k), mesh_k, applied_k, record_k, walls_k)
+                    if not best[0]:
+                        break
+                _n, mesh, applied, record, walls = best
+                sm.write(record, surface, out)
+                (out / "shell_plan.json").write_text(json.dumps(applied, indent=1, sort_keys=True, default=float))
+                rec["surface"]["sizing_wall_mm"] = sorted(set(walls.values()))
             rec["mesh_s"] = round(time.time() - t1, 1)
             if not given:
                 # SURF-5: the sizing wall sized the mesh; it is no thickness, and none is written
@@ -327,5 +360,5 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["GATE", "NO_THICKNESS", "NO_THICKNESS_YET", "READING", "SIZING_DIVISIONS", "deck_notes", "is_surface",
+__all__ = ["GATE", "NO_THICKNESS", "NO_THICKNESS_YET", "READING", "SIZING_AGAIN", "SIZING_DIVISIONS", "deck_notes", "is_surface",
            "line", "main", "read", "run", "said_shell", "sizing_wall", "surface_pass", "thickness_for", "words"]

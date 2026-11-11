@@ -142,6 +142,40 @@ def test_no_thickness_given_still_delivers_with_the_thickness_plainly_not_set(br
     assert 'add it to your notes (for example "1.2 mm thick")' in rec["words"]
 
 
+def test_with_no_thickness_a_mesh_past_nastrans_limits_is_sized_again_for_a_thicker_sheet(tmp_path, monkeypatch):
+    """SURF-5: the sliver clean-up works in walls, so the thin sizing wall cleans little. When it leaves elements
+    past Nastran's own limits the sheet is sized again at twice, then four times, that wall and the first mesh
+    inside the limits is kept; with a thickness given the mesh is never made again."""
+    from meshpipeline.engines.gmsh import shell_adapter as sa
+
+    real = sa.mesh_run
+    seen: list[float] = []
+
+    def fake(out, *, mm_per_unit=1.0, target=None):
+        wall = json.loads((out / "shell.json").read_text())["pairs"][0]["thickness_mm"]
+        seen.append(wall)
+        mesh, applied = real(out, mm_per_unit=mm_per_unit, target=target)
+        # the first two meshes are said to leave triangles past the limits; the third is clean
+        applied["quality"]["nastran_past"] = {"T3_SKEW": 3} if len(seen) == 1 else {"T3_SKEW": 1} if len(seen) == 2 else {}
+        applied["quality"]["within_nastran"] = len(seen) > 2
+        return mesh, applied
+
+    monkeypatch.setattr(sa, "mesh_run", fake)
+    src = _file(sx.bracket(), tmp_path / "in")
+    rec = surface_run.run(tmp_path, src, mm_per_unit=1.0)
+    assert rec["made"] and len(seen) == 3
+    assert seen[1] == pytest.approx(2 * seen[0], rel=1e-5) and seen[2] == pytest.approx(4 * seen[0], rel=1e-5)
+    assert rec["surface"]["sizing_wall_mm"] == [pytest.approx(seen[2])] and rec["quality"]["within_nastran"]
+    assert rec["walls_mm"] == [] and list(sw.read_bdf(tmp_path / "shell.bdf").walls.values()) == [0.0]
+    assert json.loads((tmp_path / "shell.json").read_text())["pairs"][0]["thickness_mm"] == pytest.approx(seen[2])
+    # a thickness given: one mesh, whatever it leaves
+    seen.clear()
+    ws = tmp_path / "given"
+    ws.mkdir()
+    rec = surface_run.run(ws, src, mm_per_unit=1.0, thickness_mm=1.5)
+    assert rec["made"] and seen == [1.5] and rec["walls_mm"] == [1.5]
+
+
 def test_separate_sheets_are_separate_parts_with_a_property_each(tmp_path):
     shape = sx.compound([sx.bracket(), sx.moved(sx.plate_with_hole(), (0, 0, 200))])
     rec = surface_run.run(tmp_path, _file(shape, tmp_path / "in"), mm_per_unit=1.0, thickness_mm=2.0)
