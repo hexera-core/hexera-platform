@@ -610,6 +610,15 @@ def measure(workspace, *, intake_patches, manifest: Mapping | None = None,
     roles.update({str(k): str(v) for k, v in (manifest.get("patch_types") or {}).items()
                   if str(k) not in roles})
     rec: dict = {"version": VERSION, "flow": flow}
+    # A SHELL IS NOT HELD TO THE SOLID'S SKIN. A shell mesh lies on the part's mid-surface: half a wall
+    # inside the CAD surface by construction, and a part kept solid beside it is not in it at all. Held
+    # to the outer surface, thick plates read as "off the CAD" and "missed" though every element is
+    # where it belongs (a welded plate column, 10-32 mm walls at 8 mm elements: 20% "off", 7% "missed",
+    # refused on both attempts). Where the shell lies is its own record's business (shell.json).
+    from meshpipeline.engines.shell_delivery import is_shell_workspace
+    if is_shell_workspace(ws):
+        return {**rec, "verdict": UNMEASURED,
+                "why": "a shell mesh lies on the part's mid-surface, not on its outer surface"}
     try:
         patches = mesh_patches(ws)
         cad, source, fluid_side = cad_reference(ws, flow, intake_patches)

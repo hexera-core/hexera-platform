@@ -138,6 +138,22 @@ def test_what_cannot_be_measured_is_said_and_never_refused(tmp_path):
     assert ok
 
 
+def test_a_shell_mesh_is_not_held_to_the_solids_outer_surface(tmp_path):
+    # a boundary that misses a third of the CAD is refused (the test above) - unless the delivery is a
+    # shell: a shell lies on the mid-surface, half a wall inside the CAD, with solid-kept parts absent
+    ws = _internal_ws(tmp_path, (0, 0.6, 0, 0.4, 0, 0.4))
+    assert not F.gate_cad_fidelity(GateCtx(workspace=ws, intake_patches=PATCHES))[0]
+    (ws / "quality.json").write_text(json.dumps({"fea": {"shell": True}}))
+    rec = F.measure(ws, intake_patches=PATCHES, flow="internal")
+    assert rec["verdict"] == F.UNMEASURED and "mid-surface" in rec["why"]
+    ok, feedback = F.gate_cad_fidelity(GateCtx(workspace=ws, intake_patches=PATCHES))
+    assert ok and feedback == ""
+    assert F.concerns(rec) == []
+    # a solid FEA delivery is still judged
+    (ws / "quality.json").write_text(json.dumps({"fea": {"shell": False}}))
+    assert not F.gate_cad_fidelity(GateCtx(workspace=ws, intake_patches=PATCHES))[0]
+
+
 def test_an_opening_off_its_confirmed_size_is_a_concern(tmp_path):
     ws = _internal_ws(tmp_path, (0, 1, 0, 0.4, 0, 0.4))
     manifest = {"quality": {"patch_areas_m2": {"inlet": 0.16 * 1.25, "outlet": 0.16},
