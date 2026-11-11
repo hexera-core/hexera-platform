@@ -4,73 +4,92 @@
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
 /* /
-   The product wears the finish hexera.ai actually ships (styles.css + orange-theme.css):
-   flight-test mono. Near-neutral blacks, near-white ink, ONE hot accent - international
-   orange - for the primary action, the running state and the selection, and deep steel
-   blue for technical linework: wireframes, edges, secondary structure. Role-named, so a
-   hue can change without every rule downstream becoming a lie.
+   The product wears the finish hexera.ai ships (styles.css + midnight-theme.css): three colours.
+   Black for the page, stone for ink, hairlines and linework, and ONE accent - crimson - for the
+   selection, the focus ring, links and highlights. Role-named, so a hue can change without
+   every rule downstream becoming a lie.
+
+   Because the accent is red, three jobs the old orange did are no longer its:
+     - the primary action is the site's solid stone button (--primary): a red button beside a
+       red "Failed" reads as part of the failure;
+     - the running state is stone in motion (--live): a red ring beside a red cross reads as one;
+     - a text box shows its caret by a stone edge (--focus-edge): a red edge reads as an invalid field.
+   Pass, concern and fail keep their own green, amber and red, always with a word and a mark.
+   NO RED BOXES: only a failure wears a red wash or a red outline. Crimson is a mark - the stripe
+   and the swatch of a selected row, the focus ring, a link's underline, the active section's icon,
+   the picked face on the part. A chosen card or an armed control takes a bright stone line
+   (--border-bright) on a stone wash (--selected).
 
    The LEGACY names (--ink, --card, --line ...) that the rest of this stylesheet
    tree already speaks are aliased at the bottom onto the new roles. That is
    deliberate: the product structure is unchanged, so every existing rule keeps
    working and only the values move.
 / */
+/* the wordmark's serif falls back to a local face cut to its measure, as on the site */
+@font-face{font-family:"Cormorant Fallback";src:local("Georgia"),local("Times New Roman");
+  size-adjust:88%;ascent-override:105%;descent-override:32%;line-gap-override:0%}
 :root{
   --sans:"Geist","Geist Fallback",system-ui,-apple-system,"Segoe UI","Helvetica Neue",
          Arial,sans-serif;
   --mono:"Geist Mono","Geist Mono Fallback",ui-monospace,SFMono-Regular,Menlo,Consolas,
          'Liberation Mono',monospace;
   --display:"Saira Semi Condensed","Helvetica Neue",Arial,sans-serif;
+  --serif:"Cormorant","Cormorant Fallback",Georgia,"Times New Roman",serif;   /* the HEXERA wordmark, nothing else */
 
-  /* surfaces - the site's own near-neutral black (orange-theme.css --bg), then an elevation
-     ladder each step lighter. The console had drifted to #0a0a09/#0f0f0e, half a shade cooler
-     and darker than the page a user arrives from; re-anchoring is what makes the two read as
-     one product rather than two dark apps. */
-  --canvas:#0d0d0c;
-  --background:#131312;
-  --surface-1:#161615;
-  --surface-2:#1c1c1a;
-  --surface-raised:#232321;
-  --viewer-frame:#131312;
-  --viewer-canvas:#0d0d0c;
-  --border:rgba(238,235,225,.10);
-  --border-strong:rgba(238,235,225,.22);
+  /* surfaces - the site's black page (midnight-theme.css --bg), then an elevation ladder each
+     step lighter. Neutral all the way up: no blue and no amber in the greys. */
+  --canvas:#050505;
+  --background:#0c0c0c;
+  --surface-1:#111110;
+  --surface-2:#161615;
+  --surface-raised:#1c1c1b;
+  --viewer-frame:#0c0c0c;
+  --viewer-canvas:#050505;
+  --border:rgba(175,174,162,.14);
+  --border-strong:rgba(175,174,162,.28);
+  --border-bright:rgba(175,174,162,.6);    /* the chosen card, the armed control, a text box with the caret */
 
-  /* text - the site's ink, every value AA on the surfaces above */
-  --text:#ede9e0;
-  --text-muted:#b9b6ae;
-  --text-faint:#8a8884;
-  --text-bright:#f4f1ea;
+  /* text - the site's stone ink, every value AA on the surfaces above */
+  --text:#e2e0d4;
+  --text-muted:#b9b8ad;
+  --text-faint:#86857c;
+  --text-bright:#f1efe6;
 
-  /* accent - international orange, the site's one hot colour: primary action, focus,
-     the running state, and the selection */
-  --accent:#ff4f00;
-  --accent-hover:#ff7033;
-  --accent-soft:rgba(255,79,0,.14);
-  --accent-line:rgba(255,79,0,.5);
-  --accent-ink:#1a0a02;          /* the ONLY safe text colour on --accent */
+  /* accent - crimson, the site's one hot colour, in the strengths it is used at. It marks the
+     selection, the focus ring, links and highlights; it is never a status and never a button. */
+  --accent:#d21319;              /* the selected mark: a stripe, a swatch, a sticker */
+  --accent-text:#e8403d;         /* small accent type and icons: lifted a step so it holds on the blacks */
+  --accent-display:#e0302f;      /* accent type at display sizes */
+  --accent-line:rgba(232,64,61,.55);     /* a focus ring's softer form, the divider under the pointer */
+  --accent-ink:#fff6ee;          /* the ONLY safe text colour on --accent */
 
-  /* the selection reads through the same accent (kept as a role so it can diverge) */
-  --gold:#ff4f00;
-  --gold-soft:rgba(255,79,0,.14);
-  --gold-line:rgba(255,79,0,.5);
-  --gold-ink:#1a0a02;
+  /* the wash under a selected row or an armed control: stone, so a red wash always means failure */
+  --selected:rgba(175,174,162,.1);
 
-  /* steel - the site's wireframe blue: technical linework and secondary structure */
-  --steel:#6d8baf;
-  --steel-bright:#9db6d4;
-  --steel-muted:#57708f;         /* decoration only, never text */
-  --steel-soft:rgba(109,139,175,.14);
+  /* the primary action - the site's solid stone button ("Sign up") */
+  --primary:#e2e0d4;
+  --primary-hover:#fff;
+  --primary-ink:#0a0a0a;         /* the ONLY safe text colour on --primary */
+
+  /* the running state - bright stone, in motion */
+  --live:#e2e0d4;
+
+  /* stone - the site's wireframe colour: technical linework and secondary structure */
+  --stone:#afaea2;
+  --stone-bright:#b9b8ad;        /* identifiers and receipts */
+  --stone-muted:#8e8d82;         /* decoration only, never text */
+  --stone-soft:rgba(175,174,162,.12);
 
   /* status - meaning carried by a word AND a mark, never colour alone */
   --ok:#61d49a;      --ok-soft:rgba(97,212,154,.11);
   --warn:#f1bd63;    --warn-soft:rgba(241,189,99,.12);
   --danger:#ff6b5e;  --danger-soft:rgba(216,58,48,.14);
 
-  --mesh-canvas:#0a0a09;
-  --mesh-selection:#ff4f00;
+  --mesh-canvas:#050505;
+  --mesh-selection:#e22c2c;
 
-  --focus:var(--accent);
+  --focus:var(--accent-text);
+  --focus-edge:var(--border-bright);
   --radius:4px;          /* the site's own button/input radius */
   --radius-tight:2px;    /* hairline chrome: chips, dots, rules */
 
@@ -84,8 +103,8 @@
   --fs-xl:18px;
   --r-sm:4px;            /* badges, stamps, small tags */
   --r-md:6px;            /* buttons, inputs, rows, overlays */
-  --divider:rgba(238,235,225,.07);   /* between rows and sections: quieter than --border */
-  --hover:rgba(238,235,225,.045);    /* the wash a row takes under the pointer */
+  --divider:rgba(175,174,162,.1);    /* between rows and sections: quieter than --border */
+  --hover:rgba(175,174,162,.06);     /* the wash a row takes under the pointer */
   --shadow-1:0 1px 2px rgba(0,0,0,.6);
   --shadow-2:0 18px 48px -24px rgba(0,0,0,.8);
 }
@@ -93,8 +112,8 @@
 /* /
    THE VIEWER'S ROLES. The viewer toolbar, its overlays and the 3D part read only these names, and
    the chrome ones point at tokens above - so a new theme is this one block. The part colours are
-   read by the viewers' scripts when a view opens (viewer/toolbar.js themeRgb): a mid-tone grey with
-   low glare, so the orange selection and the steel edges stand out on it, and a step of tint per
+   read by the viewers' scripts when a view opens (viewer/toolbar.js themeRgb): a mid-tone stone grey
+   with low glare, so the crimson selection and the dark edges stand out on it, and a step of tint per
    patch so the patches read apart without shouting.
 / */
 :root{
@@ -104,13 +123,13 @@
   --overlay-line:var(--border-strong);
   --overlay-well:var(--surface-1);       /* the sunken track of a choice or a search box */
   --overlay-on:var(--surface-2);         /* the chosen side of a choice */
-  --part-body:#7c828a;                   /* was #bdc7d6 - near-white, glaring */
-  --part-tint-1:#708783;
-  --part-tint-2:#8a8273;
-  --part-tint-3:#737d8c;
-  --part-tint-4:#857a87;
-  --part-tint-5:#7a8576;
-  --part-cut:var(--steel-bright);        /* the line a section draws across the part */
+  --part-body:#86857c;                   /* stone, mid-tone: no blue in it */
+  --part-tint-1:#7d8a85;
+  --part-tint-2:#8f8778;
+  --part-tint-3:#80858a;
+  --part-tint-4:#8a8189;
+  --part-tint-5:#838a7c;
+  --part-cut:var(--text);                /* the line a section draws across the part */
 }
 
 html,body{height:100%;font-family:var(--sans);font-size:14px;line-height:1.65;
@@ -123,12 +142,12 @@ html,body{height:100%;font-family:var(--sans);font-size:14px;line-height:1.65;
 :where(a,button,input,textarea,select,[tabindex]):focus-visible{
   outline:2px solid var(--focus);outline-offset:2px;border-radius:2px}
 /* A SELECTION IS A QUIET WASH, not a block of the hot accent: a stray drag across the sidebar
-   used to paint "New run" and "Overview" in solid orange, which read as a rendering bug. */
-::selection{background:rgba(255,79,0,.28);color:var(--text-bright)}
+   used to paint "New run" and "Overview" in a solid block, which read as a rendering bug. */
+::selection{background:rgba(210,19,25,.38);color:var(--text-bright)}
 
 *{scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
 ::-webkit-scrollbar{width:10px;height:10px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:6px;
   border:2px solid var(--canvas)}
-::-webkit-scrollbar-thumb:hover{background:rgba(238,235,225,.34)}
+::-webkit-scrollbar-thumb:hover{background:rgba(175,174,162,.45)}

@@ -43,18 +43,18 @@ import { bindSeg, bindToolbar, optRow, savePng, segHtml, snapshotPng, themeRgb, 
 export { b64f32, b64u32, loadVtk } from "./scene/vtk_load.js";
 
 /* the console's own palette: the theme's viewer canvas behind a matte mid-tone grey part (the
-   theme's --part-body: soft on the eyes, so the orange selection and the steel edges stand out),
-   darker hairlines on the sharp corners; stickers in the yellow of the pictures, the selected one
-   in the product's orange, which nothing else on the stage wears. The two theme colours are read
+   theme's --part-body: soft on the eyes, so the crimson selection and the dark edges stand out),
+   darker hairlines on the sharp corners; stickers in the page's stone ink, the selected one
+   in the product's crimson, which nothing else on the stage wears. The two theme colours are read
    when a stage opens; the values here are only the fallback. */
-const BACKGROUND_FALLBACK = [0.035, 0.055, 0.075], BODY_FALLBACK = [0.49, 0.51, 0.54];
+const BACKGROUND_FALLBACK = [0.02, 0.02, 0.02], BODY_FALLBACK = [0.53, 0.52, 0.49];
 const background = () => themeRgb("--viewer-canvas", BACKGROUND_FALLBACK);
 const body = () => themeRgb("--part-body", BODY_FALLBACK);
 const AMBIENT = 0.22, DIFFUSE = 0.76, SPECULAR = 0.06;
-const EDGE = [0.30, 0.34, 0.40];
-const STICKER = [1.0, 0.83, 0.0], SEL = [1.0, 0.31, 0.0];
-// an FEA part's hot spots: a quiet steel blue, apart from the stickers' yellow
-const SPOT = [0.42, 0.62, 0.86];
+const EDGE = [0.31, 0.31, 0.29];
+const STICKER = [0.886, 0.878, 0.831], SEL = [0.886, 0.173, 0.173];
+// an FEA part's hot spots: the same stone ink (the pin over each is a dark chip, the sticker's reverse)
+const SPOT = [0.886, 0.878, 0.831];
 // an assembly's interfaces: a muted green where parts touch, a muted red where they pass into each other
 const TOUCH = [0.40, 0.72, 0.52], OVERLAP = [0.86, 0.45, 0.40];
 // SHSTAGE-4: a region that stays solid (a muted amber) and where the plates do not meet (a clear red)
@@ -412,7 +412,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
 function partsLegend(patches) {
   const el = document.createElement("div"); el.className = "gc-legend";
   el.style.cssText = "position:absolute;left:8px;bottom:8px;max-height:45%;overflow:auto;padding:6px 8px;"
-    + "border-radius:6px;background:rgba(255,255,255,0.88);color:#2a2f36;font-size:11px;line-height:1.5;z-index:2";
+    + "border-radius:6px;background:rgba(255,255,255,0.88);color:#161615;font-size:11px;line-height:1.5;z-index:2";
   const named = patches.filter((pt) => pt.name), rows = named.slice(0, 40);
   el.innerHTML = rows.map((pt) => {
     const c = (Array.isArray(pt.color) ? pt.color : body()).map((v) => Math.round(v * 255)).join(",");
@@ -1022,10 +1022,10 @@ function initScene(sessionId, box, surf, p) {
     const P = [[lo[0], lo[1], lo[2]], [hi[0], lo[1], lo[2]], [hi[0], hi[1], lo[2]], [lo[0], hi[1], lo[2]],
                [lo[0], lo[1], hi[2]], [hi[0], lo[1], hi[2]], [hi[0], hi[1], hi[2]], [lo[0], hi[1], hi[2]]];
     const E = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
-    lineActor(P.flat(), E.flatMap(([a, b]) => [2, a, b]), [0.45, 0.6, 0.8], 1);
+    lineActor(P.flat(), E.flatMap(([a, b]) => [2, a, b]), [0.686, 0.682, 0.635], 1);
     if (ex.grounded) {
       const g = lo[vert], Q = P.filter((q) => q[vert] === g);
-      lineActor(Q.flat(), [2, 0, 2, 2, 1, 3], [0.45, 0.6, 0.8], 1);
+      lineActor(Q.flat(), [2, 0, 2, 2, 1, 3], [0.686, 0.682, 0.635], 1);
     }
     rw.render();
   }
@@ -1218,7 +1218,7 @@ async function openFeaStage(sessionId, d, confirm, opts) {
  * through, and the air box the file sets is drawn as faint lines. The one answer is the detail
  * level, sent with "Mesh this model".
  * ====================================================================================== */
-const AIRBOX = [0.43, 0.55, 0.69], OUTLINE = [1.0, 0.31, 0.0];
+const AIRBOX = [0.686, 0.682, 0.635], OUTLINE = [0.886, 0.173, 0.173];
 const FADED = 0.12, XRAY = 0.18;
 
 async function openThermalStage(sessionId, d, confirm, opts) {

@@ -167,13 +167,13 @@ def test_parts_lists_finds_hides_and_picks_the_parts(live, tmp_path):
     _click_el(live, f"{row}.querySelector('.vo-eye')")
     assert "inlet" in live.evaluate(f"{T}.visible()")
 
-    # a row picks its part: it turns orange and a small chip at the bottom says what it is
+    # a row picks its part: it turns crimson and a small chip at the bottom says what it is
     _click_el(live, f"document.querySelector('#v-bnd-chips-{JOB} .vo-row[data-label=outlet] .vo-pick')")
     chip = live.evaluate(f"""(() => {{ const c = document.getElementById('v-picked-{JOB}');
       return {{name: {T}.selected(), text: c.querySelector('.vp-t').textContent,
                colour: {T}.colourOf('outlet')}}; }})()""")
     assert chip["name"] == "outlet" and "1 face" in chip["text"], chip
-    assert chip["colour"] == pytest.approx([1.0, 0.31, 0.0], abs=1e-6), chip
+    assert chip["colour"] == pytest.approx([0.886, 0.173, 0.173], abs=1e-6), chip
     _click_el(live, f"document.querySelector('#v-picked-{JOB} [data-a=iso]')")
     assert live.evaluate(f"{T}.visible()") == ["outlet"]
     _click_el(live, f"document.querySelector('#v-picked-{JOB} [data-a=clear]')")
@@ -279,10 +279,10 @@ def test_the_part_is_a_matte_mid_tone_grey_read_from_the_theme(live, tmp_path):
       return {{body: css.getPropertyValue('--part-body').trim(), canvas: css.getPropertyValue('--viewer-canvas').trim(),
               first: {T}.colourOf(document.querySelector('#v-bnd-chips-{JOB} .vo-row').dataset.label),
               material: {T}.material(), bg: {T}.background()}}; }})()""")
-    assert got["body"] == "#7c828a", got
+    assert got["body"] == "#86857c", got
     # the first patch wears the body grey; the material is matte
-    assert got["first"] == pytest.approx([0x7c / 255, 0x82 / 255, 0x8a / 255], abs=1e-3), got
+    assert got["first"] == pytest.approx([0x86 / 255, 0x85 / 255, 0x7c / 255], abs=1e-3), got
     assert got["material"]["ambient"] == pytest.approx(0.22) and got["material"]["specular"] == pytest.approx(0.06), got
     # the scene is the theme's viewer canvas
-    assert got["canvas"] == "#0d0d0c" and got["bg"][:3] == pytest.approx([0x0d / 255, 0x0d / 255, 0x0c / 255], abs=1e-3), got
+    assert got["canvas"] == "#050505" and got["bg"][:3] == pytest.approx([0x05 / 255, 0x05 / 255, 0x05 / 255], abs=1e-3), got
     assert_clean(live, "the part's colours")
