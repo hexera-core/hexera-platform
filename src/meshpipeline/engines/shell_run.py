@@ -32,6 +32,9 @@ def _verdicts(record: dict) -> dict[str, int]:
     return out
 
 
+#: SHELL-26: a shell made again without its short plates, because a mesh with them could not be made
+PLATES_OUT = ("The walls short for their thickness could not be meshed with the rest, so they stay solid and are not in "
+              "the shell files.")
 #: what a shell run with no shell says when the extraction gave no measured reason
 NO_WALL_WHY = "the part has no plate or thin wall to make a shell from"
 
@@ -72,6 +75,8 @@ def words(rec: dict) -> str:
         said += f" The plates do not meet at {rec['open_edges']} edge(s): the shell has gaps there."
     if rec.get("advice"):
         said += f" {rec['advice']}"       # SHELL-23: walls short for their thickness
+    if rec.get("plates_left_out"):
+        said += f" {rec['plates_left_out']}"      # SHELL-26
     from meshpipeline.engines.shell_plan import count_words
 
     counted = count_words(rec.get("target"))
@@ -177,7 +182,22 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
             rec["why"] = no_shell_why(record)
         else:
             t1 = time.time()
-            mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
+            try:
+                mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
+            except ValueError as exc:
+                # SHELL-26: a shell whose short plates the mesher could not close is made as before them, said
+                if not ms.has_plates(record):
+                    raise
+                record = ms.extract_file(step, out, mm_per_unit=mm_per_unit, plates=False)
+                verdicts = _verdicts(record)
+                rec.update(plates_left_out=PLATES_OUT, plates_mesh_error=str(exc)[:300], advice="",
+                           bodies=verdicts,
+                           open_edges=int(sum(int(r.get("open_edges") or 0) for r in record.get("sewn") or [])),
+                           solid_bodies=int(verdicts.get("solid", 0)) + sum(len(b.get("solid_regions") or [])
+                                                                            for b in record.get("bodies") or []))
+                if not record.get("surface_faces"):
+                    raise
+                mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
             rec["mesh_s"] = round(time.time() - t1, 1)
             name_parts(mesh, ws)
             exports = sw.write_all(ws, mesh, units="m", source=source)

@@ -708,9 +708,47 @@ def _wire_edges(wire, face) -> list:
     return out
 
 
+#: SHELL-42, AN OUTLINE IS CLOSED, AS THE FILE SAYS IT IS: the pieces of a face's outline share their end points
+#: in the B-rep, but their parameter curves meet only within the file's own tolerance (up to 7e-6 of the face's
+#: parameter box on the real parts measured: free-form walls of a cyclone, a duct and an enclosure, and a
+#: bracket's drafted flat walls), and the wire builder asks 1e-7: the outline came out in pieces ("the two faces
+#: do not overlap") or as a wire that does not close ("not a valid face"). Each piece is made to start where the
+#: one before ends, and the last to end where the first starts. CHAIN_GAP only keeps apart two ends that are not
+#: one point at all (an outline wound round a closed surface ends a whole period away: 1 or more of the box).
+CHAIN_GAP = 1e-3
+#: ... and the flat overlap of two outlines, when it finds nothing, is asked again at these multiples of its
+#: tolerance (10 times, a tenth, 100 times), the first that finds an overlap kept
+OVERLAP_RETRY = (10.0, 0.1, 100.0)
+
+
+def _chained(curves: list) -> list:
+    """SHELL-42: 2D B-spline curves given in order round an outline, each made to start exactly where the one
+    before ends (and the last to end where the first starts), when they lie within CHAIN_GAP of it. A curve
+    that cannot be moved (periodic, or its end pole not its end point) is left as it is."""
+    n = len(curves)
+    if n < 2:
+        return curves
+    for i in range(n):
+        prev, cur = curves[i - 1], curves[i]
+        try:
+            end = prev.Value(prev.LastParameter())
+            start = cur.Value(cur.FirstParameter())
+            gap = end.Distance(start)
+            if gap <= 0.0 or gap > CHAIN_GAP or cur.IsPeriodic():
+                continue
+            if cur.Pole(1).Distance(start) > 1e-12:
+                continue                      # not clamped: its first pole is not its start
+            cur.SetPole(1, end)
+        except Exception as exc:  # noqa: BLE001 - the piece stays as the file gave it
+            logger.debug("shell: an outline piece could not be joined to the one before (%s)", exc)
+    return curves
+
+
 def _curves_of_a(fa, box) -> list[list]:
-    """Face A's outline and holes as 2D curves in the fitted surface's parameters (outline first)."""
-    return [[_mapped_curve(e, fa, box) for e in _wire_edges(w, fa)] for w in [_outer_wire(fa), *_inner_wires(fa)]]
+    """Face A's outline and holes as 2D curves in the fitted surface's parameters (outline first), each wire's
+    pieces joined end to end (SHELL-42)."""
+    return [_chained([_mapped_curve(e, fa, box) for e in _wire_edges(w, fa)])
+            for w in [_outer_wire(fa), *_inner_wires(fa)]]
 
 
 def _region_on(surf, wires: list[list]):
@@ -728,6 +766,7 @@ def _overlap_2d(wires_a: list[list], wires_b: list[list], surf, fuzzy: float) ->
     from OCP.BRepAdaptor import BRepAdaptor_Curve
     from OCP.Geom import Geom_Plane
     from OCP.Geom2d import Geom2d_TrimmedCurve
+    from OCP.Geom2dConvert import Geom2dConvert
     from OCP.GeomAPI import GeomAPI
     from OCP.gp import gp_Pln
     from OCP.TopAbs import TopAbs_REVERSED
@@ -751,8 +790,17 @@ def _overlap_2d(wires_a: list[list], wires_b: list[list], surf, fuzzy: float) ->
     ra, rb = flat_region(wires_a), flat_region(wires_b)
     if ra is None or rb is None:
         return []
+    pieces = overlap(ra, rb, fuzzy)
+    # SHELL-42: OpenCASCADE's flat Boolean found NOTHING at one tolerance where it finds the overlap at the ones
+    # either side of it (a bracket's drafted wall, two outlines sharing three sides: 0.358 of the box at 1e-7,
+    # 1e-5, 1e-4 and 1e-3, nothing at 1e-6). Nothing found is asked again at OVERLAP_RETRY; an overlap found is
+    # kept as it was. A wrong piece cannot pass: every fitted mid-face is read against both faces (SHELL-9).
+    for retry in OVERLAP_RETRY:
+        if pieces:
+            break
+        pieces = overlap(ra, rb, retry * fuzzy)
     out = []
-    for f in overlap(ra, rb, fuzzy):
+    for f in pieces:
         wires = []
         for w in [_outer_wire(f), *_inner_wires(f)]:
             curves = []
@@ -762,6 +810,9 @@ def _overlap_2d(wires_a: list[list], wires_b: list[list], surf, fuzzy: float) ->
                 curves.append(c.Reversed() if e.Orientation() == TopAbs_REVERSED else c)
             wires.append(curves)
         g = _region_on(surf, wires)
+        if g is None:
+            # SHELL-42: the Boolean's pieces meet within its tolerance, not exactly: joined end to end
+            g = _region_on(surf, [_chained([Geom2dConvert.CurveToBSplineCurve_s(c) for c in w]) for w in wires])
         if g is not None:
             out.append(g)
     return out
@@ -781,9 +832,7 @@ def _edge_points(edge, k: int) -> list[np.ndarray]:
 def _covers(fb, fa) -> bool:
     """Every point read along face A's edges has its foot on face B (B lies across the whole of A)."""
     from OCP.BRep import BRep_Tool
-    from OCP.BRepClass import BRepClass_FaceClassifier
-    from OCP.gp import gp_Pnt, gp_Pnt2d
-    from OCP.TopAbs import TopAbs_IN, TopAbs_ON
+    from OCP.gp import gp_Pnt
 
     proj = sp._projector(fb)
     tol = max(BRep_Tool.Tolerance_s(fb), 1e-7)
@@ -794,7 +843,8 @@ def _covers(fb, fa) -> bool:
                 if proj.NbPoints() < 1:
                     return False
                 u, v = proj.LowerDistanceParameters()
-                if BRepClass_FaceClassifier(fb, gp_Pnt2d(u, v), tol).State() not in (TopAbs_IN, TopAbs_ON):
+                # SHELL-41: the foot's parameters in the face's own range (a closed face: a drafted tube)
+                if not sp.foot_on_face(fb, u, v, tol):
                     return False
     return True
 
@@ -834,7 +884,7 @@ def _curves_of_b(fb, fa, box) -> list[list] | None:
             if out:
                 uv[0] = tuple(out[-1][-1])
             out.append(np.array(uv))
-        if not out or np.linalg.norm(out[-1][-1] - out[0][0]) > 1e-6:
+        if not out or np.linalg.norm(out[-1][-1] - out[0][0]) > CHAIN_GAP:
             return None              # the outline did not close (it wound round a periodic surface)
         out[-1][-1] = out[0][0]
         return out
@@ -975,9 +1025,35 @@ def wall_samples(mid, fa, fb) -> list[list[float]]:
     return out
 
 
-def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False) -> tuple[list, float, float, float, str]:
+#: SHELL-43, A FINER FIT WHERE THE FIRST IS OFF THE MIDDLE: a free-form wall that curves between the
+#: FIT_SAMPLES x FIT_SAMPLES midpoints (a blow-moulded tank's side, a duct's swept corner) had its fitted
+#: mid-surface up to 5% of the wall off the middle between them, and the wall was thrown out (FIDELITY_SHARE,
+#: 2%). The fit is made again through twice the points a side (33: a cubic fit's error falls 16 times, 5% to
+#: 0.4% on that tank), FIT_REFINEMENTS times at most, and kept only when it holds the middle as any fitted
+#: mid-face must. A wall whose first fit holds is fitted once, as before. Once, not twice: a fit through 65 a
+#: side takes 5 to 7 s a pair.
+FIT_REFINEMENTS = 1
+FIT_OFF_MIDDLE = "the fitted mid-surface is off the middle"
+
+
+def fitted_mid_refined(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False) -> tuple[list, float, float, float, str]:
+    """SHELL-43: fitted_mid, made again through twice the points a side while it is off the middle
+    (FIT_REFINEMENTS times at most)."""
+    n = FIT_SAMPLES
+    got = fitted_mid(fa, fb, t_hint, fuzzy, wall_wide=wall_wide)
+    for _ in range(FIT_REFINEMENTS):
+        if got[0] or not got[4].startswith(FIT_OFF_MIDDLE):
+            break
+        n = 2 * n - 1
+        got = fitted_mid(fa, fb, t_hint, fuzzy, wall_wide=wall_wide, samples=n)
+    return got
+
+
+def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False,
+               samples: int | None = None) -> tuple[list, float, float, float, str]:
     """SHELL-9: the fitted mid-faces of faces fa, fb ([] when none can be made, with why), and the wall's thinnest,
-    thickest and mean thickness over them (own units). `t_hint`: the wall as read by the pair test."""
+    thickest and mean thickness over them (own units). `t_hint`: the wall as read by the pair test. `samples`:
+    the midpoints a side (FIT_SAMPLES when not given; SHELL-43 asks for more)."""
     from OCP.Approx import Approx_IsoParametric
     from OCP.BRep import BRep_Tool
     from OCP.BRepClass import BRepClass_FaceClassifier
@@ -993,7 +1069,7 @@ def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False) 
         return [], 0.0, 0.0, 0.0, "a face without bounds"
     sa = BRep_Tool.Surface_s(fa)
     pa_proj, pb_proj = sp._projector(fa), sp._projector(fb)
-    n = FIT_SAMPLES
+    n = FIT_SAMPLES if samples is None else int(samples)
     grid = TColgp_Array2OfPnt(1, n, 1, n)
     walls = np.zeros((n, n))
     for i in range(n):
@@ -1021,6 +1097,10 @@ def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False) 
     else:
         wires_b = _curves_of_b(fb, fa, box)
         faces = _overlap_2d(wires_a, wires_b, surf, 1e-6) if wires_b is not None else []
+        # SHELL-43: an overlap under a tenth of the wall wide is no mid-face (SHELL-16's sliver): where B's
+        # outline, laid on A's surface, runs along A's own edge, the flat overlap can come back as slivers
+        # alone, and read finely enough a sliver lies in the middle of its wall
+        faces = [f for f in faces if width_of(f) >= SLIVER_WALLS * t_hint]
         if not faces:
             return [], 0.0, 0.0, 0.0, "the two faces do not overlap"
     from OCP.BRepLib import BRepLib
@@ -1042,7 +1122,7 @@ def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False) 
         worst_rel = max(worst_rel, rel)
         lo, hi = min(lo, flo), max(hi, fhi)
     if worst_rel > FIDELITY_SHARE:
-        return [], 0.0, 0.0, 0.0, (f"the fitted mid-surface is off the middle by {100 * worst_rel:.1f}% of the wall")
+        return [], 0.0, 0.0, 0.0, (f"{FIT_OFF_MIDDLE} by {100 * worst_rel:.1f}% of the wall")
     if not read and not math.isfinite(lo):
         return [], 0.0, 0.0, 0.0, "no point of the fitted mid-surface could be read"
     read = read or [lo, hi]
@@ -1051,7 +1131,7 @@ def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False) 
     # of the wall beside it (a flat dimple 1.4 walls wide in a printed cylinder's side), which that wall's own
     # mid-face runs across when it is joined
     # ... unless its WALL is wide (SHELL-2b): a strip of a wall split lengthwise is one piece of a wide wall
-    if not wall_wide and width_of(_compound(faces)) < hi / sp.SHELL_WIDTH_RATIO:
+    if not wall_wide and width_of(_compound(faces)) < hi / fit_width_ratio():
         return [], 0.0, 0.0, 0.0, "it is narrower than four walls (a local feature of the wall beside it)"
     return faces, float(lo), float(hi), float(np.mean(read)), ""
 
@@ -1068,7 +1148,8 @@ def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False) 
 #:   - at least PLATE_FLAT_SHARE of its mid-surface is flat or gently curved: a wall round a radius under
 #:     PLATE_CURVE_WALLS of its thickness (a bush, a nut, a hollow boss: its bore under three walls across) is a
 #:     thick ring, which no shell stands for. A tight bend rides with the flat plates it joins, as in SHELL-2;
-#:   - each of its pairs is NO PAD ON A THINNER WALL: neither of its faces is also a side of a thinner shell wall. A
+#:   - each of its pairs is NO PAD ON A THINNER WALL: neither of its faces is also a side of a shell wall under half
+#:     its thickness (SHELL-23c; a step up to twice the wall is a shell). A
 #:     pad, a boss or a land standing on a plate shares the plate's far face; it is thicker metal on that plate, not
 #:     a plate of its own, and stays solid as it did (two plates stacked are a lap, SHELL-8, as before);
 #:   - and each of its pairs has its mid-face IN THE METAL (PLATE_METAL_SHARE of the points read on it): two faces
@@ -1088,8 +1169,20 @@ def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False) 
 #: is read again without them, and keeps the reading with fewer open edges - so a body that sewed shut before
 #: still does, and the plates that would hang loose stay solid, said in a note.
 EVERY_PLATE = True
-PLATE_BODY_SHARE = 0.5
-PLATE_BODY_QUICK = 0.5
+#: SHELL-23b (11 Nov): THE BODY SHARE IS OFF (0). It refused the plates of bodies whose plates hold under half their
+#: metal, and was the guard behind most of the thin-wall skin still missed: on 282 lab and real parts, 24 files and
+#: 14.0 of the 18.5 file-shares (the walls stream's skin measure), among them plates 7 walls wide and 14 long on a thick
+#: body. A plate on a lump is a shell with a solid region, as a thin plate on a lump always was (SHELL-2 never had
+#: this guard). The two parts it was kept for - 2 frames whose short plates the mesher could not close - are made by
+#: SHELL-26 instead (the shell without those plates, said).
+PLATE_BODY_SHARE = 0.0
+PLATE_BODY_QUICK = 0.0
+#: SHELL-23c (11 Nov): A STEP IS NO PAD. A wall one of whose faces is a side of a thinner shell wall is a pad (it
+#: stands on that wall) only when it is more than PAD_STEP_WALLS of that wall thick: its mid-plane then lies outside
+#: the thinner wall's metal, and SHELL-7 could not lay the thinner wall onto it with an offset inside its own wall. Up
+#: to that, it is a thickness step flush on one side (a doubler, a land, a thicker band): a shell, the thinner wall
+#: snapped onto its mid-plane with its offset (SHELL-7), as industry models a one-sided step.
+PAD_STEP_WALLS = 2.0
 PLATE_OPEN_GUARD = True
 PLATE_PASS_SLACK = 1.5
 PLATE_FLAT_SHARE = 0.5
@@ -1385,6 +1478,19 @@ def flat_fidelity(mid, datum, t: float) -> tuple[float, int]:
             worst = max(worst, abs(abs(float(np.dot(_np(a.Value(u, v)) - o, n))) - t / 2.0))
             count += 1
     return worst, count
+
+
+#: SHELL-25, A FITTED WALL IS AS WIDE AS A PLATE NEEDS (11 Nov). SHELL-9 fits a tapered or free-form wall only when
+#: it is at least four of its walls wide (SHELL-2's width rule, read early so a fan housing's hundreds of narrow
+#: pairs are not fitted). Once every plate is a shell (SHELL-23), the line is the plate's own: two walls
+#: (sp.PLATE_WIDTH_RATIO). A drafted enclosure wall 4.4 to 5.3 mm thick and 4 walls wide was left solid by the old
+#: line while the even plate beside it, as wide, was a shell.
+FIT_PLATE_WIDTH = True
+
+
+def fit_width_ratio() -> float:
+    """SHELL-25: the least width, in walls (as a ratio t / width), at which a fitted mid-face is made and kept."""
+    return sp.PLATE_WIDTH_RATIO if (EVERY_PLATE and FIT_PLATE_WIDTH) else sp.SHELL_WIDTH_RATIO
 
 
 # ------------------------------------------------------------------------------------ extension ----
@@ -4807,8 +4913,10 @@ def _solid_words(closest: dict | None) -> str:
                 f"hold under {100 * PLATE_BODY_SHARE:.0f}% of its metal, so the part is mostly thick")
     if closest.get("why") == "gap":
         return "its faces look at each other across a gap, not across metal, so it has no wall a shell could stand for"
+    # (the times shown rounded DOWN: a wall 1.98 times as wide as thick is "1.9 times", never "2 times ... under 2")
+    shown = math.floor(10.0 * width / t + 1e-9) / 10.0 if t > 0 else closest["width_walls"]
     return (f"its most plate-like wall is {_num(t)} mm thick but only {_num(width)} mm wide, "
-            f"{closest['width_walls']:g} times its thickness; under {need:g} times, it is a bar or a block, not a "
+            f"{shown:g} times its thickness; under {need:g} times, it is a bar or a block, not a "
             "plate")
 
 
@@ -4907,17 +5015,29 @@ def _wall_regions(pairs: list, mids: list, faces: list, neighbours: list[set[int
                                 f"({size:.3g} mm across, {width:.3g} mm wide)")
 
 
+def has_plates(record: dict) -> bool:
+    """SHELL-26: does the record hold a wall made by SHELL-23 (a short plate) or SHELL-24 (a flat tapered plate)?"""
+    return bool(_plate_bodies(record))
+
+
 def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
-            budget_s: float | None = None) -> tuple[dict, object]:
+            budget_s: float | None = None, plates: bool = True) -> tuple[dict, object]:
     """The shell record and the sewn mid-surface (a compound, the shape's own units) of an OpenCASCADE shape
     whose coordinates are `mm_per_unit` millimetres each. Never raises for a part it cannot shell: the record
     says what was not shelled and why.
 
     SHELL-23's last guards: a body whose short plates hold under half its metal once joined is read again without
     them (PLATE_BODY_SHARE), and so is one whose short plates or flat flanges leave edges open, which keeps the
-    reading with fewer open edges (PLATE_OPEN_GUARD). At most two more passes, inside the same work budget."""
+    reading with fewer open edges (PLATE_OPEN_GUARD). At most two more passes, inside the same work budget.
+
+    `plates` False (SHELL-26): the whole part is read as before SHELL-23 and SHELL-24 - the shell the mesher makes when
+    a mesh of the short plates could not be made."""
     started = time.time()
     clock = _Clock(budget_s)
+    if not plates:
+        record, surface = _extract(shape, mm_per_unit=mm_per_unit, names=names, clock=clock, no_plate={ALL_BODIES: "mesh"})
+        record["seconds"] = round(time.time() - started, 2)
+        return record, surface
     record, surface = _extract(shape, mm_per_unit=mm_per_unit, names=names, clock=clock, no_plate={})
     if PLATE_OPEN_GUARD and (EVERY_PLATE or FLAT_TAPER):
         opened = _open_by_body(record)
@@ -4960,6 +5080,10 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
     return record, surface
 
 
+#: SHELL-26: the key of `no_plate` that stands for every body of the part
+ALL_BODIES = "*"
+
+
 def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Clock,
              no_plate: dict[str, str]) -> tuple[dict, object]:
     """One pass of the extraction. `no_plate`: the bodies (by name) read without SHELL-23 and SHELL-24, as before
@@ -4984,6 +5108,8 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
         else:
             names = [f"Face_{k}" for k in range(1, len(faces) + 1)]
     body_names = [f"Part_{b + 1}" for b in range(len(solids))] or ["Part_1"]
+    if ALL_BODIES in no_plate:
+        no_plate = dict.fromkeys(body_names, no_plate[ALL_BODIES])
     notes: list[str] = list(sew_notes)
     surface, _f, kinds = fm._brep_surface(shape, mm)
     partners = sp.ray_partners(surface)
@@ -5063,13 +5189,13 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
             try:
                 # a fitted mid-face lies between its two faces: when both are far narrower than four of its
                 # walls, so is it - not fitted at all (17 x 17 midpoints each; a fan housing has hundreds)
-                wall_wide = wall_width.get(i, 0.0) >= t_u / sp.SHELL_WIDTH_RATIO
+                wall_wide = wall_width.get(i, 0.0) >= t_u / fit_width_ratio()
                 wide = FIT_WIDTH_SLACK * max(width_of(faces[p.a]), width_of(faces[p.b]))
-                if wide < t_u / sp.SHELL_WIDTH_RATIO and not wall_wide:
+                if wide < t_u / fit_width_ratio() and not wall_wide:
                     got, why_f = [], "it is narrower than four walls (a local feature of the wall beside it)"
                 else:
-                    got, lo_u, hi_u, mean_u, why_f = fitted_mid(faces[small], faces[big], t_u, 1e-4 * t_u,
-                                                                wall_wide=wall_wide)
+                    got, lo_u, hi_u, mean_u, why_f = fitted_mid_refined(faces[small], faces[big], t_u, 1e-4 * t_u,
+                                                                        wall_wide=wall_wide)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("shell: the fitted mid-face of %s/%s failed (%s)", names[p.a], names[p.b], exc)
                 got, why_f = [], "the faces could not be read"
@@ -5196,7 +5322,8 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
                 if not (area_i > 0 and in_metal >= PLATE_METAL_SHARE * area_i):
                     plate_fail[i] = "gap"
                     pr.why = "the two faces look at each other across a gap, not across metal"
-                elif any(wall_of.get(k, math.inf) < pr.thickness * (1.0 - sp.EVEN_SHARE) for k in (pr.a, pr.b)):
+                elif any(wall_of.get(k, math.inf) * PAD_STEP_WALLS < pr.thickness * (1.0 - sp.EVEN_SHARE)
+                         for k in (pr.a, pr.b)):
                     # a face of it is a side of a thinner shell wall: a pad, a boss or a land standing on that wall
                     plate_fail[i] = "pad"
                     pr.why = "a pad on a thinner wall: thicker metal standing on a plate, not a plate of its own"
@@ -5597,7 +5724,7 @@ def solid_record(shape, why: str) -> dict:
 
 
 def extract_file(path: Path | str, out_dir: Path | str | None = None, *, mm_per_unit: float,
-                 budget_s: float | None = None, deadline_s: float | None = None) -> dict:
+                 budget_s: float | None = None, deadline_s: float | None = None, plates: bool = True) -> dict:
     """Read a STEP, IGES or BREP file, extract its mid-surface, and (when `out_dir` is given) write
     shell.json and midsurface.brep there. SHELL-18: the work runs in a new Python process that reads the file itself,
     stopped after `deadline_s` s (EXTRACT_DEADLINE_S; <= 0: here, unbounded); a part stopped is meshed solid, told
@@ -5606,11 +5733,11 @@ def extract_file(path: Path | str, out_dir: Path | str | None = None, *, mm_per_
 
     limit = EXTRACT_DEADLINE_S if deadline_s is None else float(deadline_s)
     if limit <= 0:
-        return extract_path(str(path), None if out_dir is None else str(out_dir), mm_per_unit, budget_s)
+        return extract_path(str(path), None if out_dir is None else str(out_dir), mm_per_unit, budget_s, plates)
     with tempfile.TemporaryDirectory(prefix="shell_x_") as tmp:
         out = Path(out_dir) if out_dir is not None else Path(tmp)
         status, got = run_bounded(EXTRACT_ENTRY, {"path": str(path), "out_dir": str(out), "mm_per_unit": mm_per_unit,
-                                                  "budget_s": budget_s}, limit)
+                                                  "budget_s": budget_s, "plates": bool(plates)}, limit)
         if status == "ok" and isinstance(got, dict):
             return got
         from meshpipeline.cad.scout import read_cad
@@ -5623,11 +5750,13 @@ def extract_file(path: Path | str, out_dir: Path | str | None = None, *, mm_per_
         return record
 
 
-def extract_path(path: str, out_dir: str | None, mm_per_unit: float, budget_s: float | None) -> dict:
+def extract_path(path: str, out_dir: str | None, mm_per_unit: float, budget_s: float | None,
+                 plates: bool = True) -> dict:
     """SHELL-18: read the file and extract it here (the work of extract_file's bounded child)."""
     from meshpipeline.cad.scout import read_cad
 
-    return _extract_and_write(read_cad(Path(path)), out_dir, mm_per_unit=mm_per_unit, budget_s=budget_s)
+    return _extract_and_write(read_cad(Path(path)), out_dir, mm_per_unit=mm_per_unit, budget_s=budget_s,
+                              plates=plates)
 
 
 #: SHELL-18d: what the bounded child runs
@@ -5660,9 +5789,9 @@ def _write(record: dict, surface, out_dir) -> None:
     (out / RECORD_FILE).write_text(json.dumps(record, indent=1, sort_keys=True))
 
 
-def _extract_and_write(shape, out_dir, *, mm_per_unit: float, budget_s: float | None) -> dict:
+def _extract_and_write(shape, out_dir, *, mm_per_unit: float, budget_s: float | None, plates: bool = True) -> dict:
     try:
-        record, surface = extract(shape, mm_per_unit=mm_per_unit, budget_s=budget_s)
+        record, surface = extract(shape, mm_per_unit=mm_per_unit, budget_s=budget_s, plates=plates)
     except OutOfBudget as exc:  # SHELL-18: told in numbers, the solid mesh delivered
         logger.warning("shell: %s; the part is meshed solid", exc)
         record, surface = solid_record(shape, str(exc)), _compound([])
