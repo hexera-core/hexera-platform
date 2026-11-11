@@ -190,11 +190,30 @@
 .panel__head{display:flex;align-items:center;justify-content:space-between;gap:1rem;
   padding:.875rem 1rem;border-bottom:1px solid var(--border)}
 .panel__body{padding:.875rem 1rem;border-top:1px solid var(--divider)}
-.billing-layout{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(17rem,.8fr);gap:1rem;
-  align-items:start}
 .billing-plan-grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr))}
 .billing-plan-card{display:grid;grid-template-rows:auto auto 1fr auto;gap:.7rem;min-height:13.5rem}
 .billing-actions{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap}
+.billing-pack-input{width:5rem}
+.stat-big{font:500 1.4rem/1.15 var(--mono);color:var(--text-bright);margin:0}
+.stat-big--xl{font-size:1.55rem}
+
+/* The billing activity charts are server-drawn SVG; every mark reads a token so the picture
+   stays on-palette. */
+.activity-grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(21rem,1fr))}
+.chart{display:block;width:100%;height:auto}
+.chart__label{fill:var(--text-faint);font:400 10px var(--sans)}
+.chart__value{fill:var(--text);font:500 11px var(--mono)}
+.chart__base{stroke:var(--border-strong);stroke-width:1}
+.chart__bar-spend{fill:var(--accent)}
+.chart__bar-grant{fill:var(--ok)}
+.chart__line{fill:none;stroke:var(--accent);stroke-width:1.5;stroke-linejoin:round}
+.chart__area{fill:var(--accent-soft)}
+.chart__dot{fill:var(--accent)}
+.chart-legend{display:flex;align-items:center;gap:.4rem;margin:0;color:var(--text-faint);
+  font-size:var(--fs-sm)}
+.chart-legend__swatch{width:8px;height:8px;border-radius:2px;display:inline-block;margin-left:.6rem}
+.chart-legend__swatch--spend{background:var(--accent)}
+.chart-legend__swatch--grant{background:var(--ok)}
 .message-stack{display:grid;gap:.85rem;padding:1rem 1.15rem}
 .message-card{background:var(--surface-2);border:1px solid var(--border);
   border-radius:var(--r-md);padding:1rem 1.1rem;display:grid;gap:.45rem}

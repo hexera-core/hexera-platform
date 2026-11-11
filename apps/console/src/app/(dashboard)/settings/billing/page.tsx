@@ -12,9 +12,15 @@ import {
   planLabel,
   subscriptionSummary,
 } from "@/app/_components/billing";
+import { BalanceChart, SpendChart } from "@/app/_components/billing-charts";
 import { ExtraCreditsPicker, ManageBillingButton, PlanPicker } from "@/app/_components/billing-panel";
 import { DashboardNotice } from "@/app/_components/dashboard-notice";
 import { formatCredits, formatSigned, ledgerReason, shortRunId } from "@/app/_components/ledger";
+import {
+  activityTotals,
+  activityWindow,
+  balanceSeries,
+} from "@/app/_components/ledger-activity";
 import { NavLink } from "@/app/_components/nav-link";
 import { runTitle } from "@/app/_components/run-status";
 import { When } from "@/app/_components/when-time";
@@ -44,6 +50,12 @@ type RunName = { id: string; task_label: string | null; is_rerun?: boolean };
  *  short id, still linked. */
 const NAMED_RUNS = 100;
 
+/** The ledger window the activity charts aggregate. The API's page limit bounds it, so the
+ *  charts describe the recent picture and say so; a busier workspace keeps the full table
+ *  (paginated below) for the rest. */
+const ACTIVITY_LIMIT = 100;
+const ACTIVITY_DAYS = 30;
+
 export default async function BillingPage({
   searchParams,
 }: {
@@ -59,9 +71,9 @@ export default async function BillingPage({
   );
   const cursor = Array.isArray(params?.cursor) ? params.cursor[0] : params?.cursor;
 
-  // Five independent soft reads, so one failing panel does not blank the others; the run names
+  // Six independent soft reads, so one failing panel does not blank the others; the run names
   // only dress the ledger, so without them each run is shown by its short id.
-  const [subscription, catalogue, credits, ledger, runs] = await Promise.all([
+  const [subscription, catalogue, credits, ledger, activity, runs] = await Promise.all([
     consoleFetch<Subscription>("billing", ownerId),
     consoleFetch<Catalogue>("billing/plans", ownerId),
     consoleFetch<{ balance: number; unit: string }>("credits", ownerId),
@@ -69,6 +81,7 @@ export default async function BillingPage({
       `credits/history${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
       ownerId,
     ),
+    consoleFetch<LedgerPage>(`credits/history?limit=${ACTIVITY_LIMIT}`, ownerId),
     consoleFetch<{ items: RunName[] }>(`simulation?limit=${NAMED_RUNS}`, ownerId),
   ]);
   const names = new Map<string, string>();
@@ -78,6 +91,14 @@ export default async function BillingPage({
     }
   }
   const paying = isPaying(subscription);
+  const days = activityWindow(activity?.items ?? [], new Date(), ACTIVITY_DAYS);
+  const totals = activityTotals(days);
+  // A leftover cursor means the read stopped before the ledger's beginning, so the balance line
+  // is only drawn over days the window actually covers.
+  const balances = credits
+    ? balanceSeries(days, credits.balance, activity !== null && !activity.next_cursor)
+    : [];
+  const currentPlan = catalogue?.plans.find((candidate) => candidate.name === subscription?.plan);
 
   return (
     <div className="page">
@@ -103,60 +124,86 @@ export default async function BillingPage({
         <div className="metric-card">
           <p className="label">Current plan</p>
           <b>{subscription === null ? "Unavailable" : planLabel(paying ? subscription.plan : "")}</b>
-          <span>{subscription === null ? "Plan data unavailable" : subscriptionSummary(subscription)}</span>
+          <span>
+            {subscription === null
+              ? "Plan data unavailable"
+              : `${subscriptionSummary(subscription)}${currentPlan ? ` ${currentPlan.included_credits.toLocaleString()} credits a month.` : ""}`}
+          </span>
         </div>
         <div className="metric-card">
           <p className="label">Credit balance</p>
           <b>{credits ? formatCredits(credits.balance) : "—"}</b>
           <span>{credits ? credits.unit : "unavailable"} available</span>
         </div>
+        <div className="metric-card">
+          <p className="label">Spent in the last 30 days</p>
+          <b>{activity === null ? "—" : formatCredits(totals.spent)}</b>
+          <span>
+            {activity === null
+              ? "activity unavailable"
+              : `${formatCredits(totals.granted)} granted over the same window`}
+          </span>
+        </div>
       </div>
 
-      <section className="panel">
-        <div className="panel__head">
-          <div>
-            <p className="label">How you are charged</p>
-          </div>
-        </div>
-        <div className="panel__body">
+      <section aria-labelledby="plans-title" className="section">
+        <div className="section__head">
+          <h2 className="section__title" id="plans-title">Plans</h2>
           <p className="page__sub">{chargingNote(subscription, catalogue)}</p>
         </div>
+        {catalogue === null ? (
+          <DashboardNotice
+            body="Refresh the page to try again. Your current plan is not affected."
+            retryLabel="Try again"
+            title="We couldn't load available plans"
+            tone="error"
+          />
+        ) : !catalogue.billing_enabled ? (
+          <DashboardNotice
+            action={{ href: SALES_CONTACT, label: "Contact us" }}
+            body="Contact your Hexera representative to discuss plan options for this workspace."
+            title="Online plan changes are unavailable"
+          />
+        ) : (
+          <PlanPicker
+            billingEnabled={catalogue.billing_enabled}
+            currentPlan={paying && subscription ? subscription.plan : ""}
+            plans={catalogue.plans}
+          >
+            {catalogue.extra_credits ? <ExtraCreditsPicker offer={catalogue.extra_credits} /> : null}
+          </PlanPicker>
+        )}
       </section>
 
-      <div className="billing-layout">
-        <section className="panel">
-          <div className="panel__head">
-            <div>
-              <p className="label">Plans</p>
-              <p className="page__sub">Monthly capacity, limits and hosted Stripe plan changes.</p>
-            </div>
+      {activity === null ? null : (
+        <section aria-labelledby="activity-title" className="section">
+          <div className="section__head">
+            <h2 className="section__title" id="activity-title">Credit activity</h2>
+            <p className="page__sub">The last 30 days, from the {ACTIVITY_LIMIT} most recent ledger entries.</p>
           </div>
-          {catalogue === null ? (
-            <DashboardNotice
-              body="Refresh the page to try again. Your current plan is not affected."
-              retryLabel="Try again"
-              title="We couldn't load available plans"
-              tone="error"
-            />
-          ) : !catalogue.billing_enabled ? (
-            <DashboardNotice
-              action={{ href: SALES_CONTACT, label: "Contact us" }}
-              body="Contact your Hexera representative to discuss plan options for this workspace."
-              title="Online plan changes are unavailable"
-            />
-          ) : (
-            <div className="panel__body">
-              <PlanPicker
-                billingEnabled={catalogue.billing_enabled}
-                currentPlan={paying && subscription ? subscription.plan : ""}
-                plans={catalogue.plans}
-              />
-            </div>
-          )}
+          <div className="activity-grid">
+            <section className="panel">
+              <div className="panel__head">
+                <p className="label">Spent and granted per day</p>
+                <p className="chart-legend">
+                  <i className="chart-legend__swatch chart-legend__swatch--spend" /> spent
+                  <i className="chart-legend__swatch chart-legend__swatch--grant" /> granted
+                </p>
+              </div>
+              <SpendChart days={days} />
+            </section>
+            <section className="panel">
+              <div className="panel__head">
+                <p className="label">Balance at end of day</p>
+                {activity.next_cursor ? (
+                  <p className="chart-legend">earlier history not shown</p>
+                ) : null}
+              </div>
+              <BalanceChart days={days} series={balances} />
+            </section>
+          </div>
         </section>
-
-        {catalogue?.extra_credits ? <ExtraCreditsPicker offer={catalogue.extra_credits} /> : null}
-      </div>
+      )}
 
       {ledger === null ? (
         <DashboardNotice
