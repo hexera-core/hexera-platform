@@ -642,7 +642,8 @@ def _remove_loose(gmsh, curves: set[int]) -> None:
 
 
 def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: dict[int, float], hole_size, mm: float,
-                cuts: set[int] | None = None, low_mm: float | None = None, high_mm: float | None = None
+                cuts: set[int] | None = None, low_mm: float | None = None, high_mm: float | None = None,
+                cells_out: set[int] | None = None
                 ) -> tuple[list[Washer], list[Washer], dict[int, int], set[int], dict[str, int]]:
     """SHMESH-40: each flat face whose inner loops are all washer holes is cut into a grid: round each hole a box
     along the face's own frame (its longest straight edge) - an O-grid's (_boxed) or a free box - every box side drawn
@@ -796,6 +797,8 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
         new = [s for d, s in omap[0] if d == 2]
         for s in new:
             tag_of[s] = k
+        if cells_out is not None:
+            cells_out.update(new)
         _remove_loose(gmsh, {c for got in omap[1:] for d, c in got if d == 1})
         curves = sorted({abs(int(c)) for s in new for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
         on_circle: set[int] = set()

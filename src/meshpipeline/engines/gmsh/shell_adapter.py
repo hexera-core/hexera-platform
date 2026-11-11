@@ -1162,6 +1162,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         block_preset: dict[int, int] = {}
         block_holes: set[int] = set()
         cut_curves: set[int] = set()        # curves SHMESH-40 drew (no CAD edge)
+        grid_cells: set[int] = set()        # the cells SHMESH-40 cut faces into
         if ST.WASHERS and kind != "triangles" and structure not in ("free", "no_washers"):
             washers, washer_skipped = ST.plan_washers(
                 gmsh, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm)
@@ -1169,7 +1170,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 # SHMESH-40: a face whose holes all have washers is cut into a grid of cells, mapped below
                 gridded, boxed, block_preset, block_holes, block_skipped = ST.block_faces(
                     gmsh, washers, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
-                    cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"))
+                    cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
+                    cells_out=grid_cells)
             rings = [w for w in washers if w not in gridded and w not in boxed]
             drawn = ST.imprint(gmsh, rings, tag_of)
             if len(drawn) < len(rings):
@@ -1339,7 +1341,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                         bad.add(t)
             # ... and so is every grid beside a free face that came out with an element past them (the grid's counts
             # on their shared curves did not suit that face)
-            for t in sorted(set(tag_of) - set(grids) - set(ring_faces)):
+            # (a gridded face's own free cells - a washer's box - are left to the clean-up: their transition is ours)
+            for t in sorted(set(tag_of) - set(grids) - set(ring_faces) - grid_cells):
                 beside = {int(x) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)
                           for x in gmsh.model.getAdjacencies(1, abs(c))[0] if int(x) in grids} - bad
                 if not beside:
