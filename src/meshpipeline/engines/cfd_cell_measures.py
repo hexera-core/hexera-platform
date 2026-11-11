@@ -116,7 +116,7 @@ def measure(case) -> dict | None:
     past MAX_CELLS (the worst figures are then the measure). A multi-region case with no single polyMesh is measured
     region by region (constant/<region>/polyMesh) and the cells put together."""
     if not (Path(case) / "constant" / "polyMesh" / "owner").exists():
-        regions = sorted(p.parent.name for p in (Path(case) / "constant").glob("*/polyMesh/owner"))
+        regions = sorted(p.parent.parent.name for p in (Path(case) / "constant").glob("*/polyMesh/owner"))
         parts = [f for f in (_one(case, r) for r in regions) if f]
         if not parts or len(parts) < len(regions) or sum(f["n_cells"] for f in parts) > MAX_CELLS:
             return None

@@ -4010,6 +4010,19 @@
   "roots": []
  },
  {
+  "context": "engines/cfd_requirements.py::snappy_dict::search#3|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfd_requirements.py",
+  "qualname": "snappy_dict",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 3,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/cfd_requirements.py::snappy_port_levels::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/cfd_requirements.py",
   "qualname": "snappy_port_levels",
