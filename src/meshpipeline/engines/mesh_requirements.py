@@ -18,7 +18,8 @@ The model answers with ONE `mesh_requirements` call:
 and the rules turn it into the set every route reads (`requirements`):
 
     {"sizes": {"global_mm", "min_edge_mm", "max_edge_mm", "growth", "thickness_mm"},      # None where not asked
-     "kind": {"shell": "quads" | "triangles" | None, "tria_percent_max": None | p, "order": None | "linear" | "quadratic"},
+     "kind": {"shell": "quads" | "triangles" | None, "tria_percent_max": None | p, "order": None | "linear" | "quadratic",
+              "shell_only": None | True},                                                  # MIXED-9d
      "limits": [{"id", "measure", "shape", "op": "<=" | ">=", "target", "share", "outer": None | x, "quote"}],
      "rows": [{"id", "field", "quote", "asked"}]}                                          # one per requirement, in plain words
 
@@ -63,7 +64,7 @@ MAX_CHARS = 8000
 UNITS_MM = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4, "um": 1e-3}
 SIZE_UNITS = (*UNITS_MM, "x_global", "none")
 SIZES = ("global", "min_edge", "max_edge", "growth", "thickness")
-KINDS = ("quads_only", "triangles_only", "max_triangle_percent", "linear", "quadratic")
+KINDS = ("quads_only", "triangles_only", "max_triangle_percent", "linear", "quadratic", "shell_only")
 SHAPES = ("quad", "tria", "tet", "cell", "any")
 OTHER_KINDS = ("mesh", "elsewhere", "not_mesh")
 
@@ -129,7 +130,9 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   too.
 - element_kind: quads_only ("no triangles", "quad mesh only", "all quads"), triangles_only ("tria mesh", "triangles
   only"), max_triangle_percent ("at most 5% trias" -> value 5), linear ("first order", "linear elements", "tet4"),
-  quadratic ("second order", "tet10", "mid-side nodes"). value 0 unless it is max_triangle_percent.
+  quadratic ("second order", "tet10", "mid-side nodes"), shell_only (plate elements and nothing else: what cannot
+  be made a shell is left out, never meshed solid - "shell only", "no solid", "no solid elements", "leave out what
+  can't be shelled"). value 0 unless it is max_triangle_percent.
   "shell", "solid", "mid-surface" (what to mesh the part AS) is "elsewhere".
 - limits: element QUALITY limits. measure: aspect_ratio; warpage (warp angle, degrees); jacobian (0 to 1); skew
   (degrees); taper; min_angle and max_angle (corner angles, degrees); non_orthogonality (degrees, CFD cells);
@@ -348,6 +351,16 @@ def _left_over(notes: str, quotes: list[str]) -> list[str]:
 _NO_KIND = re.compile(r"\b(?:no|without|avoid|zero|never|not)\s+(?:\w+\s+){0,2}?(tri\w*|quad\w*)", re.I)
 
 
+#: MIXED-9d: words that ask for a shell ONLY - nothing meshed solid: "shell only", "only plates", "no solid",
+#: "without solid elements", "leave out what can't be shelled", "skip the thick parts"
+_SHELL_ONLY = re.compile(
+    r"\b(?:shells?|plates?|mid-?surfaces?|2d)(?:\s+(?:elements?|mesh(?:es)?))?\s+only\b"
+    r"|\bonly\s+(?:shells?|plates?|2d)\b"
+    r"|\b(?:no|without|zero|avoid)\s+(?:any\s+)?(?:solids?|tets?|tetrahedr\w*|bricks?|hexa?\w*|3d\s+elements?)\b"
+    r"|\b(?:leave|left|leaving|keep|kept)\s+(?:\w+\s+){0,4}?out\b|\bdrop\w*\b|\bskip\w*\b|\bomit\w*\b|\bexclud\w*\b"
+    r"|\bnot\s+(?:be\s+)?(?:meshed\s+)?(?:as\s+)?solid\b", re.I)
+
+
 def _kind_said(what: str, quote: str) -> str:
     """The element kind the user's words say, when they name one they do NOT want: "no triangles" is quads only
     and "no quads" triangles only, whatever the model read (it read "no triangles" as triangles only on 3 of 10
@@ -396,7 +409,7 @@ def empty() -> dict:
     """The set with nothing asked (NOTE-9): every route runs exactly as it does with no notes."""
     return {"sizes": {"global_mm": None, "min_edge_mm": None, "max_edge_mm": None, "growth": None,
                       "thickness_mm": None},
-            "kind": {"shell": None, "tria_percent_max": None, "order": None},
+            "kind": {"shell": None, "tria_percent_max": None, "order": None, "shell_only": None},
             "limits": [], "rows": []}
 
 
@@ -543,6 +556,14 @@ def _check(arguments: str, notes: str) -> tuple[dict, list[str], list[str]]:
         k = out["kind"]
         if what not in KINDS:
             dropped.append(f"{tag}: not an element kind this step reads: not applied")
+        elif what == "shell_only":
+            # MIXED-9d: held to the user's words - they must say only shell, or that the solid be left out; a
+            # plain "shell mesh" is a shell WITH its solid patches
+            if not _SHELL_ONLY.search(quote):
+                dropped.append(f"{tag}: these words do not ask for a shell only: not applied")
+            elif not k["shell_only"]:
+                k["shell_only"] = True
+                row(what, quote, "a shell only: what cannot be made a shell is left out, not meshed as solid")
         elif what in ("quads_only", "triangles_only"):
             want = "quads" if what == "quads_only" else "triangles"
             if k["shell"] is not None and k["shell"] != want:

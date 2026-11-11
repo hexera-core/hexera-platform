@@ -110,6 +110,16 @@ class Link:
 
 
 @dataclass
+class SolidRegion:
+    """MIXED-9: one solid patch of a shell run's deck: its name (the group, SOLID_<name>), the body it is of (its
+    material), and its tetrahedra (solid.tets[first:first + count])."""
+    name: str
+    part: str
+    first: int
+    count: int
+
+
+@dataclass
 class MixedMesh:
     shell: ShellMesh
     solid: SolidPart
@@ -118,6 +128,8 @@ class MixedMesh:
     links: list[Link]
     n_overlap: int
     notes: list[str] = field(default_factory=list)
+    #: MIXED-9: the solid patches, each its own set, section and material (None: one region of `part`, as before)
+    regions: list[SolidRegion] | None = None
 
     @property
     def counts(self) -> dict:
@@ -347,10 +359,50 @@ def _solid_material(prep: sw.ShellPrepared, part: str) -> int:
     return prep.parts.index(part) + 1 if part in prep.parts else 1
 
 
+def region_materials(prep: sw.ShellPrepared, regions: list[SolidRegion]) -> dict[str, int]:
+    """MIXED-9: each solid patch's body -> its material number: a body with shell elements keeps its shell
+    material (MAT_k, k its place among the shell's parts); a body that is solid only is numbered on after them."""
+    out = {p: i + 1 for i, p in enumerate(prep.parts)}
+    for r in regions:
+        if r.part not in out:
+            out[r.part] = len(out) + 1
+    return out
+
+
+def _patch_lines_inp(mm: MixedMesh, prep: sw.ShellPrepared) -> list[str]:
+    """MIXED-9: the solid patches of a shell run in the CalculiX / Abaqus deck: their nodes, a C3D10 set and a
+    *SOLID SECTION per patch, their faces' node sets, then the ties."""
+    s = prep.scale
+    base, e0 = len(mm.shell.xyz), mm.shell.n_elements
+    regions = mm.regions or []
+    mats = region_materials(prep, regions)
+    lines = [f"** SOLID PATCHES (MIXED-9, tied by SHLINK-4): {len(mm.solid.tets)} C3D10 in {len(regions)} patch(es), "
+             f"nodes {base + 1}..{base + mm.solid.n_nodes}; each patch's section names its part's MAT_k."]
+    lines += [f"**   MAT_{mats[p]} = {p} (solid only)" for p in sorted(mats, key=lambda p: mats[p]) if p not in prep.parts]
+    lines.append("*NODE, NSET=NSOLID")
+    lines += [f"{base + j + 1}, {x * s:.12g}, {y * s:.12g}, {z * s:.12g}" for j, (x, y, z) in enumerate(mm.solid.xyz.tolist())]
+    for r in regions:
+        lines.append(f"*ELEMENT, TYPE=C3D10, ELSET=SOLID_{r.name}")
+        lines += [f"{e0 + k + 1}, " + ", ".join(str(base + int(v)) for v in mm.solid.tets[k])
+                  for k in range(r.first, r.first + r.count)]
+    for r in regions:
+        lines.append(f"*SOLID SECTION, ELSET=SOLID_{r.name}, MATERIAL=MAT_{mats[r.part]}")
+    for name, ids in sorted(mm.solid.faces.items()):
+        lines.append(f"*NSET, NSET=SOLID_{name}")
+        lines += [", ".join(str(base + int(v)) for v in ids[i:i + 16]) for i in range(0, len(ids), 16)]
+    lines.append(f"** SHLINK-4: {len(mm.ties)} ties (translations) of the shell's link rows to the solid patches")
+    lines += sl.equations(mm.ties)
+    return lines
+
+
 def write_inp(path: Path | str, mm: MixedMesh, *, units: str = "m", source: str = "", solver: str = "calculix",
               materials: dict[int, list[str]] | None = None) -> dict:
     prep = sw.prepare(mm.shell, units=units)
     got = sw.write_inp(path, prep, units=units, source=source, solver=solver, materials=materials)
+    if mm.regions is not None:
+        with open(path, "a", encoding="ascii", newline="\n") as fh:
+            fh.write("\n".join(_patch_lines_inp(mm, prep)) + "\n")
+        return {**got, "elements": int(mm.shell.n_elements + len(mm.solid.tets)), "ties": len(mm.ties)}
     s = prep.scale
     base, e0 = len(mm.shell.xyz), mm.shell.n_elements
     mat = _solid_material(prep, mm.part)
@@ -377,6 +429,30 @@ def write_bdf(path: Path | str, mm: MixedMesh, *, units: str = "m", source: str 
     got = sw.write_bdf(path, prep, units=units, source=source)
     s = prep.scale
     base, e0 = len(mm.shell.xyz), mm.shell.n_elements
+    if mm.regions is not None:
+        # MIXED-9: a PSOLID per solid patch (its part's MAT1), its CTETRA, a group per patch, the ties as MPC set 1
+        mats = region_materials(prep, mm.regions)
+        lines = [f"$ SOLID PATCHES (MIXED-9, tied by SHLINK-4): {len(mm.solid.tets)} 10-node CTETRA in "
+                 f"{len(mm.regions)} PSOLID; the join is MPC set 1 - add MPC = 1 to the case control."]
+        lines += [f"$   MAT1 {mats[p]} = {p} (solid only)" for p in sorted(mats, key=lambda p: mats[p])
+                  if p not in prep.parts]
+        lines += [f"$ Femap Property {len(prep.props) + i + 1} : SOLID_{r.name}" for i, r in enumerate(mm.regions)]
+        for j, (x, y, z) in enumerate((mm.solid.xyz * s).tolist()):
+            lines.append(f"{'GRID*':<8}{base + j + 1:>16d}{'':>16}{_f16(x)}{_f16(y)}*")
+            lines.append(f"{'*':<8}{_f16(z)}")
+        for i, r in enumerate(mm.regions):
+            pid = len(prep.props) + i + 1
+            for k in range(r.first, r.first + r.count):
+                lines.extend(_cards("CTETRA", [e0 + k + 1, pid, *[base + int(v) for v in mm.solid.tets[k]]]))
+        for i, r in enumerate(mm.regions):
+            lines.extend(_cards("PSOLID", [len(prep.props) + i + 1, mats[r.part]]))
+        for k, r in enumerate(mm.regions, start=len(mm.shell.groups) + 1):
+            lines.append(f"$ HEXERA GROUP {k} SOLID_{r.name}")
+            lines.append(f"$   {e0 + r.first + 1} THRU {e0 + r.first + r.count}")
+        lines += sl.nastran_mpcs(mm.ties, sid=1)
+        with open(path, "a", encoding="ascii", newline="\n") as fh:
+            fh.write("\n".join(lines) + "\n")
+        return {**got, "elements": int(e0 + len(mm.solid.tets)), "ties": len(mm.ties)}
     pid = len(prep.props) + 1
     mat = _solid_material(prep, mm.part)
     lines = [f"$ MIXED (SHLINK-4): the solid region of {mm.part}, {len(mm.solid.tets)} 10-node CTETRA in PSOLID {pid}"
@@ -403,8 +479,17 @@ def write_cdb(path: Path | str, mm: MixedMesh, *, units: str = "m", source: str 
     assert text.rstrip().endswith("FINISH")
     text = text.rstrip()[: -len("FINISH")]
     n = mm.solid.n_nodes
-    lines = [f"! MIXED (SHLINK-4): the solid region of {mm.part}, {len(mm.solid.tets)} SOLID187 (type 2, MAT {mat}); "
-             "the join is constraint equations (CE).", "ET,2,187",
+    # MIXED-9: each solid patch's tetrahedra carry their part's material
+    mats = region_materials(prep, mm.regions) if mm.regions is not None else {}
+    mat_of = np.full(len(mm.solid.tets), mat, dtype=np.int64)
+    for r in mm.regions or []:
+        mat_of[r.first:r.first + r.count] = mats[r.part]
+    head_line = (f"! MIXED (SHLINK-4): the solid region of {mm.part}, {len(mm.solid.tets)} SOLID187 (type 2, MAT {mat}); "
+                 "the join is constraint equations (CE).") if mm.regions is None else (
+        f"! SOLID PATCHES (MIXED-9, tied by SHLINK-4): {len(mm.solid.tets)} SOLID187 (type 2) in {len(mm.regions)} "
+        "patch(es), each its part's MAT; the join is constraint equations (CE).")
+    lines = [head_line, *[f"!   MAT {mats[p]} = {p} (solid only)" for p in sorted(mats, key=lambda p: mats[p])
+                          if p not in prep.parts], "ET,2,187",
              f"NBLOCK,6,SOLID,{base + n:>10d},{n:>10d}", "(3i9,6e21.13e3)"]
     for j, (x, y, z) in enumerate((mm.solid.xyz * s).tolist()):
         lines.append(f"{base + j + 1:>9d}{0:>9d}{0:>9d}{x:21.13E}{y:21.13E}{z:21.13E}")
@@ -412,7 +497,7 @@ def write_cdb(path: Path | str, mm: MixedMesh, *, units: str = "m", source: str 
     lines += [f"EBLOCK,19,SOLID,{e0 + len(mm.solid.tets):>10d},{len(mm.solid.tets):>10d}", "(19i9)"]
     for k, row in enumerate(mm.solid.tets.tolist()):
         conn = [base + int(v) for v in row]
-        head = [mat, 2, 1, 1, 0, 0, 0, 0, 10, 0, e0 + k + 1]
+        head = [int(mat_of[k]), 2, 1, 1, 0, 0, 0, 0, 10, 0, e0 + k + 1]
         lines.append("".join(f"{v:>9d}" for v in head + conn[:8]))
         lines.append("".join(f"{v:>9d}" for v in conn[8:]))
     lines.append(f"{-1:>9d}")
@@ -422,14 +507,16 @@ def write_cdb(path: Path | str, mm: MixedMesh, *, units: str = "m", source: str 
     return {**got, "elements": int(e0 + len(mm.solid.tets)), "ties": len(mm.ties)}
 
 
-def write_all(workspace: Path | str, mm: MixedMesh, *, units: str = "m", source: str = "") -> dict:
-    """mixed.inp (CalculiX), mixed_abaqus.inp, mixed.bdf and mixed.cdb, one numbering."""
+def write_all(workspace: Path | str, mm: MixedMesh, *, units: str = "m", source: str = "",
+              stem: str = "mixed") -> dict:
+    """mixed.inp (CalculiX), mixed_abaqus.inp, mixed.bdf and mixed.cdb, one numbering. `stem`: the files' name
+    ("shell": a shell run's own files, its solid patches in them - MIXED-9)."""
     ws = Path(workspace)
-    return {"calculix": write_inp(ws / "mixed.inp", mm, units=units, source=source),
-            "abaqus": write_inp(ws / "mixed_abaqus.inp", mm, units=units, source=source, solver="abaqus"),
-            "nastran": write_bdf(ws / "mixed.bdf", mm, units=units, source=source),
-            "ansys": write_cdb(ws / "mixed.cdb", mm, units=units, source=source)}
+    return {"calculix": write_inp(ws / f"{stem}.inp", mm, units=units, source=source),
+            "abaqus": write_inp(ws / f"{stem}_abaqus.inp", mm, units=units, source=source, solver="abaqus"),
+            "nastran": write_bdf(ws / f"{stem}.bdf", mm, units=units, source=source),
+            "ansys": write_cdb(ws / f"{stem}.cdb", mm, units=units, source=source)}
 
 
-__all__ = ["Link", "MixedMesh", "OVERLAP_GROUP", "SolidPart", "boundary_triangles", "join", "read_solid_deck",
-           "write_all", "write_bdf", "write_cdb", "write_inp"]
+__all__ = ["Link", "MixedMesh", "OVERLAP_GROUP", "SolidPart", "SolidRegion", "boundary_triangles", "join",
+           "read_solid_deck", "region_materials", "write_all", "write_bdf", "write_cdb", "write_inp"]
