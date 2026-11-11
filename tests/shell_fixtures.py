@@ -538,3 +538,132 @@ def fork_and_sleep(pid_file: str) -> None:
 
     mp.get_context("fork").Process(target=join, daemon=True).start()
     time.sleep(120.0)
+
+
+# ------------------------------------------------- plates of any ratio, and rolled sections (SHELL-23, SHELL-24) ----
+def rounded_profile(pts, radii=None, length: float = 100.0):
+    """A closed polygon in (x, y) (counter-clockwise), each corner rounded by its radius (0: sharp), extruded
+    `length` along z: a rolled section's cross-section, its root fillets and toe rounds true arcs."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    n = len(pts)
+    radii = radii or [0.0] * n
+    cuts = []                         # per corner: (where its arc starts, the arc's middle or None, where it ends)
+    for i in range(n):
+        px, py = pts[i]
+        ax, ay = pts[i - 1][0] - px, pts[i - 1][1] - py
+        bx, by = pts[(i + 1) % n][0] - px, pts[(i + 1) % n][1] - py
+        la, lb = math.hypot(ax, ay), math.hypot(bx, by)
+        ax, ay, bx, by = ax / la, ay / la, bx / lb, by / lb
+        r = radii[i]
+        if r <= 0:
+            cuts.append(((px, py), None, (px, py)))
+            continue
+        ang = math.acos(max(-1.0, min(1.0, ax * bx + ay * by)))
+        tl = r / math.tan(ang / 2.0)
+        mx, my = ax + bx, ay + by
+        lm = math.hypot(mx, my)
+        c = (px + mx / lm * r / math.sin(ang / 2.0), py + my / lm * r / math.sin(ang / 2.0))
+        cuts.append(((px + ax * tl, py + ay * tl), (c[0] - mx / lm * r, c[1] - my / lm * r),
+                     (px + bx * tl, py + by * tl)))
+    mk = BRepBuilderAPI_MakeWire()
+
+    def P(q):
+        return gp_Pnt(float(q[0]), float(q[1]), 0.0)
+
+    for i in range(n):
+        s, mid, e = cuts[i]
+        if mid is not None:
+            mk.Add(BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(P(s), P(mid), P(e)).Value()).Edge())
+        nxt = cuts[(i + 1) % n][0]
+        if math.hypot(nxt[0] - e[0], nxt[1] - e[1]) > 1e-9:
+            mk.Add(BRepBuilderAPI_MakeEdge(P(e), P(nxt)).Edge())
+    return BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(mk.Wire()).Face(), gp_Vec(0, 0, length)).Shape()
+
+
+def gusset(ratio: float = 7.6, t: float = 12.7):
+    """A right-triangle gusset plate `t` thick whose face spans `ratio` walls (the root of its area): two equal legs
+    of t * ratio * sqrt(2). A welded gusset is about 7 walls across - a plate, though not a thin one."""
+    a = t * ratio * math.sqrt(2.0)
+    return rounded_profile([(0, 0), (a, 0), (0, a)], length=t)
+
+
+def flat_bar(width_walls: float, t: float = 12.7, length: float = 200.0):
+    """A flat bar `t` thick, `width_walls` walls wide, `length` long: where a plate turns into a bar."""
+    return _box(0, 0, 0, length, width_walls * t, t)
+
+
+def rolled_channel(d: float = 381.0, bf: float = 94.5, tw: float = 18.2, tf: float = 16.5, slope: float = 1.0 / 6.0,
+                   r1: float = 12.7, r2: float = 6.1, length: float = 600.0):
+    """A rolled channel (the default: a C15 x 50 of the public shape tables, mm): depth `d` along y, flange width
+    `bf` along x from the web's back face at x = 0, web `tw`, flanges `tf` thick at the middle of their clear
+    outstand (the table's flange thickness: their mean), their inner faces sloped `slope` (2 in 12), root fillets
+    `r1`, toe rounds `r2`; `length` along z. A shell of it: two flat flanges at y = tf / 2 and d - tf / 2, from the
+    web's mid-plane x = tw / 2 to the toe x = bf, and the web between them."""
+    half = (bf - tw) / 2.0
+    toe, root = tf - slope * half, tf + slope * half
+    pts = [(0, 0), (bf, 0), (bf, toe), (tw, root), (tw, d - root), (bf, d - toe), (bf, d), (0, d)]
+    return rounded_profile(pts, [0, 0, r2, r1, r1, r2, 0, 0], length)
+
+
+def rolled_i(d: float = 304.8, bf: float = 139.2, tw: float = 17.4, tf: float = 16.7, slope: float = 1.0 / 6.0,
+             r1: float = 14.2, r2: float = 5.6, length: float = 600.0):
+    """A rolled I-beam with tapered flanges (the default: an S12 x 50, mm; slope 0 with r2 0: a W shape), its web
+    centred on x = 0, depth `d` along y; `tf` is read at the middle of each half flange's clear outstand."""
+    half = (bf - tw) / 2.0
+    toe, root = tf - slope * half / 2.0, tf + slope * half / 2.0
+    b, w = bf / 2.0, tw / 2.0
+    pts = [(-b, 0), (b, 0), (b, toe), (w, root), (w, d - root), (b, d - toe), (b, d), (-b, d),
+           (-b, d - toe), (-w, d - root), (-w, root), (-b, toe)]
+    return rounded_profile(pts, [0, 0, r2, r1, r1, r2, 0, 0, r2, r1, r1, r2], length)
+
+
+def wide_hat(depth: float = 40.0, flange: float = 150.0, t: float = 12.0, web: float = 30.0, length: float = 300.0):
+    """A shallow channel with wide flanges: a web `web` thick at x 0..web, two flanges `flange` wide and `t` thick,
+    `depth` apart outside. Its two flanges' OUTER faces look at each other across the open side: wide against their
+    distance, but with a gap between them over all but the web."""
+    pts = [(0, 0), (flange, 0), (flange, t), (web, t), (web, depth - t), (flange, depth - t), (flange, depth),
+           (0, depth)]
+    return rounded_profile(pts, length=length)
+
+
+def bush(r_out: float = 30.0, r_in: float = 12.0, length: float = 30.0):
+    """A thick bush: outside radius `r_out`, bore `r_in`, `length` long - a wall 18 mm thick round a 21 mm radius."""
+    return _cut(_cyl(0, 0, 0, r_out, length), _cyl(0, 0, -1, r_in, length + 2))
+
+
+def plate_with_low_pad(t: float = 4.0, h: float = 10.0, side: float = 60.0):
+    """A 200 x 100 x `t` plate with a `side` x `side` pad `h` high on top: the pad is wide against its height, but it
+    stands on the plate (it shares the plate's underside) - thicker metal on a plate, not a plate of its own."""
+    return _fuse(_box(0, 0, 0, 200, 100, t), _box(70, 20, t, side, side, h))
+
+
+def welded_pedestal():
+    """A welded plate pedestal as separate bodies that touch: a base plate, a round pipe column, four triangular
+    gussets round its foot, a top plate, and a rolled channel lying on it. Every body is plate or rolled steel."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pnt, gp_Trsf
+
+    def placed(shape, origin, x, z):
+        tr = gp_Trsf()
+        tr.SetDisplacement(gp_Ax3(), gp_Ax3(gp_Pnt(*origin), gp_Dir(*z), gp_Dir(*x)))
+        return BRepBuilderAPI_Transform(shape, tr, True).Shape()
+
+    base_t, top_t, pipe_t, g_t, radius, height = 25.4, 19.05, 9.5, 12.7, 109.5, 400.0
+    bodies = [_box(-200, -200, 0, 400, 400, base_t),
+              _cut(_cyl(0, 0, base_t, radius, height), _cyl(0, 0, base_t - 1, radius - pipe_t, height + 2))]
+    for k in range(4):
+        ang = math.radians(45.0 + 90.0 * k)
+        ux, uy = math.cos(ang), math.sin(ang)
+        z = (uy, -ux, 0.0)                    # the gusset's thickness runs across the radius; its legs out and up
+        bodies.append(placed(gusset(7.6, g_t), (ux * radius - z[0] * g_t / 2, uy * radius - z[1] * g_t / 2, base_t),
+                             (ux, uy, 0.0), z))
+    bodies.append(_box(-175, -175, base_t + height, 350, 350, top_t))
+    bodies.append(placed(rolled_channel(length=500.0), (-175.0, -60.0, base_t + height + top_t), (0.0, 1.0, 0.0),
+                         (1.0, 0.0, 0.0)))
+    from meshpipeline.cad.midsurface import _compound
+
+    return _compound(bodies)

@@ -343,11 +343,13 @@ def test_a_wall_s_reach_is_the_length_it_bends_over_from_its_joints(name, lo, hi
 
 
 @pytest.mark.parametrize("name", ["box_corners", "casting_ribs_block", "stiff_panel_mount"])
-def test_parts_whose_walls_are_too_thick_for_shells_are_meshed_solid(name, tmp_path):
-    """MIXED-8: the box (4 mm walls reaching 5 to 6.7 walls: its back wall read +23% mixed), the casting (3 mm ribs
-    reaching 6.7 walls: a mode -6.8%) and the stiffened panel (3 mm, 7.8 to 8.3 walls) stop before any meshing, and
-    say why in plain words."""
+def test_parts_whose_walls_are_too_thick_for_shells_are_meshed_solid(name, tmp_path, monkeypatch):
+    """MIXED-8 AS A GATE (REACH_GATE True, the rule before SHELL-23): the box (4 mm walls reaching 5 to 6.7 walls: its
+    back wall read +23% mixed), the casting (3 mm ribs reaching 6.7 walls: a mode -6.8%) and the stiffened panel (3 mm,
+    7.8 to 8.3 walls) stop before any meshing, and say why in plain words."""
     from tests import fea_fixtures as fx
+
+    monkeypatch.setattr(mr, "REACH_GATE", True)
     from tests.unit.engines import test_mixed_families as fam
 
     step = fx.write_step(fam._family(name)[0], tmp_path / "part.step")
@@ -360,11 +362,14 @@ def test_parts_whose_walls_are_too_thick_for_shells_are_meshed_solid(name, tmp_p
     assert not (tmp_path / "mixed" / "shell_trimmed.brep").exists()
 
 
-def test_a_wall_too_thick_for_shells_is_kept_solid_and_the_rest_still_shell():
-    """MIXED-8: the 12 mm lip of a 2 mm plate reaches 6 walls from its corner (12 mm above the plate); it is kept solid with the block
-    (two solid regions), and the plate, reaching far past 10 walls, is still shell, cut two walls in from both."""
+def test_a_wall_too_thick_for_shells_is_kept_solid_and_the_rest_still_shell(monkeypatch):
+    """MIXED-8 AS A GATE (REACH_GATE True): the 12 mm lip of a 2 mm plate reaches 6 walls from its corner (12 mm above
+    the plate); it is kept solid with the block (two solid regions), and the plate, reaching far past 10 walls, is
+    still shell, cut two walls in from both."""
     from meshpipeline.cad import midsurface as ms
     from meshpipeline.cad import mixed_split as mx
+
+    monkeypatch.setattr(mr, "REACH_GATE", True)
 
     shape = _plate_lip_block()
     rec, surface, reach = _reach(shape)
@@ -392,9 +397,48 @@ def test_a_wall_too_thick_for_shells_is_kept_solid_and_the_rest_still_shell():
     assert mr.kept_solid(rec, kept, thick, []) == (list(range(len(kept))), kept, thick)
 
 
-def test_too_thick_words_and_shares():
-    """MIXED-8 on a record: one of two walls too thick, the other holding enough of the part, stays mixed; both too
-    thick, the part is solid with the shortest wall named."""
+def test_short_walls_are_shell_in_the_mixed_mesh_and_said():
+    """SHELL-23: MIXED-8 is advice. A wall that reaches under 10 of its walls from a joint is meshed as shell with the
+    rest - never kept solid with the thick regions - and one line says shell theory is less exact there."""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import mixed_split as mx
+
+    assert mr.REACH_GATE is False
+    rec = {"bodies": [{"body": "Part_1", "verdict": "mixed", "volume_mm3": 1000.0, "mid_volume_ratio": 0.8,
+                       "solid_regions": [{"faces": ["Face_7"]}]}],
+           "sewn": [{"open_edges": 0}],
+           "mids": [{"id": "Mid_1", "thickness_mm": 2.0, "shell": True, "area_mm2": 350.0},
+                    {"id": "Mid_2", "thickness_mm": 2.0, "shell": True, "area_mm2": 50.0}]}
+    assert mr.too_thick(rec, {"Mid_1": 60.0, "Mid_2": 12.0}) == (["Mid_2"], pytest.approx(0.8), "")
+    assert mr.recommend(rec, {"Mid_1": 60.0, "Mid_2": 12.0}) == (True, (
+        "Thin walls meshed as shell (80% of the part, 2 mm thick); 1 thick region kept solid and joined to them. 1 wall "
+        "reaches under 10 times its thickness from a joint: shell theory is less exact there."))
+    # every wall short: still a shell-and-solid mesh, said so (the gate would have meshed it solid)
+    ok, why = mr.recommend(rec, {"Mid_1": 15.0, "Mid_2": 12.0})
+    assert ok and why.endswith(" 2 walls reach under 10 times their thickness from a joint: shell theory is less exact "
+                               "there.")
+    assert mr.words({"made": True, "counts": {}, "too_thick": ["Mid_2"], "reach_gate": False}).endswith(
+        " 1 wall reaches under 10 times its thickness from a joint: shell theory is less exact there.")
+    # on the part: the 12 mm lip of a 2 mm plate (6 walls from its corner) stays a shell wall of the split - one
+    # solid region, the block - where the gate kept it solid with the block (two)
+    shape = _plate_lip_block()
+    rec, surface, reach = _reach(shape)
+    bad, _share, stop = mr.too_thick(rec, reach)
+    assert len(bad) == 1 and stop == ""
+    kept = [(f, float({m["id"]: m for m in rec["mids"]}[o]["thickness_mm"]), 0.0)
+            for f, o in zip(ms._faces(surface), rec["surface_faces"], strict=True)]
+    faces = ms._faces(shape)
+    thick = [faces[k] for k, r in enumerate(rec["faces"]) if r["role"] in ("thick", "solid")]
+    order, walls, marks = mr.kept_solid(rec, kept, thick, [])
+    sp = mx.split_body(mx._solids(shape)[0], walls, marks, scale=1.0)
+    assert sp.ok and sp.cores == 1, sp.why
+    assert any(rec["surface_faces"][order[k]] in bad for k in sp.shell_from)       # the lip is in the shell
+
+
+def test_too_thick_words_and_shares(monkeypatch):
+    """MIXED-8 AS A GATE (REACH_GATE True) on a record: one of two walls too thick, the other holding enough of the
+    part, stays mixed; both too thick, the part is solid with the shortest wall named."""
+    monkeypatch.setattr(mr, "REACH_GATE", True)
     rec = {"bodies": [{"body": "Part_1", "verdict": "mixed", "volume_mm3": 1000.0, "mid_volume_ratio": 0.8,
                        "solid_regions": [{"faces": ["Face_7"]}]}],
            "sewn": [{"open_edges": 0}],

@@ -1,7 +1,7 @@
 # Responsibility: Verify MIXED-5 in the FEA run: when the stage's Auto settled "shell + solid" (state fea_mesh_as
 # "mixed"), the FEA driver runs engines/mixed_run on the staged solid (metres, as the builder stages it) in a process
-# of its own, cites it, and the downloads offer the mixed files; a part whose walls are too thick for shells makes no
-# mixed files and says why, and the solid path goes on. Shell and Solid are unchanged.
+# of its own, cites it, and the downloads offer the mixed files; a part whose walls are short for their thickness is
+# still meshed (SHELL-23: MIXED-8 is advice) and says so. Shell and Solid are unchanged.
 # Boundaries: a plate with a thick boss and the box with thick corners, meshed in a child process (about a minute);
 # no solver run here (the CalculiX accuracy cases are test_mixed_textbook.py / test_mixed_families.py).
 from __future__ import annotations
@@ -48,16 +48,22 @@ def test_the_driver_makes_the_mixed_mesh_when_auto_settled_it(tmp_path, monkeypa
     assert json.loads((ws / mixed_run.RECORD).read_text())["mm_per_unit"] == pytest.approx(1000.0)
 
 
-def test_walls_too_thick_for_shells_make_no_mixed_files_and_say_why(tmp_path, monkeypatch):
+def test_walls_short_for_their_thickness_are_still_meshed_and_said(tmp_path, monkeypatch):
+    """SHELL-23: the box with thick corners (4 mm walls reaching 5 to 6.7 walls from their joints) is meshed shell
+    and solid as asked - its walls are never kept solid for being short - and one line says shell theory is less
+    exact there (MIXED-8 as a gate made no mixed files of it)."""
     from tests.unit.engines import test_mixed_families as fam
 
     cited: list = []
     monkeypatch.setattr(FD, "_cite", lambda job_id, entries: cited.extend(entries))
     ws = _stage(fam._family("box_corners")[0], tmp_path / "ws")
     rec = asyncio.run(FD.shell_pass(ws, {"fea_mesh_as": "mixed"}, job_id="j", run=_Run()))
-    assert rec["made"] is False and rec["why"].startswith("Walls too thick for shells: ")
-    assert not any((ws / f).exists() for f in mixed_run.FILES)
-    assert cited[0]["decided"] == "no mixed mesh" and cited[0]["words"].startswith("No shell-and-solid mesh was made")
+    assert rec["made"] is True, rec.get("why")
+    assert len(rec["too_thick"]) == 5 and rec["reach_gate"] is False
+    assert rec["words"].endswith(" 5 walls reach under 10 times their thickness from a joint: shell theory is less "
+                                 "exact there.")
+    assert all((ws / f).stat().st_size > 0 for f in mixed_run.FILES)
+    assert cited[0]["decided"] == "mixed mesh"
 
 
 def test_the_downloads_offer_the_mixed_files_nastran_first():

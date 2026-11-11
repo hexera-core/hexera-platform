@@ -33,7 +33,7 @@ def _verdicts(record: dict) -> dict[str, int]:
 
 
 #: what a shell run with no shell says when the extraction gave no measured reason
-NO_WALL_WHY = "no wall of the part is thin enough to be a shell"
+NO_WALL_WHY = "the part has no plate or thin wall to make a shell from"
 
 
 def no_shell_why(record: dict) -> str:
@@ -45,7 +45,7 @@ def no_shell_why(record: dict) -> str:
         w = str(b.get("why") or "").strip()
         if str(b.get("verdict") or "solid") != "solid" or not w:
             continue
-        w = w.split(": ", 1)[1].strip() if w.startswith("no wall is thin against its size: ") else w
+        w = w.split(": ", 1)[1].strip() if w.startswith(("no wall of it is a plate: ", "no wall is thin against its size: ")) else w
         if w not in whys:
             whys.append(w)
     if not whys:
@@ -70,6 +70,8 @@ def words(rec: dict) -> str:
         said += f" {rec['solid_bodies']} part(s) or region(s) stay solid and are not in the shell files."
     if rec.get("open_edges"):
         said += f" The plates do not meet at {rec['open_edges']} edge(s): the shell has gaps there."
+    if rec.get("advice"):
+        said += f" {rec['advice']}"       # SHELL-23: walls short for their thickness
     from meshpipeline.engines.shell_plan import count_words
 
     counted = count_words(rec.get("target"))
@@ -125,7 +127,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
         out.mkdir(parents=True, exist_ok=True)
         record = ms.extract_file(step, out, mm_per_unit=mm_per_unit)
         verdicts = _verdicts(record)
-        rec.update(bodies=verdicts, extract_s=round(time.time() - started, 1),
+        rec.update(bodies=verdicts, extract_s=round(time.time() - started, 1), advice=str(record.get("advice") or ""),
                    open_edges=int(sum(int(r.get("open_edges") or 0) for r in record.get("sewn") or [])),
                    solid_bodies=int(verdicts.get("solid", 0)) + sum(len(b.get("solid_regions") or [])
                                                                     for b in record.get("bodies") or []))

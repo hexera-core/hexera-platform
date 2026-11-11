@@ -44,6 +44,8 @@ A sheet is a shell when both of these hold:
 - **t ≤ L / 10.** L is the sheet's size: the square root of its mid-surface area. Mindlin shells (the S4R and CQUAD4 kind) hold to about t / L = 1/10, where L is a typical structural size.
 - **t ≤ width / 4,** so a shell element there can be a few walls wide.
 
+**Since SHELL-23 (10 Nov) these two figures are advice, not a gate.** A sheet that fails them is still a shell when it is plate-like (section 1.5): a shell is only ever made because the user asked for one. The figures now decide one thing: which walls get the line of advice.
+
 Why per sheet and not per pair: a 2 mm sheet's 3 mm bend is only 5.7 mm wide. Judged alone, it reads as thick. Judged with its flanges, it is clearly a shell. The same goes for a flat-bar stiffener web, 8 mm thick and 50 mm deep.
 
 **The width of a split wall (SHELL-2b, 30 Oct, 12th helper).** A sheet's width is read on its CAD faces as one region: an edge two of its faces share is inside it, not its outline. Its mid-faces share no edge, so their outlines added up: a printed cone split lengthwise into strips read as wide as one strip and stayed solid. The same width decides whether a tapered pair is fitted at all (a strip of a wide wall is fitted). Failure map: the split printed cones (cone_taper_split, 2 cases) solid to shell; training sh0012's 5.4 mm duct body mixed to shell.
@@ -70,7 +72,55 @@ Rims become the mid-surface's free edges. Blends are bridged when the mid-faces 
 
 The verdict is a recommendation. The user picks (section 7).
 
-**A solid body says why, in numbers (SHELL-2c, 30 Oct).** Its most plate-like wall (the pair closest to passing both rules) is named with its thickness, its span and width, each in walls: "no wall is thin against its size: its most plate-like wall is 8 mm thick and spans about 42 mm, only 5.3 times its thickness; a shell needs at least 10 times". A wall too narrow says so ("only 2.8 mm wide, 1.5 times its thickness; a shell needs at least 4 times (narrower, it is a bar or a beam)"). The record keeps it as `closest_wall`. The stage shows it (SHSTAGE-3b), and Auto meshes the part solid.
+**A solid body says why, in numbers (SHELL-2c, 30 Oct; the words are SHELL-23's since 10 Nov).** Its most plate-like wall (the widest against its thickness) is named: "no wall of it is a plate: its most plate-like wall is 30 mm thick but only 40 mm wide, 1.3 times its thickness; under 2 times, it is a bar or a block, not a plate". A thick ring says so ("18 mm thick round a tight bore, a thick ring; a curved wall is a shell when its radius is at least 2 times its thickness"). The record keeps it as `closest_wall`, with what it failed. The stage shows it (SHSTAGE-3b), and the part is meshed solid.
+
+### 1.5 Every plate is a shell (SHELL-23, 10 Nov)
+
+**The founder's call.** "If the user says shell, why wouldn't we convert everything into a shell?" A shell is only ever made because the user asked for one in words. Their request beats our accuracy minimums: warn, do not refuse. So the 10 walls of SHELL-2 stop being a gate.
+
+**What showed it.** A welded plate pedestal with a rolled channel, which its users mesh all as shells: a pipe column, base and top plates, eight triangular gussets, a channel beam. Its plates and pipe came out right (mid-surfaces within 0.2 mm of the users' own shell mesh, thicknesses equal). Its eight gussets, 12.7 mm thick over a 96.5 mm face, stayed solid ("only 7.6 times its thickness; a shell needs at least 10 times") and were left out of the shell files: 8 of 14 bodies.
+
+**The rule.** A sheet that fails SHELL-2's thin rule is still a shell when it is plate-like. All four must hold:
+
+| it is | measured | what fails | why this line |
+|---|---|---|---|
+| wide against its wall | at least 2 walls wide, on its own mid-faces: the narrower of `width_of` and its widest place (the largest circle that fits in a mid-face, holes counted). A plate split by a wall standing on it (a beam's flange, either side of the web) is read on the face its pairs share. | a bar, a block, a cube, a flange ring 1.9 walls across | Narrower, the pair of faces across the width is nearly as close as the pair across the thickness: no one mid-surface. And the mesh's own rules meet there: four elements across (SHMESH-1), none under half the wall (SHMESH-2). |
+| no thick ring | at least half its mid-surface is flat, or round a radius of 2 walls or more | a bush, a nut, a hollow boss (a bore under 3 walls across) | No shell stands for a wall thicker than half its radius. A tight bend rides with the flat plates it joins, as in SHELL-2. |
+| metal between its faces | 90% of the points read on its mid-face lie in the body | two faces that look at each other across a gap (a channel's two flanges, across its open side) | A mid-face in air is no wall. |
+| no pad on a thinner wall | neither of its faces is a side of a thinner shell wall | a pad, a boss, a land or a foot standing on a plate | It shares the plate's far face: thicker metal on that plate, not a plate of its own. It stays solid, as it always did. Two plates stacked are a lap (SHELL-8), as before. |
+
+The thin sheets are settled first, then the laps, then the others from the thinnest up, so a pad is told by the wall under it.
+
+Two more guards, both on the whole body:
+
+- **The body must be mostly plate.** The plates found in a body are kept only when its shell walls (the thin ones and these) then hold at least half its metal: their mid-faces times their walls, over its volume. This is MIXED-4's half. A plate with a lump on it is a shell with a solid region. A lump with a tab on it is a lump: a shell of the tab alone would be a scrap of the part, where the user got a whole solid mesh and the reason before. Under half, the body is left exactly as it was.
+- **The plates must join.** A body whose new plates (or flat flanges, SHELL-24) leave edges open where they meet its other walls is read again without them, and the reading with fewer open edges is kept, said in a note. So a body that sewed shut before still does. At most two more passes, inside the same work budget.
+
+**What stays solid.** Anything with no mid-surface: a block, a cube, a bar under 2 walls wide, a bolt, a shaft, a ball, a thick ring, a boss or pad on a plate. Measured on generated parts (`~/plates_lab`): a 30 mm cube, a 50 x 40 x 30 block, a 20 x 20 bar, a round bar, an M12 bolt, a stepped shaft, a block with a boss, a thick bush, a block with a pocket, a ball: all solid, each with its reason. A 100 x 50 x 25 block is the line itself (2.0 walls wide): a shell.
+
+**What is a shell now.** Flat plates and triangular gussets from 3 to 12 walls across (24 parts): all shell, mid-surface exact, volume held 1.000. Flat bars 2, 3, 4 and 6 walls wide: shell; 1 and 1.5: solid. The look-alike pedestal (13 bodies: plates, a pipe, eight gussets, a rolled channel, a support plate 4 walls across): 13 of 13 shell, 0 left solid, 0 open edges, every thickness the plate's own (4 shell and 9 solid before).
+
+**The advice, one line** (`cad/shell_words.py`; the record's `short_walls` and `advice`). The stage shows it in the shell fold's own muted line, and the result says it after the element count. No new control.
+
+- one wall: "Part_6: 12.7 mm thick over 96.5 mm, 7.6 times its thickness. Shell theory is less exact under 10 times (about 2% off on a free plate this short, more where it bends from a joint)."
+- several: "9 walls are short for their thickness (the shortest, Part_13: 31.8 mm thick over 126 mm, 4 times its thickness). Shell theory is less exact under 10 times (about 5% off on a free plate this short, more where it bends from a joint)."
+- a wall 10 walls across but under 4 wide: "... 5 mm thick and 15 mm wide, 3 times its thickness. Shell theory is less exact under 4 times (about 2% off on a free strip this narrow, ...)."
+
+**What a short plate costs, measured** (CalculiX 2.21 on one thread; free-free modes 7 to 12; the product's shell mesh, S4, against a C3D10 solid of the same part, three elements through the plate; the worst of the six modes, and the first):
+
+| walls across | 12 | 10 | 9 | 7.6 | 6 | 5 | 4 | 3 |
+|---|---|---|---|---|---|---|---|---|
+| square plate, worst | +2.4% | +2.3% | +2.3% | +2.1% | -2.3% | -3.2% | -4.7% | -7.4% |
+| square plate, first mode | +2.4% | +2.3% | +2.3% | +2.1% | +2.0% | +1.9% | +2.2% | +3.0% |
+| triangular gusset, worst | +2.1% | +1.6% | +1.5% | +1.3% | +1.2% | -2.0% | +1.6% | -2.6% |
+
+Flat bars 200 mm long, 2, 3, 4 and 6 walls wide: 3.2%, 2.2%, 2.1%, 2.0%.
+
+So a plate ALONE loses nothing down to about 6 walls (2.1% at 7.6 walls, as at 12), and reads 3% off at 5, 5% at 4, 7% at 3. The advice quotes the figure for the wall's own ratio. On structured meshes (the accuracy lane's test: a plate clamped at one end and pushed at the other, S4 against C3D20R four through the wall) the shell's tip is -0.05% off the solid's at 7.6 walls, -0.05% at 5, -0.30% at 3: so the 2% left at every ratio above looks like the mesh, not the theory (not separated here). CalculiX expands a shell into one layer of solid elements; Nastran's plate elements were not run.
+
+The advice also says where the real cost is: a short wall bending from a joint. A shell wall bends from the middle of its joint, and MIXED-8's box (4 mm walls reaching 5 to 6.7 walls from their joints) read +23%.
+
+**Knock-on effects** (the lab and the dev set): section 2.4.4.
 
 ## 2. Mid-surface from the B-rep
 
@@ -112,6 +162,52 @@ A fitted mid-face is kept only when:
 - it is itself at least four walls wide (as a shell sheet is). A narrower one is a local feature of the wall beside it, which that wall's own mid-face runs across when it is joined (a flat dimple 1.4 walls wide in a printed cylinder's side).
 
 Otherwise the pair stays a variable wall, with the reason.
+
+### 2.2.2 A rolled flange is one flat plate at its mean thickness (SHELL-24, 10 Nov)
+
+**What showed it.** The same pedestal's rolled channel: its web was right, but only 19% of the users' flange surface lay within 2 mm of ours, and what we had carried 23.0 mm where the section table says 17.8. A rolled channel's flange is tapered (thin at the toe, thick at the web), with a root fillet and a rounded toe. On main the pair is a tapered wall (SHELL-9): judged at its thickest point (23.0), fitted over the sloped face only (short of the toe and of the web), and tilted. Three of seven look-alike channels came out "mixed" with their flanges solid.
+
+**The rule.** A tapered wall whose two faces are both PLANES, and which is at most 10 of its mean thickness long ALONG its taper, is one flat plate:
+
+- **Flat, and where.** Parallel to the larger of its two faces (the flange's flat outside: the datum), half the mean thickness inside it. That is the plate every section table, hand check and solver property card assumes.
+- **Its thickness: the mean.** Read on the two planes at the middle of the wall's whole length along the taper: from the face of the wall it grows out of (the next flat face past its root fillet: the web's) to its own end face (past its toe round). The wall is linear between, so that is its mean over that length, which is what the tables call the flange thickness.
+- **Its outline.** The datum face's own outline: it runs to the wall's true end under a rounded toe. On a side where another wall begins it stops at the smaller face's end, and SHELL-3 carries it on to that wall's mid-plane. So the flange is sewn to the web.
+- **Its check.** Half its wall inside its datum face, everywhere (it is not midway between two faces that taper; the record says `flat`, its `datum` and `taper_mm`).
+
+A longer tapered wall (a wedge, a drafted side, a printed cone) keeps SHELL-9's fitted mid-surface and its true wall at every node: it bends along its taper, where stiffness goes with the cube of the thickness (a 2-degree wedge meshed at one wall was 41 to 68% too stiff).
+
+**Measured on rolled sections** drawn from the public shape tables with their true taper, fillet and toe round (`~/plates_lab/tools/parts.py`; AISC C, MC, S, W, L, WT, ST; EN UPN, IPN; 600 mm long). Coverage: the share of the table's flange mid-plane rectangle (web mid-plane to toe) within 0.25 mm of our surface.
+
+| section | before: flange coverage, thickness against the table | now |
+|---|---|---|
+| C15x50, C6x13, MC12x50, MC18x58 | 6 to 13%, -3.3 to -4.3% (fitted, tilted) | 100%, exact |
+| C10x30, MC12x31, UPN200 | 0%: flanges solid, body "mixed" | 100%, exact |
+| S12x50, S8x18.4, IPN200, ST6x25 (four or two tapered half flanges) | 8 to 17%, -2.1 to -4.3% | 100%, exact |
+| W8x31, W12x26, W14x90, WT6x25 (flat flanges) | 100%, exact | the same |
+| W14x730 (a jumbo: 125 mm flanges 3.6 walls wide) | solid | 100%, exact (SHELL-23) |
+| L4x4x1/2, L6x4x3/8, L2x2x3/8 | 100%, exact | the same |
+| L8x8x1-1/8 | 95.8% | 95.8% (below) |
+
+Every section: one body, verdict shell, 0 open edges, flanges sewn to the web. "Exact" is against the mean over the clear outstand, which is the AISC tables' flange thickness. The EN tables read a UPN's (up to 300 mm) at half the flange width and an IPN's at a quarter: 3.0% and 2.4% over the mean. Ours is the mean, so it is that much under those two tables' figure; the metal is right (the look-alikes' section areas match the tables).
+
+**Not done: the stockiest angle.** An even wall with a rounded toe stops at the toe round's start when the straight join is kept (the general join runs it on to the skin). An L8x8x1-1/8 keeps the straight join and covers 95.8% of its legs, on main as here. Carrying every even plate to its own end changes the mid-surface of every plate with a one-sided round or bevel in the corpus; it needs its own regression run.
+
+**Flat at the mean, or the true wall? Measured both ways** (CalculiX on one thread; free-free modes 7 to 12 against a C3D10 solid of the CAD, two elements a wall, 1.5 on the 1500 mm ones; first mode / worst of six):
+
+| 600 mm long | flat, mean thickness (the default) | flat, true wall at each node | fitted and tilted, true wall (SHELL-9, as before) |
+|---|---|---|---|
+| C15x50 | -3.6% / -9.0% | -2.1% / -5.2% | -1.9% / -5.4% |
+| MC12x50 | -5.8% / -16.9% | -3.4% / -6.9% | -3.7% / -6.0% |
+| S12x50 | -10.2% / -15.0% | -7.5% / -8.2% | -8.0% / -8.0% |
+| C10x30 | -3.5% / -5.9% | -2.3% / -5.7% | flanges solid (-15% / -50%) |
+| UPN200 | -5.3% / -14.5% | not run | flanges solid (-36% / -50%) |
+| C15x50, 1500 mm | -2.9% / +6.7% | -1.6% / -3.6% | -3.0% / -4.3% |
+| MC12x50, 1500 mm | -6.0% / +7.4% | -4.2% / -4.2% | not run |
+| S12x50, 1500 mm | -11.0% / -11.0% | -7.9% / -7.9% | -9.4% / -9.4% |
+
+- **What the code does best:** the flat plate in its table place with the wall's true thickness at every node (`FLAT_TAPER_WALL = "true"`, one constant: the record then carries SHELL-9b's readings, taken on the two planes). It is as good as the fitted surface and keeps the flat plate's full coverage and simple join.
+- **What is the default, and why:** the mean thickness (`"mean"`), as the founder leaned: it is what the users' own shell models, their property cards and their hand checks carry, so our mesh can be laid over theirs and agree. It costs accuracy on modes where the flange bends as a plate from the web: at the web the true flange is 1.4 times the mean (and the fillet's metal is in no shell model), so the mean plate is soft there. On a short stub's higher modes that is up to 17%. The users' own convention has the same error.
+- The section's area, and its distance from the section's middle, are kept either way (the look-alikes' sewn faces times their walls hold 0.99 to 1.02 of the volume).
 
 ### 2.3 Junctions: extend to meet (SHELL-3)
 
@@ -394,6 +490,8 @@ it is kept solid with the thick regions (its mid-face marks it as a core), the r
 as shell hold under half the part's metal (MIXED-4's share), or none is left, the part is meshed solid, said so:
 "Walls too thick for shells: 5 of its 5 thin walls reach less than 10 times their thickness from the nearest joint or
 thick region (the shortest, 4 mm thick, reaches 19.8 mm: 4.9 times). ..."
+
+**Since SHELL-23 (10 Nov) MIXED-8 is advice, not a gate** (`engines/mixed_run.REACH_GATE = False`). A plate the extraction calls a shell is meshed as shell in the mixed mesh too, however short: a gusset or a rolled flange is never kept solid with the thick regions. The reach is still measured and the short walls named: "... 5 walls reach under 10 times their thickness from a joint: shell theory is less exact there." The measurements below are why the line is said; the rule as it was is one constant away. The box, the casting and the stiffened panel are meshed shell and solid again (as before 2 Nov), said so.
 
 Why 10, and why the reach. 10 is the shell check's own 1/10 (SHELL-2: Mindlin shells hold to t / L of about 1/10;
 plate texts put the thin / thick plate line at a span of 8 to 10 thicknesses). SHELL-2 reads L as the square root of

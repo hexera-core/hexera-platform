@@ -185,3 +185,19 @@ def test_the_driver_hands_the_count_to_the_shell(tmp_path, tjoint, rules_count, 
     assert rec["made"] is True and rec["target"]["asked"] == ask
     assert abs(rec["elements"] - ask) <= 0.25 * ask
     assert cited[0]["inputs"]["target"]["asked"] == ask
+
+
+def test_short_walls_are_said_with_the_shell_and_a_part_with_no_plate_says_why():
+    # SHELL-23: a wall under ten of its thicknesses across is shelled as asked, and the result says the one line of
+    # advice; a part with no plate at all says its measured reason (the new words, and a stored record's old ones)
+    from meshpipeline.engines import shell_run as sr
+
+    advice = ("Part_6: 12.7 mm thick over 96.5 mm, 7.6 times its thickness. Shell theory is less exact under 10 times "
+              "(about 2% off on a free plate this short, more where it bends from a joint).")
+    said = sr.words({"made": True, "elements": 120, "quads": 120, "trias": 0, "walls_mm": [12.7], "advice": advice})
+    assert said.startswith("Shell mesh: 120 elements") and said.endswith(" " + advice)
+    assert "less exact" not in sr.words({"made": True, "elements": 1, "quads": 1, "trias": 0})
+    rec = {"bodies": [{"verdict": "solid", "why": "no wall of it is a plate: its most plate-like wall is 30 mm thick but "
+                       "only 40 mm wide, 1.3 times its thickness; under 2 times, it is a bar or a block, not a plate"}]}
+    assert sr.no_shell_why(rec) == ("its most plate-like wall is 30 mm thick but only 40 mm wide, 1.3 times its "
+                                    "thickness; under 2 times, it is a bar or a block, not a plate")

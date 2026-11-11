@@ -36,6 +36,8 @@ from pathlib import Path
 import numpy as np
 
 from meshpipeline.cad import shell_pairs as sp
+from meshpipeline.cad.shell_words import num as _num
+from meshpipeline.cad.shell_words import short_wall_words
 
 logger = logging.getLogger(__name__)
 
@@ -1042,6 +1044,333 @@ def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False) 
     return faces, float(lo), float(hi), float(np.mean(read)), ""
 
 
+# ----------------------------------------------------------------- every plate is a shell ----
+#: SHELL-23, EVERY PLATE IS A SHELL (10 Nov, the founder's call: a shell is only ever made because the user asked
+#: for one in words, and their request beats our accuracy minimums - warn, do not refuse). A sheet that fails
+#: SHELL-2's thin rule (10 walls across, 4 wide) is still a shell when it is PLATE-LIKE:
+#:   - it is at least 1 / sp.PLATE_WIDTH_RATIO (2) walls wide, read on its own mid-faces: the narrower of width_of
+#:     and its widest place (inscribed_width: the largest circle that fits in a mid-face, holes counted, so a
+#:     flange ring reads its radial width and a frame its bars). Narrower, the pair of faces across its width is
+#:     nearly as close as the pair across its thickness - a bar or a block, with no one mid-surface - and the shell
+#:     mesh's four elements across it would each be under half the wall (SHMESH-1 against SHMESH-2's floor);
+#:   - at least PLATE_FLAT_SHARE of its mid-surface is flat or gently curved: a wall round a radius under
+#:     PLATE_CURVE_WALLS of its thickness (a bush, a nut, a hollow boss: its bore under three walls across) is a
+#:     thick ring, which no shell stands for. A tight bend rides with the flat plates it joins, as in SHELL-2;
+#:   - each of its pairs is NO PAD ON A THINNER WALL: neither of its faces is also a side of a thinner shell wall. A
+#:     pad, a boss or a land standing on a plate shares the plate's far face; it is thicker metal on that plate, not
+#:     a plate of its own, and stays solid as it did (two plates stacked are a lap, SHELL-8, as before);
+#:   - and each of its pairs has its mid-face IN THE METAL (PLATE_METAL_SHARE of the points read on it): two faces
+#:     that look at each other across a gap (a channel's two flanges, across its open side) are no wall.
+#: What fails stays as it was: thick (a side only of walls that are no plate) or solid.
+#: AND THE BODY MUST BE MOSTLY PLATE: the plates SHELL-23 finds in a body are kept only when the body's shell walls,
+#: the thin ones and these, then hold at least PLATE_BODY_SHARE of its metal - its sewn mid-faces times their walls
+#: over its volume, MIXED-4's measure and MIXED-4's half. A plate with a lump on it is a shell with a solid region;
+#: a lump with a tab on it is a lump, and a shell of the tab alone would be a scrap of the part. Under that share
+#: the body is read again without its plates: left exactly as it was. (Before any join, a body whose mid-faces
+#: alone hold under PLATE_BODY_QUICK of it is left at once: junctions add metal to a shell, they do not double it.)
+#: AND THEY MUST JOIN (PLATE_OPEN_GUARD): a body whose new plates leave edges open where they meet its other walls
+#: is read again without them, and keeps the reading with fewer open edges - so a body that sewed shut before
+#: still does, and the plates that would hang loose stay solid, said in a note.
+EVERY_PLATE = True
+PLATE_BODY_SHARE = 0.5
+PLATE_BODY_QUICK = 0.25
+PLATE_OPEN_GUARD = True
+PLATE_PASS_SLACK = 1.5
+PLATE_FLAT_SHARE = 0.5
+PLATE_CURVE_WALLS = 2.0
+PLATE_METAL_SHARE = 0.9
+PLATE_METAL_SAMPLES = 7
+#: the widest place of a mid-face is looked for on a PLATE_WIDTH_SAMPLES grid over its parameters, then closed in on
+#: by PLATE_WIDTH_STEPS halvings of the grid's step (a fixed search: the same answer twice)
+PLATE_WIDTH_SAMPLES = 15
+PLATE_WIDTH_STEPS = 8
+
+
+def inscribed_width(face) -> float:
+    """SHELL-23: a face's WIDEST PLACE, its own units: twice the largest distance from a point inside it to its
+    outline, every hole's edge counted - the diameter of the largest circle that fits in it. A strip reads its
+    width, a square its side, a ring its radial width, a frame its bars, a plate with a narrow neck its wide part."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.gp import gp_Pnt2d
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_IN
+    from OCP.TopoDS import TopoDS
+
+    emap = _map(face, TopAbs_EDGE)
+    outline = _compound([TopoDS.Edge_s(emap.FindKey(i)) for i in range(1, emap.Extent() + 1)])
+    a = BRepAdaptor_Surface(face, True)
+    u0, u1, v0, v1 = a.FirstUParameter(), a.LastUParameter(), a.FirstVParameter(), a.LastVParameter()
+    if not all(math.isfinite(x) for x in (u0, u1, v0, v1)):
+        return 0.0
+
+    def clear(u: float, v: float) -> float:
+        if BRepClass_FaceClassifier(face, gp_Pnt2d(u, v), 1e-9).State() != TopAbs_IN:
+            return -1.0
+        return _dist(_vertex(_np(a.Value(u, v))), outline)
+
+    k = PLATE_WIDTH_SAMPLES
+    du, dv = (u1 - u0) / k, (v1 - v0) / k
+    best, at = -1.0, None
+    for i in range(k):
+        for j in range(k):
+            u, v = u0 + du * (i + 0.5), v0 + dv * (j + 0.5)
+            d = clear(u, v)
+            if d > best:
+                best, at = d, (u, v)
+    if at is None:
+        return 0.0
+    for _ in range(PLATE_WIDTH_STEPS):
+        du, dv = du / 2.0, dv / 2.0
+        moved = True
+        while moved:
+            moved = False
+            for su, sv in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+                d = clear(at[0] + su * du, at[1] + sv * dv)
+                if d > best * (1.0 + 1e-12):
+                    best, at, moved = d, (at[0] + su * du, at[1] + sv * dv), True
+                    break
+    return 2.0 * max(best, 0.0)
+
+
+def metal_share(face, solid: _Solid) -> float:
+    """SHELL-23: the share of the points read on a mid-face (a PLATE_METAL_SAMPLES grid over its parameters, the
+    ones inside it; its inner point when the grid misses it) that lie in the body's metal."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.gp import gp_Pnt2d
+    from OCP.TopAbs import TopAbs_IN
+
+    a = BRepAdaptor_Surface(face, True)
+    u0, u1, v0, v1 = a.FirstUParameter(), a.LastUParameter(), a.FirstVParameter(), a.LastVParameter()
+    pts = []
+    k = PLATE_METAL_SAMPLES
+    if all(math.isfinite(x) for x in (u0, u1, v0, v1)):
+        for i in range(k):
+            for j in range(k):
+                u, v = u0 + (u1 - u0) * (i + 0.5) / k, v0 + (v1 - v0) * (j + 0.5) / k
+                if BRepClass_FaceClassifier(face, gp_Pnt2d(u, v), 1e-9).State() == TopAbs_IN:
+                    pts.append(_np(a.Value(u, v)))
+    if len(pts) < 3:
+        q = _inner_point(face)
+        if q is not None:
+            pts.append(np.asarray(q, float))
+    if not pts:
+        return 0.0
+    return sum(1 for p in pts if solid.inside(p)) / len(pts)
+
+
+def _outer_normal(face) -> np.ndarray | None:
+    """A planar face's unit normal pointing OUT of the body it bounds; None for any other surface."""
+    from OCP.TopAbs import TopAbs_REVERSED
+
+    pl = _plane(face)
+    if pl is None:
+        return None
+    return -pl[1] if face.Orientation() == TopAbs_REVERSED else pl[1]
+
+
+def _outline_points(face, k: int = 6) -> list[np.ndarray]:
+    """Points along every edge of a face (k along each), for its extent in a direction."""
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopoDS import TopoDS
+
+    emap = _map(face, TopAbs_EDGE)
+    return [x for i in range(1, emap.Extent() + 1) for x in _edge_points(TopoDS.Edge_s(emap.FindKey(i)), k)]
+
+
+#: SHELL-24, A SHORT TAPERED PLATE IS ONE FLAT PLATE AT ITS MEAN THICKNESS (a rolled section's flange: a channel's,
+#: an S or IPN beam's, a tee's cut from one). Two PLANES turned from each other by at most sp.TAPER_DEG, the wall no
+#: more than FLAT_TAPER_WALLS of its mean thickness long ALONG its taper:
+#:   - its mid-face is flat, parallel to the larger of its two faces (the flange's flat outside: the datum) and half
+#:     the mean thickness inside it. That is the plate every section table, hand check and solver property card
+#:     assumes; a wall that short does not bend along its taper as a plate, it carries load in its own plane, where
+#:     only its area and its distance from the section's middle count - and the mean thickness keeps both;
+#:   - the MEAN THICKNESS is read on the two planes at the middle of the wall's whole length along the taper: from
+#:     the face of the wall it grows out of (the next flat face past its root fillet: the web's) to its own end face
+#:     (past its toe round). The wall is linear between, so that is its mean over that length - what the section
+#:     tables call the flange thickness;
+#:   - it covers the datum face's own outline, so it runs to the wall's true end under a rounded toe, and stops at
+#:     the smaller face's end on a side where another wall begins (SHELL-3 carries it on to that wall's mid-plane).
+#: A longer tapered wall (a wedge, a drafted side, a printed cone) keeps SHELL-9's fitted mid-surface and its true
+#: thickness at every node: it bends along its taper, where stiffness goes with the cube of the thickness. So does a
+#: tapered wall under two of its walls wide (no plate by SHELL-23): it is read exactly as before.
+FLAT_TAPER = True
+FLAT_TAPER_WALLS = 10.0
+#: The wall a flat tapered plate is meshed at: "mean" - one thickness, the mean (the section table's; the default) -
+#: or "true" - the flat face keeps its place, and every node gets the wall's own thickness there (the record carries
+#: SHELL-9b's readings, taken on the two planes). Measured both ways in the design note (2.2.2).
+FLAT_TAPER_WALL = "mean"
+#: the next flat face past the smaller face's end bounds the wall when it lies within this many mean walls of it
+#: (SHELL-2's largest blend, as RIM_WALLS) and faces along the taper within FLAT_BOUND_DEG
+FLAT_BOUND_WALLS = 2.0
+FLAT_BOUND_DEG = 45.0
+
+
+def flat_mid(ka: int, kb: int, faces: list, kinds: list[str], neighbours: list[set[int]], fuzzy: float):
+    """SHELL-24: the flat mid-face(s) of the tapered pair of PLANAR faces ka, kb (indices into `faces`), or None
+    when the pair is not such a wall (not two planes, no taper, longer along its taper than FLAT_TAPER_WALLS).
+    Returns (faces, thinnest, thickest, mean thickness, datum index) in the shape's own units; the thinnest and
+    thickest are read at the two ends of the wall's whole length."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon, BRepBuilderAPI_Transform
+    from OCP.gp import gp_Pnt, gp_Trsf, gp_Vec
+
+    if kinds[ka] != "plane" or kinds[kb] != "plane":
+        return None
+    a, b = (ka, kb) if _area(faces[ka]) >= _area(faces[kb]) else (kb, ka)
+    na, nb = _outer_normal(faces[a]), _outer_normal(faces[b])
+    if na is None or nb is None:
+        return None
+    oa, ob = _plane(faces[a])[0], _plane(faces[b])[0]
+    c = float(np.dot(na, nb))
+    if c >= -math.cos(math.radians(sp.TAPER_DEG + 1.0)):
+        return None
+    grad = (nb - c * na) / c                    # how fast the wall thickens along the datum plane
+    slope = float(np.linalg.norm(grad))
+    if slope < 1e-9:
+        return None
+    g = grad / slope                            # ... and the way it thickens: the taper's direction
+    lat = np.cross(na, g)
+
+    def depth(x) -> float:                      # the wall under point x of the datum plane
+        return float(np.dot(x - ob, nb)) / c
+
+    pts_a, pts_b = _outline_points(faces[a]), _outline_points(faces[b])
+    if not pts_a or not pts_b:
+        return None
+    ga = [float(np.dot(x - oa, g)) for x in pts_a]
+    gb = [float(np.dot(x - oa, g)) for x in pts_b]
+    lb = [float(np.dot(x - oa, lat)) for x in pts_b]
+    la = [float(np.dot(x - oa, lat)) for x in pts_a]
+    centre = oa + lat * (0.5 * (min(lb) + max(lb)))        # a line along the taper, through the wall's middle
+    t_mid = depth(centre + g * (0.5 * (min(gb) + max(gb))))
+    if t_mid <= 0:
+        return None
+    # the flat faces that bound the wall along its taper: past the smaller face's end, across its rounds
+    past: list[int] = []
+    for f in sorted(neighbours[b]):
+        if f == a:
+            continue
+        if kinds[f] == "plane":
+            past.append(f)
+        else:
+            past += [w for w in sorted(neighbours[f]) if w not in (a, b) and kinds[w] == "plane"]
+            if a in neighbours[f]:
+                past.append(a)                  # a round straight onto the datum: the datum's own end is the end
+    cos_lim = math.cos(math.radians(FLAT_BOUND_DEG))
+    reach = FLAT_BOUND_WALLS * t_mid
+    ends = {}
+    for side, own in (("lo", min(gb)), ("hi", max(gb))):
+        best = None                             # (distance past the smaller face's end, coordinate, is the wall's end)
+        for w in dict.fromkeys(past):
+            if w == a:
+                at, rim = (min(ga) if side == "lo" else max(ga)), True
+            else:
+                nw, ow = _outer_normal(faces[w]), _plane(faces[w])[0]
+                if nw is None or abs(float(np.dot(nw, g))) < cos_lim:
+                    continue
+                at = float(np.dot(ow - centre, nw)) / float(np.dot(g, nw)) + float(np.dot(centre - oa, g))
+                rim = w in neighbours[a]        # an end face meets the datum; another wall's face does not
+            gap = (own - at) if side == "lo" else (at - own)
+            if -1e-6 * t_mid <= gap <= reach and (best is None or gap < best[0]):
+                best = (gap, at, rim)
+        ends[side] = (own, False) if best is None else (best[1], best[2])
+    lo, hi = ends["lo"][0], ends["hi"][0]
+    if hi - lo <= 0:
+        return None
+    t_lo, t_hi = sorted((depth(centre + g * lo), depth(centre + g * hi)))
+    t_mean = depth(centre + g * (0.5 * (lo + hi)))
+    if t_lo <= 0 or t_mean <= 0 or hi - lo > FLAT_TAPER_WALLS * t_mean:
+        return None
+    # the datum face moved half the mean wall into the metal, kept inside the wall's own length: the datum's own
+    # end where the wall ends, the smaller face's end where another wall begins
+    tr = gp_Trsf()
+    tr.SetTranslation(gp_Vec(*map(float, -na * (0.5 * t_mean))))
+    moved = _faces(BRepBuilderAPI_Transform(faces[a], tr, True).Shape())
+    if len(moved) != 1:
+        return None
+    pad = 10.0 * (max(ga) - min(ga) + max(la) - min(la))
+    g0 = min(gb) if not ends["lo"][1] else min(ga) - pad
+    g1 = max(gb) if not ends["hi"][1] else max(ga) + pad
+    l0, l1 = min(lb), max(lb)
+    if min(la) >= l0 - 1e-6 * t_mean and max(la) <= l1 + 1e-6 * t_mean:
+        l0, l1 = l0 - pad, l1 + pad
+    om = oa - na * (0.5 * t_mean)
+    corners = [om + g * x + lat * y for x, y in ((g0, l0), (g1, l0), (g1, l1), (g0, l1))]
+    poly = BRepBuilderAPI_MakePolygon()
+    for q in corners:
+        poly.Add(gp_Pnt(*map(float, q)))
+    poly.Close()
+    window = BRepBuilderAPI_MakeFace(poly.Wire(), True).Face()
+    got = overlap(moved[0], window, fuzzy)
+    if not got:
+        return None
+    # a wall too narrow to be a plate at all (under SHELL-23's two walls, on its own face and on its datum's widest
+    # place) is no flat plate either: it is read as before (a draft on a small rib, a chamfer's two sides)
+    need = t_mean / sp.PLATE_WIDTH_RATIO
+    if width_of(_compound(got)) < need and inscribed_width(faces[a]) < need:
+        return None
+    return got, float(t_lo), float(t_hi), float(t_mean), a
+
+
+def flat_wall_samples(mid, datum, other, lo: float, hi: float) -> list[list[float]]:
+    """SHELL-24 with FLAT_TAPER_WALL "true": [x, y, z, wall] (own units) at points inside the flat mid-face and along
+    its edges, the wall read between the two faces' PLANES under each point (never outside its thinnest and
+    thickest: past the smaller face's end the planes run on, the wall does not)."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.gp import gp_Pnt2d
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_IN
+    from OCP.TopoDS import TopoDS
+
+    na, nb = _outer_normal(datum), _outer_normal(other)
+    pa, pb = _plane(datum), _plane(other)
+    if na is None or nb is None or pa is None or pb is None:
+        return []
+    oa, ob = pa[0], pb[0]
+    c = float(np.dot(na, nb))
+    a = BRepAdaptor_Surface(mid, True)
+    u0, u1, v0, v1 = a.FirstUParameter(), a.LastUParameter(), a.FirstVParameter(), a.LastVParameter()
+    pts = []
+    k = WALL_SAMPLES
+    for i in range(k):
+        for j in range(k):
+            u, v = u0 + (u1 - u0) * (i + 0.5) / k, v0 + (v1 - v0) * (j + 0.5) / k
+            if BRepClass_FaceClassifier(mid, gp_Pnt2d(u, v), 1e-9).State() == TopAbs_IN:
+                pts.append(_np(a.Value(u, v)))
+    emap = _map(mid, TopAbs_EDGE)
+    for i in range(1, emap.Extent() + 1):
+        pts += _edge_points(TopoDS.Edge_s(emap.FindKey(i)), WALL_EDGE_SAMPLES)
+    out = []
+    for x in pts:
+        on_a = x - na * float(np.dot(x - oa, na))          # the point of the datum plane over it
+        w = float(np.dot(on_a - ob, nb)) / c
+        out.append([float(x[0]), float(x[1]), float(x[2]), min(max(w, lo), hi)])
+    return out
+
+
+def flat_fidelity(mid, datum, t: float) -> tuple[float, int]:
+    """SHELL-24: a flat mid-face read on a FIDELITY_SAMPLES grid: the largest error of its distance to the datum
+    face's plane from half the wall (its own units), and the points read."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.gp import gp_Pnt2d
+    from OCP.TopAbs import TopAbs_IN
+
+    o, n = _plane(datum)[0], _plane(datum)[1]
+    a = BRepAdaptor_Surface(mid, True)
+    u0, u1, v0, v1 = a.FirstUParameter(), a.LastUParameter(), a.FirstVParameter(), a.LastVParameter()
+    worst, count = 0.0, 0
+    k = FIDELITY_SAMPLES
+    for i in range(k):
+        for j in range(k):
+            u, v = u0 + (u1 - u0) * (i + 0.5) / k, v0 + (v1 - v0) * (j + 0.5) / k
+            if BRepClass_FaceClassifier(mid, gp_Pnt2d(u, v), 1e-9).State() != TopAbs_IN:
+                continue
+            worst = max(worst, abs(abs(float(np.dot(_np(a.Value(u, v)) - o, n))) - t / 2.0))
+            count += 1
+    return worst, count
+
+
 # ------------------------------------------------------------------------------------ extension ----
 class _Mid:
     """One mid-face while it is built."""
@@ -1049,6 +1378,7 @@ class _Mid:
     def __init__(self, k: int, face, pair: int, body: int, t: float):
         self.k, self.face, self.pair, self.body, self.t = k, face, pair, body, t
         self.fitted = False              # fitted through the midpoints (SHELL-9)
+        self.flat = None                 # SHELL-24: the datum face's index when it is a tapered wall's flat plate
         self.t_min = self.t_max = t      # the wall's thinnest and thickest over it (a tapered wall's differ)
         self.plane = _plane(face)
         self.extended: list[dict] = []
@@ -3967,60 +4297,140 @@ def solidify(shape, mm: float) -> tuple[object, list[str]]:
     return _compound(solids + made + rest), [note + "."]
 
 
-def _closest_wall(pairs: list, body_of: list[int], b: int) -> dict | None:
-    """SHELL-2c: of a body judged solid, the wall that came CLOSEST to being a shell - its thickness, its sheet's
-    span (the square root of its mid-surface area) and width, each in walls, against the rule (span at least
-    1 / SHELL_RATIO walls, width at least 1 / SHELL_WIDTH_RATIO walls). None when no two of its faces form a wall.
-    The user's reason, in numbers: a machined bracket 6 mm thick with 40 mm legs is 7 walls long, not 10."""
+#: a solid body's verdict, before its measured reason (engines/shell_run.no_shell_why reads the reason after it)
+NO_PLATE = "no wall of it is a plate"
+
+
+def _closest_wall(pairs: list, body_of: list[int], b: int, plate_width: dict | None = None,
+                  plate_fail: dict | None = None) -> dict | None:
+    """SHELL-2c: of a body judged solid, the wall that came CLOSEST to being a plate (SHELL-23) - its thickness, its
+    sheet's span (the square root of its mid-surface area) and its width on its own mid-faces, each in walls, and
+    what it failed ("narrow": under 1 / PLATE_WIDTH_RATIO walls wide; "ring": a wall round too tight a radius;
+    "gap": its two faces look at each other across a gap). None when no two of its faces form a wall. The user's
+    reason, in numbers: a block 30 mm thick and 40 mm wide is 1.3 walls wide, not 2."""
+    plate_width, plate_fail = plate_width or {}, plate_fail or {}
     best, score = None, -1.0
-    for p in pairs:
-        if body_of[p.a] != b or not (p.even or p.tapered) or not p.size or not p.width or not p.thickness:
+    for i, p in enumerate(pairs):
+        if body_of[p.a] != b or not (p.even or p.tapered) or not p.size or not p.thickness:
             continue
-        span, wide = p.size / p.thickness, p.width / p.thickness
-        s = min(span * sp.SHELL_RATIO, wide * sp.SHELL_WIDTH_RATIO)
+        w = plate_width.get(i, p.width)
+        if not w:
+            continue
+        s = (w / p.thickness) * (0.0 if plate_fail.get(i) == "gap" else 1.0)
         if s > score:
-            best, score = p, s
+            best, score = (i, p, w), s
     if best is None:
         return None
-    return {"thickness_mm": _r(best.thickness), "span_mm": _r(best.size), "width_mm": _r(best.width),
-            "span_walls": round(best.size / best.thickness, 1), "width_walls": round(best.width / best.thickness, 1)}
-
-
-def _num(x: float) -> str:
-    """A length in plain digits, three significant (7000, 40100, 2.78 - never 7e+03)."""
-    return f"{float(f'{float(x):.3g}'):g}"
+    i, p, w = best
+    return {"thickness_mm": _r(p.thickness), "span_mm": _r(p.size), "width_mm": _r(w),
+            "span_walls": round(p.size / p.thickness, 1), "width_walls": round(w / p.thickness, 1),
+            "why": plate_fail.get(i, "narrow")}
 
 
 def _solid_words(closest: dict | None) -> str:
     """SHELL-2c: why a body stays solid, in plain words with its numbers."""
-    need_span, need_width = 1.0 / sp.SHELL_RATIO, 1.0 / sp.SHELL_WIDTH_RATIO
+    need = 1.0 / sp.PLATE_WIDTH_RATIO
     if closest is None:
         return "no two of its faces run side by side across the metal, so it has no wall a shell could stand for"
-    t, span, width = closest["thickness_mm"], closest["span_mm"], closest["width_mm"]
-    if closest["span_walls"] < need_span:
-        return (f"its most plate-like wall is {_num(t)} mm thick and spans about {_num(span)} mm, only "
-                f"{closest['span_walls']:g} times its thickness; a shell needs at least {need_span:g} times")
-    if closest["width_walls"] >= need_width:
-        # its own numbers pass: the sheet it belongs to has a thicker wall that does not
-        return (f"its {_num(t)} mm walls belong to a sheet with thicker walls that are not thin against its "
-                f"{_num(span)} mm span")
+    t, width = closest["thickness_mm"], closest["width_mm"]
+    if closest.get("why") == "ring":
+        return (f"its most plate-like wall is {_num(t)} mm thick round a tight bore, a thick ring; a curved wall is "
+                f"a shell when its radius is at least {PLATE_CURVE_WALLS:g} times its thickness")
+    if closest.get("why") == "loose":
+        return (f"its most plate-like wall is {_num(t)} mm thick and {_num(width)} mm wide, a plate; but its plates "
+                "do not meet its other walls, so the part is left solid")
+    if closest.get("why") == "lump":
+        return (f"its most plate-like wall is {_num(t)} mm thick and {_num(width)} mm wide, a plate; but its plates "
+                f"hold under {100 * PLATE_BODY_SHARE:.0f}% of its metal, so the part is mostly thick")
+    if closest.get("why") == "gap":
+        return "its faces look at each other across a gap, not across metal, so it has no wall a shell could stand for"
     return (f"its most plate-like wall is {_num(t)} mm thick but only {_num(width)} mm wide, "
-            f"{closest['width_walls']:g} times its thickness; a shell needs at least {need_width:g} times "
-            "(narrower, it is a bar or a beam)")
+            f"{closest['width_walls']:g} times its thickness; under {need:g} times, it is a bar or a block, not a "
+            "plate")
+
+
+def _open_by_body(record: dict) -> dict[str, int]:
+    return {str(r["body"]): int(r.get("open_edges") or 0) for r in record.get("sewn") or []}
+
+
+def _low_share(record: dict) -> dict[str, float]:
+    """SHELL-23: the bodies holding short plates whose shell, once joined, holds under PLATE_BODY_SHARE of their
+    metal ({body: the share}): mostly thick, with a scrap of shell."""
+    plated = {str(r["body"]) for r in record.get("short_walls") or []}
+    return {str(b["body"]): float(b.get("mid_volume_ratio") or 0.0) for b in record.get("bodies") or []
+            if str(b["body"]) in plated and b.get("verdict") == "mixed"
+            and float(b.get("mid_volume_ratio") or 0.0) < PLATE_BODY_SHARE}
+
+
+def _plate_bodies(record: dict) -> set[str]:
+    """The bodies that hold a wall made by SHELL-23 (a short plate) or SHELL-24 (a flat tapered plate)."""
+    return ({str(r["body"]) for r in record.get("short_walls") or []}
+            | {str(m["body"]) for m in record.get("mids") or [] if m.get("flat") and m.get("shell")})
 
 
 def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
             budget_s: float | None = None) -> tuple[dict, object]:
     """The shell record and the sewn mid-surface (a compound, the shape's own units) of an OpenCASCADE shape
     whose coordinates are `mm_per_unit` millimetres each. Never raises for a part it cannot shell: the record
-    says what was not shelled and why."""
+    says what was not shelled and why.
+
+    SHELL-23's last guards: a body whose short plates hold under half its metal once joined is read again without
+    them (PLATE_BODY_SHARE), and so is one whose short plates or flat flanges leave edges open, which keeps the
+    reading with fewer open edges (PLATE_OPEN_GUARD). At most two more passes, inside the same work budget."""
+    started = time.time()
+    clock = _Clock(budget_s)
+    record, surface = _extract(shape, mm_per_unit=mm_per_unit, names=names, clock=clock, no_plate={})
+    if PLATE_OPEN_GUARD and (EVERY_PLATE or FLAT_TAPER):
+        opened = _open_by_body(record)
+        low = _low_share(record)
+        bad = sorted(b for b in _plate_bodies(record) if opened.get(b, 0) > 0 and b not in low)
+        # (another pass takes about as long as the first: only with that much of the work budget left, and half
+        # again - a part that needed most of its budget keeps its first reading)
+        spent = time.time() - started
+        need = PLATE_PASS_SLACK * spent + JOIN_MIN_S
+        if (low or bad) and clock.left() > need:
+            try:
+                why = {**dict.fromkeys(bad, "loose"), **dict.fromkeys(low, "lump")}
+                trial = _extract(shape, mm_per_unit=mm_per_unit, names=names, clock=clock, no_plate=why)
+                better = sorted(b for b in bad if _open_by_body(trial[0]).get(b, 0) < opened[b])
+                out = sorted(set(low) | set(better))
+                if out and better != bad:
+                    if clock.left() > need:
+                        trial = _extract(shape, mm_per_unit=mm_per_unit, names=names, clock=clock,
+                                         no_plate={b: why[b] for b in out})
+                    elif low or sum(_open_by_body(trial[0]).values()) < sum(opened.values()):
+                        better = bad          # no time to give the others their plates back
+                    else:
+                        out = []
+                if out:
+                    record, surface = trial
+                    left = _open_by_body(record)
+                    for b in sorted(low):
+                        record["notes"].append(
+                            f"{b}: its plates would hold only {100 * low[b]:.0f}% of its metal as a shell: it is mostly "
+                            "thick, so it is left as it was (SHELL-23).")
+                    for b in better:
+                        record["notes"].append(
+                            f"{b}: its short plates would leave {opened[b]} edge(s) open where they meet its other "
+                            f"walls ({left.get(b, 0)} without them), so they stay solid, as before (SHELL-23).")
+            except OutOfBudget:
+                # no time to read it again: the first reading stands, its open edges said
+                record["notes"].append("The work budget left no time to read the bodies with open edges again "
+                                       "without their short plates (SHELL-23); the first reading stands.")
+    record["seconds"] = round(time.time() - started, 2)
+    return record, surface
+
+
+def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Clock,
+             no_plate: dict[str, str]) -> tuple[dict, object]:
+    """One pass of the extraction. `no_plate`: the bodies (by name) read without SHELL-23 and SHELL-24, as before
+    those rules, each with why ("lump": its plates hold too little of it; "loose": they do not join)."""
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.TopAbs import TopAbs_FACE
 
     from meshpipeline.cad import fea_measure as fm
 
     started = time.time()
-    clock = _Clock(budget_s)
     mm = float(mm_per_unit)
     # SHELL-15: an IGES file's loose surfaces sewn into solids first
     shape, sew_notes = solidify(shape, mm)
@@ -4095,6 +4505,19 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
             except Exception as exc:  # noqa: BLE001
                 logger.debug("shell: the mid-face of %s/%s failed (%s)", names[p.a], names[p.b], exc)
         fitted, lo_u, hi_u, mean_u = False, t_u, t_u, t_u
+        flat_datum = None
+        if not got and p.tapered and FLAT_TAPER and body_names[body_of[p.a]] not in no_plate:
+            # SHELL-24: a short tapered plate (a rolled flange) is one flat plate at its mean thickness
+            try:
+                made = flat_mid(p.a, p.b, faces, kinds, neighbours, 1e-4 * t_u)
+            except Exception as exc:  # noqa: BLE001 - the fitted mid-face is tried next, as before
+                logger.debug("shell: the flat mid-face of %s/%s failed (%s)", names[p.a], names[p.b], exc)
+                made = None
+            if made is not None:
+                got, lo_u, hi_u, mean_u, flat_datum = made
+                p.t_min, p.t_max, p.thickness = lo_u * mm, hi_u * mm, mean_u * mm
+                p.why = (f"a tapered plate, {p.t_min:.3g} to {p.t_max:.3g} mm: one flat plate at its mean, "
+                         f"{p.thickness:.3g} mm")
         if not got:
             # SHELL-9: a tapered wall, or an even one whose half-offsets do not overlap (a twisted strap): fitted
             small, big = (p.a, p.b) if _area(faces[p.a]) <= _area(faces[p.b]) else (p.b, p.a)
@@ -4121,32 +4544,12 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
                 p.why = f"a tapered wall, {p.t_min:.3g} to {p.t_max:.3g} mm"
         for f in got:
             p.mids.append(len(mids))
-            m = _Mid(len(mids), f, i, body_of[p.a], mean_u if fitted else t_u)
+            m = _Mid(len(mids), f, i, body_of[p.a], mean_u if fitted or flat_datum is not None else t_u)
             if fitted:
                 m.fitted, m.t_min, m.t_max = True, lo_u, hi_u
+            m.flat = flat_datum
             mids.append(m)
-    # SHELL-2: shell or solid, sheet by sheet
-    for s_i, group in enumerate(sp.sheets(pairs, neighbours, body_of)):
-        sheet_faces = [mids[k].face for i in group for k in pairs[i].mids]
-        size = math.sqrt(sum(_area(f) for f in sheet_faces)) * mm
-        width = width_of(_compound(sheet_faces)) * mm
-        if WALL_WIDTH and len(group) > 1:
-            # SHELL-2b: its mid-faces do not share edges, so their outlines add up; the CAD faces as one region do
-            try:
-                ks = sorted({k for i in group for k in (pairs[i].a, pairs[i].b)})
-                width = max(width, union_width([faces[k] for k in ks]) * mm)
-            except Exception:  # noqa: BLE001 - the mid-faces' width stands
-                pass
-        t = max(pairs[i].thickness for i in group)
-        shell = t <= sp.SHELL_RATIO * size and t <= sp.SHELL_WIDTH_RATIO * width
-        for i in group:
-            pairs[i].sheet, pairs[i].size, pairs[i].width, pairs[i].shell = s_i, size, width, shell
-    # SHELL-8: a lap (two shell plates stacked and fused) is shelled with the plates it is made of
-    for i in sp.laps(pairs):
-        pairs[i].shell = True
-        pairs[i].why = "a lap: two shell plates stacked, shelled with them"
-
-    # SHELL-2: every face's role
+    # each face's own width, radius and developed width (the roles below, and SHELL-23's tight rings)
     widths, radii, arcs = [], [], []
     for k, f in enumerate(faces):
         try:
@@ -4159,6 +4562,131 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
         arcs.append(float("inf") if kinds[k] in ("cylinder", "cone") and _full_turn(f)
                     else 2.0 * _area(f) / per * mm if per > 0 else float("inf"))
         radii.append(None if kinds[k] == "plane" else fm.face_radius(f, mm))
+
+    def tight(pr: sp.Pair) -> bool:
+        # SHELL-23: a wall round a radius under PLATE_CURVE_WALLS of its thickness (read at its middle)
+        rr = [r for r in (radii[pr.a], radii[pr.b]) if r is not None]
+        return bool(rr) and min(rr) + 0.5 * pr.thickness < PLATE_CURVE_WALLS * pr.thickness
+
+    # SHELL-2: shell or solid, sheet by sheet
+    plate_width: dict[int, float] = {}       # each judged pair's sheet width on its own mid-faces, mm (SHELL-23)
+    plate_fail: dict[int, str] = {}          # ... and why it is no plate, when it is none
+    short_walls: list[dict] = []             # the sheets that are a shell by SHELL-23 alone: the advice
+    thick_sheets: list[tuple] = []           # the sheets that are not thin: (wall, sheet, pairs, size, own width)
+    for s_i, group in enumerate(sp.sheets(pairs, neighbours, body_of)):
+        sheet_faces = [mids[k].face for i in group for k in pairs[i].mids]
+        size = math.sqrt(sum(_area(f) for f in sheet_faces)) * mm
+        width = width_of(_compound(sheet_faces)) * mm
+        own_width = width
+        if WALL_WIDTH and len(group) > 1:
+            # SHELL-2b: its mid-faces do not share edges, so their outlines add up; the CAD faces as one region do
+            try:
+                ks = sorted({k for i in group for k in (pairs[i].a, pairs[i].b)})
+                width = max(width, union_width([faces[k] for k in ks]) * mm)
+            except Exception:  # noqa: BLE001 - the mid-faces' width stands
+                pass
+        t = max(pairs[i].thickness for i in group)
+        shell = t <= sp.SHELL_RATIO * size and t <= sp.SHELL_WIDTH_RATIO * width
+        if not shell:
+            thick_sheets.append((t, s_i, group, size, own_width, sheet_faces, width))
+        for i in group:
+            plate_width[i] = own_width
+            pairs[i].sheet, pairs[i].size, pairs[i].width, pairs[i].shell = s_i, size, width, shell
+    # SHELL-8: a lap (two shell plates stacked and fused) is shelled with the plates it is made of
+    for i in sp.laps(pairs):
+        pairs[i].shell = True
+        pairs[i].why = "a lap: two shell plates stacked, shelled with them"
+    # SHELL-23: a sheet that is not thin is still a shell when it is plate-like - wide against its wall, not a thick
+    # ring, its middle in the metal, and no pad on a thinner wall. Thinnest first: a pad is told by the wall under it
+    if EVERY_PLATE:
+        metal: dict[int, _Solid] = {}
+        wall_of: dict[int, float] = {}       # each face's thinnest shell wall so far, mm
+        for pr in pairs:
+            if pr.shell:
+                for k in (pr.a, pr.b):
+                    wall_of[k] = min(wall_of.get(k, math.inf), pr.thickness)
+        admitted: dict[int, list[int]] = {}          # per body, the pairs SHELL-23 made shell
+        rows_of: dict[int, list[dict]] = {}
+        for t, s_i, group, size, own_width, sheet_faces, cad_width in sorted(thick_sheets, key=lambda x: (x[0], x[1])):
+            group = [i for i in group if not pairs[i].shell]
+            if not group:
+                continue
+            if body_names[body_of[pairs[group[0]].a]] in no_plate:
+                # read as before SHELL-23; a wall of it that is wide enough says why it is no shell all the same
+                if t <= sp.PLATE_WIDTH_RATIO * own_width * (1.0 + 1e-9):
+                    for i in group:
+                        plate_fail[i] = no_plate[body_names[body_of[pairs[i].a]]]
+                continue
+            if t <= sp.PLATE_WIDTH_RATIO * own_width * (1.0 + 1e-9):
+                # wide by its outline: and at its widest place? (a flange ring is as wide as its metal, not its hole)
+                clock.check("reading the plates")
+                try:
+                    widest = max(inscribed_width(f) for f in sheet_faces) * mm
+                    # a plate split by a wall standing on it (a beam's flange, its two halves either side of the
+                    # web) is as wide as the face its pairs share, read with its CAD faces as one region (SHELL-2b)
+                    sides = [k for i in group for k in (pairs[i].a, pairs[i].b)]
+                    shared = sorted({k for k in sides if sides.count(k) > 1})
+                    if shared:
+                        widest = max(widest, min(cad_width, max(inscribed_width(faces[k]) for k in shared) * mm))
+                    own_width = min(own_width, widest)
+                except Exception as exc:  # noqa: BLE001 - the outline's width stands
+                    logger.debug("shell: a sheet's widest place could not be read (%s)", exc)
+                for i in group:
+                    plate_width[i] = own_width
+            area_all = sum(_area(mids[k].face) for i in group for k in pairs[i].mids)
+            area_flat = sum(_area(mids[k].face) for i in group for k in pairs[i].mids if not tight(pairs[i]))
+            why = ("narrow" if t > sp.PLATE_WIDTH_RATIO * own_width * (1.0 + 1e-9)
+                   else "ring" if area_flat < PLATE_FLAT_SHARE * area_all else "")
+            plate: list[int] = []
+            for i in group:
+                if why:
+                    plate_fail[i] = why
+                    continue
+                pr = pairs[i]
+                b = body_of[pr.a]
+                if b not in metal:
+                    metal[b] = _Solid(solids[b], 1e-3 * t / mm, wall=t / mm)
+                clock.check("reading the plates")
+                faces_i = [mids[k].face for k in pr.mids]
+                area_i = sum(_area(f) for f in faces_i)
+                in_metal = sum(_area(f) * metal_share(f, metal[b]) for f in faces_i)
+                if not (area_i > 0 and in_metal >= PLATE_METAL_SHARE * area_i):
+                    plate_fail[i] = "gap"
+                    pr.why = "the two faces look at each other across a gap, not across metal"
+                elif any(wall_of.get(k, math.inf) < pr.thickness * (1.0 - sp.EVEN_SHARE) for k in (pr.a, pr.b)):
+                    # a face of it is a side of a thinner shell wall: a pad, a boss or a land standing on that wall
+                    plate_fail[i] = "pad"
+                    pr.why = "a pad on a thinner wall: thicker metal standing on a plate, not a plate of its own"
+                else:
+                    plate.append(i)
+            for i in plate:
+                pairs[i].shell = True
+                for k in (pairs[i].a, pairs[i].b):
+                    wall_of[k] = min(wall_of.get(k, math.inf), pairs[i].thickness)
+            if plate:
+                b = body_of[pairs[plate[0]].a]
+                admitted.setdefault(b, []).extend(plate)
+                rows_of.setdefault(b, []).append(
+                    {"body": body_names[b], "sheet": f"S{s_i + 1}", "thickness_mm": _r(t), "span_mm": _r(size),
+                     "width_mm": _r(own_width), "span_walls": round(size / t, 1),
+                     "width_walls": round(own_width / t, 1)})
+        # ... and the body must then be mostly plate (PLATE_BODY_SHARE): else its plates are a scrap of a lump, and
+        # the body is left as it was
+        for b in sorted(admitted):
+            plate_metal = sum(_area(mids[k].face) * mids[k].t for pr in pairs if pr.shell and body_of[pr.a] == b
+                              for k in pr.mids)
+            vol = _volume(solids[b])
+            if vol > 0 and plate_metal >= PLATE_BODY_QUICK * vol:
+                short_walls.extend(rows_of[b])
+                continue
+            for i in admitted[b]:
+                pairs[i].shell = False
+                plate_fail[i] = "lump"
+                pairs[i].why = (f"a plate, but the part's plates hold only "
+                                f"{100 * plate_metal / vol if vol > 0 else 0:.0f}% of its metal: "
+                                "the part is mostly thick, so it is left solid")
+
+    # SHELL-2: every face's role
     roles = sp.face_roles(names, pairs, kinds=kinds, widths=widths, radii=radii, neighbours=neighbours,
                           arcs=arcs)
     for k, row in enumerate(roles):
@@ -4175,13 +4703,13 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
         has_shell = any(roles[k]["role"] == sp.PAIRED for k in ks)
         share = sum(_area(faces[k]) for k in shellish) * mm * mm / area if area > 0 else 0.0
         if has_shell and not solid_faces:
-            verdict, why = "shell", "every wall is thin against its size"
+            verdict, why = "shell", "every wall is a plate or a thin wall"
             shell_bodies.add(b)
         elif has_shell:
-            verdict, why = "mixed", "thin walls and thick regions"
+            verdict, why = "mixed", "plates or thin walls, and thick regions"
         else:
-            verdict, why = "solid", "no wall is thin against its size"
-        closest = _closest_wall(pairs, body_of, b) if verdict == "solid" else None
+            verdict, why = "solid", NO_PLATE
+        closest = _closest_wall(pairs, body_of, b, plate_width, plate_fail) if verdict == "solid" else None
         if verdict == "solid":
             why = f"{why}: {_solid_words(closest)}"
         row = {"body": body_names[b], "verdict": verdict, "why": why, "area_mm2": _r(area),
@@ -4408,6 +4936,10 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
             # SHELL-9: as far from one face as from the other, within FIDELITY_SHARE of the wall there
             err, rel, npts, _lo, _hi = fitted_fidelity(m.true_face, faces[p.a], faces[p.b])
             worst_rel = max(worst_rel, rel)
+        elif m.flat is not None:
+            # SHELL-24: half its (mean) wall inside its datum face, everywhere
+            err, npts = flat_fidelity(m.true_face, faces[m.flat], m.t)
+            worst_rel = max(worst_rel, err / m.t if m.t > 0 else 0.0)
         else:
             err, npts = fidelity(m.true_face, faces[p.a], faces[p.b], m.t)
             worst_rel = max(worst_rel, err / m.t if m.t > 0 else 0.0)
@@ -4415,10 +4947,21 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
         samples = []
         if m.fitted and m.t_max > m.t_min * (1.0 + WALL_VARIES):
             samples = [[_r(c * mm) for c in row] for row in wall_samples(m.true_face, faces[p.a], faces[p.b])]
+        t_lo, t_hi = p.span()
+        flat_true = m.flat is not None and FLAT_TAPER_WALL == "true" and t_hi > t_lo * (1.0 + WALL_VARIES)
+        if m.flat is not None and flat_true:
+            # (read on the sewn face's own place: the flat plate as joined runs past the smaller face's end)
+            other = p.b if m.flat == p.a else p.a
+            samples = [[_r(c * mm) for c in row]
+                       for f in ([m.face] if m.face is not None else [m.true_face])
+                       for row in flat_wall_samples(f, faces[m.flat], faces[other], t_lo / mm, t_hi / mm)]
         mid_rows.append({"id": f"Mid_{m.k + 1}", "pair": f"P{m.pair + 1}", "body": body_names[m.body],
                          "faces": [names[p.a], names[p.b]], "thickness_mm": _r(p.thickness),
                          **({"fitted": True, "thickness_range_mm": [_r(m.t_min * mm), _r(m.t_max * mm)],
                              "thickness_mean_mm": _r(m.t * mm)} if m.fitted else {}),
+                         **({"flat": True, "datum": names[m.flat],
+                             "taper_mm": [_r(t_lo), _r(t_hi)]} if m.flat is not None else {}),
+                         **({"thickness_range_mm": [_r(t_lo), _r(t_hi)]} if flat_true else {}),
                          "shell": bool(p.shell), "area_mm2": _r(_area(m.true_face) * mm * mm),
                          **({"offset_mm": _r(m.offset * mm),
                              "offset_normal": [_r(c) for c in m.offset_normal]} if m.offset else {}),
@@ -4465,6 +5008,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
                          "mids": [f"Mid_{k + 1}" for k in p.mids]} for i, p in enumerate(pairs)],
               "faces": roles, "mids": mid_rows, "sewn": sewn_rows,
               "surface_faces": [f"Mid_{k + 1}" for k in surface_owner],
+              "short_walls": short_walls, "advice": short_wall_words(short_walls),
               "checks": checks, "fallback_regions": fallback, "complete": True, "notes": notes,
               "seconds": round(time.time() - started, 2)}
     return record, _compound(surface_faces)

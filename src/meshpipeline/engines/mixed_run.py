@@ -33,6 +33,12 @@ length the wall bends over. A wall that reaches less is kept solid with the thic
 under MIXED_AUTO_SHARE of the part's metal, the part is meshed solid: "Walls too thick for shells: ...". Measured
 (2 Nov, against a converged solid): a 4 mm box reaching 5 to 6.7 walls read its back wall +23%, a casting's 3 mm
 ribs reaching 6.7 walls a mode -6.8%; the L bracket's plate, reaching 11 walls, +0.9%.
+
+SINCE SHELL-23 (10 Nov) MIXED-8 IS ADVICE, NOT A GATE (REACH_GATE False). A shell is only made because the user asked
+for one, and their request beats our accuracy minimums: every plate the extraction calls a shell is meshed as shell
+here too - a short gusset, a rolled flange - and is never kept solid with the thick regions. The walls that reach
+under REACH_WALLS are still measured and named ("... reach under 10 times their thickness from a joint: shell theory
+is less exact there"), and the numbers above are why the line is said.
 """
 from __future__ import annotations
 
@@ -69,6 +75,11 @@ WHY_THICK = ("Walls too thick for shells: {n} of its {m} thin walls reach less t
              "short bends too much at its joint, so the part is meshed as a solid.")
 #: MIXED-8 in words, when enough shell is left: those walls are kept solid with the thick regions
 WHY_KEPT = " {n} wall{s} too thick for shells (under {k:g} times {its} thickness from a joint) kept solid with them."
+#: MIXED-8 as advice (REACH_GATE False): the short walls are meshed as shell, and said
+WHY_SHORT = (" {n} wall{s} reach{es} under {k:g} times {its} thickness from a joint: shell theory is less exact there.")
+#: MIXED-8 a gate again when True: a wall reaching under REACH_WALLS is kept solid with the thick regions, and a part
+#: with too little shell left is meshed solid (the rule as it was before SHELL-23)
+REACH_GATE = False
 #: MIXED-8 in words, when the walls kept solid leave a split that cannot be made
 WHY_THICK_SPLIT = ("Walls too thick for shells: {n} of its {m} thin walls reach less than {k:g} times their thickness "
                    "from the nearest joint or thick region, and with them kept solid the rest could not be cut apart "
@@ -103,6 +114,9 @@ def too_thick(record: dict, reach: dict) -> tuple[list[str], float, str]:
     held = sum(metal.values())
     left = held - sum(metal[m["id"]] for m in bad)
     share = thin_share(record) * (left / held) if held > 0 else 0.0
+    if not REACH_GATE:
+        # SHELL-23: advice only - the short walls stay shell, so the shell's share of the part is all of it
+        return [m["id"] for m in bad], thin_share(record), ""
     if not bad or (share >= MIXED_AUTO_SHARE and left > 0):
         return [m["id"] for m in bad], share, ""
     w = bad[0]
@@ -132,10 +146,11 @@ def recommend(record: dict, reach: dict | None = None) -> tuple[bool, str]:
         if stop:
             return False, stop
         share = kept_share if bad else share
+    kept_out = bad if REACH_GATE else []          # the walls kept solid (none while MIXED-8 is advice)
     pct = max(0, min(100, int(round(100 * share))))
     if share < MIXED_AUTO_SHARE:
         return False, WHY_LOW.format(share=pct)
-    walls = sorted({float(m["thickness_mm"]) for m in record.get("mids") or [] if m.get("shell") and m.get("id") not in bad})
+    walls = sorted({float(m["thickness_mm"]) for m in record.get("mids") or [] if m.get("shell") and m.get("id") not in kept_out})
     thin = (f"{_mm(walls[0])} thick" if len(walls) == 1 or walls[-1] - walls[0] <= 0.02 * walls[-1]
             else f"{_mm(walls[0])} to {_mm(walls[-1])} thick") if walls else "thin"
     n = len(bodies[0].get("solid_regions") or []) or 1
@@ -143,8 +158,12 @@ def recommend(record: dict, reach: dict | None = None) -> tuple[bool, str]:
     if bad:
         from meshpipeline.cad import mixed_split as mx
 
-        said += WHY_KEPT.format(n=len(bad), s="" if len(bad) == 1 else "s", k=mx.REACH_WALLS,
-                                its="its" if len(bad) == 1 else "their")
+        if REACH_GATE:
+            said += WHY_KEPT.format(n=len(bad), s="" if len(bad) == 1 else "s", k=mx.REACH_WALLS,
+                                    its="its" if len(bad) == 1 else "their")
+        else:
+            said += WHY_SHORT.format(n=len(bad), s="" if len(bad) == 1 else "s", es="es" if len(bad) == 1 else "",
+                                     k=mx.REACH_WALLS, its="its" if len(bad) == 1 else "their")
     return True, said
 
 
@@ -184,8 +203,13 @@ def words(rec: dict) -> str:
             f"region{'s' if rec.get('regions', 1) != 1 else ''}, joined by {int(c.get('links', 0))} moment-carrying "
             "link(s). Files: Nastran .bdf, CalculiX and Abaqus .inp, Ansys .cdb.")
     n = len(rec.get("too_thick") or [])
-    if n:
+    if n and rec.get("reach_gate", True):
         said += f" {n} wall{'' if n == 1 else 's'} too thick for shells {'is' if n == 1 else 'are'} in the solid part."
+    elif n:
+        from meshpipeline.cad import mixed_split as mx
+
+        said += WHY_SHORT.format(n=n, s="" if n == 1 else "s", es="es" if n == 1 else "", k=mx.REACH_WALLS,
+                                 its="its" if n == 1 else "their")
     return said
 
 
@@ -291,10 +315,12 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict):
     bad, _share, stop = too_thick(record, reach)
     ok, why = recommend(record, reach)
     rec.update(reach_s=round(time.time() - t1, 1), recommended=ok, recommend_why=why, too_thick=bad,
-               reach_mm={o: round(r, 4) for o, r in reach.items()})
+               reach_gate=REACH_GATE, reach_mm={o: round(r, 4) for o, r in reach.items()})
     if stop:
         raise _Stop(stop)
-    order, shell_walls, marks = kept_solid(record, kept, thick, bad)
+    # SHELL-23: while MIXED-8 is advice no shell wall is kept solid - a short plate is a shell here as it is in the
+    # shell files, never a thick region
+    order, shell_walls, marks = kept_solid(record, kept, thick, bad if REACH_GATE else [])
     split = mx.split_body(solids[0], shell_walls, marks, scale=mm_per_unit)
     rec["split"] = {"cores": split.cores, "cut_mm": [round(d, 4) for d in split.cut_distance],
                     "solid_share": round(split.solid_volume / split.body_volume, 4) if split.body_volume else None,

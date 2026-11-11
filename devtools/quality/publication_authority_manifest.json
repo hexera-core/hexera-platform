@@ -3524,9 +3524,9 @@
   "roots": []
  },
  {
-  "context": "cad/midsurface.py::extract::check#1|NotAPublisher|not-a-publisher|cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock",
+  "context": "cad/midsurface.py::_extract::check#1|NotAPublisher|not-a-publisher|cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock",
   "path": "cad/midsurface.py",
-  "qualname": "extract",
+  "qualname": "_extract",
   "semantic": "check",
   "method": "check",
   "ordinal": 1,
@@ -3539,12 +3539,42 @@
   ]
  },
  {
-  "context": "cad/midsurface.py::extract::check#2|NotAPublisher|not-a-publisher|cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock",
+  "context": "cad/midsurface.py::_extract::check#2|NotAPublisher|not-a-publisher|cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock",
   "path": "cad/midsurface.py",
-  "qualname": "extract",
+  "qualname": "_extract",
   "semantic": "check",
   "method": "check",
   "ordinal": 2,
+  "receiver": "clock",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock"
+  ]
+ },
+ {
+  "context": "cad/midsurface.py::_extract::check#3|NotAPublisher|not-a-publisher|cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock",
+  "path": "cad/midsurface.py",
+  "qualname": "_extract",
+  "semantic": "check",
+  "method": "check",
+  "ordinal": 3,
+  "receiver": "clock",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock"
+  ]
+ },
+ {
+  "context": "cad/midsurface.py::_extract::check#4|NotAPublisher|not-a-publisher|cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock",
+  "path": "cad/midsurface.py",
+  "qualname": "_extract",
+  "semantic": "check",
+  "method": "check",
+  "ordinal": 4,
   "receiver": "clock",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",

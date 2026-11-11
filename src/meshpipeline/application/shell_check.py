@@ -52,9 +52,9 @@ SAID_SHELL = "You asked for a shell mesh."
 #: A shell asked for that cannot be made: one plain sentence each, and the part is meshed solid (never a refusal)
 TRIANGLES_WHY = ("You asked for a shell, but this file is triangles with no faces to find the mid-surface on, so it "
                  "is meshed as a solid.")
-NOTHING_TO_SHELL = "You asked for a shell, but no wall of this part is thin enough for one, so it is meshed as a solid."
-NOTHING_TO_SHELL_DETAIL = ("You asked for a shell, but no wall of this part is thin enough for one ({detail}), so it "
-                           "is meshed as a solid.")
+NOTHING_TO_SHELL = "You asked for a shell, but this part has no plate or thin wall to make one from, so it is meshed as a solid."
+NOTHING_TO_SHELL_DETAIL = ("You asked for a shell, but this part has no plate or thin wall to make one from ({detail}), "
+                           "so it is meshed as a solid.")
 #: The check could not draw the mid-surface: the run makes the shell itself (engines/fea_driver.shell_pass)
 NOT_DRAWN = "The mid-surface could not be drawn here ({reason}); the run still meshes the part as a shell."
 
@@ -210,6 +210,10 @@ def summarise(record: dict, drawn: dict | None = None) -> dict:
             "open_edges": len(opened), "open_places": groups[:50] or [{"at_mm": q} for q in opened[:50]],
             "open_at_mm": opened[:400], "connected": bool((record.get("checks") or {}).get("connected", True)),
             "complete": bool(record.get("complete", False)), "notes": list(record.get("notes") or [])[:6],
+            # SHELL-23: the walls that are a shell only because the user asked (short for their thickness): the
+            # stage says one line of advice from these rows, in the unit it shows
+            "short_walls": [{k: r.get(k) for k in ("body", "sheet", "thickness_mm", "span_mm", "width_mm", "span_walls",
+                                                   "width_walls")} for r in (record.get("short_walls") or [])[:200]],
             "overlay": bool(drawn.get("triangles")), "t_min_drawn_mm": drawn.get("t_min"),
             "t_max_drawn_mm": drawn.get("t_max")}
 
@@ -257,8 +261,10 @@ def solid_short(detail: str) -> str:
     m = _WIDTH_WHY.search(d)
     if m:
         return f"too narrow ({m.group(1)} mm wall, {m.group(2)}× width)"
-    if "no two of its faces run side by side" in d:
-        return "no thin wall"
+    if "round a tight bore" in d:
+        return "a thick ring"
+    if "no two of its faces run side by side" in d or "across a gap" in d:
+        return "no plate"
     if "belong to a sheet with thicker walls" in d:
         return "part of a thicker sheet"
     return ""
@@ -275,12 +281,12 @@ def not_shelled(summary: dict | None) -> list[dict]:
         who = reg.get("body") if many else "The part"
         name = reg.get("body") if many else "Whole part"
         if reg.get("whole"):
-            words = (f"{reg.get('body')} stays solid: no wall of it is thin against its size." if many
-                     else "The whole part stays solid: no wall is thin against its size.")
+            words = (f"{reg.get('body')} stays solid: no wall of it is a plate." if many
+                     else "The whole part stays solid: no wall of it is a plate.")
             detail = _solid_detail(s, reg.get("body"))
             if detail:
                 words = f"{words[:-1]}: {detail}."
-            short = f"{name} · {solid_short(detail) or 'no thin wall'}"
+            short = f"{name} · {solid_short(detail) or 'no plate'}"
         else:
             n = int(reg.get("n_faces") or len(reg.get("faces") or []))
             where = f"A thick region of {who if many else 'the part'} ({n} face{'s' if n != 1 else ''})"
@@ -350,6 +356,11 @@ def shell_view(status: dict | None, facts: dict | None, said: dict | None = None
         why = NOTHING_TO_SHELL_DETAIL.format(detail=detail) if detail else NOTHING_TO_SHELL
     elif state == UNAVAILABLE:
         why = NOT_DRAWN.format(reason=reason or "the check did not run")
+    elif isinstance(summary, dict) and summary.get("short_walls"):
+        # SHELL-23: walls short for their thickness are shelled as asked, with one line of advice
+        from meshpipeline.cad.shell_words import short_wall_words
+
+        why = short_wall_words(list(summary["short_walls"]))
     out: dict = {"question": QUESTION, "state": state, "said": pm.MESH_SHELL, "said_words": SAID_SHELL,
            "mesh_as": mesh_as, "label": SHELL_LABEL if mesh_as == pm.MESH_SHELL else SOLID_LABEL, "reason": why,
            "measuring_words": MEASURING_WORDS if state == MEASURING and mesh_as == pm.MESH_SHELL else ""}

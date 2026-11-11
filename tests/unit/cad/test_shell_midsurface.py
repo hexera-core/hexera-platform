@@ -206,19 +206,34 @@ def test_a_chunky_block_is_solid_and_has_no_mid_surface():
     assert not _shell_mids(rec) and rec["surface_faces"] == [] and rec["sewn"] == []
 
 
-def test_a_thick_bracket_stays_solid_and_says_why_in_numbers():
-    # SHELL-2c: an 8 mm angle with 40 mm legs is about 5 walls long, not 10 - solid, and the reason says so
+def test_a_thick_bracket_is_a_shell_when_asked_and_says_it_is_short():
+    # SHELL-23: an 8 mm angle with 40 mm legs is about 6 walls across, not 10. The user asked for a shell, so it is
+    # one - both legs, met at the corner - and one line says the walls are short for their thickness
     rec, _ = ms.extract(sf.short_angle(8.0, 40.0, 30.0), mm_per_unit=1.0)
     (body,) = rec["bodies"]
-    assert body["verdict"] == "solid"
-    assert body["closest_wall"]["thickness_mm"] == 8.0 and body["closest_wall"]["span_walls"] < 10
-    assert "8 mm thick" in body["why"] and "at least 10 times" in body["why"]
+    assert body["verdict"] == "shell" and "closest_wall" not in body
+    assert sorted(m["thickness_mm"] for m in _shell_mids(rec)) == [8.0, 8.0]
+    assert _sewn(rec)["open_edges"] == 0
+    _all_checks(rec)
+    (row,) = rec["short_walls"]
+    assert row["thickness_mm"] == 8.0 and row["span_walls"] < 10
+    assert rec["advice"].startswith(f"Part_1: 8 mm thick over {ms._num(row['span_mm'])} mm, {row['span_walls']:g} times "
+                                    "its thickness. Shell theory is less exact under 10 times (about ")
 
 
-def test_a_block_says_its_walls_are_as_thick_as_they_are_long():
-    # a 50 x 40 x 30 block: its most plate-like "wall" is 30 mm thick over a 45 mm span, 1.5 walls
-    rec, _ = ms.extract(sf.chunky_block(), mm_per_unit=1.0)
-    assert "30 mm thick" in rec["bodies"][0]["why"] and "1.5 times" in rec["bodies"][0]["why"]
+#: what the advice says a free plate 5.5 walls or more across costs (cad/shell_words: measured)
+_FREE_PLATE = " (about 2% off on a free plate this short, more where it bends from a joint)."
+
+
+def test_a_block_says_it_is_no_plate_in_numbers():
+    # a 50 x 40 x 30 block: its most plate-like "wall" is 30 mm thick and 40 mm wide, 1.3 walls - a block
+    rec, surface = ms.extract(sf.chunky_block(), mm_per_unit=1.0)
+    (body,) = rec["bodies"]
+    assert body["verdict"] == "solid" and rec["surface_faces"] == [] and rec["advice"] == ""
+    assert body["why"] == ("no wall of it is a plate: its most plate-like wall is 30 mm thick but only 40 mm wide, "
+                           "1.3 times its thickness; under 2 times, it is a bar or a block, not a plate")
+    assert body["closest_wall"] == {"thickness_mm": 30.0, "span_mm": pytest.approx(44.7214, rel=1e-4), "width_mm": 40.0,
+                                    "span_walls": 1.5, "width_walls": 1.3, "why": "narrow"}
 
 
 def test_a_plate_with_a_thick_boss_is_mixed_and_its_links_to_the_boss_are_named():
@@ -888,7 +903,8 @@ def test_touching_iges_bodies_each_own_their_faces(tmp_path):
     assert sorted(b["verdict"] for b in iges["bodies"]) == sorted(b["verdict"] for b in step["bodies"])
     assert len(iges["faces"]) == len(step["faces"]) == 12
     walls = sorted({round(p["thickness_mm"], 3) for p in step["pairs"] if p["shell"]})
-    assert sorted({round(p["thickness_mm"], 3) for p in iges["pairs"] if p["shell"]}) == walls == [2.0]
+    # (SHELL-23: the 10 mm layer is a plate too, 6 walls wide)
+    assert sorted({round(p["thickness_mm"], 3) for p in iges["pairs"] if p["shell"]}) == walls == [2.0, 10.0]
 
 
 def test_an_extraction_past_its_work_budget_fails_fast_in_words(tmp_path):
@@ -1188,3 +1204,305 @@ def test_the_closed_junctions_are_the_same_twice(tmp_path):
             out.append((json.dumps(rec, sort_keys=True), (tmp_path / f"p{k}r{run}" / ms.SURFACE_FILE).read_bytes()))
         assert out[0] == out[1]
         assert sum(s["open_edges"] for s in json.loads(out[0][0])["sewn"]) == 0
+
+
+# ------------------------------------------------------- every plate is a shell (SHELL-23), flat flanges (SHELL-24) ----
+def _box_of(surface) -> tuple[list[float], list[float]]:
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    box = Bnd_Box()
+    BRepBndLib.Add_s(surface, box, False)
+    x0, y0, z0, x1, y1, z1 = box.Get()
+    return [x0, y0, z0], [x1, y1, z1]
+
+
+def test_a_gusset_plate_under_ten_walls_across_is_a_shell_with_one_line_of_advice():
+    # SHELL-23: a 12.7 mm gusset whose face spans 96.5 mm is 7.6 walls across. The user asked for a shell: it is one,
+    # at its own thickness, and one plain line says shell theory is less exact that short
+    rec, surface = ms.extract(sf.gusset(7.6, 12.7), mm_per_unit=1.0)
+    (body,) = rec["bodies"]
+    assert body["verdict"] == "shell" and body["mid_volume_ratio"] == pytest.approx(1.0, abs=1e-4)
+    (mid,) = _shell_mids(rec)
+    assert mid["thickness_mm"] == pytest.approx(12.7, rel=REL)
+    assert mid["area_mm2"] == pytest.approx((7.6 * 12.7) ** 2, rel=REL)
+    assert {f["role"] for f in rec["faces"]} == {sp.PAIRED, sp.RIM}
+    _all_checks(rec)
+    assert rec["short_walls"] == [{"body": "Part_1", "sheet": "S1", "thickness_mm": 12.7,
+                                   "span_mm": pytest.approx(96.52, rel=REL), "width_mm": pytest.approx(79.96, rel=1e-3),
+                                   "span_walls": 7.6, "width_walls": 6.3}]
+    assert rec["advice"] == ("Part_1: 12.7 mm thick over 96.5 mm, 7.6 times its thickness. Shell theory is less exact "
+                             "under 10 times" + _FREE_PLATE)
+
+
+@pytest.mark.parametrize("ratio", [3.0, 5.0, 9.0, 12.0])
+def test_a_plate_of_any_ratio_is_a_shell(ratio):
+    rec, _ = ms.extract(sf.gusset(ratio, 10.0), mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
+    assert [m["thickness_mm"] for m in _shell_mids(rec)] == [pytest.approx(10.0, rel=REL)]
+    # only a plate under SHELL-2's ten walls gets the advice
+    assert bool(rec["advice"]) == (ratio < 10.0) and len(rec["short_walls"]) == (1 if ratio < 10.0 else 0)
+    _all_checks(rec)
+
+
+def test_a_plate_stops_being_one_under_two_walls_wide():
+    # the measured line: twice as wide as thick. A 12.7 mm flat bar 25.4 mm wide is a shell; 19 mm wide it is a bar
+    wide, _ = ms.extract(sf.flat_bar(2.0), mm_per_unit=1.0)
+    assert [b["verdict"] for b in wide["bodies"]] == ["shell"] and len(_shell_mids(wide)) == 1
+    bar, surface = ms.extract(sf.flat_bar(1.5), mm_per_unit=1.0)
+    (body,) = bar["bodies"]
+    assert body["verdict"] == "solid" and bar["surface_faces"] == [] and bar["advice"] == ""
+    assert body["why"].endswith("is 12.7 mm thick but only 19.1 mm wide, 1.5 times its thickness; under 2 times, it is "
+                                "a bar or a block, not a plate")
+
+
+def test_a_narrow_strip_is_told_by_its_width():
+    # 5 mm thick, 15 mm wide, 400 long: 15 walls across by its area, 3 walls wide - the advice names the width
+    rec, _ = ms.extract(sf.flat_bar(3.0, 5.0, 400.0), mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
+    assert rec["advice"] == ("Part_1: 5 mm thick and 15 mm wide, 3 times its thickness. Shell theory is less exact "
+                             "under 4 times (about 2% off on a free strip this narrow, more where it bends from a joint).")
+
+
+def test_a_thick_bush_is_no_shell():
+    # a wall 18 mm thick round a 21 mm radius: wide enough by its numbers, but a thick ring no shell stands for
+    rec, _ = ms.extract(sf.bush(length=60.0), mm_per_unit=1.0)
+    (body,) = rec["bodies"]
+    assert body["verdict"] == "solid" and body["closest_wall"]["why"] == "ring"
+    assert "18 mm thick round a tight bore, a thick ring" in body["why"]
+    # ... while a tube whose radius is over twice its wall is one, however short
+    tube, _ = ms.extract(sf.tube(25.0, 8.0, 40.0), mm_per_unit=1.0)
+    assert [b["verdict"] for b in tube["bodies"]] == ["shell"]
+
+
+def test_two_faces_across_a_gap_are_no_wall():
+    # a shallow channel's two flanges look at each other across its open side: 40 mm apart and 150 mm wide, but
+    # only the web's 30 mm is metal between them
+    rec, _ = ms.extract(sf.wide_hat(), mm_per_unit=1.0)
+    across = [p for p in rec["pairs"] if p["thickness_mm"] == pytest.approx(40.0)]
+    assert across and not any(p["shell"] for p in across)
+    assert all(p["why"] == "the two faces look at each other across a gap, not across metal" for p in across if p["mids"])
+    assert sorted({round(p["thickness_mm"], 3) for p in _shell_pairs(rec)}) == [12.0]       # its two flanges
+
+
+def test_a_pad_on_a_plate_stays_solid():
+    # a 60 x 60 pad 10 mm high on a 4 mm plate is 4 walls wide, but it stands on the plate: the plate is the shell,
+    # the pad a thick region of it, as before
+    rec, _ = ms.extract(sf.plate_with_low_pad(), mm_per_unit=1.0)
+    (body,) = rec["bodies"]
+    assert body["verdict"] == "mixed" and len(body["solid_regions"]) == 1
+    assert sorted({round(p["thickness_mm"], 3) for p in _shell_pairs(rec)}) == [4.0]
+    (pad,) = [p for p in rec["pairs"] if p["thickness_mm"] == pytest.approx(14.0)]
+    assert not pad["shell"] and pad["why"].startswith("a pad on a thinner wall")
+    assert rec["advice"] == ""
+
+
+def test_a_rolled_channels_tapered_flange_is_one_flat_plate_at_its_table_thickness():
+    # SHELL-24: a C15 x 50 (flanges 16.5 mm by the table, 10.1 at the toe to 22.9 at the web, a 12.7 mm root fillet
+    # and a 6.1 mm toe round). Each flange is ONE flat plate, 16.5 mm thick, half of that inside the flange's flat
+    # outside, from the web's mid-plane to the toe; the web between them; all three sewn
+    d, bf, tw, tf, length = 381.0, 94.5, 18.2, 16.5, 600.0
+    rec, surface = ms.extract(sf.rolled_channel(), mm_per_unit=1.0)
+    (body,) = rec["bodies"]
+    assert body["verdict"] == "shell" and body["mid_volume_ratio"] == pytest.approx(1.0, abs=0.01)
+    mids = _shell_mids(rec)
+    flanges = [m for m in mids if m.get("flat")]
+    assert len(mids) == 3 and len(flanges) == 2
+    half = (bf - tw) / 2.0 / 6.0
+    for m in flanges:
+        assert m["thickness_mm"] == pytest.approx(tf, rel=1e-6)                 # within 2% of the table: exact
+        assert m["taper_mm"] == pytest.approx([tf - half, tf + half], rel=1e-4)
+        assert "thickness_range_mm" not in m and "wall_samples_mm" not in m      # meshed at one wall
+        assert m["fidelity"]["max_error_mm"] <= 1e-9 and m["kind"] == "plane"
+    (web,) = [m for m in mids if not m.get("flat")]
+    assert web["thickness_mm"] == pytest.approx(tw, rel=REL)
+    sewn = _sewn(rec)
+    assert sewn["open_edges"] == 0 and sewn["shared_edges"] == 2 and sewn["faces"] == 3
+    lo, hi = _box_of(surface)
+    assert lo == pytest.approx([tw / 2, tf / 2, 0.0], abs=1e-6)                  # the flanges' planes, the web's
+    assert hi == pytest.approx([bf, d - tf / 2, length], abs=1e-6)              # ... and out to the toe
+    assert _sewn_area(surface) == pytest.approx(2 * (bf - tw / 2) * length + (d - tf) * length, rel=1e-6)
+    assert {f["role"] for f in rec["faces"]} == {sp.PAIRED, sp.RIM, sp.BLEND}
+    _all_checks(rec)
+    assert rec["advice"] == ""                                                  # its sheet is thin: nothing to say
+
+
+def test_a_rolled_beams_four_tapered_half_flanges_meet_its_web():
+    # an S12 x 50: each flange is two tapered halves over one flat outside face; one flat plate each side of the
+    # web, 16.7 mm, and the web meets them on one line (three faces an edge)
+    d, bf, tw, tf, length = 304.8, 139.2, 17.4, 16.7, 600.0
+    rec, surface = ms.extract(sf.rolled_i(), mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
+    mids = _shell_mids(rec)
+    assert sorted(round(m["thickness_mm"], 4) for m in mids) == [16.7, 16.7, 16.7, 16.7, 17.4]
+    assert sum(1 for m in mids if m.get("flat")) == 4
+    sewn = _sewn(rec)
+    assert sewn["open_edges"] == 0 and sewn["junction_edges"] == 2
+    assert _sewn_area(surface) == pytest.approx(2 * bf * length + (d - tf) * length, rel=1e-6)
+    _all_checks(rec)
+
+
+def test_a_long_wedge_keeps_its_true_wall_and_a_short_one_is_flat():
+    # SHELL-24 is for walls short along their taper (a flange). 4 to 8 mm over 200 mm is 33 walls long: it bends
+    # along its taper, and keeps SHELL-9's fitted mid-surface with its wall at every point
+    long_rec, _ = ms.extract(sf.wedge_plate(4.0, 8.0, 200.0), mm_per_unit=1.0)
+    (mid,) = _shell_mids(long_rec)
+    assert mid.get("fitted") and not mid.get("flat") and mid["thickness_range_mm"] == pytest.approx([4.0, 8.0], rel=1e-3)
+    # 4 to 6 mm over 40 mm is 8 walls long: one flat plate at its mean
+    short_rec, _ = ms.extract(sf.wedge_plate(4.0, 6.0, 40.0), mm_per_unit=1.0)
+    (mid,) = _shell_mids(short_rec)
+    assert mid.get("flat") and not mid.get("fitted")
+    assert mid["thickness_mm"] == pytest.approx(5.0, rel=5e-3) and mid["taper_mm"] == pytest.approx([4.0, 6.0], rel=5e-3)
+    _all_checks(short_rec)
+
+
+def test_a_welded_plate_pedestal_is_all_shell():
+    # a base plate, a pipe column, four gussets (7.6 walls across), a top plate and a rolled channel, as separate
+    # bodies: every one a shell, none left solid, no open edge inside a body, the plates at their own thickness
+    rec, _ = ms.extract(sf.welded_pedestal(), mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"] * 8
+    assert sum(s["open_edges"] for s in rec["sewn"]) == 0
+    walls = {b: sorted({round(m["thickness_mm"], 3) for m in _shell_mids(rec) if m["body"] == b})
+             for b in (r["body"] for r in rec["bodies"])}
+    assert walls == {"Part_1": [25.4], "Part_2": [9.5], "Part_3": [12.7], "Part_4": [12.7], "Part_5": [12.7],
+                     "Part_6": [12.7], "Part_7": [19.05], "Part_8": [16.5, 18.2]}
+    _all_checks(rec)
+    assert rec["advice"] == ("4 walls are short for their thickness (the shortest, Part_3: 12.7 mm thick over 96.5 mm, "
+                             "7.6 times its thickness). Shell theory is less exact under 10 times" + _FREE_PLATE)
+
+
+def test_the_advice_is_one_plain_line():
+    assert ms.short_wall_words([]) == ""
+    one = {"body": "Part_6", "sheet": "S3", "thickness_mm": 12.7, "span_mm": 96.52, "width_mm": 80.0, "span_walls": 7.6,
+           "width_walls": 6.3}
+    assert ms.short_wall_words([one]) == ("Part_6: 12.7 mm thick over 96.5 mm, 7.6 times its thickness. Shell theory is "
+                                          "less exact under 10 times" + _FREE_PLATE)
+    shorter = dict(one, body="Part_9", thickness_mm=31.75, span_mm=125.6, span_walls=4.0, width_walls=3.3)
+    assert ms.short_wall_words([one, shorter]) == (
+        "2 walls are short for their thickness (the shortest, Part_9: 31.8 mm thick over 126 mm, 4 times its thickness). "
+        "Shell theory is less exact under 10 times (about 5% off on a free plate this short, more where it bends from a "
+        "joint).")
+    # the two thin-rule figures the advice names are SHELL-2's own
+    from meshpipeline.cad import shell_words as sw
+
+    assert sw.SPAN_WALLS == 1.0 / sp.SHELL_RATIO and sw.WIDTH_WALLS == 1.0 / sp.SHELL_WIDTH_RATIO
+
+
+def test_plates_and_flat_flanges_read_the_same_twice(tmp_path):
+    for k, shape in enumerate((sf.gusset(7.6), sf.rolled_channel(length=300.0))):
+        path = sf.write_step(shape, tmp_path / f"part{k}.step")
+        out = []
+        for run in range(2):
+            rec = ms.extract_file(path, tmp_path / f"p{k}r{run}", mm_per_unit=1.0)
+            rec.pop("seconds")
+            out.append((json.dumps(rec, sort_keys=True), (tmp_path / f"p{k}r{run}" / ms.SURFACE_FILE).read_bytes()))
+        assert out[0] == out[1]
+
+
+def test_a_flat_flange_can_carry_its_true_wall_at_every_node(monkeypatch):
+    # SHELL-24, FLAT_TAPER_WALL "true": the flat plate keeps its place and its mean, and the record carries the wall
+    # read between the two planes at points over it (SHELL-9b's readings), so the mesh gives every node its own
+    tf, half = 16.5, (94.5 - 18.2) / 2.0 / 6.0
+    monkeypatch.setattr(ms, "FLAT_TAPER_WALL", "true")
+    rec, _ = ms.extract(sf.rolled_channel(length=300.0), mm_per_unit=1.0)
+    flanges = [m for m in _shell_mids(rec) if m.get("flat")]
+    assert len(flanges) == 2
+    for m in flanges:
+        assert m["thickness_mm"] == pytest.approx(tf, rel=1e-6)
+        assert m["thickness_range_mm"] == pytest.approx([tf - half, tf + half], rel=1e-4)
+        walls = np.array(m["wall_samples_mm"])[:, 3]
+        assert len(walls) >= 40 and walls.min() >= tf - half - 1e-3 and walls.max() <= tf + half + 1e-3
+        assert walls.min() < tf - 0.8 * half and walls.max() > tf + 0.8 * half      # read from toe to web
+    _all_checks(rec)
+    # the default carries one wall: no readings, no range
+    monkeypatch.setattr(ms, "FLAT_TAPER_WALL", "mean")
+    rec, _ = ms.extract(sf.rolled_channel(length=300.0), mm_per_unit=1.0)
+    assert all("wall_samples_mm" not in m and "thickness_range_mm" not in m for m in _shell_mids(rec))
+
+
+def test_a_ring_is_as_wide_as_its_metal():
+    # SHELL-23's width is read at the widest place of the mid-face, holes counted: a flange ring 9 mm thick whose
+    # metal is 17 mm across (1.9 walls) is no plate, though its outline is 80 mm; a washer 4 walls across is one
+    ring = sf._cut(sf._cyl(0, 0, 0, 40.0, 9.0), sf._cyl(0, 0, -1, 23.0, 11.0))
+    rec, _ = ms.extract(ring, mm_per_unit=1.0)
+    (body,) = rec["bodies"]
+    assert body["verdict"] == "solid" and body["closest_wall"]["why"] == "narrow"
+    assert body["closest_wall"]["width_mm"] == pytest.approx(17.0, rel=0.02)
+    washer = sf._cut(sf._cyl(0, 0, 0, 40.0, 4.0), sf._cyl(0, 0, -1, 23.0, 6.0))
+    rec, _ = ms.extract(washer, mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
+    # ... and the width itself, on plain faces: a square its side, a strip its width
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.gp import gp_Pln
+
+    assert ms.inscribed_width(BRepBuilderAPI_MakeFace(gp_Pln(), 0.0, 50.0, 0.0, 50.0).Face()) == pytest.approx(50.0, rel=1e-3)
+    assert ms.inscribed_width(BRepBuilderAPI_MakeFace(gp_Pln(), 0.0, 300.0, 0.0, 20.0).Face()) == pytest.approx(20.0, rel=1e-3)
+
+
+def test_a_lump_with_a_tab_stays_a_lump():
+    # SHELL-23, the body must be mostly plate: a 60 x 60 x 40 block with a 6 mm tab 30 x 20 on its side. The tab is
+    # a plate (3.3 walls wide), but it holds 2% of the part: a shell of it alone would be a scrap, so the part stays
+    # solid, said in numbers
+    lump = sf._fuse(sf._box(0, 0, 0, 60, 60, 40), sf._box(60, 20, 0, 30, 20, 6))
+    rec, _ = ms.extract(lump, mm_per_unit=1.0)
+    (body,) = rec["bodies"]
+    assert body["verdict"] == "solid" and rec["surface_faces"] == [] and rec["short_walls"] == [] and rec["advice"] == ""
+    assert body["closest_wall"]["why"] == "lump" and body["closest_wall"]["thickness_mm"] == 6.0
+    assert body["why"] == ("no wall of it is a plate: its most plate-like wall is 6 mm thick and 20 mm wide, a plate; "
+                           "but its plates hold under 50% of its metal, so the part is mostly thick")
+    (tab,) = [p for p in rec["pairs"] if p["thickness_mm"] == pytest.approx(6.0)]
+    assert not tab["shell"] and tab["why"].startswith("a plate, but the part's plates hold only 2% of its metal")
+    # the same tab on a plate of its own thickness is most of its part: a shell
+    plate = sf._fuse(sf._box(0, 0, 0, 60, 60, 6), sf._box(60, 20, 0, 30, 20, 6))
+    rec, _ = ms.extract(plate, mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
+
+
+def test_plates_that_would_hang_loose_stay_solid(monkeypatch):
+    # SHELL-23's last guard: a body whose short plates leave edges open is read again without them, and the reading
+    # with fewer open edges is kept, said in a note; one that is no better without them keeps its plates
+    calls = []
+
+    def reading(opened_with: int, opened_without: int):
+        def fake(shape, *, mm_per_unit, names, clock, no_plate):
+            calls.append(set(no_plate))
+            out = "Part_2" in no_plate
+            rec = {"sewn": [{"body": "Part_1", "open_edges": 0},
+                            {"body": "Part_2", "open_edges": opened_without if out else opened_with}],
+                   "short_walls": [] if out else [{"body": "Part_2"}], "mids": [], "notes": []}
+            return rec, ("without" if out else "with")
+        return fake
+
+    monkeypatch.setattr(ms, "_extract", reading(3, 0))
+    rec, surface = ms.extract(None, mm_per_unit=1.0)
+    assert surface == "without" and calls == [set(), {"Part_2"}]
+    assert rec["notes"] == ["Part_2: its short plates would leave 3 edge(s) open where they meet its other walls (0 "
+                            "without them), so they stay solid, as before (SHELL-23)."]
+    calls.clear()
+    monkeypatch.setattr(ms, "_extract", reading(3, 3))
+    rec, surface = ms.extract(None, mm_per_unit=1.0)
+    assert surface == "with" and calls == [set(), {"Part_2"}] and rec["notes"] == []
+    # a body with no open edge is never read twice
+    calls.clear()
+    monkeypatch.setattr(ms, "_extract", reading(0, 0))
+    assert ms.extract(None, mm_per_unit=1.0)[1] == "with" and calls == [set()]
+
+
+def test_a_body_whose_plates_hold_under_half_of_it_once_joined_is_left_as_it_was(monkeypatch):
+    # SHELL-23, the body must be mostly plate, judged on the sewn shell (MIXED-4's measure): 30% is a scrap
+    calls = []
+
+    def fake(shape, *, mm_per_unit, names, clock, no_plate):
+        calls.append(dict(no_plate))
+        out = "Part_1" in no_plate
+        rec = {"bodies": [{"body": "Part_1", "verdict": "solid" if out else "mixed",
+                           **({} if out else {"mid_volume_ratio": 0.3})}],
+               "sewn": [] if out else [{"body": "Part_1", "open_edges": 0}],
+               "short_walls": [] if out else [{"body": "Part_1"}], "mids": [], "notes": []}
+        return rec, ("without" if out else "with")
+
+    monkeypatch.setattr(ms, "_extract", fake)
+    rec, surface = ms.extract(None, mm_per_unit=1.0)
+    assert surface == "without" and calls == [{}, {"Part_1": "lump"}]
+    assert rec["notes"] == ["Part_1: its plates would hold only 30% of its metal as a shell: it is mostly thick, so it "
+                            "is left as it was (SHELL-23)."]
