@@ -207,9 +207,13 @@ def test_a_sliver_at_a_capped_corner_collapses_too(tmp_path):
     assert q["fea_set_aside"]["elements"] == 0 < q_off["fea_set_aside"]["elements"] and q["min_sicn"] > q_off["min_sicn"]
 
 
-def test_a_curved_strip_is_merged_and_the_quadratic_mesh_still_lies_on_the_cylinder(tmp_path):
+def test_a_curved_strip_is_merged_and_the_quadratic_mesh_still_lies_on_the_cylinder(tmp_path, monkeypatch):
     import numpy as np
 
+    from meshpipeline.engines import fea_mmg
+    # MESH-9's own effect, both arms without the MMG post-pass (MESH-mmg-1): where mmg3d is installed (the mesh
+    # image, a lab VM) it reshapes the unmerged arm's slivers too, and the two arms no longer compare MESH-9
+    monkeypatch.setattr(fea_mmg, "ENABLED", False)
     ws = _stage(fx.split_cylinder(), tmp_path / "cyl")
     off = _copy(ws, tmp_path / "off")
     assert A.mesh(ws) == 0
