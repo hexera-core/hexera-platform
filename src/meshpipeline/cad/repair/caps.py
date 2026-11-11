@@ -192,12 +192,37 @@ def cumulative_refusal(original: Measure, current: Measure, *,
         logger.info("caps: volume not compared (solids %d -> %d); no inside to measure, or a body "
                     "closed that nobody could have declared (%.3f -> %.3f mm3)",
                     original.solids, current.solids, original.volume_mm3, current.volume_mm3)
+        # WHAT IS STILL BOUNDED, absolutely, from the CURRENT measurement alone (never a delta
+        # against the original, whose integral is meaningless for a shell). A closed body has
+        # strictly positive volume, and no shape whose bounding-box diagonal is d exceeds
+        # d**3 / (3 * sqrt(3)) - the cube. That catches an integral gone wrong by orders of
+        # magnitude without inventing a baseline the geometry cannot support.
+        if current.solids > 0:
+            if current.volume_mm3 <= 0:
+                return (f"the run closed {current.solids} solid(s) but their volume measured "
+                        f"{current.volume_mm3:.3f} mm3; a closed body has positive volume")
+            ceiling = current.diagonal_mm ** 3 / (3 * math.sqrt(3))
+            if current.volume_mm3 > ceiling:
+                return (f"the run's volume {current.volume_mm3:.3f} mm3 is impossible for a body "
+                        f"with a {current.diagonal_mm:.3f} mm bounding-box diagonal (at most "
+                        f"{ceiling:.3f} mm3, the cube)")
         return ""
     volume = _accounted(original.volume_mm3, current.volume_mm3, declared_volume_mm3,
                         rcfg.CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO)
     if volume:
         return f"the run's volume {volume}"
     return ""
+
+
+def volume_accountability(original: Measure, current: Measure) -> dict:
+    """Was the before-vs-after volume comparison made, and if not, why. For the report."""
+    if original.solids == 0 or current.solids == 0 or current.solids > original.solids:
+        return {"compared": False,
+                "reason": ("the upload had no solid (an open shell's volume integral is not a "
+                           "volume) or a body closed that no operation could have declared; only "
+                           "an absolute plausibility bound was applied")}
+    return {"compared": True, "reason": "solid count unchanged or lower; volume judged against "
+                                        "the original plus declared"}
 
 
 def _unmeasured(m: Measure) -> list[str]:

@@ -802,7 +802,12 @@ def repair_step_file(source: Path, destination: Path, *,
     _occ()
 
     from meshpipeline.cad.repair.brep import _read_shape
-    from meshpipeline.cad.repair.caps import cumulative_refusal, measure, sanity_refusal
+    from meshpipeline.cad.repair.caps import (
+        cumulative_refusal,
+        measure,
+        sanity_refusal,
+        volume_accountability,
+    )
     from meshpipeline.cad.repair.loop import run as run_loop
 
     src, dest = Path(source), Path(destination)
@@ -840,6 +845,7 @@ def repair_step_file(source: Path, destination: Path, *,
         # `measure_s` is the whole-shape `caps.measure` calls, a cost centre beside the scan.
         "timings": {"total_s": result.total_s, "scan_count": result.scan_count,
                     "measure_s": sum(v.measure_s for v in result.verdicts)},
+        "volume_accountability": volume_accountability(original, final),
     }
 
     # THE AFTER-CHECKS STILL HAVE THE LAST WORD. The session already refused any individual
