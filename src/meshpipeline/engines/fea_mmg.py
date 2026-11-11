@@ -48,6 +48,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -172,7 +173,7 @@ def worst(xyz: np.ndarray, tets: np.ndarray, on_boundary: np.ndarray | None = No
     user = _past_any(m, targets)
     if user is not None:
         trig = trig | user
-    out = {"elements": int(len(tets)), "invalid": int(np.count_nonzero(m["min_detj"] <= 0)),
+    out: dict[str, Any] = {"elements": int(len(tets)), "invalid": int(np.count_nonzero(m["min_detj"] <= 0)),
            "min_sj": float(np.min(m["scaled_jacobian"])), "max_aspect": float(np.max(m["aspect"])),
            "min_dihedral": float(np.min(m["min_dihedral"])), "max_dihedral": float(np.max(m["max_dihedral"])),
            "over_limits": over, "triggered": int(np.count_nonzero(trig))}
