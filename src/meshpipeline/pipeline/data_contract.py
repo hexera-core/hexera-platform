@@ -83,6 +83,15 @@ CONTRACT: tuple[ContractVar, ...] = (
         corpus="training+qa: what the user actually asked for, and what became of each request",
     ),
     ContractVar(
+        concept="team meshing standard",
+        purpose="the organisation's standing mesh requirements from the console's Meshing settings - the "
+                "text as typed and the reading kept when it was saved - snapshotted at approval so the run "
+                "applies the standard the user approved under. Read by the notes' own reader and merged "
+                "under the run's notes, field by field (engines/meshing_standard, STD-1..3)",
+        dispatch_kwarg="meshing_standard", state_field="meshing_standard",
+        corpus="qa: which standing requirements a run was given, beside the notes",
+    ),
+    ContractVar(
         concept="acceptance criteria",
         purpose="intake's qualitative brief the reviewer judges against",
         intake_field="review_brief_txt", session_column="review_brief_txt",
@@ -521,6 +530,7 @@ STATE_FIELDS: dict[str, str] = {
     "request_txt":           "user requirements (see contract)",
     "review_brief_txt":      "acceptance criteria (see contract)",
     "user_notes":            "the user's own notes, verbatim (see contract)",
+    "meshing_standard":      "the team's meshing standard from settings (see contract)",
     "intake_patches":        "patch contract (see contract)",
     "dimensionality":        "dimensionality (see contract)",
     "purpose":               "purpose / use case (see contract)",

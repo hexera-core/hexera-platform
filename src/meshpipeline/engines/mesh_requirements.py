@@ -683,6 +683,9 @@ def words(sec: Mapping | None) -> list[str]:
     """Before meshing, in plain words: what was read from the notes, one short line each; then what was not applied."""
     if not sec or sec.get("status") == "none":
         return []
+    if isinstance(sec.get("lines"), list):
+        # merged with the team's meshing standard (engines/meshing_standard): said by where each came from
+        return [str(w) for w in sec["lines"]]
     if sec.get("status") != "used":
         return [str(sec.get("note") or UNREAD_WORDS)]
     out = [f"From your notes: {r['asked']}." for r in (sec.get("requirements") or {}).get("rows") or []]
@@ -780,6 +783,9 @@ def line(row: Mapping) -> str:
     unless it was measured and reached."""
     asked = str(row.get("asked") or "")
     asked = asked[:1].upper() + asked[1:]
+    if row.get("from"):
+        # a run with a team meshing standard (engines/meshing_standard): each row says where it came from
+        asked += f" (from your {row['from']})"
     if row.get("met") is True:
         tail = str(row.get("delivered") or "")
         return f"{asked}: met" + (f" - {tail}." if tail and tail != "every element is inside it" else ".")
@@ -804,8 +810,11 @@ def asked_rows(quality: Mapping | None, *, source: str = "your notes") -> list[d
     for r in (rep.get("rows") if isinstance(rep, Mapping) else None) or []:
         if not isinstance(r, Mapping) or r.get("met") not in (True, False):
             continue
-        out.append({"key": f"asked_{r.get('id')}", "label": f"You asked: {r.get('asked')}", "op": "==", "limit": 0,
-                    "measured": int(r.get("excess") or 0), "said": line(r), "source": source})
+        came = str(r.get("from") or "")
+        out.append({"key": f"asked_{r.get('id')}",
+                    "label": f"Your {came} ask: {r.get('asked')}" if came else f"You asked: {r.get('asked')}",
+                    "op": "==", "limit": 0, "measured": int(r.get("excess") or 0), "said": line(r),
+                    "source": source.replace("your notes", f"your {came}", 1) if came else source})
     return out
 
 
