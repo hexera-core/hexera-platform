@@ -1806,6 +1806,18 @@ def _bulk_past(p, d, n, t: float, solid: _Solid) -> bool:
     return False
 
 
+#: SHELL-33, EVERY OPEN EDGE IS OFFERED TO THE CLOSING PASSES: the record lists the first 50 open edges of a body
+#: (open_at_mm), and SHELL-13, SHELL-22 and SHELL-30 ran only when every open edge was listed - a body with more than
+#: 50 got none of them (a 9.525 mm plate whose 18 pocket floors the walls round found: 100 open edges, no pass run).
+#: The census now keeps every open edge for the joins under OPEN_ALL_KEY; the record still lists 50.
+OPEN_ALL_KEY = "_open_at_all_mm"
+
+
+def _open_points(census: dict) -> list:
+    """SHELL-33: every open edge's point (mm) a census read, for the closing passes."""
+    return census.get(OPEN_ALL_KEY, census.get("open_at_mm", []))
+
+
 def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thick_faces: list | None = None,
                 thick_walls: list | None = None, thick_rounds: list | None = None, mixed: bool = False,
                 past: bool = True) -> dict:
@@ -1917,7 +1929,8 @@ def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thi
     return {"faces": int(fmap.Extent()), "edges": int(e2f.Extent()), "shared_edges": shared,
             "junction_edges": junction, "boundary_edges": boundary, "ends_in_wall_edges": in_wall, "below_floor_edges": below_floor,
             "solid_link_edges": len(links), "blend_link_edges": soft, "bulk_link_edges": bulk, "rim_edges": rim,
-            "open_edges": len(open_at), "open_at_mm": open_at[:50], "solid_link_at_mm": links[:50]}
+            "open_edges": len(open_at), "open_at_mm": open_at[:50], "solid_link_at_mm": links[:50],
+            OPEN_ALL_KEY: open_at}
 
 
 # ------------------------------------------------------------------------------------- fidelity ----
@@ -4731,12 +4744,12 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
                 # held every open edge: 3 joins of 1 to 2 minutes each, none closing an edge)
                 if not (remake and alone):
                     reach = 0.5 * t_max + GROW_WALLS * max(m.t for m in mine)
-                    listed = census["open_edges"] <= len(census.get("open_at_mm", []))
+                    listed = census["open_edges"] <= len(_open_points(census))
                     walls = [m for m in mine
                              if (alone or isinstance(BRep_Tool.Surface_s(m.original), FREE_FORM))
                              and (remake or m.remade or isinstance(BRep_Tool.Surface_s(m.original), Geom_OffsetSurface))]
                     if listed and not any(_near_box(q, m.box, reach) and _dist(_vertex(q), m.original) <= reach
-                                          for q in (np.asarray(x, float) / mm for x in census.get("open_at_mm", []))
+                                          for q in (np.asarray(x, float) / mm for x in _open_points(census))
                                           for m in walls):
                         continue
                 left = clock.left() - JOIN_RESERVE_S
@@ -4786,10 +4799,10 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
                 for m, ext in zip(mine, ext_straight, strict=True):
                     m.extended = ext
         fused, images = chosen
-        if CLOSE_STRIPS and census["open_edges"] and census["open_edges"] <= len(census.get("open_at_mm", [])):
+        if CLOSE_STRIPS and census["open_edges"] and census["open_edges"] <= len(_open_points(census)):
             try:
                 closed = close_strips(fused, images, mine, solid, fuzzy,
-                                      [np.asarray(q, float) / mm for q in census["open_at_mm"]])
+                                      [np.asarray(q, float) / mm for q in _open_points(census)])
             except Exception as exc:  # noqa: BLE001 - the join stands
                 logger.debug("shell: open edges of %s could not be bridged (%s)", body_names[b], exc)
                 closed = None
@@ -4803,11 +4816,11 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
                                  "(SHELL-13).")
         # SHELL-30, before SHELL-22: the pieces of an open edge that meet another wall's surface, and that wall where it
         # stops short of the same line (one more sewing of the body, so only with time left in the work budget)
-        if (CARRY_PIECES and census["open_edges"] and census["open_edges"] <= len(census.get("open_at_mm", []))
+        if (CARRY_PIECES and census["open_edges"] and census["open_edges"] <= len(_open_points(census))
                 and clock.left() - JOIN_RESERVE_S >= JOIN_MIN_S):
             try:
                 closed = carry_on(fused, images, mine, solid, fuzzy,
-                                  [np.asarray(q, float) / mm for q in census["open_at_mm"]])
+                                  [np.asarray(q, float) / mm for q in _open_points(census)])
             except Exception as exc:  # noqa: BLE001 - the join stands
                 logger.debug("shell: open edges of %s could not be carried on piece by piece (%s)", body_names[b], exc)
                 closed = None
@@ -4825,11 +4838,11 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
                     for i, j, strip in closed[2]:
                         mine[i].extended.append({"to": mine[j].k, "area": _area(strip)})
         # (SHELL-18: one more sewing of the body, so only with time for it left in the work budget)
-        if (CLOSE_GAPS and census["open_edges"] and census["open_edges"] <= len(census.get("open_at_mm", []))
+        if (CLOSE_GAPS and census["open_edges"] and census["open_edges"] <= len(_open_points(census))
                 and clock.left() - JOIN_RESERVE_S >= JOIN_MIN_S):
             try:
                 closed = close_gaps(fused, images, mine, solid, fuzzy,
-                                    [np.asarray(q, float) / mm for q in census["open_at_mm"]])
+                                    [np.asarray(q, float) / mm for q in _open_points(census)])
             except Exception as exc:  # noqa: BLE001 - the join stands
                 logger.debug("shell: open edges of %s could not be carried on (%s)", body_names[b], exc)
                 closed = None
@@ -4860,6 +4873,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
             census = census_of(fused, images, past=True)
         census["body"] = body_names[b]
         census["join"] = method
+        census.pop(OPEN_ALL_KEY, None)
         sewn_rows.append(census)
         for m, imgs in zip(mine, images, strict=True):
             for f in imgs:
