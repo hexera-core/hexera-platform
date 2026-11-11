@@ -3287,11 +3287,12 @@ def close_gaps(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy
 #: SHELL-35, SQUARE CORNERS BEFORE STRIPS LAID ACROSS: the passes that close an open edge after the joins ran SHELL-13
 #: (a ruled strip to the nearest edge of another mid-face, at whatever angle) first, then SHELL-30 and SHELL-22. A
 #: junction SHELL-13 closed was closed by a strip laid across the corner, off both walls' surfaces (31 files, 16.3 m
-#: of such kinks on the lab sets), where SHELL-30 or SHELL-22's own carry would have drawn the corner. Now SHELL-30
-#: runs first, then SHELL-22 only where the edge carried on in its own surface meets the other wall's surface, and
-#: only then SHELL-13 and SHELL-22's nearest points for what is left. When that leaves an edge open, the old order is
-#: run too and the one leaving fewer open edges kept (on a tie the square one): a corner one order closes square can
-#: leave the other's strip no edge to close (two enclosures, e0004 and e0032, each closed by the old order alone).
+#: of such kinks on the lab sets), where SHELL-30 or SHELL-22's own carry would have drawn the corner. A second order:
+#: SHELL-30 first, then SHELL-22 only where the edge carried on in its own surface meets the other wall's surface, and
+#: only then SHELL-13 and SHELL-22's nearest points for what is left - run when the old order leaves a junction open,
+#: the one leaving fewer kept (on a tie the old one). Square first as the rule, winning ties itself, took four
+#: parts the old order closes (t0039, t0052, r0008, r0053) out of Nastran's limits (1 to 9 elements in the new
+#: corners' strips), and the old order alone closes two enclosures (e0004, e0032) the square one cannot.
 SQUARE_FIRST = True
 
 
@@ -3380,19 +3381,14 @@ def _closing_passes(fused, images, census, mine, solid, fuzzy, *, mm, census_of,
         return out
 
     old_order = (pass13, pass30, pass22)
-    if not SQUARE_FIRST or not census["open_edges"]:
-        got = run(old_order)
-    else:
-        # the square order, and the old one when the square one leaves any edge open: the one leaving fewer open
-        # edges is kept, on a tie the square one (a corner closed square by one order may leave the other's strip
-        # no edge to close, and the other way round)
-        got = run((pass30, lambda: pass22(square_only=True), pass13, pass22))
-        if got[2]["open_edges"]:
-            other = run(old_order)
-            # judged as the record will read them: what lies past each edge read (SHELL-21), as SHELL-30 is judged
-            left = [census_of(r[0], r[1], past=True)["open_edges"] for r in (got, other)]
-            if left[1] < left[0]:
-                got = other
+    got = run(old_order)
+    if SQUARE_FIRST and got[2]["open_edges"]:
+        # the old order left an edge open: the square order too, and the one leaving fewer junctions open is kept,
+        # judged as the record will read them (what lies past each edge read, SHELL-21); on a tie the old one
+        other = run((pass30, lambda: pass22(square_only=True), pass13, pass22))
+        left = [census_of(r[0], r[1], past=True)["open_edges"] for r in (got, other)]
+        if left[1] < left[0]:
+            got = other
     fused, images, census, ext, said = got
     for m, e in zip(mine, ext, strict=True):
         m.extended = e
