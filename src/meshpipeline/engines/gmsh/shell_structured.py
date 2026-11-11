@@ -106,8 +106,9 @@ def _count(r_mm: float, hole_mm: float, face_mm: float) -> tuple[int, int, float
         for rows in range(1, WASHER_ROWS + 1):
             if q ** rows < WASHER_RING[0]:
                 continue
-            # as wide as square rows make it, but no wider than the face's size allows round its outer edge
-            ratio = min(q ** rows, WASHER_RING[1], face_mm * n / (2 * math.pi * r_mm))
+            # as wide as square rows make it, but no wider than the face's size allows round its outer edge and
+            # across each row
+            ratio = min(q ** rows, WASHER_RING[1], face_mm * n / (2 * math.pi * r_mm), 1 + rows * face_mm / r_mm)
             if ratio >= WASHER_RING[0]:
                 return n, rows, ratio
             break

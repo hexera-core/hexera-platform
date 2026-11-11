@@ -1326,6 +1326,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         index[tags] = np.arange(len(tags))
         xyz = np.asarray(coords, dtype=float).reshape(-1, 3) * mm
         ring_faces = {w.annulus for w in rings}
+        high = (sizing or {}).get("high_mm")
         if check_maps and grids:
             # SHMESH-39: a grid with a quad past the solver's own limits (a face mapped where its shape bends the
             # rows too far) is meshed free on the next pass
@@ -1339,6 +1340,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     cq = index[np.asarray(conn, dtype=np.int64)].reshape(-1, 4)
                     if len(cq) and shell_quality._quad_past(shell_quality.quad_measures(xyz, cq)).any():
                         bad.add(t)
+                    elif len(cq) and high is not None and float(np.linalg.norm(
+                            xyz[cq] - xyz[np.roll(cq, -1, axis=1)], axis=2).max()) > high:
+                        bad.add(t)      # ... or with an edge over the user's longest edge (a chain's short curve)
             # ... and so is every grid beside a free face that came out with an element past them (the grid's counts
             # on their shared curves did not suit that face)
             # (a gridded face's own free cells - a washer's box - are left to the clean-up: their transition is ours)
