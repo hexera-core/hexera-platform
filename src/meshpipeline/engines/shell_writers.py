@@ -31,6 +31,7 @@ until the user sets it.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -197,10 +198,10 @@ def prepare(mesh: ShellMesh, *, units: str = "m") -> ShellPrepared:
                 name += f" z={_num(z)}mm"
             if len(same) > 1 and vary:
                 name += " varies"
-        k = 1
+        dup = 1
         while any(name.lower() == p[0].lower() for p in props):
-            k += 1
-            name = f"{name.rsplit(' #', 1)[0]} #{k}"
+            dup += 1
+            name = f"{name.rsplit(' #', 1)[0]} #{dup}"
         props.append((name, t, mat[part]))
         offsets.append(z)
         index[key] = len(props)
@@ -367,8 +368,8 @@ def read_bdf(path: Path | str) -> ShellReadBack:
             elif kind == "PROP":
                 hm_props[k] = nm
         if ln.startswith("$ Femap Property "):
-            k, _, nm = ln[len("$ Femap Property "):].partition(" : ")
-            names[int(k)] = nm
+            fk, _, nm = ln[len("$ Femap Property "):].partition(" : ")
+            names[int(fk)] = nm
         if ln.startswith("$ HEXERA GROUP "):
             _k, group = ln[len("$ HEXERA GROUP "):].split(" ", 1)
             groups[group] = set()
@@ -500,10 +501,10 @@ def _inp_name(raw: str) -> str:
 def part_set_name(raw: str) -> str:
     """SHWRITE-1: a part's ELSET name: letters, digits and _ (a space, a dot, any other sign one _; Abaqus reads a dot
     as an instance's set), a letter first, 80 characters ("PEDESTAL FOOTPAD GUSSET.57" ->
-    PEDESTAL_FOOTPAD_GUSSET_57)."""
+    PEDESTAL_FOOTPAD_GUSSET_57; "6 inch tube" -> PART_6_inch_tube)."""
     out = "_".join(w for w in "".join(c if c.isascii() and c.isalnum() else " " for c in deck_text(raw)).split())
-    if not out or not out[0].isalpha():
-        out = "P_" + out
+    if not out or not out[0].isalpha() or _PROP_SET.match(out):
+        out = "PART_" + out          # a letter first, and never P_k (the property sets' form)
     return out[:80]
 
 
@@ -523,6 +524,10 @@ def inp_part_sets(prep: ShellPrepared) -> dict[str, str]:
         taken.add(nm.upper())
         out[p] = nm
     return out
+
+
+#: a property's own ELSET (P_k)
+_PROP_SET = re.compile(r"^P_\d+$")
 
 
 def read_inp(path: Path | str) -> ShellReadBack:
@@ -572,13 +577,14 @@ def read_inp(path: Path | str) -> ShellReadBack:
             nodal[int(vals[0])] = float(vals[1])
         elif mode == "*SHELL SECTION":
             walls[int(name.split("_")[1])] = float(vals[0])
-    prop = {e: int(k.split("_")[1]) for k, es in sets.items() if k.startswith("P_") for e in es}
+    prop = {e: int(k.split("_")[1]) for k, es in sets.items() if _PROP_SET.match(k) for e in es}
     corner = {e: tuple(nodal[n] for n in conn) for e, conn in elements.items() if all(n in nodal for n in conn)}
-    groups = {k: v for k, v in sets.items() if not k.startswith("P_")}
+    groups = {k: v for k, v in sets.items() if not _PROP_SET.match(k)}
     names = {}
     for ln_i, ln in enumerate(lines[:-1]):
         # each property's name is the comment above its ELSET P_k
-        if ln.startswith("** ") and lines[ln_i + 1].startswith("*ELSET, ELSET=P_"):
+        nxt = lines[ln_i + 1]
+        if ln.startswith("** ") and nxt.startswith("*ELSET, ") and _PROP_SET.match(nxt.partition("ELSET=")[2]):
             names[int(lines[ln_i + 1].split("=P_")[1])] = ln[3:]
     parts = {label: set(sets.get(nm, set())) for nm, label in part_set.items()}
     return ShellReadBack(nodes, elements, prop, walls, corner, groups, nsets, names, parts=parts)
@@ -649,13 +655,13 @@ def write_cdb(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
         head = [mid, 1, int(sec_of[e]), int(sec_of[e]), 0, 0, 0, 0, 4, 0, e + 1]
         lines.append("".join(f"{v:>9d}" for v in head + ids))
     lines.append(f"{-1:>9d}")
-    for key, _name, els, _is_part in _groups(prep):
-        nm = comps[key]
-        ids = np.unique(np.asarray(els) + 1)
-        if extra and key in extra:
-            ids = np.unique(np.concatenate([ids, np.asarray(extra[key], dtype=np.int64)]))
-        lines += [f"CMBLOCK,{nm},ELEM,{len(ids):>8d}", "(8i10)"]
-        lines += ["".join(f"{v:>10d}" for v in ids[i:i + 8].tolist()) for i in range(0, len(ids), 8)]
+    for gkey, _name, els, _is_part in _groups(prep):
+        nm = comps[gkey]
+        gids = np.unique(np.asarray(els) + 1)
+        if extra and gkey in extra:
+            gids = np.unique(np.concatenate([gids, np.asarray(extra[gkey], dtype=np.int64)]))
+        lines += [f"CMBLOCK,{nm},ELEM,{len(gids):>8d}", "(8i10)"]
+        lines += ["".join(f"{v:>10d}" for v in gids[i:i + 8].tolist()) for i in range(0, len(gids), 8)]
     taken = set(comps.values())
     for name, nodes in prep.junctions.items():
         nm = unique_ansys_name(name, taken)
@@ -714,8 +720,8 @@ def read_cdb(path: Path | str) -> ShellReadBack:
             (groups if kind == "ELEM" else junctions)[nm] = set(ids)
             continue
         i += 1
-    parts = {label: set(groups.get(cm, set())) for cm, label in part_comp.items()}
-    return ShellReadBack(nodes, elements, prop, walls, {}, groups, junctions, names, parts=parts)
+    part_sets = {label: set(groups.get(cm, set())) for cm, label in part_comp.items()}
+    return ShellReadBack(nodes, elements, prop, walls, {}, groups, junctions, names, parts=part_sets)
 
 
 def parts_record(mesh: ShellMesh) -> list[dict]:

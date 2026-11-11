@@ -96,7 +96,7 @@ def test_one_name_on_two_parts_is_told_apart_and_never_another_parts_id():
 
 
 @pytest.mark.parametrize(("raw", "want"), [("PEDESTAL FOOTPAD GUSSET.57", "PEDESTAL_FOOTPAD_GUSSET_57"),
-                                           ("Part_3", "Part_3"), ("57 plate", "P_57_plate"), ("Bügel, links", "Bugel_links")])
+                                           ("Part_3", "Part_3"), ("57 plate", "PART_57_plate"), ("P_3 bracket", "P_3_bracket"), ("P 3", "PART_P_3"), ("P 3", "PART_P_3"), ("Bügel, links", "Bugel_links")])
 def test_a_part_set_name_is_letters_digits_and_underscores(raw, want):
     assert sw.part_set_name(raw) == want
 
