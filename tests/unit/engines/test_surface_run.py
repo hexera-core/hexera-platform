@@ -603,3 +603,69 @@ def test_a_face_written_twice_is_no_solid(tmp_path):
     rec = surface_run.run(ws, ws / "geometry.step", mm_per_unit=1000.0, thickness_mm=1.0)
     assert rec["made"] and rec["surface"]["cleaned"]["duplicates"] == 1 and rec["surface"]["faces"] == 1
     assert "1 face(s) were in the file twice: the second copy of each is left out." in rec["words"]
+
+
+def _volumes(shape) -> list[float]:
+    from OCP.TopAbs import TopAbs_SOLID
+
+    from meshpipeline.cad import midsurface as ms
+
+    m = ms._map(shape, TopAbs_SOLID)
+    return sorted(ms._volume(m.FindKey(i)) for i in range(1, m.Extent() + 1))
+
+
+def test_an_iges_pipe_bend_is_read_with_its_torus(tmp_path):
+    """SHELL-15m: an IGES writer stores a torus as a surface of revolution. Re-made on its surface alone, the face's
+    curves were left for the old surface and it read invalid, so the bend was kept as written and no body closed.
+    Converted whole (surface and curves together) it is a torus again and the bend is the solid its STEP is."""
+    import math
+
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeTorus
+
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad.scout import read_cad
+
+    outer = BRepPrimAPI_MakeTorus(80.0, 12.0, math.pi / 2).Shape()
+    inner = BRepPrimAPI_MakeTorus(80.0, 10.0, math.pi / 2).Shape()
+    bend = sx._cut(outer, inner)
+    want = _volumes(bend)
+    igs = Path(sx.write_iges(bend, tmp_path / "bend.igs"))
+    raw = read_cad(igs)
+    assert "Torus" not in _kinds(raw)
+    solid, _notes = ms.solidify(raw, 1.0)
+    assert _kinds(solid).get("Torus") == 2
+    got = _volumes(solid)
+    assert len(got) == 1 and got[0] == pytest.approx(want[0], rel=1e-4)
+
+
+def test_a_closed_shell_of_no_volume_is_never_a_body(tmp_path):
+    """SHELL-15l: two touching bodies' coincident faces (a pipe's outside, its insulation's inside) sew to each other
+    into a closed shell of no volume. Before, that pocket was made a "solid" of 0 mm3 beside the real ones; now it is no
+    body, and no solid read from the file encloses nothing."""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad.scout import read_cad
+
+    pipe = sx._cut(sx._cyl((0, 0, 0), (0, 0, 1), 20.0, 200.0), sx._cyl((0, 0, -1), (0, 0, 1), 18.0, 202.0))
+    lag = sx._cut(sx._cyl((0, 0, 0), (0, 0, 1), 45.0, 200.0), sx._cyl((0, 0, -1), (0, 0, 1), 20.0, 202.0))
+    raw = read_cad(Path(sx.write_iges(sx.compound([pipe, lag]), tmp_path / "lagged.igs")))
+    solid, _notes = ms.solidify(raw, 1.0)
+    assert _volumes(solid) and all(v > 1.0 for v in _volumes(solid))
+
+
+@pytest.mark.xfail(strict=True, reason="still open: touching bodies whose coincident faces leave an edge at the same "
+                                       "angle beside faces at their own angles (SHELL-15i reads only 2 + 2 clusters)")
+def test_a_pipe_and_its_insulation_written_as_iges_are_two_bodies(tmp_path):
+    """The STEP's two bodies. Today the IGES copy reads as one body holding both (the coincident faces pair off into
+    a pocket of nothing and the caps sew across): documented in docs/design/shell/README.md section 12."""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad.scout import read_cad
+
+    pipe = sx._cut(sx._cyl((0, 0, 0), (0, 0, 1), 20.0, 200.0), sx._cyl((0, 0, -1), (0, 0, 1), 18.0, 202.0))
+    lag = sx._cut(sx._cyl((0, 0, 0), (0, 0, 1), 45.0, 200.0), sx._cyl((0, 0, -1), (0, 0, 1), 20.0, 202.0))
+    both = sx.compound([pipe, lag])
+    want = _volumes(both)
+    raw = read_cad(Path(sx.write_iges(both, tmp_path / "lagged.igs")))
+    solid, _notes = ms.solidify(raw, 1.0)
+    got = _volumes(solid)
+    assert len(got) == 2 and got == pytest.approx(want, rel=1e-4)
+    assert all(v > 0 for v in got)
