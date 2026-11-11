@@ -105,6 +105,12 @@ OWN_SIZE_RETRIES = 2
 SPOTS_MAX = 64
 #: SHMESH-35: the walls of beads, darts and steps keep shell_plan.FLANK_ACROSS elements across under a coarser size
 FLANKS = True
+FLANK_SHARED = 2.0
+#: SHMESH-27/31: a face narrower than the floor takes the floor under the user's size (as with no notes) - every
+#: such face when True; else only those holding elements a first mesh left past the solver's own limits (SHMESH-31).
+#: All of them: fr014 inside Nastran's limits, but the welded tube frames' 0.5 mm corner faces at the floor left 16
+#: quads past Q4_IAMAX/IAMIN/TAPER on each of sh0109, sh0110, sh0113 (none before)
+SLIVER_FLOOR = False
 #: SHMESH-34: under the user's sizes, how far element centres stand off curved faces is measured and told (at most
 #: CHORD_SAMPLES elements a face are read)
 CHORD_REPORT = True
@@ -808,7 +814,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     if sizing is not None:
         planned = sizing["planned"]
     # SHMESH-27 (the user's sizes only): a face narrower than their size is sized to its own width
-    narrow = (_narrow_faces(rows, facts, mm, planned, _interior_faces(Path(brep)) if FLANKS else None)
+    narrow = (_narrow_faces(rows, facts, mm, planned, _interior_faces(Path(brep)) if FLANKS else None,
+                            slivers={k for k, _lo, _hi in own_spots})
               if sizing is not None and FEATURE_SIZES else None)
     if narrow is not None:
         planned = narrow["planned"]
@@ -832,7 +839,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         # the elements round every curve too, by the same factor, never under SHAPE_PER_TURN a turn: gmsh's own
         # 24 a turn held every 12 mm hole and every curved panel at our size (a bracket asked 221 elements got 503,
         # a curved panel asked 1,263 got 21,256)
-        per_turn = PER_TURN if sz <= 1.0 else max(SR.SHAPE_PER_TURN, int(round(PER_TURN / sz)))
+        per_turn = PER_TURN if sz <= 1.0 else max(SR.HOLE_PER_TURN, int(round(PER_TURN / sz)))
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", per_turn if finest is None else 0)
         # SHMESH-6 is held by the grading fields below; gmsh's own spread of edge sizes into a face carried a
         # narrow neighbour's size over the whole of a wide face (one 2.5 mm strip: 800,000 elements)
@@ -935,8 +942,10 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     if finest is not None and sizing is not None:
                         # SHMESH-24: the user's global size (else no finer than their shortest edge allows) - but a
                         # hole keeps its shape
+                        # hole keeps its shape: SHMESH-33, at least HOLE_PER_TURN edges round it
                         h0 = SR.curved_size(r * mm, 0.0, floor=finest, rule=(
-                            rows[k]["size_mm"] if sizing.get("global_mm") is not None else h0))
+                            rows[k]["size_mm"] if sizing.get("global_mm") is not None else h0),
+                            per_turn=SR.HOLE_PER_TURN)
                     if h0 < rows[k]["size_mm"]:
                         arcs_by.setdefault(float(f"{h0:.6g}"), []).append(abs(c))
         if short_edges is not None:
@@ -1298,19 +1307,20 @@ def _min_jac(mesh: ShellMesh) -> np.ndarray:
 
 
 def _narrow_faces(rows: list[dict], facts: list[dict], mm: float, planned: float,
-                  interior: set[int] | None = None) -> dict | None:
+                  interior: set[int] | None = None, slivers: set[int] = frozenset()) -> dict | None:
     """SHMESH-27, faces: under the user's sizes every face narrower than 1 / FEATURE_FACE_RATIO of its size (its
     strip width: twice its area over its perimeter) is sized to FEATURE_FACE_RATIO times its own width, never under
     the floor, in place - a 0.3 mm step strip at a 3 mm size was one row of elements ten times as long as wide. With
-    FEATURE_FACES off, only a face narrower than the floor itself (half its wall: a sliver strip) is: it takes the
-    floor, as our own rules size it, so the sliver merge (SHMESH-12) closes it as it does with no notes (fr014's
-    0.28 mm step strips at 3.2 mm: 137 triangles past Nastran's T3_IAMAX; none with no notes). Returns {"was": the
-    rows changed as they were, "widths": their widths, "planned"}; None (rows untouched) when the finer plan would
-    pass SHMESH-20's most elements.
-    SHMESH-35: a FLANK - a face narrower than its size with no free edge (every side meets another face: a bead's or
-    a dart's wall, a step, a rib) that is not itself a tight bend - keeps plan_rules.FLANK_ACROSS elements across it
-    (never under the floor), so a bead is not washed out under a coarse size (`interior`: the faces with no free
-    edge; None: no flank rule). Returns also "flanks": how many faces it kept finer."""
+    FEATURE_FACES off, only a face narrower than the floor itself (half its wall: a sliver strip) is - every one with
+    SLIVER_FLOOR, else those in `slivers` (SHMESH-31: faces a first mesh left elements past the solver's limits on):
+    it takes the floor, as our own rules size it, so the sliver merge (SHMESH-12) closes it as it does with no notes
+    (fr014's 0.28 mm step strips at 3.2 mm: 137 triangles past Nastran's T3_IAMAX; none with no notes). Returns
+    {"was": the rows changed as they were, "widths": their widths, "planned", "flank_faces"}; None (rows untouched)
+    when the finer plan would pass SHMESH-20's most elements.
+    SHMESH-35: a FLANK - a face narrower than its size held along its sides by other faces (`interior`,
+    _interior_faces: a bead's or a dart's wall, a step, a rib) that is not itself a tight bend - keeps
+    plan_rules.FLANK_ACROSS elements across it (never under the floor), so a bead is not washed out under a coarse
+    size. None: no flank rule."""
     new: dict[int, float] = {}
     widths: dict[int, float] = {}
     flank_faces: set[int] = set()
@@ -1323,7 +1333,8 @@ def _narrow_faces(rows: list[dict], facts: list[dict], mm: float, planned: float
                 new[k], widths[k] = h, width
                 flank_faces.add(k)
                 continue
-        if not FEATURE_FACES and width >= plan_rules.FLOOR_WALLS * r["wall_mm"]:
+        if not FEATURE_FACES and (not (SLIVER_FLOOR or k in slivers)
+                                  or width >= plan_rules.FLOOR_WALLS * r["wall_mm"]):
             continue
         h = plan_rules.feature_size(width, size=r["size_mm"], wall=r["wall_mm"], ratio=plan_rules.FEATURE_FACE_RATIO)
         if h is not None:
@@ -1368,7 +1379,9 @@ def _chord(mesh: ShellMesh, facts: list[dict], face_of: np.ndarray, mm: float) -
 
 
 def _interior_faces(brep: Path) -> set[int]:
-    """SHMESH-35: the sewn faces (0-based) every edge of which another face shares too (no free edge)."""
+    """SHMESH-35: the sewn faces (0-based) held along their sides by other faces: the length of their edges another
+    face shares at least FLANK_SHARED times the length of their free edges (a bead's wall running out to the sheet's
+    rim has only its two short ends free; a strip along the rim has a whole long side free)."""
     from OCP.BRep import BRep_Builder
     from OCP.BRepTools import BRepTools
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
@@ -1384,12 +1397,17 @@ def _interior_faces(brep: Path) -> set[int]:
     fmap = ms._map(shape, TopAbs_FACE)
     emap = TopTools_IndexedDataMapOfShapeListOfShape()
     TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, emap)
-    free: set[int] = set()
+    free = np.zeros(fmap.Extent())
+    shared = np.zeros(fmap.Extent())
     for i in range(1, emap.Extent() + 1):
         ks = {fmap.FindIndex(x) - 1 for x in emap.FindFromIndex(i)} - {-1}
-        if len(ks) == 1:
-            free |= ks
-    return set(range(fmap.Extent())) - free
+        length = ms._length(emap.FindKey(i))
+        for k in ks:
+            if len(ks) == 1:
+                free[k] += length
+            else:
+                shared[k] += length
+    return {k for k in range(fmap.Extent()) if shared[k] > 0 and shared[k] >= FLANK_SHARED * free[k]}
 
 
 def _spare_strip_corners(gmsh, tag_of: dict[int, int], rows: list[dict], mapped: dict, narrow: dict,
