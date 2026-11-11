@@ -37,6 +37,10 @@ SUMMARY = ("A mid-surface shell: {n:,} plate elements ({q:,} quads, {t:,} triang
            "thickness in the file.")
 #: SURF-6: the same line for a shell made on a surface file (engines/surface_run): what it lies on, and its thickness
 SURFACE_SUMMARY = "A shell on your surface: {n:,} plate elements ({q:,} quads, {t:,} triangles), {thick}."
+#: STD-4: the same lines for an all-triangle shell (Triangles picked on the stage, or asked in the notes or settings)
+TRIA_SUMMARY = ("A mid-surface shell: {n:,} triangular plate elements (3-node triangles); each element carries its wall "
+                "thickness in the file.")
+TRIA_SURFACE_SUMMARY = "A shell on your surface: {n:,} triangular plate elements (3-node triangles), {thick}."
 CONTAINS = (
     ("shell.bdf", "Nastran bulk data: CQUAD4 / CTRIA3, a PSHELL per wall thickness"),
     ("shell.inp", "CalculiX input deck: S4 / S3, a *SHELL SECTION per wall thickness"),
@@ -177,6 +181,12 @@ def deliver(workspace, rec: Mapping, *, target: Mapping | None = None) -> bool:
 
     plan: dict[str, Any] = {"shell": True, "words": [w for w in (rec.get("words"), count_words(tgt)) if w],
             "target": tgt or None, "faces": [], "hot_spots": [], "asked": dict(target or {}) or None}
+    # STD-4 / SHSTAGE-8: which elements were made and why ("Triangles, as chosen on the stage."), said first
+    from meshpipeline.engines import mesh_requirements as _MR
+    from meshpipeline.engines.meshing_standard import elements_of
+
+    plan["elements"] = elements_of(_MR.read(ws))
+    plan["words"] = [plan["elements"]["words"], *plan["words"]]
     if rec.get("requirements"):
         # SHMESH-26: what the user's notes asked for, against what this mesh delivers
         from meshpipeline.engines.shell_requirements import words as asked_words
@@ -195,6 +205,15 @@ def deliver(workspace, rec: Mapping, *, target: Mapping | None = None) -> bool:
                                                    "made_by": "engines/shell_run.py"}, indent=1))
     (ws / "fea_passes.json").write_text(json.dumps({"passes": [], "delivered": "shell", "levers": []}, indent=1))
     return True
+
+
+def _element_words(element: str, tria: bool) -> str:
+    """A solver's shell element as the result names it: "CQUAD4 / CTRIA3", or for an all-triangle shell its triangle
+    only ("CTRIA3", "S3", "SHELL181 triangle")."""
+    if not tria:
+        return element
+    return {"S4 / S3": "S3", "S4R / S3": "S3", "CQUAD4 / CTRIA3": "CTRIA3", "SHELL181": "SHELL181 triangle"}.get(
+        element, element)
 
 
 def results(workspace, q: Mapping, plan: Mapping) -> dict:
@@ -241,6 +260,9 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
         line = count_words(tgt)
         extra["target"] = {"asked": int(tgt["asked"]), "mode": tgt.get("mode") or "about",
                            "planned": int(tgt.get("planned") or 0), "built": cells, "words": line}
+    q_n, t_n = int(sq.get("quads") or rec.get("quads") or 0), int(sq.get("trias") or rec.get("trias") or 0)
+    # STD-4: an all-triangle shell says so (no "0 quads")
+    tria = bool(cells) and q_n == 0 and t_n > 0
     within = bool(sq.get("within_nastran"))
     solvers = []
     for key, label, file, element, tested in SHELL_SOLVERS:
@@ -248,23 +270,25 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
         solvers.append({"solver": key, "label": label, "file": file, "element": element, "tested": bool(tested),
                         "tested_words": "solved in CalculiX in our tests" if tested else "not yet tested in the real solver",
                         "outcome": "pass" if ok else "warnings",
-                        "words": f"{label}: {element} plates" + ("" if ok else " (some elements past its own checks)") + ".",
+                        "words": f"{label}: {_element_words(element, tria)} plates"
+                                 + ("" if ok else " (some elements past its own checks)") + ".",
                         "rows": [], "file_ready": present(ws, file)})
-    q_n, t_n = int(sq.get("quads") or rec.get("quads") or 0), int(sq.get("trias") or rec.get("trias") or 0)
     walls = list((q.get("fea") or {}).get("walls_mm") or [])
-    plan_words = ([w for w in [rec.get("words")] if w] + [user_line(r) for r in asked]
+    elements = _map(plan.get("elements"))
+    plan_words = ([w for w in [elements.get("words"), rec.get("words")] if w] + [user_line(r) for r in asked]
                   + [str(w) for w in plan.get("not_applied") or []])
-    summary = SUMMARY.format(n=cells, q=q_n, t=t_n)
+    summary = (TRIA_SUMMARY if tria else SUMMARY).format(n=cells, q=q_n, t=t_n)
     if _map(rec.get("surface")).get("kind") == "surface":
         # SURF-6: said as what it is - on the user's surface, at their thickness (or none set)
         from meshpipeline.contracts.shell_thickness import words as mm_words
 
         t_mm = _map(rec.get("surface")).get("thickness_mm")
-        summary = SURFACE_SUMMARY.format(n=cells, q=q_n, t=t_n, thick=f"{mm_words(t_mm)} thick" if t_mm
-                                         else "thickness not set")
+        summary = (TRIA_SURFACE_SUMMARY if tria else SURFACE_SUMMARY).format(
+            n=cells, q=q_n, t=t_n, thick=f"{mm_words(t_mm)} thick" if t_mm else "thickness not set")
     return {**extra,
             "title": "FEA shell mesh",
-            "shell": {"walls_mm": walls, "quads": q_n, "trias": t_n},
+            "shell": {"walls_mm": walls, "quads": q_n, "trias": t_n,
+                      **({"elements": dict(elements)} if elements else {})},
             "summary": summary,
             "level": "Shell",
             "units": {"mesh": COMPLETED_MESH_UNIT.value, "words": export_units_words()},

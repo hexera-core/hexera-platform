@@ -834,7 +834,7 @@ def _least_angle(xyz: np.ndarray, c: list[int]) -> float:
 
 
 def absorb_caps(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int], t_face: list[int],
-                face_wall: np.ndarray, *, rounds: int = 4, limits: InForce = IN_FORCE):
+                face_wall: np.ndarray, *, rounds: int = 4, limits: InForce = IN_FORCE, quads_too: bool = True):
     """SHMESH-22: a cap - a triangle past one of Nastran's limits whose apex lies near its longest edge (its widest
     corner over CAP_MIN_DEG) - left once every other step is done. Its three corners are on CAD edges (a face's
     corner that closes almost flat, two edges that run close): no node of it can move and no swap inside its face
@@ -848,6 +848,7 @@ def absorb_caps(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: l
     - on a free edge, its two other edges held by one more element each: the cap is dropped, and the free edge
       runs through the apex (the area lost is the cap's, a sliver).
     Never across a junction edge (three or more elements). Deterministic: caps in number order, `rounds` passes.
+    `quads_too` False (an all-triangle shell, STD-4): the polygon is cut into triangles only - no quad is ever made.
 
     Returns (quads, trias, q_face, t_face, how many caps went)."""
     Q = [list(map(int, c)) for c in quads.tolist()]
@@ -912,6 +913,8 @@ def absorb_caps(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: l
             best = None
             before_aim = (_aim_one(xyz, c, limits) + _aim_one(xyz, e, limits)) if limits.aims else 0
             for cut in _splits(poly):
+                if not quads_too and any(len(el) == 4 for el in cut):
+                    continue
                 if any(_past_one(xyz, el, limits) or float(_elem_normal(xyz, el) @ n_e) <= 0 for el in cut):
                     continue
                 if limits.aims and sum(_aim_one(xyz, el, limits) for el in cut) > before_aim:

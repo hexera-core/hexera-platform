@@ -142,6 +142,7 @@ class PipelineState(TypedDict):
     fea_plans_object:   str            # PLAN-fea-22: the object key of the plans the stage kept for the run ("" when none)
     part_matches:       dict | None    # NOTE-4: the notes tied to parts before approval, as the user left it; None = read at run time
     fea_mesh_as:        str            # an FEA part: "shell" only when the user's words asked for one, else "solid" (SHSTAGE-5); "mixed" from older confirmations
+    fea_shell_elements: str            # a shell's elements clicked on the stage: "quads" | "triangles" | "" (no click: notes and settings decide, STD-4)
     fea_shell_thickness_mm: float | None   # a surface file's wall thickness (mm) as settled on the stage from the user's words (SURF-4); None = none given
     mesh_manifest:      dict
     reviewer_result:         str

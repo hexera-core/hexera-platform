@@ -799,6 +799,10 @@ async def _run_async(req: JobRequest) -> dict:
         from meshpipeline.application.shell_check import confirmed_mesh_as
         initial_state["fea_mesh_as"] = await asyncio.to_thread(confirmed_mesh_as, str(session_id or ""),
                                                                req.user_notes)
+        # SHSTAGE-8: a shell's elements as the user clicked them on the stage ("" when they left the control as it
+        # started: the notes and settings decide, STD-4)
+        from meshpipeline.application.shell_elements import confirmed as _confirmed_elements
+        initial_state["fea_shell_elements"] = await asyncio.to_thread(_confirmed_elements, str(session_id or ""))
         # SURF-4: a surface file's wall thickness, as the stage read it from the user's words at Proceed
         from meshpipeline.application.surface_check import confirmed_thickness
         initial_state["fea_shell_thickness_mm"] = await asyncio.to_thread(confirmed_thickness, str(session_id or ""))

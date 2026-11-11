@@ -602,6 +602,11 @@ def cdb_components(prep: ShellPrepared) -> dict[str, str]:
     return out
 
 
+def _tria_words(m) -> str:
+    """STD-4: an all-triangle shell's SHELL181 are said to be triangles (K repeated as L); "" for any other."""
+    return " triangles (3-node: K repeated as L)" if len(m.trias) and not len(m.quads) else ""
+
+
 def write_cdb(path: Path | str, prep: ShellPrepared, *, units: str = "m", source: str = "", notes=(),
               extra: dict[str, np.ndarray] | None = None) -> dict:
     """SHELL181 (ET,1,181; KEYOPT,1,3,2 full integration with incompatible modes - the accurate choice for bending,
@@ -627,7 +632,8 @@ def write_cdb(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
         *([f"! Source: {source}"] if source else []),
         *_note_lines(notes, "!"),
         *_units_line(units, "!"),
-        f"! Mesh only: {m.n_elements} SHELL181. Part k's sections use MAT k - add MP,EX/PRXY/DENS for every part:",
+        f"! Mesh only: {m.n_elements} SHELL181{_tria_words(m)}. Part k's sections use MAT k - add MP,EX/PRXY/DENS for "
+        "every part:",
         *[f"!   MAT {i} = {_part_line(prep, p)}" for i, p in enumerate(prep.parts, start=1)],
         "! Every group is an element component; every junction a node component. Every part is a component named",
         "!   after it (the names below); each section is named after its property.",

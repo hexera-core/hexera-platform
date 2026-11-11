@@ -19,6 +19,12 @@
            the standard's is told as not applied. Every row of the set says where it came from.
     STD-3  NOTHING IN EITHER, NOTHING CHANGES. With no standard the notes' section is returned as it was read: every
            plan, mesh and record is byte for byte the run before the standard existed.
+    STD-4  THE STAGE HAS THE LAST WORD ON A SHELL'S ELEMENTS. The shell line's "Elements: Quads | Triangles" (SHSTAGE-8,
+           application/shell_elements) is one more source of the same field, after the notes: rules < settings < notes
+           < the stage, for the shell element kind only. Triangles: triangles only, whatever the notes or settings
+           said of quads (told as not applied). Quads: quad-dominant, as the rules make it - a "quads only" or a share
+           of triangles from the notes or settings stays (Quads covers both); only a "triangles only" gives way. No
+           click on the stage (the control left where it started): nothing changes.
 
 A per-part size stays the notes' own (engines/fea_part_sizes reads the notes' phrases against the parts): a part the
 notes size keeps its size, and a global size from the standard covers the rest (engines/fea_requirements.whole_sizes).
@@ -622,7 +628,117 @@ def decisions(sec: Mapping | None, stage: str = "notes") -> list[dict]:
                        f"{len(came) - n_s} from your notes; your notes win field by field.")}]
 
 
-__all__ = ["ELSEWHERE_WORDS", "MAX_CHARS", "OFF_WORDS", "RULE_MERGE", "RULE_NOTHING", "RULE_READ", "SAVE_WAIT_S",
-           "SOURCE", "STATE_KEY", "UNREAD_WORDS", "checked", "decide", "decisions", "kept_reading", "key_of", "lines",
-           "merge", "messages", "read", "read_at_save", "remark", "size_remark", "snapshot", "standard_of", "understood",
-           "words_read"]
+# #
+# the stage's element choice for a shell (STD-4)
+# #
+
+RULE_STAGE = "STD-4"
+#: the pipeline state field the stage's pick reaches the run in (application/shell_elements.confirmed)
+STAGE_KEY = "fea_shell_elements"
+#: the stage's two choices
+QUADS, TRIANGLES = "quads", "triangles"
+PICKS = (QUADS, TRIANGLES)
+#: the element-kind rows of the set (engines/mesh_requirements)
+_SHELL_KIND_FIELDS = ("quads_only", "triangles_only", "max_triangle_percent")
+#: where a value came from, in the words the user reads
+_FROM_WORDS = {"stage": "as chosen on the stage", "notes": "as your notes ask", "settings": "as your settings ask",
+               "default": "the default"}
+
+
+def pick_of(value) -> str:
+    """A stage pick read strictly: "quads", "triangles", or "" (nothing picked)."""
+    v = str(value or "").strip().lower()
+    return v if v in PICKS else ""
+
+
+def _from(row: Mapping) -> str:
+    """Where a row came from: a row with no mark is the notes' (a run with no standard)."""
+    return str(row.get("from") or "notes")
+
+
+def stage(sec: Mapping, pick) -> Mapping:
+    """STD-4: the section with the stage's element pick applied - the SAME field the notes and settings set
+    (requirements' kind.shell, its row from "stage"). No pick: the section itself, the same object (nothing changes).
+    A section nothing was read into ("none", or the AI not answering) becomes a "used" one holding only the pick."""
+    p = pick_of(pick)
+    if not p:
+        return sec
+    used = sec.get("status") == "used"
+    before = MR.words(sec)
+    req = copy.deepcopy(dict(sec.get("requirements") or MR.empty())) if used else MR.empty()
+    req.setdefault("kind", {"shell": None, "tria_percent_max": None, "order": None})
+    req.setdefault("rows", [])
+    gone = [dict(r) for r in req["rows"] if r.get("field") in _SHELL_KIND_FIELDS
+            and (p == TRIANGLES or r.get("field") == "triangles_only")]
+    for r in gone:
+        _drop_row(req, r)
+    told = [f"{r['asked']} ({'your settings' if _from(r) == 'settings' else 'your notes'}) - you chose "
+            f"{p.capitalize()} on the stage" for r in gone]
+    if p == TRIANGLES:
+        req["kind"]["shell"] = TRIANGLES
+        req["kind"]["tria_percent_max"] = None
+        req["rows"].append({"id": "e1", "field": "triangles_only", "quote": "", "asked": MR.KIND_WORDS[TRIANGLES],
+                            "from": "stage"})
+    out = MR.section("used", requirements=req, dropped=list(sec.get("dropped") or []) if used else [],
+                     not_applied=list(sec.get("not_applied") or []) if used else [],
+                     note=str(sec.get("note") or ""), key=str(sec.get("key") or ""),
+                     source=str(sec.get("source") or "") if used else "stage")
+    for k in ("standard", "stated_unit"):
+        if k in sec:
+            out[k] = copy.deepcopy(sec[k])
+    if isinstance(out.get("standard"), dict):
+        came = {rid: v for rid, v in (out["standard"].get("from") or {}).items()
+                if rid not in {str(r.get("id")) for r in gone}}
+        if p == TRIANGLES:
+            came["e1"] = "stage"
+        out["standard"]["from"] = came
+    gone_lines = {f"From your {'settings' if _from(r) == 'settings' else 'notes'}: {r['asked']}." for r in gone}
+    out["lines"] = ([w for w in before if w not in gone_lines] + [f"On the stage: {p}."]
+                    + [f"Not applied: {t}." for t in told])
+    out["stage"] = {"pick": p, "overridden": [{"field": r.get("field"), "asked": r.get("asked"), "from": _from(r)}
+                                              for r in gone]}
+    return out
+
+
+def elements_of(sec: Mapping | None) -> dict:
+    """WHICH SHELL ELEMENTS A RUN MAKES AND WHY, from the section in force (after the stage, STD-4): {"kind": "quads" |
+    "quads_only" | "quad_share" | "triangles", "from": "stage" | "notes" | "settings" | "default", "words":
+    "Triangles, as chosen on the stage."}. Nothing said anywhere: quad-dominant, the default."""
+    s = sec if isinstance(sec, Mapping) else {}
+    req = (s.get("requirements") or {}) if s.get("status") == "used" else {}
+    k = req.get("kind") or {}
+    row = next((r for r in req.get("rows") or [] if r.get("field") in _SHELL_KIND_FIELDS), None)
+    if k.get("shell") == TRIANGLES:
+        kind, said = "triangles", "Triangles"
+    elif k.get("shell") == QUADS:
+        kind, said = "quads_only", "Quads only"
+    elif k.get("tria_percent_max") is not None:
+        kind, said = "quad_share", f"Quads, at most {MR._g(float(k['tria_percent_max']))}% triangles"
+    else:
+        kind, said = "quads", "Quads"
+    if row is not None:
+        came = _from(row)
+    elif (s.get("stage") or {}).get("pick"):
+        came = "stage"
+    else:
+        came = "default"
+    return {"kind": kind, "from": came, "words": f"{said}, {_FROM_WORDS[came]}."}
+
+
+def stage_decisions(sec: Mapping | None, stage_name: str = "notes") -> list[dict]:
+    """The why-record entry of the stage's pick (contracts/decision_record.cite shape): [] with no pick."""
+    st = (sec or {}).get("stage") if isinstance(sec, Mapping) else None
+    if not st:
+        return []
+    got = elements_of(sec)
+    return [{"stage": stage_name, "decided": "shell elements chosen on the stage", "value": st.get("pick"),
+             "rule": RULE_STAGE, "inputs": {"pick": st.get("pick"), "overridden": list(st.get("overridden") or []),
+                                            "in_force": got["kind"]},
+             "words": got["words"]}]
+
+
+__all__ = ["ELSEWHERE_WORDS", "MAX_CHARS", "OFF_WORDS", "PICKS", "QUADS", "RULE_MERGE", "RULE_NOTHING", "RULE_READ",
+           "RULE_STAGE", "SAVE_WAIT_S", "SOURCE", "STAGE_KEY", "STATE_KEY", "TRIANGLES", "UNREAD_WORDS", "checked",
+           "decide", "decisions", "elements_of", "kept_reading", "key_of", "lines", "merge", "messages", "pick_of",
+           "read", "read_at_save", "remark", "size_remark", "snapshot", "stage", "stage_decisions", "standard_of",
+           "understood", "words_read"]

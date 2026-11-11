@@ -1362,7 +1362,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         # SHMESH-22: a cap left past a limit (all its corners on CAD edges) taken into the element across its longest
         # edge and cut again inside the limits, or dropped from a free edge
         face_wall = np.array([float(r["wall_mm"]) for r in rows])
-        Q, T, q_face, t_face, capped = shell_quality.absorb_caps(xyz, Q, T, q_face, t_face, face_wall, limits=lim)
+        Q, T, q_face, t_face, capped = shell_quality.absorb_caps(xyz, Q, T, q_face, t_face, face_wall, limits=lim,
+                                                                 quads_too=kind != "triangles")
     mended = {"merged": 0, "recut": 0, "moved": 0}
     if MEND and lim.aims:
         # SHMESH-28: what is still past a hard limit or outside one of the user's limits is mended by merging a
