@@ -99,6 +99,15 @@ FEATURE_FACES = False
 #: SHEET_REGIONS_ALL (a change to the rules' own mesh: off until signed off)
 SHEET_REGIONS = True
 SHEET_REGIONS_ALL = False
+#: SHMESH-31: how many times faces holding elements past the solver's own limits under the user's sizes are meshed
+#: again at our own (finer) sizes there
+OWN_SIZE_RETRIES = 2
+SPOTS_MAX = 64
+#: SHMESH-32: gmsh's own fallback when its 2D mesher reports a face failed - gmsh by default meshes that face again
+#: with MeshAdapt - is off (0), and the face keeps its Frontal-Delaunay mesh, checked by every step after as any other.
+#: MeshAdapt hung over an hour on one 5,000-element face (d2 t0057; 19 s, valid and inside Nastran's limits with the
+#: fallback off) and took 134 s of a 2,030-element part's 135 (d2 t0044). None: gmsh's own default
+ALGO_SWITCH = 0
 #: SHMESH-28: the last clean-up (shell_quality.mend) under the user's limits; then relax and mend again, at most
 #: MEND_CYCLES times
 MEND = True
@@ -693,6 +702,33 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
                 brep = nxt
                 resplined += made
                 continue
+            past = applied.pop("_past_spots", [])
+            past_n = applied.pop("_past_n", 0)
+            own: list = []
+            for _ in range(OWN_SIZE_RETRIES if requirements else 0):
+                # SHMESH-31: elements past the solver's own limits under the user's sizes: round each of them the
+                # mesh is made again at our rules' own size for its face (finer), graded back to the user's; the
+                # mesh with fewer past is kept
+                if not past:
+                    break
+                own = own + past
+                try:
+                    again, applied2 = _mesh_once(Path(brep), record, owners, float(mm_per_unit), None,
+                                                 target=target, correction=correction, requirements=requirements,
+                                                 own_spots=tuple(own))
+                except (ValueError, _Periodic) as exc:
+                    logger.info("shell mesh: the spots past the solver's limits were not meshed again (%s)", exc)
+                    break
+                past2 = applied2.pop("_past_spots", [])
+                n2 = applied2.pop("_past_n", 0)
+                if n2 >= past_n:
+                    break
+                mesh, applied, past, past_n = again, applied2, past2, n2
+                applied["quality"]["own_size_spots"] = len(own)
+            if applied["quality"].get("own_size_spots"):
+                mesh.notes.append(f"In {applied['quality']['own_size_spots']} spot(s) the mesh is finer than the size "
+                                  "you asked for: at your size some elements there were past the solver's own limits "
+                                  "(SHMESH-31).")
             applied["quality"]["resplined_faces"] = resplined
             if split_note:
                 mesh.notes.append(f"{split_note[0].upper()}{split_note[1:]} (SHMESH-11d).")
@@ -705,7 +741,10 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
 
 def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list | None, *,
                target: dict | None = None, correction: float = 1.0,
-               requirements: dict | None = None) -> tuple[ShellMesh, dict]:
+               requirements: dict | None = None, own_spots: tuple = ()) -> tuple[ShellMesh, dict]:
+    """One mesh. `own_spots` (SHMESH-31): (sewn face, box low corner, box high corner - mm) round elements a mesh
+    under the user's sizes left past the solver's own limits: inside each box the face's own rules' size, where
+    finer than the user's, graded back out."""
     import gmsh
 
     facts = _faces_and_facts(Path(brep), mm)
@@ -738,6 +777,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     # changes a number - `lim` is shell_quality.IN_FORCE, `sizing` and `kind` are None
     lim = SR.limits_in_force(requirements)
     kind = SR.kind_of(requirements)
+    rule_size = {k: min(rows[k]["size_mm"], rows[k].get("curve_mm", rows[k]["size_mm"])) for k, _lo, _hi in own_spots}
     sizing = SR.size_plan(rows, requirements, [f["area"] * mm * mm for f in facts], planned_max=PLANNED_MAX,
                           curved=[(f["bend"], min(f["width"], f["box_width"]) if f["box_width"] > 0 else f["width"])
                                   for f in facts])
@@ -772,6 +812,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         gmsh.option.setNumber("Mesh.MeshSizeMax", max(r["size_mm"] for r in rows) / mm)
         gmsh.option.setNumber("Mesh.Smoothing", 5)
         gmsh.option.setNumber("Mesh.LcIntegrationPrecision", LC_PRECISION)
+        if ALGO_SWITCH is not None:
+            gmsh.option.setNumber("Mesh.AlgorithmSwitchOnFailure", ALGO_SWITCH)
         gmsh.model.add("shell")
         gmsh.model.occ.importShapes(str(brep), highestDimOnly=False)
         gmsh.model.occ.synchronize()
@@ -889,6 +931,21 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             grading = binned
         for h, curves in sorted(grading.items()):
             grow(curves, h / mm)
+        for k, lo, hi in own_spots:
+            # SHMESH-31: the face's own rules' size inside a box round elements past the solver's limits, graded out
+            h0 = rule_size[k]
+            here = min(rows[k]["size_mm"], rows[k].get("curve_mm", rows[k]["size_mm"]))
+            if h0 >= here:
+                continue
+            box = gmsh.model.mesh.field.add("Box")
+            gmsh.model.mesh.field.setNumber(box, "VIn", h0 / mm)
+            gmsh.model.mesh.field.setNumber(box, "VOut", top)
+            for name, v in zip(("XMin", "YMin", "ZMin"), lo, strict=True):
+                gmsh.model.mesh.field.setNumber(box, name, float(v) / mm)
+            for name, v in zip(("XMax", "YMax", "ZMax"), hi, strict=True):
+                gmsh.model.mesh.field.setNumber(box, name, float(v) / mm)
+            gmsh.model.mesh.field.setNumber(box, "Thickness", (here - h0) / (growth - 1.0) / mm)
+            fields.append(box)
         mn =gmsh.model.mesh.field.add("Min")
         gmsh.model.mesh.field.setNumbers(mn, "FieldsList", fields)
         gmsh.model.mesh.field.setAsBackgroundMesh(mn)
@@ -1156,20 +1213,62 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         asked = SR.report(mesh, requirements, sizing)
         if asked is not None:
             out["requirements"] = asked
+        # SHMESH-31: where elements past the solver's own limits are (taken off by _mesh_shell)
+        past = shell_quality.nastran_past(mesh) | (_min_jac(mesh) <= 0)
+        out["_past_spots"] = _spots(mesh, face_of, past)
+        out["_past_n"] = int(past.sum())
     return mesh, out
 
 
+def _spots(mesh: ShellMesh, face_of: np.ndarray, past: np.ndarray) -> list[tuple]:
+    """SHMESH-31: boxes (sewn face, low corner, high corner; mm) round the elements `past`, each padded by its
+    element's longest edge; boxes of one face that overlap are joined, and past SPOTS_MAX boxes each face's are
+    joined into one."""
+    boxes: list[list] = []
+    for e in np.flatnonzero(past).tolist():
+        p = mesh.xyz[mesh.element_nodes(int(e))]
+        pad = float(np.linalg.norm(p - np.roll(p, 1, axis=0), axis=1).max())
+        boxes.append([int(face_of[e]), p.min(axis=0) - pad, p.max(axis=0) + pad])
+
+    def join(bs: list[list], always: bool) -> list[list]:
+        out: list[list] = []
+        for b in sorted(bs, key=lambda x: (x[0], *x[1].tolist())):
+            for o in out:
+                if o[0] == b[0] and (always or (np.all(o[1] <= b[2]) and np.all(b[1] <= o[2]))):
+                    o[1], o[2] = np.minimum(o[1], b[1]), np.maximum(o[2], b[2])
+                    break
+            else:
+                out.append([b[0], b[1].copy(), b[2].copy()])
+        return out
+
+    boxes = join(boxes, False)
+    if len(boxes) > SPOTS_MAX:
+        boxes = join(boxes, True)
+    return [(k, tuple(float(f"{v:.6g}") for v in lo), tuple(float(f"{v:.6g}") for v in hi)) for k, lo, hi in boxes]
+
+
+def _min_jac(mesh: ShellMesh) -> np.ndarray:
+    """Each element's smallest corner Jacobian (quads, then triangles)."""
+    q = shell_quality.quad_measures(mesh.xyz, mesh.quads)["min_jacobian"] if len(mesh.quads) else np.zeros(0)
+    t = shell_quality.tria_measures(mesh.xyz, mesh.trias)["min_jacobian"] if len(mesh.trias) else np.zeros(0)
+    return np.concatenate([q, t])
+
+
 def _narrow_faces(rows: list[dict], facts: list[dict], mm: float, planned: float) -> dict | None:
-    """SHMESH-27, faces: under the user's sizes every face narrower than 1 / FEATURE_RATIO of its size (its strip
-    width: twice its area over its perimeter) is sized to FEATURE_RATIO times its own width, in place - a 0.3 mm
-    step strip at a 3 mm size was one row of elements ten times as long as wide. Returns {"faces": how many,
-    "narrowest_mm", "planned"}; None (rows untouched) when the finer plan would pass SHMESH-20's most elements."""
+    """SHMESH-27, faces: under the user's sizes every face narrower than 1 / FEATURE_FACE_RATIO of its size (its
+    strip width: twice its area over its perimeter) is sized to FEATURE_FACE_RATIO times its own width, never under
+    the floor, in place - a 0.3 mm step strip at a 3 mm size was one row of elements ten times as long as wide. With
+    FEATURE_FACES off, only a face narrower than the floor itself (half its wall: a sliver strip) is: it takes the
+    floor, as our own rules size it, so the sliver merge (SHMESH-12) closes it as it does with no notes (fr014's
+    0.28 mm step strips at 3.2 mm: 137 triangles past Nastran's T3_IAMAX; none with no notes). Returns {"was": the
+    rows changed as they were, "widths": their widths, "planned"}; None (rows untouched) when the finer plan would
+    pass SHMESH-20's most elements."""
     new: dict[int, float] = {}
     widths: dict[int, float] = {}
     for k, (f, r) in enumerate(zip(facts, rows, strict=True)):
-        if not FEATURE_FACES:
-            break
         width = min(f["width"], f["box_width"]) if f["box_width"] > 0 else f["width"]
+        if not FEATURE_FACES and width >= plan_rules.FLOOR_WALLS * r["wall_mm"]:
+            continue
         h = plan_rules.feature_size(width, size=r["size_mm"], wall=r["wall_mm"], ratio=plan_rules.FEATURE_FACE_RATIO)
         if h is not None:
             new[k] = h

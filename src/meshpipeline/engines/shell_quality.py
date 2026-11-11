@@ -531,9 +531,45 @@ def _cycle(a: tuple[int, ...], b: tuple[int, ...]) -> list[int] | None:
     return loop if len(loop) == len(rest) else None
 
 
+#: a quad whose corner angle is past one of the solver's own angle limits by more than QUICK_DEG is known past it from
+#: a plain-float reading, without the full measure (the full measure would find it past too: the margin is a
+#: thousand times any rounding between the two readings)
+QUICK_DEG = 0.01
+
+
+def _angle_bounds(limits: InForce) -> tuple[float, float] | None:
+    """(the least, the most) quad corner angle the hard limits in force allow; None when they hold no such limit."""
+    lo = [v for s, k, op, v, _c in limits.hard if s == "quad" and k == "min_angle_quad" and op == ">="]
+    hi = [v for s, k, op, v, _c in limits.hard if s == "quad" and k == "max_angle_quad" and op == "<="]
+    return (max(lo), min(hi)) if lo and hi else None
+
+
+def _clearly_past(p: list[list[float]], bounds: tuple[float, float]) -> bool:
+    """Whether a quad (its corners, plain floats) has a corner angle past `bounds` by more than QUICK_DEG, or an edge
+    of no length."""
+    for i in range(4):
+        a, b, c = p[i - 1], p[i], p[(i + 1) % 4]
+        u = (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+        v = (c[0] - b[0], c[1] - b[1], c[2] - b[2])
+        nu = math.sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2])
+        nv = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+        if nu <= 0.0 or nv <= 0.0:
+            return False                     # left to the full measure
+        cosv = max(-1.0, min(1.0, (u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / (nu * nv)))
+        ang = math.degrees(math.acos(cosv))
+        if ang < bounds[0] - QUICK_DEG or ang > bounds[1] + QUICK_DEG:
+            return True
+    return False
+
+
 def _good_quad(xyz: np.ndarray, q: list[int], normal: np.ndarray, limits: InForce = IN_FORCE) -> float | None:
     """The quad's smallest corner angle when it is valid, inside every Nastran quad limit (and every target of the
-    user's limits in force, SHMESH-25) and turns along `normal`; else None."""
+    user's limits in force, SHMESH-25) and turns along `normal`; else None. A quad clearly past the solver's own
+    angle limits is turned down from a plain-float reading first (the same answer, faster: the walks try hundreds of
+    thousands of quads on a large part)."""
+    bounds = _angle_bounds(limits)
+    if bounds is not None and _clearly_past(xyz[q].tolist(), bounds):
+        return None
     m = quad_measures(xyz, np.array([q], dtype=np.int64), extra=limits.extra)
     if bool(_quad_past(m, limits)[0]) or (limits.aims and int(aim_score(m, "quad", limits, 1)[0]) > 0):
         return None

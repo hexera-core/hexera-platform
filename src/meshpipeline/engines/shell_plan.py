@@ -88,10 +88,12 @@ def feature_size(own: float, *, size: float, wall: float, ratio: float = FEATURE
 
 #: SHMESH-30: a sheet drawn as many CAD patches is sized by the sheet, not by the patch. Two faces of the same wall
 #: that meet along an edge where the surface runs on smoothly (their normals there within SHEET_SMOOTH_DEG) are one
-#: region, unless either is a bend (curved tighter than PANEL_WALLS walls: a bend is sized by its own curvature and
-#: width, and keeps the flanges either side apart). Each face is then planned with its region's width. A 400 x 240 mm
-#: panel drawn as 30 patches was sized patch by patch: 67,000 elements (PR #434's report)
+#: region, unless one is a bend (curved tighter than PANEL_WALLS walls) and the other is not, or both are bends of
+#: radii more than SHEET_SAME_BEND apart: a bend is sized by its own curvature and width and keeps the flanges either
+#: side apart, but a bend drawn as several patches is one bend. Each face is then planned with its region's width. A
+#: 400 x 240 mm panel drawn as 30 patches was sized patch by patch: 67,000 elements (PR #434's report)
 SHEET_SMOOTH_DEG = 5.0
+SHEET_SAME_BEND = 0.05
 
 
 def sheet_regions(n: int, links: list[tuple[int, int]]) -> list[int]:
@@ -115,10 +117,16 @@ def sheet_regions(n: int, links: list[tuple[int, int]]) -> list[int]:
 def smooth_link(angle_deg: float, *, same_wall: bool, bends: tuple[float | None, float | None],
                 wall: float) -> bool:
     """SHMESH-30: whether two faces meeting along an edge are one region: the same wall, the surface running on
-    smoothly there, and neither face a bend (a radius under PANEL_WALLS walls)."""
+    smoothly there, and neither face a bend (a radius under PANEL_WALLS walls) - or both bends of one radius."""
     if not same_wall or angle_deg > SHEET_SMOOTH_DEG:
         return False
-    return all(r is None or r <= 0 or r >= PANEL_WALLS * wall for r in bends)
+    tight = [r is not None and 0 < r < PANEL_WALLS * wall for r in bends]
+    if not any(tight):
+        return True
+    if not all(tight):
+        return False
+    a, b = float(bends[0]), float(bends[1])
+    return abs(a - b) <= SHEET_SAME_BEND * max(a, b)
 
 
 def face_plan(record: Mapping, mid_id: str, *, width: float, radii: list[float], bend: float | None = None) -> dict:
