@@ -61,10 +61,11 @@ def _ints(path: Path) -> np.ndarray | None:
     return np.array(b.replace(b"(", b" ").replace(b")", b" ").split(), dtype=np.int64)
 
 
-def read(case) -> dict | None:
+def read(case, region: str | None = None) -> dict | None:
     """{"points", "verts" (every face's vertices end to end), "start" (each face's first), "size", "owner",
-    "neighbour", "n_cells"} of the case's constant/polyMesh, or None when it cannot be read."""
-    pm = Path(case) / "constant" / "polyMesh"
+    "neighbour", "n_cells"} of the case's constant/polyMesh (a region's: constant/<region>/polyMesh), or None
+    when it cannot be read."""
+    pm = Path(case) / "constant" / (f"{region}/polyMesh" if region else "polyMesh")
     try:
         pts = _floats(pm / "points", 3)
         tok = _ints(pm / "faces")
@@ -112,9 +113,21 @@ def _faces(m: dict) -> tuple[np.ndarray, np.ndarray]:
 
 def measure(case) -> dict | None:
     """Every cell's figures ({name: array over cells}, plus "n_cells"), or None when the mesh cannot be read or is
-    past MAX_CELLS (the worst figures are then the measure)."""
+    past MAX_CELLS (the worst figures are then the measure). A multi-region case with no single polyMesh is measured
+    region by region (constant/<region>/polyMesh) and the cells put together."""
+    if not (Path(case) / "constant" / "polyMesh" / "owner").exists():
+        regions = sorted(p.parent.name for p in (Path(case) / "constant").glob("*/polyMesh/owner"))
+        parts = [f for f in (_one(case, r) for r in regions) if f]
+        if not parts or len(parts) < len(regions) or sum(f["n_cells"] for f in parts) > MAX_CELLS:
+            return None
+        return {"n_cells": sum(f["n_cells"] for f in parts),
+                **{k: np.concatenate([f[k] for f in parts]) for k in parts[0] if k != "n_cells"}}
+    return _one(case, None)
+
+
+def _one(case, region: str | None) -> dict | None:
     try:
-        m = read(case)
+        m = read(case, region)
     except Exception:  # noqa: BLE001 - a mesh that cannot be read is unmeasured, never a failed run
         logger.warning("cell measures: the polyMesh could not be read", exc_info=True)
         return None

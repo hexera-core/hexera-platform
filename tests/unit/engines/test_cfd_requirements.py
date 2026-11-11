@@ -447,6 +447,17 @@ def test_a_cube_grid_measures_as_checkmesh_does(tmp_path):
     assert np.allclose(f["min_volume"], 1.0) and np.allclose(f["orthogonal_quality"], 1.0)
 
 
+def test_a_multi_region_case_is_measured_region_by_region(tmp_path):
+    import shutil
+
+    for name, shear in (("air", 0.0), ("chip", 0.5)):
+        _box_mesh(tmp_path / name, shear=shear)
+        (tmp_path / "case" / "constant" / name).mkdir(parents=True)
+        shutil.move(str(tmp_path / name / "constant" / "polyMesh"), str(tmp_path / "case" / "constant" / name))
+    f = CM.measure(tmp_path / "case")
+    assert f["n_cells"] == 54 and 20.0 < CM.worst_of(f)["non_orthogonality"] < 30.0
+
+
 def test_a_sheared_grid_reads_its_angle(tmp_path):
     _box_mesh(tmp_path, shear=0.5)
     f = CM.measure(tmp_path)

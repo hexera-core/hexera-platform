@@ -1248,7 +1248,7 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None) -> str:
 WORST_KEYS = {"non_orthogonality": ("max_non_ortho", False), "skewness": ("max_skewness", False),
               "aspect_ratio": ("max_aspect_ratio", False), "determinant": ("min_determinant", True),
               "min_volume": ("min_volume", True), "orthogonal_quality": ("min_orthogonal_quality", True)}
-_OPENFOAM = ("snappy", "cfmesh", "snapgrid")
+_OPENFOAM = ("snappy", "cfmesh", "snapgrid", "snappy_multiregion")
 
 
 def _plan(workspace) -> dict:
