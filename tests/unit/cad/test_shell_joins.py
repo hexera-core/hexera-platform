@@ -226,3 +226,59 @@ def test_the_notched_corner_is_the_same_twice():
         out.append(([(i, j, round(ms._area(f), 9)) for i, j, f in strips],
                     [round(ms._area(f), 9) for f in ms._faces(fused)]))
     assert out[0] == out[1]
+
+
+def test_every_open_edge_is_offered_to_the_closing_passes_not_only_those_the_record_lists(monkeypatch):
+    # SHELL-33: the record lists at most 50 open edges per body; the passes read the census's full list. Here the
+    # listed points are emptied (as for a body with more open edges than the record lists): the T is still closed
+    monkeypatch.setattr(ms, "extend", lambda *a, **k: None)
+    monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
+    orig = ms.edge_census
+
+    def listed_none(*a, **k):
+        row = orig(*a, **k)
+        row["open_at_mm"] = []
+        return row
+
+    monkeypatch.setattr(ms, "edge_census", listed_none)
+    rec, _ = ms.extract(sf.t_joint(5.0, 4.0), mm_per_unit=1.0)
+    row = next(s for s in rec["sewn"] if s["body"] == "Part_1")
+    assert row["open_edges"] == 0
+    assert ms.OPEN_ALL_KEY not in row
+
+
+def test_a_corner_the_old_order_closes_keeps_the_old_order(monkeypatch):
+    # SHELL-35: the L legs stopped short of each other (no extension, no general join) are closed by the old order
+    # (SHELL-13's strip across the corner), so the square order is not run: the same surface as without the rule
+    import math
+
+    monkeypatch.setattr(ms, "extend", lambda *a, **k: None)
+    monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
+    rec, surface = ms.extract(sf.l_angle(5.0, 5.0), mm_per_unit=1.0)
+    row = next(s for s in rec["sewn"] if s["body"] == "Part_1")
+    assert row["open_edges"] == 0 and any("SHELL-13" in n for n in rec["notes"])
+    assert ms._area(surface) == pytest.approx(80 * (95.0 + 95.0 + 2.5 * math.sqrt(2.0)), rel=1e-3)
+    monkeypatch.setattr(ms, "SQUARE_FIRST", False)
+    again, surface2 = ms.extract(sf.l_angle(5.0, 5.0), mm_per_unit=1.0)
+    assert ms._area(surface2) == pytest.approx(ms._area(surface), rel=1e-9)
+
+
+def test_where_the_old_order_leaves_the_corner_open_the_square_order_closes_it(monkeypatch):
+    # SHELL-35: with SHELL-13's strip unable to close the corner (it finds nothing) and SHELL-22 drawing only its
+    # nearest-point strip, the old order leaves the L open; the square order carries both legs to their corner line
+    monkeypatch.setattr(ms, "extend", lambda *a, **k: None)
+    monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
+    monkeypatch.setattr(ms, "close_strips", lambda *a, **k: None)
+    orig = ms.close_gaps
+
+    def nearest_only(*a, square_only=False, **k):
+        return orig(*a, square_only=square_only, **k) if square_only else None
+
+    monkeypatch.setattr(ms, "close_gaps", nearest_only)
+    rec, surface = ms.extract(sf.l_angle(5.0, 5.0), mm_per_unit=1.0)
+    row = next(s for s in rec["sewn"] if s["body"] == "Part_1")
+    assert row["open_edges"] == 0
+    assert ms._area(surface) == pytest.approx(80 * (97.5 + 97.5), rel=1e-6)
+    monkeypatch.setattr(ms, "SQUARE_FIRST", False)
+    rec, _ = ms.extract(sf.l_angle(5.0, 5.0), mm_per_unit=1.0)
+    assert next(s for s in rec["sewn"] if s["body"] == "Part_1")["open_edges"] > 0

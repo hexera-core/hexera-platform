@@ -555,18 +555,46 @@ def card_mesh_as(declaration: str) -> str:
 #: is said only for a shell + solid run's thick regions (engines/mixed_mesh: C3D10)
 SHELL_ELEMENTS = "Shell: linear plates (4-node quads, a few 3-node triangles)"
 MIXED_ELEMENTS = "Thin walls: linear plates (4-node quads, a few 3-node triangles)"
+#: SHSTAGE-8: the same for an all-triangle shell (Triangles on the stage, or asked in the notes or settings)
+TRIA_ELEMENTS = "Shell: linear plates (3-node triangles)"
+TRIA_MIXED_ELEMENTS = "Thin walls: linear plates (3-node triangles)"
+#: ... and what a shell run's summary says instead of SHELL_SUMMARY
+TRIA_SHELL_SUMMARY = ("a shell mesh - plate elements (linear 3-node triangles) on the part's mid-surface, or on the "
+                      "surface itself for a surface file, each carrying its wall thickness, every face kept as a named "
+                      "group")
+#: the declaration's sentence for triangles (application/shell_elements.declaration_words)
+_TRIA_DECLARED = re.compile(r"\bElements: triangles\b")
 
 
-def card_engine_settings(mesh_as_label: str, params: dict | None) -> str:
+def card_elements(declaration: str) -> str:
+    """SHSTAGE-8: "triangles" when the conversation's FEA declaration settled an all-triangle shell, else "". Pure."""
+    return "triangles" if _TRIA_DECLARED.search(str(declaration or "")) else ""
+
+
+def shell_summary(messages) -> str:
+    """What a shell run's summary says it delivers: SHELL_SUMMARY, or its all-triangle form when the latest
+    declaration settled triangles (SHSTAGE-8)."""
+    from meshpipeline.application.geometry_confirmation import _is_declaration
+
+    for m in reversed(list(messages or [])):
+        if isinstance(m, dict) and _is_declaration(m):
+            return TRIA_SHELL_SUMMARY if card_elements(str(m.get("content") or "")) else SHELL_SUMMARY
+    return SHELL_SUMMARY
+
+
+def card_engine_settings(mesh_as_label: str, params: dict | None, *, elements: str = "") -> str:
     """The request card's "Engine settings" row for a shell or shell + solid run, true to what is written: the plates
     are linear, and the element order applies to the solid made beside them (and to the thick regions kept solid).
-    "" for a solid run (the card shows the settings as they are). Pure."""
+    `elements` "triangles": an all-triangle shell (card_elements). "" for a solid run (the card shows the settings as
+    they are). Pure."""
     kind = next((k for k, label in CARD_LABELS.items() if label == mesh_as_label), "")
     if not kind:
         return ""
     p = dict(params or {})
     order = p.pop("element_order", None)
-    parts = [SHELL_ELEMENTS if kind == pm.MESH_SHELL else MIXED_ELEMENTS]
+    tria = elements == "triangles"
+    parts = [(TRIA_ELEMENTS if tria else SHELL_ELEMENTS) if kind == pm.MESH_SHELL
+             else (TRIA_MIXED_ELEMENTS if tria else MIXED_ELEMENTS)]
     if order not in (None, "") and kind == pm.MESH_MIXED:
         parts.append(f"thick regions and the solid mesh made beside it: element order {order}")
     parts += [f"{str(k).replace('_', ' ')}: {v}" for k, v in p.items()]
@@ -601,7 +629,8 @@ def confirmed_mesh_as(session_id: str, notes=None) -> str:
 
 
 __all__ = ["CARD_LABELS", "MEASURING", "MIXED_ELEMENTS", "NOTHING_TO_SHELL", "QUESTION", "READY", "SHELL_CHECK_LIMIT_S",
-           "SHELL_ELEMENTS", "SHELL_SUMMARY", "TET_WORDS", "TRIANGLES_WHY", "UNAVAILABLE", "card_engine_settings",
+           "SHELL_ELEMENTS", "SHELL_SUMMARY", "TET_WORDS", "TRIA_ELEMENTS", "TRIA_SHELL_SUMMARY", "TRIANGLES_WHY",
+           "UNAVAILABLE", "card_elements", "card_engine_settings", "shell_summary",
            "card_mesh_as", "declared_shell", "confirmed_mesh_as",
            "declaration_words", "is_cad", "not_shelled", "solid_short", "read_status", "run_shell_check", "said_of", "settle",
            "shell_view", "start", "start_if_asked", "state_of", "summarise", "view_for", "wants_shell"]

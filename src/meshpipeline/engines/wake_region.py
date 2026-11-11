@@ -37,7 +37,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-from meshpipeline.engines.ground_plane import VERTICAL_AXIS
+from meshpipeline.engines.ground_plane import DEFAULT_FLOOR
 
 #: The plan's "wake" field when it says nothing: on, four wake lengths downstream in three graded
 #: boxes, the finest one level coarser than the wall, starting a tenth of the body's length
@@ -238,7 +238,7 @@ def _grown(lo, hi, by: float, dmin, dmax) -> tuple[list[float], list[float]]:
 
 def _tiers(*, finest: int, n: int, length: float, start: float, body_min, body_max,
            domain_min, domain_max, axis: int, sign: int, scale: float, base_cell: float,
-           grounded: bool) -> list[WakeTier]:
+           grounded: bool, floor: tuple[int, str] = DEFAULT_FLOOR) -> list[WakeTier]:
     ext = [float(body_max[i]) - float(body_min[i]) for i in range(3)]
     trailing = float(body_max[axis]) if sign > 0 else float(body_min[axis])
     lead_in = start * ext[axis]
@@ -261,8 +261,12 @@ def _tiers(*, finest: int, n: int, length: float, start: float, body_min, body_m
                 continue
             grow = WAKE_PAD * ext[j] + WAKE_SPREAD * reach + WAKE_EDGE_CELLS * cell
             lo[j], hi[j] = float(body_min[j]) - grow, float(body_max[j]) + grow
-            if grounded and j == VERTICAL_AXIS:
-                lo[j] = float(domain_min[j])       # the body stands on the floor: so does its wake
+            if grounded and j == int(floor[0]):
+                # the body stands on the floor: so does its wake (the floor follows the up axis)
+                if floor[1] == "min":
+                    lo[j] = float(domain_min[j])
+                else:
+                    hi[j] = float(domain_max[j])
         lo = [max(float(domain_min[i]), lo[i]) for i in range(3)]
         hi = [min(float(domain_max[i]), hi[i]) for i in range(3)]
         if any(hi[i] - lo[i] <= 0.0 for i in range(3)):
@@ -287,6 +291,7 @@ def _tiers(*, finest: int, n: int, length: float, start: float, body_min, body_m
 def plan_wake(*, body_min, body_max, domain_min, domain_max, flow_axis: str | None,
               base_cell: float, surface_level: int, budget_cells: float, knobs: object = None,
               ruler_m: float | None = None, grounded: bool = False,
+              floor: tuple[int, str] = DEFAULT_FLOOR,
               body_cells: float | None = None,
               share: float = WAKE_BUDGET_SHARE) -> WakePlan:
     """The wake's boxes for this body, domain and mesh. `base_cell` is the background cell the
@@ -323,7 +328,7 @@ def plan_wake(*, body_min, body_max, domain_min, domain_max, flow_axis: str | No
         tiers = _tiers(finest=finest, n=n, length=length, start=float(kn["start"]),
                        body_min=body_min, body_max=body_max, domain_min=domain_min,
                        domain_max=domain_max, axis=axis, sign=sign, scale=scale,
-                       base_cell=float(base_cell), grounded=grounded)
+                       base_cell=float(base_cell), grounded=grounded, floor=floor)
         cost = sum(t.cells for t in tiers)
         if tiers and cost <= plan.allowance:
             plan.tiers, plan.cells, plan.changes = tiers, cost, changes

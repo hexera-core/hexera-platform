@@ -339,6 +339,45 @@ export function assemblyHtml(a) {
   return `<div class="fea-assembly" data-sig="${attr(assemblySig(a))}">${secHtml(head, body, { aside: seg, cls: "fea-sec-asm" })}</div>`;
 }
 
+/* PLAN-fea-22: THE SIZE CHOICE. The check sizes the mesh once the part is shown: while it does, the
+   panel says so; then, when the full-rules mesh needs a bigger machine than the standard one, the two
+   meshes - full rules, and a quicker one sized to the standard machine - each with its size, machine
+   and time, the one the evidence recommends picked, and why. `pl` is the server's `fea.plan`. */
+const planSig = (pl) => (pl ? `${pl.state}/${(pl.options || []).length}/${pl.recommended || ""}` : "none");
+
+export function planHtml(pl) {
+  if (!pl) return "";
+  const head = `<div class="rc-row"><div class="rc-k">Mesh size</div>`;
+  if (pl.state !== "sized" || !pl.choice) {
+    return `<div class="fea-plan" data-sig="${esc(planSig(pl))}">${head}<div class="rc-v fea-plan-words">${esc(pl.words || "")}</div></div>${pl.why && pl.state === "sized" ? `<div class="gc-note">${esc(pl.why)}</div>` : ""}</div>`;
+  }
+  const opts = (pl.options || []).map((o) => `<label class="fea-plan-opt"><input type="radio" name="fea-plan" value="${esc(o.key)}"${o.recommended ? " checked" : ""}> <b>${esc(o.label)}</b>${o.recommended ? ' <span class="fea-plan-rec">recommended</span>' : ""} <span class="fea-plan-words">${esc(o.words)}</span>${(o.short || []).length ? `<ul class="fea-plan-short">${o.short.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}</label>`).join("");
+  return `<div class="fea-plan" data-sig="${esc(planSig(pl))}">${head}<div class="rc-v">${esc(pl.question || "Which mesh?")}</div></div>
+      <div class="fea-plan-opts" role="radiogroup" aria-label="${esc(pl.question || "Which mesh?")}">${opts}</div>
+      ${pl.why ? `<div class="gc-note">${esc(pl.why)}</div>` : ""}</div>`;
+}
+
+/** The size choice landing after the panel was drawn (the check sizes the mesh once the part is shown):
+ *  drawn in place, a pick already made kept. True when it changed. */
+export function followPlan(root, pl) {
+  if (!pl) return false;
+  const box = root.querySelector(".fea-plan");
+  if (box && box.dataset.sig === planSig(pl)) return false;
+  const picked = root.querySelector('input[name="fea-plan"]:checked');
+  const html = planHtml(pl);
+  if (box) box.outerHTML = html;
+  else {
+    const after = root.querySelector(".fea-assembly") || root.querySelector(".fea-measure");
+    if (!after) return false;
+    after.insertAdjacentHTML("afterend", html);
+  }
+  if (picked) {
+    const again = root.querySelector(`input[name="fea-plan"][value="${picked.value}"]`);
+    if (again) again.checked = true;
+  }
+  return true;
+}
+
 /* ======================================================================================
  * THE HOT SPOTS: shown only - version 1 refines every one automatically.
  * ====================================================================================== */
@@ -531,7 +570,20 @@ export function shellMarks(s) {
 }
 
 /** One string for what a shell view shows: a later view that says more is drawn again. */
-const meshAsSig = (s) => `${s.state}/${s.mesh_as || ""}/${(s.not_shelled || []).length}/${s.reason || ""}/${s.overlay ? 1 : 0}`;
+const meshAsSig = (s) => `${s.state}/${s.mesh_as || ""}/${(s.not_shelled || []).length}/${s.reason || ""}/${s.overlay ? 1 : 0}/${(s.elements || {}).value || ""}`;
+
+/** SHSTAGE-8: A SHELL'S ELEMENTS, the shell line's one choice - "Elements: Quads | Triangles", drawn as the stage's
+ *  other two-way choices are. It starts where the server says (the notes or settings when either named an element
+ *  kind, else Quads); the user's click is the last word for this run. `e` is the shell view's `elements`; nothing
+ *  without it (a solid, or a shell that cannot be made). */
+export function elementsHtml(e) {
+  const opts = (e && e.options) || [];
+  if (!opts.length) return "";
+  const v = e.value || opts[0].key;
+  const from = e.from && e.from !== "default" && e.from_words ? ` (${e.from_words})` : "";
+  return `<div class="fea-el" data-start="${attr(v)}" data-confirm="${attr(JSON.stringify(e.confirm || {}))}"><span class="fea-el-k" aria-hidden="true">Elements</span><div class="fea-seg fea-el-seg" role="radiogroup" aria-label="${attr(e.question || "Elements")}">${opts.map((o) =>
+    `<label class="fea-conn-opt" title="${attr(`${o.words || o.label}${o.key === v ? from : ""}`)}"><input type="radio" name="fea-shell-elements" value="${attr(o.key)}"${o.key === v ? " checked" : ""}><span>${esc(o.label)}</span></label>`).join("")}</div></div>`;
+}
 
 /** Whether the choice draws the mid-surface: a shell (or a shell + solid confirmed before it left the stage). */
 export const showsShell = (eff) => eff === "shell" || eff === "mixed";
@@ -578,7 +630,7 @@ function meshAsBody(s) {
   const said = shell && s.said_words ? ` <span class="fea-muted fea-meshas-said" title="${attr(s.said_words)}">· as you asked</span>` : "";
   const head = `<span class="fea-sec-t">Shell</span><span class="fea-sec-sum">${shellSummary(s)}</span>`;
   return secHtml(head,`<div class="fea-line fea-meshas-v"><b>${esc(s.label || "")}</b>${said}</div>
-    ${measuring}${reason}${legend}${list}`, { cls: "fea-sec-shell" });
+    ${measuring}${reason}${legend}${list}`, { cls: "fea-sec-shell", aside: shell ? elementsHtml(s.elements) : "" });
 }
 
 /** The shell fold for the panel; nothing without a `shell` view (a solid, as before shell existed). */
@@ -610,6 +662,11 @@ export function followMeshAs(root, s, changed) {
     box.innerHTML = meshAsBody(s);
     reopen(box, folds);
   }
+  // SHSTAGE-8: the element kind the user clicked stays theirs when the shell line is drawn again
+  const form = root.querySelector(".fea-form") || root;
+  const mine = form.dataset ? form.dataset.shellElements : "";
+  const again = mine ? root.querySelector(`input[name="fea-shell-elements"][value="${mine}"]`) : null;
+  if (again) again.checked = true;
   const tag = root.querySelector(".fea-tag");
   if (tag) tag.textContent = purposeTag(s);
   if (changed) changed(effectiveMeshAs(s));
@@ -643,6 +700,7 @@ export function feaPanelHtml(f, p) {
       </div>
       ${meshAsHtml(f.shell)}
       ${assemblyHtml(f.assembly)}
+      ${planHtml(f.plan)}
       ${blocked ? `<div class="fea-blocked" role="alert">${esc(blocked)}</div>` : ""}
       <div class="gc-actions fea-foot"><button class="gc-proceed" type="button"${blocked ? " disabled" : ""} title="${attr(f.question || "Is this your part and are the units right?")}">Yes, proceed</button>
         <span class="gc-hint">${blocked ? esc(f.way_out || "Upload a single part to go on.") : "Right part, right unit?"}</span></div>
@@ -660,10 +718,45 @@ export function readFeaForm(root, p) {
   if (gapBox) body.fea_gap_joins = !!gapBox.checked;
   // PLAN-fea-19/20: each pair as it is set (the server keeps the ones that differ from the rule)
   if (root.querySelector && root.querySelector(".fea-pair")) body.fea_pairs = readPairs(root);
+  const plan = root.querySelector ? root.querySelector('input[name="fea-plan"]:checked') : null;
+  if (plan) body.fea_plan = plan.value;
+  // SHSTAGE-8: a shell's elements as shown (the server keeps it only when it differs from where it started); a
+  // flip still waiting on its question is not the user's yet
+  const elements = root.querySelector ? root.querySelector('input[name="fea-shell-elements"]:checked') : null;
+  const asking = root.querySelector ? root.querySelector(".fea-el-ask") : null;
+  const elBox = root.querySelector ? root.querySelector(".fea-el") : null;
+  if (elements) body.fea_shell_elements = asking && elBox ? elBox.dataset.start : elements.value;
   const upSel = root.closest ? root.closest(".gc-stage")?.querySelector(".v-up select") : null;
   const up = (upSel && upSel.value) || p.up_axis;
   if (up) body.up_axis = up;
   return body;
+}
+
+/** SHSTAGE-8: A FLIP OF THE ELEMENTS AWAY FROM THE USER'S SETTINGS OR NOTES ASKS FIRST, in one short line under the
+ *  shell line ("Your settings say Quads. Use Triangles for this run?"): Yes keeps the click for this run, No puts the
+ *  switch back. A flip back to where it started, or one the server sends no question for, is taken at once. */
+function askElements(form, input) {
+  const box = form.querySelector(".fea-el");
+  const old = form.querySelector(".fea-el-ask");
+  if (old) old.remove();
+  if (!box) return;
+  let ask = {};
+  try { ask = JSON.parse(box.dataset.confirm || "{}"); } catch (e) { ask = {}; }
+  const start = box.dataset.start || "";
+  const question = input.value !== start ? ask[input.value] : "";
+  if (!question) { form.dataset.shellElements = input.value; return; }
+  const body = form.querySelector(".fea-sec-shell .fea-sec-body");
+  if (!body) { form.dataset.shellElements = input.value; return; }
+  body.insertAdjacentHTML("afterbegin", `<div class="fea-line fea-el-ask" role="alertdialog" aria-label="${attr(question)}"><span>${esc(question)}</span>
+      <button type="button" class="v-btn fea-el-yes">Yes</button><button type="button" class="v-btn v-quiet fea-el-no">No</button></div>`);
+  const line = body.querySelector(".fea-el-ask");
+  line.querySelector(".fea-el-yes").onclick = () => { form.dataset.shellElements = input.value; line.remove(); };
+  line.querySelector(".fea-el-no").onclick = () => {
+    const back = form.querySelector(`input[name="fea-shell-elements"][value="${start}"]`);
+    if (back) back.checked = true;
+    delete form.dataset.shellElements;
+    line.remove();
+  };
 }
 
 /** Wire the panel: the folds open on a click, the unit box follows every size shown, and Proceed confirms -
@@ -700,6 +793,8 @@ export function bindFeaPanel(root, f, p, { confirm, done }) {
       followPairDefaults(form);
     } else if (t.name === "fea-connection" || t.name === "fea-gap-joins") {
       followPairDefaults(form);
+    } else if (t.name === "fea-shell-elements") {
+      askElements(form, t);
     }
   });
   const btn = form.querySelector(".gc-proceed"), hint = form.querySelector(".gc-hint");

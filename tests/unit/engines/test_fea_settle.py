@@ -220,3 +220,81 @@ def test_settling_goes_on_until_straightening_one_element_has_folded_none_of_its
         assert min(after.values()) > 0.1                          # nothing left folded
     finally:
         gmsh.finalize()
+
+
+#: two 10-node tets on either side of one face; each midside node off its edge's middle by these (found by search:
+#: curving spoils A, B is better curved than straight, and B's shape leans on the midside nodes it shares with A)
+_PAIR_CORNERS = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0.3, 0.3, 0.25], [0.3, 0.3, -0.25]]
+_PAIR_OFFSETS = [[0.1394, 0.0009, 0.1959], [0.1759, -0.0213, 0.0404], [0.0559, 0.1008, 0.133],
+                 [0.2239, 0.0322, -0.0913], [0.0677, -0.0707, 0.113], [0.025, -0.0116, -0.2094],
+                 [0.1105, -0.0313, 0.0195], [-0.1767, 0.0974, 0.0848], [-0.0724, -0.0648, 0.0059]]
+
+
+def _pair(offsets):
+    corners = np.asarray(_PAIR_CORNERS, dtype=float)
+    tets = ([0, 1, 2, 3], [0, 2, 1, 4])
+    key: dict = {}
+    for el in tets:
+        for i, j in fea_settle.GMSH_TET10_EDGES:
+            key.setdefault(tuple(sorted((el[i], el[j]))), len(key))
+    xyz = list(corners) + [0.5 * (corners[a] + corners[b]) + np.asarray(offsets[n]) for (a, b), n in key.items()]
+    gmsh.model.add("pair")
+    gmsh.model.addDiscreteEntity(3, 1)
+    gmsh.model.mesh.addNodes(3, 1, list(range(1, len(xyz) + 1)), np.asarray(xyz).ravel().tolist())
+    conn = []
+    for el in tets:
+        conn += [c + 1 for c in el] + [6 + key[tuple(sorted((el[i], el[j])))] for i, j in fea_settle.GMSH_TET10_EDGES]
+    gmsh.model.mesh.addElementsByType(1, 11, [1, 2], conn)
+
+
+def _q():
+    t, q = fea_settle.qualities(gmsh)
+    return dict(zip(t.tolist(), q.tolist(), strict=True))
+
+
+def test_straightening_one_element_never_leaves_its_neighbour_inside_out():
+    """PLAN-fea-11 to the end (ox_mc_lid's 2 mm plates): A's straight sides turn B inside out, so B is
+    straightened in turn, and nothing is left below zero."""
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        _pair([[0.0, 0.0, 0.0]] * len(_PAIR_OFFSETS))
+        straight = _q()
+        gmsh.model.remove()
+        # the case: A spoiled by curving, B better curved than straight - and B inside out once A is straight
+        _pair(_PAIR_OFFSETS)
+        curved = _q()
+        assert curved[1] < 0.1 and curved[1] < straight[1]
+        assert curved[2] > straight[2] > 0
+        fea_settle.straighten(gmsh, 1)
+        assert _q()[2] <= 0.0
+        gmsh.model.remove()
+        _pair(_PAIR_OFFSETS)
+        out = fea_settle.settle(gmsh, straight, [], 0.1)
+        after = _q()
+        assert min(after.values()) > 0.0
+        assert out["straightened"] == 2
+        assert after[1] == pytest.approx(straight[1]) and after[2] == pytest.approx(straight[2])
+    finally:
+        gmsh.finalize()
+
+
+def test_a_curved_mesh_with_nothing_under_the_floor_is_never_touched(monkeypatch):
+    """Settling only ever moves nodes of an element under the floor and worse than straight: a curved mesh with
+    none is left exactly as curving made it."""
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        _pair([[0.0, 0.0, 0.0]] * len(_PAIR_OFFSETS))
+        straight = _q()
+        gmsh.model.remove()
+        _pair([[0.01 * k, 0.0, 0.0] for k in range(len(_PAIR_OFFSETS))])
+        before = gmsh.model.mesh.getNodes()[1].tolist()
+        moves = []
+        real = fea_settle._straighten_nodes
+        monkeypatch.setattr(fea_settle, "_straighten_nodes", lambda g, t: moves.append(t) or real(g, t))
+        out = fea_settle.settle(gmsh, straight, [], 0.1)
+        assert moves == [] and out["straightened"] == 0
+        assert gmsh.model.mesh.getNodes()[1].tolist() == before
+    finally:
+        gmsh.finalize()

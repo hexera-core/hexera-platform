@@ -205,3 +205,24 @@ def write_iges(shape, path) -> str:
 
 def perimeter_of_plate_with_hole(length: float = 200.0, width: float = 100.0, r: float = 10.0) -> float:
     return 2.0 * (length + width) + 2.0 * math.pi * r
+
+
+def strip_of_plates(n: int = 3, length: float = 100.0, width: float = 80.0, move: dict | None = None):
+    """n flat plates side by side along x, written as loose faces (a panel drawn as patches). `move`: {index: (dx,
+    dy, dz)} - plates written off their place (a gap, an overlap, a step)."""
+    faces = [rect(k * length, 0, (k + 1) * length, width) for k in range(n)]
+    return compound([moved(f, (move or {})[k]) if k in (move or {}) else f for k, f in enumerate(faces)])
+
+
+def plate_with_slot(length: float = 200.0, width: float = 100.0, slot: float = 0.05, run: float = 60.0):
+    """One flat face with a thin slot cut inside it: a slit drawn in a face."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+
+    tool = BRepPrimAPI_MakeBox(_pnt((length / 2 - run / 2, width / 2 - slot / 2, -5)), run, slot, 10.0).Shape()
+    return _cut(rect(0, 0, length, width), tool)
+
+
+def copy_of(shape):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+
+    return BRepBuilderAPI_Copy(shape, True, False).Shape()

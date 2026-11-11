@@ -33,6 +33,7 @@ from meshpipeline.persistence.models import (
     Membership,
     MembershipRole,
     Organization,
+    OrganizationMeshingStandard,
     SimulationJob,
     SourceObjectCleanup,
     User,
@@ -130,6 +131,10 @@ async def export_account(db: AsyncSession, *, owner_id: str, organization_id: st
         tables["artifacts"] = rows
         if cut:
             truncated.append("artifacts")
+        # the team's meshing standard: words a member typed for the organisation
+        rows, _cut = await _rows(db, select(OrganizationMeshingStandard)
+                                 .where(OrganizationMeshingStandard.organization_id == parsed))
+        tables["organization_meshing_standards"] = rows
 
     audit.record("privacy.export", actor=str(user.id) if user else "",
                  organization_id=organization_id, detail={"truncated": bool(truncated)})
@@ -220,6 +225,10 @@ async def request_erasure(db: AsyncSession, *, owner_id: str, organization_id: s
                      .where(_belongs(SimulationJob),
                             SimulationJob.status.in_(sorted(s.value for s in TERMINAL_STATES)))
                      .values(dispatch_payload=None))
+
+    # THE TEAM'S MESHING STANDARD is free text a member typed, and names who saved it: it goes now
+    await db.execute(delete(OrganizationMeshingStandard)
+                     .where(OrganizationMeshingStandard.organization_id == parsed))
 
     member_ids = select(Membership.user_id).where(Membership.organization_id == parsed)
     users = list((await db.execute(select(User).where(User.id.in_(member_ids)))).scalars())

@@ -356,17 +356,25 @@ def test_a_short_plate_whose_thickness_steps_is_judged_as_one_wall():
 
 
 def test_a_wall_step_is_not_read_whole_when_the_body_already_has_a_shell():
-    # SHELL-19 reads only a body with no shell sheet: here the 2 mm half passes alone, so the 3 mm half stays solid
+    # SHELL-19 reads only a body with no shell sheet: here the 2 mm half passes alone, so SHELL-19 does not read the
+    # 3 mm half against it. Since SHELL-23c (#449: a step is no pad) the 3 mm half, flush with the 2 mm shell wall and
+    # under twice it, is a shell by SHELL-23 as a short wall - not by SHELL-19's region
     rec, _ = ms.extract(sf.short_step(3.0, 2.0, a=30.0), mm_per_unit=1.0)
-    assert [b["verdict"] for b in rec["bodies"]] == ["mixed"]
-    assert [p["thickness_mm"] for p in _shell_pairs(rec)] == pytest.approx([2.0])
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
+    assert sorted(p["thickness_mm"] for p in _shell_pairs(rec)) == pytest.approx([2.0, 3.0])
+    assert not any("thickness changes" in str(p.get("why") or "") for p in _shell_pairs(rec))
+    assert [w["thickness_mm"] for w in rec["short_walls"]] == pytest.approx([3.0])
 
 
 def test_a_thick_block_lends_no_size_to_a_short_plate_on_it():
-    # SHELL-19: the 20 mm block fails against the region and is taken out; the 3 mm plate alone is under 10 walls long
+    # SHELL-19: the 20 mm block fails against the region and is taken out, so it lends the 3 mm plate no size. Since
+    # SHELL-23b (#449: the body share is off) the plate is a short wall of its own (SHELL-23) on the solid block: the
+    # body is mixed, the block a solid region, and no pair is a shell by SHELL-19's region
     rec, _ = ms.extract(sf.short_step(20.0, 3.0), mm_per_unit=1.0)
-    assert [b["verdict"] for b in rec["bodies"]] == ["solid"]
-    assert not _shell_pairs(rec)
+    assert [b["verdict"] for b in rec["bodies"]] == ["mixed"]
+    assert [p["thickness_mm"] for p in _shell_pairs(rec)] == pytest.approx([3.0])
+    assert not any("thickness changes" in str(p.get("why") or "") for p in _shell_pairs(rec))
+    assert [w["thickness_mm"] for w in rec["short_walls"]] == pytest.approx([3.0])
 
 
 def test_where_mid_faces_do_not_meet_the_region_is_meshed_solid_and_said_so(monkeypatch):
@@ -454,9 +462,11 @@ def test_a_junction_stopped_short_is_still_open(monkeypatch):
 
 
 def test_a_junction_stopped_short_is_bridged_to_the_edge_beside_it(monkeypatch):
-    # SHELL-13: the same L legs, stopped short of each other, are joined by the strip between their two edges
+    # SHELL-13: the same L legs, stopped short of each other, are joined by the strip between their two edges (with
+    # SHELL-35's square corners off: SHELL-22 would carry both legs to their corner line first)
     monkeypatch.setattr(ms, "extend", lambda *a, **k: None)
     monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
+    monkeypatch.setattr(ms, "SQUARE_FIRST", False)
     rec, surface = ms.extract(sf.l_angle(5.0, 5.0), mm_per_unit=1.0)
     assert _sewn(rec)["open_edges"] == 0
     assert any("SHELL-13" in n for n in rec["notes"])
@@ -1464,23 +1474,49 @@ def test_a_ring_is_as_wide_as_its_metal():
     assert ms.inscribed_width(BRepBuilderAPI_MakeFace(gp_Pln(), 0.0, 300.0, 0.0, 20.0).Face()) == pytest.approx(20.0, rel=1e-3)
 
 
-def test_a_lump_with_a_tab_stays_a_lump():
-    # SHELL-23, the body must be mostly plate: a 60 x 60 x 40 block with a 6 mm tab 30 x 20 on its side. The tab is
-    # a plate (3.3 walls wide), but it holds 2% of the part: a shell of it alone would be a scrap, so the part stays
-    # solid, said in numbers
+def test_a_lump_with_a_tab_is_a_shell_tab_and_a_solid_region():
+    # SHELL-23b: a 60 x 60 x 40 block with a 6 mm tab 30 x 20 on its side. The tab is a plate (3.3 walls wide) and holds
+    # 2% of the part: it is a shell, the block a solid region, as a thin tab on a block always was (SHELL-2). The block
+    # alone has no mid-surface and stays solid
     lump = sf._fuse(sf._box(0, 0, 0, 60, 60, 40), sf._box(60, 20, 0, 30, 20, 6))
     rec, _ = ms.extract(lump, mm_per_unit=1.0)
     (body,) = rec["bodies"]
-    assert body["verdict"] == "solid" and rec["surface_faces"] == [] and rec["short_walls"] == [] and rec["advice"] == ""
-    assert body["closest_wall"]["why"] == "lump" and body["closest_wall"]["thickness_mm"] == 6.0
-    assert body["why"] == ("no wall of it is a plate: its most plate-like wall is 6 mm thick and 20 mm wide, a plate; "
-                           "but its plates hold under 50% of its metal, so the part is mostly thick")
-    (tab,) = [p for p in rec["pairs"] if p["thickness_mm"] == pytest.approx(6.0)]
-    assert not tab["shell"] and tab["why"].startswith("a plate, but the part's plates hold only 2% of its metal")
-    # the same tab on a plate of its own thickness is most of its part: a shell
-    plate = sf._fuse(sf._box(0, 0, 0, 60, 60, 6), sf._box(60, 20, 0, 30, 20, 6))
-    rec, _ = ms.extract(plate, mm_per_unit=1.0)
-    assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
+    assert body["verdict"] == "mixed" and len(body["solid_regions"]) == 1
+    assert [round(m["thickness_mm"], 3) for m in _shell_mids(rec)] == [6.0]
+    assert body["mid_volume_ratio"] == pytest.approx(0.024, abs=0.003)
+    block, _ = ms.extract(sf.chunky_block(), mm_per_unit=1.0)
+    assert [b["verdict"] for b in block["bodies"]] == ["solid"]
+
+
+def test_a_step_up_to_twice_the_wall_is_a_shell_and_a_taller_pad_is_not():
+    # SHELL-23c: a 4 mm plate with a 60 x 60 land 2 mm high (6 mm there, flush underneath) is one shell, the plate laid
+    # onto the land's mid-plane with its offset (SHELL-7); 4 mm high (8 mm, twice the plate) too; 10 mm high (14 mm,
+    # 3.5 times) its mid-plane lies outside the plate's metal: a pad, solid, as before
+    for h, off in ((2.0, -1.0), (4.0, -2.0)):
+        rec, surface = ms.extract(sf.plate_with_low_pad(4.0, h), mm_per_unit=1.0)
+        assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
+        walls = sorted((m["thickness_mm"], m.get("offset_mm", 0.0)) for m in _shell_mids(rec))
+        assert walls == [(4.0, pytest.approx(off)), (4.0 + h, 0.0)]
+        assert _sewn(rec)["open_edges"] == 0 and _sewn_area(surface) == pytest.approx(200 * 100, rel=1e-6)
+        _all_checks(rec)
+    rec, _ = ms.extract(sf.plate_with_low_pad(4.0, 10.0), mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["mixed"]
+    (pad,) = [p for p in rec["pairs"] if p["thickness_mm"] == pytest.approx(14.0)]
+    assert not pad["shell"] and pad["why"].startswith("a pad on a thinner wall")
+
+
+def test_a_part_can_be_read_without_its_short_plates():
+    # SHELL-26: extract(plates=False) reads the whole part as before SHELL-23 and SHELL-24 - the shell the run falls
+    # back to when a mesh of the short plates cannot be made
+    rec, _ = ms.extract(sf.gusset(7.6, 12.7), mm_per_unit=1.0)
+    assert ms.has_plates(rec) and [b["verdict"] for b in rec["bodies"]] == ["shell"]
+    old, _ = ms.extract(sf.gusset(7.6, 12.7), mm_per_unit=1.0, plates=False)
+    assert not ms.has_plates(old) and [b["verdict"] for b in old["bodies"]] == ["solid"] and old["advice"] == ""
+    flange, _ = ms.extract(sf.rolled_channel(length=300.0), mm_per_unit=1.0)
+    assert ms.has_plates(flange)
+    assert not ms.has_plates(ms.extract(sf.rolled_channel(length=300.0), mm_per_unit=1.0, plates=False)[0])
+    thin, _ = ms.extract(sf.flat_plate(2.0), mm_per_unit=1.0)
+    assert not ms.has_plates(thin)
 
 
 def test_plates_that_would_hang_loose_stay_solid(monkeypatch):
@@ -1514,7 +1550,9 @@ def test_plates_that_would_hang_loose_stay_solid(monkeypatch):
 
 
 def test_a_body_whose_plates_hold_under_half_of_it_once_joined_is_left_as_it_was(monkeypatch):
-    # SHELL-23, the body must be mostly plate, judged on the sewn shell (MIXED-4's measure): 30% is a scrap
+    # SHELL-23, the body share, judged on the sewn shell (MIXED-4's measure) - off since SHELL-23b; its switch still
+    # works: at a half, 30% is left as it was
+    monkeypatch.setattr(ms, "PLATE_BODY_SHARE", 0.5)
     calls = []
 
     def fake(shape, *, mm_per_unit, names, clock, no_plate):
@@ -1531,3 +1569,20 @@ def test_a_body_whose_plates_hold_under_half_of_it_once_joined_is_left_as_it_was
     assert surface == "without" and calls == [{}, {"Part_1": "lump"}]
     assert rec["notes"] == ["Part_1: its plates would hold only 30% of its metal as a shell: it is mostly thick, so it "
                             "is left as it was (SHELL-23)."]
+
+
+def test_a_narrow_long_wedge_is_fitted_once_it_is_two_walls_wide(monkeypatch):
+    # SHELL-25: a wedge 4 to 8 mm over 200 mm (33 walls long: SHELL-9's fitted wall, its true thickness at every point)
+    # 25 mm wide is 3.1 walls at its thickest. The old line (four walls) left it solid while an even plate as wide was
+    # a shell; the plate's own line (two) fits it. 12 mm wide (1.5 walls) is a bar, solid either way
+    rec, _ = ms.extract(sf.wedge_plate(4.0, 8.0, 200.0, 25.0), mm_per_unit=1.0)
+    (mid,) = _shell_mids(rec)
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"] and mid["kind"] == "bspline"
+    assert mid["thickness_range_mm"] == pytest.approx([4.0, 8.0], rel=1e-3)
+    assert mid["area_mm2"] == pytest.approx(200.0 * 25.0, rel=1e-3)
+    _all_checks(rec)
+    bar, _ = ms.extract(sf.wedge_plate(4.0, 8.0, 200.0, 12.0), mm_per_unit=1.0)
+    assert [b["verdict"] for b in bar["bodies"]] == ["solid"]
+    monkeypatch.setattr(ms, "FIT_PLATE_WIDTH", False)
+    old, _ = ms.extract(sf.wedge_plate(4.0, 8.0, 200.0, 25.0), mm_per_unit=1.0)
+    assert [b["verdict"] for b in old["bodies"]] == ["solid"]

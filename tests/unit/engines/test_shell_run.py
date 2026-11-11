@@ -201,3 +201,30 @@ def test_short_walls_are_said_with_the_shell_and_a_part_with_no_plate_says_why()
                        "only 40 mm wide, 1.3 times its thickness; under 2 times, it is a bar or a block, not a plate"}]}
     assert sr.no_shell_why(rec) == ("its most plate-like wall is 30 mm thick but only 40 mm wide, 1.3 times its "
                                     "thickness; under 2 times, it is a bar or a block, not a plate")
+
+
+def test_a_shell_whose_short_plates_will_not_mesh_is_made_without_them(tmp_path, monkeypatch):
+    # SHELL-26: the mesher cannot close the boundary where a part's short plates join; the run reads the part again
+    # without them, meshes that, and says so in one line
+    from meshpipeline.engines import shell_run as sr
+    from meshpipeline.engines.gmsh import shell_adapter as sa
+
+    step = sf.write_step(sf._fuse(sf._box(0, 0, 0, 200, 100, 3), sf._box(0, 0, 3, 5, 100, 20)), tmp_path / "p.step")
+    real, calls = sa.mesh_run, []
+
+    def flaky(out, **kw):
+        rec = json.loads((Path(out) / "shell.json").read_text())
+        calls.append(len(rec.get("short_walls") or []))
+        if rec.get("short_walls"):
+            raise ValueError("gmsh could not close the boundary of 5 faces in turn (SHMESH-11c)")
+        return real(out, **kw)
+
+    monkeypatch.setattr(sa, "mesh_run", flaky)
+    rec = sr.run(tmp_path / "ws", step, mm_per_unit=1.0)
+    assert calls == [1, 0] and rec["made"] is True
+    assert rec["plates_left_out"] == sr.PLATES_OUT and rec["advice"] == ""
+    assert rec["words"].endswith(" " + sr.PLATES_OUT)
+    # a shell with no short plate that will not mesh is not read again: the solid is delivered, as before
+    monkeypatch.setattr(sa, "mesh_run", lambda out, **kw: (_ for _ in ()).throw(ValueError("no")))
+    thin = sr.run(tmp_path / "ws2", sf.write_step(sf.flat_plate(2.0), tmp_path / "q.step"), mm_per_unit=1.0)
+    assert thin["made"] is False and "plates_left_out" not in thin

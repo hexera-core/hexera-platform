@@ -37,6 +37,10 @@ SUMMARY = ("A mid-surface shell: {n:,} plate elements ({q:,} quads, {t:,} triang
            "thickness in the file.")
 #: SURF-6: the same line for a shell made on a surface file (engines/surface_run): what it lies on, and its thickness
 SURFACE_SUMMARY = "A shell on your surface: {n:,} plate elements ({q:,} quads, {t:,} triangles), {thick}."
+#: STD-4: the same lines for an all-triangle shell (Triangles picked on the stage, or asked in the notes or settings)
+TRIA_SUMMARY = ("A mid-surface shell: {n:,} triangular plate elements (3-node triangles); each element carries its wall "
+                "thickness in the file.")
+TRIA_SURFACE_SUMMARY = "A shell on your surface: {n:,} triangular plate elements (3-node triangles), {thick}."
 CONTAINS = (
     ("shell.bdf", "Nastran bulk data: CQUAD4 / CTRIA3, a PSHELL per wall thickness"),
     ("shell.inp", "CalculiX input deck: S4 / S3, a *SHELL SECTION per wall thickness"),
@@ -73,14 +77,24 @@ def _worst(sq: Mapping, key: str):
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
+def user_limits(quality: Mapping) -> list[Mapping]:
+    """SHMESH-26: the quality limits the user's notes set that were measured on this shell (the requirement rows of
+    a limit, applied); [] when the notes set none."""
+    rows = _map(quality.get("requirements")).get("rows") or []
+    return [r for r in rows if isinstance(r, Mapping) and str(r.get("field") or "").startswith("limit:")
+            and r.get("applied") is not False]
+
+
 def limits(quality: Mapping) -> list[dict]:
     """The shell's verdict rows (VER-2 for a shell): every figure of engines/shell_quality.LIMITS at its worst against
-    its limit, and the elements past Nastran's own GEOMCHECK limits. Notes, never blockers: validity blocks."""
+    its limit, and the elements past Nastran's own GEOMCHECK limits. Notes, never blockers: validity blocks.
+    SHMESH-26: WHILE THE USER'S OWN LIMITS ARE IN FORCE the shell is judged by them alone - our usual targets are no
+    rows at all (they are a quiet "also measured" line, `also_measured`); Nastran's own limits still are."""
     from meshpipeline.engines.shell_quality import LIMITS
 
     sq = _map(quality.get("shell_quality"))
     rows = []
-    for key, op, limit, source in LIMITS:
+    for key, op, limit, source in (() if user_limits(quality) else LIMITS):
         measured = _worst(sq, key)
         if measured is None:
             continue
@@ -92,6 +106,39 @@ def limits(quality: Mapping) -> list[dict]:
                  "source": "engines/shell_quality.py (MSC Nastran GEOMCHECK defaults)"})
     rows.extend(asked_rows(quality))
     return rows
+
+
+def also_measured(quality: Mapping) -> str:
+    """While the user's limits are in force: our usual shell targets a figure is past, in one quiet line - never a
+    failure, never "past a limit" ("" when none is, or when the user set no limit)."""
+    from meshpipeline.engines.shell_quality import LIMITS
+
+    if not user_limits(quality):
+        return ""
+    sq = _map(quality.get("shell_quality"))
+    said = []
+    for key, op, limit, _source in LIMITS:
+        v = _worst(sq, key)
+        if v is None or (v >= limit if op == ">=" else v <= limit):
+            continue
+        said.append(f"{LABELS.get(key, key).split(' (')[0].lower()} {v:.4g} (our target {'at least' if op == '>=' else 'at most'} "
+                    f"{limit:g})")
+    return ("Also measured against our usual shell targets, not judged while your own limits are in force: "
+            + "; ".join(said) + ".") if said else ""
+
+
+def header_row(quality: Mapping) -> dict | None:
+    """The result header's worst-quality figure while the user set a Jacobian limit: the worst element by their
+    Jacobian against their outer limit (their target when they gave none), marked as their own line is - met or
+    not - so the header never says "needs 0.6+" in amber over an element their 1% band allows. None otherwise."""
+    for r in user_limits(quality):
+        if r.get("field") != "limit:jacobian" or r.get("worst") is None:
+            continue
+        bound = r.get("limit_outer") if r.get("limit_outer") is not None else r.get("limit_target")
+        return {"key": WORST_KEY, "label": f"Worst element (Jacobian, as you asked: {r.get('asked')})", "op": ">=",
+                "limit": bound, "measured": r.get("worst"), "ok": r.get("met"), "gating": False, "asked": True,
+                "words": user_line(r), "row_id": r.get("id")}
+    return None
 
 
 def asked_rows(quality: Mapping) -> list[dict]:
@@ -242,6 +289,12 @@ def deliver(workspace, rec: Mapping, *, target: Mapping | None = None) -> bool:
 
     plan: dict[str, Any] = {"shell": True, "words": [w for w in (rec.get("words"), count_words(tgt)) if w],
             "target": tgt or None, "faces": [], "hot_spots": [], "asked": dict(target or {}) or None}
+    # STD-4 / SHSTAGE-8: which elements were made and why ("Triangles, as chosen on the stage."), said first
+    from meshpipeline.engines import mesh_requirements as _MR
+    from meshpipeline.engines.meshing_standard import elements_of
+
+    plan["elements"] = elements_of(_MR.read(ws))
+    plan["words"] = [*plan["words"][:1], plan["elements"]["words"], *plan["words"][1:]]
     if rec.get("requirements"):
         # SHMESH-26: what the user's notes asked for, against what this mesh delivers
         from meshpipeline.engines.shell_requirements import words as asked_words
@@ -260,6 +313,15 @@ def deliver(workspace, rec: Mapping, *, target: Mapping | None = None) -> bool:
                                                    "made_by": "engines/shell_run.py"}, indent=1))
     (ws / "fea_passes.json").write_text(json.dumps({"passes": [], "delivered": "shell", "levers": []}, indent=1))
     return True
+
+
+def _element_words(element: str, tria: bool) -> str:
+    """A solver's shell element as the result names it: "CQUAD4 / CTRIA3", or for an all-triangle shell its triangle
+    only ("CTRIA3", "S3", "SHELL181 triangle"; CalculiX's S6, SHWRITE-2)."""
+    if not tria:
+        return element
+    return {"S4 / S3": "S6", "S4R / S3": "S3", "CQUAD4 / CTRIA3": "CTRIA3", "SHELL181": "SHELL181 triangle"}.get(
+        element, element)
 
 
 def results(workspace, q: Mapping, plan: Mapping) -> dict:
@@ -287,6 +349,13 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
         met = limit_met(r.get("measured"), str(r.get("op")), r.get("limit"))
         rows.append({**{k: r.get(k) for k in ("key", "label", "op", "limit", "measured")}, "ok": met,
                      "gating": r in gating, "words": words(r)})
+    # SHMESH-26: the header's worst-quality figure is the user's Jacobian line when they set one (in place of its row,
+    # so it is listed once)
+    head = header_row(q)
+    if head is not None:
+        rows = [r for r in rows if r["key"] != f"asked_{head['row_id']}"]
+        rows.insert(len(gating), {k: v for k, v in head.items() if k != "row_id"})
+    mine = bool(user_limits(q))
     asked = [r for r in _map(q.get("requirements")).get("rows") or [] if isinstance(r, Mapping)]
     missed = sum(1 for r in asked if r.get("met") is False)
     if any(r["ok"] is False and r["gating"] for r in rows) or q.get("fatal"):
@@ -300,7 +369,15 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
                     "could not be fully met (each is listed with how far off it is).")
     else:
         outcome, said = "pass", "Every element meets the shell limits and Nastran's own checks."
-        if asked and all(r.get("met") is True for r in asked):
+        if mine:
+            # judged by the user's own limits alone: said so, and the edge-length targets with their share
+            said = "Passed: every limit your notes set is met, and every element is inside Nastran's own checks."
+            shares = [f"{r.get('outside_pct'):g}% of elements have an edge "
+                      f"{'shorter' if r.get('field') == 'min_edge' else 'longer'} than you asked"
+                      for r in asked if r.get("target") and r.get("met") is None and r.get("outside")]
+            if shares:
+                said += " Edge-length targets: " + "; ".join(shares) + "."
+        elif asked and all(r.get("met") is True for r in asked):
             said += " Everything your notes asked for is met."
     extra: dict[str, Any] = {}
     if asked:
@@ -311,6 +388,9 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
         line = count_words(tgt)
         extra["target"] = {"asked": int(tgt["asked"]), "mode": tgt.get("mode") or "about",
                            "planned": int(tgt.get("planned") or 0), "built": cells, "words": line}
+    q_n, t_n = int(sq.get("quads") or rec.get("quads") or 0), int(sq.get("trias") or rec.get("trias") or 0)
+    # STD-4: an all-triangle shell says so (no "0 quads")
+    tria = bool(cells) and q_n == 0 and t_n > 0
     within = bool(sq.get("within_nastran"))
     solvers = []
     for key, label, file, element, tested in SHELL_SOLVERS:
@@ -318,17 +398,19 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
         solvers.append({"solver": key, "label": label, "file": file, "element": element, "tested": bool(tested),
                         "tested_words": "solved in CalculiX in our tests" if tested else "not yet tested in the real solver",
                         "outcome": "pass" if ok else "warnings",
-                        "words": f"{label}: {element} plates" + ("" if ok else " (some elements past its own checks)") + ".",
+                        "words": f"{label}: {_element_words(element, tria)} plates"
+                                 + ("" if ok else " (some elements past its own checks)") + ".",
                         "rows": [], "file_ready": present(ws, file)})
-    q_n, t_n = int(sq.get("quads") or rec.get("quads") or 0), int(sq.get("trias") or rec.get("trias") or 0)
     walls = list((q.get("fea") or {}).get("walls_mm") or [])
-    plan_words = ([w for w in [rec.get("words")] if w] + [user_line(r) for r in asked]
-                  + [str(w) for w in plan.get("not_applied") or []])
+    elements = _map(plan.get("elements"))
+    plan_words = ([w for w in [rec.get("words"), elements.get("words")] if w] + [user_line(r) for r in asked]
+                  + [str(w) for w in plan.get("not_applied") or []] + [w for w in [also_measured(q)] if w])
+    summary = (TRIA_SUMMARY if tria else SUMMARY).format(n=cells, q=q_n, t=t_n)
     patches = patches_of(rec)
     m_n = int(rec.get("solid_elements") or 0)
-    summary = SUMMARY.format(n=cells - m_n, q=q_n, t=t_n)
     if patches:
         # MIXED-9: the solid patches in the same files, tied to the shell
+        summary = (TRIA_SUMMARY if tria else SUMMARY).format(n=cells - m_n, q=q_n, t=t_n)
         summary += PATCH_SUMMARY.format(k=len(patches), es="" if len(patches) == 1 else "es", m=m_n)
         for s in solvers:
             s["words"] = str(s["words"])[:-1] + ", with 10-node tetrahedra in the solid patches, tied to the plates."
@@ -337,11 +419,12 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
         from meshpipeline.contracts.shell_thickness import words as mm_words
 
         t_mm = _map(rec.get("surface")).get("thickness_mm")
-        summary = SURFACE_SUMMARY.format(n=cells, q=q_n, t=t_n, thick=f"{mm_words(t_mm)} thick" if t_mm
-                                         else "thickness not set")
+        summary = (TRIA_SURFACE_SUMMARY if tria else SURFACE_SUMMARY).format(
+            n=cells, q=q_n, t=t_n, thick=f"{mm_words(t_mm)} thick" if t_mm else "thickness not set")
     return {**extra,
             "title": "FEA shell mesh",
             "shell": {"walls_mm": walls, "quads": q_n, "trias": t_n,
+                      **({"elements": dict(elements)} if elements else {}),
                       **({"solid_elements": m_n, "solid_patches": [{k: p.get(k) for k in ("name", "body", "whole",
                                                                                           "count", "elements")}
                                                                    for p in patches]} if patches else {})},
@@ -349,7 +432,8 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
             "level": "Shell",
             "units": {"mesh": COMPLETED_MESH_UNIT.value, "words": export_units_words()},
             "check": {"outcome": outcome, "words": said, "rows": rows,
-                      "solvers": "Limits: the shell industry targets, and Nastran's own GEOMCHECK defaults."},
+                      "solvers": ("Limits: your own, from your notes, and Nastran's own GEOMCHECK defaults." if mine
+                                  else "Limits: the shell industry targets, and Nastran's own GEOMCHECK defaults.")},
             "elements": cells,
             "through_wall": {},
             "plan_words": plan_words,
@@ -362,7 +446,7 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
             "solvers": solvers}
 
 
-__all__ = ["CONTAINS", "LABELS", "MARKER_SOURCE", "SUMMARY", "SURFACE_SUMMARY", "WORST_KEY", "asked_rows", "deliver", "is_shell",
-           "part_names", "part_tags", "patch_label", "patches_of", "requirements_of", "solid_rows",
+__all__ = ["CONTAINS", "LABELS", "MARKER_SOURCE", "SUMMARY", "SURFACE_SUMMARY", "WORST_KEY", "also_measured",
+           "asked_rows", "header_row", "user_limits", "deliver", "is_shell", "part_names", "part_tags", "patch_label", "patches_of", "requirements_of", "solid_rows",
            "is_shell_workspace",
            "limits", "quality_of", "results"]

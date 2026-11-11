@@ -279,9 +279,9 @@ def test_every_requirement_is_told_asked_against_delivered():
     assert (rep["met"], rep["missed"]) == (8, 1) and rep["definitions"] == SR.DEFINITIONS
     # the closing message's one line, and the verdict's rows: a miss is a note with its own plain words
     said = SR.summary(rep)
-    assert said == ("8 of the 9 things you asked for are met; not fully met: aspect ratio under 4 (up to 1% of elements "
-                    "between 4 and 6) (1.5% of elements (3) are over 4, 1 of them over 6; the worst is 8). 1.5% of "
-                    "elements have an edge longer than you asked.")
+    assert said == ("Of the 10 things you asked for: 8 met, 1 not fully met: aspect ratio under 4 (up to 1% of "
+                    "elements between 4 and 6) (1.5% of elements (3) are over 4, 1 of them over 6; the worst is 8); 1 "
+                    "edge-length target: 1.5% of elements have an edge longer than you asked.")
     assert len(said) <= 400
     asked = MR.asked_rows({"requirements": rep})
     assert [r["key"] for r in asked] == [f"asked_r{k}" for k in (1, 2, 4, 5, 6, 7, 8, 9, 10)]
@@ -410,8 +410,11 @@ def test_the_criteria_list_on_a_plate_is_delivered_and_told_row_by_row(tmp_path,
     from meshpipeline.engines.fea_results import results
 
     block = results(ws)
-    asked = [r for r in block["check"]["rows"] if r["key"].startswith("asked_")]
+    # one row per measured requirement; the user's Jacobian line is the header's worst-quality row (SHMESH-26)
+    asked = [r for r in block["check"]["rows"] if r["key"].startswith("asked_") or r.get("asked")]
     assert len(asked) == sum(1 for r in rows if r["met"] is not None) >= 8 and all(not r["gating"] for r in asked)
+    head = next(r for r in asked if r["key"] == SD.WORST_KEY)
+    assert head["words"].startswith("Jacobian over 0.6") and head["limit"] == 0.4 and head["ok"] is True
     warp = next(r for r in asked if r["key"] == "asked_r4")
     assert warp["words"] == "Warpage under 15° (up to 1% of elements between 15° and 30°): met."
     assert block["check"]["outcome"] in ("pass", "concerns")
@@ -426,7 +429,11 @@ def test_the_criteria_list_on_a_plate_is_delivered_and_told_row_by_row(tmp_path,
     from meshpipeline.engines.verdict_limits import fea_limits, words
 
     limits = fea_limits(json.loads((ws / "quality.json").read_text()))
-    assert [r["key"] for r in limits if r["key"].startswith("asked_")] == [r["key"] for r in asked]
+    jac = next(r["id"] for r in rows if r["field"] == "limit:jacobian")
+    assert sorted(r["key"] for r in limits if r["key"].startswith("asked_")) == sorted(
+        f"asked_{jac}" if r["key"] == SD.WORST_KEY else r["key"] for r in asked)
+    # judged by the user's limits alone: none of our usual targets is a row
+    assert not any(r["key"] in ("shell_skew_deg", "shell_aspect", "shell_min_angle_quad") for r in limits)
     assert words(next(r for r in limits if r["key"] == "asked_r4")) == warp["words"]
 
 
@@ -502,3 +509,27 @@ def test_a_mixed_run_applies_the_notes_to_its_shell_and_its_solid(tmp_path, monk
     # the solid region was planned at the size asked for, too
     plan = json.loads((ws / mixed_run.FOLDER / "solid" / "fea_plan.json").read_text())
     assert plan["base_size_m"] == pytest.approx(0.006) and plan["user_sizes"]["Part_1"]["whole"] is True
+
+
+def test_a_mesh_past_a_limit_is_set_against_435s_steps_and_the_record_tells_both(tmp_path, plate, monkeypatch):
+    """SHMESH-36: both candidate meshes - this PR's steps and #435's - and the one kept, with the rule that chose it,
+    are written into the record."""
+    from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    real = SA._standing
+
+    def standing(applied, past_n, other=None, requirements=None):
+        got = real(applied, past_n, other, requirements)
+        return got if other is not None else (got[0], 0, max(got[2], 1), got[3])      # always "past a limit"
+
+    monkeypatch.setattr(SA, "_standing", standing)
+    ws = _copy(plate, tmp_path / "ws")
+    _run(ws, criteria(0.5))
+    kept = json.loads((ws / "shell_quality.json").read_text())["kept"]
+    assert kept["rule"] == "SHMESH-36" and len(kept["candidates"]) == 2
+    names = [c["mesh"] for c in kept["candidates"]]
+    assert names == ["this PR's steps (SHMESH-27..35)", "#435's steps"] and kept["kept"] in names
+    for c in kept["candidates"]:
+        assert {"elements", "trias", "past_solver", "nastran_past", "lines"} <= set(c) and len(c["lines"]) == 7
+        assert all({"id", "asked", "outside", "beyond", "worst", "met"} <= set(r) for r in c["lines"])
+    assert kept["why"] and set(kept["standing"]) == set(names)

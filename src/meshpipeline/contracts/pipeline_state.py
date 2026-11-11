@@ -133,12 +133,16 @@ class PipelineState(TypedDict):
     executor_failure_facts: dict       # the plain facts the user's sentence is built from
     geometry_unsuitable_reason: str    # node_geometry_admission's reject reason (unmeshable input)
     flow_topology:      str            # "internal"/"external"/"" - DERIVED from purpose (neutral fact, NOT an engine_param)
+    up_axis:            str            # INS-9: which way is up, as confirmed on the stage ("+z", "-y", ...); "" = +z
     leak_closing:       dict | None    # INS-8: {"close_up_to_m", "rule"} as confirmed on the stage; None = the surface as drawn
     fea_connection:     str            # an FEA assembly: "bonded" | "contact", as confirmed on the stage ("" otherwise)
     fea_gap_joins:      bool           # an FEA assembly: parts across a small gap joined there (PLAN-fea-18); True unless switched off
     fea_pairs:          dict           # an FEA assembly: the single pairs set on the stage, by pair key (PLAN-fea-19/20); {} = the rule
+    fea_plan_choice:    str            # PLAN-fea-22: "full" | "quicker", the size the user picked on the stage ("" when none: the run takes the recommended one)
+    fea_plans_object:   str            # PLAN-fea-22: the object key of the plans the stage kept for the run ("" when none)
     part_matches:       dict | None    # NOTE-4: the notes tied to parts before approval, as the user left it; None = read at run time
     fea_mesh_as:        str            # an FEA part: "shell" only when the user's words asked for one, else "solid" (SHSTAGE-5); "mixed" from older confirmations
+    fea_shell_elements: str            # a shell's elements clicked on the stage: "quads" | "triangles" | "" (no click: notes and settings decide, STD-4)
     fea_shell_thickness_mm: float | None   # a surface file's wall thickness (mm) as settled on the stage from the user's words (SURF-4); None = none given
     mesh_manifest:      dict
     reviewer_result:         str
@@ -211,6 +215,10 @@ class PipelineState(TypedDict):
     # application from the approval and never rewritten by a node. Every route's AI steps read
     # them and answer per requirement; the result says what became of each.
     user_notes: list
+    # THE TEAM'S MESHING STANDARD (engines/meshing_standard, STD-1..3): the organisation's standing mesh
+    # requirements as approved with the run - {"text", "reading"?, "updated_by"?, "updated_at"?} - or None.
+    # Read by the same reader as the notes and merged under them (the notes win field by field).
+    meshing_standard: dict | None
     # THE RESOLUTION LADDER (engines/resolution_policy, LAD-cfd-1/2): the rung the current
     # attempt was built at, the engine it belongs to, and the shortfall it answers. Set by the
     # engine-fallback node between attempts; written into the attempt's workspace by the builder.

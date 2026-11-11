@@ -33,7 +33,8 @@ def test_every_file_reads_back_the_same_mesh(tmp_path, units):
     sw.write_all(tmp_path, m, units=units)
     s = 1e-3 if units == "m" else 1.0
     prep = sw.prepare(m, units=units)
-    assert [p[0] for p in prep.props] == ["Part_1_t2mm", "Part_1_t1p5mm", "Part_2_t3mm_varies"]
+    # SHWRITE-1: a part of several walls has a property per wall, "<part> t=<wall>mm"; a part of one, the part's name
+    assert [p[0] for p in prep.props] == ["Part_1 t=2mm", "Part_1 t=1.5mm", "Part_2"]
     assert [p[2] for p in prep.props] == [1, 1, 2]
     assert prep.junctions == {"J_Mid_1_Mid_2": pytest.approx(np.array([1, 4]))}
     for read in (sw.read_bdf(tmp_path / "shell.bdf"), sw.read_inp(tmp_path / "shell.inp"),
@@ -47,12 +48,13 @@ def test_every_file_reads_back_the_same_mesh(tmp_path, units):
         assert {"PART_1", "PART_2"} <= names and len(read.groups) == 4
     bdf = sw.read_bdf(tmp_path / "shell.bdf")
     assert bdf.corner == {3: pytest.approx((1.0 * s, 2.0 * s, 3.0 * s))}
-    assert bdf.names == {1: "Part_1_t2mm", 2: "Part_1_t1p5mm", 3: "Part_2_t3mm_varies"}
+    assert bdf.names == bdf.hm_props == {1: "Part_1 t=2mm", 2: "Part_1 t=1.5mm", 3: "Part_2"}
+    assert bdf.parts == {"Part_1": {1, 2}, "Part_2": {3}}
     assert bdf.groups["Part_1"] == {1, 2}
     inp = sw.read_inp(tmp_path / "shell.inp")
     assert inp.corner == {3: pytest.approx((1.0 * s, 2.0 * s, 3.0 * s))}
     text = (tmp_path / "shell.bdf").read_text()
-    assert "add MAT1 k" in text and "$ Femap Property 1 : Part_1_t2mm" in text
+    assert "add MAT1 k" in text and "$ Femap Property 1 : Part_1 t=2mm" in text
     assert "not yet tested in the real solver" in text.lower()
 
 
@@ -136,7 +138,7 @@ def test_an_offset_mid_plane_is_written_to_every_deck(tmp_path):
     m.zoffs = np.array([0.0, 0.25, 0.0])
     sw.write_all(tmp_path, m, units="mm")
     prep = sw.prepare(m, units="mm")
-    assert [p[0] for p in prep.props] == ["Part_1_t2mm", "Part_1_t1p5mm_z0p25", "Part_2_t3mm_varies"]
+    assert [p[0] for p in prep.props] == ["Part_1 t=2mm", "Part_1 t=1.5mm", "Part_2"]
     bdf = sw.read_bdf(tmp_path / "shell.bdf")
     assert bdf.zoffs == {2: pytest.approx(0.25)}
     assert bdf.corner == {3: pytest.approx((1.0, 2.0, 3.0))}

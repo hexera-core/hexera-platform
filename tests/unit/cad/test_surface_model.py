@@ -71,7 +71,7 @@ def test_a_seam_that_does_not_sew_is_a_crack_not_an_opening():
     assert sum(s["unmet_edges"] for s in cracked["sheets"]) == 8
     assert all(lp["seam"] for s in cracked["sheets"] for lp in s["loops"])
     # ... and a lid lifted clear of its neighbours is a real opening again (a tray and a loose plate)
-    apart, _sewn = _read(sx.skin_with_crack(100.0 * tol))
+    apart, _sewn = _read(sx.skin_with_crack(300.0 * tol))
     assert apart["kind"] == "surface" and sum(s["unmet_edges"] for s in apart["sheets"]) == 0
 
 
@@ -140,12 +140,18 @@ def test_the_record_is_the_one_the_shell_mesher_reads(tmp_path):
 
 def test_edges_that_do_not_meet_are_said_in_the_record():
     tol = _read(sx.tray())[0]["sew_tolerance_mm"]
-    reading, sewn = _read(sx.skin_with_crack(3.0 * tol), said_shell=True)
+    # left as drawn (the user said not to stitch): the gaps are in the record
+    reading, sewn = _read(sx.skin_with_crack(3.0 * tol), said_shell=True, stitch=False)
     assert reading["kind"] == "surface"
     rec, _surface = sm.record(reading, sewn, mm_per_unit=1.0, walls_mm={s["part"]: 1.0 for s in reading["sheets"]})
     assert rec["checks"]["connected"] is False
-    assert sum(c["open_edges"] for c in rec["sewn"]) == 8
+    assert sum(c["open_edges"] for c in rec["sewn"]) == 1          # one gap all round (SURF-8's one count)
     assert any("SURF-2" in n for n in rec["notes"])
+    # by rule they are closed (SURF-8), and the record says that instead
+    reading, sewn = _read(sx.skin_with_crack(3.0 * tol), said_shell=True)
+    rec, _surface = sm.record(reading, sewn, mm_per_unit=1.0, walls_mm={s["part"]: 1.0 for s in reading["sheets"]})
+    assert rec["checks"]["connected"] is True and sum(c["open_edges"] for c in rec["sewn"]) == 0
+    assert any("SURF-8" in n and "4 gap(s)" in n for n in rec["notes"]) and not any("SURF-2" in n for n in rec["notes"])
 
 
 def test_three_faces_at_one_line_are_sewn_into_a_junction():

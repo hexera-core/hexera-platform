@@ -152,6 +152,13 @@ class ConfirmIn(BaseModel):
     #: the declaration line that says it.
     fea_mesh_as_picked: str = ""
     mesh_as_summary: str = ""
+    #: SHSTAGE-8: A SHELL'S ELEMENTS, "quads" or "triangles", from the shell line's one choice. Sent by the stage; the
+    #: server keeps it only when it is the user's own click (it differs from where the control started) - "" when
+    #: the control was left as it started, the notes and settings then decide as the run reads them. Read into the
+    #: run from the stored confirmation (application/shell_elements.confirmed).
+    fea_shell_elements: str = ""
+    #: SET BY THE SERVER with it: where the elements in force came from ("stage", "notes", "settings", "default").
+    fea_shell_elements_by: str = ""
     #: SURF-4: SET BY THE SERVER at Proceed for a file that is a surface: the wall thickness the user's words gave,
     #: in millimetres (None: none given - the run delivers the shell with its thickness not set). Whatever a client
     #: sends here is ignored. Read into the run from the stored confirmation (application/surface_check).
@@ -171,6 +178,11 @@ class ConfirmIn(BaseModel):
     fea_pairs: dict | list | None = None
     #: SET BY THE SERVER for an FEA assembly: the pairs the user set, in words.
     pairs_summary: str = ""
+    #: PLAN-fea-22: the size the user picked on the stage ("full" or "quicker"), checked against what the check
+    #: offered; read into the run from the stored confirmation (application/fea_check.confirmed_plan_choice).
+    fea_plan: str = ""
+    #: SET BY THE SERVER: the size choice in words, for the declaration.
+    plan_summary: str = ""
 
     @field_validator("extents")
     @classmethod
@@ -262,6 +274,22 @@ def _take_back(store, object_key: str, *, ours: bytes, earlier: bytes | None, se
         logger.warning("geometry check: could not take back the stored confirmation - session_id=%s", session_id)
 
 
+async def _meshing_standard_of(organization_id: str) -> dict | None:
+    """SHSTAGE-8: the team's meshing standard, for where a shell's element choice starts (its kept reading only:
+    no model is asked); None with none, or when it cannot be read (the control then starts on the notes or Quads)."""
+    if not organization_id:
+        return None
+    try:
+        from meshpipeline.application import meshing_standard_service
+        from meshpipeline.persistence.session import get_db
+
+        async with get_db() as db:
+            return await meshing_standard_service.for_dispatch(db, organization_id=organization_id)
+    except Exception as exc:  # noqa: BLE001 - a setting never breaks the stage
+        logger.warning("geometry check: the meshing standard could not be read (%s)", type(exc).__name__)
+        return None
+
+
 @router.get("/{session_id}/check")
 async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                     organization_id: str = Depends(org_dep)) -> dict:
@@ -333,6 +361,11 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                 logger.warning("geometry check: the shell check was not started (%s)", type(exc).__name__)
             _shell = await asyncio.to_thread(shell_check.view_for, str(session_id), payload.get("facts"), _msgs)
         if _shell is not None:
+            # SHSTAGE-8: a shell's one element choice, Quads | Triangles, on its line (none for a solid)
+            from meshpipeline.application import shell_elements
+            if _shell.get("mesh_as") == "shell":
+                _std = await _meshing_standard_of(organization_id)
+                _shell = {**_shell, "elements": shell_elements.view(_shell, _msgs, standard=_std)}
             payload["fea"]["shell"] = _shell
         # ...and NO OPENINGS: a solid part for structural analysis has no inlet or outlet, so the
         # scout's flow openings (read before the purpose was known) are not served on its check
@@ -757,6 +790,9 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
             "gap_summary": (("Joined across small gaps: " if gap_on else "Left open (small gaps not joined): ")
                             + "; ".join(g["words"].split(" - ")[0] for g in gaps[:8])
                             + (f" and {len(gaps) - 8} more" if len(gaps) > 8 else "") + ".") if gaps else ""})
+        # PLAN-fea-22: the size the user picked, when the check offered a choice (the recommended one when unsent)
+        plan = fea_check.plan_answer(body.fea_plan, facts)
+        body = body.model_copy(update={"fea_plan": plan, "plan_summary": fea_check.plan_words(plan, facts)})
         # SHSTAGE-5: SHELL OR SOLID, SETTLED NOW - a shell only when the user's words asked for one (never the
         # form's: it has no pick), else a solid as before shell existed. The run never waits on the user after this.
         from meshpipeline.application import shell_check, surface_check
@@ -770,12 +806,22 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
                 logger.warning("geometry confirm: the shell check was not started (%s)", type(exc).__name__)
             _view = await asyncio.to_thread(shell_check.view_for, str(session_id), facts, session.messages)
         _settled = shell_check.settle(_view)
+        # SHSTAGE-8: the shell's elements - the user's click is the last word for this run; a control left where it
+        # started is no pick (the notes and settings decide as the run reads them)
+        from meshpipeline.application import shell_elements
+        _elements = {"pick": "", "by": "", "words": ""}
+        if _settled["mesh_as"] == "shell":
+            _started = shell_elements.start(session.messages, standard=await _meshing_standard_of(organization_id))
+            _elements = shell_elements.settle(body.fea_shell_elements, _started)
         body = body.model_copy(update={"fea_mesh_as": _settled["mesh_as"],
                                        "fea_shell_thickness_mm": (_view or {}).get("thickness_mm")
                                        if (_view or {}).get("surface") else None,
                                        "fea_mesh_as_picked": (f"{_settled['picked']} ({_settled['by']})"
                                                               if _settled["picked"] else ""),
-                                       "mesh_as_summary": shell_check.declaration_words(_settled)})
+                                       "fea_shell_elements": _elements["pick"],
+                                       "fea_shell_elements_by": _elements["by"],
+                                       "mesh_as_summary": " ".join(w for w in (shell_check.declaration_words(_settled),
+                                                                               _elements["words"]) if w)})
         proposed = _stored_check.get("proposal") or {}
         body = body.model_copy(update={
             "input_kind": "solid-body", "flow": None, "openings": [], "seed_point_mm": None,

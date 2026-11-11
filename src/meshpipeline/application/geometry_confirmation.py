@@ -348,6 +348,9 @@ def fea_confirmation_message(body) -> str:
         pairs_said = str(getattr(body, "pairs_summary", "") or "").strip()
         if pairs_said:
             parts.append(pairs_said)
+    plan_said = str(getattr(body, "plan_summary", "") or "").strip()
+    if plan_said:
+        parts.append(plan_said)       # PLAN-fea-22: the size the user picked
     # SHSTAGE-5: shell or solid, as settled at Proceed, and why
     mesh_as = str(getattr(body, "mesh_as_summary", "") or "").strip()
     if mesh_as:
@@ -490,6 +493,26 @@ def confirmed_leak_closing(session_id: str) -> dict | None:
     except Exception:  # noqa: BLE001 - unknown is "as drawn", never a refusal
         return None
     return leak_closing_of(record)
+
+
+def confirmed_up_axis(session_id: str) -> str:
+    """Which way is up in the file, as the user confirmed it on the stage ("+z", "-y", ...): the
+    ground is laid under it (INS-9). "" when nothing was confirmed or it cannot be read - the run
+    then takes +z up, as before."""
+    import json
+
+    from meshpipeline.contracts.geometry_fields import UP_AXES
+
+    if not session_id:
+        return ""
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.contracts.object_storage import get_object_store
+    try:
+        record = json.loads(get_object_store().get_bytes(object_key=check_object_key(session_id, "confirmed.json")))
+    except Exception:  # noqa: BLE001 - unknown is +z up, never a refusal
+        return ""
+    up = str((record or {}).get("up_axis") or "").strip().lower() if isinstance(record, dict) else ""
+    return up if up in UP_AXES else ""
 
 
 def leak_closing_of(record) -> dict | None:

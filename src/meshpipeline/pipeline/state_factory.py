@@ -37,6 +37,7 @@ def make_pipeline_state(
     agent_model_configs: dict | None = None,
     user_dispute: dict | None = None,
     user_notes: list | None = None,
+    meshing_standard: dict | None = None,
 ) -> dict:
     # The chosen mesh engine is the canonical PipelineState field `engine` (intake's tool/session
     # interface calls it `mesh_engine`; there is no third spelling). Carrying it here - plus the
@@ -105,6 +106,8 @@ def make_pipeline_state(
         "review_history":        [],
         # the user's own notes, word for word (contracts/user_notes); [] when they left none
         "user_notes":            list(user_notes or []),
+        # the team's meshing standard (engines/meshing_standard); None when the organisation has none
+        "meshing_standard":      dict(meshing_standard) if meshing_standard else None,
         "agent_model_configs":   agent_model_configs if agent_model_configs is not None else {},
         "user_dispute":          user_dispute if user_dispute is not None else {},
         # Empty until the phase that owns each one runs; never seeded from a caller, so a

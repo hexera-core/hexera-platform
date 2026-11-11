@@ -75,6 +75,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                               failure_marker=STOP_REVIEWED_CASE_REPEATS)
         return False, STOP_REVIEWED_CASE_REPEATS, outcome
 
+    # CFDREQ-1: THE USER'S REQUIREMENTS from their notes (engines/cfd_requirements) - the one seam. None: the plan
+    # is exactly the detail level's
+    from meshpipeline.engines import cfd_requirements as CR
+    _ask = CR.Ask.of(ws, "snapgrid")
+    if _ask is not None:
+        plan = CR.snapgrid_plan(_ask, plan)
+        _ask.write(ws)
+        await CR.say(publish, _ask.lines())
     shutil.copy2(src, ws / R.SOURCE_NAME)
     R.write_plan(ws, plan)
     run.note_authoring()

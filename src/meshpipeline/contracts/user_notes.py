@@ -41,6 +41,9 @@ QUESTION = ("Anything specific about this simulation we should know? For example
 
 SOURCE_CHAT = "chat"
 SOURCE_CONSOLE = "console"
+#: the team's meshing standard (engines/meshing_standard): read by the notes' reader as a note of its own, never
+#: stored among a run's notes
+SOURCE_SETTINGS = "settings"
 
 #: The file every attempt's workspace gets (verbatim notes, for any step that reads the workspace)
 NOTES_FILE = "user_notes.txt"
@@ -77,9 +80,10 @@ CONSUMERS: dict[str, str] = {
     "fea_ai": "engines/fea_ai.py: the FEA judgement calls are shown them",
     "fea_part_sizes": "engines/fea_part_sizes.py: the phrases about particular parts are tied to the parts by the "
                       "vision model (cad/part_words), and the sizes they ask for applied part by part",
-    "mesh_requirements": "engines/mesh_requirements.py: what a note asks of the WHOLE mesh - sizes, the element kind, "
-                         "quality limits - read into one checked set (NOTE-7), applied by the shell and solid FEA "
-                         "meshes and told asked against delivered",
+    "mesh_requirements": "engines/mesh_requirements.py: what a note asks of the mesh - sizes, the element kind, "
+                         "quality limits, a cell count, boundary layers, sizes in a named place - read into one "
+                         "checked set (NOTE-7, NOTE-10), applied by the shell and solid FEA meshes and by every CFD "
+                         "engine (engines/cfd_requirements.py), and told asked against delivered",
     "snappy_part_levels": "engines/snappy/part_levels.py: the same reading on the flow route; each part's size "
                           "becomes its own snappyHexMesh level against the background cell",
     "reviewer": "agents/reviewer/visual.py: shown as context, never as criteria",
@@ -91,20 +95,20 @@ CONSUMERS: dict[str, str] = {
 COMMON_CONSUMERS = ("intake", "builder_workspace", "reviewer", "delivery", "chat")
 #: Each route of application/purpose_map.ROUTES, and the AI steps that read the notes on it.
 ROUTE_CONSUMERS: dict[str, tuple[str, ...]] = {
-    "flow": (*COMMON_CONSUMERS, "builder_model", "snappy_planner", "snappy_part_levels"),
+    "flow": (*COMMON_CONSUMERS, "builder_model", "snappy_planner", "snappy_part_levels", "mesh_requirements"),
     "fea": (*COMMON_CONSUMERS, "fea_ai", "fea_part_sizes", "mesh_requirements", "builder_model"),
     # an ECXML model is built by snapgrid's deterministic driver: no AI step in the build, so the
     # intake sets what fits a field and the reviewer reads them beside the result
-    "electronics": COMMON_CONSUMERS,
+    "electronics": (*COMMON_CONSUMERS, "mesh_requirements"),
 }
 #: Each implemented engine (engines/registry.engine_names), and the build step that reads them.
 ENGINE_CONSUMERS: dict[str, tuple[str, ...]] = {
-    "cfmesh": ("builder_model",),
+    "cfmesh": ("builder_model", "mesh_requirements"),
     "gmsh": ("builder_model", "fea_ai", "fea_part_sizes", "mesh_requirements"),
-    "snapgrid": ("intake",),
-    "snappy": ("snappy_planner", "snappy_part_levels"),
-    "snappy_multiregion": ("builder_model",),
-    "vmtk": ("builder_model",),
+    "snapgrid": ("intake", "mesh_requirements"),
+    "snappy": ("snappy_planner", "snappy_part_levels", "mesh_requirements"),
+    "snappy_multiregion": ("builder_model", "mesh_requirements"),
+    "vmtk": ("builder_model", "mesh_requirements"),
 }
 
 
@@ -250,6 +254,8 @@ def merge(existing: Any, new: Any) -> list[dict]:
 def _where(note: Mapping) -> str:
     if note.get("source") == SOURCE_CONSOLE:
         return "typed in the notes box"
+    if note.get("source") == SOURCE_SETTINGS:
+        return "the team's meshing standard, from settings"
     return f"said in the chat, message {note['turn']}" if note.get("turn") else "said in the chat"
 
 
@@ -429,14 +435,16 @@ def given_remark(engines: Sequence[str]) -> str:
 
 
 def result_lines(remarks: Sequence[Any], *, consumer: str = "delivery") -> list[str]:
-    """The result's 'From your notes' lines, one per remark ([] with none)."""
+    """The result's 'From your notes' lines, one per remark ([] with none). A remark that already says where it came
+    from ("From your settings: ...", engines/meshing_standard.remark) is kept as it is."""
     _reader(consumer)
-    return [f"From your notes: {str(r).strip()}" for r in remarks or () if str(r).strip()]
+    return [str(r).strip() if str(r).strip().startswith("From your ") else f"From your notes: {str(r).strip()}"
+            for r in remarks or () if str(r).strip()]
 
 
 __all__ = ["COMMON_CONSUMERS", "CONSUMERS", "ENGINE_CONSUMERS", "GUIDANCE", "NOTES_FILE",
            "QUESTION", "REMARKS_FILE", "REMARK_DESCRIPTION", "ROUTE_CONSUMERS", "RULE_EVERY_ROUTE",
-           "RULE_NEVER_FAILS", "RULE_VERBATIM", "SOURCE_CHAT", "SOURCE_CONSOLE", "answer",
+           "RULE_NEVER_FAILS", "RULE_VERBATIM", "SOURCE_CHAT", "SOURCE_CONSOLE", "SOURCE_SETTINGS", "answer",
            "answers_now", "asked", "capture", "chat_block", "clean", "context_block", "drop_remark", "is_skip", "make",
            "merge", "own_notes",
            "prompt_block", "SYSTEM_LEADS", "system_written",

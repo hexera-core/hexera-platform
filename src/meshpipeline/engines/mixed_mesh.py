@@ -314,7 +314,8 @@ def join(shell: ShellMesh, solid: SolidPart, cut_faces: list, *, part: str,
     ext = ShellMesh(xyz=all_xyz, quads=np.vstack([shell.quads, q]), trias=shell.trias,
                     wall=np.concatenate([shell.wall[:n_q], q_wall, shell.wall[n_q:]]),
                     mid=list(shell.mid[:n_q]) + q_mid + list(shell.mid[n_q:]),
-                    part=list(shell.part[:n_q]) + q_part + list(shell.part[n_q:]), notes=list(shell.notes))
+                    part=list(shell.part[:n_q]) + q_part + list(shell.part[n_q:]), notes=list(shell.notes),
+                    part_names=dict(shell.part_names))
     # element indices move: the triangles come after the new quads
     shift = np.where(np.arange(shell.n_elements) >= n_q, len(q), 0)
     ext.groups = {g: np.asarray(v, dtype=np.int64) + shift[np.asarray(v, dtype=np.int64)] for g, v in shell.groups.items()}
@@ -457,6 +458,13 @@ def write_inp(path: Path | str, mm: MixedMesh, *, units: str = "m", source: str 
     for name, ids in sorted(mm.solid.faces.items()):
         lines.append(f"*NSET, NSET=SOLID_{name}")
         lines += [", ".join(str(base + int(v)) for v in ids[i:i + 16]) for i in range(0, len(ids), 16)]
+    if mm.part in prep.parts:
+        # SHWRITE-1: the solid region is of the same part - its elements join the part's ELSET (a set named again adds
+        # to it, in Abaqus and CalculiX alike)
+        lines.append(f"** the solid region's elements are part {prep.label(mm.part)}'s too")
+        lines.append(f"*ELSET, ELSET={sw.inp_part_sets(prep)[mm.part]}")
+        lines += [", ".join(str(e0 + k + 1) for k in range(i, min(i + 16, len(mm.solid.tets))))
+                  for i in range(0, len(mm.solid.tets), 16)]
     lines.append(f"** SHLINK-4: {len(mm.ties)} ties (translations) of the shell's link rows to the solid")
     lines += sl.equations(mm.ties)
     with open(path, "a", encoding="ascii", newline="\n") as fh:
@@ -502,8 +510,13 @@ def write_bdf(path: Path | str, mm: MixedMesh, *, units: str = "m", source: str 
     for j, (x, y, z) in enumerate((mm.solid.xyz * s).tolist()):
         lines.append(f"{'GRID*':<8}{base + j + 1:>16d}{'':>16}{_f16(x)}{_f16(y)}*")
         lines.append(f"{'*':<8}{_f16(z)}")
+    # SHWRITE-1: the solid region's elements are in its part's HyperMesh component (the same id as its shell's)
+    label = prep.label(mm.part)
+    lines.append(sw.hm_name("COMP", mat, label))
     for k, row in enumerate(mm.solid.tets.tolist()):
         lines.extend(_cards("CTETRA", [e0 + k + 1, pid, *[base + int(v) for v in row]]))
+    lines.append(f"$ Femap Property {pid} : {label} solid")
+    lines.append(sw.hm_name("PROP", pid, f"{label} solid"))
     lines.extend(_cards("PSOLID", [pid, mat]))
     lines += sl.nastran_mpcs(mm.ties, sid=1)
     with open(path, "a", encoding="ascii", newline="\n") as fh:
@@ -513,13 +526,19 @@ def write_bdf(path: Path | str, mm: MixedMesh, *, units: str = "m", source: str 
 
 def write_cdb(path: Path | str, mm: MixedMesh, *, units: str = "m", source: str = "") -> dict:
     prep = sw.prepare(mm.shell, units=units)
-    got = sw.write_cdb(path, prep, units=units, source=source)
     s = prep.scale
     base, e0 = len(mm.shell.xyz), mm.shell.n_elements
+    # SHWRITE-1: the solid region's elements are in its part's component too, so the solid blocks go before the
+    # components (after the shell's elements)
+    extra = {mm.part: np.arange(e0 + 1, e0 + len(mm.solid.tets) + 1)} if mm.part in prep.parts else None
+    got = sw.write_cdb(path, prep, units=units, source=source, extra=extra)
     mat = _solid_material(prep, mm.part)
     text = Path(path).read_text(encoding="ascii")
     assert text.rstrip().endswith("FINISH")
     text = text.rstrip()[: -len("FINISH")]
+    at = text.find("\nCMBLOCK,")
+    tail = text[at + 1:] if at >= 0 else ""
+    text = text[:at + 1] if at >= 0 else text
     n = mm.solid.n_nodes
     # MIXED-9: each solid patch's tetrahedra carry their part's material
     mats = region_materials(prep, mm.regions) if mm.regions is not None else {}
@@ -543,6 +562,7 @@ def write_cdb(path: Path | str, mm: MixedMesh, *, units: str = "m", source: str 
         lines.append("".join(f"{v:>9d}" for v in head + conn[:8]))
         lines.append("".join(f"{v:>9d}" for v in conn[8:]))
     lines.append(f"{-1:>9d}")
+    lines += tail.rstrip("\n").splitlines() if tail else []
     lines += sl.ansys_ces(mm.ties)
     lines.append("FINISH")
     Path(path).write_text(text + "\n".join(lines) + "\n", encoding="ascii", newline="\n")

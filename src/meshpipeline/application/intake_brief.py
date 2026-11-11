@@ -222,11 +222,14 @@ def build_brief(session: Any, *, part_matches: dict | None = None) -> dict[str, 
         # an FEA mesh has no detail level (one rules-based plan, PLAN-fea-14): no row for it
         brief["mesh_fidelity"] = None
         # SHSTAGE-5: a part settled as a shell, or as shell + solid, says so on the card (a solid is the default)
-        from meshpipeline.application.shell_check import card_engine_settings, card_mesh_as
-        brief["mesh_as"] = _clean(card_mesh_as(_fea_declaration(getattr(session, "messages", None) or [])))
-        # ...and its engine settings true to it: the plates are linear; the element order is the solid's beside them
+        from meshpipeline.application.shell_check import card_elements, card_engine_settings, card_mesh_as
+        _declared = _fea_declaration(getattr(session, "messages", None) or [])
+        brief["mesh_as"] = _clean(card_mesh_as(_declared))
+        # ...and its engine settings true to it: the plates are linear (3-node triangles when SHSTAGE-8 settled
+        # them); the element order is the solid's beside them
         if brief["mesh_as"] and brief.get("engine_params"):
-            brief["engine_params_label"] = _clean(card_engine_settings(brief["mesh_as"], brief["engine_params"]))
+            brief["engine_params_label"] = _clean(card_engine_settings(brief["mesh_as"], brief["engine_params"],
+                                                                       elements=card_elements(_declared)))
     # absent stays absent: a field Intake never settled is not a blank row
     brief = {k: v for k, v in brief.items() if v is not None}
     brief["submitted"] = bool(getattr(session, "intake_submitted", False))
