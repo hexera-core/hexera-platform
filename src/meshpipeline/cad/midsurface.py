@@ -2178,6 +2178,18 @@ def _bulk_past(p, d, n, t: float, solid: _Solid) -> bool:
     return False
 
 
+#: SHELL-33, EVERY OPEN EDGE IS OFFERED TO THE CLOSING PASSES: the record lists the first 50 open edges of a body
+#: (open_at_mm), and SHELL-13, SHELL-22 and SHELL-30 ran only when every open edge was listed - a body with more than
+#: 50 got none of them (a 9.525 mm plate whose 18 pocket floors the walls round found: 100 open edges, no pass run).
+#: The census now keeps every open edge for the joins under OPEN_ALL_KEY; the record still lists 50.
+OPEN_ALL_KEY = "_open_at_all_mm"
+
+
+def _open_points(census: dict) -> list:
+    """SHELL-33: every open edge's point (mm) a census read, for the closing passes."""
+    return census.get(OPEN_ALL_KEY, census.get("open_at_mm", []))
+
+
 def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thick_faces: list | None = None,
                 thick_walls: list | None = None, thick_rounds: list | None = None, mixed: bool = False,
                 past: bool = True) -> dict:
@@ -2289,7 +2301,8 @@ def edge_census(fused, owner_t: dict, solid: _Solid | None, *, scale: float, thi
     return {"faces": int(fmap.Extent()), "edges": int(e2f.Extent()), "shared_edges": shared,
             "junction_edges": junction, "boundary_edges": boundary, "ends_in_wall_edges": in_wall, "below_floor_edges": below_floor,
             "solid_link_edges": len(links), "blend_link_edges": soft, "bulk_link_edges": bulk, "rim_edges": rim,
-            "open_edges": len(open_at), "open_at_mm": open_at[:50], "solid_link_at_mm": links[:50]}
+            "open_edges": len(open_at), "open_at_mm": open_at[:50], "solid_link_at_mm": links[:50],
+            OPEN_ALL_KEY: open_at}
 
 
 # ------------------------------------------------------------------------------------- fidelity ----
@@ -3395,7 +3408,7 @@ def close_strips(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuz
     if not strips:
         return None
     faces = [TopoDS.Face_s(fmap.FindKey(k)) for k in range(1, fmap.Extent() + 1)]
-    out, imgs = sew(faces + [f for _i, f in strips], fuzzy)
+    out, imgs = _sew_safe(faces + [f for _i, f in strips], fuzzy)
     new_images: list[list] = [[] for _ in mine]
     for k in range(1, len(faces) + 1):
         if k in owner:
@@ -3514,7 +3527,8 @@ def _curve_edge(points: list):
     return mk.Edge() if mk.IsDone() else None
 
 
-def close_gaps(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy: float, open_at: list):
+def close_gaps(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy: float, open_at: list, *,
+               square_only: bool = False):
     """SHELL-22 on one body's joined surface: (fused, images, [(mid index, other mid index, strip)]) with the open
     edges at `open_at` (points on them, own units) carried on to the mid-face they stop short of; None when none
     can be."""
@@ -3581,6 +3595,8 @@ def close_gaps(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy
                 far.append(x)
                 ways.append(s_hit)
             rank = 0
+            if len(far) != len(pd) and square_only:
+                continue                              # SHELL-35: the square carry only, on this pass
             if len(far) != len(pd):
                 # ... or, walls in line a step apart, to its nearest points on the other mid-face
                 far, ways = [], []
@@ -3631,13 +3647,125 @@ def close_gaps(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy
     if not strips:
         return None
     order = [faces[k] for k in sorted(faces)]
-    out, imgs = sew(order + [f for _i, _j, f in strips], fuzzy)
+    out, imgs = _sew_safe(order + [f for _i, _j, f in strips], fuzzy)
     new_images: list[list] = [[] for _ in mine]
     for pos, k in enumerate(sorted(faces)):
         new_images[owner[k]] += list(imgs[pos])
     for n, (i, _j, _f) in enumerate(strips):
         new_images[i] += list(imgs[len(order) + n])
     return out, new_images, strips
+
+
+#: SHELL-35, SQUARE CORNERS BEFORE STRIPS LAID ACROSS: the passes that close an open edge after the joins ran SHELL-13
+#: (a ruled strip to the nearest edge of another mid-face, at whatever angle) first, then SHELL-30 and SHELL-22. A
+#: junction SHELL-13 closed was closed by a strip laid across the corner, off both walls' surfaces (31 files, 16.3 m
+#: of such kinks on the lab sets), where SHELL-30 or SHELL-22's own carry would have drawn the corner. A second order:
+#: SHELL-30 first, then SHELL-22 only where the edge carried on in its own surface meets the other wall's surface, and
+#: only then SHELL-13 and SHELL-22's nearest points for what is left - run when the old order leaves a junction open,
+#: the one leaving fewer kept (on a tie the old one). Square first as the rule, winning ties itself, took four
+#: parts the old order closes (t0039, t0052, r0008, r0053) out of Nastran's limits (1 to 9 elements in the new
+#: corners' strips), and the old order alone closes two enclosures (e0004, e0032) the square one cannot.
+SQUARE_FIRST = True
+
+
+def _closing_passes(fused, images, census, mine, solid, fuzzy, *, mm, census_of, notes, body, t_min, clock):
+    """SHELL-13, SHELL-30 and SHELL-22 on one body's joined surface, in SHELL-35's order: (fused, images, census)."""
+    def pts():
+        return [np.asarray(q, float) / mm for q in _open_points(census)]
+
+    def offered(timed: bool) -> bool:
+        return (census["open_edges"] > 0 and census["open_edges"] <= len(_open_points(census))
+                and (not timed or clock.left() - JOIN_RESERVE_S >= JOIN_MIN_S))
+
+    def pass13():
+        nonlocal fused, images, census
+        if not (CLOSE_STRIPS and offered(False)):
+            return
+        try:
+            closed = close_strips(fused, images, mine, solid, fuzzy, pts())
+        except Exception as exc:  # noqa: BLE001 - the join stands
+            logger.debug("shell: open edges of %s could not be bridged (%s)", body, exc)
+            closed = None
+        if closed is not None:
+            census_c = census_of(closed[0], closed[1])
+            if census_c["open_edges"] < census["open_edges"] and _max_tol(closed[0]) <= JOIN_TOL_WALLS * t_min:
+                fused, images, census = closed[0], closed[1], census_c
+                for i, strip in closed[2]:
+                    mine[i].extended.append({"to": None, "area": _area(strip)})
+                notes.append(f"{body}: {len(closed[2])} open edge(s) bridged to the junction beside them (SHELL-13).")
+
+    def pass30():
+        # SHELL-30: the pieces of an open edge that meet another wall's surface, and that wall where it stops short of
+        # the same line (one more sewing of the body, so only with time left in the work budget)
+        nonlocal fused, images, census
+        if not (CARRY_PIECES and offered(True)):
+            return
+        try:
+            closed = carry_on(fused, images, mine, solid, fuzzy, pts())
+        except Exception as exc:  # noqa: BLE001 - the join stands
+            logger.debug("shell: open edges of %s could not be carried on piece by piece (%s)", body, exc)
+            closed = None
+        if closed is not None:
+            # judged by the junctions still to close once what lies past each edge is read (SHELL-21): a piece
+            # carried on leaves the rest of its edge, and the ends of its strip, facing whatever stopped the wall
+            # there (a corner post, a rib's foot) - more edges with metal past them, fewer junctions left open
+            left = census_of(fused, images, past=True)["open_edges"]
+            left_c = census_of(closed[0], closed[1], past=True)["open_edges"]
+            if left_c < left and _max_tol(closed[0]) <= JOIN_TOL_WALLS * t_min and not unsound_faces(closed[1]):
+                notes.append(f"{body}: {left - left_c} open edge(s) closed by carrying both walls on to the line where "
+                             "they meet (SHELL-30).")
+                fused, images, census = closed[0], closed[1], census_of(closed[0], closed[1])
+                for i, j, strip in closed[2]:
+                    mine[i].extended.append({"to": mine[j].k, "area": _area(strip)})
+
+    def pass22(square_only: bool = False):
+        # (SHELL-18: one more sewing of the body, so only with time for it left in the work budget)
+        nonlocal fused, images, census
+        if not (CLOSE_GAPS and offered(True)):
+            return
+        try:
+            closed = close_gaps(fused, images, mine, solid, fuzzy, pts(), square_only=square_only)
+        except Exception as exc:  # noqa: BLE001 - the join stands
+            logger.debug("shell: open edges of %s could not be carried on (%s)", body, exc)
+            closed = None
+        if closed is not None:
+            census_c = census_of(closed[0], closed[1])
+            if census_c["open_edges"] < census["open_edges"] and _max_tol(closed[0]) <= JOIN_TOL_WALLS * t_min:
+                notes.append(f"{body}: {census['open_edges'] - census_c['open_edges']} open edge(s) carried on to the "
+                             "wall they stopped short of (SHELL-22).")
+                fused, images, census = closed[0], closed[1], census_c
+                for i, j, strip in closed[2]:
+                    mine[i].extended.append({"to": mine[j].k, "area": _area(strip)})
+
+    def run(order) -> tuple:
+        """The passes in this order from the joined surface as it came: (fused, images, census, extended, notes)."""
+        nonlocal fused, images, census
+        start = (fused, images, census)
+        ext0 = [list(m.extended) for m in mine]
+        n0 = len(notes)
+        for step in order:
+            step()
+        out = (fused, images, census, [list(m.extended) for m in mine], notes[n0:])
+        fused, images, census = start
+        for m, ext in zip(mine, ext0, strict=True):
+            m.extended = ext
+        del notes[n0:]
+        return out
+
+    old_order = (pass13, pass30, pass22)
+    got = run(old_order)
+    if SQUARE_FIRST and got[2]["open_edges"]:
+        # the old order left an edge open: the square order too, and the one leaving fewer junctions open is kept,
+        # judged as the record will read them (what lies past each edge read, SHELL-21); on a tie the old one
+        other = run((pass30, lambda: pass22(square_only=True), pass13, pass22))
+        left = [census_of(r[0], r[1], past=True)["open_edges"] for r in (got, other)]
+        if left[1] < left[0]:
+            got = other
+    fused, images, census, ext, said = got
+    for m, e in zip(mine, ext, strict=True):
+        m.extended = e
+    notes.extend(said)
+    return fused, images, census
 
 
 #: SHELL-30, AN OPEN EDGE CARRIED ON PIECE BY PIECE, AND THE WALL IT MEETS CARRIED ON TO THE SAME LINE: SHELL-22 carries
@@ -3926,13 +4054,65 @@ def carry_on(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy: 
     if not strips:
         return None
     order = [faces[k] for k in sorted(faces)]
-    out, imgs = sew(order + [f for _i, _j, f in strips], fuzzy)
+    out, imgs = _sew_safe(order + [f for _i, _j, f in strips], fuzzy)
     new_images: list[list] = [[] for _ in mine]
     for pos, k in enumerate(sorted(faces)):
         new_images[owner[k]] += list(imgs[pos])
     for n, (i, _j, _f) in enumerate(strips):
         new_images[i] += list(imgs[len(order) + n])
     return out, new_images, strips
+
+
+#: SHELL-34, A JOIN THE GENERAL FUSE CANNOT SEW IS SEWN EDGE TO EDGE: OpenCASCADE's general fuse fails outright on some
+#: sets of mid-faces (two cyclone parts whose free-form walls the walls round found: fr018, fr019), and the straight
+#: join then handed back its mid-faces UNSEWN - every edge where two of them meet open (fr018: 53, fr019: 13) - and
+#: every pass after it (SHELL-13, 22, 30) failed on the same fuse. Now, where the fuse fails, the faces are sewn edge
+#: to edge (BRepBuilderAPI_Sewing at SEW_AGAIN_SHARE of the thinnest wall's sewing tolerance: it joins edges that lie
+#: on each other and cuts no face, so a T stays open for the passes, whose strips are sewn the same way). The fuse
+#: tried again 2 and 10 times wider first failed as well, at about 80 s a try on fr019, so it is not tried again.
+SEW_AGAIN = True
+SEW_AGAIN_SHARE = 10.0
+
+
+def _sew_again(faces: list, fuzzy: float):
+    """SHELL-34: (fused, images) for faces the general fuse would not sew at `fuzzy` - sewn edge to edge - or None."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS
+
+    sw = BRepBuilderAPI_Sewing(SEW_AGAIN_SHARE * fuzzy)
+    for f in faces:
+        sw.Add(f)
+    sw.Perform()
+    out = sw.SewedShape()
+    omap = _map(out, TopAbs_FACE)
+    images = []
+    for f in faces:
+        g = TopoDS.Face_s(sw.Modified(f)) if sw.IsModified(f) else f
+        if omap.FindIndex(g) <= 0:
+            return None
+        images.append([g])
+    return out, images
+
+
+#: SHELL-34: the general fuse failed on this body's joined surface already: its passes sew edge to edge straight away
+#: (each failed fuse cost about 36 s on fr019, six passes). Reset for every body (extract).
+_FUSE_FAILED = [False]
+
+
+def _sew_safe(faces: list, fuzzy: float):
+    """sew, or - where the general fuse fails - SHELL-34's sewing edge to edge (ValueError when that fails too)."""
+    if not (SEW_AGAIN and _FUSE_FAILED[0]):
+        try:
+            return sew(faces, fuzzy)
+        except ValueError:
+            if not SEW_AGAIN:
+                raise
+            _FUSE_FAILED[0] = True
+    got = _sew_again(faces, fuzzy)
+    if got is None:
+        raise ValueError("the mid-faces could not be sewn")
+    return got
 
 
 def _join_straight(mine: list[_Mid], solid: _Solid, fuzzy: float, notes: list[str], body: str):
@@ -3955,8 +4135,13 @@ def _join_straight(mine: list[_Mid], solid: _Solid, fuzzy: float, notes: list[st
     try:
         fused, images = sew([m.face for m in mine] + [f for _i, _j, f in strips], fuzzy)
     except ValueError as exc:
-        notes.append(f"{body}: {exc}.")
-        return _compound([m.face for m in mine]), [[m.face] for m in mine]
+        got = _sew_again([m.face for m in mine] + [f for _i, _j, f in strips], fuzzy) if SEW_AGAIN else None
+        _FUSE_FAILED[0] = got is not None
+        if got is None:
+            notes.append(f"{body}: {exc}.")
+            return _compound([m.face for m in mine]), [[m.face] for m in mine]
+        fused, images = got
+        notes.append(f"{body}: the mid-faces were sewn edge to edge (SHELL-34).")
     out = [list(images[i]) for i in range(len(mine))]
     for n, (i, _j, _f) in enumerate(strips):
         out[i] += images[len(mine) + n]
@@ -5454,6 +5639,7 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
         # slotted sheets of the corpus) and the general join (grow, cut, keep: any surfaces - a tube on a plate,
         # a cylinder into a cone, a relief-cut flange). The one leaving fewer open edges is kept; on a tie, the
         # straight one. Deterministic: each is.
+        _FUSE_FAILED[0] = False
         straight = _join_straight(mine, solid, fuzzy, notes, body_names[b])
         census = census_of(*straight)
         chosen, method, ext_straight = straight, "straight", [list(m.extended) for m in mine]
@@ -5483,12 +5669,12 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
                 # held every open edge: 3 joins of 1 to 2 minutes each, none closing an edge)
                 if not (remake and alone):
                     reach = 0.5 * t_max + GROW_WALLS * max(m.t for m in mine)
-                    listed = census["open_edges"] <= len(census.get("open_at_mm", []))
+                    listed = census["open_edges"] <= len(_open_points(census))
                     walls = [m for m in mine
                              if (alone or isinstance(BRep_Tool.Surface_s(m.original), FREE_FORM))
                              and (remake or m.remade or isinstance(BRep_Tool.Surface_s(m.original), Geom_OffsetSurface))]
                     if listed and not any(_near_box(q, m.box, reach) and _dist(_vertex(q), m.original) <= reach
-                                          for q in (np.asarray(x, float) / mm for x in census.get("open_at_mm", []))
+                                          for q in (np.asarray(x, float) / mm for x in _open_points(census))
                                           for m in walls):
                         continue
                 left = clock.left() - JOIN_RESERVE_S
@@ -5538,61 +5724,11 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
                 for m, ext in zip(mine, ext_straight, strict=True):
                     m.extended = ext
         fused, images = chosen
-        if CLOSE_STRIPS and census["open_edges"] and census["open_edges"] <= len(census.get("open_at_mm", [])):
-            try:
-                closed = close_strips(fused, images, mine, solid, fuzzy,
-                                      [np.asarray(q, float) / mm for q in census["open_at_mm"]])
-            except Exception as exc:  # noqa: BLE001 - the join stands
-                logger.debug("shell: open edges of %s could not be bridged (%s)", body_names[b], exc)
-                closed = None
-            if closed is not None:
-                census_c = census_of(closed[0], closed[1])
-                if census_c["open_edges"] < census["open_edges"] and _max_tol(closed[0]) <= JOIN_TOL_WALLS * t_min:
-                    fused, images, census = closed[0], closed[1], census_c
-                    for i, strip in closed[2]:
-                        mine[i].extended.append({"to": None, "area": _area(strip)})
-                    notes.append(f"{body_names[b]}: {len(closed[2])} open edge(s) bridged to the junction beside them "
-                                 "(SHELL-13).")
-        # SHELL-30, before SHELL-22: the pieces of an open edge that meet another wall's surface, and that wall where it
-        # stops short of the same line (one more sewing of the body, so only with time left in the work budget)
-        if (CARRY_PIECES and census["open_edges"] and census["open_edges"] <= len(census.get("open_at_mm", []))
-                and clock.left() - JOIN_RESERVE_S >= JOIN_MIN_S):
-            try:
-                closed = carry_on(fused, images, mine, solid, fuzzy,
-                                  [np.asarray(q, float) / mm for q in census["open_at_mm"]])
-            except Exception as exc:  # noqa: BLE001 - the join stands
-                logger.debug("shell: open edges of %s could not be carried on piece by piece (%s)", body_names[b], exc)
-                closed = None
-            if closed is not None:
-                # judged by the junctions still to close once what lies past each edge is read (SHELL-21): a piece
-                # carried on leaves the rest of its edge, and the ends of its strip, facing whatever stopped the wall
-                # there (a corner post, a rib's foot) - more edges with metal past them, fewer junctions left open
-                left = census_of(fused, images, past=True)["open_edges"]
-                left_c = census_of(closed[0], closed[1], past=True)["open_edges"]
-                if (left_c < left and _max_tol(closed[0]) <= JOIN_TOL_WALLS * t_min
-                        and not unsound_faces(closed[1])):
-                    notes.append(f"{body_names[b]}: {left - left_c} open edge(s) "
-                                 "closed by carrying both walls on to the line where they meet (SHELL-30).")
-                    fused, images, census = closed[0], closed[1], census_of(closed[0], closed[1])
-                    for i, j, strip in closed[2]:
-                        mine[i].extended.append({"to": mine[j].k, "area": _area(strip)})
-        # (SHELL-18: one more sewing of the body, so only with time for it left in the work budget)
-        if (CLOSE_GAPS and census["open_edges"] and census["open_edges"] <= len(census.get("open_at_mm", []))
-                and clock.left() - JOIN_RESERVE_S >= JOIN_MIN_S):
-            try:
-                closed = close_gaps(fused, images, mine, solid, fuzzy,
-                                    [np.asarray(q, float) / mm for q in census["open_at_mm"]])
-            except Exception as exc:  # noqa: BLE001 - the join stands
-                logger.debug("shell: open edges of %s could not be carried on (%s)", body_names[b], exc)
-                closed = None
-            if closed is not None:
-                census_c = census_of(closed[0], closed[1])
-                if census_c["open_edges"] < census["open_edges"] and _max_tol(closed[0]) <= JOIN_TOL_WALLS * t_min:
-                    notes.append(f"{body_names[b]}: {census['open_edges'] - census_c['open_edges']} open edge(s) "
-                                 "carried on to the wall they stopped short of (SHELL-22).")
-                    fused, images, census = closed[0], closed[1], census_c
-                    for i, j, strip in closed[2]:
-                        mine[i].extended.append({"to": mine[j].k, "area": _area(strip)})
+        if method == "general":
+            _FUSE_FAILED[0] = False         # SHELL-34's shortcut is for the straight join's surface only
+        # SHELL-35: the passes that close what the joins left open, square corners first
+        fused, images, census = _closing_passes(fused, images, census, mine, solid, fuzzy, mm=mm, census_of=census_of,
+                                                notes=notes, body=body_names[b], t_min=t_min, clock=clock)
         if SLIVERS:
             try:
                 cut = drop_slivers(fused, images, [m.t for m in mine])
@@ -5612,6 +5748,7 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
             census = census_of(fused, images, past=True)
         census["body"] = body_names[b]
         census["join"] = method
+        census.pop(OPEN_ALL_KEY, None)
         sewn_rows.append(census)
         for m, imgs in zip(mine, images, strict=True):
             for f in imgs:

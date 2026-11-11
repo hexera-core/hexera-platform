@@ -454,9 +454,11 @@ def test_a_junction_stopped_short_is_still_open(monkeypatch):
 
 
 def test_a_junction_stopped_short_is_bridged_to_the_edge_beside_it(monkeypatch):
-    # SHELL-13: the same L legs, stopped short of each other, are joined by the strip between their two edges
+    # SHELL-13: the same L legs, stopped short of each other, are joined by the strip between their two edges (with
+    # SHELL-35's square corners off: SHELL-22 would carry both legs to their corner line first)
     monkeypatch.setattr(ms, "extend", lambda *a, **k: None)
     monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
+    monkeypatch.setattr(ms, "SQUARE_FIRST", False)
     rec, surface = ms.extract(sf.l_angle(5.0, 5.0), mm_per_unit=1.0)
     assert _sewn(rec)["open_edges"] == 0
     assert any("SHELL-13" in n for n in rec["notes"])
