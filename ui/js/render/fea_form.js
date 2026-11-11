@@ -422,14 +422,16 @@ function measureBody(m, p) {
   return `${wallRow}${secHtml(head, `<ul class="fea-spots" aria-label="Hot spots the mesh will be refined at">${list}</ul>${unsent}${capped}${contacts}`, { cls: "fea-sec-spots" })}`;
 }
 
-/** Wire the hot-spot list (and every other tagged row): `light(id)` (if given) runs when a line is pointed at
- *  or clicked. */
+/** Wire the hot-spot list (and every other tagged row): `light(id)` (if given) runs when a line is clicked, and
+ *  `light(id, "hover")` while it is pointed at (`light(null, "hover")` when the pointer leaves): pointing shows
+ *  the line's mark on the part, a click chooses it. */
 export function bindMeasure(root, light) {
   if (!light) return;
   root.querySelectorAll(".fea-spot-row").forEach((r) => {
     if (r.dataset.lit === "1") return;
     r.dataset.lit = "1";
-    r.addEventListener("mouseenter", () => light(r.dataset.spot));
+    r.addEventListener("mouseenter", () => light(r.dataset.spot, "hover"));
+    r.addEventListener("mouseleave", () => light(null, "hover"));
     r.addEventListener("click", () => light(r.dataset.spot));
   });
 }

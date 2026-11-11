@@ -943,10 +943,48 @@ th,td{border-color:var(--border)}
 .gc-thumb{height:56px;border:1px solid var(--border);border-radius:var(--r-sm);background:#fff;cursor:zoom-in}
 .gc-thumb:hover,.gc-overview:hover{border-color:var(--border-strong)}
 
-/* stickers: stone with a dark number, as the site's solid button; the selected one wears the crimson.
-   (The check's own pictures still draw them yellow: they are rendered by the server.) */
-.gc-pin{background:var(--primary);color:var(--primary-ink);font-weight:700;border-color:rgba(5,5,5,.85)}
-.gc-pin.sel{background:var(--accent);color:var(--accent-ink);border-color:rgba(226,224,212,.9)}
+/* ------------------------------------------------------- marks on the part ---- */
+/* THE MARKS ON A STAGE'S PART (viewer/scene/marks.js): small flat dots of a fixed size on screen - never
+   balls that grow with the part - with no shading, no white ring and no shadow. A hot spot is a stone dot;
+   a join (where two parts meet) a stone ring; what the user should see (parts that pass into each other,
+   plates that do not meet) a muted red dot; a region that stays solid a muted amber one. What a mark is
+   shows beside it only when it is pointed at or chosen; the chosen one wears the crimson. Marks that would
+   overlap at this zoom are one quiet chip with their count, which zooms in when clicked. */
+.vm{position:absolute;z-index:6;width:16px;height:16px;transform:translate(-50%,-50%);cursor:pointer;
+  user-select:none;font-size:0;line-height:0}
+.vm::before{content:"";position:absolute;left:50%;top:50%;width:7px;height:7px;border-radius:50%;
+  transform:translate(-50%,-50%);background:var(--stone);box-shadow:0 0 0 1px rgba(5,5,5,.6);
+  transition:transform .12s ease,background-color .12s ease}
+.vm.k-join::before{width:8px;height:8px;background:transparent;
+  box-shadow:inset 0 0 0 1.5px var(--stone),0 0 0 1px rgba(5,5,5,.5)}
+.vm.k-problem::before{background:#d9645a}
+.vm.k-solid::before{background:#cc9e52}
+.vm:hover::before,.vm.hot::before{transform:translate(-50%,-50%) scale(1.4)}
+.vm.sel::before{background:var(--accent);box-shadow:0 0 0 1.5px rgba(5,5,5,.75),0 0 0 4px rgba(210,19,25,.25)}
+.vm.hot,.vm.sel,.vm:hover{z-index:8}
+.vm.back{opacity:.35}
+/* the words beside a mark: its tag and what it is, only while pointed at or chosen */
+.vm-l{display:none;position:absolute;left:calc(50% + 9px);top:50%;transform:translateY(-50%);padding:2px 7px;
+  border:1px solid var(--border-strong);border-radius:var(--r-sm);background:rgba(12,12,12,.88);
+  color:var(--text);font:500 11px/1.4 var(--sans);white-space:nowrap;pointer-events:none}
+.vm-l i{font-style:normal;color:var(--text-muted);margin-left:6px}
+.vm:hover .vm-l,.vm.hot .vm-l,.vm.sel .vm-l{display:block}
+/* an opening (the flow stage's sticker) keeps its number: naming the openings is the step, and the number
+   is the row's. A small flat chip in stone ink; the chosen one in the crimson. (The check's own pictures
+   still draw them yellow: they are rendered by the server.) */
+.vm.vm-chip{width:auto;min-width:17px;height:17px;padding:0 5px;border-radius:9px;background:rgba(226,224,212,.92);
+  color:var(--primary-ink);font:600 10.5px/17px var(--sans);text-align:center;font-variant-numeric:tabular-nums;
+  box-shadow:0 0 0 1px rgba(5,5,5,.55)}
+.vm.vm-chip::before{content:none}
+.vm.vm-chip:hover{background:var(--primary-hover)}
+.vm.vm-chip.sel{background:var(--accent);color:var(--accent-ink)}
+/* marks merged at this zoom: their count, quietly */
+.vm-group{position:absolute;z-index:7;min-width:18px;height:18px;padding:0 5px;transform:translate(-50%,-50%);
+  border:1px solid rgba(175,174,162,.5);border-radius:9px;background:rgba(12,12,12,.8);color:var(--text-muted);
+  font:600 10.5px/16px var(--sans);text-align:center;font-variant-numeric:tabular-nums;cursor:zoom-in;user-select:none}
+.vm-group:hover{border-color:var(--text);color:var(--text-bright)}
+.vm-group.warn{border-color:rgba(217,100,90,.75)}
+.vm-group.back{opacity:.4}
 
 /* ----------------------------------------------------- thermal model (ECXML) ---- */
 /* An ECXML upload opens as the file's own model: the title and four totals, the air box in one
@@ -1188,9 +1226,6 @@ th,td{border-color:var(--border)}
 .fea-spot-row:hover{background:var(--hover)}
 .fea-spot-row.sel{background:var(--surface-2)}
 .fea-spot-id{flex:none;min-width:2.4em;color:var(--text-faint);font-variant-numeric:tabular-nums}
-.fea-spot{min-width:26px;padding:0 4px;background:var(--canvas);color:var(--text);font-size:11px;font-weight:600;
-  border-color:rgba(226,224,212,.9)}
-.fea-spot.sel{background:var(--accent);color:var(--accent-ink)}
 .fea-spot-unsent{padding:2px 6px}
 /* the hot spots in groups by type, each its own line with its count and range */
 .fea-spot-group{margin:0}
@@ -1202,15 +1237,12 @@ th,td{border-color:var(--border)}
 .fea-spot-sum{min-width:0;margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-faint)}
 .fea-spot-rows{list-style:none;margin:0 0 4px;padding:0 0 0 14px}
 .fea-spot-head{color:var(--text-faint);font-weight:600}
-/* an assembly: its parts, where they touch (a muted green mark) or pass into each other (a muted
-   red one); the one answer, bonded or contact, a two-way switch in the fold's header */
+/* an assembly: its parts, where they meet (a stone ring on the part) or pass into each other (a muted
+   red mark, its tag the same red here); the one answer, bonded or contact, a two-way switch in the fold's header */
 .fea-parts{list-style:none;display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 2px;padding:0;font-size:var(--fs-sm);line-height:1.4}
 .fea-part-row{max-width:100%;padding:1px 7px;border:1px solid var(--border);border-radius:var(--r-sm);color:var(--text-muted);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.fea-itf-row.overlap .fea-spot-id{color:#c97a72}
-.fea-itf-row.touching .fea-spot-id{color:#6fae86}
-.fea-itf-row.gap .fea-spot-id{color:#b9a35f}
-.fea-spot.fea-itf{background:#7fbf95}
+.fea-itf-row.overlap .fea-spot-id{color:#d9645a}
 .fea-seg{flex:none;display:inline-flex;border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden}
 .fea-seg .fea-conn-opt{position:relative;cursor:pointer}
 .fea-seg .fea-conn-opt input{position:absolute;opacity:0;pointer-events:none}
@@ -1260,9 +1292,6 @@ th,td{border-color:var(--border)}
 .fe-pairs{margin:4px 0}
 .fe-pairs summary{cursor:pointer;color:var(--text-faint)}
 .fe-pair.off{color:var(--text-faint)}
-/* many hot spots: each a small mark without its number, until it is pointed at or chosen */
-.fea-spot.mark{min-width:0;width:9px;height:9px;padding:0;font-size:0;line-height:0;border-width:1.5px}
-.fea-spot.mark:hover,.fea-spot.mark.sel{width:auto;min-width:26px;height:22px;padding:0 4px;font-size:11px;line-height:22px;z-index:8}
 /* SHSTAGE-2..4: a shell the user asked for: what is not in the shell (a muted amber mark), where the
    plates do not meet (red), and the legend of the mid-surface's wall colours */
 .fea-meshas-v{color:var(--text-muted)}
@@ -1273,9 +1302,7 @@ th,td{border-color:var(--border)}
 .fea-shell-rows{list-style:none;margin:0;padding:0}
 .fea-shell-head{padding:2px 6px;color:var(--text-faint)}
 .fea-shell-row.solid .fea-spot-id{color:#cc9e52}
-.fea-shell-row.open .fea-spot-id{color:#d9534a}
-.fea-spot.fea-shell-pin.shell_solid{background:#cc9e52}
-.fea-spot.fea-shell-pin.shell_open{background:#d9534a;color:#fff}
+.fea-shell-row.open .fea-spot-id{color:#d9645a}
 .fea-shell-legend{display:flex;gap:8px;align-items:center;font-size:var(--fs-sm);margin:8px 0 2px}
 .fea-shell-legend-k{color:var(--text-faint)}
 .fea-shell-ramp{flex:0 0 120px;height:10px;border-radius:2px}
