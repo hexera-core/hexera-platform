@@ -56,6 +56,46 @@ class DetailError(RuntimeError):
     """The detail cannot be cut, with the reason a reader should be shown."""
 
 
+def _visible_rows(region: str, rows: list, skip_names, keep_names=()) -> list:
+    """`rows` minus the patches a reader has turned off, named EITHER WAY ROUND.
+
+    THE NAME A READER HOLDS IS THE QUALIFIED ONE. A window serves a patch as `<region>/<patch>`,
+    because both halves of a conjugate mesh carry a `..._to_...` side and a bare name cannot tell
+    `fluid/fluid_to_solid` from `solid/solid_to_fluid`. The boundary file this reads calls that
+    same patch just `<patch>`. So a skip list built from what is on the reader's screen arrives
+    qualified, and testing it against the bare name skips NOTHING and says so nowhere.
+
+    That is not hypothetical: it is why a reader who isolated the coolant was shown the metal
+    drawn over it at every zoom past the handover, and why zooming further walked the view box
+    onto `solid/solid_to_air` - the outer wall of the plate, which no reader asked for and which
+    stands between the camera and the channels - until the mesh on screen was 400 cells of the
+    wrong region. Matching both forms costs one set lookup and closes that.
+
+    `keep_names` IS THE ONE A CLIENT SHOULD SEND, and a skip list cannot replace it. A viewer can
+    only name the patches it was given, and a conjugate payload is not given all of them: this
+    plate's drawn set leaves out `solid/solid_to_fluid` and `solid/solid_to_chip`, which are the
+    metal's side of interfaces already drawn from the fluid's and the chip's. They are the SAME
+    surface - 16,619,777 faces each way - so a window that returns both hands the renderer two
+    coincident sheets, and what a reader sees is not detail but z-fighting: a speckle of two
+    materials across every channel wall, worse the closer they look. Keeping only what the reader
+    can actually see drops that second sheet, halves what travels, and needs no client to know a
+    name it was never told.
+    """
+    if not skip_names and not keep_names:
+        return rows
+    skip, keep = set(skip_names), set(keep_names)
+    kept = []
+    for p in rows:
+        bare = str(p["name"])
+        qual = f"{region}/{bare}" if region else bare
+        if keep and bare not in keep and qual not in keep:
+            continue
+        if bare in skip or qual in skip:
+            continue
+        kept.append(p)
+    return kept
+
+
 def delivered_regions(workspace) -> list[tuple[str, Path]]:
     """Every DELIVERED region's polyMesh, named. One region, called "", on a single-region engine.
 
@@ -232,7 +272,7 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
     hits: list[tuple] = []
     in_range = 0
     for region, polymesh in regions:
-        rows = [p for p in read_boundary_patches(polymesh) if p["name"] not in skip_names]
+        rows = _visible_rows(region, read_boundary_patches(polymesh), skip_names)
         if not rows:
             continue
 
@@ -356,6 +396,7 @@ WINDOW_MAX_FACES = int(os.environ.get("HEXERA_WINDOW_MAX_FACES") or 1_500_000)
 
 
 def detail_box(workspace, *, lo, hi, skip_names: tuple[str, ...] = (),
+               keep_names: tuple[str, ...] = (),
                max_faces: int = WINDOW_MAX_FACES) -> dict:
     """Every delivered face inside an axis-aligned box, unmerged - or a refusal to send any.
 
@@ -397,7 +438,7 @@ def detail_box(workspace, *, lo, hi, skip_names: tuple[str, ...] = (),
     found: list[tuple] = []
     in_box = 0
     for region, polymesh in regions:
-        rows = [p for p in read_boundary_patches(polymesh) if p["name"] not in skip_names]
+        rows = _visible_rows(region, read_boundary_patches(polymesh), skip_names, keep_names)
         if not rows:
             continue
         try:
@@ -432,7 +473,7 @@ def detail_box(workspace, *, lo, hi, skip_names: tuple[str, ...] = (),
     if in_box > max_faces:
         return {"lo": a.tolist(), "hi": b.tolist(), "fits": False, "faces_in_box": int(in_box),
                 "faces_returned": 0, "patches": [], "centre": centre, "radius": radius,
-                "faces_in_range": int(in_box), "truncated": False,
+                "faces_in_range": int(in_box), "truncated": False, "max_faces": int(max_faces),
                 "why": f"{in_box:,} faces in this view and a window carries {max_faces:,}"}
 
     out: list[dict] = []
@@ -453,7 +494,7 @@ def detail_box(workspace, *, lo, hi, skip_names: tuple[str, ...] = (),
         })
     return {"lo": a.tolist(), "hi": b.tolist(), "fits": True, "faces_in_box": int(in_box),
             "faces_returned": int(returned), "patches": out, "centre": centre, "radius": radius,
-            "faces_in_range": int(in_box), "truncated": False}
+            "faces_in_range": int(in_box), "truncated": False, "max_faces": int(max_faces)}
 
 
 def detail_response(job_id: str, cut: dict) -> dict:

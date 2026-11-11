@@ -476,6 +476,7 @@ async def get_detail(job_id: uuid.UUID, x: float, y: float, z: float, radius: fl
 @router.get("/{job_id}/window")
 async def get_window(job_id: uuid.UUID,
                      x0: float, y0: float, z0: float, x1: float, y1: float, z1: float,
+                     skip: str | None = None, keep: str | None = None,
                      owner_id: str = Depends(owner_dep),
                      organization_id: str = Depends(org_dep)):
     """Everything the DELIVERED mesh has inside one box, unmerged - or a refusal to send any.
@@ -499,6 +500,22 @@ async def get_window(job_id: uuid.UUID,
     Measured on the delivered plate, 2026-11-10: a view 4 mm across holds 1,372,166 faces and
     answers in 2.3 s; 2 mm holds 345,496 and answers in 0.66 s warm. A cell is 5 px at the first
     of those, which is where this takes over from the surface.
+
+    `keep` IS WHAT THE READER CAN SEE and is the one a viewer should send; `skip` is its
+    complement and is kept for anything that already sends one. A viewer can only name patches it
+    was given, and this plate's payload is not given `solid/solid_to_fluid` or
+    `solid/solid_to_chip` - the metal's side of two interfaces drawn from the other side - so a
+    skip list cannot name them and the window returned both sheets of every interface. Coincident
+    sheets do not read as detail; they read as a speckle of two materials over every channel wall.
+
+    `skip` IS WHAT THE READER CANNOT SEE, comma separated, named as the window names a patch
+    (`<region>/<patch>`, or bare on a single-region mesh). A window without it answers with the
+    whole box regardless of what the reader turned off, which on a conjugate mesh means the metal
+    is drawn over the coolant the moment the handover fires - and then the view box, which is
+    centred on whatever is under the middle of the screen, settles onto the outer wall of the
+    plate and the channels leave the screen entirely. Measured before this took a skip list:
+    isolate the coolant, zoom past the handover, and the window came back `solid/solid_to_air`
+    with 400 faces where the coolant had tens of thousands.
     """
     from meshpipeline.application.job_service import final_attempt_workspace
     from meshpipeline.render.detail_window import DetailError, detail_box, detail_response
@@ -511,7 +528,12 @@ async def get_window(job_id: uuid.UUID,
     if ws is None:
         raise HTTPException(404, "This job's workspace is no longer on this machine")
     try:
-        out = await asyncio.to_thread(detail_box, ws, lo=(x0, y0, z0), hi=(x1, y1, z1))
+        def _names(raw: str | None) -> tuple[str, ...]:
+            return tuple(dict.fromkeys(n.strip() for n in (raw or "").split(",") if n.strip()))
+
+        skips, keeps = _names(skip), _names(keep)
+        out = await asyncio.to_thread(detail_box, ws, lo=(x0, y0, z0), hi=(x1, y1, z1),
+                                      skip_names=skips, keep_names=keeps)
     except DetailError as exc:
         raise HTTPException(409, str(exc)) from exc
     # A WINDOW THAT DOES NOT FIT IS A 200, not an error. It is the routine answer at every zoom
@@ -519,9 +541,11 @@ async def get_window(job_id: uuid.UUID,
     # failure in the console for the normal case.
     if not out.get("fits"):
         return {"job_id": str(job_id), "fits": False, "patches": [],
-                "faces_in_box": out.get("faces_in_box", 0), "why": out.get("why", "")}
+                "faces_in_box": out.get("faces_in_box", 0), "why": out.get("why", ""),
+                "max_faces": out.get("max_faces", 0)}
     return {**detail_response(str(job_id), out), "fits": True,
-            "faces_in_box": out.get("faces_in_box", 0)}
+            "faces_in_box": out.get("faces_in_box", 0),
+            "max_faces": out.get("max_faces", 0)}
 
 
 async def _up_axis_of(job_id: uuid.UUID, owner_id: str, organization_id: str) -> str | None:

@@ -986,6 +986,13 @@ class Handler(SimpleHTTPRequestHandler):
             hi = tuple(float(qs[k][0]) for k in ("x1", "y1", "z1"))
         except (KeyError, IndexError, ValueError):
             return self._json({"detail": "a window needs x0,y0,z0 and x1,y1,z1"}, code=422)
+        # WHAT THE READER CANNOT SEE, so the window does not draw it back. The names arrive the
+        # way this route hands them out - `<src prefix><region>/<patch>` - and `detail_box` knows
+        # only the last two, so the prefix comes off before it is asked. Without this, isolating
+        # the coolant and zooming past the handover drew the metal over it and then walked the
+        # view box onto the plate's outer wall; see `detail_window._visible_rows`.
+        skip_all = tuple(n for n in (qs.get("skip", [""])[0] or "").split(",") if n.strip())
+        keep_all = tuple(n for n in (qs.get("keep", [""])[0] or "").split(",") if n.strip())
         srcs = cut_sources(job)
         if any(s["fwd"] for s in srcs):
             return self._json({"detail": "this scene places a body by a transform, and a box "
@@ -994,17 +1001,33 @@ class Handler(SimpleHTTPRequestHandler):
 
         from meshpipeline.render.detail_window import DetailError, detail_box, detail_response
         pats: list = []
-        in_box = returned = 0
+        in_box = returned = cap = 0
         fits = True
         for src in srcs:
+            pre = str(src.get("prefix") or "")
+
+            def _both(names, pre=pre):
+                """Each name as sent AND with this body's prefix taken off, because the reader
+                holds `<src prefix><region>/<patch>` and `detail_box` knows the last two."""
+                out = {n.strip() for n in names}
+                if pre:
+                    out |= {n.strip()[len(pre):] for n in names if n.strip().startswith(pre)}
+                return tuple(out)
+
+            keeps = _both(keep_all)
+            if keep_all and not keeps:
+                # this body has nothing the reader can see; do not read it at all
+                continue
             try:
-                out = detail_box(src["sidecar"], lo=lo, hi=hi)
+                out = detail_box(src["sidecar"], lo=lo, hi=hi,
+                                 skip_names=_both(skip_all), keep_names=keeps)
             except DetailError as exc:
                 return self._json({"detail": str(exc)}, code=409)
             except Exception as exc:            # noqa: BLE001 - say which body, not just "500"
                 sys.stderr.write("   window failed on %s/%s: %r\n" % (job, src["slug"], exc))
                 return self._json({"detail": "%s: %s" % (src["slug"], exc)}, code=500)
             in_box += int(out.get("faces_in_box") or 0)
+            cap = max(cap, int(out.get("max_faces") or 0))
             if not out.get("fits"):
                 fits = False
                 continue
@@ -1017,13 +1040,13 @@ class Handler(SimpleHTTPRequestHandler):
             # client asks again on the next camera move, and an error here would fill a reader's
             # console with failures for the normal case.
             return self._json({"job_id": job, "fits": False, "patches": [],
-                               "faces_in_box": in_box,
+                               "faces_in_box": in_box, "max_faces": cap,
                                "why": "%s faces in this view" % format(in_box, ",")})
         body = detail_response(job, {"centre": [(lo[i] + hi[i]) / 2 for i in range(3)],
                                      "radius": 0.0, "faces_in_range": in_box,
                                      "faces_returned": returned, "truncated": False,
                                      "patches": pats})
-        return self._json({**body, "fits": True, "faces_in_box": in_box,
+        return self._json({**body, "fits": True, "faces_in_box": in_box, "max_faces": cap,
                            "lo": list(lo), "hi": list(hi)})
 
     def _detail(self, job: str, qs: dict):

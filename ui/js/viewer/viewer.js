@@ -388,7 +388,7 @@ function initViewer(job,surf,uiCfg){
   let partsApi=null,sliceOn=null;
   // the parts panel's own repaint: the heatmap hands edges back through the panel, so a selected
   // part keeps its selection edge - and a listener on it, so the problem areas follow what is shown
-  let repaintParts=null,onPartsPainted=null;
+  let repaintParts=null,onPartsPainted=null,onVisibleChanged=null;
   const cam=ren.getActiveCamera();
   /* HALF THE VIEW'S HEIGHT PER UNIT OF DISTANCE, in the scope BOTH closures below
      need it in. It used to be a const inside the heatmap's IIFE, and `radiusNow` in
@@ -655,6 +655,10 @@ function initViewer(job,surf,uiCfg){
       note.innerHTML=inspect(selPart);
       wire();
       if(onPartsPainted)onPartsPainted();
+      /* A SEPARATE HOOK FROM `onPartsPainted`, which is spoken for, and fired on every paint
+         rather than only on a visibility change - the listener compares the set itself, because
+         paint also runs for a selection, which changes colour and nothing a window cares about. */
+      if(onVisibleChanged)onVisibleChanged();
     }
     repaintParts=paint;
 
@@ -2022,10 +2026,91 @@ function initViewer(job,surf,uiCfg){
     //: view this far out has never fitted and the round trip is 1.5 s of nothing. p10 and not
     //: typ, for the reason the streaming gate records: the budget is spent on face COUNT and the
     //: count is dominated by the fine faces.
-    const DEEP_MIN_PX=3.0;
+    //:
+    //: IT WAS 3.0 AND THAT WAS COSTING THE READER THE MESH. A pixel gate is a face-count estimate
+    //: with the part's density divided out, and this part's density varies by better than two
+    //: orders of magnitude - measured the same afternoon, a 5.68 mm view held 81,886 faces in one
+    //: place while the recorded table has 3,086,098 in a 6 mm view in another. At 3.0 the coolant
+    //: stayed a smooth surface at 8.3 mm (2.87 px per cell) in a view the route would have
+    //: answered with every real cell, because nothing ever asked it. The floor now sits where a
+    //: cell is still a visible thing - a cell and a half - and `depWorth` below carries the part
+    //: of the job the floor was doing badly: it LEARNS this view's density from the route's own
+    //: answer and stops asking once the next step out cannot fit. The floor guards the FIRST
+    //: question, before there is anything to have learnt from.
+    const DEEP_MIN_PX=1.5;
+    //: How many view-widths the box reaches PAST what is under the middle of the screen. See
+    //: `viewBox`: the camera sees forward, so a cube centred on the first surface it hits leaves
+    //: the far half of a channel unread and the canvas full of holes.
+    const DEEP_DEPTH=4.0;
     const dep=document.getElementById('v-insp-deep-'+job);
     let deepOn=false,depTimer=null,depBusy=false,depKey='';
     let depFaces=0,depFits=false,depInBox=0,depMs=0;
+    //: What the route said its ceiling was, and the width/count pair it last measured. Faces on a
+    //: surface go as the square of the width, so one honest answer is enough to predict the next
+    //: question - and a prediction costs nothing, where the question costs a bucket walk over
+    //: however much mesh is in the box.
+    let depCap=0,depAcross=0,depSeen=-1,depSkipKey=null,depCentre=null;
+    //: Bumped whenever the answer in flight stops being the answer anyone wants - the mode going
+    //: off, or the reader changing which parts are on screen. A window is two awaits deep and
+    //: both of them outlive a click.
+    let depGen=0;
+
+    /* THE PATCHES THE READER CANNOT SEE, as the window names them. Isolate the coolant and the
+       metal is not on screen; without this the window hands it back anyway and draws it over the
+       channels, because a box knows nothing about a parts panel. Worse than the drawing: the box
+       is centred on whatever is under the middle of the screen, so once the plate's outer wall is
+       drawn in front of the coolant the next window centres on THAT, and the one after it walks
+       further out still. Measured before this list existed - isolate the coolant, zoom past the
+       handover, and the window came back `solid/solid_to_air`, 400 faces, no coolant at all.
+
+       VISIBILITY IS READ FROM `hidden` WHEN DEEP IS HOLDING IT, because by then this mode has
+       switched the surface off itself and every actor would read as invisible. `hidden` is the
+       record of what was on when it did. */
+    function readerSees(){
+      const on=Object.create(null);
+      if(hidden.length)hidden.forEach(h=>{const en=h.en||h;on[en.patch]=1;});
+      else entries.forEach(en=>{if(en.actor.getVisibility())on[en.patch]=1;});
+      return on;}
+    function deepSkip(){
+      const on=readerSees(),out=[],seen=Object.create(null);
+      entries.forEach(en=>{
+        if(on[en.patch]||seen[en.patch])return;
+        seen[en.patch]=1;out.push(en.patch);});
+      return out.sort();}
+
+    /* WHAT THE READER CAN SEE, which is what the window is actually told, and NOT the complement
+       of what they cannot. A skip list can only name patches this viewer was handed, and a
+       conjugate payload is not handed all of them: the plate's drawn set leaves out
+       `solid/solid_to_fluid` and `solid/solid_to_chip`, the metal's side of two interfaces
+       already drawn from the fluid's and the chip's. The window knows them, so a skip list that
+       cannot name them got them back every time - two coincident sheets of 16,619,777 faces each,
+       which a renderer cannot order and draws as a speckle of two materials across every channel
+       wall. That speckle is what "the mesh looks wrong close up" was.
+
+       Naming what IS on screen closes it without this viewer ever having to know a patch it was
+       not given, and halves what travels on the way. */
+    function deepKeep(){
+      const on=readerSees(),out=[];
+      Object.keys(on).forEach(k=>out.push(k));
+      return out.sort();}
+
+    /* IS IT WORTH ASKING. The floor above guards the first question; this guards every one after
+       it, and unlike the floor it knows this view's own density. `depSeen` faces at `depAcross`
+       across scales as the square, and the route refuses anything over `depCap`. The slack is
+       generous on purpose: the estimate assumes the mesh is spread evenly through the box and it
+       is not, so a near miss is worth the round trip and a mile out is not. */
+    function depWorth(v){
+      if(!(depCap>0&&depAcross>0&&depSeen>=0)||!(v&&v.across>0))return true;
+      /* MOVED IS NOT ZOOMED. This part's face density varies by better than two orders of
+         magnitude between the channel lattice and the plenum - 81,886 faces in one 5.68 mm view
+         and 9,686,304 in another - so a count measured in one place predicts nothing about
+         another, and a single dense refusal would otherwise wedge the mode off everywhere the
+         reader panned to afterwards. Half a box width is the test: inside that the reader has
+         zoomed, outside it they have gone somewhere else and this knows nothing about it. */
+      if(depCentre){
+        const c0=(v.lo[0]+v.hi[0])/2,c1=(v.lo[1]+v.hi[1])/2,c2=(v.lo[2]+v.hi[2])/2;
+        if(Math.hypot(c0-depCentre[0],c1-depCentre[1],c2-depCentre[2])>0.5*depAcross)return true;}
+      return depSeen*Math.pow(v.across/depAcross,2)<=depCap*2.5;}
 
     /* THE VIEW AS A WORLD-ALIGNED BOX. The index answers axis-aligned boxes and a frustum is
        neither axis-aligned nor a box, so this takes the oriented box around what the camera can
@@ -2052,13 +2137,66 @@ function initViewer(job,surf,uiCfg){
       const p=cam.getPosition();
       const dp=Math.abs((f[0]-p[0])*b.d[0]+(f[1]-p[1])*b.d[1]+(f[2]-p[2])*b.d[2])||camDist();
       const hy=dp*th,hx=hy*asp,hz=Math.max(hx,hy);
+      /* DEEP, AND POINTING FORWARD. A cube on the picked point is not what a camera sees. What
+         it sees carries on BEHIND the first surface - down the inside of a channel, past the far
+         wall - while the space between the camera and that first surface is the part it has
+         already flown through and is empty. A symmetric cube spends half its depth there and
+         runs out of the other half early, and the screen then has holes in it where the surface
+         receded past the back face. Measured on the coolant at the deepest zooms, with the cube:
+         92.9% of the canvas drawn at 4.53 mm, 72.9% at 2.11 mm, 60.0% at 1.44 mm - and a reader
+         cannot tell a hole in the window from a hole in the mesh, which is the one thing this
+         route exists to avoid.
+
+         So the box reaches a quarter of a width back and `DEEP_DEPTH` widths forward. It is
+         affordable because it is bounded by the same cap as everything else and the counts at
+         these zooms are three to five orders under it: a 1.44 mm view of the coolant holds about
+         137 faces against a ceiling of 1,500,000. Where it is NOT affordable - the wide view of
+         a dense lattice - the route refuses as it always did and the exact surface stays up. */
+      const back=0.25*hz,fwd=DEEP_DEPTH*hz;
       const lo=[Infinity,Infinity,Infinity],hi=[-Infinity,-Infinity,-Infinity];
-      for(let s0=-1;s0<=1;s0+=2)for(let s1=-1;s1<=1;s1+=2)for(let s2=-1;s2<=1;s2+=2)
+      for(let s0=-1;s0<=1;s0+=2)for(let s1=-1;s1<=1;s1+=2)for(let s2=0;s2<2;s2++)
         for(let k=0;k<3;k++){
-          const v=f[k]+s0*hx*b.r[k]+s1*hy*b.u[k]+s2*hz*b.d[k];
+          const v=f[k]+s0*hx*b.r[k]+s1*hy*b.u[k]+(s2?fwd:-back)*b.d[k];
           if(v<lo[k])lo[k]=v;
           if(v>hi[k])hi[k]=v;}
       return {lo,hi,across:2*Math.max(hx,hy)};}
+
+    /* AIM THE ZOOM AT THE MESH. A dolly moves the camera a fraction of the way to its FOCAL
+       POINT, and `resetCamera` leaves that at the centre of the visible bounding box - which on
+       a cooled plate, and on the coolant alone, is a point in empty space inside the part. So
+       the camera converges on somewhere the mesh is not, and the surface the reader is looking
+       at never gets closer. Measured on the delivered coolant, zooming in from the fit:
+
+           wheel clicks   camera to focal   camera to the MESH   view across, at the mesh
+                     20        57.27 mm            72.02 mm              48.03 mm
+                     36        12.46 mm            27.22 mm              18.15 mm
+                     52         2.71 mm            17.46 mm              11.65 mm
+
+       Thirty-two clicks of zoom moved the camera 54 mm closer to its target and 4 mm closer to
+       the part. The mesh stayed about 17 mm away and the view across it barely moved, so the
+       window kept asking for a box eleven millimetres wide - nine million faces, far past what
+       one carries - and the real cells could never take over however long a reader scrolled.
+       Every pixels-per-cell figure was quoting the same wrong distance and read 6.4x too
+       optimistic with it.
+
+       THE FIX MOVES NOTHING A READER CAN SEE. The focal point slides ALONG the view direction to
+       the depth of whatever is under the middle of the screen; it stays on the same ray, so the
+       view direction, the up vector and the view angle are all untouched and the rendered image
+       is identical to the pixel. What changes is only what the next dolly converges on, and what
+       `camDist` means - which is what every cell-size reading on this page is divided by.
+
+       The deadband is what stops it chasing itself: `setFocalPoint` fires `onModified`, which
+       pings this mode again, and without a "close enough" test the ping would re-aim and re-ping
+       for ever. Within 2% it is already aimed and does nothing. */
+    function aimAtMesh(hit){
+      if(!hit)return false;
+      const b=camBasis(),q=cam.getPosition(),f=cam.getFocalPoint();
+      const along=a=>(a[0]-q[0])*b.d[0]+(a[1]-q[1])*b.d[1]+(a[2]-q[2])*b.d[2];
+      const dh=along(hit),df=along(f);
+      if(!(dh>0)||!(df>0))return false;
+      if(Math.abs(dh-df)<=df*0.02)return false;
+      cam.setFocalPoint(q[0]+b.d[0]*dh,q[1]+b.d[1]*dh,q[2]+b.d[2]*dh);
+      return true;}
 
     /* OFF ENTIRELY, not to a tenth. Recorded in `hidden` in the bare-actor shape, which `clear`
        already knows how to put back - the same list the ghosting modes use, so one `clear`
@@ -2070,38 +2208,87 @@ function initViewer(job,surf,uiCfg){
         hidden.push(en);
         en.actor.setVisibility(false);});}
 
+    /* THE KEY CARRIES THE SKIP SET. It is what the debounce and the re-ping in `finally` both
+       compare, so a key made of the box alone cannot tell "the same view" from "the same view of
+       a different set of parts" - isolate the coolant without moving the camera and the mode sat
+       on its last answer, which was the answer for the metal. */
+    function depKeyOf(v,keep){
+      return v.lo.concat(v.hi).map(x=>x.toFixed(7)).join(',')+'|'+keep.join('~');}
+
     async function deepNow(){
       if(!deepOn||depBusy)return;
       // THE CHEAP GATE FIRST, before the picker: the route is the authority on whether a view
       // fits, but a view this far out has never fitted and the pick plus the round trip is
-      // seconds of nothing.
-      if(realCellPx()<DEEP_MIN_PX){
-        const g=viewBox();
-        depKey=g.lo.concat(g.hi).map(x=>x.toFixed(7)).join(',');
+      // seconds of nothing. The density gate is NOT here: it belongs below, on the box that
+      // will actually be asked for.
+      const keep=deepKeep(),px=realCellPx();
+      if(px<DEEP_MIN_PX||!keep.length){
+        depKey=depKeyOf(viewBox(),keep);
         depFits=false;depFaces=0;
         if(shown.length||hidden.length)clear();
-        lbl.textContent='zoom in and the real cells take over';
+        lbl.textContent=keep.length?'zoom in and the real cells take over'
+                                   :'nothing of the mesh is on screen';
         legendSoon();return;}
       // WHAT IS ACTUALLY UNDER THE MIDDLE OF THE SCREEN. The same picker Follow uses, and for
       // the same reason: the camera's focal point is not on the mesh.
+      /* THE QUESTION THIS IS THE ANSWER TO. A window is two awaits deep - the pick, then the
+         round trip - and a reader can turn the mode off or change which parts are on screen
+         during either. Without this, `setDeep(false)` ran `clear()` and then the fetch landed,
+         drew its cells and hid the surface again: Deep off, cells up, part gone. The same
+         applies to `keep`, which is read before both awaits, so an answer for the coolant could
+         be drawn after the reader had switched to the metal. */
+      const gen=depGen;
       depBusy=true;
       const hit=await pickCentre();
+      if(gen!==depGen||!deepOn){depBusy=false;return;}
+      /* BEFORE THE BOX IS MEASURED, because the box and the gate are both read off the camera
+         and this is the call that makes the camera's own distance mean the mesh. Re-aiming
+         fires `onModified`, so the ping that follows is this mode's own and is what draws the
+         view it has just made reachable. */
+      aimAtMesh(hit);
       const v=viewBox(hit);
-      const key=v.lo.concat(v.hi).map(x=>x.toFixed(7)).join(',');
+      const key=depKeyOf(v,keep);
       if(key===depKey){depBusy=false;return;}
       depKey=key;
+      /* THE DENSITY GATE, ON THE BOX THAT WILL BE ASKED FOR. It was up with the floor, before the
+         pick, where it compared a box built on the camera's FOCAL POINT against a width recorded
+         from a box built on the picked point - two different boxes, so the prediction was against
+         a width it had never measured and it let every question through. The focal point is not
+         on the mesh (`viewBox` carries the measurements); that is the same trap, one level up. */
+      if(!depWorth(v)){
+        depFits=false;depFaces=0;
+        if(shown.length||hidden.length)clear();
+        lbl.textContent='zoom in and the real cells take over';
+        legendSoon();depBusy=false;return;}
       const t0=(window.performance&&performance.now)?performance.now():0;
       if(a)a.dataset.busy='1';
       try{
         const q=`x0=${v.lo[0]}&y0=${v.lo[1]}&z0=${v.lo[2]}`
-               +`&x1=${v.hi[0]}&y1=${v.hi[1]}&z1=${v.hi[2]}`;
+               +`&x1=${v.hi[0]}&y1=${v.hi[1]}&z1=${v.hi[2]}`
+               +`&keep=${encodeURIComponent(keep.join(','))}`;
         const res=await fetch(`/api/v1/simulation/${job}/window?${q}`,{headers:headers()});
         if(!res.ok){
           let why='';try{why=((await res.json())||{}).detail||'';}catch(_e){why='';}
           lbl.textContent=why?String(why).slice(0,90):('window '+res.status);
           depFits=false;return;}
         const got=await res.json();
+        // the answer outlived its question: `finally` still clears the busy flag
+        if(gen!==depGen||!deepOn)return;
         depInBox=+got.faces_in_box||0;
+        // WHAT THIS VIEW IS LIKE, from the route rather than from an assumption. Recorded on
+        // every answer, fitting or not, because a refusal carries the count too and a refusal is
+        // exactly the case the next prediction has to get right.
+        depCap=+got.max_faces||depCap;
+        // NOT FROM AN EMPTY ANSWER. `depWorth` scales a count by the square of the width, and
+        // zero scales to zero at every width - so one empty box would say "worth asking" for
+        // ever and the gate would be dead. An empty box is routine now that a keep list can
+        // leave a region out entirely: the reader isolates the coolant, the middle of the
+        // screen lands past the channels, and the answer is a legitimate fits-with-nothing-in-it
+        // rather than the metal. Keep the last REAL pair; `depSeen` stays -1 until one arrives,
+        // which is what lets the first question through under the floor.
+        if(depInBox>0){depAcross=v.across;depSeen=depInBox;
+                       depCentre=[(v.lo[0]+v.hi[0])/2,(v.lo[1]+v.hi[1])/2,
+                                  (v.lo[2]+v.hi[2])/2];}
         if(got.fits&&(got.patches||[]).length){
           dropShown();
           hideSurface();
@@ -2136,7 +2323,7 @@ function initViewer(job,surf,uiCfg){
         depBusy=false;
         // where the camera is NOW against where this answer was for: every ping that arrived
         // during the round trip was dropped by the busy guard, including the one they stopped on
-        const g=viewBox(hit),now=g.lo.concat(g.hi).map(x=>x.toFixed(7)).join(',');
+        const now=depKeyOf(viewBox(hit),deepKeep());
         if(deepOn&&now!==depKey)depPing();}}
 
     function depPing(){
@@ -2147,10 +2334,54 @@ function initViewer(job,surf,uiCfg){
       deepOn=!!on;
       if(dep){dep.setAttribute('aria-pressed',deepOn?'true':'false');
               dep.classList.toggle('on',deepOn);}
-      if(deepOn){setArmed(false);setFollow(false);setStream(false);depKey='';deepNow();}
-      else{depKey='';if(depTimer){clearTimeout(depTimer);depTimer=null;}
+      depGen++;
+      if(deepOn){setArmed(false);setFollow(false);setStream(false);
+                 depKey='';depSkipKey=deepKeep().join('~');
+                 depCap=0;depAcross=0;depSeen=-1;depCentre=null;deepNow();}
+      else{depKey='';depSkipKey=null;if(depTimer){clearTimeout(depTimer);depTimer=null;}
            depFaces=0;depFits=false;depInBox=0;
+           depCap=0;depAcross=0;depSeen=-1;depCentre=null;
            clear();}}
+    /* THE READER CHANGED WHAT THEY CAN SEE. Three things are wrong at once and all three are
+       this mode's: the cells on screen are a window for the old set, the density this mode learnt
+       was measured on the old set, and - the one that is actually visible - `paint` has just set
+       every actor's visibility from the parts panel, which turns the surface this mode switched
+       off back ON, underneath the cells it drew. That last one is what a reader sees as a smooth
+       surface with patches of mesh scattered across it.
+
+       So: drop the cells, forget the record of what was hidden (paint is the authority now),
+       forget the density, and ask again. Keyed on the set itself because `paint` also runs for a
+       selection, and re-asking on a colour change would be a round trip for nothing. */
+    onVisibleChanged=function(){
+      if(!deepOn){depSkipKey=null;hidden=[];return;}
+      /* THE STALE RECORD GOES FIRST, and that ordering is the whole of it. `hidden` is this
+         mode's note of which actors IT switched off; `paint` has just set every one of them
+         from the parts panel, so the note describes a state that no longer exists. Two things
+         went wrong while it stood:
+
+         `readerSees` prefers `hidden` when it is non-empty, so `deepKeep` kept answering with
+         the set from BEFORE the reader touched anything - the comparison below could never see
+         a change, and isolating a different part while Deep was on did nothing at all. Measured:
+         switch from the coolant to the metal and the keep list stayed the coolant's, the window
+         stayed the coolant's, and the cells on screen stayed the coolant's.
+
+         And `hideSurface` begins `if(hidden.length)return;`, so a stale note also meant it could
+         never run again. The surface `paint` had just turned back on stayed on, underneath the
+         cells - which is a smooth surface with patches of mesh scattered over it, and is what
+         this whole repair started from. */
+      hidden=[];
+      const k=deepKeep().join('~');
+      if(k===depSkipKey){
+        /* SAME PARTS. The cells up are still the right cells, so this does not spend a round
+           trip - it just puts the surface back down under them. `paint` runs for a selection
+           too, and re-asking on a colour change would be a fetch for nothing. */
+        if(depFits&&shown.length)hideSurface();
+        rw.render();return;}
+      depSkipKey=k;depGen++;
+      if(shown.length)dropShown();
+      depCap=0;depAcross=0;depSeen=-1;depCentre=null;
+      depKey='';depPing();};
+
     if(dep){
       dep.onclick=function(){setDeep(!deepOn);};
       if(cam.onModified)cam.onModified(depPing);
@@ -2491,6 +2722,29 @@ function initViewer(job,surf,uiCfg){
                                    deepAgain:()=>{depKey='';return deepNow();},
                                    deepFits:()=>depFits,deepFaces:()=>depFaces,
                                    deepInBox:()=>depInBox,deepBox:()=>viewBox(),
+                                   // what the reader cannot see, which is what the window is
+                                   // told to leave out, and what the route taught us about this
+                                   // view's own density
+                                   deepSkip:()=>deepSkip(),deepKeep:()=>deepKeep(),
+                                   deepCap:()=>depCap,deepAcross:()=>depAcross,
+                                   deepAim:async()=>aimAtMesh(await pickCentre()),
+                                   // where the pick lands and how far down the view it is,
+                                   // against where the camera is aimed - the two depths that
+                                   // decide the box and the pixels-per-cell gate
+                                   deepProbe:async()=>{
+                                     const h=await pickCentre(),b=camBasis();
+                                     const q=cam.getPosition(),f=cam.getFocalPoint();
+                                     const dot=a=>Math.abs((a[0]-q[0])*b.d[0]
+                                                          +(a[1]-q[1])*b.d[1]
+                                                          +(a[2]-q[2])*b.d[2]);
+                                     return {hit:h,focal:f,pos:q,camDist:camDist(),
+                                             dpFocal:dot(f),dpHit:h?dot(h):null,
+                                             nearFar:cam.getClippingRange?
+                                                     cam.getClippingRange():null,
+                                             acrossFocal:viewBox().across,
+                                             acrossHit:h?viewBox(h).across:null};},
+                                   deepSeen:()=>depSeen,
+                                   deepWorth:v=>depWorth(v||viewBox()),
                                    realCellPx:()=>realCellPx(),
                                    cellPx:()=>cellPx(),viewRadius:()=>viewRadius(),
                                    fitRadius:()=>folFitR,inRange:()=>lastInRange,
