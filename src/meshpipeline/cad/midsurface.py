@@ -694,9 +694,47 @@ def _wire_edges(wire, face) -> list:
     return out
 
 
+#: SHELL-42, AN OUTLINE IS CLOSED, AS THE FILE SAYS IT IS: the pieces of a face's outline share their end points
+#: in the B-rep, but their parameter curves meet only within the file's own tolerance (up to 7e-6 of the face's
+#: parameter box on the real parts measured: free-form walls of a cyclone, a duct and an enclosure, and a
+#: bracket's drafted flat walls), and the wire builder asks 1e-7: the outline came out in pieces ("the two faces
+#: do not overlap") or as a wire that does not close ("not a valid face"). Each piece is made to start where the
+#: one before ends, and the last to end where the first starts. CHAIN_GAP only keeps apart two ends that are not
+#: one point at all (an outline wound round a closed surface ends a whole period away: 1 or more of the box).
+CHAIN_GAP = 1e-3
+#: ... and the flat overlap of two outlines, when it finds nothing, is asked again at these multiples of its
+#: tolerance (10 times, a tenth, 100 times), the first that finds an overlap kept
+OVERLAP_RETRY = (10.0, 0.1, 100.0)
+
+
+def _chained(curves: list) -> list:
+    """SHELL-42: 2D B-spline curves given in order round an outline, each made to start exactly where the one
+    before ends (and the last to end where the first starts), when they lie within CHAIN_GAP of it. A curve
+    that cannot be moved (periodic, or its end pole not its end point) is left as it is."""
+    n = len(curves)
+    if n < 2:
+        return curves
+    for i in range(n):
+        prev, cur = curves[i - 1], curves[i]
+        try:
+            end = prev.Value(prev.LastParameter())
+            start = cur.Value(cur.FirstParameter())
+            gap = end.Distance(start)
+            if gap <= 0.0 or gap > CHAIN_GAP or cur.IsPeriodic():
+                continue
+            if cur.Pole(1).Distance(start) > 1e-12:
+                continue                      # not clamped: its first pole is not its start
+            cur.SetPole(1, end)
+        except Exception as exc:  # noqa: BLE001 - the piece stays as the file gave it
+            logger.debug("shell: an outline piece could not be joined to the one before (%s)", exc)
+    return curves
+
+
 def _curves_of_a(fa, box) -> list[list]:
-    """Face A's outline and holes as 2D curves in the fitted surface's parameters (outline first)."""
-    return [[_mapped_curve(e, fa, box) for e in _wire_edges(w, fa)] for w in [_outer_wire(fa), *_inner_wires(fa)]]
+    """Face A's outline and holes as 2D curves in the fitted surface's parameters (outline first), each wire's
+    pieces joined end to end (SHELL-42)."""
+    return [_chained([_mapped_curve(e, fa, box) for e in _wire_edges(w, fa)])
+            for w in [_outer_wire(fa), *_inner_wires(fa)]]
 
 
 def _region_on(surf, wires: list[list]):
@@ -714,6 +752,7 @@ def _overlap_2d(wires_a: list[list], wires_b: list[list], surf, fuzzy: float) ->
     from OCP.BRepAdaptor import BRepAdaptor_Curve
     from OCP.Geom import Geom_Plane
     from OCP.Geom2d import Geom2d_TrimmedCurve
+    from OCP.Geom2dConvert import Geom2dConvert
     from OCP.GeomAPI import GeomAPI
     from OCP.gp import gp_Pln
     from OCP.TopAbs import TopAbs_REVERSED
@@ -737,8 +776,17 @@ def _overlap_2d(wires_a: list[list], wires_b: list[list], surf, fuzzy: float) ->
     ra, rb = flat_region(wires_a), flat_region(wires_b)
     if ra is None or rb is None:
         return []
+    pieces = overlap(ra, rb, fuzzy)
+    # SHELL-42: OpenCASCADE's flat Boolean found NOTHING at one tolerance where it finds the overlap at the ones
+    # either side of it (a bracket's drafted wall, two outlines sharing three sides: 0.358 of the box at 1e-7,
+    # 1e-5, 1e-4 and 1e-3, nothing at 1e-6). Nothing found is asked again at OVERLAP_RETRY; an overlap found is
+    # kept as it was. A wrong piece cannot pass: every fitted mid-face is read against both faces (SHELL-9).
+    for retry in OVERLAP_RETRY:
+        if pieces:
+            break
+        pieces = overlap(ra, rb, retry * fuzzy)
     out = []
-    for f in overlap(ra, rb, fuzzy):
+    for f in pieces:
         wires = []
         for w in [_outer_wire(f), *_inner_wires(f)]:
             curves = []
@@ -748,6 +796,9 @@ def _overlap_2d(wires_a: list[list], wires_b: list[list], surf, fuzzy: float) ->
                 curves.append(c.Reversed() if e.Orientation() == TopAbs_REVERSED else c)
             wires.append(curves)
         g = _region_on(surf, wires)
+        if g is None:
+            # SHELL-42: the Boolean's pieces meet within its tolerance, not exactly: joined end to end
+            g = _region_on(surf, [_chained([Geom2dConvert.CurveToBSplineCurve_s(c) for c in w]) for w in wires])
         if g is not None:
             out.append(g)
     return out
@@ -767,9 +818,7 @@ def _edge_points(edge, k: int) -> list[np.ndarray]:
 def _covers(fb, fa) -> bool:
     """Every point read along face A's edges has its foot on face B (B lies across the whole of A)."""
     from OCP.BRep import BRep_Tool
-    from OCP.BRepClass import BRepClass_FaceClassifier
-    from OCP.gp import gp_Pnt, gp_Pnt2d
-    from OCP.TopAbs import TopAbs_IN, TopAbs_ON
+    from OCP.gp import gp_Pnt
 
     proj = sp._projector(fb)
     tol = max(BRep_Tool.Tolerance_s(fb), 1e-7)
@@ -780,7 +829,8 @@ def _covers(fb, fa) -> bool:
                 if proj.NbPoints() < 1:
                     return False
                 u, v = proj.LowerDistanceParameters()
-                if BRepClass_FaceClassifier(fb, gp_Pnt2d(u, v), tol).State() not in (TopAbs_IN, TopAbs_ON):
+                # SHELL-41: the foot's parameters in the face's own range (a closed face: a drafted tube)
+                if not sp.foot_on_face(fb, u, v, tol):
                     return False
     return True
 
@@ -820,7 +870,7 @@ def _curves_of_b(fb, fa, box) -> list[list] | None:
             if out:
                 uv[0] = tuple(out[-1][-1])
             out.append(np.array(uv))
-        if not out or np.linalg.norm(out[-1][-1] - out[0][0]) > 1e-6:
+        if not out or np.linalg.norm(out[-1][-1] - out[0][0]) > CHAIN_GAP:
             return None              # the outline did not close (it wound round a periodic surface)
         out[-1][-1] = out[0][0]
         return out
@@ -961,9 +1011,35 @@ def wall_samples(mid, fa, fb) -> list[list[float]]:
     return out
 
 
-def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False) -> tuple[list, float, float, float, str]:
+#: SHELL-43, A FINER FIT WHERE THE FIRST IS OFF THE MIDDLE: a free-form wall that curves between the
+#: FIT_SAMPLES x FIT_SAMPLES midpoints (a blow-moulded tank's side, a duct's swept corner) had its fitted
+#: mid-surface up to 5% of the wall off the middle between them, and the wall was thrown out (FIDELITY_SHARE,
+#: 2%). The fit is made again through twice the points a side (33: a cubic fit's error falls 16 times, 5% to
+#: 0.4% on that tank), FIT_REFINEMENTS times at most, and kept only when it holds the middle as any fitted
+#: mid-face must. A wall whose first fit holds is fitted once, as before. Once, not twice: a fit through 65 a
+#: side takes 5 to 7 s a pair.
+FIT_REFINEMENTS = 1
+FIT_OFF_MIDDLE = "the fitted mid-surface is off the middle"
+
+
+def fitted_mid_refined(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False) -> tuple[list, float, float, float, str]:
+    """SHELL-43: fitted_mid, made again through twice the points a side while it is off the middle
+    (FIT_REFINEMENTS times at most)."""
+    n = FIT_SAMPLES
+    got = fitted_mid(fa, fb, t_hint, fuzzy, wall_wide=wall_wide)
+    for _ in range(FIT_REFINEMENTS):
+        if got[0] or not got[4].startswith(FIT_OFF_MIDDLE):
+            break
+        n = 2 * n - 1
+        got = fitted_mid(fa, fb, t_hint, fuzzy, wall_wide=wall_wide, samples=n)
+    return got
+
+
+def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False,
+               samples: int | None = None) -> tuple[list, float, float, float, str]:
     """SHELL-9: the fitted mid-faces of faces fa, fb ([] when none can be made, with why), and the wall's thinnest,
-    thickest and mean thickness over them (own units). `t_hint`: the wall as read by the pair test."""
+    thickest and mean thickness over them (own units). `t_hint`: the wall as read by the pair test. `samples`:
+    the midpoints a side (FIT_SAMPLES when not given; SHELL-43 asks for more)."""
     from OCP.Approx import Approx_IsoParametric
     from OCP.BRep import BRep_Tool
     from OCP.BRepClass import BRepClass_FaceClassifier
@@ -979,7 +1055,7 @@ def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False) 
         return [], 0.0, 0.0, 0.0, "a face without bounds"
     sa = BRep_Tool.Surface_s(fa)
     pa_proj, pb_proj = sp._projector(fa), sp._projector(fb)
-    n = FIT_SAMPLES
+    n = FIT_SAMPLES if samples is None else int(samples)
     grid = TColgp_Array2OfPnt(1, n, 1, n)
     walls = np.zeros((n, n))
     for i in range(n):
@@ -1007,6 +1083,10 @@ def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False) 
     else:
         wires_b = _curves_of_b(fb, fa, box)
         faces = _overlap_2d(wires_a, wires_b, surf, 1e-6) if wires_b is not None else []
+        # SHELL-43: an overlap under a tenth of the wall wide is no mid-face (SHELL-16's sliver): where B's
+        # outline, laid on A's surface, runs along A's own edge, the flat overlap can come back as slivers
+        # alone, and read finely enough a sliver lies in the middle of its wall
+        faces = [f for f in faces if width_of(f) >= SLIVER_WALLS * t_hint]
         if not faces:
             return [], 0.0, 0.0, 0.0, "the two faces do not overlap"
     from OCP.BRepLib import BRepLib
@@ -1028,7 +1108,7 @@ def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False) 
         worst_rel = max(worst_rel, rel)
         lo, hi = min(lo, flo), max(hi, fhi)
     if worst_rel > FIDELITY_SHARE:
-        return [], 0.0, 0.0, 0.0, (f"the fitted mid-surface is off the middle by {100 * worst_rel:.1f}% of the wall")
+        return [], 0.0, 0.0, 0.0, (f"{FIT_OFF_MIDDLE} by {100 * worst_rel:.1f}% of the wall")
     if not read and not math.isfinite(lo):
         return [], 0.0, 0.0, 0.0, "no point of the fitted mid-surface could be read"
     read = read or [lo, hi]
@@ -4106,8 +4186,8 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
                 if wide < t_u / sp.SHELL_WIDTH_RATIO and not wall_wide:
                     got, why_f = [], "it is narrower than four walls (a local feature of the wall beside it)"
                 else:
-                    got, lo_u, hi_u, mean_u, why_f = fitted_mid(faces[small], faces[big], t_u, 1e-4 * t_u,
-                                                                wall_wide=wall_wide)
+                    got, lo_u, hi_u, mean_u, why_f = fitted_mid_refined(faces[small], faces[big], t_u, 1e-4 * t_u,
+                                                                        wall_wide=wall_wide)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("shell: the fitted mid-face of %s/%s failed (%s)", names[p.a], names[p.b], exc)
                 got, why_f = [], "the faces could not be read"
