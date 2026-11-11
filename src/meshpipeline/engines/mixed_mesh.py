@@ -186,9 +186,6 @@ def join(shell: ShellMesh, solid: SolidPart, cut_faces: list, *, part: str,
     `loose_faces` (MIXED-9): faces of a body that is solid as a whole, which a shell edge meets within LOOSE_SHARE of
     its wall (a plate of another body ending on it: its mid-face stops where its two skins stop, a hair short of a
     curved face) - their solid nodes are found as the cut faces' are."""
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
-    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
-    from OCP.gp import gp_Pnt
 
     from meshpipeline.cad import midsurface as ms
 
@@ -196,17 +193,13 @@ def join(shell: ShellMesh, solid: SolidPart, cut_faces: list, *, part: str,
     users = edge_users(shell)
     elems = shell.elements()
     free = [(k, u[0]) for k, u in users.items() if len(u) == 1]
-    tight = ms._compound(cut_faces) if cut_faces else None
-    loose = ms._compound(loose_faces) if loose_faces else None
+    tight = _Faces(list(cut_faces))
+    loose = _Faces(list(loose_faces or []))
     cut = ms._compound(list(cut_faces) + list(loose_faces or []))
     on_cache: dict[int, bool] = {}
 
-    def close(n: int, shape, share: float, e: int) -> bool:
-        if shape is None:
-            return False
-        v = BRepBuilderAPI_MakeVertex(gp_Pnt(*map(float, shell.xyz[n]))).Vertex()
-        d = BRepExtrema_DistShapeShape(v, shape)
-        return d.IsDone() and d.Value() <= share * float(shell.wall[e]) + 1e-6
+    def close(n: int, faces: _Faces, share: float, e: int) -> bool:
+        return faces.within(shell.xyz[n], share * float(shell.wall[e]) + 1e-6)
 
     def on_cut(n: int, e: int) -> bool:
         if n not in on_cache:
@@ -280,11 +273,13 @@ def join(shell: ShellMesh, solid: SolidPart, cut_faces: list, *, part: str,
     else:
         lo, hi = ms._box(cut)
         tol = ON_FACE_SHARE * float(np.min(shell.wall)) + 1e-6
-        inside = np.flatnonzero(np.all((solid.xyz >= lo - tol) & (solid.xyz <= hi + tol), axis=1))
+        every = _Faces(list(cut_faces) + list(loose_faces or []))
+        # only the solid mesh's skin can lie on a cut face (the cut faces are the region's own faces)
+        skin = np.zeros(solid.n_nodes + 1, dtype=bool)
+        skin[np.unique(boundary_triangles(solid.tets, np.ones(solid.n_nodes + 1, dtype=bool))[:, :3])] = True
+        inside = np.flatnonzero(np.all((solid.xyz >= lo - tol) & (solid.xyz <= hi + tol), axis=1) & skin[1:])
         for j in inside.tolist():
-            v = BRepBuilderAPI_MakeVertex(gp_Pnt(*map(float, solid.xyz[j]))).Vertex()
-            d = BRepExtrema_DistShapeShape(v, cut)
-            on[j + 1] = d.IsDone() and d.Value() <= tol
+            on[j + 1] = every.within(solid.xyz[j], tol)
     tri = boundary_triangles(solid.tets, on)
     face_xyz = {base + int(i): solid.xyz[int(i) - 1] for i in np.unique(tri)}
     face_area = {base + i: a for i, a in ml.face_node_areas({int(i): solid.xyz[int(i) - 1] for i in np.unique(tri)},
@@ -337,6 +332,39 @@ def join(shell: ShellMesh, solid: SolidPart, cut_faces: list, *, part: str,
                                   for a, b in _segs(lk)], dtype=arr.dtype).reshape(-1)
             setattr(ext, name, np.concatenate([arr[:n_q], extra, arr[n_q:]]))
     return MixedMesh(shell=ext, solid=solid, part=part, ties=ties, links=links, n_overlap=len(q), notes=notes)
+
+
+class _Faces:
+    """Faces to measure points against, each with its box: a point is tested only against the faces whose box (padded
+    by the tolerance) holds it, one face at a time - the distance to their compound, at a fraction of the cost
+    (a part with tens of solid pieces spent most of half an hour on one BRepExtrema against the whole compound for
+    each of its solid nodes)."""
+
+    def __init__(self, faces: list):
+        from meshpipeline.cad import midsurface as ms
+
+        self.faces = list(faces)
+        boxes = [ms._box(f) for f in self.faces]
+        self.lo = np.array([b[0] for b in boxes], float).reshape(-1, 3)
+        self.hi = np.array([b[1] for b in boxes], float).reshape(-1, 3)
+
+    def within(self, p, tol: float) -> bool:
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+        from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+        from OCP.gp import gp_Pnt
+
+        if not self.faces:
+            return False
+        p = np.asarray(p, float)
+        cand = np.flatnonzero(np.all((p >= self.lo - tol) & (p <= self.hi + tol), axis=1))
+        if not len(cand):
+            return False
+        v = BRepBuilderAPI_MakeVertex(gp_Pnt(*map(float, p))).Vertex()
+        for k in cand.tolist():
+            d = BRepExtrema_DistShapeShape(v, self.faces[k])
+            if d.IsDone() and d.Value() <= tol:
+                return True
+        return False
 
 
 def _segs(lk: Link) -> list[tuple[int, int]]:
