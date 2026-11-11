@@ -101,6 +101,8 @@ ROUTE_CONSUMERS: dict[str, tuple[str, ...]] = {
 ENGINE_CONSUMERS: dict[str, tuple[str, ...]] = {
     "cfmesh": ("builder_model",),
     "gmsh": ("builder_model", "fea_ai", "fea_part_sizes", "mesh_requirements"),
+    # Netgen is built by its deterministic plan (engines/netgen/plan.py): no AI step in the build
+    "netgen": ("intake",),
     "snapgrid": ("intake",),
     "snappy": ("snappy_planner", "snappy_part_levels"),
     "snappy_multiregion": ("builder_model",),

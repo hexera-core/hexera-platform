@@ -15,6 +15,7 @@ PACKS = {
     "vmtk": "VMTK_SYSTEM",
     "snappy_multiregion": "SNAPPY_MULTIREGION_SYSTEM",
     "snapgrid": "SNAPGRID_SYSTEM",
+    "netgen": "NETGEN_SYSTEM",
 }
 
 #: Cross-engine Builder rules. Each must appear in the packaged role prompt, and none may be
@@ -103,6 +104,7 @@ def test_engine_specific_instructions_were_not_centralized(engine):
         "vmtk": ["centerline", "vmtk"],
         "snappy_multiregion": ["splitMeshRegions", "regionProperties"],
         "snapgrid": ["snap-grid", "JEP181"],
+        "netgen": ["Netgen", "netgen_spec.json"],
     }[engine]
     leaked = [t for t in engine_only if t in general]
     assert not leaked, f"{engine}-specific vocabulary leaked into the shared prompt: {leaked}"

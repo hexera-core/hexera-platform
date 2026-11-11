@@ -181,6 +181,87 @@
    "write_file"
   ]
  },
+ "netgen": {
+  "axes": [
+   "near_wall_layers_generated",
+   "tet_cell_quality",
+   "wall_fidelity"
+  ],
+  "criteria": [
+   "fatal",
+   "layer_coverage_pct",
+   "max_non_ortho",
+   "rc",
+   "timed_out"
+  ],
+  "deliverable": [
+   "constant/polyMesh",
+   "fluid_boundary.stl",
+   "mesh_volume.msh",
+   "netgen_report.json",
+   "netgen_spec.json",
+   "system/controlDict"
+  ],
+  "deliverable_kind": "Deliverable",
+  "export_formats": [
+   "openfoam_polymesh",
+   "gmsh_msh",
+   "stl_surface"
+  ],
+  "gates": [
+   [
+    "manifest_valid",
+    true,
+    "MANIFEST"
+   ],
+   [
+    "quality_floor",
+    true,
+    "MESH"
+   ],
+   [
+    "cell_limit",
+    false,
+    "MESH"
+   ],
+   [
+    "resolution_floor",
+    false,
+    "MESH"
+   ],
+   [
+    "patch_contract",
+    true,
+    "GROUPS"
+   ],
+   [
+    "port_areas",
+    true,
+    "GROUPS"
+   ],
+   [
+    "boundary_types",
+    true,
+    "GROUPS"
+   ]
+  ],
+  "input_contract": {
+   "input_kind": "surface",
+   "internal_from_surface": true,
+   "min_thickness_ratio": 0.0,
+   "rationale": "Netgen remeshes and fills a CLOSED staged fluid boundary (the shared internal staging closes it at the confirmed openings); the cell size follows the measured passage, so no hard thin-feature floor is set.",
+   "require_no_self_intersection": false
+  },
+  "required_run_files": [
+   "netgen_spec.json"
+  ],
+  "tools": [
+   "list_directory",
+   "read_file",
+   "run_mesh",
+   "submit_mesh"
+  ]
+ },
  "snapgrid": {
   "axes": [
    "interface_continuity",

@@ -54,7 +54,8 @@ def test_topology_never_enters_vmtk_engine_params():
 def test_engines_producing_topology_reads_capabilities_not_params():
     # gmsh serves either topology from a PREPARED fluid-domain solid; the wrap-and-fill
     # engines from a body surface; vmtk internal only.
-    assert set(ec.engines_producing_topology("internal")) == {"cfmesh", "gmsh", "snappy", "vmtk"}
+    assert set(ec.engines_producing_topology("internal")) == {"cfmesh", "gmsh", "netgen", "snappy",
+                                                              "vmtk"}
     assert set(ec.engines_producing_topology("external")) == {"cfmesh", "gmsh", "snappy"}
     assert "vmtk" not in ec.engines_producing_topology("external")
     assert ec.engines_producing_topology("bogus") == []

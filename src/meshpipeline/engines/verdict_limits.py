@@ -27,9 +27,9 @@ _OPENFOAM_HEX = ("snappy", "cfmesh", "snappy_multiregion")
 #: the engines that build one connected fluid region (a second region is a disconnected one)
 _ONE_REGION = ("snappy", "cfmesh", "gmsh", "vmtk")
 #: the engines whose internal meshes the resolution floor measures (engines/passage_flow)
-_PASSAGE_MEASURED = ("snappy", "cfmesh", "gmsh", "vmtk")
+_PASSAGE_MEASURED = ("snappy", "cfmesh", "gmsh", "vmtk", "netgen")
 #: every flow engine
-_ALL = ("snappy", "cfmesh", "snappy_multiregion", "snapgrid", "gmsh", "vmtk")
+_ALL = ("snappy", "cfmesh", "snappy_multiregion", "snapgrid", "gmsh", "vmtk", "netgen")
 _CFD = ("external", "internal")
 
 _CHECKMESH = "https://doc.cfd.direct/openfoam/user-guide-v12/mesh-description (checkMesh warns above 70 degrees)"
@@ -61,6 +61,11 @@ class Limit:
 PRODUCTION_LIMITS: tuple[Limit, ...] = (
     Limit("max_non_ortho", "Worst face non-orthogonality", "<=", 70.0, _OPENFOAM_HEX,
           source=_CHECKMESH),
+    # Netgen's tetrahedra + prisms as an OpenFOAM polyMesh: the same checkMesh bar as the hex meshers
+    # (a Netgen mesh is several separate regions where the staged boundary is - a left and a right
+    # carotid - so it is not held to one region)
+    Limit("max_non_ortho", "Worst face non-orthogonality", "<=", 70.0, ("netgen",),
+          source=_CHECKMESH),
     Limit("max_non_ortho", "Worst face non-orthogonality a CFD solver can correct", "<=", 85.0,
           ("gmsh",), topologies=_CFD,
           source="engines/gmsh/criteria.py (also gmsh's gating bar, so a mesh past it never "
@@ -70,7 +75,7 @@ PRODUCTION_LIMITS: tuple[Limit, ...] = (
                  "share of all faces (engines/snappy/criteria.py): a production limit on a sound "
                  "mesh, never a validity bar (LAD-cfd-3); cfMesh often does not report it"),
     Limit("layer_coverage_pct", "Wall covered by prism layers (percent)", ">=", 80.0,
-          ("snappy", "cfmesh", "snappy_multiregion", "vmtk"), needs_layers=True,
+          ("snappy", "cfmesh", "snappy_multiregion", "vmtk", "netgen"), needs_layers=True,
           source="Hexera lab history: under 80% coverage, wall shear and y+ are unreliable on a "
                  "material share of the wall"),
     Limit("layers_short", "Prism layers built short of the layers asked for", "<=", 0,
