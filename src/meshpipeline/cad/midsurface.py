@@ -3179,6 +3179,24 @@ def _analytic_face(face, tol: float):
 SEW_SWEPT = True
 
 
+def _revolved_sphere(surf) -> bool:
+    """SHELL-15m: whether a surface of revolution turns an arc of a circle centred on its own axis (a sphere)."""
+    from OCP.Geom import Geom_Circle, Geom_SurfaceOfRevolution, Geom_TrimmedCurve
+    from OCP.gp import gp_Lin
+
+    if not isinstance(surf, Geom_SurfaceOfRevolution):
+        return False
+    try:
+        c = surf.BasisCurve()
+        while isinstance(c, Geom_TrimmedCurve):
+            c = c.BasisCurve()
+        if not isinstance(c, Geom_Circle):
+            return False
+        return gp_Lin(surf.Axis()).Distance(c.Location()) <= 1e-7 * max(c.Radius(), 1e-12)
+    except Exception:  # noqa: BLE001 - not known: treated as a sphere, the safe side
+        return True
+
+
 def _swept_face(face):
     """SHELL-15m: a face on a surface of revolution or of linear extrusion (how an IGES writer stores a cylinder,
     cone, sphere or torus) re-made on the elementary surface it is by OpenCASCADE's whole-face conversion - the
@@ -3188,18 +3206,29 @@ def _swept_face(face):
     face with the same area that meshes, its material side kept."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepCheck import BRepCheck_Analyzer
-    from OCP.Geom import Geom_SurfaceOfLinearExtrusion, Geom_SurfaceOfRevolution
+    from OCP.Geom import Geom_SphericalSurface, Geom_SurfaceOfLinearExtrusion, Geom_SurfaceOfRevolution
     from OCP.ShapeCustom import ShapeCustom
     from OCP.TopAbs import TopAbs_REVERSED
     from OCP.TopoDS import TopoDS
 
     if not isinstance(BRep_Tool.Surface_s(face), (Geom_SurfaceOfRevolution, Geom_SurfaceOfLinearExtrusion)):
         return None
+    from OCP.TopAbs import TopAbs_EDGE
+
+    em = _map(face, TopAbs_EDGE)
+    if any(BRep_Tool.Degenerated_s(TopoDS.Edge_s(em.FindKey(i))) for i in range(1, em.Extent() + 1)):
+        # A FACE WITH A POLE (a dome's cap, a cone's tip) is left to SHELL-15c/g: OpenCASCADE's whole-face conversion
+        # crashes the process on a sphere's pole (the IGES dome's extraction child stopped and it read as solid)
+        return None
+    if _revolved_sphere(BRep_Tool.Surface_s(face)):
+        return None                     # a sphere written as a revolved arc: SHELL-15c/g, as for a pole
     try:
         got = _faces(ShapeCustom.SweptToElementary_s(face))
         if len(got) != 1:
             return None
         out = TopoDS.Face_s(got[0])
+        if isinstance(BRep_Tool.Surface_s(out), Geom_SphericalSurface):
+            return None                 # a sphere too: SHELL-15c/g's re-make, measured on domes, stands
         if not BRepCheck_Analyzer(out).IsValid() or abs(_area(out) - _area(face)) > 1e-6 * _area(face):
             return None
         q = _inner_point(face)
