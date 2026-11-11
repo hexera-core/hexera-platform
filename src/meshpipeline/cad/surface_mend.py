@@ -573,6 +573,10 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
                 how = "extended along its own surface" + ("" if same else " and trimmed where it meets its neighbour")
                 if got is not None:
                     changed = abs(ms._area(new) - ms._area(a)) / max(ms._length(e), 1e-300)
+                    # an extension covers the gap and no more: a strip much wider than the gap lies over the neighbour
+                    # (11 Nov: a trimmed B-spline face 1 mm short was continued 2.2 mm along a slanted cut)
+                    if changed > EXTEND_PAST * gap + 2.0 * here.tol:
+                        got, why = None, "continuing the face would cover more than the gap"
     # 3. TRIMMED back to the neighbour's edge (an overlap: the face runs over its neighbour)
     if got is None:
         eb = [m[0] for m in p["_members"] if m[1] == nbr]
