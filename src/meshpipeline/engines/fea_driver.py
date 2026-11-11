@@ -2306,24 +2306,28 @@ async def _rung_refine(ws: Path, record: dict, diag_m: float, first_plan: dict, 
     return facts
 
 
+class _NoCount(Exception):
+    """surface_asks: no element count to ask for (no words, or no staged file)."""
+
+
 async def surface_asks(ws: Path, state, *, job_id: str, run=None, publish=None) -> tuple[dict | None, dict | None]:
     """SURF-11: WHAT THE USER'S WORDS ASK OF A SURFACE FILE'S MESH, read by the same readers the solid route uses,
     so a count or a size written in the notes reaches a surface file as it reaches a solid: (the element count,
     PLAN-fea-27 / SHMESH-23 - the FEA plan's AI step shown the file with no zones, its answer checked by the same
     rules; the notes' mesh requirements, NOTE-7..9 - read by this module's read_requirements and left in the
-    workspace for the surface run, SURF-7). Asked only when the user left words to read
-    (cad/part_words.wanted): a run without words asks no model and is the run it always was. Never raises (but a
-    fenced worker's stale publish): no answer is no count."""
+    workspace for the surface run, SURF-7). The count is asked only when the user left words to read
+    (cad/part_words.wanted): a run without words asks no model for it. The requirements are read on every run, as
+    before SURF-11 (Glue 1): a team's meshing standard (STD-2) reaches a surface file with no notes, and with neither
+    the reading is "none" with no model asked. Never raises (but a fenced worker's stale publish): no answer is no
+    count."""
     from meshpipeline.cad.part_words import wanted
     from meshpipeline.contracts.event_stream import StaleExecutionPublish
 
-    if not wanted(state or {}):
-        return None, None
     target = None
     try:
-        staged = staged_solid(ws)
+        staged = staged_solid(ws) if wanted(state or {}) else None
         if staged is None:
-            return None, None
+            raise _NoCount
         _box, diag_m = await asyncio.to_thread(_metre_box, staged)
         ai = await FA.decide({"faces": {}, "bodies": 1}, state or {}, [], diag_m=diag_m, limit=element_limit({})[0],
                              job_id=job_id, run=run, wait_s=ai_wait_s(run))
@@ -2335,6 +2339,8 @@ async def surface_asks(ws: Path, state, *, job_id: str, run=None, publish=None) 
                                      "follow that count."}])
     except StaleExecutionPublish:
         raise
+    except _NoCount:
+        target = None
     except Exception as exc:  # noqa: BLE001 - no count read is the rules' own sizes
         logger.warning("fea driver: the element count was not read for the surface file (%s)", type(exc).__name__)
         target = None
