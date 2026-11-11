@@ -114,6 +114,12 @@ def kind_of(req: Mapping | None) -> str | None:
     return "quads" if k.get("tria_percent_max") is not None else None
 
 
+def structure_of(req: Mapping | None) -> str | None:
+    """SHMESH-42: the user's word on the mesh's pattern (NOTE-7's element kind): "free" (a free mesh: no washers, no
+    mapped faces), "no_washers", "structured" (asked for what is done anyway), or None (not said: structured)."""
+    return ((req or {}).get("kind") or {}).get("structure")
+
+
 def chord_size(radius: float, deviation: float) -> float:
     """SHMESH-34: the longest element (mm) on an arc of `radius` whose middle stands at most `deviation` off it."""
     if radius <= 0 or deviation >= radius:
