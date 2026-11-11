@@ -106,6 +106,12 @@ COMMITTED = "committed"
 REVERTED = "reverted"
 ESCALATED = "escalated"
 
+#: Reason prefix for a package that was never executed, because it was malformed. It shares the
+#: `reverted` status - the vocabulary is the three the region loop routes on - so the prefix is
+#: what tells "never ran" from "ran and the claim failed". Same idiom as `try_op`'s `cap:` and
+#: `declined:`.
+REFUSED = "refused:"
+
 
 @dataclass(frozen=True, slots=True)
 class PackageVerdict:
@@ -425,8 +431,10 @@ class RepairSession:
         measurement checks.
 
         THE ORDER IS THE DESIGN, for the reason `try_op` gives:
-          1. admit the package    - specificity, locus, well-formedness. CHEAP, and a malformed
-                                    package must not cost a scan.
+          1. admit the package    - the budget's own sanity, then the predicate's specificity,
+                                    locus and the plan's well-formedness. CHEAP, and a malformed
+                                    package must not cost a scan. Refusals keep the `reverted`
+                                    status with a `refused:` reason, because nothing ran.
           2. budget               - a plan larger than the budget is refused unapplied
           3. snapshot             - ONE, at the package boundary
           4. apply the plan       - through `try_op`, so every cap, hold, declaration and
@@ -455,8 +463,14 @@ class RepairSession:
         if refusal:
             # A REFUSAL, NOT AN ESCALATION. The package was malformed, not defeated: there is
             # nothing here for a person to look at in the geometry, only an author to fix.
+            # AND NOT A REVERT EITHER, which is why the reason is PREFIXED. The status vocabulary
+            # is the three the loop routes on, so a fourth is not available; but "malformed, never
+            # ran" and "ran, and the claim did not hold" are different diagnoses with different
+            # remedies, and nothing was undone here because nothing was applied. `try_op` makes
+            # the same distinction in text with `cap:` and `declined:`; this follows that idiom,
+            # so a caller can tell the two apart from the verdict alone.
             return self._record_package(PackageVerdict(
-                region_index=region.index, status=REVERTED, reason=refusal))
+                region_index=region.index, status=REVERTED, reason=f"{REFUSED}{refusal}"))
 
         if len(package.plan) > package.budget.max_ops:
             return self._record_package(PackageVerdict(
@@ -484,7 +498,7 @@ class RepairSession:
 
         for item in package.plan:
             spent = self.clock() - started
-            if package.budget.timeout_s > 0.0 and spent > package.budget.timeout_s:
+            if spent > package.budget.timeout_s:
                 self.shape, self._defects, self.complete_scan = snapshot
                 return self._record_package(PackageVerdict(
                     region_index=region.index, status=ESCALATED,
@@ -536,11 +550,28 @@ class RepairSession:
     def _package_refusal(package: TargetPackage) -> str:
         """"" if this package may be executed, otherwise why it may not. NO WORK IS DONE HERE.
 
+        A budget that permits unbounded time is not a budget, so a non-positive `timeout_s` is
+        malformed rather than permissive.
+
         A predicate that names NO entity asserts only what is always true, so an author could
         pass by promising nothing. A predicate that names geometry OUTSIDE the region cannot be
         verified by the scoped scan that judges it - and padding the claim with out-of-region
         names is exactly how an author would inflate its specificity past this gate.
         """
+        budget = package.budget
+        if budget.timeout_s <= 0.0:
+            # A BUDGET THAT PERMITS UNBOUNDED TIME IS NOT A BUDGET. Read as "no mid-plan timeout",
+            # a zero would hand an author unlimited wall clock on a region by nothing worse than a
+            # bug - and the per-region budget is the cost control of this whole loop, so that has
+            # to be loud rather than silent. A region that cannot afford its plan escalates; it
+            # does not quietly become free.
+            return f"budget permits unbounded time: timeout_s is {budget.timeout_s:.6g}"
+        if budget.max_ops < 0:
+            # ZERO IS NOT MALFORMED HERE, and the asymmetry with `timeout_s` is the point: a zero
+            # operation allowance permits NOTHING, so any non-empty plan escalates on it below -
+            # which is a budget working. A NEGATIVE allowance is a value with no reading at all.
+            return f"budget is nonsensical: max_ops is {budget.max_ops}"
+
         predicate = package.predicate
         if specificity(predicate) == 0.0:
             return ("predicate names no entity: a claim that promises nothing is true of any "

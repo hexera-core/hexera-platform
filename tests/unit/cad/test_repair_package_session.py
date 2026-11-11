@@ -165,10 +165,50 @@ def test_reclassified_entities_are_reported_on_the_verdict():
 # THE ADMISSION GATE - refused BEFORE any work, because the package was malformed
 
 
+def test_a_budget_that_permits_unbounded_time_is_refused():
+    # The per-region budget is this loop's cost control. A zero read as "no timeout" would hand an
+    # author unlimited wall clock on a region, so it is malformed, not permissive.
+    session = _session()
+    verdict = session.try_package(_package(session, cleared={_EDGE}, timeout_s=0.0))
+    assert verdict.reason.startswith("refused:")
+    assert "budget" in verdict.reason
+    assert verdict.verdicts == ()                # no operation was attempted
+    assert session.shape == "original"
+    assert session.scan_count == 0
+
+
+def test_a_negative_operation_budget_is_refused_but_a_zero_one_escalates():
+    # Zero permits nothing, which is a budget working. Negative has no reading at all.
+    session = _session()
+    verdict = session.try_package(_package(session, cleared={_EDGE}, max_ops=-1))
+    assert verdict.reason.startswith("refused:")
+    assert session.scan_count == 0
+    assert _session().try_package(
+        _package(_session(), cleared={_EDGE}, max_ops=0)).status == "escalated"
+
+
+def test_a_refusal_is_distinguishable_from_a_revert():
+    # Both carry the `reverted` status, so the reason is what tells "never ran" from "ran and the
+    # claim did not hold" - and an operator reading one as the other has the wrong diagnosis.
+    refused = _session()
+    refused_verdict = refused.try_package(_package(refused, cleared={_EDGE}, timeout_s=0.0))
+
+    ran = _session()
+    ran_verdict = ran.try_package(_package(ran, cleared={"edge:never-cleared"},
+                                           extra_fingerprints={"edge:never-cleared"}))
+
+    assert refused_verdict.status == ran_verdict.status == "reverted"
+    assert refused_verdict.reason.startswith("refused:")
+    assert not ran_verdict.reason.startswith("refused:")
+    assert ran_verdict.verdicts != ()            # it really did execute, then was undone
+    assert refused_verdict.verdicts == ()
+
+
 def test_a_predicate_that_names_no_entity_is_refused_before_anything_is_applied():
     session = _session()
     verdict = session.try_package(_package(session))
     assert verdict.status == "reverted"
+    assert verdict.reason.startswith("refused:")
     assert "names no entity" in verdict.reason
     assert verdict.verdicts == ()
     assert session.shape == "original"
@@ -185,6 +225,7 @@ def test_a_predicate_naming_geometry_outside_the_region_is_refused():
 
     verdict = session.try_package(replace(package, predicate=outside))
     assert verdict.status == "reverted"
+    assert verdict.reason.startswith("refused:")
     assert "edge:elsewhere" in verdict.reason
     assert verdict.verdicts == ()
     assert session.scan_count == 0
@@ -196,6 +237,7 @@ def test_a_malformed_plan_item_is_refused_before_anything_is_applied():
         session, cleared={_EDGE},
         plan=({"op": session.test_ops[0], "targets": (), "defect_code": DefectCode.small_edge},)))
     assert verdict.status == "reverted"
+    assert verdict.reason.startswith("refused:")
     assert "malformed" in verdict.reason
     assert session.scan_count == 0
 
