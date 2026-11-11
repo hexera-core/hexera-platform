@@ -345,6 +345,33 @@ without it: their bends pass the taper test but are fitted only when narrower th
 thinnest reading (2.4 mm at the grid's band middles) does not join them to their 2 mm flanges' wall (SHELL-2b). That
 grouping, at the bend's own edges, is the next step for bends.
 
+**Results (11 Nov, lab VM; "fully good" as the sealed set reads it).** Skin coverage is the mean over files of the
+share of thin-wall skin with shell.
+
+| set | files | fully good | skin coverage | files 99% covered | files with open edges | open edges |
+|---|---|---|---|---|---|---|
+| wall set (real parts) | 60 | 36 to 36 | 87.3 to 87.4% | 25 to 26 of 40 | 1 to 1 | 1 to 1 |
+| new set (real parts) | 135 | 76 to 76 | 77.2 to 78.4% | 56 to 61 of 104 | 9 to 8 | 53 to 137 |
+| lab (tuned on) | 87 | 71 to 70 | 96.9 to 98.0% | 70 to 76 of 81 | 2 to 4 | 3 to 70 |
+
+On the plates stream's head (#436) the same rules move the same files: fully good 41 / 78 / 71 to 41 / 78 / 70, skin
+coverage 87.8 / 80.7 / 96.5% to 87.9 / 81.8 / 97.9%.
+
+- **Better.** 15 files hold more of their walls (coverage up a point or more, none down): a duct bend and a reducer
+  now shell whole (their bodies mixed or solid before), an octagonal chamber's 7 more bodies, a tank's drafted cone
+  in its cylinder (open edge 1 to 0, now fully good), two tanks and an enclosure 7, 9 and 6 open edges to 0, 4, 4.
+- **Worse by the count, judged.** Three parts whose walls are now found open new junctions the joins do not close:
+  a cyclone inlet body ("fully good" before with 10% of its metal shelled; now 51%, 14 open edges; the general join
+  runs to its 300 s deadline: 58 to 693 s), an enclosure plate whose pocket floors are now walls (62% of its metal to
+  102%, 100 open edges at the pocket steps), a cyclone cone (outside the Nastran limits before, now one shell with 53
+  open edges). The shell they had before was the wrong model (most walls missing); the open edges are joins work.
+- **Run time** (base and this branch side by side under the same load, 281 files): 12,233 s to 11,326 s. Five files
+  more than 1.5 times slower, each holding new walls: the cyclone inlet (the general join above), a duct reducer's mesh
+  (12 to 106 s: 18,250 to 88,271 elements, its two new walls are 20-across panels), a duct bend (37 to 65 s mesh), a
+  bracket and the enclosure plate (1.6 times).
+- **The same twice.** All 281 records and surfaces byte-identical over two runs; meshes identical but on two files
+  whose gmsh quad recombination differs run to run on the base code too.
+
 ### 2.5 Assemblies and mixed parts (PR 3)
 
 **Bonded plates in different bodies:**
