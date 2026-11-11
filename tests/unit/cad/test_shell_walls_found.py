@@ -262,3 +262,59 @@ def test_the_pairing_rays_read_every_flat_face_they_meet():
     # and where both read a wall they read the same face
     both = (hit[0] >= 0) & (hit[1] >= 0)
     assert (hit[0][both] == hit[1][both]).all()
+
+
+# ------------------------------------------------------------------ SHELL-46: a bend between flanges ----
+def _bend(rec: dict) -> list[dict]:
+    return [p for p in rec["pairs"] if p["why"].startswith("a bend between flanges")]
+
+
+@pytest.mark.parametrize(("t", "r", "ro"), [(2.0, 5.0, 5.0), (1.5, 4.0, 4.0), (2.0, 6.0, 7.0)])
+def test_a_sheet_bent_round_rounds_that_are_not_concentric_is_one_shell(t, r, ro):
+    # both rounds alike (or the outside a little bigger): the bend's faces turn past 10 degrees at its ends, or its
+    # wall reads thicker than its flanges' at the grid's band middles; read along its edges it is the flanges' wall
+    rec, _ = ms.extract(sf.bent_bracket(t=t, r=r, outer_r=ro), mm_per_unit=1.0)
+    assert rec["checks"] == {"fidelity": True, "connected": True, "faces_accounted": True, "volume": True}
+    assert rec["bodies"][0]["verdict"] == "shell"
+    (bend,) = _bend(rec)
+    assert bend["shell"] and bend["thickness_range_mm"][0] == pytest.approx(t)
+    assert rec["bodies"][0]["mid_volume_ratio"] == pytest.approx(1.0, abs=0.02)
+
+
+def test_a_bend_no_bigger_than_a_blend_is_bridged_as_before():
+    # a 2 mm sheet bent round 3 mm inside, 4 mm outside: a blend (SHELL-2), joined across as it always was
+    rec, _ = ms.extract(sf.bent_bracket(t=2.0, r=3.0, outer_r=4.0), mm_per_unit=1.0)
+    assert not _bend(rec)
+    assert rec["bodies"][0]["verdict"] == "shell"
+    assert rec["bodies"][0]["mid_volume_ratio"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_a_wedge_and_a_boss_are_no_bend():
+    for shape in (sf.wedge_plate(3.0, 40.0, 100.0), sf.plate_with_boss(), sf.filleted_t()):
+        rec, _ = ms.extract(shape, mm_per_unit=1.0)
+        assert not _bend(rec)
+
+
+def test_a_bend_is_read_only_where_its_edge_carries_the_flange_wall():
+    # rounded alike inside and out (radius 5, 2 mm sheet), one bend face's edges lie square over the other flange
+    # face and read the flange's 2 mm; the other face's edges lie off it and read 2.28 mm (sqrt(2.2^2 + ...): the
+    # rounds' centres are a wall apart along each flange)
+    from OCP.GeomAbs import GeomAbs_Cylinder
+
+    shape = sf.bent_bracket(t=2.0, r=5.0, outer_r=5.0)
+    faces = ms._faces(shape)
+    a, b = [k for k, f in enumerate(faces) if _adaptor(f).GetType() == GeomAbs_Cylinder]
+    flats = [k for k, f in enumerate(faces) if _adaptor(f).GetType() != GeomAbs_Cylinder]
+    worst = []
+    for x, y in ((a, b), (b, a)):
+        side = []
+        for f in flats:
+            for e in ms._shared_edges(faces[x], faces[f]):
+                if ms._length(e) < 25.0:
+                    continue            # the bend's ends on the sheet's sides, not its edges along the flanges
+                q = ms._edge_points(e, 4)[2]
+                gs = [g for g in flats if g != f and ms._shared_edges(faces[y], faces[g])]
+                side.append(min(ms._dist(ms._vertex(q), ms._compound([faces[y], faces[g]])) for g in gs))
+        worst.append(max(side))
+    assert sorted(worst)[0] == pytest.approx(2.0, abs=1e-6)
+    assert sorted(worst)[1] == pytest.approx(2.28, abs=0.01)
