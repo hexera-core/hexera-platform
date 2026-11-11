@@ -1674,8 +1674,14 @@ def _wall_ahead(p, d, own: int, walls: list, t: float, solid: _Solid) -> bool:
             x = p + d * (reach * i / AHEAD_STEPS)
             if not solid.inside(x):
                 break
-            if _near_box(x, box, slab) and _dist(_vertex(x), f) <= slab and (not AHEAD_OVER
-                                                                             or _over_face(x, f, solid.tol, AHEAD_OVER_CLEAR * w)):
+            if not _near_box(x, box, slab):
+                continue
+            gap = _dist(_vertex(x), f)
+            # SHELL-32: ... over that wall's mid-face, and the mid-face itself within the reach (the way so far plus
+            # what is left to it): a wall whose slab the walk only enters at the end of the reach is one no join
+            # carries the edge on to (SHELL-3, SHELL-22 and SHELL-30 all stop at the reach)
+            if gap <= slab and (not AHEAD_OVER or (reach * i / AHEAD_STEPS + gap <= reach
+                                                   and _over_face(x, f, solid.tol, AHEAD_OVER_CLEAR * w))):
                 return True
         try:
             s_hit = _ray_on_surface(p, d, f, reach)
@@ -4715,12 +4721,16 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
                 logger.debug("shell: open edges of %s could not be carried on piece by piece (%s)", body_names[b], exc)
                 closed = None
             if closed is not None:
-                census_c = census_of(closed[0], closed[1])
-                if (census_c["open_edges"] < census["open_edges"] and _max_tol(closed[0]) <= JOIN_TOL_WALLS * t_min
+                # judged by the junctions still to close once what lies past each edge is read (SHELL-21): a piece
+                # carried on leaves the rest of its edge, and the ends of its strip, facing whatever stopped the wall
+                # there (a corner post, a rib's foot) - more edges with metal past them, fewer junctions left open
+                left = census_of(fused, images, past=True)["open_edges"]
+                left_c = census_of(closed[0], closed[1], past=True)["open_edges"]
+                if (left_c < left and _max_tol(closed[0]) <= JOIN_TOL_WALLS * t_min
                         and not unsound_faces(closed[1])):
-                    notes.append(f"{body_names[b]}: {census['open_edges'] - census_c['open_edges']} open edge(s) "
+                    notes.append(f"{body_names[b]}: {left - left_c} open edge(s) "
                                  "closed by carrying both walls on to the line where they meet (SHELL-30).")
-                    fused, images, census = closed[0], closed[1], census_c
+                    fused, images, census = closed[0], closed[1], census_of(closed[0], closed[1])
                     for i, j, strip in closed[2]:
                         mine[i].extended.append({"to": mine[j].k, "area": _area(strip)})
         # (SHELL-18: one more sewing of the body, so only with time for it left in the work budget)
