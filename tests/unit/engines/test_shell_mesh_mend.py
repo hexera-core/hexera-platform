@@ -186,3 +186,44 @@ def test_the_size_beside_a_small_piece_of_the_cad():
     # a narrow face: twice its own width
     assert sp.feature_size(1.0, size=10.0, wall=1.0, ratio=sp.FEATURE_FACE_RATIO) == 2.0
     assert sp.feature_size(0.0, size=10.0, wall=1.0) is None
+
+
+def test_a_sheet_drawn_as_patches_is_one_region():
+    # faces 0-1-2 joined smoothly, 3 apart, 4 joined to 3
+    assert sp.sheet_regions(5, [(1, 2), (0, 1), (3, 4)]) == [0, 0, 0, 3, 3]
+    assert sp.sheet_regions(3, []) == [0, 1, 2]
+    wall = 2.0
+    # flat patches meeting flush: one region; a crease of 10 degrees: not
+    assert sp.smooth_link(0.5, same_wall=True, bends=(None, None), wall=wall)
+    assert not sp.smooth_link(10.0, same_wall=True, bends=(None, None), wall=wall)
+    assert not sp.smooth_link(0.0, same_wall=False, bends=(None, None), wall=wall)
+    # a gently curved panel (radius 400 mm = 200 walls) and a flat patch: one region
+    assert sp.smooth_link(1.0, same_wall=True, bends=(400.0, None), wall=wall)
+    # a bend (radius 4 mm = 2 walls) keeps the flange beside it apart
+    assert not sp.smooth_link(0.0, same_wall=True, bends=(4.0, None), wall=wall)
+    # ... but a bend drawn as two patches of one radius is one bend; two bends of other radii are not
+    assert sp.smooth_link(0.0, same_wall=True, bends=(4.0, 4.1), wall=wall)
+    assert not sp.smooth_link(0.0, same_wall=True, bends=(4.0, 6.0), wall=wall)
+
+
+def test_the_quick_angle_check_never_turns_down_a_quad_the_full_measure_keeps():
+    rng = np.random.default_rng(3)
+    bounds = sq._angle_bounds(sq.IN_FORCE)
+    assert bounds == (30.0, 150.0)
+    base = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=float)
+    quick = 0
+    for _ in range(3000):
+        p = base + rng.normal(scale=0.35, size=(4, 3)) * np.array([1, 1, 0.2])
+        full = bool(sq._quad_past(sq.quad_measures(p, np.array([[0, 1, 2, 3]])))[0])
+        if sq._clearly_past(p.tolist(), bounds):
+            quick += 1
+            assert full
+        # and the quad walks read the same answer with the quick check as without it
+        n = np.array([0.0, 0.0, 1.0])
+        got = sq._good_quad(p, [0, 1, 2, 3], n)
+        m = sq.quad_measures(p, np.array([[0, 1, 2, 3]]))
+        want = None
+        if not full and float(np.dot(np.cross(p[2] - p[0], p[3] - p[1]), n)) > 0:
+            want = float(m["min_angle_quad"][0])
+        assert got == want
+    assert quick > 300                                        # the quick check does turn many down

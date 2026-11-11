@@ -103,6 +103,12 @@ SHEET_REGIONS_ALL = False
 #: again at our own (finer) sizes there
 OWN_SIZE_RETRIES = 2
 SPOTS_MAX = 64
+#: SHMESH-35: the walls of beads, darts and steps keep shell_plan.FLANK_ACROSS elements across under a coarser size
+FLANKS = True
+#: SHMESH-34: under the user's sizes, how far element centres stand off curved faces is measured and told (at most
+#: CHORD_SAMPLES elements a face are read)
+CHORD_REPORT = True
+CHORD_SAMPLES = 200
 #: SHMESH-32: gmsh's own fallback when its 2D mesher reports a face failed - gmsh by default meshes that face again
 #: with MeshAdapt - is off (0), and the face keeps its Frontal-Delaunay mesh, checked by every step after as any other.
 #: MeshAdapt hung over an hour on one 5,000-element face (d2 t0057; 19 s, valid and inside Nastran's limits with the
@@ -531,10 +537,14 @@ def _faces_and_facts(brep: Path, mm: float):
 
 def _sheet_widths(brep: Path, facts: list[dict], owners: list[str], record: dict, mm: float) -> dict:
     """SHMESH-30: each sewn face's region (faces of one wall joined where the surface runs on smoothly,
-    shell_plan.smooth_link) and that region's width (mm: as one region, its shared edges inside it - midsurface
-    union_width). Returns {"widths": per face (0 for a face alone), "size": faces in its region}."""
+    shell_plan.smooth_link) and that region's width, measured as one face's is (mm: its oriented box's middle side
+    or twice its area over its own boundary, the narrower). The 400 x 240 mm panel of the patch study: 1,979 elements
+    as 1 patch, and 2,005 / 2,178 / 2,513 as 4 / 12 / 30 (patch by patch: 7,937 / 22,468 / 2,523). Returns
+    {"widths": per face (0 for a face alone), "size": faces in its region}."""
+    from OCP.Bnd import Bnd_OBB
     from OCP.BRep import BRep_Builder
     from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepTools import BRepTools
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp
@@ -583,12 +593,26 @@ def _sheet_widths(brep: Path, facts: list[dict], owners: list[str], record: dict
         members.setdefault(r, []).append(k)
     widths = [0.0] * len(faces)
     size = [1] * len(faces)
+    # each edge's faces and length, for the regions' own boundaries
+    edge_faces = []
+    for i in range(1, emap.Extent() + 1):
+        ks = sorted({fmap.FindIndex(x) - 1 for x in emap.FindFromIndex(i)} - {-1})
+        edge_faces.append((ks, ms._length(emap.FindKey(i))))
     for ks in members.values():
         if len(ks) < 2:
             continue
-        w = float(ms.union_width([faces[k] for k in ks])) * mm
+        # the region measured as one face is: the narrower of its oriented box's middle side and twice its area
+        # over its own boundary (the edges only one of its faces holds, holes included) - midsurface.strip_width
+        inside = set(ks)
+        area = sum(ms._area(faces[k]) for k in ks)
+        rim = sum(length for fs, length in edge_faces if sum(1 for f in fs if f in inside) == 1)
+        obb = Bnd_OBB()
+        BRepBndLib.AddOBB_s(ms._compound([faces[k] for k in ks]), obb, True, True, False)
+        w = sorted(2.0 * x for x in (obb.XHSize(), obb.YHSize(), obb.ZHSize()))[1]
+        if rim > 0:
+            w = min(w, 2.0 * area / rim)
         for k in ks:
-            widths[k], size[k] = w, len(ks)
+            widths[k], size[k] = w * mm, len(ks)
     return {"widths": widths, "size": size}
 
 
@@ -784,7 +808,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     if sizing is not None:
         planned = sizing["planned"]
     # SHMESH-27 (the user's sizes only): a face narrower than their size is sized to its own width
-    narrow = _narrow_faces(rows, facts, mm, planned) if sizing is not None and FEATURE_SIZES else None
+    narrow = (_narrow_faces(rows, facts, mm, planned, _interior_faces(Path(brep)) if FLANKS else None)
+              if sizing is not None and FEATURE_SIZES else None)
     if narrow is not None:
         planned = narrow["planned"]
     finest = (sizing or {}).get("floor_mm")
@@ -803,7 +828,12 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         gmsh.option.setNumber("Mesh.RecombinationAlgorithm", RECOMBINATION)
         # (with the user's own sizes, SHMESH-24, every curved face and arc is sized by the plan itself, between
         # the user's shortest edge and the shape it must keep: gmsh's own curvature sizing would refine past both)
-        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", PER_TURN if finest is None else 0)
+        # SHMESH-33: a count the user asked for that makes the sizes coarser than ours (SHMESH-23, sz > 1) coarsens
+        # the elements round every curve too, by the same factor, never under SHAPE_PER_TURN a turn: gmsh's own
+        # 24 a turn held every 12 mm hole and every curved panel at our size (a bracket asked 221 elements got 503,
+        # a curved panel asked 1,263 got 21,256)
+        per_turn = PER_TURN if sz <= 1.0 else max(SR.SHAPE_PER_TURN, int(round(PER_TURN / sz)))
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", per_turn if finest is None else 0)
         # SHMESH-6 is held by the grading fields below; gmsh's own spread of edge sizes into a face carried a
         # narrow neighbour's size over the whole of a wide face (one 2.5 mm strip: 800,000 elements)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
@@ -1210,6 +1240,19 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     f"Your CAD has {short_edges['edges']} edge(s) and {len(narrow['widths'])} face(s) smaller than "
                     f"the element size you asked for (the smallest is {smallest:g} mm). The mesh is finer around "
                     "them, so the elements there keep a good shape (SHMESH-27).")
+            flanks = sorted((narrow or {}).get("flank_faces") or [])
+            if flanks:
+                sizing["flanks"] = {"rule": "SHMESH-35", "faces": len(flanks), "across": plan_rules.FLANK_ACROSS}
+                mesh.notes.append(f"Kept finer at {len(flanks)} narrow wall(s) of beads, darts or steps: "
+                                  f"{plan_rules.FLANK_ACROSS} elements across each, so they keep their shape "
+                                  "(SHMESH-35).")
+            chord = _chord(mesh, facts, face_of, mm) if CHORD_REPORT else None
+            if chord is not None:
+                # SHMESH-34: how far the elements stand off the CAD on curved faces, told against the size
+                g = sizing.get("global_mm") or float(np.median([r["size_mm"] for r in rows]))
+                sizing["chord"] = {"rule": "SHMESH-34", **chord, "share": float(f"{chord['max_mm'] / g:.3g}")}
+                mesh.notes.append(f"On curved faces element centres lie within {chord['max_mm']:.3g} mm of your "
+                                  f"CAD ({100 * chord['max_mm'] / g:.2g}% of the element size) (SHMESH-34).")
         asked = SR.report(mesh, requirements, sizing)
         if asked is not None:
             out["requirements"] = asked
@@ -1254,7 +1297,8 @@ def _min_jac(mesh: ShellMesh) -> np.ndarray:
     return np.concatenate([q, t])
 
 
-def _narrow_faces(rows: list[dict], facts: list[dict], mm: float, planned: float) -> dict | None:
+def _narrow_faces(rows: list[dict], facts: list[dict], mm: float, planned: float,
+                  interior: set[int] | None = None) -> dict | None:
     """SHMESH-27, faces: under the user's sizes every face narrower than 1 / FEATURE_FACE_RATIO of its size (its
     strip width: twice its area over its perimeter) is sized to FEATURE_FACE_RATIO times its own width, never under
     the floor, in place - a 0.3 mm step strip at a 3 mm size was one row of elements ten times as long as wide. With
@@ -1262,11 +1306,23 @@ def _narrow_faces(rows: list[dict], facts: list[dict], mm: float, planned: float
     floor, as our own rules size it, so the sliver merge (SHMESH-12) closes it as it does with no notes (fr014's
     0.28 mm step strips at 3.2 mm: 137 triangles past Nastran's T3_IAMAX; none with no notes). Returns {"was": the
     rows changed as they were, "widths": their widths, "planned"}; None (rows untouched) when the finer plan would
-    pass SHMESH-20's most elements."""
+    pass SHMESH-20's most elements.
+    SHMESH-35: a FLANK - a face narrower than its size with no free edge (every side meets another face: a bead's or
+    a dart's wall, a step, a rib) that is not itself a tight bend - keeps plan_rules.FLANK_ACROSS elements across it
+    (never under the floor), so a bead is not washed out under a coarse size (`interior`: the faces with no free
+    edge; None: no flank rule). Returns also "flanks": how many faces it kept finer."""
     new: dict[int, float] = {}
     widths: dict[int, float] = {}
+    flank_faces: set[int] = set()
     for k, (f, r) in enumerate(zip(facts, rows, strict=True)):
         width = min(f["width"], f["box_width"]) if f["box_width"] > 0 else f["width"]
+        if interior is not None and k in interior and not (
+                f["bend"] is not None and 0 < f["bend"] < plan_rules.PANEL_WALLS * r["wall_mm"]):
+            h = plan_rules.flank_size(width, size=r["size_mm"], wall=r["wall_mm"])
+            if h is not None:
+                new[k], widths[k] = h, width
+                flank_faces.add(k)
+                continue
         if not FEATURE_FACES and width >= plan_rules.FLOOR_WALLS * r["wall_mm"]:
             continue
         h = plan_rules.feature_size(width, size=r["size_mm"], wall=r["wall_mm"], ratio=plan_rules.FEATURE_FACE_RATIO)
@@ -1282,7 +1338,58 @@ def _narrow_faces(rows: list[dict], facts: list[dict], mm: float, planned: float
         if rows[k].get("curve_mm", 0.0) >= h:
             rows[k].pop("curve_mm", None)
         rows[k]["rule"] = f"{rows[k]['rule']}+SHMESH-27"
-    return {"was": was, "widths": widths, "planned": planned + extra}
+    return {"was": was, "widths": widths, "planned": planned + extra, "flank_faces": flank_faces}
+
+
+def _chord(mesh: ShellMesh, facts: list[dict], face_of: np.ndarray, mm: float) -> dict | None:
+    """SHMESH-34: on the curved faces (those with a radius), the largest distance (mm) of an element's centre from the
+    face's own surface, over at most CHORD_SAMPLES elements a face (every n-th, in order); None with no curved face."""
+    from OCP.BRep import BRep_Tool
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+    from OCP.gp import gp_Pnt
+
+    worst, faces = 0.0, 0
+    order = np.argsort(face_of, kind="stable")
+    bounds = np.searchsorted(face_of[order], np.arange(len(facts) + 1))
+    for k, f in enumerate(facts):
+        if f["bend"] is None:
+            continue
+        els = order[bounds[k]:bounds[k + 1]]
+        if not len(els):
+            continue
+        faces += 1
+        surf = BRep_Tool.Surface_s(f["normal_face"])
+        for e in els[::max(1, len(els) // CHORD_SAMPLES)].tolist():
+            c = mesh.xyz[mesh.element_nodes(int(e))].mean(axis=0) / mm
+            pr = GeomAPI_ProjectPointOnSurf(gp_Pnt(float(c[0]), float(c[1]), float(c[2])), surf)
+            if pr.NbPoints() > 0:
+                worst = max(worst, float(pr.LowerDistance()) * mm)
+    return {"max_mm": float(f"{worst:.4g}"), "faces": faces} if faces else None
+
+
+def _interior_faces(brep: Path) -> set[int]:
+    """SHMESH-35: the sewn faces (0-based) every edge of which another face shares too (no free edge)."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS_Shape
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    from meshpipeline.cad import midsurface as ms
+
+    shape = TopoDS_Shape()
+    if not BRepTools.Read_s(shape, str(brep), BRep_Builder()):
+        raise ValueError("the mid-surface could not be read")
+    fmap = ms._map(shape, TopAbs_FACE)
+    emap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, emap)
+    free: set[int] = set()
+    for i in range(1, emap.Extent() + 1):
+        ks = {fmap.FindIndex(x) - 1 for x in emap.FindFromIndex(i)} - {-1}
+        if len(ks) == 1:
+            free |= ks
+    return set(range(fmap.Extent())) - free
 
 
 def _spare_strip_corners(gmsh, tag_of: dict[int, int], rows: list[dict], mapped: dict, narrow: dict,
@@ -1320,6 +1427,7 @@ def _spare_strip_corners(gmsh, tag_of: dict[int, int], rows: list[dict], mapped:
             rows[k].clear()
             rows[k].update(narrow["was"].pop(k))
             narrow["widths"].pop(k)
+            narrow["flank_faces"].discard(k)
 
 
 def _short_edges(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float) -> dict:

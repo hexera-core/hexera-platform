@@ -48,8 +48,10 @@ MIN_MARGIN = 1.3
 MAX_MARGIN = 1.3
 #: SHMESH-24: under the user's own sizes a curve keeps its shape, no more: a full turn (a hole's rim, a tube) gets at
 #: least this many elements, whatever the shortest edge asked for - a hole is never closed to a slit; a face that
-#: turns through no more than SHAPE_ONE_ACROSS radians (100 degrees: a bend) may have one element across it
-SHAPE_PER_TURN = 4
+#: turns through no more than SHAPE_ONE_ACROSS radians (100 degrees: a bend) may have one element across it.
+#: SHMESH-33: 8, not 4 (a hole of 4 edges is a square; 8 is the common floor round a hole in pre-processors, and an
+#: element turning 45 degrees stands its middle 7.6% of its length off the arc)
+SHAPE_PER_TURN = 8
 SHAPE_ONE_ACROSS = 1.75
 #: SHMESH-24: a mapped strip narrower than the user's size is stretched to their aspect ratio of its own width
 STRIP_ASPECT = True

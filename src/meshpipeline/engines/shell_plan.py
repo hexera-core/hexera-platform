@@ -86,6 +86,22 @@ def feature_size(own: float, *, size: float, wall: float, ratio: float = FEATURE
     return _r(h) if h < size else None
 
 
+#: SHMESH-35: a bead's, a dart's or a step's wall (a narrow face every side of which meets another face) keeps at
+#: least FLANK_ACROSS elements across it under a coarser size the user asks for - the common floor for a bead flank.
+#: Measured on the lab's stamped files (1 mm sheet): our own size gives 3.35 across a bead flank; 4 mm gave 0.92 and
+#: 10 mm 0.38 (the bead washed out), and darts at 10 mm 1.04 across with elements past Nastran's limits
+FLANK_ACROSS = 2
+
+
+def flank_size(width: float, *, size: float, wall: float, across: int = FLANK_ACROSS) -> float | None:
+    """SHMESH-35: the element size (mm) on a flank `width` mm wide inside faces sized `size`: `across` elements over
+    its width, never under the floor; None when the size already gives that many."""
+    if width <= 0 or across * size <= width:
+        return None
+    h = max(width / across, FLOOR_WALLS * wall)
+    return _r(h) if h < size else None
+
+
 #: SHMESH-30: a sheet drawn as many CAD patches is sized by the sheet, not by the patch. Two faces of the same wall
 #: that meet along an edge where the surface runs on smoothly (their normals there within SHEET_SMOOTH_DEG) are one
 #: region, unless one is a bend (curved tighter than PANEL_WALLS walls) and the other is not, or both are bends of
@@ -234,4 +250,4 @@ def count_words(t: Mapping | None) -> str:
 
 __all__ = ["BASE_DIVISIONS", "COUNT_SHARE", "CURVE_PER_QUARTER", "FLOOR_WALLS", "GROWTH", "MIN_ACROSS", "PANEL_ACROSS",
            "PANEL_WALLS", "SCALE_RANGE", "base_size", "count_aim", "count_met", "count_scale", "count_words",
-           "curve_size", "face_plan", "feature_size", "sheet_regions", "smooth_link"]
+           "curve_size", "face_plan", "feature_size", "flank_size", "sheet_regions", "smooth_link"]
