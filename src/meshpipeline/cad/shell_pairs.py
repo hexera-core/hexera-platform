@@ -99,7 +99,6 @@ class Pair:
     tapered: bool = False                 # a TAPERED wall (SHELL-9): not even, but turned at most TAPER_DEG
     t_min: float | None = None            # mm, a tapered wall's thinnest and thickest reading
     t_max: float | None = None
-    bend: bool = False                    # a tapered wall admitted past TAPER_DEG as a bend (SHELL-45)
 
     def span(self) -> tuple[float, float]:
         """The wall's thinnest and thickest reading, mm (an even wall's are its thickness)."""

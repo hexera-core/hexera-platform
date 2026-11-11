@@ -4136,8 +4136,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
         # SHELL-9: a wall that is not even but turns little is a TAPERED wall, judged at its thickest point
         if not ok and ("not parallel" in why or "not even" in why):
             try:
-                tap, lo, hi, turn, why_t = sp.tapered_wall(faces[small], faces[big], mm)
-                pair.bend = bool(tap) and turn > sp.TAPER_DEG
+                tap, lo, hi, _turn, why_t = sp.tapered_wall(faces[small], faces[big], mm)
             except Exception as exc:  # noqa: BLE001 - no taper read: the pair stays as it was
                 logger.debug("shell: taper of %s/%s could not be read (%s)", names[a], names[b], exc)
                 tap = False
@@ -4192,11 +4191,6 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
             except Exception as exc:  # noqa: BLE001
                 logger.debug("shell: the fitted mid-face of %s/%s failed (%s)", names[p.a], names[p.b], exc)
                 got, why_f = [], "the faces could not be read"
-            if got and p.bend and hi_u > sp.BEND_RATIO * lo_u:
-                # SHELL-45: a bend's wall, read over its whole fitted mid-face, stays within BEND_RATIO too (on a
-                # tube's flattened side, a corner read at 1.6 times on the pair's 49 points was 2 times fitted)
-                got, why_f = [], (f"its wall goes from {lo_u * mm:.3g} to {hi_u * mm:.3g} mm, more than a bend's "
-                                  f"{sp.BEND_RATIO:.2f} times")
             fitted = bool(got)
             if not got:
                 p.why = "the two faces do not overlap" if p.even else f"{p.why}; no mid-surface: {why_f}"
