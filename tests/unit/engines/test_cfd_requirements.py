@@ -248,6 +248,27 @@ def test_a_tight_non_orthogonality_with_layers_says_why_layers_may_be_taken_back
     assert "taken back" in plan[ask.rid("layers:count")]["note"]
 
 
+def test_a_limit_between_our_snap_and_layer_bars_holds_the_layer_stage(tmp_path):
+    # ours: 65 while snapping, 68 while adding layers (the finished mesh is held to 70). A user's 66 is tighter than
+    # what the finished mesh is held to: the layer stage takes it (2 under), the snap keeps its own 65
+    req, _d, _ = _read("non-ortho under 66", limits=[_lim("non_orthogonality", 66, "non-ortho under 66")])
+    ask = CR.Ask(req, "snappy")
+    text, _s = _snappy(tmp_path / "r", ask)
+    head, relaxed = text.split("relaxed")
+    assert re_num(head.split("meshQualityControls")[1], "maxNonOrtho") == 65 and re_num(relaxed, "maxNonOrtho") == 64
+    assert ask.rows[req["limits"][0]["id"]]["status"] == "applied"
+
+
+def test_a_share_within_its_outer_limit_is_met_whatever_the_worst_cell(tmp_path):
+    lim = {"id": "r1", "measure": "non_orthogonality", "shape": "any", "op": "<=", "target": 65.0, "share": 0.01,
+           "outer": 70.0, "quote": "x"}
+    figs = {"non_orthogonality": np.array([10.0] * 999 + [67.0])}
+    got = CR._limit_row(lim, {"max_non_ortho": 67.0}, figs, 1000, {})
+    assert got["met"] is True and got["by"] == "every cell"
+    got = CR._limit_row({**lim, "share": 0.0, "outer": None}, {"max_non_ortho": 67.0}, figs, 1000, {})
+    assert got["met"] is False
+
+
 def test_a_looser_limit_than_ours_keeps_ours_and_says_so(tmp_path):
     req, _d, _ = _read("non-ortho under 80", limits=[_lim("non_orthogonality", 80, "non-ortho under 80")])
     ask = CR.Ask(req, "snappy")

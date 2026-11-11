@@ -1140,11 +1140,18 @@ def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None)
         want = float(lim["target"])
         if ours is None:
             continue
+        rel = re.search(r"relaxed\s*\{[^}]*\}", out)
+        loosest = _num(rel.group(0), name) if rel else None
+        if loosest is not None and tighter == "lower":
+            # the layer stage's relaxed bar is the one the finished mesh is held to: ours is that, not the snap's
+            ours = max(ours, loosest)
         if (tighter == "lower" and want >= ours) or (tighter == "higher" and want <= ours):
             ask.done(lim["id"], f"our own limit while meshing is already {MR._g(ours)}, tighter than yours",
                      ours=ours)
             continue
-        out = _sub(out, name, f"{want:.6g}", inside="meshQualityControls", count=1)
+        snap = _num(out, name)
+        if snap is not None and ((tighter == "lower" and want < snap) or (tighter == "higher" and want > snap)):
+            out = _sub(out, name, f"{want:.6g}", inside="meshQualityControls", count=1)
         if lim["measure"] == "skewness":
             bs = _num(out, "maxBoundarySkewness")
             if bs is not None and want < bs:
@@ -1221,10 +1228,15 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None) -> str:
             new = max(1e-30, min(ours, 1e-3 * pyramid))
             if new < ours:
                 out = _sub(out, "minVol", f"{new:.3g}", inside="meshQualityControls", count=1)
-        if first is not None and wall_cell_m / first > 1000:
-            ask.rows.get(ask.rid("layers:first_height") or "", {}).update(
-                note=f"the first layer is {int(wall_cell_m / first):,} times thinner than the wall cells "
-                     f"({_mm(wall_cell_m)}): layers that thin may not all be kept where the wall turns sharply")
+        if first is not None and wall_cell_m / first > 50:
+            # a stack far thinner than the cells it grows into is hard for the mesher to keep (measured: a 0.011 mm
+            # first layer under 2 mm wall cells kept layers on 1.8% of a wing): said where it is set and where the
+            # layers are reported, with what keeps more of them
+            thin = (f"the first layer is {int(wall_cell_m / first):,} times thinner than the wall cells "
+                    f"({_mm(wall_cell_m)}): layers that thin are hard to keep; finer cells at the walls keep more of them")
+            ask.rows.get(ask.rid("layers:first_height") or ask.rid("layers:y_plus") or "", {}).update(note=thin)
+            if not ask.layer_note:
+                ask.layer_note = thin
     return out
 
 
@@ -1345,8 +1357,9 @@ def _limit_row(lim: Mapping, q: Mapping, figs: dict | None, n: int, p: Mapping) 
         if isinstance(theirs, (int, float)) and not isinstance(theirs, bool) and got.get("worst") is not None:
             # the engine's own checkMesh line is the figure a user checks first: a disagreement is said, and a
             # limit it reads as missed is never told as met
-            t = float(lim["target"])
-            if (float(theirs) < t if low else float(theirs) > t) and got.get("met") is True:
+            t, o = float(lim["target"]), lim.get("outer")
+            edge = t if not float(lim.get("share") or 0.0) else (float(o) if o is not None else None)
+            if edge is not None and (float(theirs) < edge if low else float(theirs) > edge) and got.get("met") is True:
                 got["met"] = None
             if abs(float(theirs) - float(got["worst"])) > 0.01 * max(abs(float(theirs)), 1e-12):
                 got["delivered"] += f" (the mesher's own check reads the worst as {MR._g(float(theirs))}{unit})"
