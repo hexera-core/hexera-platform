@@ -337,3 +337,66 @@ def test_a_body_missing_its_top_above_the_floor_is_still_refused(tmp_path):
     rec = F.measure(ws, intake_patches=[{"name": "body", "type": "wall"}, {"name": "farfield", "type": "farfield"}],
                     flow="external")
     assert rec["verdicts"]["cad_to_mesh"] == F.REBUILD, rec["surface"]
+
+
+# ------------------------------------------------------------------- the shell routes of #439 (land, on #389)
+def _deliver_shell(ws: Path, rec: dict) -> None:
+    """The delivery the FEA driver makes for a shell (SHSTAGE-7) or a surface file's shell (SURF-3)."""
+    from meshpipeline.engines import shell_delivery as SD
+
+    assert rec.get("made") and SD.deliver(ws, rec), rec.get("why")
+
+
+def test_a_mid_surface_shell_delivered_by_the_shell_route_is_not_judged(tmp_path):
+    """SHSTAGE-7: the shell route's own delivery marks the workspace a shell, so the gate leaves it alone - judged on
+    the solid's skin, a shell half a wall inside it would read as off the CAD."""
+    pytest.importorskip("OCP.BRepPrimAPI")
+    pytest.importorskip("gmsh")
+    from tests import shell_fixtures as sf
+
+    from meshpipeline.engines import shell_run
+
+    ws = tmp_path / "shell"
+    ws.mkdir()
+    rec = shell_run.run(ws, sf.write_step(sf.t_joint(), ws / "part.step"), mm_per_unit=1.0)
+    _deliver_shell(ws, rec)
+    _write_cad(ws / "_internal_stls" / "fluid_boundary.stl")      # a skin the shell does not lie on
+    got = F.measure(ws, intake_patches=PATCHES, flow="internal")
+    assert got["verdict"] == F.UNMEASURED and "mid-surface" in got["why"]
+    assert F.gate_cad_fidelity(GateCtx(workspace=ws, intake_patches=PATCHES)) == (True, "")
+
+
+def test_a_surface_files_shell_is_not_judged(tmp_path):
+    """SURF-3: a surface file has no solid skin at all; its shell, delivered through the same shell delivery, is
+    marked a shell and the gate leaves it alone."""
+    pytest.importorskip("OCP.BRepPrimAPI")
+    pytest.importorskip("gmsh")
+    from tests import surface_fixtures as sx
+
+    from meshpipeline.engines import surface_run
+
+    ws = tmp_path / "surface"
+    ws.mkdir()
+    rec = surface_run.run(ws, sx.write_step(sx.bracket(), ws / "part.step"), mm_per_unit=1.0, thickness_mm=1.2)
+    assert surface_run.is_surface(rec)
+    _deliver_shell(ws, rec)
+    q = json.loads((ws / "quality.json").read_text())
+    assert q["fea"]["shell"] is True and q["fea"]["surface"] is True
+    got = F.measure(ws, intake_patches=PATCHES, flow="internal")
+    assert got["verdict"] == F.UNMEASURED and "mid-surface" in got["why"]
+    assert F.gate_cad_fidelity(GateCtx(workspace=ws, intake_patches=PATCHES)) == (True, "")
+
+
+def test_a_mixed_run_is_judged_on_its_delivered_solid_mesh_only(tmp_path):
+    """MIXED-5: shell + solid makes its files (mixed.*) BESIDE the solid mesh, and the solid mesh is the delivery - it
+    lies on the CAD and is judged as before. The mixed files neither excuse it nor change a number."""
+    ws = _internal_ws(tmp_path, (0, 0.6, 0, 0.4, 0, 0.4))                 # a third of the part missing
+    (ws / "quality.json").write_text(json.dumps({"fea": {"shell": False}}))
+    before = F.measure(ws, intake_patches=PATCHES, flow="internal")
+    assert before["verdict"] == F.REBUILD
+    for name in ("mixed.bdf", "mixed.inp", "mixed_abaqus.inp", "mixed.cdb"):
+        (ws / name).write_text("* a shell + solid deck beside the solid one\n")
+    (ws / "mixed_run.json").write_text(json.dumps({"made": True, "counts": {"shell_elements": 10}}))
+    after = F.measure(ws, intake_patches=PATCHES, flow="internal")
+    assert after == before
+    assert not F.gate_cad_fidelity(GateCtx(workspace=ws, intake_patches=PATCHES))[0]
