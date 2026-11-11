@@ -239,3 +239,34 @@ def test_a_junction_keeps_one_node_per_point_and_a_rectangle_is_one_grid(tmp_pat
     pairs = cKDTree(mesh.xyz).query_pairs(1e-6)
     assert not pairs
     assert applied["quality"]["edges"]["junction"] > 0
+
+
+def test_a_grid_never_cuts_an_edge_another_face_shares(tmp_path):
+    """A flange with bolt holes beside a web: lines drawn across the flange would cut the edge it shares with the
+    web (the web would keep it whole: a crack), so that face is not gridded and the junction keeps its nodes."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    from meshpipeline.cad import midsurface as ms
+
+    flange = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 300, 100, 5).Shape()
+    for x in (75.0, 150.0, 225.0):
+        flange = BRepAlgoAPI_Cut(flange, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, 25, -1), gp_Dir(0, 0, 1)), 7,
+                                                                  7).Shape()).Shape()
+    web = BRepPrimAPI_MakeBox(gp_Pnt(0, 47.5, 5), 300, 5, 100).Shape()
+    rec, surf = ms.extract(BRepAlgoAPI_Fuse(flange, web).Shape(), mm_per_unit=1.0)
+    brep = tmp_path / "flange.brep"
+    BRepTools.Write_s(surf, str(brep))
+    mesh, applied = _mesh(brep, rec, _criteria())
+    from scipy.spatial import cKDTree
+
+    pairs = SS._edges(mesh)
+    free = pairs[0][pairs[1] == 1]
+    mids = 0.5 * (mesh.xyz[free[:, 0]] + mesh.xyz[free[:, 1]])
+    # no free edge lies on another (a crack), and none along the junction line (y = 50, z = 2.5)
+    d, _i = cKDTree(mids).query(mids, k=2)
+    assert (d[:, 1] > 1e-6).all()
+    assert not np.any((np.abs(mids[:, 1] - 50.0) < 1e-6) & (np.abs(mids[:, 2] - 2.5) < 1e-6))
+    assert applied["quality"]["structure"]["washers"] == 3

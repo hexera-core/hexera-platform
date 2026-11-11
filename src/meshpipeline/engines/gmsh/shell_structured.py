@@ -185,6 +185,13 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
     return keep, skipped
 
 
+def _on_hole(gmsh, w: Washer, curves: list[int]) -> bool:
+    """Whether these curves lie on the washer's hole circle (the annulus's other loop; the face outside a ring has a
+    loop of two too when the ring's hole is its only one)."""
+    return all(bool(np.all(np.abs(np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1) - w.r) <= 1e-4 * w.r))
+               for c in curves)
+
+
 def _rings_whole(gmsh, t: int, ws: list[Washer], omap) -> bool:
     """Whether a fragment of face t by the washers' circles left each ring one circle closing round its hole."""
     new = [s for d, s in omap[0] if d == 2]
@@ -236,8 +243,10 @@ def imprint(gmsh, washers: list[Washer], tag_of: dict[int, int]) -> list[Washer]
                 _l, loops = occ.getCurveLoops(s)
                 loops = [[abs(int(c)) for c in cl] for cl in loops]
                 if len(loops) == 2 and [w.ring] in loops:
-                    w.annulus = s
-                    w.hole_after = [cl for cl in loops if cl != [w.ring]][0]
+                    other = [cl for cl in loops if cl != [w.ring]][0]
+                    if _on_hole(gmsh, w, other):
+                        w.annulus = s
+                        w.hole_after = other
             if not w.annulus:
                 raise ValueError("a washer's ring did not close round its hole")
             kept.append(w)
@@ -770,6 +779,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             return out
 
         # tried on a copy of the face first: no edge of a cell under CELL_MIN face sizes
+        shared = [c for cl in loops for c in cl if len(gmsh.model.getAdjacencies(1, c)[0]) > 1]
         copy = gmsh.model.occ.copy([(2, t)])
         _o, cmap = gmsh.model.occ.fragment(copy, tools())
         gmsh.model.occ.synchronize()
@@ -779,6 +789,16 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                         gmsh.model.getBoundary([(2, s)], oriented=False)) < CELL_MIN * h for s in cells)
         # and every ring came out as drawn: one circle round a free box's hole, four quarters round an O-grid's
         trial = sorted({abs(int(c)) for s in cells for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
+        # and no line cuts an edge the face shares with another (the other face would keep it whole: a crack)
+        if shared:
+            from scipy.spatial import cKDTree
+
+            for c in shared:
+                tree = cKDTree(_samples(gmsh, c, 256))
+                full = float(gmsh.model.occ.getMass(1, c))
+                for x in trial:
+                    if tree.query(_samples(gmsh, x, 4))[0].max() <= 1e-3 * h + full / 256 and                             float(gmsh.model.occ.getMass(1, x)) < (1 - 1e-6) * full:
+                        small = True
         for w, p in zip(ws, plans, strict=True):
             R = p[2] * w.r if p is not None else w.R
             on_ring = [c for c in trial if np.all(np.abs(np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1) - R)
@@ -789,7 +809,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
         gmsh.model.occ.synchronize()
         _remove_loose(gmsh, cut_curves)
         if small:
-            no("a cell would come out too small, or a ring cut")
+            no("a cell would come out too small, a ring or a shared edge cut")
             continue
         edge_pts = np.vstack([_samples(gmsh, c, 64) for cl in loops for c in cl])
         _o, omap = gmsh.model.occ.fragment([(2, t)], tools())
@@ -831,7 +851,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 for s in new:
                     _l3, lp = gmsh.model.occ.getCurveLoops(s)
                     lp = [sorted(abs(int(c)) for c in cl) for cl in lp]
-                    if len(lp) == 2 and [w.ring] in lp:
+                    if len(lp) == 2 and [w.ring] in lp and _on_hole(gmsh, w, [c for cl in lp for c in cl if c != w.ring]):
                         w.annulus = s
                 if not w.annulus:
                     raise ValueError("a washer's ring did not close round its hole")
