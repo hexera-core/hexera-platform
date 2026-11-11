@@ -36,6 +36,10 @@ from meshpipeline.engines.shell_mesh import ShellMesh, edge_users
 OVERLAP_GROUP = "SHLINK_overlap"
 #: a shell node lies on a cut face within this share of its wall
 ON_FACE_SHARE = 2e-3
+#: MIXED-9: a shell node lies on a face of a body solid as a whole within this share of its wall - a plate's edge
+#: butting the body (its mid-face ends where its skins end: 0.03 mm short of a 30 mm hub for a 2 mm spoke); a plate
+#: lying ON the body's face, its edge half a wall off it, is not a plate ending there
+LOOSE_SHARE = 0.25
 #: the inner row is tied to the solid nodes within this share of the overlap depth of its place, along the shell
 BAND_SHARE = 0.5
 #: the tetrahedron's faces, solver order (corners 0-3; edge midpoints 4:(0,1) 5:(1,2) 6:(2,0) 7:(0,3) 8:(1,3) 9:(2,3))
@@ -176,9 +180,12 @@ def _normal(p: np.ndarray) -> np.ndarray:
 
 
 def join(shell: ShellMesh, solid: SolidPart, cut_faces: list, *, part: str,
-         cut_face_names: list[str] | None = None) -> MixedMesh:
+         cut_face_names: list[str] | None = None, loose_faces: list | None = None) -> MixedMesh:
     """SHLINK-4 on a shell mesh and a solid mesh of one mixed body (both mm): the link rows found on the cut faces
-    (OCC faces, mm), the overlap quads added to the shell, the ties made. The shell mesh is extended in place."""
+    (OCC faces, mm), the overlap quads added to the shell, the ties made. The shell mesh is extended in place.
+    `loose_faces` (MIXED-9): faces of a body that is solid as a whole, which a shell edge meets within LOOSE_SHARE of
+    its wall (a plate of another body ending on it: its mid-face stops where its two skins stop, a hair short of a
+    curved face) - their solid nodes are found as the cut faces' are."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
     from OCP.BRepExtrema import BRepExtrema_DistShapeShape
     from OCP.gp import gp_Pnt
@@ -189,14 +196,21 @@ def join(shell: ShellMesh, solid: SolidPart, cut_faces: list, *, part: str,
     users = edge_users(shell)
     elems = shell.elements()
     free = [(k, u[0]) for k, u in users.items() if len(u) == 1]
-    cut = ms._compound(cut_faces)
+    tight = ms._compound(cut_faces) if cut_faces else None
+    loose = ms._compound(loose_faces) if loose_faces else None
+    cut = ms._compound(list(cut_faces) + list(loose_faces or []))
     on_cache: dict[int, bool] = {}
+
+    def near(n: int, shape, share: float, e: int) -> bool:
+        if shape is None:
+            return False
+        v = BRepBuilderAPI_MakeVertex(gp_Pnt(*map(float, shell.xyz[n]))).Vertex()
+        d = BRepExtrema_DistShapeShape(v, shape)
+        return d.IsDone() and d.Value() <= share * float(shell.wall[e]) + 1e-6
 
     def on_cut(n: int, e: int) -> bool:
         if n not in on_cache:
-            v = BRepBuilderAPI_MakeVertex(gp_Pnt(*map(float, shell.xyz[n]))).Vertex()
-            d = BRepExtrema_DistShapeShape(v, cut)
-            on_cache[n] = d.IsDone() and d.Value() <= ON_FACE_SHARE * float(shell.wall[e]) + 1e-6
+            on_cache[n] = near(n, tight, ON_FACE_SHARE, e) or near(n, loose, LOOSE_SHARE, e)
         return on_cache[n]
 
     link_edges = {key: eu for key, eu in free if on_cut(key[0], eu[0]) and on_cut(key[1], eu[0])}

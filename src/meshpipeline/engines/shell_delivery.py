@@ -109,19 +109,73 @@ def user_line(row: Mapping) -> str:
     return line(row)
 
 
+#: MIXED-9: the line said of a shell delivered with solid patches, after SUMMARY
+PATCH_SUMMARY = (" The {k} solid patch{es} where the part is too thick for a shell: {m:,} quadratic tetrahedra, "
+                 "tied to the shell.")
+#: MIXED-9: what each solver file holds when the shell carries solid patches
+PATCH_CONTAINS = {
+    "shell.bdf": "Nastran bulk data: CQUAD4 / CTRIA3 in a PSHELL per wall thickness, CTETRA in a PSOLID per solid "
+                 "patch, tied by MPC set 1",
+    "shell.inp": "CalculiX input deck: S4 / S3 in a *SHELL SECTION per wall thickness, C3D10 in a *SOLID SECTION per "
+                 "solid patch, tied by *EQUATION",
+    "shell_abaqus.inp": "Abaqus input deck: S4R / S3 in a *SHELL SECTION per wall thickness, C3D10 in a *SOLID SECTION "
+                        "per solid patch, tied by *EQUATION",
+    "shell.cdb": "Ansys MAPDL archive: SHELL181 and SOLID187 (the solid patches), tied by constraint equations",
+}
+
+
+def patches_of(rec: Mapping) -> list[dict]:
+    """MIXED-9: the solid patches a shell run delivered ([] for a shell alone)."""
+    return [p for p in rec.get("patches") or [] if isinstance(p, Mapping)]
+
+
+def solid_rows(rec: Mapping) -> list[dict]:
+    """MIXED-9: the notes' requirements as measured on the solid patches (engines/fea_requirements, each patch's own
+    report), every row named for its patch - the shell part's rows are the shell's own (SHMESH-26)."""
+    out: list[dict] = []
+    many = len(patches_of(rec)) > 1
+    for p in patches_of(rec):
+        rep = _map(_map(p.get("quality")).get("requirements"))
+        for r in rep.get("rows") or []:
+            if isinstance(r, Mapping):
+                who = f"Solid patch {str(p.get('name', '')).split('_')[-1]}" if many else "Solid patch"
+                out.append({**dict(r), "id": f"{p.get('name')}:{r.get('id')}", "asked": f"{who}: {r.get('asked')}"})
+    return out
+
+
+def requirements_of(rec: Mapping) -> dict | None:
+    """The notes' requirements asked against delivered: the shell's report, as it was; with solid patches, the shell
+    part's rows named "Shell part: ..." and the patches' rows after them (solid_rows), per part kind (MIXED-9)."""
+    shell = _map(rec.get("requirements"))
+    solid = solid_rows(rec)
+    if not solid:
+        return dict(shell) if shell else None
+    rows = [{**dict(r), "asked": f"Shell part: {r.get('asked')}"} for r in shell.get("rows") or []
+            if isinstance(r, Mapping)] + solid
+    met = [r.get("met") for r in rows]
+    return {**dict(shell), "rows": rows, "met": sum(1 for m in met if m is True),
+            "missed": sum(1 for m in met if m is False)}
+
+
 def quality_of(rec: Mapping) -> dict:
-    """quality.json for a delivered shell, from the shell run's record."""
+    """quality.json for a delivered shell, from the shell run's record. MIXED-9: a shell with solid patches counts
+    their tetrahedra among its cells and names them."""
     sq = dict(rec.get("quality") or {})
     invalid = int(sq.get("invalid") or 0)
     faces = list(rec.get("faces") or [])
+    patches = patches_of(rec)
     return {
-        "cells": int(rec.get("elements") or 0), "nodes": int(rec.get("nodes") or 0), "element_order": 1,
+        "cells": int(rec.get("elements") or 0) + int(rec.get("solid_elements") or 0),
+        "nodes": int(rec.get("nodes") or 0), "element_order": 1,
+        **({"solid_patches": [{k: p.get(k) for k in ("name", "body", "whole", "count", "elements")} for p in patches],
+            "solid_elements": int(rec.get("solid_elements") or 0), "ties": int(rec.get("ties") or 0)}
+           if patches else {}),
         "fatal": [f"{invalid} elements are folded or flat"] if invalid else [],
         "bounds": rec.get("bounds_m") or [0, 0, 0, 1, 1, 1],
         "groups": {"free": "free"}, "default_group": "free", "default_group_used": True,
         "quality_bar": "fea", "min_sicn": None, "fea_inverted": invalid,
         "shell_quality": sq,
-        **({"requirements": rec["requirements"]} if rec.get("requirements") else {}),
+        **({"requirements": requirements_of(rec)} if requirements_of(rec) else {}),
         "fea": {"plan": True, "shell": True, "walls_mm": list(rec.get("walls_mm") or []),
                 # SURF-3: a shell made on a surface file, and whether the user gave its thickness
                 **({"surface": True, "thickness_set": bool(_map(rec.get("surface")).get("thickness_set"))}
@@ -182,6 +236,11 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
     cells = int(q.get("cells") or 0)
     gating = [{"key": "fea_inverted", "label": "Folded or flat elements (a corner Jacobian not above zero)",
                "op": "==", "limit": 0, "measured": q.get("fea_inverted")}]
+    if patches_of(rec):
+        # MIXED-9: the solid patches are held to the solid's own floor (no inverted tetrahedron), as a solid run is
+        gating.append({"key": "patch_inverted", "label": "Solid patches: inverted tetrahedra (a Jacobian not above zero)",
+                       "op": "==", "limit": 0,
+                       "measured": sum(int(_map(p.get("quality")).get("fea_inverted") or 0) for p in patches_of(rec))})
     rows = []
     for r in gating + limits(q):
         met = limit_met(r.get("measured"), str(r.get("op")), r.get("limit"))
@@ -224,7 +283,14 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
     walls = list((q.get("fea") or {}).get("walls_mm") or [])
     plan_words = ([w for w in [rec.get("words")] if w] + [user_line(r) for r in asked]
                   + [str(w) for w in plan.get("not_applied") or []])
-    summary = SUMMARY.format(n=cells, q=q_n, t=t_n)
+    patches = patches_of(rec)
+    m_n = int(rec.get("solid_elements") or 0)
+    summary = SUMMARY.format(n=cells - m_n, q=q_n, t=t_n)
+    if patches:
+        # MIXED-9: the solid patches in the same files, tied to the shell
+        summary += PATCH_SUMMARY.format(k=len(patches), es="" if len(patches) == 1 else "es", m=m_n)
+        for s in solvers:
+            s["words"] = s["words"][:-1] + ", with 10-node tetrahedra in the solid patches, tied to the plates."
     if _map(rec.get("surface")).get("kind") == "surface":
         # SURF-6: said as what it is - on the user's surface, at their thickness (or none set)
         from meshpipeline.contracts.shell_thickness import words as mm_words
@@ -234,7 +300,10 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
                                          else "thickness not set")
     return {**extra,
             "title": "FEA shell mesh",
-            "shell": {"walls_mm": walls, "quads": q_n, "trias": t_n},
+            "shell": {"walls_mm": walls, "quads": q_n, "trias": t_n,
+                      **({"solid_elements": m_n, "solid_patches": [{k: p.get(k) for k in ("name", "body", "whole",
+                                                                                          "count", "elements")}
+                                                                   for p in patches]} if patches else {})},
             "summary": summary,
             "level": "Shell",
             "units": {"mesh": COMPLETED_MESH_UNIT.value, "words": export_units_words()},
@@ -246,7 +315,8 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
             "hot_spots": [],
             "faces": [],
             "download": {"words": "The full download holds:",
-                         "contains": [{"file": f, "words": w} for f, w in CONTAINS if present(ws, f)],
+                         "contains": [{"file": f, "words": PATCH_CONTAINS.get(f, w) if patches else w}
+                                      for f, w in CONTAINS if present(ws, f)],
                          "later": "Every shell file has the same node and element numbers, and its lengths in metres."},
             "solvers": solvers}
 

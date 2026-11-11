@@ -322,13 +322,13 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
 
     # the solid patches, each meshed by the FEA path; a whole body's faces cut down to those a shell edge ends on
     t1 = time.time()
-    from meshpipeline.engines.mixed_mesh import ON_FACE_SHARE
+    from meshpipeline.engines.mixed_mesh import LOOSE_SHARE
 
     parts, sqs, cut_all, kept_regions = [], [], [], []
     for i, r in enumerate(regions, start=1):
         cut = [_scaled(f, k) for f in r.cut_faces]
         if r.whole:
-            cut = _met_faces(shell, cut, ON_FACE_SHARE)
+            cut = _met_faces(shell, cut, LOOSE_SHARE)
             if not cut:
                 left.append({"body": r.body, "whole": True, "count": 1,
                              "why": f"{r.body} does not meet the shell at any plate edge"})
@@ -362,7 +362,9 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
     while True:
         solid, nodes_at, tets_at = _merge(parts)
         try:
-            joined = mm.join(shell, solid, [f for c in cut_all for f in c], part=kept_regions[0].body)
+            joined = mm.join(shell, solid, [f for c, r in zip(cut_all, kept_regions, strict=True) if not r.whole for f in c],
+                             part=kept_regions[0].body,
+                             loose_faces=[f for c, r in zip(cut_all, kept_regions, strict=True) if r.whole for f in c])
         except ValueError as exc:
             raise Stop(f"the shell meets none of the solid regions ({exc})") from exc
         reach = _tied(joined, nodes_at)
@@ -387,8 +389,9 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
         joined.regions.append(mm.SolidRegion(name=r.name, part=r.body, first=a, count=b - a))
         patches.append({"name": f"Solid_{j}", "set": f"SOLID_{r.name}", "body": r.body, "whole": r.whole,
                         "count": r.count, "elements": b - a,
-                        "quality": {key: sq.get(key) for key in ("elements", "valid", "fatal", "fea_inverted",
-                                                                 "min_sicn", "requirements") if key in sq}})
+                        "quality": {key: sq.get(key) for key in ("cells", "fatal", "fea_inverted", "min_sicn",
+                                                                 "sicn_floor", "elements_under_floor", "requirements")
+                                    if key in sq}})
     applied = dict(applied) if isinstance(applied, dict) else {}
     applied["patches_split"] = split_notes
     return Patched(joined=joined, patches=patches, left=left, applied=applied,
