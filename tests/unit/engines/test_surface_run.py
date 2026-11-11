@@ -203,13 +203,113 @@ def test_a_rib_on_a_plate_is_meshed_with_shared_nodes_along_its_foot(tmp_path):
 
 
 def test_edges_that_do_not_meet_are_said_on_the_result(tmp_path):
+    """SURF-2 as it was, when the user says not to stitch: the gaps are counted, sized and said, never closed."""
     from meshpipeline.cad import surface_model as sm
 
     tol = sm.read(sx.tray(), mm_per_unit=1.0)[0]["sew_tolerance_mm"]
     src = _file(sx.skin_with_crack(3.0 * tol), tmp_path / "in")
-    rec = surface_run.run(tmp_path, src, mm_per_unit=1.0, thickness_mm=1.0)
+    rec = surface_run.run(tmp_path, src, mm_per_unit=1.0, thickness_mm=1.0, stitch=False)
     assert rec["made"] and rec["open_edges"] == 8
-    assert "The surfaces do not meet at 8 edge(s): the shell has gaps there." in rec["words"]
+    assert "The surfaces do not meet at 8 edge(s): the shell has gaps there (the widest " in rec["words"]
+    assert "Nothing was stitched, as your notes asked." in rec["words"]
+
+
+def test_small_gaps_are_closed_by_rule_and_said(tmp_path):
+    """SURF-7: a panel drawn as three patches, the middle one written three sew tolerances off: stitched, meshed as
+    one sheet with shared nodes along both joints, and the result says how many gaps and how wide."""
+    from meshpipeline.cad import surface_model as sm
+
+    for name in ("whole", "gapped"):
+        (tmp_path / name).mkdir()
+    whole = surface_run.run(tmp_path / "whole", _file(sx.strip_of_plates(), tmp_path / "a"), mm_per_unit=1.0,
+                            thickness_mm=1.0)
+    tol = sm.read(sx.strip_of_plates(), mm_per_unit=1.0)[0]["sew_tolerance_mm"]
+    src = _file(sx.strip_of_plates(move={1: (0, 0, 3.0 * tol)}), tmp_path / "b")
+    rec = surface_run.run(tmp_path / "gapped", src, mm_per_unit=1.0, thickness_mm=1.0)
+    assert rec["made"] and rec["open_edges"] == 0 and rec["surface"]["sheets"] == 1
+    c = rec["surface"]["cleaned"]
+    assert c["closed_edges"] == 2 and c["limit_from"] == "rule" and c["wider_gaps"] == 0
+    assert f"Closed 2 gap(s) between the surfaces, the widest {3.0 * tol:.2g} mm." in rec["words"]
+    q = rec["quality"]
+    assert q["invalid"] == 0 and q["within_nastran"] is True
+    # one sheet: the mesh's only free edges are the panel's rim, as for the panel written whole
+    assert q["edges"]["free"] == whole["quality"]["edges"]["free"]
+    assert rec["elements"] == pytest.approx(whole["elements"], rel=0.05)
+    assert all((tmp_path / "gapped" / f).stat().st_size > 0 for f in FILES)
+
+
+def test_a_wider_gap_is_left_open_and_said_and_the_notes_tolerance_closes_it(tmp_path):
+    from meshpipeline.cad import surface_model as sm
+
+    tol = sm.read(sx.strip_of_plates(), mm_per_unit=1.0)[0]["sew_tolerance_mm"]
+    src = _file(sx.strip_of_plates(move={1: (0, 0, 12.0 * tol)}), tmp_path / "in")
+    for name in ("rule", "said"):
+        (tmp_path / name).mkdir()
+    rec = surface_run.run(tmp_path / "rule", src, mm_per_unit=1.0, thickness_mm=1.0)
+    assert rec["made"] and rec["surface"]["sheets"] == 3 and rec["surface"]["cleaned"]["closed_edges"] == 0
+    assert "2 pair(s) of edges run side by side up to " in rec["words"]
+    assert 'If they should meet, add to your notes: "stitch gaps up to ' in rec["words"]
+    # the tolerance the words suggest is enough to close them
+    ask = float(rec["words"].split('"stitch gaps up to ')[1].split(" mm")[0])
+    assert 12.0 * tol < ask <= 1.25 * 12.0 * tol
+    said = surface_run.run(tmp_path / "said", src, mm_per_unit=1.0, thickness_mm=1.0, sew_mm=ask)
+    assert said["made"] and said["surface"]["sheets"] == 1 and said["open_edges"] == 0
+    assert f"as your notes asked (up to {ask:.2g} mm)" in said["words"]
+    assert "run side by side" not in said["words"]
+
+
+def test_the_stitch_words_are_read_from_the_notes_the_latest_standing():
+    state = {"request_txt": "FEA shell, stitch gaps up to 0.5 mm",
+             "user_notes": [{"id": "n1", "text": "1 mm thick, stitch gaps up to 0.2 mm, ignore holes under 4 mm"}]}
+    got = surface_run.stitch_for(state)
+    assert got.mm == 0.2 and got.holes_mm == 4.0 and not got.off
+    assert surface_run.stitch_for({"request_txt": "FEA", "user_notes": [{"id": "n", "text": "do not stitch"}]}).off
+    assert not surface_run.stitch_for({"request_txt": "FEA of a bracket"}).given
+
+
+def test_the_notes_mesh_requirements_reach_the_shell_mesher(tmp_path, monkeypatch):
+    """SURF-10: the requirements read from the notes (NOTE-7..9) are handed to the shell mesher for a surface file as
+    they are for a mid-surface shell; with none, the mesher is called exactly as before."""
+    from meshpipeline.engines.gmsh import shell_adapter as sa
+
+    real = sa.mesh_run
+    seen: list = []
+
+    def fake(out, *, mm_per_unit=1.0, target=None, **more):
+        seen.append(dict(more, target=target))
+        mesh, applied = real(out, mm_per_unit=mm_per_unit, target=target)
+        if more.get("requirements"):
+            applied["requirements"] = {"asked": more["requirements"]}
+        return mesh, applied
+
+    monkeypatch.setattr(sa, "mesh_run", fake)
+    src = _file(sx.bracket(), tmp_path / "in")
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir()
+    asked = {"sizes": {"global_mm": 4.0}}
+    rec = surface_run.run(tmp_path / "a", src, mm_per_unit=1.0, thickness_mm=1.5, requirements=asked,
+                          target={"elements": 800, "mode": "about"})
+    assert rec["made"] and seen[0] == {"requirements": asked, "target": {"elements": 800, "mode": "about"}}
+    assert rec["requirements"] == {"asked": asked}
+    seen.clear()
+    plain = surface_run.run(tmp_path / "b", src, mm_per_unit=1.0, thickness_mm=1.5)
+    assert plain["made"] and seen[0] == {"target": None} and "requirements" not in plain
+
+
+def test_the_requirements_are_read_from_the_workspace_when_that_reader_is_built_in(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "meshpipeline.engines.mesh_requirements", None)        # not in this build
+    assert surface_run.requirements_in(tmp_path) is None
+    fake = types.ModuleType("meshpipeline.engines.mesh_requirements")
+    fake.read = lambda ws: {"status": "used", "requirements": {"sizes": {"global_mm": 4.0}}}
+    fake.requirements_of = lambda sec: sec.get("requirements")
+    monkeypatch.setitem(sys.modules, "meshpipeline.engines.mesh_requirements", fake)
+    import meshpipeline.engines as engines_pkg
+
+    monkeypatch.setattr(engines_pkg, "mesh_requirements", fake, raising=False)
+    assert surface_run.requirements_in(tmp_path) == {"sizes": {"global_mm": 4.0}}
 
 
 def test_what_the_words_left_unread_and_a_thick_sheet_are_said_never_refused(tmp_path):
@@ -362,3 +462,144 @@ def test_a_surface_whose_shell_cannot_be_made_is_the_runs_plain_reason(tmp_path,
     refusal = read_refusal(tmp_path)
     assert refusal is not None and refusal.gate == surface_run.GATE
     assert "it can only be meshed as a shell" in refusal.builder_text and "SHMESH-21" in refusal.builder_text
+
+
+# ------------------------------------------------------------------- SURF-10: the user's count and requirements
+def test_the_users_element_count_reaches_a_surface_file(tmp_path, monkeypatch):
+    """The count is read by the FEA plan's own reader (shown the file with no zones) and the shell is sized to it."""
+    ws = _stage(sx.strip_of_plates(), tmp_path / "ws")
+    shown: list = []
+
+    async def decide(record, state, zones, **kw):
+        shown.append((dict(record), list(zones), state.get("user_notes")))
+        return {"status": "used", "decision": {"target_elements": 600, "target_mode": "about", "target_min": 0,
+                                               "target_max": 0}}
+
+    monkeypatch.setattr(FD.FA, "decide", decide)
+    state = {"purpose": "structural", "request_txt": "FEA of a panel",
+             "user_notes": [{"id": "n1", "text": "1 mm thick, about 600 elements"}]}
+    ok, _marker, calls, cited = _drive(ws, monkeypatch, state)
+    assert ok is True and calls == [] and len(shown) == 1 and shown[0][1] == []
+    rec = shell_run.read(ws)
+    assert surface_run.is_surface(rec) and abs(rec["elements"] - 600) <= 0.25 * 600
+    assert int(rec["target"]["asked"]) == 600
+    assert ("element count", "SURF-10") in [(c["decided"], c["rule"]) for c in cited]
+    plan = json.loads((ws / "fea_plan.json").read_text())
+    assert plan["asked"]["elements"] == 600
+
+
+def test_with_no_words_no_model_is_asked_for_a_surface_file(tmp_path, monkeypatch):
+    ws = _stage(sx.strip_of_plates(), tmp_path / "ws")
+
+    async def never(*a, **k):
+        raise AssertionError("the model was asked with no words to read")
+
+    monkeypatch.setattr(FD.FA, "decide", never)
+    ok, _marker, calls, cited = _drive(ws, monkeypatch, {"purpose": "structural"})
+    assert ok is True and calls == []
+    assert [(c["decided"], c["rule"]) for c in cited if c["stage"] == surface_run.GATE] == [
+        ("surface part", "SURF-1"), ("thickness", "SURF-4"), ("shell mesh", "SURF-3"), ("shell delivered", "SURF-3")]
+
+
+def test_the_notes_requirements_reader_is_called_for_a_surface_file_when_it_is_built_in(tmp_path, monkeypatch):
+    """NOTE-7..9's reader (fea_driver.read_requirements, with engines/mesh_requirements) is asked before the surface
+    run, so what it leaves in the workspace is there for the shell mesher."""
+    ws = _stage(sx.strip_of_plates(), tmp_path / "ws")
+    order: list = []
+
+    async def decide(record, state, zones, **kw):
+        return {"status": "off"}
+
+    async def reader(w, state, *, job_id, run=None, publish=None):
+        order.append("requirements")
+        return {"status": "none"}
+
+    real_pass = surface_run.surface_pass
+
+    async def passed(*a, **k):
+        order.append("surface run")
+        return await real_pass(*a, **k)
+
+    monkeypatch.setattr(FD.FA, "decide", decide)
+    monkeypatch.setattr(FD, "read_requirements", reader, raising=False)
+    monkeypatch.setattr(surface_run, "surface_pass", passed)
+    state = {"purpose": "structural", "user_notes": [{"id": "n1", "text": "global size 4 mm"}]}
+    ok, _marker, _calls, _cited = _drive(ws, monkeypatch, state)
+    assert ok is True and order == ["requirements", "surface run"]
+
+
+def test_the_cleanup_is_cited_when_it_did_something(tmp_path, monkeypatch):
+    from meshpipeline.cad import surface_model as sm
+
+    tol = sm.read(sx.strip_of_plates(), mm_per_unit=1.0)[0]["sew_tolerance_mm"]
+    ws = _stage(sx.strip_of_plates(move={1: (0, 0, 3.0 * tol)}), tmp_path / "ws")
+    ok, _marker, _calls, cited = _drive(ws, monkeypatch, {"purpose": "structural"})
+    assert ok is True
+    (entry,) = [c for c in cited if c["decided"] == "surface cleaned"]
+    assert entry["rule"] == "SURF-7" and entry["value"] == 2 and entry["inputs"]["limit_from"] == "rule"
+    assert entry["words"].startswith("Closed 2 gap(s) between the surfaces")
+    res = shell_run.read(ws)
+    assert "Closed 2 gap(s) between the surfaces" in res["words"]
+
+
+# ------------------------------------------------------------------- IGES-1 / IGES-2: MESH-1's reading
+def _stage_file(src: Path, ws: Path) -> Path:
+    ws.mkdir(parents=True, exist_ok=True)
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.option.setNumber("Geometry.OCCScaling", 0.001)
+        gmsh.model.occ.importShapes(str(src))
+        gmsh.option.setNumber("Geometry.OCCScaling", 1.0)
+        gmsh.model.occ.synchronize()
+        gmsh.write(str(ws / "geometry.brep"))
+    finally:
+        gmsh.finalize()
+    return ws
+
+
+def _kinds(shape) -> dict:
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    out: dict = {}
+    ex = TopExp_Explorer(shape, TopAbs_FACE)
+    while ex.More():
+        kind = str(BRepAdaptor_Surface(TopoDS.Face_s(ex.Current()), True).GetType()).rsplit("_", 1)[-1]
+        out[kind] = out.get(kind, 0) + 1
+        ex.Next()
+    return out
+
+
+def test_an_iges_copy_of_a_solid_is_staged_as_the_solid_its_step_is(tmp_path):
+    """IGES-1: an IGES file's trimmed surfaces carry no solid and write a cylinder as a surface of revolution. MESH-1
+    reads them the way the mid-surface extraction does: one valid solid, its bore a cylinder again."""
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+
+    from meshpipeline.cad.scout import read_cad
+
+    solid = sx._cut(sx.box_solid(60.0, 40.0, 4.0), sx._cyl((30, 20, -1), (0, 0, 1), 6.0, 6.0))
+    igs = Path(sx.write_iges(solid, tmp_path / "part.igs"))
+    raw = read_cad(igs)
+    assert not TopExp_Explorer(raw, TopAbs_SOLID).More() and "Cylinder" not in _kinds(raw)
+    ws = _stage_file(igs, tmp_path / "ws")
+    seen: dict = {}
+    assert FD.solids_from_shells(ws, seen) == 1 and seen == {}
+    staged = read_cad(ws / "geometry.brep")
+    assert TopExp_Explorer(staged, TopAbs_SOLID).More()
+    assert _kinds(staged) == {"Plane": 6, "Cylinder": 1}
+
+
+def test_a_face_written_twice_is_no_solid(tmp_path):
+    """IGES-2: two copies of one face sew into a closed pocket of no volume. It is no solid: the file is still the
+    surface it is, and the surface run leaves the second copy out (SURF-8)."""
+    one = sx.plate_with_hole()
+    ws = _stage(sx.compound([one, sx.copy_of(one)]), tmp_path / "ws")
+    seen: dict = {}
+    assert FD.solids_from_shells(ws, seen) == 0 and seen == {"open": True}
+    rec = surface_run.run(ws, ws / "geometry.step", mm_per_unit=1000.0, thickness_mm=1.0)
+    assert rec["made"] and rec["surface"]["cleaned"]["duplicates"] == 1 and rec["surface"]["faces"] == 1
+    assert "1 face(s) were in the file twice: the second copy of each is left out." in rec["words"]

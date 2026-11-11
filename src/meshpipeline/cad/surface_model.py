@@ -160,12 +160,13 @@ class Sewn:
         self.faces, self.names, self.sheets, self.tol, self.diag = faces, names, sheets, tol, diag
 
 
-def sew(shape, *, junctions: bool = False) -> Sewn | None:
+def sew(shape, *, junctions: bool = False, leave_out: frozenset[int] = frozenset()) -> Sewn | None:
     """SURF-2: the file's faces sewn as the clean check sews them (cad/validity_brep: BRepBuilderAPI_Sewing at
     SEW_TOLERANCE of the diagonal - edges that meet within it become one edge, every other edge stays free) and
     grouped into sheets. With `junctions`, an edge three or more faces meet along (a rib on a plate, a T) is sewn
-    into one edge too - the same tolerance, the sewing's own non-manifold mode. None when the file holds no face
-    with a size."""
+    into one edge too - the same tolerance, the sewing's own non-manifold mode. `leave_out`: the faces (their
+    place in the file, from 0) that are another face written twice (SURF-8); the others keep their own numbers.
+    None when the file holds no face with a size."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
     from OCP.TopAbs import TopAbs_FACE
     from OCP.TopExp import TopExp
@@ -184,7 +185,7 @@ def sew(shape, *, junctions: bool = False) -> Sewn | None:
         return None
     tol = SEW_TOLERANCE * diag
     sewing = BRepBuilderAPI_Sewing(tol, True, True, True, bool(junctions))
-    sewing.Add(shape)
+    sewing.Add(ms._compound([f for k, f in enumerate(before) if k not in leave_out]) if leave_out else shape)
     sewing.Perform()
     sewn = sewing.SewedShape()
     if sewn is None or sewn.IsNull():
@@ -194,6 +195,8 @@ def sew(shape, *, junctions: bool = False) -> Sewn | None:
     faces, names = [], []
     seen: set[int] = set()
     for k, f in enumerate(before):
+        if k in leave_out:
+            continue
         g = sewing.ModifiedSubShape(f)
         i = index.FindIndex(g) if g is not None and not g.IsNull() else 0
         if i <= 0 or i in seen:
@@ -278,10 +281,11 @@ def imprint(sewn: Sewn) -> Sewn | None:
         return None
 
 
-def _unmet(free: list, own: list[int], faces: list, boxes: list, reach: float) -> list[np.ndarray | None]:
+def _unmet(free: list, own: list[int], faces: list, boxes: list, reach: float,
+           far: list[float] | None = None) -> list[np.ndarray | None]:
     """SURF-2: for each free edge, its middle when it lies along another face (every sample point within `reach` of
     a face that is not the edge's own: a seam the sewing did not close, a rib that does not reach its plate), else
-    None."""
+    None. `far` (when given) is filled with how far each such edge lies from that face (the farthest sample)."""
     from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 
     from meshpipeline.cad import midsurface as ms
@@ -297,22 +301,27 @@ def _unmet(free: list, own: list[int], faces: list, boxes: list, reach: float) -
             lo, hi = boxes[k]
             if any(np.any(p < lo - reach) or np.any(p > hi + reach) for p in probe):
                 continue
-            near = True
+            near, widest = True, 0.0
             for p in probe:
                 d = BRepExtrema_DistShapeShape(ms._vertex(p), f)
                 if not d.IsDone() or d.Value() > reach:
                     near = False
                     break
+                widest = max(widest, float(d.Value()))
             if near:
                 found = probe[1]
+                if far is not None:
+                    far.append(widest)
                 break
         out.append(found)
     return out
 
 
-def measure(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
+def measure(sewn: Sewn, *, mm_per_unit: float, reach: float | None = None) -> list[dict]:
     """Each sheet of the sewn file, measured (SURF-1, SURF-2): its area and size, its free edges chained into loops
-    with the area each spans, its open share, and the edges that do not meet their neighbour."""
+    with the area each spans, its open share, and the edges that do not meet their neighbour. `reach` (the shape's
+    own units): how near a neighbouring face an edge must lie to count as not meeting it - NEAR_SEW sew tolerances
+    unless a wider stitch tolerance was stated (SURF-7)."""
     from OCP.BRep import BRep_Tool
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
     from OCP.TopExp import TopExp
@@ -352,13 +361,14 @@ def measure(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
         else:
             junction[s] = junction.get(s, 0) + 1
     boxes = [ms._box(f) for f in sewn.faces]
-    reach = NEAR_SEW * sewn.tol
+    reach = max(NEAR_SEW * sewn.tol, float(reach or 0.0))
     areas = [sum(ms._area(sewn.faces[k]) for k in ks) for ks in sewn.sheets]
     out = []
     for s, ks in enumerate(sewn.sheets):
         area = areas[s]
         free = free_of.get(s, [])
-        unmet = _unmet(free, own_of.get(s, []), sewn.faces, boxes, reach) if free else []
+        far: list[float] = []
+        unmet = _unmet(free, own_of.get(s, []), sewn.faces, boxes, reach, far) if free else []
         rows: list[dict] = []
         spanned = 0.0
         for lp in _loops(free, vmap):
@@ -384,6 +394,7 @@ def measure(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
                     "loops": rows[:MAX_PLACES], "loop_count": len(rows),
                     "open_share": _r(spanned / area_mm2) if area_mm2 > 0 else 0.0,
                     "unmet_edges": len(places), "unmet_at_mm": [[_r(c * mm) for c in p] for p in places[:MAX_PLACES]],
+                    "unmet_widest_mm": _r(max(far) * mm) if far else 0.0,
                     "closed": not free})
     return out
 
@@ -417,12 +428,33 @@ def classify(sheets: list[dict], *, said_shell: bool = False) -> tuple[str, str,
                    "rather than the edge of a sheet", _r(share))
 
 
-def read(shape, *, mm_per_unit: float, said_shell: bool = False) -> tuple[dict, Sewn | None]:
+def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = True,
+         sew_mm: float | None = None, holes_mm: float | None = None) -> tuple[dict, Sewn | None]:
     """SURF-1: what kind of file this is, with the sheets as measured: (the reading, the sewn faces - None unless
-    the reading is "surface" or "gap")."""
+    the reading is "surface" or "gap"). A surface part is then cleaned (SURF-7..9, cad/surface_clean): a face written
+    twice is left out, the gaps between neighbouring faces are closed up the sewing ladder, pinholes are filled -
+    and the reading says what was done ("cleaned") and measures what is left. `stitch` False: the user said not
+    to; `sew_mm`: the stitch tolerance their notes state (None: the rule's); `holes_mm`: the size under which they
+    asked for holes to be filled (None: only pinholes no wider than the gaps being closed)."""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import surface_clean as sc
+    from meshpipeline.cad.validity_brep import SEW_TOLERANCE, _bbox
+
     if has_solid(shape):
         return {"kind": "solid", "why": "the file holds a solid", "sheets": []}, None
-    sewn = sew(shape)
+    # SURF-8: A FACE WRITTEN TWICE is left out before anything is sewn or judged (sewn in, it pairs its edges with
+    # its twin's and the two read as a closed pocket)
+    twice: list[int] = []
+    try:
+        drawn = ms._faces(shape)
+        lo, hi = _bbox(shape)
+        if len(drawn) > 1 and lo is not None:
+            _kept, twice = sc.without_duplicates(drawn, SEW_TOLERANCE * float(np.linalg.norm(hi - lo)))
+    except Exception as exc:  # noqa: BLE001 - the file as written
+        logger.info("surface: faces written twice were not looked for (%s)", type(exc).__name__)
+        twice = []
+    out = frozenset(twice)
+    sewn = sew(shape, leave_out=out)
     if sewn is None:
         return {"kind": "empty", "why": "the file holds no faces", "sheets": []}, None
     sheets = measure(sewn, mm_per_unit=mm_per_unit)
@@ -432,7 +464,7 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False) -> tuple[dict, 
         # SURF-2: EDGES LEFT LYING ALONG A NEIGHBOUR may be a junction - a rib's foot on the line two plate faces
         # share, three faces at one edge, which the plain sewing leaves apart (it joins two faces at an edge). Sewn
         # again with junctions allowed, and kept when fewer edges are left unmet and nothing closed
-        joined = sew(shape, junctions=True)
+        joined = sew(shape, junctions=True, leave_out=out)
         if joined is not None and len(joined.faces) == len(sewn.faces):
             again = measure(joined, mm_per_unit=mm_per_unit)
             if sum(int(s["unmet_edges"]) for s in again) < unmet and not any(s["closed"] for s in again):
@@ -446,9 +478,35 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False) -> tuple[dict, 
                 if sum(int(s["unmet_edges"]) for s in again) < unmet and not any(s["closed"] for s in again):
                     sewn, sheets = scored, again
         kind, why, share = classify(sheets, said_shell=said_shell)
+    cleaned: dict | None = None
+    if kind == "surface":
+        # SURF-7 / SURF-9: THE CLEAN-UP, only once the file is known to be a surface part (what kind of file it is
+        # was read above from the file as written: a closed skin with a crack is still a closed skin with a crack)
+        cleaned = {"duplicates": len(twice), "duplicate_faces": [f"Face_{k + 1}" for k in twice][:MAX_PLACES]}
+        reach = None
+        if stitch:
+            try:
+                tidy, did = sc.clean(sewn, mm_per_unit=mm_per_unit, limit_mm=sew_mm, holes_mm=holes_mm)
+            except Exception as exc:  # noqa: BLE001 - the surface as sewn; what is open is said
+                logger.warning("surface: the clean-up failed (%s: %s)", type(exc).__name__, str(exc)[:200])
+                tidy, did = sewn, {"refused": "the clean-up could not be run"}
+            cleaned.update(did)
+            reach = float(did.get("limit_mm") or 0.0) / float(mm_per_unit)
+            if tidy is not sewn:
+                sewn = tidy
+                sheets = measure(sewn, mm_per_unit=mm_per_unit, reach=reach)
+            elif reach > NEAR_SEW * sewn.tol:
+                sheets = measure(sewn, mm_per_unit=mm_per_unit, reach=reach)
+        else:
+            cleaned.update(stitch="off")
+        cleaned.update(left_open=sum(int(s["unmet_edges"]) for s in sheets),
+                       left_widest_mm=max([float(s.get("unmet_widest_mm") or 0.0) for s in sheets] + [0.0]),
+                       left_at_mm=[p for s in sheets for p in s["unmet_at_mm"]][:MAX_PLACES])
     reading = {"kind": kind, "why": why, "faces": len(set(sewn.names)), "sew_tolerance_mm": _r(sewn.tol * mm_per_unit),
                "diag_mm": _r(sewn.diag * mm_per_unit), "open_share": share, "said_shell": bool(said_shell),
                "sheets": sheets}
+    if cleaned is not None:
+        reading["cleaned"] = cleaned
     return reading, (sewn if kind in ("surface", "gap") else None)
 
 
@@ -519,6 +577,16 @@ def record(reading: dict, sewn: Sewn, *, mm_per_unit: float, walls_mm: dict[str,
     if unmet:
         notes.append(f"{unmet} edge(s) lie along a neighbouring face without meeting it within "
                      f"{reading['sew_tolerance_mm']:.3g} mm: the shell has gaps there (SURF-2).")
+    c = reading.get("cleaned") or {}
+    if c.get("duplicates"):
+        notes.append(f"{c['duplicates']} face(s) written twice in the file were left out once (SURF-8).")
+    if c.get("closed_edges"):
+        notes.append(f"{c['closed_edges']} gap(s) between neighbouring faces were closed, the widest "
+                     f"{c['closed_widest_mm']:.3g} mm, within {c['limit_mm']:.3g} mm "
+                     f"({'the tolerance the notes state' if c.get('limit_from') == 'notes' else 'the rule'}, SURF-7).")
+    if c.get("pinholes"):
+        notes.append(f"{c['pinholes']} hole(s) up to {c['pinhole_widest_mm']:.3g} mm across were filled with the "
+                     "face's own surface (SURF-9).")
     rec = {"version": ms.VERSION, "unit": "mm", "ratio": sp.SHELL_RATIO, "diag_mm": reading["diag_mm"],
            "source": "surface", "surface_model": reading,
            "bodies": bodies, "pairs": pairs, "faces": roles, "mids": mids, "sewn": census,

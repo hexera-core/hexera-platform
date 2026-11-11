@@ -192,7 +192,21 @@ def _faces_in(shape) -> int:
     return m.Extent()
 
 
-def _plain_solids(shape, tol: float) -> tuple[Any, int, int]:
+def _encloses(solid, diag: float) -> bool:
+    """IGES-2: whether a solid made from a closed shell encloses a volume at all (more than cad/validity's
+    ZERO_VOLUME_RATIO of the file's size cubed). A face written twice sews into a closed pocket of no volume: no
+    solid, and the file is still the surface it is (SURF-8 leaves the second copy out)."""
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    from meshpipeline.cad.validity import ZERO_VOLUME_RATIO
+
+    g = GProp_GProps()
+    BRepGProp.VolumeProperties_s(solid, g)
+    return abs(float(g.Mass())) > ZERO_VOLUME_RATIO * diag ** 3
+
+
+def _plain_solids(shape, tol: float, diag: float) -> tuple[Any, int, int]:
     """MESH-1 as it always was: the file's shells sewn within `tol`, each closed one made a solid. Returns (the
     compound of those solids, how many, how many faces they hold)."""
     from OCP.BRep import BRep_Builder, BRep_Tool
@@ -215,13 +229,13 @@ def _plain_solids(shape, tol: float) -> tuple[Any, int, int]:
         if not BRep_Tool.IsClosed_s(shell):
             continue
         mk = BRepBuilderAPI_MakeSolid(shell)
-        if mk.IsDone():
+        if mk.IsDone() and _encloses(mk.Solid(), diag):
             b.Add(comp, mk.Solid())
             made += 1
     return comp, made, _faces_in(comp) if made else 0
 
 
-def _solidified(shape) -> tuple[Any, int, int] | None:
+def _solidified(shape, diag: float) -> tuple[Any, int, int] | None:
     """IGES-1: the file's loose faces read as the solids they bound THE WAY THE MID-SURFACE EXTRACTION READS THEM
     (cad/midsurface.solidify, SHELL-15): a surface written in another form (an IGES file's surface of revolution or
     B-spline) re-made as the plane, cylinder, cone, sphere or torus it is, the sewing tolerance measured from the
@@ -247,6 +261,8 @@ def _solidified(shape) -> tuple[Any, int, int] | None:
             ex.Next()
             if not BRepCheck_Analyzer(solid).IsValid():
                 return None
+            if not _encloses(solid, diag):
+                continue
             b.Add(comp, solid)
             made += 1
         return (comp, made, _faces_in(comp)) if made else None
@@ -265,8 +281,7 @@ def solids_from_shells(ws: Path, seen: dict | None = None) -> int:
     solids - so an IGES copy's staged solid is its STEP's, for the solid mesh and the shell alike. Writes
     geometry.brep and returns how many solids it made (0: nothing to do, or no shell closes - the part is then
     meshed, or refused, as it stands). `seen` (when given) is told "open": True for a file with no solid none of
-    whose shells closes - a surface for engines/surface_run to read (SURF-1) - and "read_as" when the extraction's
-    reading was the one kept."""
+    whose shells closes - a surface for engines/surface_run to read (SURF-1)."""
     from OCP.BRepTools import BRepTools
     from OCP.TopAbs import TopAbs_SOLID
     from OCP.TopExp import TopExp_Explorer
@@ -284,12 +299,10 @@ def solids_from_shells(ws: Path, seen: dict | None = None) -> int:
     if lo is None:
         return 0
     diag = float(math.dist(tuple(lo), tuple(hi)))
-    comp, made, held = _plain_solids(shape, SEW_TOLERANCE * diag)
-    read_as = _solidified(shape)
+    comp, made, held = _plain_solids(shape, SEW_TOLERANCE * diag, diag)
+    read_as = _solidified(shape, diag)
     if read_as is not None and read_as[2] >= held:
         comp, made, held = read_as
-        if seen is not None:
-            seen["read_as"] = "solidify"
     if made:
         BRepTools.Write_s(comp, str(ws / "geometry.brep"))
     elif seen is not None:
@@ -1892,14 +1905,68 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
     return record, ran
 
 
-async def _deliver_surface(ws: Path, rec: dict, *, job_id: str, run):
+async def surface_asks(ws: Path, state, *, job_id: str, run=None, publish=None) -> tuple[dict | None, dict | None]:
+    """SURF-10: WHAT THE USER'S WORDS ASK OF A SURFACE FILE'S MESH, read by the same readers the solid route uses,
+    so a count or a size written in the notes reaches a surface file as it reaches a solid: (the element count,
+    PLAN-fea-27 / SHMESH-23 - the FEA plan's AI step shown the file with no zones, its answer checked by the same
+    rules; the notes' mesh requirements, NOTE-7..9 - read by this module's read_requirements when that reader is in
+    the build, and left in the workspace for the surface run). Asked only when the user left words to read
+    (cad/part_words.wanted): a run without words asks no model and is the run it always was. Never raises (but a
+    fenced worker's stale publish): no answer is no count."""
+    from meshpipeline.cad.part_words import wanted
+    from meshpipeline.contracts.event_stream import StaleExecutionPublish
+
+    if not wanted(state or {}):
+        return None, None
+    target = None
+    try:
+        staged = staged_solid(ws)
+        _box, diag_m = await asyncio.to_thread(_metre_box, staged)
+        ai = await FA.decide({"faces": {}, "bodies": 1}, state or {}, [], diag_m=diag_m, limit=element_limit({})[0],
+                             job_id=job_id, run=run, wait_s=ai_wait_s(run))
+        target = element_target(state, ai)
+        if target and target.get("elements"):
+            _cite(job_id, [{"stage": "fea_ai", "decided": "element count", "value": int(target["elements"]),
+                            "rule": "SURF-10", "inputs": {k: target.get(k) for k in ("mode", "low", "high")},
+                            "words": f"The notes ask for {int(target['elements']):,} elements: the shell's sizes "
+                                     "follow that count."}])
+    except StaleExecutionPublish:
+        raise
+    except Exception as exc:  # noqa: BLE001 - no count read is the rules' own sizes
+        logger.warning("fea driver: the element count was not read for the surface file (%s)", type(exc).__name__)
+        target = None
+    asked = None
+    reader = globals().get("read_requirements")      # NOTE-7..9's reader (engines/mesh_requirements), when built in
+    if callable(reader):
+        asked = await reader(ws, state, job_id=job_id, run=run, publish=publish)
+    return (target if target and target.get("elements") else None), asked
+
+
+async def _deliver_surface(ws: Path, rec: dict, *, job_id: str, run, target: dict | None = None,
+                           asked: dict | None = None):
     """SURF-3: a surface file's shell delivered as THE result (as SHSTAGE-7 delivers a said shell); one that could not
-    be made is the run's plain reason - the file holds no solid to mesh instead."""
+    be made is the run's plain reason - the file holds no solid to mesh instead. SURF-10: the user's count and the
+    notes' requirements are told as asked against delivered, as for a mid-surface shell."""
     from meshpipeline.contracts.failure_cause import FailureCause
     from meshpipeline.engines import shell_delivery as SD
     from meshpipeline.engines import surface_run as SR
 
-    if rec.get("made") and await asyncio.to_thread(SD.deliver, ws, rec):
+    if rec.get("made") and await asyncio.to_thread(lambda: SD.deliver(ws, rec, target=target)):
+        from meshpipeline.contracts.user_notes import record_remark
+        from meshpipeline.engines.shell_plan import count_words
+
+        counted = count_words(rec.get("target"))
+        if counted:
+            record_remark(ws, counted, by="fea_target")
+        if (asked or {}).get("status") == "used":
+            try:
+                from meshpipeline.engines import mesh_requirements as MR
+                from meshpipeline.engines.shell_requirements import summary as asked_summary
+
+                record_remark(ws, asked_summary(rec.get("requirements"), len(MR.not_applied_words(asked))),
+                              by="mesh_requirements")
+            except ImportError:
+                pass
         _cite(job_id, [{"stage": SR.GATE, "decided": "shell delivered", "value": rec.get("elements"),
                         "rule": "SURF-3", "inputs": {"solid_made": False},
                         "words": "The shell on the surface is the delivered mesh: the file holds no solid to mesh."}])
@@ -1941,9 +2008,12 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         # plan or fall back to. Any other file with no solid carries on exactly as before.
         from meshpipeline.engines import surface_run as SR
 
-        surfaced = await SR.surface_pass(ws, state, job_id=job_id, run=run, cite=_cite, left_s=attempt_left_s(run))
+        # SURF-10: the user's count and the notes' mesh requirements, read as the solid route reads them
+        target, asked = await surface_asks(ws, state, job_id=job_id, run=run, publish=publish)
+        surfaced = await SR.surface_pass(ws, state, job_id=job_id, run=run, cite=_cite, left_s=attempt_left_s(run),
+                                         target=target)
         if surfaced is not None:
-            return await _deliver_surface(ws, surfaced, job_id=job_id, run=run)
+            return await _deliver_surface(ws, surfaced, job_id=job_id, run=run, target=target, asked=asked)
     # MESH-8 FOR A SINGLE PART: its skins left out, its faces still named for the CAD faces they came from
     skins = await asyncio.to_thread(open_single_skins, ws)
     from meshpipeline.contracts import narration as _N
