@@ -92,7 +92,7 @@ def test_do_not_stitch_leaves_every_gap_as_drawn():
     reading, _sewn = _read(sx.strip_of_plates(move={1: (0, 0, 3.0 * tol)}), stitch=False)
     assert reading["cleaned"]["stitch"] == "off" and "closed_edges" not in reading["cleaned"]
     assert len(reading["sheets"]) == 3 and reading["cleaned"]["left_open"] == sum(
-        s["unmet_edges"] for s in reading["sheets"]) > 0
+        s["unmet_places"] for s in reading["sheets"]) == 2
 
 
 @pytest.mark.parametrize("slot_tols", [0.5, 2.0, 4.0, 20.0])

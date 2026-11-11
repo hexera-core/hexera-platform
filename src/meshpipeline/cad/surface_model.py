@@ -399,6 +399,122 @@ def measure(sewn: Sewn, *, mm_per_unit: float, reach: float | None = None) -> li
     return out
 
 
+#: SURF-8: AN OPEN PLACE, one definition whatever tolerance was asked: a run of free edges (joined end to end) each of
+#: which lies along a face that is not its own within OPEN_REACH sew tolerances (1/100 of the part's size). Every
+#: other free edge is the sheet's own rim. Measured the same way after any clean-up, so a stated tolerance and the
+#: rule's can be compared, and the user and the record see the same count.
+OPEN_REACH = 100.0
+
+
+def open_places(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
+    """SURF-8: the places where the surfaces do not meet (OPEN_REACH): [{"sheet", "edges", "length_mm", "gap_mm",
+    "at_mm"}], the widest gap first. A gap is the farthest an edge of the place lies from the face beside it. One
+    place is one gap: the free edges joined end to end, and the two sides of it (face A's edges along face B and
+    B's along A) - so an edge the sewing cut into pieces, or a gap seen from both sides, is counted once. Its length
+    is the free edge on both sides."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
+
+    from meshpipeline.cad import midsurface as ms
+
+    mm = float(mm_per_unit)
+    reach = OPEN_REACH * sewn.tol
+    comp = ms._compound(sewn.faces)
+    vmap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(comp, TopAbs_VERTEX, vmap)
+    fmap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(comp, TopAbs_FACE, fmap)
+    place = {fmap.FindIndex(f): k for k, f in enumerate(sewn.faces)}
+    owners = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(comp, TopAbs_EDGE, TopAbs_FACE, owners)
+    sheet_of = {k: i for i, ks in enumerate(sewn.sheets) for k in ks}
+    boxes = [ms._box(f) for f in sewn.faces]
+    found: list = []
+    for i in range(1, owners.Extent() + 1):
+        e = TopoDS.Edge_s(owners.FindKey(i))
+        if owners.FindFromIndex(i).Extent() != 1 or BRep_Tool.Degenerated_s(e):
+            continue
+        mine = place[fmap.FindIndex(owners.FindFromIndex(i).First())]
+        pts = _edge_points(e)
+        probe = [pts[int(round(t * (len(pts) - 1)))] for t in NEAR_SAMPLES]
+        best, near = None, -1
+        for k, f in enumerate(sewn.faces):
+            if k == mine:
+                continue
+            lo, hi = boxes[k]
+            if any(np.any(q < lo - reach) or np.any(q > hi + reach) for q in probe):
+                continue
+            far = 0.0
+            for q in probe:
+                d = BRepExtrema_DistShapeShape(ms._vertex(q), f)
+                far = max(far, float(d.Value()) if d.IsDone() else float("inf"))
+                if far > reach:
+                    break
+            if far <= reach and (best is None or far < best):
+                best, near = far, k
+        if best is not None:
+            found.append((e, mine, best, near))
+    if not found:
+        return []
+    # the edges joined end to end through the vertices they share are one place
+    parent = list(range(len(found)))
+
+    def root(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    at_vertex: dict[int, list[int]] = {}
+    # both sides of one gap are one place: the edges of face A lying along face B and those of B lying along A
+    by_pair: dict[tuple[int, int], list[int]] = {}
+    for n, (_e, k, _g, near) in enumerate(found):
+        by_pair.setdefault((min(k, near), max(k, near)), []).append(n)
+    for ns in by_pair.values():
+        for n in ns[1:]:
+            a, b = root(ns[0]), root(n)
+            if a != b:
+                parent[max(a, b)] = min(a, b)
+    for n, (e, _k, _g, _near) in enumerate(found):
+        em = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(e, TopAbs_VERTEX, em)
+        for j in range(1, em.Extent() + 1):
+            at_vertex.setdefault(vmap.FindIndex(em.FindKey(j)), []).append(n)
+    for ns in at_vertex.values():
+        for n in ns[1:]:
+            a, b = root(ns[0]), root(n)
+            if a != b:
+                parent[max(a, b)] = min(a, b)
+    groups: dict[int, list[int]] = {}
+    for n in range(len(found)):
+        groups.setdefault(root(n), []).append(n)
+    out = []
+    for ns in groups.values():
+        es = [found[n][0] for n in ns]
+        mid = _edge_points(max(es, key=ms._length), 3)[1]
+        out.append({"sheet": int(sheet_of[found[ns[0]][1]]), "edges": len(ns),
+                    "length_mm": _r(sum(ms._length(e) for e in es) * mm),
+                    "gap_mm": _r(max(found[n][2] for n in ns) * mm), "at_mm": [_r(c * mm) for c in mid]})
+    out.sort(key=lambda r: (-float(r["gap_mm"]), list(r["at_mm"])))
+    return out
+
+
+def with_places(sheets: list[dict], places: list[dict]) -> list[dict]:
+    """The sheets with the open places written in (SURF-8's one definition): unmet_places, unmet_at_mm,
+    unmet_widest_mm, unmet_length_mm; unmet_edges stays the count of free edges in them."""
+    for i, s in enumerate(sheets):
+        mine = [p for p in places if p["sheet"] == i]
+        s.update(unmet_places=len(mine), unmet_edges=sum(int(p["edges"]) for p in mine),
+                 unmet_at_mm=[p["at_mm"] for p in mine][:MAX_PLACES],
+                 unmet_widest_mm=max([float(p["gap_mm"]) for p in mine] + [0.0]),
+                 unmet_length_mm=_r(sum(float(p["length_mm"]) for p in mine)))
+    return sheets
+
+
 def has_solid(shape) -> bool:
     from OCP.TopAbs import TopAbs_SOLID
     from OCP.TopExp import TopExp_Explorer
@@ -483,7 +599,6 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = 
         # SURF-8 / SURF-10: THE CLEAN-UP, only once the file is known to be a surface part (what kind of file it is
         # was read above from the file as written: a closed skin with a crack is still a closed skin with a crack)
         cleaned = {"duplicates": len(twice), "duplicate_faces": [f"Face_{k + 1}" for k in twice][:MAX_PLACES]}
-        reach = None
         if stitch:
             try:
                 tidy, did = sc.clean(sewn, mm_per_unit=mm_per_unit, limit_mm=sew_mm, holes_mm=holes_mm)
@@ -491,17 +606,25 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = 
                 logger.warning("surface: the clean-up failed (%s: %s)", type(exc).__name__, str(exc)[:200])
                 tidy, did = sewn, {"refused": "the clean-up could not be run"}
             cleaned.update(did)
-            reach = float(did.get("limit_mm") or 0.0) / float(mm_per_unit)
             if tidy is not sewn and isinstance(tidy, Sewn):
                 sewn = tidy
-                sheets = measure(sewn, mm_per_unit=mm_per_unit, reach=reach)
-            elif reach > NEAR_SEW * sewn.tol:
-                sheets = measure(sewn, mm_per_unit=mm_per_unit, reach=reach)
+                sheets = measure(sewn, mm_per_unit=mm_per_unit)
         else:
             cleaned.update(stitch="off")
-        cleaned.update(left_open=sum(int(s["unmet_edges"]) for s in sheets),
-                       left_widest_mm=max([float(s.get("unmet_widest_mm") or 0.0) for s in sheets] + [0.0]),
-                       left_at_mm=[p for s in sheets for p in s["unmet_at_mm"]][:MAX_PLACES])
+        # SURF-8: WHAT IS LEFT OPEN, by the one definition (open_places), whatever was asked: the record, the words and
+        # the guard on a stated tolerance all read this
+        places = open_places(sewn, mm_per_unit=mm_per_unit)
+        sheets = with_places(sheets, places)
+        # with nothing stitched (do not stitch, or the clean-up failed) every open place is one left open
+        applied = float(cleaned["applied_mm"]) if cleaned.get("applied_mm") is not None else float("inf")
+        within = [p for p in places if float(p["gap_mm"]) <= applied]
+        wide = [p for p in places if float(p["gap_mm"]) > applied]
+        cleaned.update(open_places=len(places), open_length_mm=_r(sum(float(p["length_mm"]) for p in places)),
+                       left_open=len(within), left_widest_mm=max([float(p["gap_mm"]) for p in within] + [0.0]),
+                       left_at_mm=[p["at_mm"] for p in within][:MAX_PLACES],
+                       wider_gaps=len(wide), wider_widest_mm=max([float(p["gap_mm"]) for p in wide] + [0.0]),
+                       wider_narrowest_mm=min([float(p["gap_mm"]) for p in wide] or [0.0]),
+                       wider_at_mm=[p["at_mm"] for p in wide][:MAX_PLACES])
     reading = {"kind": kind, "why": why, "faces": len(set(sewn.names)), "sew_tolerance_mm": _r(sewn.tol * mm_per_unit),
                "diag_mm": _r(sewn.diag * mm_per_unit), "open_share": share, "said_shell": bool(said_shell),
                "sheets": sheets}
@@ -571,12 +694,14 @@ def record(reading: dict, sewn: Sewn, *, mm_per_unit: float, walls_mm: dict[str,
         census.append({"body": part, "join": "sewn", "faces": len(sheet["faces"]), "edges": sheet["edges"],
                        "shared_edges": sheet["shared_edges"], "junction_edges": sheet["junction_edges"],
                        "boundary_edges": sheet["free_edges"] - sheet["unmet_edges"],
-                       "open_edges": sheet["unmet_edges"], "open_at_mm": sheet["unmet_at_mm"]})
+                       "open_edges": int(sheet.get("unmet_places", sheet["unmet_edges"])),
+                       "open_length_mm": sheet.get("unmet_length_mm"), "open_at_mm": sheet["unmet_at_mm"]})
     unmet = sum(c["open_edges"] for c in census)
     notes = [f"The file is a surface ({reading['why']}): it is meshed as a shell on the surface as given (SURF-1)."]
     if unmet:
-        notes.append(f"{unmet} edge(s) lie along a neighbouring face without meeting it within "
-                     f"{reading['sew_tolerance_mm']:.3g} mm: the shell has gaps there (SURF-2).")
+        notes.append(f"The surfaces do not meet at {unmet} place(s) (free edges lying along another face within "
+                     f"{OPEN_REACH * float(reading['sew_tolerance_mm']):.3g} mm): the shell has gaps there (SURF-2, "
+                     "SURF-8).")
     c = reading.get("cleaned") or {}
     if c.get("duplicates"):
         notes.append(f"{c['duplicates']} face(s) written twice in the file were left out once (SURF-9).")

@@ -79,10 +79,7 @@ def words(rec: dict) -> str:
     if sheets > 1:
         said.append(f"The file's {sheets} separate sheets are {sheets} parts, each with its own property.")
     said += clean_words(s.get("cleaned"))
-    if rec.get("open_edges"):
-        said.append(open_words(int(rec["open_edges"]), s.get("cleaned")))
-    if wider_words(s.get("cleaned")):
-        said.append(wider_words(s.get("cleaned")))
+    said += gap_words(int(rec.get("open_edges") or 0), s.get("cleaned"))
     if s.get("others_mm"):
         said.append("Your notes also name " + ", ".join(_mm(v) for v in s["others_mm"]) + ": one thickness is used for "
                     "the whole file; change a part's on its own property line.")
@@ -129,36 +126,38 @@ def clean_words(cleaned: dict | None) -> list[str]:
     return out
 
 
-def open_words(n: int, cleaned: dict | None) -> str:
-    """SURF-2 / SURF-8: the gaps LEFT OPEN, said with their size and why they were left. No tolerance is offered
-    for them: they are within what was tried, so a larger one would not close them either."""
+def gap_words(n: int, cleaned: dict | None) -> list[str]:
+    """SURF-2 / SURF-8: WHERE THE SURFACES DO NOT MEET, by the one count the record holds (cad/surface_model.
+    open_places: n places in all, the same whatever tolerance was asked). Those within what was stitched are said
+    with why they were left, and no tolerance is offered for them (a larger one would not close them either); those
+    wider are said with a tolerance only when it was tried on this file and closed them."""
+    if not n:
+        return []
     c = cleaned or {}
-    said = f"The surfaces do not meet at {n} edge(s): the shell has gaps there"
-    widest = float(c.get("left_widest_mm") or 0.0)
-    if widest > 0:
-        said += f" (the widest {_gap(widest)})"
-    said += "."
-    if c.get("refused"):
-        said += f" They were left open because {c['refused']}."
-    return said
-
-
-def wider_words(cleaned: dict | None) -> str:
-    """SURF-8: edges that run side by side WIDER APART than the gaps closed: found, not closed, and said. A
-    tolerance is offered only when it was tried on this file and closed them (they may be meant to be apart: only
-    the user knows)."""
-    c = cleaned or {}
-    n = int(c.get("wider_gaps") or 0)
-    if not n or c.get("stitch") == "off":
-        return ""
-    applied = float(c.get("applied_mm") or c.get("limit_mm") or 0.0)
-    said = (f"{n} pair(s) of edges run side by side up to {_gap(float(c.get('wider_widest_mm') or 0.0))} apart, "
-            f"wider than the {_gap(applied)} closed here.")
-    if c.get("advice_mm"):
-        said += f' If they should meet, add to your notes: "stitch gaps up to {float(c["advice_mm"]):g} mm".'
-    else:
-        said += " Stitching does not close them cleanly, so they are left as drawn."
-    return said
+    if "left_open" not in c:
+        return [f"The surfaces do not meet at {n} place(s): the shell has gaps there."]
+    out = []
+    left, wide = int(c.get("left_open") or 0), int(c.get("wider_gaps") or 0)
+    if c.get("stitch") == "off" or c.get("applied_mm") is None:
+        return [f"The surfaces do not meet at {n} place(s): the shell has gaps there (the widest "
+                f"{_gap(max(float(c.get('left_widest_mm') or 0.0), float(c.get('wider_widest_mm') or 0.0)))})."]
+    applied = float(c["applied_mm"])
+    out.append(f"The surfaces do not meet at {n} place(s): the shell has gaps there.")
+    if left:
+        said = (f"{left} of them are within the {_gap(applied)} stitched here (the widest "
+                f"{_gap(float(c.get('left_widest_mm') or 0.0))}) and were left open")
+        said += f" because {c['refused']}." if c.get("refused") else ": stitching does not join them (an overlap, or a corner off its neighbour's)."
+        out.append(said)
+    if wide:
+        lo, hi = float(c.get("wider_narrowest_mm") or 0.0), float(c.get("wider_widest_mm") or 0.0)
+        span = _gap(hi) if abs(hi - lo) <= 1e-9 * max(hi, 1.0) else f"{_gap(lo)[:-3]} to {_gap(hi)}"
+        said = f"{wide} of them are wider than that: the surfaces run side by side {span} apart there."
+        if c.get("advice_mm"):
+            said += f' If they should meet, add to your notes: "stitch gaps up to {float(c["advice_mm"]):g} mm".'
+        else:
+            said += " Stitching does not close them cleanly, so they are left as drawn."
+        out.append(said)
+    return out
 
 
 def stitch_for(state):
@@ -498,5 +497,5 @@ if __name__ == "__main__":
 
 
 __all__ = ["GATE", "NO_THICKNESS", "NO_THICKNESS_YET", "READING", "SIZING_AGAIN", "SIZING_DIVISIONS", "clean_words",
-           "deck_notes", "is_surface", "line", "main", "open_words", "read", "requirements_in", "run", "said_shell",
+           "deck_notes", "gap_words", "is_surface", "line", "main", "read", "requirements_in", "run", "said_shell",
            "sizing_wall", "stitch_for", "surface_pass", "thickness_for", "words"]

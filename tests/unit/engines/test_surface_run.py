@@ -209,8 +209,9 @@ def test_edges_that_do_not_meet_are_said_on_the_result(tmp_path):
     tol = sm.read(sx.tray(), mm_per_unit=1.0)[0]["sew_tolerance_mm"]
     src = _file(sx.skin_with_crack(3.0 * tol), tmp_path / "in")
     rec = surface_run.run(tmp_path, src, mm_per_unit=1.0, thickness_mm=1.0, stitch=False)
-    assert rec["made"] and rec["open_edges"] == 8
-    assert "The surfaces do not meet at 8 edge(s): the shell has gaps there (the widest " in rec["words"]
+    # one place: the lid's rim and the walls' tops are the two sides of one gap all round (SURF-8's one count)
+    assert rec["made"] and rec["open_edges"] == 1
+    assert "The surfaces do not meet at 1 place(s): the shell has gaps there (the widest " in rec["words"]
     assert "Nothing was stitched, as your notes asked." in rec["words"]
 
 
@@ -247,7 +248,8 @@ def test_a_wider_gap_is_left_open_and_said_and_the_notes_tolerance_closes_it(tmp
         (tmp_path / name).mkdir()
     rec = surface_run.run(tmp_path / "rule", src, mm_per_unit=1.0, thickness_mm=1.0)
     assert rec["made"] and rec["surface"]["sheets"] == 3 and rec["surface"]["cleaned"]["closed_edges"] == 0
-    assert "2 pair(s) of edges run side by side up to " in rec["words"]
+    assert rec["open_edges"] == 2 and "The surfaces do not meet at 2 place(s)" in rec["words"]
+    assert "2 of them are wider than that: the surfaces run side by side " in rec["words"]
     assert 'If they should meet, add to your notes: "stitch gaps up to ' in rec["words"]
     # the tolerance the words suggest is enough to close them
     ask = float(rec["words"].split('"stitch gaps up to ')[1].split(" mm")[0])

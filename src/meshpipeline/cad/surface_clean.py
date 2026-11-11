@@ -680,12 +680,13 @@ def fill_pinholes(sewn, limit: float) -> tuple[Any, list[float]]:
     return sm.Sewn(faces, list(sewn.names), sm._sheets(faces), sewn.tol, sewn.diag), sorted(filled)
 
 
-def _open_count(sewn, reach: float) -> tuple[int, float]:
-    """How much is left open: (free edges lying along another face within `reach`, the free-edge length)."""
+def _open_length(sewn) -> tuple[float, int]:
+    """How much is left open, by SURF-8's one definition (surface_model.open_places): (the length of the open
+    places, how many) in the shape's own units."""
     from meshpipeline.cad import surface_model as sm
 
-    sheets = sm.measure(sewn, mm_per_unit=1.0, reach=reach)
-    return sum(int(x["unmet_edges"]) for x in sheets), float(sum(float(x["free_length_mm"]) for x in sheets))
+    places = sm.open_places(sewn, mm_per_unit=1.0)
+    return float(sum(float(p["length_mm"]) for p in places)), len(places)
 
 
 def _ask(widest_mm: float) -> float:
@@ -711,20 +712,27 @@ def clean(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
     out, rec = ladder(sewn, limit, stated=stated)
     fell_back = False
     if stated and limit > rule:
+        # SURF-8: A STATED TOLERANCE NEVER LEAVES MORE OPEN THAN THE RULE'S, by the one count both are measured with
         base, base_rec = ladder(sewn, rule, stated=False)
-        mine, theirs = _open_count(out, limit), _open_count(base, limit)
-        if (mine[0], mine[1]) > (theirs[0], theirs[1] + 1e-9 * max(theirs[1], 1.0)) and mine[0] >= theirs[0]:
+        mine, theirs = _open_length(out), _open_length(base)
+        if mine[0] > theirs[0] + 1e-6 * max(theirs[0], sewn.tol):
             out, rec, fell_back = base, base_rec, True
     hole_limit = float(holes_mm) / mm if holes_mm else (rule if fell_back else limit)
     out, holes = fill_pinholes(out, hole_limit)
     applied = rule if fell_back else limit
-    more = wider(out, max(REPORT_REACH * sewn.tol, 2.0 * limit), above=max(applied, limit))
+    # the tolerance to offer: tried on the file first, and offered only when it leaves no place wider than what
+    # was applied open up to it
+    from meshpipeline.cad import surface_model as sm
+
     advice = 0.0
-    if more["count"]:
-        ask = _ask(more["widest"] * mm) / mm
+    places = sm.open_places(out, mm_per_unit=1.0)
+    wide = [float(p["gap_mm"]) for p in places if float(p["gap_mm"]) > applied]
+    if wide:
+        ask = _ask(max(wide) * mm) / mm
         try:
             trial, trial_rec = ladder(out, ask, stated=True)
-            if int(trial_rec["joined"]) > 0 and not wider(trial, ask, above=max(applied, limit))["count"]:
+            left = [p for p in sm.open_places(trial, mm_per_unit=1.0) if applied < float(p["gap_mm"]) <= ask]
+            if int(trial_rec["joined"]) > 0 and not left and _open_length(trial)[0] < _open_length(out)[0]:
                 advice = ask * mm
         except Exception as exc:  # noqa: BLE001 - nothing is offered
             logger.info("surface clean: the tolerance to offer was not tried (%s)", type(exc).__name__)
@@ -735,10 +743,7 @@ def clean(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
                "closed_at_mm": [[_r(c * mm) for c in p] for _g, p in rec["places"][:MAX_PLACES]],
                "pinholes": len(holes), "pinhole_widest_mm": _r(max(holes) * mm) if holes else 0.0,
                "holes_limit_mm": _r(hole_limit * mm), "holes_from": "notes" if holes_mm else "rule",
-               "refused": rec["refused"], "skipped": int(rec.get("skipped") or 0),
-               "wider_gaps": int(more["count"]), "wider_widest_mm": _r(more["widest"] * mm),
-               "wider_at_mm": [[_r(c * mm) for c in p] for _g, p in more["places"][:MAX_PLACES]],
-               "advice_mm": _r(advice)}
+               "refused": rec["refused"], "skipped": int(rec.get("skipped") or 0), "advice_mm": _r(advice)}
     return out, cleaned
 
 
