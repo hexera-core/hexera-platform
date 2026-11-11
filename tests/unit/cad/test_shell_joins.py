@@ -245,3 +245,22 @@ def test_every_open_edge_is_offered_to_the_closing_passes_not_only_those_the_rec
     row = next(s for s in rec["sewn"] if s["body"] == "Part_1")
     assert row["open_edges"] == 0
     assert ms.OPEN_ALL_KEY not in row
+
+
+def test_a_corner_stopped_short_is_closed_square_before_any_strip_is_laid_across(monkeypatch):
+    # SHELL-35: the L legs stopped short of each other (no extension, no general join): both are carried on to the line
+    # where their mid-planes meet - the whole 80 mm corner, each leg 97.5 mm - not joined by a strip across the corner
+    import math
+
+    monkeypatch.setattr(ms, "extend", lambda *a, **k: None)
+    monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
+    rec, surface = ms.extract(sf.l_angle(5.0, 5.0), mm_per_unit=1.0)
+    row = next(s for s in rec["sewn"] if s["body"] == "Part_1")
+    assert row["open_edges"] == 0
+    assert not any("SHELL-13" in n for n in rec["notes"])
+    assert ms._area(surface) == pytest.approx(80 * (97.5 + 97.5), rel=1e-6)
+    # with the old order, the strip across the corner: 2.5 x sqrt 2 by 80 between the two legs
+    monkeypatch.setattr(ms, "SQUARE_FIRST", False)
+    rec, surface = ms.extract(sf.l_angle(5.0, 5.0), mm_per_unit=1.0)
+    assert any("SHELL-13" in n for n in rec["notes"])
+    assert ms._area(surface) == pytest.approx(80 * (95.0 + 95.0 + 2.5 * math.sqrt(2.0)), rel=1e-3)
