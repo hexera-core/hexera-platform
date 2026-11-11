@@ -45,6 +45,17 @@ PAIR_DEG = 2.0
 #: printed funnel's drafted wall. Steeper than that, the two faces are two sides of a solid region, not one wall.
 TAPER_DEG = 10.0
 TAPER_MIN_POINTS = 6
+#: SHELL-46, A BEND BETWEEN FLANGES IS ONE WALL: a sheet's bend whose inside and outside rounds are not concentric
+#: (both rounded alike, as a CAD model that rounds a box's edges and shells it does) turns its two faces from each
+#: other past TAPER_DEG at its ends, while it carries its flanges' wall on round the corner. Such a pair is a
+#: tapered wall when, with its faces turned by at most BEND_DEG and facing squarely (within PAIR_DEG) somewhere,
+#: its wall where it meets a flange - read along the CAD edges it shares with an even pair's faces, to the other
+#: side of the metal (its partner or the flange's other face) - is that flange's wall within EVEN_SHARE, on every
+#: such edge. Its span then starts at the flange's wall, so it is judged with its flanges (SHELL-2b). BEND_DEG:
+#: a sheet bent at its own thickness with both rounds alike turns by up to 26.6 degrees (atan 1/2 at an inside
+#: radius equal to the wall); 30 leaves a margin. A bore or a round beside a flat face continues no flange's wall,
+#: however little it turns.
+BEND_DEG = 30.0
 #: SHELL OR SOLID (SHELL-2) is judged per SHEET: the even wall pairs of one thickness (within EVEN_SHARE) whose
 #: faces are the same or meet at a CAD edge - a bent sheet's flanges and bends, a deck plate's pieces between
 #: stiffeners. A sheet is a shell when its thickness is at most SHELL_RATIO of its size L, the square root of
@@ -87,6 +98,7 @@ class Pair:
     tapered: bool = False                 # a TAPERED wall (SHELL-9): not even, but turned at most TAPER_DEG
     t_min: float | None = None            # mm, a tapered wall's thinnest and thickest reading
     t_max: float | None = None
+    bend: bool = False                    # a bend between flanges (SHELL-46)
 
     def span(self) -> tuple[float, float]:
         """The wall's thinnest and thickest reading, mm (an even wall's are its thickness)."""
@@ -308,11 +320,13 @@ def even_wall(fa, fb, mm: float) -> tuple[bool, float, float, str]:
     return True, med, spread, ""
 
 
-def tapered_wall(fa, fb, mm: float) -> tuple[bool, float, float, float, str]:
+def tapered_wall(fa, fb, mm: float, *, limit_deg: float = TAPER_DEG,
+                 square: bool = False) -> tuple[bool, float, float, float, str]:
     """The TAPERED-wall test (SHELL-9) of faces fa, fb whose coordinates are `mm` millimetres each: points spread
     over fa (PAIR_SAMPLES x PAIR_SAMPLES over its parameters, the ones inside it) are projected onto fb's surface;
     only those whose foot lies on fb itself are read. (passed, thinnest mm, thickest mm, largest turn degrees,
-    why not)."""
+    why not). `limit_deg`: the largest turn allowed (SHELL-46 reads a bend at BEND_DEG); `square`: the faces must
+    also face each other within PAIR_DEG somewhere."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepLProp import BRepLProp_SLProps
@@ -347,7 +361,7 @@ def tapered_wall(fa, fb, mm: float) -> tuple[bool, float, float, float, str]:
         dot = sign * (na.X() * nb.X() + na.Y() * nb.Y() + na.Z() * nb.Z())
         dists.append(float(proj.LowerDistance()) * mm)
         turned.append(math.degrees(math.acos(max(-1.0, min(1.0, -dot)))))
-        if turned[-1] > TAPER_DEG:
+        if turned[-1] > limit_deg:
             # one point turned past the limit settles it: no taper (most pairs the rays find across a
             # corner are two sides of a solid; reading all 49 points of each was half a fan housing's pairing)
             return False, nan, nan, turned[-1], f"the faces are not parallel (they turn by {turned[-1]:.1f} degrees)"
@@ -356,8 +370,10 @@ def tapered_wall(fa, fb, mm: float) -> tuple[bool, float, float, float, str]:
     lo, hi, turn = float(min(dists)), float(max(dists)), float(max(turned))
     if lo <= 0:
         return False, lo, hi, turn, "the faces touch"
-    if turn > TAPER_DEG:
+    if turn > limit_deg:
         return False, lo, hi, turn, f"the faces are not parallel (they turn by up to {turn:.1f} degrees)"
+    if square and min(turned) > PAIR_DEG:
+        return False, lo, hi, turn, f"the faces face each other squarely nowhere (they turn by {min(turned):.1f} degrees or more)"
     return True, lo, hi, turn, ""
 
 
@@ -473,5 +489,5 @@ def face_roles(names: list[str], pairs: list[Pair], *, kinds: list[str], widths:
     return out
 
 
-__all__ = ["BLEND", "PAIRED", "RIM", "SHELL_RATIO", "SHELL_WIDTH_RATIO", "SOLID", "TAPER_DEG", "THICK", "Pair",
+__all__ = ["BEND_DEG", "BLEND", "PAIRED", "RIM", "SHELL_RATIO", "SHELL_WIDTH_RATIO", "SOLID", "TAPER_DEG", "THICK", "Pair",
            "even_wall", "face_grid", "face_roles", "foot_on_face", "sheets", "ray_partners", "tapered_wall"]
