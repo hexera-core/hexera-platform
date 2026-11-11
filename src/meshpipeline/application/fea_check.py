@@ -92,6 +92,17 @@ def clean_words(facts: dict | None) -> tuple[bool | None, str]:
     return False, summary or "The geometry is not clean."
 
 
+def declared_clean(facts: dict | None, messages=None) -> str:
+    """The clean check's sentence for the confirmation's declaration. A FILE THAT IS A SURFACE (SURF-6) is not
+    declared "not clean" for the open edges that make it a surface: what else the check found is said, else that it
+    is a surface."""
+    from meshpipeline.application import surface_check
+
+    if surface_check.is_surface(facts, messages):
+        return str((surface_check.clean_view(facts) or {}).get("clean_summary") or surface_check.DECLARED_CLEAN)
+    return clean_words(facts)[1]
+
+
 #: NOT A CLOSED SOLID (Areen's Camaro STL, 2026-10-23: a car body of 395 open, overlapping surface
 #: pieces was told "395 separate bodies - export each part on its own"). Version 1 meshes a closed
 #: solid; what the clean check found that rules one out, in plain words, worst first. Every mesh
@@ -289,10 +300,18 @@ def warnings(facts: dict | None) -> list[str]:
     return out
 
 
-def blocker(facts: dict | None) -> tuple[str, str, str]:
-    """(what stops version 1, its kind - "surface" | "self_overlap" | "", the way on) for the stage
+def blocker(facts: dict | None, messages=None) -> tuple[str, str, str]:
+    """(what stops version 1, its kind - "surface" | "gap" | "self_overlap" | "", the way on) for the stage
     and the confirmation alike. Several bodies are no stop: an assembly is meshed (design 14); a body
-    that crosses itself is (it needs CAD repair; detected only, never healed)."""
+    that crosses itself is (it needs CAD repair; detected only, never healed). A CAD FILE THAT IS A SURFACE
+    (application/surface_check, SURF-1) is no stop either: it is meshed as a shell. `messages`: the
+    conversation, for a shell or a thickness said after the check."""
+    from meshpipeline.application import surface_check
+
+    if surface_check.is_surface(facts, messages):
+        return "", "", ""
+    if surface_check.is_gap(facts, messages) and not has_solid(facts):
+        return surface_check.GAP_WORDS, "gap", surface_check.GAP_WAY_OUT
     # MESH-1 (Areen, 24 Oct): only a file no closed solid can be read from stops here - a surface, or
     # nothing at all. A face crossing another, a fold, an open or invalid patch on a readable solid are
     # warnings (warnings()): the mesh is tried, and only a mesh that fails at that spot says
@@ -348,11 +367,11 @@ def clean_details(said: str, clean: bool | None, found: list[str]) -> list[str]:
     return out
 
 
-def fea_view(facts: dict | None) -> dict:
+def fea_view(facts: dict | None, messages=None) -> dict:
     """What the FEA stage shows beside the part (the size and unit come with the proposal); for an
     assembly also its parts, their interfaces and the connection question."""
     clean, said = clean_words(facts)
-    blocked, kind, way_out = blocker(facts)
+    blocked, kind, way_out = blocker(facts, messages)
     found = [] if blocked else warnings(facts)
     details = clean_details(said, clean, found)
     if found:
@@ -367,6 +386,14 @@ def fea_view(facts: dict | None) -> dict:
     sewn = sewn_body_count(facts)
     if sewn is not None:
         out["bodies_sewn"] = sewn
+    from meshpipeline.application import surface_check
+
+    if surface_check.is_surface(facts, messages):
+        # SURF-6: A SURFACE'S OPEN EDGES ARE ITS OWN - the check row says what the file is, not that it is broken;
+        # and the solid measurement (a thinnest wall, hot spots to refine) is not said of a sheet: it has no wall
+        # to measure, and its sizes are the shell rules'
+        out.update(surface_check.clean_view(facts) or {})
+        out["measure"] = None
     # several closed solids: an assembly, with its one question (a surface that is no solid stops first)
     asm = None if blocked else assembly_view(facts)
     if asm is not None:
@@ -719,7 +746,7 @@ def in_unit(record: dict | None, scale_to_m: float | None) -> dict | None:
     return out
 
 
-__all__ = ["TRY_ANYWAY", "has_solid", "warnings", "FOLD_BACK", "fold_back_message", "SELF_OVERLAP", "WAY_OUT_REPAIR", "WAY_OUT_REPAIR_PART", "self_overlap_message", "CONNECTION_OPTIONS", "CONNECTION_QUESTION", "DEFAULT_CONNECTION", "NOT_SOLID", "NOT_SOLID_REASONS",
+__all__ = ["TRY_ANYWAY", "declared_clean", "has_solid", "warnings", "FOLD_BACK", "fold_back_message", "SELF_OVERLAP", "WAY_OUT_REPAIR", "WAY_OUT_REPAIR_PART", "self_overlap_message", "CONNECTION_OPTIONS", "CONNECTION_QUESTION", "DEFAULT_CONNECTION", "NOT_SOLID", "NOT_SOLID_REASONS",
            "QUESTION", "SHOWN_HOT_SPOTS", "GAP_JOIN_QUESTION", "DEFAULT_GAP_JOINS", "gap_words",
            "PAIR_NOTE", "confirmed_pairs", "pair_rows", "pairs_answer", "pairs_summary", "joint_counts", "joint_phrases", "joints_words", "FLOW_ONLY_KEYS", "without_flow_openings",
            "gap_joins_answer", "confirmed_gap_joins", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL", "WAY_OUT_SOLID", "assembly_view",

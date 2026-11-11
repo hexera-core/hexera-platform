@@ -152,6 +152,10 @@ class ConfirmIn(BaseModel):
     #: the declaration line that says it.
     fea_mesh_as_picked: str = ""
     mesh_as_summary: str = ""
+    #: SURF-4: SET BY THE SERVER at Proceed for a file that is a surface: the wall thickness the user's words gave,
+    #: in millimetres (None: none given - the run delivers the shell with its thickness not set). Whatever a client
+    #: sends here is ignored. Read into the run from the stored confirmation (application/surface_check).
+    fea_shell_thickness_mm: float | None = None
     #: INS-8: THE LEAK SIZE, in the reading's millimetres, when the check found leaks in the
     #: surface: every leak up to that wide is closed for the mesh (never in the file). Sent by the
     #: stage's switch and box; left out, the check's proposal; 0 switches it off. Checked by the
@@ -312,17 +316,22 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     payload["route"] = fea_check.stage_route(payload, getattr(session, "messages", None))
     if payload["route"] == fea_check.STAGE_FEA:
         # the part, its unit and size (the proposal), its bodies and the clean check - no flow form
-        payload["fea"] = await asyncio.to_thread(fea_check.fea_view, payload.get("facts"))
+        payload["fea"] = await asyncio.to_thread(fea_check.fea_view, payload.get("facts"),
+                                                 getattr(session, "messages", None))
         # SHSTAGE-2: A SHELL ONLY WHEN THE USER'S WORDS ASKED FOR ONE - the shell check as it stands (started now when
         # it was asked for after the naming); nothing at all for a solid, the stage from before shell existed
         from meshpipeline.application import shell_check
         _msgs = getattr(session, "messages", None)
-        try:
-            await asyncio.to_thread(shell_check.start_if_asked, str(session_id), owner_id, facts=payload.get("facts"),
-                                    messages=_msgs, interpretation=interpretation)
-        except Exception as exc:  # noqa: BLE001 - not started: the run still makes a said shell
-            logger.warning("geometry check: the shell check was not started (%s)", type(exc).__name__)
-        _shell = await asyncio.to_thread(shell_check.view_for, str(session_id), payload.get("facts"), _msgs)
+        # SURF-6: A FILE THAT IS A SURFACE is a shell by what it is: its one line, and no mid-surface to extract
+        from meshpipeline.application import surface_check
+        _shell = surface_check.view(payload.get("facts"), _msgs)
+        if _shell is None:
+            try:
+                await asyncio.to_thread(shell_check.start_if_asked, str(session_id), owner_id,
+                                        facts=payload.get("facts"), messages=_msgs, interpretation=interpretation)
+            except Exception as exc:  # noqa: BLE001 - not started: the run still makes a said shell
+                logger.warning("geometry check: the shell check was not started (%s)", type(exc).__name__)
+            _shell = await asyncio.to_thread(shell_check.view_for, str(session_id), payload.get("facts"), _msgs)
         if _shell is not None:
             payload["fea"]["shell"] = _shell
         # ...and NO OPENINGS: a solid part for structural analysis has no inlet or outlet, so the
@@ -721,7 +730,7 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         else fea_check.STAGE_FEA if _fea else ""})
     if body.check_mode == fea_check.STAGE_FEA:
         facts = _stored_check.get("facts") or {}
-        blocked, _kind, way_out = fea_check.blocker(facts)
+        blocked, _kind, way_out = fea_check.blocker(facts, session.messages)
         if blocked:
             # VERSION 1 MESHES ONE CLOSED SOLID AT A TIME: no guessing at how parts connect, and no
             # solid mesh of a surface - said with the way on, never a silent failure later
@@ -750,15 +759,20 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
                             + (f" and {len(gaps) - 8} more" if len(gaps) > 8 else "") + ".") if gaps else ""})
         # SHSTAGE-5: SHELL OR SOLID, SETTLED NOW - a shell only when the user's words asked for one (never the
         # form's: it has no pick), else a solid as before shell existed. The run never waits on the user after this.
-        from meshpipeline.application import shell_check
-        try:
-            await asyncio.to_thread(shell_check.start_if_asked, str(session_id), owner_id, facts=facts,
-                                    messages=session.messages, interpretation=interpretation)
-        except Exception as exc:  # noqa: BLE001 - not started: the run still makes a said shell
-            logger.warning("geometry confirm: the shell check was not started (%s)", type(exc).__name__)
-        _view = await asyncio.to_thread(shell_check.view_for, str(session_id), facts, session.messages)
+        from meshpipeline.application import shell_check, surface_check
+        # SURF-6: a surface file is a shell by what it is, at the thickness the user's words gave (None: not set)
+        _view = surface_check.view(facts, session.messages)
+        if _view is None:
+            try:
+                await asyncio.to_thread(shell_check.start_if_asked, str(session_id), owner_id, facts=facts,
+                                        messages=session.messages, interpretation=interpretation)
+            except Exception as exc:  # noqa: BLE001 - not started: the run still makes a said shell
+                logger.warning("geometry confirm: the shell check was not started (%s)", type(exc).__name__)
+            _view = await asyncio.to_thread(shell_check.view_for, str(session_id), facts, session.messages)
         _settled = shell_check.settle(_view)
         body = body.model_copy(update={"fea_mesh_as": _settled["mesh_as"],
+                                       "fea_shell_thickness_mm": (_view or {}).get("thickness_mm")
+                                       if (_view or {}).get("surface") else None,
                                        "fea_mesh_as_picked": (f"{_settled['picked']} ({_settled['by']})"
                                                               if _settled["picked"] else ""),
                                        "mesh_as_summary": shell_check.declaration_words(_settled)})
@@ -769,7 +783,7 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
             "size_mm": body.size_mm or proposed.get("size_mm"),
             "scale_to_m": body.scale_to_m or proposed.get("scale_to_m") or facts.get("scale_to_m"),
             "bodies": fea_check.body_count(facts),
-            "clean_summary": fea_check.clean_words(facts)[1]})
+            "clean_summary": fea_check.declared_clean(facts, session.messages)})
     elif body.check_mode == THERMAL_CHECK:
         # the panel sends only the detail level: a thermal model is always an assembly of solid
         # parts with the air among them, so its kind and flow are the server's to fill - and its

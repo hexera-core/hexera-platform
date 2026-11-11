@@ -35,6 +35,8 @@ WORST_KEY = "shell_jacobian_ratio"
 #: the one plain line every shell result says
 SUMMARY = ("A mid-surface shell: {n:,} plate elements ({q:,} quads, {t:,} triangles); each element carries its wall "
            "thickness in the file.")
+#: SURF-6: the same line for a shell made on a surface file (engines/surface_run): what it lies on, and its thickness
+SURFACE_SUMMARY = "A shell on your surface: {n:,} plate elements ({q:,} quads, {t:,} triangles), {thick}."
 CONTAINS = (
     ("shell.bdf", "Nastran bulk data: CQUAD4 / CTRIA3, a PSHELL per wall thickness"),
     ("shell.inp", "CalculiX input deck: S4 / S3, a *SHELL SECTION per wall thickness"),
@@ -104,6 +106,9 @@ def quality_of(rec: Mapping) -> dict:
         "quality_bar": "fea", "min_sicn": None, "fea_inverted": invalid,
         "shell_quality": sq,
         "fea": {"plan": True, "shell": True, "walls_mm": list(rec.get("walls_mm") or []),
+                # SURF-3: a shell made on a surface file, and whether the user gave its thickness
+                **({"surface": True, "thickness_set": bool(_map(rec.get("surface")).get("thickness_set"))}
+                   if _map(rec.get("surface")).get("kind") == "surface" else {}),
                 "face_tags": {str(f["name"]): [int(f["tag"])] for f in faces if f.get("tag")}},
     }
 
@@ -176,10 +181,18 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
     q_n, t_n = int(sq.get("quads") or rec.get("quads") or 0), int(sq.get("trias") or rec.get("trias") or 0)
     walls = list((q.get("fea") or {}).get("walls_mm") or [])
     plan_words = [w for w in [rec.get("words")] if w]
+    summary = SUMMARY.format(n=cells, q=q_n, t=t_n)
+    if _map(rec.get("surface")).get("kind") == "surface":
+        # SURF-6: said as what it is - on the user's surface, at their thickness (or none set)
+        from meshpipeline.contracts.shell_thickness import words as mm_words
+
+        t_mm = _map(rec.get("surface")).get("thickness_mm")
+        summary = SURFACE_SUMMARY.format(n=cells, q=q_n, t=t_n, thick=f"{mm_words(t_mm)} thick" if t_mm
+                                         else "thickness not set")
     return {**extra,
             "title": "FEA shell mesh",
             "shell": {"walls_mm": walls, "quads": q_n, "trias": t_n},
-            "summary": SUMMARY.format(n=cells, q=q_n, t=t_n),
+            "summary": summary,
             "level": "Shell",
             "units": {"mesh": COMPLETED_MESH_UNIT.value, "words": export_units_words()},
             "check": {"outcome": outcome, "words": said, "rows": rows,
@@ -195,5 +208,5 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
             "solvers": solvers}
 
 
-__all__ = ["CONTAINS", "LABELS", "MARKER_SOURCE", "SUMMARY", "WORST_KEY", "deliver", "is_shell", "is_shell_workspace",
+__all__ = ["CONTAINS", "LABELS", "MARKER_SOURCE", "SUMMARY", "SURFACE_SUMMARY", "WORST_KEY", "deliver", "is_shell", "is_shell_workspace",
            "limits", "quality_of", "results"]

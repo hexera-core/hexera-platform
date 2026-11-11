@@ -18,6 +18,9 @@ GROUPS: every element group (a CAD face pair "Part_3_Face_12+Face_15", every par
 an element component (Ansys CMBLOCK ... ELEM) and, Nastran bulk data having no group card, a named comment block
 of element ranges ("$ HEXERA GROUP k name" then "$   a THRU b" lines) that read_bdf reads back. Every junction
 (nodes shared by elements of two or more mid-faces) is a node set J_<mid>_<mid>... in every file.
+A SURFACE FILE'S SHELL (engines/surface_run, SURF-4/5) writes the same: its `notes` head every file, and a part
+whose thickness was not given is one property named "<part>_thickness_not_set" carrying 0 - no solver runs it
+until the user sets it.
 """
 from __future__ import annotations
 
@@ -68,6 +71,10 @@ def _real(v: str) -> float:
     if k > 0 and v[k - 1] not in "Ee":
         v = v[:k] + "E" + v[k:]
     return float(v)
+
+
+#: SURF-5: the name of a property whose thickness was not given (a surface file with no thickness in the user's words)
+NOT_SET = "_thickness_not_set"
 
 
 def wall_label(t_mm: float) -> str:
@@ -122,7 +129,7 @@ def prepare(mesh: ShellMesh, *, units: str = "m") -> ShellPrepared:
         z = round(float(zoffs[e]), WALL_DIGITS) + 0.0
         key = (mesh.part[e], round(float(mesh.wall[e]), WALL_DIGITS), z, bool(varies[e]))
         if key not in index:
-            name = f"{key[0]}_t{wall_label(key[1])}mm"
+            name = f"{key[0]}_t{wall_label(key[1])}mm" if key[1] > 0 else f"{key[0]}{NOT_SET}"
             if z:
                 name += f"_z{'m' if z < 0 else ''}{wall_label(abs(z))}"
             if key[3]:
@@ -156,13 +163,19 @@ def _units_line(units: str, mark: str) -> list[str]:
 
 
 # ------------------------------------------------------------------------------------------- Nastran ----
-def write_bdf(path: Path | str, prep: ShellPrepared, *, units: str = "m", source: str = "") -> dict:
+def _note_lines(notes, mark: str) -> list[str]:
+    """Extra header lines (a surface file's: where the shell came from, a thickness not set), as comments."""
+    return [f"{mark} {' '.join(str(n).split())}" for n in notes or () if str(n).strip()]
+
+
+def write_bdf(path: Path | str, prep: ShellPrepared, *, units: str = "m", source: str = "", notes=()) -> dict:
     m, s = prep.mesh, prep.scale
     q = len(m.quads)
     lines = [
         "$ Hexera shell mesh - Nastran bulk data (MSC / NX), for FEMAP.",
         "$ " + NOT_TESTED.capitalize() + ".",
         *([f"$ Source: {source}"] if source else []),
+        *_note_lines(notes, "$"),
         *_units_line(units, "$"),
         f"$ Mesh only: {q} CQUAD4 and {len(m.trias)} CTRIA3 in {len(prep.props)} PSHELL. Part k's PSHELLs name",
         "$   MAT1 k - add MAT1 k for every part, the SPCs, loads and the case control:",
@@ -296,7 +309,7 @@ QUAD_TYPE = {"calculix": "S4", "abaqus": "S4R"}
 
 
 def write_inp(path: Path | str, prep: ShellPrepared, *, units: str = "m", source: str = "", solver: str = "calculix",
-              materials: dict[int, list[str]] | None = None) -> dict:
+              materials: dict[int, list[str]] | None = None, notes=()) -> dict:
     """The CalculiX (S4) or Abaqus (S4R) deck: *NODE, *ELEMENT quads and S3, an ELSET per property (P_k), per group and the
     whole mesh (EALL), an NSET per junction, a *SHELL SECTION per property naming MAT_m (*NODAL THICKNESS where
     the wall varies). `materials` (tests only): material lines to write in place of the 'add' note."""
@@ -307,6 +320,7 @@ def write_inp(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
         f"** Hexera shell mesh - {'CalculiX' if solver == 'calculix' else 'Abaqus'} input.",
         *([] if solver == "calculix" else ["** " + NOT_TESTED.capitalize() + "."]),
         *([f"** Source: {source}"] if source else []),
+        *_note_lines(notes, "**"),
         *_units_line(units, "**"),
         f"** Mesh only: {q} {quad} and {len(m.trias)} S3. Part k's sections name MATERIAL MAT_k - add *MATERIAL,",
         "**   NAME=MAT_k for every part, the boundary conditions, loads and the *STEP:",
@@ -342,7 +356,7 @@ def write_inp(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
         z = prep.offsets[i - 1] if prep.offsets else 0.0
         if z:
             # SHELL-7: OFFSET is the nodes' plane off the shell's mid-surface, in walls along the normal
-            extra += f", OFFSET={-z / t:.9g}"
+            extra += f", OFFSET={-z / t:.9g}" if t else ""
         lines.append(f"*SHELL SECTION, ELSET=P_{i}, MATERIAL=MAT_{mid}{extra}")
         lines.append(f"{t * s:.9g}")
     for mid, body in sorted((materials or {}).items()):
@@ -404,7 +418,7 @@ def read_inp(path: Path | str) -> ShellReadBack:
 
 
 # ------------------------------------------------------------------------------------------- Ansys ----
-def write_cdb(path: Path | str, prep: ShellPrepared, *, units: str = "m", source: str = "") -> dict:
+def write_cdb(path: Path | str, prep: ShellPrepared, *, units: str = "m", source: str = "", notes=()) -> dict:
     """SHELL181 (ET,1,181; KEYOPT,1,3,2 full integration with incompatible modes - the accurate choice for bending,
     as Ansys advises for thin shells; KEYOPT 1 stays 0, bending and membrane). One section per property; an element
     of a varying wall gets its own section at its corners' mean (to WALL_DIGITS)."""
@@ -423,6 +437,7 @@ def write_cdb(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
     lines = [
         "! Hexera shell mesh - Ansys MAPDL archive (CDB). " + NOT_TESTED.capitalize() + ".",
         *([f"! Source: {source}"] if source else []),
+        *_note_lines(notes, "!"),
         *_units_line(units, "!"),
         f"! Mesh only: {m.n_elements} SHELL181. Part k's sections use MAT k - add MP,EX/PRXY/DENS for every part:",
         *[f"!   MAT {i} = {p}" for i, p in enumerate(prep.parts, start=1)],
@@ -511,15 +526,17 @@ def read_cdb(path: Path | str) -> ShellReadBack:
     return ShellReadBack(nodes, elements, prop, walls, {}, groups, junctions)
 
 
-def write_all(workspace: Path | str, mesh: ShellMesh, *, units: str = "m", source: str = "") -> dict:
-    """Write shell.bdf, shell.inp (CalculiX), shell_abaqus.inp and shell.cdb into `workspace`, one numbering."""
+def write_all(workspace: Path | str, mesh: ShellMesh, *, units: str = "m", source: str = "", notes=()) -> dict:
+    """Write shell.bdf, shell.inp (CalculiX), shell_abaqus.inp and shell.cdb into `workspace`, one numbering.
+    `notes`: extra header lines for every file (engines/surface_run.deck_notes)."""
     ws = Path(workspace)
     prep = prepare(mesh, units=units)
-    return {"nastran": write_bdf(ws / "shell.bdf", prep, units=units, source=source),
-            "calculix": write_inp(ws / "shell.inp", prep, units=units, source=source),
-            "abaqus": write_inp(ws / "shell_abaqus.inp", prep, units=units, source=source, solver="abaqus"),
-            "ansys": write_cdb(ws / "shell.cdb", prep, units=units, source=source)}
+    return {"nastran": write_bdf(ws / "shell.bdf", prep, units=units, source=source, notes=notes),
+            "calculix": write_inp(ws / "shell.inp", prep, units=units, source=source, notes=notes),
+            "abaqus": write_inp(ws / "shell_abaqus.inp", prep, units=units, source=source, solver="abaqus",
+                                notes=notes),
+            "ansys": write_cdb(ws / "shell.cdb", prep, units=units, source=source, notes=notes)}
 
 
-__all__ = ["SHELL_SOLVERS", "ShellPrepared", "ShellReadBack", "junction_sets", "prepare", "read_bdf", "read_cdb",
+__all__ = ["NOT_SET", "SHELL_SOLVERS", "ShellPrepared", "ShellReadBack", "junction_sets", "prepare", "read_bdf", "read_cdb",
            "read_inp", "wall_label", "write_all", "write_bdf", "write_cdb", "write_inp"]

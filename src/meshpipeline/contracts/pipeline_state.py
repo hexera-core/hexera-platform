@@ -139,6 +139,7 @@ class PipelineState(TypedDict):
     fea_pairs:          dict           # an FEA assembly: the single pairs set on the stage, by pair key (PLAN-fea-19/20); {} = the rule
     part_matches:       dict | None    # NOTE-4: the notes tied to parts before approval, as the user left it; None = read at run time
     fea_mesh_as:        str            # an FEA part: "shell" only when the user's words asked for one, else "solid" (SHSTAGE-5); "mixed" from older confirmations
+    fea_shell_thickness_mm: float | None   # a surface file's wall thickness (mm) as settled on the stage from the user's words (SURF-4); None = none given
     mesh_manifest:      dict
     reviewer_result:         str
     reviewer_verdict:        str

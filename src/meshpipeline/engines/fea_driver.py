@@ -182,12 +182,13 @@ def named_as_cad(record: dict, surface, info: dict) -> dict:
     return out
 
 
-def solids_from_shells(ws: Path) -> int:
+def solids_from_shells(ws: Path, seen: dict | None = None) -> int:
     """MESH-1: A FILE OF FACES THAT CLOSE is read as the solid it bounds: a STEP or IGES written as closed
     shells with no solid entity (aircraft and keel surfaces, 24 Oct gate) - the shells are made solids,
     sewn first only within the clean check's own tight tolerance (cad/validity_brep), nothing else
     touched. Writes geometry.brep and returns how many solids it made (0: nothing to do, or no shell
-    closes - the part is then meshed, or refused, as it stands)."""
+    closes - the part is then meshed, or refused, as it stands). `seen` (when given) is told "open": True for
+    a file with no solid none of whose shells closes - a surface for engines/surface_run to read (SURF-1)."""
     from OCP.BRep import BRep_Builder, BRep_Tool
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
     from OCP.BRepTools import BRepTools
@@ -225,6 +226,8 @@ def solids_from_shells(ws: Path) -> int:
             made += 1
     if made:
         BRepTools.Write_s(comp, str(ws / "geometry.brep"))
+    elif seen is not None:
+        seen["open"] = True
     return made
 
 
@@ -1823,6 +1826,28 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
     return record, ran
 
 
+async def _deliver_surface(ws: Path, rec: dict, *, job_id: str, run):
+    """SURF-3: a surface file's shell delivered as THE result (as SHSTAGE-7 delivers a said shell); one that could not
+    be made is the run's plain reason - the file holds no solid to mesh instead."""
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.engines import shell_delivery as SD
+    from meshpipeline.engines import surface_run as SR
+
+    if rec.get("made") and await asyncio.to_thread(SD.deliver, ws, rec):
+        _cite(job_id, [{"stage": SR.GATE, "decided": "shell delivered", "value": rec.get("elements"),
+                        "rule": "SURF-3", "inputs": {"solid_made": False},
+                        "words": "The shell on the surface is the delivered mesh: the file holds no solid to mesh."}])
+        await run.fence("deliver builder outcome")
+        outcome = run.outcome(produced_deliverable=True, exhausted=False, failure_marker="")
+        return outcome.produced_deliverable, (outcome.terminal_value or BUILD_FAILED), outcome
+    why = str(rec.get("words") or SR.words(rec))
+    _refuse(ws, cause=FailureCause.NOT_BUILT.value, text=why, gate=SR.GATE,
+            reason=str(rec.get("why") or "the shell mesh of the surface could not be made"))
+    await run.fence("deliver builder outcome")
+    outcome = run.outcome(produced_deliverable=False, failure_marker=BUILD_FAILED)
+    return False, BUILD_FAILED, outcome
+
+
 async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublisher,
                 run: BuilderDriverRun, source_path: str = ""):
     from meshpipeline.contracts.failure_cause import FailureCause
@@ -1835,14 +1860,24 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         outcome = run.outcome(produced_deliverable=False, failure_marker=NO_SOURCE)
         return False, NO_SOURCE, outcome
 
+    seen: dict = {}
     try:
-        made = await asyncio.to_thread(solids_from_shells, ws)
+        made = await asyncio.to_thread(solids_from_shells, ws, seen)
         if made:
             _cite(job_id, [{"stage": "fea_plan", "decided": "closed shells read as solids", "value": made,
                             "rule": "MESH-1", "inputs": {"solids": made},
                             "words": f"The file's {made} closed shell(s) were read as the solid(s) they bound."}])
     except Exception as exc:  # noqa: BLE001 - the part is meshed, or refused, as it stands
         logger.warning("fea driver: closed shells not read as solids (%s)", type(exc).__name__)
+    if seen.get("open"):
+        # SURF-3: A FILE THAT IS A SURFACE, NOT A SOLID (no solid, its faces do not close: cad/surface_model) is
+        # meshed as a shell on the surface as given, and that shell is the result - there is no solid to measure,
+        # plan or fall back to. Any other file with no solid carries on exactly as before.
+        from meshpipeline.engines import surface_run as SR
+
+        surfaced = await SR.surface_pass(ws, state, job_id=job_id, run=run, cite=_cite, left_s=attempt_left_s(run))
+        if surfaced is not None:
+            return await _deliver_surface(ws, surfaced, job_id=job_id, run=run)
     # MESH-8 FOR A SINGLE PART: its skins left out, its faces still named for the CAD faces they came from
     skins = await asyncio.to_thread(open_single_skins, ws)
     from meshpipeline.contracts import narration as _N
