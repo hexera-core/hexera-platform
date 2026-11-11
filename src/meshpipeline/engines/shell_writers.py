@@ -220,8 +220,10 @@ def _groups(prep: ShellPrepared) -> list[tuple[str, str, np.ndarray, bool]]:
     ids = set(prep.mesh.part)
     groups = dict(prep.mesh.groups)
     part = np.asarray(prep.mesh.part, dtype=object)
-    for p in ids - set(groups):
-        groups[p] = np.flatnonzero(part == p)   # every part is a group, whether or not the mesher named it one
+    for p in ids:
+        # every part is a group of every element it holds, whether or not the mesher named one (a mixed mesh's
+        # overlap quads, added at the join, are their part's too)
+        groups[p] = np.flatnonzero(part == p)
     return [(k, prep.label(k) if k in ids else k, np.asarray(v), k in ids) for k, v in sorted(groups.items())]
 
 
