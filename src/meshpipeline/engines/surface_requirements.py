@@ -59,7 +59,7 @@ def thickness(words: st.ThicknessReading, req: Mapping | None) -> tuple[st.Thick
     "differs": bool})."""
     set_mm, quote = _set_thickness(req)
     how: dict = {"by": None, "set_mm": set_mm, "differs": False}
-    if words.given:
+    if words.mm is not None:
         how["by"] = BY_WORDS
         if set_mm is not None and abs(set_mm - float(words.mm)) > SAME * max(set_mm, float(words.mm)):
             how["differs"] = True
