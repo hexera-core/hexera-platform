@@ -138,6 +138,75 @@ def test_the_adapter_reports_the_floor_without_the_set_aside_elements(tmp_path):
     assert q["elements_under_floor"] == 0 and q["min_sicn"] >= 0.1
 
 
+# ------------------------------------------------- cusps: run-outs and the verdict's limits ----
+def _blend_patch():
+    """A curved patch whose one side collapses to a point: an N-sided blend's corner, the way CAD
+    draws a fillet running out against a bore (a degenerated edge at (0, 0, 0))."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.Geom import Geom_BSplineSurface
+    from OCP.gp import gp_Pnt
+    from OCP.TColgp import TColgp_Array2OfPnt
+    from OCP.TColStd import TColStd_Array1OfInteger, TColStd_Array1OfReal
+
+    poles = TColgp_Array2OfPnt(1, 3, 1, 3)
+    for j in range(1, 4):
+        poles.SetValue(1, j, gp_Pnt(0.0, 0.0, 0.0))                    # the row that collapses
+    for i, x in ((2, 5.0), (3, 10.0)):
+        for j, y in ((1, -1.5), (2, 0.0), (3, 1.5)):
+            poles.SetValue(i, j, gp_Pnt(x, y * x / 10.0, 0.6 if j == 2 else 0.0))
+    knots = TColStd_Array1OfReal(1, 2)
+    knots.SetValue(1, 0.0)
+    knots.SetValue(2, 1.0)
+    mult = TColStd_Array1OfInteger(1, 2)
+    mult.SetValue(1, 3)
+    mult.SetValue(2, 3)
+    surf = Geom_BSplineSurface(poles, knots, knots, mult, mult, 2, 2)
+    return BRepBuilderAPI_MakeFace(surf, 1e-6).Face()
+
+
+def test_a_blend_running_out_to_a_point_is_a_cusp_and_a_pole_is_not():
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCone, BRepPrimAPI_MakeSphere
+
+    found = cad_cusps(_blend_patch(), 1.0)
+    run_outs = [c for c in found if c.get("kind") == "run_out"]
+    assert [tuple(round(v, 6) for v in c["at_mm"]) for c in run_outs] == [(0.0, 0.0, 0.0)]
+    assert 0.0 < run_outs[0]["angle_deg"] < 30.0
+    # a sphere's poles and a cone's tip collapse an edge too: the surface is smooth there
+    assert cad_cusps(BRepPrimAPI_MakeSphere(5.0).Shape(), 1.0) == []
+    assert cad_cusps(BRepPrimAPI_MakeCone(5.0, 0.0, 8.0).Shape(), 1.0) == []
+
+
+def _two_tets_by_a_cusp(far: bool):
+    """A discrete model of two linear tetrahedra: a well-shaped one and a flat sliver (aspect far
+    over 20) - the sliver by the cusp at the origin, or 1 m away from it (the good one stays by it)."""
+    gmsh.model.add("two")
+    gmsh.model.addDiscreteEntity(3, 1)
+    off = 1.0 if far else 0.0
+    xyz = [0, 0, 0, 1e-3, 0, 0, 0, 1e-3, 0, 0, 0, 1e-3,
+           off, 0, 0, off + 1e-3, 0, 0, off + 0.5e-3, 1e-3, 0, off + 0.5e-3, 0.4e-3, 2e-5]
+    gmsh.model.mesh.addNodes(3, 1, list(range(1, 9)), xyz)
+    gmsh.model.mesh.addElementsByType(1, 4, [1, 2], [1, 2, 3, 4, 5, 6, 7, 8])
+
+
+def test_a_cusps_element_that_misses_the_verdicts_shape_limits_is_set_aside_and_one_far_away_is_not():
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        _two_tets_by_a_cusp(far=False)
+        tags, q = fea_settle.qualities(gmsh)
+        bad = fea_settle.misses_shape_limits(gmsh, tags)
+        assert bad.tolist() == [False, True]           # the sliver misses aspect / dihedral
+        # a floor of 0: the SICN alone picks nothing, the verdict's limits pick the sliver
+        out = fea_settle.settle(gmsh, {}, [[0.0, 0.0, 0.0]], 0.0)
+        assert out["set_aside"] == [2] and out["cusp_elements"] == 1
+        gmsh.model.remove()
+        _two_tets_by_a_cusp(far=True)
+        out = fea_settle.settle(gmsh, {}, [[0.0, 0.0, 0.0]], 0.0)
+        assert out["set_aside"] == [] and out["cusp_places_m"] == []
+    finally:
+        gmsh.finalize()
+
+
 # ------------------------------------------------------------------ micro details ----
 def test_a_micro_step_is_found_and_ordinary_parts_have_none():
     from meshpipeline.cad.fea_measure import cad_micro
