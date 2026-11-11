@@ -8,6 +8,7 @@
 # engines/shell_writers.py.
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
@@ -103,6 +104,8 @@ SHEET_REGIONS_ALL = False
 #: again at our own (finer) sizes there
 OWN_SIZE_RETRIES = 2
 SPOTS_MAX = 64
+#: SHMESH-36: a mesh left past a limit is set against the earlier steps' mesh, the better kept
+CLASSIC_CHECK = True
 #: SHMESH-35: the walls of beads, darts and steps keep shell_plan.FLANK_ACROSS elements across under a coarser size
 FLANKS = True
 FLANK_SHARED = 2.0
@@ -760,6 +763,24 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
                 mesh.notes.append(f"In {applied['quality']['own_size_spots']} spot(s) the mesh is finer than the size "
                                   "you asked for: at your size some elements there were past the solver's own limits "
                                   "(SHMESH-31).")
+            if requirements and CLASSIC_CHECK and _standing(applied, past_n)[:2] != (0, 0):
+                # SHMESH-36: a mesh left with an element past the solver's limits or past one of the user's outer
+                # limits is set against the mesh the earlier steps alone make (SHMESH-24..26, before 27..35); the
+                # better is kept - fewer past the solver's limits, then fewer past an outer limit, then more lines
+                # met. So nothing lands past an outer limit where those steps kept every element inside it
+                try:
+                    with _classic():
+                        old, applied_old = _mesh_once(Path(brep), record, owners, float(mm_per_unit), None,
+                                                      target=target, correction=correction,
+                                                      requirements=requirements)
+                except (ValueError, _Periodic) as exc:
+                    logger.info("shell mesh: the earlier steps' mesh was not made to compare (%s)", exc)
+                else:
+                    applied_old.pop("_past_spots", None)
+                    old_n = applied_old.pop("_past_n", 0)
+                    if _standing(applied_old, old_n) < _standing(applied, past_n):
+                        mesh, applied, past_n = old, applied_old, old_n
+                        applied["quality"]["classic"] = True
             applied["quality"]["resplined_faces"] = resplined
             if split_note:
                 mesh.notes.append(f"{split_note[0].upper()}{split_note[1:]} (SHMESH-11d).")
@@ -768,6 +789,31 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
                                   "could not recover) were re-made as B-splines (the same surface) and meshed "
                                   "(SHMESH-11).")
             return mesh, applied
+
+
+def _standing(applied: dict, past_n: int) -> tuple[int, int, int]:
+    """SHMESH-36: how a mesh under the user's limits stands, lower is better: (elements past the solver's own
+    limits, elements past one of the user's outer limits, minus the lines met)."""
+    rows = (applied.get("requirements") or {}).get("rows") or []
+    beyond = sum(int(r.get("beyond") or 0) for r in rows if str(r.get("field", "")).startswith("limit:"))
+    met = sum(1 for r in rows if r.get("met") is True)
+    return int(past_n), beyond, -met
+
+
+@contextlib.contextmanager
+def _classic():
+    """SHMESH-36: the steps before SHMESH-27 alone, for one mesh: no sizes beside small pieces of the CAD, no bead
+    walls, no mend, no sliding on straight CAD edges, 4 a turn round holes and no chord hold. The constants are put
+    back after (a shell mesh runs one at a time in its process)."""
+    saved = (globals()["FEATURE_SIZES"], globals()["MEND"], globals()["SLIDE_EDGES"], SR.HOLE_PER_TURN,
+             SR.CHORD_SHARE)
+    g = globals()
+    try:
+        g["FEATURE_SIZES"], g["MEND"], g["SLIDE_EDGES"] = False, False, False
+        SR.HOLE_PER_TURN, SR.CHORD_SHARE = SR.SHAPE_PER_TURN, math.inf
+        yield
+    finally:
+        g["FEATURE_SIZES"], g["MEND"], g["SLIDE_EDGES"], SR.HOLE_PER_TURN, SR.CHORD_SHARE = saved
 
 
 def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list | None, *,

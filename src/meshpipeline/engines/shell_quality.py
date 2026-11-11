@@ -949,6 +949,8 @@ MEND_ROUNDS = 8
 #: SHMESH-28: where a triangle's corner is tried, as its height over the edge across it in that edge's lengths: 1.37
 #: (the corner then reads 40 degrees), 1 (53) and 0.7 (71)
 MEND_HEIGHTS = (1.37, 1.0, 0.7)
+#: SHMESH-28b: how much a line's worst may move (in the line's own units) before it counts as worse
+WORST_SLACK = 1e-9
 #: node kinds (the mesher's): inside a face, on a CAD edge, at a CAD vertex
 INSIDE, ON_EDGE, AT_VERTEX = 0, 1, 2
 
@@ -960,11 +962,12 @@ def _hex_splits(poly: list[int]) -> list[list[list[int]]]:
 
 
 def _costs(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, limits: InForce,
-           edges: tuple[float | None, float | None] = (None, None)
+           edges: tuple[float | None, float | None] = (None, None), bad: list | None = None
            ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """(cost per quad, cost per triangle, smallest corner angle per quad, per triangle): MEND_INVALID when not valid,
     MEND_HARD past a hard limit, else the score against the user's limits in force (0 inside every target) plus
-    AIM_BAND for an edge under the user's shortest edge and for one over their longest (`edges`, mm; None: none)."""
+    AIM_BAND for an edge under the user's shortest edge and for one over their longest (`edges`, mm; None: none).
+    `bad`, when given, is filled with [quads', triangles'] badness against every line (_badness)."""
     lo, hi = edges
     sized = lo is not None or hi is not None
 
@@ -977,17 +980,43 @@ def _costs(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, limits: InForc
         c = np.where(past, MEND_HARD, c)
         return np.where(m["min_jacobian"] <= 0, MEND_INVALID, c).astype(np.int64)
 
+    nl = len(_lines(limits))
+    if bad is not None:
+        bad[:] = [np.zeros((len(quads), nl)), np.zeros((len(trias), nl))]
     if len(quads):
         m = quad_measures(xyz, quads, extra=limits.extra or sized)
         cq, aq = one(m, _quad_past(m, limits), "quad", len(quads)), m["min_angle_quad"]
+        if bad is not None:
+            bad[0] = _badness(m, "quad", limits, len(quads))
     else:
         cq, aq = np.zeros(0, dtype=np.int64), np.zeros(0)
     if len(trias):
         m = tria_measures(xyz, trias, extra=limits.extra or sized)
         ct, at = one(m, _tria_past(m, limits), "tria", len(trias)), m["min_angle_tria"]
+        if bad is not None:
+            bad[1] = _badness(m, "tria", limits, len(trias))
     else:
         ct, at = np.zeros(0, dtype=np.int64), np.zeros(0)
     return cq, ct, aq, at
+
+
+def _lines(limits: InForce) -> list[tuple[str, str, str, float]]:
+    """SHMESH-28b: every line an element is held to - the user's targets and the solver's own limits - as (shape,
+    figure, op, the value past which it is outside)."""
+    return ([(s, k, op, float(target)) for s, k, op, target, _outer, _share in limits.aims]
+            + [(s, k, op, float(v)) for s, k, op, v, _card in limits.hard])
+
+
+def _badness(m: dict[str, np.ndarray], shape: str, limits: InForce, n: int) -> np.ndarray:
+    """(n, lines): how far each element is past each line of _lines (0 inside it, or for a line of the other
+    shape)."""
+    lines = _lines(limits)
+    out = np.zeros((n, len(lines)))
+    for j, (s, key, op, v) in enumerate(lines):
+        if s != shape or key not in m:
+            continue
+        out[:, j] = np.maximum(0.0, (v - m[key]) if op == ">=" else (m[key] - v))
+    return out
 
 
 def mend(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int], t_face: list[int],
@@ -1048,7 +1077,13 @@ def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, q
 
     Qa = np.array(Q, dtype=np.int64).reshape(-1, 4)
     Ta = np.array(T, dtype=np.int64).reshape(-1, 3)
-    cq, ct, _aq, _at = _costs(xyz, Qa, Ta, limits, edges)
+    held: list = []
+    cq, ct, _aq, _at = _costs(xyz, Qa, Ta, limits, edges, bad=held)
+    worst_now = np.vstack(held)                      # (elements, lines): how far each is past each line
+    # an element may come into a user's band (it costs, and the share allows some) but no further than the elements
+    # it replaces were past that line; past a solver limit, never
+    band = np.array([abs(float(outer) - float(target)) if outer is not None else 0.0
+                     for _s, _k, _op, target, outer, _sh in limits.aims] + [0.0] * len(limits.hard))
     nq = len(Q)
     cost = np.concatenate([cq, ct])
     bad = np.flatnonzero(cost > 0)
@@ -1205,8 +1240,9 @@ def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, q
         xyz = np.vstack([xyz, np.array(points)])
     new_q = [el for cand in cands for el, _f, _o in cand[2] if len(el) == 4]
     new_t = [el for cand in cands for el, _f, _o in cand[2] if len(el) == 3]
+    held_new: list = []
     nq_c, nt_c, na_q, na_t = _costs(xyz, np.array(new_q, dtype=np.int64).reshape(-1, 4),
-                                    np.array(new_t, dtype=np.int64).reshape(-1, 3), limits, edges)
+                                    np.array(new_t, dtype=np.int64).reshape(-1, 3), limits, edges, bad=held_new)
     normal: dict[int, np.ndarray] = {}
 
     def turned_as(e: int, touched: tuple[int, ...]) -> np.ndarray:
@@ -1226,19 +1262,26 @@ def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, q
     for ci, (e, touched, new, _kind, _block, _move) in enumerate(cands):
         before = int(cost[list(touched)].sum())
         after, least, ok = 0, 180.0, True
+        worst_after = np.zeros(worst_now.shape[1])
         for el, _f, old in new:
             if len(el) == 4:
                 after += int(nq_c[iq])
                 ok = ok and int(nq_c[iq]) < MEND_INVALID
                 least = min(least, float(na_q[iq]))
+                worst_after = np.maximum(worst_after, held_new[0][iq])
                 iq += 1
             else:
                 after += int(nt_c[it])
                 ok = ok and int(nt_c[it]) < MEND_INVALID
                 least = min(least, float(na_t[it]))
+                worst_after = np.maximum(worst_after, held_new[1][it])
                 it += 1
             if ok and float(_elem_normal(xyz, list(el)) @ turned_as(old, touched)) <= 0.0:
                 ok = False
+        # SHMESH-28b: the worst element under each line never gets worse - a change that lowers the total by
+        # trading several elements in a band for one further out is not made (a welded part at 10 mm: one
+        # triangle at 9.1 degrees where the elements it came from were at 21.4 at the worst)
+        ok = ok and bool(np.all(worst_after <= np.maximum(worst_now[list(touched)].max(axis=0), band) + WORST_SLACK))
         if ok and after < before and len({frozenset(el) for el, _f, _o in new}) == len(new):
             ranked.append((after - before, len(new), -round(least, 9), e, ci))
     if not ranked:
