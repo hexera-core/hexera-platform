@@ -31,7 +31,6 @@ def _edges(mesh: ShellMesh) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     parts = []
     for conn in (mesh.quads, mesh.trias):
         if len(conn):
-            k = conn.shape[1]
             parts.append(np.stack([conn, np.roll(conn, -1, axis=1)], axis=2).reshape(-1, 2))
     if not parts:
         return np.zeros((0, 2), dtype=np.int64), np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)

@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import contextlib
 import json
-from collections import Counter
 import logging
 import math
 import time
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -159,6 +159,19 @@ class _Periodic(Exception):
         self.face = face
         self.kin = kin      # re-make every sewn face on the same surface with it (SHMESH-11b)
         self.loop = loop    # gmsh read the face's 1D mesh as not a closed loop (SHMESH-11c)
+
+
+class _Unmap(Exception):
+    """SHMESH-39: mapped faces (gmsh surface tags) whose grid came out with a quad past the solver's own limits: the
+    mesh is made again with them free."""
+
+    def __init__(self, faces: set[int]) -> None:
+        super().__init__(f"{len(faces)} mapped face(s)")
+        self.faces = faces
+
+
+#: SHMESH-39: how many times a mesh is made again with its bad grids free
+UNMAP_ROUNDS = 2
 
 
 def _generate(gmsh, tag_of: dict[int, int]) -> None:
@@ -875,10 +888,18 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 split_note = f"the closed faces were meshed whole ({exc})"
         resplined = loops = 0
         started = time.monotonic()
+        unmap: set[int] = set()
+        unmapped = 0
         while True:
             try:
                 mesh, applied = _mesh_once(Path(brep), record, owners, float(mm_per_unit), log, target=target,
-                                           correction=correction, requirements=requirements)
+                                           correction=correction, requirements=requirements, unmap=frozenset(unmap),
+                                           check_maps=unmapped < UNMAP_ROUNDS)
+            except _Unmap as u:
+                # SHMESH-39: a grid that came out past the solver's limits is meshed free (the rest mapped again)
+                unmap |= u.faces
+                unmapped += 1
+                continue
             except _Periodic as p:
                 if resplined >= RESPLINE_MAX:
                     raise ValueError(f"gmsh could not mesh {resplined + 1} periodic faces") from p
@@ -910,7 +931,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 try:
                     again, applied2 = _mesh_once(Path(brep), record, owners, float(mm_per_unit), None,
                                                  target=target, correction=correction, requirements=requirements,
-                                                 own_spots=tuple(own))
+                                                 own_spots=tuple(own), unmap=frozenset(unmap), check_maps=False)
                 except (ValueError, _Periodic) as exc:
                     logger.info("shell mesh: the spots past the solver's limits were not meshed again (%s)", exc)
                     break
@@ -925,6 +946,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                                   "you asked for: at your size some elements there were past the solver's own limits "
                                   "(SHMESH-31).")
             applied["quality"]["resplined_faces"] = resplined
+            applied["quality"].setdefault("structure", {})["grids_freed"] = len(unmap)
             if split_note:
                 mesh.notes.append(f"{split_note[0].upper()}{split_note[1:]} (SHMESH-11d).")
             if resplined:
@@ -994,8 +1016,10 @@ def _classic():
 
 def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list | None, *,
                target: dict | None = None, correction: float = 1.0,
-               requirements: dict | None = None, own_spots: tuple = ()) -> tuple[ShellMesh, dict]:
-    """One mesh. `own_spots` (SHMESH-31): (sewn face, box low corner, box high corner - mm) round elements a mesh
+               requirements: dict | None = None, own_spots: tuple = (), unmap: frozenset = frozenset(),
+               check_maps: bool = False) -> tuple[ShellMesh, dict]:
+    """One mesh. `unmap` (SHMESH-39): gmsh surfaces left free (their grid came out past the solver's limits once);
+    `check_maps`: raise _Unmap when a mapped face's grid comes out past them. `own_spots` (SHMESH-31): (sewn face, box low corner, box high corner - mm) round elements a mesh
     under the user's sizes left past the solver's own limits: inside each box the face's own rules' size, where
     finer than the user's, graded back out."""
     import gmsh
@@ -1187,8 +1211,10 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
 
             grids, _grid_counts = ST.map_faces(
                 gmsh, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, mm, arc_mm=arc_mm,
-                skip=set(mapped) | {w.annulus for w in rings}, preset={**strip_counts, **block_preset},
-                low_mm=(sizing or {}).get("low_mm"), fine_at=short_edges["fine_at"] if short_edges else None,
+                skip=set(mapped) | {w.annulus for w in rings} | set(unmap),
+                preset={**strip_counts, **block_preset},
+                low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
+                fine_at=short_edges["fine_at"] if short_edges else None,
                 growth=growth)
         if short_edges is not None and narrow is not None and mapped and not FEATURE_AT_STRIPS:
             _spare_strip_corners(gmsh, tag_of, rows, mapped, narrow, short_edges)
@@ -1292,6 +1318,21 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         index = np.full(int(tags.max()) + 1 if len(tags) else 1, -1, dtype=np.int64)
         index[tags] = np.arange(len(tags))
         xyz = np.asarray(coords, dtype=float).reshape(-1, 3) * mm
+        if check_maps and grids:
+            # SHMESH-39: a grid with a quad past the solver's own limits (a face mapped where its shape bends the
+            # rows too far) is meshed free on the next pass
+            bad: set[int] = set()
+            for t in sorted(grids):
+                types, _tags, conns = gmsh.model.mesh.getElements(2, t)
+                for et, conn in zip(types, conns, strict=True):
+                    if et != 3:
+                        bad.add(t)
+                        continue
+                    cq = index[np.asarray(conn, dtype=np.int64)].reshape(-1, 4)
+                    if len(cq) and shell_quality._quad_past(shell_quality.quad_measures(xyz, cq)).any():
+                        bad.add(t)
+            if bad:
+                raise _Unmap(bad)
         quads, trias, q_face, t_face = [], [], [], []
         # SHMESH-38: each washer's annulus takes the washer's own ring of quads in place of gmsh's mesh there
         ring_of = {w.annulus: w for w in rings}
@@ -1358,14 +1399,14 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         if cut_curves:
             # SHMESH-40: the nodes on the lines the grid was cut along are inside the CAD face: they relax and mend as
             # the face's own inside nodes do (in its plane); the ends of a cut on a CAD edge stay on it
-            have = {c for _d, c in gmsh.model.getEntities(1)}
+            have = {int(x) for _d, x in gmsh.model.getEntities(1)}
             on_cad: set[int] = set()
-            for c in sorted(have - cut_curves):
-                got, _c, _p = gmsh.model.mesh.getNodes(1, c, includeBoundary=True)
-                on_cad |= set(index[np.asarray(got, dtype=np.int64)].tolist())
-            for c in sorted(cut_curves & have):
-                got, _c, _p = gmsh.model.mesh.getNodes(1, c, includeBoundary=True)
-                for v in index[np.asarray(got, dtype=np.int64)].tolist():
+            for cv in sorted(have - cut_curves):
+                along, _c, _p = gmsh.model.mesh.getNodes(1, cv, includeBoundary=True)
+                on_cad |= set(index[np.asarray(along, dtype=np.int64)].tolist())
+            for cv in sorted(cut_curves & have):
+                along, _c, _p = gmsh.model.mesh.getNodes(1, cv, includeBoundary=True)
+                for v in index[np.asarray(along, dtype=np.int64)].tolist():
                     if v in on_cad:
                         continue
                     movable[v] = True

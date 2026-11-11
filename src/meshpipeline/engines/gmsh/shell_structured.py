@@ -68,6 +68,8 @@ def _samples(gmsh, curve: int, n: int = 24) -> np.ndarray:
 
 def _circle_of(gmsh, curves: list[int]) -> tuple[np.ndarray, float, np.ndarray, np.ndarray] | None:
     """(centre, radius, normal, first point) when the loop's curves together are one circle, else None."""
+    if not curves:
+        return None
     pts = [_samples(gmsh, c) for c in curves]
     allp = np.vstack(pts)
     # the centre: least squares in the loop's own plane
@@ -149,6 +151,8 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
                 skipped["no count fits"] = skipped.get("no count fits", 0) + 1
                 continue
             cnt, rows, ratio = plan
+            # a hole drawn as many short curves (a faceted circle) carries at least one element on each
+            cnt = max(cnt, WASHER_STEP * math.ceil(len(cl) / WASHER_STEP))
             xa = first - centre
             xa = xa - float(xa @ n) * n
             xa /= max(float(np.linalg.norm(xa)), 1e-300)
@@ -219,9 +223,9 @@ def set_counts(gmsh, washers: list[Washer]) -> set[int]:
     fixed: set[int] = set()
     for w in washers:
         lengths = [float(gmsh.model.occ.getMass(1, c)) for c in w.hole_after]
-        total = sum(lengths)
-        counts = [max(1, round(w.n * x / total)) for x in lengths]
-        counts[int(np.argmax(lengths))] += w.n - sum(counts)
+        counts = _spread(w.n, lengths)
+        if counts is None:
+            raise ValueError(f"a washer's hole has {len(lengths)} curves for {w.n} elements round it")
         for c, m in zip(w.hole_after, counts, strict=True):
             gmsh.model.mesh.setTransfiniteCurve(c, m + 1)
             fixed.add(c)
@@ -292,6 +296,8 @@ def ring_mesh(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float) ->
 MAP_CORNER = (40.0, 140.0)
 SMOOTH_DEG = 20.0
 MAP_ALIKE = 2.25
+#: ... and no segment of a mapped side longer than MAP_LONGEST times the finest size its faces ask for
+MAP_LONGEST = 1.4
 
 
 def _ends(gmsh, c: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -379,7 +385,8 @@ def _spread(total: int, lengths: list[float]) -> list[int] | None:
 
 def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float, *, skip: set[int],
               preset: dict[int, int], low_mm: float | None = None, fine_at: dict[int, float] | None = None,
-              growth: float = 1.3, arc_mm=None) -> tuple[dict[int, list[int]], dict[int, int]]:
+              growth: float = 1.3, arc_mm=None, high_mm: float | None = None
+              ) -> tuple[dict[int, list[int]], dict[int, int]]:
     """SHMESH-39: every four-cornered face (_four_sided) not in `skip` is meshed as a mapped grid. Opposite sides that
     are one curve each take one count, and so does every curve they share with other mapped faces (a pipe's pieces,
     a run of cells: one class of curves, one count). A class's count is its curves' mean length over the finest size
@@ -406,7 +413,7 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
     while True:
         parent: dict[int, int] = {}
 
-        def root(c: int) -> int:
+        def root(c: int, parent: dict[int, int] = parent) -> int:
             parent.setdefault(c, c)
             while parent[c] != c:
                 parent[c] = parent[parent[c]]
@@ -449,6 +456,11 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
                                 if got is not None:
                                     h = min(h, got / mm)
                 n = max(1, round(float(np.mean([length[c] for c in cs])) / h))
+                # the class's longest curve no coarser than MAP_LONGEST of the size (and under the user's longest edge)
+                longest = max(length[c] for c in cs)
+                n = max(n, math.ceil(longest / (MAP_LONGEST * h) - 1e-9))
+                if high_mm is not None:
+                    n = max(n, math.ceil(longest * mm / (0.98 * high_mm) - 1e-9))
                 if low_mm is not None:
                     n = max(1, min(n, math.floor(min(length[c] for c in cs) * mm / low_mm + 1e-9)))
                 free_beside = any(s not in cand for c in cs for s in gmsh.model.getAdjacencies(1, c)[0] if s in tag_of)
@@ -461,27 +473,27 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
             if t in bad:
                 continue
             for i in (0, 1):
-                a, b = sides[i], sides[i + 2]
-                if len(a) == 1 and len(b) == 1:
+                sa, sb = sides[i], sides[i + 2]
+                if len(sa) == 1 and len(sb) == 1:
                     continue
-                known = lambda sd: all(c in counts or c in preset for c in sd)  # noqa: E731
-                total = lambda sd: sum(counts.get(c, preset.get(c, 0)) for c in sd)  # noqa: E731
-                if known(a) and known(b):
-                    if total(a) != total(b):
+                known = lambda sd, counts=counts: all(c in counts or c in preset for c in sd)  # noqa: E731
+                total = lambda sd, counts=counts: sum(counts.get(c, preset.get(c, 0)) for c in sd)  # noqa: E731
+                if known(sa) and known(sb):
+                    if total(sa) != total(sb):
                         bad.add(t)
                     continue
-                master, chain = (a, b) if known(a) else (b, a) if known(b) else (None, None)
+                master, chain = (sa, sb) if known(sa) else (sb, sa) if known(sb) else (None, None)
                 if master is None or chain is None:
                     bad.add(t)
                     continue
                 fixed = [c for c in chain if c in counts or c in preset]
                 left = [c for c in chain if c not in fixed]
-                got = _spread(total(master) - total(fixed), [length[c] for c in left]) if left else None
-                if got is None:
+                spread = _spread(total(master) - total(fixed), [length[c] for c in left]) if left else None
+                if spread is None:
                     bad.add(t)
                     continue
-                for c, n in zip(left, got, strict=True):
-                    counts[c] = n
+                for c, m in zip(left, spread, strict=True):
+                    counts[c] = m
         if not bad:
             break
         for t in bad:

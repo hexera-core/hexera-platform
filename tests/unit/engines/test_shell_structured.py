@@ -11,12 +11,12 @@ import math
 
 import numpy as np
 import pytest
+from tests.unit.engines.test_mesh_requirements import CRITERIA, criteria_answer
 
 from meshpipeline.engines import mesh_requirements as MR
 from meshpipeline.engines import shell_structure as SS
 from meshpipeline.engines.gmsh import shell_structured as ST
 from meshpipeline.engines.shell_mesh import ShellMesh
-from tests.unit.engines.test_mesh_requirements import CRITERIA, criteria_answer
 
 
 # ------------------------------------------------------------------------------------------- the plans
