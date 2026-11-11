@@ -181,6 +181,29 @@ def test_the_viewer_mesh_shows_each_patch_as_its_own_group(tmp_path):
     assert int(els[0]) == 1 + 4 + 4 == len(els) - 1
 
 
+def test_the_result_names_each_patch_as_its_own_part_and_counts_its_tetrahedra(tmp_path):
+    from meshpipeline.engines import shell_delivery as SD
+
+    (tmp_path / "shell.json").write_text(json.dumps({"mids": [{"id": "Mid_1", "body": "Part_1"},
+                                                              {"id": "Mid_2", "body": "Part_1"}]}))
+    rec = {"made": True, "elements": 100, "quads": 100, "trias": 0, "solid_elements": 900, "ties": 30,
+           "faces": [{"tag": 1, "name": "Mid_1"}, {"tag": 2, "name": "Mid_2"},
+                     {"tag": 3, "name": "Solid_1", "body": "Part_1", "solid": True, "elements": 900}],
+           "patches": [{"name": "Solid_1", "body": "Part_1", "whole": False, "count": 1, "elements": 900,
+                        "quality": {"fea_inverted": 0, "requirements": {"rows": [
+                            {"id": "r1", "field": "global", "asked": "global element size 5 mm", "met": True}]}}}],
+           "requirements": {"rows": [{"id": "r1", "field": "global", "asked": "global element size 5 mm",
+                                      "met": False}]}}
+    tags = SD.part_tags(tmp_path, rec)
+    assert tags == {"Part_1": [1, 2], "Part_1, solid patch 1": [3]}
+    q = SD.quality_of(rec, tags)
+    assert q["cells"] == 1000 and q["solid_elements"] == 900 and q["fea"]["part_tags"] == tags
+    # the notes' requirements per part kind
+    assert [r["asked"] for r in q["requirements"]["rows"]] == ["Shell part: global element size 5 mm",
+                                                               "Solid patch: global element size 5 mm"]
+    assert q["requirements"]["met"] == 1 and q["requirements"]["missed"] == 1
+
+
 # ------------------------------------------------------------------------------------------------ the runs ----
 pytest.importorskip("OCP.BRepPrimAPI")
 pytest.importorskip("gmsh")
