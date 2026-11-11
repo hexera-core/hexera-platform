@@ -2387,10 +2387,9 @@ def _inner_point(face):
 
 
 def join_body(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float, fuzzy: float,
-              remake: bool = True, patch_alone: bool = True, alone_all: bool = False):
+              remake: bool = True, patch_alone: bool = True):
     """SHELL-3 v2 for one body: (the fused shape, the kept faces, each kept face's mid-face index into `mine`,
-    for each mid-face the extensions it kept as [(other mid index or None, area)]). `alone_all` (SHELL-30): every
-    mid-face that has a grown copy is left out of the fuse beside it, whatever its surface."""
+    for each mid-face the extensions it kept as [(other mid index or None, area)])."""
     from OCP.BOPAlgo import BOPAlgo_Builder
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp
@@ -2410,7 +2409,7 @@ def join_body(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float
         # the fuse does not merge with the mid-face's own: both in the fuse were the same wall twice (a twisted
         # strap held 29% more metal than it has). The patch alone goes in; its pieces inside the mid-face are the
         # mid-face's own (read by geometry below).
-        if g is not None and (alone_all or (patch_alone and isinstance(_BT.Surface_s(m.original), FREE_FORM))):
+        if patch_alone and g is not None and isinstance(_BT.Surface_s(m.original), FREE_FORM):
             continue
         b.AddArgument(m.original)
     for g in grown:
@@ -2647,7 +2646,9 @@ def _overfilled(images: list[list], straight: list[list], mine: list, volume: fl
 #: tank's nozzle, t0010: 2 of 26). gmsh cannot mesh such a face ("could not close the boundary of 5 faces in turn"),
 #: so the whole shell mesh failed and the part fell back to a solid mesh. A join that leaves any face OpenCASCADE's
 #: own checker (BRepCheck) calls invalid is not used; the joins already made stand, and the record says so. On the
-#: 282 lab files no join that is used today holds such a face but these two parts'.
+#: 282 lab and dev files it turned a general join down in 11 parts: the two above and a duct (t0052) became fully
+#: good, a cyclone (sh0011) with SHELL-30 too, an enclosure whose join ran its mesh past 15 minutes now meshes in 7 s
+#: (e0009), and the other 6 kept their verdict.
 JOIN_SOUND = True
 
 
