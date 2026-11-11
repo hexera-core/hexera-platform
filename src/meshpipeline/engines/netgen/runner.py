@@ -56,7 +56,12 @@ RUNG_MIN_SECONDS = 60
 _POLYMESH = ("points", "faces", "owner", "neighbour", "boundary")
 
 
-def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None):
+def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None,
+                      stage_timeout_s: float | None = None):
+    """The engine seam's tessellation (engines/base.EngineBundle.tessellate_to_stl): every keyword the seam
+    passes is accepted. `stage_timeout_s` is accepted and ignored, as cad_tessellate's own is - the staging
+    that calls this already runs under its own clock (dev-areen 11 Nov, job ae3a6f47: without it every Netgen
+    run stopped in staging with a TypeError, before any plan)."""
     from meshpipeline.contracts.intake_formats import is_cad
     geom_path, out_stl = Path(geom_path), Path(out_stl)
     if is_cad(geom_path):

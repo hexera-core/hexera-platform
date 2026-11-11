@@ -112,6 +112,15 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     note_native_payload(ws, [m for m in PAYLOAD if (ws / m).exists()])
 
     await run.fence("start native mesh")
+    # THE DESIGN AND THE MESH START, said as every route says them (#423's run box): the design receipt
+    # (contracts/mesh_design: the plan cited above and what was done with the notes), then the mesher
+    # starting - so "Designing the mesh" and "Creating the mesh" fill for Netgen as for every engine
+    from meshpipeline.contracts import mesh_design
+    await mesh_design.apublish(publish, job_id=job_id, workspace=ws,
+                               planned=(int(plan.get("estimated_cells") or 0), "cells"), attempt=1)
+    meshing = getattr(publish, "ameshing", None)
+    if meshing is not None:
+        await meshing("netgen", 0, None, op_id="meshing:netgen:1")
     engine = get_engine("netgen")
     result = await asyncio.to_thread(
         run_off_the_wall, ws, lambda cap: engine.run_cartesian_mesh(ws, timeout=cap),

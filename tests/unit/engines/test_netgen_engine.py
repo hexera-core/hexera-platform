@@ -213,3 +213,47 @@ def test_near_coincident_corners_are_welded_and_collapsed_triangles_dropped():
     assert len(tris) == 2 and labels.tolist() == [0, 1]
     assert info["merged_corners"] >= 2 and info["dropped"] == 2
     assert np.array_equal(tris[1][2], tris[0][2])                       # one point now
+
+
+def test_the_netgen_driver_says_its_design_and_the_mesher_start(tmp_path: Path, monkeypatch):
+    """#423's run box x #399: the driver publishes the design receipt and the mesher start, as every route does,
+    so "Designing the mesh" is not "nothing to design" on a Netgen run (dev-areen, 11 Nov)."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from meshpipeline.contracts import native_time
+    from meshpipeline.engines import runtime
+    from meshpipeline.engines.netgen import driver as D
+
+    (tmp_path / "fluid_boundary.stl").write_text("solid wall\nendsolid wall\n")
+    plan = {"cells_across": 16.0, "h_narrow_m": 0.002, "maxh_m": 0.003, "layers": 5, "layer_stack_m": 0.0004,
+            "estimated_cells": 650_000, "cell_limit": 8_000_000, "notes": [], "rungs": [{"name": "planned layers"}]}
+    monkeypatch.setattr(D, "plan_case", lambda ws, state: plan)
+    monkeypatch.setattr(native_time, "run_off_the_wall", lambda ws, fn, **_k: {"rc": 1, "log_tail": "x"})
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=None))
+    calls = []
+
+    class Pub:
+        async def areceipt(self, title, rows, op_id=""):
+            calls.append(("receipt", title, [r["label"] for r in rows]))
+
+        async def ameshing(self, engine, budget_s, history=None, op_id=""):
+            calls.append(("meshing", engine))
+
+    class Run:
+        async def fence(self, _w):
+            return None
+
+        def note_authoring(self):
+            pass
+
+        def note_native_run(self, **_k):
+            pass
+
+        def outcome(self, produced_deliverable, failure_marker="", exhausted=False):
+            return SimpleNamespace(produced_deliverable=produced_deliverable, terminal_value=failure_marker)
+
+    ok, _marker, _o = asyncio.run(D.drive(tmp_path, {}, job_id="t-ng-design", publish=Pub(), run=Run()))
+    assert not ok
+    assert calls[0][0] == "receipt" and "Size" in calls[0][2]
+    assert ("meshing", "netgen") in calls and calls.index(("meshing", "netgen")) > 0
