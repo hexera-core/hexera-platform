@@ -227,3 +227,29 @@ def test_the_quick_angle_check_never_turns_down_a_quad_the_full_measure_keeps():
             want = float(m["min_angle_quad"][0])
         assert got == want
     assert quick > 300                                        # the quick check does turn many down
+
+
+def test_a_bead_wall_keeps_two_elements_across_never_under_the_floor():
+    # a 10.9 mm wall at a 10 mm size: 5.45 mm (2 across); a 1 mm wall of a 1.2 mm sheet: the floor, 0.6 mm
+    assert sp.flank_size(10.9, size=10.0, wall=1.2) == 5.45
+    assert sp.flank_size(1.0, size=10.0, wall=1.2) == 0.6
+    # the size already gives 2 across: nothing
+    assert sp.flank_size(25.0, size=10.0, wall=1.2) is None
+
+
+def test_holes_and_curves_under_the_users_size():
+    from meshpipeline.engines import shell_requirements as SR
+
+    # a 6 mm radius hole at 10 mm: 8 edges round it (not 4: a square)
+    h = SR.curved_size(6.0, 0.0, floor=6.5, rule=10.0, per_turn=SR.HOLE_PER_TURN)
+    assert abs(h - 2 * np.pi * 6.0 / 8) < 1e-9
+    # a large hole takes the size
+    assert SR.curved_size(60.0, 0.0, floor=6.5, rule=10.0, per_turn=SR.HOLE_PER_TURN) == 10.0
+    # a gently curved panel (200 mm radius) takes the user's 10 mm: its middle stands 0.06 mm off the arc
+    assert SR.curved_size(200.0, 300.0, floor=6.5, rule=10.0, chord=1.0) == 10.0
+    # a 4 mm radius at 10 mm is held so an element's middle stands at most 1 mm (a tenth of the size) off it
+    h = SR.curved_size(4.0, 50.0, floor=0.5, rule=10.0, chord=1.0)
+    assert abs(4.0 * (1 - np.cos(h / 8.0)) - 1.0) < 1e-9 and h < 2 * np.pi * 4.0 / 4
+    # a narrow bend keeps one element across unless the chord holds it
+    assert SR.curved_size(20.0, 30.0, floor=0.5, rule=10.0, chord=1.0) == 10.0
+    assert SR.chord_size(5.0, 6.0) == float("inf")
