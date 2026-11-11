@@ -98,8 +98,15 @@ FEATURE_FACES = False
 #: MEND_CYCLES times
 MEND = True
 MEND_CYCLES = 3
+#: ... in which an edge over the user's longest edge (under their shortest) costs as an element in a band does
+MEND_LONG = True
+MEND_SHORT = False
+#: SHMESH-14d (under the user's limits): the nodes on a straight CAD edge relax too, sliding along their edge, never
+#: nearer its ends than SLIDE_ENDS of its length
+SLIDE_EDGES = True
+SLIDE_ENDS = 0.01
 #: ... but not at the corners of a mapped strip (a mapped grid cannot grade), and no strip is left free for one
-FEATURE_AT_STRIPS = False
+FEATURE_AT_STRIPS = True
 FEATURE_UNMAP = False
 
 
@@ -855,17 +862,26 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         node_kind = np.zeros(len(tags), dtype=np.int8)
         node_edge = np.full(len(tags), -1, dtype=np.int64)
         vertex_edges: dict[int, set[int]] = {}
+        # SHMESH-14d: the nodes on a straight CAD edge may slide along it (between its two ends)
+        on_line = np.zeros(len(tags), dtype=bool)
+        line_a = np.zeros((len(tags), 3))
+        line_b = np.zeros((len(tags), 3))
         if MEND and lim.aims:
             for _d, c in gmsh.model.getEntities(1):
                 inner, _c, _p = gmsh.model.mesh.getNodes(1, c, includeBoundary=False)
                 at = index[np.asarray(inner, dtype=np.int64)]
                 node_kind[at] = shell_quality.ON_EDGE
                 node_edge[at] = int(c)
-                for _dd, p in gmsh.model.getBoundary([(1, c)], oriented=False):
-                    ends, _c, _p = gmsh.model.mesh.getNodes(0, abs(p))
+                points = [abs(int(p)) for _dd, p in gmsh.model.getBoundary([(1, c)], oriented=False)]
+                for p in points:
+                    ends, _c, _p = gmsh.model.mesh.getNodes(0, p)
                     for v in index[np.asarray(ends, dtype=np.int64)].tolist():
                         node_kind[v] = shell_quality.AT_VERTEX
                         vertex_edges.setdefault(int(v), set()).add(int(c))
+                if SLIDE_EDGES and len(at) and len(points) == 2 and gmsh.model.getType(1, c) == "Line":
+                    on_line[at] = True
+                    line_a[at] = np.asarray(gmsh.model.getValue(0, points[0], []), dtype=float) * mm
+                    line_b[at] = np.asarray(gmsh.model.getValue(0, points[1], []), dtype=float) * mm
         if log is not None:
             log.extend(gmsh.logger.get())
     finally:
@@ -879,6 +895,10 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         Q, T, q_face, t_face, merged = shell_mesh.collapse_short(xyz / mm, Q, T, q_face, t_face, limit)
     relaxed = 0
     project = _projector(facts, on_face, mm) if RELAX_CURVED and (on_face >= 0).any() else None
+    if on_line.any():
+        # SHMESH-14d (under the user's limits): the nodes on straight CAD edges relax too, each kept on its edge
+        project = _slider(project, on_line, line_a, line_b)
+        movable = movable | on_line
     if RELAX_ROUNDS:
         # the neighbours' middle first; then also where each quad round a node would be a parallelogram (SHMESH-14b),
         # for what the middle left past a limit (tried at once, the parallelogram moves mended a quad and left a
@@ -961,10 +981,16 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         # SHMESH-28: what is still past a hard limit or outside one of the user's limits is mended by merging a
         # node away or cutting two neighbours' outline again; the nodes round a change relax once more, and what
         # that opens is mended again
+        # SHMESH-29: "ignore edges under X mm" - only when the user asks: the ends of a CAD edge shorter than X may be
+        # merged too, and every element edge under X counts as outside
+        ignore = ((requirements or {}).get("sizes") or {}).get("ignore_edges_mm")
+        ignore = float(ignore) if ignore else None
         for _ in range(MEND_CYCLES):
             Q, T, q_face, t_face, got = shell_quality.mend(
                 xyz, Q, T, q_face, t_face, node_kind, node_edge, vertex_edges, limits=lim,
-                quads_too=kind != "triangles", triangles_too=kind != "quads")
+                quads_too=kind != "triangles", triangles_too=kind != "quads",
+                edges=(ignore if ignore else ((sizing or {}).get("low_mm") if MEND_SHORT else None),
+                       (sizing or {}).get("high_mm") if MEND_LONG else None), suppress=ignore)
             if not (got["merged"] or got["recut"]):
                 break
             mended = {k: mended[k] + got[k] for k in mended}
@@ -1143,7 +1169,7 @@ def _short_edges(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float) -> d
         size = min(rows[tag_of[t]]["size_mm"] for t in faces)
         wall = min(rows[tag_of[t]]["wall_mm"] for t in faces)
         length = float(gmsh.model.occ.getMass(1, c)) * mm
-        h = plan_rules.feature_size(length, size=size, wall=wall)
+        h = plan_rules.feature_size(length, size=size, wall=wall, ratio=plan_rules.FEATURE_RATIO)
         if h is None:
             continue
         by_size.setdefault(float(f"{h:.6g}"), []).append(int(c))
@@ -1211,6 +1237,23 @@ def _projector(facts: list[dict], on_face: np.ndarray, mm: float):
         return out
 
     return project
+
+
+def _slider(project, on_line: np.ndarray, line_a: np.ndarray, line_b: np.ndarray):
+    """SHMESH-14d: project(nodes, points) - a node on a straight CAD edge is laid back onto that edge (the closest
+    point of the line through the edge's two ends, kept between them: SLIDE_ENDS of its length from either end);
+    every other node goes through `project` (the curved faces' own, or none)."""
+    def both(nodes: np.ndarray, pts: np.ndarray) -> np.ndarray:
+        out = project(nodes, pts) if project is not None else pts.copy()
+        sel = on_line[nodes]
+        if sel.any():
+            a, b = line_a[nodes[sel]], line_b[nodes[sel]]
+            d = b - a
+            t = np.einsum("mi,mi->m", pts[sel] - a, d) / np.maximum(np.einsum("mi,mi->m", d, d), 1e-300)
+            out[sel] = a + np.clip(t, SLIDE_ENDS, 1.0 - SLIDE_ENDS)[:, None] * d
+        return out
+
+    return both
 
 
 #: SHELL-9b: a node's wall is read from the WALL_NEAREST wall readings of its mid-face nearest it (a plane through

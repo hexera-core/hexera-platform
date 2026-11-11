@@ -920,30 +920,41 @@ def _hex_splits(poly: list[int]) -> list[list[list[int]]]:
              [poly[(k + 3) % 6], poly[(k + 4) % 6], poly[(k + 5) % 6], poly[k]]] for k in range(3)]
 
 
-def _costs(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, limits: InForce
+def _costs(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, limits: InForce,
+           edges: tuple[float | None, float | None] = (None, None)
            ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """(cost per quad, cost per triangle, smallest corner angle per quad, per triangle): MEND_INVALID when not valid,
-    MEND_HARD past a hard limit, else the score against the user's limits in force (0 inside every target)."""
+    MEND_HARD past a hard limit, else the score against the user's limits in force (0 inside every target) plus
+    AIM_BAND for an edge under the user's shortest edge and for one over their longest (`edges`, mm; None: none)."""
+    lo, hi = edges
+    sized = lo is not None or hi is not None
+
+    def one(m: dict, past: np.ndarray, shape: str, n: int) -> np.ndarray:
+        c = aim_score(m, shape, limits, n)
+        if lo is not None:
+            c = c + AIM_BAND * (m["min_edge"] < lo)
+        if hi is not None:
+            c = c + AIM_BAND * (m["max_edge"] > hi)
+        c = np.where(past, MEND_HARD, c)
+        return np.where(m["min_jacobian"] <= 0, MEND_INVALID, c).astype(np.int64)
+
     if len(quads):
-        m = quad_measures(xyz, quads, extra=limits.extra)
-        cq = np.where(_quad_past(m, limits), MEND_HARD, aim_score(m, "quad", limits, len(quads)))
-        cq = np.where(m["min_jacobian"] <= 0, MEND_INVALID, cq)
-        aq = m["min_angle_quad"]
+        m = quad_measures(xyz, quads, extra=limits.extra or sized)
+        cq, aq = one(m, _quad_past(m, limits), "quad", len(quads)), m["min_angle_quad"]
     else:
         cq, aq = np.zeros(0, dtype=np.int64), np.zeros(0)
     if len(trias):
-        m = tria_measures(xyz, trias, extra=limits.extra)
-        ct = np.where(_tria_past(m, limits), MEND_HARD, aim_score(m, "tria", limits, len(trias)))
-        ct = np.where(m["min_jacobian"] <= 0, MEND_INVALID, ct)
-        at = m["min_angle_tria"]
+        m = tria_measures(xyz, trias, extra=limits.extra or sized)
+        ct, at = one(m, _tria_past(m, limits), "tria", len(trias)), m["min_angle_tria"]
     else:
         ct, at = np.zeros(0, dtype=np.int64), np.zeros(0)
-    return cq.astype(np.int64), ct.astype(np.int64), aq, at
+    return cq, ct, aq, at
 
 
 def mend(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int], t_face: list[int],
          node_kind: np.ndarray, node_edge: np.ndarray, vertex_edges: dict[int, set[int]], *,
-         limits: InForce = IN_FORCE, rounds: int = MEND_ROUNDS, quads_too: bool = True, triangles_too: bool = True
+         limits: InForce = IN_FORCE, rounds: int = MEND_ROUNDS, quads_too: bool = True, triangles_too: bool = True,
+         edges: tuple[float | None, float | None] = (None, None), suppress: float | None = None
          ) -> tuple[np.ndarray, np.ndarray, list[int], list[int], dict]:
     """SHMESH-28: the last clean-up. Every element past a hard limit, and every element outside one of the user's
     limits in force, is mended by the best of the local changes that leave its neighbourhood better - a lower total
@@ -963,7 +974,8 @@ def mend(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int
     `node_kind` (INSIDE / ON_EDGE / AT_VERTEX), `node_edge` (the CAD edge of an ON_EDGE node) and `vertex_edges`
     (the CAD edges that end at an AT_VERTEX node) come from the mesher. `quads_too` False: no change makes a quad
     (the user asked for triangles); `triangles_too` False: no change leaves more triangles than it found (they
-    asked for quads).
+    asked for quads). `edges`: the user's (shortest, longest) edge, mm - an element with an edge outside them costs
+    AIM_BAND more, so a merge that only trades a limit for an over-long edge is not made.
 
     Returns (quads, triangles, their faces, {"merged": nodes merged, "recut": outlines cut again})."""
     Q = [tuple(map(int, c)) for c in quads.tolist()]
@@ -973,14 +985,15 @@ def mend(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int
 
     for _round in range(rounds):
         got = _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, quads_too, triangles_too,
-                          done)
+                          done, edges, suppress)
         if got is None:
             break
         Q, qf, T, tf = got
     return (np.array(Q, dtype=np.int64).reshape(-1, 4), np.array(T, dtype=np.int64).reshape(-1, 3), qf, tf, done)
 
 
-def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, quads_too, triangles_too, done):
+def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, quads_too, triangles_too, done,
+                edges=(None, None), suppress=None):
     """One pass of mend: (quads, their faces, triangles, their faces) as lists, or None when nothing changed."""
     def on_edge(v: int, c: int) -> bool:
         k = int(node_kind[v])
@@ -988,7 +1001,7 @@ def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, q
 
     Qa = np.array(Q, dtype=np.int64).reshape(-1, 4)
     Ta = np.array(T, dtype=np.int64).reshape(-1, 3)
-    cq, ct, _aq, _at = _costs(xyz, Qa, Ta, limits)
+    cq, ct, _aq, _at = _costs(xyz, Qa, Ta, limits, edges)
     nq = len(Q)
     cost = np.concatenate([cq, ct])
     bad = np.flatnonzero(cost > 0)
@@ -1015,17 +1028,27 @@ def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, q
             nbrs.setdefault(a, set()).add(b)
             nbrs.setdefault(b, set()).add(a)
 
+    def along(a: int, b: int) -> bool:
+        """Whether the mesh edge a-b runs along a CAD edge: a free edge, a junction, or a seam between two faces
+        (an edge two elements of ONE face share is a chord inside that face)."""
+        u = users.get((a, b) if a < b else (b, a), ())
+        return len(u) != 2 or face[u[0]] != face[u[1]]
+
     def may_merge(x: int, y: int) -> bool:
         """Whether node x may be merged into node y (an edge of the mesh joins them)."""
         kx = int(node_kind[x])
         if kx == AT_VERTEX:
-            return False
+            # only when the user asked for small edges to be ignored (SHMESH-29): into its neighbour along a CAD edge
+            # shorter than the length they gave
+            if suppress is None or not along(x, y) or not any(on_edge(y, c) for c in vertex_edges.get(x, ())):
+                return False
+            if float(np.linalg.norm(xyz[x] - xyz[y])) >= suppress:
+                return False
         if kx == ON_EDGE:
             c = int(node_edge[x])
-            if not on_edge(y, c):
+            if not on_edge(y, c) or not along(x, y):
                 return False
-            other = [z for z in nbrs.get(x, ()) if z != y and on_edge(z, c)
-                     and len(users.get((x, z) if x < z else (z, x), ())) != 2]
+            other = [z for z in nbrs.get(x, ()) if z != y and on_edge(z, c) and along(x, z)]
             if len(other) != 1:
                 return False
             z = other[0]
@@ -1034,7 +1057,7 @@ def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, q
             if span <= 0.0:
                 return False
             off = float(np.linalg.norm(np.cross(xyz[x] - xyz[y], line))) / span
-            if off > MEND_CHORD * span:
+            if off > MEND_CHORD * span and (suppress is None or off >= suppress):
                 return False
         # the mesh stays a surface: every node next to both is a corner of an element that holds both
         both = set(at_node.get(x, ())) & set(at_node.get(y, ()))
@@ -1102,7 +1125,7 @@ def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, q
     new_q = [el for cand in cands for el, _f, _o in cand[2] if len(el) == 4]
     new_t = [el for cand in cands for el, _f, _o in cand[2] if len(el) == 3]
     nq_c, nt_c, na_q, na_t = _costs(xyz, np.array(new_q, dtype=np.int64).reshape(-1, 4),
-                                    np.array(new_t, dtype=np.int64).reshape(-1, 3), limits)
+                                    np.array(new_t, dtype=np.int64).reshape(-1, 3), limits, edges)
     normal: dict[int, np.ndarray] = {}
 
     def turned_as(e: int, touched: tuple[int, ...]) -> np.ndarray:
