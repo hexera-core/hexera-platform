@@ -15,6 +15,13 @@ AIMS = sq.InForce(aims=(("tria", "min_angle_tria", ">=", 30.0, 20.0, 0.01),
 IN, EDGE, VERTEX = sq.INSIDE, sq.ON_EDGE, sq.AT_VERTEX
 
 
+def _mend(*args, **kw):
+    """shell_quality.mend without moves: (quads, triangles, their faces, what was done); no node may have moved."""
+    xyz, Q, T, qf, tf, done = sq.mend(*args, **kw)
+    assert done.pop("moved") == 0 and (xyz == args[0]).all()
+    return Q, T, qf, tf, done
+
+
 def _area(xyz, Q, T) -> float:
     a = sum(0.5 * abs(np.cross(xyz[q[2]] - xyz[q[0]], xyz[q[3]] - xyz[q[1]])[2]) for q in Q)
     return a + sum(0.5 * abs(np.cross(xyz[t[1]] - xyz[t[0]], xyz[t[2]] - xyz[t[0]])[2]) for t in T)
@@ -41,7 +48,7 @@ def _needle_inside():
 def test_a_needle_inside_a_face_is_merged_away():
     xyz, Q, T, kind, edge, ends = _needle_inside()
     assert _cost(xyz, Q, T) == 2 * sq.AIM_OUTER
-    Q2, T2, qf, tf, done = sq.mend(xyz, Q, T, [0] * 4, [0] * 2, kind, edge, ends, limits=AIMS)
+    Q2, T2, qf, tf, done = _mend(xyz, Q, T, [0] * 4, [0] * 2, kind, edge, ends, limits=AIMS)
     assert done == {"merged": 1, "recut": 0} and len(T2) == 0 and len(Q2) == 4 and qf == [0] * 4 and tf == []
     assert _cost(xyz, Q2, T2) == 0 and abs(_area(xyz, Q2, T2) - 4.0) < 1e-12
     # every node on the outline is still a corner of the mesh; one of the two inside nodes is gone
@@ -51,7 +58,7 @@ def test_a_needle_inside_a_face_is_merged_away():
 
 def test_with_no_user_limit_and_nothing_past_a_solver_limit_nothing_changes():
     xyz, Q, T, kind, edge, ends = _needle_inside()
-    Q2, T2, qf, tf, done = sq.mend(xyz, Q, T, [0] * 4, [0] * 2, kind, edge, ends)
+    Q2, T2, qf, tf, done = _mend(xyz, Q, T, [0] * 4, [0] * 2, kind, edge, ends)
     assert done == {"merged": 0, "recut": 0}
     assert Q2.tolist() == Q.tolist() and T2.tolist() == T.tolist() and qf == [0] * 4 and tf == [0] * 2
 
@@ -79,42 +86,42 @@ def _strip(drop: float = 0.0, kinds=(VERTEX, VERTEX), gap: float = 0.1):
 
 def test_the_ends_of_a_short_cad_edge_stay_unless_the_user_asked_to_ignore_it():
     xyz, Q, T, kind, edge, ends = _strip()
-    Q2, T2, _qf, _tf, done = sq.mend(xyz, Q, T, [0, 0], [0], kind, edge, ends, limits=AIMS)
+    Q2, T2, _qf, _tf, done = _mend(xyz, Q, T, [0, 0], [0], kind, edge, ends, limits=AIMS)
     assert done["merged"] == 0 and {1, 2} <= set(Q2.ravel().tolist()) | set(T2.ravel().tolist())
     assert abs(_area(xyz, Q2, T2) - _area(xyz, Q, T)) < 1e-12
     # "ignore edges under 0.2 mm": the 0.1 mm edge's ends become one node, and the needle is gone
-    Q3, T3, _qf, _tf, done3 = sq.mend(xyz, Q, T, [0, 0], [0], kind, edge, ends, limits=AIMS, suppress=0.2)
+    Q3, T3, _qf, _tf, done3 = _mend(xyz, Q, T, [0, 0], [0], kind, edge, ends, limits=AIMS, suppress=0.2)
     assert done3["merged"] == 1 and len(T3) == 0 and len(Q3) == 2 and _cost(xyz, Q3, T3) == 0
     # ... but not an edge as long as the length they gave
-    _Q4, T4, _qf, _tf, done4 = sq.mend(xyz, Q, T, [0, 0], [0], kind, edge, ends, limits=AIMS, suppress=0.1)
+    _Q4, T4, _qf, _tf, done4 = _mend(xyz, Q, T, [0, 0], [0], kind, edge, ends, limits=AIMS, suppress=0.1)
     assert done4["merged"] == 0 and len(T4) == 1
 
 
 def test_a_node_on_a_cad_edge_goes_only_along_a_straight_piece_of_it():
     xyz, Q, T, kind, edge, ends = _strip(kinds=(EDGE, EDGE))
-    Q2, T2, _qf, _tf, done = sq.mend(xyz, Q, T, [0, 0], [0], kind, edge, ends, limits=AIMS)
+    Q2, T2, _qf, _tf, done = _mend(xyz, Q, T, [0, 0], [0], kind, edge, ends, limits=AIMS)
     assert done["merged"] == 1 and len(T2) == 0 and _cost(xyz, Q2, T2) == 0
     assert abs(_area(xyz, Q2, T2) - _area(xyz, Q, T)) < 1e-12              # the edge is where it was
     # the same nodes on a bent edge (node 2 stands 0.05 off the line): merging either would move the edge
     xyz, Q, T, kind, edge, ends = _strip(drop=0.05, kinds=(EDGE, EDGE))
-    _Q3, T3, _qf, _tf, done3 = sq.mend(xyz, Q, T, [0, 0], [0], kind, edge, ends, limits=AIMS)
+    _Q3, T3, _qf, _tf, done3 = _mend(xyz, Q, T, [0, 0], [0], kind, edge, ends, limits=AIMS)
     assert done3["merged"] == 0 and len(T3) == 1
 
 
 def test_two_triangles_are_cut_along_the_other_diagonal_when_that_mends_them():
-    # a kite cut along its long diagonal: two triangles of 14 degrees; along the short one: two of 76 / 28
-    xyz = np.array([[0, 0, 0], [2, -0.25, 0], [4, 0, 0], [2, 0.25, 0]], dtype=float)
+    # a kite cut along its long diagonal: two triangles with a corner of 152 degrees; along the short one: 76 at most
+    xyz = np.array([[0, 0, 0], [2, -0.5, 0], [4, 0, 0], [2, 0.5, 0]], dtype=float)
     T = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int64)
     kind = np.full(4, VERTEX, dtype=np.int8)
     limits = sq.InForce(aims=(("tria", "max_angle_tria", "<=", 120.0, 140.0, 0.01),))
     Q0 = np.zeros((0, 4), dtype=np.int64)
     assert _cost(xyz, Q0, T, limits) == 2 * sq.AIM_OUTER
-    Q2, T2, _qf, tf, done = sq.mend(xyz, Q0, T, [], [0, 0], kind, np.full(4, -1), {}, limits=limits,
+    Q2, T2, _qf, tf, done = _mend(xyz, Q0, T, [], [0, 0], kind, np.full(4, -1), {}, limits=limits,
                                     quads_too=False)
     assert done == {"merged": 0, "recut": 1} and len(Q2) == 0 and len(T2) == 2 and tf == [0, 0]
-    assert _cost(xyz, Q2, T2, limits) == 0 and abs(_area(xyz, Q2, T2) - 1.0) < 1e-12
+    assert _cost(xyz, Q2, T2, limits) == 0 and abs(_area(xyz, Q2, T2) - 2.0) < 1e-12
     # never across two faces
-    _Q3, T3, _qf, _tf, done3 = sq.mend(xyz, Q0, T, [], [0, 1], kind, np.full(4, -1), {}, limits=limits)
+    _Q3, T3, _qf, _tf, done3 = _mend(xyz, Q0, T, [], [0, 1], kind, np.full(4, -1), {}, limits=limits)
     assert done3["recut"] == 0 and T3.tolist() == T.tolist()
 
 
@@ -132,7 +139,7 @@ def test_no_change_makes_an_element_that_is_not_valid_and_the_outline_stays():
     kind = np.where(inner, IN, VERTEX).astype(np.int8)
     before = _cost(xyz, Q, T)
     assert before > 0
-    Q2, T2, qf, tf, done = sq.mend(xyz, Q, T, [0] * len(Q), [0] * len(T), kind, np.full(len(xyz), -1), {},
+    Q2, T2, qf, tf, done = _mend(xyz, Q, T, [0] * len(Q), [0] * len(T), kind, np.full(len(xyz), -1), {},
                                    limits=AIMS)
     assert done["merged"] + done["recut"] > 0 and _cost(xyz, Q2, T2) < before
     assert (sq.quad_measures(xyz, Q2)["min_jacobian"] > 0).all() and (sq.tria_measures(xyz, T2)["min_jacobian"] > 0).all()
@@ -142,11 +149,11 @@ def test_no_change_makes_an_element_that_is_not_valid_and_the_outline_stays():
     assert (np.cross(xyz[Q2[:, 2]] - xyz[Q2[:, 0]], xyz[Q2[:, 3]] - xyz[Q2[:, 1]])[:, 2] > 0).all()
     assert (np.cross(xyz[T2[:, 1]] - xyz[T2[:, 0]], xyz[T2[:, 2]] - xyz[T2[:, 0]])[:, 2] > 0).all()
     # the same mesh twice: the same answer
-    Q3, T3, _qf, _tf, done3 = sq.mend(xyz, Q, T, [0] * len(Q), [0] * len(T), kind, np.full(len(xyz), -1), {},
+    Q3, T3, _qf, _tf, done3 = _mend(xyz, Q, T, [0] * len(Q), [0] * len(T), kind, np.full(len(xyz), -1), {},
                                       limits=AIMS)
     assert Q3.tolist() == Q2.tolist() and T3.tolist() == T2.tolist() and done3 == done
     # asked for quads: no more triangles than there were
-    _Q4, T4, _qf, _tf, _d = sq.mend(xyz, Q, T, [0] * len(Q), [0] * len(T), kind, np.full(len(xyz), -1), {},
+    _Q4, T4, _qf, _tf, _d = _mend(xyz, Q, T, [0] * len(Q), [0] * len(T), kind, np.full(len(xyz), -1), {},
                                     limits=AIMS, triangles_too=False)
     assert len(T4) <= len(T)
 
@@ -156,14 +163,15 @@ def test_an_edge_over_the_users_longest_counts_against_a_merge():
     # beside it has a 1.45 mm edge
     xyz, Q, T, kind, edge, ends = _strip(kinds=(EDGE, EDGE), gap=0.45)
     assert _cost(xyz, Q, T) == sq.AIM_BAND
-    _Q2, T2, _qf, _tf, done = sq.mend(xyz, Q, T, [0, 0], [0], kind, edge, ends, limits=AIMS)
+    _Q2, T2, _qf, _tf, done = _mend(xyz, Q, T, [0, 0], [0], kind, edge, ends, limits=AIMS)
     assert done["merged"] == 1 and len(T2) == 0
     # with a longest edge of 1.3 mm asked, that only trades one line for another: not made
-    Q3, T3, _qf, _tf, done3 = sq.mend(xyz, Q, T, [0, 0], [0], kind, edge, ends, limits=AIMS, edges=(None, 1.3))
+    Q3, T3, _qf, _tf, done3 = _mend(xyz, Q, T, [0, 0], [0], kind, edge, ends, limits=AIMS, edges=(None, 1.3))
     assert done3 == {"merged": 0, "recut": 0} and T3.tolist() == T.tolist() and Q3.tolist() == Q.tolist()
     # an edge outside the user's sizes costs as an element in a band does
     cq, ct, _a, _b = sq._costs(xyz, Q, T, AIMS, (0.5, 1.02))
-    assert cq.tolist() == [sq.AIM_BAND, sq.AIM_BAND] and ct.tolist() == [2 * sq.AIM_BAND]
+    # (the triangle: in the band, an edge under 0.5 mm, an edge over 1.02 mm; each quad: an edge over 1.02 mm)
+    assert cq.tolist() == [sq.AIM_BAND, sq.AIM_BAND] and ct.tolist() == [3 * sq.AIM_BAND]
 
 
 def test_the_size_beside_a_small_piece_of_the_cad():

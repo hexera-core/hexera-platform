@@ -101,6 +101,8 @@ MEND_CYCLES = 3
 #: ... in which an edge over the user's longest edge (under their shortest) costs as an element in a band does
 MEND_LONG = True
 MEND_SHORT = False
+#: ... and a node of an element outside a line may move to where that element is well shaped (shell_quality.mend)
+MEND_MOVES = True
 #: SHMESH-14d (under the user's limits): the nodes on a straight CAD edge relax too, sliding along their edge, never
 #: nearer its ends than SLIDE_ENDS of its length
 SLIDE_EDGES = True
@@ -976,7 +978,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         # edge and cut again inside the limits, or dropped from a free edge
         face_wall = np.array([float(r["wall_mm"]) for r in rows])
         Q, T, q_face, t_face, capped = shell_quality.absorb_caps(xyz, Q, T, q_face, t_face, face_wall, limits=lim)
-    mended = {"merged": 0, "recut": 0}
+    mended = {"merged": 0, "recut": 0, "moved": 0}
     if MEND and lim.aims:
         # SHMESH-28: what is still past a hard limit or outside one of the user's limits is mended by merging a
         # node away or cutting two neighbours' outline again; the nodes round a change relax once more, and what
@@ -986,12 +988,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         ignore = ((requirements or {}).get("sizes") or {}).get("ignore_edges_mm")
         ignore = float(ignore) if ignore else None
         for _ in range(MEND_CYCLES):
-            Q, T, q_face, t_face, got = shell_quality.mend(
+            xyz, Q, T, q_face, t_face, got = shell_quality.mend(
                 xyz, Q, T, q_face, t_face, node_kind, node_edge, vertex_edges, limits=lim,
                 quads_too=kind != "triangles", triangles_too=kind != "quads",
                 edges=(ignore if ignore else ((sizing or {}).get("low_mm") if MEND_SHORT else None),
-                       (sizing or {}).get("high_mm") if MEND_LONG else None), suppress=ignore)
-            if not (got["merged"] or got["recut"]):
+                       (sizing or {}).get("high_mm") if MEND_LONG else None), suppress=ignore,
+                movable=movable if MEND_MOVES else None, project=project)
+            if not (got["merged"] or got["recut"] or got["moved"]):
                 break
             mended = {k: mended[k] + got[k] for k in mended}
             if RELAX_ROUNDS:

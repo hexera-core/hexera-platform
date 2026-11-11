@@ -910,6 +910,9 @@ MEND_INVALID = 1000000
 #: (0 on a straight edge; 0.033 on an arc meshed at 15 degrees a segment)
 MEND_CHORD = 0.01
 MEND_ROUNDS = 8
+#: SHMESH-28: where a triangle's corner is tried, as its height over the edge across it in that edge's lengths: 1.37
+#: (the corner then reads 40 degrees), 1 (53) and 0.7 (71)
+MEND_HEIGHTS = (1.37, 1.0, 0.7)
 #: node kinds (the mesher's): inside a face, on a CAD edge, at a CAD vertex
 INSIDE, ON_EDGE, AT_VERTEX = 0, 1, 2
 
@@ -954,8 +957,9 @@ def _costs(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, limits: InForc
 def mend(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int], t_face: list[int],
          node_kind: np.ndarray, node_edge: np.ndarray, vertex_edges: dict[int, set[int]], *,
          limits: InForce = IN_FORCE, rounds: int = MEND_ROUNDS, quads_too: bool = True, triangles_too: bool = True,
-         edges: tuple[float | None, float | None] = (None, None), suppress: float | None = None
-         ) -> tuple[np.ndarray, np.ndarray, list[int], list[int], dict]:
+         edges: tuple[float | None, float | None] = (None, None), suppress: float | None = None,
+         movable: np.ndarray | None = None, project=None
+         ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int], list[int], dict]:
     """SHMESH-28: the last clean-up. Every element past a hard limit, and every element outside one of the user's
     limits in force, is mended by the best of the local changes that leave its neighbourhood better - a lower total
     cost (MEND_HARD past a hard limit, AIM_OUTER past a user's outer limit, AIM_BAND between target and outer limit),
@@ -968,33 +972,40 @@ def mend(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int
     * re-cut: the element and the one across one of its edges (the same face, that edge theirs alone) are taken
       as one outline and cut again: a triangle and a triangle into a quad or along the other diagonal, a triangle and
       a quad into another quad and triangle (or three triangles), two quads into two quads the other two ways.
+    * move (with `movable`): one of its nodes that may move (inside a face; on a straight CAD edge, along it) goes
+      to where the element would be well shaped - a triangle's corner to MEND_HEIGHTS times the edge across it
+      above that edge's middle (a needle standing on a short CAD edge gets its far corner pulled in), a quad's
+      corner to where it would be a parallelogram and half-way there - each point laid back by `project` (onto
+      the node's own surface or CAD edge).
 
-    No node moves, so no node leaves its surface or its CAD edge. Candidates of a round are judged together and
-    taken best first, each element changed at most once a round; `rounds` passes at most. Deterministic.
+    Merges and re-cuts move no node. Candidates of a round are judged together and taken best first, each element
+    changed at most once a round; `rounds` passes at most. Deterministic.
     `node_kind` (INSIDE / ON_EDGE / AT_VERTEX), `node_edge` (the CAD edge of an ON_EDGE node) and `vertex_edges`
     (the CAD edges that end at an AT_VERTEX node) come from the mesher. `quads_too` False: no change makes a quad
     (the user asked for triangles); `triangles_too` False: no change leaves more triangles than it found (they
     asked for quads). `edges`: the user's (shortest, longest) edge, mm - an element with an edge outside them costs
     AIM_BAND more, so a merge that only trades a limit for an over-long edge is not made.
 
-    Returns (quads, triangles, their faces, {"merged": nodes merged, "recut": outlines cut again})."""
+    Returns (the coordinates, quads, triangles, their faces, {"merged": nodes merged, "recut": outlines cut
+    again, "moved": nodes moved})."""
     Q = [tuple(map(int, c)) for c in quads.tolist()]
     T = [tuple(map(int, c)) for c in trias.tolist()]
     qf, tf = list(q_face), list(t_face)
-    done = {"merged": 0, "recut": 0}
-
+    done = {"merged": 0, "recut": 0, "moved": 0}
+    X = xyz.copy()
     for _round in range(rounds):
-        got = _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, quads_too, triangles_too,
-                          done, edges, suppress)
+        got = _mend_round(X, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, quads_too, triangles_too,
+                          done, edges, suppress, movable, project)
         if got is None:
             break
         Q, qf, T, tf = got
-    return (np.array(Q, dtype=np.int64).reshape(-1, 4), np.array(T, dtype=np.int64).reshape(-1, 3), qf, tf, done)
+    return (X, np.array(Q, dtype=np.int64).reshape(-1, 4), np.array(T, dtype=np.int64).reshape(-1, 3), qf, tf, done)
 
 
 def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, quads_too, triangles_too, done,
-                edges=(None, None), suppress=None):
-    """One pass of mend: (quads, their faces, triangles, their faces) as lists, or None when nothing changed."""
+                edges=(None, None), suppress=None, movable=None, project=None):
+    """One pass of mend: (quads, their faces, triangles, their faces) as lists, or None when nothing changed. A
+    node that moves is moved in `xyz` itself."""
     def on_edge(v: int, c: int) -> bool:
         k = int(node_kind[v])
         return (k == ON_EDGE and int(node_edge[v]) == c) or (k == AT_VERTEX and c in vertex_edges.get(v, ()))
@@ -1065,8 +1076,9 @@ def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, q
         return (nbrs.get(x, set()) & nbrs.get(y, set())) <= shared
 
     # (the bad element, the elements that go, the new ones as (corners, face, the element each stands for),
-    #  what it is, the elements no other change of this round may touch)
-    cands: list[tuple[int, tuple[int, ...], list[tuple[tuple[int, ...], int, int]], str, frozenset]] = []
+    #  what it is, the elements no other change of this round may touch, for a move: (the node, where to))
+    cands: list[tuple] = []
+    points: list[np.ndarray] = []
     seen: set = set()
     for e in bad.tolist():
         c = conn[e]
@@ -1090,13 +1102,13 @@ def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, q
                         j = el.index(x)
                         if el[(j + 1) % 4] != y and el[(j - 1) % 4] != y:
                             ok = False                                # across a quad: it would fold
-                            return None
+                            break
                         new.append((tuple(v for v in el if v != x), face[t], t))
                     else:
                         new.append((tuple(y if v == x else v for v in el), face[t], t))
                 if ok and (triangles_too or sum(len(el) == 3 for el, _f, _o in new)
                            <= sum(len(conn[t]) == 3 for t in touched)):
-                    cands.append((e, touched, new, "merged", frozenset(at_node[x]) | frozenset(at_node[y])))
+                    cands.append((e, touched, new, "merged", frozenset(at_node[x]) | frozenset(at_node[y]), None))
             # cut the outline of this element and the one across this edge again
             u = users[(a, b) if a < b else (b, a)]
             if len(u) != 2:
@@ -1118,10 +1130,43 @@ def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, q
                         not triangles_too and n_tri > (len(c) == 3) + (len(conn[n]) == 3)):
                     continue
                 pair = (min(e, n), max(e, n))
-                cands.append((e, pair, [(tuple(el), face[e], e) for el in cut], "recut", frozenset(pair)))
+                cands.append((e, pair, [(tuple(el), face[e], e) for el in cut], "recut", frozenset(pair), None))
+        if movable is None:
+            continue
+        # move one of its nodes: a triangle's corner towards (or away from) the edge across it, to where the
+        # triangle would stand MEND_HEIGHTS times that edge high; a quad's corner to where the quad would be a
+        # parallelogram, and half-way there
+        for j in range(k):
+            v = c[j]
+            if not movable[v]:
+                continue
+            here = xyz[v]
+            if k == 3:
+                a, b = c[(j + 1) % 3], c[(j + 2) % 3]
+                mid = 0.5 * (xyz[a] + xyz[b])
+                base = float(np.linalg.norm(xyz[a] - xyz[b]))
+                up = here - mid
+                high = float(np.linalg.norm(up))
+                if high <= 0.0 or base <= 0.0:
+                    continue
+                spots = [mid + up * (f * base / high) for f in MEND_HEIGHTS if abs(f * base - high) > 0.05 * high]
+            else:
+                iso = xyz[c[(j + 1) % 4]] + xyz[c[(j + 3) % 4]] - xyz[c[(j + 2) % 4]]
+                spots = [iso, 0.5 * (here + iso)]
+            star = tuple(sorted(set(at_node[v])))
+            for spot in spots:
+                if project is not None:
+                    spot = project(np.array([v], dtype=np.int64), spot[None])[0]
+                tmp = len(xyz) + len(points)
+                points.append(spot)
+                cands.append((e, star, [(tuple(tmp if w == v else w for w in conn[t]), face[t], t) for t in star],
+                              "moved", frozenset(star), (v, spot)))
     if not cands:
         return None
-    # judge every new element of every candidate at once
+    # judge every new element of every candidate at once (a moved node stands at the end of the coordinates)
+    here_all = xyz
+    if points:
+        xyz = np.vstack([xyz, np.array(points)])
     new_q = [el for cand in cands for el, _f, _o in cand[2] if len(el) == 4]
     new_t = [el for cand in cands for el, _f, _o in cand[2] if len(el) == 3]
     nq_c, nt_c, na_q, na_t = _costs(xyz, np.array(new_q, dtype=np.int64).reshape(-1, 4),
@@ -1142,7 +1187,7 @@ def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, q
 
     iq = it = 0
     ranked = []
-    for ci, (e, touched, new, _kind, _block) in enumerate(cands):
+    for ci, (e, touched, new, _kind, _block, _move) in enumerate(cands):
         before = int(cost[list(touched)].sum())
         after, least, ok = 0, 180.0, True
         for el, _f, old in new:
@@ -1166,14 +1211,17 @@ def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, q
     gone: set[int] = set()
     add: list[tuple[tuple[int, ...], int]] = []
     for _gain, _n, _least, _e, ci in sorted(ranked):
-        _e2, touched, new, kind, block = cands[ci]
+        _e2, touched, new, kind, block, move = cands[ci]
         if block & used:
             continue
         used |= block
+        done[kind] += 1
+        if move is not None:
+            here_all[move[0]] = move[1]          # the elements stay; their node stands somewhere else
+            continue
         gone |= set(touched)
         add += [(el, f) for el, f, _o in new]
-        done[kind] += 1
-    if not gone:
+    if not used:
         return None
     return ([c for i, c in enumerate(Q) if i not in gone] + [el for el, _f in add if len(el) == 4],
             [f for i, f in enumerate(qf) if i not in gone] + [f for el, f in add if len(el) == 4],
