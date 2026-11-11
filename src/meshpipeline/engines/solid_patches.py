@@ -53,6 +53,10 @@ RULE = "MIXED-9"
 SHELL_ONLY = "shell_only"
 #: the shell trimmed round the regions, as written for the mesher
 TRIMMED_FILE = "shell_patched.brep"
+#: MIXED-9g: the most the solid patches may add to a shell run, seconds. Past it the shell is made as before and the
+#: regions are said as left out: a shell run is held to engines/fea_driver.SHELL_RUN_LIMIT_S (2400 s, extraction up
+#: to 1800 of it), and a run that ran out would deliver no shell at all
+PATCH_BUDGET_S = 420.0
 
 
 class Stop(Exception):
@@ -285,6 +289,28 @@ def _untied(joined, nodes_at: list[tuple[int, int]]) -> list[int]:
     return sorted({int(np.searchsorted(starts, int(x), side="right") - 1) for x in np.atleast_1d(j)})
 
 
+def _folded(joined, nodes_at: list[tuple[int, int]]) -> list[int]:
+    """MIXED-9c: the patches whose join folded an overlap element (a corner Jacobian not above zero: the rows run one
+    wall into the solid from each node, and round a corner sharper than the elements are long they cross)."""
+    from scipy.spatial import cKDTree
+
+    from meshpipeline.engines import mixed_mesh as mm
+    from meshpipeline.engines import shell_quality as SQ
+
+    sh = joined.shell
+    over = np.asarray(sh.groups.get(mm.OVERLAP_GROUP, []), dtype=np.int64)
+    over = over[over < len(sh.quads)]
+    if not len(over) or not len(joined.solid.xyz):
+        return []
+    jac = SQ.quad_measures(sh.xyz, sh.quads[over]).get("min_jacobian")
+    bad = over[np.asarray(jac) <= 0] if jac is not None else over[:0]
+    if not len(bad):
+        return []
+    _d, j = cKDTree(np.asarray(joined.solid.xyz, float)).query(np.asarray(sh.xyz, float)[sh.quads[bad][:, 0]])
+    starts = np.array([a for a, _b in nodes_at])
+    return sorted({int(np.searchsorted(starts, int(x), side="right") - 1) for x in np.atleast_1d(j)})
+
+
 def _worst(sqs: list[dict]) -> dict:
     """One patch's quality from its pieces': the cells added up, the worst shape, every fatal line."""
     if len(sqs) == 1:
@@ -298,7 +324,8 @@ def _worst(sqs: list[dict]) -> dict:
 
 
 def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: dict | None = None,
-          target: dict | None = None, requirements_file: Path | None = None) -> Patched:
+          target: dict | None = None, requirements_file: Path | None = None,
+          budget_s: float | None = None) -> Patched:
     """MIXED-9: the shell of `step` with its solid patches, joined (all lengths mm). `out`: the extraction's folder
     (its record and sewn surface are read there; the patches' work goes there too). Raises Stop with the reason
     when no patch can be made."""
@@ -314,6 +341,12 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
     from meshpipeline.engines.gmsh import shell_adapter as sa
 
     t0 = time.time()
+    budget = PATCH_BUDGET_S if budget_s is None else float(budget_s)
+
+    def in_time() -> None:
+        if time.time() - t0 > budget:
+            raise Stop(f"the solid patches would take longer than the {budget / 60:.0f} minutes they are given")
+
     k = float(mm_per_unit)
     rows = solid_rows(record)
     if not rows:
@@ -432,6 +465,7 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
             shapes = list(r.met) if r.met else [r.shape]
             got, why = [], ""
             for j, shp in enumerate(shapes, start=1):
+                in_time()
                 ws_j = ws_i if len(shapes) == 1 else ws_i / f"piece_{j}"
                 ws_j.mkdir(parents=True, exist_ok=True)
                 if ws_j != ws_i and (ws_i / "mesh_requirements.json").exists():
@@ -466,6 +500,7 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
         while True:
             if not parts:
                 raise Stop(lost[-1]["why"] if lost else "no solid patch could be meshed")
+            in_time()
             solid, nodes_at, tets_at = _merge(parts)
             try:
                 joined = mm.join(shell, solid, [f for c, r in zip(cut_all, kept, strict=True) if not r.whole for f in c],
@@ -478,6 +513,8 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
             if drop_untied and joined.notes:
                 for i in _untied(joined, nodes_at):
                     loose.setdefault(i, "could not be tied to the shell all round (too few solid nodes across a wall)")
+            for i in _folded(joined, nodes_at):
+                loose.setdefault(i, "could not be tied to the shell without folding a shell element at a sharp corner")
             if not loose:
                 return joined, tets_at, sqs, kept, lost
             for i in sorted(loose, reverse=True):
