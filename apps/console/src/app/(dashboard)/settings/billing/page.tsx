@@ -149,7 +149,6 @@ export default async function BillingPage({
       <section aria-labelledby="plans-title" className="section">
         <div className="section__head">
           <h2 className="section__title" id="plans-title">Plans</h2>
-          <p className="page__sub">{chargingNote(subscription, catalogue)}</p>
         </div>
         {catalogue === null ? (
           <DashboardNotice
@@ -179,7 +178,7 @@ export default async function BillingPage({
         <section aria-labelledby="activity-title" className="section">
           <div className="section__head">
             <h2 className="section__title" id="activity-title">Credit activity</h2>
-            <p className="page__sub">The last 30 days, from the {ACTIVITY_LIMIT} most recent ledger entries.</p>
+            <p className="section__note">Last 30 days</p>
           </div>
           <div className="activity-grid">
             <section className="panel">
@@ -274,6 +273,7 @@ export default async function BillingPage({
               </Link>
             </div>
           ) : null}
+          <p className="section__note">{chargingNote(subscription, catalogue)}</p>
         </section>
       )}
     </div>

@@ -211,7 +211,7 @@ export function ExtraCreditsPicker({ offer }: { offer: ExtraCreditsOffer | null 
   return (
     <div className="card billing-plan-card card--accent">
       <p className="label">One-off credits</p>
-      <p className="stat-big stat-big--xl">{extraCreditsLabel(activeOffer)}</p>
+      <p className="stat-big">{extraCreditsLabel(activeOffer)}</p>
       <p className="page__sub">Buy extra capacity once. No subscription changes.</p>
       <div className="billing-actions">
         <label className="label" htmlFor="extra-credit-packs">
