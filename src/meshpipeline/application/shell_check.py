@@ -458,6 +458,9 @@ SHELL_HEAD = ("Meshed as: a shell - the mid-surface with plate elements, each wi
               "CalculiX, Abaqus and Ansys files.")
 MIXED_HEAD = ("Meshed as: shell where thin, solid where thick - plate elements on the thin walls joined to tetrahedra in "
               "the thick regions, in Nastran, CalculiX, Abaqus and Ansys files. The solid mesh is made beside it, as before.")
+#: SURF-6: the head for a file that is a surface (application/surface_check): the plates lie on the surface itself
+SURFACE_HEAD = ("Meshed as: a shell - plate elements on the surface as given, in Nastran, CalculiX, Abaqus and Ansys "
+                "files.")
 #: The request card's "Mesh as" row for a settled shell or shell + solid (a solid needs no row: it is the default)
 CARD_LABELS = {pm.MESH_SHELL: "Shell (mid-surface, plate elements)",
                pm.MESH_MIXED: "Shell + solid (thin walls shell, thick regions solid)"}
@@ -467,7 +470,7 @@ def declaration_words(settled: dict | None) -> str:
     """The declaration's line for the settled choice: "Meshed as: a shell (the mid-surface ...). <why>"."""
     s = settled or {}
     if s.get("mesh_as") == pm.MESH_SHELL:
-        head = SHELL_HEAD
+        head = SURFACE_HEAD if s.get("by") == "surface file" else SHELL_HEAD
     elif s.get("mesh_as") == pm.MESH_MIXED:
         head = MIXED_HEAD
     elif s.get("mesh_as") == pm.MESH_SOLID and s.get("picked") == pm.MESH_SHELL:
@@ -483,7 +486,7 @@ def card_mesh_as(declaration: str) -> str:
     """The request card's "Mesh as" row, read from the conversation's FEA declaration (its head, written by
     declaration_words at Proceed): a label for a shell or shell + solid, "" for a solid or none. Pure."""
     text = str(declaration or "")
-    for kind, head in ((pm.MESH_MIXED, MIXED_HEAD), (pm.MESH_SHELL, SHELL_HEAD)):
+    for kind, head in ((pm.MESH_MIXED, MIXED_HEAD), (pm.MESH_SHELL, SHELL_HEAD), (pm.MESH_SHELL, SURFACE_HEAD)):
         if head in text:
             return CARD_LABELS[kind]
     return ""

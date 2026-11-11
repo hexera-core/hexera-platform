@@ -379,11 +379,10 @@ def fea_view(facts: dict | None, messages=None) -> dict:
 
     if surface_check.is_surface(facts, messages):
         # SURF-6: A SURFACE'S OPEN EDGES ARE ITS OWN - the check row says what the file is, not that it is broken;
-        # and no "thinnest wall" is said of a sheet that has none
+        # and the solid measurement (a thinnest wall, hot spots to refine) is not said of a sheet: it has no wall
+        # to measure, and its sizes are the shell rules'
         out.update(surface_check.clean_view(facts) or {})
-        if isinstance(out.get("measure"), dict):
-            out["measure"] = {**out["measure"], "thickness_min_mm": None, "thickness_face": None,
-                              "thickness_at_mm": None}
+        out["measure"] = None
     # several closed solids: an assembly, with its one question (a surface that is no solid stops first)
     asm = None if blocked else assembly_view(facts)
     if asm is not None:

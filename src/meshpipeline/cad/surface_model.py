@@ -15,24 +15,20 @@
     {"kind": "surface" | "gap" | "closed" | "solid" | "empty", "why", "faces", "sew_tolerance_mm", "diag_mm",
      "open_share", "said_shell",
      "sheets": [{"part": "Part_1", "faces": ["Face_1", ...], "area_mm2", "size_mm", "free_edges", "free_length_mm",
-                 "loops": [{"length_mm", "span_mm2", "edges", "at_mm", "seam", "end"}], "open_share",
+                 "loops": [{"length_mm", "span_mm2", "edges", "at_mm", "seam"}], "open_share",
                  "unmet_edges", "unmet_at_mm": [...], "closed": bool}]}
 
 SURF-1, the rule. A file is a surface part when it holds NO solid, its faces do not close into one after the clean
-check's own sewing, and it is not a closed skin with a small gap. Two things are measured on each sewn sheet:
+check's own sewing, and it is not a closed skin with a small gap. The measure is the file's OPEN SHARE: the area its
+free boundary loops span (each loop's vector area, |1/2 sum r x dr| - exact for a flat loop, never more than any
+surface that closes it) over its surface area. A flat sheet spans its whole area; a pressed panel, a bracket, a
+channel, a cup, a tray, an open tube span a share of theirs; a small missing face spans a sliver. A loop whose edges
+lie along a neighbouring face (a seam the sewing did not close, SURF-2) or that spans next to nothing for its length
+(a slit) spans nothing: it is a crack, not an opening.
 
-- its OPEN SHARE: the area its free boundary loops span (each loop's vector area, |1/2 sum r x dr| - exact for a
-  flat loop, never more than any surface that closes it) over the sheet's own area. A flat sheet spans its whole
-  area; a pressed panel, a bracket, a cup, a tray span a large share of theirs; a small missing face spans a sliver.
-  A loop whose edges lie along a neighbouring face (a seam the sewing did not close, SURF-2) spans nothing: it is a
-  crack, not an opening.
-- whether a small opening is an END of the sheet or a hole in a skin: the skin carries on beside a hole (a missing
-  face of a closed skin, a nozzle hole in a tank) and stops at an end (the mouth of a tube, of a channel, of a cup).
-  Read at points pushed outward from the loop in its own plane: skin above or below them is skin beside the opening.
-
-A file whose openings span at most GAP_SHARE of its surface, none of them an end, is a closed skin with a gap - CAD
-repair's business, as before. Anything else is a surface part. The user's own words (shell, mid-surface, a
-thickness) settle a file under the share as a surface too.
+A file whose openings span at most GAP_SHARE of its surface is a closed skin with a gap - CAD repair's business, as
+before. Anything else is a surface part. The user's own words (shell, mid-surface, a thickness) settle a file under
+the share as a surface too: by shape alone a tube 50 diameters long cannot be told from a rod with its ends missing.
 """
 from __future__ import annotations
 
@@ -45,18 +41,11 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-#: SURF-1: a file whose openings span at most this share of its surface, none of them an end of the sheet, is a
-#: closed skin with a gap, not a surface part (the numbers: docs/design/shell/README.md section 11)
+#: SURF-1: a file whose openings span at most this share of its surface is a closed skin with a gap, not a surface
+#: part. Measured on 86 public closed solids (docs/design/shell/README.md section 11): a crack reads 0; one face
+#: left out reads under it for six in ten faces; the least open surface parts drawn for the lab (an open tube 40
+#: diameters long, a tank skin with a nozzle hole) read 1.2% and 1.3%.
 GAP_SHARE = 0.01
-#: SURF-1: AN END. An opening is read at END_PROBES points spread evenly along its loop, each pushed outward in the
-#: loop's plane by END_PUSH of its own distance from the loop's middle; a point has skin beside it when the sheet
-#: passes within END_NEAR of that distance of the line through it across the loop's plane (the loop's reach up and
-#: down). The opening is a hole in a skin when at least END_AROUND of the points have skin beside them, else an end
-#: of the sheet (the skin does not carry on beside it).
-END_PROBES = 24
-END_PUSH = 0.5
-END_NEAR = 0.05
-END_AROUND = 0.5
 #: a loop spanning under this share of its own length squared over 4 pi (a circle spans 1) is a slit: no opening
 SLIT_SHARE = 1e-4
 #: SURF-2: a free edge whose every sample point lies within NEAR_SEW sew tolerances of another face is an edge
@@ -134,56 +123,9 @@ def _loops(free: list, vmap) -> list[dict]:
 
 def _span(points: np.ndarray) -> np.ndarray:
     """The vector area a closed loop of points spans (1/2 sum r_i x r_i+1 about its middle): its size is the area
-    spanned, its direction the loop's own plane."""
+    spanned."""
     p = points - points.mean(axis=0)
     return 0.5 * np.cross(p, np.roll(p, -1, axis=0)).sum(axis=0)
-
-
-def _is_end(points: np.ndarray, span: np.ndarray, skin) -> bool:
-    """SURF-1: whether the opening a loop bounds is an END of the sheet (the skin stops there: the mouth of a tube,
-    a channel, a cup) rather than a hole in a skin (the skin carries on beside it: a missing face, a nozzle hole).
-    Read at END_PROBES points spread evenly along the loop, each pushed outward in the loop's plane by END_PUSH of
-    its own distance from the loop's middle: the point has skin beside it when the sheet passes within END_NEAR of
-    that distance of the line through it across the plane, the loop's reach up and down. `skin`: the sheet's
-    faces as one shape."""
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
-    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
-    from OCP.gp import gp_Pnt
-
-    area = float(np.linalg.norm(span))
-    if area <= 0 or len(points) < 3:
-        return False
-    n = span / area
-    c = points.mean(axis=0)
-    flat = (points - c) - np.outer((points - c) @ n, n)
-    reach = float(np.linalg.norm(flat, axis=1).max())
-    # the loop walked at even steps of its own length
-    seg = np.linalg.norm(np.roll(points, -1, axis=0) - points, axis=1)
-    total = float(seg.sum())
-    if total <= 0 or reach <= 0:
-        return False
-    cum = np.concatenate([[0.0], np.cumsum(seg)])
-    beside = tried = 0
-    for k in range(END_PROBES):
-        at = (k + 0.5) * total / END_PROBES
-        i = min(int(np.searchsorted(cum, at, side="right")) - 1, len(points) - 1)
-        if seg[i] <= 0:
-            continue
-        a, b = points[i], points[(i + 1) % len(points)]
-        here = a + (b - a) * ((at - cum[i]) / seg[i])
-        out = np.cross((b - a) / seg[i], n)              # the loop runs with its inside on the side of n x tangent
-        size_out = float(np.linalg.norm(out))
-        away = here - c
-        away = float(np.linalg.norm(away - float(away @ n) * n))
-        if size_out <= 1e-9 or away <= 0:
-            continue
-        q = here + END_PUSH * away * out / size_out
-        line = BRepBuilderAPI_MakeEdge(gp_Pnt(*map(float, q - reach * n)), gp_Pnt(*map(float, q + reach * n))).Edge()
-        d = BRepExtrema_DistShapeShape(line, skin)
-        tried += 1
-        if d.IsDone() and d.Value() <= END_NEAR * away:
-            beside += 1
-    return tried > 0 and beside < END_AROUND * tried
 
 
 def _components(n: int, links: list[tuple[int, int]]) -> list[list[int]]:
@@ -344,31 +286,23 @@ def measure(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
     boxes = [ms._box(f) for f in sewn.faces]
     reach = NEAR_SEW * sewn.tol
     areas = [sum(ms._area(sewn.faces[k]) for k in ks) for ks in sewn.sheets]
-    small = GAP_SHARE * sum(areas)
     out = []
     for s, ks in enumerate(sewn.sheets):
         area = areas[s]
         free = free_of.get(s, [])
         unmet = _unmet(free, own_of.get(s, []), sewn.faces, boxes, reach) if free else []
-        skin = None
         rows = []
         for lp in _loops(free, vmap):
             pts = lp["points"]
-            span = _span(pts)
-            size = float(np.linalg.norm(span))
+            size = float(np.linalg.norm(_span(pts)))
             length = sum(ms._length(e) for e in lp["edges"])
             # a loop most of whose edges lie along a neighbouring face is a seam that did not sew, and one that
             # spans next to nothing for its length is a slit: neither is an opening
             seam = (sum(1 for i in lp["index"] if unmet[i] is not None) * 2 >= len(lp["index"])
                     or size <= SLIT_SHARE * length * length / (4.0 * math.pi))
-            end = None
-            if not seam and size <= small:
-                # only an opening small against the file can be a gap in a closed skin: is it an end, or a hole?
-                skin = ms._compound([sewn.faces[k] for k in ks]) if skin is None else skin
-                end = _is_end(pts, span, skin)
             rows.append({"length_mm": _r(length * mm), "span_mm2": 0.0 if seam else _r(size * mm * mm),
                          "edges": len(lp["edges"]), "at_mm": [_r(c * mm) for c in pts.mean(axis=0)],
-                         "seam": bool(seam), **({} if end is None else {"end": bool(end)})})
+                         "seam": bool(seam)})
         rows.sort(key=lambda r: (-r["length_mm"], r["at_mm"]))
         spanned = sum(r["span_mm2"] for r in rows)
         area_mm2 = area * mm * mm
@@ -378,7 +312,6 @@ def measure(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
                     "junction_edges": junction.get(s, 0), "free_edges": len(free),
                     "free_length_mm": _r(sum(ms._length(e) for e in free) * mm),
                     "loops": rows[:MAX_PLACES], "loop_count": len(rows),
-                    "ends": sum(1 for r in rows if r.get("end")),
                     "open_share": _r(spanned / area_mm2) if area_mm2 > 0 else 0.0,
                     "unmet_edges": len(places), "unmet_at_mm": [[_r(c * mm) for c in p] for p in places[:MAX_PLACES]],
                     "closed": not free})
@@ -395,8 +328,7 @@ def has_solid(shape) -> bool:
 def classify(sheets: list[dict], *, said_shell: bool = False) -> tuple[str, str, float]:
     """SURF-1: (kind, why, the file's open share) from the measured sheets. "closed" when any sheet closes (the
     file's closed shells are read as the solids they bound, MESH-1, as before); "gap" when the openings of the whole
-    file span at most GAP_SHARE of its surface, none of them is an end of a sheet, and the user's words did not ask
-    for a shell; else "surface"."""
+    file span at most GAP_SHARE of its surface and the user's words did not ask for a shell; else "surface"."""
     if not sheets:
         return "empty", "the file holds no faces", 0.0
     area = sum(s["area_mm2"] for s in sheets)
@@ -408,15 +340,11 @@ def classify(sheets: list[dict], *, said_shell: bool = False) -> tuple[str, str,
     if share > GAP_SHARE:
         return "surface", f"it holds no solid and its faces do not close: the open edges span {pct} of the surface", \
             _r(share)
-    ends = sum(int(s.get("ends") or 0) for s in sheets)
-    if ends:
-        return ("surface", f"it holds no solid and its faces do not close: the sheet ends at {ends} open "
-                           f"end(s)", _r(share))
     if said_shell:
         return ("surface", f"its faces do not close (the open edges span {pct} of the surface), and a shell was "
                            "asked for", _r(share))
-    return ("gap", f"its faces nearly close: the open edges span {pct} of the surface, with the skin carrying on "
-                   "around them - a gap in a closed skin rather than the edge of a sheet", _r(share))
+    return ("gap", f"its faces nearly close: the open edges span {pct} of the surface - a gap in a closed skin "
+                   "rather than the edge of a sheet", _r(share))
 
 
 def read(shape, *, mm_per_unit: float, said_shell: bool = False) -> tuple[dict, Sewn | None]:
@@ -517,5 +445,5 @@ def write(rec: dict, surface, out_dir: Path | str) -> None:
     (out / ms.RECORD_FILE).write_text(json.dumps(rec, indent=1, sort_keys=True))
 
 
-__all__ = ["END_AROUND", "GAP_SHARE", "NEAR_SEW", "Sewn", "classify", "has_solid", "measure", "read", "read_file", "record", "sew",
+__all__ = ["GAP_SHARE", "NEAR_SEW", "Sewn", "classify", "has_solid", "measure", "read", "read_file", "record", "sew",
            "write"]
