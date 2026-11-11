@@ -453,8 +453,15 @@ class RepairSession:
         claim of absence, so it supports no predicate either.
 
         A plan item is `{"op": RepairOp, "targets": tuple[EntityRef, ...], "defect_code": ...,
-        "tolerance_mm": float, "answered_held": frozenset[str]}` - the last two optional. The
-        author sets the tolerance, because a package names the operations it wants performed.
+        "tolerance_mm": float}` - the tolerance optional, and set by the author because a package
+        names the operations it wants performed.
+
+        A PLAN ITEM CANNOT CARRY `answered_held`, deliberately. In `try_op` that is THE ENGINEER'S
+        ANSWER - the exemption that lets a human's directive touch geometry held for review - and
+        a package plan is authored by a model. Reading it from the plan would let the author
+        exempt itself from a hold on geometry an engineer is still being asked about, which is a
+        package replacing an inner proof rather than adding an outer one. When hold provenance
+        arrives it must carry a human-directive marker, not come from the plan.
         """
         region = package.region
         predicate = package.predicate
@@ -492,14 +499,23 @@ class RepairSession:
         # THE SNAPSHOT IS TAKEN AFTER THE BOUNDARY LIST IS MATERIALISED, so restoring it restores
         # the defect list the package found rather than an uncached `None` - which would make a
         # reversal cost a fresh whole-shape scan to re-learn what was already measured here.
-        snapshot = (self.shape, self._defects, self.complete_scan)
+        #
+        # AND IT CARRIES THE ACCOUNTING, which `try_op`'s own snapshot does not need to: `try_op`
+        # adds to the accounting only for an operation it KEPT, and that is the whole of its
+        # contract ("Immutable, so a rolled-back operation cannot leave a trace", caps.Accounting).
+        # A PACKAGE BREAKS THAT INVARIANT UNLESS IT RESTORES IT HERE: its operations are kept
+        # individually and then discarded together, so without this a reverted package leaves the
+        # area and volume DECLARATIONS of geometry that no longer exists. The next legitimate
+        # operation anywhere in the run - in this region or any later one - is then refused for a
+        # residual nothing accounted for, which is one discarded package poisoning the whole run.
+        snapshot = (self.shape, self._defects, self.complete_scan, self.accounting)
         apply_s = 0.0
         verdicts: list[OpVerdict] = []
 
         for item in package.plan:
             spent = self.clock() - started
             if spent > package.budget.timeout_s:
-                self.shape, self._defects, self.complete_scan = snapshot
+                self.shape, self._defects, self.complete_scan, self.accounting = snapshot
                 return self._record_package(PackageVerdict(
                     region_index=region.index, status=ESCALATED,
                     reason=f"budget: {spent:.6g}s of {package.budget.timeout_s:.6g}s spent after "
@@ -510,8 +526,7 @@ class RepairSession:
             # whether the plan as a whole did what was claimed.
             verdict = self.try_op(
                 item["op"], tuple(item["targets"]), item["defect_code"],
-                tolerance_mm=float(item.get("tolerance_mm", 0.0)),
-                answered_held=frozenset(item.get("answered_held") or ()))
+                tolerance_mm=float(item.get("tolerance_mm", 0.0)))
             verdicts.append(verdict)
             apply_s += verdict.apply_s
             scan_s += verdict.scan_s
@@ -525,9 +540,13 @@ class RepairSession:
         reclassified = frozenset(predicate.reclassified).intersection(defects_after)
 
         if not complete:
-            self.shape, self._defects, self.complete_scan = snapshot
+            # ESCALATED, NOT REVERTED, and the distinction is the routing: `reverted` tells a
+            # reader the claim was tested and failed, and this claim was never judged at all - we
+            # could not see enough of the region to decide. An unjudgeable region belongs in front
+            # of a person, not filed as a failed claim. No `refused:` prefix: the package DID run.
+            self.shape, self._defects, self.complete_scan, self.accounting = snapshot
             return self._record_package(PackageVerdict(
-                region_index=region.index, status=REVERTED,
+                region_index=region.index, status=ESCALATED,
                 reason="scan incomplete: a scoped re-inspection that stopped early supports no "
                        "claim about what is absent from the region",
                 verdicts=tuple(verdicts), reclassified=reclassified,
@@ -536,7 +555,7 @@ class RepairSession:
         reason = evaluate(predicate, before=before, after=self._measure(self.shape),
                            defects_before=defects_before, defects_after=defects_after)
         if reason:
-            self.shape, self._defects, self.complete_scan = snapshot
+            self.shape, self._defects, self.complete_scan, self.accounting = snapshot
             return self._record_package(PackageVerdict(
                 region_index=region.index, status=REVERTED, reason=reason,
                 verdicts=tuple(verdicts), reclassified=reclassified,
@@ -552,6 +571,9 @@ class RepairSession:
 
         A budget that permits unbounded time is not a budget, so a non-positive `timeout_s` is
         malformed rather than permissive.
+
+        An empty plan, an unlocated region and a predicate naming the empty fingerprint are all
+        refused for one reason: none of them leaves anything for the scoped scan to judge.
 
         A predicate that names NO entity asserts only what is always true, so an author could
         pass by promising nothing. A predicate that names geometry OUTSIDE the region cannot be
@@ -578,10 +600,33 @@ class RepairSession:
                     "outcome and cannot be verified")
 
         named = predicate.cleared | predicate.reclassified | predicate.unchanged
+        if "" in named:
+            # NOTHING TO VERIFY AGAINST, which is the refusal `try_op` already makes for an
+            # untargetable target. `localize` names an entity with no measurable extent `""`, so
+            # a claim about `""` is a claim about no entity in particular: the scan reports the
+            # empty name whatever happened, and the predicate holds for doing anything at all.
+            # It would even score specificity, which is how an author would get past that gate
+            # while promising nothing.
+            return "predicate names the empty fingerprint, which identifies no entity"
+
         outside = sorted(named - package.region.fingerprints)
         if outside:
             return ("predicate names entities outside region "
                     f"{package.region.index}: {', '.join(outside)}")
+
+        if not package.region.located:
+            # THE UNLOCATED REGION IS NOT A LOCUS. `regions.decompose` returns the defects with no
+            # measurable extent as one trailing region with no box, precisely so they cannot be
+            # silently dropped - and a scan scoped to it is the whole-shape scan, because
+            # `_Scope` rejects nothing it cannot place. So there is nothing scoped about the
+            # proof and nothing targetable in the region: those defects are a person's question,
+            # not a package's.
+            return f"region {package.region.index} is unlocated: it has no box to scope a proof to"
+
+        if not package.plan:
+            # AN EMPTY PLAN HAS NOTHING TO PROVE. A predicate naming only `unchanged` entities
+            # would hold trivially, and the package would buy a commit with two scans and no work.
+            return "plan is empty: a package with no operations has nothing to prove"
 
         for n, item in enumerate(package.plan):
             missing = [key for key in ("op", "targets", "defect_code") if not item.get(key)]
