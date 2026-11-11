@@ -1392,7 +1392,8 @@ def _limit_row(lim: Mapping, q: Mapping, figs: dict | None, n: int, p: Mapping) 
 
 def summary(rep: Mapping | None, not_applied: int = 0) -> str:
     """The one line the closing message carries ("From your notes: ...")."""
-    return MR.summary(rep, kind="flow", not_applied=not_applied)
+    return MR.summary(rep, kind="flow", not_applied=not_applied).replace("could not be applied to a flow mesh",
+                                                                       "could not be applied on this mesher")
 
 
 def facts_text(manifest: Mapping | None) -> str:
