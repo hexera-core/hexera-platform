@@ -1119,7 +1119,7 @@ def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False,
     # of the wall beside it (a flat dimple 1.4 walls wide in a printed cylinder's side), which that wall's own
     # mid-face runs across when it is joined
     # ... unless its WALL is wide (SHELL-2b): a strip of a wall split lengthwise is one piece of a wide wall
-    if not wall_wide and width_of(_compound(faces)) < hi / sp.SHELL_WIDTH_RATIO:
+    if not wall_wide and width_of(_compound(faces)) < hi / fit_width_ratio():
         return [], 0.0, 0.0, 0.0, "it is narrower than four walls (a local feature of the wall beside it)"
     return faces, float(lo), float(hi), float(np.mean(read)), ""
 
@@ -1453,6 +1453,19 @@ def flat_fidelity(mid, datum, t: float) -> tuple[float, int]:
             worst = max(worst, abs(abs(float(np.dot(_np(a.Value(u, v)) - o, n))) - t / 2.0))
             count += 1
     return worst, count
+
+
+#: SHELL-25, A FITTED WALL IS AS WIDE AS A PLATE NEEDS (11 Nov). SHELL-9 fits a tapered or free-form wall only when
+#: it is at least four of its walls wide (SHELL-2's width rule, read early so a fan housing's hundreds of narrow
+#: pairs are not fitted). Once every plate is a shell (SHELL-23), the line is the plate's own: two walls
+#: (sp.PLATE_WIDTH_RATIO). A drafted enclosure wall 4.4 to 5.3 mm thick and 4 walls wide was left solid by the old
+#: line while the even plate beside it, as wide, was a shell.
+FIT_PLATE_WIDTH = True
+
+
+def fit_width_ratio() -> float:
+    """SHELL-25: the least width, in walls (as a ratio t / width), at which a fitted mid-face is made and kept."""
+    return sp.PLATE_WIDTH_RATIO if (EVERY_PLATE and FIT_PLATE_WIDTH) else sp.SHELL_WIDTH_RATIO
 
 
 # ------------------------------------------------------------------------------------ extension ----
@@ -4608,9 +4621,9 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
             try:
                 # a fitted mid-face lies between its two faces: when both are far narrower than four of its
                 # walls, so is it - not fitted at all (17 x 17 midpoints each; a fan housing has hundreds)
-                wall_wide = wall_width.get(i, 0.0) >= t_u / sp.SHELL_WIDTH_RATIO
+                wall_wide = wall_width.get(i, 0.0) >= t_u / fit_width_ratio()
                 wide = FIT_WIDTH_SLACK * max(width_of(faces[p.a]), width_of(faces[p.b]))
-                if wide < t_u / sp.SHELL_WIDTH_RATIO and not wall_wide:
+                if wide < t_u / fit_width_ratio() and not wall_wide:
                     got, why_f = [], "it is narrower than four walls (a local feature of the wall beside it)"
                 else:
                     got, lo_u, hi_u, mean_u, why_f = fitted_mid_refined(faces[small], faces[big], t_u, 1e-4 * t_u,
