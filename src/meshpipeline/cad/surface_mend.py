@@ -185,9 +185,12 @@ def _extended(face, edge, length: float):
     from OCP.TopAbs import TopAbs_REVERSED
     from OCP.TopoDS import TopoDS
 
-    side = _iso_side(face, edge)
-    if side is None or length <= 0:
+    if length <= 0:
         return None
+    side = _iso_side(face, edge)
+    if side is None:
+        # a TRIMMED face (a bead or a dart cut out of a larger patch): its surface already runs on past the edge
+        return _extended_trimmed(face, edge, length)
     in_u, after = side
     surf = BRep_Tool.Surface_s(face)
     while isinstance(surf, Geom_RectangularTrimmedSurface):
@@ -224,6 +227,100 @@ def _extended(face, edge, length: float):
     if face.Orientation() == TopAbs_REVERSED:
         out = TopoDS.Face_s(out.Reversed())
     return out
+
+
+def _extended_trimmed(face, edge, length: float):
+    """SURF-12: a trimmed face continued past one of its edges by `length` on its own surface: a strip of that
+    surface between the edge and the edge moved outward (in the surface's own parameters, as far as `length` is
+    there), joined to the face into one face (OpenCASCADE's fuse, then same-surface faces unified). None when the
+    surface does not run on that far, or the result is not one face of the face's area plus the strip's."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve2d, BRepAdaptor_Surface
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.BRepLib import BRepLib
+    from OCP.GCE2d import GCE2d_MakeSegment
+    from OCP.Geom2d import Geom2d_Curve
+    from OCP.gp import gp_Pnt, gp_Pnt2d, gp_Vec, gp_Vec2d
+    from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+    from OCP.TopAbs import TopAbs_FORWARD, TopAbs_OUT, TopAbs_REVERSED
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad import midsurface as ms
+
+    try:
+        fwd = TopoDS.Face_s(face.Oriented(TopAbs_FORWARD))
+        surf = BRep_Tool.Surface_s(fwd)
+        c2 = BRepAdaptor_Curve2d(edge, fwd)
+        t0, t1 = c2.FirstParameter(), c2.LastParameter()
+        tm = 0.5 * (t0 + t1)
+        uv, duv = gp_Pnt2d(), gp_Vec2d()
+        c2.D1(tm, uv, duv)
+        if duv.Magnitude() < 1e-14:
+            return None
+        perp = np.array([-duv.Y(), duv.X()]) / duv.Magnitude()
+        # outward: the side of the edge that is not the face
+        span = max(1e-9, max(abs(c2.Value(t1).X() - c2.Value(t0).X()), abs(c2.Value(t1).Y() - c2.Value(t0).Y())))
+        probe = 1e-3 * span
+        tol = BRep_Tool.Tolerance_s(fwd)
+        outside = None
+        for sgn in (1.0, -1.0):
+            q = gp_Pnt2d(uv.X() + sgn * probe * perp[0], uv.Y() + sgn * probe * perp[1])
+            if BRepClass_FaceClassifier(fwd, q, tol).State() == TopAbs_OUT:
+                outside = sgn
+                break
+        if outside is None:
+            return None
+        d = outside * perp
+        p, su, sv = gp_Pnt(), gp_Vec(), gp_Vec()
+        BRepAdaptor_Surface(fwd, False).D1(uv.X(), uv.Y(), p, su, sv)
+        speed = float(np.linalg.norm(d[0] * np.array([su.X(), su.Y(), su.Z()]) + d[1] * np.array([sv.X(), sv.Y(), sv.Z()])))
+        if speed <= 1e-300:
+            return None
+        shift = gp_Vec2d(*(d * float(length) / speed))
+        # the surface must run on that far (a patch cut from a larger one does)
+        u0, u1, v0, v1 = surf.Bounds()
+        for t in (t0, tm, t1):
+            w = c2.Value(t).Translated(shift)
+            if not (u0 - 1e-9 <= w.X() <= u1 + 1e-9 and v0 - 1e-9 <= w.Y() <= v1 + 1e-9):
+                return None
+        pc = BRep_Tool.CurveOnSurface_s(edge, fwd, 0.0, 0.0)
+        if pc is None:
+            return None
+        moved = Geom2d_Curve.DownCast(pc.Translated(shift))
+        a0, a1 = c2.Value(t0), c2.Value(t1)
+        b0, b1 = a0.Translated(shift), a1.Translated(shift)
+        e_in = BRepBuilderAPI_MakeEdge(pc, surf, t0, t1).Edge()
+        e_out = BRepBuilderAPI_MakeEdge(moved, surf, t0, t1).Edge()
+        s0 = BRepBuilderAPI_MakeEdge(GCE2d_MakeSegment(a0, b0).Value(), surf).Edge()
+        s1 = BRepBuilderAPI_MakeEdge(GCE2d_MakeSegment(a1, b1).Value(), surf).Edge()
+        mk = BRepBuilderAPI_MakeWire()
+        for e in (e_in, s1, e_out, s0):
+            mk.Add(e)
+        if not mk.IsDone():
+            return None
+        strip = BRepBuilderAPI_MakeFace(surf, mk.Wire(), True).Face()
+        BRepLib.BuildCurves3d_s(strip)
+        if ms._area(strip) <= 0:
+            return None
+        fused = BRepAlgoAPI_Fuse(fwd, strip)
+        fused.SetRunParallel(False)
+        fused.Build()
+        if not fused.IsDone():
+            return None
+        uni = ShapeUpgrade_UnifySameDomain(fused.Shape(), True, True, True)
+        uni.Build()
+        got = ms._faces(uni.Shape())
+        if len(got) != 1:
+            return None
+        out = TopoDS.Face_s(got[0])
+        if abs(ms._area(out) - ms._area(fwd) - ms._area(strip)) > 1e-4 * ms._area(fwd):
+            return None
+        return TopoDS.Face_s(out.Reversed()) if face.Orientation() == TopAbs_REVERSED else out
+    except Exception as exc:  # noqa: BLE001 - not extended: the place is told
+        logger.debug("surface mend: a trimmed face was not extended (%s)", type(exc).__name__)
+        return None
 
 
 #: SURF-12: a B-spline patch is rebuilt through this many points a side (more where it has more poles)
@@ -475,13 +572,19 @@ def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None) -> tuple[An
             row["why"] = why or "no extension, trim or move closes it within the reach"
             left.append(row)
             continue
-        before_n = len(sm.open_places(here, mm_per_unit=1.0, reach=look))
-        after_n = len(sm.open_places(got, mm_per_unit=1.0, reach=look))
-        if after_n >= before_n:
-            row["why"] = "the change did not close the place"
+        # a change is kept when it leaves less open (by SURF-8's own count: fewer places, or as many with less open
+        # edge - a place of several pieces, a T-meet, is closed piece by piece) and never more places
+        bp = sm.open_places(here, mm_per_unit=1.0, reach=look)
+        ap = sm.open_places(got, mm_per_unit=1.0, reach=look)
+        before_n, after_n = len(bp), len(ap)
+        bl = sum(float(x["length_mm"]) for x in bp)
+        al = sum(float(x["length_mm"]) for x in ap)
+        if after_n > before_n or (after_n == before_n and al >= bl - 2.0 * here.tol):
+            row["why"] = "the change would not leave less open"
             left.append(row)
             continue
         here = got
+        tried.discard(tuple(map(tuple, p["pairs"])))       # what is left of a place closed piece by piece is tried again
         row.update(how=how, face=here.names[k], moved_mm=_r(max(changed, gap) * mm), places_closed=before_n - after_n)
         done.append(row)
     record = {"reach_mm": _r(reach * mm), "reach_from": "notes" if limit_mm else "rule",
