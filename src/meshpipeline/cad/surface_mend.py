@@ -6,8 +6,8 @@
 # time, each change judged before it is kept and told: what was done, where, by how much.
 # Boundaries: geometry only, deterministic, no model call. Only open sheets read by cad/surface_model (the surface
 # route): solids and the extraction from solids are never touched, nor cad/repair (a closed skin's defects are CAD
-# repair's). A change never moves geometry farther than the reach (REACH_PART of the part, REACH_FACE of the
-# narrower face, or the user's own "close gaps up to 4 mm"); an extension continues the face's own surface, a trim
+# repair's). A change never moves geometry farther than the reach (REACH_PART of the part, REACH_SELF of the width
+# of the face changed or one element the user asked for, or the user's own "close gaps up to 4 mm"); an extension continues the face's own surface, a trim
 # cuts where the faces cross, and a result face must be valid, keep its normal side, keep its area within the band
 # the change can explain, and cross no other face. Anything else is left open and told.
 # Collaborates with: cad/surface_model.py (open places, the Sewn), cad/surface_clean.py (the pair sewing, the free
@@ -23,14 +23,12 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 #: SURF-12: a change never moves geometry farther than this share of the part's size (1/100: the reach inside which
-#: an edge is an open place, SURF-8), nor than REACH_FACE of the narrower of the two faces, nor than what the user's
-#: notes allow
+#: an edge is an open place, SURF-8), nor than what the user's notes allow
 REACH_PART = 1e-2
 #: ... nor than REACH_SELF of the width of the face that is changed, or the element size the user asked for when that is
 #: more (a gap under one element is one an engineer closes by hand). The first version capped it at a quarter of the
 #: NARROWER of the two faces: a 5 mm fillet patch beside the main panel held every change on the panel to 1.2 mm.
 REACH_SELF = 0.5
-REACH_FACE = REACH_SELF
 #: an extension runs this much past the gap, so the extended face crosses its neighbour and is trimmed there
 EXTEND_PAST = 1.5
 #: two faces are the same surface continued (a gap in one sheet of metal, not a corner) when their normals at the gap
@@ -645,7 +643,8 @@ def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
                 break
             steps.append(f"{here.names[k]}: {why}")
         if got is None:
-            row["why"] = steps[0].split(": ", 1)[1] if len(steps) == 1 else "; ".join(steps)
+            # the words say one plain reason (the first face's); the record keeps each face's
+            row["why"] = steps[0].split(": ", 1)[1] if steps else "no extension, trim or move closes it"
             row["tried"] = steps
             left.append(row)
             continue
@@ -665,4 +664,4 @@ def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
     return here, record
 
 
-__all__ = ["EXTEND_PAST", "REACH_FACE", "REACH_PART", "REACH_SELF", "mend"]
+__all__ = ["EXTEND_PAST", "REACH_PART", "REACH_SELF", "mend"]
