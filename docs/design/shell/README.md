@@ -733,6 +733,88 @@ wall, not by its own thickest point, before it can come back.
 frame and a deck angle fully good, an enclosure's open junction closed, hoppers and ducts covered), 2 worse (a frame
 and hood extra shell to wall misplaced, 140 to 38 open edges; a pedestal box one element past the Nastran limits).
 
+### 2.4.9 The walls the walls round found, joined (SHELL-33 to SHELL-35, 11 Nov)
+
+The walls round (§2.4.6) found real walls nobody had shelled - skin coverage up on every set - and the junctions
+round them were left open: open edges 53 to 137 on the new set and 3 to 70 on the lab with #441 alone. On #437 and
+#441 together, before the rules below, what was left open came from three causes, none a new kind of junction:
+
+| cause | files | open edges (#437 + #441) |
+|---|---|---|
+| more than 50 open edges in one body: no closing pass ran at all (a 9.525 mm plate with 18 pocket floors, r0061) | 1 | 100 |
+| the general fuse fails outright on the straight join's mid-faces, and the general join runs past its deadline: every mid-face handed back loose (two cyclone parts, fr018, fr019) | 2 | 66 |
+| a new wall's small leftovers (e0007) | 1 | 1 more |
+
+**SHELL-33, every open edge is offered to the closing passes.** The record lists the first 50 open edges of a body,
+and SHELL-13, SHELL-22 and SHELL-30 ran only when every open edge was listed: a body with more than 50 got none of
+them. The census now keeps every open edge for the passes; the record still lists 50. r0061's 100 open edges at its
+pocket steps are closed (SHELL-13's strips down each step: butt steps between 3.175, 6.35 and 9.525 mm floors), and
+a frame that runs out of its work budget before any general join (d040) goes from 85 open edges to 2.
+
+**SHELL-34, a surface the general fuse cannot sew is sewn edge to edge.** When OpenCASCADE's general fuse fails on a
+body's joined surface, the straight join handed its mid-faces back unsewn, and every pass after it failed on the
+same fuse (about 36 s a pass on fr019). Now the faces are sewn edge to edge (BRepBuilderAPI_Sewing at ten times the
+sewing tolerance: it joins edges lying on each other and cuts no face), and once the fuse has failed on a body its
+passes sew that way at once. Tried and dropped: the fuse again at 2 and 10 times its tolerance (176 s on fr019, never
+sewing), and OpenCASCADE's glue, oriented-box and no-inverted-check options (all failed; full glue dropped faces).
+fr018 goes from 53 open edges to 18 and fr019 from 13 to 2. What is left is not a junction rule's: on fr019 both edges
+are a wall that goes on unshelled (113 mm, the walls class); on fr018 five are that class and 13 are steps and gaps
+between pieces of its cone wall, where the passes make their strips but a strip whose far end lands inside another
+face cannot be sewn edge to edge - it needs the general fuse that fails there.
+
+**SHELL-35, square corners where the strips leave a junction open.** The passes after the joins run SHELL-13 (a
+ruled strip from an open edge to the nearest edge of another mid-face, at whatever angle) first, then SHELL-30 and
+SHELL-22. A corner SHELL-13 closes is closed by a strip laid across it, off both walls' surfaces (31 files, 16.3 m of
+such kinks on #437). When that order leaves a junction open, a second order runs: SHELL-30, then SHELL-22 only where
+the edge carried on in its own surface meets the other wall's surface, then SHELL-13 and SHELL-22's nearest points;
+the one leaving fewer junctions open, read as the record reads them (SHELL-21), is kept, the old one on a tie.
+Measured and not kept: the square order as the rule (taking ties itself) took four fully good parts out of Nastran's
+limits (t0039, t0052, r0008, r0053: 1 to 9 elements in the new corners' strips), and judged before SHELL-21's
+reading it left two enclosures (e0004, e0032) open that the old order closes. So the strips laid across corners
+mostly stay; drawing those corners square without the strips' Nastran cost is still open.
+
+**Decks in plain ASCII.** Two census files whose names held a non-ASCII letter lost their shell mesh whole: the
+deck's comment line naming the source file could not be written as ASCII. The three decks now write an accented
+letter as its plain letter and any other non-ASCII character as "_" (engines/shell_writers.py).
+
+**Accuracy through a step** (CalculiX, one thread, free-free modes 7 to 12, S4 shell of the sewn mid-surface against
+C3D10 of the CAD; a 160 x 100 x 6 mm plate with a 60 x 40 pocket to a 3 mm floor): the step as SHELL-7's offset +0.8
+to +2.5%; the step closed by strips, as r0061's pocket steps are, -0.6 to +1.6%.
+
+**Results (11 Nov; lab VM, #437 alone and this branch side by side, 15 files at once each).** "Fully good": a shell
+found, every extraction check, a valid mesh inside all Nastran limits.
+
+| set | fully good | files with open edges | open edges | files that mesh | inside Nastran | skin coverage (mean of files) |
+|---|---|---|---|---|---|---|
+| lab (87) | 72 to 71 | 0 to 2 | 0 to 20 | 81 to 80 | 72 to 71 | 96.8 to 98.2% |
+| wall set (60) | 36 to 36 | 1 to 1 | 1 to 1 | 39 to 39 | 37 to 37 | 85.2 to 87.7% |
+| new set (135) | 80 to 81 | 7 to 5 | 30 to 24 | 91 to 92 | 86 to 86 | 77.1 to 78.5% |
+
+- Every verdict change: fr019 fully good to 2 open edges (on #437 alone 90% of its walls were missing: coverage 25.7
+  to 79.8%; both edges are a wall that goes on unshelled); fr018 from past Nastran's limits to 18 open edges (coverage
+  65.1 to 94.6%; 5 of the walls class, 13 where the general fuse fails, above) and its mesh past 15 minutes; e0003
+  from no shell to a shell past Nastran's limits (a wall the walls round found); t0033 4 open edges to closed, past
+  Nastran's limits; t0048 1 open edge to fully good; t0032 11 to 9; e0007 3 to 4 (a new wall's two leftovers).
+  d040 (85 to 2 open edges in an earlier run of this code) stopped at its 1800 s deadline in both runs here.
+- Skin coverage went down on no file of the 228 with thin-wall skin; 18 files went up by a point or more.
+- The same twice: the 247 files whose record differs from #437's were run again: 247 records and 247 surface files the
+  same, and the three decks byte for byte the same on all 190 that mesh.
+- Time: extraction and mesh 1.01 times #437's on the wall set, 1.39 on the lab, 0.91 on the new set. Files over 1.5
+  times slower: fr019 9.9x, sh0014 6.1x, sh0012 2.6x, fr018 2.4x, e0003 2.9x, r0019 2.0x, r0061 1.6x - all parts where
+  the walls round found more walls (it reports fr019 11.7x, sh0014 6.2x, sh0012 1.7x, r0019 1.6x, r0061 1.6x on #441
+  alone); fr018's mesh runs to the 15-minute stop on its edge-sewn surface.
+- Census DEV (305 public files, the scorer's verdicts, #437 alone against this branch): fully good 123 to 125; open
+  junction 18 to 17; mesh failed 8 to 7; extra shell 4 to 3. 12 files moved on (r0033 and r0443, open junctions of 38
+  and 1,564 edges, now fully good), 6 moved back: s0046 (1 element past Nastran's limits; its record is #441's own,
+  made the same without these rules), s0084 (the same mesh, 33,057 elements; 604 s against 542 s, past the scorer's
+  time limit on a loaded VM), s0163 (135 open edges closed by SHELL-33, and its mesh then runs past 15 minutes), r0368
+  (3,036 open edges to 1,480, read as a wall missing), r0134 and s0102.
+- Two parts the plates round (#449) shells: r0228, whose new plates left 89 open edges (kept solid by #449's guard,
+  56 open), is closed by SHELL-33 on this branch merged with #449: 0 open edges, valid and inside Nastran's limits.
+  r0399, a keyboard plate, has 1 open edge with and without these rules on the lab VM (the census counted 467 on
+  #449); its extraction runs to its 1500 s work budget (two of its bodies get no general join), so what the census
+  saw is the budget, not a junction class.
+
 ### 2.5 Assemblies and mixed parts (PR 3)
 
 **Bonded plates in different bodies:**
