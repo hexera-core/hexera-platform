@@ -356,6 +356,7 @@ def test_a_thick_block_lends_no_size_to_a_short_plate_on_it():
 
 def test_where_mid_faces_do_not_meet_the_region_is_meshed_solid_and_said_so(monkeypatch):
     monkeypatch.setattr(ms, "CLOSE_STRIPS", False)   # the join itself under test, no SHELL-13 strips
+    monkeypatch.setattr(ms, "CLOSE_GAPS", False)     # ... and no SHELL-22 strips
     monkeypatch.setattr(ms, "snap_steps", lambda *_a, **_k: None)   # leave the butt step open
     rec, _ = ms.extract(sf.butt_step(6.0, 3.0), mm_per_unit=1.0)
     regions = rec["fallback_regions"]
@@ -385,6 +386,7 @@ def test_the_general_join_closes_what_the_straight_one_cannot(name):
 
 def test_each_join_alone_is_held_to_the_same_parts(monkeypatch):
     monkeypatch.setattr(ms, "CLOSE_STRIPS", False)   # the join itself under test, no SHELL-13 strips
+    monkeypatch.setattr(ms, "CLOSE_GAPS", False)     # ... and no SHELL-22 strips
     # the straight join alone leaves the tube on its plate open; the general join closes it
     monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
     rec, _ = ms.extract(sf.tube_on_plate(), mm_per_unit=1.0)
@@ -403,6 +405,7 @@ def test_the_general_join_in_its_own_process_gives_the_same_record(monkeypatch):
 
 def test_a_general_join_past_its_deadline_is_stopped_and_the_straight_join_stands(monkeypatch):
     monkeypatch.setattr(ms, "CLOSE_STRIPS", False)   # the join itself under test, no SHELL-13 strips
+    monkeypatch.setattr(ms, "CLOSE_GAPS", False)     # ... and no SHELL-22 strips
     import time as _time
 
     def slow(*_a, **_k):
@@ -430,6 +433,7 @@ def test_a_junction_stopped_short_is_still_open(monkeypatch):
     monkeypatch.setattr(ms, "extend", lambda *a, **k: None)
     monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
     monkeypatch.setattr(ms, "CLOSE_STRIPS", False)
+    monkeypatch.setattr(ms, "CLOSE_GAPS", False)     # ... and no SHELL-22 strips
     rec, _ = ms.extract(sf.l_angle(5.0, 5.0), mm_per_unit=1.0)
     assert _sewn(rec)["open_edges"] >= 1
 
@@ -595,6 +599,7 @@ def test_a_slit_narrower_than_the_open_step_is_a_real_cut():
 
 def test_a_general_join_that_loses_mid_faces_is_not_used(monkeypatch):
     monkeypatch.setattr(ms, "CLOSE_STRIPS", False)   # the join itself under test, no SHELL-13 strips
+    monkeypatch.setattr(ms, "CLOSE_GAPS", False)     # ... and no SHELL-22 strips
     # a join that comes back without its mid-faces has no free edge left to count: it must not win on that
     real = ms.join_body
 
@@ -923,6 +928,7 @@ def test_an_extraction_past_its_work_budget_fails_fast_in_words(tmp_path):
 def test_a_general_join_gets_only_what_is_left_of_the_budget(monkeypatch):
     # SHELL-18: with under JOIN_MIN_S left after the reserve, no general join starts; the straight join stands
     monkeypatch.setattr(ms, "CLOSE_STRIPS", False)
+    monkeypatch.setattr(ms, "CLOSE_GAPS", False)     # ... and no SHELL-22 strips
     monkeypatch.setattr(ms, "JOIN_RESERVE_S", 1e9)
     rec, _ = ms.extract(sf.tube_on_plate(), mm_per_unit=1.0)
     assert rec["sewn"][0]["join"] == "straight"
@@ -1096,3 +1102,114 @@ def test_bodies_touching_face_to_face_are_not_read_by_angle():
 
     loose = ms._faces(ms._compound([_box(0, 0, 0, 100, 60, 3), _box(100, 0, 0, 100, 60, 3)]))
     assert ms._solids_by_angle(loose, 1e-4, 0.1) is None
+
+
+# ---- SHELL-21, SHELL-22: what lies past an edge, and junctions the joins left open -------------------------------
+def _no_general(monkeypatch):
+    monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
+
+
+@pytest.mark.parametrize("t2", [1.98, 1.7, 1.2])
+def test_a_tube_whose_wall_steps_is_one_shell_across_the_step(t2, monkeypatch):
+    # SHELL-22: two mid-cylinders in line, half the step apart - from far inside a hundredth of a wall to a fifth
+    rec, _ = ms.extract(sf.stepped_tube(20.0, 2.0, t2, 200.0), mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
+    assert _sewn(rec)["open_edges"] == 0 and not rec["fallback_regions"]
+    assert any("SHELL-22" in n for n in rec["notes"])
+    _all_checks(rec)
+    monkeypatch.setattr(ms, "CLOSE_GAPS", False)
+    before, _ = ms.extract(sf.stepped_tube(20.0, 2.0, t2, 200.0), mm_per_unit=1.0)
+    assert _sewn(before)["open_edges"] == 2
+
+
+def test_a_t_joint_no_join_reached_is_closed_edge_by_edge(monkeypatch):
+    # SHELL-22: with neither join allowed to extend and no SHELL-13 strip, the web is carried down to the plate's
+    # mid-plane and the plate's two pieces across to the web's - the surface the straight extension makes
+    monkeypatch.setattr(ms, "extend", lambda *a, **k: None)
+    _no_general(monkeypatch)
+    monkeypatch.setattr(ms, "CLOSE_STRIPS", False)
+    tp, ts = 5.0, 4.0
+    rec, surface = ms.extract(sf.t_joint(tp, ts), mm_per_unit=1.0)
+    row = _sewn(rec)
+    assert row["open_edges"] == 0 and row["junction_edges"] >= 1
+    assert any("SHELL-22" in n for n in rec["notes"])
+    # the whole 200 x 100 mid-plane and the web from z = tp / 2 to its top, as test_a_t_joint_is_sewn_on_one_line
+    assert _sewn_area(surface) == pytest.approx(200 * 100 + (60 + tp / 2) * 100, rel=REL)
+
+
+@pytest.mark.parametrize("name", ["tube_on_plate", "l_angle"])
+def test_junctions_of_other_kinds_no_join_reached_are_closed_edge_by_edge(name, monkeypatch):
+    # SHELL-22: a cylinder's end circle carried along its axis to the plate; an L's two legs each to the other's plane
+    monkeypatch.setattr(ms, "extend", lambda *a, **k: None)
+    _no_general(monkeypatch)
+    monkeypatch.setattr(ms, "CLOSE_STRIPS", False)
+    rec, _ = ms.extract(getattr(sf, name)(), mm_per_unit=1.0)
+    assert _sewn(rec)["open_edges"] == 0
+    assert any("SHELL-22" in n for n in rec["notes"])
+
+
+@pytest.mark.parametrize("name", ["knife_plate", "round_ended_plate"])
+def test_a_plate_bevelled_or_rounded_at_its_end_has_a_free_edge_there(name, monkeypatch):
+    # SHELL-21: the plate's two faces stop facing each other before the plate ends; with no join to run the mid-face
+    # on to the tip, the metal past its edge is the plate's own end - a real free edge, not a gap
+    _no_general(monkeypatch)
+    rec, _ = ms.extract(getattr(sf, name)(), mm_per_unit=1.0)
+    row = _sewn(rec)
+    assert row["open_edges"] == 0 and row["rim_edges"] == 1 and row["boundary_edges"] == 4
+    assert not rec["fallback_regions"]
+    monkeypatch.setattr(ms, "PAST_EDGE", False)
+    before, _ = ms.extract(getattr(sf, name)(), mm_per_unit=1.0)
+    assert _sewn(before)["open_edges"] == 1
+
+
+def _quad(*pts):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.gp import gp_Pnt
+
+    poly = BRepBuilderAPI_MakePolygon()
+    for p in pts:
+        poly.Add(gp_Pnt(*map(float, p)))
+    poly.Close()
+    return BRepBuilderAPI_MakeFace(poly.Wire()).Face()
+
+
+def test_an_edge_running_into_thicker_metal_is_a_solid_link_in_a_mixed_body_only():
+    # SHELL-21, read on the part itself: a plate's mid-face ending where a block starts, with none of the block's
+    # faces handed to the census (as when its faces beside the edge are chamfers named rim or blend)
+    t = 2.0
+    body = sf.plate_into_block(t)
+    mid = _quad((0, 0, t / 2), (170, 0, t / 2), (170, 100, t / 2), (0, 100, t / 2))
+    solid = ms._Solid(body, 1e-3 * t, wall=t)
+    mixed = ms.edge_census(ms._compound([mid]), {1: t}, solid, scale=1.0, mixed=True)
+    assert mixed["open_edges"] == 0 and mixed["solid_link_edges"] == 1 and mixed["bulk_link_edges"] == 1
+    assert mixed["boundary_edges"] == 3
+    # a body with no thick region has nothing to link to: the same edge stays open
+    shell = ms.edge_census(ms._compound([mid]), {1: t}, solid, scale=1.0, mixed=False)
+    assert shell["open_edges"] == 1 and shell["solid_link_edges"] == 0
+    # ... and the join is still judged by it (a join that meets the walls themselves is preferred)
+    assert ms._unjoined(mixed) == 1 and ms._unjoined(shell) == 1
+
+
+def test_an_edge_with_a_shell_wall_ahead_stays_open_whatever_the_body():
+    # SHELL-21 never takes a junction the join did not close for a link or a free edge: a web stopped at its
+    # plate's face, the plate's mid-face half a plate further on
+    tp, ts = 5.0, 4.0
+    body = sf.t_joint(tp, ts)
+    plate = _quad((0, 0, tp / 2), (200, 0, tp / 2), (200, 100, tp / 2), (0, 100, tp / 2))
+    web = _quad((100, 0, tp), (100, 100, tp), (100, 100, tp + 60), (100, 0, tp + 60))
+    solid = ms._Solid(body, 1e-3 * ts, wall=ts)
+    for mixed in (True, False):
+        row = ms.edge_census(ms._compound([plate, web]), {1: tp, 2: ts}, solid, scale=1.0, mixed=mixed)
+        assert row["open_edges"] == 1 and row["solid_link_edges"] == 0 and row["rim_edges"] == 0
+
+
+def test_the_closed_junctions_are_the_same_twice(tmp_path):
+    for k, shape in enumerate((sf.stepped_tube(20.0, 2.0, 1.7, 200.0), sf.round_ended_plate())):
+        path = sf.write_step(shape, tmp_path / f"part{k}.step")
+        out = []
+        for run in range(2):
+            rec = ms.extract_file(path, tmp_path / f"p{k}r{run}", mm_per_unit=1.0)
+            rec.pop("seconds")
+            out.append((json.dumps(rec, sort_keys=True), (tmp_path / f"p{k}r{run}" / ms.SURFACE_FILE).read_bytes()))
+        assert out[0] == out[1]
+        assert sum(s["open_edges"] for s in json.loads(out[0][0])["sewn"]) == 0

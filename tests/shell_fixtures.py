@@ -479,6 +479,36 @@ def pipe_branch(R: float = 40.0, ratio: float = 1.0, angle_deg: float = 90.0, t:
     return _cut(_cut(outer, cyl(R - t, run + 2, (0, 0, -run / 2 - 1), z)), cyl(r - t, 130.0, (0, 0, 0), d))
 
 
+def stepped_tube(r_out: float = 20.0, t1: float = 2.0, t2: float = 1.7, length: float = 200.0):
+    """A round tube whose wall steps from `t1` to `t2` halfway along, flush outside: two mid-cylinders in line,
+    (t1 - t2) / 2 apart."""
+    r1, r2, half = r_out - t1, r_out - t2, length / 2
+    return _revolved([(r1, 0), (r_out, 0), (r_out, length), (r2, length), (r2, half), (r1, half)])
+
+
+def _prism_xz(pts, width: float = 100.0):
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Vec
+
+    return BRepPrimAPI_MakePrism(_profile_xz(pts), gp_Vec(0, width, 0)).Shape()
+
+
+def knife_plate(t: float = 6.0, c: float = 3.0):
+    """A 200 x 100 plate `t` thick whose one end is bevelled from both faces to a knife edge, `c` long: its two
+    faces stop `c` short of its end."""
+    return _prism_xz([(0, 0), (200 - c, 0), (200, t / 2), (200 - c, t), (0, t)])
+
+
+def round_ended_plate(t: float = 4.0):
+    """A 200 x 100 plate `t` thick whose one end is rounded over its whole thickness (radius t / 2)."""
+    return _fuse(_box(0, 0, 0, 200, 100, t), _cyl(200, 0, t / 2, t / 2, 100, axis=(0, 1, 0)))
+
+
+def plate_into_block(t: float = 2.0, hb: float = 20.0):
+    """A 170 x 100 plate `t` thick running into a block 30 long and `hb` high, flush underneath."""
+    return _prism_xz([(0, 0), (200, 0), (200, hb), (170, hb), (170, t), (0, t)])
+
+
 def write_iges(shape, path: Path | str) -> Path:
     """The shape as an IGES file of trimmed surfaces (OpenCASCADE's faces mode: no B-rep topology), as most CAD
     systems write IGES."""
