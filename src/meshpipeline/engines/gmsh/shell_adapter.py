@@ -87,6 +87,14 @@ STRIP_LONG = 1.5
 EVEN = True
 #: SHMESH-3/4 through gmsh's own curvature sizing: elements per full turn of every curve and curved face
 PER_TURN = 4 * plan_rules.CURVE_PER_QUARTER
+#: SHMESH-27 (under the user's own sizes only): the size beside a CAD edge shorter than the size, and on a face
+#: narrower than it, is held at shell_plan.FEATURE_RATIO times the feature and grown from there
+FEATURE_SIZES = True
+FEATURE_EDGES = True
+FEATURE_FACES = True
+#: ... but not at the corners of a mapped strip (a mapped grid cannot grade), and no strip is left free for one
+FEATURE_AT_STRIPS = False
+FEATURE_UNMAP = False
 
 
 class _Periodic(Exception):
@@ -201,7 +209,8 @@ def _arc_radius(gmsh, curve: int) -> float | None:
 
 
 def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
-                sizing: dict | None = None) -> dict[int, tuple[tuple[int, ...], float]]:
+                sizing: dict | None = None, fine_at: dict[int, float] | None = None
+                ) -> dict[int, tuple[tuple[int, ...], float]]:
     """SHMESH-16: every narrow four-sided strip (a bend, a flange, a strip between holes: its two long sides alike in
     length, its two ends alike, the long sides at least STRIP_LONG times the ends) is meshed as a mapped grid of
     quads - its planned size across it, and along it the size of the faces beside its long sides, at most
@@ -223,7 +232,9 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
     size_of = {t: rows[k]["size_mm"] / mm for t, k in tag_of.items()}
     for t, k in sorted(tag_of.items()):
         flat = gmsh.model.getType(2, t) == "Plane"
-        if (rows[k]["rule"] == "SHMESH-15" or (flat and not MAP_FLAT)
+        # SHMESH-27: under the user's sizes a flat strip narrower than its size (one element across) is mapped too
+        user_flat = flat and sizing is not None and FEATURE_SIZES
+        if (rows[k]["rule"] == "SHMESH-15" or (flat and not MAP_FLAT and not user_flat)
                 or len(gmsh.model.getBoundary([(2, t)], oriented=False)) != 4):
             continue
         sides = sorted({abs(c) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)})
@@ -247,8 +258,10 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
         if min(la) < STRIP_LONG * max(lb) or max(lb) * mm >= plan_rules.PANEL_WALLS * rows[k]["wall_mm"]:
             continue
         across = size_of[t]
+        if user_flat and not MAP_FLAT and max(lb) >= across:
+            continue
         beside = [size_of[s] for c in a for s in gmsh.model.getAdjacencies(1, c)[0] if s != t and s in size_of]
-        stretch = STRETCH_FLAT if flat else STRETCH_MAX
+        stretch = STRETCH_FLAT if flat and not user_flat else STRETCH_MAX
         if sizing is not None and sizing.get("stretch") is not None:
             stretch = min(stretch, max(1.0, float(sizing["stretch"])))
         along = min([stretch * across] + beside)
@@ -263,6 +276,13 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
             if high is not None:
                 along = min(along, 0.98 * high / mm)
             along = max(along, min(across, seg))
+        if fine_at:
+            # SHMESH-27: a mapped grid cannot grade. A strip with a smaller piece of the CAD at one of its corners
+            # (sized more than one growth step under the strip's own elements) stays free, and grades down to it:
+            # mapped, a tube corner's 10 mm elements fanned out of a 0.5 mm face at its end (sh0110)
+            near = min((fine_at.get(p, math.inf) for c in sides for p in ends[c]), default=math.inf)
+            if near * plan_rules.GROWTH < min(along, max(lb) / max(1, math.ceil(max(lb) / across - 1e-9))) * mm:
+                continue
         n_b = max(1, math.ceil(max(lb) / across - 1e-9))
         n_a = max(1, math.ceil(max(la) / along - 1e-9))
         n_a = count.get(a[0], count.get(a[1], n_a))
@@ -633,6 +653,10 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                                   for f in facts])
     if sizing is not None:
         planned = sizing["planned"]
+    # SHMESH-27 (the user's sizes only): a face narrower than their size is sized to its own width
+    narrow = _narrow_faces(rows, facts, mm, planned) if sizing is not None and FEATURE_SIZES else None
+    if narrow is not None:
+        planned = narrow["planned"]
     finest = (sizing or {}).get("floor_mm")
     growth = float((sizing or {}).get("growth") or plan_rules.GROWTH)
     if planned > PLANNED_MAX:
@@ -714,8 +738,14 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             gmsh.model.mesh.field.setNumber(thr, "DistMax", (top - h0) / (growth - 1.0))
             fields.append(thr)
 
+        # SHMESH-27: an edge of the CAD shorter than the size of the faces it bounds is graded down to
+        short_edges = _short_edges(gmsh, tag_of, rows, mm) if narrow is not None else None
         # SHMESH-16: narrow four-sided strips (bends, flanges) are mapped, their elements stretched along them
-        mapped = _map_strips(gmsh, tag_of, rows, mm, sizing) if MAP_STRIPS and kind != "triangles" else {}
+        mapped = (_map_strips(gmsh, tag_of, rows, mm, sizing,
+                              fine_at=short_edges["fine_at"] if short_edges and FEATURE_UNMAP else None)
+                  if MAP_STRIPS and kind != "triangles" else {})
+        if short_edges is not None and mapped and not FEATURE_AT_STRIPS:
+            _spare_strip_corners(gmsh, tag_of, rows, mapped, narrow, short_edges)
         # SHMESH-6: a face finer than the coarsest grades its neighbours from its own edges (a mapped strip's long
         # sides from its size along them)
         rims: dict[float, list[int]] = {}
@@ -747,6 +777,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                             rows[k]["size_mm"] if sizing.get("global_mm") is not None else h0))
                     if h0 < rows[k]["size_mm"]:
                         arcs_by.setdefault(float(f"{h0:.6g}"), []).append(abs(c))
+        if short_edges is not None:
+            for h, curves in short_edges["by_size"].items():
+                arcs_by.setdefault(h, []).extend(curves)
         for h_mm, surfs in sorted(const_by.items()):
             fid = gmsh.model.mesh.field.add("Constant")
             gmsh.model.mesh.field.setNumber(fid, "VIn", h_mm / mm)
@@ -970,10 +1003,116 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                               "inside it (SHMESH-25).")
         if sizing is not None:
             out["sizing"] = sizing
+            if narrow is not None and (narrow["widths"] or short_edges["edges"]):
+                smallest = float(f"{min([*narrow['widths'].values(), *short_edges['lengths'].values()]):.4g}")
+                sizing["features"] = {"rule": "SHMESH-27", "faces": len(narrow["widths"]),
+                                      "edges": short_edges["edges"], "smallest_mm": smallest}
+                mesh.notes.append(
+                    f"Your CAD has {short_edges['edges']} edge(s) and {len(narrow['widths'])} face(s) smaller than "
+                    f"the element size you asked for (the smallest is {smallest:g} mm). The mesh is finer around "
+                    "them, so the elements there keep a good shape (SHMESH-27).")
         asked = SR.report(mesh, requirements, sizing)
         if asked is not None:
             out["requirements"] = asked
     return mesh, out
+
+
+def _narrow_faces(rows: list[dict], facts: list[dict], mm: float, planned: float) -> dict | None:
+    """SHMESH-27, faces: under the user's sizes every face narrower than 1 / FEATURE_RATIO of its size (its strip
+    width: twice its area over its perimeter) is sized to FEATURE_RATIO times its own width, in place - a 0.3 mm
+    step strip at a 3 mm size was one row of elements ten times as long as wide. Returns {"faces": how many,
+    "narrowest_mm", "planned"}; None (rows untouched) when the finer plan would pass SHMESH-20's most elements."""
+    new: dict[int, float] = {}
+    widths: dict[int, float] = {}
+    for k, (f, r) in enumerate(zip(facts, rows, strict=True)):
+        if not FEATURE_FACES:
+            break
+        width = min(f["width"], f["box_width"]) if f["box_width"] > 0 else f["width"]
+        h = plan_rules.feature_size(width, size=r["size_mm"], wall=r["wall_mm"], ratio=plan_rules.FEATURE_FACE_RATIO)
+        if h is not None:
+            new[k] = h
+            widths[k] = width
+    extra = sum(facts[k]["area"] * mm * mm * (1.0 / h ** 2 - 1.0 / rows[k]["size_mm"] ** 2) for k, h in new.items())
+    if planned + extra > PLANNED_MAX:
+        return None
+    was = {k: dict(rows[k]) for k in new}
+    for k, h in new.items():
+        rows[k]["size_mm"] = h
+        if rows[k].get("curve_mm", 0.0) >= h:
+            rows[k].pop("curve_mm", None)
+        rows[k]["rule"] = f"{rows[k]['rule']}+SHMESH-27"
+    return {"was": was, "widths": widths, "planned": planned + extra}
+
+
+def _spare_strip_corners(gmsh, tag_of: dict[int, int], rows: list[dict], mapped: dict, narrow: dict,
+                         short_edges: dict) -> None:
+    """SHMESH-27: a mapped grid cannot grade, so a smaller piece of the CAD at a mapped strip's corner is left at the
+    size it had: a short edge ending there is not graded to, a narrow face (not itself mapped) with a corner there
+    takes its size back. Graded, a tube corner's 10 mm mapped elements fanned out of a 0.5 mm face at its end
+    (sh0110: 30 triangles under 20 degrees became 168); left free, the strips lost their grids (899)."""
+    def points(c: int) -> set[int]:
+        return {abs(int(p)) for _d, p in gmsh.model.getBoundary([(1, c)], oriented=False)}
+
+    def curves(t: int) -> list[int]:
+        return [abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)]
+
+    corners: set[int] = set()
+    for t in mapped:
+        for c in curves(t):
+            corners |= points(c)
+    for h in list(short_edges["by_size"]):
+        keep = [c for c in short_edges["by_size"][h] if not (points(c) & corners)]
+        for c in short_edges["by_size"][h]:
+            if c not in keep:
+                short_edges["lengths"].pop(c, None)
+        short_edges["edges"] = len(short_edges["lengths"])
+        if keep:
+            short_edges["by_size"][h] = keep
+        else:
+            del short_edges["by_size"][h]
+    face_tag = {k: t for t, k in tag_of.items()}
+    for k in sorted(narrow["was"]):
+        t = face_tag.get(k)
+        if t is None or t in mapped:
+            continue
+        if any(points(c) & corners for c in curves(t)):
+            rows[k].clear()
+            rows[k].update(narrow["was"].pop(k))
+            narrow["widths"].pop(k)
+
+
+def _short_edges(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float) -> dict:
+    """SHMESH-27, edges: every edge of the CAD shorter than 1 / FEATURE_RATIO of the size of the faces it bounds
+    takes FEATURE_RATIO times its own length as the size beside it (grown from there by the grading fields). The
+    edge itself still gets one segment. Returns {"by_size": {size mm: [curves]}, "edges", "lengths": {curve: mm},
+    "fine_at": {CAD vertex: the finest size (mm) a feature gives beside it - a short edge ending there, a narrow
+    face (one SHMESH-27 sized) it is a corner of}}."""
+    by_size: dict[float, list[int]] = {}
+    fine_at: dict[int, float] = {}
+    lengths: dict[int, float] = {}
+
+    def ends(c: int) -> list[int]:
+        return [abs(int(p)) for _d, p in gmsh.model.getBoundary([(1, c)], oriented=False)]
+
+    for _d, c in gmsh.model.getEntities(1):
+        faces = [int(t) for t in gmsh.model.getAdjacencies(1, c)[0] if int(t) in tag_of]
+        if not faces or not FEATURE_EDGES:
+            continue
+        for t in faces:
+            if "SHMESH-27" in rows[tag_of[t]]["rule"]:
+                for p in ends(int(c)):
+                    fine_at[p] = min(fine_at.get(p, math.inf), float(rows[tag_of[t]]["size_mm"]))
+        size = min(rows[tag_of[t]]["size_mm"] for t in faces)
+        wall = min(rows[tag_of[t]]["wall_mm"] for t in faces)
+        length = float(gmsh.model.occ.getMass(1, c)) * mm
+        h = plan_rules.feature_size(length, size=size, wall=wall)
+        if h is None:
+            continue
+        by_size.setdefault(float(f"{h:.6g}"), []).append(int(c))
+        for p in ends(int(c)):
+            fine_at[p] = min(fine_at.get(p, math.inf), h)
+        lengths[int(c)] = length
+    return {"by_size": by_size, "edges": len(lengths), "fine_at": fine_at, "lengths": lengths}
 
 
 def _count_plan(rows: list[dict], planned: float, target: dict | None, correction: float) -> tuple[dict | None, float]:
