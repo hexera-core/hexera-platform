@@ -493,6 +493,27 @@ def declaration_words(settled: dict | None) -> str:
     return f"{head} {why}".strip()
 
 
+def declared_shell(messages) -> bool:
+    """Whether the conversation's latest geometry declaration settled a SHELL (plates only, no tetrahedra): a part
+    meshed as a shell or a surface file (SURF-6) - never shell + solid, which has tetrahedra in its thick regions."""
+    from meshpipeline.application.geometry_confirmation import _is_declaration
+
+    for m in reversed(list(messages or [])):
+        if isinstance(m, dict) and _is_declaration(m):
+            text = str(m.get("content") or "")
+            return SHELL_HEAD in text or SURFACE_HEAD in text
+    return False
+
+
+#: The words of a solid tetrahedral mesh, which a shell run's summary must never promise (the intake's FEA path wrote
+#: "Generate a quadratic tetrahedral structural mesh ..." for a surface file meshed as a shell)
+TET_WORDS = re.compile(r"\b(?:tetrahedr\w*|tets?|10-node|ten-node|c3d10|solid187|ctetra|quadratic)\b", re.I)
+#: How a shell run's summary says its mesh instead
+SHELL_SUMMARY = ("a shell mesh - plate elements (linear 4-node quads, a few 3-node triangles) on the part's "
+                 "mid-surface, or on the surface itself for a surface file, each carrying its wall thickness, every "
+                 "face kept as a named group")
+
+
 def card_mesh_as(declaration: str) -> str:
     """The request card's "Mesh as" row, read from the conversation's FEA declaration (its head, written by
     declaration_words at Proceed): a label for a shell or shell + solid, "" for a solid or none. Pure."""
@@ -554,6 +575,7 @@ def confirmed_mesh_as(session_id: str, notes=None) -> str:
 
 
 __all__ = ["CARD_LABELS", "MEASURING", "MIXED_ELEMENTS", "NOTHING_TO_SHELL", "QUESTION", "READY", "SHELL_CHECK_LIMIT_S",
-           "SHELL_ELEMENTS", "TRIANGLES_WHY", "UNAVAILABLE", "card_engine_settings", "card_mesh_as", "confirmed_mesh_as",
+           "SHELL_ELEMENTS", "SHELL_SUMMARY", "TET_WORDS", "TRIANGLES_WHY", "UNAVAILABLE", "card_engine_settings",
+           "card_mesh_as", "declared_shell", "confirmed_mesh_as",
            "declaration_words", "is_cad", "not_shelled", "solid_short", "read_status", "run_shell_check", "said_of", "settle",
            "shell_view", "start", "start_if_asked", "state_of", "summarise", "view_for", "wants_shell"]

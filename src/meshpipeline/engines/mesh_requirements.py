@@ -185,10 +185,14 @@ def tool() -> dict:
 
 
 def notes_text(state: Mapping) -> str:
-    """The user's own words this step reads: the notes (word for word) and the request's words beyond them."""
-    from meshpipeline.cad.part_words import notes_text as _words
+    """THE USER'S OWN WORDS, and only those (NOTE-7): what they typed in the notes box and their own chat messages
+    as kept (contracts/user_notes.own_notes), word for word. Never the intake's summary of the request
+    (request_txt, a model's rewrite: on a shell run it read "Generate a quadratic tetrahedral structural mesh ...",
+    and was told back to the user as a note "not applied"), the geometry declaration, the confirmation card or any
+    text the application wrote - so a "Not applied" line can only ever quote the user."""
+    from meshpipeline.contracts.user_notes import own_notes, render
 
-    return _words(state)
+    return render(own_notes((state or {}).get("user_notes") or []))
 
 
 def wanted(state: Mapping) -> bool:
@@ -198,12 +202,12 @@ def wanted(state: Mapping) -> bool:
 
 def messages_for(state: Mapping, *, route: str = "") -> list[dict]:
     """What the model is shown, as plain data in a fixed order (the decision cache keys the round by it)."""
-    from meshpipeline.cad.part_words import request_beyond_notes
-    from meshpipeline.contracts.user_notes import prompt_block
+    from meshpipeline.contracts.user_notes import own_notes, prompt_block
 
     s = state or {}
-    shown = {"mesh_for": route, "user_request": request_beyond_notes(s)[:MAX_CHARS // 2],
-             "user_notes": prompt_block(s.get("user_notes") or [], consumer="mesh_requirements", limit=MAX_CHARS)}
+    shown = {"mesh_for": route,
+             "user_notes": prompt_block(own_notes(s.get("user_notes") or []), consumer="mesh_requirements",
+                                        limit=MAX_CHARS)}
     return [{"role": "system", "content": SYSTEM},
             {"role": "user", "content": json.dumps(shown, sort_keys=True, separators=(",", ":"))}]
 
@@ -305,8 +309,11 @@ def _locate(quote: str, notes: str) -> str | None:
 
 
 #: words that make a left-over clause one about the mesh (NOTE-8's floor)
-_MESH_WORDS = re.compile(r"\b(?:mesh\w*|elements?|nodes?|quads?|trias?|triangles?|tets?|tetrahedr\w+|hex\w*|"
+_MESH_WORDS = re.compile(r"\b(?:elements?|nodes?|quads?|trias?|triangles?|tets?|tetrahedr\w+|hex\w*|"
                          r"layers?|refine\w*|coarse\w*|jacobian|warp\w*|aspect|skew\w*|taper|washers?)\b", re.I)
+#: ... but a clause about WHAT to mesh the part as (shell or solid, FEA or CFD, the analysis) is another reader's
+#: (SHSTAGE, the purpose map), never a setting left out: "FEA shell mesh of this part" is not told as not applied
+_MESH_AS = re.compile(r"\b(?:shell|mid-?surface|solid|fea|cfd|structural|static|modal|buckling|analysis)\b", re.I)
 _MARKER = re.compile(r"^(?:\[n\d+\]\s*\(.*\)|<<<|>>>|\.\.\. \(cut here.*)$")
 
 
@@ -331,9 +338,24 @@ def _left_over(notes: str, quotes: list[str]) -> list[str]:
     for run in runs:
         for piece in re.split(r"[.;!?。；]+\s+|[.;!?。；]+$", run):
             piece = re.sub(r"^(?:[\s,:\-–]+|(?:but|and|also|then)\b)+", "", piece.strip(), flags=re.I).strip(" ,:-–")
-            if len(piece.split()) >= 4 and _MESH_WORDS.search(piece) and piece not in out:
+            if (len(piece.split()) >= 4 and _MESH_WORDS.search(piece) and not _MESH_AS.search(piece)
+                    and piece not in out):
                 out.append(piece[:400])
     return out
+
+
+#: "no triangles", "without quads", "avoid trias": the user's words say which kind is NOT wanted
+_NO_KIND = re.compile(r"\b(?:no|without|avoid|zero|never|not)\s+(?:\w+\s+){0,2}?(tri\w*|quad\w*)", re.I)
+
+
+def _kind_said(what: str, quote: str) -> str:
+    """The element kind the user's words say, when they name one they do NOT want: "no triangles" is quads only
+    and "no quads" triangles only, whatever the model read (it read "no triangles" as triangles only on 3 of 10
+    tries). Any other entry is left as read."""
+    m = _NO_KIND.search(str(quote or ""))
+    if m is None or what not in ("quads_only", "triangles_only"):
+        return what
+    return "quads_only" if m.group(1).lower().startswith("tri") else "triangles_only"
 
 
 def _short(quote: str) -> str:
@@ -517,7 +539,7 @@ def _check(arguments: str, notes: str) -> tuple[dict, list[str], list[str]]:
         if got is None:
             continue
         quote, numbers = got
-        what, tag = str(e.get("what") or ""), f'"{_short(quote)}"'
+        what, tag = _kind_said(str(e.get("what") or ""), quote), f'"{_short(quote)}"'
         k = out["kind"]
         if what not in KINDS:
             dropped.append(f"{tag}: not an element kind this step reads: not applied")

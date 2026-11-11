@@ -4244,6 +4244,19 @@
   "roots": []
  },
  {
+  "context": "engines/mesh_requirements.py::_kind_said::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "_kind_said",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_NO_KIND",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/mesh_requirements.py::_left_over::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/mesh_requirements.py",
   "qualname": "_left_over",
@@ -4251,6 +4264,19 @@
   "method": "search",
   "ordinal": 1,
   "receiver": "_MESH_WORDS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/mesh_requirements.py::_left_over::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "_left_over",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_MESH_AS",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

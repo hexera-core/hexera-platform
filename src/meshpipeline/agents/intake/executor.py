@@ -178,6 +178,8 @@ class IntakeExecutionState:
     search_events: list = field(default_factory=list)
     submit_attempts: int = 0
     submit_rejections: int = 0
+    #: a shell run's summary that promised tetrahedra was sent back once for a rewrite (never twice)
+    shell_words_sent_back: bool = False
     val_errors_seen: list[str] = field(default_factory=list)
     tools_invoked: list[str] = field(default_factory=list)
 
@@ -490,6 +492,17 @@ class IntakeToolExecutor:
             st.selection_prompt = None
             logger.info("Intake: engine selection CONFIRMED for an FEA part - %s on the FEA path - "
                         "job_id=%s", eng, self._job_id)
+            from meshpipeline.application.shell_check import SHELL_SUMMARY, declared_shell
+            if declared_shell(st.conversation):
+                # SHSTAGE-5 / SURF-6: the stage settled a SHELL - the delivered mesh is plates, never tetrahedra
+                return IntakeToolResult(
+                    tool="propose_engine_selection", accepted=True, advanced=True,
+                    content=(f"{_vocab.to_display(_vocab.ENGINE, eng)} is SELECTED for this FEA part. The stage "
+                             f"settled a SHELL: the delivered mesh is {SHELL_SUMMARY}. request_txt and "
+                             "review_brief_txt say that shell and never a solid or tetrahedral mesh, element "
+                             "order or tetrahedra. Do not ask about the engine, the element order, near-wall "
+                             "layers or a detail level, and do not mention them. Call preview_selected_admission "
+                             "and submit_requirements now (engine_source suggested_confirmed)."))
             return IntakeToolResult(
                 tool="propose_engine_selection", accepted=True, advanced=True,
                 content=(f"{_vocab.to_display(_vocab.ENGINE, eng)} is SELECTED for this FEA part "
@@ -695,6 +708,23 @@ class IntakeToolExecutor:
                            tok_reason, self._job_id)
             return IntakeToolResult(tool="submit_requirements", accepted=False, content=(
                 f"Submission NOT authorized: {tok_reason}. Nothing was saved."))
+
+        # A SHELL RUN'S SUMMARY NEVER PROMISES TETRAHEDRA (SHSTAGE-5 / SURF-6): the card shows request_txt to the user,
+        # and a surface file meshed as a shell was summarised as "a quadratic tetrahedral structural mesh". Sent back
+        # ONCE for a rewrite; the card's own Mesh-as and engine rows say the shell either way
+        if fea_path(st) and not st.shell_words_sent_back:
+            from meshpipeline.application.shell_check import SHELL_SUMMARY, TET_WORDS, declared_shell
+            said = sorted({w.lower() for w in TET_WORDS.findall(
+                f"{args.get('request_txt') or ''} {args.get('review_brief_txt') or ''}")})
+            if said and declared_shell(st.conversation):
+                st.shell_words_sent_back = True
+                logger.info("Intake: a shell run's summary promised a solid mesh (%s) - sent back once for a "
+                            "rewrite - job_id=%s", ", ".join(said), self._job_id)
+                return IntakeToolResult(tool="submit_requirements", accepted=False, content=(
+                    "Not saved: this part is meshed as a SHELL (the stage settled it), and request_txt or "
+                    f"review_brief_txt speak of a solid mesh ({', '.join(said)}). The delivered mesh is "
+                    f"{SHELL_SUMMARY}. Rewrite both to say that shell - no tetrahedra, no element order - and "
+                    "call submit_requirements again with the same preview_token."))
 
         # THE USER'S OWN WORDS (contracts/user_notes, NOTE-1): their answer to the notes question
         # and every message the model quoted as saying something specific, kept whole and verbatim.

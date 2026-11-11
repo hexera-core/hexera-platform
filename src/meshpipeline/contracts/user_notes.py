@@ -47,6 +47,11 @@ NOTES_FILE = "user_notes.txt"
 #: The one-line remarks steps leave for the result ("From your notes: ...")
 REMARKS_FILE = "user_notes_remarks.json"
 
+#: TEXT THE APPLICATION WRITES, never the user's own words, though a conversation may carry it as a user turn: the
+#: geometry check's declaration and drawing marks (application/geometry_confirmation CONFIRMED_MARK and DRAWING_MARK;
+#: a test holds them equal). A message or note that begins with one is never kept as a note, never read as one.
+SYSTEM_LEADS = ("GEOMETRY CHECK (confirmed by the user):", "GEOMETRY CHECK (drawing your part):")
+
 #: The most of one note kept (a pasted spec sheet fits many times over)
 MAX_NOTE_CHARS = 20_000
 #: The most of the notes one prompt is shown; the rest stays in user_notes.txt
@@ -121,11 +126,18 @@ def _norm(text: Any) -> str:
     return " ".join(str(text or "").split()).casefold()
 
 
+def system_written(text: Any) -> bool:
+    """Whether a text is the application's own (SYSTEM_LEADS), never the user's words."""
+    t = str(text or "").lstrip()
+    return any(t.startswith(lead) for lead in SYSTEM_LEADS)
+
+
 def _own(messages: Iterable[Any]) -> list[dict]:
     """The conversation as the user and the assistant said it - the application's synthetic
-    nudges left out."""
+    nudges, and any user turn the application wrote (SYSTEM_LEADS), left out."""
     return [m for m in messages or [] if isinstance(m, dict) and not m.get("_synthetic")
-            and m.get("role") in ("user", "assistant")]
+            and m.get("role") in ("user", "assistant")
+            and not (m.get("role") == "user" and system_written(m.get("content")))]
 
 
 def asked(messages: Iterable[Any]) -> bool:
@@ -239,6 +251,12 @@ def _where(note: Mapping) -> str:
     if note.get("source") == SOURCE_CONSOLE:
         return "typed in the notes box"
     return f"said in the chat, message {note['turn']}" if note.get("turn") else "said in the chat"
+
+
+def own_notes(notes: Any) -> list[dict]:
+    """The notes that are the user's own words: what they typed in the notes box and their own chat messages as
+    kept - never a text the application wrote (SYSTEM_LEADS). Numbered as clean() numbers them."""
+    return clean([n for n in clean(notes) if not system_written(n.get("text"))])
 
 
 def render(notes: Any, *, limit: int | None = None) -> str:
@@ -420,7 +438,7 @@ __all__ = ["COMMON_CONSUMERS", "CONSUMERS", "ENGINE_CONSUMERS", "GUIDANCE", "NOT
            "QUESTION", "REMARKS_FILE", "REMARK_DESCRIPTION", "ROUTE_CONSUMERS", "RULE_EVERY_ROUTE",
            "RULE_NEVER_FAILS", "RULE_VERBATIM", "SOURCE_CHAT", "SOURCE_CONSOLE", "answer",
            "answers_now", "asked", "capture", "chat_block", "clean", "context_block", "drop_remark", "is_skip", "make",
-           "merge",
-           "prompt_block",
+           "merge", "own_notes",
+           "prompt_block", "SYSTEM_LEADS", "system_written",
            "read_remarks", "record_remark", "render", "result_lines", "workspace_block",
            "write_file"]
