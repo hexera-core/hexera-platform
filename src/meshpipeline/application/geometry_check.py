@@ -1963,6 +1963,10 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None, ear
         ref = GeometrySourceRef.from_payload(stored["source"])
         key = reuse.fea_key(ref.sha256, interpretation, scale, validity)
         known = reuse.known_fea(owner_id, ref.sha256, key) if owner_id else None
+        if known is not None and _lacks_surface_reading(known, facts):
+            # SURF-1: a measurement kept from before surface files were read holds no reading of a file with no
+            # solid - reused, the stage would stop the file as it did then. It is measured again, once
+            known = None
         if known is not None:
             if early is not None:
                 early.stop()
@@ -2007,6 +2011,18 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None, ear
         reuse.remember_fea(owner_id, str(stored["source"].get("sha256") or ""), key, record,
                            session_id=str(stored.get("session_id") or ""))
     return record
+
+
+def _lacks_surface_reading(record: dict, facts: dict) -> bool:
+    """Whether a kept CAD measurement of a file the scout found no solid in was made before SURF-1: it holds no
+    surface reading (application/surface_check.KEY)."""
+    from meshpipeline.application import surface_check
+
+    try:
+        no_solid = int(facts.get("solids")) == 0
+    except (TypeError, ValueError):
+        return False
+    return no_solid and record.get("basis") == "cad" and surface_check.KEY not in record
 
 
 def _too_big(fetched: Path) -> None:

@@ -126,3 +126,75 @@ def test_the_record_re_reads_in_the_confirmed_unit():
     assert inch["hot_spots"][0]["radius_mm"] == pytest.approx(254.0)
     assert inch["hot_spots"][0]["span_deg"] == 360.0 and inch["hot_spots"][1]["angle_deg"] == 90.0
     assert fea_check.in_unit(rec, 0.001) == rec and fea_check.in_unit(None, 0.001) is None
+
+
+def test_a_surface_file_keeps_its_reading_with_the_measurement_and_opens_the_stage_as_a_shell(monkeypatch, tmp_path):
+    """SURF-1 in the geometry check: a CAD file with no solid is read as a surface once, with the measurement (so a
+    reused measurement carries it), the stage is not stopped, and several sheets are no assembly to connect. A solid
+    and faces that close get no such stage; an IGES copy reads the same."""
+    pytest.importorskip("OCP.BRepPrimAPI")
+    from tests import surface_fixtures as sx
+
+    from meshpipeline.application import surface_check
+    from meshpipeline.cad import validity
+
+    def check(shape, name, write=sx.write_step):
+        path = tmp_path / name
+        write(shape, path)
+        _serve(monkeypatch, path)
+        stored = _stored(path, path.suffix)
+        stored["facts"]["solids"] = 0
+        rec = gc.fea_measurements(stored, stored["facts"], None)
+        facts = {**stored["facts"], FACT_KEY: rec, "source_format": path.suffix.lstrip("."),
+                 "validity": validity.check_cad_file(path).as_dict()}
+        return rec, facts
+
+    rec, facts = check(sx.compound([sx.bracket(), sx.moved(sx.plate_with_hole(), (0, 0, 200))]), "two.step")
+    assert rec["measured"] and rec[surface_check.KEY]["kind"] == "surface" and rec[surface_check.KEY]["sheets"] == 2
+    assert "assembly" not in rec, "sheets are not solids to bond or put in contact"
+    view = fea_check.fea_view(facts, [{"role": "user", "content": "stress, 2 mm thick"}])
+    assert view["can_proceed"] and view["clean_short"] == "A surface, not a solid" and view["bodies_sewn"] == 2
+    assert "assembly" not in view and view["measure"] is None
+    # before this the same facts stopped the stage
+    old = {**facts, FACT_KEY: {k: v for k, v in rec.items() if k != surface_check.KEY}}
+    assert fea_check.blocker(old)[1] == "surface"
+
+    rec, facts = check(sx.bracket(), "bracket.igs", sx.write_iges)
+    assert rec[surface_check.KEY]["kind"] == "surface" and fea_check.blocker(facts) == ("", "", "")
+
+    rec, facts = check(sx.skin_with_pinhole(), "pinhole.step")
+    assert rec[surface_check.KEY]["kind"] == "gap" and fea_check.blocker(facts)[1] == "gap"
+
+    rec, facts = check(sx.closed_skin(), "closed.step")
+    assert rec[surface_check.KEY]["kind"] == "closed" and fea_check.blocker(facts) == ("", "", "")
+    assert surface_check.view(facts, [{"role": "user", "content": "shell, 1 mm thick"}]) is None
+
+    rec, facts = check(sx.box_solid(), "solid.step")
+    assert surface_check.KEY not in rec
+
+
+def test_a_measurement_kept_from_before_surface_files_is_not_reused_for_a_file_with_no_solid(monkeypatch, tmp_path):
+    """The same file uploaded before this (its measurement kept, with no surface reading) is measured again, so the
+    stage does not stop it as it did then; a solid's kept measurement is reused as before."""
+    pytest.importorskip("OCP.BRepPrimAPI")
+    from tests import surface_fixtures as sx
+
+    from meshpipeline.application import geometry_reuse as reuse
+    from meshpipeline.application import surface_check
+
+    path = tmp_path / "bracket.step"
+    sx.write_step(sx.bracket(), path)
+    _serve(monkeypatch, path)
+    kept = {"measured": True, "basis": "cad", "bodies": 1, "scale_to_m": 0.001, "hot_spots": []}
+    monkeypatch.setattr(reuse, "known_fea", lambda owner, sha, key: dict(kept))
+    monkeypatch.setattr(reuse, "remember_fea", lambda *a, **k: None)
+    stored = _stored(path, ".step")
+    stored["facts"]["solids"] = 0
+    rec = gc.fea_measurements(stored, stored["facts"], None, owner_id="owner-1")
+    assert rec[surface_check.KEY]["kind"] == "surface"
+    # a solid's kept record (and a surface's that already holds its reading) is reused whole
+    stored["facts"]["solids"] = 1
+    assert gc.fea_measurements(stored, stored["facts"], None, owner_id="owner-1") == kept
+    stored["facts"]["solids"] = 0
+    kept[surface_check.KEY] = {"kind": "surface"}
+    assert gc.fea_measurements(stored, stored["facts"], None, owner_id="owner-1") == kept
