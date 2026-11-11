@@ -35,6 +35,7 @@ class _Row:
     reading: dict | None
     updated_by: str
     updated_at: datetime
+    shell_elements: str = "quads"
 
 
 class _Store:
@@ -48,8 +49,8 @@ class _Store:
     async def get_for_organization(self, db, organization_id):
         return self.rows.get(organization_id)
 
-    async def put(self, db, *, organization_id, text, reading, updated_by):
-        self.rows[organization_id] = _Row(organization_id, text, reading, updated_by, NOW)
+    async def put(self, db, *, organization_id, text, reading, updated_by, shell_elements="quads"):
+        self.rows[organization_id] = _Row(organization_id, text, reading, updated_by, NOW, shell_elements)
         return self.rows[organization_id]
 
     async def clear(self, db, *, organization_id):
@@ -113,7 +114,8 @@ async def _put(text: str, principal: Principal | None = None):
 
 async def test_an_organisation_with_no_standard_reads_empty(store):
     got = await organization.read_meshing_standard(owner_id=OWNER, organization_id=str(OWN_ORG))
-    assert got == {"text": "", "lines": [], "status": "empty", "updated_by": None, "updated_at": None}
+    assert got == {"text": "", "lines": [], "status": "empty", "shell_elements": "quads", "updated_by": None,
+                   "updated_at": None}
 
 
 async def test_saving_reads_the_words_once_and_shows_what_was_understood(store, reader):
@@ -211,3 +213,29 @@ async def test_the_approval_carries_the_standard_only_when_there_is_one(store, r
 
     # a standard that cannot be read never fails the approval: the run goes without it
     assert await approval._meshing_standard(lambda: _Broken(), str(OWN_ORG), logger=logging.getLogger("t")) is None
+
+
+# ------------------------------------------------------------------ the page's one switch (SHSTAGE-8, STD-4)
+async def _put_kind(text: str, kind: str):
+    return await organization.save_meshing_standard(
+        organization.MeshingStandardIn(text=text, shell_elements=kind), _console(), owner_id=OWNER)
+
+
+async def test_the_shell_elements_switch_is_saved_with_the_standard_and_dispatched(store, reader):
+    got = await _put_kind(CRITERIA, "triangles")
+    assert got["shell_elements"] == "triangles" and store.rows[OWN_ORG].shell_elements == "triangles"
+    snap = await MSS.for_dispatch(None, organization_id=str(OWN_ORG))
+    assert snap["shell_elements"] == "triangles" and snap["text"] == CRITERIA
+    # flipping the switch back with the same words reads nothing again
+    got = await _put_kind(CRITERIA, "quads")
+    assert got["shell_elements"] == "quads" and len(reader.calls) == 1
+    assert "shell_elements" not in await MSS.for_dispatch(None, organization_id=str(OWN_ORG))
+
+
+async def test_the_switch_alone_is_a_standard_and_quads_alone_is_none(store, reader):
+    got = await _put_kind("", "triangles")
+    assert got["status"] == "empty" and got["shell_elements"] == "triangles" and reader.calls == []
+    assert await MSS.for_dispatch(None, organization_id=str(OWN_ORG)) == {
+        "text": "", "shell_elements": "triangles", "updated_by": OWNER, "updated_at": NOW.isoformat()}
+    got = await _put_kind("", "quads")
+    assert got["shell_elements"] == "quads" and OWN_ORG not in store.rows

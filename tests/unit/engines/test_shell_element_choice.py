@@ -173,9 +173,9 @@ def test_a_run_makes_triangles_from_the_settings_switch_and_quads_when_the_stage
     ws1, tri, plan1 = _run(tmp_path, "tri", {MS.STATE_KEY: _std("triangles")}, monkeypatch)
     ws2, back, plan2 = _run(tmp_path, "back", {MS.STATE_KEY: _std("triangles"), MS.STAGE_KEY: "quads"}, monkeypatch)
     assert plain["quads"] > 0 and tri["quads"] == 0 and tri["trias"] > plain["elements"]
-    assert plan0["words"][0] == "Quads, the default."
-    assert plan1["words"][0] == "Triangles, from your settings."
-    assert plan2["words"][0] == "Quads, chosen on the stage."
+    assert plan0["words"][1] == "Quads, the default."
+    assert plan1["words"][1] == "Triangles, from your settings."
+    assert plan2["words"][1] == "Quads, chosen on the stage."
     # the stage's Quads is today's shell, file for file
     assert (back["elements"], back["quads"], back["trias"]) == (plain["elements"], plain["quads"], plain["trias"])
     for f in ("shell.bdf", "shell_abaqus.inp", "shell.cdb", "shell.msh"):
@@ -189,7 +189,7 @@ def test_a_run_makes_triangles_from_the_settings_switch_and_quads_when_the_stage
 
     res = results(ws1)
     assert res["summary"].startswith("A mid-surface shell:") and "triangular plate elements" in res["summary"]
-    assert res["plan_words"][0] == "Triangles, from your settings."
+    assert res["plan_words"][1] == "Triangles, from your settings."
 
 
 def test_a_run_takes_triangles_from_the_notes_over_the_settings(tmp_path, monkeypatch):
@@ -206,7 +206,7 @@ def test_a_run_takes_triangles_from_the_notes_over_the_settings(tmp_path, monkey
     state[MS.STATE_KEY]["reading"] = {"key": MS.key_of(text), "arguments": _answer()}
     _ws, rec, plan = _run(tmp_path, "notes", state, monkeypatch, router)
     assert rec["quads"] == 0 and rec["trias"] > 0
-    assert plan["words"][0] == "Triangles, from your notes."
+    assert plan["words"][1] == "Triangles, from your notes."
 
 
 # ------------------------------------------------------------------ the decks (SHWRITE-2) and the clean-up

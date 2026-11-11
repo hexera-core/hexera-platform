@@ -186,7 +186,7 @@ def deliver(workspace, rec: Mapping, *, target: Mapping | None = None) -> bool:
     from meshpipeline.engines.meshing_standard import elements_of
 
     plan["elements"] = elements_of(_MR.read(ws))
-    plan["words"] = [plan["elements"]["words"], *plan["words"]]
+    plan["words"] = [*plan["words"][:1], plan["elements"]["words"], *plan["words"][1:]]
     if rec.get("requirements"):
         # SHMESH-26: what the user's notes asked for, against what this mesh delivers
         from meshpipeline.engines.shell_requirements import words as asked_words
@@ -275,7 +275,7 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
                         "rows": [], "file_ready": present(ws, file)})
     walls = list((q.get("fea") or {}).get("walls_mm") or [])
     elements = _map(plan.get("elements"))
-    plan_words = ([w for w in [elements.get("words"), rec.get("words")] if w] + [user_line(r) for r in asked]
+    plan_words = ([w for w in [rec.get("words"), elements.get("words")] if w] + [user_line(r) for r in asked]
                   + [str(w) for w in plan.get("not_applied") or []])
     summary = (TRIA_SUMMARY if tria else SUMMARY).format(n=cells, q=q_n, t=t_n)
     if _map(rec.get("surface")).get("kind") == "surface":

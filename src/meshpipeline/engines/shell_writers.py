@@ -467,7 +467,7 @@ def write_inp(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
     sets = inp_part_sets(prep)
     # SHWRITE-2: an all-triangle shell's CalculiX deck is S6, its mid-side nodes after the corner nodes
     s6 = S6_ALL_TRIANGLES and solver == "calculix" and not q and len(m.trias) > 0
-    mids, mid_xyz, mid_ends = _mid_nodes(m) if s6 else (None, None, [])
+    mids, mid_xyz, mid_ends = _mid_nodes(m) if s6 else (np.zeros((0, 3), dtype=np.int64), np.zeros((0, 3)), [])
     tria = "S6" if s6 else "S3"
     lines = [
         f"** Hexera shell mesh - {'CalculiX' if solver == 'calculix' else 'Abaqus'} input.",
@@ -514,7 +514,9 @@ def write_inp(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
         if s6:
             # the mid-side nodes of a junction's edges are on it too (nodes here are 1-based)
             on = {int(v) for v in nodes}
-            nodes = sorted(on | {len(m.xyz) + 1 + j for j, (u, v) in enumerate(mid_ends) if u + 1 in on and v + 1 in on})
+            lines += _id_lines(sorted(on | {len(m.xyz) + 1 + j for j, (u, v) in enumerate(mid_ends)
+                                            if u + 1 in on and v + 1 in on}))
+            continue
         lines += _id_lines(nodes)
     if prep.corner:
         lines.append("*NODAL THICKNESS")

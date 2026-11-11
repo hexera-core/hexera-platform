@@ -657,7 +657,7 @@ _FROM_WORDS = {"stage": "chosen on the stage", "notes": "from your notes", "sett
                "default": "the default"}
 
 
-def switched(settings: Mapping, kind: str) -> Mapping:
+def switched(settings: dict, kind: str) -> dict:
     """STD-4: the settings' section with the page's switch as its shell element kind - Triangles: triangles only
     (any element kind the words gave set aside); Quads: a "triangles only" the words gave is set aside (told), a
     "quads only" or a share of triangles stays. Quads with nothing to set aside: the section itself."""
@@ -695,7 +695,7 @@ def _from(row: Mapping) -> str:
     return str(row.get("from") or "notes")
 
 
-def stage(sec: Mapping, pick) -> Mapping:
+def stage(sec: dict, pick) -> dict:
     """STD-4: the section with the stage's element pick applied - the SAME field the notes and settings set
     (requirements' kind.shell, its row from "stage"). No pick: the section itself, the same object (nothing changes).
     A section nothing was read into ("none", or the AI not answering) becomes a "used" one holding only the pick."""
