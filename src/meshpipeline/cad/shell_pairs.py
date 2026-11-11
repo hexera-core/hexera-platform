@@ -116,6 +116,17 @@ def _sample_rays(s: ff.Surface, *, rays: int = PAIR_RAYS, seed: int = 0):
     return (np.concatenate(origins), np.concatenate(dirs), np.concatenate(labels)) if origins else (None, None, None)
 
 
+#: SHELL-44, NO RAY LOST ON A FLAT FACE: VTK's line test against the triangles, asked with a tolerance of exactly
+#: 0, misses a triangle whose box has no thickness - a flat face lying square to an axis, the far side of the
+#: commonest wall there is - for some of the rays that meet it (which ones depends on where the face lies in the
+#: locator's cells). Measured on 237 real parts: 2.5% of the pairing rays read no wall that way on average, over
+#: 5% on 23 parts, 85% on one; every ray lost left through such a triangle; and on 71 parts the faces named as
+#: partners changed (a pair needs 3 rays and a tenth of its face's readings). Any tolerance above 0 finds them:
+#: 1e-9 mm, a millionth of a micron, moves no reading. Only the pairing's rays: the FEA wall readings
+#: (cad/fea_features.wall_thickness) are made as they always were.
+RAY_TOL_MM = 1e-9
+
+
 def ray_partners(s: ff.Surface) -> dict[tuple[int, int], int]:
     """{(a, b) with a < b: rays that crossed between them, both ways} for every pair that passes the ray
     test (PAIR_MIN_RAYS and PAIR_SHARE, read from either side)."""
@@ -124,7 +135,7 @@ def ray_partners(s: ff.Surface) -> dict[tuple[int, int], int]:
         return {}
     eps = 1e-6 * s.diag
     hit = np.full(len(P), -1, dtype=np.int64)
-    ff.wall_reach(s, P + D * eps, D, L, eps=eps, exit_label=hit)
+    ff.wall_reach(s, P + D * eps, D, L, eps=eps, exit_label=hit, ray_tol=RAY_TOL_MM)
     ok = hit >= 0
     m = len(s.names)
     keys, counts = np.unique(L[ok] * m + hit[ok], return_counts=True)
