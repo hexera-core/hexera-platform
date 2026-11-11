@@ -263,7 +263,7 @@ jobs:
           FEA_ACCURACY_REQUIRE_CCX: "1"
           FEA_ACCURACY_REPORT: fea_accuracy.jsonl
           FEA_ACCURACY_THREADS: "4"
-        run: python -m pytest -q -p no:cacheprovider -rs tests/unit/engines/test_fea_textbook.py tests/unit/engines/test_shell_textbook.py tests/unit/engines/test_shell_pipeline.py tests/unit/engines/test_mixed_textbook.py
+        run: python -m pytest -q -p no:cacheprovider -rs tests/unit/engines/test_fea_textbook.py tests/unit/engines/test_shell_textbook.py tests/unit/engines/test_shell_pipeline.py tests/unit/engines/test_surface_textbook.py tests/unit/engines/test_mixed_textbook.py
       - name: Mixed shell + solid families, meshed and solved against the all-solid mesh
         timeout-minutes: 60
         env:

@@ -28,10 +28,10 @@ def test_the_cad_stage_has_view_measure_and_snapshot_and_a_mid_tone_part(live):
     assert seen["tools"] == ["View", "Measure", "Snapshot"], seen
     assert not seen["old"] and not seen["ruler"], seen
     # the part: the theme's mid-tone grey, little ambient, little shine, on the theme's canvas
-    assert seen["css"] == "#7c828a", seen
-    assert seen["material"]["color"] == pytest.approx([0x7c / 255, 0x82 / 255, 0x8a / 255], abs=1e-3), seen
+    assert seen["css"] == "#86857c", seen
+    assert seen["material"]["color"] == pytest.approx([0x86 / 255, 0x85 / 255, 0x7c / 255], abs=1e-3), seen
     assert seen["material"]["ambient"] == pytest.approx(0.22) and seen["material"]["specular"] == pytest.approx(0.06), seen
-    assert seen["bg"][:3] == pytest.approx([0x0d / 255, 0x0d / 255, 0x0c / 255], abs=1e-3), seen
+    assert seen["bg"][:3] == pytest.approx([0x05 / 255, 0x05 / 255, 0x05 / 255], abs=1e-3), seen
 
     # VIEW: the set views turn the camera; the Up select and Fit live in the overlay; Esc closes it
     view = live.evaluate(f"""(() => {{ const h = {H};

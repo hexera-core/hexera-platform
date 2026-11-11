@@ -22,13 +22,15 @@ def test_the_console_requests_the_display_weight_the_site_uses():
     # weight is what made the console's headings read as a generic dark dashboard.
     request = LEGACY_STYLES.read_text()
     assert "Saira+Semi+Condensed:wght@300;400;500;600" in request
+    # Cormorant is the wordmark's face and nothing else's: one weight is all it needs.
+    assert "Cormorant:wght@600" in request
     assert "Geist:wght@300;400;500;600" in request
     assert "Geist+Mono:wght@400;500" in request
 
 
 def test_the_canvas_is_anchored_on_the_sites_own_black():
     tokens = (CSS / "tokens.css").read_text()
-    assert "--canvas:#0d0d0c" in tokens.replace(" ", "")
+    assert "--canvas:#050505" in tokens.replace(" ", "")
 
 
 def test_the_chrome_carries_the_sites_primitives():
@@ -62,9 +64,11 @@ def test_the_nav_bar_eases_into_its_stuck_state():
 
 
 def test_the_console_ships_no_second_accent():
-    # One hot colour. A stray hex that is neither the accent, the steel linework nor a status
-    # role is how a palette becomes six colours nobody chose.
-    banned = re.compile(r"#(?:ffba00|0fb6ac|0a8b84|ddab46|e8c879)", re.IGNORECASE)
+    # One hot colour. A stray hex that is neither the accent, the stone linework nor a status
+    # role is how a palette becomes six colours nobody chose. The retired looks are named here:
+    # the gold and teal of the first site, then the international orange and steel blue of the second.
+    banned = re.compile(r"#(?:ffba00|0fb6ac|0a8b84|ddab46|e8c879|ff4f00|ff7033|6d8baf|57708f|9db6d4)",
+                        re.IGNORECASE)
     for sheet in CSS.glob("*.css"):
         found = banned.findall(sheet.read_text())
         assert not found, f"{sheet.name} carries a retired palette value: {found}"

@@ -195,7 +195,8 @@ def parts_seen(check: Mapping | None) -> dict | None:
 
 def notes_of(user_notes, request_txt) -> str:
     from meshpipeline.cad import part_words as PW
-    return PW.notes_text({"user_notes": list(user_notes or []), "request_txt": request_txt or ""})
+    # the user's own words only: request_txt (the intake's summary) is never read (cad/part_words.notes_text)
+    return PW.notes_text({"user_notes": list(user_notes or [])})
 
 
 def key_of(notes: str, table: list[dict]) -> str:
@@ -217,7 +218,7 @@ def view(session: Any, *, owner_id: str = "") -> dict | None:
 
 
 def finalize(session: Any, *, owner_id: str = "") -> dict | None:
-    """THE USER FINALIZED THEIR NOTES: the reading of the words as they stand now (the first answer and every note)
+    """THE USER FINALIZED THEIR NOTES: the reading of the user's notes as they stand now
     is started - unless it already runs or is done - and the card's view is answered. Never raises."""
     try:
         return _view(session, owner_id=owner_id, start=True)

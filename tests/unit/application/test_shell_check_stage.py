@@ -142,7 +142,7 @@ def test_shell_asked_on_a_chunky_part_is_a_solid_with_the_plain_reason(parts):
     rec, drawn, _ = parts["block"]
     view = sc.shell_view(_ready(sc.summarise(rec, drawn)), CAD, SHELL)
     assert view["mesh_as"] == "solid" and view["label"] == "Solid"
-    assert view["reason"].startswith("You asked for a shell, but no wall of this part is thin enough for one (")
+    assert view["reason"].startswith("You asked for a shell, but this part has no plate or thin wall to make one from (")
     assert "30 mm thick" in view["reason"] and view["reason"].endswith("), so it is meshed as a solid.")
     assert view["reason"].count(". ") == 0                                 # one sentence
     assert "not_shelled" not in view and "overlay" not in view and view["measuring_words"] == ""
@@ -344,3 +344,23 @@ def test_two_small_faces_far_apart_are_a_length_not_a_wall_thickness():
     assert not _is_wall({"thickness_mm": 255.0, "width_mm": 25.0})
     assert _is_wall({"thickness_mm": 30.0})          # no width measured: a wall, as before
     assert not _is_wall({"width_mm": 25.0})
+
+
+def test_walls_short_for_their_thickness_are_shelled_with_one_line_of_advice():
+    """SHELL-23: a gusset 7.6 walls across is a shell because the user asked; the stage's one muted line says it is
+    short, in the unit the stage shows; a thin part says nothing."""
+    row = {"body": "Part_6", "sheet": "S3", "thickness_mm": 12.7, "span_mm": 96.52, "width_mm": 80.0, "span_walls": 7.6,
+           "width_walls": 6.3}
+    record = {"bodies": [{"body": "Part_6", "verdict": "shell", "area_mm2": 100.0, "shell_area_share": 1.0}],
+              "checks": {"connected": True}, "complete": True, "short_walls": [row]}
+    summary = sc.summarise(record)
+    assert summary["short_walls"] == [row]
+    view = sc.shell_view(_ready(summary), CAD, SHELL)
+    assert view["mesh_as"] == "shell" and view["label"] == sc.SHELL_LABEL
+    assert view["reason"] == ("Part_6: 12.7 mm thick over 96.5 mm, 7.6 times its thickness. Shell theory is less exact under 10 times "
+              "(about 2% off on a free plate this short, more where it bends from a joint).")
+    assert sc.settle(view)["mesh_as"] == "shell"                       # advice, never a refusal
+    # the unit corrected since the check (read as mm, in fact inches): the same wall, said in the unit shown
+    inches = sc.shell_view(_ready(summary, scale=0.001), {**CAD, "scale_to_m": 0.0254}, SHELL)
+    assert inches["reason"].startswith("Part_6: 323 mm thick over 2450 mm, 7.6 times its thickness.")
+    assert sc.shell_view(_ready(sc.summarise({**record, "short_walls": []})), CAD, SHELL)["reason"] == ""

@@ -397,7 +397,8 @@ def test_a_part_gmsh_cannot_mesh_is_delivered_by_the_last_rung(tmp_path, monkeyp
     assert ok, marker
     assert read_refusal(ws) is None
     passes = json.loads((ws / "fea_passes.json").read_text())
-    rung = [p for p in passes["passes"] if p.get("engine") == "ftetwild"]
+    # the rung's own passes (LAD-fea-13's refinement after it, when its mesh is short, is its own test's)
+    rung = [p for p in passes["passes"] if p.get("engine") == "ftetwild" and "refine" not in p]
     gm = [p for p in passes["passes"] if p.get("engine") != "ftetwild"]
     # every gmsh option first (the fixed ladder's passes), the rung after them, delivered
     assert len(gm) == calls.count(None) >= 2 and not any(p["valid"] for p in gm)
@@ -528,3 +529,212 @@ def test_nothing_here_reads_an_environment_variable():
     # the binary is found on PATH or at its install path, never through a setting (settings/inventory)
     src = Path(TW.__file__).read_text()
     assert "os.environ" not in src and "optional_env" not in src
+
+
+def test_the_rung_takes_only_the_part_gmsh_failed_on_and_keeps_the_others_as_gmsh_filled_them(tmp_path, monkeypatch,
+                                                                                            fake_ftetwild, capsys):
+    """LAD-fea-11 with the last rung: parts meshed apart; gmsh's fill fails on Part_2 on every pass. Pass 1 keeps
+    Part_1 (the fill stops at Part_2), pass 2 meshes only Part_3 and Part_2, and the rung's pass gives Part_2 to fTetWild with the others
+    read back as pass 1 filled them - never meshed by gmsh again."""
+    pytest.importorskip("OCP.BRepPrimAPI")
+    import gmsh
+    from tests import fea_fixtures as fx
+
+
+    shape = fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(20, 0, 0, 8, 8, 8), fx._box(40, 0, 0, 6, 6, 6))
+    ws = _stage(shape, tmp_path / "keep_rung")
+    real = gmsh.model.mesh.generate
+
+    def generate(dim=3):
+        if dim == 3 and gmsh.option.getNumber("Mesh.MeshOnlyVisible") and gmsh.model.getVisibility(3, 2):
+            raise Exception("Invalid boundary mesh (overlapping facets) on surface 7 surface 8")
+        return real(dim)
+
+    monkeypatch.setattr(gmsh.model.mesh, "generate", staticmethod(generate))
+    ok, marker, _o = _drive(ws, monkeypatch, {"purpose": "structural", "fea_connection": "contact"})
+    assert ok, marker
+    said = capsys.readouterr().err
+    # pass 1 stops at Part_2 (Part_3 not reached); pass 2 fills Part_3, then fails on Part_2 again (HXT, its faces
+    # with MeshAdapt - then no gmsh option is left); the rung's pass gives Part_2 alone to fTetWild
+    assert "1 part volume(s) kept from the pass before; meshing the other 2" in said
+    assert "2 part volume(s) kept from the pass before; meshing the other 1" in said
+    q = json.loads((ws / "quality.json").read_text())
+    ftw = q["fea"]["ftetwild"]
+    assert ftw["parts"] == ["Part_2"] and ftw["gmsh_parts"] == 2 and not q["fatal"]
+    # the ladder's own passes (LAD-fea-13's refinement after a short rung mesh is its own test's)
+    passes = [p for p in json.loads((ws / "fea_passes.json").read_text())["passes"] if "refine" not in p]
+    assert [p.get("engine", "gmsh") for p in passes] == ["gmsh", "gmsh", "ftetwild"] and passes[-1]["valid"]
+
+
+def test_a_part_a_later_gmsh_pass_did_fill_is_never_given_to_ftetwild_too(tmp_path, monkeypatch, fake_ftetwild):
+    """LAD-fea-11: pass 1 fails on Part_2 and Part_3; pass 2 fills Part_3 but not Part_2. The rung takes Part_2
+    alone - Part_3 keeps its gmsh mesh, never meshed a second time (two overlapping element sets in the deck)."""
+    pytest.importorskip("OCP.BRepPrimAPI")
+    import gmsh
+    from tests import fea_fixtures as fx
+
+    shape = fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(20, 0, 0, 8, 8, 8), fx._box(40, 0, 0, 6, 6, 6))
+    ws = _stage(shape, tmp_path / "later")
+    real = gmsh.model.mesh.generate
+    seen: list[str] = []
+
+    def generate(dim=3):
+        if dim == 3 and gmsh.option.getNumber("Mesh.MeshOnlyVisible"):
+            plan = json.loads((ws / "fea_plan.json").read_text())
+            first = not (plan.get("mesh") or {}).get("keep")
+            for v in ((2, 3) if first else (2,)):
+                if gmsh.model.getVisibility(3, v):
+                    seen.append(f"fail {v}")
+                    raise Exception(f"Invalid boundary mesh (overlapping facets) on surface {v * 6} surface {v * 6 + 1}")
+        return real(dim)
+
+    monkeypatch.setattr(gmsh.model.mesh, "generate", staticmethod(generate))
+    ok, marker, _o = _drive(ws, monkeypatch, {"purpose": "structural", "fea_connection": "contact"})
+    assert ok, marker
+    q = json.loads((ws / "quality.json").read_text())
+    assert q["fea"]["ftetwild"]["parts"] == ["Part_2"] and not q["fatal"]
+    parts = {p["id"]: p["elements"] for p in q["fea"]["assembly"]["parts"]}
+    assert set(parts) == {"Part_1", "Part_2", "Part_3"} and all(n > 0 for n in parts.values())
+    assert q["cells"] == sum(parts.values())                     # no part meshed twice
+
+
+
+def test_the_rung_takes_every_part_not_kept_never_gmsh_again_on_a_part_it_never_reached(tmp_path, monkeypatch,
+                                                                                       fake_ftetwild, capsys):
+    """LAD-fea-11 with the last rung (o_fc_folding_chair, lab 28 Oct): the last gmsh pass stops at its first failure,
+    so some parts are never reached. The rung gives fTetWild every part not kept - the one that failed and the ones
+    not reached, each on its own settings - and keeps the rest. Before, gmsh tried the parts not reached again inside
+    the rung, failed on one, and every part went to fTetWild on the whole assembly's settings ("whole")."""
+    pytest.importorskip("OCP.BRepPrimAPI")
+    import gmsh
+    from tests import fea_fixtures as fx
+
+    shape = fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(20, 0, 0, 8, 8, 8), fx._box(40, 0, 0, 6, 6, 6))
+    ws = _stage(shape, tmp_path / "not_reached")
+    real = gmsh.model.mesh.generate
+
+    def generate(dim=3):
+        # gmsh's fill fails on Part_2 and Part_3 whenever it tries them
+        if dim == 3 and gmsh.option.getNumber("Mesh.MeshOnlyVisible"):
+            for v in (2, 3):
+                if gmsh.model.getVisibility(3, v):
+                    raise Exception(f"Invalid boundary mesh (overlapping facets) on surface {v * 6} surface {v * 6 + 1}")
+        return real(dim)
+
+    monkeypatch.setattr(gmsh.model.mesh, "generate", staticmethod(generate))
+    ok, marker, _o = _drive(ws, monkeypatch, {"purpose": "structural", "fea_connection": "contact"})
+    assert ok, marker
+    said = capsys.readouterr().err
+    assert "every part goes to fTetWild" not in said
+    q = json.loads((ws / "quality.json").read_text())
+    ftw = q["fea"]["ftetwild"]
+    assert ftw["parts"] == ["Part_2", "Part_3"] and ftw["gmsh_parts"] == 1 and not q["fatal"]
+    assert "whole" not in [r["part"] for r in ftw["per_part"]]
+    parts = {p["id"]: p["elements"] for p in q["fea"]["assembly"]["parts"]}
+    assert set(parts) == {"Part_1", "Part_2", "Part_3"} and q["cells"] == sum(parts.values())
+
+def _cube_tets():
+    """The unit cube in six tetrahedra about its 0-7 diagonal (corner k at the bits of k)."""
+    import itertools
+
+    xyz = np.array([[(k >> 0) & 1, (k >> 1) & 1, (k >> 2) & 1] for k in range(8)], dtype=float)
+    tets = []
+    for i, j, _k in itertools.permutations((1, 2, 4)):
+        tets.append([0, i, i + j, 7])
+    return xyz, np.array(tets, dtype=np.int64)
+
+
+def test_a_flat_sliver_on_the_surface_is_taken_off_and_nothing_else_is():
+    """LAD-fea-12 (ox_mc_lid's Part_239): a no-volume tetrahedron lying on the surface, three faces outside, is
+    dropped; the cube's own six are kept as they were, and a mesh without one is returned unchanged."""
+    xyz, cube = _cube_tets()
+    cube, _vol = TW.orient(xyz, cube)
+    kept, dropped, left = TW.peel_flat(xyz, cube)
+    assert (dropped, left) == (0, 0) and np.array_equal(kept, cube)
+    # an ear on the z = 0 face: one of the cube's outside triangles there, and a point in it
+    face = next(f for f in TW.boundary(cube).tolist() if all(xyz[n][2] == 0.0 for n in f))
+    xyz2 = np.vstack([xyz, xyz[face].mean(axis=0)])
+    ear = np.array([[*face, 8]], dtype=np.int64)
+    mesh, _vol = TW.orient(xyz2, np.vstack([cube, ear]))
+    assert len(TW.boundary(mesh)) == len(TW.boundary(cube)) + 2      # the ear's three faces in place of one
+    kept, dropped, left = TW.peel_flat(xyz2, mesh)
+    assert (dropped, left) == (1, 0)
+    assert np.array_equal(kept, mesh[:6])
+    assert TW._odd_edges(TW.boundary(kept)) == 0
+
+
+#: the stand-in fTetWild, but one tetrahedron on the surface split so that a sliver lies on its outside face (one
+#: face out, three in: the peel cannot take it off), a millionth of the tetrahedron's height thick
+FAKE_SLIVER = FAKE.replace("""gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
+gmsh.write(out)
+gmsh.finalize()""", """ntags, nxyz, _ = gmsh.model.mesh.getNodes()
+_t, _e, en = gmsh.model.mesh.getElements(3)
+gmsh.finalize()
+import meshio
+pts = np.asarray(nxyz).reshape(-1, 3)
+where = {int(t): i for i, t in enumerate(ntags)}
+tets = np.vectorize(where.get)(np.asarray(en[0], dtype=np.int64).reshape(-1, 4))
+faces = {}
+for k, t in enumerate(tets):
+    for f in ((1, 2, 3), (0, 3, 2), (0, 1, 3), (0, 2, 1)):
+        faces.setdefault(tuple(sorted(t[list(f)])), []).append((k, f))
+k, f = next(v[0] for v in faces.values() if len(v) == 1)
+a, b, c = (int(tets[k][i]) for i in f)
+d = int(next(n for n in tets[k] if n not in (a, b, c)))
+mid = pts[[a, b, c]].mean(axis=0)
+pts = np.vstack([pts, mid + 1e-6 * (pts[d] - mid)])
+p = len(pts) - 1
+tets = np.vstack([np.delete(tets, k, axis=0), [[a, b, c, p], [a, b, p, d], [b, c, p, d], [c, a, p, d]]])
+meshio.write(out, meshio.Mesh(pts, [("tetra", tets)]), file_format="gmsh22", binary=False)""")
+
+
+def test_a_sliver_the_peel_cannot_take_off_is_set_aside_and_named_and_the_rung_still_delivers(tmp_path, monkeypatch):
+    """LAD-fea-12 (ox_mc_lid's Part_239: two slivers under SICN 5e-5 with one face on the surface): the floor is held
+    without it, the delivery names where it is, and nothing is inverted."""
+    pytest.importorskip("OCP.BRepPrimAPI")
+    pytest.importorskip("meshio")
+    from tests import fea_fixtures as fx
+
+    from meshpipeline.contracts import decision_record as dr
+    from meshpipeline.engines.verdict_limits import fea_limits
+
+    exe = tmp_path / "bin" / "fTetWild"
+    exe.parent.mkdir()
+    exe.write_text(f"#!{sys.executable}\n{FAKE_SLIVER}")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setattr(TW, "binary", lambda: str(exe))
+    ws = _stage(fx.plate_with_hole(), tmp_path / "plate")
+    _gmsh_fails_on(monkeypatch, None, ["Face_5"])
+    ok, marker, _o = _drive(ws, monkeypatch)
+    assert ok, marker
+    q = json.loads((ws / "quality.json").read_text())
+    assert q["engine_rung"] == "ftetwild" and not q["fatal"] and q["fea_inverted"] == 0
+    slivers = q["fea_set_aside"]["ftetwild_slivers"]
+    assert slivers["elements"] == 1 and slivers["rule"] == "LAD-fea-12" and len(slivers["slivers"]) == 1
+    one = slivers["slivers"][0]
+    assert one["part"] == "whole" and one["face"].startswith("Face_") and 0 < one["sicn"] < TW.SLIVER_SICN
+    assert "tags" not in slivers and "set_aside" not in q["fea"]["ftetwild"]
+    assert q["fea_set_aside"]["elements"] >= 1 and q["fea_set_aside"]["min_sicn"] < TW.SLIVER_SICN
+    assert q["min_sicn"] > 0                      # the floor, held without it
+    rows = [r for r in fea_limits(q) if r["key"] == "fea_ftetwild_slivers"]
+    assert len(rows) == 1 and "not resolved" in rows[0]["label"]
+    assert rows[0]["measured"] == [f"whole {one['face']}, SICN {one['sicn']:.2g}, at "
+                                   f"({', '.join(f'{float(v):g}' for v in one['at_mm'])}) mm"]
+    # never a clean pass: the verdict over these limits is "with concerns" (VER-2)
+    assert dr.verdict({"valid": True, "gating": [], "limits": rows}) == (dr.OUTCOME_CONCERNS, dr.VER_CONCERNS)
+    assert dr.verdict({"valid": True, "gating": [], "limits": fea_limits(q)})[0] == dr.OUTCOME_CONCERNS
+
+
+def test_slivers_set_aside_are_never_a_clean_pass_even_when_unnamed():
+    """LAD-fea-12: whatever the record holds, set-aside slivers always miss their row - "with concerns", never
+    "clean" - and a record without the names still says how many."""
+    from meshpipeline.contracts import decision_record as dr
+    from meshpipeline.engines.verdict_limits import fea_limits
+
+    q = {"fea": {"plan": True}, "element_order": 2,
+         "fea_set_aside": {"elements": 2, "ftetwild_slivers": {"rule": "LAD-fea-12", "elements": 2, "slivers": []}}}
+    rows = [r for r in fea_limits(q) if r["key"] == "fea_ftetwild_slivers"]
+    assert len(rows) == 1 and rows[0]["measured"] == ["(unnamed)", "(unnamed)"]
+    assert dr.verdict({"valid": True, "gating": [], "limits": rows})[0] == dr.OUTCOME_CONCERNS
+    assert not [r for r in fea_limits({"fea": {"plan": True}, "fea_set_aside": {"elements": 0}})
+                if r["key"] == "fea_ftetwild_slivers"]

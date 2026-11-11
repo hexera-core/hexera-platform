@@ -80,20 +80,32 @@ def _note(text: str, nid: str = "n1") -> dict:
 
 
 @pytest.mark.parametrize("route", [PM.ROUTE_FEA, PM.ROUTE_CFD])
-@pytest.mark.parametrize("where", ["first answer", "notes box", "both"])
-def test_finalize_reads_the_parts_from_either_place_and_the_run_takes_them(monkeypatch, route, where):
-    notes = [_note(SENTENCE)] if where != "first answer" else []
-    request = f"Static stress on the bracket assembly. {SENTENCE}" if where != "notes box" else "Static stress."
+@pytest.mark.parametrize("where", ["notes box", "both"])
+def test_finalize_reads_the_parts_from_the_users_notes_and_the_run_takes_them(monkeypatch, route, where):
+    notes = [_note(SENTENCE)]
+    request = f"Static stress on the bracket assembly. {SENTENCE}" if where == "both" else "Static stress."
     session, queued, router = _world(monkeypatch, route, notes=notes, request_txt=request)
     assert PM.view(session) == {"status": "ready"} and not queued          # the card reads nothing by itself
     assert PM.finalize(session) == {"status": "reading"} and len(queued) == 1
     PM.run_reading(**queued.pop())
     got = PM.view(session)
     assert got["status"] == "done" and [r["parts"] for r in got["rows"]] == [["Part_3"]]   # one row, never two
-    asked = router.seen[-1]                                                  # the sentence read once
-    assert (asked["user_request"] + json.dumps(asked["user_notes"])).count("frame rail") == 1
+    asked = router.seen[-1]                                                  # the user's notes only, read once
+    assert "user_request" not in asked and json.dumps(asked["user_notes"]).count("frame rail") == 1
+    assert "Static stress" not in json.dumps(asked)
     run = PM.for_run(SID, session.user_notes, session.request_txt)
     assert run["status"] == "used" and PW.per_part(run["entries"])["Part_3"]["max_m"] == pytest.approx(0.004)
+
+
+@pytest.mark.parametrize("route", [PM.ROUTE_FEA, PM.ROUTE_CFD])
+def test_the_intake_summary_alone_gives_no_per_part_size(monkeypatch, route):
+    """NOTE-4: the intake's summary of the request is a model's rewrite, never the user's words: with no note, a size
+    it names is not read, nothing is queued, nothing is shown on the card and the run sizes no part."""
+    session, queued, router = _world(monkeypatch, route, notes=[],
+                                     request_txt=f"Static stress on the bracket assembly. {SENTENCE}")
+    assert PM.view(session) is None and PM.finalize(session) is None and not queued
+    assert PM.before_run(session) == "go"
+    assert PM.for_run(SID, session.user_notes, session.request_txt) is None
 
 
 def test_a_pick_on_the_model_reaches_the_run(monkeypatch):
@@ -127,18 +139,26 @@ def test_words_naming_no_part_show_nothing_after_finalize(monkeypatch):
     assert PM.view(session) == {"status": "done", "rows": [], "unsure": []}
 
 
-def test_a_sentence_in_both_places_is_read_once():
+def test_the_words_read_are_the_users_notes_only():
     state = {"user_notes": [_note(SENTENCE)], "request_txt": f"Static stress. {SENTENCE}"}
-    assert PW.notes_text(state).count("frame rail") == 1
-    assert PW.request_beyond_notes(state) == "Static stress."
+    assert PW.notes_text(state).count("frame rail") == 1 and "Static stress" not in PW.notes_text(state)
+    assert PW.notes_text({"request_txt": f"Static stress. {SENTENCE}"}) == ""
+    assert not PW.wanted({"request_txt": f"Static stress. {SENTENCE}"})
+    # a declaration that reached the notes as a user turn is the application's text, never read
+    from meshpipeline.application.geometry_confirmation import CONFIRMED_MARK
+    assert PW.notes_text({"user_notes": [_note(f"{CONFIRMED_MARK} a part. {SENTENCE}")]}) == ""
 
 
-def test_the_card_lists_a_rows_words_from_the_first_answer_with_the_notes():
-    from meshpipeline.application.intake_brief import _request_notes
-    pm = {"rows": [{"quote": "3-4 mm on the frame rail"}], "unsure": []}
-    got = _request_notes(pm, [], f"Static stress on the assembly. {SENTENCE}")
-    assert [n["text"] for n in got] == [SENTENCE]
-    assert _request_notes(pm, [{"text": SENTENCE}], f"Static stress. {SENTENCE}") == []    # already a note
+def test_the_card_lists_only_the_users_own_notes():
+    """NOTE-5: the card's notes are the user's words alone - never a sentence of the intake's summary listed as a
+    note beside the checklist."""
+    from meshpipeline.application.intake_brief import build_brief
+    session = SimpleNamespace(request_txt=f"Static stress on the assembly. {SENTENCE}", user_notes=[_note("Keep it tidy.")],
+                              messages=[], intake_submitted=False, purpose="structural")
+    pm = {"status": "done", "rows": [{"quote": "3-4 mm on the frame rail", "parts": ["Part_3"]}], "unsure": []}
+    brief = build_brief(session, part_matches=pm)
+    assert [n["text"] for n in brief["user_notes"]] == ["Keep it tidy."]
+    assert brief["part_matches"] == pm
 
 
 # # the yes

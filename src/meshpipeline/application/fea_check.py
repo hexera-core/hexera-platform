@@ -92,6 +92,17 @@ def clean_words(facts: dict | None) -> tuple[bool | None, str]:
     return False, summary or "The geometry is not clean."
 
 
+def declared_clean(facts: dict | None, messages=None) -> str:
+    """The clean check's sentence for the confirmation's declaration. A FILE THAT IS A SURFACE (SURF-6) is not
+    declared "not clean" for the open edges that make it a surface: what else the check found is said, else that it
+    is a surface."""
+    from meshpipeline.application import surface_check
+
+    if surface_check.is_surface(facts, messages):
+        return str((surface_check.clean_view(facts) or {}).get("clean_summary") or surface_check.DECLARED_CLEAN)
+    return clean_words(facts)[1]
+
+
 #: NOT A CLOSED SOLID (Areen's Camaro STL, 2026-10-23: a car body of 395 open, overlapping surface
 #: pieces was told "395 separate bodies - export each part on its own"). Version 1 meshes a closed
 #: solid; what the clean check found that rules one out, in plain words, worst first. Every mesh
@@ -289,10 +300,18 @@ def warnings(facts: dict | None) -> list[str]:
     return out
 
 
-def blocker(facts: dict | None) -> tuple[str, str, str]:
-    """(what stops version 1, its kind - "surface" | "self_overlap" | "", the way on) for the stage
+def blocker(facts: dict | None, messages=None) -> tuple[str, str, str]:
+    """(what stops version 1, its kind - "surface" | "gap" | "self_overlap" | "", the way on) for the stage
     and the confirmation alike. Several bodies are no stop: an assembly is meshed (design 14); a body
-    that crosses itself is (it needs CAD repair; detected only, never healed)."""
+    that crosses itself is (it needs CAD repair; detected only, never healed). A CAD FILE THAT IS A SURFACE
+    (application/surface_check, SURF-1) is no stop either: it is meshed as a shell. `messages`: the
+    conversation, for a shell or a thickness said after the check."""
+    from meshpipeline.application import surface_check
+
+    if surface_check.is_surface(facts, messages):
+        return "", "", ""
+    if surface_check.is_gap(facts, messages) and not has_solid(facts):
+        return surface_check.GAP_WORDS, "gap", surface_check.GAP_WAY_OUT
     # MESH-1 (Areen, 24 Oct): only a file no closed solid can be read from stops here - a surface, or
     # nothing at all. A face crossing another, a fold, an open or invalid patch on a readable solid are
     # warnings (warnings()): the mesh is tried, and only a mesh that fails at that spot says
@@ -348,11 +367,11 @@ def clean_details(said: str, clean: bool | None, found: list[str]) -> list[str]:
     return out
 
 
-def fea_view(facts: dict | None) -> dict:
+def fea_view(facts: dict | None, messages=None) -> dict:
     """What the FEA stage shows beside the part (the size and unit come with the proposal); for an
     assembly also its parts, their interfaces and the connection question."""
     clean, said = clean_words(facts)
-    blocked, kind, way_out = blocker(facts)
+    blocked, kind, way_out = blocker(facts, messages)
     found = [] if blocked else warnings(facts)
     details = clean_details(said, clean, found)
     if found:
@@ -367,11 +386,146 @@ def fea_view(facts: dict | None) -> dict:
     sewn = sewn_body_count(facts)
     if sewn is not None:
         out["bodies_sewn"] = sewn
+    from meshpipeline.application import surface_check
+
+    if surface_check.is_surface(facts, messages):
+        # SURF-6: A SURFACE'S OPEN EDGES ARE ITS OWN - the check row says what the file is, not that it is broken;
+        # and the solid measurement (a thinnest wall, hot spots to refine) is not said of a sheet: it has no wall
+        # to measure, and its sizes are the shell rules'
+        out.update(surface_check.clean_view(facts) or {})
+        out["measure"] = None
     # several closed solids: an assembly, with its one question (a surface that is no solid stops first)
     asm = None if blocked else assembly_view(facts)
     if asm is not None:
         out["assembly"] = asm
+    plan = None if blocked else plan_view(facts)
+    if plan is not None:
+        out["plan"] = plan
     return out
+
+
+#: PLAN-fea-22: THE SIZE CHOICE as the stage asks it - the full-rules mesh or a quicker one (application facts
+#: key, engines/fea_plan_options); the full-rules mesh is made when nothing was picked.
+PLAN_FACT_KEY = "fea_plan"
+PLAN_QUESTION = "Which mesh?"
+PLAN_FULL, PLAN_QUICKER = "full", "quicker"
+
+
+def _elements_words(n: int, at_least: bool = False) -> str:
+    said = f"{n / 1e6:.1f} million" if n >= 1_000_000 else f"{n:,}"
+    return f"{'at least' if at_least else 'about'} {said} elements"
+
+
+def _time_words(minutes, usual=None) -> str:
+    """A mesh's time: what it usually takes and its upper end (Areen, 28 Oct)."""
+    from meshpipeline.engines.fea_plan_options import minutes_words
+    try:
+        m = int(minutes)
+    except (TypeError, ValueError):
+        return ""
+    try:
+        u = int(usual) if usual is not None else None
+    except (TypeError, ValueError):
+        u = None
+    return minutes_words(u, m)
+
+
+#: said once under the times: a pass the ladder repeats takes longer than one pass
+RETRY_WORDS = "A retry can take longer."
+
+
+def _machine_words(row: dict) -> str:
+    if row.get("standard"):
+        return "the standard machine"
+    gib = row.get("memory_gib")
+    return f"a {gib:g} GiB machine" if isinstance(gib, (int, float)) and gib else "a bigger machine"
+
+
+def _option(row: dict, key: str, recommended: str) -> dict:
+    label = "Full rules" if key == PLAN_FULL else "Quicker"
+    bits = [_elements_words(int(row.get("elements") or 0), bool(row.get("at_least"))), _machine_words(row),
+            _time_words(row.get("minutes"), row.get("usual_minutes"))]
+    words = " · ".join(b for b in bits if b)
+    if key == PLAN_QUICKER and row.get("short_zones"):
+        words += f" · {int(row['short_zones'])} zones coarser than their rules"
+    return {"key": key, "label": label, "words": words, "recommended": key == recommended,
+            "short": list(row.get("short") or [])[:6], "short_kinds": list(row.get("short_kinds") or [])}
+
+
+def plan_view(facts: dict | None) -> dict | None:
+    """PLAN-fea-22, the size choice as the stage shows it: "sizing" while the check plans the mesh, then the two
+    meshes with the one the evidence recommends (preselected) and why - or, when the full-rules mesh fits the
+    standard machine, that there is nothing to choose; "not sized" when the check could not plan it in time
+    (the run sizes it and takes the recommended mesh itself - it never waits for the user). None before the check
+    started sizing it."""
+    got = (facts or {}).get(PLAN_FACT_KEY)
+    if not isinstance(got, dict):
+        return None
+    if got.get("sizing"):
+        return {"state": "sizing", "words": ("Sizing the mesh... You can go on: if it is not ready by then, the run "
+                                                 "takes the recommended mesh itself.")}
+    if not got.get("sized"):
+        return {"state": "not_sized", "words": (got.get("why") or "The mesh is sized when it runs") + ": "
+                "the run sizes it and takes the recommended mesh, without waiting for you."}
+    full = got.get("full") or {}
+    rec = PLAN_QUICKER if got.get("recommended") == PLAN_QUICKER else PLAN_FULL
+    options = [_option(full, PLAN_FULL, rec)]
+    if got.get("choice") and isinstance(got.get("quicker"), dict):
+        options.append(_option(got["quicker"], PLAN_QUICKER, rec))
+    out: dict = {"state": "sized", "choice": len(options) > 1, "recommended": rec,
+                 "why": " ".join(w for w in (str(got.get("why") or ""), RETRY_WORDS) if w),
+                 "question": PLAN_QUESTION, "options": options}
+    if len(options) == 1:
+        out["words"] = (f"{_elements_words(int(full.get('elements') or 0), bool(full.get('at_least')))} on "
+                        f"{_machine_words(full)}, {_time_words(full.get('minutes'), full.get('usual_minutes'))}. "
+                        f"{RETRY_WORDS}")
+    return out
+
+
+def plan_answer(value, facts: dict | None) -> str:
+    """The size choice the stage sent, checked against what the check offered: "full" or "quicker" when there
+    was a choice (the recommended one when the stage sent neither), "" when there was none to make."""
+    view = plan_view(facts)
+    if not view or not view.get("choice"):
+        return ""
+    v = str(value or "").strip().lower()
+    return v if v in (PLAN_FULL, PLAN_QUICKER) else str(view.get("recommended") or PLAN_FULL)
+
+
+def plan_words(answer: str, facts: dict | None) -> str:
+    """The size choice in the declaration's words."""
+    view = plan_view(facts) or {}
+    opt = next((o for o in view.get("options") or [] if o["key"] == answer), None)
+    if not opt:
+        return ""
+    return f"Mesh: {opt['label'].lower()} ({opt['words']})."
+
+
+def plans_object_key(session_id: str) -> str:
+    """Where the check keeps the plans its sizing made (engines/fea_plan_options.PLANS_FILE); "" without a session."""
+    if not session_id:
+        return ""
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.engines.fea_plan_options import PLANS_FILE
+    return check_object_key(session_id, PLANS_FILE)
+
+
+def confirmed_plan_choice(session_id: str) -> str:
+    """PLAN-fea-22: the size choice confirmed on the stage (the stored confirmation's fea_plan): "quicker" or
+    "full"; "" when nothing was picked (the run then takes the recommended mesh itself, and says so)."""
+    import json
+
+    if not session_id:
+        return ""
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.contracts.object_storage import get_object_store
+
+    try:
+        record = json.loads(get_object_store().get_bytes(object_key=check_object_key(session_id, "confirmed.json")))
+    except Exception:  # noqa: BLE001 - unknown is the full-rules mesh, never a refusal
+        return ""
+    v = str((record or {}).get("fea_plan") or "").strip().lower() if isinstance(record, dict) else ""
+    return v if v in (PLAN_FULL, PLAN_QUICKER) else ""
 
 
 def assembly_view(facts: dict | None) -> dict | None:
@@ -719,7 +873,7 @@ def in_unit(record: dict | None, scale_to_m: float | None) -> dict | None:
     return out
 
 
-__all__ = ["TRY_ANYWAY", "has_solid", "warnings", "FOLD_BACK", "fold_back_message", "SELF_OVERLAP", "WAY_OUT_REPAIR", "WAY_OUT_REPAIR_PART", "self_overlap_message", "CONNECTION_OPTIONS", "CONNECTION_QUESTION", "DEFAULT_CONNECTION", "NOT_SOLID", "NOT_SOLID_REASONS",
+__all__ = ["TRY_ANYWAY", "declared_clean", "has_solid", "warnings", "FOLD_BACK", "fold_back_message", "SELF_OVERLAP", "WAY_OUT_REPAIR", "WAY_OUT_REPAIR_PART", "self_overlap_message", "CONNECTION_OPTIONS", "CONNECTION_QUESTION", "DEFAULT_CONNECTION", "NOT_SOLID", "NOT_SOLID_REASONS",
            "QUESTION", "SHOWN_HOT_SPOTS", "GAP_JOIN_QUESTION", "DEFAULT_GAP_JOINS", "gap_words",
            "PAIR_NOTE", "confirmed_pairs", "pair_rows", "pairs_answer", "pairs_summary", "joint_counts", "joint_phrases", "joints_words", "FLOW_ONLY_KEYS", "without_flow_openings",
            "gap_joins_answer", "confirmed_gap_joins", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL", "WAY_OUT_SOLID", "assembly_view",

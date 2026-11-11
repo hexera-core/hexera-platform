@@ -17,6 +17,7 @@ import math
 import re
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1811,6 +1812,13 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
         from meshpipeline.cad.fea_measure import FACT_KEY
 
         facts[FACT_KEY] = fea_measurements(stored, facts, interpretation, early=early, owner_id=owner_id)
+        # PLAN-fea-22: A CAD PART'S MESH IS SIZED once the stage is shown (the size choice lands on it after)
+        from meshpipeline.application.fea_check import PLAN_FACT_KEY
+        sizing = ""
+        if (facts[FACT_KEY].get("measured") and facts[FACT_KEY].get("basis") == "cad"
+                and not fea_blocker(facts)):
+            sizing = uuid.uuid4().hex
+            facts[PLAN_FACT_KEY] = {"sizing": True, "token": sizing}
         # SHSTAGE-1: SHELL OR SOLID, when the user's words say it: the word table, the model only for a
         # paraphrase (checked against the allowed values); the stage opens on it and never overrides it
         from meshpipeline.application import mesh_as
@@ -1833,6 +1841,8 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
                       purpose_text=purpose_text[:2000], naming_seconds=round(time.time() - started, 1))
         landed = _land_named(session_id, result, stored)
         logger.info("geometry naming %s - session=%s (an FEA part: nothing to name)", landed["status"], session_id)
+        if sizing and landed.get("status") == STATUS_READY:
+            size_fea_plan(session_id, stored, interpretation, token=sizing, started=started)
         return landed
 
     with tempfile.TemporaryDirectory(prefix=f"geometry_naming_{session_id[:8]}_") as tmp:
@@ -1873,6 +1883,84 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
     logger.info("geometry naming %s - session=%s in %.1fs (model %s)", landed["status"], session_id,
                 result["naming_seconds"], "answered" if "error" not in vision else "unavailable")
     return landed
+
+
+def fea_blocker(facts: dict) -> bool:
+    """Whether the FEA stage stops this part (a surface, not a closed solid): nothing to size then."""
+    from meshpipeline.application.fea_check import blocker
+    return bool(blocker(facts)[0])
+
+
+#: PLAN-fea-22: THE SIZING'S OWN TIME. It runs after the stage is shown (the naming has landed), for up to
+#: fea_plan_options.BUDGET_S whatever the naming itself took - the naming task is given that much more
+#: (naming_task_limits) - and stores what it made; a run started before it is done sizes the part itself and takes
+#: the recommended mesh (engines/fea_driver.size_choice). This is what the task keeps back for storing the result.
+SIZING_MARGIN_S = 120.0
+
+
+def naming_task_limits(session_id: str) -> tuple[int, int]:
+    """The naming TASK's (soft, hard) limits: the naming's own (naming_limits_for), plus the FEA sizing's budget and
+    its margin, which run after the stage is shown (the check's own time box still holds the naming to its limits:
+    once the stage is ready, nothing waits on the sizing)."""
+    from meshpipeline.engines.fea_plan_options import BUDGET_S
+    soft, hard = naming_limits_for(session_id)
+    extra = int(BUDGET_S + SIZING_MARGIN_S)
+    return soft + extra, hard + extra
+
+
+def size_fea_plan(session_id: str, stored: dict, interpretation: dict | None, *, token: str,
+                  started: float) -> dict:
+    """PLAN-fea-22: the size choice for the FEA part just shown (engines/fea_plan_options), planned as the run
+    plans it in a child stopped within the naming's own time, and stored on the check - unless the check moved on
+    meanwhile (a new naming, a new unit: its marker's token is no longer this one). Never raises; returns what it
+    stored (the options, or why they were not sized)."""
+    from meshpipeline.application.fea_check import PLAN_FACT_KEY
+    from meshpipeline.engines import fea_plan_options as PO
+
+    budget = PO.BUDGET_S
+    got: dict = {"sized": False, "why": "The mesh could not be sized before it runs"}
+    if budget > 0:
+        try:
+            from meshpipeline.cad.ingest import canonicalise
+            from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
+            from meshpipeline.contracts.intake_formats import GeometryKind
+
+            ref = GeometrySourceRef.from_payload(stored["source"])
+            interp_ref = GeometryInterpretationRef.from_payload(interpretation) if interpretation else None
+            with tempfile.TemporaryDirectory(prefix="fea_plan_") as tmp:
+                work = Path(tmp)
+                canonical = canonicalise(_fetch(ref, work), work, stem="geometry", ecxml_form="placed")
+                if canonical.kind is GeometryKind.cad:
+                    prepared, _note = _prepared_coordinates(canonical.path, interp_ref, ref)
+                    kept = work / PO.PLANS_FILE
+                    options = PO.bounded(canonical.path, to_metres=float(prepared.to_metres), budget_s=budget,
+                                         plans_out=kept)
+                    got = {"sized": True, **options} if options else \
+                        {"sized": False, "why": "The mesh could not be sized in time before it runs"}
+                    if options and kept.exists():
+                        # PLANNED ONCE: the plans kept for the run (it reuses them when made for its staged solid)
+                        from meshpipeline.contracts.object_storage import get_object_store
+                        get_object_store().upload_file(local_path=kept,
+                                                       object_key=check_object_key(session_id, PO.PLANS_FILE))
+        except Exception as exc:  # noqa: BLE001 - the run sizes it; the stage says so
+            logger.warning("geometry check: the FEA mesh was not sized (%s: %s)", type(exc).__name__, str(exc)[:200])
+            got = {"sized": False, "why": "The mesh could not be sized before it runs"}
+    try:
+        current = read_check(session_id)
+        facts = dict((current or {}).get("facts") or {})
+        mark = facts.get(PLAN_FACT_KEY)
+        if not current or current.get("status") != STATUS_READY or not isinstance(mark, dict) \
+                or mark.get("token") != token:
+            logger.info("geometry check: the FEA size choice is stale (the check moved on) - session=%s", session_id)
+            return got
+        facts[PLAN_FACT_KEY] = got
+        write_status(session_id, STATUS_READY, **{**{k: v for k, v in current.items() if k not in _STAMPED_KEYS},
+                                                  "facts": facts})
+    except Exception:  # noqa: BLE001 - the stage then keeps saying it is sizing; the run sizes it
+        logger.exception("geometry check: the FEA size choice could not be stored - session=%s", session_id)
+    logger.info("geometry check: FEA size choice %s - session=%s", "sized" if got.get("sized") else "not sized",
+                session_id)
+    return got
 
 
 def _land_named(session_id: str, result: dict, named_from: dict) -> dict:
@@ -1963,6 +2051,10 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None, ear
         ref = GeometrySourceRef.from_payload(stored["source"])
         key = reuse.fea_key(ref.sha256, interpretation, scale, validity)
         known = reuse.known_fea(owner_id, ref.sha256, key) if owner_id else None
+        if known is not None and _lacks_surface_reading(known, facts):
+            # SURF-1: a measurement kept from before surface files were read holds no reading of a file with no
+            # solid - reused, the stage would stop the file as it did then. It is measured again, once
+            known = None
         if known is not None:
             if early is not None:
                 early.stop()
@@ -2009,6 +2101,16 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None, ear
     return record
 
 
+def _lacks_surface_reading(record: dict, facts: dict) -> bool:
+    """Whether a kept CAD measurement of a file the scout found no solid in was made before SURF-1: it holds no
+    surface reading (application/surface_check.KEY)."""
+    from meshpipeline.application import surface_check
+
+    solids = facts.get("solids")
+    no_solid = isinstance(solids, (int, float)) and not isinstance(solids, bool) and int(solids) == 0
+    return no_solid and record.get("basis") == "cad" and surface_check.KEY not in record
+
+
 def _too_big(fetched: Path) -> None:
     size_mb = fetched.stat().st_size / 1e6
     if size_mb > FEA_MEASURE_MAX_MB:
@@ -2028,7 +2130,19 @@ def _fea_measure_cad(path: Path, interp_ref, ref):
     mm_per_unit = 1000.0 * float(occ_scale_transform(prepared).ScaleFactor())
     shape = read_cad(path)
     record, surface = measure_cad_surface(shape, mm_per_unit=mm_per_unit)
-    if int(record.get("bodies") or 0) > 1:
+    sheet = False
+    from meshpipeline.cad.surface_model import has_solid
+    if not has_solid(shape):
+        # SURF-1: A FILE WITH NO SOLID is read as a surface once, here, with the measurement (so a reused
+        # measurement carries the reading): a sheet to mesh as a shell, a closed skin with a gap, or faces that close
+        from meshpipeline.application import surface_check
+
+        reading = surface_check.measure(shape, mm_per_unit=mm_per_unit)
+        if reading is not None:
+            record[surface_check.KEY] = reading
+            # (its sheets are no assembly of solids: nothing touches, nothing is bonded)
+            sheet = reading.get("kind") in (surface_check.SURFACE, surface_check.GAP)
+    if int(record.get("bodies") or 0) > 1 and not sheet:
         # AN ASSEMBLY: its parts, where they touch or pass into each other, and every
         # face named Part_k_Face_j - the names the delivered files use
         from meshpipeline.cad.fea_assembly import global_face_names, measure_assembly

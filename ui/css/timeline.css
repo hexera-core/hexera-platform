@@ -20,7 +20,7 @@
 .tl-node::before{content:'';position:absolute;left:8px;top:20px;bottom:-2px;width:1.5px;background:var(--border)}
 .tl-node:last-child::before{display:none}
 .tl-dot{position:absolute;left:1px;top:2px;width:17px;height:17px;border-radius:50%;background:#fff;
-  border:1.5px solid var(--steel-muted);z-index:1;display:flex;align-items:center;justify-content:center;transition:.25s}
+  border:1.5px solid var(--stone-muted);z-index:1;display:flex;align-items:center;justify-content:center;transition:.25s}
 .tl-dot.active{border-color:var(--text)}
 .tl-dot.active::after{content:'';width:7px;height:7px;border-radius:50%;background:var(--text);animation:dotpulse 1.3s ease-in-out infinite}
 .tl-dot.done{border-color:var(--text);background:var(--text)}
@@ -31,7 +31,7 @@
 .tl-name .ct{font-size:11px;color:var(--text-faint);font-family:var(--mono)}
 /* a lane's own one line (the repair check's outcome) in place of a count: it may shrink, never wrap */
 .tl-name .ct.said{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tl-chev{margin-left:10px;color:var(--steel-muted);font-size:9px;transition:transform .2s}
+.tl-chev{margin-left:10px;color:var(--stone-muted);font-size:9px;transition:transform .2s}
 .tl-node.open .tl-chev{transform:rotate(180deg)}
 .tl-body{display:none;margin-top:9px}.tl-node.open .tl-body{display:block}
 .tl-inner{max-height:360px;overflow-y:auto;padding-right:6px}
@@ -44,7 +44,7 @@
   background:#eceff3;border:1px solid var(--border);border-radius:5px;padding:1px 6px;text-transform:uppercase}
 .e-tool .call{color:var(--text-bright);word-break:break-all}
 .e-info{display:flex;gap:8px;font-family:var(--mono);font-size:11px;color:var(--text-muted)}
-.e-info::before{content:'·';color:var(--steel-muted);flex-shrink:0}
+.e-info::before{content:'·';color:var(--stone-muted);flex-shrink:0}
 .e-info.warn{color:#b45309}.e-info.warn::before{content:'!';color:#d97706}
 .e-detail{margin:2px 0 6px 18px;padding-left:11px;border-left:1.5px solid var(--border);color:var(--text-faint);
   font-family:var(--mono);font-size:10.5px;white-space:pre-wrap;word-break:break-word;max-height:90px;overflow:auto}
@@ -55,11 +55,11 @@
 
 /* MCP web-search entry (replaces RAG) */
 .e-mcp{display:flex;align-items:center;gap:9px;margin:5px 0;padding:7px 11px;border-radius:9px;
-  background:rgba(8,145,178,.07);border:1px solid rgba(8,145,178,.25);border-left:3px solid var(--steel);
+  background:var(--stone-soft);border:1px solid var(--border);border-left:3px solid var(--stone);
   font-family:var(--mono);font-size:11.5px;animation:rise .3s ease}
 .e-mcp .ico{flex-shrink:0}
-.e-mcp .lbl{color:var(--steel);font-weight:700;flex-shrink:0;letter-spacing:.02em}
-.e-mcp .q{color:var(--steel-bright);font-weight:600;word-break:break-all}
+.e-mcp .lbl{color:var(--stone);font-weight:700;flex-shrink:0;letter-spacing:.02em}
+.e-mcp .q{color:var(--stone-bright);font-weight:600;word-break:break-all}
 .e-mcp .hid{margin-left:auto;flex-shrink:0;color:var(--text-faint);font-style:italic;font-size:10px;opacity:.75}
 
 /* file write card */
@@ -89,9 +89,9 @@
 .mb-lbl{font-size:12px;color:var(--text-muted);font-family:var(--mono)}
 .mb-num{font-size:11.5px;color:var(--text-faint);font-family:var(--mono)}
 .mb-track{height:5px;border-radius:999px;background:#e9ebef;overflow:hidden}
-.mb-fill{height:100%;width:0;border-radius:999px;background:#3b82f6;transition:width .5s linear}
-.mb-fill.over{background:#f59e0b}
-.meshbar.done .mb-fill{background:#34d399}
+.mb-fill{height:100%;width:0;border-radius:999px;background:var(--live);transition:width .5s linear}
+.mb-fill.over{background:var(--warn)}
+.meshbar.done .mb-fill{background:var(--ok)}
 
 /* validation evidence: what the mesh PROVED, not which function ran */
 .e-check{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;color:var(--text-bright);
