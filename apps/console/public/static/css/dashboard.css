@@ -277,7 +277,8 @@
 .table .row-action:hover{background:var(--surface-raised);color:var(--text)}
 .row-action svg{width:15px;height:15px}
 
-/* Status: a WORD and a mark, never a colour alone. Sentence case, the body face. */
+/* Status: a WORD and a mark, never a colour alone. The uppercase below is set by the brand
+   voice block at the foot of this file. */
 .status{display:inline-flex;align-items:center;gap:.5rem;vertical-align:middle;font:500 var(--fs-md)/1.2 var(--sans);
   letter-spacing:0;text-transform:none;color:var(--text-muted)}
 .status::before{content:"";width:6px;height:6px;border-radius:50%;flex:none;
@@ -369,14 +370,16 @@
 
 /* Brand voice: on hexera.ai every functional word is uppercase - chrome in Geist Mono caps with
    a wide track, display words in Saira caps. The page shell and sidebar take the same rule:
-   nothing lowercase anywhere; the label set takes the mono face and the site's tracking, and the
-   page title takes the display face the tokens already declare. Free-running prose (chat inside
-   the workbench) keeps its own voice - this is the chrome. */
+   nothing lowercase anywhere. These rules set the transform ON the elements, not the parents -
+   the older rules above declare text-transform:none on each piece, and a declared value beats
+   the inherited one however late the parent rule comes. Free-running prose (chat inside the
+   workbench) keeps its own voice - this is the chrome. */
 .sidebar,.page,.auth{text-transform:uppercase}
-.page__title{font-family:var(--display);font-weight:600;letter-spacing:-.01em}
+.shell .page__title{font-family:var(--display);font-weight:600;letter-spacing:-.01em;
+  text-transform:uppercase}
 .auth__title{letter-spacing:-.01em}
-.label,.page__eyebrow,.section__title,.section__head .page__sub,.chart-legend,.chart__label,
-.chart__value,.sidebar__group,.sidebar__item,.sidebar__new,.sidebar__run,.sidebar__credits,
-.sidebar__settings>summary,.table th,.metric-card .label,.metric-card span,.status,.btn,
-.billing-plan-card .label,.dashboard-notice h2,.auth__alt,.auth__foot{
-  font-family:var(--mono);letter-spacing:.12em}
+.shell .label,.shell .page__eyebrow,.section__title,.section__head .page__sub,.chart-legend,
+.chart__label,.chart__value,.sidebar__group,.sidebar__item,.sidebar__new,.sidebar__run,
+.sidebar__credits,.sidebar__settings>summary,.table th,.metric-card .label,.metric-card span,
+.status,.shell .btn,.billing-plan-card .label,.dashboard-notice h2,.auth__alt,.auth__foot{
+  font-family:var(--mono);letter-spacing:.12em;text-transform:uppercase}
