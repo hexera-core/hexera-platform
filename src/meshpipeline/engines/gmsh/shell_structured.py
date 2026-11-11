@@ -407,6 +407,11 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
             continue
         if fine_at and min((fine_at.get(p, math.inf) for p in got[1]), default=math.inf) * growth < size_mm[t]:
             continue
+        # nor next to a face more than two growth steps finer (a grid cannot grade down to it)
+        near = {int(s) for sd in got[0] for c in sd for s in gmsh.model.getAdjacencies(1, c)[0]
+                if int(s) != t and int(s) in size_mm}
+        if any(size_mm[s] * growth ** 2 < size_mm[t] for s in near):
+            continue
         cand[t] = got
     length = {c: float(gmsh.model.occ.getMass(1, c)) for t in cand for sd in cand[t][0] for c in sd}
     counts: dict[int, int] = {}
@@ -743,11 +748,19 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
         cut_curves = {c for got in cmap[1:] for d, c in got if d == 1}
         small = any(min(float(gmsh.model.occ.getMass(1, abs(c))) for _d, c in
                         gmsh.model.getBoundary([(2, s)], oriented=False)) < CELL_MIN * h for s in cells)
+        # and every ring came out as drawn: one circle round a free box's hole, four quarters round an O-grid's
+        trial = sorted({abs(int(c)) for s in cells for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
+        for w, p in zip(ws, plans, strict=True):
+            R = p[2] * w.r if p is not None else w.R
+            on_ring = [c for c in trial if np.all(np.abs(np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1) - R)
+                                                  <= 1e-4 * R)]
+            if len(on_ring) != (4 if p is not None else 1):
+                small = True
         gmsh.model.occ.remove([(2, s) for s in cells], recursive=True)
         gmsh.model.occ.synchronize()
         _remove_loose(gmsh, cut_curves)
         if small:
-            no("a cell would come out too small")
+            no("a cell would come out too small, or a ring cut")
             continue
         edge_pts = np.vstack([_samples(gmsh, c, 64) for cl in loops for c in cl])
         _o, omap = gmsh.model.occ.fragment([(2, t)], tools())
