@@ -356,17 +356,25 @@ def test_a_short_plate_whose_thickness_steps_is_judged_as_one_wall():
 
 
 def test_a_wall_step_is_not_read_whole_when_the_body_already_has_a_shell():
-    # SHELL-19 reads only a body with no shell sheet: here the 2 mm half passes alone, so the 3 mm half stays solid
+    # SHELL-19 reads only a body with no shell sheet: here the 2 mm half passes alone, so SHELL-19 does not read the
+    # 3 mm half against it. Since SHELL-23c (#449: a step is no pad) the 3 mm half, flush with the 2 mm shell wall and
+    # under twice it, is a shell by SHELL-23 as a short wall - not by SHELL-19's region
     rec, _ = ms.extract(sf.short_step(3.0, 2.0, a=30.0), mm_per_unit=1.0)
-    assert [b["verdict"] for b in rec["bodies"]] == ["mixed"]
-    assert [p["thickness_mm"] for p in _shell_pairs(rec)] == pytest.approx([2.0])
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
+    assert sorted(p["thickness_mm"] for p in _shell_pairs(rec)) == pytest.approx([2.0, 3.0])
+    assert not any("thickness changes" in str(p.get("why") or "") for p in _shell_pairs(rec))
+    assert [w["thickness_mm"] for w in rec["short_walls"]] == pytest.approx([3.0])
 
 
 def test_a_thick_block_lends_no_size_to_a_short_plate_on_it():
-    # SHELL-19: the 20 mm block fails against the region and is taken out; the 3 mm plate alone is under 10 walls long
+    # SHELL-19: the 20 mm block fails against the region and is taken out, so it lends the 3 mm plate no size. Since
+    # SHELL-23b (#449: the body share is off) the plate is a short wall of its own (SHELL-23) on the solid block: the
+    # body is mixed, the block a solid region, and no pair is a shell by SHELL-19's region
     rec, _ = ms.extract(sf.short_step(20.0, 3.0), mm_per_unit=1.0)
-    assert [b["verdict"] for b in rec["bodies"]] == ["solid"]
-    assert not _shell_pairs(rec)
+    assert [b["verdict"] for b in rec["bodies"]] == ["mixed"]
+    assert [p["thickness_mm"] for p in _shell_pairs(rec)] == pytest.approx([3.0])
+    assert not any("thickness changes" in str(p.get("why") or "") for p in _shell_pairs(rec))
+    assert [w["thickness_mm"] for w in rec["short_walls"]] == pytest.approx([3.0])
 
 
 def test_where_mid_faces_do_not_meet_the_region_is_meshed_solid_and_said_so(monkeypatch):
