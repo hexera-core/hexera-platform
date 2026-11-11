@@ -72,6 +72,8 @@ class Region:
     name: str = ""
     #: MIXED-9f: the body's metal the shell does not hold, as pieces, when its thick cores could not be grown
     pieces: list | None = None
+    #: MIXED-9f: those pieces a shell edge ends on (each meshed on its own)
+    met: list | None = None
 
 
 @dataclass
@@ -270,6 +272,31 @@ def _tied(joined, nodes_at: list[tuple[int, int]]) -> list[int]:
     return got.tolist()
 
 
+def _untied(joined, nodes_at: list[tuple[int, int]]) -> list[int]:
+    """The patches beside a link node the join could not tie (its nearest solid node's patch)."""
+    from scipy.spatial import cKDTree
+
+    tied = {t.node for t in joined.ties}
+    loose = [n for lk in joined.links for n in list(lk.on_face) + list(lk.inner) if n + 1 not in tied]
+    if not loose or not len(joined.solid.xyz):
+        return []
+    _d, j = cKDTree(np.asarray(joined.solid.xyz, float)).query(np.asarray(joined.shell.xyz, float)[loose])
+    starts = np.array([a for a, _b in nodes_at])
+    return sorted({int(np.searchsorted(starts, int(x), side="right") - 1) for x in np.atleast_1d(j)})
+
+
+def _worst(sqs: list[dict]) -> dict:
+    """One patch's quality from its pieces': the cells added up, the worst shape, every fatal line."""
+    if len(sqs) == 1:
+        return sqs[0]
+    sicn = [q["min_sicn"] for q in sqs if q.get("min_sicn") is not None]
+    return {"cells": sum(int(q.get("cells") or 0) for q in sqs), "fatal": [f for q in sqs for f in q.get("fatal") or []],
+            "fea_inverted": sum(int(q.get("fea_inverted") or 0) for q in sqs), "min_sicn": min(sicn) if sicn else None,
+            "sicn_floor": sqs[0].get("sicn_floor"),
+            "elements_under_floor": sum(int(q.get("elements_under_floor") or 0) for q in sqs),
+            **({"requirements": sqs[0]["requirements"]} if sqs[0].get("requirements") else {})}
+
+
 def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: dict | None = None,
           target: dict | None = None, requirements_file: Path | None = None) -> Patched:
     """MIXED-9: the shell of `step` with its solid patches, joined (all lengths mm). `out`: the extraction's folder
@@ -365,6 +392,7 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
             # of shell walls, which no edge reaches, stays out as in any shell model
             met = [p for p in r.pieces if _met_faces(shell, ms._faces(_scaled(p, k)), ON_FACE_SHARE)]
             r.shape = ms._compound(met) if met else None
+            r.met = met
             r.cut_faces = [f for p in met for f in ms._faces(p)]
     for r in regions:
         if r.shape is None:
@@ -399,25 +427,42 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
                 # the notes' requirements are measured on the solid part too (engines/gmsh/fea_adapter PLAN-fea-34)
                 shutil.copyfile(requirements_file, ws_i / Path(requirements_file).name)
             what = "body" if r.whole else "thick region"
-            try:
-                part, sq = mixed_run._solid_mesh(_scaled(r.shape, k), ws_i, req)
-            except Exception as exc:  # noqa: BLE001 - this patch is left out, said; the others go on
-                logger.warning("solid patch %s: not meshed (%s)", r.body, exc)
-                lost.append({"body": r.body, "whole": r.whole, "count": r.count,
-                             "why": f"the solid mesh of {r.body}'s {what} could not be made"})
+            # MIXED-9f: the unheld metal is meshed piece by piece (one FEA mesh of many touching slivers left
+            # overlapping facets between them); a piece that cannot be meshed validly is left out, said
+            shapes = list(r.met) if r.met else [r.shape]
+            got, why = [], ""
+            for j, shp in enumerate(shapes, start=1):
+                ws_j = ws_i if len(shapes) == 1 else ws_i / f"piece_{j}"
+                ws_j.mkdir(parents=True, exist_ok=True)
+                if ws_j != ws_i and (ws_i / "mesh_requirements.json").exists():
+                    shutil.copyfile(ws_i / "mesh_requirements.json", ws_j / "mesh_requirements.json")
+                try:
+                    part, sq = mixed_run._solid_mesh(_scaled(shp, k), ws_j, req)
+                except Exception as exc:  # noqa: BLE001 - this piece is left out, said; the others go on
+                    logger.warning("solid patch %s: not meshed (%s)", r.body, exc)
+                    why = f"the solid mesh of {r.body}'s {what} could not be made"
+                    continue
+                if sq.get("fatal") or int(sq.get("fea_inverted") or 0) > 0:
+                    why = f"the solid mesh of {r.body}'s {what} is not valid"
+                    continue
+                got.append((part, sq))
+            if why:
+                lost.append({"body": r.body, "whole": r.whole, "count": r.count if not got else 0,
+                             "why": why if not got else f"{why} in {len(shapes) - len(got)} of {len(shapes)} pieces"})
+            if not got:
                 continue
-            if sq.get("fatal") or int(sq.get("fea_inverted") or 0) > 0:
-                lost.append({"body": r.body, "whole": r.whole, "count": r.count,
-                             "why": f"the solid mesh of {r.body}'s {what} is not valid"})
-                continue
+            part = _merge([g[0] for g in got])[0] if len(got) > 1 else got[0][0]
+            sq = _worst([g[1] for g in got])
             parts.append(part)
             sqs.append(sq)
             cut_all.append(cut)
             kept.append(r)
         return parts, sqs, cut_all, kept, lost
 
-    def join_all(parts, sqs, cut_all, kept, lost):
-        """SHLINK-4 on every patch; a patch no shell edge reaches is left out and the rest joined again."""
+    def join_all(parts, sqs, cut_all, kept, lost, *, drop_untied: bool = False):
+        """SHLINK-4 on every patch; a patch no shell edge reaches is left out and the rest joined again. With
+        `drop_untied`, so is a patch round which a link row found too few solid nodes (MIXED-9c: every link node
+        tied, or the patch is not delivered)."""
         while True:
             if not parts:
                 raise Stop(lost[-1]["why"] if lost else "no solid patch could be meshed")
@@ -428,14 +473,17 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
                                  loose_faces=[f for c, r in zip(cut_all, kept, strict=True) if r.whole for f in c])
             except ValueError as exc:
                 raise Stop(f"the shell meets none of the solid regions ({exc})") from exc
-            loose = [i for i, n in enumerate(_tied(joined, nodes_at)) if n == 0]
+            loose = {i: "does not meet the shell at a plate edge" for i, n in enumerate(_tied(joined, nodes_at))
+                     if n == 0}
+            if drop_untied and joined.notes:
+                for i in _untied(joined, nodes_at):
+                    loose.setdefault(i, "could not be tied to the shell all round (too few solid nodes across a wall)")
             if not loose:
                 return joined, tets_at, sqs, kept, lost
-            for i in reversed(loose):
+            for i in sorted(loose, reverse=True):
                 r = kept.pop(i)
                 lost.append({"body": r.body, "whole": r.whole, "count": r.count,
-                             "why": f"{r.body}'s {'body' if r.whole else 'thick region'} does not meet the shell at "
-                                    "a plate edge"})
+                             "why": f"{r.body}'s {'body' if r.whole else 'thick region'} {loose[i]}"})
                 del parts[i], sqs[i], cut_all[i]
 
     joined, tets_at, sqs, kept_regions, lost = join_all(*mesh_all(None))
@@ -445,7 +493,7 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
         # SHLINK-3: a link row found too few solid nodes across its wall - the patches meshed again at half the
         # thinnest wall (two quadratic tetrahedra through it), and joined again
         missing = list(joined.notes)
-        joined, tets_at, sqs, kept_regions, lost = join_all(*mesh_all(0.5 * float(t_min)))
+        joined, tets_at, sqs, kept_regions, lost = join_all(*mesh_all(0.5 * float(t_min)), drop_untied=True)
         seconds["finer"] = {"size_mm": 0.5 * float(t_min), "before": missing}
     left.extend(lost)
     if joined.notes:
