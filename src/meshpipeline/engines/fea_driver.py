@@ -2039,11 +2039,15 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             if asked.get("status") == "used":
                 # SHMESH-26 / NOTE-8: asked against delivered, and what was not applied, in the result's "From your
                 # notes" line
-                from meshpipeline.contracts.user_notes import record_remark
+                from meshpipeline.contracts.user_notes import drop_remark, record_remark
                 from meshpipeline.engines import mesh_requirements as MR
                 from meshpipeline.engines.shell_requirements import summary as asked_summary
-                record_remark(ws, asked_summary(shelled.get("requirements"), len(MR.not_applied_words(asked))),
-                              by="mesh_requirements")
+                said = asked_summary(shelled.get("requirements"), len(MR.not_applied_words(asked)))
+                if said:
+                    # the AI's own remark (above) says what it did with the notes for the SOLID plan, which is not
+                    # made: beside the shell's asked-against-delivered line it told the user of a solid mesh
+                    drop_remark(ws, by="fea_ai")
+                    record_remark(ws, said, by="mesh_requirements")
             _cite(job_id, [{"stage": SHELL_GATE, "decided": "shell delivered", "value": shelled.get("elements"),
                             "rule": "SHSTAGE-7", "inputs": {"solid_made": False},
                             "words": "The shell is the delivered mesh: no solid mesh is made beside it."}])

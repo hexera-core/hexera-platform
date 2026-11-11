@@ -362,6 +362,22 @@ def record_remark(workspace: Any, remark: Any, *, by: str) -> None:
         logger.warning("user notes: could not keep %s's remark", by, exc_info=True)
 
 
+def drop_remark(workspace: Any, *, by: str) -> None:
+    """Take a step's remark out of the workspace: the step's work was set aside, so its line would tell the user
+    of something that was not made. Best effort, as record_remark; nothing kept by that step is no change."""
+    import json
+    if not workspace:
+        return
+    rows = read_remarks(workspace, raw=True)
+    left = [r for r in rows if r.get("by") != by]
+    if len(left) == len(rows):
+        return
+    try:
+        (Path(workspace) / REMARKS_FILE).write_text(json.dumps(left, indent=1), encoding="utf-8")
+    except OSError:
+        logger.warning("user notes: could not drop %s's remark", by, exc_info=True)
+
+
 def read_remarks(workspace: Any, *, raw: bool = False) -> list:
     """The remarks the steps left in this workspace: their lines, or (raw) the stored rows."""
     import json
@@ -403,7 +419,8 @@ def result_lines(remarks: Sequence[Any], *, consumer: str = "delivery") -> list[
 __all__ = ["COMMON_CONSUMERS", "CONSUMERS", "ENGINE_CONSUMERS", "GUIDANCE", "NOTES_FILE",
            "QUESTION", "REMARKS_FILE", "REMARK_DESCRIPTION", "ROUTE_CONSUMERS", "RULE_EVERY_ROUTE",
            "RULE_NEVER_FAILS", "RULE_VERBATIM", "SOURCE_CHAT", "SOURCE_CONSOLE", "answer",
-           "answers_now", "asked", "capture", "chat_block", "clean", "context_block", "is_skip", "make", "merge",
+           "answers_now", "asked", "capture", "chat_block", "clean", "context_block", "drop_remark", "is_skip", "make",
+           "merge",
            "prompt_block",
            "read_remarks", "record_remark", "render", "result_lines", "workspace_block",
            "write_file"]
