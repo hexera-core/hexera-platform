@@ -283,7 +283,17 @@ def conjugate_viewer(workspace, *, roles: dict, units: str,
         # place and a number, measured on the faces the mesher wrote, and merging the drawing
         # does not move it or change it. This used to skip BOTH on a reduced mesh, which is the
         # mesh a reader most needs told where to look.
-        _paint(resp, ws, colours=not reduced)
+        # COLOURS ONLY WHERE A COLOUR WAS MEASURED ON THE THING IT IS ON. `_paint`'s arrays are
+        # one value per DELIVERED face; after either kind of merge the drawn polygons are fewer,
+        # so those arrays describe a surface that is not on screen. viewer.js drops an array whose
+        # length does not match the polygon count - silently, by design - so passing them would
+        # not paint anything wrong, it would simply paint nothing while looking as though it had.
+        _paint(resp, ws, colours=not (reduced or exact_note))
+        if exact_note:
+            # The exact route CAN carry colours, which the budget route never could: it knows
+            # exactly which delivered faces went into each polygon, so it summarises them instead
+            # of guessing. See `_attach_exact_colours` for what that summary is and is not.
+            _attach_exact_colours(resp, raw)
     return resp
 
 
@@ -351,6 +361,72 @@ def _poor_surfaces(ws: Path) -> list[dict]:
         logger.info("conjugate viewer: %d poor-cell set(s) drawn - %s", len(out),
                     ", ".join(f"{d['name']} ({d['face_count']} faces)" for d in out))
     return out
+
+
+def _attach_exact_colours(resp: dict, raw: list[dict]) -> None:
+    """Per-DRAWN-POLYGON quality arrays, in the shape viewer.js already decodes.
+
+    THE WHOLE PART GETS A HEATMAP FOR THE FIRST TIME. The budget route could never carry one: it
+    clusters faces by position and has no record of which delivered faces ended up under a drawn
+    one, so a colour on it was measured on none of them and `_paint` drops the arrays. The lossless
+    merge knows exactly which faces each rectangle replaced, because the merge is what put them
+    there, so it can summarise them.
+
+    WHAT THE COLOUR IS, and it is not a face's value. A merged rectangle stands for up to 544,272
+    delivered faces on this plate - the chip's flat top is one polygon - so it carries the WORST of
+    them. That is an upper bound a reader can act on: red means there is a bad face in there. It is
+    NOT "this is a bad face", and the probe says `worst of N` wherever N is more than one, because
+    a 544,272-face polygon painted by its single worst cell would otherwise read as a ruined chip.
+    `faces_per_polygon_b64` travels so the client can say that number.
+
+    A face kept whole carries its own value, with N = 1, and on this plate that is about 8% of the
+    boundary - so some of the heatmap is exact per face and the rest is bounded.
+
+    Written in the keys `face_quality.quality_fields` uses, so the viewer's existing ramp, legend,
+    hotspots and probe read it with no special case anywhere.
+    """
+    import base64
+
+    import numpy as np
+
+    qf = resp.get("quality_fields")
+    if not isinstance(qf, dict) or not qf.get("metrics"):
+        return
+    keys = {"non_ortho": "non_ortho_b64", "skewness": "skewness_b64",
+            "aspect_ratio": "aspect_ratio_b64"}
+    out: dict = {}
+    for p in raw:
+        got = p.get("quality") or {}
+        vals = got.get("values") or {}
+        name = str(p.get("name") or "")
+        n = int(p.get("poly_count") or 0)
+        if not name or not n or not vals:
+            continue
+        row: dict = {}
+        for metric, b64key in keys.items():
+            v = (vals.get(metric) or {}).get("worst")
+            if not v:
+                continue
+            # LENGTH IS THE CONTRACT. viewer.js drops an array that does not match the polygon
+            # count rather than trusting it, because a misaligned field paints every face with its
+            # neighbour's number. Check it here too, so a mismatch is a log line and not silence.
+            if len(v) != n * 4:
+                logger.warning("conjugate viewer: %s has %d bytes of %s for %d polygons, dropped",
+                               name, len(v), metric, n)
+                continue
+            row[b64key] = base64.b64encode(v).decode("ascii")
+        fp = p.get("faces_per_polygon")
+        if row and fp and len(fp) == n * 4:
+            row["faces_per_polygon_b64"] = base64.b64encode(
+                np.frombuffer(fp, dtype=np.uint32).astype("<u4").tobytes()).decode("ascii")
+        if row:
+            out[name] = row
+    if out:
+        qf["patches"] = out
+        qf["per_polygon"] = ("a merged polygon carries the WORST of the delivered faces it "
+                             "replaced, and faces_per_polygon says how many that was; a face "
+                             "kept whole carries its own value")
+        logger.info("conjugate viewer: per-polygon colours on %d patch(es)", len(out))
 
 
 def _paint(resp: dict, ws: Path, *, colours: bool = True) -> None:

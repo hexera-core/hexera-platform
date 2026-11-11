@@ -132,14 +132,6 @@ def main(argv=None) -> int:
                "area_m2": r["area_m2"],
                "points_b64": b64(r["points"]),
                "polys_b64": b64(r["polys"])}
-        if r.get("quality"):
-            row["quality"] = {
-                "basis": r["quality"]["basis"],
-                "over": r["quality"]["over"],
-                "values_b64": {m: {k: b64(v) for k, v in d.items()}
-                               for m, d in r["quality"]["values"].items()},
-            }
-            row["faces_per_polygon_b64"] = b64(r["faces_per_polygon"])
         patches.append(row)
         prov["patches"][r["name"]] = r["exact"]
         n_poly += int(r["poly_count"])
@@ -165,6 +157,38 @@ def main(argv=None) -> int:
     surf = dict(ssurf)
     surf["patches"] = patches
     surf.pop("reduced", None)
+
+    # PER-POLYGON COLOURS, in the keys viewer.js already decodes, so the whole part gets a heatmap
+    # for the first time. The budget route cannot carry one - it clusters by position and keeps no
+    # record of which delivered faces went under a drawn one - and `face_quality` drops the arrays
+    # on a reduced mesh for exactly that reason. The lossless merge knows, because the merge is
+    # what put them there. The value is the WORST of the faces a polygon replaced, which is an
+    # upper bound and not the value of any one face; `faces_per_polygon_b64` is how the probe
+    # says so. Same thing `cfmesh_conjugate/viewer._attach_exact_colours` does on the product path.
+    keymap = {"non_ortho": "non_ortho_b64", "skewness": "skewness_b64",
+              "aspect_ratio": "aspect_ratio_b64"}
+    qf = dict(surf.get("quality_fields") or {})
+    per: dict = {}
+    for r in rows:
+        got = (r.get("quality") or {}).get("values") or {}
+        n = int(r["poly_count"])
+        one: dict = {}
+        for metric, key in keymap.items():
+            v = (got.get(metric) or {}).get("worst")
+            if v and len(v) == n * 4:
+                one[key] = b64(v)
+        fp = r.get("faces_per_polygon")
+        if one and fp and len(fp) == n * 4:
+            one["faces_per_polygon_b64"] = b64(fp)
+        if one:
+            per[r["name"]] = one
+    if per and qf.get("metrics"):
+        qf["patches"] = per
+        qf["per_polygon"] = ("a merged polygon carries the WORST of the delivered faces it "
+                             "replaced, and faces_per_polygon says how many that was; a face "
+                             "kept whole carries its own value")
+        surf["quality_fields"] = qf
+        logger.info("  per-polygon colours on %d patch(es): %s", len(per), ", ".join(sorted(per)))
     surf["exact"] = {
         "delivered_faces": n_face,
         "drawn_polygons": n_poly,

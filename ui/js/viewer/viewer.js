@@ -2153,7 +2153,22 @@ function initViewer(job,surf,uiCfg){
            clear();}}
     if(dep){
       dep.onclick=function(){setDeep(!deepOn);};
-      if(cam.onModified)cam.onModified(depPing);}
+      if(cam.onModified)cam.onModified(depPing);
+      /* ON BY DEFAULT, BUT ONLY ON AN EXACT SURFACE. A mode a reader has to find is not an answer
+         to "the viewer should show me my mesh"; they should simply zoom and have it happen. But
+         the handover is only invisible where the surface it replaces is the mesh - on a
+         budget-clustered one the part would shift by the 1.35% of area that route loses every
+         time detail arrived, and a jump nobody asked for is worse than a button nobody found.
+         So the payload decides, and the gate above means a view this far out costs nothing.
+
+         AFTER THIS TURN OF THE LOOP, and not inline, because `setDeep` turns the other modes off
+         and `setArmed` reads `activeMetric` - which is declared with `let` in the heatmap block
+         further down this file and is therefore in its temporal dead zone while the viewer is
+         still wiring itself up. Inline, this threw "Cannot access 'activeMetric' before
+         initialization" and the whole viewer failed to load with a message about downloads. The
+         three modes have always called each other safely because until now nothing called any of
+         them before a reader clicked. */
+      if(_draw.exact)setTimeout(function(){if(deepOn)return;setDeep(true);},0);}
 
     /* ARMED IS A MODE, and it says so three ways - the button's own state, the cursor, and the
        hint under the canvas - because a mode a reader cannot see is a mode they will click out of
@@ -2248,16 +2263,64 @@ function initViewer(job,surf,uiCfg){
       const n=[0,0,0];n[k]=clipFlip?-1:1;
       const pl=vtk.Common.DataModel.vtkPlane.newInstance({origin:o,normal:n});
       ms.forEach(m=>{if(m&&m.addClippingPlane)m.addClippingPlane(pl);});}
+
+    /* AIM AT WHAT IS LEFT, which is the whole of a bug that made Clip unusable the moment anyone
+       zoomed.
+
+       `resetCamera` puts the focal point at the centre of the bounding box, and `applyClip` puts
+       the plane at the midpoint of that same box - so at the slider's default the two are the SAME
+       POINT. The camera dollies toward its focal point, so zooming after a clip converged the
+       camera onto the clip plane itself, and everything beyond the plane is exactly what was
+       removed. Measured on the delivered coolant, drawn canvas against wheel clicks:
+
+           clicks      no clip     clip on z
+                0       16.26%        11.66%
+               20       83.63%        33.37%
+               40      100.00%         3.23%
+
+       A reader clipped to see inside, zoomed to see detail, and watched the mesh evaporate. The
+       clip was innocent of the emptiness and guilty of where it left the camera pointing.
+
+       So when the clip moves, the focal point moves to the middle of the half that SURVIVES, and
+       the camera moves with it - same direction, same distance, so nothing about the view changes
+       except what the zoom is now converging on. Only on a clip change: `applyClip` is also called
+       after every cut and from `clear`, and moving a reader's camera on either of those would be
+       the camera wandering off on its own. */
+    function reaimForClip(){
+      if(_clamping)return;
+      const k={x:0,y:1,z:2}[clipAx];
+      const f=cam.getFocalPoint().slice(),p=cam.getPosition().slice();
+      if(k===undefined){
+        // clip off: back to the box's own centre, so the next zoom behaves as it always did
+        const c=[(_bs[0]+_bs[1])/2,(_bs[2]+_bs[3])/2,(_bs[4]+_bs[5])/2];
+        cam.setFocalPoint(c[0],c[1],c[2]);
+        cam.setPosition(p[0]+c[0]-f[0],p[1]+c[1]-f[1],p[2]+c[2]-f[2]);
+        return;}
+      const lo=_bs[k*2],hi=_bs[k*2+1],t=clipEl?(+clipEl.value)/100:0.5;
+      const at=lo+(hi-lo)*t;
+      // `normal` points INTO the half that is kept, so flip decides which side survives
+      const keepLo=clipFlip?lo:at,keepHi=clipFlip?at:hi;
+      const want=(keepLo+keepHi)/2;
+      // a sliver is not worth aiming into; leave the camera where it is rather than shoving it
+      // into a hundred-micron gap at the end of the slider's travel
+      if(!(keepHi-keepLo>1e-6*Math.max(hi-lo,1e-12)))return;
+      const d=want-f[k];
+      if(!isFinite(d)||Math.abs(d)<1e-12)return;
+      f[k]+=d;p[k]+=d;
+      cam.setFocalPoint(f[0],f[1],f[2]);
+      cam.setPosition(p[0],p[1],p[2]);}
     box.querySelectorAll('.v-insp-c[data-ax]').forEach(b=>{
       b.onclick=()=>{
         clipAx=b.dataset.ax||'';
         box.querySelectorAll('.v-insp-c[data-ax]').forEach(o=>
           o.setAttribute('aria-pressed',o===b?'true':'false'));
         if(clipEl)clipEl.disabled=!clipAx;
-        applyClip();rw.render();};});
-    if(clipEl)clipEl.addEventListener('input',()=>{applyClip();rw.render();});
+        applyClip();reaimForClip();clampCam();rw.render();legendSoon();};});
+    if(clipEl)clipEl.addEventListener('input',()=>{
+      applyClip();reaimForClip();clampCam();rw.render();legendSoon();});
     const flipB=document.getElementById('v-insp-flip-'+job);
-    if(flipB)flipB.onclick=()=>{clipFlip=!clipFlip;applyClip();rw.render();};
+    if(flipB)flipB.onclick=()=>{clipFlip=!clipFlip;applyClip();reaimForClip();clampCam();
+                                rw.render();legendSoon();};
 
     /* THE HELP IS THE FEATURE, on the evidence: the control worked and was unreadable, so the
        words that say what it does earn their place beside it rather than in a document nobody
@@ -2466,7 +2529,15 @@ function initViewer(job,surf,uiCfg){
     entries.forEach(en=>{const p=(qf.patches||{})[en.patch];en.q={};if(!p)return;
       avail.forEach(m=>{if(!p[META[m].b64])return;const a=b64f32(p[META[m].b64]);
         if(a.length===en.nCells)en.q[m]=a;});
-      if(p.cell_faces_b64){const cf=b64u8(p.cell_faces_b64);if(cf.length===en.nCells)en.cellFaces=cf;}});
+      if(p.cell_faces_b64){const cf=b64u8(p.cell_faces_b64);if(cf.length===en.nCells)en.cellFaces=cf;}
+      /* HOW MANY DELIVERED FACES ONE DRAWN POLYGON STANDS FOR. Absent on the budget route, which
+         cannot know. Present on the lossless one, which merged them and so does: the value above
+         is then the WORST of that many, which is an upper bound a reader can act on and is NOT
+         the value of the face under their cursor. The chip's flat top is ONE polygon covering
+         544,272 faces; painted by its single worst cell and read as a face's own number, it says
+         the chip is ruined. The probe says `worst of N` wherever N is more than one. */
+      if(p.faces_per_polygon_b64){const fp=b64u32(p.faces_per_polygon_b64);
+        if(fp.length===en.nCells)en.nFaces=fp;}});
     if(!entries.some(en=>Object.keys(en.q).length)&&!(qf.hotspots||[]).length)return;
 
     /* one ramp per metric: calm below the bar, warm approaching it, red past it. The colours
@@ -2934,17 +3005,29 @@ function initViewer(job,surf,uiCfg){
       const over=have.filter(m=>en.q[m][cid]>qf.metrics[m].limit);
       lastProbe={patch:en.patch,cell:cid,cellFaces:cf,over,
                  values:Object.fromEntries(have.map(m=>[m,en.q[m][cid]]))};
-      const rows=have.map(m=>probeRow(m,en.q[m][cid])).join('');
+      const nf=en.nFaces?en.nFaces[cid]:1;
+      const rows=have.map(m=>probeRow(m,en.q[m][cid],nf)).join('');
       probeEl=document.createElement('div');probeEl.className='v-probe';
-      probeEl.innerHTML=`<div class="pk">${esc(en.patch)} · face ${cid.toLocaleString()}</div>`
+      probeEl.innerHTML=`<div class="pk">${esc(en.patch)} · `
+        +(nf>1?`polygon ${cid.toLocaleString()}, ${nf.toLocaleString()} delivered faces`
+              :`face ${cid.toLocaleString()}`)+`</div>`
         +`<div class="pr-rows">${rows}</div>`
         +(cf!=null?`<div class="pr-cell">cell behind it: ${cf}-face ${shapeOf(cf)}</div>`:'')
         +(over.length?`<div class="why">likely: ${esc(why(cf,role))}</div>`:'');
       probeActs(()=>placeMarker(en,cid));}
     // one reading: what it is, its value, and where it sits against the gate's bar
-    function probeRow(m,v){const md=qf.metrics[m],bad=v>md.limit;
-      return `<div class="pr"><span class="pr-k">${esc(md.label)}</span><span class="pr-v">${esc(fmt(m,v))}</span>`
-        +`<span class="pr-s ${bad?'over':'ok'}">${bad?'over':'under'} the ${esc(fmt(m,md.limit))} limit</span></div>`;}
+    function probeRow(m,v,nFaces){const md=qf.metrics[m],bad=v>md.limit;
+      /* A BOUND IS NOT A MEASUREMENT OF THE THING UNDER THE CURSOR, and the difference has to be
+         on the card rather than in a docstring. Where one drawn polygon stands for many delivered
+         faces the number is the worst of them: "over the limit" then means at least one face in
+         there is, not that this is it. */
+      const many=nFaces>1;
+      return `<div class="pr"><span class="pr-k">${esc(md.label)}</span>`
+        +`<span class="pr-v">${esc(fmt(m,v))}${many?' <small>worst of '
+            +nFaces.toLocaleString()+'</small>':''}</span>`
+        +`<span class="pr-s ${bad?'over':'ok'}">`
+        +(bad?(many?'at least one face over':'over'):(many?'none over':'under'))
+        +` the ${esc(fmt(m,md.limit))} limit</span></div>`;}
     host.addEventListener('pointerup',e=>{
       if(markMode||!activeMetric||!downXY)return;
       if(e.target&&e.target.closest&&e.target.closest('.v-probe,.v-legend,.v-pin,.v-heatctl,.v-tools'))return;
