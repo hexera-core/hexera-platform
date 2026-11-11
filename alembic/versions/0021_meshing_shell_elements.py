@@ -3,15 +3,15 @@
 # Boundaries: one column on organization_meshing_standards (0020), nothing else touched. Order-safe for the image: the
 #             previous image never reads it, and every existing row takes 'quads' (the shell mesh it always made).
 
-# Revision ID: 0021_meshing_standard_shell_elements
-# Revises: 0020_organization_meshing_standard
+# Revision ID: 0021_meshing_shell_elements
+# Revises: 0020_org_meshing_standard
 from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0021_meshing_standard_shell_elements"
-down_revision = "0020_organization_meshing_standard"
+revision = "0021_meshing_shell_elements"
+down_revision = "0020_org_meshing_standard"
 branch_labels = None
 depends_on = None
 

@@ -4,7 +4,7 @@
 #             and the new image reads it only on the settings routes and at approval (a missing table there is
 #             caught and the run is dispatched without a standard) - deploy still runs migrations first.
 
-# Revision ID: 0020_organization_meshing_standard
+# Revision ID: 0020_org_meshing_standard
 # Revises: 0019_signup_claims_and_erasure
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0020_organization_meshing_standard"
+revision = "0020_org_meshing_standard"
 down_revision = "0019_signup_claims_and_erasure"
 branch_labels = None
 depends_on = None
