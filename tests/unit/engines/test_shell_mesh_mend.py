@@ -274,6 +274,13 @@ def test_the_earlier_steps_mesh_is_set_against_a_mesh_past_a_limit():
     assert SA._standing(applied([0, 0], [True, True]), 1) > SA._standing(applied([5, 5], [False, False]), 0)
     assert SA._standing(applied([2, 0], [False, True]), 0) > SA._standing(applied([0, 0], [False, False]), 0)
     assert SA._standing(applied([0, 0], [True, False]), 0) > SA._standing(applied([0, 0], [True, True]), 0)
+    # set against another mesh: a line past its outer limit where the other is inside counts first
+    new, old = applied([2, 1], [False, False]), applied([4, 0], [False, True])
+    for a_, ids in ((new, ("r1", "r2")), (old, ("r1", "r2"))):
+        for r, k in zip(a_["requirements"]["rows"], ids, strict=True):
+            r["id"], r["worst"] = k, 15.0
+    req = {"limits": [{"id": "r1", "op": ">="}, {"id": "r2", "op": ">="}]}
+    assert SA._standing(new, 0, old, req) > SA._standing(old, 0, new, req)      # new is past on r2, old is not
     # the earlier steps alone, for one mesh; every constant put back after
     before = (SA.FEATURE_SIZES, SA.MEND, SA.SLIDE_EDGES, SR.HOLE_PER_TURN, SR.CHORD_SHARE)
     with SA._classic():

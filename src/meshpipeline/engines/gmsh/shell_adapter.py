@@ -763,10 +763,12 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
                 mesh.notes.append(f"In {applied['quality']['own_size_spots']} spot(s) the mesh is finer than the size "
                                   "you asked for: at your size some elements there were past the solver's own limits "
                                   "(SHMESH-31).")
-            if requirements and CLASSIC_CHECK and _standing(applied, past_n)[:2] != (0, 0):
+            standing = _standing(applied, past_n)
+            if requirements and CLASSIC_CHECK and (standing[0] or standing[2]):
                 # SHMESH-36: a mesh left with an element past the solver's limits or past one of the user's outer
                 # limits is set against the mesh the earlier steps alone make (SHMESH-24..26, before 27..35); the
-                # better is kept - fewer past the solver's limits, then fewer past an outer limit, then more lines
+                # better is kept - fewer past the solver's limits, then fewer lines on which it is past an outer
+                # limit where the other is not (or further past), then fewer past an outer limit, then more lines
                 # met. So nothing lands past an outer limit where those steps kept every element inside it
                 try:
                     with _classic():
@@ -778,7 +780,8 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
                 else:
                     applied_old.pop("_past_spots", None)
                     old_n = applied_old.pop("_past_n", 0)
-                    if _standing(applied_old, old_n) < _standing(applied, past_n):
+                    if (_standing(applied_old, old_n, applied, requirements)
+                            < _standing(applied, past_n, applied_old, requirements)):
                         mesh, applied, past_n = old, applied_old, old_n
                         applied["quality"]["classic"] = True
             applied["quality"]["resplined_faces"] = resplined
@@ -791,13 +794,31 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
             return mesh, applied
 
 
-def _standing(applied: dict, past_n: int) -> tuple[int, int, int]:
+def _standing(applied: dict, past_n: int, other: dict | None = None,
+              requirements: dict | None = None) -> tuple[int, ...]:
     """SHMESH-36: how a mesh under the user's limits stands, lower is better: (elements past the solver's own
-    limits, elements past one of the user's outer limits, minus the lines met)."""
+    limits, the lines of the user's on which it has an element past the outer limit and `other` has none - or its
+    worst is further past than `other`'s worst -, elements past the user's outer limits, minus the lines met).
+    Without `other` the second figure is 0."""
     rows = (applied.get("requirements") or {}).get("rows") or []
-    beyond = sum(int(r.get("beyond") or 0) for r in rows if str(r.get("field", "")).startswith("limit:"))
+    limit_rows = [r for r in rows if str(r.get("field", "")).startswith("limit:")]
+    beyond = sum(int(r.get("beyond") or 0) for r in limit_rows)
     met = sum(1 for r in rows if r.get("met") is True)
-    return int(past_n), beyond, -met
+    worse = 0
+    if other is not None:
+        theirs = {r.get("id"): r for r in ((other.get("requirements") or {}).get("rows") or [])}
+        ops = {lim.get("id"): str(lim.get("op")) for lim in (requirements or {}).get("limits") or []}
+        for r in limit_rows:
+            if not int(r.get("beyond") or 0):
+                continue
+            o = theirs.get(r.get("id")) or {}
+            if not int(o.get("beyond") or 0):
+                worse += 1
+            elif r.get("worst") is not None and o.get("worst") is not None:
+                further = (float(r["worst"]) < float(o["worst"])) if ops.get(r.get("id")) == ">=" else (
+                    float(r["worst"]) > float(o["worst"]))
+                worse += int(further)
+    return int(past_n), worse, beyond, -met
 
 
 @contextlib.contextmanager
