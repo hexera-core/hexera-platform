@@ -411,6 +411,8 @@ OPEN_REACH = 100.0
 #: the shared corner, as two rim edges meeting at a bend or running on from one another do)
 ALONG_DEG = 15.0
 FROM_CORNER = 2.0
+#: ... but an edge whose distance grows under this much per unit of its length (about 6 degrees) is a crack, not a rim
+WEDGE_SLOPE = 0.1
 
 
 def _alongside(edge, probe: list, dists: list, feet: list, face, tol: float) -> bool:
@@ -460,7 +462,12 @@ def _alongside(edge, probe: list, dists: list, feet: list, face, tol: float) -> 
             near_ends.append(qa)
     if near_ends and len(dists) == len(probe) and min(dists) > 0:
         lo, hi = min(dists), max(dists)
-        if hi >= FROM_CORNER * lo:
+        # ... unless it opens from that corner as a crack does, at a slant of a few degrees: two edges meant to be one,
+        # joined at one end (a face slid along its neighbour, partly stitched) - a sheet's own rim leaves its
+        # neighbour's corner at the rim's own angle, its distance growing about as fast as the edge runs (11 Nov: two
+        # matrix files left a crack 0.03 mm wide along 6 mm open and unsaid)
+        slope = (hi - lo) / max(0.5 * ms._length(edge), 1e-300)
+        if hi >= FROM_CORNER * lo and slope > WEDGE_SLOPE:
             return False
     return True
 

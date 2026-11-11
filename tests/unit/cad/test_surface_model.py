@@ -214,3 +214,24 @@ def test_classify_is_pure_over_the_measured_sheets():
     assert sm.classify([{**sheet, "area_mm2": 100000.0, "open_share": 0.001},
                         {**sheet, "area_mm2": 2000.0, "open_share": 1.0}])[0] == "surface"
     assert sm.classify([])[0] == "empty"
+
+
+def test_a_crack_opening_from_a_shared_corner_is_an_open_place():
+    """SURF-8: two plates sharing a corner whose edges open from it to 0.4 mm over 80 mm (a face slid along its
+    neighbour, joined at one end) are one open place - not two rims leaving a corner (their distance grows as fast as
+    the edge runs); a plain L of two plates meeting at a corner only is none."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.gp import gp_Pnt
+
+    def poly(*pts):
+        w = BRepBuilderAPI_MakePolygon()
+        for p in pts:
+            w.Add(gp_Pnt(*map(float, p)))
+        w.Close()
+        return BRepBuilderAPI_MakeFace(w.Wire(), True).Face()
+
+    crack = sm.sew(sx.compound([sx.rect(0, 0, 100, 80), poly((100, 0, 0), (200, 0, 0), (200, 80, 0), (100.4, 80, 0))]))
+    places = sm.open_places(crack, mm_per_unit=1.0)
+    assert len(places) == 1 and 0.1 < places[0]["gap_mm"] < 0.5, places
+    corner = sm.sew(sx.compound([sx.rect(0, 0, 100, 80), sx.rect(100, 80, 200, 160)]))
+    assert sm.open_places(corner, mm_per_unit=1.0) == []
