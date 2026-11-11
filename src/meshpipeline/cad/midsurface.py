@@ -4089,96 +4089,6 @@ def _solid_words(closest: dict | None) -> str:
             "(narrower, it is a bar or a beam)")
 
 
-#: SHELL-46 (cad/shell_pairs.BEND_DEG): a bend between flanges whose faces turn past the taper limit is read as one
-#: wall with its flanges
-BENDS = True
-#: points read inside each CAD edge a bend shares with a flange's face
-BEND_EDGE_SAMPLES = 5
-
-
-def _shared_edges(fa, fb) -> list:
-    """The CAD edges two faces share."""
-    from OCP.TopAbs import TopAbs_EDGE
-    from OCP.TopoDS import TopoDS
-
-    ea, eb = _map(fa, TopAbs_EDGE), _map(fb, TopAbs_EDGE)
-    return [TopoDS.Edge_s(ea.FindKey(i)) for i in range(1, ea.Extent() + 1) if eb.Contains(ea.FindKey(i))]
-
-
-def bends_between_flanges(pairs: list, faces: list, neighbours: list[set[int]], mm: float) -> int:
-    """SHELL-46: each pair thrown out as not parallel whose faces meet the two faces of an even pair (a flange: its
-    face beside one face of the pair, its other face beside the other or the pair's other face itself) and whose
-    wall along every such shared CAD edge, read to the other side of the metal, is that flange's wall within
-    EVEN_SHARE, is re-read as a tapered wall with the bend's own turn limit (shell_pairs.BEND_DEG, facing squarely
-    somewhere); its span starts at the flange's wall. Changes the pairs in place; how many became bends."""
-    from meshpipeline.cad import fea_measure as fm
-
-    even_of: dict[int, list[int]] = {}
-    for i, p in enumerate(pairs):
-        if p.even:
-            even_of.setdefault(p.a, []).append(i)
-            even_of.setdefault(p.b, []).append(i)
-    made = 0
-    for p in pairs:
-        if p.even or not (p.tapered or "not parallel" in p.why):
-            continue
-        # each flange (an even pair) meeting the bend: its face beside one bend face, its other face beside the other
-        flanges: dict[int, list[tuple[int, int, int, int]]] = {}
-        for x, y in ((p.a, p.b), (p.b, p.a)):
-            for f in sorted(neighbours[x] - {y}):
-                for j in even_of.get(f, []):
-                    q = pairs[j]
-                    g = q.b if q.a == f else q.a
-                    if g == y or g in neighbours[y]:
-                        flanges.setdefault(j, []).append((x, y, f, g))
-        if not flanges:
-            continue
-
-        def carries(x: int, y: int, f: int, g: int, t: float) -> bool:
-            """The wall along the edge bend face x shares with flange face f, read to the far side of the metal (the
-            other bend face y or the flange's other face g), is the flange's wall t (within EVEN_SHARE). Of a bend
-            whose rounds are not concentric, one side's edge lies square over the flange's other face: the inside's
-            when the outside round is the smaller."""
-            pts = [q for e in _shared_edges(faces[x], faces[f]) for q in _edge_points(e, BEND_EDGE_SAMPLES + 1)[1:-1]]
-            other = _compound([faces[y], faces[g]])
-            return bool(pts) and all(abs(_dist(_vertex(q), other) * mm - t) <= sp.EVEN_SHARE * t for q in pts)
-
-        try:
-            # the flanges whose wall the bend carries on (an even pair across the part's width meets the bend too,
-            # and carries nothing)
-            carried = [j for j, sides in sorted(flanges.items())
-                       if any(carries(x, y, f, g, pairs[j].thickness) for x, y, f, g in sides)]
-            if not carried:
-                continue
-            # a round no bigger than a blend (SHELL-2: radius at most BLEND_FACTOR walls) is bridged by the joins as
-            # a blend, as it always was: made a wall of its own as well, its fitted mid-face and the flanges grown
-            # to meet across it held 14% more metal than the part (a 2 mm sheet bent round 3 and 4 mm)
-            t_c = max(pairs[j].thickness for j in carried)
-            if p.tapered and (p.t_min if p.t_min is not None else p.thickness) <= (1 + sp.EVEN_SHARE) * t_c:
-                continue                # a taper already judged with its flanges (SHELL-2b): left as it was
-            if any(r is not None and r <= sp.BLEND_FACTOR * t_c for r in (fm.face_radius(faces[k], mm) for k in (p.a, p.b))):
-                continue
-            if p.tapered:
-                # a taper already (turned under TAPER_DEG): only its span is read again, to its edges
-                tap, lo, hi = True, p.t_min if p.t_min is not None else p.thickness, p.thickness
-            else:
-                small, big = (p.a, p.b) if _area(faces[p.a]) <= _area(faces[p.b]) else (p.b, p.a)
-                tap, lo, hi, _turn, _why = sp.tapered_wall(faces[small], faces[big], mm, limit_deg=sp.BEND_DEG,
-                                                           square=True)
-        except Exception as exc:  # noqa: BLE001 - a bend that cannot be read stays as it was
-            logger.debug("shell: a bend could not be read (%s)", exc)
-            continue
-        if not tap:
-            continue
-        walls = [pairs[j].thickness for j in carried]
-        p.tapered, p.bend = True, True
-        p.t_min, p.t_max = min(lo, *walls), max(hi, *walls)
-        p.thickness = p.t_max
-        p.why = f"a bend between flanges, {p.t_min:.3g} to {p.t_max:.3g} mm"
-        made += 1
-    return made
-
-
 def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
             budget_s: float | None = None) -> tuple[dict, object]:
     """The shell record and the sewn mid-surface (a compound, the shape's own units) of an OpenCASCADE shape
@@ -4238,10 +4148,6 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
     # SHELL-2b: each even or tapered pair's WALL - the pairs of one thickness whose faces meet (as a sheet, before
     # any mid-face is made) - and that wall's width, its CAD faces taken as one region
     neighbours = _neighbours(shape, fmap)
-    if BENDS:
-        # SHELL-46: a bend between flanges whose faces turn past the taper limit is one wall with its flanges
-        clock.check("reading the bends")
-        bends_between_flanges(pairs, faces, neighbours, mm)
     wall_width: dict[int, float] = {}
     if WALL_WIDTH:
         for group in sp.sheets(pairs, neighbours, body_of, need_mids=False):
@@ -4291,11 +4197,8 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
                 p.tapered = False
                 continue
             if p.tapered:
-                # SHELL-46: a bend's wall at its edges is its flanges' (read there; the fitted grid does not reach them)
-                t_edge = p.t_min if p.bend and p.t_min is not None else math.inf
-                p.t_min, p.t_max, p.thickness = min(lo_u * mm, t_edge), hi_u * mm, hi_u * mm
-                p.why = (f"a bend between flanges, {p.t_min:.3g} to {p.t_max:.3g} mm" if p.bend
-                         else f"a tapered wall, {p.t_min:.3g} to {p.t_max:.3g} mm")
+                p.t_min, p.t_max, p.thickness = lo_u * mm, hi_u * mm, hi_u * mm
+                p.why = f"a tapered wall, {p.t_min:.3g} to {p.t_max:.3g} mm"
         for f in got:
             p.mids.append(len(mids))
             m = _Mid(len(mids), f, i, body_of[p.a], mean_u if fitted else t_u)
