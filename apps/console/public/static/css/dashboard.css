@@ -376,7 +376,11 @@
    case: capping prose is what made the page shout. */
 .shell .page__title{font-family:var(--display);font-weight:600;letter-spacing:-.01em;
   text-transform:uppercase}
-.auth__title{letter-spacing:-.01em;text-transform:uppercase}
+
+/* The serif is restricted the way the site restricts it: the wordmark and the doorway titles,
+   never UI. Everywhere else is Geist or Geist Mono - a face that only shows up a couple of
+   times reads as intentional; a face that shows up in the labels reads as a font soup. */
+.sidebar__brand span{font-family:var(--serif);font-weight:600;font-size:.95rem;letter-spacing:.04em}
 .shell .label,.shell .page__eyebrow,.section__title,.chart-legend,.chart__label,.chart__value,
 .sidebar__group,.sidebar__item,.sidebar__new,.sidebar__run,.sidebar__credits,
 .sidebar__settings>summary,.table th,.status,.shell .btn,.dashboard-notice h2,.auth__alt,
