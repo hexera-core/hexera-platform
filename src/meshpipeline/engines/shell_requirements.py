@@ -348,6 +348,12 @@ def report(mesh, req: Mapping | None, sizing: Mapping | None = None) -> dict | N
                    "delivered": f"{_pct(nt, n):g}% of elements ({nt:,}) are triangles"}
         elif field == "linear":
             got = {"applied": True, "met": True, "delivered": "shell elements are 4-node quads and 3-node triangles"}
+        elif field in ("free_mesh", "no_washers", "structured"):
+            # SHMESH-42: the pattern is a setting of the mesher, applied as asked
+            got = {"applied": True, "met": True, "delivered": {
+                "free_mesh": "a free mesh: no washers, no mapped faces",
+                "no_washers": "no washers round holes; faces with four sides are still mapped",
+                "structured": "washers round the round holes and mapped quads on faces that allow them"}[field]}
         else:  # quadratic
             got = {"applied": False, "met": None, "delivered": "not applied - shell elements are made as 4-node quads "
                                                                "and 3-node triangles"}

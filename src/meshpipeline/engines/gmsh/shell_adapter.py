@@ -976,7 +976,11 @@ def _classic():
              "ALGO_SWITCH", "COUNT_CURVATURE", "CHORD_REPORT", "CLASSIC_CHECK", "FORCE_CLASSIC")
     saved = {n: g[n] for n in names}
     saved_sr = (SR.HOLE_PER_TURN, SR.CHORD_SHARE)
+    saved_st = (ST.WASHERS, ST.MAPPED, ST.BLOCKS, PLANE_ALGORITHM)
     try:
+        # SHMESH-38..41 are not #435's steps either: the candidate is the mesh without them
+        ST.WASHERS = ST.MAPPED = ST.BLOCKS = False
+        g["PLANE_ALGORITHM"] = None
         g.update(FEATURE_SIZES=False, MEND=False, SLIDE_EDGES=False, SHEET_REGIONS=False, SHEET_REGIONS_ALL=False,
                  OWN_SIZE_RETRIES=0, ALGO_SWITCH=None, COUNT_CURVATURE=False, CHORD_REPORT=False,
                  CLASSIC_CHECK=False, FORCE_CLASSIC=False)
@@ -985,6 +989,7 @@ def _classic():
     finally:
         g.update(saved)
         SR.HOLE_PER_TURN, SR.CHORD_SHARE = saved_sr
+        ST.WASHERS, ST.MAPPED, ST.BLOCKS, g["PLANE_ALGORITHM"] = saved_st
 
 
 def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list | None, *,

@@ -8,7 +8,8 @@ The model answers with ONE `mesh_requirements` call:
     {"stated_unit": "mm" | "cm" | "m" | "in" | "um" | "none",
      "sizes": [{"what": "global" | "min_edge" | "max_edge" | "growth" | "thickness",
                 "value": 10, "unit": "mm" | ... | "x_global" | "none", "quote": "Global Mesh Size = 10 mm"}],
-     "element_kind": [{"what": "quads_only" | "triangles_only" | "max_triangle_percent" | "linear" | "quadratic",
+     "element_kind": [{"what": "quads_only" | "triangles_only" | "max_triangle_percent" | "linear" | "quadratic"
+                             | "free_mesh" | "no_washers" | "structured",
                        "value": 0, "quote": "no triangles"}],
      "limits": [{"measure": "warpage", "shape": "quad" | "tria" | "tet" | "cell" | "any", "direction": "max" | "min",
                  "target": 15, "allowed_percent": 1, "outer": 30, "has_outer": true,
@@ -24,7 +25,8 @@ The model answers with ONE `mesh_requirements` call:
 and the rules turn it into the set every route reads (`requirements`):
 
     {"sizes": {"global_mm", "min_edge_mm", "max_edge_mm", "growth", "thickness_mm", "near_wall_mm"},  # None: not asked
-     "kind": {"shell": "quads" | "triangles" | None, "tria_percent_max": None | p, "order": None | "linear" | "quadratic"},
+     "kind": {"shell": "quads" | "triangles" | None, "tria_percent_max": None | p, "order": None | "linear" | "quadratic",
+              "structure": "free" | "no_washers" | "structured" (only when said)},
      "cells": {"target", "ceiling", "floor"},                                              # a cell or element count
      "layers": {"count", "first_mm", "total_mm", "growth", "y_plus"},                      # the boundary layers
      "local": [{"id", "where", "what", "mm", "quote"}],                                    # sizes in one named place
@@ -77,7 +79,11 @@ MAX_CHARS = 8000
 UNITS_MM = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4, "um": 1e-3}
 SIZE_UNITS = (*UNITS_MM, "x_global", "none")
 SIZES = ("global", "min_edge", "max_edge", "growth", "thickness", "near_wall")
-KINDS = ("quads_only", "triangles_only", "max_triangle_percent", "linear", "quadratic")
+KINDS = ("quads_only", "triangles_only", "max_triangle_percent", "linear", "quadratic", "free_mesh", "no_washers",
+         "structured")
+#: SHMESH-42: the mesh's PATTERN (a shell's): "free_mesh" (no washers, no mapped faces), "no_washers", "structured"
+#: (washers and mapped quads: what the shell mesh does anyway) - one slot, kind["structure"]
+PATTERNS = {"free_mesh": "free", "no_washers": "no_washers", "structured": "structured"}
 SHAPES = ("quad", "tria", "tet", "cell", "any")
 OTHER_KINDS = ("mesh", "elsewhere", "not_mesh")
 #: NOTE-10: the flow (CFD) fields - a cell count, the boundary layers, and sizes in a named place
@@ -188,7 +194,9 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   other as well.
 - element_kind: quads_only ("no triangles", "quad mesh only", "all quads"), triangles_only ("tria mesh", "triangles
   only"), max_triangle_percent ("at most 5% trias" -> value 5), linear ("first order", "linear elements", "tet4"),
-  quadratic ("second order", "tet10", "mid-side nodes"). value 0 unless it is max_triangle_percent.
+  quadratic ("second order", "tet10", "mid-side nodes"), free_mesh ("free mesh", "paved mesh", "no mapped mesh",
+  "unstructured quads"), no_washers ("no washers", "no rings round the holes"), structured ("washers round holes",
+  "mapped mesh", "structured quads", "rings of quads round bolt holes"). value 0 unless it is max_triangle_percent.
   "shell", "solid", "mid-surface" (what to mesh the part AS) is "elsewhere". A solver's element name at the head of
   a quality line ("QUAD4: skew angle > 30", "CTRIA3 min angle 20") only names the elements the limit is for (its
   shape): it asks for no element kind or order.
@@ -207,7 +215,7 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   A limit on element LENGTH ("Min. Element Length > 0.5 x Global Size") is a size (min_edge / max_edge), not a limit.
 - other: every other thing they wrote, one entry per line, sentence or clause, never left out. kind "mesh": about
   the mesh but fitting no field above (chordal deviation, elements through the thickness or across a flange,
-  washers round holes, cells across a gap, a named solver's own check, a quality measure not in the list, a
+  cells across a gap, a named solver's own check, a quality measure not in the list, a
   preference like "quads preferred" or "hex-dominant", a vague wish like "good quality mesh" or "resolve the
   boundary layer well").
   "elsewhere": ONLY shell or solid (what to mesh the part as). "not_mesh": loads, supports, materials, the
@@ -909,6 +917,15 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
             elif k["shell"] is None:
                 k["shell"] = want
                 row(what, quote, "quads only, no triangles" if want == "quads" else "triangles only")
+        elif what in PATTERNS:
+            # SHMESH-42: the pattern - the first one written is kept
+            if k.get("structure") is not None and k["structure"] != PATTERNS[what]:
+                dropped.append(f"{tag}: the notes ask for two mesh patterns - the first one written is kept")
+            elif k.get("structure") is None:
+                k["structure"] = PATTERNS[what]
+                row(what, quote, {"free": "a free mesh: no washers round holes, no mapped faces",
+                                  "no_washers": "no washers round holes",
+                                  "structured": "washers round holes and mapped quads where a face allows"}[PATTERNS[what]])
         elif what == "max_triangle_percent":
             p = _f(e.get("value"))
             if p is None or not (0.0 <= p <= 100.0) or not _in_quote(p, numbers):
