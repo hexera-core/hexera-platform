@@ -70,6 +70,8 @@ class Region:
     shape: object
     cut_faces: list
     name: str = ""
+    #: MIXED-9f: the body's metal the shell does not hold, as pieces, when its thick cores could not be grown
+    pieces: list | None = None
 
 
 @dataclass
@@ -171,6 +173,32 @@ def trim(sewn: list, owners: list[str], tools: list) -> tuple[list, list[str]]:
         out.append(p)
         own.append(owners[k])
     return out, own
+
+
+def unheld(body, kept: list) -> list:
+    """MIXED-9f: the body's metal its shell walls do not hold - the body less each sewn mid-face's slab (the mid-face
+    thickened to its wall, cad/mixed_split.slab) - as solids, in canonical order. A Boolean that fails is tried again
+    with a fuzzy value of a thousandth of the thinnest wall. [] when nothing is left or it cannot be cut."""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import mixed_split as mx
+
+    if not kept:
+        return []
+    t_min = min(t for _f, t, _o in kept)
+    try:
+        slabs = [mx.slab(f, 0.5 * t * (1.0 + mx.SLAB_SLACK) + abs(o)) for f, t, o in kept]
+    except Exception as exc:  # noqa: BLE001 - no slab, no pieces: said by the caller
+        logger.info("solid patches: a slab could not be made (%s)", exc)
+        return []
+    for fuzzy in (0.0, 1e-3 * t_min):
+        try:
+            got = mx._solids(mx._bop("cut", body, slabs, fuzzy=fuzzy))
+        except Exception as exc:  # noqa: BLE001 - tried again fuzzy, then given up
+            logger.info("solid patches: the unheld metal could not be cut (%s)", exc)
+            continue
+        out = [p for p in got if ms._volume(p) > 0]
+        return sorted(out, key=lambda p: tuple(np.round(ms._box(p)[0], 6)) + tuple(np.round(ms._box(p)[1], 6)))
+    return []
 
 
 def _met_faces(shell, faces: list, wall_share: float) -> list:
@@ -298,17 +326,23 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
         split_notes.append({"body": row["body"], "ok": split.ok, "cores": split.cores,
                             "cut_mm": [round(d, 4) for d in split.cut_distance], "why": split.why})
         if not split.ok:
-            left.append({**row, "why": f"its thick regions could not be cut out of {row['body']} ({split.why})"})
+            # MIXED-9f: the metal the shell does not hold, as it is (no core grown, the shell not cut)
+            pieces = unheld(solids[b], kept)
+            if not pieces:
+                left.append({**row, "why": f"its thick regions could not be cut out of {row['body']} ({split.why})"})
+                continue
+            split_notes[-1]["unheld_pieces"] = len(pieces)
+            regions.append(Region(row["body"], b, False, row["count"], None, [], pieces=pieces))
             continue
         regions.append(Region(row["body"], b, False, row["count"], split.solid, list(split.cut_faces)))
     if not regions:
         raise Stop(left[0]["why"] if left else "no region could be made solid")
-    seconds = {"split_s": round(time.time() - t0, 1)}
+    seconds: dict = {"split_s": round(time.time() - t0, 1)}
 
     # the shell: the sewn surface less the regions of the mixed bodies (a body solid as a whole is not cut into: the
     # shell ends on its faces as it was made)
     t1 = time.time()
-    pieces, own = trim(sewn, owners, [r.shape for r in regions if not r.whole])
+    pieces, own = trim(sewn, owners, [r.shape for r in regions if not r.whole and r.pieces is None])
     if not pieces:
         raise Stop("no shell is left once the solid regions are cut out")
     BRepTools.Write_s(ms._compound(pieces), str(Path(out) / TRIMMED_FILE))
@@ -323,66 +357,100 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
 
     # the solid patches, each meshed by the FEA path; a whole body's faces cut down to those a shell edge ends on
     t1 = time.time()
-    from meshpipeline.engines.mixed_mesh import LOOSE_SHARE
+    from meshpipeline.engines.mixed_mesh import LOOSE_SHARE, ON_FACE_SHARE
 
-    parts, sqs, cut_all, kept_regions = [], [], [], []
-    for i, r in enumerate(regions, start=1):
-        cut = [_scaled(f, k) for f in r.cut_faces]
-        if r.whole:
-            cut = _met_faces(shell, cut, LOOSE_SHARE)
-            if not cut:
-                left.append({"body": r.body, "whole": True, "count": 1,
-                             "why": f"{r.body} does not meet the shell at any plate edge"})
+    for r in regions:
+        if r.pieces is not None:
+            # MIXED-9f: only the pieces a shell edge ends on (the shell is cut open round them); the metal at a junction
+            # of shell walls, which no edge reaches, stays out as in any shell model
+            met = [p for p in r.pieces if _met_faces(shell, ms._faces(_scaled(p, k)), ON_FACE_SHARE)]
+            r.shape = ms._compound(met) if met else None
+            r.cut_faces = [f for p in met for f in ms._faces(p)]
+    for r in regions:
+        if r.shape is None:
+            left.append({"body": r.body, "whole": False, "count": r.count,
+                         "why": f"no shell edge ends on {r.body}'s thick regions"})
+    regions = [r for r in regions if r.shape is not None]
+    if not regions:
+        raise Stop(left[-1]["why"])
+    walls = sorted(float(m["thickness_mm"]) for m in mids.values() if m.get("shell") and m.get("thickness_mm"))
+    t_min = walls[0] if walls else None
+
+    def mesh_all(cap: float | None):
+        """Each patch meshed by the FEA path (`cap`: the longest tet edge, mm - SHLINK-3's two quadratic elements
+        through a wall, asked again when a link row found too few solid nodes)."""
+        req = requirements
+        if cap is not None:
+            sz = dict((requirements or {}).get("sizes") or {})
+            sz["max_edge_mm"] = min(float(sz.get("max_edge_mm") or cap), cap)
+            req = {**(requirements or {}), "sizes": sz}
+        parts, sqs, cut_all, kept, lost = [], [], [], [], []
+        for i, r in enumerate(regions, start=1):
+            cut = [_scaled(f, k) for f in r.cut_faces]
+            if r.whole:
+                cut = _met_faces(shell, cut, LOOSE_SHARE)
+                if not cut:
+                    lost.append({"body": r.body, "whole": True, "count": 1,
+                                 "why": f"{r.body} does not meet the shell at any plate edge"})
+                    continue
+            ws_i = Path(out) / f"solid_{i}{'' if cap is None else '_fine'}"
+            ws_i.mkdir(parents=True, exist_ok=True)
+            if requirements_file is not None and Path(requirements_file).exists():
+                # the notes' requirements are measured on the solid part too (engines/gmsh/fea_adapter PLAN-fea-34)
+                shutil.copyfile(requirements_file, ws_i / Path(requirements_file).name)
+            what = "body" if r.whole else "thick region"
+            try:
+                part, sq = mixed_run._solid_mesh(_scaled(r.shape, k), ws_i, req)
+            except Exception as exc:  # noqa: BLE001 - this patch is left out, said; the others go on
+                logger.warning("solid patch %s: not meshed (%s)", r.body, exc)
+                lost.append({"body": r.body, "whole": r.whole, "count": r.count,
+                             "why": f"the solid mesh of {r.body}'s {what} could not be made"})
                 continue
-        ws_i = Path(out) / f"solid_{i}"
-        ws_i.mkdir(parents=True, exist_ok=True)
-        if requirements_file is not None and Path(requirements_file).exists():
-            # the notes' requirements are measured on the solid part too (engines/gmsh/fea_adapter PLAN-fea-34)
-            shutil.copyfile(requirements_file, ws_i / Path(requirements_file).name)
-        try:
-            part, sq = mixed_run._solid_mesh(_scaled(r.shape, k), ws_i, requirements)
-        except Exception as exc:  # noqa: BLE001 - this patch is left out, said; the others go on
-            logger.warning("solid patch %s: not meshed (%s)", r.body, exc)
-            left.append({"body": r.body, "whole": r.whole, "count": r.count,
-                         "why": f"the solid mesh of {r.body}'s {'body' if r.whole else 'thick region'} could not be made"})
-            continue
-        if sq.get("fatal") or int(sq.get("fea_inverted") or 0) > 0:
-            left.append({"body": r.body, "whole": r.whole, "count": r.count,
-                         "why": f"the solid mesh of {r.body}'s {'body' if r.whole else 'thick region'} is not valid"})
-            continue
-        parts.append(part)
-        sqs.append(sq)
-        cut_all.append(cut)
-        kept_regions.append(r)
-    seconds["solid_mesh_s"] = round(time.time() - t1, 1)
-    if not parts:
-        raise Stop(left[-1]["why"] if left else "no solid patch could be meshed")
+            if sq.get("fatal") or int(sq.get("fea_inverted") or 0) > 0:
+                lost.append({"body": r.body, "whole": r.whole, "count": r.count,
+                             "why": f"the solid mesh of {r.body}'s {what} is not valid"})
+                continue
+            parts.append(part)
+            sqs.append(sq)
+            cut_all.append(cut)
+            kept.append(r)
+        return parts, sqs, cut_all, kept, lost
 
-    # the join (SHLINK-4); a patch no shell edge reaches is left out and the rest joined again
+    def join_all(parts, sqs, cut_all, kept, lost):
+        """SHLINK-4 on every patch; a patch no shell edge reaches is left out and the rest joined again."""
+        while True:
+            if not parts:
+                raise Stop(lost[-1]["why"] if lost else "no solid patch could be meshed")
+            solid, nodes_at, tets_at = _merge(parts)
+            try:
+                joined = mm.join(shell, solid, [f for c, r in zip(cut_all, kept, strict=True) if not r.whole for f in c],
+                                 part=kept[0].body,
+                                 loose_faces=[f for c, r in zip(cut_all, kept, strict=True) if r.whole for f in c])
+            except ValueError as exc:
+                raise Stop(f"the shell meets none of the solid regions ({exc})") from exc
+            loose = [i for i, n in enumerate(_tied(joined, nodes_at)) if n == 0]
+            if not loose:
+                return joined, tets_at, sqs, kept, lost
+            for i in reversed(loose):
+                r = kept.pop(i)
+                lost.append({"body": r.body, "whole": r.whole, "count": r.count,
+                             "why": f"{r.body}'s {'body' if r.whole else 'thick region'} does not meet the shell at "
+                                    "a plate edge"})
+                del parts[i], sqs[i], cut_all[i]
+
+    joined, tets_at, sqs, kept_regions, lost = join_all(*mesh_all(None))
+    seconds["mesh_join_s"] = round(time.time() - t1, 1)
     t1 = time.time()
-    while True:
-        solid, nodes_at, tets_at = _merge(parts)
-        try:
-            joined = mm.join(shell, solid, [f for c, r in zip(cut_all, kept_regions, strict=True) if not r.whole for f in c],
-                             part=kept_regions[0].body,
-                             loose_faces=[f for c, r in zip(cut_all, kept_regions, strict=True) if r.whole for f in c])
-        except ValueError as exc:
-            raise Stop(f"the shell meets none of the solid regions ({exc})") from exc
-        reach = _tied(joined, nodes_at)
-        loose = [i for i, n in enumerate(reach) if n == 0]
-        if not loose:
-            break
-        for i in reversed(loose):
-            r = kept_regions.pop(i)
-            left.append({"body": r.body, "whole": r.whole, "count": r.count,
-                         "why": f"{r.body}'s {'body' if r.whole else 'thick region'} does not meet the shell at a "
-                                "plate edge"})
-            del parts[i], sqs[i], cut_all[i]
-        if not parts:
-            raise Stop(left[-1]["why"])
+    if joined.notes and t_min:
+        # SHLINK-3: a link row found too few solid nodes across its wall - the patches meshed again at half the
+        # thinnest wall (two quadratic tetrahedra through it), and joined again
+        missing = list(joined.notes)
+        joined, tets_at, sqs, kept_regions, lost = join_all(*mesh_all(0.5 * float(t_min)))
+        seconds["finer"] = {"size_mm": 0.5 * float(t_min), "before": missing}
+    left.extend(lost)
     if joined.notes:
         raise Stop("; ".join(joined.notes))
-    seconds["join_s"] = round(time.time() - t1, 1)
+    seconds["again_s"] = round(time.time() - t1, 1)
     patches: list[dict] = []
     joined.regions = []
     for j, (r, (a, b), sq) in enumerate(zip(kept_regions, tets_at, sqs, strict=True), start=1):
