@@ -731,3 +731,78 @@ Time: 1 to 55 s a file (a 400 x 240 mm curved panel of 30 patches, 67,000 elemen
 - Thickness per part from words.
 - A panel drawn as many patches is sized patch by patch (each patch's own width), so it gets more elements than the same panel drawn as one face.
 - A triangle file (STL) that is an open surface is still stopped: it has no faces to group.
+
+## 12. Surfaces that are not clean, and IGES (SURF-8..11, SHELL-15j..m, 11 Nov, input stream)
+
+### 12.1 Geometry clean-up of a surface file
+
+Real surface models carry small gaps, overlaps, slivers, faces written twice, split and tiny edges, and pinholes. A pre-processor user fixes these by hand: stitch within a tolerance, merge slivers, fill pinholes. The safe part of that is now done by rule (`cad/surface_clean.py`), and only after SURF-1 has read the file as a surface part from the file as written (a closed skin with a crack is still a closed skin with a crack). Nothing is moved, added or reshaped: only edges that lie along each other are made one, a copy is left out, a pinhole's loop is taken off its face.
+
+- **The ladder (SURF-8).** The faces are sewn again at 2 and 5 sew tolerances (one tolerance is 1e-4 of the part's diagonal, the clean check's own), lowest first. OpenCASCADE's sewing reports every pair of edges it joined, and each pair is judged before the rung is kept: the two edges are on different faces (one face's own two edges are a slot drawn in it); the two faces leave the edge to opposite sides (within 10 degrees of the same side they lie on each other - a copy of a face a little off, a patch laid over the sheet - and would sew into a closed pocket); the gap is no wider than a tenth of the narrower face (the extraction's own SEW_CAP); no face, area or other free edge is lost. The first refused rung stops the climb. The rule's limit is 5 tolerances, 1/2000 of the part: the reach inside which SURF-2 already said an edge "does not meet" its neighbour, so what used to be said as a gap is now closed.
+- **The user's tolerance.** "stitch gaps up to 0.5 mm", "sewing tolerance 0.2", "close gaps under 0.3 mm" (a fixed word table, `contracts/surface_stitch.py`, the latest word standing) replaces the limit and the narrow-face cap; "do not stitch" turns the ladder off.
+- **What is said.** "Closed N gap(s) between the surfaces, the widest X mm." What is left open is counted, placed and said with its widest gap. Edges that run side by side up to 1/100 of the part are said with the note that closes them ('add to your notes: "stitch gaps up to 0.6 mm"', a tenth over the widest, rounded up): they may be meant to be apart, and only the user knows. (At 1/200, 11 of 74 faces pulled 50 tolerances off went unsaid.)
+- **A face written twice (SURF-9).** Same area, same box, and each lying on the other within the sew tolerance (5 points inside it, found on a fine UV grid so a ring's are found, and 3 points on each edge): the later copy is left out before anything is sewn, and said.
+- **Pinholes (SURF-10).** An inner loop of a face whose every edge is free and which is no bigger across (the farthest two of its points) than the gaps being closed is filled with the face's own surface. "ignore holes under 5 mm" fills holes up to that size instead.
+- **The user's count (SURF-11).** The element count in the notes is read for a surface file by the FEA plan's own reader (shown the file with no zones, asked only when there are words) and reaches the shell's sizes (SHMESH-23) as it does for a solid. The notes' other mesh requirements reach the surface run through the land branch's Glue 1.
+
+**The damaged-surface matrix** (`~/shellcamp/input/tools/damage.py`, `matrix_read.py`, `matrix_judge.py`). 46 public surface files (the surface lab's synth, mids and skins written as sewn STEP) damaged in 13 ways at 0.5, 2, 4, 10, 20 and 50 sew tolerances: a face pulled off along its normal and in its plane, an edge split, a tiny edge, a sliver cut off along an edge, a face written twice (exactly, and offset), a pinhole in a face and at a corner; and, meant to stay apart, a slot in one face, a copy laid over the sheet, the part cut in two with a clearance (closed by rule up to 5 tolerances, kept past it). 2,212 files, judged against the product's own reading of the clean file:
+
+| | closed | kept as drawn | left open and said | left open, silent | wrongly welded | joined as before (SURF-2's junction rule) |
+|---|---|---|---|---|---|---|
+| this branch | 888 | 927 | 374 | 0 | **0** | 23 |
+| the code before | 597 | 927 | 400 | 190 | 98 | - |
+
+The 98 welded before were copies of a face read as a closed pocket, or the file as a closed skin. The 23 "as before": a copy of a face laid 2 to 50 tolerances off whose edge lies inside a neighbouring face (a shelf), joined there by SURF-2's scoring exactly as before this branch. Left open and said: faces pulled 10 to 50 tolerances off (with the note that closes them), slivers narrower than 10 tolerances (kept as a face, the edge it does not meet said), corner pinholes 2 to 4 tolerances across (the corner's faces are narrow against the hole, so the face cap refuses).
+
+### 12.2 IGES
+
+An IGES copy of a part that passes as STEP came out fully good 1 time in 13 on the sealed set. Reproduced on public parts (`~/shellcamp/input/tools/iges_export.py`, `parity_jobs.py`, `route_one.py`, `parity_table.py`): every STEP or BREP part of the shell lab, the wall lab's dev set and the surface lab (170 parts), exported by OpenCASCADE as trimmed surfaces (type 144, mm), as manifold solids (186), in inches, and with every real rounded to 7 and to 5 digits; each copy and its original run through the run's own order (the clean check, the real staging, MESH-1, then the shell run or the surface run). The cause and the rules are in section 2.4.1, items 10 to 12.
+
+Same as its STEP (the same route, made alike, the same verdicts, mid-surface area within 1%, the same open edges, valid and inside Nastran's limits alike, elements within 10%), on 168 public parts (2 originals did not run):
+
+| IGES flavour | before (PR #434 code) | now | fully good parts lost now (before) |
+|---|---|---|---|
+| manifold solid (186) | 163 (97%) | 163 (97%) | 0 (0) |
+| trimmed surfaces (144), mm | 101 (60%) | 140 (83%) | 4 (31) |
+| trimmed surfaces, inches | 100 (60%) | 138 (82%) | 5 (32) |
+
+By set, trimmed surfaces: shell lab 13 -> 42 of 59, wall lab 38 -> 49 of 59, surface lab 50 -> 49 of 50. **The 90% target is not reached.** What still differs (parts, the mm and inch copies together):
+
+- 10 are touching or overlapping bodies (sh0014, sh0017, sh0042, sh0100, sh0101, sh0112, sh0113, d008; sh0003, sh0058 and sh0110's verdict in inches only): the open item in 2.4.1 - coincident faces of two bodies.
+- 8 differ only in element count with the same verdicts (sh0004, sh0054, sh0109, sh0110, sh0114, d010, sh0007 with one open edge more, sh0011 a few elements past Nastran's limits): the IGES faces re-made as planes and cylinders where the STEP has B-splines, so the sizing reads other curvatures.
+- 4 differ in the brep flavour too (sh0009, sh0013, d029, d039): the extraction or the mesher reads the copy differently whatever the format; sh0009's copies mesh where its STEP does not.
+- 3 crash in the run on the copy (d045, d058 a segmentation fault, d003 gmsh "could not fix wire").
+- 3 are better as IGES (d035, d047: no open edges where the STEP left some; mid_sh0055: read as the surface it is).
+- d057's copy reads as a closed skin with a gap (its faces do not sew closed).
+
+The copies written with every real rounded to 7 or 5 digits (a single-precision exporter) were run on the first 52 parts only: 49% and 52% the same, solids read invalid. A named open item.
+
+### 12.3 Sizing of surface files (for the notes stream; `engines/shell_plan.py` not changed)
+
+The same 400 x 240 mm panel drawn as 1, 4, 12 and 30 B-spline patches, flat and bent to a 600 mm radius, 1.2 mm thick (`tools/sizing_patches.py`):
+
+| patches | elements (flat / bent) | element size | rule |
+|---|---|---|---|
+| 1 | 1,981 / 1,988 | 7.5 mm | SHMESH-15 (a panel: width / 20) |
+| 4 | 7,933 / 7,923 | 3.75 mm | SHMESH-15 on each patch's width |
+| 12 | 22,479 / 22,478 | 2.22 mm | SHMESH-15 on each patch's width |
+| 30 | 2,522 / 2,541 | 6.98 mm | SHMESH-1 (each patch under span / 10: no panel, width / 4) |
+
+With no thickness the counts are the same (sizing wall 1.03 mm). Patches cost 4 and 11 times the elements, and not even steadily: the panel test and the width are read per patch. **Proposed rule:** read the width and the panel test on the smooth panel (patches joined across edges whose normals turn under about 5 degrees), not on each patch. The industry stamping's 25,765 elements of about 1 mm where 4 mm was wanted is the thin-sheet floor (SURF-5) on top of this; a global size in the notes (Glue 1) is the user's way out today.
+
+### 12.4 Features at 4 to 10 mm (beads, darts, holes, fillets)
+
+Nine lab stamped files, 1 mm thick, at the rules' own size and at the element count a 4, 6 and 10 mm global size gives (`tools/feature_one.py`):
+
+- **Small holes** (up to 12 mm across) get 24 to 26 element edges round them at every size (SHMESH-3, 6 per quarter turn): they hold the elements fine around them whatever is asked (a bracket asked for 221 elements at 10 mm got 503).
+- **Beads** (a panel with three beads): 3.35 elements across the beads' flanks and radii at the rules' size; 0.92 at 4 mm (12 of 18 faces one element across); 0.38 at 10 mm (all 18): the bead is washed out. Darts: 1.04 across at 10 mm, and the mesh then leaves Nastran's limits.
+- **Doubly curved stamped panels** keep their curvature sizing (SHMESH-4): a curved panel asked for 1,263 elements at 10 mm got 21,256 (median edge 0.8 mm); element centres sit up to 0.98 mm off the CAD surface at 6 mm.
+- **Fillets** (a hat section) at 10 mm: 0.53 elements across, centres 0.30 mm off.
+
+Industry practice: beads and darts are kept as geometry with at least two elements across a bead's flank; small holes under a stated size are filled on request, larger ones get a ring of elements; fillets under the element size are often meshed as a sharp bend. The one request that maps onto a lever here, "ignore holes under 5 mm", is SURF-10. A minimum of elements across a bead and a per-hole budget under a global size are for the sizing stream.
+
+### 12.5 Still open
+
+- Touching bodies in IGES: a pipe and its insulation, coaxial reductions (sh0003, sh0013, sh0014, sh0017, sh0046). Their coincident faces leave an edge at one angle beside faces at their own, which SHELL-15i does not read (a strict xfail test pins it).
+- IGES written with every real rounded to 7 or 5 digits: solids read invalid; not worked on.
+- The sizing rule above and a bead minimum, for the sizing stream.
