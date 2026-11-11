@@ -1278,7 +1278,9 @@ def built_remark(ws: Path, record: dict | None = None) -> None:
         if plan.get("by_choice_failed") == "sizes":
             said = [BY_CHOICE_WORDS["sizes"]]
         if said:
-            record_remark(ws, said[0], by="fea_part_sizes")
+            # STD-2: a size for the whole mesh the team's standard set is said as the standard's
+            from meshpipeline.engines.meshing_standard import size_remark
+            record_remark(ws, size_remark(plan.get("requirements"), said[0]), by="fea_part_sizes")
     try:
         delivered = json.loads((ws / "quality.json").read_text()).get("requirements")
     except (OSError, ValueError):

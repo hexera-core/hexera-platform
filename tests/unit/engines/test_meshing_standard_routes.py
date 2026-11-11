@@ -74,6 +74,8 @@ def test_a_solid_run_applies_the_standard_alone_and_says_it_came_from_settings(t
     assert [r["key"] for r in asked] == ["asked_s1", "asked_s2"]
     remark = [r["text"] for r in read_remarks(ws, raw=True) if r["by"] == "mesh_requirements"]
     assert remark and remark[0].startswith("From your settings: ")
+    sized = [r["text"] for r in read_remarks(ws, raw=True) if r["by"] == "fea_part_sizes"]
+    assert sized and sized[0].startswith("From your settings: You asked for") and "the whole mesh" in sized[0]
     assert any(e["rule"] == "STD-2" for e in cited)
 
 

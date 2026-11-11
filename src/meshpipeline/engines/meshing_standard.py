@@ -592,6 +592,18 @@ def remark(sec: Mapping | None, line: str) -> str:
     return line
 
 
+def size_remark(sec: Mapping | None, line: str) -> str:
+    """The plan's line about a size for the whole mesh ("You asked for 4-12 mm elements on the whole mesh: ..."), led
+    by where the sizes came from; unchanged with no standard, for any other line, or when the notes set them all."""
+    if not line or "the whole mesh" not in line or not isinstance(sec, Mapping) or not sec.get("standard"):
+        return line
+    rows = ((sec.get("requirements") or {}).get("rows") or []) if isinstance(sec.get("requirements"), Mapping) else []
+    got = {str(r.get("from")) for r in rows if r.get("field") in ("global", "min_edge", "max_edge")}
+    if got == {"settings"}:
+        return f"From your settings: {line}"
+    return f"From your settings and notes: {line}" if "settings" in got else line
+
+
 def decisions(sec: Mapping | None, stage: str = "notes") -> list[dict]:
     """The why-record entry of the merge (contracts/decision_record.cite shape): [] with no standard."""
     std = (sec or {}).get("standard") if isinstance(sec, Mapping) else None
@@ -612,5 +624,5 @@ def decisions(sec: Mapping | None, stage: str = "notes") -> list[dict]:
 
 __all__ = ["ELSEWHERE_WORDS", "MAX_CHARS", "OFF_WORDS", "RULE_MERGE", "RULE_NOTHING", "RULE_READ", "SAVE_WAIT_S",
            "SOURCE", "STATE_KEY", "UNREAD_WORDS", "checked", "decide", "decisions", "kept_reading", "key_of", "lines",
-           "merge", "messages", "read", "read_at_save", "remark", "snapshot", "standard_of", "understood",
+           "merge", "messages", "read", "read_at_save", "remark", "size_remark", "snapshot", "standard_of", "understood",
            "words_read"]
