@@ -552,7 +552,8 @@ def _flow_across(out: dict, source, not_the_notes) -> None:
     source) re-applied where the two sources meet - the notes' value is kept and the standard's is told as not
     applied: no boundary layers against a layer setting, a first layer not thinner than the stack, a cell floor not
     under the ceiling, a cell count outside the range."""
-    lay = out.get("layers") if isinstance(out.get("layers"), dict) else {}
+    got = out.get("layers")
+    lay: dict = got if isinstance(got, dict) else {}
     others = [f for f in _LAYER_KEY if f != "layers:count" and lay.get(_LAYER_KEY[f]) is not None]
     if lay.get("count") == 0 and others:
         if source("layers:count") == "notes":
@@ -565,7 +566,8 @@ def _flow_across(out: dict, source, not_the_notes) -> None:
             and source("layers:first_height") != source("layers:total_thickness")):
         bad = "layers:first_height" if source("layers:first_height") == "settings" else "layers:total_thickness"
         not_the_notes(bad, "it does not fit the boundary layers your notes ask for")
-    c = out.get("cells") if isinstance(out.get("cells"), dict) else {}
+    got = out.get("cells")
+    c: dict = got if isinstance(got, dict) else {}
     lo, hi = c.get("floor"), c.get("ceiling")
     if lo is not None and hi is not None and lo >= hi and source("cells:floor") != source("cells:ceiling"):
         not_the_notes("cells:floor" if source("cells:floor") == "settings" else "cells:ceiling",
