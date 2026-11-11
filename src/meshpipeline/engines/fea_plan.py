@@ -129,7 +129,7 @@ VALID_DIVISIONS = 3
 
 QUARTER = math.pi / 2.0
 #: zone kinds in plain words (PLAN-fea-8's coarsening says which it touched and which it kept)
-KIND_WORDS = {"round": "rounds", "corner": "capped corners", "wall": "walls", "wall_spot": "thin spots",
+KIND_WORDS = {"relief": "raised or sunk details", "round": "rounds", "corner": "capped corners", "wall": "walls", "wall_spot": "thin spots",
               "part": "the parts' own sizes", "hole": "holes", "fillet": "fillets", "notch": "notches"}
 _MM = 1e-3
 
@@ -206,6 +206,8 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
 
     for name in sorted(face_rows, key=_face_sort):
         row = face_rows[name] or {}
+        if row.get("relief"):
+            continue               # PLAN-fea-12: a raised or sunk detail's face - its relief zone below sizes it
         # PLAN-fea-3, THIN ONLY WHERE IT IS THIN: a face thin only in places keeps the wall the rest
         # of it agrees on, and each thin spot is a zone of its own round where its readings are
         t = _f(row.get("thickness_wall_mm")) or _f(row.get("thickness_min_mm"))
@@ -243,6 +245,17 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
                         "size_m": QUARTER * r / ROUND_PER_QUARTER * _MM, "reach_m": 0.0,
                         "rule": "PLAN-fea-7", "radius_m": r * _MM, "capped": False,
                         "why": f"a round of radius {_mm(r)} on {name}: {ROUND_PER_QUARTER} elements per quarter-turn"})
+    # PLAN-fea-12: A RAISED OR SUNK DETAIL (lettering, a logo, a shallow texture) keeps its shape with one zone as
+    # fine as it is high: one element through its height, none of its walls' or corners' rules
+    for i, g in enumerate(record.get("relief") or [], start=1):
+        hgt, faces = _f(g.get("height_mm")), [str(f) for f in g.get("faces") or []]
+        if hgt is None or not faces:
+            continue
+        out.append({"id": f"E{i}", "kind": "relief", "faces": faces, "size_m": hgt * _MM, "reach_m": 0.0,
+                    "rule": "PLAN-fea-12", "capped": False, "height_m": hgt * _MM,
+                    "why": (f"{'raised' if g.get('raised', True) else 'sunk'} detail {_mm(hgt)} "
+                            f"{'high' if g.get('raised', True) else 'deep'} on {g.get('parent')} ({len(faces)} faces): "
+                            "one element through its height")})
     # PLAN-fea-17: EVERY PART OF AN ASSEMBLY HAS ITS OWN BASE SIZE - a tenth of the part, as
     # PLAN-fea-14 gives a single part - so a bolt beside a flange is sized as the bolt it is
     for part in record.get("part_bases") or []:
@@ -363,7 +376,7 @@ def _part_thinnest(record: Mapping) -> dict[str, float]:
         return {}
     out: dict[str, float] = {}
     for name, row in (record.get("faces") or {}).items():
-        t = _f((row or {}).get("thickness_min_mm"))
+        t = None if (row or {}).get("relief") else _f((row or {}).get("thickness_min_mm"))
         key = _part_key(name)
         if t is not None and key:
             out[key] = min(out.get(key, t), t)
@@ -412,6 +425,8 @@ def keep_size(z: dict, through: float = KEEP_THROUGH) -> float | None:
         sizes.append(float(z["thickness_m"]) / through)
     if z["kind"] in ("hole", "fillet", "notch", "round") and z.get("radius_m"):
         sizes.append(QUARTER * float(z["radius_m"]) / KEEP_PER_QUARTER)
+    if z["kind"] == "relief" and z.get("height_m"):
+        sizes.append(float(z["height_m"]))          # one element through a relief's height is its shape
     return min(sizes) if sizes else None
 
 

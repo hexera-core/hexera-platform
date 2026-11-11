@@ -20,7 +20,7 @@ def test_both_flow_engines_declare_the_same_gate_chain():
         # the floor last a patch-name mismatch refused a run while leaving its quality unmeasured.
         assert [g.key for g in get_spec(name).gates] == [
             "manifest_valid", "quality_floor", "cell_limit", "resolution_floor",
-            "patch_contract", "port_areas", "boundary_types"]
+            "patch_contract", "port_areas", "boundary_types", "cad_fidelity"]
         # our own bars are notes on a sound mesh, never failures (LAD-cfd-3/4)
         assert {g.key for g in get_spec(name).gates if not g.blocking} == {
             "cell_limit", "resolution_floor"}

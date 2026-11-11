@@ -24,7 +24,7 @@ import { esc } from "../core/format.js";
 import { applyFlow, bindAxis, bindUnit, changedAnswers, editsLine, extentAlong, followSuggestion, followUnit, formHtml,
   markConfirmed, noteDrawn, readExternal, readForm, rowHtml, servedProposal, shown, tableHead, unitChoiceHint,
   unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
-import { bindFeaPanel, bindMeasure, effectiveMeshAs, feaPanelHtml, followAssembly, followClean, followMeasure, followMeshAs, interfaceMarks,
+import { bindFeaPanel, bindMeasure, effectiveMeshAs, feaPanelHtml, followAssembly, followClean, followMeasure, followMeshAs, followPlan, interfaceMarks,
   lightSpotRow, shellLegendHtml, shellMarks, showsShell, wallColour } from "../render/fea_form.js";
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
@@ -1210,6 +1210,8 @@ async function openFeaStage(sessionId, d, confirm, opts) {
       if (d2 && d2.confirmed) { closed = true; settledAs = String(d2.confirmed.fea_mesh_as || "") || settledAs; }
       if (d2 && d2.fea) { Object.assign(f, d2.fea); follow(() => followClean(panel, f)); }
       const movedA = !!a && follow(() => followAssembly(panel, a));
+      // PLAN-fea-22: the size choice, once the check has sized the mesh
+      if (d2 && d2.fea && d2.fea.plan) follow(() => followPlan(panel, d2.fea.plan));
       // SHSTAGE-2: the shell check lands minutes after the stage opened (or a shell is asked for later) - the
       // shell row and its marks follow
       const movedS = !!(d2 && d2.fea && d2.fea.shell) && follow(() => followMeshAs(panel, d2.fea.shell, meshAsChanged));

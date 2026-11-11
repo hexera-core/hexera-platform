@@ -36,7 +36,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 #: docs/RULES.md "Rulebook version". Raised whenever a rule changes what it decides.
-RULES_VERSION = "64"
+RULES_VERSION = "65"
 
 SOURCE_RULE = "rule"
 SOURCE_USER = "user"
@@ -251,12 +251,12 @@ OUTCOME_WRONG_PROBLEM = "wrong_problem"
 #: review can never stand in for one (it is a note), and the class is listed so a check is built.
 WRONG_PROBLEM_CHECKS: Mapping[str, tuple[str, ...]] = {
     "wrong_side_meshed": ("port_areas", "region_contract"),
-    "missing_geometry": ("file_fidelity",),
+    "missing_geometry": ("file_fidelity", "cad_fidelity"),
     "wrong_scale": (),                # measured as a VER-2 concern (the believable-size row)
     "wrong_flow_setup": ("domain_extent", "port_areas"),
     "wrong_boundaries": ("patch_contract", "boundary_types", "port_areas"),
     "no_flow_path": (),
-    "shape_changed": ("file_fidelity",),
+    "shape_changed": ("file_fidelity", "cad_fidelity"),
     "junk_regions": ("regions_split",),   # one-region engines: a VER-2 concern (regions row)
     "requirement_absent": (),         # measured as a VER-2 concern (the requirement rows)
 }

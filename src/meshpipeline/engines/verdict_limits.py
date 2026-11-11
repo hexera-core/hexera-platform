@@ -91,6 +91,11 @@ PRODUCTION_LIMITS: tuple[Limit, ...] = (
           source="the executor's measured requirement checks (requirement_caveats)"),
     Limit("size_concerns", "A believable size for what it is", "<=", 0, _ALL,
           source="contracts/unit_plausibility (the delivered body's size against what it is)"),
+    Limit("cad_fidelity_concerns", "Follows the CAD it was built from (measures missed)", "<=", 0,
+          ("snappy", "cfmesh", "gmsh"), topologies=_CFD,
+          source="engines/cad_fidelity.py (wall within a cell of the CAD, the CAD reached, the "
+                 "volume and each opening against the CAD; a mesh that is not the part is "
+                 "refused by its gate, VER-4)"),
 )
 
 
@@ -121,9 +126,24 @@ def _passage(quality: Mapping) -> tuple[float | None, float | None]:
     return v.cells_across, v.floor
 
 
+def _cad_fidelity_concerns(quality: Mapping) -> int | None:
+    """How many of the CAD fidelity measures missed their bar (engines/cad_fidelity.py); None when
+    the check did not run or could not measure."""
+    from meshpipeline.engines.cad_fidelity import CONCERN, REBUILD, RECORD_KEY, UNMEASURED
+    rec = quality.get(RECORD_KEY)
+    if not isinstance(rec, Mapping) or rec.get("verdict") in (None, UNMEASURED):
+        return None
+    verdicts = rec.get("verdicts")
+    if not isinstance(verdicts, Mapping):
+        return None
+    return sum(1 for v in verdicts.values() if v in (CONCERN, REBUILD))
+
+
 def _measured(key: str, quality: Mapping, facts: Mapping) -> Any:
     if key == "layers_short":
         return _layers_short(quality)
+    if key == "cad_fidelity_concerns":
+        return _cad_fidelity_concerns(quality)
     if key in ("requirement_near_misses", "size_concerns"):
         return facts.get(key)
     return quality.get(key)
@@ -294,10 +314,42 @@ def fea_limits(quality: Mapping) -> list[dict]:
                      "label": ("Bonded pairs left open - a face with no mesh node within the solver's reach of the other "
                                "part, so the pair is not joined there"),
                      "source": "docs/RULES.md PLAN-fea-21 (engines/fea_assembly_deck.open_joints)"})
+    walls = [w for w in ((_m_(fea_m.get("rules")).get("through_wall") or {}).get("short") or []) if isinstance(w, Mapping)]
+    if walls:
+        # LAD-fea-13: every wall short of its elements through, named - its face, how thick, how many elements
+        # through it against the rule's (a refinement after the last rung that could not bring it up says so here)
+        named = [f"{w.get('face')} ({w.get('zone')}): {float(w.get('elements') or 0.0):.3g} element(s) through a "
+                 f"{float(w.get('thickness_mm') or 0.0):.3g} mm wall, {float(w.get('needed') or 2.0):g} needed"
+                 for w in walls]
+        rows.append({"key": "fea_walls_short", "op": "empty", "limit": [], "measured": named,
+                     "label": (f"{len(walls)} wall(s) with fewer elements through them than the plan's rule - stress "
+                               "through those walls is less exact; a finer mesh there, or a thicker wall in CAD, "
+                               "meets it"),
+                     "source": "docs/RULES.md PLAN-fea-3 / LAD-fea-13 (engines/fea_checks.py)"})
+    slivers = aside.get("ftetwild_slivers")
+    if isinstance(slivers, Mapping) and slivers.get("elements"):
+        # LAD-fea-12: the last rung's slivers on the surface, each named - part, face, SICN, place - and NEVER a
+        # clean pass: the row is always missed (one entry per sliver, never empty), so the verdict is "with
+        # concerns" (VER-2). A bad element hidden from the user is worse than a failure (coordinator, 27 Oct)
+        named = [f"{x.get('part')} {x.get('face')}, SICN {float(x.get('sicn') or 0.0):.2g}, at "
+                 f"({', '.join(f'{float(v):g}' for v in x.get('at_mm') or [])}) mm"
+                 for x in slivers.get("slivers") or [] if isinstance(x, Mapping)]
+        named += ["(unnamed)"] * max(0, int(slivers["elements"]) - len(named))
+        rows.append({"key": "fea_ftetwild_slivers", "op": "empty", "limit": [], "measured": named,
+                     "label": (f"{int(slivers['elements'])} near-flat element(s) left by the last-resort mesher "
+                               f"(fTetWild) on the surface, SICN under {5e-5:g}, set aside from the quality floor - "
+                               "a solver accepts them (none is inverted), but stress right at them is not resolved; "
+                               "they sit at CAD details far smaller than the mesh - remove or enlarge those details "
+                               "in CAD for a clean mesh"),
+                     "source": "docs/RULES.md LAD-fea-12 (engines/fea_tetwild.mesh_into)"})
     # PLAN-fea-34: the user's own requirements (read from their notes), each measured as the elements outside what
     # was asked - notes like every other row here, never a blocker; none with no requirement
     rows.extend(asked_rows(quality, source="your notes (engines/fea_requirements.py)"))
     return rows
+
+
+def _m_(v: Any) -> Mapping:
+    return v if isinstance(v, Mapping) else {}
 
 
 def _plain(v: Any) -> Any:

@@ -1292,6 +1292,15 @@ th,td{border-color:var(--border)}
 .fe-pairs{margin:4px 0}
 .fe-pairs summary{cursor:pointer;color:var(--text-faint)}
 .fe-pair.off{color:var(--text-faint)}
+/* PLAN-fea-22: the size choice - the full-rules mesh or a quicker one, each with its size, machine and time */
+.fea-plan-opts{display:flex;flex-direction:column;gap:6px;margin:0 0 6px}
+.fea-plan-opt{display:block;font-size:var(--fs-sm);line-height:1.45;cursor:pointer}
+.fea-plan-words{color:var(--text-faint)}
+.fea-plan-rec{font-size:var(--fs-xs,11px);color:var(--text-muted);border:1px solid var(--border,currentColor);border-radius:3px;padding:0 4px;margin-left:2px}
+.fea-plan-short{margin:2px 0 0 22px;padding:0;color:var(--text-faint);font-size:var(--fs-xs,11px)}
+/* many hot spots: each a small mark without its number, until it is pointed at or chosen */
+.fea-spot.mark{min-width:0;width:9px;height:9px;padding:0;font-size:0;line-height:0;border-width:1.5px}
+.fea-spot.mark:hover,.fea-spot.mark.sel{width:auto;min-width:26px;height:22px;padding:0 4px;font-size:11px;line-height:22px;z-index:8}
 /* SHSTAGE-2..4: a shell the user asked for: what is not in the shell (a muted amber mark), where the
    plates do not meet (red), and the legend of the mid-surface's wall colours */
 .fea-meshas-v{color:var(--text-muted)}

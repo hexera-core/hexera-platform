@@ -312,6 +312,16 @@ def rung_words(parts: list[int] | None, rung: int, crossing: Mapping | None = No
             "rung (LAD-fea-9). Its surface follows the CAD within its envelope; the faces keep their names.")
 
 
+def refined_better(new: Mapping, old: Mapping) -> bool:
+    """LAD-fea-13: the refinement pass after the rung beats the rung's own pass: valid, within the limit, and fewer
+    zones short of their rule - or as many, with the worst wall holding more elements through it."""
+    if not new.get("valid") or new.get("over"):
+        return False
+    a = (len(set(new.get("short") or [])), -float(new.get("through_wall_min") or 0.0))
+    b = (len(set(old.get("short") or [])), -float(old.get("through_wall_min") or 0.0))
+    return a < b
+
+
 def _rank(f: Mapping) -> tuple:
     # PLAN-fea-31: a pass whose count was off what the user asked (and so was re-aimed) after any that is not
     return (not f["valid"], bool(f.get("off_count")), bool(f["short"]), f["over"], -float(f["min_sicn"] or 0.0),
@@ -323,7 +333,8 @@ _DECIDING = ("a valid mesh", "the count asked for", "every rule met", "within th
 
 def best_pass(passes: list[dict]) -> tuple[int | None, str]:
     """(the pass delivered, what decided it) - None when no pass built a valid mesh."""
-    valid = [f for f in passes if f["valid"]]
+    # LAD-fea-13: a refinement pass after the rung that came out no better than the rung's own is never delivered
+    valid = [f for f in passes if f["valid"] and f.get("deliverable", True)]
     if not valid:
         return None, "no valid mesh"
     ranked = sorted(valid, key=_rank)
@@ -335,4 +346,4 @@ def best_pass(passes: list[dict]) -> tuple[int | None, str]:
 
 
 __all__ = ["AI_LEVERS", "MAX_PASSES", "SURFACE_STALL", "stalled_surface", "surface_stall_lever", "best_pass", "coarse_factor", "failed_surfaces", "growth", "mesh_settings",
-           "by_choice", "lever_options", "next_lever", "pass_facts", "rung_words", "tightened"]
+           "by_choice", "lever_options", "refined_better", "next_lever", "pass_facts", "rung_words", "tightened"]
