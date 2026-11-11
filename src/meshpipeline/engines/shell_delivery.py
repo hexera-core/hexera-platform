@@ -126,7 +126,7 @@ PATCH_CONTAINS = {
 
 def patches_of(rec: Mapping) -> list[dict]:
     """MIXED-9: the solid patches a shell run delivered ([] for a shell alone)."""
-    return [p for p in rec.get("patches") or [] if isinstance(p, Mapping)]
+    return [dict(p) for p in rec.get("patches") or [] if isinstance(p, Mapping)]
 
 
 def solid_rows(rec: Mapping) -> list[dict]:
@@ -290,7 +290,7 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
         # MIXED-9: the solid patches in the same files, tied to the shell
         summary += PATCH_SUMMARY.format(k=len(patches), es="" if len(patches) == 1 else "es", m=m_n)
         for s in solvers:
-            s["words"] = s["words"][:-1] + ", with 10-node tetrahedra in the solid patches, tied to the plates."
+            s["words"] = str(s["words"])[:-1] + ", with 10-node tetrahedra in the solid patches, tied to the plates."
     if _map(rec.get("surface")).get("kind") == "surface":
         # SURF-6: said as what it is - on the user's surface, at their thickness (or none set)
         from meshpipeline.contracts.shell_thickness import words as mm_words

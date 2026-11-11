@@ -42,6 +42,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -76,7 +77,7 @@ class Patched:
     """The shell run's mesh with its solid patches: the joined mesh (engines/mixed_mesh.MixedMesh, its `regions`
     set), the patches as the record says them, what was left out and why, the shell mesher's applied plan, and each
     patch's solid quality."""
-    joined: object
+    joined: Any
     patches: list[dict]
     left: list[dict]
     applied: dict
@@ -187,7 +188,7 @@ def _met_faces(shell, faces: list, wall_share: float) -> list:
     if not free:
         return []
     nodes = sorted({n for (a, b), _e in free for n in (a, b)})
-    wall = {}
+    wall: dict[int, float] = {}
     for (a, b), e in free:
         for n in (a, b):
             wall[n] = max(wall.get(n, 0.0), float(shell.wall[e]))
@@ -208,7 +209,7 @@ def _met_faces(shell, faces: list, wall_share: float) -> list:
     return out
 
 
-def _merge(parts: list) -> tuple[object, list[tuple[int, int]], list[tuple[int, int]]]:
+def _merge(parts: list) -> tuple[Any, list[tuple[int, int]], list[tuple[int, int]]]:
     """The solid patches' meshes as one SolidPart (one numbering), with each patch's node and tet ranges."""
     from meshpipeline.engines import mixed_mesh as mm
 
@@ -382,7 +383,7 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
     if joined.notes:
         raise Stop("; ".join(joined.notes))
     seconds["join_s"] = round(time.time() - t1, 1)
-    patches = []
+    patches: list[dict] = []
     joined.regions = []
     for j, (r, (a, b), sq) in enumerate(zip(kept_regions, tets_at, sqs, strict=True), start=1):
         r.name = f"{j}_{r.body}"

@@ -201,7 +201,7 @@ def join(shell: ShellMesh, solid: SolidPart, cut_faces: list, *, part: str,
     cut = ms._compound(list(cut_faces) + list(loose_faces or []))
     on_cache: dict[int, bool] = {}
 
-    def near(n: int, shape, share: float, e: int) -> bool:
+    def close(n: int, shape, share: float, e: int) -> bool:
         if shape is None:
             return False
         v = BRepBuilderAPI_MakeVertex(gp_Pnt(*map(float, shell.xyz[n]))).Vertex()
@@ -210,7 +210,7 @@ def join(shell: ShellMesh, solid: SolidPart, cut_faces: list, *, part: str,
 
     def on_cut(n: int, e: int) -> bool:
         if n not in on_cache:
-            on_cache[n] = near(n, tight, ON_FACE_SHARE, e) or near(n, loose, LOOSE_SHARE, e)
+            on_cache[n] = close(n, tight, ON_FACE_SHARE, e) or close(n, loose, LOOSE_SHARE, e)
         return on_cache[n]
 
     link_edges = {key: eu for key, eu in free if on_cut(key[0], eu[0]) and on_cut(key[1], eu[0])}
