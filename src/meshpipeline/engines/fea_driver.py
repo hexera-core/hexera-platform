@@ -397,8 +397,11 @@ async def shell_pass(ws: Path, state, *, job_id: str, run=None, target: dict | N
         return rec
     _cite(job_id, [{"stage": SHELL_GATE, "decided": "shell mesh" if rec.get("made") else "no shell mesh",
                     "value": rec.get("elements"), "rule": "SHSTAGE-6",
-                    "inputs": {k: rec.get(k) for k in ("bodies", "open_edges", "solid_bodies", "walls_mm", "seconds",
-                                                         "why", "target")},
+                    "inputs": {**{k: rec.get(k) for k in ("bodies", "open_edges", "solid_bodies", "walls_mm", "seconds",
+                                                            "why", "target")},
+                               # MIXED-9: the solid patches tied into the shell, or why there are none
+                               **{k: rec[k] for k in ("patched_regions", "solid_elements", "ties", "patch_why",
+                                                      "shell_only") if k in rec}},
                     "words": rec["words"]}])
     return rec
 
