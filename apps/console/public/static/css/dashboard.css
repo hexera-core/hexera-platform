@@ -368,18 +368,16 @@
 @media (prefers-reduced-motion:reduce){.files__row{animation:none}}
 @media (max-width:860px){.sidebar__switch,.files{display:none}}
 
-/* Brand voice: on hexera.ai every functional word is uppercase - chrome in Geist Mono caps with
-   a wide track, display words in Saira caps. The page shell and sidebar take the same rule:
-   nothing lowercase anywhere. These rules set the transform ON the elements, not the parents -
-   the older rules above declare text-transform:none on each piece, and a declared value beats
-   the inherited one however late the parent rule comes. Free-running prose (chat inside the
-   workbench) keeps its own voice - this is the chrome. */
-.sidebar,.page,.auth{text-transform:uppercase}
+/* Brand voice: on hexera.ai the functional chrome - labels, nav, buttons, table heads, figure
+   captions - is Geist Mono uppercase on a wide track, and prose stays sentence case. The console
+   chrome takes the same treatment; these rules set it ON the elements because the earlier rules
+   declare text-transform:none on each, and a declared value beats an inherited one. Everything
+   a person reads as a sentence - intros, card copy, table cells, notice bodies - keeps normal
+   case: capping prose is what made the page shout. */
 .shell .page__title{font-family:var(--display);font-weight:600;letter-spacing:-.01em;
   text-transform:uppercase}
-.auth__title{letter-spacing:-.01em}
-.shell .label,.shell .page__eyebrow,.section__title,.section__head .page__sub,.chart-legend,
-.chart__label,.chart__value,.sidebar__group,.sidebar__item,.sidebar__new,.sidebar__run,
-.sidebar__credits,.sidebar__settings>summary,.table th,.metric-card .label,.metric-card span,
-.status,.shell .btn,.billing-plan-card .label,.dashboard-notice h2,.auth__alt,.auth__foot{
-  font-family:var(--mono);letter-spacing:.12em;text-transform:uppercase}
+.auth__title{letter-spacing:-.01em;text-transform:uppercase}
+.shell .label,.shell .page__eyebrow,.section__title,.chart-legend,.chart__label,.chart__value,
+.sidebar__group,.sidebar__item,.sidebar__new,.sidebar__run,.sidebar__credits,
+.sidebar__settings>summary,.table th,.status,.shell .btn,.dashboard-notice h2,.auth__alt,
+.auth__foot{font-family:var(--mono);letter-spacing:.12em;text-transform:uppercase}
