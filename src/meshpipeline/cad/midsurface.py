@@ -1471,10 +1471,8 @@ def flat_fidelity(mid, datum, t: float) -> tuple[float, int]:
 #: SHELL-25, A FITTED WALL IS AS WIDE AS A PLATE NEEDS (11 Nov). SHELL-9 fits a tapered or free-form wall only when
 #: it is at least four of its walls wide (SHELL-2's width rule, read early so a fan housing's hundreds of narrow
 #: pairs are not fitted). Once every plate is a shell (SHELL-23), the line is the plate's own: two walls
-#: (sp.PLATE_WIDTH_RATIO) for the fitted face itself. A drafted enclosure wall 4.4 to 5.3 mm thick and 4 walls wide was
-#: left solid by the old line while the even plate beside it, as wide, was a shell. The quick test BEFORE fitting
-#: (are both faces, with FIT_WIDTH_SLACK, narrower than four walls?) is kept: moved to two walls it fitted every narrow
-#: drafted pair of a printed enclosure (31 of them) and its extraction went 97 s to 668 s, for 0.3 point of skin.
+#: (sp.PLATE_WIDTH_RATIO). A drafted enclosure wall 4.4 to 5.3 mm thick and 4 walls wide was left solid by the old
+#: line while the even plate beside it, as wide, was a shell.
 FIT_PLATE_WIDTH = True
 
 
@@ -4654,9 +4652,9 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
             try:
                 # a fitted mid-face lies between its two faces: when both are far narrower than four of its
                 # walls, so is it - not fitted at all (17 x 17 midpoints each; a fan housing has hundreds)
-                wall_wide = wall_width.get(i, 0.0) >= t_u / sp.SHELL_WIDTH_RATIO
+                wall_wide = wall_width.get(i, 0.0) >= t_u / fit_width_ratio()
                 wide = FIT_WIDTH_SLACK * max(width_of(faces[p.a]), width_of(faces[p.b]))
-                if wide < t_u / sp.SHELL_WIDTH_RATIO and not wall_wide:
+                if wide < t_u / fit_width_ratio() and not wall_wide:
                     got, why_f = [], "it is narrower than four walls (a local feature of the wall beside it)"
                 else:
                     got, lo_u, hi_u, mean_u, why_f = fitted_mid_refined(faces[small], faces[big], t_u, 1e-4 * t_u,
