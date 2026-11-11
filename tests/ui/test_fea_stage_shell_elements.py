@@ -50,7 +50,7 @@ def test_a_shell_line_carries_one_quads_or_triangles_choice_and_a_free_flip(live
     sid = "elfree"
     _open(live, sid, _check(_with(_shell("measuring"))))
     s = _el(live, sid)
-    assert s["shown"] and s["inHead"] and s["seg"] and s["text"].split() == ["Elements", "Quads", "Triangles"]
+    assert s["shown"] and s["inHead"] and s["seg"] and s["text"] == "ElementsQuadsTriangles"
     assert s["checked"] == "quads" and s["ask"] == ""
     _flip(live, sid, "triangles")
     assert _el(live, sid)["checked"] == "triangles" and _el(live, sid)["ask"] == ""

@@ -51,6 +51,7 @@ logger = logging.getLogger(__name__)
 RULE_READ = "NOTE-7"
 RULE_NOT_APPLIED = "NOTE-8"
 RULE_NOTHING = "NOTE-9"
+RULE_KIND_WORDS = "NOTE-10"
 TOOL = "mesh_requirements"
 CONSUMER = "mesh_requirements"
 STEP = "mesh_requirements"

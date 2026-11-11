@@ -3105,6 +3105,19 @@
   ]
  },
  {
+  "context": "application/shell_check.py::card_elements::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/shell_check.py",
+  "qualname": "card_elements",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_TRIA_DECLARED",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/shell_check.py::solid_short::search#1|NotAPublisher|not-a-publisher|",
   "path": "application/shell_check.py",
   "qualname": "solid_short",
@@ -3125,6 +3138,19 @@
   "method": "search",
   "ordinal": 2,
   "receiver": "_WIDTH_WHY",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/shell_elements.py::said_in::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/shell_elements.py",
+  "qualname": "said_in",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_SHARE",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -4166,6 +4192,19 @@
   "roots": []
  },
  {
+  "context": "engines/fea_driver.py::read_requirements::stage#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/fea_driver.py",
+  "qualname": "read_requirements",
+  "semantic": "stage",
+  "method": "stage",
+  "ordinal": 1,
+  "receiver": "MS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/fea_driver.py::restage_tied::stage#1|NotAPublisher|not-a-publisher|",
   "path": "engines/fea_driver.py",
   "qualname": "restage_tied",
@@ -4342,6 +4381,32 @@
   "method": "search",
   "ordinal": 1,
   "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/mesh_requirements.py::kind_in_words::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "kind_in_words",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_SAID_QUADS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/mesh_requirements.py::kind_in_words::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "kind_in_words",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_SAID_TRIANGLES",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

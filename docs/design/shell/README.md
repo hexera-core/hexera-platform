@@ -1209,6 +1209,7 @@ stretched mapped strips (sh0031, a hat section, darted brackets): triangles are 
 
 SHWRITE-2: CalculiX expands S3 into one layer of C3D6 wedges, which lock in bending (a cantilever strip 64% too stiff,
 a simply supported plate 44%). An all-triangle shell's CalculiX deck writes S6 (mid-side nodes at the middle of each
-edge, numbered after the corner nodes; C3D15): +0.8% against Navier's plate, +1.3% against the S4 shell. A
+edge, numbered after the corner nodes; C3D15): the plate +0.8% against Navier and +1.3% against the S4 shell, the
+strip +0.7% against the S4 shell (both S4 within 0.5% and 3.2% of theory). A
 quad-dominant shell's few triangles stay S3. Abaqus S3, Nastran CTRIA3 and SHELL181 triangles are written as they are
 (not solved here: no licence).
