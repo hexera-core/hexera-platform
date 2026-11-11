@@ -203,7 +203,7 @@ export function createRunProgress(now = () => Date.now()) {
           elapsed_s: null };
       }
       const elapsed = Math.max(0, (t - active.t0) / 1000);
-      let current = prefix + active.doing, note = "";
+      let current = prefix + active.doing, note = "", limit = "";
       let kind = "", progress = null;
       if (active.key !== "build" && pre && pre.at >= active.t0) {
         kind = pre.kind; current = `${prefix}${pre.stage}…`;
@@ -225,13 +225,16 @@ export function createRunProgress(now = () => Date.now()) {
         if (cap && elapsed >= cap) note = "Past its time limit - it stops by itself.";
         else if (cap && elapsed >= 0.8 * cap) note = `If it's still going at ${durationWords(cap)}, it stops by itself.`;
         else if (typ && elapsed > typ) note = `Taking longer than similar runs (usually about ${durationWords(typ)}).`;
+        // with no similar runs to go by, the mesher's time limit is said in plain words (#417's line, which
+        // the mesh bar carried before the run box)
+        if (!typ && cap) limit = `No similar runs yet · Time limit ${durationWords(cap)}`;
       } else if (SOFT_MS[active.key] && elapsed * 1000 > SOFT_MS[active.key]) {
         note = `Past ${durationWords(SOFT_MS[active.key] / 1000)} - still running.`;
       }
       if (!note && lastEventAt && t - lastEventAt > QUIET_NOTE_MS && active.key !== "build") {
         note = `No news for ${durationWords(QUIET_NOTE_MS / 1000)}. Still running; this updates when it moves.`;
       }
-      return { state: "running", live: true, steps: shown, current, note, elapsed_s: elapsed,
+      return { state: "running", live: true, steps: shown, current, note: note || limit, elapsed_s: elapsed,
                slow: note ? "yes" : undefined, kind, progress };
     },
   };
