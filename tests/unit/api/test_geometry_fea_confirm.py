@@ -301,6 +301,8 @@ async def test_a_surface_file_is_served_as_a_shell_and_confirmed_at_the_thicknes
     assert got == [], "a surface has no mid-surface to extract: no shell check is started"
     assert "Meshed as: a shell - plate elements on the surface as given" in out["message"]
     assert "It is meshed as a shell, 1.2 mm thick." in out["message"]
+    # the declaration does not call the sheet's own open edges "not clean"
+    assert "not clean" not in out["message"] and "Clean check: The file is a surface" in out["message"]
     record = json.loads(store.objects[f"sessions/{SID}/geometry_check/confirmed.json"])
     assert record["fea_mesh_as"] == "shell" and record["fea_mesh_as_picked"] == "shell (surface file)"
     assert record["fea_shell_thickness_mm"] == 1.2          # the server's reading, never the client's 9.0

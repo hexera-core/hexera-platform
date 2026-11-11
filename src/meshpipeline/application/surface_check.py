@@ -29,6 +29,8 @@ CLEAN_SHORT = "A surface, not a solid"
 UNMET_SHORT = "A surface · {n} edge{s} do not meet"
 UNMET_WORDS = ("{n} edge{s} lie{v} along a neighbouring face without meeting it (within {tol} mm): the shell mesh has "
                "a gap there.")
+#: ... and what the confirmation's declaration says of it, in place of the clean check's "not closed"
+DECLARED_CLEAN = "The file is a surface: its open edges are the sheet's own, not a fault."
 #: the clean check's reasons that only restate "this is a surface"
 SURFACE_REASONS = frozenset({"open_shell", "open_boundary", "flat", "zero_volume"})
 #: a file whose faces nearly close: said, with the two ways on
@@ -161,5 +163,5 @@ def confirmed_thickness(session_id: str) -> float | None:
     return t if st.MIN_MM <= t <= st.MAX_MM else None
 
 
-__all__ = ["CLEAN_SHORT", "GAP", "GAP_WAY_OUT", "GAP_WORDS", "KEY", "SURFACE", "clean_view", "confirmed_thickness",
+__all__ = ["CLEAN_SHORT", "DECLARED_CLEAN", "GAP", "GAP_WAY_OUT", "GAP_WORDS", "KEY", "SURFACE", "clean_view", "confirmed_thickness",
            "is_gap", "is_surface", "measure", "reading_of", "said_shell", "summarise", "thickness_of", "view"]

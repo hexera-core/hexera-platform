@@ -122,24 +122,25 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
     started = time.time()
     rec: dict = {"made": False, "mm_per_unit": float(mm_per_unit), "surface": {"kind": "unread"}}
     try:
-        given = bool(thickness_mm and thickness_mm > 0)
+        wall = float(thickness_mm or 0.0)
+        given = wall > 0
         reading, sewn = sm.read(read_cad(Path(step)), mm_per_unit=mm_per_unit, said_shell=said_shell or given)
         (ws / READING).write_text(json.dumps(reading, indent=1, sort_keys=True, default=float))
         rec["surface"] = {"kind": reading["kind"], "why": reading.get("why"), "faces": reading.get("faces"),
                           "open_share": reading.get("open_share"), "sheets": len(reading.get("sheets") or []),
                           "sew_tolerance_mm": reading.get("sew_tolerance_mm"),
-                          "thickness_mm": float(thickness_mm) if given else None, "thickness_set": given,
+                          "thickness_mm": wall if given else None, "thickness_set": given,
                           "others_mm": [float(v) for v in others_mm or []] if given else [],
                           "unread": str(unread or "")}
         if reading["kind"] != "surface" or sewn is None:
             rec["why"] = f"the file is not a surface part ({reading.get('why')})"
         else:
             sheets = reading["sheets"]
-            walls = {s["part"]: (float(thickness_mm) if given else sizing_wall(s["size_mm"])) for s in sheets}
+            walls = {s["part"]: (wall if given else sizing_wall(s["size_mm"])) for s in sheets}
             if not given:
                 rec["surface"]["sizing_wall_mm"] = sorted(set(walls.values()))
             else:
-                thick = [s["size_mm"] for s in sheets if float(thickness_mm) > THICK_SHARE * s["size_mm"]]
+                thick = [s["size_mm"] for s in sheets if wall > THICK_SHARE * s["size_mm"]]
                 if thick:
                     rec["surface"]["thick_for_mm"] = float(min(thick))
             record, surface = sm.record(reading, sewn, mm_per_unit=mm_per_unit, walls_mm=walls,
@@ -156,7 +157,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
                 # SURF-5: the sizing wall sized the mesh; it is no thickness, and none is written
                 mesh.wall = np.zeros(mesh.n_elements, dtype=float)
                 mesh.node_wall, mesh.varies = None, None
-            exports = sw.write_all(ws, mesh, units="m", source=source, notes=deck_notes(thickness_mm if given else None))
+            exports = sw.write_all(ws, mesh, units="m", source=source, notes=deck_notes(wall if given else None))
             faces = shell_run.write_msh(ws / shell_run.MSH, mesh)
             xyz_m = mesh.xyz / 1000.0
             q = applied.get("quality") if isinstance(applied, dict) else None

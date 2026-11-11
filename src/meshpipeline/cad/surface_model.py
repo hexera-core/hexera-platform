@@ -291,7 +291,8 @@ def measure(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
         area = areas[s]
         free = free_of.get(s, [])
         unmet = _unmet(free, own_of.get(s, []), sewn.faces, boxes, reach) if free else []
-        rows = []
+        rows: list[dict] = []
+        spanned = 0.0
         for lp in _loops(free, vmap):
             pts = lp["points"]
             size = float(np.linalg.norm(_span(pts)))
@@ -300,11 +301,11 @@ def measure(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
             # spans next to nothing for its length is a slit: neither is an opening
             seam = (sum(1 for i in lp["index"] if unmet[i] is not None) * 2 >= len(lp["index"])
                     or size <= SLIT_SHARE * length * length / (4.0 * math.pi))
-            rows.append({"length_mm": _r(length * mm), "span_mm2": 0.0 if seam else _r(size * mm * mm),
-                         "edges": len(lp["edges"]), "at_mm": [_r(c * mm) for c in pts.mean(axis=0)],
-                         "seam": bool(seam)})
-        rows.sort(key=lambda r: (-r["length_mm"], r["at_mm"]))
-        spanned = sum(r["span_mm2"] for r in rows)
+            span_mm2 = 0.0 if seam else _r(size * mm * mm)
+            spanned += span_mm2
+            rows.append({"length_mm": _r(length * mm), "span_mm2": span_mm2, "edges": len(lp["edges"]),
+                         "at_mm": [_r(c * mm) for c in pts.mean(axis=0)], "seam": bool(seam)})
+        rows.sort(key=lambda r: (-float(r["length_mm"]), list(r["at_mm"])))
         area_mm2 = area * mm * mm
         places = [p for p in unmet if p is not None]
         out.append({"part": f"Part_{s + 1}", "faces": [sewn.names[k] for k in ks], "area_mm2": _r(area_mm2),

@@ -92,6 +92,17 @@ def clean_words(facts: dict | None) -> tuple[bool | None, str]:
     return False, summary or "The geometry is not clean."
 
 
+def declared_clean(facts: dict | None, messages=None) -> str:
+    """The clean check's sentence for the confirmation's declaration. A FILE THAT IS A SURFACE (SURF-6) is not
+    declared "not clean" for the open edges that make it a surface: what else the check found is said, else that it
+    is a surface."""
+    from meshpipeline.application import surface_check
+
+    if surface_check.is_surface(facts, messages):
+        return str((surface_check.clean_view(facts) or {}).get("clean_summary") or surface_check.DECLARED_CLEAN)
+    return clean_words(facts)[1]
+
+
 #: NOT A CLOSED SOLID (Areen's Camaro STL, 2026-10-23: a car body of 395 open, overlapping surface
 #: pieces was told "395 separate bodies - export each part on its own"). Version 1 meshes a closed
 #: solid; what the clean check found that rules one out, in plain words, worst first. Every mesh
@@ -735,7 +746,7 @@ def in_unit(record: dict | None, scale_to_m: float | None) -> dict | None:
     return out
 
 
-__all__ = ["TRY_ANYWAY", "has_solid", "warnings", "FOLD_BACK", "fold_back_message", "SELF_OVERLAP", "WAY_OUT_REPAIR", "WAY_OUT_REPAIR_PART", "self_overlap_message", "CONNECTION_OPTIONS", "CONNECTION_QUESTION", "DEFAULT_CONNECTION", "NOT_SOLID", "NOT_SOLID_REASONS",
+__all__ = ["TRY_ANYWAY", "declared_clean", "has_solid", "warnings", "FOLD_BACK", "fold_back_message", "SELF_OVERLAP", "WAY_OUT_REPAIR", "WAY_OUT_REPAIR_PART", "self_overlap_message", "CONNECTION_OPTIONS", "CONNECTION_QUESTION", "DEFAULT_CONNECTION", "NOT_SOLID", "NOT_SOLID_REASONS",
            "QUESTION", "SHOWN_HOT_SPOTS", "GAP_JOIN_QUESTION", "DEFAULT_GAP_JOINS", "gap_words",
            "PAIR_NOTE", "confirmed_pairs", "pair_rows", "pairs_answer", "pairs_summary", "joint_counts", "joint_phrases", "joints_words", "FLOW_ONLY_KEYS", "without_flow_openings",
            "gap_joins_answer", "confirmed_gap_joins", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL", "WAY_OUT_SOLID", "assembly_view",

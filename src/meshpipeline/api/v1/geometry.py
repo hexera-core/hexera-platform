@@ -783,7 +783,7 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
             "size_mm": body.size_mm or proposed.get("size_mm"),
             "scale_to_m": body.scale_to_m or proposed.get("scale_to_m") or facts.get("scale_to_m"),
             "bodies": fea_check.body_count(facts),
-            "clean_summary": fea_check.clean_words(facts)[1]})
+            "clean_summary": fea_check.declared_clean(facts, session.messages)})
     elif body.check_mode == THERMAL_CHECK:
         # the panel sends only the detail level: a thermal model is always an assembly of solid
         # parts with the air among them, so its kind and flow are the server's to fill - and its
