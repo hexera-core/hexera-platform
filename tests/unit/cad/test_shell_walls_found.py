@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pytest
 
 pytest.importorskip("OCP.BRepPrimAPI")
@@ -236,3 +237,61 @@ def test_an_overlap_under_a_tenth_of_the_wall_wide_is_no_mid_face(monkeypatch):
                                    40.0).Face()
     got, _lo, _hi, _mean, why = ms.fitted_mid(low, TopoDS.Face_s(high.Reversed()), 2.0, 2e-4, wall_wide=True)
     assert not got and why == "the two faces do not overlap"
+
+
+# ------------------------------------------------------------------ SHELL-44: no ray lost on a flat face ----
+def test_the_pairing_rays_read_every_flat_face_they_meet():
+    from meshpipeline.cad import fea_features as ff
+    from meshpipeline.cad import fea_measure as fm
+
+    shape = sf.flat_plate(4.0)
+    s, _faces, _kinds = fm._brep_surface(shape, 1.0)
+    P, D, L = sp._sample_rays(s)
+    eps = 1e-6 * s.diag
+    hit = [None, None]
+    for k, tol in enumerate((0.0, sp.RAY_TOL_MM)):
+        h = np.full(len(P), -1, dtype=np.int64)
+        ff.wall_reach(s, P + D * eps, D, L, eps=eps, exit_label=h, ray_tol=tol)
+        hit[k] = h
+    # every ray from the plate's two big faces leaves through the other one (a ray from a rim reads the plate's
+    # length: not counted)
+    big = sorted(range(len(s.names)), key=lambda k: -float(s.areas[s.label == k].sum()))[:2]
+    from_big = np.isin(L, big)
+    assert (hit[1][from_big] >= 0).all()
+    assert (hit[1] >= 0).sum() >= (hit[0] >= 0).sum()
+    # and where both read a wall they read the same face
+    both = (hit[0] >= 0) & (hit[1] >= 0)
+    assert (hit[0][both] == hit[1][both]).all()
+
+
+# ------------------------------------------------------------------ SHELL-45: a bend not concentric ----
+def _bend_faces(shape):
+    from OCP.GeomAbs import GeomAbs_Cylinder
+
+    return sorted(_kind_faces(shape, GeomAbs_Cylinder), key=ms._area)
+
+
+def test_a_bend_whose_rounds_are_not_concentric_is_read_as_one_wall():
+    # 2 mm sheet, both rounds 5 mm: the faces turn 13.7 degrees at the bend's ends, face each other squarely in its
+    # middle, and the wall goes 2.4 to 2.8 mm (read at the 49 points' band middles)
+    a, b = _bend_faces(sf.bent_bracket(t=2.0, r=5.0, outer_r=5.0))
+    tap, lo, hi, turn, why = sp.tapered_wall(a, b, 1.0)
+    assert tap and not why
+    assert sp.TAPER_DEG < turn <= sp.BEND_DEG and hi <= sp.BEND_RATIO * lo
+    assert lo == pytest.approx(2.0 * 1.2, rel=0.03) and hi == pytest.approx(2.0 * math.sqrt(2.0), rel=0.01)
+
+
+def test_a_wall_turned_the_same_everywhere_past_the_taper_limit_is_no_bend():
+    # a wedge turned 20 degrees from end to end: its faces never face each other squarely (SHELL-9's own case)
+    from OCP.GeomAbs import GeomAbs_Plane
+
+    shape = sf.wedge_plate(3.0, 40.0, 100.0)
+    faces = sorted(_kind_faces(shape, GeomAbs_Plane), key=ms._area)[-2:]
+    tap, _lo, _hi, turn, _why = sp.tapered_wall(faces[0], faces[1], 1.0)
+    assert not tap and turn > sp.TAPER_DEG
+    rec, _ = ms.extract(shape, mm_per_unit=1.0)
+    assert rec["bodies"][0]["verdict"] == "solid"
+
+
+def test_the_bend_ratio_is_a_tapers_gain_across_the_narrowest_shell_wall():
+    assert sp.BEND_RATIO == pytest.approx(1.0 + math.tan(math.radians(sp.TAPER_DEG)) / sp.SHELL_WIDTH_RATIO)
