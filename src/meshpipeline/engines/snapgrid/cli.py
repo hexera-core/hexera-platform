@@ -40,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
                          "below override it (default: a bare grid plan, thermal rules off)")
     ap.add_argument("--max-cells", type=int, default=None)
     ap.add_argument("--background-cells", type=int, default=None)
+    ap.add_argument("--background-size", type=float, default=None,
+                    help="the background cell in metres, from the user's notes (overrides --background-cells)")
     ap.add_argument("--min-cells-across", type=int, default=None)
     ap.add_argument("--cylinder-cells", type=int, default=None)
     ap.add_argument("--growth", type=float, default=None)

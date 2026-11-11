@@ -197,6 +197,12 @@ def inputs_for(*, engine: str, topology: str, manifest: Mapping | None, valid: b
     for row in _declared_advisory(engine):
         limits.append({**row, "measured": _plain(quality.get(row["key"]))})
     limits.extend(fea_limits(quality))
+    fea = quality.get("fea") if isinstance(quality.get("fea"), Mapping) else {}
+    if not (fea or {}).get("plan"):
+        # CFDREQ-6: a flow mesh's rows for the user's own requirements (engines/cfd_requirements), notes like every
+        # other row here - a missed one is "delivered with notes", never a blocker; none with no requirement
+        from meshpipeline.engines.mesh_requirements import asked_rows
+        limits.extend(asked_rows(quality, source="your notes (engines/cfd_requirements.py)"))
     return {"engine": engine, "topology": topology, "valid": bool(valid),
             "failed_gate": str(failed_gate or ""), "layers_planned": bool(layers_planned),
             "gating": gating_rows(engine, mf) if valid else [],

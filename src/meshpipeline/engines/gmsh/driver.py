@@ -726,6 +726,9 @@ def _external_fluid(gmsh, ws, spec, discrete, surfaces, bmin, bmax, h, ports):
         origin = _face_origin(gmsh, body, before)
     span = max(float(dmax[k]) - float(dmin[k]) for k in range(3))
     h_far = max(float(h), span / 15.0)
+    if (Path(ws) / "mesh_requirements.json").exists():
+        from meshpipeline.engines.cfd_requirements import gmsh_far
+        h_far = max(float(h), gmsh_far(ws, h_far))     # CFDREQ-2: the user's largest cell caps the far field
     grade_from_body(gmsh, body, h_body=float(h), h_far=h_far, ruler=ruler)
     gmsh.option.setNumber("Mesh.MeshSizeMax", h_far)
     groups = _external_groups(spec.get("groups"), body, far, origin, ports)
@@ -1115,8 +1118,20 @@ def main(workspace: str) -> int:
             print(f"[GMSH] resolution clamp: element size {h_req:.4g} m would put only "
                   f"{min_ext / h_req:.1f} cells across {_what}; "
                   f"tightened to {h:.4g} m ({MIN_CELLS_ACROSS} across).", file=sys.stderr)
+        # CFDREQ-1: THE USER'S REQUIREMENTS from their notes (engines/cfd_requirements) - the one seam. None: the
+        # sizes are exactly the ones the rules gave
+        _ask = None
+        if (ws / "mesh_requirements.json").exists():
+            from meshpipeline.engines import cfd_requirements as CR
+            _ask = CR.Ask.of(ws, "gmsh") if CR.flow_run(ws) else None
+        _h_min = h / 20.0
+        if _ask is not None:
+            h, _lo = CR.gmsh_sizes(_ask, h, external=external)
+            _h_min = max(h / 20.0, _lo) if _lo is not None else h / 20.0
+            _ask.write(ws)
+            CR.say_sync(ws, _ask.lines())
         gmsh.option.setNumber("Mesh.MeshSizeMax", h)
-        gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0)
+        gmsh.option.setNumber("Mesh.MeshSizeMin", _h_min)
         # CURVATURE SIZING. Off for a CLASSIFIED upload: it reads the facets' kinks as curvature
         # and refined a 69 mm elbow past 300 s of surface meshing without finishing
         # (bend_elbow_021 STL, 2026-10-04) - the passage field sizes it. On for the STAGED fluid

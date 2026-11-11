@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import meshpipeline.engines.snappy.settings as scfg
 import meshpipeline.settings.policy as polcfg
+from meshpipeline.engines.cfd_requirements import guarded as _guarded
 from meshpipeline.engines.gap_sizing import LIMITED, OVER_LIMIT, accepted_fewer
 from meshpipeline.engines.ground_contact import describe as describe_contact
 from meshpipeline.engines.ground_plane import VERTICAL_AXIS, ground_patch_name
@@ -367,6 +369,113 @@ def _release_size_brake(workspace: Path, oversize: dict, *, attempt: int, job_id
     except Exception:  # noqa: BLE001 - the why record never stops a mesh
         logger.debug("RUN-8 not cited", exc_info=True)
     return True
+
+
+def _requirements(workspace, engine: str, strategy: dict, state, analysis: dict | None):
+    """CFDREQ-1: the user's requirements for this pass (engines/cfd_requirements.Ask), with the case's reference
+    length for a y+ - None when the notes ask nothing (the pass is exactly what it always was)."""
+    from meshpipeline.engines import cfd_requirements as CR
+    ask = CR.Ask.of(workspace, engine)
+    if ask is None:
+        return None
+    ruler = (state or {}).get("reference_length_m") or strategy.get("reference_length_m")
+    if ruler:
+        ask.length_m, ask.length_from = float(ruler), "the reference length you confirmed"
+    elif analysis and analysis.get("bbox_min") is not None:
+        ext = [float(b) - float(a) for a, b in zip(analysis["bbox_min"], analysis["bbox_max"], strict=False)]
+        if ext and max(ext) > 0:
+            ask.length_m, ask.length_from = max(ext), "the body's length"
+    return ask
+
+
+@_guarded(lambda ask, budget, prev: int(budget))
+def _ask_budget(ask, budget: int, prev) -> int:
+    """CFDREQ-3: the user's count as the pass's budget, held to the largest machine - and still corrected when the
+    last pass overshot it."""
+    out = ask.budget(int(budget), hard=int(polcfg.CELL_HARD_LIMIT))
+    if prev is not None and ask.user_budget():
+        from meshpipeline.engines.snappy.planner import overshoot_corrected_budget
+        corr = overshoot_corrected_budget(prev[0], prev[1], ceiling=polcfg.CELL_HARD_LIMIT)
+        if corr is not None and corr < out:
+            out = int(corr)
+    return out
+
+
+@_guarded(lambda ask, strategy, budget: dict(strategy))
+def _ask_strategy(ask, strategy: dict, budget: int) -> dict:
+    """The plan with the user's layer count in it (the planner's 3-5 is ours; theirs wins), and the budget they set
+    as the plan's own (the size brake measures against it)."""
+    out = dict(strategy)
+    if ask.n_layers is not None:
+        out["n_layers"] = int(ask.n_layers)
+        ask.done("layers:count", "no boundary layers" if int(ask.n_layers) == 0 else
+                 f"{int(ask.n_layers)} layers on every wall (fewer only where a thin edge cannot hold them)")
+    if ask.user_budget():
+        out["_plan_cells"] = int(budget)
+    return out
+
+
+@_guarded(lambda ask, **k: (k["cells_across"], k["surface_level"], k["feature_level"]))
+def _ask_internal_sizes(ask, *, bore_D: float, cells_across: int, surface_level: int,
+                        feature_level: int) -> tuple[int, int, int]:
+    """CFDREQ-2 on an internal flow: (cells across the bore, the wall's level, the feature level) for the user's
+    size at the walls (the wall cell is bore / cells across), their global or largest cell (the fill's cell, base =
+    wall cell x 2^level) and their smallest cell. Fewer than 8 cells across the bore is no mesh of a passage: the
+    nearest, said (validity)."""
+    from meshpipeline.engines import cfd_requirements as CR
+    wall = bore_D / cells_across
+    if ask.wall_m is not None:
+        n = int(round(bore_D / ask.wall_m))
+        if n < 8:
+            cells_across = 8
+            ask.nearest("near_wall", f"cells of {CR._mm(bore_D / 8)} at the walls: 8 across the bore is the fewest a "
+                                     "passage is meshed with", built_m=bore_D / 8)
+        else:
+            cells_across = n
+            ask.done("near_wall", f"cells of {CR._mm(bore_D / n)} at the walls ({n} across the bore)",
+                     built_m=bore_D / n)
+        wall = bore_D / cells_across
+    if ask.min_m is not None and wall < ask.min_m:
+        n = max(8, int(math.floor(bore_D / ask.min_m)))
+        cells_across, wall = n, bore_D / n
+        if bore_D / n < ask.min_m * 0.999:
+            ask.nearest("min_edge", f"cells of {CR._mm(wall)} at the walls: 8 across the bore is the fewest a "
+                                    "passage is meshed with", built_m=wall)
+        else:
+            ask.done("min_edge", f"cells of {CR._mm(wall)} at the walls, none finer planned (narrow spots may still "
+                                 "get finer boxes)", built_m=wall)
+    elif ask.min_m is not None:
+        ask.done("min_edge", f"the wall cells are {CR._mm(wall)}, over it", built_m=wall)
+    fill = ask.global_m or ask.max_m
+    if fill is not None:
+        lv = max(0, int(round(math.log2(max(fill, wall) / wall))))
+        if ask.max_m is not None and wall * 2 ** lv > ask.max_m * 1.0001:
+            lv = max(0, lv - 1)
+        surface_level, feature_level = lv, max(lv, min(feature_level, lv + 1))
+        field = "global" if ask.global_m is not None else "max_edge"
+        built = wall * 2 ** lv
+        if abs(built - fill) / fill > 0.25 and fill > wall:
+            ask.nearest(field, f"cells of {CR._mm(built)} away from the walls (the wall cell {CR._mm(wall)} doubled "
+                               "to the nearest size)", built_m=built)
+        elif fill < wall:
+            ask.nearest(field, f"cells of {CR._mm(wall)} everywhere: the wall cells set the finest size",
+                        built_m=wall)
+        else:
+            ask.done(field, f"cells of {CR._mm(built)} away from the walls, {CR._mm(wall)} at them", built_m=built)
+        if field == "global" and ask.max_m is not None:
+            ask.done("max_edge", f"the largest cells are {CR._mm(built)}")
+    return int(cells_across), int(surface_level), int(feature_level)
+
+
+async def _say_requirements(publish, lines: list, *, job_id: str) -> None:
+    """What this mesher does with the notes, said once before it meshes (CFDREQ-2..5)."""
+    from meshpipeline.engines import cfd_requirements as CR
+    try:
+        await CR.say(publish, lines)
+    except StaleExecutionPublish:
+        raise
+    except Exception:  # noqa: BLE001 - the words never stop a mesh
+        logger.debug("CFDREQ lines not said", exc_info=True)
 
 
 async def _part_sizes(workspace, state, *, job_id: str, run=None) -> dict | None:
@@ -1202,6 +1311,12 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                 _prev[0], _prev[1], _prev[1] / _prev[0], _corr,
                                 polcfg.CELL_HARD_LIMIT)
                     _budget = _corr
+            # CFDREQ-1: THE USER'S REQUIREMENTS from their notes (engines/cfd_requirements) - the one seam. Their
+            # count beats the plan's budget (an overshoot of it is still corrected), their layer count the plan's
+            _ask = _requirements(workspace, "snappy", strategy, state, analysis)
+            if _ask is not None:
+                _budget = _ask_budget(_ask, _budget, _prev)
+                strategy = _ask_strategy(_ask, strategy, _budget)
             strategy = {**strategy, "max_cells": _budget}
             rec = recommend_refinement(analysis, max_cells=_budget)
             # THE USER'S CONFIRMED MARGINS WIN. The planner writes domain_margin itself, and a
@@ -1284,7 +1399,11 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 contact=_contact,
                 # the gaps between the body's parts, 13 cells across (engines/gap_sizing)
                 gap_field=_gap_field,
-                part_sizes=_part_got)
+                part_sizes=_part_got,
+                requirements=_ask)
+            if summary.get("requirements_lines") and not _part_cache.get("req_said"):
+                _part_cache["req_said"] = True
+                await _say_requirements(publish, summary["requirements_lines"], job_id=str(job_id or ""))
             if _part_got and not _part_cache.get("said"):
                 _part_cache["said"] = True
                 await _say_part_levels(workspace, publish, _part_got, summary.get("part_levels"),
@@ -2304,6 +2423,17 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         if quality not in ("balanced", "strict"):
             quality = "balanced"
         feature_level = max(0, plan_int(strategy, "feature_level", surface_level + 1))
+        # CFDREQ-1: THE USER'S REQUIREMENTS from their notes (engines/cfd_requirements) - the one seam: their count
+        # beats the plan's budget, their layer count the plan's, their sizes set the wall cell and the fill
+        _ask = _requirements(workspace, "snappy", strategy, state, None)
+        if _ask is not None:
+            _ask.length_m, _ask.length_from = (_ask.length_m or float(bore_D)), (_ask.length_from or "the bore")
+            _budget = _ask_budget(_ask, _budget, _prev)
+            strategy = _ask_strategy(_ask, strategy, _budget)
+            n_layers = max(0, plan_int(strategy, "n_layers", 3))
+            cells_across, surface_level, feature_level = _ask_internal_sizes(
+                _ask, bore_D=float(bore_D), cells_across=cells_across, surface_level=surface_level,
+                feature_level=feature_level)
         # base cell sized so the wall cell (base / 2^level) resolves the bore into `cells_across`
         base_cell = (bore_D / cells_across) * (2 ** surface_level)
         # THIN FEATURES. The wall cell above is sized from the BORE, so a feature thinner
@@ -2453,7 +2583,9 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 thin_regions=[*_thin_regions, *_narrow_regions,
                               *(strategy.get("local_boxes") or [])],
                 near_band_depth=_band_m if _band_set else None,
-                distance_regions=_narrow_surfaces_)
+                distance_regions=_narrow_surfaces_, requirements=_ask)
+            if _ask is not None and attempt == 1:
+                await _say_requirements(publish, _ask.lines(), job_id=str(job_id or ""))
             _stop_on_repeated_case(workspace, _reviewed_ws, job_id=job_id,
                                    where=f"internal pass {attempt}")
             if _repeats_timed_out_case(workspace, _timeout_case):

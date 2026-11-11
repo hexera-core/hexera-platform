@@ -114,7 +114,10 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
     rows = []
     for row in req["rows"]:
         field = str(row["field"])
-        if field.startswith("limit:"):
+        flow = MR.elements_row(field, req, n, "solid") if field in MR.FLOW_FIELDS else None
+        if flow is not None:
+            got = flow
+        elif field.startswith("limit:"):
             got = _limit_row(limits[row["id"]], m, n)
         elif field == "global":
             typical = float(np.median(0.5 * (lo + hi))) if n else 0.0

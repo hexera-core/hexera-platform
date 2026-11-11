@@ -61,7 +61,7 @@ def test_the_criteria_list_is_read_into_sizes_and_limits():
     req, dropped, not_applied = _check(criteria_answer(), CRITERIA)
     assert dropped == [] and not_applied == []
     assert req["sizes"] == {"global_mm": 10.0, "min_edge_mm": 5.0, "max_edge_mm": 15.0, "growth": None,
-                            "thickness_mm": None}
+                            "thickness_mm": None, "near_wall_mm": None}
     assert req["kind"] == {"shell": None, "tria_percent_max": None, "order": None}
     got = {(lim["measure"], lim["shape"]): (lim["op"], lim["target"], lim["share"], lim["outer"])
            for lim in req["limits"]}
@@ -414,10 +414,10 @@ def test_the_reading_is_kept_in_the_workspace_only_when_it_asks_for_something(tm
 
 
 # ------------------------------------------------------------------ the flow route (CFD) ------------------------
-def test_flow_limits_are_read_into_the_same_set_but_the_flow_route_does_not_apply_it_yet():
+def test_flow_limits_are_read_into_the_same_set_and_every_flow_engine_reads_it():
     """The reading is route-neutral: a flow mesh's limits land in the same typed set, and the rows any route's
-    result reads are built the same way. No flow engine reads the set yet (its planner has no field for a
-    whole-mesh size or a quality limit): the consumer registry says so, and this test moves when that is built."""
+    result reads are built the same way. Every flow engine reads the set (engines/cfd_requirements, NOTE-10): the
+    consumer registry says so."""
     from meshpipeline.contracts import user_notes as un
 
     notes = "Max non-orthogonality 65 degrees, skewness below 4, cells around 5 mm"
@@ -440,5 +440,5 @@ def test_flow_limits_are_read_into_the_same_set_but_the_flow_route_does_not_appl
     assert row["measured"] == 1 and row["said"] == ("Cell non-orthogonality under 65°: not fully met - 33.3% of "
                                                    "elements (1) are over 65°; the worst is 71°.")
     assert "mesh_requirements" in un.ROUTE_CONSUMERS["fea"] and "mesh_requirements" in un.ENGINE_CONSUMERS["gmsh"]
-    assert "mesh_requirements" not in un.ROUTE_CONSUMERS["flow"]
-    assert not any("mesh_requirements" in v for k, v in un.ENGINE_CONSUMERS.items() if k != "gmsh")
+    assert "mesh_requirements" in un.ROUTE_CONSUMERS["flow"]
+    assert all("mesh_requirements" in v for v in un.ENGINE_CONSUMERS.values())
