@@ -1,0 +1,101 @@
+# Responsibility: Define the target package - a region, a plan and the claim its author makes
+#                 about the outcome - and judge that claim against what was measured.
+# Owns: the `TargetPackage`, `Predicate` and `PackageBudget` values, `specificity`, and `evaluate`.
+# Boundaries: pure comparison of a claim fixed BEFORE execution against measurements taken after.
+#             It imports no kernel, runs nothing, and judges no quality: the author cannot grade its
+#             own work, it can only state something a separate measurement checks. It does not
+#             enforce `PackageBudget.deviation_mm`; that would make a package a cap waiver, which a
+#             planner directive explicitly is not (cad/repair/directives.py).
+# Collaborates with: cad/repair/regions.py (the `Region` a package targets), cad/repair/caps.py
+#                    (the `Measure` it compares).
+from __future__ import annotations
+
+from collections.abc import Iterable
+from dataclasses import dataclass
+
+from meshpipeline.cad.repair.caps import Measure
+from meshpipeline.cad.repair.regions import Region
+
+
+@dataclass(frozen=True, slots=True)
+class PackageBudget:
+    max_ops: int
+    timeout_s: float
+    model_calls: int
+    #: RECORDED, NOT ENFORCED. Whether a package may move a cap is an open product question.
+    deviation_mm: float
+
+
+# `reclassified` is the discharge-by-judgement path: a defect the author asserts is intentional
+# (a chamfer reported as a sliver) may remain and the predicate still holds. A clean part means
+# "nothing unexplained remains", not "the inspector finds nothing". It is the main abuse surface of
+# the design, so callers must surface how many defects a package reclassified.
+#
+# `unchanged` is the collateral-damage guard: an entity the author said it would not touch whose
+# defect disappeared FAILS the predicate. An unpredicted change is what this design exists to catch.
+
+
+@dataclass(frozen=True, slots=True)
+class Predicate:
+    cleared: frozenset[str]
+    reclassified: frozenset[str]
+    unchanged: frozenset[str]
+    max_area_delta_mm2: float
+    max_volume_delta_mm3: float
+
+
+@dataclass(frozen=True, slots=True)
+class TargetPackage:
+    region: Region
+    intent: str
+    plan: tuple[dict, ...]
+    predicate: Predicate
+    budget: PackageBudget
+    rationale: str = ""
+
+
+def specificity(predicate: Predicate) -> float:
+    """0.0 when the claim names no entity, rising towards 1.0 with each entity it commits to.
+
+    A predicate asserting only what is always true (the shape is still valid) would let an author
+    pass by promising nothing, so the caller refuses a zero.
+    """
+    n = len(predicate.cleared | predicate.reclassified | predicate.unchanged)
+    return n / (n + 1.0)
+
+
+def _names(items: Iterable[str]) -> str:
+    return ", ".join(sorted(items))
+
+
+def evaluate(predicate: Predicate, *, before: Measure, after: Measure,
+             defects_before: Iterable[str], defects_after: Iterable[str]) -> str:
+    """Return "" when the claim held, else the first way it failed, in words.
+
+    Checked in a fixed order - cleared, unchanged, reclassified, area, volume - and entities are
+    listed sorted, so identical inputs always give the identical message.
+    """
+    was, now = set(defects_before), set(defects_after)
+
+    remaining = predicate.cleared & now
+    if remaining:
+        return f"cleared defects still present: {_names(remaining)}"
+
+    vanished = (predicate.unchanged & was) - now
+    if vanished:
+        return f"defects claimed unchanged were altered: {_names(vanished)}"
+
+    phantom = predicate.reclassified - was
+    if phantom:
+        return f"reclassified defects were never reported: {_names(phantom)}"
+
+    area = abs(after.surface_area_mm2 - before.surface_area_mm2)
+    if area > predicate.max_area_delta_mm2:
+        return (f"surface area moved {area:.6g} mm2, past the claimed "
+                f"{predicate.max_area_delta_mm2:.6g} mm2")
+
+    volume = abs(after.volume_mm3 - before.volume_mm3)
+    if volume > predicate.max_volume_delta_mm3:
+        return (f"volume moved {volume:.6g} mm3, past the claimed "
+                f"{predicate.max_volume_delta_mm3:.6g} mm3")
+    return ""
