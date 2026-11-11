@@ -672,3 +672,18 @@ def test_a_pipe_and_its_insulation_written_as_iges_are_two_bodies(tmp_path):
     got = _volumes(solid)
     assert len(got) == 2 and got == pytest.approx(want, rel=1e-4)
     assert all(v > 0 for v in got)
+
+
+def test_the_stated_tolerance_words_stand_alone_and_add_up():
+    """With a stitch tolerance stated in the notes, each gap sentence names what was stitched and its own count out of
+    the places in all: never "of them", never "(s)"."""
+    c = {"left_open": 1, "wider_gaps": 2, "applied_mm": 2.0, "left_widest_mm": 1.0, "wider_narrowest_mm": 3.0,
+         "wider_widest_mm": 4.0, "limit_from": "notes"}
+    words = surface_run.gap_words(3, c)
+    assert words[0] == "The surfaces do not meet at 3 places: the shell has gaps there."
+    assert words[1].startswith("At 1 of these 3 places, the gap is narrower than the 2 mm stitched here")
+    assert words[2].startswith("At 2 of these 3 places, the surfaces run side by side ")
+    assert "wider than the 2 mm stitched here." in words[2]
+    assert not any("of them" in w or "(s)" in w for w in words)
+    one = surface_run.gap_words(1, {**c, "left_open": 1, "wider_gaps": 0})
+    assert one[1].startswith("At that place, the gap is narrower than the 2 mm stitched here") and "join it" in one[1]
