@@ -148,6 +148,13 @@ def test_no_change_makes_an_element_that_is_not_valid_and_the_outline_stays():
     # every element still turns the way it did (z up)
     assert (np.cross(xyz[Q2[:, 2]] - xyz[Q2[:, 0]], xyz[Q2[:, 3]] - xyz[Q2[:, 1]])[:, 2] > 0).all()
     assert (np.cross(xyz[T2[:, 1]] - xyz[T2[:, 0]], xyz[T2[:, 2]] - xyz[T2[:, 0]])[:, 2] > 0).all()
+    # SHMESH-28b: under every line the worst element is no further past it than before (or than the line's band)
+    held_before: list = []
+    sq._costs(xyz, Q, T, AIMS, bad=held_before)
+    held_after: list = []
+    sq._costs(xyz, Q2, T2, AIMS, bad=held_after)
+    band = np.array([abs(o - t) for _s, _k, _op, t, o, _sh in AIMS.aims] + [0.0] * len(AIMS.hard))
+    assert np.all(np.vstack(held_after).max(axis=0) <= np.maximum(np.vstack(held_before).max(axis=0), band) + 1e-9)
     # the same mesh twice: the same answer
     Q3, T3, _qf, _tf, done3 = _mend(xyz, Q, T, [0] * len(Q), [0] * len(T), kind, np.full(len(xyz), -1), {},
                                       limits=AIMS)
@@ -253,3 +260,23 @@ def test_holes_and_curves_under_the_users_size():
     # a narrow bend keeps one element across unless the chord holds it
     assert SR.curved_size(20.0, 30.0, floor=0.5, rule=10.0, chord=1.0) == 10.0
     assert SR.chord_size(5.0, 6.0) == float("inf")
+
+
+def test_the_earlier_steps_mesh_is_set_against_a_mesh_past_a_limit():
+    from meshpipeline.engines import shell_requirements as SR
+    from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    def applied(beyond, met):
+        rows = [{"field": "limit:min_angle", "beyond": b, "met": m} for b, m in zip(beyond, met, strict=True)]
+        return {"requirements": {"rows": rows}}
+
+    # fewer past the solver first, then fewer past an outer limit, then more lines met
+    assert SA._standing(applied([0, 0], [True, True]), 1) > SA._standing(applied([5, 5], [False, False]), 0)
+    assert SA._standing(applied([2, 0], [False, True]), 0) > SA._standing(applied([0, 0], [False, False]), 0)
+    assert SA._standing(applied([0, 0], [True, False]), 0) > SA._standing(applied([0, 0], [True, True]), 0)
+    # the earlier steps alone, for one mesh; every constant put back after
+    before = (SA.FEATURE_SIZES, SA.MEND, SA.SLIDE_EDGES, SR.HOLE_PER_TURN, SR.CHORD_SHARE)
+    with SA._classic():
+        assert (SA.FEATURE_SIZES, SA.MEND, SA.SLIDE_EDGES) == (False, False, False)
+        assert SR.HOLE_PER_TURN == SR.SHAPE_PER_TURN
+    assert (SA.FEATURE_SIZES, SA.MEND, SA.SLIDE_EDGES, SR.HOLE_PER_TURN, SR.CHORD_SHARE) == before
