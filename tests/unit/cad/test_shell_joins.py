@@ -226,3 +226,22 @@ def test_the_notched_corner_is_the_same_twice():
         out.append(([(i, j, round(ms._area(f), 9)) for i, j, f in strips],
                     [round(ms._area(f), 9) for f in ms._faces(fused)]))
     assert out[0] == out[1]
+
+
+def test_every_open_edge_is_offered_to_the_closing_passes_not_only_those_the_record_lists(monkeypatch):
+    # SHELL-33: the record lists at most 50 open edges per body; the passes read the census's full list. Here the
+    # listed points are emptied (as for a body with more open edges than the record lists): the T is still closed
+    monkeypatch.setattr(ms, "extend", lambda *a, **k: None)
+    monkeypatch.setattr(ms, "_join_general", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("off")))
+    orig = ms.edge_census
+
+    def listed_none(*a, **k):
+        row = orig(*a, **k)
+        row["open_at_mm"] = []
+        return row
+
+    monkeypatch.setattr(ms, "edge_census", listed_none)
+    rec, _ = ms.extract(sf.t_joint(5.0, 4.0), mm_per_unit=1.0)
+    row = next(s for s in rec["sewn"] if s["body"] == "Part_1")
+    assert row["open_edges"] == 0
+    assert ms.OPEN_ALL_KEY not in row
