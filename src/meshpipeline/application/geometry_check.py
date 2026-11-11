@@ -2018,10 +2018,8 @@ def _lacks_surface_reading(record: dict, facts: dict) -> bool:
     surface reading (application/surface_check.KEY)."""
     from meshpipeline.application import surface_check
 
-    try:
-        no_solid = int(facts.get("solids")) == 0
-    except (TypeError, ValueError):
-        return False
+    solids = facts.get("solids")
+    no_solid = isinstance(solids, (int, float)) and not isinstance(solids, bool) and int(solids) == 0
     return no_solid and record.get("basis") == "cad" and surface_check.KEY not in record
 
 
