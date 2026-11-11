@@ -158,13 +158,24 @@ def test_a_rib_on_a_plate_is_meshed_with_shared_nodes_along_its_foot(tmp_path):
     assert rec["made"] and rec["surface"]["sheets"] == 1 and rec["open_edges"] == 0
     edges = rec["quality"]["edges"]
     assert edges["junction"] > 0 and rec["quality"]["invalid"] == 0
-    # a foot that lands inside one face is two parts with a gap between them, said
+    # a foot that lands inside one face is joined too (the plate scored along it): one part, shared nodes
     ws = tmp_path / "inside"
     ws.mkdir()
     rec = surface_run.run(ws, _file(sx.tee(split=False), ws / "in"), mm_per_unit=1.0, thickness_mm=2.0)
-    assert rec["made"] and rec["surface"]["sheets"] == 2 and rec["open_edges"] == 1
-    assert "The surfaces do not meet at 1 edge(s): the shell has gaps there." in rec["words"]
-    assert rec["quality"]["edges"]["junction"] == 0
+    assert rec["made"] and rec["surface"]["sheets"] == 1 and rec["open_edges"] == 0
+    assert rec["quality"]["edges"]["junction"] > 0 and rec["quality"]["invalid"] == 0
+    groups = sw.read_bdf(ws / "shell.bdf").groups
+    assert {"Face_1", "Face_2", "Part_1"} <= set(groups) and len(groups["Face_1"]) + len(groups["Face_2"]) == rec["elements"]
+
+
+def test_edges_that_do_not_meet_are_said_on_the_result(tmp_path):
+    from meshpipeline.cad import surface_model as sm
+
+    tol = sm.read(sx.tray(), mm_per_unit=1.0)[0]["sew_tolerance_mm"]
+    src = _file(sx.skin_with_crack(3.0 * tol), tmp_path / "in")
+    rec = surface_run.run(tmp_path, src, mm_per_unit=1.0, thickness_mm=1.0)
+    assert rec["made"] and rec["open_edges"] == 8
+    assert "The surfaces do not meet at 8 edge(s): the shell has gaps there." in rec["words"]
 
 
 def test_what_the_words_left_unread_and_a_thick_sheet_are_said_never_refused(tmp_path):

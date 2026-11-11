@@ -162,14 +162,35 @@ def test_three_faces_at_one_line_are_sewn_into_a_junction():
     assert rec["checks"]["connected"] is True and rec["sewn"][0]["junction_edges"] == 1
 
 
-def test_a_rib_landing_inside_a_face_is_said_not_joined():
-    """... but a foot that lands inside one face has no edge there to sew to: it is counted and said (the shell has
-    a gap there), never closed - the file is not changed beyond the sewing."""
+def test_a_rib_landing_inside_a_face_is_joined_by_scoring_that_face():
+    """... and a foot that lands inside ONE face has no edge there to sew to: the faces are fused (the extractor's
+    own way, SHELL-4), which scores the plate along the foot. Nothing moves and no area changes; the plate's two
+    pieces are still one CAD face, one mid-face, one group."""
     reading, sewn = _read(sx.tee(split=False))
-    assert reading["kind"] == "surface" and len(reading["sheets"]) == 2
-    assert [s["unmet_edges"] for s in reading["sheets"]] == [0, 1]
+    assert reading["kind"] == "surface" and len(reading["sheets"]) == 1 and reading["faces"] == 2
+    (sheet,) = reading["sheets"]
+    assert sheet["faces"] == ["Face_1", "Face_2"] and sheet["unmet_edges"] == 0 and sheet["junction_edges"] == 1
+    assert sheet["free_length_mm"] == pytest.approx(2 * (200 + 100) + (200 + 2 * 40))
+    assert sheet["area_mm2"] == pytest.approx(200 * 100 + 200 * 40)
+    assert sewn.names == ["Face_1", "Face_1", "Face_2"]
+    rec, surface = sm.record(reading, sewn, mm_per_unit=1.0, walls_mm={"Part_1": 2.0})
+    assert rec["surface_faces"] == ["Mid_1", "Mid_1", "Mid_2"] and [m["id"] for m in rec["mids"]] == ["Mid_1", "Mid_2"]
+    assert rec["mids"][0]["area_mm2"] == pytest.approx(200 * 100) and rec["checks"]["connected"] is True
+    from meshpipeline.cad import midsurface as ms
+
+    assert len(ms._faces(surface)) == 3
+
+
+def test_a_fuse_that_would_lose_or_change_a_face_is_not_kept(monkeypatch):
+    """The imprint never changes what the file holds: when the fuse fails, the sewn faces stand and the edge is
+    said as not meeting."""
+    monkeypatch.setattr(sm, "imprint", lambda sewn: None)
+    reading, sewn = _read(sx.tee(split=False))
+    assert len(reading["sheets"]) == 2 and [s["unmet_edges"] for s in reading["sheets"]] == [0, 1]
     rec, _surface = sm.record(reading, sewn, mm_per_unit=1.0, walls_mm={"Part_1": 2.0, "Part_2": 2.0})
     assert rec["checks"]["connected"] is False and sum(c["open_edges"] for c in rec["sewn"]) == 1
+    monkeypatch.undo()
+    assert sm.imprint(sm.sew(sx.plate())) is None            # one face: nothing to fuse
 
 
 def test_classify_is_pure_over_the_measured_sheets():

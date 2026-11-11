@@ -52,6 +52,10 @@ SLIT_SHARE = 1e-4
 #: that does not meet its neighbour (a seam wider than the sew tolerance, a rib that stops short): counted and
 #: placed, never closed.
 NEAR_SEW = 5.0
+#: SURF-2: the fuse that joins a rib to the face its foot lands inside is tried on at most this many faces, and kept
+#: only when the faces' area is the same within this share
+IMPRINT_MAX_FACES = 3000
+IMPRINT_AREA = 1e-6
 #: points read along an edge: for its loop's span, and (the inner ones) for the edges that do not meet
 EDGE_POINTS = 16
 NEAR_SAMPLES = (0.25, 0.5, 0.75)
@@ -163,10 +167,10 @@ def sew(shape, *, junctions: bool = False) -> Sewn | None:
     into one edge too - the same tolerance, the sewing's own non-manifold mode. None when the file holds no face
     with a size."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
-    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopAbs import TopAbs_FACE
     from OCP.TopExp import TopExp
     from OCP.TopoDS import TopoDS
-    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
+    from OCP.TopTools import TopTools_IndexedMapOfShape
 
     from meshpipeline.cad import midsurface as ms
     from meshpipeline.cad.validity_brep import SEW_TOLERANCE, _bbox
@@ -199,6 +203,17 @@ def sew(shape, *, junctions: bool = False) -> Sewn | None:
         names.append(f"Face_{k + 1}")
     if not faces:
         return None
+    return Sewn(faces, names, _sheets(faces), tol, diag)
+
+
+def _sheets(faces: list) -> list[list[int]]:
+    """The faces grouped into sheets: those joined through the edges they share (indices into `faces`)."""
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
+
+    from meshpipeline.cad import midsurface as ms
+
     comp = ms._compound(faces)
     owners = TopTools_IndexedDataMapOfShapeListOfShape()
     TopExp.MapShapesAndAncestors_s(comp, TopAbs_EDGE, TopAbs_FACE, owners)
@@ -209,7 +224,58 @@ def sew(shape, *, junctions: bool = False) -> Sewn | None:
     for i in range(1, owners.Extent() + 1):
         on = sorted({place[fmap.FindIndex(f)] for f in owners.FindFromIndex(i)})
         links += [(on[0], o) for o in on[1:]]
-    return Sewn(faces, names, _components(len(faces), links), tol, diag)
+    return _components(len(faces), links)
+
+
+def imprint(sewn: Sewn) -> Sewn | None:
+    """SURF-2: a rib's foot that lands INSIDE a face has no edge there to sew to. The sewn faces are fused
+    (OpenCASCADE's general fuse, as the mid-surface extractor joins its mid-faces, SHELL-4) with the sew tolerance
+    as its fuzzy value: a face another face's edge lies on is split or scored along it, so the two share that edge.
+    No face is moved, added or dropped: each piece keeps the CAD face it came from (its name), and the area is the
+    same. None when the fuse fails or loses a face - the caller keeps the sewn faces and says the edges do not meet."""
+    from OCP.BOPAlgo import BOPAlgo_Builder
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    from meshpipeline.cad import midsurface as ms
+
+    if len(sewn.faces) < 2 or len(sewn.faces) > IMPRINT_MAX_FACES:
+        return None
+    try:
+        bop = BOPAlgo_Builder()
+        for f in sewn.faces:
+            bop.AddArgument(f)
+        bop.SetRunParallel(False)
+        bop.SetNonDestructive(True)
+        bop.SetFuzzyValue(float(sewn.tol))
+        bop.Perform()
+        if bop.HasErrors():
+            return None
+        index = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(bop.Shape(), TopAbs_FACE, index)
+        faces, names = [], []
+        seen: set[int] = set()
+        for f, name in zip(sewn.faces, sewn.names, strict=True):
+            images = [TopoDS.Face_s(x) for x in bop.Modified(f)] or ([] if bop.IsDeleted(f) else [f])
+            kept = 0
+            for g in images:
+                i = index.FindIndex(g)
+                if i > 0 and i not in seen:
+                    seen.add(i)
+                    faces.append(TopoDS.Face_s(index.FindKey(i)))
+                    names.append(name)
+                    kept += 1
+            if not kept:
+                return None
+        before, after = sum(ms._area(f) for f in sewn.faces), sum(ms._area(f) for f in faces)
+        if abs(after - before) > IMPRINT_AREA * before:
+            return None
+        return Sewn(faces, names, _sheets(faces), sewn.tol, sewn.diag)
+    except Exception as exc:  # noqa: BLE001 - not joined: the edges are said as not meeting
+        logger.info("surface: the faces could not be fused at their junctions (%s)", type(exc).__name__)
+        return None
 
 
 def _unmet(free: list, own: list[int], faces: list, boxes: list, reach: float) -> list[np.ndarray | None]:
@@ -310,7 +376,8 @@ def measure(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
         rows.sort(key=lambda r: (-float(r["length_mm"]), list(r["at_mm"])))
         area_mm2 = area * mm * mm
         places = [p for p in unmet if p is not None]
-        out.append({"part": f"Part_{s + 1}", "faces": [sewn.names[k] for k in ks], "area_mm2": _r(area_mm2),
+        out.append({"part": f"Part_{s + 1}", "faces": list(dict.fromkeys(sewn.names[k] for k in ks)),
+                    "area_mm2": _r(area_mm2),
                     "size_mm": _r(math.sqrt(area_mm2)), "edges": edges_in.get(s, 0), "shared_edges": shared.get(s, 0),
                     "junction_edges": junction.get(s, 0), "free_edges": len(free),
                     "free_length_mm": _r(sum(ms._length(e) for e in free) * mm),
@@ -370,8 +437,16 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False) -> tuple[dict, 
             again = measure(joined, mm_per_unit=mm_per_unit)
             if sum(int(s["unmet_edges"]) for s in again) < unmet and not any(s["closed"] for s in again):
                 sewn, sheets = joined, again
-                kind, why, share = classify(sheets, said_shell=said_shell)
-    reading = {"kind": kind, "why": why, "faces": len(sewn.faces), "sew_tolerance_mm": _r(sewn.tol * mm_per_unit),
+                unmet = sum(int(s["unmet_edges"]) for s in sheets)
+        if unmet:
+            # ... and a foot that lands inside a face is joined by scoring that face along it (imprint)
+            scored = imprint(sewn)
+            if scored is not None:
+                again = measure(scored, mm_per_unit=mm_per_unit)
+                if sum(int(s["unmet_edges"]) for s in again) < unmet and not any(s["closed"] for s in again):
+                    sewn, sheets = scored, again
+        kind, why, share = classify(sheets, said_shell=said_shell)
+    reading = {"kind": kind, "why": why, "faces": len(set(sewn.names)), "sew_tolerance_mm": _r(sewn.tol * mm_per_unit),
                "diag_mm": _r(sewn.diag * mm_per_unit), "open_share": share, "said_shell": bool(said_shell),
                "sheets": sheets}
     return reading, (sewn if kind in ("surface", "gap") else None)
@@ -404,29 +479,35 @@ def record(reading: dict, sewn: Sewn, *, mm_per_unit: float, walls_mm: dict[str,
     from meshpipeline.cad import shell_pairs as sp
 
     mm = float(mm_per_unit)
-    place = {n: k for k, n in enumerate(sewn.names)}
-    bodies, pairs, roles, mids, census, order = [], [], [], [], [], []
-    for s, sheet in enumerate(reading["sheets"]):
+    bodies, pairs, roles, mids, census, order, owner = [], [], [], [], [], [], []
+    for s, (sheet, ks) in enumerate(zip(reading["sheets"], sewn.sheets, strict=True)):
         part = sheet["part"]
         wall = float(walls_mm[part])
         set_ = bool((given or {}).get(part, True))
         pid = f"P{s + 1}"
-        mine = []
-        for name in sheet["faces"]:
-            k = place[name]
+        mine: dict[str, dict] = {}
+        for k in ks:
+            name = sewn.names[k]
+            mid = f"Mid_{int(name.rsplit('_', 1)[-1])}"            # the CAD face's own number: Face_7 -> Mid_7
             width, kind = _face_width_kind(sewn.faces[k], mm)
-            mid = f"Mid_{k + 1}"
-            mine.append(mid)
+            area = ms._area(sewn.faces[k]) * mm * mm
             order.append(k)
+            owner.append(mid)
+            if mid in mine:
+                # another piece of the same CAD face (a face scored where a rib lands on it, SURF-2)
+                mine[mid]["area_mm2"] = _r(mine[mid]["area_mm2"] + area)
+                mine[mid]["width_mm"] = max(mine[mid]["width_mm"], _r(width))
+                continue
             roles.append({"face": name, "kind": kind, "role": sp.PAIRED, "pairs": [pid], "body": part})
-            mids.append({"id": mid, "pair": pid, "body": part, "faces": [name], "thickness_mm": _r(wall),
-                         "thickness_set": set_, "shell": True, "area_mm2": _r(ms._area(sewn.faces[k]) * mm * mm),
-                         "width_mm": _r(width), "kind": kind, "extended": [],
-                         "fidelity": {"max_error_mm": 0.0, "points": 0}})
+            mine[mid] = {"id": mid, "pair": pid, "body": part, "faces": [name], "thickness_mm": _r(wall),
+                         "thickness_set": set_, "shell": True, "area_mm2": _r(area), "width_mm": _r(width),
+                         "kind": kind, "extended": [], "fidelity": {"max_error_mm": 0.0, "points": 0}}
+        mids += list(mine.values())
         pairs.append({"id": pid, "faces": list(sheet["faces"]), "thickness_mm": _r(wall), "thickness_set": set_,
                       "spread": 0.0, "rays": 0, "even": True, "why": "a surface: the wall is the one given",
                       "sheet": f"S{s + 1}", "size_mm": sheet["size_mm"], "width_mm": None,
-                      "ratio": _r(wall / sheet["size_mm"]) if sheet["size_mm"] else None, "shell": True, "mids": mine})
+                      "ratio": _r(wall / sheet["size_mm"]) if sheet["size_mm"] else None, "shell": True,
+                      "mids": list(mine)})
         bodies.append({"body": part, "verdict": "shell", "why": "a surface, meshed as given",
                        "area_mm2": sheet["area_mm2"], "volume_mm3": None, "shell_area_share": 1.0})
         census.append({"body": part, "join": "sewn", "faces": len(sheet["faces"]), "edges": sheet["edges"],
@@ -441,7 +522,7 @@ def record(reading: dict, sewn: Sewn, *, mm_per_unit: float, walls_mm: dict[str,
     rec = {"version": ms.VERSION, "unit": "mm", "ratio": sp.SHELL_RATIO, "diag_mm": reading["diag_mm"],
            "source": "surface", "surface_model": reading,
            "bodies": bodies, "pairs": pairs, "faces": roles, "mids": mids, "sewn": census,
-           "surface_faces": [f"Mid_{k + 1}" for k in order],
+           "surface_faces": owner,
            "checks": {"fidelity": True, "connected": unmet == 0, "faces_accounted": True, "volume": True},
            "fallback_regions": [], "complete": True, "notes": notes, "seconds": 0.0}
     return rec, ms._compound([sewn.faces[k] for k in order])
@@ -459,5 +540,5 @@ def write(rec: dict, surface, out_dir: Path | str) -> None:
     (out / ms.RECORD_FILE).write_text(json.dumps(rec, indent=1, sort_keys=True))
 
 
-__all__ = ["GAP_SHARE", "NEAR_SEW", "Sewn", "classify", "has_solid", "measure", "read", "read_file", "record", "sew",
+__all__ = ["GAP_SHARE", "NEAR_SEW", "Sewn", "classify", "has_solid", "imprint", "measure", "read", "read_file", "record", "sew",
            "write"]
