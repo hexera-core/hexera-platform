@@ -91,7 +91,13 @@ PER_TURN = 4 * plan_rules.CURVE_PER_QUARTER
 #: narrower than it, is held at shell_plan.FEATURE_RATIO times the feature and grown from there
 FEATURE_SIZES = True
 FEATURE_EDGES = True
-FEATURE_FACES = True
+#: (faces: measured on the 80 lab parts, free-meshed narrow faces gave 4,300 more triangles and 3 parts past Nastran's
+#: limits for the same parts inside the list; off until narrow faces of more than four sides are mapped)
+FEATURE_FACES = False
+#: SHMESH-28: the last clean-up (shell_quality.mend) under the user's limits; then relax and mend again, at most
+#: MEND_CYCLES times
+MEND = True
+MEND_CYCLES = 3
 #: ... but not at the corners of a mapped strip (a mapped grid cannot grade), and no strip is left free for one
 FEATURE_AT_STRIPS = False
 FEATURE_UNMAP = False
@@ -845,6 +851,21 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     movable[at] = True
                     if not plane:
                         on_face[at] = tag_of[t]
+        # SHMESH-28: which nodes lie on a CAD edge (and on which) or at a CAD vertex - those the mend never takes off
+        node_kind = np.zeros(len(tags), dtype=np.int8)
+        node_edge = np.full(len(tags), -1, dtype=np.int64)
+        vertex_edges: dict[int, set[int]] = {}
+        if MEND and lim.aims:
+            for _d, c in gmsh.model.getEntities(1):
+                inner, _c, _p = gmsh.model.mesh.getNodes(1, c, includeBoundary=False)
+                at = index[np.asarray(inner, dtype=np.int64)]
+                node_kind[at] = shell_quality.ON_EDGE
+                node_edge[at] = int(c)
+                for _dd, p in gmsh.model.getBoundary([(1, c)], oriented=False):
+                    ends, _c, _p = gmsh.model.mesh.getNodes(0, abs(p))
+                    for v in index[np.asarray(ends, dtype=np.int64)].tolist():
+                        node_kind[v] = shell_quality.AT_VERTEX
+                        vertex_edges.setdefault(int(v), set()).add(int(c))
         if log is not None:
             log.extend(gmsh.logger.get())
     finally:
@@ -935,6 +956,22 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         # edge and cut again inside the limits, or dropped from a free edge
         face_wall = np.array([float(r["wall_mm"]) for r in rows])
         Q, T, q_face, t_face, capped = shell_quality.absorb_caps(xyz, Q, T, q_face, t_face, face_wall, limits=lim)
+    mended = {"merged": 0, "recut": 0}
+    if MEND and lim.aims:
+        # SHMESH-28: what is still past a hard limit or outside one of the user's limits is mended by merging a
+        # node away or cutting two neighbours' outline again; the nodes round a change relax once more, and what
+        # that opens is mended again
+        for _ in range(MEND_CYCLES):
+            Q, T, q_face, t_face, got = shell_quality.mend(
+                xyz, Q, T, q_face, t_face, node_kind, node_edge, vertex_edges, limits=lim,
+                quads_too=kind != "triangles", triangles_too=kind != "quads")
+            if not (got["merged"] or got["recut"]):
+                break
+            mended = {k: mended[k] + got[k] for k in mended}
+            if RELAX_ROUNDS:
+                xyz, again = shell_quality.relax_past(xyz, Q, T, movable, rounds=RELAX_ROUNDS, weights=(64, 1),
+                                                      project=project, limits=lim)
+                relaxed += again
     # keep only the nodes the elements use, renumbered in order
     used = np.unique(np.concatenate([Q.ravel(), T.ravel()]))
     remap = np.full(len(xyz), -1, dtype=np.int64)
@@ -998,6 +1035,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     if requirements:
         # SHMESH-26: every requirement of the user's, asked against delivered, measured on this mesh
         quality["aimed_split"] = aimed
+        quality["mended"] = mended
         if aimed:
             mesh.notes.append(f"{aimed} quad(s) past a limit you asked for were cut into two triangles each, both "
                               "inside it (SHMESH-25).")
