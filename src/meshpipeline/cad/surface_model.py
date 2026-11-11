@@ -557,7 +557,7 @@ def open_places(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
     groups: dict[int, list[int]] = {}
     for n in range(len(found)):
         groups.setdefault(root(n), []).append(n)
-    out = []
+    out: list[dict] = []
     for ns in groups.values():
         es = [found[n][0] for n in ns]
         mid = _edge_points(max(es, key=ms._length), 3)[1]
