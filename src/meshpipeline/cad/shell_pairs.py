@@ -45,18 +45,6 @@ PAIR_DEG = 2.0
 #: printed funnel's drafted wall. Steeper than that, the two faces are two sides of a solid region, not one wall.
 TAPER_DEG = 10.0
 TAPER_MIN_POINTS = 6
-#: SHELL-45, A BEND WHOSE ROUNDS ARE NOT CONCENTRIC IS ONE WALL: a rounded corner drawn with an inside and an
-#: outside radius that do not share a centre (a moulded enclosure's corner, a tank's knuckle) has faces that turn
-#: towards each other and away again - past TAPER_DEG at its ends, square to each other in its middle - while its
-#: wall changes little. Such a pair is a tapered wall too when: its faces turn by at most BEND_DEG wherever they
-#: face each other; somewhere they face each other squarely (within PAIR_DEG), which a wedge's or a chamfer's
-#: faces never do; and its wall stays within BEND_RATIO of its thinnest reading - what a TAPER_DEG taper gains
-#: across the narrowest shell wall, 1 + tan(TAPER_DEG) / SHELL_WIDTH_RATIO. Measured on real parts: the bends
-#: thrown out turn by 17 to 21 degrees with walls 1.14 to 1.54 times their thinnest; a bore beside a flat face,
-#: which is no wall, turns by 25 degrees or more or thickens 1.9 times or more.
-BEND_DEG = 22.5
-#: 1 / SHELL_WIDTH_RATIO (below) walls across: 1.705
-BEND_RATIO = 1.0 + 4.0 * math.tan(math.radians(TAPER_DEG))
 #: SHELL OR SOLID (SHELL-2) is judged per SHEET: the even wall pairs of one thickness (within EVEN_SHARE) whose
 #: faces are the same or meet at a CAD edge - a bent sheet's flanges and bends, a deck plate's pieces between
 #: stiffeners. A sheet is a shell when its thickness is at most SHELL_RATIO of its size L, the square root of
@@ -359,7 +347,7 @@ def tapered_wall(fa, fb, mm: float) -> tuple[bool, float, float, float, str]:
         dot = sign * (na.X() * nb.X() + na.Y() * nb.Y() + na.Z() * nb.Z())
         dists.append(float(proj.LowerDistance()) * mm)
         turned.append(math.degrees(math.acos(max(-1.0, min(1.0, -dot)))))
-        if turned[-1] > BEND_DEG:
+        if turned[-1] > TAPER_DEG:
             # one point turned past the limit settles it: no taper (most pairs the rays find across a
             # corner are two sides of a solid; reading all 49 points of each was half a fan housing's pairing)
             return False, nan, nan, turned[-1], f"the faces are not parallel (they turn by {turned[-1]:.1f} degrees)"
@@ -368,8 +356,7 @@ def tapered_wall(fa, fb, mm: float) -> tuple[bool, float, float, float, str]:
     lo, hi, turn = float(min(dists)), float(max(dists)), float(max(turned))
     if lo <= 0:
         return False, lo, hi, turn, "the faces touch"
-    if turn > TAPER_DEG and not (min(turned) <= PAIR_DEG and hi <= BEND_RATIO * lo):
-        # SHELL-45: past the taper limit, one wall only when it is a bend (see BEND_DEG)
+    if turn > TAPER_DEG:
         return False, lo, hi, turn, f"the faces are not parallel (they turn by up to {turn:.1f} degrees)"
     return True, lo, hi, turn, ""
 
