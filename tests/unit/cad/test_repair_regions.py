@@ -60,7 +60,32 @@ def test_region_box_spans_members_and_face_indices_exclude_edges():
     assert region.face_indices == frozenset({3})
 
 
-def test_unlocated_defect_joins_everything():
-    regions = decompose([_defect("a", at=(0, 0, 0)), _defect("b", at=(100, 0, 0)),
-                         _defect("u", at=(0, 0, 0), located=False)], diagonal_mm=200.0)
-    assert len(regions) == 1
+def test_unlocated_defects_form_their_own_last_region_and_do_not_merge():
+    regions = decompose([_defect("u1", at=(0, 0, 0), located=False),
+                         _defect("a", at=(0, 0, 0)), _defect("b", at=(100, 0, 0)),
+                         _defect("u2", at=(0, 0, 0), located=False, index=7)],
+                        diagonal_mm=200.0)
+    assert [r.fingerprints for r in regions] == [frozenset({"a"}), frozenset({"b"}),
+                                                 frozenset({"u1", "u2"})]
+    assert [r.located for r in regions] == [True, True, False]
+    assert regions[2].bbox_min is None and regions[2].bbox_max is None
+    assert regions[0].bbox_min is not None
+    assert [r.index for r in regions] == [0, 1, 2]
+
+
+def test_no_unlocated_region_when_all_are_located():
+    regions = decompose([_defect("a", at=(0, 0, 0))], diagonal_mm=200.0)
+    assert all(r.located for r in regions)
+
+
+def test_only_unlocated_defects_give_one_unlocated_region():
+    (region,) = decompose([_defect("u", at=(0, 0, 0), located=False)], diagonal_mm=200.0)
+    assert not region.located and region.bbox_min is None
+
+
+def test_result_is_independent_of_input_order():
+    defects = [_defect("c", at=(5.0, 0, 0)), _defect("a", at=(0, 0, 0)),
+               _defect("b", at=(2.5, 0, 0)), _defect("d", at=(100, 0, 0)),
+               _defect("u", at=(0, 0, 0), located=False)]
+    assert decompose(defects, diagonal_mm=200.0) == decompose(list(reversed(defects)),
+                                                              diagonal_mm=200.0)
