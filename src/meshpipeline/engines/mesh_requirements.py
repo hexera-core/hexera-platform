@@ -1,4 +1,4 @@
-# Responsibility: Read the MESH REQUIREMENTS a user wrote in their notes into one closed, typed set - sizes (a global size, the shortest and longest edge, growth, a wall thickness), the element kind, and quality limits (a measure, a shape, a direction, a target, the share of elements allowed past it and the outer limit none may pass) - checked by rules, with everything else the user wrote about the mesh kept as "not applied" and told. One reading serves every route.
+# Responsibility: Read the MESH REQUIREMENTS a user wrote in their notes into one closed, typed set - sizes (a global size, the shortest and longest edge, growth, a wall thickness), the element kind, and quality limits (a measure, a shape, a direction, a target, the share of elements allowed past it and the outer limit none may pass) - checked by rules, with everything else the user wrote about the mesh kept as "not applied" and told. One reading serves every route; the flow fields (a cell count, boundary layers, a size at the walls or in a named place, the flow numbers a y+ needs) are read the same way (NOTE-10).
 # Boundaries: the model only fills declared fields from a quote of the user's own words; every number must be in that quote, every unit is the user's, every direction and range is checked here. It writes no mesher setting. A model that is off, slow, wrong or down never fails a run: its saved reading for these same words, else nothing applied, and said. With no words to read no model is asked and the set is empty. What a route does with the set is the route's (the shell mesh: engines/shell_requirements.py).
 # Collaborates with: contracts/model_inference (the builder route; contracts/decision_cache keys and replays the round), contracts/user_notes (the notes, word for word), cad/part_words.notes_text (the words read), engines/fea_driver.py (asks once per run), engines/shell_requirements.py (limits in force, asked against delivered).
 """THE MESH REQUIREMENTS IN THE USER'S NOTES (docs/RULES.md NOTE-7..9).
@@ -13,12 +13,22 @@ The model answers with ONE `mesh_requirements` call:
      "limits": [{"measure": "warpage", "shape": "quad" | "tria" | "tet" | "cell" | "any", "direction": "max" | "min",
                  "target": 15, "allowed_percent": 1, "outer": 30, "has_outer": true,
                  "quote": "Warpage < 15° (1% between 15° and 30° is acceptable)"}],
-     "other": [{"quote": "...", "kind": "mesh" | "elsewhere" | "not_mesh"}]}
+     "other": [{"quote": "...", "kind": "mesh" | "elsewhere" | "not_mesh"}],
+     # NOTE-10, the flow fields (read on every route):
+     "counts": [{"what": "target" | "ceiling" | "floor", "value": 8000000, "quote": "max 8 million cells"}],
+     "layers": [{"what": "count" | "first_height" | "total_thickness" | "growth" | "y_plus", "value", "unit", "quote"}],
+     "local": [{"where": "the wing", "what": "size" | "finer" | "coarser", "value", "unit", "quote"}],
+     "physics": [{"what": "velocity" | "length" | "kinematic_viscosity" | "reynolds" | "air" | "water", "value",
+                  "unit", "quote"}]}
 
 and the rules turn it into the set every route reads (`requirements`):
 
-    {"sizes": {"global_mm", "min_edge_mm", "max_edge_mm", "growth", "thickness_mm"},      # None where not asked
+    {"sizes": {"global_mm", "min_edge_mm", "max_edge_mm", "growth", "thickness_mm", "near_wall_mm"},  # None: not asked
      "kind": {"shell": "quads" | "triangles" | None, "tria_percent_max": None | p, "order": None | "linear" | "quadratic"},
+     "cells": {"target", "ceiling", "floor"},                                              # a cell or element count
+     "layers": {"count", "first_mm", "total_mm", "growth", "y_plus"},                      # the boundary layers
+     "local": [{"id", "where", "what", "mm", "quote"}],                                    # sizes in one named place
+     "physics": {"velocity_ms", "length_m", "nu_m2s", "reynolds", "fluid"},                # context for a y+, never asked
      "limits": [{"id", "measure", "shape", "op": "<=" | ">=", "target", "share", "outer": None | x, "quote"}],
      "rows": [{"id", "field", "quote", "asked"}]}                                          # one per requirement, in plain words
 
@@ -29,6 +39,9 @@ NOTE-7  the reading: one strict-schema call, every entry checked - the quote is 
         first, the shortest edge is not over the longest. What fails is dropped and told in plain words.
 NOTE-8  what fits no field is "not applied" and told; never silently dropped.
 NOTE-9  no words: no model call and an empty set; no answer and none saved: an empty set, and said.
+NOTE-10 the flow fields of the same reading (a count, layers, a size at the walls, sizes in a place, three more flow
+        measures, the flow's numbers for a y+), checked the same way; every flow engine applies them
+        (engines/cfd_requirements.py), the solid and shell routes say what each is there.
 """
 from __future__ import annotations
 
@@ -47,6 +60,7 @@ logger = logging.getLogger(__name__)
 RULE_READ = "NOTE-7"
 RULE_NOT_APPLIED = "NOTE-8"
 RULE_NOTHING = "NOTE-9"
+RULE_FLOW = "NOTE-10"          # the flow fields of the same reading (a count, layers, a size at the walls or in a place)
 TOOL = "mesh_requirements"
 CONSUMER = "mesh_requirements"
 STEP = "mesh_requirements"
@@ -62,10 +76,25 @@ MAX_CHARS = 8000
 #: millimetres per unit the user may state
 UNITS_MM = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4, "um": 1e-3}
 SIZE_UNITS = (*UNITS_MM, "x_global", "none")
-SIZES = ("global", "min_edge", "max_edge", "growth", "thickness")
+SIZES = ("global", "min_edge", "max_edge", "growth", "thickness", "near_wall")
 KINDS = ("quads_only", "triangles_only", "max_triangle_percent", "linear", "quadratic")
 SHAPES = ("quad", "tria", "tet", "cell", "any")
 OTHER_KINDS = ("mesh", "elsewhere", "not_mesh")
+#: NOTE-10: the flow (CFD) fields - a cell count, the boundary layers, and sizes in a named place
+COUNTS = ("target", "ceiling", "floor")
+LAYERS = ("count", "first_height", "total_thickness", "growth", "y_plus")
+LOCAL = ("size", "finer", "coarser")
+#: the flow's own numbers a y+ needs (context, never a requirement): metres per second per speed unit
+PHYSICS = ("velocity", "length", "kinematic_viscosity", "reynolds", "air", "water")
+SPEEDS = {"m/s": 1.0, "km/h": 1 / 3.6, "mph": 0.44704, "kn": 0.514444, "ft/s": 0.3048}
+#: the route whose meshes are cells of a flow: its words say "cell", and it alone reads the flow fields (the
+#: solid and shell routes have their own steps for a count and for sizes in a place, and no boundary layers)
+FLOW = "flow"
+#: a cell or element count anyone means, a layer count, a y+ and a layer growth
+COUNT_RANGE = (1_000.0, 1e11)
+LAYER_COUNT_MAX = 60
+Y_PLUS_RANGE = (0.01, 1000.0)
+LAYER_GROWTH_RANGE = (1.0, 3.0)
 
 #: THE DECLARED MEASURES: name -> (the directions it can be limited in, (lowest, highest) sane target, unit shown,
 #: plain name). A direction outside these is a contradiction (an aspect ratio "over 5" is no quality limit).
@@ -79,7 +108,13 @@ MEASURES: dict[str, tuple[tuple[str, ...], tuple[float, float], str, str]] = {
     "max_angle": (("max",), (0.0, 180.0), "°", "largest corner angle"),
     "non_orthogonality": (("max",), (0.0, 90.0), "°", "non-orthogonality"),
     "skewness": (("max",), (0.0, 100.0), "", "skewness"),
+    # NOTE-10: the flow measures checkMesh and the CFD meshers hold
+    "determinant": (("min",), (0.0, 1.0), "", "determinant"),
+    "min_volume": (("min",), (0.0, 1.0), " m³", "cell volume"),
+    "orthogonal_quality": (("min",), (0.0, 1.0), "", "orthogonal quality"),
 }
+#: the measures whose sane range includes its ends (a Jacobian of 1, a taper of 0, a volume over 0)
+_ENDS_SANE = ("jacobian", "taper", "min_volume", "determinant")
 #: the share of elements a limit may allow past its target, in percent, at most
 MAX_ALLOWED_PERCENT = 50.0
 #: sizes: an element size anyone means (mm), a growth ratio, a multiple of the global size
@@ -114,27 +149,56 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
 
 - stated_unit: the length unit the notes give ONCE FOR ALL their numbers ("all dimensions in inches", "units: mm"),
   else "none".
-- sizes: element sizes for the WHOLE mesh.
-  global = the element size they want everywhere ("Global Mesh Size = 10 mm", "keep elements around 5 mm", "mesh at
-  0.2 in", "element size 3").
-  min_edge = the shortest element edge / smallest element size allowed; max_edge = the longest / largest allowed.
-  growth = how fast sizes may grow from one element to the next ("growth rate 1.2"): unit "none".
+- sizes: element (or CFD cell) sizes for the WHOLE mesh.
+  global = the element or cell size they want everywhere ("Global Mesh Size = 10 mm", "keep elements around 5 mm",
+  "mesh at 0.2 in", "element size 3", "base cell size 20 mm", "background cells 50 mm", "cells around 5 mm").
+  min_edge = the shortest element edge / smallest element or cell size allowed ("min cell size 0.5 mm"); max_edge =
+  the longest / largest allowed ("max cell size 100 mm", "no cell bigger than 0.1 m", "far-field cells max 0.5 m":
+  the cells far from the body are the largest).
+  near_wall = the cell or element size AT THE WALLS / on the body's surface, for the whole mesh ("surface cells 2 mm",
+  "wall cell size 1 mm", "2 mm cells on the surface"). A first LAYER height is a layer, not this.
+  growth = how fast cell or element sizes may grow from one to the next through the volume ("growth rate 1.2", "cell
+  size ratio at most 1.3"): unit "none". A growth or expansion ratio of the prism LAYERS is a layer, not this.
   thickness = a wall or shell thickness they state for the part ("2 mm sheet", "thickness = 1.5 mm").
   value and unit exactly as written: the unit beside the number (mm, cm, m, in for inches or ", um for microns);
   "x_global" when the number is a multiple of the global size ("0.5 x Global Size", "half the global size" -> 0.5,
   "1.5 times the element size"); "none" when no unit is written beside it. A fraction is its value ("3/8 inch" ->
   0.375, in).
-  A plain size for ONE part or region ("3 mm on the bracket", "2 mm at the holes", "finer near the weld") is NOT a
-  size here: list its quote under other, kind "elsewhere". A total element COUNT ("500k elements") is "elsewhere"
-  too.
+  A size for ONE part, surface or region ("3 mm on the bracket", "2 mm at the holes", "finer near the weld", "refine
+  around the wing to 2 mm") is NOT a size here: it is a local entry. A total element or cell COUNT is a count.
+- counts: a total cell or element count. target ("about 5 million cells", "around 500k elements"), ceiling ("max 8
+  million cells", "under 2M cells", "no more than 300k elements"), floor ("at least 1 million cells"). value is the
+  whole number as written: "8 million" -> 8000000, "500k" -> 500000, "2.5M" -> 2500000, "1e6" -> 1000000.
+- layers: the boundary layers at the walls (prism, inflation or wall layers; CFD). count ("5 prism layers" -> 5, "no
+  boundary layers" -> 0); first_height ("first layer 0.02 mm", "first cell height 1e-5 m", "wall spacing 10 um"),
+  value and unit as written; total_thickness (the whole stack: "layers 3 mm thick in total"); growth (how much each
+  layer grows over the one under it: "layer growth 1.2", "expansion ratio 1.15", "inflation rate 1.2" - unit
+  "none"); y_plus (the y+ they aim at: "y+ around 1" -> 1, "y+ < 5" -> 5, "y+ 30-100" -> 30, the low end of a
+  range) - unit "none".
+- local: a size or a refinement in ONE named place, each with `where` = the place in the user's words ("the wing",
+  "the inlet", "the bracket", "the holes", "the wake", "the gap between the wheels and the floor"). what: size (a
+  size given: "refine around the wing to 2 mm" -> where "the wing", value 2, mm; "wake cells 10 mm" -> where "the
+  wake"), finer ("finer near the inlet", "refine the wake"; value 0, unit "none"), coarser ("coarser at the outlet";
+  value 0, unit "none"). The walls, the surface or the body as a whole are not one place: a size there is near_wall;
+  the far field is max_edge. A number of refinement LEVELS ("4 levels at the surface") is no size: other, "mesh".
+- physics: the flow's numbers, ONLY as written, so a y+ can be turned into a first layer height. velocity ("air at
+  30 m/s", "60 mph", "120 km/h"; unit m/s, km/h, mph, kn, ft/s), length (the reference length: "chord 0.5 m", "car
+  length 4.2 m"; a length unit), kinematic_viscosity ("nu = 1.5e-5 m2/s"; unit m2/s), reynolds ("Re = 3e6"; unit
+  none), air / water (the fluid is named; value 0, unit none). The physics lines are "not_mesh" too: list them under
+  other as well.
 - element_kind: quads_only ("no triangles", "quad mesh only", "all quads"), triangles_only ("tria mesh", "triangles
   only"), max_triangle_percent ("at most 5% trias" -> value 5), linear ("first order", "linear elements", "tet4"),
   quadratic ("second order", "tet10", "mid-side nodes"). value 0 unless it is max_triangle_percent.
-  "shell", "solid", "mid-surface" (what to mesh the part AS) is "elsewhere".
+  "shell", "solid", "mid-surface" (what to mesh the part AS) is "elsewhere". A solver's element name at the head of
+  a quality line ("QUAD4: skew angle > 30", "CTRIA3 min angle 20") only names the elements the limit is for (its
+  shape): it asks for no element kind or order.
 - limits: element QUALITY limits. measure: aspect_ratio; warpage (warp angle, degrees); jacobian (0 to 1); skew
-  (degrees); taper; min_angle and max_angle (corner angles, degrees); non_orthogonality (degrees, CFD cells);
-  skewness (CFD cells). shape: quad, tria, tet or cell when the line names one ("Quad Max. Angle", "tria min angle",
-  "tets"), else any. direction: "max" when the value must stay UNDER the target (<, at most, below, no more than),
+  (degrees); taper; min_angle and max_angle (corner angles, degrees); non_orthogonality (degrees, CFD cells:
+  "non-ortho under 65", "maxNonOrtho 70"); skewness (CFD cells: "max skewness 4"); determinant (CFD cell
+  determinant, 0 to 1: "min determinant 0.001"); min_volume (the smallest CFD cell volume, in cubic metres: "min
+  volume 1e-15"); orthogonal_quality (Fluent's orthogonal quality, 0 to 1: "orthogonal quality above 0.1").
+  shape: quad, tria, tet or cell when the line names one ("Quad Max. Angle", "tria min angle", "tets", "cells"),
+  else any. direction: "max" when the value must stay UNDER the target (<, at most, below, no more than),
   "min" when it must stay OVER it (>, at least, above, no less than) - as the user wrote it, even if it looks wrong.
   target: the limit. Many criteria sheets allow a few elements past the target up to an outer limit: "Warpage < 15°
   (1% between 15° and 30° is acceptable)" -> target 15, allowed_percent 1, outer 30, has_outer true. "5% of elements
@@ -142,12 +206,16 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   allowed_percent 0, has_outer false, outer 0.
   A limit on element LENGTH ("Min. Element Length > 0.5 x Global Size") is a size (min_edge / max_edge), not a limit.
 - other: every other thing they wrote, one entry per line, sentence or clause, never left out. kind "mesh": about
-  the mesh but fitting no field above (a layer count, y+, chordal deviation, elements through the thickness or
-  across a flange, washers round holes, a named solver's own check, a quality measure not in the list, a
-  preference like "quads preferred", a vague wish like "good quality mesh").
-  "elsewhere": ONLY a plain size (or finer / coarser) for one part or region, a total element count, shell or
-  solid. "not_mesh": loads, supports, materials, the analysis, greetings, thanks, "use your defaults", headings,
-  anything that asks nothing of the mesh.
+  the mesh but fitting no field above (chordal deviation, elements through the thickness or across a flange,
+  washers round holes, cells across a gap, a named solver's own check, a quality measure not in the list, a
+  preference like "quads preferred" or "hex-dominant", a vague wish like "good quality mesh" or "resolve the
+  boundary layer well").
+  "elsewhere": ONLY shell or solid (what to mesh the part as). "not_mesh": loads, supports, materials, the
+  analysis, the flow's physics (velocity, fluid, Reynolds number, turbulence model, wall functions, inlet and outlet
+  conditions), the solver or file format the mesh is for ("mesh for Fluent", "OpenFOAM format": the export is chosen
+  at download), greetings, thanks, "use your defaults", headings, anything that asks nothing of the mesh.
+When the notes give the SAME thing twice ("5 layers. Actually 10 layers."), list BOTH entries, in the order written:
+the first one is kept and the second told.
 An empty note, or one with no mesh requirement: empty lists (other still lists what was written)."""
 
 
@@ -158,13 +226,33 @@ def tool() -> dict:
         "description": "The mesh requirements written in the user's notes, each with the quote it was read from.",
         "parameters": {
             "type": "object", "additionalProperties": False,
-            "required": ["stated_unit", "sizes", "element_kind", "limits", "other"],
+            "required": ["stated_unit", "sizes", "counts", "layers", "local", "physics", "element_kind", "limits",
+                         "other"],
             "properties": {
                 "stated_unit": {"type": "string", "enum": [*UNITS_MM, "none"]},
                 "sizes": {"type": "array", "items": {
                     "type": "object", "additionalProperties": False, "required": ["what", "value", "unit", "quote"],
                     "properties": {"what": {"type": "string", "enum": list(SIZES)}, "value": {"type": "number"},
                                    "unit": {"type": "string", "enum": list(SIZE_UNITS)}, "quote": q}}},
+                "counts": {"type": "array", "items": {
+                    "type": "object", "additionalProperties": False, "required": ["what", "value", "quote"],
+                    "properties": {"what": {"type": "string", "enum": list(COUNTS)}, "value": {"type": "number"},
+                                   "quote": q}}},
+                "layers": {"type": "array", "items": {
+                    "type": "object", "additionalProperties": False, "required": ["what", "value", "unit", "quote"],
+                    "properties": {"what": {"type": "string", "enum": list(LAYERS)}, "value": {"type": "number"},
+                                   "unit": {"type": "string", "enum": [*UNITS_MM, "none"]}, "quote": q}}},
+                "physics": {"type": "array", "items": {
+                    "type": "object", "additionalProperties": False, "required": ["what", "value", "unit", "quote"],
+                    "properties": {"what": {"type": "string", "enum": list(PHYSICS)}, "value": {"type": "number"},
+                                   "unit": {"type": "string", "enum": [*UNITS_MM, *SPEEDS, "m2/s", "none"]},
+                                   "quote": q}}},
+                "local": {"type": "array", "items": {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["where", "what", "value", "unit", "quote"],
+                    "properties": {"where": {"type": "string"}, "what": {"type": "string", "enum": list(LOCAL)},
+                                   "value": {"type": "number"},
+                                   "unit": {"type": "string", "enum": [*UNITS_MM, "none"]}, "quote": q}}},
                 "element_kind": {"type": "array", "items": {
                     "type": "object", "additionalProperties": False, "required": ["what", "value", "quote"],
                     "properties": {"what": {"type": "string", "enum": list(KINDS)}, "value": {"type": "number"},
@@ -261,10 +349,40 @@ def _unit_beside(value: float, quote: str) -> str | None:
     return None
 
 
+#: a number in scientific notation as people write it: 1e-5, 2.5E6, 1x10^-5, 1×10-5, 1*10^6
+_SCI = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?|\.\d+)\s*(?:[eE]|[x*]\s*10\s*\^?|\*\*)\s*([-+]?\d+)(?![\w.])")
+#: a count's multiplier written after its number ("8 million", "500k", "2.5M cells", "3 mio")
+_COUNT = re.compile(r"(?<![\w.])(\d+(?:[.,]\d+)?|\.\d+)\s*(k|thousand|m|mio|mn|mln|million|millions|millionen|millones|"
+                    r"millón|millon|milioni|milione|milhões|milhoes|b|bn|billion|万|億)?(?![a-zà-ÿ])", re.I)
+_MULT = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mio": 1e6, "mn": 1e6, "mln": 1e6, "million": 1e6, "millions": 1e6,
+         "millionen": 1e6, "millones": 1e6, "millón": 1e6, "millon": 1e6, "milioni": 1e6, "milione": 1e6,
+         "milhões": 1e6, "milhoes": 1e6, "b": 1e9, "bn": 1e9, "billion": 1e9, "万": 1e4, "億": 1e8}
+
+
+def _sci(text: str) -> list[float]:
+    t = _DASHES.sub("-", str(text or "")).replace("×", "x")
+    out = []
+    for a, e in _SCI.findall(t):
+        try:
+            out.append(float(a) * 10.0 ** int(e))
+        except (ValueError, OverflowError):
+            continue
+    return out
+
+
+def _counts(text: str) -> list[float]:
+    """The counts written in the user's words, with their multipliers and thousands marks ("8 million", "500k",
+    "8,000,000", "2.5M", "1e6")."""
+    t = re.sub(r"(?<=\d)[,' _](?=\d{3}(?!\d))", "", _DASHES.sub("-", str(text or "")))
+    out = [float(n.replace(",", ".")) * _MULT.get(m.casefold(), 1.0) for n, m in _COUNT.findall(t)]
+    return out + _sci(t) + _numbers(t)
+
+
 def _numbers(text: str) -> list[float]:
     t = _DASHES.sub("-", str(text or ""))
     # a fraction is its value ("3/8 inch" is 0.375, and neither 3 nor 8)
     out = [float(a) / float(b) for a, b in _FRACTION.findall(t) if float(b)]
+    out += _sci(t)
     t = _FRACTION.sub(" ", t)
     out += [float(m.replace(",", ".")) for m in _NUM.findall(t)]
     # "4,5" may be the European 4.5 or a list "4, 5": both readings count as written
@@ -363,9 +481,26 @@ def _short(quote: str) -> str:
     return q if len(q) <= 90 else q[:87] + "..."
 
 
-def _size_words(what: str, mm: float, multiple: float | None, unit: str, value: float) -> str:
-    own = "" if unit in ("mm", "x_global", "none") else f" ({_g(value)} {'inch' if unit == 'in' else unit})"
+def _own_unit(unit: str, value: float) -> str:
+    return "" if unit in ("mm", "x_global", "none") else f" ({_g(value)} {'inch' if unit == 'in' else unit})"
+
+
+def _size_words(what: str, mm: float, multiple: float | None, unit: str, value: float, *, cells: bool = False) -> str:
+    own = _own_unit(unit, value)
     tail = f" ({_g(multiple)} x the global size)" if multiple is not None else own
+    if cells:
+        # the flow route's words: a mesh of cells, sized by a cell's edge
+        if what == "global":
+            return f"cell size {_g(mm)} mm{tail}"
+        if what == "min_edge":
+            return f"no cell smaller than {_g(mm)} mm{tail}"
+        if what == "max_edge":
+            return f"no cell larger than {_g(mm)} mm{tail}"
+        if what == "near_wall":
+            return f"cells of {_g(mm)} mm at the walls{tail}"
+        if what == "thickness":
+            return f"wall thickness {_g(mm)} mm{tail}"
+        return f"cell sizes grow by at most {_g(value)} from one cell to the next"
     if what == "global":
         return f"global element size {_g(mm)} mm{tail}"
     if what == "min_edge":
@@ -374,29 +509,77 @@ def _size_words(what: str, mm: float, multiple: float | None, unit: str, value: 
         return f"longest element edge under {_g(mm)} mm{tail}"
     if what == "thickness":
         return f"wall thickness {_g(mm)} mm{tail}"
+    if what == "near_wall":
+        return f"elements of {_g(mm)} mm at the walls{tail}"
     return f"sizes grow by at most {_g(value)} from one element to the next"
 
 
-def limit_words(lim: Mapping) -> str:
-    """One limit in plain words: "warpage under 15° (up to 1% of elements between 15° and 30°)"."""
+def _count_words(what: str, n: float, *, cells: bool = True) -> str:
+    said, noun = _count(n), "cells" if cells else "elements"
+    return {"target": f"about {said} {noun}", "ceiling": f"at most {said} {noun}",
+            "floor": f"at least {said} {noun}"}[what]
+
+
+def _count(n: float) -> str:
+    """A cell count as people say it: 8 million, 2.5 million, 500,000."""
+    n = float(n)
+    if n >= 1e6:
+        return f"{_g(n / 1e6)} million"
+    return f"{int(round(n)):,}"
+
+
+def _layer_words(what: str, value: float, mm: float | None = None, unit: str = "none") -> str:
+    if what == "count":
+        return "no boundary layers" if int(value) == 0 else (
+            f"{int(value)} boundary layer{'' if int(value) == 1 else 's'}")
+    if what == "first_height":
+        return f"first boundary layer {_g(mm or 0.0)} mm thick{_own_unit(unit, value)}"
+    if what == "total_thickness":
+        return f"boundary layers {_g(mm or 0.0)} mm thick in all{_own_unit(unit, value)}"
+    if what == "growth":
+        return f"each boundary layer at most {_g(value)} times the one under it"
+    return f"y+ of about {_g(value)} at the walls"
+
+
+def _local_words(where: str, what: str, mm: float | None, unit: str = "none", value: float = 0.0, *,
+                 cells: bool = True) -> str:
+    noun = "cells" if cells else "elements"
+    at = "in" if re.search(r"\b(wake|gap|region|zone|box|volume)\b", where, re.I) else "at"
+    if what == "size":
+        return f"{noun} of {_g(mm or 0.0)} mm {at} {where}{_own_unit(unit, value)}"
+    return f"{'finer' if what == 'finer' else 'coarser'} {noun} {at} {where}"
+
+
+def limit_words(lim: Mapping, *, cells: bool = False) -> str:
+    """One limit in plain words: "warpage under 15° (up to 1% of elements between 15° and 30°)" ("of cells" on the
+    flow route)."""
     _d, _r, unit, name = MEASURES[str(lim["measure"])]
     shape = {"quad": "quad ", "tria": "triangle ", "tet": "tetrahedron ", "cell": "cell "}.get(str(lim.get("shape")), "")
+    if name.startswith("cell ") and shape == "cell ":
+        shape = ""
+    of = "cells" if cells else "elements"
     side = "under" if lim["op"] == "<=" else "over"
     said = f"{shape}{name} {side} {_g(lim['target'])}{unit}"
     share, outer = float(lim.get("share") or 0.0), lim.get("outer")
     if share > 0 and outer is not None:
         lo, hi = sorted((float(lim["target"]), float(outer)))
-        said += f" (up to {_g(100 * share)}% of elements between {_g(lo)}{unit} and {_g(hi)}{unit})"
+        said += f" (up to {_g(100 * share)}% of {of} between {_g(lo)}{unit} and {_g(hi)}{unit})"
     elif share > 0:
-        said += f" (up to {_g(100 * share)}% of elements may be past it)"
+        said += f" (up to {_g(100 * share)}% of {of} may be past it)"
     return said
 
 
 def empty() -> dict:
-    """The set with nothing asked (NOTE-9): every route runs exactly as it does with no notes."""
+    """The set with nothing asked (NOTE-9): every route runs exactly as it does with no notes. The flow fields
+    (NOTE-10: `cells`, `layers`, `local`, the size at the walls) are filled on the flow route only."""
     return {"sizes": {"global_mm": None, "min_edge_mm": None, "max_edge_mm": None, "growth": None,
-                      "thickness_mm": None},
+                      "thickness_mm": None, "near_wall_mm": None},
             "kind": {"shell": None, "tria_percent_max": None, "order": None},
+            "cells": {"target": None, "ceiling": None, "floor": None},
+            "layers": {"count": None, "first_mm": None, "total_mm": None, "growth": None, "y_plus": None},
+            "local": [],
+            # context for a y+, never a requirement (is_empty does not read it)
+            "physics": {"velocity_ms": None, "length_m": None, "nu_m2s": None, "reynolds": None, "fluid": None},
             "limits": [], "rows": []}
 
 
@@ -404,16 +587,178 @@ def is_empty(req: Mapping | None) -> bool:
     """Whether a requirement set asks for nothing a route applies (None, {} or empty())."""
     r = req or {}
     return (not any(v is not None for v in (r.get("sizes") or {}).values())
-            and not any(v is not None for v in (r.get("kind") or {}).values()) and not r.get("limits"))
+            and not any(v is not None for v in (r.get("kind") or {}).values()) and not r.get("limits")
+            and not any(v is not None for v in (r.get("cells") or {}).values())
+            and not any(v is not None for v in (r.get("layers") or {}).values()) and not r.get("local"))
 
 
-def check(arguments: str, notes: str) -> tuple[dict, list[str], list[str]]:
+def check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str], list[str]]:
     """(the requirement set, what was dropped and why in plain words, what the user wrote about the mesh that
-    fits no field). Never raises: an answer of any other shape gives an empty set, said."""
+    fits no field). Never raises: an answer of any other shape gives an empty set, said. `route` "flow" fills the
+    flow fields and says "cells" (NOTE-10); any other route keeps its own steps for a count and for sizes in a
+    place, and a boundary layer or a size at the walls is told as not applied there."""
     try:
-        return _check(arguments, notes)
+        return _check(arguments, notes, route=str(route or ""))
     except Exception as exc:  # noqa: BLE001 - a malformed answer is the model's, never the run's
         return empty(), [f"the reading did not fit the schema ({type(exc).__name__}): nothing applied"], []
+
+
+def _length_mm(value: float, unit: str, quote: str, stated: str) -> tuple[float, str]:
+    """(millimetres, the unit used) for a length the user wrote: the unit beside the number in their words, else
+    the model's, else the notes' once for all, else millimetres ("none": said)."""
+    used = _unit_beside(value, quote) or (unit if unit in UNITS_MM else stated)
+    return value * UNITS_MM[used if used in UNITS_MM else "mm"], used if used in UNITS_MM else "none"
+
+
+def _flow_fields(raw: Mapping, out: dict, quoted, row, dropped: list[str], stated: str, *, cells: bool) -> None:
+    """NOTE-10: the flow fields of the reading, checked like the sizes - the quote is the user's, every number is in
+    it, the unit is theirs, ranges are sane, the first of two is kept, contradictions are told."""
+    # a cell count: a target, a ceiling, a floor
+    counts: dict[str, tuple[float, str]] = {}
+    for e in _rows_of(raw, "counts"):
+        got = quoted(e)
+        if got is None:
+            continue
+        quote = got[0]
+        what, value, tag = str(e.get("what") or ""), _f(e.get("value")), f'"{_short(quote)}"'
+        if what not in COUNTS:
+            dropped.append(f"{tag}: not a cell count this step reads: not applied")
+        elif value is None or not _in_quote(value, _counts(quote)):
+            dropped.append(f"{tag}: the count {e.get('value')!r} is not in those words: not applied")
+        elif not (COUNT_RANGE[0] <= value <= COUNT_RANGE[1]):
+            dropped.append(f"{tag}: {_count(value)} cells is not a mesh size anyone means: not applied")
+        elif what in counts:
+            dropped.append(f"{tag}: a second cell count {what} - the first one written is kept")
+        else:
+            counts[what] = (float(round(value)), quote)
+    lo, hi, mid = (counts.get(k, (None, ""))[0] for k in ("floor", "ceiling", "target"))
+    if lo is not None and hi is not None and lo >= hi:
+        dropped.append(f"at least {_count(lo)} and at most {_count(hi)} cells cannot both hold: neither is applied")
+        counts.pop("floor"), counts.pop("ceiling")
+        lo = hi = None
+    if mid is not None and ((hi is not None and mid > hi) or (lo is not None and mid < lo)):
+        dropped.append(f"about {_count(mid)} cells is outside the range the notes give: the range is applied")
+        counts.pop("target")
+    for what in COUNTS:
+        if what in counts:
+            out["cells"][what] = counts[what][0]
+            row(f"cells:{what}", counts[what][1], _count_words(what, counts[what][0], cells=cells))
+
+    # the boundary layers
+    lay: dict[str, tuple[float, float | None, str, str]] = {}
+    for e in _rows_of(raw, "layers"):
+        got = quoted(e)
+        if got is None:
+            continue
+        quote, numbers = got
+        what, value, tag = str(e.get("what") or ""), _f(e.get("value")), f'"{_short(quote)}"'
+        unit = str(e.get("unit") or "none").strip().lower()
+        if what not in LAYERS:
+            dropped.append(f"{tag}: not a boundary-layer setting this step reads: not applied")
+            continue
+        if value is None or value < 0 or not (_in_quote(value, numbers) or (what == "count" and value == 0
+                                                                          and re.search(r"\b(no|without|zero)\b",
+                                                                                        quote, re.I))):
+            dropped.append(f"{tag}: the number {e.get('value')!r} is not in those words: not applied")
+            continue
+        if what in lay:
+            dropped.append(f"{tag}: a second {_LAYER_NAMES[what]} - the first one written is kept")
+            continue
+        mm = None
+        if what == "count":
+            if value != int(value) or value > LAYER_COUNT_MAX:
+                dropped.append(f"{tag}: {_g(value)} is not a layer count anyone means: not applied")
+                continue
+        elif what in ("first_height", "total_thickness"):
+            mm, unit = _length_mm(value, unit, quote, stated)
+            if not (SIZE_RANGE_MM[0] <= mm <= SIZE_RANGE_MM[1]) or value <= 0:
+                dropped.append(f"{tag}: {_g(mm)} mm is not a layer thickness anyone means: not applied")
+                continue
+        elif what == "growth":
+            if not (LAYER_GROWTH_RANGE[0] < value <= LAYER_GROWTH_RANGE[1]):
+                dropped.append(f"{tag}: a layer growth of {_g(value)} is not between {_g(LAYER_GROWTH_RANGE[0])} and "
+                               f"{_g(LAYER_GROWTH_RANGE[1])}: not applied")
+                continue
+        elif not (Y_PLUS_RANGE[0] <= value <= Y_PLUS_RANGE[1]):
+            dropped.append(f"{tag}: a y+ of {_g(value)} is not one anyone aims at: not applied")
+            continue
+        lay[what] = (float(value), mm, unit, quote)
+    if "count" in lay and int(lay["count"][0]) == 0 and len(lay) > 1:
+        dropped.append("the notes ask for no boundary layers and also set them: no layers is kept, the rest is not "
+                       "applied")
+        lay = {"count": lay["count"]}
+    first_mm = lay["first_height"][1] if "first_height" in lay else None
+    total_mm = lay["total_thickness"][1] if "total_thickness" in lay else None
+    if first_mm is not None and total_mm is not None and first_mm >= total_mm:
+        dropped.append(f"the first layer ({_g(first_mm)} mm) is not thinner than the whole stack ({_g(total_mm)} mm): "
+                       "the stack's thickness is not applied")
+        lay.pop("total_thickness")
+    keys = {"count": "count", "first_height": "first_mm", "total_thickness": "total_mm", "growth": "growth",
+            "y_plus": "y_plus"}
+    for what in LAYERS:
+        if what not in lay:
+            continue
+        value, mm, unit, quote = lay[what]
+        out["layers"][keys[what]] = int(value) if what == "count" else float(mm if mm is not None else value)
+        words = _layer_words(what, value, mm, unit)
+        if what in ("first_height", "total_thickness") and unit == "none":
+            words += " (no unit was written: read as millimetres)"
+        row(f"layers:{what}", quote, words)
+
+    # a size or a refinement in one named place
+    for e in _rows_of(raw, "local"):
+        got = quoted(e)
+        if got is None:
+            continue
+        quote, numbers = got
+        where = " ".join(str(e.get("where") or "").split())[:120]
+        what, value, tag = str(e.get("what") or ""), _f(e.get("value")), f'"{_short(quote)}"'
+        unit = str(e.get("unit") or "none").strip().lower()
+        if not where or what not in LOCAL:
+            dropped.append(f"{tag}: no place named for it: not applied")
+            continue
+        mm = None
+        if what == "size":
+            if value is None or value <= 0 or not _in_quote(value, numbers):
+                dropped.append(f"{tag}: the number {e.get('value')!r} is not in those words: not applied")
+                continue
+            mm, unit = _length_mm(value, unit, quote, stated)
+            if not (SIZE_RANGE_MM[0] <= mm <= SIZE_RANGE_MM[1]):
+                dropped.append(f"{tag}: {_g(mm)} mm is not a cell size anyone means: not applied")
+                continue
+        words = _local_words(where, what, mm, unit, value or 0.0, cells=cells)
+        if what == "size" and unit == "none":
+            words += " (no unit was written: read as millimetres)"
+        rid = row("local", quote, words)
+        out["local"].append({"id": rid, "where": where, "what": what, "mm": mm, "quote": quote})
+
+    # the flow's own numbers (a y+ needs them): kept only as written, never a row
+    ph = out["physics"]
+    for e in _rows_of(raw, "physics"):
+        quote = " ".join(str(e.get("quote") or "").split())[:400]
+        what, value = str(e.get("what") or ""), _f(e.get("value"))
+        unit = str(e.get("unit") or "none").strip().lower()
+        got = quoted(e) if quote else None
+        if got is None:
+            continue
+        if what in ("air", "water"):
+            ph["fluid"] = ph["fluid"] or what
+            continue
+        if value is None or value <= 0 or not _in_quote(value, got[1] + (_counts(got[0]) if what == "reynolds" else [])):
+            continue
+        if what == "velocity" and unit in SPEEDS and ph["velocity_ms"] is None:
+            ph["velocity_ms"] = float(value) * SPEEDS[unit]
+        elif what == "length" and ph["length_m"] is None:
+            ph["length_m"] = _length_mm(value, unit, got[0], stated)[0] / 1000.0
+        elif what == "kinematic_viscosity" and unit in ("m2/s", "none") and 1e-8 < value < 1e-2 \
+                and ph["nu_m2s"] is None:
+            ph["nu_m2s"] = float(value)
+        elif what == "reynolds" and ph["reynolds"] is None and value >= 1.0:
+            ph["reynolds"] = float(value)
+
+
+_LAYER_NAMES = {"count": "layer count", "first_height": "first layer height", "total_thickness": "layer stack "
+                "thickness", "growth": "layer growth", "y_plus": "y+"}
 
 
 def _rows_of(raw: Mapping, key: str) -> list[dict]:
@@ -425,13 +770,14 @@ def _rows_of(raw: Mapping, key: str) -> list[dict]:
     return [x for x in v if isinstance(x, dict)]
 
 
-def _check(arguments: str, notes: str) -> tuple[dict, list[str], list[str]]:
+def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str], list[str]]:
     try:
         raw = json.loads(arguments or "")
     except ValueError:
         return empty(), ["the reading was not JSON: nothing applied"], []
     if not isinstance(raw, dict):
         return empty(), ["the reading was not an object: nothing applied"], []
+    flow = route == FLOW
     said, squashed = _norm(notes), _squash(notes)
     out = empty()
     dropped: list[str] = []
@@ -473,7 +819,7 @@ def _check(arguments: str, notes: str) -> tuple[dict, list[str], list[str]]:
             dropped.append(f"{tag}: the number {e.get('value')!r} is not in those words: not applied")
             continue
         key = {"global": "global_mm", "min_edge": "min_edge_mm", "max_edge": "max_edge_mm", "growth": "growth",
-               "thickness": "thickness_mm"}[what]
+               "thickness": "thickness_mm", "near_wall": "near_wall_mm"}[what]
         if out["sizes"][key] is not None or any(p[0] == what for p in pending):
             dropped.append(f"{tag}: a second {what.replace('_', ' ')} - the first one written is kept")
             continue
@@ -483,7 +829,7 @@ def _check(arguments: str, notes: str) -> tuple[dict, list[str], list[str]]:
                                f"{_g(GROWTH_RANGE[1])}: not applied")
                 continue
             out["sizes"]["growth"] = float(value)
-            row("growth", quote, _size_words("growth", 0.0, None, "none", value))
+            row("growth", quote, _size_words("growth", 0.0, None, "none", value, cells=flow))
             continue
         multiple = None
         if unit == "x_global":
@@ -528,10 +874,13 @@ def _check(arguments: str, notes: str) -> tuple[dict, list[str], list[str]]:
     for what, mm, multiple, unit, value, quote in pending:
         if what in bad:
             continue
-        words = _size_words(what, mm, multiple, unit, value)
+        words = _size_words(what, mm, multiple, unit, value, cells=flow)
         if unit == "none":
             words += " (no unit was written: read as millimetres)"
         row(what, quote, words)
+    # NOTE-10: the count, the boundary layers and the sizes in a place - read the same on every route (the route
+    # that applies the set says what it does with each, and what it cannot)
+    _flow_fields(raw, out, quoted, row, dropped, stated, cells=flow)
 
     # the element kind
     for e in _rows_of(raw, "element_kind"):
@@ -589,11 +938,13 @@ def _check(arguments: str, notes: str) -> tuple[dict, list[str], list[str]]:
         if target is None or not _in_quote(target, numbers):
             dropped.append(f"{tag}: the limit {e.get('target')!r} is not in those words: not applied")
             continue
+        if measure == "min_volume" and re.search(r"mm\s*(?:\^\s*3|³|3\b)", quote, re.I):
+            target = target * 1e-9           # the user's cubic millimetres, in the cubic metres the meshers hold
         if direction not in directions:
             dropped.append(f"{tag}: {name} can only be held {'under' if directions[0] == 'max' else 'over'} a value, "
                            f"and this asks for it {'under' if direction == 'max' else 'over'} one: not applied")
             continue
-        if not (low <= target <= high) or (target in (low, high) and measure not in ("jacobian", "taper")
+        if not (low <= target <= high) or (target in (low, high) and measure not in _ENDS_SANE
                                            and not (measure == "aspect_ratio" and target > low)):
             dropped.append(f"{tag}: {_g(target)}{unit} is not a {name} limit anyone means: not applied")
             continue
@@ -624,15 +975,19 @@ def _check(arguments: str, notes: str) -> tuple[dict, list[str], list[str]]:
         seen.add((measure, shape, direction))
         lim = {"measure": measure, "shape": shape, "op": "<=" if direction == "max" else ">=", "target": float(target),
                "share": float(share), "outer": outer, "quote": quote}
-        lim["id"] = row(f"limit:{measure}", quote, limit_words(lim))
+        lim["id"] = row(f"limit:{measure}", quote, limit_words(lim, cells=flow))
         out["limits"].append(lim)
 
     # what fits no field (NOTE-8): told, never silently dropped
     not_applied: list[str] = []
+    typed = list(covered)                # the quotes read into a field: a line told "not applied" is what is left
     for e in _rows_of(raw, "other"):
         quote = " ".join(str(e.get("quote") or "").split())[:400]
         covered.append(quote)
         if str(e.get("kind")) == "mesh" and _quoted(quote, said, squashed) and quote not in not_applied:
+            over = [t for t in typed if t and (_squash(t) in _squash(quote) or _squash(quote) in _squash(t))]
+            if over and not _left_over(quote, over):
+                continue                 # every mesh word of it was read into a field already
             not_applied.append(quote)
     # NOTE-8's floor: words about the mesh that the reading listed NOWHERE are told too, as the user wrote them
     for piece in _left_over(notes, covered):
@@ -728,7 +1083,8 @@ def decisions(sec: Mapping | None, stage: str = "notes") -> list[dict]:
     req = sec.get("requirements") or {}
     out = [{"stage": stage, "decided": "mesh requirements read", "value": len(req.get("rows") or []),
             "rule": RULE_READ, "source": SOURCE_AI_LEVER,
-            "inputs": {"sizes": req.get("sizes"), "kind": req.get("kind"),
+            "inputs": {"sizes": req.get("sizes"), "kind": req.get("kind"), "cells": req.get("cells"),
+                       "layers": req.get("layers"), "local": req.get("local"),
                        "limits": [{k: lim.get(k) for k in ("measure", "shape", "op", "target", "share", "outer", "quote")}
                                   for lim in req.get("limits") or []],
                        "dropped": sec.get("dropped") or [], "key": sec.get("key"), "from": sec.get("source")},
@@ -795,6 +1151,29 @@ def finish_report(rows: list[dict], n: int, definitions: str) -> dict:
             int(r.get("outside") or 0) - int(math.floor(float(r.get("share") or 0.0) * n + 1e-9)))
     return {"rows": rows, "met": sum(1 for r in rows if r["met"] is True),
             "missed": sum(1 for r in rows if r["met"] is False), "definitions": definitions}
+
+
+#: NOTE-10: the fields the flow route reads that a solid or a shell mesh answers on its own terms
+FLOW_FIELDS = ("near_wall", "local", "cells:target", "cells:ceiling", "cells:floor", *(f"layers:{w}" for w in LAYERS))
+
+
+def elements_row(field: str, req: Mapping, n: int, kind: str) -> dict | None:
+    """A flow field (FLOW_FIELDS) on a solid or a shell mesh of `n` elements: a count is measured against what
+    was asked; a size in a place is the sizes-per-part step's; boundary layers and a size at the walls are not
+    built on this kind of mesh - told. None for any other field."""
+    if field.startswith("cells:"):
+        asked = float(((req.get("cells") or {}).get(field.split(":", 1)[1])) or 0.0)
+        what = field.split(":", 1)[1]
+        met = (n <= asked) if what == "ceiling" else (n >= asked) if what == "floor" else None
+        return {"applied": True, "measured": int(n), "met": met, "delivered": f"the mesh has {n:,} elements"}
+    if field == "local":
+        return {"applied": True, "met": None,
+                "delivered": "sizes in a named place are set part by part (see the lines about your parts)"}
+    if field == "near_wall" or field.startswith("layers:"):
+        return {"applied": False, "met": None,
+                "delivered": f"not applied - a {kind} mesh has no boundary layers or wall cells; they are a "
+                             "CFD setting"}
+    return None
 
 
 def line(row: Mapping) -> str:
@@ -922,7 +1301,7 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
         args = _args_of(rr) if rr is not None else None
         if args is None:
             return None
-        req, dropped, not_applied = check(args, notes)
+        req, dropped, not_applied = check(args, notes, route)
         return section("used", requirements=req, dropped=dropped, not_applied=not_applied, key=key, source=source)
 
     def without(status: str, why: str) -> dict:

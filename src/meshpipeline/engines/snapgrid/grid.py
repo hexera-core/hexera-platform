@@ -55,6 +55,7 @@ class GridPlan:
     spread_cells: int = 0               # cells across each heat-producing part's width
     opening_cells: int = 0              # cells across each fan, vent and grille
     air_aspect: float = 0.0             # longest/shortest side of a cell in gaps and heated bands
+    background_size: float = 0.0        # CFDREQ-2: the user's background cell, metres (0: background_cells)
 
     def problems(self) -> list[str]:
         out = []
