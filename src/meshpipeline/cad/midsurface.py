@@ -3036,7 +3036,7 @@ def close_strips(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuz
     if not strips:
         return None
     faces = [TopoDS.Face_s(fmap.FindKey(k)) for k in range(1, fmap.Extent() + 1)]
-    out, imgs = sew(faces + [f for _i, f in strips], fuzzy)
+    out, imgs = _sew_safe(faces + [f for _i, f in strips], fuzzy)
     new_images: list[list] = [[] for _ in mine]
     for k in range(1, len(faces) + 1):
         if k in owner:
@@ -3275,7 +3275,7 @@ def close_gaps(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy
     if not strips:
         return None
     order = [faces[k] for k in sorted(faces)]
-    out, imgs = sew(order + [f for _i, _j, f in strips], fuzzy)
+    out, imgs = _sew_safe(order + [f for _i, _j, f in strips], fuzzy)
     new_images: list[list] = [[] for _ in mine]
     for pos, k in enumerate(sorted(faces)):
         new_images[owner[k]] += list(imgs[pos])
@@ -3686,7 +3686,7 @@ def carry_on(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy: 
     if not strips:
         return None
     order = [faces[k] for k in sorted(faces)]
-    out, imgs = sew(order + [f for _i, _j, f in strips], fuzzy)
+    out, imgs = _sew_safe(order + [f for _i, _j, f in strips], fuzzy)
     new_images: list[list] = [[] for _ in mine]
     for pos, k in enumerate(sorted(faces)):
         new_images[owner[k]] += list(imgs[pos])
@@ -3695,30 +3695,24 @@ def carry_on(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy: 
     return out, new_images, strips
 
 
-#: SHELL-34, A STRAIGHT JOIN THE GENERAL FUSE CANNOT SEW IS SEWN ANOTHER WAY: OpenCASCADE's general fuse fails outright on
-#: some sets of mid-faces (two cyclone parts whose free-form walls the walls round found: fr018, fr019), and the
-#: straight join then handed back its mid-faces UNSEWN - every edge where two of them meet open (fr018: 53, fr019:
-#: 13), with the general join past its deadline too. Now the fuse is tried again at SEW_AGAIN_FACTORS times the
-#: sewing tolerance (at most a tenth of the thinnest wall: SHELL-12's limit is half), and then the faces are sewn
-#: edge to edge (BRepBuilderAPI_Sewing at the largest of those tolerances: it joins edges that lie on each other and
-#: cuts no face, so a T stays open for the passes after it). The record says which.
+#: SHELL-34, A JOIN THE GENERAL FUSE CANNOT SEW IS SEWN EDGE TO EDGE: OpenCASCADE's general fuse fails outright on some
+#: sets of mid-faces (two cyclone parts whose free-form walls the walls round found: fr018, fr019), and the straight
+#: join then handed back its mid-faces UNSEWN - every edge where two of them meet open (fr018: 53, fr019: 13) - and
+#: every pass after it (SHELL-13, 22, 30) failed on the same fuse. Now, where the fuse fails, the faces are sewn edge
+#: to edge (BRepBuilderAPI_Sewing at SEW_AGAIN_SHARE of the thinnest wall's sewing tolerance: it joins edges that lie
+#: on each other and cuts no face, so a T stays open for the passes, whose strips are sewn the same way). The fuse
+#: tried again 2 and 10 times wider first failed as well, at about 80 s a try on fr019, so it is not tried again.
 SEW_AGAIN = True
-SEW_AGAIN_FACTORS = (2.0, 10.0)
+SEW_AGAIN_SHARE = 10.0
 
 
 def _sew_again(faces: list, fuzzy: float):
-    """SHELL-34: (fused, images, how) for faces the general fuse would not sew at `fuzzy`, or None."""
+    """SHELL-34: (fused, images) for faces the general fuse would not sew at `fuzzy` - sewn edge to edge - or None."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
     from OCP.TopAbs import TopAbs_FACE
     from OCP.TopoDS import TopoDS
 
-    for factor in SEW_AGAIN_FACTORS:
-        try:
-            fused, images = sew(faces, factor * fuzzy)
-            return fused, images, f"by the general fuse at {factor:g} times its tolerance"
-        except ValueError:
-            continue
-    sw = BRepBuilderAPI_Sewing(max(SEW_AGAIN_FACTORS) * fuzzy)
+    sw = BRepBuilderAPI_Sewing(SEW_AGAIN_SHARE * fuzzy)
     for f in faces:
         sw.Add(f)
     sw.Perform()
@@ -3730,7 +3724,27 @@ def _sew_again(faces: list, fuzzy: float):
         if omap.FindIndex(g) <= 0:
             return None
         images.append([g])
-    return out, images, "edge to edge"
+    return out, images
+
+
+#: SHELL-34: the general fuse failed on this body's joined surface already: its passes sew edge to edge straight away
+#: (each failed fuse cost about 36 s on fr019, six passes). Reset for every body (extract).
+_FUSE_FAILED = [False]
+
+
+def _sew_safe(faces: list, fuzzy: float):
+    """sew, or - where the general fuse fails - SHELL-34's sewing edge to edge (ValueError when that fails too)."""
+    if not (SEW_AGAIN and _FUSE_FAILED[0]):
+        try:
+            return sew(faces, fuzzy)
+        except ValueError:
+            if not SEW_AGAIN:
+                raise
+            _FUSE_FAILED[0] = True
+    got = _sew_again(faces, fuzzy)
+    if got is None:
+        raise ValueError("the mid-faces could not be sewn")
+    return got
 
 
 def _join_straight(mine: list[_Mid], solid: _Solid, fuzzy: float, notes: list[str], body: str):
@@ -3754,11 +3768,12 @@ def _join_straight(mine: list[_Mid], solid: _Solid, fuzzy: float, notes: list[st
         fused, images = sew([m.face for m in mine] + [f for _i, _j, f in strips], fuzzy)
     except ValueError as exc:
         got = _sew_again([m.face for m in mine] + [f for _i, _j, f in strips], fuzzy) if SEW_AGAIN else None
+        _FUSE_FAILED[0] = got is not None
         if got is None:
             notes.append(f"{body}: {exc}.")
             return _compound([m.face for m in mine]), [[m.face] for m in mine]
-        fused, images, how = got
-        notes.append(f"{body}: the mid-faces were sewn {how} (SHELL-34).")
+        fused, images = got
+        notes.append(f"{body}: the mid-faces were sewn edge to edge (SHELL-34).")
     out = [list(images[i]) for i in range(len(mine))]
     for n, (i, _j, _f) in enumerate(strips):
         out[i] += images[len(mine) + n]
@@ -4876,6 +4891,7 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
         # slotted sheets of the corpus) and the general join (grow, cut, keep: any surfaces - a tube on a plate,
         # a cylinder into a cone, a relief-cut flange). The one leaving fewer open edges is kept; on a tie, the
         # straight one. Deterministic: each is.
+        _FUSE_FAILED[0] = False
         straight = _join_straight(mine, solid, fuzzy, notes, body_names[b])
         census = census_of(*straight)
         chosen, method, ext_straight = straight, "straight", [list(m.extended) for m in mine]
@@ -4960,6 +4976,8 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
                 for m, ext in zip(mine, ext_straight, strict=True):
                     m.extended = ext
         fused, images = chosen
+        if method == "general":
+            _FUSE_FAILED[0] = False         # SHELL-34's shortcut is for the straight join's surface only
         # SHELL-35: the passes that close what the joins left open, square corners first
         fused, images, census = _closing_passes(fused, images, census, mine, solid, fuzzy, mm=mm, census_of=census_of,
                                                 notes=notes, body=body_names[b], t_min=t_min, clock=clock)

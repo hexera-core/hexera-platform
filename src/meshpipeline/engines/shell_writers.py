@@ -92,6 +92,18 @@ class ShellPrepared:
         return int(len(self.mesh.xyz))
 
 
+def ascii_text(text: str) -> str:
+    """The deck's text as the solvers read it, ASCII: a letter with an accent written as its plain letter, anything
+    else not ASCII as "_". Two census files whose names held an a-umlaut lost their shell mesh whole
+    (UnicodeEncodeError) for the deck's comment line naming the source file."""
+    import unicodedata
+
+    if text.isascii():
+        return text
+    plain = unicodedata.normalize("NFKD", text)
+    return "".join(c if c.isascii() else ("" if unicodedata.combining(c) else "_") for c in plain)
+
+
 def junction_sets(mesh: ShellMesh) -> dict[str, np.ndarray]:
     """The nodes of every sewn junction: an element edge whose elements lie on two or more mid-faces. Named after
     the mid-faces it joins (J_Mid_1_Mid_4), 1-based node ids, sorted."""
@@ -202,7 +214,7 @@ def write_bdf(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
     for k, (name, nodes) in enumerate(prep.junctions.items(), start=1):
         lines.append(f"$ {name}")
         lines.extend(_cards("SET3", [k, "GRID", *nodes.tolist()]))
-    Path(path).write_text("\n".join(lines) + "\n", encoding="ascii", newline="\n")
+    Path(path).write_text(ascii_text("\n".join(lines) + "\n"), encoding="ascii", newline="\n")
     return {"file": Path(path).name, "elements": m.n_elements, "properties": len(prep.props)}
 
 
@@ -348,7 +360,7 @@ def write_inp(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
     for mid, body in sorted((materials or {}).items()):
         lines.append(f"*MATERIAL, NAME=MAT_{mid}")
         lines += body
-    Path(path).write_text("\n".join(lines) + "\n", encoding="ascii", newline="\n")
+    Path(path).write_text(ascii_text("\n".join(lines) + "\n"), encoding="ascii", newline="\n")
     return {"file": Path(path).name, "elements": m.n_elements, "properties": len(prep.props)}
 
 
@@ -463,7 +475,7 @@ def write_cdb(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
         lines += [f"CMBLOCK,{nm},NODE,{len(nodes):>8d}", "(8i10)"]
         lines += ["".join(f"{v:>10d}" for v in nodes[i:i + 8].tolist()) for i in range(0, len(nodes), 8)]
     lines.append("FINISH")
-    Path(path).write_text("\n".join(lines) + "\n", encoding="ascii", newline="\n")
+    Path(path).write_text(ascii_text("\n".join(lines) + "\n"), encoding="ascii", newline="\n")
     return {"file": Path(path).name, "elements": m.n_elements, "sections": len(secs)}
 
 
