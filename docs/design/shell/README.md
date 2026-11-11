@@ -87,13 +87,13 @@ The verdict is a recommendation. The user picks (section 7).
 | wide against its wall | at least 2 walls wide, on its own mid-faces: the narrower of `width_of` and its widest place (the largest circle that fits in a mid-face, holes counted). A plate split by a wall standing on it (a beam's flange, either side of the web) is read on the face its pairs share. | a bar, a block, a cube, a flange ring 1.9 walls across | Narrower, the pair of faces across the width is nearly as close as the pair across the thickness: no one mid-surface. And the mesh's own rules meet there: four elements across (SHMESH-1), none under half the wall (SHMESH-2). |
 | no thick ring | at least half its mid-surface is flat, or round a radius of 2 walls or more | a bush, a nut, a hollow boss (a bore under 3 walls across) | No shell stands for a wall thicker than half its radius. A tight bend rides with the flat plates it joins, as in SHELL-2. |
 | metal between its faces | 90% of the points read on its mid-face lie in the body | two faces that look at each other across a gap (a channel's two flanges, across its open side) | A mid-face in air is no wall. |
-| no pad on a thinner wall | neither of its faces is a side of a thinner shell wall | a pad, a boss, a land or a foot standing on a plate | It shares the plate's far face: thicker metal on that plate, not a plate of its own. It stays solid, as it always did. Two plates stacked are a lap (SHELL-8), as before. |
+| no pad on a thinner wall | neither of its faces is a side of a shell wall under half its thickness (SHELL-23c: a step up to twice the wall is a shell) | a pad, a boss, a land or a foot standing on a plate | It shares the plate's far face: thicker metal on that plate, not a plate of its own. It stays solid, as it always did. Two plates stacked are a lap (SHELL-8), as before. |
 
 The thin sheets are settled first, then the laps, then the others from the thinnest up, so a pad is told by the wall under it.
 
 Two more guards, both on the whole body:
 
-- **The body must be mostly plate.** The plates found in a body are kept only when its shell walls (the thin ones and these) then hold at least half its metal: its sewn mid-faces times their walls, over its volume. This is MIXED-4's measure and MIXED-4's half. A plate with a lump on it is a shell with a solid region. A lump with a tab on it is a lump: a shell of the tab alone would be a scrap of the part, where the user got a whole solid mesh and the reason before. Under half, the body is left exactly as it was. The line is drawn twice: on the bare mid-faces before any join (junction metal is not in them), and on the sewn shell after. With the first line at a quarter, 7 more dev parts came in: 5 shelled well (a flag plate, a cable-chain mount, a chassis floor, a channel block, a panel clip), and 2 frames that meshed before lost their mesh (gmsh could not close a boundary where the short walls join). So both lines stay at half until those junctions mesh.
+- **The body must be mostly plate** (off since SHELL-23b, section 2.4.6). The plates found in a body are kept only when its shell walls (the thin ones and these) then hold at least half its metal: its sewn mid-faces times their walls, over its volume. This is MIXED-4's measure and MIXED-4's half. A plate with a lump on it is a shell with a solid region. A lump with a tab on it is a lump: a shell of the tab alone would be a scrap of the part, where the user got a whole solid mesh and the reason before. Under half, the body is left exactly as it was. The line is drawn twice: on the bare mid-faces before any join (junction metal is not in them), and on the sewn shell after. With the first line at a quarter, 7 more dev parts came in: 5 shelled well (a flag plate, a cable-chain mount, a chassis floor, a channel block, a panel clip), and 2 frames that meshed before lost their mesh (gmsh could not close a boundary where the short walls join). So both lines stay at half until those junctions mesh.
 - **The plates must join.** A body whose new plates (or flat flanges, SHELL-24) leave edges open where they meet its other walls is read again without them, and the reading with fewer open edges is kept, said in a note. So a body that sewed shut before still does. At most two more passes, inside the same work budget.
 
 **What stays solid.** Anything with no mid-surface: a block, a cube, a bar under 2 walls wide, a bolt, a shaft, a ball, a thick ring, a boss or pad on a plate. Measured on generated parts (`~/plates_lab`): a 30 mm cube, a 50 x 40 x 30 block, a 20 x 20 bar, a round bar, an M12 bolt, a stepped shaft, a block with a boss, a thick bush, a block with a pocket, a ball: all solid, each with its reason. A 100 x 50 x 25 block is the line itself (2.0 walls wide): a shell.
@@ -506,6 +506,48 @@ coverage 87.8 / 80.7 / 96.5% to 87.9 / 81.8 / 97.9%.
   bracket and the enclosure plate (1.6 times).
 - **The same twice.** All 281 records and surfaces byte-identical over two runs; meshes identical but on two files
   whose gmsh quad recombination differs run to run on the base code too.
+
+### 2.4.6 Thin walls still judged too thick (SHELL-23b, 23c, 25, 26; 11 Nov)
+
+**How it was found.** The walls stream's skin measure (section 2.4.5) put down the thin-wall skin still missed on #436 to the record of each pair: "judged too thick" was 44 files and 18.5 file-shares of the 282 lab and real parts. Each was traced to the rule that refused it:
+
+| what refused it | files | file-shares |
+|---|---|---|
+| the body share (the body's plates under half its metal) | 24 | 14.0 |
+| the pad test (a face shared with a thinner shell wall) | 4 | 2.0 |
+| a tapered sheet judged at its thickest point | 2 | 1.0 |
+| a thick ring | 1 | 1.0 |
+| under two walls wide (strips beside a wall, mostly) | 27 | 0.9 |
+| its plates would leave edges open (SHELL-23's last guard) | 6 | 0.2 |
+
+**SHELL-23b, the body share is off.** It refused plates 7 walls wide and 14 long on thick bodies. A plate on a lump is a shell with a solid region, as a thin plate on a lump always was: SHELL-2 never had this guard. The two frames it had been kept for (their short plates' joins would not mesh) are made by SHELL-26 instead.
+
+**SHELL-23c, a step is no pad.** A wall flush with a thinner shell wall is a shell when it is at most twice that wall. Its mid-plane then lies inside the thinner wall's metal, and SHELL-7 lays the thinner wall onto it with its offset (a doubler, a land, a thicker band). Thicker than that, it is a pad and stays solid, as before.
+
+**SHELL-25, a drafted wall is fitted once it is two walls wide.** SHELL-9 fitted a tapered or free-form wall only when it was four walls wide (SHELL-2's width rule, read early). Now the line is the plate's own, two walls. A drafted enclosure wall 4.4 to 5.3 mm thick and 4 walls wide had been left solid while an even plate beside it, as wide, was a shell. Cost: a printed enclosure fits its 31 narrow drafted pairs and its extraction goes 43 s to 474 s. With the quick test before fitting kept at four walls, that cost goes away, but an enclosure goes back to 1 open edge and a frame back to solid, so the quick test is at two walls too.
+
+**SHELL-26, the shell without its short plates when the mesher cannot close them.** On two dev frames, gmsh could not close the boundary of small curved pieces where short plates (0.6 and 1.25 mm, 5 to 10 walls across) join ("could not close the boundary of 5 faces in turn"). The run then reads the part again without SHELL-23 and SHELL-24 (`extract(plates=False)`), meshes that, and says one line: "The walls short for their thickness could not be meshed with the rest, so they stay solid and are not in the shell files." Both frames then mesh exactly as before. Two enclosures whose mesh failed before this round also mesh now this way.
+
+**Results** (lab VM; before = #436 merged with #441, fb444b45; "fully good" as the sealed set reads it).
+
+| set | files | fully good | mean skin coverage | files under 50% covered | fully good before, not after |
+|---|---|---|---|---|---|
+| wall set (real) | 60 | 41 to 49 | 87.9 to 93.4% | 5 to 3 | none |
+| new real set | 135 | 78 to 104 | 81.8 to 94.9% | 18 to 4 | none |
+| lab | 87 | 70 to 70 | 97.9 to 97.9% | 1 to 1 | none |
+| look-alikes (plates, sections, pedestal, lumps) | 64 | 52 to 52 | | | none |
+
+- "Judged too thick" skin: 44 files and 18.5 file-shares to 27 and 3.9. What is left: pads over twice their wall (1.7), the tapered hull judged at its thickest (1.0), a thick ring (1.0), strips beside walls, and the six plates SHELL-26 left out.
+- Census DEV (305 files, the census stream's scorer): fully good 138 to 139; whole part judged solid 19 to 8 (the 8 left are under two walls wide: bars, rails, posts); mean scorer coverage 90.7% to 94.3% (29 files up, none down); no file that was fully good is worse. The files that now make a shell mostly move to "wall missing" (44 to 54): the scorer still finds walls of theirs missing (pads, rings, junctions) or the shell cut open round the solid region.
+- The ten generated lumps stay solid. The look-alikes are unchanged.
+- No lab file gains an open edge. On the census DEV half, two files do (the product's own count): a keyboard plate 0 to 467 and an enclosure 4 to 89 (handed to the joins stream).
+- Run time: lab 9,859 s to 6,961 s, real sets the same (the VM was shared by two runs: rough). Two files more than 1.5 times slower: the printed enclosure above (SHELL-25) and a duct, 355 s to 649 s.
+- The same twice: 279 of 281 records and surfaces byte-identical, 247 of 249 meshes. The two records that differ are a cyclone inlet and the printed enclosure: their general join runs into its 300 s deadline under load (SHELL-11), as on the base. The two meshes that differ: one gmsh recombination that differs on the base too, one large assembly meshed in only one of the runs.
+- Accuracy (CalculiX, free-free modes 7 to 12, against a C3D10 solid of the part): a 4 mm plate with a 2 mm land (SHELL-23c), +2.1% to +3.0%; with a 4 mm land (twice the wall), +3.0% to +4.1% (a free plate alone reads +2.3% the same way: the step adds 1 to 2 points); a narrow wedge 4 to 8 mm, 3 walls wide (SHELL-25), +1.0% on its first mode and +7.8% on its fifth (48 elements, 4 across).
+
+**Not done.**
+- Sheet-metal bends whose two rounds have the same radius (not concentric). Measured on generated 2 mm brackets: at a bend radius of 6 sheet thicknesses or more, the bend already passes the taper test and is a shell. At 2 to 3 thicknesses, the bend's two faces turn more than 10 degrees, so the pair is "not parallel". The thickness at the bend's edges is not what stops them. That is the walls stream's SHELL-45 (tried and taken out for its side effects).
+- Pads over twice their wall, rings, and walls under two walls wide stay solid, by rule.
 
 ### 2.5 Assemblies and mixed parts (PR 3)
 

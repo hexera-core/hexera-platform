@@ -4454,8 +4454,10 @@ def _solid_words(closest: dict | None) -> str:
                 f"hold under {100 * PLATE_BODY_SHARE:.0f}% of its metal, so the part is mostly thick")
     if closest.get("why") == "gap":
         return "its faces look at each other across a gap, not across metal, so it has no wall a shell could stand for"
+    # (the times shown rounded DOWN: a wall 1.98 times as wide as thick is "1.9 times", never "2 times ... under 2")
+    shown = math.floor(10.0 * width / t + 1e-9) / 10.0 if t > 0 else closest["width_walls"]
     return (f"its most plate-like wall is {_num(t)} mm thick but only {_num(width)} mm wide, "
-            f"{closest['width_walls']:g} times its thickness; under {need:g} times, it is a bar or a block, not a "
+            f"{shown:g} times its thickness; under {need:g} times, it is a bar or a block, not a "
             "plate")
 
 
