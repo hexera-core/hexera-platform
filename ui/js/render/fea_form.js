@@ -581,7 +581,7 @@ export function elementsHtml(e) {
   if (!opts.length) return "";
   const v = e.value || opts[0].key;
   const from = e.from && e.from !== "default" && e.from_words ? ` (${e.from_words})` : "";
-  return `<div class="fea-el"><span class="fea-el-k" aria-hidden="true">Elements</span><div class="fea-seg fea-el-seg" role="radiogroup" aria-label="${attr(e.question || "Elements")}">${opts.map((o) =>
+  return `<div class="fea-el" data-start="${attr(v)}" data-confirm="${attr(JSON.stringify(e.confirm || {}))}"><span class="fea-el-k" aria-hidden="true">Elements</span><div class="fea-seg fea-el-seg" role="radiogroup" aria-label="${attr(e.question || "Elements")}">${opts.map((o) =>
     `<label class="fea-conn-opt" title="${attr(`${o.words || o.label}${o.key === v ? from : ""}`)}"><input type="radio" name="fea-shell-elements" value="${attr(o.key)}"${o.key === v ? " checked" : ""}><span>${esc(o.label)}</span></label>`).join("")}</div></div>`;
 }
 
@@ -715,13 +715,43 @@ export function readFeaForm(root, p) {
   if (root.querySelector && root.querySelector(".fea-pair")) body.fea_pairs = readPairs(root);
   const plan = root.querySelector ? root.querySelector('input[name="fea-plan"]:checked') : null;
   if (plan) body.fea_plan = plan.value;
-  // SHSTAGE-8: a shell's elements as shown (the server keeps it only when it differs from where it started)
+  // SHSTAGE-8: a shell's elements as shown (the server keeps it only when it differs from where it started); a
+  // flip still waiting on its question is not the user's yet
   const elements = root.querySelector ? root.querySelector('input[name="fea-shell-elements"]:checked') : null;
-  if (elements) body.fea_shell_elements = elements.value;
+  const asking = root.querySelector ? root.querySelector(".fea-el-ask") : null;
+  const elBox = root.querySelector ? root.querySelector(".fea-el") : null;
+  if (elements) body.fea_shell_elements = asking && elBox ? elBox.dataset.start : elements.value;
   const upSel = root.closest ? root.closest(".gc-stage")?.querySelector(".v-up select") : null;
   const up = (upSel && upSel.value) || p.up_axis;
   if (up) body.up_axis = up;
   return body;
+}
+
+/** SHSTAGE-8: A FLIP OF THE ELEMENTS AWAY FROM THE USER'S SETTINGS OR NOTES ASKS FIRST, in one short line under the
+ *  shell line ("Your settings say Quads. Use Triangles for this run?"): Yes keeps the click for this run, No puts the
+ *  switch back. A flip back to where it started, or one the server sends no question for, is taken at once. */
+function askElements(form, input) {
+  const box = form.querySelector(".fea-el");
+  const old = form.querySelector(".fea-el-ask");
+  if (old) old.remove();
+  if (!box) return;
+  let ask = {};
+  try { ask = JSON.parse(box.dataset.confirm || "{}"); } catch (e) { ask = {}; }
+  const start = box.dataset.start || "";
+  const question = input.value !== start ? ask[input.value] : "";
+  if (!question) { form.dataset.shellElements = input.value; return; }
+  const body = form.querySelector(".fea-sec-shell .fea-sec-body");
+  if (!body) { form.dataset.shellElements = input.value; return; }
+  body.insertAdjacentHTML("afterbegin", `<div class="fea-line fea-el-ask" role="alertdialog" aria-label="${attr(question)}"><span>${esc(question)}</span>
+      <button type="button" class="v-btn fea-el-yes">Yes</button><button type="button" class="v-btn v-quiet fea-el-no">No</button></div>`);
+  const line = body.querySelector(".fea-el-ask");
+  line.querySelector(".fea-el-yes").onclick = () => { form.dataset.shellElements = input.value; line.remove(); };
+  line.querySelector(".fea-el-no").onclick = () => {
+    const back = form.querySelector(`input[name="fea-shell-elements"][value="${start}"]`);
+    if (back) back.checked = true;
+    delete form.dataset.shellElements;
+    line.remove();
+  };
 }
 
 /** Wire the panel: the folds open on a click, the unit box follows every size shown, and Proceed confirms -
@@ -759,7 +789,7 @@ export function bindFeaPanel(root, f, p, { confirm, done }) {
     } else if (t.name === "fea-connection" || t.name === "fea-gap-joins") {
       followPairDefaults(form);
     } else if (t.name === "fea-shell-elements") {
-      form.dataset.shellElements = t.value;     // the user's click, kept when the shell line is drawn again
+      askElements(form, t);
     }
   });
   const btn = form.querySelector(".gc-proceed"), hint = form.querySelector(".gc-hint");

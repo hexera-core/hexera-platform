@@ -9,11 +9,15 @@ import {
   MAX_CHARS,
   PLACEHOLDER,
   SCOPE,
+  SHELL_LABEL,
+  SHELL_OPTIONS,
   type MeshingStandard,
+  type ShellElements,
   isNotApplied,
   rowsFor,
   saveFailureMessage,
   savedBy,
+  shellElementsOf,
   statusLine,
 } from "./meshing-standard";
 import { MeshingStandardView } from "./meshing-standard-view";
@@ -37,12 +41,16 @@ function standard(over: Partial<MeshingStandard> = {}): MeshingStandard {
 
 const EMPTY: MeshingStandard = { text: "", lines: [], status: "empty", updated_by: null, updated_at: null };
 
-function render(saved: MeshingStandard, over: { draft?: string; busy?: boolean; error?: string | null } = {}) {
+function render(
+  saved: MeshingStandard,
+  over: { draft?: string; busy?: boolean; error?: string | null; kind?: ShellElements } = {},
+) {
   return renderToStaticMarkup(
     createElement(MeshingStandardView, {
       busy: over.busy ?? false,
       draft: over.draft ?? saved.text,
       error: over.error ?? null,
+      kind: over.kind,
       saved,
     }),
   );
@@ -105,8 +113,9 @@ test("a read standard shows the box, the line, Save and Clear, and every line ex
   assert.match(html, /<li>Aspect ratio under 4 \(up to 1% of elements between 4 and 6\)\.<\/li>/);
   assert.match(html, /<li style="color:var\(--text-muted\)">Not applied: &quot;Nastran deck&quot; - no mesh setting/);
   assert.match(html, /Saved 11 Nov 2026 by engineer@example\.com\./);
-  // nothing else: two buttons, no per-field controls
-  assert.equal((html.match(/<button/g) ?? []).length, 2);
+  // nothing else: Save, Clear and the one switch's two choices; no per-field controls
+  assert.equal((html.match(/<button/g) ?? []).length, 4);
+  assert.equal((html.match(/role="radio"/g) ?? []).length, 2);
   assert.match(html, />Save<\/button>/);
   assert.match(html, />Clear<\/button>/);
   assert.doesNotMatch(html, /<input|<select/);
@@ -140,4 +149,25 @@ test("an unread standard says it was saved and will be read at run time", () => 
 test("a failed save is shown where the user is looking", () => {
   const html = render(standard(), { error: saveFailureMessage(500) });
   assert.match(html, /<div class="auth__error" role="status">Could not save just now\. Try again\.<\/div>/);
+});
+
+// ------------------------------------------------------------------ the one switch: Shell elements ---------------
+test("the switch says Shell elements: Quads | Triangles, Quads unless saved otherwise", () => {
+  assert.equal(SHELL_LABEL, "Shell elements");
+  assert.deepEqual(SHELL_OPTIONS.map((o) => o.label), ["Quads", "Triangles"]);
+  assert.equal(shellElementsOf(standard()), "quads");
+  assert.equal(shellElementsOf(standard({ shell_elements: "triangles" })), "triangles");
+  const html = render(standard());
+  assert.match(html, /<span class="label">Shell elements<\/span>/);
+  assert.match(html, /role="radiogroup"/);
+  assert.match(html, /aria-checked="true"[^>]*data-kind="quads"/);
+  assert.match(html, /aria-checked="false"[^>]*data-kind="triangles"/);
+  const tri = render(standard({ shell_elements: "triangles" }));
+  assert.match(tri, /aria-checked="true"[^>]*data-kind="triangles"/);
+});
+
+test("a flipped switch is a change to save, like an edited box", () => {
+  assert.match(render(standard(), { kind: "triangles" }), /<button class="btn btn--gold" type="submit">Save<\/button>/);
+  assert.match(render(standard(), { kind: "quads" }), /<button class="btn btn--gold" disabled="" type="submit">Save<\/button>/);
+  assert.match(render(EMPTY, { kind: "triangles" }), /<button class="btn btn--gold" type="submit">Save<\/button>/);
 });

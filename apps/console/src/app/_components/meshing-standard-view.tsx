@@ -4,10 +4,14 @@ import {
   APPLIES,
   MAX_CHARS,
   PLACEHOLDER,
+  SHELL_LABEL,
+  SHELL_OPTIONS,
   type MeshingStandard,
+  type ShellElements,
   isNotApplied,
   rowsFor,
   savedBy,
+  shellElementsOf,
   statusLine,
 } from "@/app/_components/meshing-standard";
 
@@ -19,6 +23,9 @@ type MeshingStandardViewProps = {
   /** a failed save, said in plain words */
   error: string | null;
   saved: MeshingStandard;
+  /** the switch as set now (the saved value until the user flips it) */
+  kind?: ShellElements;
+  onKind?: (kind: ShellElements) => void;
   onChange?: (text: string) => void;
   onClear?: () => void;
   /** a plain submit handler, not a form action: a form action's state updates wait for the action to finish,
@@ -27,7 +34,8 @@ type MeshingStandardViewProps = {
 };
 
 /**
- * THE MESHING SETTINGS, AS DRAWN: one box, one line on where it applies, Save and Clear, and what the reader
+ * THE MESHING SETTINGS, AS DRAWN: one box, one switch (Shell elements: Quads | Triangles), one line on where they
+ * apply, Save and Clear, and what the reader
  * understood - each line exactly as a run will say it. No hooks: the page's client panel holds the state, and
  * this renders the same markup on the server, in the browser and in a test.
  */
@@ -35,14 +43,17 @@ export function MeshingStandardView({
   busy,
   draft,
   error,
+  kind,
   onChange,
   onClear,
+  onKind,
   onSave,
   saved,
 }: MeshingStandardViewProps) {
   const said = statusLine(saved);
   const by = savedBy(saved);
-  const changed = draft.trim() !== saved.text.trim();
+  const shown = kind ?? shellElementsOf(saved);
+  const changed = draft.trim() !== saved.text.trim() || shown !== shellElementsOf(saved);
 
   return (
     <form
@@ -67,6 +78,38 @@ export function MeshingStandardView({
           value={draft}
         />
       </label>
+      <div style={{ alignItems: "center", display: "flex", gap: ".8rem" }}>
+        <span className="label">{SHELL_LABEL}</span>
+        <div
+          aria-label={SHELL_LABEL}
+          role="radiogroup"
+          style={{ border: "1px solid var(--border-strong)", borderRadius: "var(--r-md)", display: "inline-flex", overflow: "hidden" }}
+        >
+          {SHELL_OPTIONS.map((o, i) => (
+            <button
+              aria-checked={shown === o.key}
+              data-kind={o.key}
+              disabled={busy}
+              key={o.key}
+              onClick={onKind ? () => onKind(o.key) : undefined}
+              role="radio"
+              style={{
+                background: shown === o.key ? "var(--surface-raised)" : "transparent",
+                border: 0,
+                borderLeft: i ? "1px solid var(--border-strong)" : 0,
+                color: shown === o.key ? "var(--text)" : "var(--text-faint)",
+                cursor: busy ? "default" : "pointer",
+                font: "inherit",
+                padding: ".35rem .8rem",
+              }}
+              title={o.title}
+              type="button"
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <p className="page__sub">{APPLIES}</p>
 
       <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: ".6rem" }}>
