@@ -203,3 +203,59 @@ def test_one_rung_reports_what_it_joined_and_why_it_is_refused():
     got, rec = sc.try_rung(base, 5.0 * base.tol)
     assert got is not None and rec["joined"] == 2 and rec["widest"] == pytest.approx(3.0 * tol, rel=0.02)
     assert len(got.sheets) == 1 and len(got.faces) == 3
+
+
+def _tmeet(lift: float = 0.0, slide: float = 0.0):
+    """A plate beside two half plates: the half plates' shared corner lands in the middle of the plate's edge (a
+    T-meet), the half plates written `lift` above and `slide` across."""
+    halves = [sx.moved(f, (slide, 0, lift)) for f in (sx.rect(100, 0, 200, 40), sx.rect(100, 40, 200, 80))]
+    return sx.compound([sx.rect(0, 0, 100, 80), *halves])
+
+
+@pytest.mark.parametrize(("lift", "slide"), [(3.0, 0.0), (0.0, 3.0), (2.0, 2.0)])
+def test_a_t_meet_written_off_its_neighbour_is_stitched(lift, slide):
+    """The coordinator's case: the sewing cuts the long edge where the half plates' corner meets it, and the pieces
+    it returns are not in its own map. They are traced to their face by where they lie, so the joins are judged and
+    taken rather than the rung refused ("a joined edge could not be traced to one face")."""
+    tol = _tol(_tmeet())
+    reading, _sewn = _read(_tmeet(lift * tol, slide * tol))
+    c = reading["cleaned"]
+    assert reading["kind"] == "surface" and len(reading["sheets"]) == 1 and reading["faces"] == 3
+    assert c["closed_edges"] >= 2 and c["left_open"] == 0 and c["wider_gaps"] == 0
+    assert "could not be traced" not in c["refused"]
+    assert _free(reading) == pytest.approx(2.0 * (200.0 + 80.0), abs=12 * 3.0 * tol)
+
+
+def test_a_stated_tolerance_never_leaves_more_open_than_the_rule():
+    """A gap of 12 tolerances and one of 3: the rule closes the 3, a stated 15 closes both - and whatever is stated,
+    no more is left open than the rule leaves, and what is said is consistent with what was closed."""
+    tol = _tol()
+    shape = sx.strip_of_plates(move={0: (0, 0, 3.0 * tol), 2: (0, 0, 12.0 * tol)})
+    rule, _ = _read(shape)
+    assert rule["cleaned"]["closed_edges"] == 1 and len(rule["sheets"]) == 2
+    for stated in (4.0, 8.0, 15.0, 40.0):
+        got, _ = _read(shape, sew_mm=stated * tol)
+        c = got["cleaned"]
+        assert len(got["sheets"]) <= len(rule["sheets"])
+        assert _free(got) <= _free(rule) + 4.0 * tol
+        # gaps said as wider are wider than what was applied, and a tolerance is offered only when it closes them
+        if c["wider_gaps"]:
+            assert c["wider_widest_mm"] > c["applied_mm"]
+        if c["advice_mm"]:
+            again, _ = _read(shape, sew_mm=c["advice_mm"])
+            assert again["cleaned"]["wider_gaps"] == 0 and len(again["sheets"]) < len(got["sheets"])
+    assert len(_read(shape, sew_mm=15.0 * tol)[0]["sheets"]) == 1
+
+
+def test_a_rung_with_one_join_that_fails_still_takes_the_others():
+    """A slot 2 tolerances wide drawn in the middle plate (its two edges are one face's: never sewn) and the right
+    plate written 3 tolerances off: the slot's join is refused, the right plate's gap is still closed."""
+    tol = _tol()
+    slotted = sx.moved(sx.plate_with_slot(100.0, 80.0, slot=2.0 * tol, run=40.0), (100.0, 0, 0))
+    shape = sx.compound([sx.rect(0, 0, 100, 80), slotted, sx.moved(sx.rect(200, 0, 300, 80), (0, 0, 3.0 * tol))])
+    reading, _sewn = _read(shape)
+    c = reading["cleaned"]
+    assert c["closed_edges"] == 1
+    assert len(reading["sheets"]) == 1 and reading["faces"] == 3
+    # the slot is still open: the panel's rim and the slot's outline
+    assert _free(reading) == pytest.approx(2.0 * (300.0 + 80.0) + 2.0 * (40.0 + 2.0 * tol), abs=12 * 3.0 * tol)

@@ -112,7 +112,8 @@ def clean_words(cleaned: dict | None) -> list[str]:
         n = int(c["duplicates"])
         out.append(f"{n} face(s) were in the file twice: the second copy of each is left out.")
     if c.get("closed_edges"):
-        asked = f", as your notes asked (up to {_gap(c['limit_mm'])})" if c.get("limit_from") == "notes" else ""
+        asked = (f", as your notes asked (up to {_gap(c['limit_mm'])})"
+                 if c.get("limit_from") == "notes" and not c.get("fell_back") else "")
         out.append(f"Closed {int(c['closed_edges'])} gap(s) between the surfaces, the widest "
                    f"{_gap(c.get('closed_widest_mm') or 0.0)}{asked}.")
     if c.get("pinholes"):
@@ -120,13 +121,17 @@ def clean_words(cleaned: dict | None) -> list[str]:
         what = "hole(s)" if c.get("holes_from") == "notes" else "pinhole(s)"
         out.append(f"Filled {int(c['pinholes'])} {what}, the largest {_gap(c.get('pinhole_widest_mm') or 0.0)} "
                    f"across{asked}.")
+    if c.get("fell_back"):
+        out.append(f"Stitching up to {_gap(c['limit_mm'])}, as your notes asked, would have left more open than the "
+                   f"usual {_gap(c.get('rule_mm') or 0.0)}, so the usual result is kept.")
     if c.get("stitch") == "off":
         out.append("Nothing was stitched, as your notes asked.")
     return out
 
 
 def open_words(n: int, cleaned: dict | None) -> str:
-    """SURF-2 / SURF-8: the gaps LEFT OPEN, said with their size and the way to close them."""
+    """SURF-2 / SURF-8: the gaps LEFT OPEN, said with their size and why they were left. No tolerance is offered
+    for them: they are within what was tried, so a larger one would not close them either."""
     c = cleaned or {}
     said = f"The surfaces do not meet at {n} edge(s): the shell has gaps there"
     widest = float(c.get("left_widest_mm") or 0.0)
@@ -135,33 +140,25 @@ def open_words(n: int, cleaned: dict | None) -> str:
     said += "."
     if c.get("refused"):
         said += f" They were left open because {c['refused']}."
-    elif c.get("stitch") != "off" and widest > 0 and not c.get("wider_gaps"):
-        said += f' To close them, add to your notes: "stitch gaps up to {_ask(widest):g} mm".'
     return said
 
 
-def _ask(widest_mm: float) -> float:
-    """The tolerance that closes a gap this wide: a tenth over it, rounded up to two digits."""
-    import math
-
-    v = 1.1 * float(widest_mm)
-    if v <= 0:
-        return 0.0
-    step = 10.0 ** (math.floor(math.log10(v)) - 1)
-    return float(f"{math.ceil(v / step) * step:.2g}")
-
-
 def wider_words(cleaned: dict | None) -> str:
-    """SURF-8: edges that run side by side WIDER APART than the gaps closed by rule: found, not closed, and said -
-    with the note that closes them (they may be meant to be apart: only the user knows)."""
+    """SURF-8: edges that run side by side WIDER APART than the gaps closed: found, not closed, and said. A
+    tolerance is offered only when it was tried on this file and closed them (they may be meant to be apart: only
+    the user knows)."""
     c = cleaned or {}
     n = int(c.get("wider_gaps") or 0)
     if not n or c.get("stitch") == "off":
         return ""
-    widest = max(float(c.get("wider_widest_mm") or 0.0), float(c.get("left_widest_mm") or 0.0))
-    return (f"{n} pair(s) of edges run side by side up to {_gap(float(c.get('wider_widest_mm') or 0.0))} apart, wider "
-            f"than the {_gap(float(c.get('limit_mm') or 0.0))} closed here. If they should meet, add to your notes: "
-            f'"stitch gaps up to {_ask(widest):g} mm".')
+    applied = float(c.get("applied_mm") or c.get("limit_mm") or 0.0)
+    said = (f"{n} pair(s) of edges run side by side up to {_gap(float(c.get('wider_widest_mm') or 0.0))} apart, "
+            f"wider than the {_gap(applied)} closed here.")
+    if c.get("advice_mm"):
+        said += f' If they should meet, add to your notes: "stitch gaps up to {float(c["advice_mm"]):g} mm".'
+    else:
+        said += " Stitching does not close them cleanly, so they are left as drawn."
+    return said
 
 
 def stitch_for(state):
