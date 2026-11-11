@@ -57,8 +57,15 @@ TRIMMED_FILE = "shell_patched.brep"
 #: runs in a forked child, stopped there). Past it the shell is made as before and the regions are said as left out:
 #: a shell run is held to engines/fea_driver.SHELL_RUN_LIMIT_S (2400 s, extraction up to 1800 of it), and a run that
 #: ran out would deliver no shell at all. Measured 11 Nov: grown patches take 8 to 50 s on the look-alikes and 50 to
-#: 420 s on real parts; the unheld metal of a part with tens of pieces ran past 30 minutes before this deadline
-PATCH_BUDGET_S = 420.0
+#: 430 s on real parts (the DEV census: median 172 s of the 9 made; the lab: 6 to 160 s of 16); the unheld metal of
+#: a part with tens of pieces ran past 30 minutes before this deadline. 300 s keeps every lab patch and 7 of the 9
+#: census ones, and keeps a part whose patches cannot be made inside the shell bar's 10 minutes
+PATCH_BUDGET_S = 300.0
+#: MIXED-9g: no patch is tried once the shell run has spent this long (a long extraction): the run stays inside its
+#: limit, and the census measured a 25-minute extraction plus the patches running past a 45-minute clock
+PATCH_LATEST_S = 900.0
+#: MIXED-9g: ... nor with less than this left of the budget
+PATCH_MIN_S = 60.0
 
 
 class Stop(Exception):
@@ -293,7 +300,10 @@ def _untied(joined, nodes_at: list[tuple[int, int]]) -> list[int]:
 
 def _folded(joined, nodes_at: list[tuple[int, int]]) -> list[int]:
     """MIXED-9c: the patches whose join folded an overlap element (a corner Jacobian not above zero: the rows run one
-    wall into the solid from each node, and round a corner sharper than the elements are long they cross)."""
+    wall into the solid from each node, and round a corner sharper than the elements are long they cross) or put one
+    past Nastran's own GEOMCHECK limits (shell_quality.NASTRAN_LIMITS: round a tight curve the inner row is shorter
+    than the outer and the quad tapers - the DEV census had 64 such on one part that was fully good without its
+    patch)."""
     from scipy.spatial import cKDTree
 
     from meshpipeline.engines import mixed_mesh as mm
@@ -304,8 +314,13 @@ def _folded(joined, nodes_at: list[tuple[int, int]]) -> list[int]:
     over = over[over < len(sh.quads)]
     if not len(over) or not len(joined.solid.xyz):
         return []
-    jac = SQ.quad_measures(sh.xyz, sh.quads[over]).get("min_jacobian")
-    bad = over[np.asarray(jac) <= 0] if jac is not None else over[:0]
+    m = SQ.quad_measures(sh.xyz, sh.quads[over])
+    flag = np.asarray(m["min_jacobian"]) <= 0 if "min_jacobian" in m else np.zeros(len(over), dtype=bool)
+    for shape, key, op, limit, _card in SQ.NASTRAN_LIMITS:
+        if shape == "quad" and key in m:
+            v = np.asarray(m[key], float)
+            flag |= (v < limit) if op == ">=" else (v > limit)
+    bad = over[flag]
     if not len(bad):
         return []
     _d, j = cKDTree(np.asarray(joined.solid.xyz, float)).query(np.asarray(sh.xyz, float)[sh.quads[bad][:, 0]])
@@ -516,7 +531,8 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
                 for i in _untied(joined, nodes_at):
                     loose.setdefault(i, "could not be tied to the shell all round (too few solid nodes across a wall)")
             for i in _folded(joined, nodes_at):
-                loose.setdefault(i, "could not be tied to the shell without folding a shell element at a sharp corner")
+                loose.setdefault(i, "could not be tied to the shell without a shell element folded or past Nastran's "
+                                    "limits at a tight corner")
             if not loose:
                 return joined, tets_at, sqs, kept, lost
             for i in sorted(loose, reverse=True):
@@ -554,29 +570,30 @@ def build(step, out: Path, record: dict, *, mm_per_unit: float, requirements: di
                    solid_quality=[p["quality"] for p in patches], seconds=seconds)
 
 
+def _bounded_child(send, step, out, record: dict, budget: float, kw: dict) -> None:
+    """build_bounded's child: build() and its answer down the pipe."""
+    try:
+        send.send(("ok", build(step, out, record, budget_s=budget, **kw)))
+    except Stop as stop:
+        send.send(("stop", str(stop)))
+    except BaseException as exc:  # noqa: BLE001 - told to the parent, which says it
+        send.send(("error", f"{type(exc).__name__}: {str(exc)[:300]}"))
+    finally:
+        send.close()
+
+
 def build_bounded(step, out: Path, record: dict, *, budget_s: float | None = None, **kw) -> Patched:
-    """MIXED-9g: build() in a forked child stopped after `budget_s` (PATCH_BUDGET_S) - Stop with the reason when it
-    ran out or the child failed. Without fork (not Linux), build() here, its own soft checks only."""
+    """MIXED-9g: build() in a child process stopped after `budget_s` (PATCH_BUDGET_S) - Stop with the reason when it
+    ran out or the child failed. The child is SPAWNED, a fresh interpreter: forked from a process that has threads (a
+    test run, a driver), it hung on a lock it inherited and every patch ran out of time."""
     import multiprocessing as mp
-    import os
 
     budget = PATCH_BUDGET_S if budget_s is None else float(budget_s)
-    if budget <= 0 or "fork" not in mp.get_all_start_methods():
+    if budget <= 0:
         return build(step, out, record, budget_s=budget_s, **kw)
-    recv, send = mp.get_context("fork").Pipe(duplex=False)
-
-    def child() -> None:
-        try:
-            send.send(("ok", build(step, out, record, budget_s=budget, **kw)))
-        except Stop as stop:
-            send.send(("stop", str(stop)))
-        except BaseException as exc:  # noqa: BLE001 - told to the parent, which says it
-            send.send(("error", f"{type(exc).__name__}: {str(exc)[:300]}"))
-        finally:
-            send.close()
-            os._exit(0)
-
-    proc = mp.get_context("fork").Process(target=child, daemon=False)
+    ctx = mp.get_context("spawn")
+    recv, send = ctx.Pipe(duplex=False)
+    proc = ctx.Process(target=_bounded_child, args=(send, step, out, record, budget, kw), daemon=False)
     proc.start()
     send.close()
     try:

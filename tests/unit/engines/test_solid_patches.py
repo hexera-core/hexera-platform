@@ -264,10 +264,20 @@ def test_the_same_part_twice_gives_the_same_files(boss, tmp_path):
 def test_the_patches_are_stopped_at_their_budget_and_the_shell_is_made_as_before(boss, tmp_path, monkeypatch):
     """MIXED-9g: a hard deadline - past it, today's shell, the reason said."""
     monkeypatch.setattr(SP, "PATCH_BUDGET_S", 1.0)
+    monkeypatch.setattr(SP, "PATCH_MIN_S", 0.0)
     rec = _run(boss, tmp_path / "late")
     assert rec["made"] is True and not rec.get("patches")
     assert "longer than the 0 minutes they are given" in rec["patch_why"]
     assert "TYPE=C3D10" not in (tmp_path / "late" / "shell.inp").read_text()
+
+
+def test_no_patch_is_tried_once_the_run_has_spent_long(boss, tmp_path, monkeypatch):
+    """MIXED-9g: after a long extraction no patch is tried - the run keeps inside its limit - and it is said."""
+    monkeypatch.setattr(SP, "PATCH_LATEST_S", 0.0)
+    rec = _run(boss, tmp_path / "long")
+    assert rec["made"] is True and not rec.get("patches")
+    assert rec["patch_why"].startswith("no time was left for them")
+    assert "could not be meshed as solid and tied to the shell (no time was left for them" in rec["words"]
 
 
 def test_a_part_with_nothing_solid_is_today_s_shell(tmp_path):

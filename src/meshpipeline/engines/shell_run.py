@@ -168,7 +168,7 @@ def parts_of(mesh, faces: list[dict]) -> list[dict]:
 
 
 def _patched(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_unit: float, target: dict | None,
-             requirements: dict | None):
+             requirements: dict | None, spent_s: float = 0.0):
     """MIXED-9: the shell with its solid patches (engines/solid_patches), or None - nothing to patch, the notes ask
     for a shell only (said: rec["shell_only"]), or the patches could not be made (said: rec["patch_why"]); the
     shell is then made as before."""
@@ -180,10 +180,15 @@ def _patched(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_unit:
     if SP.shell_only(requirements):
         rec["shell_only"] = True
         return None
+    # MIXED-9g: the budget, and none at all once the run has spent long (a long extraction)
+    budget = min(SP.PATCH_BUDGET_S, SP.PATCH_LATEST_S - float(spent_s))
+    if budget < SP.PATCH_MIN_S:
+        rec["patch_why"] = (f"no time was left for them (the mid-surface took {spent_s / 60:.0f} minutes to find)")
+        return None
     t1 = time.time()
     try:
         return SP.build_bounded(step, out, record, mm_per_unit=mm_per_unit, requirements=requirements, target=target,
-                                requirements_file=ws / MR.FILE)
+                                requirements_file=ws / MR.FILE, budget_s=budget)
     except SP.Stop as stop:
         rec["patch_why"] = str(stop)
     except Exception as exc:  # noqa: BLE001 - the shell is still made, as before; the reason is kept
@@ -223,7 +228,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
         else:
             t1 = time.time()
             patched = _patched(ws, out, step, record, rec, mm_per_unit=mm_per_unit, target=target,
-                               requirements=requirements) if rec["solid_bodies"] else None
+                               requirements=requirements, spent_s=time.time() - started) if rec["solid_bodies"] else None
             if patched is not None:
                 # MIXED-9: the shell and its solid patches, tied, in the shell's own files
                 from meshpipeline.engines import mixed_mesh as mm
