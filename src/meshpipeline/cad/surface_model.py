@@ -492,7 +492,7 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = 
                 tidy, did = sewn, {"refused": "the clean-up could not be run"}
             cleaned.update(did)
             reach = float(did.get("limit_mm") or 0.0) / float(mm_per_unit)
-            if tidy is not sewn:
+            if tidy is not sewn and isinstance(tidy, Sewn):
                 sewn = tidy
                 sheets = measure(sewn, mm_per_unit=mm_per_unit, reach=reach)
             elif reach > NEAR_SEW * sewn.tol:

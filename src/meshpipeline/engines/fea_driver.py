@@ -1921,6 +1921,8 @@ async def surface_asks(ws: Path, state, *, job_id: str, run=None, publish=None) 
     target = None
     try:
         staged = staged_solid(ws)
+        if staged is None:
+            return None, None
         _box, diag_m = await asyncio.to_thread(_metre_box, staged)
         ai = await FA.decide({"faces": {}, "bodies": 1}, state or {}, [], diag_m=diag_m, limit=element_limit({})[0],
                              job_id=job_id, run=run, wait_s=ai_wait_s(run))
@@ -1960,9 +1962,10 @@ async def _deliver_surface(ws: Path, rec: dict, *, job_id: str, run, target: dic
             record_remark(ws, counted, by="fea_target")
         if (asked or {}).get("status") == "used":
             try:
-                from meshpipeline.engines import mesh_requirements as MR
-                from meshpipeline.engines.shell_requirements import summary as asked_summary
+                import importlib
 
+                MR = importlib.import_module("meshpipeline.engines.mesh_requirements")
+                asked_summary = importlib.import_module("meshpipeline.engines.shell_requirements").summary
                 record_remark(ws, asked_summary(rec.get("requirements"), len(MR.not_applied_words(asked))),
                               by="mesh_requirements")
             except ImportError:

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import math
+from typing import Any
 
 import numpy as np
 
@@ -231,7 +232,7 @@ def _into(bound, face, at) -> np.ndarray | None:
     return ms._into_face(bound, face, t_best)
 
 
-def _couples(sewn, tol: float) -> tuple[object, list[dict]]:
+def _couples(sewn, tol: float) -> tuple[Any, list[dict]]:
     """The sewn faces sewn again at `tol` (nothing kept), and every pair of edges that sewing would join, judged:
     [{"gap", "length", "at", "on": (face, face), "bad": "" | why this join is no gap closed}]. Returns (the sewing,
     the pairs)."""
@@ -287,7 +288,7 @@ def _couples(sewn, tol: float) -> tuple[object, list[dict]]:
     return sewing, out
 
 
-def try_rung(sewn, tol: float, *, face_cap: bool = True) -> tuple[object | None, dict]:
+def try_rung(sewn, tol: float, *, face_cap: bool = True) -> tuple[Any, dict]:
     """SURF-8: ONE RUNG. The sewn faces sewn again at `tol`, and every pair of edges that sewing joined judged.
     Returns (the new Sewn, the rung's record) - the Sewn is None when the rung is refused (record["refused"] says
     why) or joined nothing (record["joined"] == 0).
@@ -300,7 +301,7 @@ def try_rung(sewn, tol: float, *, face_cap: bool = True) -> tuple[object | None,
     from meshpipeline.cad import midsurface as ms
     from meshpipeline.cad import surface_model as sm
 
-    rec: dict = {"tol": float(tol), "joined": 0, "widest": 0.0, "places": [], "refused": ""}
+    rec: dict[str, Any] = {"tol": float(tol), "joined": 0, "widest": 0.0, "places": [], "refused": ""}
     _free_before, length_before = _free(sewn.faces)
     sewing, pairs = _couples(sewn, tol)
     n = len(pairs)
@@ -361,7 +362,7 @@ def wider(sewn, reach: float) -> dict:
     """SURF-8: THE GAPS A WIDER TOLERANCE WOULD CLOSE, found and not closed: one trial sewing at `reach`, and the
     pairs it would join that are gaps by the same judgement (different faces, not lying on each other).
     {"count", "widest", "places"} in the shape's own units - what is said to the user as left open."""
-    out = {"count": 0, "widest": 0.0, "places": []}
+    out: dict[str, Any] = {"count": 0, "widest": 0.0, "places": []}
     if not _free(sewn.faces)[0] or len(_free(sewn.faces)[0]) > MAX_FREE_EDGES:
         return out
     try:
@@ -390,11 +391,11 @@ def wider(sewn, reach: float) -> dict:
     return out
 
 
-def ladder(sewn, limit: float, *, stated: bool = False) -> tuple[object, dict]:
+def ladder(sewn, limit: float, *, stated: bool = False) -> tuple[Any, dict]:
     """SURF-8: climb the ladder from the sewn faces: each rung of RUNGS (times the sew tolerance) up to `limit` (the
     shape's own units), and the limit itself as the last rung. A rung that joins nothing is passed over; one that
     is refused stops the climb. Returns (the Sewn to use, {"rung", "joined", "widest", "places", "refused"})."""
-    out = {"rung": 0.0, "joined": 0, "widest": 0.0, "places": [], "refused": ""}
+    out: dict[str, Any] = {"rung": 0.0, "joined": 0, "widest": 0.0, "places": [], "refused": ""}
     free, _length = _free(sewn.faces)
     if not free or limit <= sewn.tol:
         return sewn, out
@@ -452,7 +453,7 @@ def _across(wire) -> float:
     return float(np.sqrt((d * d).sum(axis=2)).max())
 
 
-def fill_pinholes(sewn, limit: float) -> tuple[object, list[float]]:
+def fill_pinholes(sewn, limit: float) -> tuple[Any, list[float]]:
     """SURF-10: every INNER loop of a face that is no bigger across than `limit` is taken off its face: the hole is
     filled with the face's own surface, which was always there under it. Only a loop whose every edge is free (the
     hole is open, nothing is attached to its rim). Returns (the Sewn, the sizes of the holes filled)."""
@@ -514,13 +515,13 @@ def fill_pinholes(sewn, limit: float) -> tuple[object, list[float]]:
 
 
 def clean(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
-          holes_mm: float | None = None) -> tuple[object, dict]:
+          holes_mm: float | None = None) -> tuple[Any, dict]:
     """SURF-8 and SURF-10 on a surface part's sewn faces: (the Sewn to mesh, the clean-up record in mm). `limit_mm`:
     the stitch tolerance the user's notes state (None: the rule's, GAP_RULE sew tolerances). `holes_mm`: the size
     under which the user asked for holes to be filled (None: only pinholes no bigger than the gaps closed)."""
     mm = float(mm_per_unit)
     stated = limit_mm is not None and limit_mm > 0
-    limit = float(limit_mm) / mm if stated else GAP_RULE * sewn.tol
+    limit = float(limit_mm) / mm if limit_mm is not None and stated else GAP_RULE * sewn.tol
     out, rec = ladder(sewn, limit, stated=stated)
     hole_limit = float(holes_mm) / mm if holes_mm else limit
     out, holes = fill_pinholes(out, hole_limit)

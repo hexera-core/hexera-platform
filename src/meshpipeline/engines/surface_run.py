@@ -177,12 +177,15 @@ def requirements_in(workspace: Path | str) -> dict | None:
     """NOTE-7..9: the mesh requirements the FEA driver read from the user's notes and left in the workspace (a global
     size, edge lengths, quality limits, the element kind), for the shell mesher. None when nothing was asked - or
     when the notes' requirements reader (engines/mesh_requirements) is not in this build."""
+    import importlib
+
     try:
-        from meshpipeline.engines import mesh_requirements as MR
+        MR = importlib.import_module("meshpipeline.engines.mesh_requirements")
     except ImportError:
         return None
     try:
-        return MR.requirements_of(MR.read(workspace))
+        got = MR.requirements_of(MR.read(workspace))
+        return got if isinstance(got, dict) else None
     except Exception as exc:  # noqa: BLE001 - no requirements read is no requirements
         logger.warning("surface run: the notes' mesh requirements were not read (%s)", type(exc).__name__)
         return None
@@ -192,9 +195,9 @@ def _mesh(out: Path, *, mm_per_unit: float, target: dict | None, requirements: d
     """The shell mesher on the record in `out`, with the user's count and (when given) their notes' requirements."""
     from meshpipeline.engines.gmsh import shell_adapter as sa
 
-    if requirements:
-        return sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
-    return sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target)
+    # the requirements keyword exists where the notes' reader is built in (PR #435); with none, the call is as before
+    more: dict = {"requirements": requirements} if requirements else {}
+    return sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, **more)
 
 
 def deck_notes(thickness_mm: float | None) -> list[str]:

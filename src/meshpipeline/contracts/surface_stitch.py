@@ -110,12 +110,13 @@ def read_text(text: Any) -> StitchReading:
             rest = pattern.sub(lambda m: " " * len(m.group(0)), rest)
     stitch = _first(_STITCH, rest)
     no = _NO_STITCH.search(rest)
-    out = {"holes_mm": hole[0], "holes_quote": hole[1]} if hole is not None else {}
+    holes_mm = hole[0] if hole is not None else None
+    holes_quote = hole[1] if hole is not None else ""
     if stitch is not None and (no is None or stitch[2] > no.start()):
-        return StitchReading(mm=stitch[0], quote=stitch[1], **out)
+        return StitchReading(mm=stitch[0], quote=stitch[1], holes_mm=holes_mm, holes_quote=holes_quote)
     if no is not None:
-        return StitchReading(off=True, quote=" ".join(no.group(0).split()), **out)
-    return StitchReading(**out)
+        return StitchReading(off=True, quote=" ".join(no.group(0).split()), holes_mm=holes_mm, holes_quote=holes_quote)
+    return StitchReading(holes_mm=holes_mm, holes_quote=holes_quote)
 
 
 def read(texts: Iterable[Any]) -> StitchReading:
