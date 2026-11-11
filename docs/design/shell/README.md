@@ -807,3 +807,23 @@ Industry practice: beads and darts are kept as geometry with at least two elemen
 - Touching bodies in IGES: a pipe and its insulation, coaxial reductions (sh0003, sh0013, sh0014, sh0017, sh0046). Their coincident faces leave an edge at one angle beside faces at their own, which SHELL-15i does not read (a strict xfail test pins it).
 - IGES written with every real rounded to 7 or 5 digits: solids read invalid; not worked on.
 - The sizing rule above and a bead minimum, for the sizing stream.
+
+## 13. Surfaces made to meet (SURF-12, 11 Nov, input stream; founder's decision)
+
+A surface file written as a clean-up exercise (or simply exported loosely) has places where the surfaces do not meet: an edge stopping short of its neighbour, a face running over its neighbour, a corner off its neighbour's corner. A pre-processor user closes each by hand: extend the face to its neighbour, trim the overlap back, move the corner. Commercial tools leave this to the engineer. Here it is done by rule (`cad/surface_mend.py`), on the surface route only (open sheets, no solid; solids, the extraction and `cad/repair` are not touched), before stitching - so a gap across a face is closed by continuing the face, never papered over by a sewing tolerance.
+
+**The places** are SURF-8's: free edges running alongside another face within 1/100 of the part. They are taken one at a time, nearest gap first. For each, by which way the neighbour lies:
+
+- **Extended** (the neighbour lies across the face: an edge stopping short). The face is continued past the edge on its own surface. A natural patch (its one wire the four sides of its surface): on a plane, cylinder, cone, sphere or torus, the same surface over a wider stretch of its own parameters; on a B-spline, the patch rebuilt through its own points and continued past the edge with the surface's first and second derivatives, kept only when it lies on the old patch within a tenth of the sew tolerance. A trimmed face (a bead or dart cut out of a larger patch - most faces of a real stamped file): a strip of its own surface between the edge and a line past it, the strip's sides continuing the face's own neighbouring edges (a rim stays a straight rim), joined into the face as one face. The continued face is then cut where it crosses its neighbour, or - when the two are one sheet continued - cut back along the neighbour's own edge. A web's foot extended onto its plate is joined by scoring the plate (SURF-2's imprint).
+- **Trimmed** (an overlap: the face runs over its neighbour): cut back along the neighbour's edge.
+- **Moved** (the neighbour lies off the face: a step, a corner off its neighbour's corner): the two faces sewn alone at the gap - a tolerance join, the faces' surfaces unchanged.
+
+**Every change is judged** before it is kept: the face valid (BRepCheck), its normal side kept, its area changed by no more than a strip as wide as the reach along the edge, and crossing no other face (touching along edges is allowed). The sheet then sewn again at the sew tolerance; the change is kept only when it leaves less open by SURF-8's count (fewer places, or as many with less open edge - a place of several pieces is closed piece by piece) and never more places.
+
+**The reach**: no change moves geometry farther than 1/100 of the part nor a quarter of the narrower of the two faces; "close gaps up to 4 mm" (or "stitch gaps up to ...") sets it; "do not change the surfaces" turns this off. Beyond the reach the place stays open and is told why.
+
+**What is said**: "Closed K of the N places where the surfaces did not meet", then how ("2 extended along their own surface, 1 trimmed back to a neighbour's edge - by up to 1.2 mm"), with each change in the run's record (what, which face, where, by how much). Where the surfaces still do not meet, each sentence stands alone and the counts add up to the places left.
+
+**Proof** (`tests/unit/cad/test_surface_mend.py`, `test_surface_textbook.py`; look-alikes `~/shellcamp/input/tools/stamped_gaps.py`, `trimmed_gaps.py`): an edge stopping short, an overlap, a step, a web's foot, a trimmed plate cut back - each closed, the area the clean part's; a gap past the reach left and told; "do not change" changes nothing; a slot never closed; before - closed = after; the same file twice the same. A cantilever drawn as four patches with a 0.6 mm short edge and a 0.8 mm step, made to meet, bends within 2% of the clean patches (CalculiX). MEND_NUMBERS_HERE
+
+**Not done**: a trimmed face whose surface does not run on past the edge (it would need the surface itself extended and the face rebuilt on it); a "moved" step is a tolerance join, not a reshaped face; bodies touching in IGES stay open (section 2.4.1).
