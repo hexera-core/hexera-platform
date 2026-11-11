@@ -413,17 +413,38 @@ ALONG_DEG = 15.0
 FROM_CORNER = 2.0
 #: ... but an edge whose distance grows under this much per unit of its length (about 6 degrees) is a crack, not a rim
 WEDGE_SLOPE = 0.1
+#: ... and a face bending by up to this much across a gap is the same sheet continued (the edge runs alongside it)
+SAME_SHEET_DEG = 45.0
 
 
-def _alongside(edge, probe: list, dists: list, feet: list, face, tol: float) -> bool:
+def _same_sheet(sas, srf, q, n) -> bool:
+    """SURF-8: whether the edge's own face at probe q faces within SAME_SHEET_DEG of the neighbour's normal n - the
+    same sheet continued across the gap, bending on the way (a bead's flank, a stamped curve): the edge lies in its own
+    face, so it runs alongside a neighbour that only bends away from that face. (11 Nov: a 1 mm gap across a curved
+    stamped panel's slanted cut was not counted - the neighbour's surface 1 mm across a bead turned 20 degrees.)"""
+    from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.gp import gp_Pnt
+
+    if sas is None:
+        return False
+    uv = sas.ValueOfUV(gp_Pnt(*map(float, q)), 1e-7)
+    pr = BRepLProp_SLProps(srf, uv.X(), uv.Y(), 1, 1e-9)
+    if not pr.IsNormalDefined():
+        return False
+    m = pr.Normal()
+    return abs(m.X() * n.X() + m.Y() * n.Y() + m.Z() * n.Z()) >= np.cos(np.radians(SAME_SHEET_DEG))
+
+
+def _alongside(edge, probe: list, dists: list, feet: list, face, tol: float, own=None) -> bool:
     """SURF-8: whether a free edge lying within reach of `face` (its probe points at `dists` from it, nearest at
-    `feet`) runs alongside it - a gap, an overlap, an edge stopping short - rather than meeting it at a corner."""
+    `feet`) runs alongside it - a gap, an overlap, an edge stopping short - rather than meeting it at a corner.
+    `own`: the edge's own face."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
     from OCP.BRepLProp import BRepLProp_SLProps
     from OCP.gp import gp_Pnt, gp_Vec
     from OCP.ShapeAnalysis import ShapeAnalysis_Surface
-    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.TopAbs import TopAbs_REVERSED, TopAbs_VERTEX
     from OCP.TopoDS import TopoDS
 
     from meshpipeline.cad import midsurface as ms
@@ -433,8 +454,12 @@ def _alongside(edge, probe: list, dists: list, feet: list, face, tol: float) -> 
     t0, t1 = c.FirstParameter(), c.LastParameter()
     sas = ShapeAnalysis_Surface(BRep_Tool.Surface_s(face))
     srf = BRepAdaptor_Surface(face, False)
-    for j, (_q, foot) in enumerate(zip(probe, feet, strict=True)):
-        t = t0 + (t1 - t0) * NEAR_SAMPLES[j]
+    # the probes are taken in the edge's own direction (_edge_points): a reversed edge's run from its curve's end
+    rev = edge.Orientation() == TopAbs_REVERSED
+    own_sas = ShapeAnalysis_Surface(BRep_Tool.Surface_s(own)) if own is not None else None
+    own_srf = BRepAdaptor_Surface(own, False) if own is not None else None
+    for j, (q, foot) in enumerate(zip(probe, feet, strict=True)):
+        t = (t1 - (t1 - t0) * NEAR_SAMPLES[j]) if rev else (t0 + (t1 - t0) * NEAR_SAMPLES[j])
         p, v = gp_Pnt(), gp_Vec()
         c.D1(t, p, v)
         if v.Magnitude() < 1e-14:
@@ -445,7 +470,7 @@ def _alongside(edge, probe: list, dists: list, feet: list, face, tol: float) -> 
             continue
         n = pr.Normal()
         sin = abs(v.X() * n.X() + v.Y() * n.Y() + v.Z() * n.Z()) / v.Magnitude()
-        if sin > np.sin(np.radians(ALONG_DEG)):
+        if sin > np.sin(np.radians(ALONG_DEG)) and not _same_sheet(own_sas, own_srf, q, n):
             return False
     # 2. not leaving a shared corner: the edge shares a vertex with the face and the distance grows from it
     near_ends = []
@@ -524,7 +549,7 @@ def open_places(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
                 dists.append(dq)
                 pt = d.PointOnShape2(1)
                 feet.append(np.array([pt.X(), pt.Y(), pt.Z()]))
-            if far > reach or not _alongside(e, probe, dists, feet, f, sewn.tol):
+            if far > reach or not _alongside(e, probe, dists, feet, f, sewn.tol, sewn.faces[mine]):
                 continue
             if best is None or far < best:
                 best, near = far, k
