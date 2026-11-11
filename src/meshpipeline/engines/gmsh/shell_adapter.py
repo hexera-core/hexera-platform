@@ -94,6 +94,11 @@ FEATURE_EDGES = True
 #: (faces: measured on the 80 lab parts, free-meshed narrow faces gave 4,300 more triangles and 3 parts past Nastran's
 #: limits for the same parts inside the list; off until narrow faces of more than four sides are mapped)
 FEATURE_FACES = False
+#: SHMESH-30: a sheet drawn as many CAD patches is sized by the sheet (shell_plan.SHEET_SMOOTH_DEG) - on surface
+#: files (record "source": "surface", PR #434's route, not on main); on extracted mid-surfaces too only with
+#: SHEET_REGIONS_ALL (a change to the rules' own mesh: off until signed off)
+SHEET_REGIONS = True
+SHEET_REGIONS_ALL = False
 #: SHMESH-28: the last clean-up (shell_quality.mend) under the user's limits; then relax and mend again, at most
 #: MEND_CYCLES times
 MEND = True
@@ -515,6 +520,69 @@ def _faces_and_facts(brep: Path, mm: float):
     return out
 
 
+def _sheet_widths(brep: Path, facts: list[dict], owners: list[str], record: dict, mm: float) -> dict:
+    """SHMESH-30: each sewn face's region (faces of one wall joined where the surface runs on smoothly,
+    shell_plan.smooth_link) and that region's width (mm: as one region, its shared edges inside it - midsurface
+    union_width). Returns {"widths": per face (0 for a face alone), "size": faces in its region}."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS, TopoDS_Shape
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    from meshpipeline.cad import midsurface as ms
+
+    shape = TopoDS_Shape()
+    if not BRepTools.Read_s(shape, str(brep), BRep_Builder()):
+        raise ValueError("the mid-surface could not be read")
+    faces = ms._faces(shape)
+    fmap = ms._map(shape, TopAbs_FACE)          # the same order as `faces` (1-based)
+    mids = {m["id"]: m for m in record["mids"]}
+    pairs = {p["id"]: p for p in record["pairs"]}
+
+    def wall_of(k: int) -> float:
+        return float(pairs[mids[owners[k]]["pair"]]["thickness_mm"])
+
+    emap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, emap)
+    links: list[tuple[int, int]] = []
+    for i in range(1, emap.Extent() + 1):
+        ks = sorted({fmap.FindIndex(x) - 1 for x in emap.FindFromIndex(i)} - {-1})
+        if len(ks) != 2:
+            continue
+        a, b = ks
+        same = abs(wall_of(a) - wall_of(b)) <= 1e-6 * max(1.0, wall_of(a)) and (
+            mids[owners[a]]["pair"] == mids[owners[b]]["pair"] or mids[owners[a]].get("body") == mids[owners[b]].get("body"))
+        if not same:
+            continue
+        c = BRepAdaptor_Curve(TopoDS.Edge_s(emap.FindKey(i)))
+        p = c.Value(0.5 * (c.FirstParameter() + c.LastParameter()))
+        na = ms._face_normal_at(faces[a], (p.X(), p.Y(), p.Z()))
+        nb = ms._face_normal_at(faces[b], (p.X(), p.Y(), p.Z()))
+        if na is None or nb is None:
+            continue
+        cosv = abs(float(np.dot(na, nb))) / max(float(np.linalg.norm(na) * np.linalg.norm(nb)), 1e-300)
+        angle = math.degrees(math.acos(min(1.0, cosv)))
+        if plan_rules.smooth_link(angle, same_wall=True, bends=(facts[a]["bend"], facts[b]["bend"]),
+                                  wall=min(wall_of(a), wall_of(b))):
+            links.append((a, b))
+    region = plan_rules.sheet_regions(len(faces), links)
+    members: dict[int, list[int]] = {}
+    for k, r in enumerate(region):
+        members.setdefault(r, []).append(k)
+    widths = [0.0] * len(faces)
+    size = [1] * len(faces)
+    for ks in members.values():
+        if len(ks) < 2:
+            continue
+        w = float(ms.union_width([faces[k] for k in ks])) * mm
+        for k in ks:
+            widths[k], size[k] = w, len(ks)
+    return {"widths": widths, "size": size}
+
+
 def _reference_normal(face) -> np.ndarray | None:
     """The face's oriented normal at its middle (the side its sheet's normals are turned to)."""
     from OCP.BRepGProp import BRepGProp
@@ -644,10 +712,17 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     if len(owners) != len(facts):
         raise ValueError(f"the mid-surface has {len(facts)} faces but the record names {len(owners)}")
     rows = []
+    widths = [min(f["width"], f["box_width"]) if f["box_width"] > 0 else f["width"] for f in facts]
+    sheet = None
+    if SHEET_REGIONS_ALL or (SHEET_REGIONS and record.get("source") == "surface"):
+        # SHMESH-30: a sheet drawn as many patches is sized by the sheet
+        sheet = _sheet_widths(Path(brep), facts, owners, record, mm)
+        widths = [max(w, s) for w, s in zip(widths, sheet["widths"], strict=True)]
     for k, f in enumerate(facts):
-        width = min(f["width"], f["box_width"]) if f["box_width"] > 0 else f["width"]
-        rows.append({"face": k + 1, **plan_rules.face_plan(record, owners[k], width=width, radii=f["radii"],
+        rows.append({"face": k + 1, **plan_rules.face_plan(record, owners[k], width=widths[k], radii=f["radii"],
                                                          bend=f["bend"])})
+        if sheet is not None and sheet["size"][k] > 1:
+            rows[-1]["sheet_mm"] = float(f"{sheet['widths'][k]:.6g}")
     walls = [r["wall_mm"] for r in rows]
     # SHMESH-20: a plan far past what a shell mesh is made in within the time allowed stops before gmsh starts, and
     # says so (a ship's 3 m slotted hull, sh0048: about 3 million planned, over an hour of gmsh)

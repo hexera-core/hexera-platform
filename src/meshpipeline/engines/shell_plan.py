@@ -86,6 +86,41 @@ def feature_size(own: float, *, size: float, wall: float, ratio: float = FEATURE
     return _r(h) if h < size else None
 
 
+#: SHMESH-30: a sheet drawn as many CAD patches is sized by the sheet, not by the patch. Two faces of the same wall
+#: that meet along an edge where the surface runs on smoothly (their normals there within SHEET_SMOOTH_DEG) are one
+#: region, unless either is a bend (curved tighter than PANEL_WALLS walls: a bend is sized by its own curvature and
+#: width, and keeps the flanges either side apart). Each face is then planned with its region's width. A 400 x 240 mm
+#: panel drawn as 30 patches was sized patch by patch: 67,000 elements (PR #434's report)
+SHEET_SMOOTH_DEG = 5.0
+
+
+def sheet_regions(n: int, links: list[tuple[int, int]]) -> list[int]:
+    """SHMESH-30: the region of each of `n` faces, given the pairs of faces joined smoothly (`links`): each region
+    named by its lowest face. Pure; deterministic."""
+    parent = list(range(n))
+
+    def root(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for a, b in sorted(links):
+        ra, rb = root(a), root(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    return [root(a) for a in range(n)]
+
+
+def smooth_link(angle_deg: float, *, same_wall: bool, bends: tuple[float | None, float | None],
+                wall: float) -> bool:
+    """SHMESH-30: whether two faces meeting along an edge are one region: the same wall, the surface running on
+    smoothly there, and neither face a bend (a radius under PANEL_WALLS walls)."""
+    if not same_wall or angle_deg > SHEET_SMOOTH_DEG:
+        return False
+    return all(r is None or r <= 0 or r >= PANEL_WALLS * wall for r in bends)
+
+
 def face_plan(record: Mapping, mid_id: str, *, width: float, radii: list[float], bend: float | None = None) -> dict:
     """The plan for one sewn face of mid-face `mid_id`: {"mid", "wall_mm", "size_mm", "rule", "curve_mm",
     "curve_rule", "floored"}. `width` (mm) is the face's own narrowest width, `radii` (mm) its edges' radii (hole
@@ -191,4 +226,4 @@ def count_words(t: Mapping | None) -> str:
 
 __all__ = ["BASE_DIVISIONS", "COUNT_SHARE", "CURVE_PER_QUARTER", "FLOOR_WALLS", "GROWTH", "MIN_ACROSS", "PANEL_ACROSS",
            "PANEL_WALLS", "SCALE_RANGE", "base_size", "count_aim", "count_met", "count_scale", "count_words",
-           "curve_size", "face_plan"]
+           "curve_size", "face_plan", "feature_size", "sheet_regions", "smooth_link"]
