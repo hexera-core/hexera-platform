@@ -1112,26 +1112,37 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         slivers = len(tiny)
         # SHMESH-38: WASHERS - a ring of quads round each round hole of a flat face (engines/gmsh/shell_structured.py),
         # drawn on the face before anything is sized; off under the user's "free mesh" / "no washers"
+        mesh_min = plan_rules.FLOOR_WALLS * min(walls) * min(sz, 1.0)
+
+        def hole_size(r_mm: float, k: int) -> float:
+            # the element length the plan puts round a hole of radius r_mm (as the arc sizes below do)
+            h0, _rule = plan_rules.curve_size(r_mm, wall=rows[k]["wall_mm"])
+            h0 *= sz
+            if finest is not None and sizing is not None:
+                h0 = SR.curved_size(r_mm, 0.0, floor=finest, rule=(
+                    rows[k]["size_mm"] if sizing.get("global_mm") is not None else h0), per_turn=SR.HOLE_PER_TURN)
+            elif per_turn:
+                h0 = min(h0, max(2 * math.pi * r_mm / per_turn, mesh_min))
+            return min(h0, rows[k]["size_mm"])
         washers: list = []
         washer_skipped: dict[str, int] = {}
+        block_skipped: dict[str, int] = {}
+        gridded: list = []                  # washers inside a gridded face (SHMESH-40): mapped with it
+        rings: list = []                    # washers in a free face: their own ring mesh (ST.ring_mesh)
+        block_preset: dict[int, int] = {}
+        block_holes: set[int] = set()
+        cut_curves: set[int] = set()        # curves SHMESH-40 drew (no CAD edge)
         if ST.WASHERS and kind != "triangles" and structure not in ("free", "no_washers"):
-            mesh_min = plan_rules.FLOOR_WALLS * min(walls) * min(sz, 1.0)
-
-            def hole_size(r_mm: float, k: int) -> float:
-                # the element length the plan puts round a hole of radius r_mm (as the arc sizes below do)
-                h0, _rule = plan_rules.curve_size(r_mm, wall=rows[k]["wall_mm"])
-                h0 *= sz
-                if finest is not None and sizing is not None:
-                    h0 = SR.curved_size(r_mm, 0.0, floor=finest, rule=(
-                        rows[k]["size_mm"] if sizing.get("global_mm") is not None else h0), per_turn=SR.HOLE_PER_TURN)
-                elif per_turn:
-                    h0 = min(h0, max(2 * math.pi * r_mm / per_turn, mesh_min))
-                return min(h0, rows[k]["size_mm"])
-
             washers, washer_skipped = ST.plan_washers(
                 gmsh, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm)
-            ST.imprint(gmsh, washers, tag_of)
-        washer_holes = {c for w in washers for c in w.hole_after}
+            if ST.BLOCKS and ST.MAPPED and structure != "free":
+                # SHMESH-40: a face whose holes all have washers is cut into a grid of cells, mapped below
+                gridded, block_preset, block_holes, block_skipped = ST.block_faces(
+                    gmsh, washers, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
+                    cuts=cut_curves)
+            rings = [w for w in washers if w not in gridded]
+            ST.imprint(gmsh, rings, tag_of)
+        washer_holes = {c for w in rings for c in w.hole_after} | block_holes
         # SHMESH-1/2: a constant size per face; SHMESH-3/4/6: curves sized by curvature, grown at GROWTH
         fields = []
         top = max(rows[k]["size_mm"] for k in tag_of.values()) / mm
@@ -1163,10 +1174,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         # SHMESH-39: every other four-sided face is a mapped grid too (counts shared through the curves they share)
         grids: dict[int, list[int]] = {}
         if ST.MAPPED and kind != "triangles" and structure != "free":
+            def arc_mm(c: int, t: int) -> float | None:
+                r = _arc_radius(gmsh, c)
+                return None if r is None else hole_size(r * mm, tag_of[t])
+
             grids, _grid_counts = ST.map_faces(
-                gmsh, tag_of, {t: float(min(rows[k]["size_mm"], rows[k].get("curve_mm", rows[k]["size_mm"])))
-                               for t, k in tag_of.items()}, mm,
-                skip=set(mapped) | {w.annulus for w in washers}, preset=strip_counts,
+                gmsh, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, mm, arc_mm=arc_mm,
+                skip=set(mapped) | {w.annulus for w in rings}, preset={**strip_counts, **block_preset},
                 low_mm=(sizing or {}).get("low_mm"), fine_at=short_edges["fine_at"] if short_edges else None,
                 growth=growth)
         if short_edges is not None and narrow is not None and mapped and not FEATURE_AT_STRIPS:
@@ -1207,7 +1221,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         if short_edges is not None:
             for h, curves in short_edges["by_size"].items():
                 arcs_by.setdefault(h, []).extend(curves)
-        for w in washers:
+        for w in rings:
             # SHMESH-38: the field grows out from the ring at the ring's own element length
             if w.out_mm < rows[w.owner]["size_mm"]:
                 arcs_by.setdefault(float(f"{w.out_mm:.6g}"), []).append(w.ring)
@@ -1249,7 +1263,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         gmsh.model.mesh.field.setNumbers(mn, "FieldsList", fields)
         gmsh.model.mesh.field.setAsBackgroundMesh(mn)
         evened = 0
-        washer_curves = ST.set_counts(gmsh, washers)
+        washer_curves = ST.set_counts(gmsh, rings)
         if EVEN_FACES and kind != "triangles":
             fixed = {abs(c) for t in mapped for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)}
             fixed |= washer_curves
@@ -1273,8 +1287,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         xyz = np.asarray(coords, dtype=float).reshape(-1, 3) * mm
         quads, trias, q_face, t_face = [], [], [], []
         # SHMESH-38: each washer's annulus takes the washer's own ring of quads in place of gmsh's mesh there
-        ring_of = {w.annulus: w for w in washers}
-        for w in washers:
+        ring_of = {w.annulus: w for w in rings}
+        for w in rings:
             pts, ring = ST.ring_mesh(gmsh, w, index, xyz, mm)
             xyz = np.vstack([xyz, pts])
             quads.append(ring)
@@ -1334,6 +1348,24 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     on_line[at] = True
                     line_a[at] = np.asarray(gmsh.model.getValue(0, points[0], []), dtype=float) * mm
                     line_b[at] = np.asarray(gmsh.model.getValue(0, points[1], []), dtype=float) * mm
+        if cut_curves:
+            # SHMESH-40: the nodes on the lines the grid was cut along are inside the CAD face: they relax and mend as
+            # the face's own inside nodes do (in its plane); the ends of a cut on a CAD edge stay on it
+            have = {c for _d, c in gmsh.model.getEntities(1)}
+            on_cad: set[int] = set()
+            for c in sorted(have - cut_curves):
+                got, _c, _p = gmsh.model.mesh.getNodes(1, c, includeBoundary=True)
+                on_cad |= set(index[np.asarray(got, dtype=np.int64)].tolist())
+            for c in sorted(cut_curves & have):
+                got, _c, _p = gmsh.model.mesh.getNodes(1, c, includeBoundary=True)
+                for v in index[np.asarray(got, dtype=np.int64)].tolist():
+                    if v in on_cad:
+                        continue
+                    movable[v] = True
+                    node_kind[v] = 0
+                    node_edge[v] = -1
+                    on_line[v] = False
+                    vertex_edges.pop(int(v), None)
         if log is not None:
             log.extend(gmsh.logger.get())
     finally:
@@ -1495,13 +1527,14 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     quality["sliver_faces"] = slivers
     holes_seen = len(washers) + sum(washer_skipped.values())
     quality["structure"] = {"washers": len(washers), "holes": holes_seen,
-                            "mapped_faces": len(grids) + len(mapped), "faces": len(tag_of) - len(washers),
+                            "mapped_faces": len(grids) + len(mapped), "faces": len(tag_of) - len(rings),
                             "washers_shrunk": sum(1 for w in washers if w.shrunk),
                             "no_washer": dict(sorted(washer_skipped.items())),
                             "around": dict(sorted(Counter(w.n for w in washers).items())),
+                            "washers_in_grid": len(gridded), "not_gridded": dict(sorted(block_skipped.items())),
                             "switched_off": structure}
     if grids or mapped:
-        mesh.notes.append(f"Mapped quads (a regular grid) on {len(grids) + len(mapped)} of {len(tag_of) - len(washers)} "
+        mesh.notes.append(f"Mapped quads (a regular grid) on {len(grids) + len(mapped)} of {len(tag_of) - len(rings)} "
                           "face(s): every face with four sides (SHMESH-39).")
     if washers:
         why = "; ".join(f"{n} {reason}" for reason, n in sorted(washer_skipped.items()))

@@ -20,7 +20,7 @@ ALIGN_DEG = 10.0
 CIRCLE_TOL = 0.02
 #: a hole has a RING when every element touching its circle is a quad lying on it by one edge, and the quads' far
 #: corners lie on one circle (within RING_TOL of its radius)
-RING_TOL = 0.05
+RING_TOL = 0.10
 #: a sharp edge between two elements (a fold of the sheet) counts as a boundary the mesh should run along
 FOLD_DEG = 30.0
 
@@ -82,10 +82,14 @@ def _loops(pairs: np.ndarray) -> list[list[int]]:
 
 def _circle(xyz: np.ndarray) -> tuple[np.ndarray, float, np.ndarray] | None:
     """(centre, radius, normal) of points on a circle, else None."""
-    c = xyz.mean(axis=0)
-    rel = xyz - c
-    _u, _s, vt = np.linalg.svd(rel, full_matrices=False)
+    c0 = xyz.mean(axis=0)
+    _u, _s, vt = np.linalg.svd(xyz - c0, full_matrices=False)
     n = vt[2]
+    # the centre: a least-squares circle in the loop's plane (its nodes need not be evenly spaced)
+    xy = np.column_stack([(xyz - c0) @ vt[0], (xyz - c0) @ vt[1]])
+    sol, *_r = np.linalg.lstsq(np.column_stack([2 * xy, np.ones(len(xy))]), (xy ** 2).sum(axis=1), rcond=None)
+    c = c0 + sol[0] * vt[0] + sol[1] * vt[1]
+    rel = xyz - c
     r = np.linalg.norm(rel, axis=1)
     rm = float(r.mean())
     if rm <= 0 or float(np.abs(r - rm).max()) > CIRCLE_TOL * rm or float(np.abs(rel @ n).max()) > CIRCLE_TOL * rm:
