@@ -717,6 +717,47 @@ through a fixed count of nodes, and on a 15-degree faceted wall the band keeps o
 8.55); the middle was the mean of four nodes sitting 3 mm above the box's middle, where the deflection rises 2.5%
 a millimetre. Read at the point, the tube is within 3.1% everywhere.
 
+**MIXED-9, solid patches in a shell run (11 Nov, the founder's decision).** When the user asks for a shell and a
+region cannot be a proper shell - a boss, a block, a nozzle root, a whole solid body beside plates - it is meshed as
+SOLID and tied to the shell round it, in the shell's own files, instead of being left out ("shell where you can,
+solid patches where you must, tied together"). No question and no button: one plain line on the stage and in the
+result ("1 region is too thick for a shell and is meshed as solid, tied to the shell."; the bodies listed for a file
+of several). `engines/solid_patches.py`, called by `engines/shell_run.py` after the extraction.
+
+- 9a, what is patched: each thick region of a body with shell walls (the record's `solid_regions`), and each body
+  solid as a whole when another body has a shell.
+- 9b, how: the mixed route's own split (MIXED-1..3, cores grown CUT_WALLS into the walls), the whole sewn surface cut
+  by the regions in one Boolean, the FEA path's quadratic tetrahedra, and SHLINK-4's ties. A body solid as a whole is
+  not cut into: a shell edge ending on its face within a quarter wall (`mixed_mesh.LOOSE_SHARE`) is linked to it (a
+  2 mm spoke's mid-face stops 0.03 mm short of a 30 mm hub's face).
+- 9c, held to: the shell valid, every patch valid, every link node tied. A patch that no shell edge reaches, one whose
+  link rows find too few solid nodes even meshed at half the thinnest wall, or one whose overlap row folds a shell
+  element at a sharp corner, is left out and said. The other patches are kept.
+- 9d, shell only: "shell only", "no solid", "leave out what can't be shelled" in the notes (the notes reader's
+  element kind `shell_only`, checked against the user's own words) gives today's shell, said as asked.
+- 9f, the metal the shell does not hold: when a body's cores cannot be grown (OCC's offset), the body less its shell
+  walls' slabs is patched as it is, with no growth and no trim: only the pieces a shell edge ends on (the metal at a
+  junction, which no edge reaches, stays out as in any shell model), each piece meshed on its own.
+- 9g, a budget: the patches may add 7 minutes to a run (`PATCH_BUDGET_S`); past it, today's shell, said.
+- Nothing solid: today's path, byte for byte (decks, viewer mesh, record).
+
+Decks: `shell.bdf` CTETRA in a PSOLID per patch (its part's MAT1), a `$ HEXERA GROUP` per patch, MPC set 1;
+`shell.inp` / `shell_abaqus.inp` C3D10 in a *SOLID SECTION per patch, *EQUATION; `shell.cdb` SOLID187, CE. The
+viewer draws each patch as its own part ("Part_1, solid patch 1").
+
+Proof (11 Nov, lab VM, CalculiX 2.21, one thread), the patched shell against the FEA path's own all-solid mesh:
+
+| part | elements, patched / all-solid | statics | modes |
+|---|---|---|---|
+| 200 x 100 x 2 plate, 20 mm boss 15 tall (free-free) | 19,054 / 240,463 | boss top z -0.7%, x -0.7% | 7-12: +0.2 to +1.0% |
+| frame: four 2 mm spokes round a 30 mm hub (ends clamped) | 31,447 / 101,719 | hub sideways -1.6% | 1-3: +0.0 to +0.9% |
+| the same frame, the hub a body of its own | 1,715 / 101,719 | hub sideways +1.0% | 1-3: -0.5 to -0.1% |
+| T-bracket: 2 mm web 60 wide on a 40 x 60 x 20 block foot | 24,841 / 88,945 | web tip -6.9% (clamped plate theory: 0.0%) | 1-3: +3.4 to +6.2% |
+
+The T-bracket's web is 30 walls wide: the shell bends it as a plate (E / (1 - nu^2)) and reads the clamped plate's
+own 0.7222 mm exactly; the solid lets the web's free sides curl and bends between plate (0.7218) and beam (0.7932):
+0.7758. That gap is the shell idealisation on a wide web, not the join.
+
 Closed by MIXED-8 (both now meshed solid), as it was explained: the box and the casting's 12th mode. Both are as far from the converged truth as from the product's
 own solid mesh, and are unchanged by a shell mesh twice as fine (-0.7%) or a cut 3 walls in (0.0%): the shell
 idealisation itself. The box's 4 mm walls are 10 walls tall: a shell wall bends from the bottom's mid-plane, 2 mm
