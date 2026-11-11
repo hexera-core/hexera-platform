@@ -1458,10 +1458,12 @@ def _cite(job_id: str, entries: list[dict]) -> None:
 
 
 async def _narrate_pass(publish, *, n: int, first: bool, plan: dict, levers: list[dict], machine: dict,
-                        budget_s: int) -> None:
+                        budget_s: int, job_id: str = "", ws: Path | None = None) -> None:
     """Say a pass out loud before it meshes: on the first pass the plan's own decisions (their
-    words, through the leak guard), on a later one why it runs again (the lever's words); then the
-    machine it runs on, and the mesh start the run line counts from."""
+    words, through the leak guard), on a later one why it runs again (the lever's words); the whole
+    design as one receipt (contracts/mesh_design); then the machine it runs on, and the mesh start
+    the run line counts from."""
+    from meshpipeline.contracts import mesh_design
     from meshpipeline.contracts import narration as N
 
     if first:
@@ -1469,6 +1471,8 @@ async def _narrate_pass(publish, *, n: int, first: bool, plan: dict, levers: lis
             await N.asay(publish, line, op_id=f"fea:plan:{n}:{i}")
     elif levers:
         await N.asay(publish, N.retry_line(n, levers[-1]), op_id=f"fea:retry:{n}")
+    await mesh_design.apublish(publish, job_id=job_id, workspace=ws, attempt=n,
+                               planned=(int((plan.get("estimate") or {}).get("elements") or 0), "elements"))
     await N.astep(publish, "machine", N.machine_words(machine), op_id=f"fea:machine:{n}")
     meshing = getattr(publish, "ameshing", None)
     if meshing is not None:
@@ -2183,7 +2187,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             # mesher's own stages as it reports them. This path used to say nothing here, so a run
             # meshing for an hour on a VM still read "Planning the mesh..." on the page.
             await _narrate_pass(publish, n=n, first=n == n0 + 1, plan=plan, levers=levers,
-                                machine=machine, budget_s=int(work["ceiling_s"]))
+                                machine=machine, budget_s=int(work["ceiling_s"]), job_id=job_id, ws=ws)
             native_t0 = time.monotonic()
             runs_here = 0
             while True:

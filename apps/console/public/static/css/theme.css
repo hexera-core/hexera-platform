@@ -1461,3 +1461,33 @@ button.rp-kind:focus-visible{outline:2px solid var(--accent-line,var(--accent));
 .rp-body .oc-more{margin-top:8px}
 .fe .fe-faces-short{margin-top:6px}
 @media (prefers-reduced-motion:reduce){.rp-chev{transition:none}}
+
+/* THE RUN BOX'S FOUR ROWS (render/stage.js, core/run_rows.js): one name and one time per row, a few
+   plain lines always in view, the live line inside the row running now, and the steps folded away */
+.rr-box .tl-node{padding-bottom:10px}
+.rr-box .tl-name{cursor:default}
+.rr-box .tl-node:has(.tl-chev:not([hidden])) .tl-name{cursor:pointer}
+.tl-chev[hidden]{display:none}
+.rr-said{margin:0 0 2px}
+.rr-said:empty{display:none}
+.rr-line{margin:1px 0;font:var(--fs-sm)/1.55 var(--sans);color:var(--text-muted)}
+.rr-line.bad{color:var(--danger)}
+.rr-line.none{color:var(--text-faint)}
+.rr-dec{list-style:none;margin:2px 0 4px;padding:0;display:grid;gap:2px}
+.rr-dec li{position:relative;padding-left:12px;font:var(--fs-sm)/1.55 var(--sans);color:var(--text-muted)}
+.rr-dec li::before{content:'';position:absolute;left:2px;top:.68em;width:4px;height:4px;border-radius:50%;background:var(--border-strong)}
+.rr-k{margin-right:6px;font-weight:500;color:var(--text)}
+.rr-live{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;margin:2px 0 4px;font:var(--fs-sm)/1.5 var(--sans);color:var(--text)}
+.rr-live[hidden]{display:none}
+.rr-note{color:var(--text-faint)}
+.rr-bar{flex-basis:100%;height:2px;border-radius:2px;background:var(--divider);overflow:hidden}
+.rr-bar>i{display:block;height:100%;background:var(--accent);transition:width .6s ease}
+.tl-dot.skip{border-color:var(--border-strong);background:var(--surface-2)}
+.tl-dot.skip::after{content:'–';color:var(--text-faint);font-size:9px;font-weight:700}
+.e-rc{margin:4px 0;font:var(--fs-sm)/1.5 var(--sans);color:var(--text-muted)}
+.e-rc-h{font-weight:500;color:var(--text)}
+.rr-dec .rr-more{display:none}
+.tl-node.open .rr-dec .rr-more{display:list-item}
+.tl-node.open .rr-dec .rr-count{display:none}
+.rr-dec .rr-count{color:var(--text-faint)}
+.rr-dec .rr-count::before{display:none}

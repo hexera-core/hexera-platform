@@ -1,28 +1,24 @@
-// Responsibility: Turn a mesh run's events into one live line at the top of the run card - the step
-// running now in plain words (the engine chosen and why, the plan, meshing on the cloud mesher and
-// what the mesher says it is doing, checking quality, the AI review), its time, how far through
-// the engine's own estimate says it is, the steps done ticked with their times, a note when a step
-// runs long, and how the run ended.
-// Boundaries: a model the stage renderer feeds (render/stage.js); it draws through the geometry
-// check's line (render/check_progress.js), so the two read alike. It reads no prose to decide
-// anything: an event's TYPE and lane say what happened; a note is only ever shown as it was said.
-import { createCheckProgress, durationWords } from "./check_progress.js";
+// Responsibility: Turn a mesh run's events into the run box's live line - what the row running now is
+// doing, in plain words (choosing the engine, designing, meshing and what the mesher says it is doing,
+// checking, the review), how far through the engine's own estimate says it is, a note when a row runs
+// long, and how the run ended. Its steps are the box's four rows (core/run_rows.js).
+// Boundaries: a model the stage renderer feeds and reads (render/stage.js draws the line inside the row
+// running now). It reads no prose to decide anything: an event's TYPE and lane say what happened; a note
+// is only ever shown as it was said.
+import { DESIGNS_IN, ROWS, STAGE_ROW } from "../core/run_rows.js";
+import { durationWords } from "./check_progress.js";
 
-const STEPS = [
-  ["engine", "Choosing the mesh engine…", "Chose the mesh engine"],
-  ["repair", "Checking your part for repair…", "Checked your part"],
-  ["plan", "Planning the mesh…", "Planned the mesh"],
-  ["mesh", "Meshing on the cloud mesher…", "Meshed"],
-  ["quality", "Checking quality…", "Checked quality"],
-  ["review", "Reviewing the mesh against your brief…", "Reviewed"],
-];
-/* which lane opening starts which step */
-const LANE_STEP = { engine_select: "engine", repair: "repair", builder: "plan", executor: "quality", classifier: "quality",
-                    reviewer: "review" };
+/* THE STEPS ARE THE RUN BOX'S FOUR ROWS (core/run_rows.js): the same four for every route */
+const STEPS = ROWS.map((r) => [r.key, r.doing, r.title]);
+/* which lane opening starts which step: the one table, with the builder's lane opening on its design */
+const LANE_STEP = Object.fromEntries(Object.entries(STAGE_ROW).map(([k, v]) => [k, k === DESIGNS_IN ? "design" : v]));
+/* what the running line says while a lane inside a row is open, when that is more exact than the row's word */
+const LANE_DOING = { repair: "Checking your part for repair…", executor: "Checking the mesh…",
+                     classifier: "Checking the mesh…", reviewer: "Reviewing the mesh against your brief…" };
 /* a step this long with no word from the run gets a note: it is still running, and the page will move */
 const QUIET_NOTE_MS = 10 * 60 * 1000;
 /* how long a step may run before its line says so - the mesh's own is the engine's measured time */
-const SOFT_MS = { engine: 60e3, plan: 5 * 60e3, quality: 3 * 60e3, review: 5 * 60e3 };
+const SOFT_MS = { engine: 60e3, design: 5 * 60e3, review: 8 * 60e3 };
 
 /** "1.2M", "850k", "4,200" - a count read at a glance (the server's cells_words). */
 export function countWords(n) {
@@ -72,12 +68,11 @@ export function createRunProgress(now = () => Date.now()) {
     s.state = "done"; s.seconds = Math.max(0, (at - s.t0) / 1000);
   }
   /** `key` starts now: every step before it that was open is done, and any it skipped is done too
-   *  (a pinned engine opens no engine lane; an engine without a planner sends no plan) - except the
-   *  repair check: a run that never opened it (no part on disk, a re-review) did not check one. */
+   *  (a pinned engine opens no engine lane; an engine without a planner sends no design). */
   function start(key, at) {
     const i = idx(key);
     steps.forEach((s, j) => {
-      if (j < i) { if (s.state === "active") finish(s, at); else if (s.state === "todo" && s.key !== "repair") s.state = "done"; }
+      if (j < i) { if (s.state === "active") finish(s, at); else if (s.state === "todo") s.state = "done"; }
       // a step run again (a second meshing pass) makes the steps after it to do again
       else if (j > i && s.state !== "todo") Object.assign(s, { state: "todo", seconds: null, t0: null, label: STEPS[j][2], receipt: null });
     });
@@ -90,7 +85,8 @@ export function createRunProgress(now = () => Date.now()) {
 
   return {
     reset,
-    lane(agent, at) { touch(at); const k = LANE_STEP[agent]; if (k) start(k, at); },
+    lane(agent, at) { touch(at); const k = LANE_STEP[agent]; if (!k) return;
+      const s = start(k, at); s.doing = LANE_DOING[agent] || STEPS[idx(k)][1]; },
     waiting(text) { waitingText = text || ""; },
     /** the engine lane's own words: "Mesh engine: cfMesh - it did best in our lab on shapes like this one" */
     engine(text, at) {
@@ -98,12 +94,12 @@ export function createRunProgress(now = () => Date.now()) {
       if (/^Mesh engine:/.test(String(text || ""))) { s.label = String(text).trim(); s.engine = true; }
     },
     plan(summary, at) {
-      touch(at); const s = start("plan", at);
+      touch(at); const s = start("design", at);
       if (summary) s.label = "Plan: " + summary;
       finish(s, at);
     },
     meshing(engine, budgetS, history, at) {
-      touch(at); start("mesh", at);
+      touch(at); start("build", at).doing = "Meshing on the cloud mesher…";
       const e = step("engine"); if (!e.engine && engine) e.label = "Mesh engine: " + engine;
       meshInfo = { budget: Number(budgetS) || 0, typical: (history && history.typical_s) || 0, stage: "" };
       // the machine was said just before the mesher started: it is what the mesh is doing first
@@ -152,8 +148,8 @@ export function createRunProgress(now = () => Date.now()) {
       s.receipt = { title: String((ev && ev.title) || "Receipt"), rows };
     },
     meshed(cells, at) {
-      touch(at); const s = step("mesh");
-      if (s.state !== "active") start("mesh", at);
+      touch(at); const s = step("build");
+      if (s.state !== "active") start("build", at);
       if (cells) s.label = "Meshed - " + cells;
       finish(s, at); meshInfo = null;
     },
@@ -168,7 +164,7 @@ export function createRunProgress(now = () => Date.now()) {
       touch(at);
       if (!(n > attempt)) return;
       attempt = n;
-      steps.forEach((s) => { if (s.key !== "engine" && s.key !== "repair") Object.assign(s, { state: "todo", seconds: null, t0: null, label: STEPS[idx(s.key)][2], receipt: null }); });
+      steps.forEach((s) => { if (s.key !== "engine") Object.assign(s, { state: "todo", seconds: null, t0: null, label: STEPS[idx(s.key)][2], receipt: null }); });
       meshInfo = null;
     },
     final(data, at) {
@@ -209,10 +205,10 @@ export function createRunProgress(now = () => Date.now()) {
       const elapsed = Math.max(0, (t - active.t0) / 1000);
       let current = prefix + active.doing, note = "";
       let kind = "", progress = null;
-      if (active.key !== "mesh" && pre && pre.at >= active.t0) {
+      if (active.key !== "build" && pre && pre.at >= active.t0) {
         kind = pre.kind; current = `${prefix}${pre.stage}…`;
       }
-      if (active.key === "mesh" && meshInfo && meshInfo.narrated) {
+      if (active.key === "build" && meshInfo && meshInfo.narrated) {
         kind = meshInfo.kind || "fill";
         const count = meshInfo.n != null && meshInfo.of ? ` · ${countWords(meshInfo.n)} of about ${countWords(meshInfo.of)}${meshInfo.unit ? " " + meshInfo.unit : ""}`
           : meshInfo.n != null ? ` · ${countWords(meshInfo.n)}${meshInfo.unit ? " " + meshInfo.unit : ""} so far` : "";
@@ -223,7 +219,7 @@ export function createRunProgress(now = () => Date.now()) {
         if (meshInfo.frac != null) progress = meshInfo.frac;
         if (meshInfo.beat) note = meshInfo.beat + ". This updates when it moves.";
       }
-      if (active.key === "mesh" && meshInfo) {
+      if (active.key === "build" && meshInfo) {
         if (meshInfo.stage && !meshInfo.narrated) current = `${prefix}Meshing on the cloud mesher - ${meshInfo.stage}…`;
         const typ = meshInfo.typical, cap = meshInfo.budget;
         if (cap && elapsed >= cap) note = "Past its time limit - it stops by itself.";
@@ -232,26 +228,11 @@ export function createRunProgress(now = () => Date.now()) {
       } else if (SOFT_MS[active.key] && elapsed * 1000 > SOFT_MS[active.key]) {
         note = `Past ${durationWords(SOFT_MS[active.key] / 1000)} - still running.`;
       }
-      if (!note && lastEventAt && t - lastEventAt > QUIET_NOTE_MS && active.key !== "mesh") {
+      if (!note && lastEventAt && t - lastEventAt > QUIET_NOTE_MS && active.key !== "build") {
         note = `No news for ${durationWords(QUIET_NOTE_MS / 1000)}. Still running; this updates when it moves.`;
       }
       return { state: "running", live: true, steps: shown, current, note, elapsed_s: elapsed,
                slow: note ? "yes" : undefined, kind, progress };
     },
   };
-}
-
-/** The run card's line: the model above, drawn at the top of the card. */
-export function createRunLine() {
-  const model = createRunProgress();
-  const line = createCheckProgress();
-  let host = null;
-  const api = {
-    model,
-    attach(el) { host = el; },
-    // the commentary stays in view after the run ends, so the line still says why it went the way it did
-    draw() { if (host && host.isConnected) line.show(host, { ...model.view(), said: model.said() }, { pinned: true, id: "run-progress" }); },
-    reset() { model.reset(); line.reset(); host = null; },
-  };
-  return api;
 }

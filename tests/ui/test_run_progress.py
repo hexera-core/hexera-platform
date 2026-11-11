@@ -1,7 +1,7 @@
 # Responsibility: Verify a mesh run's live line in a real browser, fed through the one event dispatch
-# a live or replayed run goes through: waiting for a worker, the engine and why, the plan, meshing
-# with what the mesher says it is doing, checking quality, the AI review, and how the run ended -
-# with the steps done ticked, a rebuild starting the steps again, and nothing moving once it ends.
+# a live or replayed run goes through: waiting for a worker, the engine and why, the design, meshing
+# with what the mesher says it is doing, checking, the review, and how the run ended - always inside
+# the one of the four rows running now, a rebuild running the rows again, and nothing moving once it ends.
 # Boundaries: the console's own modules in the page; no network.
 from __future__ import annotations
 
@@ -16,15 +16,19 @@ SETUP = """
   Stage.mount();
   let cur = null;
   const ev = (e) => { cur = dispatch(e, Stage, cur); };
-  const line = () => { const g = document.querySelector('#run-progress .gp'); return {
-    state: g.dataset.state, live: g.dataset.live === '1', now: g.querySelector('.gp-now').textContent,
-    note: g.querySelector('.gp-note')?.textContent || '', advice: g.querySelector('.gp-advice')?.textContent || '',
-    steps: [...g.querySelectorAll('.gp-step')].map(s => s.className.replace('gp-step ', '') + ':' + s.querySelector('.gp-label').textContent),
-    inCard: !!document.querySelector('.proc #proc-live #run-progress') }; };
+  const MARKS = ['done', 'bad', 'back', 'warn', 'nomesh', 'skip', 'ended', 'active'];
+  // the live line is inside the row running now; the rows say what each one did
+  const line = () => { const l = [...document.querySelectorAll('.proc .rr-live')].find(e => !e.hidden);
+    return { live: !!l, row: l ? l.closest('.tl-node').dataset.row : '',
+      now: l ? l.querySelector('.rr-now').textContent : '', note: l?.querySelector('.rr-note')?.textContent || '',
+      rows: [...document.querySelectorAll('.proc .tl-node')].map(n =>
+        MARKS.filter(m => n.querySelector('.tl-dot').classList.contains(m)).join(' ') + ':'
+        + n.dataset.row + ':' + n.querySelector('.rr-said').textContent),
+      title: document.querySelector('.proc-title').textContent }; };
 """
 
 
-def test_the_run_line_follows_the_run_step_by_step(live):
+def test_the_run_line_follows_the_run_row_by_row(live):
     out = live.evaluate("(async () => {" + SETUP + """
       Stage.ensureProc();
       Stage.waiting('Waiting for a worker - about 4 min while the fleet wakes up');
@@ -44,25 +48,29 @@ def test_the_run_line_follows_the_run_step_by_step(live):
       const reviewing = line();
       ev({type:'verdict', stage:'reviewer', verdict:'PASS'});
       Stage.final({pass:true, createdAt:'2026-10-19T10:00:00Z', endedAt:'2026-10-19T10:07:12Z', attempts:1});
-      return {waiting, planning, meshing, checking, reviewing, done: line()};
+      return {waiting, planning, meshing, checking, reviewing, done: line(),
+              clock: document.getElementById('proc-clock').textContent};
     })()""", timeout=60)
-    assert out["waiting"]["inCard"] and out["waiting"]["live"] and out["waiting"]["now"] == "Waiting for a worker…"
-    assert "fleet wakes up" in out["waiting"]["note"]
-    assert out["planning"]["now"] == "Planning the mesh…"
-    assert out["planning"]["steps"][0] == "done:Mesh engine: snappyHexMesh - it did best in our lab on shapes like this one"
+    w = out["waiting"]
+    assert w["live"] and w["row"] == "engine" and w["now"] == "Waiting for a worker…"
+    assert "fleet wakes up" in w["note"]
+    p = out["planning"]
+    assert p["row"] == "design" and p["now"] == "Designing the mesh…"
+    assert p["rows"][0] == "done:engine:snappyHexMesh - it did best in our lab on shapes like this one"
     m = out["meshing"]
-    assert m["now"] == "Meshing on the cloud mesher - adding wall layers…" and m["live"] is True
-    assert "done:Plan: about 2.1M cells, 5 wall layers, finer cells in the wake" in m["steps"]
-    assert out["checking"]["now"] == "Checking quality…"
-    assert "done:Meshed - 2,081,224 cells" in out["checking"]["steps"]
+    assert m["row"] == "build" and m["now"] == "Meshing on the cloud mesher - adding wall layers…"
+    assert "done:design:Plan: about 2.1M cells, 5 wall layers, finer cells in the wake" in m["rows"]
+    c = out["checking"]
+    assert c["row"] == "review" and c["now"] == "Checking the mesh…"
+    assert "done:build:Mesh built: 2.1M cells." in c["rows"]
     assert out["reviewing"]["now"] == "Reviewing the mesh against your brief…"
     d = out["done"]
-    assert d["state"] == "done" and d["live"] is False and d["now"] == "Mesh ready in 7 min 12 s"
-    assert "done:Review passed" in d["steps"] and all(s.startswith("done:") for s in d["steps"])
-    assert_clean(live, "the run line through a whole run")
+    assert not d["live"] and d["title"] == "Mesh ready" and out["clock"] == "7:12"
+    assert all(r.startswith("done:") for r in d["rows"]), d["rows"]
+    assert_clean(live, "the run box through a whole run")
 
 
-def test_a_rebuild_starts_the_steps_again_and_a_failed_run_stops_where_it_was(live):
+def test_a_rebuild_runs_the_rows_again_and_a_failed_run_stops_where_it_was(live):
     out = live.evaluate("(async () => {" + SETUP + """
       ev({type:'attempt', n:1});
       ev({type:'stage', stage:'builder'});
@@ -78,13 +86,12 @@ def test_a_rebuild_starts_the_steps_again_and_a_failed_run_stops_where_it_was(li
       return {second, ended: line()};
     })()""", timeout=60)
     s = out["second"]
-    assert s["now"] == "Attempt 2: Meshing on the cloud mesher…"
-    assert s["steps"][0] == "done:Mesh engine: cfmesh"            # the engine stands; nothing else does
-    assert not any("Review" in x for x in s["steps"])
+    assert s["row"] == "build" and s["now"] == "Attempt 2: Meshing on the cloud mesher…"
+    assert s["rows"][0] == "skip:engine:" or s["rows"][0] == "done:engine:Engine: cfmesh", s["rows"]
+    assert any(r.startswith("back:review:") for r in s["rows"]), s["rows"]
     e = out["ended"]
-    assert e["state"] == "failed" and e["live"] is False
-    assert e["now"] == "Stopped while meshing on the cloud mesher."
-    assert "failed:Meshing on the cloud mesher" in e["steps"] and e["advice"]
+    assert not e["live"] and e["title"] == "Run failed"
+    assert any(r.startswith("bad:build:") for r in e["rows"]), e["rows"]
 
 
 def test_a_mesh_far_past_its_usual_time_says_so(live):
@@ -108,8 +115,8 @@ def test_a_mesh_far_past_its_usual_time_says_so(live):
 
 def test_a_count_with_an_estimate_draws_a_bar_under_the_words_and_a_count_alone_draws_none(live):
     out = live.evaluate("(async () => {" + SETUP + """
-      const bar = () => { const i = document.querySelector('#run-progress .gp-bar > i');
-        return i ? {width: i.style.width, hidden: document.querySelector('#run-progress .gp-bar').getAttribute('aria-hidden')} : null; };
+      const bar = () => { const i = document.querySelector('.rr-live:not([hidden]) .rr-bar > i');
+        return i ? {width: i.style.width, hidden: i.parentElement.getAttribute('aria-hidden')} : null; };
       ev({type:'stage', stage:'builder'});
       ev({type:'meshing', stage:'builder', engine:'cfmesh', budget_s:1800});
       ev({type:'narrate', stage:'builder', kind:'fill', text:'Filling the volume', n:1220000, unit:'cells'});
@@ -158,7 +165,7 @@ def test_the_bar_caps_at_full_and_never_walks_backwards(live):
 
 def test_passing_the_estimate_holds_the_bar_at_full_and_the_next_mesh_starts_with_none(live):
     out = live.evaluate("(async () => {" + SETUP + """
-      const bar = () => { const i = document.querySelector('#run-progress .gp-bar > i');
+      const bar = () => { const i = document.querySelector('.rr-live:not([hidden]) .rr-bar > i');
         return i ? i.style.width : null; };
       const say = (n, of) => ev({type:'narrate', stage:'builder', kind:'fill',
                                  text:'Filling the volume', n, of, unit:'cells'});
