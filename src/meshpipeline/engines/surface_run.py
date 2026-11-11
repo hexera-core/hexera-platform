@@ -107,19 +107,20 @@ def clean_words(cleaned: dict | None) -> list[str]:
     out = []
     if c.get("duplicates"):
         n = int(c["duplicates"])
-        out.append(f"{n} face(s) were in the file twice: the second copy of each is left out.")
+        out.append(f"{_count(n, 'face was', 'faces were')} in the file twice: the second copy of {'it' if n == 1 else 'each'} is left out.")
     if c.get("closed_places"):
         # SURF-8: said in PLACES, the count the record and gap_words use: places before - closed = places after.
         # (Joins inside a place that stays open - part of its length - are not a place closed.)
         asked = (f", as your notes asked (up to {_gap(c['limit_mm'])})"
                  if c.get("limit_from") == "notes" and not c.get("fell_back") else "")
         widest = float(c.get("closed_places_widest_mm") or 0.0)
-        out.append(f"Closed {int(c['closed_places'])} of the {int(c.get('places_before') or 0)} place(s) where the "
-                   f"surfaces did not meet{f', the widest {_gap(widest)}' if widest > 0 else ''}{asked}.")
+        out.append(f"Closed {_closed_of(int(c['closed_places']), int(c.get('places_before') or 0))} where "
+                   f"the surfaces did not meet{f', the widest {_gap(widest)}' if widest > 0 else ''}{asked}.")
     if c.get("pinholes"):
         asked = ", as your notes asked" if c.get("holes_from") == "notes" else ""
-        what = "hole(s)" if c.get("holes_from") == "notes" else "pinhole(s)"
-        out.append(f"Filled {int(c['pinholes'])} {what}, the largest {_gap(c.get('pinhole_widest_mm') or 0.0)} "
+        k = int(c["pinholes"])
+        what = _count(k, "hole") if c.get("holes_from") == "notes" else _count(k, "pinhole")
+        out.append(f"Filled {what}, {'' if k == 1 else 'the largest '}{_gap(c.get('pinhole_widest_mm') or 0.0)} "
                    f"across{asked}.")
     if c.get("fell_back"):
         out.append(f"Stitching up to {_gap(c['limit_mm'])}, as your notes asked, would have left more open than the "
@@ -138,29 +139,55 @@ def gap_words(n: int, cleaned: dict | None) -> list[str]:
         return []
     c = cleaned or {}
     if "left_open" not in c:
-        return [f"The surfaces do not meet at {n} place(s): the shell has gaps there."]
+        return [f"The surfaces do not meet at {_count(n, 'place')}: the shell has gaps there."]
     out = []
     left, wide = int(c.get("left_open") or 0), int(c.get("wider_gaps") or 0)
     if c.get("stitch") == "off" or c.get("applied_mm") is None:
-        return [f"The surfaces do not meet at {n} place(s): the shell has gaps there (the widest "
+        return [f"The surfaces do not meet at {_count(n, 'place')}: the shell has gaps there (the widest "
                 f"{_gap(max(float(c.get('left_widest_mm') or 0.0), float(c.get('wider_widest_mm') or 0.0)))})."]
     applied = float(c["applied_mm"])
-    out.append(f"The surfaces do not meet at {n} place(s): the shell has gaps there.")
+    out.append(f"The surfaces do not meet at {_count(n, 'place')}: the shell has gaps there.")
+    # every sentence stands alone: it names what was stitched, and its counts add up to the n above
     if left:
-        said = (f"{left} of them are within the {_gap(applied)} stitched here (the widest "
-                f"{_gap(float(c.get('left_widest_mm') or 0.0))}) and were left open")
-        said += f" because {c['refused']}." if c.get("refused") else ": stitching does not join them (an overlap, or a corner off its neighbour's)."
+        said = (f"At {_of(left, n)}, the gap is narrower than the {_gap(applied)} stitched here (the widest "
+                f"{_gap(float(c.get('left_widest_mm') or 0.0))}) but stitching does not join "
+                f"{'it' if left == 1 else 'them'}")
+        said += f", because {c['refused']}." if c.get("refused") else ": an edge lies over its neighbour's face, or a corner is off its neighbour's corner."
         out.append(said)
     if wide:
         lo, hi = float(c.get("wider_narrowest_mm") or 0.0), float(c.get("wider_widest_mm") or 0.0)
         span = _gap(hi) if abs(hi - lo) <= 1e-9 * max(hi, 1.0) else f"{_gap(lo)[:-3]} to {_gap(hi)}"
-        said = f"{wide} of them are wider than that: the surfaces run side by side {span} apart there."
+        said = (f"At {_of(wide, n)}, the surfaces run side by side {span} apart, wider than the {_gap(applied)} "
+                "stitched here.")
         if c.get("advice_mm"):
             said += f' If they should meet, add to your notes: "stitch gaps up to {float(c["advice_mm"]):g} mm".'
         else:
-            said += " Stitching does not close them cleanly, so they are left as drawn."
+            said += f" Stitching does not close {'it' if wide == 1 else 'them'} cleanly, so {'it is' if wide == 1 else 'they are'} left as drawn."
         out.append(said)
     return out
+
+
+def _closed_of(k: int, n: int) -> str:
+    """ "the 1 place", "both places", "all 3 places", "2 of the 5 places"."""
+    if n <= 1:
+        return "the 1 place"
+    if k >= n:
+        return "both places" if n == 2 else f"all {n} places"
+    return f"{k} of the {n} places"
+
+
+def _count(k: int, noun: str, nouns: str | None = None) -> str:
+    """ "1 place", "3 places" ("1 face was", "2 faces were" when the plural is given)."""
+    return f"{k} {noun}" if k == 1 else f"{k} {nouns or noun + 's'}"
+
+
+def _of(k: int, n: int) -> str:
+    """ "that place", "both places", "all 3 places", "2 of these 4 places"."""
+    if n == 1:
+        return "that place"
+    if k == n:
+        return "both places" if n == 2 else f"all {n} places"
+    return f"{k} of these {n} places"
 
 
 def stitch_for(state):
