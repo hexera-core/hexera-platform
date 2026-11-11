@@ -916,7 +916,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         mapped = (_map_strips(gmsh, tag_of, rows, mm, sizing,
                               fine_at=short_edges["fine_at"] if short_edges and FEATURE_UNMAP else None)
                   if MAP_STRIPS and kind != "triangles" else {})
-        if short_edges is not None and mapped and not FEATURE_AT_STRIPS:
+        if short_edges is not None and narrow is not None and mapped and not FEATURE_AT_STRIPS:
             _spare_strip_corners(gmsh, tag_of, rows, mapped, narrow, short_edges)
         # SHMESH-6: a face finer than the coarsest grades its neighbours from its own edges (a mapped strip's long
         # sides from its size along them)
@@ -1244,7 +1244,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                               "inside it (SHMESH-25).")
         if sizing is not None:
             out["sizing"] = sizing
-            if narrow is not None and (narrow["widths"] or short_edges["edges"]):
+            if narrow is not None and short_edges is not None and (narrow["widths"] or short_edges["edges"]):
                 smallest = float(f"{min([*narrow['widths'].values(), *short_edges['lengths'].values()]):.4g}")
                 sizing["features"] = {"rule": "SHMESH-27", "faces": len(narrow["widths"]),
                                       "edges": short_edges["edges"], "smallest_mm": smallest}
@@ -1310,7 +1310,7 @@ def _min_jac(mesh: ShellMesh) -> np.ndarray:
 
 
 def _narrow_faces(rows: list[dict], facts: list[dict], mm: float, planned: float,
-                  interior: set[int] | None = None, slivers: set[int] = frozenset()) -> dict | None:
+                  interior: set[int] | None = None, slivers: frozenset[int] | set[int] = frozenset()) -> dict | None:
     """SHMESH-27, faces: under the user's sizes every face narrower than 1 / FEATURE_FACE_RATIO of its size (its
     strip width: twice its area over its perimeter) is sized to FEATURE_FACE_RATIO times its own width, never under
     the floor, in place - a 0.3 mm step strip at a 3 mm size was one row of elements ten times as long as wide. With

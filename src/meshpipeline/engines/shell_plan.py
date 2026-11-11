@@ -141,7 +141,7 @@ def smooth_link(angle_deg: float, *, same_wall: bool, bends: tuple[float | None,
         return True
     if not all(tight):
         return False
-    a, b = float(bends[0]), float(bends[1])
+    a, b = float(bends[0] or 0.0), float(bends[1] or 0.0)
     return abs(a - b) <= SHEET_SAME_BEND * max(a, b)
 
 
