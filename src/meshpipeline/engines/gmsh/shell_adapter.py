@@ -104,8 +104,12 @@ SHEET_REGIONS_ALL = False
 #: again at our own (finer) sizes there
 OWN_SIZE_RETRIES = 2
 SPOTS_MAX = 64
-#: SHMESH-36: a mesh left past a limit is set against the earlier steps' mesh, the better kept
+#: SHMESH-36: a mesh left past a limit is set against #435's steps' mesh, the better kept; FORCE_CLASSIC (lab only):
+#: #435's steps alone
 CLASSIC_CHECK = True
+FORCE_CLASSIC = False
+#: SHMESH-33: a count coarser than our rules coarsens gmsh's curvature sizing too
+COUNT_CURVATURE = True
 #: SHMESH-35: the walls of beads, darts and steps keep shell_plan.FLANK_ACROSS elements across under a coarser size
 FLANKS = True
 FLANK_SHARED = 2.0
@@ -697,7 +701,69 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
 def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None,
                 target: dict | None = None, correction: float = 1.0,
                 requirements: dict | None = None) -> tuple[ShellMesh, dict]:
-    """mesh_shell, unbounded, in this process."""
+    """mesh_shell, unbounded, in this process. SHMESH-36: a mesh under the user's limits left with an element past
+    the solver's limits or past one of the user's outer limits is set against the mesh #435's steps alone make
+    (_classic: the whole path again, from the sewn surface, exactly as #435 meshed it), and the better is kept -
+    fewer past the solver's limits, then fewer lines on which it is past an outer limit where the other is not (or
+    further past), then fewer past an outer limit, then more lines met. Both candidates and the choice are written
+    into the record ("kept")."""
+    if FORCE_CLASSIC:
+        with _classic():
+            mesh, applied, _n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
+                                           correction=correction, requirements=requirements)
+        return mesh, applied
+    mesh, applied, past_n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
+                                       correction=correction, requirements=requirements)
+    standing = _standing(applied, past_n)
+    if not (requirements and CLASSIC_CHECK and (standing[0] or standing[2])):
+        return mesh, applied
+    this = _candidate("this PR's steps (SHMESH-27..35)", mesh, applied, past_n)
+    try:
+        with _classic():
+            old, applied_old, old_n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=None, target=target,
+                                                 correction=correction, requirements=requirements)
+    except (ValueError, _Periodic) as exc:
+        logger.info("shell mesh: #435's steps did not make a mesh to compare (%s)", exc)
+        applied["kept"] = {"rule": "SHMESH-36", "candidates": [this], "kept": this["mesh"],
+                           "why": f"#435's steps made no mesh ({type(exc).__name__}: {str(exc)[:200]})"}
+        return mesh, applied
+    that = _candidate("#435's steps", old, applied_old, old_n)
+    s_new = _standing(applied, past_n, applied_old, requirements)
+    s_old = _standing(applied_old, old_n, applied, requirements)
+    keep_old = s_old < s_new
+    why = next((name for name, a, b in zip(STANDING_WORDS, s_new, s_old, strict=True) if a != b), "a tie: this PR's")
+    kept = {"rule": "SHMESH-36", "candidates": [this, that], "kept": (that if keep_old else this)["mesh"],
+            "why": why, "standing": {this["mesh"]: list(s_new), that["mesh"]: list(s_old)}}
+    if keep_old:
+        mesh, applied = old, applied_old
+        applied["quality"]["classic"] = True
+    applied["kept"] = kept
+    return mesh, applied
+
+
+#: SHMESH-36: what each figure of _standing compares, in order (the first that differs decides)
+STANDING_WORDS = ("fewer elements past the solver's own limits",
+                  "fewer lines past an outer limit where the other mesh is inside it (or less far past)",
+                  "fewer elements past the user's outer limits", "more lines met")
+
+
+def _candidate(name: str, mesh: ShellMesh, applied: dict, past_n: int) -> dict:
+    """SHMESH-36: one candidate mesh as the record tells it: its elements, those past the solver's own limits, and
+    per line of the user's: outside, past the outer limit, the worst, met."""
+    rows = (applied.get("requirements") or {}).get("rows") or []
+    return {"mesh": name, "elements": int(mesh.n_elements), "trias": int(len(mesh.trias)),
+            "past_solver": int(past_n), "nastran_past": dict(applied["quality"].get("nastran_past") or {}),
+            "lines": [{"id": r.get("id"), "asked": r.get("asked"), "outside": r.get("outside"),
+                       "beyond": r.get("beyond"), "worst": r.get("worst"), "met": r.get("met")}
+                      for r in rows if str(r.get("field", "")).startswith("limit:")]}
+
+
+def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None,
+               target: dict | None = None, correction: float = 1.0,
+               requirements: dict | None = None) -> tuple[ShellMesh, dict, int]:
+    """The whole path of one shell mesh: closed faces cut, faces gmsh cannot mesh re-made, SHMESH-31's local
+    re-mesh. Returns (the mesh, the plan as applied, its elements past the solver's own limits - with requirements
+    only)."""
     import tempfile
 
     with tempfile.TemporaryDirectory(prefix="shell_mesh_") as tmp:
@@ -763,27 +829,6 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
                 mesh.notes.append(f"In {applied['quality']['own_size_spots']} spot(s) the mesh is finer than the size "
                                   "you asked for: at your size some elements there were past the solver's own limits "
                                   "(SHMESH-31).")
-            standing = _standing(applied, past_n)
-            if requirements and CLASSIC_CHECK and (standing[0] or standing[2]):
-                # SHMESH-36: a mesh left with an element past the solver's limits or past one of the user's outer
-                # limits is set against the mesh the earlier steps alone make (SHMESH-24..26, before 27..35); the
-                # better is kept - fewer past the solver's limits, then fewer lines on which it is past an outer
-                # limit where the other is not (or further past), then fewer past an outer limit, then more lines
-                # met. So nothing lands past an outer limit where those steps kept every element inside it
-                try:
-                    with _classic():
-                        old, applied_old = _mesh_once(Path(brep), record, owners, float(mm_per_unit), None,
-                                                      target=target, correction=correction,
-                                                      requirements=requirements)
-                except (ValueError, _Periodic) as exc:
-                    logger.info("shell mesh: the earlier steps' mesh was not made to compare (%s)", exc)
-                else:
-                    applied_old.pop("_past_spots", None)
-                    old_n = applied_old.pop("_past_n", 0)
-                    if (_standing(applied_old, old_n, applied, requirements)
-                            < _standing(applied, past_n, applied_old, requirements)):
-                        mesh, applied, past_n = old, applied_old, old_n
-                        applied["quality"]["classic"] = True
             applied["quality"]["resplined_faces"] = resplined
             if split_note:
                 mesh.notes.append(f"{split_note[0].upper()}{split_note[1:]} (SHMESH-11d).")
@@ -791,7 +836,7 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
                 mesh.notes.append(f"{resplined} face(s) gmsh could not mesh (a periodic surface, or a boundary it "
                                   "could not recover) were re-made as B-splines (the same surface) and meshed "
                                   "(SHMESH-11).")
-            return mesh, applied
+            return mesh, applied, past_n
 
 
 def _standing(applied: dict, past_n: int, other: dict | None = None,
@@ -823,18 +868,26 @@ def _standing(applied: dict, past_n: int, other: dict | None = None,
 
 @contextlib.contextmanager
 def _classic():
-    """SHMESH-36: the steps before SHMESH-27 alone, for one mesh: no sizes beside small pieces of the CAD, no bead
-    walls, no mend, no sliding on straight CAD edges, 4 a turn round holes and no chord hold. The constants are put
-    back after (a shell mesh runs one at a time in its process)."""
-    saved = (globals()["FEATURE_SIZES"], globals()["MEND"], globals()["SLIDE_EDGES"], SR.HOLE_PER_TURN,
-             SR.CHORD_SHARE)
+    """SHMESH-36: #435's steps exactly, for one mesh: every switch this PR added is put at #435's value - no sizes
+    beside small pieces of the CAD (27), no mend (28), no sliding on straight CAD edges (14d), no sheet regions (30),
+    no local re-mesh (31), gmsh's own fallback (32: the earlier head kept 32 on, and on a part where gmsh falls back
+    that alone gave a different mesh), gmsh's 24 a turn under a count (33), 4 a turn round holes (33), no chord hold
+    or report (34); the comparison itself off. The constants are put back after (a shell mesh runs one at a time in
+    its process)."""
     g = globals()
+    names = ("FEATURE_SIZES", "MEND", "SLIDE_EDGES", "SHEET_REGIONS", "SHEET_REGIONS_ALL", "OWN_SIZE_RETRIES",
+             "ALGO_SWITCH", "COUNT_CURVATURE", "CHORD_REPORT", "CLASSIC_CHECK", "FORCE_CLASSIC")
+    saved = {n: g[n] for n in names}
+    saved_sr = (SR.HOLE_PER_TURN, SR.CHORD_SHARE)
     try:
-        g["FEATURE_SIZES"], g["MEND"], g["SLIDE_EDGES"] = False, False, False
+        g.update(FEATURE_SIZES=False, MEND=False, SLIDE_EDGES=False, SHEET_REGIONS=False, SHEET_REGIONS_ALL=False,
+                 OWN_SIZE_RETRIES=0, ALGO_SWITCH=None, COUNT_CURVATURE=False, CHORD_REPORT=False,
+                 CLASSIC_CHECK=False, FORCE_CLASSIC=False)
         SR.HOLE_PER_TURN, SR.CHORD_SHARE = SR.SHAPE_PER_TURN, math.inf
         yield
     finally:
-        g["FEATURE_SIZES"], g["MEND"], g["SLIDE_EDGES"], SR.HOLE_PER_TURN, SR.CHORD_SHARE = saved
+        g.update(saved)
+        SR.HOLE_PER_TURN, SR.CHORD_SHARE = saved_sr
 
 
 def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list | None, *,
@@ -909,7 +962,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         # the elements round every curve too, by the same factor, never under SHAPE_PER_TURN a turn: gmsh's own
         # 24 a turn held every 12 mm hole and every curved panel at our size (a bracket asked 221 elements got 503,
         # a curved panel asked 1,263 got 21,256)
-        per_turn = PER_TURN if sz <= 1.0 else max(SR.HOLE_PER_TURN, int(round(PER_TURN / sz)))
+        per_turn = (PER_TURN if sz <= 1.0 or not COUNT_CURVATURE
+                    else max(SR.HOLE_PER_TURN, int(round(PER_TURN / sz))))
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", per_turn if finest is None else 0)
         # SHMESH-6 is held by the grading fields below; gmsh's own spread of edge sizes into a face carried a
         # narrow neighbour's size over the whole of a wide face (one 2.5 mm strip: 800,000 elements)
