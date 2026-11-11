@@ -85,8 +85,9 @@ def viewer_face_names(workspace) -> dict[int, str] | None:
     q = _read(Path(workspace) / "quality.json")
     tags = ((q.get("fea") or {}).get("assembly") or {}).get("face_tags") or {}
     if not tags and (q.get("fea") or {}).get("shell"):
-        # a delivered shell: its mid-faces by name (Mid_k), as shell.msh groups them (engines/shell_run.write_msh)
-        tags = (q.get("fea") or {}).get("face_tags") or {}
+        # a delivered shell: its parts by the CAD's names, each holding its mid-faces (engines/shell_delivery
+        # part_tags); one delivered before its parts were named, its mid-faces (Mid_k) as shell.msh groups them
+        tags = (q.get("fea") or {}).get("part_tags") or (q.get("fea") or {}).get("face_tags") or {}
     if not tags:
         return None
     out: dict[int, str] = {}
