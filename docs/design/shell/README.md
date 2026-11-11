@@ -264,6 +264,87 @@ SHELL-13 looked only for a whole edge lying alongside a whole edge, and skipped 
 - **A wall through air.** A flat hollow profile with solid edges (two 1.5 mm skins 4 mm apart): its two OUTER faces face each other through the solid edges, pass as a 7 mm shell wall, and their mid-face is laid through the cavity (the body holds 2.7 times its metal; the volume check is read on shell bodies only, and this one is mixed). On main as here.
 - **SHELL-13 before SHELL-22.** One duct lost its last open edge on the first commit and keeps it on the final one: main's SHELL-13 strip beside it is made first again and leaves SHELL-22 no clean way. The better strip should win, whichever rule makes it.
 
+### 2.4.4 Walls never found as walls (SHELL-40 to SHELL-44, 11 Nov)
+
+The last round found that most open edges left on real parts sit beside a wall the pairing never made a wall. So
+the walls were measured on the part itself, not on the extractor's pairs.
+
+**How "wall missed" is measured.** 4,000 points over the solid's skin (by area, a fixed seed). From each, a ray
+inward gives the local wall and the skin across it; the point is a wall's side when the skin across faces it back
+within 12 degrees (SHELL-9's 10, plus 2 for the triangles). From the wall's middle there, a walk along the wall in 8
+directions, half a wall a step, re-centred between the skins each step, while the wall keeps its thickness within
+1.5 times. The skin is THIN-WALL skin when the wall is at least 4 walls wide and 10 walls long there (SHELL-2's own
+1/4 and 1/10, read locally, with no faces, pairs or sheets), or when a walk from it runs into such wall of about
+its thickness (a strip between cut-outs, a stretch beside a boss). It is COVERED when the delivered mid-surface
+passes within half the local wall of the wall's middle. Each point not covered is put down to its two CAD faces and
+to what the record says of that pair. Tools: `~/shellcamp/walls/tools/skin.py`, `classes.py`. A corner whose two
+skins turn by more than 12 degrees is not counted as wall skin: that class shows in open edges, not here.
+
+**What was missed (282 real and lab parts: the 60-file wall set, the 135 new real parts, the 87 lab parts; 225 have
+thin-wall skin).** Ranked by the sum over files of each file's missed share (1.00 = one whole file):
+
+| class | files | share | whose |
+|---|---|---|---|
+| a whole wall judged too thick against its span or width | 51 | 22.3 | the shell-or-solid verdict (plates stream) |
+| a bore, a round or a blend beside a flat face, turned past 10 degrees | 34 | 3.4 | mostly no wall |
+| a drafted or free-form wall whose outline did not close or whose overlap came back empty | 8 | 2.3 | SHELL-42 |
+| a free-form wall whose fitted mid-surface was off the middle between the fitted points | 4 | 0.9 | SHELL-43 |
+| a face that fills little of its parameter box: "too few points of the face could be read" | 15 | 0.7 | SHELL-40 |
+| a piece of a wall judged too thick beside a shell piece of it (a step, a strip) | 8 | 0.6 | verdict |
+| a drafted tube (a cone facing a cylinder) whose wall read "the two faces do not overlap" | 2 | 0.3 | SHELL-41 |
+| a shell pair whose mid-face is not in the sewn surface | 3 | 0.3 | joins |
+| never named a pair by the rays | 16 | 0.1 | SHELL-44 |
+
+So the pairing's own misses are few in area against the verdict's, but they are whole walls, and each leaves a hole
+in the shell beside walls that are found.
+
+**SHELL-40, the wall read on the face itself.** The even-wall and taper tests read a 7 x 7 grid over a face's
+PARAMETER BOX and keep the points inside the face. A face that fills little of its box (a frame round a cut-out, a
+ring, an L, a strip lying askew in its plane's parameters) kept under 3 points and was thrown out ("too few points
+of the face could be read": a 2 mm duct's flange 12 walls wide, a 9.5 mm plate's pocket floors). When fewer than 12
+of the 49 points lie in the face, the grid is made twice as fine, at most three times (7, 14, 28, 56 a side), until
+12 do. 12 is a quarter of 49: a face filling a quarter of its box or more is read exactly as before.
+
+**SHELL-41, a foot on a closed face in the face's own turn.** A point projected onto a cylinder, a cone or any closed
+surface comes back in the surface's first period; a face on it may run from pi to 3 pi. Read as it came, half the
+feet of a drafted tube's wall lay "off" the tube and its two faces "did not overlap" (a moulded tank's cone in its
+cylinder, a dust jar's drafted wall). The parameters are moved by whole periods into the face's range first, in the
+taper test and in the fitted mid-face's "B lies across A".
+
+**SHELL-42, an outline is closed as the file says it is.** The pieces of a face's outline share their end points in
+the B-rep, but their parameter curves meet only within the file's tolerance (up to 7e-6 of the parameter box on the
+parts measured: a cyclone's free-form walls, a duct's, an enclosure's, a bracket's drafted walls), and the wire
+builder asks 1e-7: the fitted mid-face's outline came out in pieces ("the two faces do not overlap") or not closed
+("not a valid face"). Each piece is made to start where the one before ends (CHAIN_GAP 1e-3 of the box keeps apart
+ends that are not one point: an outline wound round a closed surface ends a whole period away). OpenCASCADE's flat
+Boolean of the two outlines also found NOTHING at one tolerance where it finds the overlap either side of it
+(0.358 of the box at 1e-7, 1e-5, 1e-4, 1e-3, nothing at 1e-6); an empty overlap is asked again at 10, 0.1 and 100
+times. A wrong piece cannot pass: every fitted mid-face is read against both its faces (SHELL-9).
+
+**SHELL-43, a finer fit where the first is off the middle.** A free-form wall that curves between the 17 x 17 fitted
+midpoints (a blow-moulded tank's side) was up to 5% of its wall off the middle between them and thrown out
+(FIDELITY_SHARE 2%). It is fitted once more through 33 a side (a cubic fit's error falls about 16 times: 5% to
+0.4% on that tank) and kept only if it holds the middle. Once, not twice: 65 a side took 5 to 7 s a pair. A fitted
+overlap under a tenth of a wall wide (SHELL-16's sliver) is no mid-face: read finely enough, a sliver along A's own
+edge lies in the middle of its wall.
+
+**SHELL-44, no pairing ray lost on a flat face.** VTK's line test, asked with a tolerance of exactly 0, misses a
+triangle whose box has no thickness - a flat face square to an axis, the far side of the commonest wall there is -
+for part of the rays that meet it. On 237 parts: 2.5% of the pairing rays read no wall that way on average, over 5%
+on 23 parts, 85% on one; every ray lost left through such a triangle; on 71 parts the faces named as
+partners changed. The pairing's rays now ask 1e-9 mm. The FEA wall readings (`fea_features.wall_thickness`) are left
+as they were (the FEA path's regression is not this stream's); they lose the same rays.
+
+**Tried and taken out: SHELL-45, a bend whose rounds are not concentric.** A pair turned past 10 degrees was let
+through as a tapered wall when it faced squarely somewhere (within 2 degrees), turned at most 22.5 degrees and kept
+its wall within 1 + tan 10 / 0.25 = 1.71 times. On the 282 parts it changed 4: an enclosure's 2 open edges closed but
+its mesh then ran past 15 minutes (SHMESH-21); a fully good tank got 1 open edge at its knuckle and went 10 s to 386
+s; a frame's rounded tube took 18% more metal than it has (a fitted range check took that back). The generated
+sheet-metal brackets it was meant for (2 mm sheet, both rounds 4 to 6 mm, not concentric) still read MIXED with or
+without it: their bends pass the taper test but are fitted only when narrower than four walls is excused, and their
+thinnest reading (2.4 mm at the grid's band middles) does not join them to their 2 mm flanges' wall (SHELL-2b). That
+grouping, at the bend's own edges, is the next step for bends.
+
 ### 2.5 Assemblies and mixed parts (PR 3)
 
 **Bonded plates in different bodies:**
