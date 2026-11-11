@@ -42,6 +42,10 @@ NOTE-9  no words: no model call and an empty set; no answer and none saved: an e
 NOTE-10 the flow fields of the same reading (a count, layers, a size at the walls, sizes in a place, three more flow
         measures, the flow's numbers for a y+), checked the same way; every flow engine applies them
         (engines/cfd_requirements.py), the solid and shell routes say what each is there.
+NOTE-11 a shell element kind written in a few fixed phrases ("triangles only", "tri mesh", "Shell elements: triangles",
+        "use triangles for shells", "no triangles", "all quads") that the model put in no field is read by the rules
+        from the user's own line - never against a kind the model did read. A share of triangles carries a number:
+        the model's alone.
 """
 from __future__ import annotations
 
@@ -61,6 +65,7 @@ RULE_READ = "NOTE-7"
 RULE_NOT_APPLIED = "NOTE-8"
 RULE_NOTHING = "NOTE-9"
 RULE_FLOW = "NOTE-10"          # the flow fields of the same reading (a count, layers, a size at the walls or in a place)
+RULE_KIND_WORDS = "NOTE-11"
 TOOL = "mesh_requirements"
 CONSUMER = "mesh_requirements"
 STEP = "mesh_requirements"
@@ -474,6 +479,49 @@ def _kind_said(what: str, quote: str) -> str:
     if m is None or what not in ("quads_only", "triangles_only"):
         return what
     return "quads_only" if m.group(1).lower().startswith("tri") else "triangles_only"
+
+
+#: NOTE-11: THE FEW FIXED PHRASES THAT NAME A SHELL'S ELEMENT KIND in anyone's words - "triangles only", "tria mesh",
+#: "tri mesh", "all quads", "no triangles", "Shell elements: triangles", "use triangles for shells". The stage's
+#: control starts on what they say (application/shell_elements), and the reading takes one the model left in no field
+#: (_kind_by_words). A share of triangles ("at most 5% trias") is the model's to read: it carries a number.
+_TRIA = r"(?:triangles?|triangular|trias?|tris?)"
+_QUAD = r"(?:quads?|quadrilaterals?)"
+_SAID_TRIANGLES = re.compile(
+    rf"\b(?:{_TRIA}\s+(?:elements?\s+|mesh\s+)?only|only\s+{_TRIA}|all[- ]{_TRIA}|(?:tria|tri|triangle|triangular)\s+"
+    rf"(?:shell\s+)?mesh(?:es|ing)?|no\s+{_QUAD}|without\s+{_QUAD}|avoid\s+{_QUAD}|"
+    rf"(?:shell\s+)?elements?\s*(?:[:=]|are|as)\s*{_TRIA}|use\s+{_TRIA})\b", re.I)
+_SAID_QUADS = re.compile(
+    rf"\b(?:{_QUAD}\s+(?:elements?\s+|mesh\s+)?only|only\s+{_QUAD}|all[- ]{_QUAD}|pure\s+{_QUAD}|no\s+{_TRIA}|"
+    rf"without\s+{_TRIA}|avoid\s+{_TRIA}|(?:shell\s+)?elements?\s*(?:[:=]|are|as)\s*{_QUAD}|use\s+(?:only\s+)?{_QUAD})\b",
+    re.I)
+
+
+def kind_in_words(text: str) -> str:
+    """NOTE-11: the shell element kind a piece of words names - "quads" (quads only), "triangles" or "" - the FIRST one
+    written when it names both."""
+    t = str(text or "")
+    q, r = _SAID_QUADS.search(t), _SAID_TRIANGLES.search(t)
+    if q and r:
+        return "quads" if q.start() < r.start() else "triangles"
+    return "quads" if q else "triangles" if r else ""
+
+
+def _kind_by_words(notes: str) -> tuple[str, str] | None:
+    """NOTE-11: (kind, the user's line) for the first line or sentence of the notes that names a shell element kind
+    by the fixed phrases, a share of triangles aside; None with none."""
+    for piece in re.split(r"\n+|(?<=[.!?;])\s+", str(notes or "")):
+        piece = " ".join(piece.split())
+        if not piece or "%" in piece or _MARKER.match(piece):
+            continue
+        got = kind_in_words(piece)
+        if got:
+            return got, piece[:400]
+    return None
+
+
+#: the words a shell element-kind row says (the settings page's "What we understood" shows them too)
+KIND_WORDS = {"quads": "shell elements: quads only, no triangles", "triangles": "shell elements: triangles only"}
 
 
 def _short(quote: str) -> str:
@@ -908,7 +956,7 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
                                "written is kept")
             elif k["shell"] is None:
                 k["shell"] = want
-                row(what, quote, "quads only, no triangles" if want == "quads" else "triangles only")
+                row(what, quote, KIND_WORDS[want])
         elif what == "max_triangle_percent":
             p = _f(e.get("value"))
             if p is None or not (0.0 <= p <= 100.0) or not _in_quote(p, numbers):
@@ -921,6 +969,16 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
         elif k["order"] is None:
             k["order"] = what
             row(what, quote, f"{what} elements")
+    rescued = ""
+    if out["kind"]["shell"] is None and out["kind"]["tria_percent_max"] is None:
+        # NOTE-11: a shell element kind the user plainly wrote ("Shell elements: triangles", "tri mesh") that the
+        # model put in no field is read by the fixed phrases - the same field, from the user's own line
+        got_kind = _kind_by_words(notes)
+        if got_kind is not None:
+            want, rescued = got_kind
+            out["kind"]["shell"] = want
+            covered.append(rescued)
+            row("quads_only" if want == "quads" else "triangles_only", rescued, KIND_WORDS[want])
     if out["kind"]["shell"] == "quads" and out["kind"]["tria_percent_max"] is not None:
         # "quads, triangles under 5%": the share is the ask, said once (quads only would read as none at all)
         out["rows"] = [r for r in out["rows"] if r["field"] != "quads_only"]
@@ -993,6 +1051,8 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
     for e in _rows_of(raw, "other"):
         quote = " ".join(str(e.get("quote") or "").split())[:400]
         covered.append(quote)
+        if rescued and kind_in_words(quote):
+            continue        # NOTE-11: read above as the element kind
         if str(e.get("kind")) == "mesh" and _quoted(quote, said, squashed) and quote not in not_applied:
             over = [t for t in typed if t and (_squash(t) in _squash(quote) or _squash(quote) in _squash(t))]
             if over and not _left_over(quote, over):
@@ -1000,7 +1060,7 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
             not_applied.append(quote)
     # NOTE-8's floor: words about the mesh that the reading listed NOWHERE are told too, as the user wrote them
     for piece in _left_over(notes, covered):
-        if piece not in not_applied:
+        if piece not in not_applied and not (rescued and kind_in_words(piece)):
             not_applied.append(piece)
     return out, dropped, not_applied[:20]
 
@@ -1044,7 +1104,8 @@ def write(workspace, sec: Mapping | None) -> bool:
 
     path = Path(workspace) / FILE
     try:
-        if requirements_of(sec) is None and not not_applied_words(sec):
+        # (a pick on the stage, STD-4, is kept too: the result says which elements were made and why)
+        if requirements_of(sec) is None and not not_applied_words(sec) and not (sec or {}).get("stage"):
             path.unlink(missing_ok=True)
             return False
         path.write_text(json.dumps(sec, indent=1, sort_keys=True), encoding="utf-8")
@@ -1194,7 +1255,10 @@ def line(row: Mapping) -> str:
     unless it was measured and reached."""
     asked = str(row.get("asked") or "")
     asked = asked[:1].upper() + asked[1:]
-    if row.get("from"):
+    if row.get("from") == "stage":
+        # the shell line's own choice (engines/meshing_standard STD-4)
+        asked += " (chosen on the stage)"
+    elif row.get("from"):
         # a run with a team meshing standard (engines/meshing_standard): each row says where it came from
         asked += f" (from your {row['from']})"
     if row.get("met") is True:
@@ -1222,10 +1286,13 @@ def asked_rows(quality: Mapping | None, *, source: str = "your notes") -> list[d
         if not isinstance(r, Mapping) or r.get("met") not in (True, False):
             continue
         came = str(r.get("from") or "")
+        label = (f"Chosen on the stage: {r.get('asked')}" if came == "stage"
+                 else f"Your {came} ask: {r.get('asked')}" if came else f"You asked: {r.get('asked')}")
         out.append({"key": f"asked_{r.get('id')}",
-                    "label": f"Your {came} ask: {r.get('asked')}" if came else f"You asked: {r.get('asked')}",
+                    "label": label,
                     "op": "==", "limit": 0, "measured": int(r.get("excess") or 0), "said": line(r),
-                    "source": source.replace("your notes", f"your {came}", 1) if came else source})
+                    "source": ("the stage" if came == "stage" else source.replace("your notes", f"your {came}", 1))
+                    if came else source})
     return out
 
 
@@ -1367,7 +1434,7 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
     return got if got is not None else without("invalid", "it gave no reading")
 
 
-__all__ = ["CONSUMER", "FILE", "KINDS", "MAX_LIVE", "asked_rows", "not_applied_words", "finish_report", "limit_row", "line", "live_words",
+__all__ = ["CONSUMER", "FILE", "KINDS", "KIND_WORDS", "kind_in_words", "MAX_LIVE", "asked_rows", "not_applied_words", "finish_report", "limit_row", "line", "live_words",
            "pct", "report_words", "share_words", "summary", "MEASURES", "RULE_NOTHING", "RULE_NOT_APPLIED", "RULE_READ", "SHAPES", "SIZES", "SYSTEM",
            "TOOL", "UNITS_MM", "UNREAD_WORDS", "check", "decide", "decisions", "empty", "is_empty", "limit_words",
            "messages_for", "notes_text", "read", "requirements_of", "section", "tool", "wanted", "words", "write"]

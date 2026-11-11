@@ -491,6 +491,9 @@ STATE_FIELDS: dict[str, str] = {
     "fea_mesh_as":           "an FEA part meshed as a shell (its mid-surface, plate elements) only when the user's "
                              "words asked for one, else a solid, as settled at Proceed (SHSTAGE-5); 'mixed' only "
                              "from a confirmation stored before it left the stage; 'solid' when nothing says",
+    "fea_shell_elements":    "a shell's elements as the user clicked them on the stage's shell line (SHSTAGE-8): "
+                             "'quads' or 'triangles', the last word on that one field (STD-4); '' when the control "
+                             "was left as it started - the notes and settings then decide",
     "fea_shell_thickness_mm": "a surface file's wall thickness in millimetres, read from the user's words and "
                               "settled on the stage at Proceed (SURF-4); None when none was given - the shell is "
                               "then delivered with its thickness not set",

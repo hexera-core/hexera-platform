@@ -3,7 +3,12 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { type MeshingStandard, saveFailureMessage } from "@/app/_components/meshing-standard";
+import {
+  type MeshingStandard,
+  type ShellElements,
+  saveFailureMessage,
+  shellElementsOf,
+} from "@/app/_components/meshing-standard";
 import { MeshingStandardView } from "@/app/_components/meshing-standard-view";
 
 export function MeshingStandardPanel({ standard }: { standard: MeshingStandard }) {
@@ -12,6 +17,7 @@ export function MeshingStandardPanel({ standard }: { standard: MeshingStandard }
   // exactly the words that were saved, so the lines shown can never be of an older text.
   const [saved, setSaved] = useState<MeshingStandard>(standard);
   const [draft, setDraft] = useState(standard.text);
+  const [kind, setKind] = useState<ShellElements>(shellElementsOf(standard));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -22,7 +28,7 @@ export function MeshingStandardPanel({ standard }: { standard: MeshingStandard }
       const response = await fetch("/api/v1/organization/meshing-standard", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: draft }),
+        body: JSON.stringify({ text: draft, shell_elements: kind }),
       });
       if (!response.ok) {
         setError(saveFailureMessage(response.status));
@@ -31,6 +37,7 @@ export function MeshingStandardPanel({ standard }: { standard: MeshingStandard }
       const body = (await response.json()) as MeshingStandard;
       setSaved(body);
       setDraft(body.text);
+      setKind(shellElementsOf(body));
       router.refresh();
     } catch {
       setError(saveFailureMessage(0));
@@ -44,7 +51,9 @@ export function MeshingStandardPanel({ standard }: { standard: MeshingStandard }
       busy={busy}
       draft={draft}
       error={error}
+      kind={kind}
       onChange={setDraft}
+      onKind={setKind}
       onClear={() => setDraft("")}
       onSave={save}
       saved={saved}

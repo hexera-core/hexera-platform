@@ -1252,6 +1252,12 @@ th,td{border-color:var(--border)}
 .fea-seg .fea-conn-opt input:focus-visible+span{outline:1px solid var(--accent-line);outline-offset:-1px}
 .fea-seg .fea-conn-opt input:disabled+span{opacity:.6;cursor:default}
 .fea-conn-said{margin:0 0 2px}
+/* SHSTAGE-8: a shell's elements, "Elements  Quads | Triangles", in the shell line's header */
+.fea-el{flex:none;display:inline-flex;align-items:center;gap:7px}
+.fea-el-k{color:var(--text-faint);font-size:var(--fs-sm)}
+.fea-el-ask{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:0 0 6px;color:var(--text)}
+.fea-el-ask span{margin-right:4px}
+.fea-el-ask .v-btn{height:26px;padding:0 10px;font-size:var(--fs-sm)}
 /* each pair (PLAN-fea-19/20): one line - its tag, its two parts, what was measured in a word, its type;
    behind it, what was measured in full, the reason, who keeps an overlap and the reach */
 .fea-pair{display:block;padding:0}

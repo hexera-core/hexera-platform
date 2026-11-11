@@ -42,13 +42,16 @@ def _iso(value: Any) -> str | None:
     return value.isoformat() if hasattr(value, "isoformat") else (str(value) if value else None)
 
 
-def view_of(text: str, reading: dict | None, *, updated_by: str = "", updated_at: Any = None) -> dict:
+def view_of(text: str, reading: dict | None, *, updated_by: str = "", updated_at: Any = None,
+            shell_elements: str = MS.QUADS) -> dict:
     """What the settings page shows: the words, one plain line per thing understood (as a run says it), and
-    whether they were read ("read"), saved unread ("unread": each run reads them) or empty."""
+    whether they were read ("read"), saved unread ("unread": each run reads them) or empty; and the page's one
+    switch, a shell's elements (SHSTAGE-8: "quads" | "triangles")."""
     t = str(text or "")
     read = isinstance(reading, dict) and isinstance(reading.get("arguments"), str)
     return {"text": t, "lines": MS.understood(t, reading) if read else [],
             "status": "empty" if not t.strip() else ("read" if read else "unread"),
+            "shell_elements": MS.pick_of(shell_elements) or MS.QUADS,
             "updated_by": updated_by or None, "updated_at": _iso(updated_at)}
 
 
@@ -63,18 +66,21 @@ async def view(db: AsyncSession, *, owner_id: str, organization_id: str) -> dict
     row = await standard_repo.get_for_organization(db, org)
     if row is None:
         return dict(EMPTY)
-    return view_of(row.text, row.reading, updated_by=row.updated_by, updated_at=row.updated_at)
+    return view_of(row.text, row.reading, updated_by=row.updated_by, updated_at=row.updated_at,
+                   shell_elements=row.shell_elements)
 
 
 Reader = Callable[..., Awaitable[dict | None]]
 
 
 async def save(*, owner_id: str, organization_id: str, text: str, sessions,
-               read: Reader | None = None) -> dict | None:
+               read: Reader | None = None, shell_elements: str = MS.QUADS) -> dict | None:
     """Save the caller's organisation's standard and read it once (STD-1): the reading is kept with the words and
-    every run reuses it while the words and the question stay the same. Empty words clear the standard. None when
+    every run reuses it while the words and the question stay the same. Empty words and Quads (the switch's
+    default) clear the standard. `shell_elements`: the page's switch (SHSTAGE-8), "quads" | "triangles". None when
     the caller belongs to no organisation it can name. The model is asked OUTSIDE any transaction (it can take a
     minute), and its answer never decides whether the words are saved."""
+    kind = MS.pick_of(shell_elements) or MS.QUADS
     t = str(text or "").replace("\r\n", "\n").strip()
     if len(t) > MAX_CHARS:
         raise TooLong(f"The standard can be at most {MAX_CHARS:,} characters.")
@@ -82,18 +88,20 @@ async def save(*, owner_id: str, organization_id: str, text: str, sessions,
         org = await _own(db, owner_id=owner_id, organization_id=organization_id)
         if org is None:
             return None
-        if not t:
+        if not t and kind == MS.QUADS:
             await standard_repo.clear(db, organization_id=org)
             await db.commit()
             return dict(EMPTY)
         row = await standard_repo.get_for_organization(db, org)
         same = row is not None and row.text == t and MS.kept_reading({"text": t, "reading": row.reading}) is not None
         kept = dict(row.reading) if same and row is not None and row.reading else None
-    reading = kept if kept is not None else await (read or MS.read_at_save)(t, user_id=owner_id)
+    reading = kept if kept is not None else (await (read or MS.read_at_save)(t, user_id=owner_id) if t else None)
     async with sessions() as db:
-        saved = await standard_repo.put(db, organization_id=org, text=t, reading=reading, updated_by=owner_id)
+        saved = await standard_repo.put(db, organization_id=org, text=t, reading=reading, updated_by=owner_id,
+                                        shell_elements=kind)
         await db.commit()
-        return view_of(saved.text, saved.reading, updated_by=saved.updated_by, updated_at=saved.updated_at)
+        return view_of(saved.text, saved.reading, updated_by=saved.updated_by, updated_at=saved.updated_at,
+                       shell_elements=saved.shell_elements)
 
 
 async def for_dispatch(db: AsyncSession, *, organization_id: str) -> dict | None:
@@ -105,7 +113,8 @@ async def for_dispatch(db: AsyncSession, *, organization_id: str) -> dict | None
     row = await standard_repo.get_for_organization(db, org)
     if row is None:
         return None
-    return MS.snapshot(row.text, row.reading, updated_by=row.updated_by, updated_at=_iso(row.updated_at) or "")
+    return MS.snapshot(row.text, row.reading, updated_by=row.updated_by, updated_at=_iso(row.updated_at) or "",
+                       shell_elements=row.shell_elements)
 
 
 __all__ = ["EMPTY", "MAX_CHARS", "TooLong", "for_dispatch", "save", "view", "view_of"]

@@ -9,9 +9,26 @@ export type MeshingStandard = {
   text: string;
   lines: string[];
   status: "read" | "unread" | "empty";
+  /** the page's one switch: a shell's elements for every run (SHSTAGE-8); Quads when the API leaves it out */
+  shell_elements?: ShellElements;
   updated_by: string | null;
   updated_at: string | null;
 };
+
+/** A shell's elements: quad-dominant (a few triangles where a quad cannot be well shaped) or all triangles. */
+export type ShellElements = "quads" | "triangles";
+
+/** The switch's label and its two choices, in the user's words. */
+export const SHELL_LABEL = "Shell elements";
+export const SHELL_OPTIONS: { key: ShellElements; label: string; title: string }[] = [
+  { key: "quads", label: "Quads", title: "Mostly 4-node quads; a few triangles only where a quad cannot be well shaped." },
+  { key: "triangles", label: "Triangles", title: "All 3-node triangles, at the same element sizes." },
+];
+
+/** The switch as saved: Quads unless the API says Triangles. */
+export function shellElementsOf(standard: MeshingStandard): ShellElements {
+  return standard.shell_elements === "triangles" ? "triangles" : "quads";
+}
 
 /** The most characters a standard may hold: every one of them is read (engines/meshing_standard.MAX_CHARS). */
 export const MAX_CHARS = 8000;

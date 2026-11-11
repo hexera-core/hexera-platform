@@ -1383,3 +1383,30 @@ Industry practice: beads and darts are kept as geometry with at least two elemen
 - Touching bodies in IGES: a pipe and its insulation, coaxial reductions (sh0003, sh0013, sh0014, sh0017, sh0046). Their coincident faces leave an edge at one angle beside faces at their own, which SHELL-15i does not read (a strict xfail test pins it).
 - IGES written with every real rounded to 7 or 5 digits: solids read invalid; not worked on.
 - The sizing rule above and a bead minimum, for the sizing stream.
+
+## Quads or triangles (SHSTAGE-8, STD-4, NOTE-11, SHWRITE-2; 11 Nov)
+
+A shell is quad-dominant by default (a real welded column: 63,074 quads, 84 triangles). The user can ask for an
+all-triangle shell instead, in three places, one field (`kind.shell` of the notes' typed set):
+
+- the Meshing settings page's one switch beside its box, "Shell elements: Quads | Triangles" (Quads by default);
+- the notes ("triangles only", "tri mesh", "use triangles for shells" ...: the model's reading, or NOTE-11's fixed
+  phrases when it put the words in no field) - the notes win over the settings;
+- the stage's shell line, "Elements: Quads | Triangles", drawn as Bonded | Contact. It starts on the notes' value when
+  they say one, else the settings switch, else Quads. A flip away from the settings or the notes asks one short line
+  first ("Your settings say Quads. Use Triangles for this run?"; Yes keeps it, No puts it back); which sources ask is
+  `application/shell_elements.CONFIRM_FROM`, one line. A click is the last word for that run (source "stage"); a
+  control left where it started is no pick.
+
+Triangles: gmsh without recombination at the same plan sizes, no mapped strips, no pairing or walks, caps cut into
+triangles only (`shell_quality.absorb_caps(quads_too=False)`). On 20 lab parts (shellcamp/shellkind): Quads is
+byte-identical to the base in every deck and the viewer mesh; Triangles is valid, inside Nastran's limits and read
+back by pyNastran (all CTRIA3) on all 20, about 2 times the elements (1.9 to 2.1) - 2.9 to 5.4 times where the quad mesh
+stretched mapped strips (sh0031, a hat section, darted brackets): triangles are not stretched.
+
+SHWRITE-2: CalculiX expands S3 into one layer of C3D6 wedges, which lock in bending (a cantilever strip 64% too stiff,
+a simply supported plate 44%). An all-triangle shell's CalculiX deck writes S6 (mid-side nodes at the middle of each
+edge, numbered after the corner nodes; C3D15): the plate +0.8% against Navier and +1.3% against the S4 shell, the
+strip +0.7% against the S4 shell (both S4 within 0.5% and 3.2% of theory). A
+quad-dominant shell's few triangles stay S3. Abaqus S3, Nastran CTRIA3 and SHELL181 triangles are written as they are
+(not solved here: no licence).

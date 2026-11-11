@@ -424,11 +424,16 @@ async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=N
 
     # STD-1..3: the notes merged with the team's meshing standard (settings < notes, field by field); with no
     # standard this is the notes' own reading, exactly as before
-    sec = await MS.decide(state or {}, route="fea", job_id=job_id, run=run, enabled=FA.FEA_AI, wait_s=ai_wait_s(run))
+    read = await MS.decide(state or {}, route="fea", job_id=job_id, run=run, enabled=FA.FEA_AI, wait_s=ai_wait_s(run))
+    # STD-4: a shell's elements picked on the stage (Quads | Triangles) are the last word on that one field; no
+    # pick (the control left where it started, or a solid run): the section as read, the same object
+    sec = MS.stage(read, (state or {}).get(MS.STAGE_KEY)) if mesh_as_of(state) != "solid" else read
     MR.write(ws, sec)
     if sec.get("status") == "none":
         return sec
-    _cite(job_id, [*MR.decisions(sec, stage="fea_ai"), *MS.decisions(sec, stage="fea_ai")])
+    entries = ([*MR.decisions(read, stage="fea_ai"), *MS.decisions(read, stage="fea_ai")]
+               if read.get("status") != "none" else [])
+    _cite(job_id, [*entries, *MS.stage_decisions(sec, stage_name="fea_ai")])
     for i, line in enumerate(MR.live_words(sec)):
         await _N.asay(publish, line, op_id=f"fea:notes:{i}")
     return sec
