@@ -63,7 +63,12 @@ MAX_RAY_TRIANGLES = 5_000_000
 #: What the remote mesher receives besides the plan: the solid and the facts the deck reads.
 PAYLOAD = (*P.STAGED_SOLIDS, "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json", "assembly.brep", "assembly.json",
            # LAD-fea-11: the parts an earlier pass meshed, kept for this one
-           "fea_kept_parts.msh", "fea_kept_parts.json")
+           "fea_kept_parts.msh", "fea_kept_parts.json",
+           # PLAN-fea-34 / MESH-mmg-1: the user's requirements read from the notes (engines/mesh_requirements.FILE).
+           # The mesh job's adapter reads them to measure each asked-for limit and to aim the MMG pass; without
+           # this file in the payload neither happened on the cloud mesher (dev-areen 11 Nov, job a8cc1718:
+           # no limit rows, MMG with no targets), though both did in a run on one machine
+           "mesh_requirements.json")
 #: LAD-fea-11's files (engines/gmsh/fea_adapter.KEEP_MSH / KEEP_JSON)
 KEPT_FILES = ("fea_kept_parts.msh", "fea_kept_parts.json")
 #: Where each pass's deliverables are kept until the best one is chosen.
