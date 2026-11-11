@@ -1624,6 +1624,38 @@ PAST_FRACTIONS = (0.21, 0.79)
 PAST_EDGE = True
 
 
+#: SHELL-32, A WALL AHEAD IS A WALL THE WALK COMES OVER: the walk's point counts as inside another wall's slab only
+#: when it lies OVER that wall's mid-face - its nearest point on the mid-face is where the mid-face's own normal
+#: through the point meets it (within AHEAD_OVER_DEG), not a point of the mid-face's border reached sideways. A point
+#: just past a wall's border, beside it, is within half a wall of that border but in no slab of that wall: SHELL-21
+#: read a wall "ahead" from the pieces of wall lying BESIDE the way (above and below the edge along a seam, either
+#: side of a rib's foot), and an edge with a boss, a post or a rib's foot past it stayed open where it is a link to
+#: that thick region (16 open edges of 57 on the dev sets and the lab, 6 files). The nearest point must lie inside
+#: the mid-face, AHEAD_OVER_CLEAR of that wall clear of its border (a straight walk off a curved wall drifts off
+#: its surface, so a point past the border of the next piece of a cylinder stood 1.3 mm off it radially and 1.15 mm
+#: past its border: by the angle alone, "over" it), and the line to it within AHEAD_OVER_DEG of the normal there:
+#: 45 degrees, halfway between a point straight over the mid-face (0) and one straight out past its border (90).
+AHEAD_OVER = True
+AHEAD_OVER_DEG = 45.0
+AHEAD_OVER_CLEAR = 0.05
+
+
+def _over_face(x, face, tol: float, clear: float) -> bool:
+    """SHELL-32: does point x lie over the face - its nearest point on the face inside it (`clear` from its border)
+    and the line from that point to x along the face's normal there (within AHEAD_OVER_DEG)?"""
+    y = _nearest_on(x, face)
+    if y is None or not _in_face(face, y, clear):
+        return False
+    off = x - y
+    gap = float(np.linalg.norm(off))
+    if gap <= tol:
+        return True
+    n = _face_normal_at(face, y)
+    if n is None:
+        return False
+    return abs(float(np.dot(off / gap, n))) >= math.cos(math.radians(AHEAD_OVER_DEG))
+
+
 def _wall_ahead(p, d, own: int, walls: list, t: float, solid: _Solid) -> bool:
     """SHELL-21: is another sewn wall there to meet, outward from edge point p (direction d, in the edge's own
     face) within SHELL-3's reach? Either the walk, while in the metal, comes inside that wall's own slab (half
@@ -1642,7 +1674,8 @@ def _wall_ahead(p, d, own: int, walls: list, t: float, solid: _Solid) -> bool:
             x = p + d * (reach * i / AHEAD_STEPS)
             if not solid.inside(x):
                 break
-            if _near_box(x, box, slab) and _dist(_vertex(x), f) <= slab:
+            if _near_box(x, box, slab) and _dist(_vertex(x), f) <= slab and (not AHEAD_OVER
+                                                                             or _over_face(x, f, solid.tol, AHEAD_OVER_CLEAR * w)):
                 return True
         try:
             s_hit = _ray_on_surface(p, d, f, reach)
@@ -3148,6 +3181,291 @@ def close_gaps(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy
     return out, new_images, strips
 
 
+#: SHELL-30, AN OPEN EDGE CARRIED ON PIECE BY PIECE, AND THE WALL IT MEETS CARRIED ON TO THE SAME LINE: SHELL-22 carries
+#: an edge on only when EVERY point read along it meets the other wall, and takes the other wall as it stands. On real
+#: parts a wall's edge meets its neighbour over part of its length only (the neighbour is notched for ribs or slots, or
+#: gives way to a corner post), and both walls stop short of the corner. There SHELL-22 fell back to joining the edge
+#: to its nearest points on the other wall - a strip laid across the corner - while the other wall's own edges were
+#: carried on to the true corner line, and the two did not meet (a printed enclosure, dev e0032: three edges, 149 mm,
+#: left open 0.55 walls from the skin). Now, before SHELL-22: each edge still open is read at one point a wall
+#: (GAP_SAMPLES to GAP_SAMPLES_MAX, as SHELL-22), each point carried on in its own surface to the other wall's surface
+#: under SHELL-22's own conditions (within SHELL-3's reach, the way in the metal, the meeting point within half of
+#: each wall of that wall's mid-face). Every run of points that meet, at least CARRY_MIN_WALLS walls long, its ends
+#: found by halving CARRY_BISECT times, gets the strip from that piece of the edge to the meeting line; and where
+#: the meeting line lies off the other wall's own mid-face, that wall is carried on to it too, by the strip between
+#: the meeting line and its nearest points on that mid-face (its border). Both strips end on the one line: a
+#: corner as SHELL-3 draws it, for the pieces of the edge that have one. A whole edge that meets the other
+#: mid-face itself is left to SHELL-22, made as before. Kept only when it leaves fewer open edges, no tolerance
+#: past SHELL-12 and no unsound face (SHELL-31).
+CARRY_PIECES = True
+#: the shortest piece carried on: one wall (the spacing of the points read; a shorter one is a neighbour's corner)
+CARRY_MIN_WALLS = 1.0
+#: the ends of a piece are found to within 2^-CARRY_BISECT of the spacing of the points read (1/64 of a wall)
+CARRY_BISECT = 6
+#: the other wall's border under the meeting line must run smoothly: no turn over this between three points read
+CARRY_TURN_DEG = 30.0
+
+
+def _outward_reader(edge, face, t: float):
+    """(first parameter, last parameter, read) for an edge of a face: read(u) -> (point, outward unit direction in
+    the face's surface) or None; None altogether when the face's side cannot be told (as _outward_points)."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    c = BRepAdaptor_Curve(edge)
+    a, b = c.FirstParameter(), c.LastParameter()
+
+    def raw(u: float):
+        q, v = gp_Pnt(), gp_Vec()
+        c.D1(u, q, v)
+        p = np.array([q.X(), q.Y(), q.Z()])
+        tan = np.array([v.X(), v.Y(), v.Z()])
+        q2 = c.Value(a + (b - a) * min(max((u - a) / (b - a), 0.02), 0.98))
+        n = _face_normal_at(face, np.array([q2.X(), q2.Y(), q2.Z()]))
+        if n is None or np.linalg.norm(tan) <= 0:
+            return None
+        d = np.cross(tan / np.linalg.norm(tan), n)
+        if np.linalg.norm(d) <= 0:
+            return None
+        return p, d / float(np.linalg.norm(d))
+
+    sign = None
+    for frac in SIDE_FRACTIONS:
+        got = raw(a + (b - a) * frac)
+        if got is None:
+            continue
+        p, d = got
+        step = 0.01 * t
+        plus, minus = _in_face(face, p + d * step, 1e-3 * step), _in_face(face, p - d * step, 1e-3 * step)
+        if plus != minus:
+            sign = -1.0 if plus else 1.0
+            break
+    if sign is None:
+        return None
+
+    def read(u: float):
+        got = raw(u)
+        return None if got is None else (got[0], got[1] * sign)
+
+    return a, b, read
+
+
+def _runs(flags: list[bool]) -> list[tuple[int, int]]:
+    """The maximal runs of True in a list: [(first index, last index)]."""
+    out, start = [], None
+    for i, ok in enumerate(flags):
+        if ok and start is None:
+            start = i
+        if not ok and start is not None:
+            out.append((start, i - 1))
+            start = None
+    if start is not None:
+        out.append((start, len(flags) - 1))
+    return out
+
+
+def _smooth(points: list, limit_deg: float) -> bool:
+    """Do the points run on without a turn over `limit_deg` between three in a row (points that coincide aside)?"""
+    cos_lim = math.cos(math.radians(limit_deg))
+    last = None
+    for a, b in zip(points[:-1], points[1:], strict=True):
+        v = b - a
+        n = float(np.linalg.norm(v))
+        if n <= 0:
+            continue
+        v = v / n
+        if last is not None and float(np.dot(last, v)) < cos_lim:
+            return False
+        last = v
+    return True
+
+
+def carry_on(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy: float, open_at: list):
+    """SHELL-30 on one body's joined surface: (fused, images, [(mid index, other mid index, strip)]) with the pieces
+    of the open edges at `open_at` (points on them, own units) that meet another wall's surface carried on to it,
+    and that wall carried on to the same line where it stops short; None when there is no such piece."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_Transform
+    from OCP.BRepFill import BRepFill
+    from OCP.gp import gp_Trsf, gp_Vec
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    tol = 10.0 * fuzzy
+    fmap = _map(fused, TopAbs_FACE)
+    owner: dict[int, int] = {}
+    for i, imgs in enumerate(images):
+        for f in imgs:
+            k = fmap.FindIndex(f)
+            if k > 0:
+                owner.setdefault(k, i)
+    faces = {k: TopoDS.Face_s(fmap.FindKey(k)) for k in sorted(owner)}
+    boxes = {k: _box(f) for k, f in faces.items()}
+    e2f = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(fused, TopAbs_EDGE, TopAbs_FACE, e2f)
+    points = [_vertex(np.asarray(q, float)) for q in open_at]
+    strips: list[tuple[int, int, object]] = []
+    made: list[tuple[object, tuple]] = []           # every strip of this pass, with its box
+
+    def covered(p) -> bool:
+        return any(_near_box(p, box, tol) and _dist(_vertex(p), st) <= tol for st, box in made)
+
+    def meets(pd, g, box, t: float, w: float):
+        """Where the point carried on meets face g's surface (SHELL-22's conditions): (point, way) or None."""
+        if pd is None:
+            return None
+        p, d = pd
+        reach = (0.5 * w + EXTEND_WALLS * max(t, w)) * (1.0 + REACH_SLACK)
+        near = 0.5 * (w + t) * IN_WALL_SLACK + solid.tol
+        if not _near_box(p, box, reach + near):
+            return None
+        try:
+            s_hit = _ray_on_surface(p, d, g, reach)
+        except Exception:  # noqa: BLE001 - a surface the line cannot be met with
+            return None
+        if s_hit is None or s_hit <= fuzzy:
+            return None
+        x = p + d * s_hit
+        if not _near_box(x, box, near) or _dist(_vertex(x), g) > near:
+            return None
+        if not all(solid.inside(p + d * (s_hit * c)) for c in (0.25, 0.5, 0.75)):
+            return None
+        return x, s_hit
+
+    def moved(edge, moves: list, pts: list, t: float):
+        """The edge moved by the one way all its points go, or the curve through `pts`."""
+        if all(float(np.linalg.norm(mv - moves[0])) <= 1e-9 * t for mv in moves):
+            tr = gp_Trsf()
+            tr.SetTranslation(gp_Vec(*map(float, moves[0])))
+            return TopoDS.Edge_s(BRepBuilderAPI_Transform(edge, tr, True).Shape())
+        return _curve_edge(pts)
+
+    def same_way(e1, e2):
+        pa, pb = _edge_points(e1, 4), _edge_points(e2, 4)
+        if (np.linalg.norm(pa[1] - pb[1]) + np.linalg.norm(pa[3] - pb[3])
+                > np.linalg.norm(pa[1] - pb[3]) + np.linalg.norm(pa[3] - pb[1])):
+            return TopoDS.Edge_s(e2.Reversed())
+        return e2
+
+    for n in range(1, e2f.Extent() + 1):
+        e = TopoDS.Edge_s(e2f.FindKey(n))
+        ks = sorted({fmap.FindIndex(f) for f in e2f.FindFromIndex(n)} - {0})
+        length = _length(e)
+        if len(ks) != 1 or ks[0] not in owner or length <= tol or not any(_dist(q, e) <= tol for q in points):
+            continue
+        k0 = ks[0]
+        i = owner[k0]
+        t = mine[i].t_max
+        try:
+            reader = _outward_reader(e, faces[k0], t)
+        except Exception as exc:  # noqa: BLE001 - the edge stays open
+            logger.debug("shell: an open edge of Mid_%d could not be read (%s)", mine[i].k + 1, exc)
+            reader = None
+        if reader is None:
+            continue
+        a, b, read = reader
+        count = int(min(GAP_SAMPLES_MAX, max(GAP_SAMPLES, math.ceil(length / t))))
+        us = [a + (b - a) * c / count for c in range(count + 1)]
+        pds = [read(u) for u in us]
+        pds = [None if pd is None or covered(pd[0]) else pd for pd in pds]
+        pieces = []                                   # (-(span), farthest way, other mid, face, u0, u1, whole)
+        for k, g in faces.items():
+            j = owner[k]
+            if k == k0 or j == i:
+                continue
+            w = mine[j].t_max
+            got = [meets(pd, g, boxes[k], t, w) for pd in pds]
+            for first, last in _runs([x is not None for x in got]):
+                u0, u1 = us[first], us[last]
+                # the ends, between the last point that meets and the first that does not
+                for end, inside_i, outside_i in ((0, first, first - 1), (1, last, last + 1)):
+                    if outside_i < 0 or outside_i > count:
+                        continue
+                    lo, hi = us[inside_i], us[outside_i]
+                    for _ in range(CARRY_BISECT):
+                        mid_u = 0.5 * (lo + hi)
+                        pd = read(mid_u)
+                        if pd is not None and not covered(pd[0]) and meets(pd, g, boxes[k], t, w) is not None:
+                            lo = mid_u
+                        else:
+                            hi = mid_u
+                    if end == 0:
+                        u0 = lo
+                    else:
+                        u1 = lo
+                span = abs(u1 - u0) / abs(b - a) * length
+                if span < CARRY_MIN_WALLS * t:
+                    continue
+                way = max(x[1] for x in got[first:last + 1])
+                pieces.append((-span, way, j, k, u0, u1, first == 0 and last == count))
+        taken: list[tuple[float, float]] = []
+        for _span, _way, j, k, u0, u1, whole in sorted(pieces):
+            lo, hi = min(u0, u1), max(u0, u1)
+            if any(lo < t1 and hi > t0 for t0, t1 in taken):
+                continue
+            g, w = faces[k], mine[j].t_max
+            m = int(min(GAP_SAMPLES_MAX, max(GAP_SAMPLES, math.ceil(abs(u1 - u0) / abs(b - a) * length / t))))
+            sub = [read(u0 + (u1 - u0) * c / m) for c in range(m + 1)]
+            hit = [meets(pd, g, boxes[k], t, w) for pd in sub]
+            if any(x is None for x in hit):
+                continue
+            far = [x[0] for x in hit]
+            near_pts = [_nearest_on(x, g) for x in far]
+            if any(y is None for y in near_pts):
+                continue
+            gaps = [float(np.linalg.norm(x - y)) for x, y in zip(far, near_pts, strict=True)]
+            off = max(gaps) > tol
+            if whole and not off:
+                continue                              # the whole edge onto the other mid-face itself: SHELL-22's
+            if off and (min(gaps) <= fuzzy or not _smooth(near_pts, CARRY_TURN_DEG)
+                        or not all(solid.inside(0.5 * (x + y)) for x, y in zip(far[1:-1], near_pts[1:-1], strict=True))):
+                continue
+            try:
+                if whole:
+                    piece = e
+                else:
+                    mk = BRepBuilderAPI_MakeEdge(BRep_Tool.Curve_s(e, 0.0, 0.0), lo, hi)
+                    if not mk.IsDone():
+                        continue
+                    piece = mk.Edge()
+                far_edge = moved(piece, [x - pd[0] for pd, x in zip(sub, far, strict=True)], far, t)
+                if far_edge is None:
+                    continue
+                far_edge = same_way(piece, far_edge)
+                strip = BRepFill.Face_s(piece, far_edge)
+                if strip.IsNull() or _area(strip) <= fuzzy * _length(piece):
+                    continue
+                back = None
+                if off:
+                    near_edge = moved(far_edge, [y - x for x, y in zip(far, near_pts, strict=True)], near_pts, t)
+                    if near_edge is None:
+                        continue
+                    back = BRepFill.Face_s(far_edge, same_way(far_edge, near_edge))
+                    if back.IsNull() or _area(back) <= fuzzy * _length(far_edge):
+                        continue
+            except Exception as exc:  # noqa: BLE001 - no strip, the piece stays open
+                logger.debug("shell: no strip from Mid_%d to Mid_%d (%s)", mine[i].k + 1, mine[j].k + 1, exc)
+                continue
+            taken.append((lo, hi))
+            strips.append((i, j, strip))
+            made.append((strip, _box(strip)))
+            if back is not None:
+                strips.append((j, i, back))
+                made.append((back, _box(back)))
+    if not strips:
+        return None
+    order = [faces[k] for k in sorted(faces)]
+    out, imgs = sew(order + [f for _i, _j, f in strips], fuzzy)
+    new_images: list[list] = [[] for _ in mine]
+    for pos, k in enumerate(sorted(faces)):
+        new_images[owner[k]] += list(imgs[pos])
+    for n, (i, _j, _f) in enumerate(strips):
+        new_images[i] += list(imgs[len(order) + n])
+    return out, new_images, strips
+
+
 def _join_straight(mine: list[_Mid], solid: _Solid, fuzzy: float, notes: list[str], body: str):
     """The straight-edge extension (extend) and a plain sew: (fused shape, each mid-face's faces in it)."""
     for m in mine:
@@ -4386,6 +4704,25 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
                         mine[i].extended.append({"to": None, "area": _area(strip)})
                     notes.append(f"{body_names[b]}: {len(closed[2])} open edge(s) bridged to the junction beside them "
                                  "(SHELL-13).")
+        # SHELL-30, before SHELL-22: the pieces of an open edge that meet another wall's surface, and that wall where it
+        # stops short of the same line (one more sewing of the body, so only with time left in the work budget)
+        if (CARRY_PIECES and census["open_edges"] and census["open_edges"] <= len(census.get("open_at_mm", []))
+                and clock.left() - JOIN_RESERVE_S >= JOIN_MIN_S):
+            try:
+                closed = carry_on(fused, images, mine, solid, fuzzy,
+                                  [np.asarray(q, float) / mm for q in census["open_at_mm"]])
+            except Exception as exc:  # noqa: BLE001 - the join stands
+                logger.debug("shell: open edges of %s could not be carried on piece by piece (%s)", body_names[b], exc)
+                closed = None
+            if closed is not None:
+                census_c = census_of(closed[0], closed[1])
+                if (census_c["open_edges"] < census["open_edges"] and _max_tol(closed[0]) <= JOIN_TOL_WALLS * t_min
+                        and not unsound_faces(closed[1])):
+                    notes.append(f"{body_names[b]}: {census['open_edges'] - census_c['open_edges']} open edge(s) "
+                                 "closed by carrying both walls on to the line where they meet (SHELL-30).")
+                    fused, images, census = closed[0], closed[1], census_c
+                    for i, j, strip in closed[2]:
+                        mine[i].extended.append({"to": mine[j].k, "area": _area(strip)})
         # (SHELL-18: one more sewing of the body, so only with time for it left in the work budget)
         if (CLOSE_GAPS and census["open_edges"] and census["open_edges"] <= len(census.get("open_at_mm", []))
                 and clock.left() - JOIN_RESERVE_S >= JOIN_MIN_S):
