@@ -110,8 +110,8 @@ def user_line(row: Mapping) -> str:
 
 
 #: MIXED-9: the line said of a shell delivered with solid patches, after SUMMARY
-PATCH_SUMMARY = (" The {k} solid patch{es} where the part is too thick for a shell: {m:,} quadratic tetrahedra, "
-                 "tied to the shell.")
+PATCH_SUMMARY = (" Where the part is too thick for a shell: {k} solid patch{es}, {m:,} quadratic tetrahedra, tied to "
+                 "the shell.")
 #: MIXED-9: what each solver file holds when the shell carries solid patches
 PATCH_CONTAINS = {
     "shell.bdf": "Nastran bulk data: CQUAD4 / CTRIA3 in a PSHELL per wall thickness, CTETRA in a PSOLID per solid "
