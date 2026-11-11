@@ -406,6 +406,65 @@ def measure(sewn: Sewn, *, mm_per_unit: float, reach: float | None = None) -> li
 OPEN_REACH = 100.0
 
 
+#: SURF-8: an edge runs ALONGSIDE a face when it is parallel to it (its direction within ALONG_DEG of the face's
+#: surface where it is nearest) and does not merely leave a corner it shares with that face (distances growing from
+#: the shared corner, as two rim edges meeting at a bend or running on from one another do)
+ALONG_DEG = 15.0
+FROM_CORNER = 2.0
+
+
+def _alongside(edge, probe: list, dists: list, feet: list, face, tol: float) -> bool:
+    """SURF-8: whether a free edge lying within reach of `face` (its probe points at `dists` from it, nearest at
+    `feet`) runs alongside it - a gap, an overlap, an edge stopping short - rather than meeting it at a corner."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+    from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.gp import gp_Pnt, gp_Vec
+    from OCP.ShapeAnalysis import ShapeAnalysis_Surface
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad import midsurface as ms
+
+    # 1. parallel: the edge's direction lies in the face's tangent plane where it is nearest
+    c = BRepAdaptor_Curve(edge)
+    t0, t1 = c.FirstParameter(), c.LastParameter()
+    sas = ShapeAnalysis_Surface(BRep_Tool.Surface_s(face))
+    srf = BRepAdaptor_Surface(face, False)
+    for j, (_q, foot) in enumerate(zip(probe, feet, strict=True)):
+        t = t0 + (t1 - t0) * NEAR_SAMPLES[j]
+        p, v = gp_Pnt(), gp_Vec()
+        c.D1(t, p, v)
+        if v.Magnitude() < 1e-14:
+            continue
+        uv = sas.ValueOfUV(gp_Pnt(*map(float, foot)), 1e-7)
+        pr = BRepLProp_SLProps(srf, uv.X(), uv.Y(), 1, 1e-9)
+        if not pr.IsNormalDefined():
+            continue
+        n = pr.Normal()
+        sin = abs(v.X() * n.X() + v.Y() * n.Y() + v.Z() * n.Z()) / v.Magnitude()
+        if sin > np.sin(np.radians(ALONG_DEG)):
+            return False
+    # 2. not leaving a shared corner: the edge shares a vertex with the face and the distance grows from it
+    near_ends = []
+    em = ms._map(edge, TopAbs_VERTEX)
+    fv = ms._map(face, TopAbs_VERTEX)
+    fpts = []
+    for k in range(1, fv.Extent() + 1):
+        w = BRep_Tool.Pnt_s(TopoDS.Vertex_s(fv.FindKey(k)))
+        fpts.append(np.array([w.X(), w.Y(), w.Z()]))
+    for k in range(1, em.Extent() + 1):
+        q = BRep_Tool.Pnt_s(TopoDS.Vertex_s(em.FindKey(k)))
+        qa = np.array([q.X(), q.Y(), q.Z()])
+        if any(float(np.linalg.norm(qa - w)) <= 2.0 * tol for w in fpts):
+            near_ends.append(qa)
+    if near_ends and len(dists) == len(probe) and min(dists) > 0:
+        lo, hi = min(dists), max(dists)
+        if hi >= FROM_CORNER * lo:
+            return False
+    return True
+
+
 def open_places(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
     """SURF-8: the places where the surfaces do not meet (OPEN_REACH): [{"sheet", "edges", "length_mm", "gap_mm",
     "at_mm"}], the widest gap first. A place's gap is how far its longest edge lies from the face beside it. One
@@ -448,13 +507,19 @@ def open_places(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
             lo, hi = boxes[k]
             if any(np.any(q < lo - reach) or np.any(q > hi + reach) for q in probe):
                 continue
-            far = 0.0
+            far, dists, feet = 0.0, [], []
             for q in probe:
                 d = BRepExtrema_DistShapeShape(ms._vertex(q), f)
-                far = max(far, float(d.Value()) if d.IsDone() else float("inf"))
+                dq = float(d.Value()) if d.IsDone() and d.NbSolution() else float("inf")
+                far = max(far, dq)
                 if far > reach:
                     break
-            if far <= reach and (best is None or far < best):
+                dists.append(dq)
+                pt = d.PointOnShape2(1)
+                feet.append(np.array([pt.X(), pt.Y(), pt.Z()]))
+            if far > reach or not _alongside(e, probe, dists, feet, f, sewn.tol):
+                continue
+            if best is None or far < best:
                 best, near = far, k
         if best is not None:
             found.append((e, mine, best, near))
