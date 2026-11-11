@@ -421,6 +421,8 @@ INVENTORY: list[Group] = [
                help="most model calls one review may make across its sample"),
         EnvVar("CAD_REPAIR_REVIEW_LLM_TIMEOUT_S", "20.0", kind="float", exposure="internal",
                help="seconds one review model call may take before its defect goes to the engineer unexamined"),
+        EnvVar("CAD_REPAIR_REGION_LOOP", "off", exposure="internal",
+               help="which driver repairs a part: off (the operation-at-a-time loop, byte-for-byte the prior behaviour) or live (region-scoped target packages, each proved by a scan scoped to its region, with an unrepairable region queued for a person while the rest ship); anything else reads as off"),
         EnvVar("CAD_REPAIR_LLM_PLANNER", "off", exposure="internal",
                help="the model's seat in the repair planner: off (byte-for-byte the prior behaviour, rules only), shadow (asked and recorded, never acted on) or live (its plan acts inside the same caps); anything else reads as off"),
         EnvVar("CAD_REPAIR_LLM_PLANNER_CALLS_MAX", "2", kind="int", exposure="internal",

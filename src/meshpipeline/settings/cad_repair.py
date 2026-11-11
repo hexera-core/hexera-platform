@@ -188,6 +188,24 @@ CAD_REPAIR_LLM_PLANNER_CALLS_MAX: int = int(optional_env("CAD_REPAIR_LLM_PLANNER
 CAD_REPAIR_LLM_PLANNER_TIMEOUT_S: float = float(
     optional_env("CAD_REPAIR_LLM_PLANNER_TIMEOUT_S", "20.0"))
 
+def _region_loop_posture() -> str:
+    """The region-loop posture, FAILING CLOSED: anything but exactly live reads as off."""
+    raw = optional_env("CAD_REPAIR_REGION_LOOP", "off").strip().lower()
+    return raw if raw == "live" else "off"
+
+
+#: Which DRIVER repairs a part: the operation-at-a-time loop, or the region-scoped one. "off" is
+#: byte-for-byte the prior behaviour. "live" decomposes the part into regions and gives each one a
+#: target package - a locus, a plan, and a claim stated before execution that a region-scoped
+#: re-inspection then checks - so a region that cannot be repaired within its own budget is queued
+#: for a person while the regions that committed still ship.
+#:
+#: A POSTURE RATHER THAN A BOOLEAN, for the reason CAD_REPAIR_LLM_PLANNER is one: an unknown value
+#: reads as "off", so a typo in a deployment changes the driver of a customer's geometry to
+#: nothing at all. The operation-at-a-time loop is retained whatever this says - it is the
+#: benchmark baseline an improvement is attributed against, and the corpus runner reaches it.
+CAD_REPAIR_REGION_LOOP: str = _region_loop_posture()
+
 #: The confidence below which the model's plan is not acted on and the rule planner's choice stands.
 CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE: float = float(
     optional_env("CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE", "0.5"))

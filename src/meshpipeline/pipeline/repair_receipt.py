@@ -76,6 +76,10 @@ _STOPPED: dict[str, str] = {
     "time_budget": "the repair reached its time limit",
     "stalled": "several attempts in a row changed nothing",
     "scan_incomplete": "the defect scan did not finish, so nothing can be called absent",
+    # The region-scoped driver's two endings (cad/repair/region_loop.py). A customer reading this
+    # row has to be told plainly that part of their file was repaired and part was handed on.
+    "escalated": "part of the file was repaired and a region was passed to an engineer",
+    "regions_exhausted": "every region was tried once and what is left was not repaired",
 }
 
 #: The measured lengths an inspection records against a located defect, worst-first by usefulness.

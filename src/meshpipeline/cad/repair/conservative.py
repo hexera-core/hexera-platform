@@ -823,9 +823,31 @@ def repair_step_file(source: Path, destination: Path, *,
     # PER-DEFECT REVIEW HOLDS THE JUDGEMENT DEFECTS for a person: nothing automatic aims at them
     # until an engineer's directive does.
     reserved = REVIEW_RESERVED_CODES if rcfg.CAD_REPAIR_REVIEW_ENABLED else frozenset()
-    planner = RepairPlanner(directives or (), reserved=reserved)
-    result = run_loop(before_shape, planner=planner, tolerance_mm=tolerance, reserved=reserved)
-    final = measure(result.shape)
+    regions_run = None
+    if rcfg.CAD_REPAIR_REGION_LOOP == "live":
+        # THE REGION-SCOPED DRIVER. Every after-check below is unchanged and still has the last
+        # word: the region run is translated into the one result shape every later stage reads
+        # (`as_repair_run`), so a package's operations answer to the same caps, the same
+        # accountability and the same refusals as an operation-at-a-time run's.
+        #
+        # DIRECTIVES ARE NOT PLAYED HERE YET. An engineer's answer to a held defect is the
+        # `answered_held` exemption, which a package deliberately cannot carry (session.try_package)
+        # - so with directives in hand this posture would silently drop them, and the posture is
+        # off by default until the model author arrives with its own provenance (Plan 2).
+        from meshpipeline.cad.repair.region_loop import as_repair_run, run_regions
+        from meshpipeline.cad.repair.rules_author import LABEL, rules_author
+
+        regions_run = run_regions(
+            before_shape, tolerance_mm=tolerance, reserved=reserved,
+            author=rules_author(before_shape, original=original, reserved=reserved))
+        final = measure(regions_run.shape)
+        result = as_repair_run(regions_run, original=original.to_dict(), final=final.to_dict(),
+                               planner_label=LABEL)
+    else:
+        planner = RepairPlanner(directives or (), reserved=reserved)
+        result = run_loop(before_shape, planner=planner, tolerance_mm=tolerance,
+                          reserved=reserved)
+        final = measure(result.shape)
 
     measurements = {
         "before": original.to_dict(), "after": final.to_dict(),
@@ -843,10 +865,20 @@ def repair_step_file(source: Path, destination: Path, *,
         "operations_kept": sum(1 for v in result.verdicts if v.kept),
         # WHERE THE TIME WENT, so a later change can be shown to have made the run faster.
         # `measure_s` is the whole-shape `caps.measure` calls, a cost centre beside the scan.
+        # A region run adds its own scan counts to these (below); the keys a reader already has
+        # keep their meaning either way.
         "timings": {"total_s": result.total_s, "scan_count": result.scan_count,
-                    "measure_s": sum(v.measure_s for v in result.verdicts)},
+                    "measure_s": sum(v.measure_s for v in result.verdicts),
+                    **(regions_run.timings if regions_run is not None else {})},
         "volume_accountability": volume_accountability(original, final),
     }
+
+    if regions_run is not None:
+        # THE REGION-LEVEL TRUTH, beside the operation-level record above rather than instead of
+        # it. The op log cannot distinguish an operation that shipped from one discarded with its
+        # package, and a region queued for a person is the one thing in a partial repair a
+        # customer must be told plainly (spec decision 7) - so both travel.
+        measurements["regions"] = regions_run.to_dict()
 
     # THE AFTER-CHECKS STILL HAVE THE LAST WORD. The session already refused any individual
     # operation that left the caps, so reaching here with a refusal would mean a bug - but the
