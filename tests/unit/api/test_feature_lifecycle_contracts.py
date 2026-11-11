@@ -190,6 +190,14 @@ def test_the_served_routes_are_exactly_the_supported_set():
         # rather than the cells. The consumer is detailWindow() in ui/js/viewer/viewer.js and in
         # the console's copy.
         ("GET", "/api/v1/simulation/{job_id}/detail"),
+        # THE DEEP-ZOOM WINDOW: every delivered face inside the box the reader is LOOKING at, or
+        # a refusal to send any. /detail is a ball a reader opened ON something and may be
+        # sampled; this is the whole screen and may not, because a sample of the whole screen is
+        # a screen with holes in it and nobody can tell a hole in the sample from a hole in the
+        # mesh. It refuses with fits:false and the client keeps drawing the exact surface, which
+        # is the same geometry at a coarser subdivision. The consumer is Deep in
+        # ui/js/viewer/viewer.js, which is on by default for an exact payload.
+        ("GET", "/api/v1/simulation/{job_id}/window"),
         ("POST", "/api/v1/upload/step-file"),
         # THE DIRECT UPLOAD for a file too large for a request body: begin (a signed PUT URL for
         # one object), then finish (the multipart route's checks on the bytes that arrived). The

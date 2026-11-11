@@ -93,6 +93,7 @@ so about 8% of the part is exact per face and the rest is bounded.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -363,8 +364,11 @@ def exact_surface(polymesh, *, region: str = "", skip_names: tuple[str, ...] = (
             logger.debug("exact_surface: no per-face quality at %s (%s)", polymesh, exc)
 
     out: list[dict] = []
-    totals = {"delivered_faces": 0, "drawn_polygons": 0, "merged": 0, "kept": 0,
-              "area_delivered_m2": 0.0, "area_drawn_m2": 0.0, "patches": {}}
+    #: Annotated because it is deliberately heterogeneous - counts, areas, a nested dict of
+    #: per-patch blocks - and without it every `totals[k] += n` below reads as `object + int`.
+    totals: dict[str, Any] = {
+        "delivered_faces": 0, "drawn_polygons": 0, "merged": 0, "kept": 0,
+        "area_delivered_m2": 0.0, "area_drawn_m2": 0.0, "patches": {}}
     #: the areas of the DELIVERED faces, kept so `cell_stats` describes the mesh's cells and not
     #: the merged polygons. A rectangle that stands for 544,272 faces has no cell size, and an
     #: odometer that took its size from one would tell a reader a cell is millimetres across.
@@ -526,7 +530,8 @@ def exact_surface(polymesh, *, region: str = "", skip_names: tuple[str, ...] = (
                 # THE BASIS TRAVELS WITH THE VALUES, as it does in `detail_window`: a boundary
                 # face's skewness is allowed 20 where an internal face gets 4, so anything that
                 # draws all three against one bar paints faces red that checkMesh passed.
-                row["faces_per_polygon"] = faces_per.tobytes()
+                if faces_per is not None:
+                    row["faces_per_polygon"] = faces_per.tobytes()
                 row["quality"] = {"basis": {m: qual.basis(m) for m in vals},
                                   "values": vals,
                                   "over": "a merged polygon carries the WORST and the "
