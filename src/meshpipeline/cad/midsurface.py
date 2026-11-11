@@ -2957,6 +2957,9 @@ SEW_ANALYTIC = True
 SEW_ANALYTIC_MEND = True
 #: SHELL-15b: the largest faces of a volume that vote on whether it is material
 VOLUME_VOTERS = 12
+#: SHELL-15l: a closed shell enclosing less than this share of the part's size cubed encloses nothing
+#: (cad/validity.ZERO_VOLUME_RATIO)
+SEW_NO_VOLUME = 1e-9
 
 
 def _free_edge_list(shape) -> list:
@@ -3592,7 +3595,10 @@ def solidify(shape, mm: float) -> tuple[object, list[str]]:
             if mk.IsDone():
                 s = mk.Solid()
                 BRepLib.OrientClosedSolid_s(s)
-                if BRepCheck_Analyzer(s).IsValid():
+                # SHELL-15l: a closed shell that encloses no volume is no body - two touching bodies' coincident
+                # faces sewn to each other (a pipe's outer face and its insulation's inner face: a pocket of nothing,
+                # and the insulation left without its inner side). It counts as a bad shell: the volumes are read
+                if BRepCheck_Analyzer(s).IsValid() and abs(_volume(s)) > SEW_NO_VOLUME * diag ** 3:
                     made.append(s)
                     continue
                 bad = True

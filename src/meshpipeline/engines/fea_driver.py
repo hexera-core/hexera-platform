@@ -193,7 +193,7 @@ def _faces_in(shape) -> int:
 
 
 def _encloses(solid, diag: float) -> bool:
-    """IGES-2: whether a solid made from a closed shell encloses a volume at all (more than cad/validity's
+    """SHELL-15k: whether a solid made from a closed shell encloses a volume at all (more than cad/validity's
     ZERO_VOLUME_RATIO of the file's size cubed). A face written twice sews into a closed pocket of no volume: no
     solid, and the file is still the surface it is (SURF-8 leaves the second copy out)."""
     from OCP.BRepGProp import BRepGProp
@@ -236,7 +236,7 @@ def _plain_solids(shape, tol: float, diag: float) -> tuple[Any, int, int]:
 
 
 def _solidified(shape, diag: float) -> tuple[Any, int, int] | None:
-    """IGES-1: the file's loose faces read as the solids they bound THE WAY THE MID-SURFACE EXTRACTION READS THEM
+    """SHELL-15j: the file's loose faces read as the solids they bound THE WAY THE MID-SURFACE EXTRACTION READS THEM
     (cad/midsurface.solidify, SHELL-15): a surface written in another form (an IGES file's surface of revolution or
     B-spline) re-made as the plane, cylinder, cone, sphere or torus it is, the sewing tolerance measured from the
     faces' own gaps, bodies that touch kept apart, a sealed cavity put into its body, every solid checked valid.
@@ -276,7 +276,7 @@ def solids_from_shells(ws: Path, seen: dict | None = None) -> int:
     """MESH-1: A FILE OF FACES THAT CLOSE is read as the solid it bounds: a STEP or IGES written as closed
     shells with no solid entity (aircraft and keel surfaces, 24 Oct gate) - the shells are made solids,
     sewn first only within the clean check's own tight tolerance (cad/validity_brep), nothing else
-    touched. IGES-1: the same faces are also read the way the mid-surface extraction reads loose faces
+    touched. SHELL-15j: the same faces are also read the way the mid-surface extraction reads loose faces
     (_solidified), and that reading is the staged solid when it puts at least as many of the file's faces into
     solids - so an IGES copy's staged solid is its STEP's, for the solid mesh and the shell alike. Writes
     geometry.brep and returns how many solids it made (0: nothing to do, or no shell closes - the part is then

@@ -542,7 +542,7 @@ def test_the_cleanup_is_cited_when_it_did_something(tmp_path, monkeypatch):
     assert "Closed 2 gap(s) between the surfaces" in res["words"]
 
 
-# ------------------------------------------------------------------- IGES-1 / IGES-2: MESH-1's reading
+# ------------------------------------------------------------------- SHELL-15j / SHELL-15k: MESH-1's reading
 def _stage_file(src: Path, ws: Path) -> Path:
     ws.mkdir(parents=True, exist_ok=True)
     gmsh.initialize()
@@ -574,7 +574,7 @@ def _kinds(shape) -> dict:
 
 
 def test_an_iges_copy_of_a_solid_is_staged_as_the_solid_its_step_is(tmp_path):
-    """IGES-1: an IGES file's trimmed surfaces carry no solid and write a cylinder as a surface of revolution. MESH-1
+    """SHELL-15j: an IGES file's trimmed surfaces carry no solid and write a cylinder as a surface of revolution. MESH-1
     reads them the way the mid-surface extraction does: one valid solid, its bore a cylinder again."""
     from OCP.TopAbs import TopAbs_SOLID
     from OCP.TopExp import TopExp_Explorer
@@ -594,7 +594,7 @@ def test_an_iges_copy_of_a_solid_is_staged_as_the_solid_its_step_is(tmp_path):
 
 
 def test_a_face_written_twice_is_no_solid(tmp_path):
-    """IGES-2: two copies of one face sew into a closed pocket of no volume. It is no solid: the file is still the
+    """SHELL-15k: two copies of one face sew into a closed pocket of no volume. It is no solid: the file is still the
     surface it is, and the surface run leaves the second copy out (SURF-8)."""
     one = sx.plate_with_hole()
     ws = _stage(sx.compound([one, sx.copy_of(one)]), tmp_path / "ws")
