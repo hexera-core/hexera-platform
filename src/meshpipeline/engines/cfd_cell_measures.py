@@ -61,11 +61,61 @@ def _ints(path: Path) -> np.ndarray | None:
     return np.array(b.replace(b"(", b" ").replace(b")", b" ").split(), dtype=np.int64)
 
 
+_LIST = re.compile(rb"\n\s*(\d+)\s*\n?\s*\(")
+
+
+def _binary(path: Path):
+    """(header, raw bytes) of a binary foam file, or None when it is ascii (or not a foam file)."""
+    raw = path.read_bytes()
+    head = raw[:4096]
+    if b"FoamFile" not in head or _ASCII.search(head) or not re.search(rb"format\s+binary\s*;", head):
+        return None
+    return head, raw, raw.find(b"}", raw.find(b"FoamFile")) + 1
+
+
+def _blist(raw: bytes, at: int, dtype, width: int = 1):
+    """(the binary list starting after `at`, where it ends): its count, '(' and count x width items of dtype."""
+    m = _LIST.search(raw, at)
+    if m is None:
+        raise ValueError("no list")
+    n, s = int(m.group(1)), m.end()
+    nbytes = n * width * np.dtype(dtype).itemsize
+    a = np.frombuffer(raw[s:s + nbytes], dtype=dtype).astype(np.float64 if dtype == "<f8" else np.int64)
+    return (a.reshape(-1, width) if width > 1 else a), s + nbytes
+
+
+def _read_binary(pm: Path) -> dict | None:
+    """read() for a binary polyMesh (label size from the header's arch, faces as a compact list)."""
+    files = {k: _binary(pm / k) for k in ("points", "faces", "owner", "neighbour")}
+    if any(v is None for v in files.values()):
+        return None
+    head = files["faces"][0]
+    lab = "<i8" if re.search(rb"label\s*=\s*64", head) else "<i4"
+    sca = "<f8"
+    _h, raw, at = files["points"]
+    pts, _ = _blist(raw, at, sca, 3)
+    _h, raw, at = files["faces"]
+    if b"faceCompactList" not in head:
+        return None
+    offs, end = _blist(raw, at, lab)
+    labels, _ = _blist(raw, end, lab)
+    own = _blist(files["owner"][1], files["owner"][2], lab)[0]
+    nei = _blist(files["neighbour"][1], files["neighbour"][2], lab)[0]
+    size = np.diff(offs)
+    return {"points": pts, "verts": labels, "start": offs[:-1].astype(np.int64), "size": size, "owner": own,
+            "neighbour": nei, "n_cells": int(max(int(own.max()), int(nei.max()) if len(nei) else -1)) + 1}
+
+
 def read(case, region: str | None = None) -> dict | None:
     """{"points", "verts" (every face's vertices end to end), "start" (each face's first), "size", "owner",
-    "neighbour", "n_cells"} of the case's constant/polyMesh (a region's: constant/<region>/polyMesh), or None
-    when it cannot be read."""
+    "neighbour", "n_cells"} of the case's constant/polyMesh (a region's: constant/<region>/polyMesh), ascii or
+    binary, or None when it cannot be read."""
     pm = Path(case) / "constant" / (f"{region}/polyMesh" if region else "polyMesh")
+    try:
+        if _binary(pm / "faces") is not None:
+            return _read_binary(pm)
+    except (OSError, ValueError):
+        return None
     try:
         pts = _floats(pm / "points", 3)
         tok = _ints(pm / "faces")
