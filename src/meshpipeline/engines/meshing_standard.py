@@ -310,7 +310,7 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
         settings = MR.section("failed", source="rules", note=UNREAD_WORDS)
     left = max(0.0, float(wait_s) - (time.monotonic() - started))
     notes = await MR.decide(state, route=route, job_id=job_id, run=run, enabled=enabled, wait_s=left)
-    return merge(settings, notes)
+    return merge(settings, notes, route=route)
 
 
 # #
@@ -319,7 +319,11 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
 
 _KIND_SLOT = {"quads_only": "shell", "triangles_only": "shell", "max_triangle_percent": "tria_percent_max",
               "linear": "order", "quadratic": "order"}
-_SIZE_KEY = {"global": "global_mm", "min_edge": "min_edge_mm", "max_edge": "max_edge_mm", "thickness": "thickness_mm"}
+_SIZE_KEY = {"global": "global_mm", "min_edge": "min_edge_mm", "max_edge": "max_edge_mm", "thickness": "thickness_mm",
+             "near_wall": "near_wall_mm"}
+#: the flow route's boundary-layer rows (NOTE-10) and the key each sets in the set's "layers"
+_LAYER_KEY = {"layers:count": "count", "layers:first_height": "first_mm", "layers:total_thickness": "total_mm",
+              "layers:growth": "growth", "layers:y_plus": "y_plus"}
 _MULTIPLE = re.compile(r"\(([0-9.eE+-]+) x the global size\)")
 _NO_UNIT = " (no unit was written: read as millimetres)"
 
@@ -364,6 +368,10 @@ def _drop_row(req: dict, row: Mapping) -> None:
             req[k] = [e for e in v if not (isinstance(e, Mapping) and e.get("id") == rid)]
     if field in _SIZE_KEY:
         req["sizes"][_SIZE_KEY[field]] = None
+    elif field in _LAYER_KEY and isinstance(req.get("layers"), dict):
+        req["layers"][_LAYER_KEY[field]] = None
+    elif field.startswith("cells:") and isinstance(req.get("cells"), dict):
+        req["cells"][field.split(":", 1)[1]] = None
     elif field == "growth":
         req["sizes"]["growth"] = None
     elif field in _KIND_SLOT:
@@ -379,24 +387,45 @@ def _set_size(row: dict, req: dict, mm: float, words: str) -> None:
     row["asked"] = words
 
 
-def _in_unit(notes: dict, unit: str, told: list[str]) -> None:
+def _in_unit(notes: dict, unit: str, told: list[str], *, cells: bool = False) -> None:
     """STD-2: the notes' lengths written with no unit are in the unit the standard names (the notes' own unit, when
-    they give one, was already used by the reader)."""
+    they give one, was already used by the reader). The flow route's lengths too (NOTE-10): the size at the walls, a
+    boundary layer's first height and its stack, a size in one named place. `cells`: the flow route's words."""
     per = MR.UNITS_MM[unit]
+    said = f" (no unit was written: {_UNIT_NAME[unit]}, as your settings say)"
     for row in list(notes.get("rows") or []):
         field = str(row.get("field") or "")
         asked = str(row.get("asked") or "")
-        if field not in _SIZE_KEY or not asked.endswith(_NO_UNIT) or _MULTIPLE.search(asked):
+        if not asked.endswith(_NO_UNIT) or _MULTIPLE.search(asked):
             continue
-        value = float(notes["sizes"][_SIZE_KEY[field]])
-        mm = value * per
+        place = None
+        if field in _SIZE_KEY:
+            value = notes["sizes"].get(_SIZE_KEY[field])
+        elif field in ("layers:first_height", "layers:total_thickness"):
+            value = (notes.get("layers") or {}).get(_LAYER_KEY[field])
+        elif field == "local":
+            place = next((e for e in notes.get("local") or [] if e.get("id") == row.get("id")), None)
+            value = place.get("mm") if place and place.get("what") == "size" else None
+        else:
+            continue
+        if value is None:
+            continue
+        mm = float(value) * per
         if not (MR.SIZE_RANGE_MM[0] <= mm <= MR.SIZE_RANGE_MM[1]):
-            told.append(f'"{MR._short(row.get("quote"))}": {MR._g(mm)} mm is not an element size anyone means: not '
-                        "applied")
+            told.append(f'"{MR._short(row.get("quote"))}": {MR._g(mm)} mm is not '
+                        f'{"a cell" if cells else "an element"} size anyone means: not applied')
             _drop_row(notes, row)
             continue
-        words = MR._size_words(field, mm, None, unit, value)
-        _set_size(row, notes, mm, f"{words} (no unit was written: {_UNIT_NAME[unit]}, as your settings say)")
+        if field in _SIZE_KEY:
+            words = MR._size_words(field, mm, None, unit, float(value), cells=cells)
+            _set_size(row, notes, mm, f"{words}{said}")
+        elif place is not None:
+            place["mm"] = mm
+            where = str(place.get("where") or "")
+            row["asked"] = f"{MR._local_words(where, 'size', mm, unit, float(value), cells=cells)}{said}"
+        else:
+            notes["layers"][_LAYER_KEY[field]] = mm
+            row["asked"] = f"{MR._layer_words(field.split(':', 1)[1], float(value), mm, unit)}{said}"
 
 
 def _follow_global(req: dict, glob: float | None) -> None:
@@ -412,7 +441,7 @@ def _follow_global(req: dict, glob: float | None) -> None:
         _set_size(row, req, k * glob, MR._size_words(field, k * glob, k, "x_global", k))
 
 
-def merge(settings: Mapping | None, notes: Mapping) -> dict:
+def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
     """THE MERGED SECTION a route applies (STD-2): the notes' section shape, every row marked with where it came
     from ("settings" / "notes"), the lines said before meshing worked out once here (mesh_requirements.words reads
     them), and the merge itself kept for the why record. No standard: the notes' section, the same object (STD-3)."""
@@ -424,7 +453,7 @@ def merge(settings: Mapping | None, notes: Mapping) -> dict:
     told_s: list[str] = []          # the standard's values not applied because of the notes, and why
     told_n: list[str] = []          # the notes' values the standard's unit made unbuildable
     if s_used and n_used and settings.get("stated_unit"):
-        _in_unit(N, str(settings["stated_unit"]), told_n)
+        _in_unit(N, str(settings["stated_unit"]), told_n, cells=route == FLOW)
     _reid(S, "s")
     for r in S.get("rows") or []:
         r["from"] = "settings"
@@ -479,6 +508,7 @@ def merge(settings: Mapping | None, notes: Mapping) -> dict:
                 not_the_notes(field, f"it does not fit the {MR._g(glob)} mm global size your notes ask for")
             else:
                 not_the_notes("global", "it does not fit the edge lengths your notes ask for")
+    _flow_across(out, source, not_the_notes)
     k = out["kind"]
     shell_row = next((r for r in out["rows"] if r.get("field") in ("quads_only", "triangles_only")), None)
     share_row = next((r for r in out["rows"] if r.get("field") == "max_triangle_percent"), None)
@@ -515,6 +545,37 @@ def merge(settings: Mapping | None, notes: Mapping) -> dict:
     if status != "used":
         sec["note"] = " ".join(sec["lines"]) or UNREAD_WORDS
     return sec
+
+
+def _flow_across(out: dict, source, not_the_notes) -> None:
+    """STD-2 x NOTE-10: the flow fields' own rules (engines/mesh_requirements._flow_fields settles them within one
+    source) re-applied where the two sources meet - the notes' value is kept and the standard's is told as not
+    applied: no boundary layers against a layer setting, a first layer not thinner than the stack, a cell floor not
+    under the ceiling, a cell count outside the range."""
+    lay = out.get("layers") if isinstance(out.get("layers"), dict) else {}
+    others = [f for f in _LAYER_KEY if f != "layers:count" and lay.get(_LAYER_KEY[f]) is not None]
+    if lay.get("count") == 0 and others:
+        if source("layers:count") == "notes":
+            for f in others:
+                not_the_notes(f, "your notes ask for no boundary layers")
+        elif any(source(f) == "notes" for f in others):
+            not_the_notes("layers:count", "your notes set the boundary layers")
+    first, total = lay.get("first_mm"), lay.get("total_mm")
+    if (first is not None and total is not None and float(first) >= float(total)
+            and source("layers:first_height") != source("layers:total_thickness")):
+        bad = "layers:first_height" if source("layers:first_height") == "settings" else "layers:total_thickness"
+        not_the_notes(bad, "it does not fit the boundary layers your notes ask for")
+    c = out.get("cells") if isinstance(out.get("cells"), dict) else {}
+    lo, hi = c.get("floor"), c.get("ceiling")
+    if lo is not None and hi is not None and lo >= hi and source("cells:floor") != source("cells:ceiling"):
+        not_the_notes("cells:floor" if source("cells:floor") == "settings" else "cells:ceiling",
+                      "it does not fit the cell count your notes ask for")
+    lo, hi, mid = c.get("floor"), c.get("ceiling"), c.get("target")
+    if mid is not None:
+        for f, off in (("cells:floor", lo is not None and mid < lo), ("cells:ceiling", hi is not None and mid > hi)):
+            if off and source(f) != source("cells:target"):
+                not_the_notes(f if source(f) == "settings" else "cells:target",
+                              "it does not fit the cell count your notes ask for")
 
 
 def lines(settings: Mapping, notes: Mapping, merged: Mapping, *, told_s=(), told_n=()) -> list[str]:

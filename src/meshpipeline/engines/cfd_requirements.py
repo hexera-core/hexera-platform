@@ -116,13 +116,16 @@ async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, 
     what was not applied. No words: nothing asked, nothing written, nothing said. Never raises (but a fenced
     worker's stale publish)."""
     from meshpipeline.contracts import narration as _N
+    from meshpipeline.engines import meshing_standard as MS
 
     ws = Path(workspace)
     try:
+        # STD-2: the notes merged with the team's meshing standard (settings < notes, field by field); with no
+        # standard this is the notes' own reading, exactly as before (STD-3)
         if wait_s is None:
-            sec = await MR.decide(state or {}, route=ROUTE, job_id=job_id, run=run)
+            sec = await MS.decide(state or {}, route=ROUTE, job_id=job_id, run=run)
         else:
-            sec = await MR.decide(state or {}, route=ROUTE, job_id=job_id, run=run, wait_s=float(wait_s))
+            sec = await MS.decide(state or {}, route=ROUTE, job_id=job_id, run=run, wait_s=float(wait_s))
     except StaleExecutionPublish:
         raise
     except Exception as exc:  # noqa: BLE001 - the notes never fail a run
@@ -134,7 +137,7 @@ async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, 
         return sec
     try:
         from meshpipeline.contracts import decision_record as _dr
-        for d in MR.decisions(sec, stage="plan"):
+        for d in [*MR.decisions(sec, stage="plan"), *MS.decisions(sec, stage="plan")]:
             _dr.cite(str(job_id or ""), stage=str(d["stage"]), decided=str(d["decided"]), value=d.get("value"),
                      rule=str(d["rule"]), inputs=d.get("inputs") or {},
                      source=str(d.get("source") or _dr.SOURCE_RULE), words=str(d.get("words") or ""))
@@ -1312,7 +1315,8 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
                 lim = float(req["sizes"]["max_edge_mm"]) * 1e-3
                 got.update(measured=float(f"{big * 1e3:.4g}"), met=bool(big <= 1.05 * lim) and status != "nearest",
                            delivered=got["delivered"] + f"; the largest cell is {_mm(big)}")
-        rows.append({"id": row["id"], "field": field, "asked": row["asked"], **got})
+        rows.append({"id": row["id"], "field": field, "asked": row["asked"], **got,
+                     **({"from": row["from"]} if row.get("from") else {})})
     return MR.finish_report(rows, n_meas or n, DEFINITIONS)
 
 
@@ -1425,7 +1429,10 @@ def attach(workspace, quality: dict, engine: str) -> dict:
     out = {**quality, "requirements": rep}
     try:
         from meshpipeline.contracts.user_notes import record_remark
-        said = summary(rep, not_applied=len(MR.not_applied_words(MR.read(workspace))))
+        from meshpipeline.engines import meshing_standard as MS
+        sec = MR.read(workspace)
+        # STD-2: the closing line says where the things asked came from ("From your settings: ...")
+        said = MS.remark(sec, summary(rep, not_applied=len(MR.not_applied_words(sec))))
         if said:
             record_remark(Path(workspace), said, by=CONSUMER)
     except Exception:  # noqa: BLE001
