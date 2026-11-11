@@ -161,7 +161,7 @@ def test_the_solid_report_measures_each_requirement_on_the_tetrahedra():
     assert MR.line(rows["max_edge"]) == ("Longest element edge under 15 mm: a target - 10% of elements (1) have an "
                                          "edge longer than 15 mm (the longest is 60 mm).")
     assert FR.report(_tets([REGULAR]), None) is None and FR.report(_tets([REGULAR]), MR.empty()) is None
-    assert "2 of the 3 things you asked for are met" in FR.summary(rep)
+    assert FR.summary(rep).startswith("Of the 6 things you asked for: 2 met, 1 not fully met: aspect ratio under 4")
     assert "could not be applied to a solid mesh" in FR.summary(rep)
 
 

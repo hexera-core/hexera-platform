@@ -321,7 +321,10 @@ def report(mesh, req: Mapping | None, sizing: Mapping | None = None) -> dict | N
     rows = []
     for row in req["rows"]:
         field = str(row["field"])
-        if field.startswith("limit:"):
+        flow = MR.elements_row(field, req, n, "shell") if field in MR.FLOW_FIELDS else None
+        if flow is not None:
+            got = flow
+        elif field.startswith("limit:"):
             got = _limit_row(limits[row["id"]], mesh, q, t)
         elif field in ("global", "min_edge", "max_edge", "growth", "thickness"):
             got = _size_row(row, field, mesh, sizing, req)

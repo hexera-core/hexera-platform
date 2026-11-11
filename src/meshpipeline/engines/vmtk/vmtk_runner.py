@@ -249,7 +249,7 @@ def _layer_args(s: dict) -> list[str]:
             # vmtk's layer COUNT flag is -sublayers (there is no -numberoflayers)
             "-sublayers", str(layers),
             "-thicknessfactor", f"{vs_edge:g}",
-            "-sublayerratio", f"{1.0 / LAYER_GROWTH_RATIO:g}",
+            "-sublayerratio", f"{1.0 / float(s.get('layer_growth') or LAYER_GROWTH_RATIO):g}",
             # layers belong on the lumen WALL, not across the inlet/outlet caps
             "-boundarylayeroncaps", "0",
         ]
@@ -438,6 +438,12 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
                           "geometry: give source_points+target_points (coordinates on the "
                           "inlet and outlet ends) or source_ids+target_ids (open-profile ids "
                           "from geometry_report). Interactive seeding cannot run headless.")}
+    # CFDREQ-1: THE USER'S REQUIREMENTS from their notes (engines/cfd_requirements) - the one seam. None: the spec
+    # is exactly the one it always was
+    from meshpipeline.engines import cfd_requirements as CR
+    _ask = CR.Ask.of(ws, "vmtk")
+    if _ask is not None:
+        s = CR.vmtk_spec(_ask, s)
     # THE RESOLUTION LADDER'S RUNG (engines/resolution_policy, LAD-cfd-1): a retry after a sound
     # fill short of the floor puts `factor` times the cells across every passage - the edge factor
     # is the local radius' share, so the fill stays local to each passage's own width (PLAN-cfd-1)
@@ -474,6 +480,12 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
                           "wide costs the cube of its gap. snappyHexMesh or cfMesh can stretch "
                           "their cells along the passage and fit it.")}
     (ws / "vmtk_spec.json").write_text(json.dumps(s, indent=2))
+    if _ask is not None:
+        _fit = s.get("boundary_layers")
+        if _ask.n_layers is not None and isinstance(_fit, int) and _fit < int(_ask.n_layers):
+            _ask.nearest("layers:count", f"{_fit} layers: {int(_ask.n_layers)} would not fit the cell budget")
+        _ask.write(ws)
+        CR.say_sync(ws, _ask.lines())
     out: dict = {"spec": s, "pype": " ".join(build_pype(s))}
     if plan:
         out["predicted_cells"] = plan.get("predicted")
