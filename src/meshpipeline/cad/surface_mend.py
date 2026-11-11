@@ -95,9 +95,39 @@ def _check(new, old, band: float, others: list, tol: float) -> str:
             continue
         sec = BRepAlgoAPI_Section(new, f)
         sec.Build()
-        if sec.IsDone() and ms._length(sec.Shape()) > 2.0 * tol:
+        if sec.IsDone() and _crossing(sec.Shape(), new, f, tol):
             return "the changed face would cross another face"
     return ""
+
+
+def _crossing(section, a, b, tol: float) -> bool:
+    """Whether two faces' section holds a curve that runs through the inside of either (a crossing), not only along
+    the edges they share or touch at."""
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import surface_model as sm
+
+    em = ms._map(section, TopAbs_EDGE)
+    for i in range(1, em.Extent() + 1):
+        e = TopoDS.Edge_s(em.FindKey(i))
+        if ms._length(e) <= 2.0 * tol:
+            continue
+        mid = sm._edge_points(e, 3)[1]
+        on_rim = all(min(ms._dist(ms._vertex(mid), TopoDS.Edge_s(x)) for x in _edges(f)) <= 2.0 * tol for f in (a, b))
+        if not on_rim:
+            return True
+    return False
+
+
+def _edges(face) -> list:
+    from OCP.TopAbs import TopAbs_EDGE
+
+    from meshpipeline.cad import midsurface as ms
+
+    m = ms._map(face, TopAbs_EDGE)
+    return [m.FindKey(i) for i in range(1, m.Extent() + 1)]
 
 
 def _iso_side(face, edge) -> tuple[bool, bool] | None:
