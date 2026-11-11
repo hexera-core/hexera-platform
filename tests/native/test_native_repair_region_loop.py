@@ -109,7 +109,7 @@ def _budget() -> LoopBudget:
     return LoopBudget(max_ops=6, stall_limit=2, timeout_s=120.0)
 
 
-def test_each_region_is_proved_by_a_scan_scoped_to_it(tmp_path, monkeypatch):
+def test_a_packaged_region_is_proved_by_a_scan_scoped_to_it(tmp_path, monkeypatch):
     """THE FIRST TIME THE SCOPED PATH MEETS A REAL KERNEL inside a whole run.
 
     Every earlier task exercised `localize_scan(..., within=)` with doubles or on its own; here it

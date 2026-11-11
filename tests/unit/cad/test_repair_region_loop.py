@@ -112,6 +112,8 @@ def _author(part: _Part, *, escalate: tuple[int, ...] = (), decline: tuple[int, 
     `escalate` gives a region a zero-operation budget, which is how a real package runs out of
     its allowance before it has applied anything (session: a plan larger than the budget is
     refused unapplied, status `escalated`). `decline` is the author with nothing to propose.
+    `aim_elsewhere` plans an operation that clears nothing, so the claim fails and the package is
+    reverted - an author that was tried and wrong, which is not the same as one that declined.
     """
 
     def author(region, defects):
