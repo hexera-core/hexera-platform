@@ -1916,8 +1916,17 @@ def _mesh(workspace) -> int:
         if meshed and not rung:
             from meshpipeline.engines import fea_mmg
 
+            # PLAN-fea-34 x MESH-mmg-1: the user's own quality limits (their notes) the pass can aim at;
+            # none (no notes, or no such limit): the pass exactly as it is without them
+            mmg_targets: list = []
             try:
-                mmg = fea_mmg.improve(gmsh, vols)
+                from meshpipeline.engines import shell_run as _notes_reader
+                mmg_targets = fea_mmg.targets_of(_notes_reader.requirements_in(ws))
+            except Exception as exc:  # noqa: BLE001 - the notes never fail a mesh
+                print(f"[GMSH-FEA] the notes' quality limits were not read for the quality pass: {exc}",
+                      file=sys.stderr)
+            try:
+                mmg = fea_mmg.improve(gmsh, vols, targets=mmg_targets or None)
             except Exception as exc:  # noqa: BLE001 - a post-pass that cannot run leaves the gmsh mesh
                 mmg = {"rule": fea_mmg.RULE, "ran": False, "why": f"{type(exc).__name__}: {exc}"[:300]}
             if fea_mmg.words(mmg):
@@ -2059,6 +2068,9 @@ def _mesh(workspace) -> int:
             wanted = shell_run.requirements_in(ws)
             if wanted and solid is not None:
                 asked_report = fea_requirements.report(solid, wanted, order=order)
+                if mmg.get("targets"):
+                    from meshpipeline.engines import fea_mmg as _mmg_told
+                    asked_report = _mmg_told.tell(asked_report, mmg)
         except Exception as exc:  # noqa: BLE001 - told as not measured, never a failed mesh
             print(f"[GMSH-FEA] the notes' requirements were not measured: {exc}", file=sys.stderr)
         # MESH ONCE, EXPORT MANY (design 8): the Nastran and Ansys files from the same mesh, with the

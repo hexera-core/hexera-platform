@@ -228,6 +228,137 @@ def test_splice_keeps_a_cavity_that_came_back_worse_as_it_was():
         gmsh.finalize()
 
 
+# #
+# PLAN-fea-34 x MESH-mmg-1: the user's own quality limits as the pass's targets
+# #
+
+def _lim(i, measure, op, target, shape="any"):
+    return {"id": f"L{i}", "measure": measure, "shape": shape, "op": op, "target": target, "share": 0.0,
+            "outer": None, "quote": ""}
+
+
+def test_the_user_limits_the_pass_can_reach_are_its_targets_and_the_others_are_not():
+    req = {"limits": [_lim(1, "aspect_ratio", "<=", 4.0), _lim(2, "min_angle", ">=", 20.0),
+                      _lim(3, "max_angle", "<=", 120.0), _lim(4, "jacobian", ">=", 0.7),
+                      _lim(5, "warpage", "<=", 10.0), _lim(6, "aspect_ratio", "<=", 3.0, shape="quad")]}
+    got = M.targets_of(req)
+    assert [(t["id"], t["figure"], t["op"], t["target"]) for t in got] == [
+        ("L1", "edge_ratio", "<=", 4.0), ("L2", "min_face_angle", ">=", 20.0), ("L3", "max_face_angle", "<=", 120.0)]
+    assert M.targets_of(None) == [] and M.targets_of({"limits": []}) == []
+
+
+def test_with_no_target_the_figures_are_exactly_the_ones_without_targets():
+    tets = np.array([[0, 1, 2, 3]])
+    assert M.worst(_SLIVER, tets) == M.worst(_SLIVER, tets, targets=None) == M.worst(_SLIVER, tets, targets=[])
+    assert np.array_equal(M.flagged(_GOOD, tets), M.flagged(_GOOD, tets, None))
+
+
+def test_an_element_past_the_users_limit_is_flagged_and_counted():
+    tets = np.array([[0, 1, 2, 3]])
+    # a regular tetrahedron: no production trigger, every edge equal (edge ratio 1), every face angle 60 degrees
+    assert M.worst(_GOOD, tets)["triggered"] == 0
+    strict = [{"id": "L1", "figure": "min_face_angle", "op": ">=", "target": 61.0}]
+    w = M.worst(_GOOD, tets, targets=strict)
+    assert w["triggered"] == 1 and w["user_past"] == 1 and w["user_past_by"] == {"L1": 1}
+    assert M.flagged(_GOOD, tets, strict).tolist() == [True]
+    loose = [{"id": "L1", "figure": "edge_ratio", "op": "<=", "target": 2.0}]
+    assert M.worst(_GOOD, tets, targets=loose)["user_past"] == 0
+
+
+def test_never_more_elements_past_the_users_limits_and_fewer_is_better():
+    b = _fig(user_past=5, user_past_by={"L1": 5})
+    keep, why = M.better(b, _fig(min_sj=0.3, user_past=6))
+    assert not keep and "your limits" in why                              # better figures, more past the user's
+    keep, why = M.better(b, _fig(user_past=2))
+    assert keep and "your limits" in why                                  # only fewer past the user's: kept
+    assert not M.better(b, _fig(user_past=5))[0]                          # the same: no better
+
+
+def test_with_no_targets_the_pass_records_exactly_what_it_did_before(tmp_path):
+    gmsh = pytest.importorskip("gmsh")
+    exe = _fake_mmg(tmp_path, "shutil.copy(src, dst)")
+    _box_model(gmsh)
+    try:
+        old = M.TRIGGER_SJ
+        M.TRIGGER_SJ = 2.0
+        try:
+            a = M.improve(gmsh, [1], enabled=True, exe=exe)
+            b = M.improve(gmsh, [1], enabled=True, exe=exe, targets=[])
+            c = M.improve(gmsh, [1], enabled=True, exe=exe, targets=None)
+        finally:
+            M.TRIGGER_SJ = old
+        for rec in (a, b, c):
+            rec.pop("seconds")
+            for row in rec["volumes"]:
+                row.pop("seconds", None)
+        assert a == b == c and "targets" not in a
+        assert M.improve(gmsh, [1], enabled=False, targets=None) == {"rule": M.RULE, "ran": False,
+                                                                     "why": "off (FEA_MMG=off)"}
+    finally:
+        gmsh.finalize()
+
+
+def test_a_users_limit_sends_a_volume_no_production_limit_would_to_the_pass(tmp_path):
+    gmsh = pytest.importorskip("gmsh")
+    exe = _fake_mmg(tmp_path, "shutil.copy(src, dst)")
+    _box_model(gmsh)
+    try:
+        assert M.improve(gmsh, [1], enabled=True, exe=exe)["volumes"] == []      # nothing a limit would note
+        strict = [{"id": "L1", "figure": "edge_ratio", "op": "<=", "target": 1.05}]
+        rec = M.improve(gmsh, [1], enabled=True, exe=exe, targets=strict)
+        assert rec["targets"] == strict and rec["tried"] == 1 and rec["kept"] == 0
+        row = rec["volumes"][0]
+        assert row["before"]["user_past"] > 0 and row["why"] == "no cavity came back better"
+        b, a, tried = M.user_counts(rec)["L1"]
+        assert b == a == row["before"]["user_past_by"]["L1"] and tried
+    finally:
+        gmsh.finalize()
+
+
+def test_each_aimed_limit_is_told_what_the_pass_did():
+    def rep():
+        return {"rows": [{"id": "L1", "field": "limit:aspect_ratio", "delivered": "2.0% of elements are over 4"},
+                         {"id": "L2", "field": "global", "delivered": "elements are about 3 mm"}]}
+    t = [{"id": "L1", "figure": "edge_ratio", "op": "<=", "target": 4.0}]
+    assert M.tell(rep(), {"ran": True, "volumes": []}) == rep()          # no targets: the report as it was
+    vol = {"mmg": True, "kept": True, "before": {"user_past_by": {"L1": 40}}, "after": {"user_past_by": {"L1": 12}}}
+    got = M.tell(rep(), {"ran": True, "targets": t, "volumes": [vol]})
+    assert got["rows"][0]["lever"]["before"] == 40 and got["rows"][0]["lever"]["after"] == 12
+    assert got["rows"][0]["delivered"].startswith("2.0% of elements are over 4; the quality pass reshaped")
+    assert got["rows"][1] == rep()["rows"][1]
+    tried = {**vol, "kept": False}
+    assert "could not make them better" in M.tell(rep(), {"ran": True, "targets": t, "volumes": [tried]})[
+        "rows"][0]["delivered"]
+    pinned = {"before": {"user_past_by": {"L1": 3}}, "kept": False}
+    assert "pinned by the surface mesh" in M.tell(rep(), {"ran": True, "targets": t, "volumes": [pinned]})[
+        "rows"][0]["delivered"]
+    off = M.tell(rep(), {"ran": False, "why": "mmg3d is not installed in this image", "targets": t})
+    assert "did not run here (mmg3d is not installed in this image)" in off["rows"][0]["delivered"]
+
+
+@pytest.mark.skipif(not M.binary(), reason="mmg3d is not installed (the mesh image ships it)")
+def test_the_real_mmg3d_aims_at_a_users_limit_and_never_leaves_more_past_it(tmp_path):
+    gmsh = pytest.importorskip("gmsh")
+    _box_model(gmsh, size=0.2)
+    try:
+        surf_before = sorted(tuple(sorted(t)) for t in
+                             np.asarray(gmsh.model.mesh.getElementsByType(2)[1]).reshape(-1, 3).tolist())
+        t = [{"id": "L1", "figure": "min_face_angle", "op": ">=", "target": 35.0}]
+        rec = M.improve(gmsh, [1], enabled=True, targets=t)
+        assert rec["ran"] and rec["targets"] == t
+        b, a, _tried = M.user_counts(rec)["L1"]
+        assert a <= b
+        for row in rec["volumes"]:
+            if row.get("kept"):
+                assert row["after"]["user_past"] <= row["before"]["user_past"]
+                assert row["after"]["min_sj"] >= row["before"]["min_sj"] - 1e-9
+        surf_after = sorted(tuple(sorted(t)) for t in
+                            np.asarray(gmsh.model.mesh.getElementsByType(2)[1]).reshape(-1, 3).tolist())
+        assert surf_after == surf_before
+    finally:
+        gmsh.finalize()
+
+
 def test_splice_takes_a_better_cavity_and_leaves_the_required_elements(monkeypatch):
     gmsh = pytest.importorskip("gmsh")
     try:

@@ -1,6 +1,6 @@
 # Responsibility: The FEA quality post-pass (MESH-mmg-1): after gmsh has filled and optimised a part's straight tetrahedra, and before they are curved, the pinned MMG binary (mmg3d) improves the volumes that still hold an element the production limits would note - with the boundary frozen, so no node on a CAD face, curve or joint moves - and the result is kept only when it is measurably better and the boundary is exactly the one that went in.
 # Boundaries: runs inside the gmsh FEA adapter's process on the current gmsh model, one volume at a time, between gmsh's optimiser and setOrder. It never touches a surface mesh, a named face, a joint, an embedded entity or an fTetWild part; a volume it cannot improve keeps its gmsh mesh to the byte. It decides no lever and no verdict.
-# Collaborates with: engines/gmsh/fea_adapter.py (calls improve() and records what it did in quality.json), engines/fea_quality.py (the same element measures the verdict reads), Dockerfile (the pinned MMG build), docs/RULES.md MESH-mmg-1.
+# Collaborates with: engines/gmsh/fea_adapter.py (calls improve() and records what it did in quality.json), engines/fea_quality.py (the same element measures the verdict reads), engines/fea_requirements.py (the user's own quality limits from their notes, PLAN-fea-34: targets_of turns them into the pass's targets, tell says what the pass did for each), Dockerfile (the pinned MMG build), docs/RULES.md MESH-mmg-1.
 """MMG, THE QUALITY POST-PASS (MESH-mmg-1).
 
 gmsh's Delaunay fill and its Netgen optimiser leave a few poor elements on some parts: a sliver
@@ -29,6 +29,13 @@ WHAT IS FIXED, AND WHY (never guessed):
   figures (scaled Jacobian, aspect, smallest and largest dihedral) is worse, the count of elements
   over a limit is not higher, and at least one worst figure is better. Otherwise the gmsh mesh stays.
 * REPEATABLE. mmg3d is single-threaded and deterministic: the same volume gives the same mesh.
+* THE USER'S OWN LIMITS TOO (PLAN-fea-34). When the notes set a quality limit the pass can reach on a
+  straight element - an aspect ratio (longest over shortest edge), a smallest or a largest corner angle -
+  an element past it is flagged as well, and a cavity is kept only when, beside the rule above, no more
+  elements are past the user's limits than before (fewer counts as better). The corners MMG moves are the
+  delivered element's corners, so the figure it aims at is the one the report measures. A Jacobian limit
+  is not a target: a straight tetrahedron's Jacobian ratio is 1, it changes only as the sides curve.
+  With no such limit in the notes, nothing here changes, to the byte.
 
 THE ROOT CAUSE COMES FIRST. A sliver pinned by a CAD detail far below the element size (MESH-9, PLAN-fea-12)
 is a geometry problem, fixed in the geometry; this pass is the safety net for what is left, and on a part
@@ -84,13 +91,54 @@ def binary() -> str | None:
 # the figures (pure)
 # #
 
-def flagged(xyz: np.ndarray, tets: np.ndarray) -> np.ndarray:
-    """Per element: would a delivered quadratic mesh be noted on it (the TRIGGER_* limits, straight)."""
+#: the user's limits (engines/fea_requirements.FIGURES: requirement -> figure) the pass can aim at on a
+#: straight element; the Jacobian is not one (1 on every straight tetrahedron)
+TARGET_FIGURES = ("edge_ratio", "min_face_angle", "max_face_angle")
+
+
+def targets_of(req) -> list[dict]:
+    """PLAN-fea-34 x MESH-mmg-1: the user's quality limits (the checked set read from their notes) the pass
+    aims at - [{id, figure, op, target}], [] when the notes set none it can reach."""
+    from meshpipeline.engines.fea_requirements import FIGURES
+
+    out: list[dict] = []
+    for lim in (req or {}).get("limits") or []:
+        fig = FIGURES.get((str(lim.get("measure")), str(lim.get("op"))))
+        if fig not in TARGET_FIGURES or str(lim.get("shape") or "any") not in ("tet", "any"):
+            continue
+        try:
+            out.append({"id": str(lim["id"]), "figure": fig, "op": str(lim["op"]), "target": float(lim["target"])})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _past(m: dict, targets) -> dict[str, np.ndarray]:
+    """Per user limit (by id): which elements are past its target, read on the figures `m`."""
+    return {t["id"]: (m[t["figure"]] < t["target"]) if t["op"] == ">=" else (m[t["figure"]] > t["target"])
+            for t in targets or ()}
+
+
+def _past_any(m: dict, targets) -> np.ndarray | None:
+    past = _past(m, targets)
+    if not past:
+        return None
+    out = np.zeros(len(m["aspect"]), dtype=bool)
+    for v in past.values():
+        out |= v
+    return out
+
+
+def flagged(xyz: np.ndarray, tets: np.ndarray, targets=None) -> np.ndarray:
+    """Per element: would a delivered quadratic mesh be noted on it (the TRIGGER_* limits, straight), or is
+    it past one of the user's own limits (`targets`, targets_of)."""
     from meshpipeline.engines.fea_quality import element_measures
 
     m = element_measures(xyz[tets])
-    return ((m["scaled_jacobian"] < TRIGGER_SJ) | (m["aspect"] > TRIGGER_ASPECT)
-            | (m["min_dihedral"] < TRIGGER_MIN_DIHEDRAL) | (m["max_dihedral"] > TRIGGER_MAX_DIHEDRAL))
+    out = ((m["scaled_jacobian"] < TRIGGER_SJ) | (m["aspect"] > TRIGGER_ASPECT)
+           | (m["min_dihedral"] < TRIGGER_MIN_DIHEDRAL) | (m["max_dihedral"] > TRIGGER_MAX_DIHEDRAL))
+    user = _past_any(m, targets)
+    return out if user is None else out | user
 
 
 def around(tets: np.ndarray, seed: np.ndarray, rings: int) -> np.ndarray:
@@ -104,11 +152,12 @@ def around(tets: np.ndarray, seed: np.ndarray, rings: int) -> np.ndarray:
     return out
 
 
-def worst(xyz: np.ndarray, tets: np.ndarray, on_boundary: np.ndarray | None = None) -> dict:
+def worst(xyz: np.ndarray, tets: np.ndarray, on_boundary: np.ndarray | None = None, targets=None) -> dict:
     """The worst straight-element figures of tets (E, 4) into xyz, and how many elements miss each
     straight production limit. With `on_boundary` (a per-node mask), also how many of the elements the
     pass is for have every corner on the boundary: those the frozen surface pins, which no move inside
-    the volume can reshape."""
+    the volume can reshape. With `targets` (the user's limits, targets_of), also how many elements are
+    past them (`user_past`, and per limit `user_past_by`); they count as elements the pass is for."""
     from meshpipeline.engines.fea_quality import element_measures
 
     if len(tets) == 0:
@@ -119,10 +168,17 @@ def worst(xyz: np.ndarray, tets: np.ndarray, on_boundary: np.ndarray | None = No
         over += int(np.count_nonzero(m[key] < lim if op == "<" else m[key] > lim))
     trig = ((m["scaled_jacobian"] < TRIGGER_SJ) | (m["aspect"] > TRIGGER_ASPECT)
             | (m["min_dihedral"] < TRIGGER_MIN_DIHEDRAL) | (m["max_dihedral"] > TRIGGER_MAX_DIHEDRAL))
+    past = _past(m, targets)
+    user = _past_any(m, targets)
+    if user is not None:
+        trig = trig | user
     out = {"elements": int(len(tets)), "invalid": int(np.count_nonzero(m["min_detj"] <= 0)),
            "min_sj": float(np.min(m["scaled_jacobian"])), "max_aspect": float(np.max(m["aspect"])),
            "min_dihedral": float(np.min(m["min_dihedral"])), "max_dihedral": float(np.max(m["max_dihedral"])),
            "over_limits": over, "triggered": int(np.count_nonzero(trig))}
+    if user is not None:
+        out["user_past"] = int(np.count_nonzero(user))
+        out["user_past_by"] = {k: int(np.count_nonzero(v)) for k, v in past.items()}
     if on_boundary is not None:
         corners = on_boundary[tets].sum(axis=1)
         out["triggered_pinned"] = int(np.count_nonzero(trig & (corners == 4)))
@@ -144,9 +200,15 @@ def better(before: dict, after: dict, *, tol: float = 1e-9) -> tuple[bool, str]:
         return False, "worse on " + ", ".join(worse)
     if after["over_limits"] > before["over_limits"]:
         return False, f"more elements over a limit ({after['over_limits']} > {before['over_limits']})"
+    # the user's own limits (PLAN-fea-34), when the notes set any: never more elements past them
+    user = "user_past" in before and "user_past" in after
+    if user and after["user_past"] > before["user_past"]:
+        return False, f"more elements past your limits ({after['user_past']} > {before['user_past']})"
     gained = [k for k, low in (("min_sj", True), ("max_aspect", False), ("min_dihedral", True),
                                ("max_dihedral", False))
               if (after[k] > before[k] + tol if low else after[k] < before[k] - tol)]
+    if user and after["user_past"] < before["user_past"]:
+        gained.append("elements past your limits")
     if not gained and after["over_limits"] >= before["over_limits"]:
         return False, "no better"
     return True, "better on " + (", ".join(gained) or "elements over a limit")
@@ -293,11 +355,11 @@ def _volume6(xyz: np.ndarray, tets: np.ndarray) -> float:
     return float(np.abs(np.einsum("ij,ij->i", p[:, 3] - p[:, 0], np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]))).sum())
 
 
-def splice(xyz: np.ndarray, tets: np.ndarray, free: np.ndarray, out: dict) -> dict:
+def splice(xyz: np.ndarray, tets: np.ndarray, free: np.ndarray, out: dict, targets=None) -> dict:
     """mmg's elements back cavity by cavity: each group of free elements (they share a corner) is
-    replaced by what mmg made of it only when that is better (`better`, the same never-worse rule) and
-    fills the same volume; every other cavity, and every required element, stays as it was. Returns
-    {ok, why, xyz, tets, boundary_map, cavities, improved}."""
+    replaced by what mmg made of it only when that is better (`better`, the same never-worse rule, the
+    user's limits `targets` included) and fills the same volume; every other cavity, and every required
+    element, stays as it was. Returns {ok, why, xyz, tets, boundary_map, cavities, improved}."""
     vmap = out["vertex_map"]
     req = ~np.asarray(free, dtype=bool)
     new_t = out["tets"]
@@ -346,7 +408,7 @@ def splice(xyz: np.ndarray, tets: np.ndarray, free: np.ndarray, out: dict) -> di
         new_c = pos[nf[owner == c]]
         ok = len(new_c) > 0 and abs(_volume6(xyz_all, new_c) - _volume6(xyz, old_c)) <= 1e-9 * max(
             _volume6(xyz, old_c), 1e-300)
-        if ok and better(worst(xyz, old_c), worst(xyz_all, new_c))[0]:
+        if ok and better(worst(xyz, old_c, targets=targets), worst(xyz_all, new_c, targets=targets))[0]:
             keep_tets.append(new_c)
             improved += 1
         else:
@@ -422,15 +484,18 @@ def _replace(gmsh, v: int, ntags: np.ndarray, out: dict) -> None:
     gmsh.model.mesh.addElementsByType(v, 4, list(range(next_el, next_el + len(tets))), tets.ravel().tolist())
 
 
-def improve(gmsh, vols, *, enabled: bool | None = None, exe: str | None = None) -> dict:
+def improve(gmsh, vols, *, enabled: bool | None = None, exe: str | None = None, targets=None) -> dict:
     """MESH-mmg-1 on every listed volume of the current gmsh model (straight tetrahedra, before
-    setOrder). Returns the record quality.json carries: {rule, ran, volumes: [...], kept, seconds} or
-    {rule, ran: False, why}."""
+    setOrder). `targets`: the user's own quality limits (targets_of; None or [] = none, and the pass is
+    exactly the one without them). Returns the record quality.json carries: {rule, ran, volumes: [...],
+    kept, seconds} (and `targets` when there are some) or {rule, ran: False, why}."""
+    targets = list(targets or []) or None
     if not (ENABLED if enabled is None else enabled):
-        return {"rule": RULE, "ran": False, "why": "off (FEA_MMG=off)"}
+        return {"rule": RULE, "ran": False, "why": "off (FEA_MMG=off)", **({"targets": targets} if targets else {})}
     exe = exe or binary()
     if not exe:
-        return {"rule": RULE, "ran": False, "why": "mmg3d is not installed in this image"}
+        return {"rule": RULE, "ran": False, "why": "mmg3d is not installed in this image",
+                **({"targets": targets} if targets else {})}
     t0 = time.monotonic()
     rows: list[dict] = []
     for v in sorted(int(x) for x in vols):
@@ -447,7 +512,7 @@ def improve(gmsh, vols, *, enabled: bool | None = None, exe: str | None = None) 
         ntags, xyz, tets, tris, refs = arrays
         on_b = np.zeros(len(xyz), dtype=bool)
         on_b[np.unique(tris)] = True
-        before = worst(xyz, tets, on_b)
+        before = worst(xyz, tets, on_b, targets=targets)
         if not before.get("triggered"):
             continue                                # nothing a delivered mesh would be noted on
         if before.get("triggered_pinned") == before["triggered"]:
@@ -457,14 +522,14 @@ def improve(gmsh, vols, *, enabled: bool | None = None, exe: str | None = None) 
             continue
         # ONLY AROUND THE FLAGGED ELEMENTS: every element further than RINGS shared corners away is
         # required, so it comes back exactly as it went in
-        free = around(tets, flagged(xyz, tets), RINGS)
+        free = around(tets, flagged(xyz, tets, targets), RINGS)
         t1 = time.monotonic()
         with tempfile.TemporaryDirectory(prefix="fea_mmg_") as td:
             out = remesh(xyz, tris, refs, tets, exe=exe, workdir=Path(td), free=free,
                          timeout=TIME_BASE_S + TIME_PER_ELEMENT_S * len(tets))
         row: dict = {"volume": v, "mmg": True, "before": before, "free_elements": int(free.sum())}
         if out["ok"]:
-            out = splice(xyz, tets, free, out)
+            out = splice(xyz, tets, free, out, targets)
         row["seconds"] = round(time.monotonic() - t1, 2)
         if not out["ok"]:
             rows.append({**row, "kept": False, "why": out["why"]})
@@ -473,7 +538,7 @@ def improve(gmsh, vols, *, enabled: bool | None = None, exe: str | None = None) 
         if not out["improved"]:
             rows.append({**row, "kept": False, "why": "no cavity came back better"})
             continue
-        after = worst(out["xyz"], out["tets"], out["boundary_map"] >= 0)
+        after = worst(out["xyz"], out["tets"], out["boundary_map"] >= 0, targets=targets)
         keep, why = better(before, after)
         if not keep and why == "no better":
             # a cavity away from the volume's worst element came back better: kept, nothing is worse
@@ -483,7 +548,56 @@ def improve(gmsh, vols, *, enabled: bool | None = None, exe: str | None = None) 
             _replace(gmsh, v, ntags, out)
         rows.append(row)
     return {"rule": RULE, "ran": True, "volumes": rows, "kept": sum(1 for r in rows if r.get("kept")),
-            "tried": sum(1 for r in rows if r.get("mmg")), "seconds": round(time.monotonic() - t0, 2)}
+            "tried": sum(1 for r in rows if r.get("mmg")), "seconds": round(time.monotonic() - t0, 2),
+            **({"targets": targets} if targets else {})}
+
+
+def user_counts(record: dict) -> dict[str, tuple[int, int, bool]]:
+    """Per user limit the pass aimed at: (elements past it in the volumes the pass looked at, before; and
+    after - a volume kept by mmg counted as it came back, any other as it was; whether mmg ran on any)."""
+    out: dict[str, tuple[int, int, bool]] = {}
+    for t in (record or {}).get("targets") or []:
+        b = a = 0
+        tried = False
+        for r in (record or {}).get("volumes") or []:
+            before = (r.get("before") or {}).get("user_past_by") or {}
+            if t["id"] not in before:
+                continue
+            nb = int(before[t["id"]])
+            b += nb
+            a += int(((r.get("after") or {}).get("user_past_by") or {}).get(t["id"], nb)) if r.get("kept") else nb
+            tried = tried or bool(r.get("mmg"))
+        out[t["id"]] = (b, a, tried)
+    return out
+
+
+def tell(report: dict | None, record: dict) -> dict | None:
+    """PLAN-fea-34's rows told what the pass did for each limit it aimed at (the row's `lever` and one more
+    sentence on what was delivered); the report as it was when the pass had no targets."""
+    if not report or not (record or {}).get("targets"):
+        return report
+    counts = user_counts(record)
+    for row in report.get("rows") or []:
+        if row.get("id") not in counts:
+            continue
+        b, a, tried = counts[row["id"]]
+        if not record.get("ran"):
+            words = (f"the quality pass that aims at it did not run here ({record.get('why') or 'not run'}); "
+                     "it is measured on the mesh")
+        elif not b:
+            words = "the quality pass found no element past it before curving, in the volumes it works on"
+        elif not tried:
+            words = (f"the quality pass found {b:,} element{'s' if b != 1 else ''} past it before curving, all "
+                     "pinned by the surface mesh, which stays as meshed")
+        elif a < b:
+            words = (f"the quality pass reshaped the inside of the volume around them: {b:,} past it before, "
+                     f"{a:,} after (the surface mesh stays as meshed)")
+        else:
+            words = (f"the quality pass tried the {b:,} element{'s' if b != 1 else ''} past it and could not make "
+                     "them better without moving the surface mesh, which stays as meshed")
+        row["lever"] = {"rule": RULE, "before": b, "after": a, "words": words}
+        row["delivered"] = f"{row.get('delivered') or ''}; {words}".lstrip("; ")
+    return report
 
 
 def words(record: dict) -> str:
@@ -499,5 +613,5 @@ def words(record: dict) -> str:
             f"(worst scaled Jacobian {b:.3g} -> {a:.3g}; {RULE})")
 
 
-__all__ = ["BIN_PATH", "ENABLED", "OPTIONS", "RULE", "better", "binary", "improve", "read_medit", "remesh",
-           "words", "worst", "write_medit"]
+__all__ = ["BIN_PATH", "ENABLED", "OPTIONS", "RULE", "TARGET_FIGURES", "better", "binary", "improve", "read_medit",
+           "remesh", "targets_of", "tell", "user_counts", "words", "worst", "write_medit"]
