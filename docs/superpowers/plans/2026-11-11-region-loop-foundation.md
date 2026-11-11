@@ -44,7 +44,11 @@ The report records no elapsed time anywhere today, so nothing later in this plan
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `OpVerdict.apply_s: float` and `OpVerdict.scan_s: float`, both defaulting to `0.0` and included in `to_dict()`; `RepairRun.total_s: float` and `RepairRun.scan_count: int`, both in `to_dict()`; report key `measurements["timings"] = {"total_s": float, "scan_count": int}`.
+- Produces: `OpVerdict.apply_s: float` and `OpVerdict.scan_s: float`, both defaulting to `0.0` and included in `to_dict()`; `OpVerdict.measure_s: float`; `RepairRun.total_s: float` and `RepairRun.scan_count: int`, both in
+  `to_dict()`; report key `measurements["timings"] = {"total_s": float, "scan_count": int, "measure_s": float}`.
+  `measure_s` is timed separately because `caps.measure` runs a whole-shape `BRepCheck_Analyzer` and is
+  called twice per operation (`session.py:231`, `:242`), so it is a second cost centre alongside the scan
+  and a scoped proof has to scope it too.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -85,50 +89,78 @@ git commit -m "feat(repair): record elapsed time per operation, scan and run"
 
 ---
 
-### Task 2: Close The Volume-Cap Hole
+### Task 2: Make The Unchecked Volume Visible And Bound The Closed Bodies
 
-`cumulative_refusal` returns `""` whenever `original.solids == 0`, so volume is never compared for an upload that arrives as shells - the exact case fills convert into solids. Measured on the knee: volume moved -6454.25 mm3 (-12%) with `declared_volume_mm3: 0.0` and no check could look at it.
+`cumulative_refusal` skips the volume comparison whenever `original.solids == 0` - the exact case
+fills convert into solids. Measured on the knee: volume moved -6454.25 mm3 (-12%) with
+`declared_volume_mm3: 0.0` and nothing looked at it.
+
+It cannot be closed by comparing before against after. `caps.py:189` is explicit that an open
+shell's volume integral "is a number, not a volume - it reports 799.9999999999998 mm3 for the
+5-face open box of the open-shell fixture", so the "before" side of any such delta is meaningless.
+This task therefore bounds what is boundable and makes the unchecked case explicit instead of
+silent.
 
 **Files:**
 - Modify: `src/meshpipeline/cad/repair/caps.py` (`cumulative_refusal`)
-- Modify: `src/meshpipeline/cad/repair/session.py` (`try_op`, to record the enclosed volume)
+- Modify: `src/meshpipeline/cad/repair/conservative.py` (add to `measurements`)
 - Test: `tests/unit/cad/test_repair_caps.py` (extend)
 
 **Interfaces:**
-- Consumes: `Accounting`, `Measure` as they are.
-- Produces: `evidence["volume_enclosed_mm3"]`, set by the session - not by each operation - whenever `after.solids > before.solids`, equal to `after.volume_mm3 - before.volume_mm3`; `Accounting.plus` adds it to `declared_volume_mm3`.
+- Consumes: `Measure` as it is.
+- Produces: `volume_accountability(original: Measure, current: Measure) -> dict` returning
+  `{"compared": bool, "reason": str}`; report key `measurements["volume_accountability"]`.
+  `cumulative_refusal` gains a plausibility refusal for the closing case and is otherwise unchanged.
+
+The plausibility bound is geometric and exact: any shape whose bounding-box diagonal is `d` has
+volume at most `d**3 / (3 * sqrt(3))`, the cube case. A closed body must also have positive volume.
+That catches an integral that has gone wrong by orders of magnitude without inventing a baseline the
+geometry cannot support.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-def test_volume_is_compared_once_a_body_closed_and_declared():
-    original = _changed(solids=0, volume_mm3=53367.667)
-    current = _changed(solids=5, volume_mm3=46913.420)
-    # declared exactly what closing the bodies enclosed: accepted
-    assert cumulative_refusal(original, current, declared_area_mm2=0.0,
-                              declared_volume_mm3=46913.420 - 53367.667) == ""
-
-def test_undeclared_volume_on_a_closing_run_is_refused():
-    original = _changed(solids=0, volume_mm3=53367.667)
-    current = _changed(solids=5, volume_mm3=46913.420)
+def test_a_closed_body_with_impossible_volume_is_refused():
+    original = _changed(solids=0, diagonal_mm=260.475, volume_mm3=53367.667)
+    current = _changed(solids=5, diagonal_mm=260.475, volume_mm3=9.9e9)
     assert "volume" in cumulative_refusal(original, current, declared_area_mm2=0.0,
                                           declared_volume_mm3=0.0)
 
-def test_volume_still_not_compared_when_nothing_closed():
-    original = _changed(solids=0, volume_mm3=800.0)
-    current = _changed(solids=0, volume_mm3=1000.0)
+def test_a_closed_body_with_non_positive_volume_is_refused():
+    original = _changed(solids=0, diagonal_mm=260.475, volume_mm3=53367.667)
+    current = _changed(solids=5, diagonal_mm=260.475, volume_mm3=0.0)
+    assert "volume" in cumulative_refusal(original, current, declared_area_mm2=0.0,
+                                          declared_volume_mm3=0.0)
+
+def test_the_knee_shaped_closing_run_still_passes():
+    # the real measured numbers: a legitimate shells-to-solids repair must not be refused
+    original = _changed(solids=0, diagonal_mm=260.47491719601175, volume_mm3=53367.667278043045)
+    current = _changed(solids=5, diagonal_mm=260.47491719601175, volume_mm3=46913.42038292233)
     assert cumulative_refusal(original, current, declared_area_mm2=0.0,
                               declared_volume_mm3=0.0) == ""
+
+def test_accountability_says_volume_was_not_compared_and_why():
+    original = _changed(solids=0, volume_mm3=53367.667)
+    current = _changed(solids=5, volume_mm3=46913.420)
+    out = volume_accountability(original, current)
+    assert out["compared"] is False
+    assert "open shell" in out["reason"]
+
+def test_accountability_says_volume_was_compared_for_an_ordinary_run():
+    assert volume_accountability(_SOUND, _changed(volume_mm3=8100.0))["compared"] is True
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/unit/cad/test_repair_caps.py -k volume -v`
-Expected: FAIL - the second test gets `""` because the `original.solids == 0` branch short-circuits.
+Run: `python -m pytest tests/unit/cad/test_repair_caps.py -k "volume or accountability" -v`
+Expected: FAIL - `volume_accountability` is undefined, and the impossible-volume case returns `""`.
 
-- [ ] **Step 3: Narrow the short-circuit**
+- [ ] **Step 3: Implement the plausibility refusal and `volume_accountability`**
 
-Keep the skip for the genuinely unmeasurable cases - `current.solids == 0`, where there is still no inside - and remove it for `original.solids == 0 and current.solids > 0`, where the run closed bodies and the session now declares what they enclosed. Leave the existing log line for the cases still skipped. Retain the existing comment's reasoning and amend it to say which case still cannot be compared and why.
+Add the plausibility check inside the existing `original.solids == 0 or current.solids == 0 or
+current.solids > original.solids` branch, before its `return ""`, so every case that currently
+skips the comparison is still skipped but no longer unexamined. Keep the existing `logger.info`
+line and the comment's reasoning; extend the comment to say what is now bounded.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -138,8 +170,8 @@ Expected: PASS, with every pre-existing test in the file still passing.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/meshpipeline/cad/repair/caps.py src/meshpipeline/cad/repair/session.py tests/unit/cad/test_repair_caps.py
-git commit -m "fix(repair): compare volume when a shells-only upload closes into solids"
+git add src/meshpipeline/cad/repair/caps.py src/meshpipeline/cad/repair/conservative.py tests/unit/cad/test_repair_caps.py
+git commit -m "fix(repair): bound closed-body volume and report when volume went uncompared"
 ```
 
 ---
@@ -286,6 +318,11 @@ git commit -m "feat(repair): scope a re-inspection to one region"
   - `@dataclass(frozen=True, slots=True) TargetPackage` with `region: Region`, `intent: str`, `plan: tuple[dict, ...]`, `predicate: Predicate`, `budget: PackageBudget`, `rationale: str = ""`.
   - `specificity(predicate: Predicate) -> float` - 0.0 when the predicate asserts nothing about named entities, rising with the number of entities it commits to.
   - `evaluate(predicate, *, before, after, defects_before, defects_after) -> str` - `""` accepts; otherwise the first way the claim failed, in words.
+
+`PackageBudget.deviation_mm` is **recorded, not enforced** in this plan. Enforcing it would make a
+package a cap waiver, which `directives.py:4` says a planner directive is not; whether a package may
+genuinely move a cap is an open product-owner question in the spec. The global residual ratios keep
+judging every operation.
 
 `evaluate` is the verifier: it compares the claim the author made *before* execution against what was measured. A predicate naming no entity in `cleared`, `reclassified` or `unchanged` scores 0.0 specificity and is refused by the caller, so an author cannot pass by promising only that the shape stays valid.
 

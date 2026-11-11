@@ -13,7 +13,8 @@ everything we want to change:
 
 - Cost. One re-inspection (`cad/repair/localize.py:localize_scan`) per attempt dominates the run.
   A measured run on the knee prosthesis paid 14 scans to keep 7 operations; 6 of those scans were
-  paid for and discarded.
+  paid for and discarded. That run had `CAD_REPAIR_MAX_OPS` raised to 200 by a demo preset - at the
+  default of 6 it could not have made 13 attempts at all, which is itself part of the problem.
 - Shallowness. Because each iteration is expensive, the budgets are small (`CAD_REPAIR_MAX_OPS`
   defaults to 6, `CAD_REPAIR_STALL_LIMIT` to 2, `CAD_REPAIR_TIMEOUT_S` to 120) and the stall limit
   is global, so two unrelated failures anywhere end the whole run.
@@ -29,6 +30,13 @@ The hypothesis this design rests on: **a model can semantically understand a reg
 what it is and what should become of it - and can therefore be trusted to author scoped, reversible
 work orders against it.** That capability is what unlocks the reserved defects, and scoping is what
 makes iteration affordable.
+
+`localize_scan` is the largest cost but not the only one: `caps.measure` runs a whole-shape
+`BRepCheck_Analyzer` plus area, volume and counts, and `session.try_op` calls it twice per
+operation (`session.py:231`, `session.py:242`). A scoped proof must therefore scope the validity
+check too, or it keeps paying whole-shape cost for a local edit. AGENT CALL: which global
+invariants are cheap enough to run per package is left to the builder, and the answer is not
+"all of them".
 
 The unifying observation is that a region is simultaneously the semantic unit (what the model
 reasons about), the verification unit (a local edit needs only a local proof), the reversal unit (a
@@ -93,7 +101,7 @@ These would make the project a failure even if it technically worked:
 |---|---|---|
 | 1 | Clean = zero undischarged defects of any severity AND meshable within budget | Model must own the reserved judgement codes; `HELD_ANSWERING_SOURCES` licensing is on the critical path |
 | 2 | A defect may be **discharged by reclassification** with a recorded rationale | "Clean" means nothing unexplained remains. Relabelling is the primary reward-hacking surface |
-| 3 | Full scoped primitive set: scoped delete, scoped tolerance-merge, scoped local rebuild | Three new operations, each needing its own declaration and adversarial tests |
+| 3 | Full scoped primitive set: scoped delete, scoped tolerance-merge, scoped local rebuild | Three new operations, each needing its own declaration and adversarial tests. Scoped delete follows the `FixSmallFaces` pattern - declare the exact face count, refused on one face beyond it (`caps.py:126`) - and must NOT use `CAD_REPAIR_ALLOW_FACE_REMOVAL`, which `settings/cad_repair.py:79` describes as waiving the check "for EVERY operation in a run" |
 | 4 | Rebuild output is **parametric B-rep by default with declared deviation**, faceted only behind a deployment flag and recorded per region | Keeps the artefact editable CAD; fallback exists for hard tangles |
 | 5 | The region loop **replaces the rules planner in the live path** | No dual live path |
 | 6 | The rules planner is **retained as a benchmark baseline only**, reachable by the corpus runner, never by a customer job | Attribution to model direction survives (`public-benchmarks.md` requires it) |
@@ -143,6 +151,12 @@ Three qualitative changes: the model re-plans on evidence (regions being indepen
 async-pre-pass-against-synchronous-loop blocker the code names); failure is local (a hard tangle
 burns its own budget while clean regions finish); and partial success ships.
 
+AGENT CALL on what "concurrently" means. Kernel mutation stays **serialised**: `RepairSession` owns
+one shape and snapshots it by reference (`session.py:103`, `:229`), and concurrent `TopoDS_Shape`
+mutation is not a property OCC offers. Only package *authoring* - the model calls - overlaps. The
+cost argument does not depend on parallelism: the saving is scans avoided, because a local edit gets
+a local proof. Parallel authoring is a latency improvement on top, not the thesis.
+
 ### Why The Pre-Registered Predicate Is The Safety Story
 
 The model declares its expected outcome before acting, and the harness checks that exact claim. The
@@ -169,7 +183,13 @@ solids, manifold output, valid shape. These are the kernel's floor, not policy.
 
 **Declared per package** - the model asks for what it needs and says why; the harness holds it to
 exactly the declaration: deviation inside the locus, faces removed as a count, area and volume
-delta. This is how `cad/repair/caps.py` already reasons about area - "An operation that declared
+delta. AGENT CALL, and a narrowing: today's declaration mechanism lets an operation declare what it
+*adds* and be measured against `original + declared`, while the residual ratio itself is never
+negotiable - which is what makes `directives.py:4` able to say a directive is not a cap waiver. A
+per-package deviation or hole-span budget would invert that. So for the foundation plan a package
+declares expected additions only, the residual ratios stay global, and `deviation_mm` is recorded
+but not enforced as a waiver. Whether a package may genuinely move a cap is an open question for
+the product owner, listed below. This is how `cad/repair/caps.py` already reasons about area - "An operation that declared
 50 mm2 and moved 200 is refused - not for moving surface, but for not understanding what it did" -
 and the pattern generalises. A declaration is more permissive than a constant where it is earned,
 and more accountable everywhere.
@@ -179,10 +199,17 @@ review with the model's rationale attached, and the rest of the part ships.
 
 Two existing caps change independent of all the above:
 
-- `cumulative_refusal` returns `""` when `original.solids == 0`, so the volume cap is **structurally
-  disabled** for any upload arriving as shells with no solid - exactly the shells-to-solids case
-  fills create. On the knee, volume moved -6454.25 mm3 (-12%) with `declared_volume_mm3: 0.0` and
-  nothing could look. This is a hole to close, not a cap to loosen.
+- `cumulative_refusal` **skips the volume comparison** when `original.solids == 0`, so the volume
+  cap is structurally disabled for any upload arriving as shells with no solid - exactly the
+  shells-to-solids case fills create. The non-finite, tolerance-ceiling, deviation and area checks
+  all still run; only volume goes unchecked. On the knee, volume moved -6454.25 mm3 (-12%) with
+  `declared_volume_mm3: 0.0` and nothing could look at it.
+  The branch is deliberate and its reasoning stands: "OpenCASCADE's volume integral over an open
+  shell is a number, not a volume - it reports 799.9999999999998 mm3 for the 5-face open box of the
+  open-shell fixture" (`caps.py:189`). So this cannot be closed by comparing before against after,
+  because the "before" number is not a volume. What is measurable is the new solids themselves.
+  AGENT CALL: the gap is closed by bounding the closed bodies for plausibility and by recording
+  explicitly that the comparison was skipped - not by inventing a baseline.
 - `CAD_REPAIR_MAX_HOLE_SPAN_RATIO` is 0.75 and the knee's largest open shell has
   `relative_size: 0.721691` - **96% of the cap**. Parts marginally larger than our own demo part
   cannot be filled at all. AGENT CALL: this needs headroom, and the right fix is per-package
@@ -217,8 +244,9 @@ can address it.
 - Repaired geometry stays content-addressed; an identical re-delivery writes identical bytes
   (`artifact_keys.py`).
 - The repair report is the carrier for everything downstream reads. It currently records **no
-  elapsed time at all**, despite `TIME_REPAIR_CLOCK` existing in `engines/determinism.py` for the
-  purpose.
+  elapsed time at all**. `TIME_REPAIR_CLOCK` is defined in `contracts/work_limits.py:55` and only
+  imported by `engines/determinism.py:203`, and it records a *decision* rather than a duration, so
+  it is not the mechanism either - the elapsed-time fields are genuinely new.
 
 ## What Is Left To The Builder
 
@@ -243,3 +271,33 @@ can address it.
 | No deterministic live fallback (decision 5) | Model off or unreachable means no repair | Accepted by decision. Posture still fails closed; the baseline planner remains for the corpus runner |
 | Cost moves rather than falling | Fewer scans, more model calls | Per-region budgets (decision 9); fingerprint-keyed cache of judgements, since fingerprints are content-derived and a judgement is valid for every future upload containing that entity |
 | Partial repairs reach customers (decision 7) | Trust | The report states plainly what shipped unrepaired and why; escalation carries the rationale |
+
+## Open Questions For The Product Owner
+
+Raised by the builder check on this document, and answered before the plans that depend on them.
+None blocks the foundation plan.
+
+1. **The mesh budget has no carrier.** Half of "clean" is "meshable within a declared cost budget"
+   and nothing in the repo supplies one. The nearest thing, `contracts/work_limits.py:86`, is a
+   time guard on a mesh run rather than a budget a repair can be judged against. Blocks Plan 4.
+2. **What licence does a model-authored package get on reserved codes?** `HELD_ANSWERING_SOURCES`
+   is `{"engineer", "replay"}` (`directives.py:32`) and the guard exists because of a recorded
+   incident - an engineer asked about a defect already healed, and a re-run re-appending the heal
+   after the engineer chose "leave" (`directives.py:103`). Does the model replace the engineer,
+   act only where no item is minted, or act and still mint for audit? Blocks Plan 2.
+3. **Is a reclassification durable across uploads and across customers?** `contracts/decision_cache.py:12`
+   says "a decision is never shared across accounts". A fingerprint-keyed judgement cache spanning
+   uploads is a cross-tenant channel. Policy call. Blocks the cache in Plan 2.
+4. **Can an answered escalation reach a delivered artefact?** Only the park path can act on an
+   answer - resumption re-runs repair from the source bytes replaying `park.kept_operations`
+   (`api/v1/repair_review.py:473`) - while items minted on a delivered run have a NULL `park_id`
+   and never park (`persistence/models.py:588`). "Ship the rest, queue the region" therefore asks
+   a question whose answer cannot currently be applied. Re-delivery, or advisory only? Blocks Plan 2.
+5. **Does "clean" now mean warnings block delivery?** `status_from_defects` (`contracts.py:177`)
+   already returns `clean` when nothing is error or worse, and triage and the corpus runner gate on
+   that value. Goal 1 redefines it for every job, not only model-directed ones. Intended, or is the
+   new notion a report-level one sitting beside the existing status? Blocks Plan 5's scoring.
+6. **Is byte-identical re-delivery still required for model-directed runs?** Mid-run re-planning
+   feeds measured deltas back into the prompt, so one differing kernel result forks the
+   conversation and the second delivery diverges. If replay is still required, the mechanism is
+   replaying the recorded package rather than the operations. Blocks Plan 2.
