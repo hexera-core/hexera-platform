@@ -167,6 +167,21 @@ def tray(a: float = 80.0, b: float = 50.0, c: float = 20.0):
     return sewn([f for k, f in enumerate(faces) if k != top])
 
 
+def tee(split: bool = True, length: float = 200.0, half: float = 50.0, height: float = 40.0):
+    """A plate with an upright web along its middle, as surfaces. `split`: the plate is drawn as two faces that
+    meet under the web (three faces at one line); else as one face, the web's foot landing inside it."""
+    import math as _m
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
+
+    t = gp_Trsf()
+    t.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), _m.pi / 2)
+    web = BRepBuilderAPI_Transform(rect(0, 0, length, height), t, True).Shape()
+    plate_faces = [rect(0, -half, length, 0), rect(0, 0, length, half)] if split else [rect(0, -half, length, half)]
+    return compound([*plate_faces, web])
+
+
 def write_step(shape, path) -> str:
     from OCP.Interface import Interface_Static
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer

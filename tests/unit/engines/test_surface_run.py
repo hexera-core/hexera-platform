@@ -153,6 +153,20 @@ def test_separate_sheets_are_separate_parts_with_a_property_each(tmp_path):
     assert "The file's 2 separate sheets are 2 parts, each with its own property." in rec["words"]
 
 
+def test_a_rib_on_a_plate_is_meshed_with_shared_nodes_along_its_foot(tmp_path):
+    rec = surface_run.run(tmp_path, _file(sx.tee(split=True), tmp_path / "in"), mm_per_unit=1.0, thickness_mm=2.0)
+    assert rec["made"] and rec["surface"]["sheets"] == 1 and rec["open_edges"] == 0
+    edges = rec["quality"]["edges"]
+    assert edges["junction"] > 0 and rec["quality"]["invalid"] == 0
+    # a foot that lands inside one face is two parts with a gap between them, said
+    ws = tmp_path / "inside"
+    ws.mkdir()
+    rec = surface_run.run(ws, _file(sx.tee(split=False), ws / "in"), mm_per_unit=1.0, thickness_mm=2.0)
+    assert rec["made"] and rec["surface"]["sheets"] == 2 and rec["open_edges"] == 1
+    assert "The surfaces do not meet at 1 edge(s): the shell has gaps there." in rec["words"]
+    assert rec["quality"]["edges"]["junction"] == 0
+
+
 def test_what_the_words_left_unread_and_a_thick_sheet_are_said_never_refused(tmp_path):
     src = _file(sx.plate(60.0, 40.0), tmp_path / "in")
     rec = surface_run.run(tmp_path, src, mm_per_unit=1.0, thickness_mm=8.0, others_mm=[1.5],

@@ -148,6 +148,30 @@ def test_edges_that_do_not_meet_are_said_in_the_record():
     assert any("SURF-2" in n for n in rec["notes"])
 
 
+def test_three_faces_at_one_line_are_sewn_into_a_junction():
+    """SURF-2: a rib's foot on the line two plate faces share - the plain sewing joins two faces at an edge and
+    leaves the third lying along it; sewn again with junctions allowed, the three share the edge."""
+    reading, sewn = _read(sx.tee(split=True))
+    assert reading["kind"] == "surface" and len(reading["sheets"]) == 1
+    (sheet,) = reading["sheets"]
+    assert sheet["junction_edges"] == 1 and sheet["unmet_edges"] == 0 and sheet["shared_edges"] == 0
+    assert sheet["faces"] == ["Face_1", "Face_2", "Face_3"]
+    # the free edges are the plate's rim and the web's three other sides
+    assert sheet["free_length_mm"] == pytest.approx(2 * (200 + 100) + (200 + 2 * 40))
+    rec, _surface = sm.record(reading, sewn, mm_per_unit=1.0, walls_mm={"Part_1": 2.0})
+    assert rec["checks"]["connected"] is True and rec["sewn"][0]["junction_edges"] == 1
+
+
+def test_a_rib_landing_inside_a_face_is_said_not_joined():
+    """... but a foot that lands inside one face has no edge there to sew to: it is counted and said (the shell has
+    a gap there), never closed - the file is not changed beyond the sewing."""
+    reading, sewn = _read(sx.tee(split=False))
+    assert reading["kind"] == "surface" and len(reading["sheets"]) == 2
+    assert [s["unmet_edges"] for s in reading["sheets"]] == [0, 1]
+    rec, _surface = sm.record(reading, sewn, mm_per_unit=1.0, walls_mm={"Part_1": 2.0, "Part_2": 2.0})
+    assert rec["checks"]["connected"] is False and sum(c["open_edges"] for c in rec["sewn"]) == 1
+
+
 def test_classify_is_pure_over_the_measured_sheets():
     sheet = {"area_mm2": 1000.0, "open_share": 0.5, "closed": False}
     assert sm.classify([sheet])[0] == "surface"

@@ -156,10 +156,12 @@ class Sewn:
         self.faces, self.names, self.sheets, self.tol, self.diag = faces, names, sheets, tol, diag
 
 
-def sew(shape) -> Sewn | None:
+def sew(shape, *, junctions: bool = False) -> Sewn | None:
     """SURF-2: the file's faces sewn as the clean check sews them (cad/validity_brep: BRepBuilderAPI_Sewing at
     SEW_TOLERANCE of the diagonal - edges that meet within it become one edge, every other edge stays free) and
-    grouped into sheets. None when the file holds no face with a size."""
+    grouped into sheets. With `junctions`, an edge three or more faces meet along (a rib on a plate, a T) is sewn
+    into one edge too - the same tolerance, the sewing's own non-manifold mode. None when the file holds no face
+    with a size."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp
@@ -177,7 +179,7 @@ def sew(shape) -> Sewn | None:
     if not math.isfinite(diag) or diag <= 0:
         return None
     tol = SEW_TOLERANCE * diag
-    sewing = BRepBuilderAPI_Sewing(tol)
+    sewing = BRepBuilderAPI_Sewing(tol, True, True, True, bool(junctions))
     sewing.Add(shape)
     sewing.Perform()
     sewn = sewing.SewedShape()
@@ -358,6 +360,17 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False) -> tuple[dict, 
         return {"kind": "empty", "why": "the file holds no faces", "sheets": []}, None
     sheets = measure(sewn, mm_per_unit=mm_per_unit)
     kind, why, share = classify(sheets, said_shell=said_shell)
+    unmet = sum(int(s["unmet_edges"]) for s in sheets)
+    if kind in ("surface", "gap") and unmet:
+        # SURF-2: EDGES LEFT LYING ALONG A NEIGHBOUR may be a junction - a rib's foot on the line two plate faces
+        # share, three faces at one edge, which the plain sewing leaves apart (it joins two faces at an edge). Sewn
+        # again with junctions allowed, and kept when fewer edges are left unmet and nothing closed
+        joined = sew(shape, junctions=True)
+        if joined is not None and len(joined.faces) == len(sewn.faces):
+            again = measure(joined, mm_per_unit=mm_per_unit)
+            if sum(int(s["unmet_edges"]) for s in again) < unmet and not any(s["closed"] for s in again):
+                sewn, sheets = joined, again
+                kind, why, share = classify(sheets, said_shell=said_shell)
     reading = {"kind": kind, "why": why, "faces": len(sewn.faces), "sew_tolerance_mm": _r(sewn.tol * mm_per_unit),
                "diag_mm": _r(sewn.diag * mm_per_unit), "open_share": share, "said_shell": bool(said_shell),
                "sheets": sheets}
