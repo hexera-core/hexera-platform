@@ -139,23 +139,70 @@ def test_the_result_is_the_shells_count_quality_and_one_plain_line(delivered):
     assert "shell elements" in quality_line(q, past_limits=[])
 
 
-def test_the_viewer_draws_the_plates_one_part_per_mid_face(delivered):
+def test_the_viewer_draws_the_plates_one_part_per_body_as_their_real_quads(delivered):
+    import base64
+
+    import numpy as np
+
     from meshpipeline.engines.fea_results import viewer_face_names
     from meshpipeline.engines.gmsh.viewer_surface import read_msh
+    from meshpipeline.engines.registry import get_spec
 
     ws, _ok, _calls = delivered
     rec = shell_run.read(ws)
+    q = json.loads((ws / "quality.json").read_text())
+    # NO EMPTY "free" GROUP: every element is in a part
+    assert q["groups"] == {} and q["default_group_used"] is False
+    # THE PARTS ARE THE BODIES, each holding its mid-faces (no CAD names in this file: Part_k)
+    body_of = {m["id"]: m["body"] for m in json.loads((ws / "shell.json").read_text())["mids"]}
+    tags = q["fea"]["part_tags"]
+    assert sorted(tags) == sorted({body_of[f["name"]] for f in rec["faces"]})
+    assert sorted(t for ts in tags.values() for t in ts) == sorted(f["tag"] for f in rec["faces"])
     mesh = read_msh(ws, by_face=True, face_names=viewer_face_names(ws))
     assert mesh["cells"] == [], "no volume cells: the plates are the mesh"
-    names = [n for n, _p in mesh["patches"]]
-    assert names == [f["name"] for f in rec["faces"]] and all(n.startswith("Mid_") for n in names)
+    assert sorted(n for n, _p in mesh["patches"]) == sorted(tags)
     assert sum(len(p) for _n, p in mesh["patches"]) == rec["elements"]
     assert sorted({f["wall_mm"] for f in rec["faces"]}) == [4.0, 5.0]
     # the deck's metres (the T-joint is 200 mm long)
-    import numpy as np
-
     span = np.ptp(np.asarray(mesh["points"]), axis=0)
     assert 0.05 < float(span.max()) < 1.0
+    # QUADS ARE DRAWN AS QUADS: the payload carries each element as one polygon, never a quad's two triangles
+    resp = get_spec("gmsh").viewer_surface(ws, roles={}, units="m")
+    sizes: list[int] = []
+    for p in resp["patches"]:
+        assert "positions_b64" not in p
+        recs = np.frombuffer(base64.b64decode(p["polys_b64"]), dtype="<u4")
+        mine, k = [], 0
+        while k < len(recs):
+            mine.append(int(recs[k]))
+            k += int(recs[k]) + 1
+        assert p["face_count"] == len(mine)
+        sizes += mine
+    assert sizes.count(4) == rec["quads"] > 0 and sizes.count(3) == rec["trias"]
+
+
+def test_a_shells_parts_carry_the_cads_names(tmp_path):
+    """Each body by the STEP product name the assembly staging read (assembly.json), Part_k where it has none,
+    holding the surfaces of its mid-faces; a mid-face that cannot be traced to its body leaves the mid-faces."""
+    (tmp_path / "shell.json").write_text(json.dumps({"mids": [
+        {"id": "Mid_1", "body": "Part_1"}, {"id": "Mid_2", "body": "Part_1"}, {"id": "Mid_4", "body": "Part_2"},
+        {"id": "Mid_7", "body": "Part_3"}]}))
+    (tmp_path / "assembly.json").write_text(json.dumps({"parts": [
+        {"id": "Part_1", "name": "base plate"}, {"id": "Part_2", "name": ""}, {"id": "Part_3", "name": "pipe"}]}))
+    rec = {"faces": [{"tag": 1, "name": "Mid_1"}, {"tag": 2, "name": "Mid_2"}, {"tag": 3, "name": "Mid_4"},
+                     {"tag": 4, "name": "Mid_7"}]}
+    assert SD.part_tags(tmp_path, rec) == {"base plate": [1, 2], "Part_2": [3], "pipe": [4]}
+    q = SD.quality_of(rec, SD.part_tags(tmp_path, rec))
+    assert q["fea"]["part_tags"] == {"base plate": [1, 2], "Part_2": [3], "pipe": [4]}
+    assert "free" not in q["groups"]
+    (tmp_path / "quality.json").write_text(json.dumps(q))
+    from meshpipeline.engines.fea_results import viewer_face_names
+
+    assert viewer_face_names(tmp_path) == {1: "base plate", 2: "base plate", 3: "Part_2", 4: "pipe"}
+    # untraceable: the mid-faces themselves, as before
+    rec["faces"].append({"tag": 5, "name": "Mid_9"})
+    assert SD.part_tags(tmp_path, rec) == {}
+    assert "part_tags" not in SD.quality_of(rec, {})["fea"]
 
 
 def test_the_downloads_offer_the_shell_files_once(delivered):
