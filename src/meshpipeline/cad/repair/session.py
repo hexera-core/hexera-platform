@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -75,6 +76,14 @@ class OpVerdict:
     source: str = ""
     directive_id: str | None = None
     planner_confidence: float | None = None
+    #: Seconds, from the run's injected clock. `apply_s` is the operation itself, `scan_s` the
+    #: re-inspection, `measure_s` the whole-shape `caps.measure` calls (twice per operation: a
+    #: `BRepCheck_Analyzer` plus area, volume and counts - a cost centre of its own). All default
+    #: to 0.0 so older constructions and tolerant rebuilds keep working; a path that never reached
+    #: a step leaves that step at 0.0.
+    apply_s: float = 0.0
+    scan_s: float = 0.0
+    measure_s: float = 0.0
 
     @property
     def kept(self) -> bool:
@@ -84,6 +93,7 @@ class OpVerdict:
         return {"op": self.op, "targets": list(self.targets), "defect_code": self.defect_code,
                 "status": self.status, "reason": self.reason, "basis": self.basis,
                 "evidence": dict(self.evidence), "delta": dict(self.delta),
+                "apply_s": self.apply_s, "scan_s": self.scan_s, "measure_s": self.measure_s,
                 **({"item_id": self.item_id} if self.item_id else {}),
                 **({"source": self.source} if self.source else {}),
                 **({"directive_id": self.directive_id} if self.directive_id else {}),
@@ -114,7 +124,8 @@ class RepairSession:
 
     def __init__(self, shape, *, measurer=_measure, scanner=None,
                  remaining_s: Callable[[], float] | None = None,
-                 reserved: frozenset = frozenset()) -> None:
+                 reserved: frozenset = frozenset(),
+                 clock: Callable[[], float] = time.monotonic) -> None:
         #: Defect codes per-defect review holds for a PERSON, as the planner has them. The planner
         #: will not aim at a held entity; this is the other half - an operation that removes one
         #: without aiming at it (a whole-shape sweep) is rolled back below.
@@ -128,6 +139,10 @@ class RepairSession:
         #: What is left of the run's time, asked at each scan. None until somebody knows - the
         #: loop assigns one - and then the whole repair allowance is assumed.
         self.remaining_s = remaining_s
+        #: The run's clock, handed down by the loop so a test's fake clock drives every timing.
+        self.clock = clock
+        #: How many times the shape has been scanned, the first scan and every re-inspection.
+        self.scan_count: int = 0
         self.shape = shape
         #: THE UPLOAD'S OWN MEASUREMENT, taken once and never replaced. Every cumulative check is
         #: against this, which is what stops six small operations drifting past a cap together.
@@ -154,6 +169,7 @@ class RepairSession:
     def defects(self) -> tuple:
         """The current shape's located defects. Scanned once per shape and cached."""
         if self._defects is None:
+            self.scan_count += 1
             found, complete = self._scan(self.shape)
             self._defects = tuple(found)
             self.complete_scan = bool(complete)
@@ -169,6 +185,7 @@ class RepairSession:
         An injected scanner is still called as `scanner(shape)`; its analyzer-only findings are
         dropped here instead, so a double cannot reintroduce the demotion either.
         """
+        self.scan_count += 1
         if self._injected:
             found, complete = self._scan(self.shape)
         else:
@@ -178,6 +195,12 @@ class RepairSession:
         self._defects = tuple(found)
         self.complete_scan = bool(complete)
         return self._defects
+
+    def _timed_measure(self, shape) -> tuple:
+        """`(measurement, seconds)` - the whole-shape measure is a cost centre to be reported."""
+        started = self.clock()
+        measured = self._measure(shape)
+        return measured, self.clock() - started
 
     def current(self):
         """The current shape's measurement. Taken fresh: the caller wants the run's end state."""
@@ -227,8 +250,9 @@ class RepairSession:
                                           status=ROLLED_BACK, reason="target_absent"))
 
         snapshot = (self.shape, self._defects, self.complete_scan)
-        before = self._measure(self.shape)
+        before, measure_s = self._timed_measure(self.shape)
 
+        apply_started = self.clock()
         try:
             outcome = op.apply(self.shape, targets, tolerance_mm=tolerance_mm)
         except Exception as exc:  # noqa: BLE001 - a repair that breaks is never the file's fault
@@ -236,10 +260,13 @@ class RepairSession:
             self.shape, self._defects, self.complete_scan = snapshot
             return self._record(OpVerdict(
                 op=op.name, targets=fingerprints, defect_code=code, status=FAILED,
-                reason=f"{type(exc).__name__}: {exc}", delta={"before": before.to_dict()}))
+                reason=f"{type(exc).__name__}: {exc}", delta={"before": before.to_dict()},
+                apply_s=self.clock() - apply_started, measure_s=measure_s))
+        apply_s = self.clock() - apply_started
 
         self.shape = outcome.shape
-        after = self._measure(self.shape)
+        after, after_s = self._timed_measure(self.shape)
+        measure_s += after_s
         delta = {"before": before.to_dict(), "after": after.to_dict()}
 
         # HELD GEOMETRY IS NOT A SWEEP'S TO REMOVE. The planner refuses an operation whose
@@ -263,7 +290,8 @@ class RepairSession:
                 op=op.name, targets=fingerprints, defect_code=code, status=ROLLED_BACK,
                 reason=f"held_for_review:{len(removed_held)} removed entity(s) carry a defect "
                        f"an engineer is being asked about ({removed_held[0]})",
-                evidence=dict(outcome.evidence), delta=delta))
+                evidence=dict(outcome.evidence), delta=delta,
+                apply_s=apply_s, measure_s=measure_s))
 
         # The face-count twin of the area/volume declarations: only the sliver sweep sets
         # `faces_removed`, and only a removal of exactly that many is excused (caps.sanity_refusal).
@@ -281,7 +309,8 @@ class RepairSession:
             self.shape, self._defects, self.complete_scan = snapshot
             return self._record(OpVerdict(
                 op=op.name, targets=fingerprints, defect_code=code, status=ROLLED_BACK,
-                reason=f"cap:{refusal}", evidence=dict(outcome.evidence), delta=delta))
+                reason=f"cap:{refusal}", evidence=dict(outcome.evidence), delta=delta,
+                apply_s=apply_s, measure_s=measure_s))
 
         declined = outcome.evidence.get("declined")
         if declined:
@@ -293,7 +322,8 @@ class RepairSession:
             self.shape, self._defects, self.complete_scan = snapshot
             return self._record(OpVerdict(
                 op=op.name, targets=fingerprints, defect_code=code, status=ROLLED_BACK,
-                reason=f"declined:{str(declined)[:200]}", evidence=dict(outcome.evidence), delta=delta))
+                reason=f"declined:{str(declined)[:200]}", evidence=dict(outcome.evidence), delta=delta,
+                apply_s=apply_s, measure_s=measure_s))
 
         previous = self.defects()
         # THE HEAL IS JUDGED ON THE FACE SCAN, so `crossing_remains`/`new_defect` still police it;
@@ -301,7 +331,9 @@ class RepairSession:
         # findings, which is the comparison the flag-off run makes.
         judged_by_face_scan = (op.name == HEAL_OP
                                or code == DefectCode.self_intersection.value)
+        scan_started = self.clock()
         found = self._rescan(face_scan=judged_by_face_scan)
+        scan_s = self.clock() - scan_started
         if not judged_by_face_scan:
             carried = tuple(d for d in previous if analyzer_only(d))
             previous = tuple(d for d in previous if not analyzer_only(d))
@@ -313,7 +345,8 @@ class RepairSession:
             self.shape, self._defects, self.complete_scan = snapshot
             return self._record(OpVerdict(
                 op=op.name, targets=fingerprints, defect_code=code, status=ROLLED_BACK,
-                reason=reason, basis=basis, evidence=dict(outcome.evidence), delta=delta))
+                reason=reason, basis=basis, evidence=dict(outcome.evidence), delta=delta,
+                apply_s=apply_s, scan_s=scan_s, measure_s=measure_s))
 
         if not judged_by_face_scan and carried:
             # THE ANALYZER'S FINDINGS STAY ON THE LIST after a kept operation that did not re-run
@@ -330,7 +363,8 @@ class RepairSession:
         self.accounting = self.accounting.plus(outcome.evidence)
         return self._record(OpVerdict(
             op=op.name, targets=fingerprints, defect_code=code, status=KEPT, basis=basis,
-            evidence=dict(outcome.evidence), delta=delta))
+            evidence=dict(outcome.evidence), delta=delta,
+            apply_s=apply_s, scan_s=scan_s, measure_s=measure_s))
 
     def _carries(self, targets, defect_code) -> bool:
         """Does at least one target actually carry the defect it is being repaired for?

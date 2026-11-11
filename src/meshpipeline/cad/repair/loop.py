@@ -74,6 +74,10 @@ class RepairRun:
     planner_label: str = ""
     original: dict = field(default_factory=dict)
     final: dict = field(default_factory=dict)
+    #: Seconds on the run's clock from before the first scan to the end, and how many scans the
+    #: shape took (the first plus every re-inspection). Defaulted so older constructions work.
+    total_s: float = 0.0
+    scan_count: int = 0
 
     @property
     def resolved(self) -> bool:
@@ -85,7 +89,8 @@ class RepairRun:
                 "operations": [v.to_dict() for v in self.verdicts],
                 "refusals": [dict(r) for r in self.refusals],
                 "defects_remaining": [d.to_dict() for d in self.defects],
-                "original": dict(self.original), "final": dict(self.final)}
+                "original": dict(self.original), "final": dict(self.final),
+                "total_s": self.total_s, "scan_count": self.scan_count}
 
 
 def _judged(session: RepairSession) -> tuple:
@@ -184,7 +189,11 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
     # `reserved` reaches the SESSION as well as the planner: the planner will not aim at a held
     # entity, and the session will not let a whole-shape sweep remove one it never aimed at.
     work = session if session is not None else RepairSession(
-        shape, remaining_s=remaining, reserved=reserved)
+        shape, remaining_s=remaining, reserved=reserved, clock=clock)
+    # A SESSION THE LOOP BUILDS TIMES ITS STEPS ON THE LOOP'S CLOCK, so one fake clock drives every
+    # number the run reports. An injected session keeps the clock it was given: the loop does not
+    # reach into it, and a test that scripted the loop's clock tick by tick is not shifted by
+    # extra reads.
     if work.remaining_s is None:
         work.remaining_s = remaining
     history = RunHistory()
@@ -201,7 +210,8 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
         return RepairRun(shape=work.shape, verdicts=(), refusals=tuple(history.refusals),
                          defects=work.defects(), stopped_because=SCAN_INCOMPLETE,
                          complete_scan=False, planner_label=getattr(chosen, "label", ""),
-                         original=original, final=original)
+                         original=original, final=original,
+                         total_s=clock() - started, scan_count=work.scan_count)
 
     entered_with_errors = _errors_remain(work)
     consecutive_misses = 0
@@ -283,8 +293,10 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
     logger.info("repair loop: stopped=%s attempts=%d kept=%d planner=%s",
                 stopped, len(work.log), sum(1 for v in work.log if v.kept),
                 getattr(chosen, "label", ""))
+    final = work.current().to_dict()
     return RepairRun(shape=work.shape, verdicts=tuple(work.log),
                      refusals=tuple(history.refusals), defects=work.defects(),
                      stopped_because=stopped, complete_scan=work.complete_scan,
                      planner_label=getattr(chosen, "label", ""),
-                     original=original, final=work.current().to_dict())
+                     original=original, final=final,
+                     total_s=clock() - started, scan_count=work.scan_count)

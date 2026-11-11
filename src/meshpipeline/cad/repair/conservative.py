@@ -836,6 +836,10 @@ def repair_step_file(source: Path, destination: Path, *,
         "refusals": [dict(r) for r in result.refusals],
         "operations_attempted": len(result.verdicts),
         "operations_kept": sum(1 for v in result.verdicts if v.kept),
+        # WHERE THE TIME WENT, so a later change can be shown to have made the run faster.
+        # `measure_s` is the whole-shape `caps.measure` calls, a cost centre beside the scan.
+        "timings": {"total_s": result.total_s, "scan_count": result.scan_count,
+                    "measure_s": sum(v.measure_s for v in result.verdicts)},
     }
 
     # THE AFTER-CHECKS STILL HAVE THE LAST WORD. The session already refused any individual
