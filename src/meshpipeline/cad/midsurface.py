@@ -1066,14 +1066,18 @@ def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False) 
 #: the thin ones and these, then hold at least PLATE_BODY_SHARE of its metal - its sewn mid-faces times their walls
 #: over its volume, MIXED-4's measure and MIXED-4's half. A plate with a lump on it is a shell with a solid region;
 #: a lump with a tab on it is a lump, and a shell of the tab alone would be a scrap of the part. Under that share
-#: the body is read again without its plates: left exactly as it was. (Before any join, a body whose mid-faces
-#: alone hold under PLATE_BODY_QUICK of it is left at once: junctions add metal to a shell, they do not double it.)
+#: the body is read again without its plates: left exactly as it was. The line is drawn twice: before any join on
+#: the bare mid-faces (PLATE_BODY_QUICK, half too: junction metal is not in them, so a body of short thick walls
+#: that is half junction is left as it was), and after the joins on the sewn shell. Measured on the dev set with the
+#: first line at a quarter: of 7 parts whose bare mid-faces hold a quarter to a half, 5 shelled well and 2 that
+#: meshed before lost their mesh (gmsh could not close a boundary where the short walls join). So it stays at half
+#: until those junctions mesh.
 #: AND THEY MUST JOIN (PLATE_OPEN_GUARD): a body whose new plates leave edges open where they meet its other walls
 #: is read again without them, and keeps the reading with fewer open edges - so a body that sewed shut before
 #: still does, and the plates that would hang loose stay solid, said in a note.
 EVERY_PLATE = True
 PLATE_BODY_SHARE = 0.5
-PLATE_BODY_QUICK = 0.25
+PLATE_BODY_QUICK = 0.5
 PLATE_OPEN_GUARD = True
 PLATE_PASS_SLACK = 1.5
 PLATE_FLAT_SHARE = 0.5

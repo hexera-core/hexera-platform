@@ -93,7 +93,7 @@ The thin sheets are settled first, then the laps, then the others from the thinn
 
 Two more guards, both on the whole body:
 
-- **The body must be mostly plate.** The plates found in a body are kept only when its shell walls (the thin ones and these) then hold at least half its metal: their mid-faces times their walls, over its volume. This is MIXED-4's half. A plate with a lump on it is a shell with a solid region. A lump with a tab on it is a lump: a shell of the tab alone would be a scrap of the part, where the user got a whole solid mesh and the reason before. Under half, the body is left exactly as it was.
+- **The body must be mostly plate.** The plates found in a body are kept only when its shell walls (the thin ones and these) then hold at least half its metal: its sewn mid-faces times their walls, over its volume. This is MIXED-4's measure and MIXED-4's half. A plate with a lump on it is a shell with a solid region. A lump with a tab on it is a lump: a shell of the tab alone would be a scrap of the part, where the user got a whole solid mesh and the reason before. Under half, the body is left exactly as it was. The line is drawn twice: on the bare mid-faces before any join (junction metal is not in them), and on the sewn shell after. With the first line at a quarter, 7 more dev parts came in: 5 shelled well (a flag plate, a cable-chain mount, a chassis floor, a channel block, a panel clip), and 2 frames that meshed before lost their mesh (gmsh could not close a boundary where the short walls join). So both lines stay at half until those junctions mesh.
 - **The plates must join.** A body whose new plates (or flat flanges, SHELL-24) leave edges open where they meet its other walls is read again without them, and the reading with fewer open edges is kept, said in a note. So a body that sewed shut before still does. At most two more passes, inside the same work budget.
 
 **What stays solid.** Anything with no mid-surface: a block, a cube, a bar under 2 walls wide, a bolt, a shaft, a ball, a thick ring, a boss or pad on a plate. Measured on generated parts (`~/plates_lab`): a 30 mm cube, a 50 x 40 x 30 block, a 20 x 20 bar, a round bar, an M12 bolt, a stepped shaft, a block with a boss, a thick bush, a block with a pocket, a ball: all solid, each with its reason. A 100 x 50 x 25 block is the line itself (2.0 walls wide): a shell.
@@ -359,6 +359,45 @@ SHELL-13 looked only for a whole edge lying alongside a whole edge, and skipped 
 - **The straight join models a relieved gusset soft.** SHELL-20 (a plate with holes redrawn hole by hole, so the straight extension works on it) was written, measured and taken out. It closed a printed chassis of slotted plates (13 open edges to 3). But the straight join wins a tie, so five lab parts the general join already closed changed their join, and a motor bracket with two relieved gussets went from 1.8% stiff to 6.1% soft on its first elastic mode against the solid: the straight join joins each gusset to its plates over 2 mm less than the general join does (16.5 and 12.5 mm against 18.5 and 14.5). (The three tube frames among them meshed with 2 to 8 times fewer elements; the one checked kept its modes within 0.3% at half the elements.) The tie rule and the gusset's foot come first.
 - **A wall through air.** A flat hollow profile with solid edges (two 1.5 mm skins 4 mm apart): its two OUTER faces face each other through the solid edges, pass as a 7 mm shell wall, and their mid-face is laid through the cavity (the body holds 2.7 times its metal; the volume check is read on shell bodies only, and this one is mixed). On main as here.
 - **SHELL-13 before SHELL-22.** One duct lost its last open edge on the first commit and keeps it on the final one: main's SHELL-13 strip beside it is made first again and leaves SHELL-22 no clean way. The better strip should win, whichever rule makes it.
+
+### 2.4.4 Every plate a shell: what moved in the lab (SHELL-23, SHELL-24, 10 Nov)
+
+Run on a lab VM, 10 at once, extraction then mesh then the three decks: the code before (the open-edges branch, 9ad6948d) against this one. "Fully good" as in 2.4.3: a shell found, every extraction check, a valid mesh inside all Nastran limits.
+
+| set | files | fully good | no shell found | fully good before, not after |
+|---|---|---|---|---|
+| lab (87) and the dev set of real parts (60) | 147 | 107 to 112 | 25 to 21 | none |
+| look-alikes (plates, gussets, bars, rolled sections, the pedestal, lumps) | 64 | 25 to 52 | 39 to 12 | none |
+
+The 12 look-alikes with no shell are the ten lumps and the two bars under 2 walls wide: all meant to stay solid.
+
+**Every file that changed, and the call on each.** 11 files of the 147. Every other file keeps its surface file byte for byte (134 of the 145 run on the final code) and, where it meshes, its mesh and three decks byte for byte (112 files). Two files were run on the commit before only: a chassis that stops at the 30-minute limit before and after, and a cone adapter that takes 25 minutes and is unchanged.
+
+| file | what it is | before | now | call |
+|---|---|---|---|---|
+| d011 | a flat strip bracket, 3 mm by 6 mm by 67 mm | solid: "6.7 times" | shell, 269 elements | Right: a flat strip. It sits on the line (2.0 walls wide). |
+| d041 | an extrusion foot, a 9 mm plate 5 walls across | solid | shell holds 97%, one thick region | Right. |
+| d046 | a rail section, 2.5 mm wall, 5.3 walls across | solid | shell holds 78% | Right. |
+| d053 | a pivot plate, 10 mm, 9.3 walls across | solid | shell holds 80% | Right. |
+| d010 | an IMU mount; its second body has 5 mm walls 3.5 to 6.7 walls across | that body solid | shell and solid regions | A shell, as asked. Weak spot: its sewn faces times their walls hold 1.18 of the body (thick short walls overlap where they join; the volume check is read on all-shell bodies only). |
+| d028 | a switch enclosure | shell holds 79% | 94%: two 5 mm walls and two small 1 mm ones joined in | Better. |
+| d029 | a camera cover | shell held 6% of the part | all of it: two 5 mm walls and a short drafted wall, flat at its mean | Better: the shell was a scrap before. Triangles 1% to 14%. |
+| d030 | a flight-controller housing | shell holds 75%, outside the Nastran limits | 85%, inside them | Better. |
+| d038 | a tube holder | a 4 mm patch of the wall was a hole in the shell | filled: all shell | Better. |
+| d048 | a tube base | shell holds 57% | 89%: six 2.5 mm tabs joined in | Better. |
+| sh0089 | a CubeSat frame | 1 mid-face | 11: ten 2 mm tabs joined in | Better. |
+
+No part that was rightly solid turned into a shell. What kept them out:
+
+- **The body share.** Five dev parts that were solid, and one body of a sixth, have a plate-like tab or lip on a thick body: their plates hold 8% to 19% of the metal. Without the share they came out "shell and solid regions" with a scrap of shell in the files; with it they are solid, as before. A skin panel whose new plates held 26% (and brought 34 open edges) keeps the shell it had. Seven more parts sit between a quarter and a half and are left as they were (above).
+- **The plates must join.** A printed buoy's seventh body gained 12 short walls and 12 open edges with them; it is read again without them and keeps its sewn shell.
+- **No flat plate under two walls wide.** A drafted rib's two sides are a tapered pair too. They get no flat mid-face, so a part with no new plate keeps its record's mid-face numbers, and its decks, as they were.
+
+**Costs, said plainly.**
+- Triangles. Short walls mesh with more triangles: six of the eleven are over the 5% target (5.2% to 14.9%; one of them was at 5.7% before). All are inside every Nastran limit.
+- Time. Extraction is 10 to 20% slower on parts with many thick or tapered pairs (a hull part alone on the VM: 36 s to 43 s). A body read again without its plates costs up to two more passes (a skin panel 11 s to 36 s).
+
+**The same twice.** The 145 files run twice on the final code: the same record and the same surface file 145 of 145; the same mesh and the same three decks, byte for byte, on all 123 that mesh.
 
 ### 2.5 Assemblies and mixed parts (PR 3)
 
