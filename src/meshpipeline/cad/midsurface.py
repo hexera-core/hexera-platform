@@ -2348,9 +2348,10 @@ def _inner_point(face):
 
 
 def join_body(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float, fuzzy: float,
-              remake: bool = True, patch_alone: bool = True):
+              remake: bool = True, patch_alone: bool = True, alone_all: bool = False):
     """SHELL-3 v2 for one body: (the fused shape, the kept faces, each kept face's mid-face index into `mine`,
-    for each mid-face the extensions it kept as [(other mid index or None, area)])."""
+    for each mid-face the extensions it kept as [(other mid index or None, area)]). `alone_all` (SHELL-30): every
+    mid-face that has a grown copy is left out of the fuse beside it, whatever its surface."""
     from OCP.BOPAlgo import BOPAlgo_Builder
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp
@@ -2370,7 +2371,7 @@ def join_body(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float
         # the fuse does not merge with the mid-face's own: both in the fuse were the same wall twice (a twisted
         # strap held 29% more metal than it has). The patch alone goes in; its pieces inside the mid-face are the
         # mid-face's own (read by geometry below).
-        if patch_alone and g is not None and isinstance(_BT.Surface_s(m.original), FREE_FORM):
+        if g is not None and (alone_all or (patch_alone and isinstance(_BT.Surface_s(m.original), FREE_FORM))):
             continue
         b.AddArgument(m.original)
     for g in grown:
@@ -2600,6 +2601,36 @@ def _overfilled(images: list[list], straight: list[list], mine: list, volume: fl
     held = sum(_area(f) * m.t for m, imgs in zip(mine, images, strict=True) for f in imgs)
     base = sum(_area(f) * m.t for m, imgs in zip(mine, straight, strict=True) for f in imgs)
     return held > JOIN_METAL_MAX * volume and held - base > JOIN_METAL_ADDED * volume
+
+
+#: SHELL-31, NO JOIN WITH A FACE THAT IS NO FACE: OpenCASCADE's general fuse can hand back a face whose boundary does
+#: not close or cannot be oriented (a thick valve body's discs and bores, dev t0039: 19 of its 104 sewn faces; a
+#: tank's nozzle, t0010: 2 of 26). gmsh cannot mesh such a face ("could not close the boundary of 5 faces in turn"),
+#: so the whole shell mesh failed and the part fell back to a solid mesh. A join that leaves any face OpenCASCADE's
+#: own checker (BRepCheck) calls invalid is not used; the joins already made stand, and the record says so. On the
+#: 282 lab files no join that is used today holds such a face but these two parts'.
+JOIN_SOUND = True
+
+
+def unsound_faces(images: list[list]) -> int:
+    """SHELL-31: how many of a join's sewn faces OpenCASCADE's checker calls invalid (each face once)."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    seen = TopTools_IndexedMapOfShape()
+    bad = 0
+    for imgs in images:
+        for f in imgs:
+            if seen.Contains(f):
+                continue
+            seen.Add(f)
+            try:
+                bad += not BRepCheck_Analyzer(f).IsValid()
+            except Exception:  # noqa: BLE001 - a face the checker cannot read is no sound face
+                bad += 1
+    return bad
+
+
 #: SHELL-11: one general join may take at most JOIN_DEADLINE_S seconds. OpenCASCADE's general fuse cannot be
 #: stopped from inside (no time budget reaches its Perform), and on a cone meeting a ring (fr018) it ran past 40
 #: minutes; no join of the training corpus comes near it. Where the system can fork, the join runs in a child
@@ -4319,6 +4350,9 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
                 elif _max_tol(general[0]) > JOIN_TOL_WALLS * t_min:
                     notes.append(f"{body_names[b]}: a general join left a tolerance of {_max_tol(general[0]) * mm:.3g} "
                                  f"mm (over {JOIN_TOL_WALLS:g} of the thinnest wall) and was not used (SHELL-12).")
+                elif JOIN_SOUND and unsound_faces(general[1]):
+                    notes.append(f"{body_names[b]}: a general join left {unsound_faces(general[1])} face(s) whose "
+                                 "boundary does not close and was not used (SHELL-31).")
                 elif JOIN_METAL_MAX and bodies[b]["verdict"] == "shell" and _overfilled(general[1], straight[1], mine,
                                                                                    _volume(sol)):
                     # SHELL-17: a join must not hold more metal than the part has: its sewn faces times their walls
