@@ -184,38 +184,63 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
     return keep, skipped
 
 
-def imprint(gmsh, washers: list[Washer], tag_of: dict[int, int]) -> None:
+def _rings_whole(gmsh, t: int, ws: list[Washer], omap) -> bool:
+    """Whether a fragment of face t by the washers' circles left each ring one circle closing round its hole."""
+    new = [s for d, s in omap[0] if d == 2]
+    for got in omap[1:len(ws) + 1]:
+        curves = [c for d, c in got if d == 1]
+        if len(curves) != 1:
+            return False
+        if not any([curves[0]] in [[abs(int(c)) for c in cl] for cl in gmsh.model.occ.getCurveLoops(s)[1]]
+                   and len(gmsh.model.occ.getCurveLoops(s)[1]) == 2 for s in new):
+            return False
+    return True
+
+
+def imprint(gmsh, washers: list[Washer], tag_of: dict[int, int]) -> list[Washer]:
     """SHMESH-38: each washer's ring drawn on its face (a circle about the hole's centre, starting where the hole's
     circle starts), the face cut along it; `tag_of` follows (the new surfaces keep the face's sewn face). Edges the face
-    shares keep their tags (the fragment changes only what it cuts), so every junction stays conformal."""
+    shares keep their tags (the fragment changes only what it cuts), so every junction stays conformal. Tried on a
+    copy of the face first: a face where a ring would come out cut (it touches another edge) keeps no washer.
+    Returns the washers drawn."""
     by_face: dict[int, list[Washer]] = {}
     for w in washers:
         by_face.setdefault(w.face, []).append(w)
+    kept: list[Washer] = []
+    occ = gmsh.model.occ
+
+    def circles(ws: list[Washer]) -> list[tuple[int, int]]:
+        return [(1, occ.addCircle(*[float(x) for x in w.centre], float(w.R), zAxis=[float(x) for x in w.normal],
+                                  xAxis=[float(x) for x in w.xaxis])) for w in ws]
+
     for t, ws in sorted(by_face.items()):
-        tools = []
-        for w in ws:
-            c = gmsh.model.occ.addCircle(*[float(x) for x in w.centre], float(w.R), zAxis=[float(x) for x in w.normal],
-                                         xAxis=[float(x) for x in w.xaxis])
-            tools.append((1, c))
-        _out, omap = gmsh.model.occ.fragment([(2, t)], tools)
-        gmsh.model.occ.synchronize()
+        copy = occ.copy([(2, t)])
+        _o, cmap = occ.fragment(copy, circles(ws))
+        occ.synchronize()
+        whole = _rings_whole(gmsh, t, ws, cmap)
+        occ.remove([(2, s) for d, s in cmap[0] if d == 2], recursive=True)
+        occ.synchronize()
+        _remove_loose(gmsh, {c for got in cmap[1:] for d, c in got if d == 1})
+        if not whole:
+            continue
+        _out, omap = occ.fragment([(2, t)], circles(ws))
+        occ.synchronize()
         k = tag_of.pop(t)
         new = [s for d, s in omap[0] if d == 2]
         for s in new:
             tag_of[s] = k
         for w, got in zip(ws, omap[1:], strict=True):
-            curves = [c for d, c in got if d == 1]
-            if len(curves) != 1:
-                raise ValueError("a washer's ring did not come out as one circle")
-            w.ring = curves[0]
+            w.ring = [c for d, c in got if d == 1][0]
             for s in new:
-                _l, loops = gmsh.model.occ.getCurveLoops(s)
+                _l, loops = occ.getCurveLoops(s)
                 loops = [[abs(int(c)) for c in cl] for cl in loops]
                 if len(loops) == 2 and [w.ring] in loops:
                     w.annulus = s
                     w.hole_after = [cl for cl in loops if cl != [w.ring]][0]
             if not w.annulus:
                 raise ValueError("a washer's ring did not close round its hole")
+            kept.append(w)
+    return kept
 
 
 def set_counts(gmsh, washers: list[Washer]) -> set[int]:
@@ -407,12 +432,14 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
             continue
         if fine_at and min((fine_at.get(p, math.inf) for p in got[1]), default=math.inf) * growth < size_mm[t]:
             continue
-        # nor next to a face more than two growth steps finer (a grid cannot grade down to it)
-        near = {int(s) for sd in got[0] for c in sd for s in gmsh.model.getAdjacencies(1, c)[0]
-                if int(s) != t and int(s) in size_mm}
-        if any(size_mm[s] * growth ** 2 < size_mm[t] for s in near):
-            continue
         cand[t] = got
+    # nor next to a free face more than two growth steps finer (a grid cannot grade down to it; a mapped
+    # neighbour shares its counts instead)
+    for t in sorted(cand):
+        near = {int(s) for sd in cand[t][0] for c in sd for s in gmsh.model.getAdjacencies(1, c)[0]
+                if int(s) != t and int(s) in size_mm and int(s) not in cand}
+        if any(size_mm[s] * growth ** 2 < size_mm[t] for s in near):
+            cand.pop(t)
     length = {c: float(gmsh.model.occ.getMass(1, c)) for t in cand for sd in cand[t][0] for c in sd}
     counts: dict[int, int] = {}
     while True:

@@ -1171,8 +1171,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     gmsh, washers, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
                     cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"))
             rings = [w for w in washers if w not in gridded and w not in boxed]
-            ST.imprint(gmsh, rings, tag_of)
-            rings += boxed
+            drawn = ST.imprint(gmsh, rings, tag_of)
+            if len(drawn) < len(rings):
+                # a ring that would cut another edge of its face: that face keeps no washer
+                lost = [w for w in rings if w not in drawn]
+                washer_skipped["a ring would cut another edge"] = len(lost)
+                washers = [w for w in washers if w not in lost]
+            rings = drawn + boxed
         washer_holes = {c for w in rings for c in w.hole_after} | block_holes
         # SHMESH-1/2: a constant size per face; SHMESH-3/4/6: curves sized by curvature, grown at GROWTH
         fields = []
