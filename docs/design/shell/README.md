@@ -934,13 +934,16 @@ of several). `engines/solid_patches.py`, called by `engines/shell_run.py` after 
   2 mm spoke's mid-face stops 0.03 mm short of a 30 mm hub's face).
 - 9c, held to: the shell valid, every patch valid, every link node tied. A patch that no shell edge reaches, one whose
   link rows find too few solid nodes even meshed at half the thinnest wall, or one whose overlap row folds a shell
-  element at a sharp corner, is left out and said. The other patches are kept.
+  element or puts one past Nastran's own GEOMCHECK limits at a tight corner, is left out and said. The other patches
+  are kept.
 - 9d, shell only: "shell only", "no solid", "leave out what can't be shelled" in the notes (the notes reader's
   element kind `shell_only`, checked against the user's own words) gives today's shell, said as asked.
 - 9f, the metal the shell does not hold: when a body's cores cannot be grown (OCC's offset), the body less its shell
   walls' slabs is patched as it is, with no growth and no trim: only the pieces a shell edge ends on (the metal at a
   junction, which no edge reaches, stays out as in any shell model), each piece meshed on its own.
-- 9g, a budget: the patches may add 7 minutes to a run (`PATCH_BUDGET_S`); past it, today's shell, said.
+- 9g, a budget: the patches may add 5 minutes to a run (`PATCH_BUDGET_S`, a hard deadline: they are built in a
+  spawned process stopped there), and none is tried once the run has spent 15 minutes (`PATCH_LATEST_S`, a long
+  extraction); either way today's shell, said.
 - Nothing solid: today's path, byte for byte (decks, viewer mesh, record).
 
 Decks: `shell.bdf` CTETRA in a PSOLID per patch (its part's MAT1), a `$ HEXERA GROUP` per patch, MPC set 1;
@@ -959,6 +962,15 @@ Proof (11 Nov, lab VM, CalculiX 2.21, one thread), the patched shell against the
 The T-bracket's web is 30 walls wide: the shell bends it as a plate (E / (1 - nu^2)) and reads the clamped plate's
 own 0.7222 mm exactly; the solid lets the web's free sides curl and bends between plate (0.7218) and beam (0.7932):
 0.7758. That gap is the shell idealisation on a wide web, not the join.
+
+Lab parts (11 Nov; `~/shell_lab` corpus, `~/wall_lab` dev, `~/plates_lab` parts: 199 files, base test/shell-all
+991f57d8 against the branch's own change): the 116 parts with nothing solid are byte-identical (decks, viewer mesh,
+record). 82 parts had regions left out on base, 51 of them with a shell made; 14 of those 51 now carry their solid
+patches: every one valid, every link node tied, no inverted tetrahedron, 13 inside Nastran's limits (the 14th was
+past them on base too), each made twice with the same files. The other 37 keep today's shell and say why: 16 ran
+past the budget, 8 solid meshes could not be made, 6 overlap rows folded or tapered past Nastran at a tight corner,
+3 had no shell edge on the region, 2 unheld metal could not be tied, 2 others. Making the grown core (OCC's 3D
+offset) and the unheld metal of many slivers are where the rest is lost: the next work.
 
 Closed by MIXED-8 (both now meshed solid), as it was explained: the box and the casting's 12th mode. Both are as far from the converged truth as from the product's
 own solid mesh, and are unchanged by a shell mesh twice as fine (-0.7%) or a cut 3 walls in (0.0%): the shell
