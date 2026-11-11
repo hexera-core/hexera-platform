@@ -6,6 +6,7 @@ import {
   PLACEHOLDER,
   type MeshingStandard,
   isNotApplied,
+  rowsFor,
   savedBy,
   statusLine,
 } from "@/app/_components/meshing-standard";
@@ -20,7 +21,9 @@ type MeshingStandardViewProps = {
   saved: MeshingStandard;
   onChange?: (text: string) => void;
   onClear?: () => void;
-  onSave?: (formData: FormData) => void;
+  /** a plain submit handler, not a form action: a form action's state updates wait for the action to finish,
+   *  so "Saving…" would never be seen while the reader reads */
+  onSave?: () => void;
 };
 
 /**
@@ -42,7 +45,13 @@ export function MeshingStandardView({
   const changed = draft.trim() !== saved.text.trim();
 
   return (
-    <form action={onSave} style={{ display: "grid", gap: ".9rem" }}>
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSave?.();
+      }}
+      style={{ display: "grid", gap: ".9rem" }}
+    >
       <label className="auth__field">
         <span className="label">Your meshing standard</span>
         <textarea
@@ -52,9 +61,9 @@ export function MeshingStandardView({
           name="text"
           onChange={onChange ? (event) => onChange(event.target.value) : undefined}
           placeholder={PLACEHOLDER}
-          rows={9}
+          rows={rowsFor(draft)}
           spellCheck={false}
-          style={{ font: "inherit", lineHeight: 1.55, minHeight: "12rem", padding: ".7rem .8rem", resize: "vertical" }}
+          style={{ font: "inherit", lineHeight: 1.55, padding: ".7rem .8rem", resize: "vertical" }}
           value={draft}
         />
       </label>
@@ -78,7 +87,7 @@ export function MeshingStandardView({
 
       {said || saved.lines.length ? (
         <section aria-live="polite" className="card" style={{ display: "grid", gap: ".5rem" }}>
-          <p className="label">What we understood</p>
+          {saved.lines.length ? <p className="label">What we understood</p> : null}
           {said ? <p>{said}</p> : null}
           {saved.lines.length ? (
             <ul style={{ display: "grid", gap: ".3rem", listStyle: "none", margin: 0, padding: 0 }}>

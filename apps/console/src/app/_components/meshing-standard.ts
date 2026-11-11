@@ -30,6 +30,11 @@ export const APPLIES = "Applied to every run. What you write in a run's notes wi
 /** The one line that says whose standard this is. */
 export const SCOPE = "One standard for your whole team, shared by everyone in this organisation.";
 
+/** How tall the box is: the whole standard in view (a pasted criteria list), between 8 and 24 lines. */
+export function rowsFor(text: string): number {
+  return Math.min(24, Math.max(8, text.split("\n").length + 1));
+}
+
 /** A "Not applied" line from the reader: shown quieter than a line that applies. */
 export function isNotApplied(line: string): boolean {
   return line.startsWith("Not applied");

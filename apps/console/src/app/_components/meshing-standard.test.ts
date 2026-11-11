@@ -11,6 +11,7 @@ import {
   SCOPE,
   type MeshingStandard,
   isNotApplied,
+  rowsFor,
   saveFailureMessage,
   savedBy,
   statusLine,
@@ -81,6 +82,12 @@ test("a failed save says what happened without inventing a cause", () => {
   assert.equal(MAX_CHARS, 8000);
 });
 
+test("the box shows a whole pasted criteria list, within reason", () => {
+  assert.equal(rowsFor(""), 8);
+  assert.equal(rowsFor("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl"), 13);
+  assert.equal(rowsFor("x\n".repeat(60)), 24);
+});
+
 test("a not-applied line is told apart from a line that applies", () => {
   assert.equal(isNotApplied('Not applied: "Nastran deck" - no mesh setting of ours matches it yet.'), true);
   assert.equal(isNotApplied("Global element size 10 mm."), false);
@@ -125,7 +132,7 @@ test("an empty standard is just the box with its example", () => {
 
 test("an unread standard says it was saved and will be read at run time", () => {
   const html = render(standard({ status: "unread", lines: [] }));
-  assert.match(html, /What we understood/);
+  assert.doesNotMatch(html, /What we understood/, "nothing was understood yet");
   assert.match(html, /Saved\. We couldn&#x27;t read it just now, so each run reads it when it starts\./);
   assert.doesNotMatch(html, /<ul/);
 });
