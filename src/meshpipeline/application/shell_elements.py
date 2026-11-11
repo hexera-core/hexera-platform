@@ -29,8 +29,8 @@ OPTIONS = (
      "words": "All 3-node triangles (CTRIA3, S3, SHELL181 triangles), at the same element sizes."},
 )
 #: where the starting value came from, in plain words (shown under the tooltip)
-FROM_WORDS = {"notes": "as your notes ask", "settings": "as your settings ask", "default": "the default",
-              "stage": "as chosen on the stage"}
+FROM_WORDS = {"notes": "from your notes", "settings": "from your settings", "default": "the default",
+              "stage": "chosen on the stage"}
 
 #: a share of triangles ("at most 5% trias") is a quad-dominant shell: the control starts on Quads
 _SHARE = re.compile(r"\b(?:at\s+most|max(?:imum)?|under|below|less\s+than)\s+\d+(?:\.\d+)?\s*%\s*(?:of\s+)?"
@@ -70,25 +70,34 @@ def notes_kind(messages=None, notes=None) -> str:
 
 
 def settings_kind(standard: Mapping | None) -> str:
-    """The element kind the team's meshing standard names, read from the reading kept when it was saved (STD-1: no
-    model asked), else "". A standard not read yet says nothing here (each run reads it)."""
+    """The settings page's switch (STD-4), "quads" | "triangles"; "" with no standard (the control then starts on
+    Quads, the default)."""
     from meshpipeline.engines import meshing_standard as MS
 
     if not isinstance(standard, Mapping):
         return ""
-    text = str(standard.get("text") or "")
-    kept = MS.kept_reading(standard, text)
-    if kept is None:
-        return ""
-    k = ((MS.checked(kept, text).get("requirements") or {}).get("kind") or {})
-    if k.get("shell") == TRIANGLES:
-        return TRIANGLES
-    return QUADS if k.get("shell") == QUADS or k.get("tria_percent_max") is not None else ""
+    return MS.switch_of(standard)
+
+
+#: SHSTAGE-8: A FLIP ON THE STAGE AWAY FROM THESE SOURCES ASKS FIRST ("Your settings say Quads. Use Triangles for this
+#: run?"). The founder is still deciding whether the notes ask too: taking "notes" out is the one change.
+CONFIRM_FROM = ("settings", "notes")
+_WHOSE = {"settings": "Your settings say", "notes": "Your notes say"}
+
+
+def confirm_words(started: Mapping) -> dict:
+    """{option: the one short question asked before the stage overrides where the control started}, {} when a flip
+    asks nothing (the default, or a source CONFIRM_FROM leaves out)."""
+    by, value = str(started.get("from") or ""), pick_of(started.get("value"))
+    if by not in CONFIRM_FROM or not value:
+        return {}
+    return {o["key"]: f"{_WHOSE[by]} {value.capitalize()}. Use {o['label']} for this run?"
+            for o in OPTIONS if o["key"] != value}
 
 
 def start(messages=None, *, standard: Mapping | None = None, notes=None) -> dict:
-    """Where the control starts: {"value", "from": "notes" | "settings" | "default"} - the notes over the settings
-    (STD-2), else Quads."""
+    """Where the control starts: {"value", "from": "notes" | "settings" | "default"} - the notes' value when they say
+    one (typed by hand for this run), else the settings page's switch, else Quads."""
     got = notes_kind(messages, notes)
     if got:
         return {"value": got, "from": "notes"}
@@ -107,7 +116,7 @@ def view(shell: Mapping | None, messages=None, *, standard: Mapping | None = Non
         return None
     s = start(messages, standard=standard)
     return {"question": QUESTION, "options": [dict(o) for o in OPTIONS], "value": s["value"], "from": s["from"],
-            "from_words": FROM_WORDS[s["from"]]}
+            "from_words": FROM_WORDS[s["from"]], "confirm": confirm_words(s)}
 
 
 def settle(sent, started: Mapping | None) -> dict:
@@ -152,4 +161,4 @@ def confirmed(session_id: str) -> str:
 
 
 __all__ = ["DEFAULT", "FROM_WORDS", "OPTIONS", "QUADS", "QUESTION", "RULE", "TRIANGLES", "confirmed",
-           "declaration_words", "notes_kind", "pick_of", "said_in", "settings_kind", "settle", "start", "view"]
+           "CONFIRM_FROM", "confirm_words", "declaration_words", "notes_kind", "pick_of", "said_in", "settings_kind", "settle", "start", "view"]

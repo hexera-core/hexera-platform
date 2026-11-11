@@ -5,7 +5,7 @@
 # or invites, all of which are non-goals. The meshing standard is the one thing a member may write here.
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -48,6 +48,8 @@ async def read_organization(owner_id: Annotated[str, Depends(owner_dep)] = "",
 class MeshingStandardIn(BaseModel):
     #: the standard as the user writes it, the way they write a run's notes; empty clears it
     text: str = Field(default="", max_length=meshing_standard_service.MAX_CHARS)
+    #: SHSTAGE-8: the page's one switch, a shell's elements for every run of the organisation
+    shell_elements: Literal["quads", "triangles"] = "quads"
 
 
 @router.get("/meshing-standard")
@@ -74,12 +76,13 @@ async def save_meshing_standard(body: MeshingStandardIn,
     try:
         got = await meshing_standard_service.save(
             owner_id=owner_id, organization_id=principal.organization_id, text=body.text,
-            sessions=get_db)
+            sessions=get_db, shell_elements=body.shell_elements)
     except meshing_standard_service.TooLong as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if got is None:
         raise HTTPException(status_code=404, detail=_NO_ORGANISATION)
     audit.record("meshing_standard.cleared" if got["status"] == "empty" else "meshing_standard.saved",
                  actor="console", organization_id=principal.organization_id,
-                 detail={"chars": len(got["text"]), "read": got["status"] == "read"})
+                 detail={"chars": len(got["text"]), "read": got["status"] == "read",
+                         "shell_elements": got.get("shell_elements")})
     return got

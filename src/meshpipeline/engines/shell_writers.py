@@ -427,6 +427,33 @@ def _id_lines(ids) -> list[str]:
 #: cantilever bent 96 mm for 9.4: ten times too far); S4 expands into C3D8I (incompatible modes) and is right
 #: (0.6% off). Abaqus's S4R is a true shell and its default.
 QUAD_TYPE = {"calculix": "S4", "abaqus": "S4R"}
+#: SHWRITE-2: AN ALL-TRIANGLE SHELL IN CALCULIX IS S6. CalculiX expands S3 into one layer of 6-node wedges (C3D6),
+#: which lock in bending: on the textbook plates (shellcamp/shellkind/tools/tb.py) an S3 cantilever strip bent 64%
+#: too little and a simply supported plate 44% too little, where S4 was within 3% and 0.5% of theory. S6 (expanded
+#: into C3D15) was within 2.8% and 0.7%. So an all-triangle shell's CalculiX deck writes each triangle as an S6 with
+#: its mid-side nodes at the middle of its edges, numbered after the corner nodes (the corners keep the numbers every
+#: other file uses). A quad-dominant shell's few triangles stay S3 (its file exactly as before). Abaqus's S3 is a true
+#: shell element and stays S3.
+S6_ALL_TRIANGLES = True
+
+
+def _mid_nodes(m) -> tuple[np.ndarray, np.ndarray, list[tuple[int, int]]]:
+    """SHWRITE-2: for an all-triangle mesh, (each triangle's three mid-side node indices, 0-based after the corner
+    nodes, edges a-b, b-c, c-a; their coordinates; each mid node's edge), the mid nodes numbered in the order the
+    triangles first meet their edges."""
+    edge_of: dict[tuple[int, int], int] = {}
+    ends: list[tuple[int, int]] = []
+    mids = np.zeros((len(m.trias), 3), dtype=np.int64)
+    n0 = len(m.xyz)
+    for r, (a, b, c) in enumerate(np.asarray(m.trias, dtype=np.int64).tolist()):
+        for j, (u, v) in enumerate(((a, b), (b, c), (c, a))):
+            key = (min(u, v), max(u, v))
+            if key not in edge_of:
+                edge_of[key] = n0 + len(ends)
+                ends.append(key)
+            mids[r, j] = edge_of[key]
+    xyz = (np.asarray([m.xyz[u] + m.xyz[v] for u, v in ends], dtype=float) * 0.5) if ends else np.zeros((0, 3))
+    return mids, xyz, ends
 
 
 def write_inp(path: Path | str, prep: ShellPrepared, *, units: str = "m", source: str = "", solver: str = "calculix",
@@ -438,13 +465,20 @@ def write_inp(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
     q = len(m.quads)
     quad = QUAD_TYPE[solver]
     sets = inp_part_sets(prep)
+    # SHWRITE-2: an all-triangle shell's CalculiX deck is S6, its mid-side nodes after the corner nodes
+    s6 = S6_ALL_TRIANGLES and solver == "calculix" and not q and len(m.trias) > 0
+    mids, mid_xyz, mid_ends = _mid_nodes(m) if s6 else (None, None, [])
+    tria = "S6" if s6 else "S3"
     lines = [
         f"** Hexera shell mesh - {'CalculiX' if solver == 'calculix' else 'Abaqus'} input.",
         *([] if solver == "calculix" else ["** " + NOT_TESTED.capitalize() + "."]),
         *([f"** Source: {source}"] if source else []),
         *_note_lines(notes, "**"),
         *_units_line(units, "**"),
-        f"** Mesh only: {q} {quad} and {len(m.trias)} S3. Part k's sections name MATERIAL MAT_k - add *MATERIAL,",
+        *(["** All triangles: each is an S6 - CalculiX's S3 (one layer of C3D6 wedges) is far too stiff in bending.",
+           f"**   Its mid-side nodes are nodes {len(m.xyz) + 1} on, at the middle of its edges; the corner nodes keep",
+           "**   the numbers every other file uses."] if s6 else []),
+        f"** Mesh only: {q} {quad} and {len(m.trias)} {tria}. Part k's sections name MATERIAL MAT_k - add *MATERIAL,",
         "**   NAME=MAT_k for every part, the boundary conditions, loads and the *STEP:",
         *[f"**   MAT_{i} = {_part_line(prep, p)}" for i, p in enumerate(prep.parts, start=1)],
         "** Parts: every part is an ELSET named after it (the names below); each section is named in the line above it.",
@@ -453,12 +487,19 @@ def write_inp(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
     ]
     for k, (x, y, z) in enumerate((m.xyz * s).tolist(), start=1):
         lines.append(f"{k}, {x:.12g}, {y:.12g}, {z:.12g}")
+    if s6:
+        for k, (x, y, z) in enumerate((mid_xyz * s).tolist(), start=len(m.xyz) + 1):
+            lines.append(f"{k}, {x:.12g}, {y:.12g}, {z:.12g}")
     if q:
         lines.append(f"*ELEMENT, TYPE={quad}, ELSET=EALL")
         lines += [f"{e + 1}, " + ", ".join(str(int(v) + 1) for v in m.quads[e]) for e in range(q)]
     if len(m.trias):
-        lines.append("*ELEMENT, TYPE=S3, ELSET=EALL")
-        lines += [f"{q + r + 1}, " + ", ".join(str(int(v) + 1) for v in m.trias[r]) for r in range(len(m.trias))]
+        lines.append(f"*ELEMENT, TYPE={tria}, ELSET=EALL")
+        if s6:
+            lines += [f"{q + r + 1}, " + ", ".join(str(int(v) + 1) for v in [*m.trias[r], *mids[r]])
+                      for r in range(len(m.trias))]
+        else:
+            lines += [f"{q + r + 1}, " + ", ".join(str(int(v) + 1) for v in m.trias[r]) for r in range(len(m.trias))]
     for i, (name, _t, _mid) in enumerate(prep.props, start=1):
         lines.append(f"** {name}")
         lines.append(f"*ELSET, ELSET=P_{i}")
@@ -470,12 +511,21 @@ def write_inp(path: Path | str, prep: ShellPrepared, *, units: str = "m", source
         lines += _id_lines(np.sort(els) + 1)
     for name, nodes in prep.junctions.items():
         lines.append(f"*NSET, NSET={name}")
+        if s6:
+            # the mid-side nodes of a junction's edges are on it too (nodes here are 1-based)
+            on = {int(v) for v in nodes}
+            nodes = sorted(on | {len(m.xyz) + 1 + j for j, (u, v) in enumerate(mid_ends) if u + 1 in on and v + 1 in on})
         lines += _id_lines(nodes)
     if prep.corner:
         lines.append("*NODAL THICKNESS")
         wall = np.asarray(m.node_wall)
         used = sorted({int(v) for e in prep.corner for v in m.element_nodes(e)})
         lines += [f"{k + 1}, {wall[k] * s:.9g}" for k in used]
+        if s6:
+            # a mid-side node's wall is the mean of its edge's two ends'
+            n0 = len(m.xyz)
+            at = sorted({int(mids[e - q][j]) for e in prep.corner for j in range(3)})
+            lines += [f"{k + 1}, {0.5 * (wall[mid_ends[k - n0][0]] + wall[mid_ends[k - n0][1]]) * s:.9g}" for k in at]
     varied = {int(prep.prop_of[e]) for e in prep.corner}
     for i, (_name, t, mid) in enumerate(prep.props, start=1):
         extra = ", NODAL THICKNESS" if i in varied else ""

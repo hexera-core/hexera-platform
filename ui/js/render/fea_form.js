@@ -570,7 +570,20 @@ export function shellMarks(s) {
 }
 
 /** One string for what a shell view shows: a later view that says more is drawn again. */
-const meshAsSig = (s) => `${s.state}/${s.mesh_as || ""}/${(s.not_shelled || []).length}/${s.reason || ""}/${s.overlay ? 1 : 0}`;
+const meshAsSig = (s) => `${s.state}/${s.mesh_as || ""}/${(s.not_shelled || []).length}/${s.reason || ""}/${s.overlay ? 1 : 0}/${(s.elements || {}).value || ""}`;
+
+/** SHSTAGE-8: A SHELL'S ELEMENTS, the shell line's one choice - "Elements: Quads | Triangles", drawn as the stage's
+ *  other two-way choices are. It starts where the server says (the notes or settings when either named an element
+ *  kind, else Quads); the user's click is the last word for this run. `e` is the shell view's `elements`; nothing
+ *  without it (a solid, or a shell that cannot be made). */
+export function elementsHtml(e) {
+  const opts = (e && e.options) || [];
+  if (!opts.length) return "";
+  const v = e.value || opts[0].key;
+  const from = e.from && e.from !== "default" && e.from_words ? ` (${e.from_words})` : "";
+  return `<div class="fea-el"><span class="fea-el-k" aria-hidden="true">Elements</span><div class="fea-seg fea-el-seg" role="radiogroup" aria-label="${attr(e.question || "Elements")}">${opts.map((o) =>
+    `<label class="fea-conn-opt" title="${attr(`${o.words || o.label}${o.key === v ? from : ""}`)}"><input type="radio" name="fea-shell-elements" value="${attr(o.key)}"${o.key === v ? " checked" : ""}><span>${esc(o.label)}</span></label>`).join("")}</div></div>`;
+}
 
 /** Whether the choice draws the mid-surface: a shell (or a shell + solid confirmed before it left the stage). */
 export const showsShell = (eff) => eff === "shell" || eff === "mixed";
@@ -612,7 +625,7 @@ function meshAsBody(s) {
   const said = shell && s.said_words ? ` <span class="fea-muted fea-meshas-said" title="${attr(s.said_words)}">· as you asked</span>` : "";
   const head = `<span class="fea-sec-t">Shell</span><span class="fea-sec-sum">${shellSummary(s)}</span>`;
   return secHtml(head,`<div class="fea-line fea-meshas-v"><b>${esc(s.label || "")}</b>${said}</div>
-    ${measuring}${reason}${legend}${list}`, { cls: "fea-sec-shell" });
+    ${measuring}${reason}${legend}${list}`, { cls: "fea-sec-shell", aside: shell ? elementsHtml(s.elements) : "" });
 }
 
 /** The shell fold for the panel; nothing without a `shell` view (a solid, as before shell existed). */
@@ -644,6 +657,11 @@ export function followMeshAs(root, s, changed) {
     box.innerHTML = meshAsBody(s);
     reopen(box, folds);
   }
+  // SHSTAGE-8: the element kind the user clicked stays theirs when the shell line is drawn again
+  const form = root.querySelector(".fea-form") || root;
+  const mine = form.dataset ? form.dataset.shellElements : "";
+  const again = mine ? root.querySelector(`input[name="fea-shell-elements"][value="${mine}"]`) : null;
+  if (again) again.checked = true;
   const tag = root.querySelector(".fea-tag");
   if (tag) tag.textContent = purposeTag(s);
   if (changed) changed(effectiveMeshAs(s));
@@ -697,6 +715,9 @@ export function readFeaForm(root, p) {
   if (root.querySelector && root.querySelector(".fea-pair")) body.fea_pairs = readPairs(root);
   const plan = root.querySelector ? root.querySelector('input[name="fea-plan"]:checked') : null;
   if (plan) body.fea_plan = plan.value;
+  // SHSTAGE-8: a shell's elements as shown (the server keeps it only when it differs from where it started)
+  const elements = root.querySelector ? root.querySelector('input[name="fea-shell-elements"]:checked') : null;
+  if (elements) body.fea_shell_elements = elements.value;
   const upSel = root.closest ? root.closest(".gc-stage")?.querySelector(".v-up select") : null;
   const up = (upSel && upSel.value) || p.up_axis;
   if (up) body.up_axis = up;
@@ -737,6 +758,8 @@ export function bindFeaPanel(root, f, p, { confirm, done }) {
       followPairDefaults(form);
     } else if (t.name === "fea-connection" || t.name === "fea-gap-joins") {
       followPairDefaults(form);
+    } else if (t.name === "fea-shell-elements") {
+      form.dataset.shellElements = t.value;     // the user's click, kept when the shell line is drawn again
     }
   });
   const btn = form.querySelector(".gc-proceed"), hint = form.querySelector(".gc-hint");

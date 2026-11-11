@@ -71,13 +71,18 @@ ELSEWHERE_WORDS = "put sizes for one part, an element count, or shell or solid i
 # the standard as a run carries it
 # #
 
-def snapshot(text: str, reading: Mapping | None, *, updated_by: str = "", updated_at: str = "") -> dict | None:
-    """What a run is dispatched with: the text, the reading kept at save time, who saved it and when. None with no
-    words (a run without a standard carries nothing at all)."""
+def snapshot(text: str, reading: Mapping | None, *, updated_by: str = "", updated_at: str = "",
+             shell_elements: str = "quads") -> dict | None:
+    """What a run is dispatched with: the text, the reading kept at save time, who saved it and when, and the page's
+    switch when it says Triangles (STD-4; Quads, its default, is not carried). None with no words and the switch on
+    Quads (a run without a standard carries nothing at all)."""
     t = str(text or "").strip()
-    if not t:
+    tri = pick_of(shell_elements) == TRIANGLES
+    if not t and not tri:
         return None
     out: dict = {"text": t[:MAX_CHARS]}
+    if tri:
+        out["shell_elements"] = TRIANGLES
     if isinstance(reading, Mapping) and isinstance(reading.get("arguments"), str) and reading.get("key"):
         out["reading"] = {"key": str(reading["key"]), "arguments": str(reading["arguments"])}
     if updated_by:
@@ -90,9 +95,14 @@ def snapshot(text: str, reading: Mapping | None, *, updated_by: str = "", update
 def standard_of(state: Mapping | None) -> dict | None:
     """The standard the run was dispatched with, or None when it has none (STD-3)."""
     got = (state or {}).get(STATE_KEY)
-    if not isinstance(got, Mapping) or not str(got.get("text") or "").strip():
+    if not isinstance(got, Mapping) or not (str(got.get("text") or "").strip() or switch_of(got) == TRIANGLES):
         return None
     return dict(got)
+
+
+def switch_of(std: Mapping | None) -> str:
+    """STD-4: the settings page's switch as a standard carries it: "triangles", else "quads" (its default)."""
+    return TRIANGLES if pick_of((std or {}).get("shell_elements")) == TRIANGLES else QUADS
 
 
 def _state(text: str, user_id: str = "") -> dict:
@@ -307,13 +317,15 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
     started = time.monotonic()
     user_id = str((state or {}).get("user_id") or "")
     try:
-        settings = await read(std, route=route, job_id=job_id, run=run, enabled=enabled, wait_s=wait_s,
-                              user_id=user_id)
+        settings = (await read(std, route=route, job_id=job_id, run=run, enabled=enabled, wait_s=wait_s,
+                               user_id=user_id)) if str(std.get("text") or "").strip() else MR.section("none")
     except StaleExecutionPublish:
         raise
     except Exception as exc:  # noqa: BLE001 - the standard never fails a run
         logger.warning("meshing standard: not read (%s) - job_id=%s", type(exc).__name__, job_id)
         settings = MR.section("failed", source="rules", note=UNREAD_WORDS)
+    # STD-4: the page's switch is the settings' shell element kind
+    settings = switched(settings, switch_of(std))
     left = max(0.0, float(wait_s) - (time.monotonic() - started))
     notes = await MR.decide(state, route=route, job_id=job_id, run=run, enabled=enabled, wait_s=left)
     return merge(settings, notes)
@@ -641,8 +653,35 @@ PICKS = (QUADS, TRIANGLES)
 #: the element-kind rows of the set (engines/mesh_requirements)
 _SHELL_KIND_FIELDS = ("quads_only", "triangles_only", "max_triangle_percent")
 #: where a value came from, in the words the user reads
-_FROM_WORDS = {"stage": "as chosen on the stage", "notes": "as your notes ask", "settings": "as your settings ask",
+_FROM_WORDS = {"stage": "chosen on the stage", "notes": "from your notes", "settings": "from your settings",
                "default": "the default"}
+
+
+def switched(settings: Mapping, kind: str) -> Mapping:
+    """STD-4: the settings' section with the page's switch as its shell element kind - Triangles: triangles only
+    (any element kind the words gave set aside); Quads: a "triangles only" the words gave is set aside (told), a
+    "quads only" or a share of triangles stays. Quads with nothing to set aside: the section itself."""
+    used = settings.get("status") == "used"
+    req = copy.deepcopy(dict(settings.get("requirements") or MR.empty())) if used else MR.empty()
+    gone = [dict(r) for r in req.get("rows") or [] if r.get("field") in _SHELL_KIND_FIELDS
+            and (kind == TRIANGLES or r.get("field") == "triangles_only")]
+    if kind != TRIANGLES and not gone:
+        return settings
+    for r in gone:
+        _drop_row(req, r)
+    if kind == TRIANGLES:
+        req["kind"]["shell"] = TRIANGLES
+        req["kind"]["tria_percent_max"] = None
+        req["rows"].append({"id": f"r{len(req['rows']) + 1}w", "field": "triangles_only", "quote": "",
+                            "asked": MR.KIND_WORDS[TRIANGLES]})
+    out = dict(settings) if used else dict(MR.section("used", source="switch"))
+    out["requirements"] = req
+    out["dropped"] = [*list(settings.get("dropped") or [] if used else []),
+                      *[f"{r['asked']} - the Shell elements switch says {kind.capitalize()}" for r in gone]]
+    out.setdefault("stated_unit", None)
+    out.setdefault("elsewhere", [])
+    out.setdefault("solver_files", [])
+    return out
 
 
 def pick_of(value) -> str:

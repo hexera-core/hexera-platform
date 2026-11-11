@@ -963,6 +963,8 @@ class OrganizationMeshingStandard(Base):
     #: THE READING KEPT AT SAVE TIME: {"key", "arguments", "read_at"} - the model's answer and the key of the
     #: question it answered - or NULL when the model gave none (each run then reads the words itself)
     reading:    Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    #: SHSTAGE-8 (0021): the settings page's switch, a shell's elements for every run - "quads" | "triangles"
+    shell_elements: Mapped[str] = mapped_column(String(16), nullable=False, server_default="quads")
     #: who saved it last (their owner id, the lowercased email; cleared with the organisation on erasure)
     updated_by: Mapped[str] = mapped_column(String(320), nullable=False, server_default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(),

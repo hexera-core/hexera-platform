@@ -209,10 +209,10 @@ def deliver(workspace, rec: Mapping, *, target: Mapping | None = None) -> bool:
 
 def _element_words(element: str, tria: bool) -> str:
     """A solver's shell element as the result names it: "CQUAD4 / CTRIA3", or for an all-triangle shell its triangle
-    only ("CTRIA3", "S3", "SHELL181 triangle")."""
+    only ("CTRIA3", "S3", "SHELL181 triangle"; CalculiX's S6, SHWRITE-2)."""
     if not tria:
         return element
-    return {"S4 / S3": "S3", "S4R / S3": "S3", "CQUAD4 / CTRIA3": "CTRIA3", "SHELL181": "SHELL181 triangle"}.get(
+    return {"S4 / S3": "S6", "S4R / S3": "S3", "CQUAD4 / CTRIA3": "CTRIA3", "SHELL181": "SHELL181 triangle"}.get(
         element, element)
 
 
