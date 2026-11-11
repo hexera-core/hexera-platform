@@ -2028,6 +2028,14 @@ def _fea_measure_cad(path: Path, interp_ref, ref):
     mm_per_unit = 1000.0 * float(occ_scale_transform(prepared).ScaleFactor())
     shape = read_cad(path)
     record, surface = measure_cad_surface(shape, mm_per_unit=mm_per_unit)
+    if int(record.get("bodies") or 0) == 0:
+        # SURF-1: A FILE WITH NO SOLID is read as a surface once, here, with the measurement (so a reused
+        # measurement carries the reading): a sheet to mesh as a shell, a closed skin with a gap, or faces that close
+        from meshpipeline.application import surface_check
+
+        reading = surface_check.measure(shape, mm_per_unit=mm_per_unit)
+        if reading is not None:
+            record[surface_check.KEY] = reading
     if int(record.get("bodies") or 0) > 1:
         # AN ASSEMBLY: its parts, where they touch or pass into each other, and every
         # face named Part_k_Face_j - the names the delivered files use

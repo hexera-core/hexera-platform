@@ -448,7 +448,9 @@ def settle(view: dict | None) -> dict:
         return {"mesh_as": pm.MESH_SOLID, "picked": "", "by": "", "why": ""}
     if v.get("mesh_as") == pm.MESH_SOLID:
         return {"mesh_as": pm.MESH_SOLID, "picked": pm.MESH_SHELL, "by": "words", "why": str(v.get("reason") or "")}
-    return {"mesh_as": pm.MESH_SHELL, "picked": pm.MESH_SHELL, "by": "words", "why": SAID_SHELL}
+    # (a surface file's view carries its own reason: it is a shell by what the file is, SURF-6)
+    return {"mesh_as": pm.MESH_SHELL, "picked": pm.MESH_SHELL, "by": str(v.get("by") or "words"),
+            "why": str(v.get("settle_why") or SAID_SHELL)}
 
 
 #: The declaration's heads, one per settled choice (declaration_words); the request card reads them back

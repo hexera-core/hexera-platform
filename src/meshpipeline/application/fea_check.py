@@ -289,10 +289,18 @@ def warnings(facts: dict | None) -> list[str]:
     return out
 
 
-def blocker(facts: dict | None) -> tuple[str, str, str]:
-    """(what stops version 1, its kind - "surface" | "self_overlap" | "", the way on) for the stage
+def blocker(facts: dict | None, messages=None) -> tuple[str, str, str]:
+    """(what stops version 1, its kind - "surface" | "gap" | "self_overlap" | "", the way on) for the stage
     and the confirmation alike. Several bodies are no stop: an assembly is meshed (design 14); a body
-    that crosses itself is (it needs CAD repair; detected only, never healed)."""
+    that crosses itself is (it needs CAD repair; detected only, never healed). A CAD FILE THAT IS A SURFACE
+    (application/surface_check, SURF-1) is no stop either: it is meshed as a shell. `messages`: the
+    conversation, for a shell or a thickness said after the check."""
+    from meshpipeline.application import surface_check
+
+    if surface_check.is_surface(facts, messages):
+        return "", "", ""
+    if surface_check.is_gap(facts, messages) and not has_solid(facts):
+        return surface_check.GAP_WORDS, "gap", surface_check.GAP_WAY_OUT
     # MESH-1 (Areen, 24 Oct): only a file no closed solid can be read from stops here - a surface, or
     # nothing at all. A face crossing another, a fold, an open or invalid patch on a readable solid are
     # warnings (warnings()): the mesh is tried, and only a mesh that fails at that spot says
@@ -348,11 +356,11 @@ def clean_details(said: str, clean: bool | None, found: list[str]) -> list[str]:
     return out
 
 
-def fea_view(facts: dict | None) -> dict:
+def fea_view(facts: dict | None, messages=None) -> dict:
     """What the FEA stage shows beside the part (the size and unit come with the proposal); for an
     assembly also its parts, their interfaces and the connection question."""
     clean, said = clean_words(facts)
-    blocked, kind, way_out = blocker(facts)
+    blocked, kind, way_out = blocker(facts, messages)
     found = [] if blocked else warnings(facts)
     details = clean_details(said, clean, found)
     if found:
@@ -367,6 +375,15 @@ def fea_view(facts: dict | None) -> dict:
     sewn = sewn_body_count(facts)
     if sewn is not None:
         out["bodies_sewn"] = sewn
+    from meshpipeline.application import surface_check
+
+    if surface_check.is_surface(facts, messages):
+        # SURF-6: A SURFACE'S OPEN EDGES ARE ITS OWN - the check row says what the file is, not that it is broken;
+        # and no "thinnest wall" is said of a sheet that has none
+        out.update(surface_check.clean_view(facts) or {})
+        if isinstance(out.get("measure"), dict):
+            out["measure"] = {**out["measure"], "thickness_min_mm": None, "thickness_face": None,
+                              "thickness_at_mm": None}
     # several closed solids: an assembly, with its one question (a surface that is no solid stops first)
     asm = None if blocked else assembly_view(facts)
     if asm is not None:

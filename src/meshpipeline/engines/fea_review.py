@@ -259,13 +259,21 @@ def shell_facts_text(workspace) -> str:
     from meshpipeline.engines.bucket_files import present
     lines = ["MEASURED FEA FACTS (taken by the pipeline from the delivered files - judge against these, "
              "never re-derive them from a picture):",
-             "- This is a SHELL mesh the user asked for: plate elements on the part's mid-surface, each carrying its "
-             "wall thickness in the file. It is not a solid; elements through a wall do not apply.",
+             ("- This is a SHELL mesh of a SURFACE file (the CAD holds a sheet, no solid): plate elements on the "
+              "surface as given, " + ("each carrying the wall thickness the user gave."
+                                      if _m(q.get("fea")).get("thickness_set") else
+                                      "with NO thickness set - the user gave none, and the result says so; that is "
+                                      "not a defect of the mesh.")
+              + " It is not a solid; elements through a wall do not apply, and its free edges are the sheet's own."
+              if _m(q.get("fea")).get("surface") else
+              "- This is a SHELL mesh the user asked for: plate elements on the part's mid-surface, each carrying its "
+              "wall thickness in the file. It is not a solid; elements through a wall do not apply."),
              "- Validity (the hard pass/fail, measured): "
              + ("VALID - no folded or flat element." if measured_valid(q) else f"NOT VALID - {_n(q.get('fea_inverted'))} "
                 "folded or flat elements."),
              f"- Elements: {_n(q.get('cells'))} ({_n(sq.get('quads'))} quads, {_n(sq.get('trias'))} triangles), "
-             f"{_n(q.get('nodes'))} nodes; walls {', '.join(str(w) for w in (_m(q.get('fea')).get('walls_mm') or [])[:8])} mm."]
+             f"{_n(q.get('nodes'))} nodes; walls "
+             f"{', '.join(str(w) for w in (_m(q.get('fea')).get('walls_mm') or [])[:8]) or 'not set, in'} mm."]
     for _k, label, file, element, _t in SHELL_SOLVERS:
         lines.append(f"- {file} ({label}, {element}): " + ("written" if present(ws, file) else "MISSING") + ".")
     return "\n".join(lines)
