@@ -106,6 +106,7 @@ SPOTS_MAX = 64
 #: SHMESH-35: the walls of beads, darts and steps keep shell_plan.FLANK_ACROSS elements across under a coarser size
 FLANKS = True
 FLANK_SHARED = 2.0
+FLANK_BENDS = 2
 #: SHMESH-27/31: a face narrower than the floor takes the floor under the user's size (as with no notes) - every
 #: such face when True; else only those holding elements a first mesh left past the solver's own limits (SHMESH-31).
 #: All of them: fr014 inside Nastran's limits, but the welded tube frames' 0.5 mm corner faces at the floor left 16
@@ -814,7 +815,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     if sizing is not None:
         planned = sizing["planned"]
     # SHMESH-27 (the user's sizes only): a face narrower than their size is sized to its own width
-    narrow = (_narrow_faces(rows, facts, mm, planned, _interior_faces(Path(brep)) if FLANKS else None,
+    bent = [f["bend"] is not None and 0 < f["bend"] < plan_rules.PANEL_WALLS * r["wall_mm"]
+            for f, r in zip(facts, rows, strict=True)]
+    narrow = (_narrow_faces(rows, facts, mm, planned, _interior_faces(Path(brep), bent) if FLANKS else None,
                             slivers={k for k, _lo, _hi in own_spots})
               if sizing is not None and FEATURE_SIZES else None)
     if narrow is not None:
@@ -1354,10 +1357,12 @@ def _narrow_faces(rows: list[dict], facts: list[dict], mm: float, planned: float
 
 def _chord(mesh: ShellMesh, facts: list[dict], face_of: np.ndarray, mm: float) -> dict | None:
     """SHMESH-34: on the curved faces (those with a radius), the largest distance (mm) of an element's centre from the
-    face's own surface, over at most CHORD_SAMPLES elements a face (every n-th, in order); None with no curved face."""
-    from OCP.BRep import BRep_Tool
-    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+    face's own surface, over at most CHORD_SAMPLES elements a face (every n-th, in order); None with no curved face.
+    The nearest point is read within the surface's own bounds (ShapeAnalysis_Surface, as the mid-surface reads it):
+    an orthogonal projection alone found far points beside a patch's rim (6 mm off on a 20 mm radius at 6 mm)."""
     from OCP.gp import gp_Pnt
+
+    from meshpipeline.cad import midsurface as ms
 
     worst, faces = 0.0, 0
     order = np.argsort(face_of, kind="stable")
@@ -1369,19 +1374,21 @@ def _chord(mesh: ShellMesh, facts: list[dict], face_of: np.ndarray, mm: float) -
         if not len(els):
             continue
         faces += 1
-        surf = BRep_Tool.Surface_s(f["normal_face"])
+        _surf, sa = ms._analyser(f["normal_face"])
         for e in els[::max(1, len(els) // CHORD_SAMPLES)].tolist():
             c = mesh.xyz[mesh.element_nodes(int(e))].mean(axis=0) / mm
-            pr = GeomAPI_ProjectPointOnSurf(gp_Pnt(float(c[0]), float(c[1]), float(c[2])), surf)
-            if pr.NbPoints() > 0:
-                worst = max(worst, float(pr.LowerDistance()) * mm)
+            sa.ValueOfUV(gp_Pnt(float(c[0]), float(c[1]), float(c[2])), 1e-7)
+            worst = max(worst, float(sa.Gap()) * mm)
     return {"max_mm": float(f"{worst:.4g}"), "faces": faces} if faces else None
 
 
-def _interior_faces(brep: Path) -> set[int]:
+def _interior_faces(brep: Path, bent: list[bool] | None = None) -> set[int]:
     """SHMESH-35: the sewn faces (0-based) held along their sides by other faces: the length of their edges another
     face shares at least FLANK_SHARED times the length of their free edges (a bead's wall running out to the sheet's
-    rim has only its two short ends free; a strip along the rim has a whole long side free)."""
+    rim has only its two short ends free; a strip along the rim has a whole long side free). With `bent` (per face:
+    is it a tight bend, a fillet), also met by at least FLANK_BENDS such faces: a bead's or a dart's wall runs between
+    its fillets; a step or a joint strip in an extracted mid-surface meets flat faces at a sharp edge (on the 80 lab
+    parts the walls without this test cost 154,000 elements and 20,000 triangles for no line of the list)."""
     from OCP.BRep import BRep_Builder
     from OCP.BRepTools import BRepTools
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
@@ -1399,6 +1406,7 @@ def _interior_faces(brep: Path) -> set[int]:
     TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, emap)
     free = np.zeros(fmap.Extent())
     shared = np.zeros(fmap.Extent())
+    bends: list[set[int]] = [set() for _ in range(fmap.Extent())]
     for i in range(1, emap.Extent() + 1):
         ks = {fmap.FindIndex(x) - 1 for x in emap.FindFromIndex(i)} - {-1}
         length = ms._length(emap.FindKey(i))
@@ -1407,7 +1415,10 @@ def _interior_faces(brep: Path) -> set[int]:
                 free[k] += length
             else:
                 shared[k] += length
-    return {k for k in range(fmap.Extent()) if shared[k] > 0 and shared[k] >= FLANK_SHARED * free[k]}
+                if bent is not None:
+                    bends[k] |= {j for j in ks if j != k and bent[j]}
+    return {k for k in range(fmap.Extent()) if shared[k] > 0 and shared[k] >= FLANK_SHARED * free[k]
+            and (bent is None or len(bends[k]) >= FLANK_BENDS)}
 
 
 def _spare_strip_corners(gmsh, tag_of: dict[int, int], rows: list[dict], mapped: dict, narrow: dict,
