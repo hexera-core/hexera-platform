@@ -109,8 +109,34 @@ def user_line(row: Mapping) -> str:
     return line(row)
 
 
-def quality_of(rec: Mapping) -> dict:
-    """quality.json for a delivered shell, from the shell run's record."""
+def part_names(workspace) -> dict[str, str]:
+    """Each body's name as the user knows it: the CAD's own (the STEP product names, read when the assembly was
+    staged: cad/fea_assembly's assembly.json), else Part_k. Empty when the workspace says nothing of its bodies."""
+    from meshpipeline.cad.fea_assembly import SIDECAR
+
+    parts = _read(Path(workspace) / SIDECAR).get("parts") or []
+    return {str(p["id"]): str(p.get("name") or "").strip() or str(p["id"])
+            for p in parts if isinstance(p, Mapping) and p.get("id")}
+
+
+def part_tags(workspace, rec: Mapping) -> dict[str, list[int]]:
+    """THE SHELL'S PARTS FOR THE VIEWER: each body by its name (part_names), holding the shell.msh surfaces of its
+    mid-faces (cad/midsurface's record, shell.json: each mid-face's body). Empty when a mid-face cannot be traced
+    to its body - the viewer then lists the mid-faces themselves, as before."""
+    mids = _read(Path(workspace) / "shell.json").get("mids") or []
+    body_of = {str(m.get("id")): str(m.get("body") or "") for m in mids if isinstance(m, Mapping)}
+    names = part_names(workspace)
+    out: dict[str, list[int]] = {}
+    for f in rec.get("faces") or []:
+        body = body_of.get(str(f.get("name")))
+        if not body or not f.get("tag"):
+            return {}
+        out.setdefault(names.get(body, body), []).append(int(f["tag"]))
+    return out
+
+
+def quality_of(rec: Mapping, parts: Mapping | None = None) -> dict:
+    """quality.json for a delivered shell, from the shell run's record. `parts`: part_tags."""
     sq = dict(rec.get("quality") or {})
     invalid = int(sq.get("invalid") or 0)
     faces = list(rec.get("faces") or [])
@@ -118,7 +144,9 @@ def quality_of(rec: Mapping) -> dict:
         "cells": int(rec.get("elements") or 0), "nodes": int(rec.get("nodes") or 0), "element_order": 1,
         "fatal": [f"{invalid} elements are folded or flat"] if invalid else [],
         "bounds": rec.get("bounds_m") or [0, 0, 0, 1, 1, 1],
-        "groups": {"free": "free"}, "default_group": "free", "default_group_used": True,
+        # NO "free" GROUP: every element of a shell is in its mid-face's group, so a default group would be an
+        # empty row in the viewer's parts list; the parts are the drawn surfaces themselves (part_tags)
+        "groups": {}, "default_group": "free", "default_group_used": False,
         "quality_bar": "fea", "min_sicn": None, "fea_inverted": invalid,
         "shell_quality": sq,
         **({"requirements": rec["requirements"]} if rec.get("requirements") else {}),
@@ -126,7 +154,8 @@ def quality_of(rec: Mapping) -> dict:
                 # SURF-3: a shell made on a surface file, and whether the user gave its thickness
                 **({"surface": True, "thickness_set": bool(_map(rec.get("surface")).get("thickness_set"))}
                    if _map(rec.get("surface")).get("kind") == "surface" else {}),
-                "face_tags": {str(f["name"]): [int(f["tag"])] for f in faces if f.get("tag")}},
+                "face_tags": {str(f["name"]): [int(f["tag"])] for f in faces if f.get("tag")},
+                **({"part_tags": {str(k): [int(t) for t in v] for k, v in parts.items()}} if parts else {})},
     }
 
 
@@ -141,7 +170,8 @@ def deliver(workspace, rec: Mapping, *, target: Mapping | None = None) -> bool:
     shutil.copyfile(ws / shell_run.MSH, ws / "mesh.msh")
     for stale in ("mesh.bdf", "mesh.cdb"):
         (ws / stale).unlink(missing_ok=True)
-    (ws / "quality.json").write_text(json.dumps(quality_of(rec), indent=1, sort_keys=True, default=float))
+    (ws / "quality.json").write_text(json.dumps(quality_of(rec, part_tags(ws, rec)), indent=1, sort_keys=True,
+                                                default=float))
     tgt = dict(rec.get("target") or {})
     from meshpipeline.engines.shell_plan import count_words
 
@@ -252,5 +282,6 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
 
 
 __all__ = ["CONTAINS", "LABELS", "MARKER_SOURCE", "SUMMARY", "SURFACE_SUMMARY", "WORST_KEY", "asked_rows", "deliver", "is_shell",
+           "part_names", "part_tags",
            "is_shell_workspace",
            "limits", "quality_of", "results"]

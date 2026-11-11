@@ -26,6 +26,8 @@ class ShellMesh:
     zoffs: np.ndarray | None = None          # (q + r,) mm: the element's true mid-plane off its nodes' plane, along
     #                                          its normal (SHELL-7 steps and laps: Nastran ZOFFS, Abaqus OFFSET)
     notes: list[str] = field(default_factory=list)
+    #: SHWRITE-1: the CAD's own name of a part ("PEDESTAL FOOTPAD GUSSET.57"), by its id; a part not in it is its id
+    part_names: dict[str, str] = field(default_factory=dict)
 
     @property
     def n_elements(self) -> int:

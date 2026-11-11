@@ -3381,6 +3381,19 @@
   "roots": []
  },
  {
+  "context": "cad/fea_assembly.py::strip_document_prefix::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/fea_assembly.py",
+  "qualname": "strip_document_prefix",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "cad/ingest/assembly_files.py::_schema_family::search#1|NotAPublisher|not-a-publisher|",
   "path": "cad/ingest/assembly_files.py",
   "qualname": "_schema_family",

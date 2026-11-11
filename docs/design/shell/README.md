@@ -837,7 +837,7 @@ What was tried and dropped for the triangle share (29 Oct, 8th helper): Frontal-
 
 ## 4. Properties and groups (PR 2)
 
-- **One PSHELL per sheet thickness, per part.** Part_3 at 6 mm becomes "Part_3_t6mm". Material: exactly as today's solid decks - mesh only, no material: PSHELL k names MAT1 k (Abaqus: MATERIAL=MAT_k) and the deck header says "add MAT1 k" (decided 29 Oct). The textbook tests add their own material.
+- **One PSHELL per sheet thickness, per part** (SHWRITE-1, 11 Nov: a customer's HyperMesh deck has one property per part, named after the part). A part is named as the CAD names it (the STEP instance "PEDESTAL FOOTPAD GUSSET.57", else its product), else Part_k; a part of one thickness has one property with the part's name, a part of several one per thickness, "<part> t=6mm". Every element is in its part: a `$HMNAME COMP` block per part (Nastran), an ELSET per part (Abaqus / CalculiX), a component per part (Ansys). Material: exactly as today's solid decks - mesh only, no material: PSHELL k names MAT1 k (Abaqus: MATERIAL=MAT_k) and the deck header says "add MAT1 k" (decided 29 Oct). The textbook tests add their own material.
 - **Groups:** one element group per original CAD face pair, named after the CAD faces (`Part_3_Face_12+Face_15`), and one per part.
 - **Joints are marked:**
   - shared-node lines at sewn junctions get a node group per junction;
@@ -852,7 +852,7 @@ What was tried and dropped for the triangle share (29 Oct, 8th helper): Frontal-
 
 **Nastran bulk data (.bdf), first-class for FEMAP.**
 - Cards: GRID, CQUAD4 and CTRIA3 (T1 to T4 corner thicknesses when the wall varies), PSHELL (MID1 = MID2 = MID3, 12I/T³ = 1, TS/T = 5/6), MAT1.
-- Names: Femap's own comment form for property and material names (`$ Femap Property 1 : Part_3_t6mm`). Our ingest already reads that form back (`cad/ingest/readers.py`).
+- Names: Femap's own comment form for property and material names (`$ Femap Property 1 : PEDESTAL FOOTPAD GUSSET.57`), and HyperMesh's (`$HMNAME PROP 1"PEDESTAL FOOTPAD GUSSET.57"`) on the line after it, both right before the PSHELL. Our ingest already reads that form back (`cad/ingest/readers.py`).
 - **Groups:** Nastran bulk data has no group card. We write each group as a named comment block of element ranges, and read it back in our tests.
 - **The FEMAP-native route is a neutral file (.neu)**, whose group block is public. We offer it as soon as the prospect confirms the import in their FEMAP. Until then the BDF says "not yet tested in the real solver", as the solid writers do.
 

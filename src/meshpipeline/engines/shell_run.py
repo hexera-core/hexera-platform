@@ -90,9 +90,16 @@ MSH = "shell.msh"
 def write_msh(path: Path, mesh) -> list[dict]:
     """The shell mesh as a gmsh MSH 2.2 ASCII file in metres: 4-node quads and 3-node triangles, each mid-face its own
     surface entity and physical group (k, named Mid_k), so the viewer draws one part per mid-face. Returns the faces:
-    [{"tag", "name", "wall_mm", "elements"}] in tag order."""
+    [{"tag", "name", "wall_mm", "elements", "part", "part_name"}] in tag order - SHWRITE-1: "part" the body the
+    mid-face belongs to (Part_k) and "part_name" its name as the solver files write it (the CAD's, else Part_k)."""
     import numpy as np
 
+    from meshpipeline.engines.shell_writers import part_labels
+
+    labels = part_labels(mesh)
+    part_of: dict[str, str] = {}
+    for m_, p_ in zip(mesh.mid, mesh.part, strict=True):
+        part_of.setdefault(m_, p_)
     mids = sorted(set(mesh.mid), key=lambda m: (len(m), m))
     tag_of = {m: k for k, m in enumerate(mids, start=1)}
     walls: dict[str, list[float]] = {}
@@ -111,7 +118,35 @@ def write_msh(path: Path, mesh) -> list[dict]:
     lines.append("$EndElements")
     Path(path).write_text("\n".join(lines) + "\n")
     return [{"tag": tag_of[m], "name": m, "elements": len(walls.get(m) or []),
-             "wall_mm": round(float(np.median(walls[m])), 4) if walls.get(m) else None} for m in mids]
+             "wall_mm": round(float(np.median(walls[m])), 4) if walls.get(m) else None,
+             "part": part_of[m], "part_name": labels.get(part_of[m], part_of[m])} for m in mids]
+
+
+def name_parts(mesh, ws: Path) -> None:
+    """SHWRITE-1: the mesh's parts named as the CAD names them - the STEP names the assembly staging read
+    (cad/fea_assembly's assembly.json, through engines/shell_delivery.part_names: the very names the result viewer
+    lists, so the files and the viewer agree); a part with none, or a run with no assembly, is Part_k as before.
+    Names only: the mesh is not touched."""
+    from meshpipeline.engines.shell_delivery import part_names
+
+    try:
+        names = part_names(ws)
+    except Exception as exc:  # noqa: BLE001 - a courtesy: every part is still Part_k
+        logger.info("shell run: the parts' names were not read (%s)", type(exc).__name__)
+        names = {}
+    ids = set(mesh.part)
+    mesh.part_names = {k: v for k, v in names.items() if k in ids and v and v != k}
+
+
+def parts_of(mesh, faces: list[dict]) -> list[dict]:
+    """SHWRITE-1: the record's parts - shell_writers.parts_record with each part's shell.msh tags ("tags": the
+    physical groups of its mid-faces), for the result viewer's parts list."""
+    from meshpipeline.engines.shell_writers import parts_record
+
+    tags: dict[str, list[int]] = {}
+    for f in faces:
+        tags.setdefault(str(f.get("part")), []).append(int(f["tag"]))
+    return [{**p, "tags": tags.get(p["id"], [])} for p in parts_record(mesh)]
 
 
 def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: str = "",
@@ -120,7 +155,8 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
     element count the user asked for (engines/fea_driver.element_target), which the shell's sizes follow (SHMESH-23).
     `requirements`: the mesh requirements read from the user's notes (engines/mesh_requirements): their sizes, limits
     and element kind are applied (SHMESH-24, 25) and each is told asked against delivered (SHMESH-26, the record's
-    "requirements"). None: the rules' own shell, exactly as before."""
+    "requirements"). None: the rules' own shell, exactly as before. SHWRITE-1: the parts are named in every file as
+    the assembly staging named them (name_parts)."""
     from meshpipeline.cad import midsurface as ms
     from meshpipeline.engines import shell_writers as sw
     from meshpipeline.engines.gmsh import shell_adapter as sa
@@ -143,11 +179,12 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
             t1 = time.time()
             mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
             rec["mesh_s"] = round(time.time() - t1, 1)
+            name_parts(mesh, ws)
             exports = sw.write_all(ws, mesh, units="m", source=source)
             # THE SHELL IS THE RESULT (engines/shell_delivery): the viewer's picture of it, one group per mid-face
             faces = write_msh(ws / MSH, mesh)
             xyz_m = mesh.xyz / 1000.0
-            rec.update(nodes=int(len(mesh.xyz)), faces=faces,
+            rec.update(nodes=int(len(mesh.xyz)), faces=faces, parts=parts_of(mesh, faces),
                        bounds_m=[float(v) for v in (*xyz_m.min(axis=0), *xyz_m.max(axis=0))] if len(xyz_m) else None)
             q = applied.get("quality") if isinstance(applied, dict) else None
             (ws / "shell_quality.json").write_text(json.dumps(applied, indent=1, sort_keys=True, default=float))
@@ -230,4 +267,5 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["FILES", "MSH", "RECORD", "main", "read", "requirements_in", "run", "words", "write_msh"]
+__all__ = ["FILES", "MSH", "RECORD", "main", "name_parts", "parts_of", "read", "requirements_in", "run", "words",
+           "write_msh"]

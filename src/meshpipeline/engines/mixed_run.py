@@ -259,17 +259,23 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
         requirements: dict | None = None) -> dict:
     """Extract, split, mesh, join and write the mixed mesh of `step` (coordinates `mm_per_unit` mm each).
     `requirements`: the mesh requirements read from the user's notes (engines/mesh_requirements) - the shell part
-    takes them as a shell does (SHMESH-24..26), the solid part their sizes (PLAN-fea-33). None: as before."""
+    takes them as a shell does (SHMESH-24..26), the solid part their sizes (PLAN-fea-33). None: as before.
+    SHWRITE-1: the part is named in every file as a shell run names it (shell_run.name_parts)."""
     from meshpipeline.engines import mixed_mesh as mm
+    from meshpipeline.engines import shell_run
 
     ws = Path(workspace)
     started = time.time()
     rec: dict = {"made": False, "mm_per_unit": float(mm_per_unit)}
     try:
         joined = build(step, ws / FOLDER, mm_per_unit=mm_per_unit, rec=rec, requirements=requirements)
+        shell_run.name_parts(joined.shell, ws)
         exports = mm.write_all(ws, joined, units="m", source=source)
+        from meshpipeline.engines.shell_writers import part_labels
+
         rec.update(made=all((ws / f).exists() and (ws / f).stat().st_size > 0 for f in FILES),
-                   counts=joined.counts, exports={k: v for k, v in exports.items() if isinstance(v, dict)})
+                   counts=joined.counts, exports={k: v for k, v in exports.items() if isinstance(v, dict)},
+                   parts=[{"id": k, "name": v, "cad_name": k != v} for k, v in part_labels(joined.shell).items()])
     except _Stop as stop:
         rec.update(made=False, why=str(stop) or "the part is not one body of thin walls and thick regions")
     except Exception as exc:  # noqa: BLE001 - the solid mesh is still delivered; the reason is kept
