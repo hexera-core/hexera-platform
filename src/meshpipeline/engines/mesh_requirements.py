@@ -1129,7 +1129,8 @@ def limit_row(lim: Mapping, values, n: int) -> dict:
     worst = float(values.min() if least else values.max()) if len(values) else None
     out: dict = {"applied": True, "outside": outside, "outside_pct": pct(outside, n), "beyond": beyond,
                  "share": share, "worst": float(f"{worst:.6g}") if worst is not None else None,
-           "met": bool(outside <= share * n + 1e-9 and beyond == 0)}
+                 "limit_target": target, "limit_outer": float(outer) if outer is not None else None,
+                 "met": bool(outside <= share * n + 1e-9 and beyond == 0)}
     side = "under" if least else "over"
     if not outside:
         out["delivered"] = "every element is inside it"
@@ -1220,32 +1221,39 @@ def summary(rep: Mapping | None, *, kind: str = "mesh", limit: int = 380, not_ap
              "be applied (listed with the result)") if not_applied else ""
     if not rows:
         return (extra + ".").replace(" other thing", " thing") if extra else ""
-    judged = [r for r in rows if r.get("met") in (True, False)]
-    missed = [r for r in judged if r["met"] is False]
-    aside = [r for r in rows if r.get("applied") is False]
-    if not missed:
-        said = (f"all {len(judged)} things you asked for are met" if len(judged) > 1 else
-                "what you asked for is met" if judged else "")
-    else:
-        said = f"{len(judged) - len(missed)} of the {len(judged)} things you asked for are met; not fully met"
-    out, shown = said, 0
-    for r in missed:
-        more = f"{': ' if not shown else '; '}{r['asked']} ({r['delivered']})"
-        if len(out) + len(more) > limit - 60:
-            break
-        out, shown = out + more, shown + 1
-    if missed and shown < len(missed):
-        out += f"{'; and ' if shown else ': '}{len(missed) - shown} more, listed on the result"
-    for r in rows:
-        # an edge-length target some elements are outside of: its share, in a few words
-        if r.get("target") and r.get("met") is None and r.get("outside") and len(out) < limit - 90:
-            what = "shorter" if r.get("field") == "min_edge" else "longer"
-            out += f"{'. ' if out else ''}{r.get('outside_pct'):g}% of elements have an edge {what} than you asked"
+    # EVERY LINE THE USER WROTE IS COUNTED, each in one group: met, not fully met, an edge-length target reported
+    # with its share, applied as a setting, or not applied to this kind of mesh ("Of the 10 things you asked for:
+    # 8 met; 2 edge-length targets: ...") - never "all 8 met" over a list of 10
+    met = [r for r in rows if r.get("met") is True]
+    missed = [r for r in rows if r.get("met") is False]
+    targets = [r for r in rows if r.get("met") is None and r.get("target")]
+    aside = [r for r in rows if r.get("met") is None and not r.get("target") and r.get("applied") is False]
+    settings = [r for r in rows if r.get("met") is None and not r.get("target") and r.get("applied") is not False]
+    n = len(rows)
+    out = f"Of the {n} thing{'' if n == 1 else 's'} you asked for: {len(met)} met"
+    if missed:
+        out += f", {len(missed)} not fully met"
+        shown = 0
+        for r in missed:
+            more = f"{': ' if not shown else '; '}{r['asked']} ({r['delivered']})"
+            if len(out) + len(more) > limit - 90:
+                break
+            out, shown = out + more, shown + 1
+        if shown < len(missed):
+            out += f"{'; and ' if shown else ': '}{len(missed) - shown} more, listed on the result"
+    if targets:
+        shares = [f"{r.get('outside_pct'):g}% of elements have an edge "
+                  f"{'shorter' if r.get('field') == 'min_edge' else 'longer'} than you asked"
+                  for r in targets if r.get("outside")]
+        out += (f"; {len(targets)} edge-length target{'' if len(targets) == 1 else 's'}"
+                + (": " + ", ".join(shares) if shares else ""))
+    if settings:
+        out += f"; {len(settings)} applied as {'a setting' if len(settings) == 1 else 'settings'}"
     if aside:
-        out += f"{'. ' if out else ''}{len(aside)} could not be applied to a {kind} mesh (listed on the result)"
+        out += f"; {len(aside)} could not be applied to a {kind} mesh (listed on the result)"
     if extra:
-        out += f"{'. ' if out else ''}{extra}"
-    return (out + ".") if out else ""
+        out += f". {extra}"
+    return out + "."
 
 
 #: the most lines said live before meshing (the rest are in the plan's words on the result)
