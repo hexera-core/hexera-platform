@@ -3200,21 +3200,24 @@ def close_gaps(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy
 #: found by halving CARRY_BISECT times, gets the strip from that piece of the edge to the meeting line; and where
 #: the meeting line lies off the other wall's own mid-face, that wall is carried on to it too, by the strip between
 #: the meeting line and its nearest points on that mid-face (its border). Both strips end on the one line: a
-#: corner as SHELL-3 draws it, for the pieces of the edge that have one. A whole edge that meets the other
-#: mid-face itself is left to SHELL-22, made as before. Kept only when it leaves fewer open edges, no tolerance
-#: past SHELL-12 and no unsound face (SHELL-31).
+#: corner as SHELL-3 draws it, for the pieces of the edge that have one. An edge that meets the other wall over
+#: its whole length is left to SHELL-22, made as before. Kept only when it leaves fewer junctions open (read as
+#: SHELL-21 reads them: the rest of the edge and the ends of the strips face whatever stopped the wall there), no
+#: tolerance past SHELL-12 and no unsound face (SHELL-31).
 CARRY_PIECES = True
 #: the shortest piece carried on: one wall (the spacing of the points read; a shorter one is a neighbour's corner)
 CARRY_MIN_WALLS = 1.0
 #: the ends of a piece are found to within 2^-CARRY_BISECT of the spacing of the points read (1/64 of a wall)
 CARRY_BISECT = 6
-#: the other wall's border under the meeting line must run smoothly: no turn over this between three points read
+#: the other wall's border under the meeting line must run with it: its nearest point to a meeting point within this
+#: of square across from it, and no turn over this between three such points
 CARRY_TURN_DEG = 30.0
 
 
 def _outward_reader(edge, face, t: float):
     """(first parameter, last parameter, read) for an edge of a face: read(u) -> (point, outward unit direction in
-    the face's surface) or None; None altogether when the face's side cannot be told (as _outward_points)."""
+    the face's surface, the edge's unit tangent) or None; None altogether when the face's side cannot be told (as
+    _outward_points)."""
     from OCP.BRepAdaptor import BRepAdaptor_Curve
     from OCP.gp import gp_Pnt, gp_Vec
 
@@ -3230,17 +3233,18 @@ def _outward_reader(edge, face, t: float):
         n = _face_normal_at(face, np.array([q2.X(), q2.Y(), q2.Z()]))
         if n is None or np.linalg.norm(tan) <= 0:
             return None
-        d = np.cross(tan / np.linalg.norm(tan), n)
+        tan = tan / np.linalg.norm(tan)
+        d = np.cross(tan, n)
         if np.linalg.norm(d) <= 0:
             return None
-        return p, d / float(np.linalg.norm(d))
+        return p, d / float(np.linalg.norm(d)), tan
 
     sign = None
     for frac in SIDE_FRACTIONS:
         got = raw(a + (b - a) * frac)
         if got is None:
             continue
-        p, d = got
+        p, d, _tan = got
         step = 0.01 * t
         plus, minus = _in_face(face, p + d * step, 1e-3 * step), _in_face(face, p - d * step, 1e-3 * step)
         if plus != minus:
@@ -3251,7 +3255,7 @@ def _outward_reader(edge, face, t: float):
 
     def read(u: float):
         got = raw(u)
-        return None if got is None else (got[0], got[1] * sign)
+        return None if got is None else (got[0], got[1] * sign, got[2])
 
     return a, b, read
 
@@ -3319,10 +3323,11 @@ def carry_on(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy: 
         return any(_near_box(p, box, tol) and _dist(_vertex(p), st) <= tol for st, box in made)
 
     def meets(pd, g, box, t: float, w: float):
-        """Where the point carried on meets face g's surface (SHELL-22's conditions): (point, way) or None."""
+        """Where the point carried on meets face g's surface (SHELL-22's conditions), the other wall square across
+        from it: (point, way) or None."""
         if pd is None:
             return None
-        p, d = pd
+        p, d, tan = pd
         reach = (0.5 * w + EXTEND_WALLS * max(t, w)) * (1.0 + REACH_SLACK)
         near = 0.5 * (w + t) * IN_WALL_SLACK + solid.tol
         if not _near_box(p, box, reach + near):
@@ -3337,6 +3342,14 @@ def carry_on(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy: 
         if not _near_box(x, box, near) or _dist(_vertex(x), g) > near:
             return None
         if not all(solid.inside(p + d * (s_hit * c)) for c in (0.25, 0.5, 0.75)):
+            return None
+        # the other wall lies SQUARE ACROSS from the meeting point: its nearest point is not one reached along the
+        # meeting line, past the end of its border (a piece ends where the other wall does, not half a wall further)
+        y = _nearest_on(x, g)
+        if y is None:
+            return None
+        gap = float(np.linalg.norm(x - y))
+        if gap > tol and abs(float(np.dot(x - y, tan))) > math.sin(math.radians(CARRY_TURN_DEG)) * gap:
             return None
         return x, s_hit
 
@@ -3423,19 +3436,16 @@ def carry_on(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy: 
                 continue
             gaps = [float(np.linalg.norm(x - y)) for x, y in zip(far, near_pts, strict=True)]
             off = max(gaps) > tol
-            if whole and not off:
-                continue                              # the whole edge onto the other mid-face itself: SHELL-22's
+            if whole:
+                continue                              # a whole edge that meets the other wall: SHELL-22's, as before
             if off and (min(gaps) <= fuzzy or not _smooth(near_pts, CARRY_TURN_DEG)
                         or not all(solid.inside(0.5 * (x + y)) for x, y in zip(far[1:-1], near_pts[1:-1], strict=True))):
                 continue
             try:
-                if whole:
-                    piece = e
-                else:
-                    mk = BRepBuilderAPI_MakeEdge(BRep_Tool.Curve_s(e, 0.0, 0.0), lo, hi)
-                    if not mk.IsDone():
-                        continue
-                    piece = mk.Edge()
+                mk = BRepBuilderAPI_MakeEdge(BRep_Tool.Curve_s(e, 0.0, 0.0), lo, hi)
+                if not mk.IsDone():
+                    continue
+                piece = mk.Edge()
                 far_edge = moved(piece, [x - pd[0] for pd, x in zip(sub, far, strict=True)], far, t)
                 if far_edge is None:
                     continue
