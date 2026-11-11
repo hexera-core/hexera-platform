@@ -56,6 +56,31 @@ def test_predicate_fails_when_volume_moved_past_the_claim():
     assert "volume" in msg and "area" not in msg
 
 
+def test_predicate_fails_when_volume_shrank_past_the_claim():
+    p = _p(cleared={"edge:a"}, volume=1.0)
+    msg = evaluate(p, before=_SOUND, after=_changed(volume_mm3=7900.0),
+                   defects_before=("edge:a",), defects_after=())
+    assert "volume" in msg and "area" not in msg
+
+
+def test_predicate_fails_when_a_defect_appeared_at_an_unchanged_entity():
+    p = _p(unchanged={"face:b"})
+    assert "face:b" in evaluate(p, before=_SOUND, after=_SOUND,
+                                defects_before=(), defects_after=("face:b",))
+
+
+def test_a_healthy_unchanged_entity_that_stays_healthy_holds():
+    p = _p(unchanged={"face:b"})
+    assert evaluate(p, before=_SOUND, after=_SOUND,
+                    defects_before=("edge:a",), defects_after=("edge:a",)) == ""
+
+
+def test_clearing_a_defect_that_was_never_reported_fails():
+    p = _p(cleared={"edge:ghost"})
+    assert "edge:ghost" in evaluate(p, before=_SOUND, after=_SOUND,
+                                    defects_before=(), defects_after=())
+
+
 def test_a_delta_exactly_at_the_claim_holds():
     p = _p(cleared={"edge:a"}, area=5.0, volume=100.0)
     assert evaluate(p, before=_SOUND,

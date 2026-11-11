@@ -81,9 +81,19 @@ def evaluate(predicate: Predicate, *, before: Measure, after: Measure,
     if remaining:
         return f"cleared defects still present: {_names(remaining)}"
 
+    unreported = predicate.cleared - was
+    if unreported:
+        return f"cleared defects were never reported: {_names(unreported)}"
+
+    # `unchanged` fails in BOTH directions. A defect that went away is collateral damage; one that
+    # appeared is new damage exactly where the author promised not to touch. An entity that was
+    # healthy before and stays healthy is a legitimate, checkable claim, so no phantom check here.
     vanished = (predicate.unchanged & was) - now
     if vanished:
-        return f"defects claimed unchanged were altered: {_names(vanished)}"
+        return f"defects claimed unchanged disappeared: {_names(vanished)}"
+    appeared = (predicate.unchanged & now) - was
+    if appeared:
+        return f"defects claimed unchanged appeared: {_names(appeared)}"
 
     phantom = predicate.reclassified - was
     if phantom:
