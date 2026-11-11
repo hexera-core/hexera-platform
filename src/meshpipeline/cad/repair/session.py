@@ -27,6 +27,7 @@ from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.identity import GONE, EntityRef
 from meshpipeline.cad.repair.localize import analyzer_only, face_scan_budget_s
 from meshpipeline.cad.repair.localize import localize_scan as _localize_scan
+from meshpipeline.cad.repair.package import TargetPackage, evaluate, specificity
 
 # THE ONE DEFINITION OF A HOLD, shared with both planners so they cannot disagree about what a
 # hold covers (plan.py does not import this module, so this is not a cycle).
@@ -101,6 +102,52 @@ class OpVerdict:
                    if self.planner_confidence is not None else {})}
 
 
+COMMITTED = "committed"
+REVERTED = "reverted"
+ESCALATED = "escalated"
+
+
+@dataclass(frozen=True, slots=True)
+class PackageVerdict:
+    """What happened to one target package, judged as a whole.
+
+    THE THREE STATUSES ARE NOT INTERCHANGEABLE, because a later stage routes on them: a
+    `committed` region ships, an `escalated` one is queued for a person because the package ran
+    out of its budget without satisfying its claim, and a `reverted` one was tried and the claim
+    did not hold. Conflating the last two sends work to the wrong place.
+    """
+
+    region_index: int
+    status: str
+    reason: str = ""
+    #: What `try_op` said about each operation, in plan order, whatever the package's own outcome.
+    #: A `kept` verdict here with a `reverted` package means the operation passed its own
+    #: judgements and was then discarded with the rest of the plan - which is why the package
+    #: verdict, not the op log, is the authority on what survived.
+    verdicts: tuple[OpVerdict, ...] = ()
+    #: Defects this package discharged BY RELABELLING rather than by repair: the entities its
+    #: predicate called `reclassified` that the scoped re-inspection still reports. REPORTED
+    #: rather than absorbed into the status, because "clean because nothing unexplained remains"
+    #: is a legitimate discharge AND the main abuse surface of the design, so a caller must be
+    #: able to see how much of a package's success came from relabelling. Empty when no scoped
+    #: scan was taken (an inadmissible package or an exhausted budget discharged nothing).
+    reclassified: frozenset[str] = frozenset()
+    #: Seconds. AGGREGATED from the operations' own `OpVerdict` timings plus the package's
+    #: boundary and scoped scans, so the same work is never timed twice.
+    scan_s: float = 0.0
+    apply_s: float = 0.0
+
+    @property
+    def committed(self) -> bool:
+        return self.status == COMMITTED
+
+    def to_dict(self) -> dict:
+        return {"region_index": int(self.region_index), "status": self.status,
+                "reason": self.reason, "verdicts": [v.to_dict() for v in self.verdicts],
+                "reclassified": sorted(self.reclassified),
+                "scan_s": self.scan_s, "apply_s": self.apply_s}
+
+
 class RepairSession:
     """One shape, carried through a repair, with every attempt reversible.
 
@@ -151,6 +198,9 @@ class RepairSession:
         self._defects: tuple | None = None
         self.complete_scan: bool = True
         self.log: list[OpVerdict] = []
+        #: The package-level truth, beside the per-operation `log`. A reader of the log alone
+        #: cannot tell a kept operation that shipped from one discarded with its package.
+        self.packages: list[PackageVerdict] = []
 
     def _default_scan(self, shape, *, face_scan: bool = True):
         """`localize_scan`, with a face-level scan only when the self-intersection heal is on.
@@ -365,6 +415,175 @@ class RepairSession:
             op=op.name, targets=fingerprints, defect_code=code, status=KEPT, basis=basis,
             evidence=dict(outcome.evidence), delta=delta,
             apply_s=apply_s, scan_s=scan_s, measure_s=measure_s))
+
+    def try_package(self, package: TargetPackage) -> PackageVerdict:
+        """Execute one target package as ONE reversible unit, and prove it against its own claim.
+
+        THE SAFETY PROPERTY IS THE ORDERING, NOT THE CHECKS. The package's author - eventually a
+        model - states its predicate BEFORE any of this runs, and this method only measures that
+        claim. An author can never grade its own work; it can only say something a separate
+        measurement checks.
+
+        THE ORDER IS THE DESIGN, for the reason `try_op` gives:
+          1. admit the package    - specificity, locus, well-formedness. CHEAP, and a malformed
+                                    package must not cost a scan.
+          2. budget               - a plan larger than the budget is refused unapplied
+          3. snapshot             - ONE, at the package boundary
+          4. apply the plan       - through `try_op`, so every cap, hold, declaration and
+                                    per-operation rollback still applies, operation by operation
+          5. one scoped scan      - EXPENSIVE, so it is paid for last, and only ONE for the whole
+                                    plan: that saving is the point of scoping a package to a region
+          6. `package.evaluate`   - the claim against the measurements
+          7. commit, or restore the BOUNDARY snapshot
+
+        ALL OR NOTHING. The predicate was written about the whole plan, so a partially applied
+        package was never what the author claimed: a failed predicate, a budget exhausted
+        mid-plan and an incomplete scoped scan all revert to step 3's snapshot, not to the last
+        operation's.
+
+        AN INCOMPLETE SCOPED SCAN CAN NEVER COMMIT. A short list from a stopped walk supports no
+        claim of absence, so it supports no predicate either.
+
+        A plan item is `{"op": RepairOp, "targets": tuple[EntityRef, ...], "defect_code": ...,
+        "tolerance_mm": float, "answered_held": frozenset[str]}` - the last two optional. The
+        author sets the tolerance, because a package names the operations it wants performed.
+        """
+        region = package.region
+        predicate = package.predicate
+
+        refusal = self._package_refusal(package)
+        if refusal:
+            # A REFUSAL, NOT AN ESCALATION. The package was malformed, not defeated: there is
+            # nothing here for a person to look at in the geometry, only an author to fix.
+            return self._record_package(PackageVerdict(
+                region_index=region.index, status=REVERTED, reason=refusal))
+
+        if len(package.plan) > package.budget.max_ops:
+            return self._record_package(PackageVerdict(
+                region_index=region.index, status=ESCALATED,
+                reason=f"budget: the plan's {len(package.plan)} operation(s) exceed the "
+                       f"package budget of {package.budget.max_ops}"))
+
+        started = self.clock()
+        before = self._measure(self.shape)
+
+        scan_started = self.clock()
+        # THE WHOLE-SHAPE LIST, deliberately, and normally already cached and so free. The
+        # predicate may only name entities in the region (checked above), so every comparison
+        # `evaluate` makes against it is a comparison about this region; and reading the cached
+        # whole-shape list avoids a second scan to learn what is already known.
+        defects_before = tuple(d.fingerprint for d in self.defects())
+        scan_s = self.clock() - scan_started
+
+        # THE SNAPSHOT IS TAKEN AFTER THE BOUNDARY LIST IS MATERIALISED, so restoring it restores
+        # the defect list the package found rather than an uncached `None` - which would make a
+        # reversal cost a fresh whole-shape scan to re-learn what was already measured here.
+        snapshot = (self.shape, self._defects, self.complete_scan)
+        apply_s = 0.0
+        verdicts: list[OpVerdict] = []
+
+        for item in package.plan:
+            spent = self.clock() - started
+            if package.budget.timeout_s > 0.0 and spent > package.budget.timeout_s:
+                self.shape, self._defects, self.complete_scan = snapshot
+                return self._record_package(PackageVerdict(
+                    region_index=region.index, status=ESCALATED,
+                    reason=f"budget: {spent:.6g}s of {package.budget.timeout_s:.6g}s spent after "
+                           f"{len(verdicts)} of {len(package.plan)} operation(s)",
+                    verdicts=tuple(verdicts), scan_s=scan_s, apply_s=apply_s))
+            # AN OPERATION THAT ROLLED ITSELF BACK DOES NOT END THE PACKAGE. Its own judgements
+            # already undid it, and the predicate - written about the whole plan - is what says
+            # whether the plan as a whole did what was claimed.
+            verdict = self.try_op(
+                item["op"], tuple(item["targets"]), item["defect_code"],
+                tolerance_mm=float(item.get("tolerance_mm", 0.0)),
+                answered_held=frozenset(item.get("answered_held") or ()))
+            verdicts.append(verdict)
+            apply_s += verdict.apply_s
+            scan_s += verdict.scan_s
+
+        scan_started = self.clock()
+        found, complete = self._region_scan(region)
+        scan_s += self.clock() - scan_started
+        defects_after = tuple(d.fingerprint for d in found)
+        # Computed from what the scan actually found, so this reports relabelling that really
+        # discharged a surviving defect rather than merely what the author asked for.
+        reclassified = frozenset(predicate.reclassified).intersection(defects_after)
+
+        if not complete:
+            self.shape, self._defects, self.complete_scan = snapshot
+            return self._record_package(PackageVerdict(
+                region_index=region.index, status=REVERTED,
+                reason="scan incomplete: a scoped re-inspection that stopped early supports no "
+                       "claim about what is absent from the region",
+                verdicts=tuple(verdicts), reclassified=reclassified,
+                scan_s=scan_s, apply_s=apply_s))
+
+        reason = evaluate(predicate, before=before, after=self._measure(self.shape),
+                           defects_before=defects_before, defects_after=defects_after)
+        if reason:
+            self.shape, self._defects, self.complete_scan = snapshot
+            return self._record_package(PackageVerdict(
+                region_index=region.index, status=REVERTED, reason=reason,
+                verdicts=tuple(verdicts), reclassified=reclassified,
+                scan_s=scan_s, apply_s=apply_s))
+
+        return self._record_package(PackageVerdict(
+            region_index=region.index, status=COMMITTED, verdicts=tuple(verdicts),
+            reclassified=reclassified, scan_s=scan_s, apply_s=apply_s))
+
+    @staticmethod
+    def _package_refusal(package: TargetPackage) -> str:
+        """"" if this package may be executed, otherwise why it may not. NO WORK IS DONE HERE.
+
+        A predicate that names NO entity asserts only what is always true, so an author could
+        pass by promising nothing. A predicate that names geometry OUTSIDE the region cannot be
+        verified by the scoped scan that judges it - and padding the claim with out-of-region
+        names is exactly how an author would inflate its specificity past this gate.
+        """
+        predicate = package.predicate
+        if specificity(predicate) == 0.0:
+            return ("predicate names no entity: a claim that promises nothing is true of any "
+                    "outcome and cannot be verified")
+
+        named = predicate.cleared | predicate.reclassified | predicate.unchanged
+        outside = sorted(named - package.region.fingerprints)
+        if outside:
+            return ("predicate names entities outside region "
+                    f"{package.region.index}: {', '.join(outside)}")
+
+        for n, item in enumerate(package.plan):
+            missing = [key for key in ("op", "targets", "defect_code") if not item.get(key)]
+            if missing:
+                return f"malformed plan item {n}: missing {', '.join(missing)}"
+        return ""
+
+    def _region_scan(self, region) -> tuple[tuple, bool]:
+        """ONE re-inspection, scoped to the region, for the whole package.
+
+        IT DOES NOT BECOME THE SESSION'S DEFECT LIST. A scoped list is exhaustive only within its
+        scope, and `self._defects`/`self.complete_scan` are read as statements about the whole
+        shape; replacing them with a region's findings would claim the rest of the part had been
+        checked and found sound. The package's own verdict carries what this scan said instead.
+
+        The face-level budget is the one the session's first scan uses, not the status-walk-only
+        one a per-operation re-inspection gets: this is the scan a commit rests on, so within the
+        region it is as thorough as the original inspection was.
+        """
+        self.scan_count += 1
+        if self._injected:
+            found, complete = self._scan(self.shape)
+        else:
+            budget = 0.0
+            if rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS:
+                remaining = self.remaining_s or (lambda: float(rcfg.CAD_REPAIR_TIMEOUT_S))
+                budget = face_scan_budget_s(remaining())
+            found, complete = _localize_scan(self.shape, face_scan_s=budget, within=region)
+        return tuple(found), bool(complete)
+
+    def _record_package(self, verdict: PackageVerdict) -> PackageVerdict:
+        self.packages.append(verdict)
+        return verdict
 
     def _carries(self, targets, defect_code) -> bool:
         """Does at least one target actually carry the defect it is being repaired for?
