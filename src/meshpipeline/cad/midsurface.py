@@ -1136,7 +1136,8 @@ def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False,
 #:   - at least PLATE_FLAT_SHARE of its mid-surface is flat or gently curved: a wall round a radius under
 #:     PLATE_CURVE_WALLS of its thickness (a bush, a nut, a hollow boss: its bore under three walls across) is a
 #:     thick ring, which no shell stands for. A tight bend rides with the flat plates it joins, as in SHELL-2;
-#:   - each of its pairs is NO PAD ON A THINNER WALL: neither of its faces is also a side of a thinner shell wall. A
+#:   - each of its pairs is NO PAD ON A THINNER WALL: neither of its faces is also a side of a shell wall under half
+#:     its thickness (SHELL-23c; a step up to twice the wall is a shell). A
 #:     pad, a boss or a land standing on a plate shares the plate's far face; it is thicker metal on that plate, not
 #:     a plate of its own, and stays solid as it did (two plates stacked are a lap, SHELL-8, as before);
 #:   - and each of its pairs has its mid-face IN THE METAL (PLATE_METAL_SHARE of the points read on it): two faces
@@ -1156,8 +1157,20 @@ def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False,
 #: is read again without them, and keeps the reading with fewer open edges - so a body that sewed shut before
 #: still does, and the plates that would hang loose stay solid, said in a note.
 EVERY_PLATE = True
-PLATE_BODY_SHARE = 0.5
-PLATE_BODY_QUICK = 0.5
+#: SHELL-23b (11 Nov): THE BODY SHARE IS OFF (0). It refused the plates of bodies whose plates hold under half their
+#: metal, and was the guard behind most of the thin-wall skin still missed: on 282 lab and real parts, 24 files and
+#: 14.0 of the 18.5 file-shares (the walls stream's skin measure), among them plates 7 walls wide and 14 long on a thick
+#: body. A plate on a lump is a shell with a solid region, as a thin plate on a lump always was (SHELL-2 never had
+#: this guard). The two parts it was kept for - 2 frames whose short plates the mesher could not close - are made by
+#: SHELL-26 instead (the shell without those plates, said).
+PLATE_BODY_SHARE = 0.0
+PLATE_BODY_QUICK = 0.0
+#: SHELL-23c (11 Nov): A STEP IS NO PAD. A wall one of whose faces is a side of a thinner shell wall is a pad (it
+#: stands on that wall) only when it is more than PAD_STEP_WALLS of that wall thick: its mid-plane then lies outside
+#: the thinner wall's metal, and SHELL-7 could not lay the thinner wall onto it with an offset inside its own wall. Up
+#: to that, it is a thickness step flush on one side (a doubler, a land, a thicker band): a shell, the thinner wall
+#: snapped onto its mid-plane with its offset (SHELL-7), as industry models a one-sided step.
+PAD_STEP_WALLS = 2.0
 PLATE_OPEN_GUARD = True
 PLATE_PASS_SLACK = 1.5
 PLATE_FLAT_SHARE = 0.5
@@ -4465,17 +4478,29 @@ def _plate_bodies(record: dict) -> set[str]:
             | {str(m["body"]) for m in record.get("mids") or [] if m.get("flat") and m.get("shell")})
 
 
+def has_plates(record: dict) -> bool:
+    """SHELL-26: does the record hold a wall made by SHELL-23 (a short plate) or SHELL-24 (a flat tapered plate)?"""
+    return bool(_plate_bodies(record))
+
+
 def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
-            budget_s: float | None = None) -> tuple[dict, object]:
+            budget_s: float | None = None, plates: bool = True) -> tuple[dict, object]:
     """The shell record and the sewn mid-surface (a compound, the shape's own units) of an OpenCASCADE shape
     whose coordinates are `mm_per_unit` millimetres each. Never raises for a part it cannot shell: the record
     says what was not shelled and why.
 
     SHELL-23's last guards: a body whose short plates hold under half its metal once joined is read again without
     them (PLATE_BODY_SHARE), and so is one whose short plates or flat flanges leave edges open, which keeps the
-    reading with fewer open edges (PLATE_OPEN_GUARD). At most two more passes, inside the same work budget."""
+    reading with fewer open edges (PLATE_OPEN_GUARD). At most two more passes, inside the same work budget.
+
+    `plates` False (SHELL-26): the whole part is read as before SHELL-23 and SHELL-24 - the shell the mesher makes when
+    a mesh of the short plates could not be made."""
     started = time.time()
     clock = _Clock(budget_s)
+    if not plates:
+        record, surface = _extract(shape, mm_per_unit=mm_per_unit, names=names, clock=clock, no_plate={ALL_BODIES: "mesh"})
+        record["seconds"] = round(time.time() - started, 2)
+        return record, surface
     record, surface = _extract(shape, mm_per_unit=mm_per_unit, names=names, clock=clock, no_plate={})
     if PLATE_OPEN_GUARD and (EVERY_PLATE or FLAT_TAPER):
         opened = _open_by_body(record)
@@ -4518,6 +4543,10 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
     return record, surface
 
 
+#: SHELL-26: the key of `no_plate` that stands for every body of the part
+ALL_BODIES = "*"
+
+
 def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Clock,
              no_plate: dict[str, str]) -> tuple[dict, object]:
     """One pass of the extraction. `no_plate`: the bodies (by name) read without SHELL-23 and SHELL-24, as before
@@ -4542,6 +4571,8 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
         else:
             names = [f"Face_{k}" for k in range(1, len(faces) + 1)]
     body_names = [f"Part_{b + 1}" for b in range(len(solids))] or ["Part_1"]
+    if ALL_BODIES in no_plate:
+        no_plate = dict.fromkeys(body_names, no_plate[ALL_BODIES])
     notes: list[str] = list(sew_notes)
     surface, _f, kinds = fm._brep_surface(shape, mm)
     partners = sp.ray_partners(surface)
@@ -4750,7 +4781,8 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
                 if not (area_i > 0 and in_metal >= PLATE_METAL_SHARE * area_i):
                     plate_fail[i] = "gap"
                     pr.why = "the two faces look at each other across a gap, not across metal"
-                elif any(wall_of.get(k, math.inf) < pr.thickness * (1.0 - sp.EVEN_SHARE) for k in (pr.a, pr.b)):
+                elif any(wall_of.get(k, math.inf) * PAD_STEP_WALLS < pr.thickness * (1.0 - sp.EVEN_SHARE)
+                         for k in (pr.a, pr.b)):
                     # a face of it is a side of a thinner shell wall: a pad, a boss or a land standing on that wall
                     plate_fail[i] = "pad"
                     pr.why = "a pad on a thinner wall: thicker metal standing on a plate, not a plate of its own"
@@ -5125,7 +5157,7 @@ def solid_record(shape, why: str) -> dict:
 
 
 def extract_file(path: Path | str, out_dir: Path | str | None = None, *, mm_per_unit: float,
-                 budget_s: float | None = None, deadline_s: float | None = None) -> dict:
+                 budget_s: float | None = None, deadline_s: float | None = None, plates: bool = True) -> dict:
     """Read a STEP, IGES or BREP file, extract its mid-surface, and (when `out_dir` is given) write
     shell.json and midsurface.brep there. SHELL-18: the work runs in a new Python process that reads the file itself,
     stopped after `deadline_s` s (EXTRACT_DEADLINE_S; <= 0: here, unbounded); a part stopped is meshed solid, told
@@ -5134,11 +5166,11 @@ def extract_file(path: Path | str, out_dir: Path | str | None = None, *, mm_per_
 
     limit = EXTRACT_DEADLINE_S if deadline_s is None else float(deadline_s)
     if limit <= 0:
-        return extract_path(str(path), None if out_dir is None else str(out_dir), mm_per_unit, budget_s)
+        return extract_path(str(path), None if out_dir is None else str(out_dir), mm_per_unit, budget_s, plates)
     with tempfile.TemporaryDirectory(prefix="shell_x_") as tmp:
         out = Path(out_dir) if out_dir is not None else Path(tmp)
         status, got = run_bounded(EXTRACT_ENTRY, {"path": str(path), "out_dir": str(out), "mm_per_unit": mm_per_unit,
-                                                  "budget_s": budget_s}, limit)
+                                                  "budget_s": budget_s, "plates": bool(plates)}, limit)
         if status == "ok" and isinstance(got, dict):
             return got
         from meshpipeline.cad.scout import read_cad
@@ -5151,11 +5183,13 @@ def extract_file(path: Path | str, out_dir: Path | str | None = None, *, mm_per_
         return record
 
 
-def extract_path(path: str, out_dir: str | None, mm_per_unit: float, budget_s: float | None) -> dict:
+def extract_path(path: str, out_dir: str | None, mm_per_unit: float, budget_s: float | None,
+                 plates: bool = True) -> dict:
     """SHELL-18: read the file and extract it here (the work of extract_file's bounded child)."""
     from meshpipeline.cad.scout import read_cad
 
-    return _extract_and_write(read_cad(Path(path)), out_dir, mm_per_unit=mm_per_unit, budget_s=budget_s)
+    return _extract_and_write(read_cad(Path(path)), out_dir, mm_per_unit=mm_per_unit, budget_s=budget_s,
+                              plates=plates)
 
 
 #: SHELL-18d: what the bounded child runs
@@ -5188,9 +5222,9 @@ def _write(record: dict, surface, out_dir) -> None:
     (out / RECORD_FILE).write_text(json.dumps(record, indent=1, sort_keys=True))
 
 
-def _extract_and_write(shape, out_dir, *, mm_per_unit: float, budget_s: float | None) -> dict:
+def _extract_and_write(shape, out_dir, *, mm_per_unit: float, budget_s: float | None, plates: bool = True) -> dict:
     try:
-        record, surface = extract(shape, mm_per_unit=mm_per_unit, budget_s=budget_s)
+        record, surface = extract(shape, mm_per_unit=mm_per_unit, budget_s=budget_s, plates=plates)
     except OutOfBudget as exc:  # SHELL-18: told in numbers, the solid mesh delivered
         logger.warning("shell: %s; the part is meshed solid", exc)
         record, surface = solid_record(shape, str(exc)), _compound([])
