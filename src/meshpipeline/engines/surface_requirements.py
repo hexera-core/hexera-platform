@@ -1,9 +1,10 @@
 # Responsibility: THE NOTES' MESH REQUIREMENTS ON A SURFACE FILE (SURF-7): where the surface run (engines/surface_run,
-# SURF-3..6) and the requirements read from the user's notes (engines/mesh_requirements, NOTE-7..9) meet. Two
+# SURF-3..6) and the requirements read from the user's notes (engines/mesh_requirements, NOTE-7..9) meet. Three
 # things, none of which either side decides alone: (1) the ONE thickness a surface file is given, from the two
 # places a thickness can be read (the fixed word table, contracts/shell_thickness, and the "thickness" entry of the
-# notes' typed set); (2) the asked-against-delivered rows a surface file's shell tells differently from a solid
-# part's (its thickness is the user's, not measured from CAD).
+# notes' typed set); (2) the wall the mesher works with when the notes give a global size and no thickness (the
+# size asked, never the thin-sheet guess of SURF-5); (3) the asked-against-delivered rows a surface file's shell
+# tells differently from a solid part's (its thickness is the user's, not measured from CAD).
 # Boundaries: pure over plain data; no engine, no file, no model. With no requirement every function hands back what
 # it was given: a surface file with nothing said in the notes is meshed exactly as before.
 # Collaborates with: engines/surface_run.py (calls all three), contracts/shell_thickness.py (the word table's
@@ -22,6 +23,12 @@ BY_WORDS = "words"            # the word table (the notes, the stage, the reques
 BY_SET = "notes reading"      # the notes' typed set (the model's reading, checked), when the word table read none
 #: the two readings are the same thickness within this share
 SAME = 1e-6
+#: SURF-7: WITH A GLOBAL SIZE AND NO THICKNESS, the wall the sizes and the clean-up are worked with is the global
+#: size times this. At 1.0 the shell rules' own floor (half a wall, SHMESH-2) is half the size asked - the shortest
+#: edge the usual criteria sheet allows (engines/shell_requirements.BAND) - so a sliver edge is merged exactly
+#: where the user's own list would call it too short. Measured against the thin-sheet wall of SURF-5 (the sheet's
+#: size over 300) on the surface lab: see docs/design/shell/README.md section 12.
+WALL_PER_GLOBAL = 1.0
 
 
 def _set_thickness(req: Mapping | None) -> tuple[float | None, str]:
@@ -74,6 +81,14 @@ def global_size(req: Mapping | None) -> float | None:
     return g if g > 0 else None
 
 
+def working_wall(req: Mapping | None) -> float | None:
+    """SURF-7: the wall a sheet with NO thickness is worked with when the notes give a global size (mm): the size
+    asked times WALL_PER_GLOBAL - the user's own number, so the thin-sheet guess (SURF-5) plays no part. None when
+    the notes give no global size (SURF-5 stands). It sizes the clean-up only: no thickness is written."""
+    g = global_size(req)
+    return float(f"{WALL_PER_GLOBAL * g:.6g}") if g is not None else None
+
+
 #: the clause engines/shell_requirements adds to the global-size row when elements are under half the wall
 _HALF_WALL = "; some elements are smaller than half the wall, finer than a shell usually needs"
 
@@ -120,6 +135,8 @@ def words(how: Mapping | None, req: Mapping | None, *, given: bool) -> str:
     g = global_size(req)
     if g is not None:
         said.append(f"the sizes are the {g:.4g} mm your notes ask for")
+        if not given:
+            said.append("no thickness was given, so the clean-up works at that size, not at a guessed sheet")
     if req and req.get("limits"):
         n = len(req["limits"])
         said.append(f"the {n} quality limit{'' if n == 1 else 's'} in your notes are aimed at")
@@ -135,4 +152,5 @@ def words(how: Mapping | None, req: Mapping | None, *, given: bool) -> str:
     return text[:1].upper() + text[1:]
 
 
-__all__ = ["BY_SET", "BY_WORDS", "RULE", "global_size", "thickness", "told", "words"]
+__all__ = ["BY_SET", "BY_WORDS", "RULE", "WALL_PER_GLOBAL", "global_size", "thickness", "told", "words",
+           "working_wall"]

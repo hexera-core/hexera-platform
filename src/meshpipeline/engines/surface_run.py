@@ -10,7 +10,8 @@
 # raises from run(). A file that is not a surface (a solid, faces that close, a closed skin with a gap) is left alone:
 # its record says which, and the FEA driver carries on exactly as before.
 # The notes' mesh requirements (NOTE-7) reach it too (SURF-7, engines/surface_requirements): their sizes, limits and
-# element kind are the shell mesher's, and a thickness in them is used when the word table read none.
+# element kind are the shell mesher's, a global size with no thickness sizes the sheet itself, and a thickness in them
+# is used when the word table read none.
 # Collaborates with: engines/fea_driver.py (calls surface_pass, cites it), cad/surface_model.py, engines/shell_run.py,
 # engines/shell_delivery.py, contracts/shell_thickness.py, engines/surface_requirements.py.
 from __future__ import annotations
@@ -128,7 +129,8 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
     {"kind", "why", "thickness_mm", "thickness_set", "sizing_wall_mm", "sheets", "faces", "open_share", ...}.
     `thickness_mm`: the user's (None: not given); `said_shell`: their words asked for a shell (SURF-1).
     `requirements`: the mesh requirements read from the user's notes (engines/mesh_requirements) - applied as on
-    any shell (SHMESH-24..26) and told asked against delivered (SURF-7). `thickness_how`: where the thickness came from (engines/surface_requirements.thickness).
+    any shell (SHMESH-24..26) and told asked against delivered; a global size among them sizes a sheet with no
+    thickness (SURF-7). `thickness_how`: where the thickness came from (engines/surface_requirements.thickness).
     None: the rules' own surface shell, exactly as before."""
     import numpy as np
 
@@ -160,9 +162,15 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
             rec["why"] = f"the file is not a surface part ({reading.get('why')})"
         else:
             sheets = reading["sheets"]
-            walls = {s["part"]: (wall if given else sizing_wall(s["size_mm"])) for s in sheets}
+            # SURF-7: a global size in the notes and no thickness - the sheet is worked at the size asked, never at
+            # the thin-sheet guess (SURF-5), and it is not sized again
+            by_size = None if given else srq.working_wall(requirements)
+            walls = {s["part"]: (wall if given else by_size if by_size is not None else sizing_wall(s["size_mm"]))
+                     for s in sheets}
             if not given:
                 rec["surface"]["sizing_wall_mm"] = sorted(set(walls.values()))
+                if by_size is not None:
+                    rec["surface"]["sizing_by"] = "global size"
             else:
                 thick = [s["size_mm"] for s in sheets if wall > THICK_SHARE * s["size_mm"]]
                 if thick:
@@ -176,7 +184,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
                        free_edges=int(sum(s["free_edges"] for s in sheets)))
             t1 = time.time()
             mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, **asked)
-            if not given and _past(applied):
+            if not given and by_size is None and _past(applied):
                 # SURF-5: sized again for a thicker sheet while elements are left past Nastran's own limits
                 best = (_past(applied), mesh, applied, record, walls)
                 for factor in SIZING_AGAIN:
@@ -340,9 +348,11 @@ async def surface_pass(ws: Path, state, *, job_id: str, run=None, target: dict |
                       {"stage": GATE, "decided": "thickness", "value": s.get("thickness_mm"), "rule": "SURF-4",
                        "inputs": {"quote": got.quote, "others_mm": list(got.others_mm), "unread": got.unread,
                                   "sizing_wall_mm": s.get("sizing_wall_mm"),
-                                  **({"read_by": how["by"]} if req else {})},
+                                  **({"read_by": how["by"], "sizing_by": s.get("sizing_by")} if req else {})},
                        "words": (f"The wall thickness is the user's: {_mm(s['thickness_mm'])} (\"{got.quote}\")."
                                  if s.get("thickness_mm") else
+                                 "No thickness was given: the mesh is sized at the global size the notes ask for "
+                                 "and no thickness is written (SURF-7)." if s.get("sizing_by") else
                                  "No thickness was given: the mesh is sized as for a thin sheet and no thickness is "
                                  "written (SURF-5).")},
                       {"stage": GATE, "decided": "shell mesh" if rec.get("made") else "no shell mesh",
@@ -351,7 +361,8 @@ async def surface_pass(ws: Path, state, *, job_id: str, run=None, target: dict |
                        "words": rec["words"]}]
              + ([{"stage": GATE, "decided": "notes applied", "value": len(req.get("rows") or []),
                   "rule": srq.RULE,
-                  "inputs": {"sizes": req.get("sizes"), "thickness_by": how["by"], "thickness_set_mm": how["set_mm"]},
+                  "inputs": {"sizes": req.get("sizes"), "thickness_by": how["by"], "thickness_set_mm": how["set_mm"],
+                             "sizing_by": s.get("sizing_by")},
                   "words": s.get("notes") or srq.words(how, req, given=bool(s.get("thickness_mm")))}]
                 if req and rec.get("made") else []))
     return rec

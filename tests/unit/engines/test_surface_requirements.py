@@ -1,4 +1,4 @@
-# Responsibility: Verify SURF-7, where the surface run and the notes' mesh requirements meet: the requirements read from the notes reach a surface file (a global size, the criteria list and a thickness all apply, and are told asked against delivered); one thickness comes out of the two places one can be read (the word table wins, the notes' typed set is used when the word table read none); with nothing said a surface file is meshed exactly as before and no model is asked.
+# Responsibility: Verify SURF-7, where the surface run and the notes' mesh requirements meet: the requirements read from the notes reach a surface file (a global size, the criteria list and a thickness all apply, and are told asked against delivered); one thickness comes out of the two places one can be read (the word table wins, the notes' typed set is used when the word table read none); with a global size and no thickness the sheet is worked at the size asked, never at the thin-sheet guess; with nothing said a surface file is meshed exactly as before and no model is asked.
 # Boundaries: pure functions on plain data, then the real surface run, shell mesher and FEA driver on a small bent bracket (a few seconds each), the reading of the notes stubbed (no model). No solver, no store.
 from __future__ import annotations
 
@@ -93,6 +93,15 @@ def test_a_thickness_no_shell_can_have_is_not_taken_from_the_set():
     assert got.mm is None and how == {"by": None, "set_mm": None, "differs": False}
 
 
+def test_the_working_wall_is_the_global_size_only_when_one_is_given():
+    assert srq.working_wall(None) is None and srq.working_wall(MR.empty()) is None
+    only_limits = asked()
+    only_limits["sizes"]["global_mm"] = None
+    assert srq.working_wall(only_limits) is None                       # SURF-5's thin sheet stands
+    assert srq.working_wall(asked(4.0)) == pytest.approx(4.0 * srq.WALL_PER_GLOBAL)
+    assert srq.global_size(asked(2.5)) == 2.5
+
+
 def test_the_thickness_row_is_told_as_a_surface_files():
     row = {"id": "r4", "field": "thickness", "asked": "wall thickness 1.2 mm", "applied": False, "met": None,
            "delivered": "not applied - each wall's thickness is measured from your CAD (1.2 mm)", "excess": 0}
@@ -180,9 +189,39 @@ def test_the_same_notes_twice_give_the_same_files(sized, source, tmp_path):
     assert again["requirements"] == rec["requirements"] and again["sizing"] == rec["sizing"]
 
 
-def test_with_no_thickness_the_requirements_reach_every_mesh_of_the_thin_sheet_sizing(source, tmp_path, monkeypatch):
-    """SURF-5 stands with no thickness (sized as a thin sheet, sized again while elements are past the limits) - and
-    the user's requirements go to each of those meshes."""
+def test_with_a_global_size_and_no_thickness_the_sheet_is_not_sized_as_a_thin_sheet(source, tmp_path, monkeypatch):
+    """SURF-7: the sizes are the user's and the working wall is their size - the thin-sheet guess (the sheet's size
+    over 300, SURF-5) plays no part, and the mesh is made once whatever it leaves past a limit."""
+    from meshpipeline.engines.gmsh import shell_adapter as sa
+
+    real = sa.mesh_run
+    seen: list[float] = []
+
+    def spy(out, *, mm_per_unit=1.0, target=None, requirements=None):
+        seen.append(json.loads((out / "shell.json").read_text())["pairs"][0]["thickness_mm"])
+        mesh, applied = real(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
+        applied["quality"]["nastran_past"] = {"T3_SKEW": 2}             # said to leave triangles past the limits
+        return mesh, applied
+
+    monkeypatch.setattr(sa, "mesh_run", spy)
+    rec = surface_run.run(tmp_path, source, mm_per_unit=1.0, source="part.step", requirements=asked(limits=False))
+    assert rec["made"] is True and seen == [pytest.approx(G * srq.WALL_PER_GLOBAL)], "one mesh, at the size asked"
+    thin = surface_run.sizing_wall(json.loads((tmp_path / "surface_model.json").read_text())["sheets"][0]["size_mm"])
+    assert rec["surface"]["sizing_wall_mm"] == [pytest.approx(G * srq.WALL_PER_GLOBAL)] and thin < 0.5
+    assert rec["surface"]["sizing_by"] == "global size"
+    # about 4 mm elements, where the thin-sheet guess made them a few times finer
+    row = rec["requirements"]["rows"][0]
+    assert row["field"] == "global" and row["met"] is True and "half the wall" not in row["delivered"]
+    assert 0.5 * G <= _typical_edge(tmp_path) <= 1.5 * G
+    # still no thickness: none is written, and the files say so
+    assert rec["surface"]["thickness_set"] is False and rec["walls_mm"] == []
+    assert list(sw.read_bdf(tmp_path / "shell.bdf").walls.values()) == [0.0]
+    assert "WALL THICKNESS NOT SET" in (tmp_path / "shell.bdf").read_text()[:1500]
+
+
+def test_limits_alone_keep_the_thin_sheet_sizing_and_reach_every_mesh_of_it(source, tmp_path, monkeypatch):
+    """No global size: SURF-5 stands (sized as a thin sheet, sized again while elements are past the limits) - and
+    the user's limits go to each of those meshes."""
     from meshpipeline.engines.gmsh import shell_adapter as sa
 
     real = sa.mesh_run
@@ -201,14 +240,14 @@ def test_with_no_thickness_the_requirements_reach_every_mesh_of_the_thin_sheet_s
     req["rows"] = [r for r in req["rows"] if r["field"].startswith("limit:")]
     rec = surface_run.run(tmp_path, source, mm_per_unit=1.0, source="part.step", requirements=req)
     assert rec["made"] is True and len(seen) == 2 and all(with_req for _w, with_req in seen)
-    assert seen[1][0] == pytest.approx(2 * seen[0][0], rel=1e-5)
+    assert seen[1][0] == pytest.approx(2 * seen[0][0], rel=1e-5) and "sizing_by" not in rec["surface"]
     assert len(rec["requirements"]["rows"]) == 7
 
 
 def test_nothing_asked_is_the_surface_run_as_it_was(plain, source, tmp_path):
     ws, rec = plain
     assert not ({"requirements", "sizing", "count_set_aside"} & set(rec))
-    assert not ({"notes", "thickness_by"} & set(rec["surface"]))
+    assert not ({"notes", "thickness_by", "sizing_by"} & set(rec["surface"]))
     # an empty set, or none: the same bytes
     again = surface_run.run(tmp_path, source, mm_per_unit=1.0, thickness_mm=1.2, source="part.step",
                             requirements=MR.requirements_of(MR.section("used", requirements=MR.empty())))
