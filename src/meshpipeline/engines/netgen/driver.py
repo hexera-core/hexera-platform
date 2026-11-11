@@ -56,9 +56,24 @@ def plan_case(ws: Path, state) -> dict | None:
     wall_area = float(0.5 * np.linalg.norm(np.cross(wall_tris[:, 1] - wall_tris[:, 0],
                                                     wall_tris[:, 2] - wall_tris[:, 0]), axis=1).sum())
     layers = P.requested_layers(ws, state.get("engine_params") or {})
+    # CFDREQ-1: THE USER'S REQUIREMENTS from their notes (engines/cfd_requirements) - the one seam. None: the plan is
+    # exactly the rules' own
+    kw: dict = {"layers": layers}
+    ask = None
+    from meshpipeline.engines import mesh_requirements as MR
+    if (ws / MR.FILE).exists():
+        from meshpipeline.engines import cfd_requirements as CR
+        ask = CR.Ask.of(ws, "netgen")
+        if ask is not None:
+            kw = CR.netgen_inputs(ask, layers=layers, port_diameters=diam, soft_budget=P.SOFT_BUDGET,
+                                  cell_limit=int(polcfg.CELL_HARD_LIMIT))
     plan = P.make_plan(wall_points=pts, wall_faces=faces, radius=radius, port_diameters=diam,
                        volume=P.closed_volume(tris), wall_area=wall_area, walls=walls,
-                       layers=layers, cell_limit=int(polcfg.CELL_HARD_LIMIT))
+                       cell_limit=int(polcfg.CELL_HARD_LIMIT), **kw)
+    if ask is not None:
+        CR.netgen_planned(ask, plan)
+        ask.write(ws)
+        CR.say_sync(ws, ask.lines())
     return P.write_plan(ws, plan, pts)
 
 
@@ -113,6 +128,10 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             (ws / "netgen_outcome.json").write_text(json.dumps(result.get("netgen") or {}, default=str))
         except OSError:
             pass
+        # CFDREQ-6: a mesh built on a thinner rung than planned says so on the user's layer rows
+        if (ws / "cfd_requirements_plan.json").exists():
+            from meshpipeline.engines.cfd_requirements import netgen_built
+            netgen_built(ws, (result.get("netgen") or {}).get("built"))
     await run.fence("deliver builder outcome")
     outcome = run.outcome(produced_deliverable=ok, exhausted=not ok,
                           failure_marker="" if ok else BUILD_FAILED)

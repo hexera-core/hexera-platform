@@ -98,8 +98,18 @@ def estimate_cells(volume: float, wall_area: float, h_typ: float, layers: int) -
 
 def make_plan(*, wall_points: np.ndarray, wall_faces: np.ndarray, radius: np.ndarray,
               port_diameters: list[float], volume: float, wall_area: float, walls: list[str],
-              layers: int, cell_limit: int) -> dict:
-    """The plan (NG-1..NG-5) from the measured field; pure, so tests pin every rule."""
+              layers: int, cell_limit: int, size_lo: float | None = None, size_hi: float | None = None,
+              soft_budget: int | None = None, user_budget: bool = False, target_cells: int | None = None,
+              first_layer: float | None = None, layer_stack: float | None = None,
+              growth: float = GROWTH) -> dict:
+    """The plan (NG-1..NG-5) from the measured field; pure, so tests pin every rule.
+
+    The keywords after `cell_limit` carry the user's requirements from their notes (CFDREQ-1, read by
+    engines/cfd_requirements.netgen_inputs); with none given the plan is exactly the rules' own:
+    `size_lo` / `size_hi` clamp every planned edge (metres, delivered), `soft_budget` replaces NG-4's
+    budget (and with `user_budget` it is the user's count: it may coarsen below the floor, said),
+    `target_cells` refines toward the user's count, `first_layer` / `layer_stack` / `growth` set the
+    prism stack."""
     pts = np.asarray(wall_points, float)
     r = np.asarray(radius, float)
     areas = _point_areas(pts, np.asarray(wall_faces, np.int64))
@@ -109,13 +119,23 @@ def make_plan(*, wall_points: np.ndarray, wall_faces: np.ndarray, radius: np.nda
     notes: list[str] = []
 
     def sizes(n_across: float, scale: float = 1.0) -> np.ndarray:
-        return np.minimum(2.0 * r / (n_across * EDGE_PER_H), ceiling) * scale
+        h = np.minimum(2.0 * r / (n_across * EDGE_PER_H), ceiling) * scale
+        if size_hi is not None:
+            h = np.minimum(h, float(size_hi) / EDGE_PER_H)
+        if size_lo is not None:
+            h = np.maximum(h, float(size_lo) / EDGE_PER_H)
+        return h
 
     h = sizes(across)
     h_typ = _area_percentile(h, areas, 50.0)
     est = estimate_cells(volume, wall_area, h_typ, layers)
     scale = 1.0
-    soft = min(cell_limit, SOFT_BUDGET)
+    soft = min(cell_limit, SOFT_BUDGET if soft_budget is None else int(soft_budget))
+    # the count the plan may not pass: the cell limit, or the user's own (CFDREQ-3: it wins over the floor)
+    limit = min(cell_limit, soft) if user_budget else cell_limit
+    # the user's own size clamps can hold every size where it is: then no budget moves them (said by the caller)
+    clamped = size_lo is not None or size_hi is not None
+    held = False
     if est > soft:
         # NG-4: first toward the floor across the passage (to the soft budget), then - only past the
         # cell limit - everything together
@@ -123,46 +143,83 @@ def make_plan(*, wall_points: np.ndarray, wall_faces: np.ndarray, radius: np.nda
             if est <= soft or across <= CELLS_ACROSS_MIN:
                 break
             across = max(CELLS_ACROSS_MIN, across * (est / soft) ** (-1.0 / 3.0) / 1.01)
-            h = sizes(across)
+            h_was, h = h, sizes(across)
+            if clamped and np.array_equal(h, h_was):
+                held = True
+                break
             h_typ = _area_percentile(h, areas, 50.0)
             est = estimate_cells(volume, wall_area, h_typ, layers)
-        if est > cell_limit:
+        if est > limit:
             # the estimate is part volume (h^-3), part wall (h^-2): a few steps settle it
             for _ in range(8):
-                if est <= cell_limit:
+                if est <= limit:
                     break
-                scale *= (est / cell_limit) ** (1.0 / 3.0) * 1.01
-                h = sizes(across, scale)
+                scale *= (est / limit) ** (1.0 / 3.0) * 1.01
+                h_was, h = h, sizes(across, scale)
+                if clamped and np.array_equal(h, h_was):
+                    held = True
+                    break
                 h_typ = _area_percentile(h, areas, 50.0)
                 est = estimate_cells(volume, wall_area, h_typ, layers)
-            notes.append(f"the cell limit ({cell_limit:,}) coarsens the narrowest passages to "
-                         f"about {across / scale:.1f} cells across, under the {CELLS_ACROSS_MIN:g} "
-                         "the plan aims for")
+        if held:
+            pass
+        elif est > limit or scale != 1.0:
+            notes.append(f"{'your cell count' if limit < cell_limit else 'the cell limit'} ({limit:,}) "
+                         f"coarsens the narrowest passages to about {across / scale:.1f} cells across, "
+                         f"under the {CELLS_ACROSS_MIN:g} the plan aims for")
         else:
             notes.append(f"the plan's budget ({soft:,} cells) lowers it to {across:.1f} cells "
                          "across the local passage")
+    if target_cells and est < 0.9 * float(target_cells):
+        # the user's cell count above the plan's: finer across the passage until the estimate reaches it
+        goal = min(float(target_cells), float(cell_limit))
+        for _ in range(8):
+            if est >= 0.9 * goal:
+                break
+            across *= (goal / max(est, 1)) ** (1.0 / 3.0) * 1.01
+            h_was, h = h, sizes(across, scale)
+            if clamped and np.array_equal(h, h_was):
+                held = True
+                break
+            h_typ = _area_percentile(h, areas, 50.0)
+            est = estimate_cells(volume, wall_area, h_typ, layers)
+        if not held:
+            notes.append(f"your cell count ({int(target_cells):,}) refines it to {across:.1f} cells across the "
+                         "local passage")
     h_narrow = _area_percentile(h, areas, 5.0)
     h_min = float(np.min(h))
-    stack = LAYER_STACK * h_narrow
-    first = stack / sum(GROWTH ** k for k in range(max(layers, 1))) if layers > 0 else 0.0
+    geo = sum(float(growth) ** k for k in range(max(layers, 1)))
+    stack = LAYER_STACK * h_narrow if layer_stack is None else float(layer_stack)
+    if first_layer is not None and layers > 0:
+        first = float(first_layer)
+        if layer_stack is None:
+            stack = first * geo
+    else:
+        first = stack / geo if layers > 0 else 0.0
     maxh = float(min(ceiling * scale, np.max(h)))
+    if size_lo is not None:
+        maxh = max(maxh, float(size_lo) / EDGE_PER_H)
+    if size_hi is not None:
+        maxh = min(maxh, float(size_hi) / EDGE_PER_H)
     rungs = []
     if layers > 0:
         rungs.append({"name": "planned layers", "maxh": maxh, "layers": layers, "first_layer": first,
-                      "growth": GROWTH})
+                      "growth": growth})
         # Netgen's growth limiter stops a stack it finds running into another part of the wall; the
         # second rung is thinner and lets the layers grow unlimited (the checkMesh after it judges)
         rungs.append({"name": "layers half as thick", "maxh": maxh, "layers": layers,
-                      "first_layer": first / 2.0, "growth": GROWTH, "limit_growth": False})
+                      "first_layer": first / 2.0, "growth": growth, "limit_growth": False})
     rungs.append({"name": "no layers", "maxh": maxh, "layers": 0})
     return {
         "rule": "NG-1..NG-5", "cells_across": round(across, 2), "scale": round(scale, 4),
         "ceiling_m": ceiling, "h_typ_m": h_typ, "h_narrow_m": h_narrow, "h_min_m": h_min,
         "maxh_m": maxh, "min_edge": h_min * 0.05, "grading": GRADING,
-        "layers": layers, "first_layer_m": first, "growth": GROWTH, "layer_stack_m": stack,
+        "layers": layers, "first_layer_m": first, "growth": growth, "layer_stack_m": stack,
         "walls": walls, "estimated_cells": est, "cell_limit": cell_limit, "notes": notes,
         "volume_m3": volume, "wall_area_m2": wall_area, "rungs": rungs,
         "sizes": h,
+        # the user's size clamps held every size against a budget or a count (the caller says so)
+        **({"sizes_held": held} if clamped else {}),
     }
 
 
