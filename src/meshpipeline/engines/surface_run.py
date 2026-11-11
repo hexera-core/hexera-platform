@@ -4,7 +4,12 @@
 # the sizes (engines/shell_plan), the mesher and its clean-up (engines/gmsh/shell_adapter), the solver files
 # (engines/shell_writers), the viewer mesh and the run's record (engines/shell_run's shell_run.json), the delivery
 # (engines/shell_delivery). The wall thickness is the user's (contracts/shell_thickness); with none given the mesh is
-# still delivered, sized as for a thin sheet, with the thickness plainly not set in every file.
+# still delivered, sized as for a thin sheet, with the thickness plainly not set in every file. The surface is
+# cleaned by rule before it is meshed (SURF-8..10, cad/surface_clean: small gaps stitched, a face written twice left
+# out, pinholes filled) and the result says what was done; a stitch tolerance or a hole size in the user's notes
+# (contracts/surface_stitch) is honoured. The user's element count (SHMESH-23) and the mesh requirements read from
+# their notes (NOTE-7..9, engines/mesh_requirements when that reader is in the build) reach the shell mesher here
+# exactly as they reach it for a mid-surface shell.
 # Boundaries: deterministic, no model call, no store. Run in a process of its own (main()): OpenCASCADE and gmsh can
 # crash, and a crash must cost the run a plain reason, never a hang. Writes only into the workspace it is given. Never
 # raises from run(). A file that is not a surface (a solid, faces that close, a closed skin with a gap) is left alone:
@@ -73,8 +78,8 @@ def words(rec: dict) -> str:
     sheets = int(s.get("sheets") or 1)
     if sheets > 1:
         said.append(f"The file's {sheets} separate sheets are {sheets} parts, each with its own property.")
-    if rec.get("open_edges"):
-        said.append(f"The surfaces do not meet at {rec['open_edges']} edge(s): the shell has gaps there.")
+    said += clean_words(s.get("cleaned"))
+    said += gap_words(int(rec.get("open_edges") or 0), s.get("cleaned"))
     if s.get("others_mm"):
         said.append("Your notes also name " + ", ".join(_mm(v) for v in s["others_mm"]) + ": one thickness is used for "
                     "the whole file; change a part's on its own property line.")
@@ -89,6 +94,136 @@ def words(rec: dict) -> str:
     if counted:
         said.append(counted)
     return " ".join(said)
+
+
+def _gap(mm: float) -> str:
+    """A gap as it is said: "0.12 mm", "0.004 mm"."""
+    return f"{float(mm):.2g} mm"
+
+
+def clean_words(cleaned: dict | None) -> list[str]:
+    """SURF-8..10: WHAT THE CLEAN-UP DID, one short sentence each, nothing when it did nothing."""
+    c = cleaned or {}
+    out = []
+    if c.get("duplicates"):
+        n = int(c["duplicates"])
+        out.append(f"{_count(n, 'face was', 'faces were')} in the file twice: the second copy of {'it' if n == 1 else 'each'} is left out.")
+    if c.get("closed_places"):
+        # SURF-8: said in PLACES, the count the record and gap_words use: places before - closed = places after.
+        # (Joins inside a place that stays open - part of its length - are not a place closed.)
+        asked = (f", as your notes asked (up to {_gap(c['limit_mm'])})"
+                 if c.get("limit_from") == "notes" and not c.get("fell_back") else "")
+        widest = float(c.get("closed_places_widest_mm") or 0.0)
+        out.append(f"Closed {_closed_of(int(c['closed_places']), int(c.get('places_before') or 0))} where "
+                   f"the surfaces did not meet{f', the widest {_gap(widest)}' if widest > 0 else ''}{asked}.")
+    if c.get("pinholes"):
+        asked = ", as your notes asked" if c.get("holes_from") == "notes" else ""
+        k = int(c["pinholes"])
+        what = _count(k, "hole") if c.get("holes_from") == "notes" else _count(k, "pinhole")
+        out.append(f"Filled {what}, {'' if k == 1 else 'the largest '}{_gap(c.get('pinhole_widest_mm') or 0.0)} "
+                   f"across{asked}.")
+    if c.get("fell_back"):
+        out.append(f"Stitching up to {_gap(c['limit_mm'])}, as your notes asked, would have left more open than the "
+                   f"usual {_gap(c.get('rule_mm') or 0.0)}, so the usual result is kept.")
+    if c.get("stitch") == "off":
+        out.append("Nothing was stitched, as your notes asked.")
+    return out
+
+
+def gap_words(n: int, cleaned: dict | None) -> list[str]:
+    """SURF-2 / SURF-8: WHERE THE SURFACES DO NOT MEET, by the one count the record holds (cad/surface_model.
+    open_places: n places in all, the same whatever tolerance was asked). Those within what was stitched are said
+    with why they were left, and no tolerance is offered for them (a larger one would not close them either); those
+    wider are said with a tolerance only when it was tried on this file and closed them."""
+    if not n:
+        return []
+    c = cleaned or {}
+    if "left_open" not in c:
+        return [f"The surfaces do not meet at {_count(n, 'place')}: the shell has gaps there."]
+    out = []
+    left, wide = int(c.get("left_open") or 0), int(c.get("wider_gaps") or 0)
+    if c.get("stitch") == "off" or c.get("applied_mm") is None:
+        return [f"The surfaces do not meet at {_count(n, 'place')}: the shell has gaps there (the widest "
+                f"{_gap(max(float(c.get('left_widest_mm') or 0.0), float(c.get('wider_widest_mm') or 0.0)))})."]
+    applied = float(c["applied_mm"])
+    out.append(f"The surfaces do not meet at {_count(n, 'place')}: the shell has gaps there.")
+    # every sentence stands alone: it names what was stitched, and its counts add up to the n above
+    if left:
+        said = (f"At {_of(left, n)}, the gap is narrower than the {_gap(applied)} stitched here (the widest "
+                f"{_gap(float(c.get('left_widest_mm') or 0.0))}) but stitching does not join "
+                f"{'it' if left == 1 else 'them'}")
+        said += f", because {c['refused']}." if c.get("refused") else ": an edge lies over its neighbour's face, or a corner is off its neighbour's corner."
+        out.append(said)
+    if wide:
+        lo, hi = float(c.get("wider_narrowest_mm") or 0.0), float(c.get("wider_widest_mm") or 0.0)
+        span = _gap(hi) if abs(hi - lo) <= 1e-9 * max(hi, 1.0) else f"{_gap(lo)[:-3]} to {_gap(hi)}"
+        said = (f"At {_of(wide, n)}, the surfaces run side by side {span} apart, wider than the {_gap(applied)} "
+                "stitched here.")
+        if c.get("advice_mm"):
+            said += f' If they should meet, add to your notes: "stitch gaps up to {float(c["advice_mm"]):g} mm".'
+        else:
+            said += f" Stitching does not close {'it' if wide == 1 else 'them'} cleanly, so {'it is' if wide == 1 else 'they are'} left as drawn."
+        out.append(said)
+    return out
+
+
+def _closed_of(k: int, n: int) -> str:
+    """ "the 1 place", "both places", "all 3 places", "2 of the 5 places"."""
+    if n <= 1:
+        return "the 1 place"
+    if k >= n:
+        return "both places" if n == 2 else f"all {n} places"
+    return f"{k} of the {n} places"
+
+
+def _count(k: int, noun: str, nouns: str | None = None) -> str:
+    """ "1 place", "3 places" ("1 face was", "2 faces were" when the plural is given)."""
+    return f"{k} {noun}" if k == 1 else f"{k} {nouns or noun + 's'}"
+
+
+def _of(k: int, n: int) -> str:
+    """ "that place", "both places", "all 3 places", "2 of these 4 places"."""
+    if n == 1:
+        return "that place"
+    if k == n:
+        return "both places" if n == 2 else f"all {n} places"
+    return f"{k} of these {n} places"
+
+
+def stitch_for(state):
+    """SURF-8 / SURF-10: what the user's words say about the clean-up (contracts/surface_stitch): a stitch tolerance,
+    "do not stitch", a hole size - the latest word standing, a note over the intake's summary."""
+    from meshpipeline.contracts import shell_thickness as st
+    from meshpipeline.contracts import surface_stitch as ss
+
+    return ss.read(st.texts_of(state))
+
+
+def requirements_in(workspace: Path | str) -> dict | None:
+    """NOTE-7..9: the mesh requirements the FEA driver read from the user's notes and left in the workspace (a global
+    size, edge lengths, quality limits, the element kind), for the shell mesher. None when nothing was asked - or
+    when the notes' requirements reader (engines/mesh_requirements) is not in this build."""
+    import importlib
+
+    try:
+        MR = importlib.import_module("meshpipeline.engines.mesh_requirements")
+    except ImportError:
+        return None
+    try:
+        got = MR.requirements_of(MR.read(workspace))
+        return got if isinstance(got, dict) else None
+    except Exception as exc:  # noqa: BLE001 - no requirements read is no requirements
+        logger.warning("surface run: the notes' mesh requirements were not read (%s)", type(exc).__name__)
+        return None
+
+
+def _mesh(out: Path, *, mm_per_unit: float, target: dict | None, requirements: dict | None):
+    """The shell mesher on the record in `out`, with the user's count and (when given) their notes' requirements."""
+    from meshpipeline.engines.gmsh import shell_adapter as sa
+
+    # the requirements keyword exists where the notes' reader is built in (PR #435); with none, the call is as before
+    more: dict = {"requirements": requirements} if requirements else {}
+    return sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, **more)
 
 
 def deck_notes(thickness_mm: float | None) -> list[str]:
@@ -117,11 +252,14 @@ def sizing_wall(size_mm: float) -> float:
 
 def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thickness_mm: float | None = None,
         source: str = "", target: dict | None = None, said_shell: bool = False, others_mm: list | None = None,
-        unread: str = "") -> dict:
+        unread: str = "", stitch: bool = True, sew_mm: float | None = None, holes_mm: float | None = None,
+        requirements: dict | None = None) -> dict:
     """Read `step` (coordinates `mm_per_unit` mm each); when it is a surface, sew it, mesh it as a shell and write
     every file a shell run writes into `workspace`. Returns the run's record, shell_run.json's shape plus "surface":
     {"kind", "why", "thickness_mm", "thickness_set", "sizing_wall_mm", "sheets", "faces", "open_share", ...}.
-    `thickness_mm`: the user's (None: not given); `said_shell`: their words asked for a shell (SURF-1)."""
+    `thickness_mm`: the user's (None: not given); `said_shell`: their words asked for a shell (SURF-1). `stitch`
+    False, `sew_mm`, `holes_mm`: what their notes say of the clean-up (SURF-8, SURF-10). `target`: the element count
+    they asked for (SHMESH-23); `requirements`: the mesh requirements read from their notes (NOTE-7..9)."""
     import numpy as np
 
     from meshpipeline.cad import midsurface as ms
@@ -129,7 +267,6 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
     from meshpipeline.cad.scout import read_cad
     from meshpipeline.engines import shell_run
     from meshpipeline.engines import shell_writers as sw
-    from meshpipeline.engines.gmsh import shell_adapter as sa
 
     ws = Path(workspace)
     started = time.time()
@@ -137,14 +274,15 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
     try:
         wall = float(thickness_mm or 0.0)
         given = wall > 0
-        reading, sewn = sm.read(read_cad(Path(step)), mm_per_unit=mm_per_unit, said_shell=said_shell or given)
+        reading, sewn = sm.read(read_cad(Path(step)), mm_per_unit=mm_per_unit, said_shell=said_shell or given,
+                                stitch=stitch, sew_mm=sew_mm, holes_mm=holes_mm)
         (ws / READING).write_text(json.dumps(reading, indent=1, sort_keys=True, default=float))
         rec["surface"] = {"kind": reading["kind"], "why": reading.get("why"), "faces": reading.get("faces"),
                           "open_share": reading.get("open_share"), "sheets": len(reading.get("sheets") or []),
                           "sew_tolerance_mm": reading.get("sew_tolerance_mm"),
                           "thickness_mm": wall if given else None, "thickness_set": given,
                           "others_mm": [float(v) for v in others_mm or []] if given else [],
-                          "unread": str(unread or "")}
+                          "unread": str(unread or ""), "cleaned": reading.get("cleaned")}
         if reading["kind"] != "surface" or sewn is None:
             rec["why"] = f"the file is not a surface part ({reading.get('why')})"
         else:
@@ -164,7 +302,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
                        open_edges=int(sum(int(r.get("open_edges") or 0) for r in record["sewn"])),
                        free_edges=int(sum(s["free_edges"] for s in sheets)))
             t1 = time.time()
-            mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target)
+            mesh, applied = _mesh(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
             if not given and _past(applied):
                 # SURF-5: sized again for a thicker sheet while elements are left past Nastran's own limits
                 best = (_past(applied), mesh, applied, record, walls)
@@ -174,7 +312,8 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
                                                     given=dict.fromkeys(walls_k, False))
                     sm.write(record_k, surface_k, out)
                     try:
-                        mesh_k, applied_k = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target)
+                        mesh_k, applied_k = _mesh(out, mm_per_unit=mm_per_unit, target=target,
+                                                  requirements=requirements)
                     except ValueError:
                         continue
                     if _past(applied_k) < best[0]:
@@ -204,6 +343,11 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
                        exports={k: v for k, v in exports.items() if isinstance(v, dict)})
             if isinstance(applied, dict) and isinstance(applied.get("target"), dict):
                 rec["target"] = applied["target"]
+            if isinstance(applied, dict) and requirements:
+                # NOTE-8: what was asked against what was delivered, as the shell run keeps it
+                for key in ("requirements", "sizing", "count_set_aside"):
+                    if applied.get(key) is not None:
+                        rec[key] = applied[key]
             if not rec["made"]:
                 rec["why"] = "the solver files could not all be written"
             for name in (ms.RECORD_FILE, ms.SURFACE_FILE):
@@ -277,9 +421,11 @@ async def surface_pass(ws: Path, state, *, job_id: str, run=None, target: dict |
     if step is None:
         return None
     got = thickness_for(state)
+    sewing = stitch_for(state)
     args = {"thickness_mm": got.mm, "others_mm": list(got.others_mm), "unread": got.unread,
             "said_shell": said_shell(state), "target": {k: target[k] for k in ("elements", "mode", "low", "high")
-                                                         if k in target} if target and target.get("elements") else None}
+                                                         if k in target} if target and target.get("elements") else None,
+            "stitch": not sewing.off, "sew_mm": sewing.mm, "holes_mm": sewing.holes_mm}
     limit = float(RUN_LIMIT_S)
     if left_s is not None:
         limit = max(120.0, min(limit, 0.8 * left_s))
@@ -313,6 +459,7 @@ async def surface_pass(ws: Path, state, *, job_id: str, run=None, target: dict |
                                  if s.get("thickness_mm") else
                                  "No thickness was given: the mesh is sized as for a thin sheet and no thickness is "
                                  "written (SURF-5).")},
+                      *_clean_cites(s.get("cleaned"), sewing),
                       {"stage": GATE, "decided": "shell mesh" if rec.get("made") else "no shell mesh",
                        "value": rec.get("elements"), "rule": "SURF-3",
                        "inputs": {k: rec.get(k) for k in ("open_edges", "free_edges", "seconds", "why", "target")},
@@ -320,9 +467,26 @@ async def surface_pass(ws: Path, state, *, job_id: str, run=None, target: dict |
     return rec
 
 
+def _clean_cites(cleaned: dict | None, sewing) -> list[dict]:
+    """SURF-8..10: the clean-up in the decision record - one entry, only when it did or was asked something."""
+    c = cleaned or {}
+    did = clean_words(c)
+    if not did and not c.get("left_open") and not getattr(sewing, "given", False):
+        return []
+    return [{"stage": GATE, "decided": "surface cleaned", "value": int(c.get("closed_places") or 0), "rule": "SURF-8",
+             "inputs": {"limit_mm": c.get("limit_mm"), "limit_from": c.get("limit_from"), "rung_mm": c.get("rung_mm"),
+                        "places_before": c.get("places_before"), "joined_edge_pairs": c.get("closed_edges"),
+                        "closed_widest_mm": c.get("closed_widest_mm"), "duplicates": c.get("duplicates"),
+                        "pinholes": c.get("pinholes"), "left_open": c.get("left_open"),
+                        "left_widest_mm": c.get("left_widest_mm"), "refused": c.get("refused"),
+                        "quote": getattr(sewing, "quote", ""), "holes_quote": getattr(sewing, "holes_quote", "")},
+             "words": " ".join(did) or "Nothing in the surface needed closing."}]
+
+
 def main(argv: list[str] | None = None) -> int:
     """python -m meshpipeline.engines.surface_run <workspace> <staged file> <mm per unit | staged> [<JSON: thickness_mm,
-    others_mm, unread, said_shell, target>]"""
+    others_mm, unread, said_shell, target, stitch, sew_mm, holes_mm>]
+    (the mesh requirements read from the notes are the workspace's own file, as for engines/shell_run)"""
     args = list(sys.argv[1:] if argv is None else argv)
     more: dict = {}
     if len(args) == 4:
@@ -349,10 +513,13 @@ def main(argv: list[str] | None = None) -> int:
     else:
         mm = float(args[2])
     t = more.get("thickness_mm")
+    sew_mm, holes_mm = more.get("sew_mm"), more.get("holes_mm")
     run(ws, args[1], mm_per_unit=mm, thickness_mm=float(t) if t else None, source=Path(args[1]).name,
         target=more.get("target") if isinstance(more.get("target"), dict) else None,
         said_shell=bool(more.get("said_shell")), others_mm=list(more.get("others_mm") or []),
-        unread=str(more.get("unread") or ""))
+        unread=str(more.get("unread") or ""), stitch=more.get("stitch") is not False,
+        sew_mm=float(sew_mm) if sew_mm else None, holes_mm=float(holes_mm) if holes_mm else None,
+        requirements=requirements_in(ws))
     return 0
 
 
@@ -360,5 +527,6 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["GATE", "NO_THICKNESS", "NO_THICKNESS_YET", "READING", "SIZING_AGAIN", "SIZING_DIVISIONS", "deck_notes", "is_surface",
-           "line", "main", "read", "run", "said_shell", "sizing_wall", "surface_pass", "thickness_for", "words"]
+__all__ = ["GATE", "NO_THICKNESS", "NO_THICKNESS_YET", "READING", "SIZING_AGAIN", "SIZING_DIVISIONS", "clean_words",
+           "deck_notes", "gap_words", "is_surface", "line", "main", "read", "requirements_in", "run", "said_shell",
+           "sizing_wall", "stitch_for", "surface_pass", "thickness_for", "words"]

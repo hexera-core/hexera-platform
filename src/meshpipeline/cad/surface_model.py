@@ -160,12 +160,13 @@ class Sewn:
         self.faces, self.names, self.sheets, self.tol, self.diag = faces, names, sheets, tol, diag
 
 
-def sew(shape, *, junctions: bool = False) -> Sewn | None:
+def sew(shape, *, junctions: bool = False, leave_out: frozenset[int] = frozenset()) -> Sewn | None:
     """SURF-2: the file's faces sewn as the clean check sews them (cad/validity_brep: BRepBuilderAPI_Sewing at
     SEW_TOLERANCE of the diagonal - edges that meet within it become one edge, every other edge stays free) and
     grouped into sheets. With `junctions`, an edge three or more faces meet along (a rib on a plate, a T) is sewn
-    into one edge too - the same tolerance, the sewing's own non-manifold mode. None when the file holds no face
-    with a size."""
+    into one edge too - the same tolerance, the sewing's own non-manifold mode. `leave_out`: the faces (their
+    place in the file, from 0) that are another face written twice (SURF-9); the others keep their own numbers.
+    None when the file holds no face with a size."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
     from OCP.TopAbs import TopAbs_FACE
     from OCP.TopExp import TopExp
@@ -184,7 +185,7 @@ def sew(shape, *, junctions: bool = False) -> Sewn | None:
         return None
     tol = SEW_TOLERANCE * diag
     sewing = BRepBuilderAPI_Sewing(tol, True, True, True, bool(junctions))
-    sewing.Add(shape)
+    sewing.Add(ms._compound([f for k, f in enumerate(before) if k not in leave_out]) if leave_out else shape)
     sewing.Perform()
     sewn = sewing.SewedShape()
     if sewn is None or sewn.IsNull():
@@ -194,6 +195,8 @@ def sew(shape, *, junctions: bool = False) -> Sewn | None:
     faces, names = [], []
     seen: set[int] = set()
     for k, f in enumerate(before):
+        if k in leave_out:
+            continue
         g = sewing.ModifiedSubShape(f)
         i = index.FindIndex(g) if g is not None and not g.IsNull() else 0
         if i <= 0 or i in seen:
@@ -278,10 +281,11 @@ def imprint(sewn: Sewn) -> Sewn | None:
         return None
 
 
-def _unmet(free: list, own: list[int], faces: list, boxes: list, reach: float) -> list[np.ndarray | None]:
+def _unmet(free: list, own: list[int], faces: list, boxes: list, reach: float,
+           far: list[float] | None = None) -> list[np.ndarray | None]:
     """SURF-2: for each free edge, its middle when it lies along another face (every sample point within `reach` of
     a face that is not the edge's own: a seam the sewing did not close, a rib that does not reach its plate), else
-    None."""
+    None. `far` (when given) is filled with how far each such edge lies from that face (the farthest sample)."""
     from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 
     from meshpipeline.cad import midsurface as ms
@@ -297,22 +301,27 @@ def _unmet(free: list, own: list[int], faces: list, boxes: list, reach: float) -
             lo, hi = boxes[k]
             if any(np.any(p < lo - reach) or np.any(p > hi + reach) for p in probe):
                 continue
-            near = True
+            near, widest = True, 0.0
             for p in probe:
                 d = BRepExtrema_DistShapeShape(ms._vertex(p), f)
                 if not d.IsDone() or d.Value() > reach:
                     near = False
                     break
+                widest = max(widest, float(d.Value()))
             if near:
                 found = probe[1]
+                if far is not None:
+                    far.append(widest)
                 break
         out.append(found)
     return out
 
 
-def measure(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
+def measure(sewn: Sewn, *, mm_per_unit: float, reach: float | None = None) -> list[dict]:
     """Each sheet of the sewn file, measured (SURF-1, SURF-2): its area and size, its free edges chained into loops
-    with the area each spans, its open share, and the edges that do not meet their neighbour."""
+    with the area each spans, its open share, and the edges that do not meet their neighbour. `reach` (the shape's
+    own units): how near a neighbouring face an edge must lie to count as not meeting it - NEAR_SEW sew tolerances
+    unless a wider stitch tolerance was stated (SURF-8)."""
     from OCP.BRep import BRep_Tool
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
     from OCP.TopExp import TopExp
@@ -352,13 +361,14 @@ def measure(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
         else:
             junction[s] = junction.get(s, 0) + 1
     boxes = [ms._box(f) for f in sewn.faces]
-    reach = NEAR_SEW * sewn.tol
+    reach = max(NEAR_SEW * sewn.tol, float(reach or 0.0))
     areas = [sum(ms._area(sewn.faces[k]) for k in ks) for ks in sewn.sheets]
     out = []
     for s, ks in enumerate(sewn.sheets):
         area = areas[s]
         free = free_of.get(s, [])
-        unmet = _unmet(free, own_of.get(s, []), sewn.faces, boxes, reach) if free else []
+        far: list[float] = []
+        unmet = _unmet(free, own_of.get(s, []), sewn.faces, boxes, reach, far) if free else []
         rows: list[dict] = []
         spanned = 0.0
         for lp in _loops(free, vmap):
@@ -384,8 +394,226 @@ def measure(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
                     "loops": rows[:MAX_PLACES], "loop_count": len(rows),
                     "open_share": _r(spanned / area_mm2) if area_mm2 > 0 else 0.0,
                     "unmet_edges": len(places), "unmet_at_mm": [[_r(c * mm) for c in p] for p in places[:MAX_PLACES]],
+                    "unmet_widest_mm": _r(max(far) * mm) if far else 0.0,
                     "closed": not free})
     return out
+
+
+#: SURF-8: AN OPEN PLACE, one definition whatever tolerance was asked: a run of free edges (joined end to end) each of
+#: which lies along a face that is not its own within OPEN_REACH sew tolerances (1/100 of the part's size). Every
+#: other free edge is the sheet's own rim. Measured the same way after any clean-up, so a stated tolerance and the
+#: rule's can be compared, and the user and the record see the same count.
+OPEN_REACH = 100.0
+
+
+#: SURF-8: an edge runs ALONGSIDE a face when it is parallel to it (its direction within ALONG_DEG of the face's
+#: surface where it is nearest) and does not merely leave a corner it shares with that face (distances growing from
+#: the shared corner, as two rim edges meeting at a bend or running on from one another do)
+ALONG_DEG = 15.0
+FROM_CORNER = 2.0
+#: ... but an edge whose distance grows under this much per unit of its length (about 6 degrees) is a crack, not a rim
+WEDGE_SLOPE = 0.1
+#: ... and a face bending by up to this much across a gap is the same sheet continued (the edge runs alongside it)
+SAME_SHEET_DEG = 45.0
+
+
+def _same_sheet(sas, srf, q, n) -> bool:
+    """SURF-8: whether the edge's own face at probe q faces within SAME_SHEET_DEG of the neighbour's normal n - the
+    same sheet continued across the gap, bending on the way (a bead's flank, a stamped curve): the edge lies in its own
+    face, so it runs alongside a neighbour that only bends away from that face. (11 Nov: a 1 mm gap across a curved
+    stamped panel's slanted cut was not counted - the neighbour's surface 1 mm across a bead turned 20 degrees.)"""
+    from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.gp import gp_Pnt
+
+    if sas is None:
+        return False
+    uv = sas.ValueOfUV(gp_Pnt(*map(float, q)), 1e-7)
+    pr = BRepLProp_SLProps(srf, uv.X(), uv.Y(), 1, 1e-9)
+    if not pr.IsNormalDefined():
+        return False
+    m = pr.Normal()
+    return abs(m.X() * n.X() + m.Y() * n.Y() + m.Z() * n.Z()) >= np.cos(np.radians(SAME_SHEET_DEG))
+
+
+def _alongside(edge, probe: list, dists: list, feet: list, face, tol: float, own=None) -> bool:
+    """SURF-8: whether a free edge lying within reach of `face` (its probe points at `dists` from it, nearest at
+    `feet`) runs alongside it - a gap, an overlap, an edge stopping short - rather than meeting it at a corner.
+    `own`: the edge's own face."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+    from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.gp import gp_Pnt, gp_Vec
+    from OCP.ShapeAnalysis import ShapeAnalysis_Surface
+    from OCP.TopAbs import TopAbs_REVERSED, TopAbs_VERTEX
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad import midsurface as ms
+
+    # 1. parallel: the edge's direction lies in the face's tangent plane where it is nearest
+    c = BRepAdaptor_Curve(edge)
+    t0, t1 = c.FirstParameter(), c.LastParameter()
+    sas = ShapeAnalysis_Surface(BRep_Tool.Surface_s(face))
+    srf = BRepAdaptor_Surface(face, False)
+    # the probes are taken in the edge's own direction (_edge_points): a reversed edge's run from its curve's end
+    rev = edge.Orientation() == TopAbs_REVERSED
+    own_sas = ShapeAnalysis_Surface(BRep_Tool.Surface_s(own)) if own is not None else None
+    own_srf = BRepAdaptor_Surface(own, False) if own is not None else None
+    for j, (q, foot) in enumerate(zip(probe, feet, strict=True)):
+        t = (t1 - (t1 - t0) * NEAR_SAMPLES[j]) if rev else (t0 + (t1 - t0) * NEAR_SAMPLES[j])
+        p, v = gp_Pnt(), gp_Vec()
+        c.D1(t, p, v)
+        if v.Magnitude() < 1e-14:
+            continue
+        uv = sas.ValueOfUV(gp_Pnt(*map(float, foot)), 1e-7)
+        pr = BRepLProp_SLProps(srf, uv.X(), uv.Y(), 1, 1e-9)
+        if not pr.IsNormalDefined():
+            continue
+        n = pr.Normal()
+        sin = abs(v.X() * n.X() + v.Y() * n.Y() + v.Z() * n.Z()) / v.Magnitude()
+        if sin > np.sin(np.radians(ALONG_DEG)) and not _same_sheet(own_sas, own_srf, q, n):
+            return False
+    # 2. not leaving a shared corner: the edge shares a vertex with the face and the distance grows from it
+    near_ends = []
+    em = ms._map(edge, TopAbs_VERTEX)
+    fv = ms._map(face, TopAbs_VERTEX)
+    fpts = []
+    for k in range(1, fv.Extent() + 1):
+        w = BRep_Tool.Pnt_s(TopoDS.Vertex_s(fv.FindKey(k)))
+        fpts.append(np.array([w.X(), w.Y(), w.Z()]))
+    for k in range(1, em.Extent() + 1):
+        q = BRep_Tool.Pnt_s(TopoDS.Vertex_s(em.FindKey(k)))
+        qa = np.array([q.X(), q.Y(), q.Z()])
+        if any(float(np.linalg.norm(qa - w)) <= 2.0 * tol for w in fpts):
+            near_ends.append(qa)
+    if near_ends and len(dists) == len(probe) and min(dists) > 0:
+        lo, hi = min(dists), max(dists)
+        # ... unless it opens from that corner as a crack does, at a slant of a few degrees: two edges meant to be one,
+        # joined at one end (a face slid along its neighbour, partly stitched) - a sheet's own rim leaves its
+        # neighbour's corner at the rim's own angle, its distance growing about as fast as the edge runs (11 Nov: two
+        # matrix files left a crack 0.03 mm wide along 6 mm open and unsaid)
+        slope = (hi - lo) / max(0.5 * ms._length(edge), 1e-300)
+        if hi >= FROM_CORNER * lo and slope > WEDGE_SLOPE:
+            return False
+    return True
+
+
+def open_places(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
+    """SURF-8: the places where the surfaces do not meet (OPEN_REACH): [{"sheet", "edges", "length_mm", "gap_mm",
+    "at_mm"}], the widest gap first. A place's gap is how far its longest edge lies from the face beside it. One
+    place is one gap: the free edges joined end to end, and the two sides of it (face A's edges along face B and
+    B's along A) - so an edge the sewing cut into pieces, or a gap seen from both sides, is counted once. Its length
+    is the free edge on both sides."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
+
+    from meshpipeline.cad import midsurface as ms
+
+    mm = float(mm_per_unit)
+    reach = OPEN_REACH * sewn.tol
+    comp = ms._compound(sewn.faces)
+    vmap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(comp, TopAbs_VERTEX, vmap)
+    fmap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(comp, TopAbs_FACE, fmap)
+    place = {fmap.FindIndex(f): k for k, f in enumerate(sewn.faces)}
+    owners = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(comp, TopAbs_EDGE, TopAbs_FACE, owners)
+    sheet_of = {k: i for i, ks in enumerate(sewn.sheets) for k in ks}
+    boxes = [ms._box(f) for f in sewn.faces]
+    found: list = []
+    for i in range(1, owners.Extent() + 1):
+        e = TopoDS.Edge_s(owners.FindKey(i))
+        if owners.FindFromIndex(i).Extent() != 1 or BRep_Tool.Degenerated_s(e):
+            continue
+        mine = place[fmap.FindIndex(owners.FindFromIndex(i).First())]
+        pts = _edge_points(e)
+        probe = [pts[int(round(t * (len(pts) - 1)))] for t in NEAR_SAMPLES]
+        best, near = None, -1
+        for k, f in enumerate(sewn.faces):
+            if k == mine:
+                continue
+            lo, hi = boxes[k]
+            if any(np.any(q < lo - reach) or np.any(q > hi + reach) for q in probe):
+                continue
+            far, dists, feet = 0.0, [], []
+            for q in probe:
+                d = BRepExtrema_DistShapeShape(ms._vertex(q), f)
+                dq = float(d.Value()) if d.IsDone() and d.NbSolution() else float("inf")
+                far = max(far, dq)
+                if far > reach:
+                    break
+                dists.append(dq)
+                pt = d.PointOnShape2(1)
+                feet.append(np.array([pt.X(), pt.Y(), pt.Z()]))
+            if far > reach or not _alongside(e, probe, dists, feet, f, sewn.tol, sewn.faces[mine]):
+                continue
+            if best is None or far < best:
+                best, near = far, k
+        if best is not None:
+            found.append((e, mine, best, near))
+    if not found:
+        return []
+    # the edges joined end to end through the vertices they share are one place
+    parent = list(range(len(found)))
+
+    def root(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    at_vertex: dict[int, list[int]] = {}
+    # both sides of one gap are one place: the edges of face A lying along face B and those of B lying along A
+    by_pair: dict[tuple[int, int], list[int]] = {}
+    for n, (_e, k, _g, near) in enumerate(found):
+        by_pair.setdefault((min(k, near), max(k, near)), []).append(n)
+    for ns in by_pair.values():
+        for n in ns[1:]:
+            a, b = root(ns[0]), root(n)
+            if a != b:
+                parent[max(a, b)] = min(a, b)
+    for n, (e, _k, _g, _near) in enumerate(found):
+        em = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(e, TopAbs_VERTEX, em)
+        for j in range(1, em.Extent() + 1):
+            at_vertex.setdefault(vmap.FindIndex(em.FindKey(j)), []).append(n)
+    for ns in at_vertex.values():
+        for n in ns[1:]:
+            a, b = root(ns[0]), root(n)
+            if a != b:
+                parent[max(a, b)] = min(a, b)
+    groups: dict[int, list[int]] = {}
+    for n in range(len(found)):
+        groups.setdefault(root(n), []).append(n)
+    out: list[dict] = []
+    for ns in groups.values():
+        es = [found[n][0] for n in ns]
+        mid = _edge_points(max(es, key=ms._length), 3)[1]
+        out.append({"sheet": int(sheet_of[found[ns[0]][1]]), "edges": len(ns),
+                    "pairs": sorted({(min(found[n][1], found[n][3]), max(found[n][1], found[n][3])) for n in ns}),
+                    "length_mm": _r(sum(ms._length(e) for e in es) * mm),
+                    # the place's gap is the gap along its longest edge: a stub at a corner (as long as the gap is
+                    # wide) does not make a 3-tolerance seam read as a wider one
+                    "gap_mm": _r(found[max(ns, key=lambda n: (ms._length(found[n][0]), -n))][2] * mm),
+                    "at_mm": [_r(c * mm) for c in mid]})
+    out.sort(key=lambda r: (-float(r["gap_mm"]), list(r["at_mm"])))
+    return out
+
+
+def with_places(sheets: list[dict], places: list[dict]) -> list[dict]:
+    """The sheets with the open places written in (SURF-8's one definition): unmet_places, unmet_at_mm,
+    unmet_widest_mm, unmet_length_mm; unmet_edges stays the count of free edges in them."""
+    for i, s in enumerate(sheets):
+        mine = [p for p in places if p["sheet"] == i]
+        s.update(unmet_places=len(mine), unmet_edges=sum(int(p["edges"]) for p in mine),
+                 unmet_at_mm=[p["at_mm"] for p in mine][:MAX_PLACES],
+                 unmet_widest_mm=max([float(p["gap_mm"]) for p in mine] + [0.0]),
+                 unmet_length_mm=_r(sum(float(p["length_mm"]) for p in mine)))
+    return sheets
 
 
 def has_solid(shape) -> bool:
@@ -417,12 +645,33 @@ def classify(sheets: list[dict], *, said_shell: bool = False) -> tuple[str, str,
                    "rather than the edge of a sheet", _r(share))
 
 
-def read(shape, *, mm_per_unit: float, said_shell: bool = False) -> tuple[dict, Sewn | None]:
+def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = True,
+         sew_mm: float | None = None, holes_mm: float | None = None) -> tuple[dict, Sewn | None]:
     """SURF-1: what kind of file this is, with the sheets as measured: (the reading, the sewn faces - None unless
-    the reading is "surface" or "gap")."""
+    the reading is "surface" or "gap"). A surface part is then cleaned (SURF-8..10, cad/surface_clean): a face written
+    twice is left out, the gaps between neighbouring faces are closed up the sewing ladder, pinholes are filled -
+    and the reading says what was done ("cleaned") and measures what is left. `stitch` False: the user said not
+    to; `sew_mm`: the stitch tolerance their notes state (None: the rule's); `holes_mm`: the size under which they
+    asked for holes to be filled (None: only pinholes no wider than the gaps being closed)."""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import surface_clean as sc
+    from meshpipeline.cad.validity_brep import SEW_TOLERANCE, _bbox
+
     if has_solid(shape):
         return {"kind": "solid", "why": "the file holds a solid", "sheets": []}, None
-    sewn = sew(shape)
+    # SURF-9: A FACE WRITTEN TWICE is left out before anything is sewn or judged (sewn in, it pairs its edges with
+    # its twin's and the two read as a closed pocket)
+    twice: list[int] = []
+    try:
+        drawn = ms._faces(shape)
+        lo, hi = _bbox(shape)
+        if len(drawn) > 1 and lo is not None:
+            _kept, twice = sc.without_duplicates(drawn, SEW_TOLERANCE * float(np.linalg.norm(hi - lo)))
+    except Exception as exc:  # noqa: BLE001 - the file as written
+        logger.info("surface: faces written twice were not looked for (%s)", type(exc).__name__)
+        twice = []
+    out = frozenset(twice)
+    sewn = sew(shape, leave_out=out)
     if sewn is None:
         return {"kind": "empty", "why": "the file holds no faces", "sheets": []}, None
     sheets = measure(sewn, mm_per_unit=mm_per_unit)
@@ -432,7 +681,7 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False) -> tuple[dict, 
         # SURF-2: EDGES LEFT LYING ALONG A NEIGHBOUR may be a junction - a rib's foot on the line two plate faces
         # share, three faces at one edge, which the plain sewing leaves apart (it joins two faces at an edge). Sewn
         # again with junctions allowed, and kept when fewer edges are left unmet and nothing closed
-        joined = sew(shape, junctions=True)
+        joined = sew(shape, junctions=True, leave_out=out)
         if joined is not None and len(joined.faces) == len(sewn.faces):
             again = measure(joined, mm_per_unit=mm_per_unit)
             if sum(int(s["unmet_edges"]) for s in again) < unmet and not any(s["closed"] for s in again):
@@ -446,9 +695,42 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False) -> tuple[dict, 
                 if sum(int(s["unmet_edges"]) for s in again) < unmet and not any(s["closed"] for s in again):
                     sewn, sheets = scored, again
         kind, why, share = classify(sheets, said_shell=said_shell)
+    cleaned: dict | None = None
+    if kind == "surface":
+        # SURF-8 / SURF-10: THE CLEAN-UP, only once the file is known to be a surface part (what kind of file it is
+        # was read above from the file as written: a closed skin with a crack is still a closed skin with a crack)
+        cleaned = {"duplicates": len(twice), "duplicate_faces": [f"Face_{k + 1}" for k in twice][:MAX_PLACES]}
+        if stitch:
+            try:
+                tidy, did = sc.clean(sewn, mm_per_unit=mm_per_unit, limit_mm=sew_mm, holes_mm=holes_mm)
+            except Exception as exc:  # noqa: BLE001 - the surface as sewn; what is open is said
+                logger.warning("surface: the clean-up failed (%s: %s)", type(exc).__name__, str(exc)[:200])
+                tidy, did = sewn, {"refused": "the clean-up could not be run"}
+            cleaned.update(did)
+            if tidy is not sewn and isinstance(tidy, Sewn):
+                sewn = tidy
+                sheets = measure(sewn, mm_per_unit=mm_per_unit)
+        else:
+            cleaned.update(stitch="off")
+        # SURF-8: WHAT IS LEFT OPEN, by the one definition (open_places), whatever was asked: the record, the words and
+        # the guard on a stated tolerance all read this
+        places = open_places(sewn, mm_per_unit=mm_per_unit)
+        sheets = with_places(sheets, places)
+        # with nothing stitched (do not stitch, or the clean-up failed) every open place is one left open
+        applied = float(cleaned["applied_mm"]) if cleaned.get("applied_mm") is not None else float("inf")
+        within = [p for p in places if float(p["gap_mm"]) <= applied]
+        wide = [p for p in places if float(p["gap_mm"]) > applied]
+        cleaned.update(open_places=len(places), open_length_mm=_r(sum(float(p["length_mm"]) for p in places)),
+                       left_open=len(within), left_widest_mm=max([float(p["gap_mm"]) for p in within] + [0.0]),
+                       left_at_mm=[p["at_mm"] for p in within][:MAX_PLACES],
+                       wider_gaps=len(wide), wider_widest_mm=max([float(p["gap_mm"]) for p in wide] + [0.0]),
+                       wider_narrowest_mm=min([float(p["gap_mm"]) for p in wide] or [0.0]),
+                       wider_at_mm=[p["at_mm"] for p in wide][:MAX_PLACES])
     reading = {"kind": kind, "why": why, "faces": len(set(sewn.names)), "sew_tolerance_mm": _r(sewn.tol * mm_per_unit),
                "diag_mm": _r(sewn.diag * mm_per_unit), "open_share": share, "said_shell": bool(said_shell),
                "sheets": sheets}
+    if cleaned is not None:
+        reading["cleaned"] = cleaned
     return reading, (sewn if kind in ("surface", "gap") else None)
 
 
@@ -513,12 +795,24 @@ def record(reading: dict, sewn: Sewn, *, mm_per_unit: float, walls_mm: dict[str,
         census.append({"body": part, "join": "sewn", "faces": len(sheet["faces"]), "edges": sheet["edges"],
                        "shared_edges": sheet["shared_edges"], "junction_edges": sheet["junction_edges"],
                        "boundary_edges": sheet["free_edges"] - sheet["unmet_edges"],
-                       "open_edges": sheet["unmet_edges"], "open_at_mm": sheet["unmet_at_mm"]})
+                       "open_edges": int(sheet.get("unmet_places", sheet["unmet_edges"])),
+                       "open_length_mm": sheet.get("unmet_length_mm"), "open_at_mm": sheet["unmet_at_mm"]})
     unmet = sum(c["open_edges"] for c in census)
     notes = [f"The file is a surface ({reading['why']}): it is meshed as a shell on the surface as given (SURF-1)."]
     if unmet:
-        notes.append(f"{unmet} edge(s) lie along a neighbouring face without meeting it within "
-                     f"{reading['sew_tolerance_mm']:.3g} mm: the shell has gaps there (SURF-2).")
+        notes.append(f"The surfaces do not meet at {unmet} place(s) (free edges lying along another face within "
+                     f"{OPEN_REACH * float(reading['sew_tolerance_mm']):.3g} mm): the shell has gaps there (SURF-2, "
+                     "SURF-8).")
+    c = reading.get("cleaned") or {}
+    if c.get("duplicates"):
+        notes.append(f"{c['duplicates']} face(s) written twice in the file were left out once (SURF-9).")
+    if c.get("closed_edges"):
+        notes.append(f"{c['closed_edges']} gap(s) between neighbouring faces were closed, the widest "
+                     f"{c['closed_widest_mm']:.3g} mm, within {c['limit_mm']:.3g} mm "
+                     f"({'the tolerance the notes state' if c.get('limit_from') == 'notes' else 'the rule'}, SURF-8).")
+    if c.get("pinholes"):
+        notes.append(f"{c['pinholes']} hole(s) up to {c['pinhole_widest_mm']:.3g} mm across were filled with the "
+                     "face's own surface (SURF-10).")
     rec = {"version": ms.VERSION, "unit": "mm", "ratio": sp.SHELL_RATIO, "diag_mm": reading["diag_mm"],
            "source": "surface", "surface_model": reading,
            "bodies": bodies, "pairs": pairs, "faces": roles, "mids": mids, "sewn": census,

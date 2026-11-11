@@ -2957,6 +2957,9 @@ SEW_ANALYTIC = True
 SEW_ANALYTIC_MEND = True
 #: SHELL-15b: the largest faces of a volume that vote on whether it is material
 VOLUME_VOTERS = 12
+#: SHELL-15l: a closed shell enclosing less than this share of the part's size cubed encloses nothing
+#: (cad/validity.ZERO_VOLUME_RATIO)
+SEW_NO_VOLUME = 1e-9
 
 
 def _free_edge_list(shape) -> list:
@@ -3109,6 +3112,10 @@ def _analytic_face(face, tol: float):
     analytic = (Geom_Plane, Geom_CylindricalSurface, Geom_ConicalSurface, Geom_SphericalSurface, Geom_ToroidalSurface)
     if isinstance(surf, analytic):
         return face
+    if SEW_SWEPT:
+        swept = _swept_face(face)
+        if swept is not None:
+            return swept
     try:
         conv = GeomConvert_SurfToAnaSurf(surf)
         new = conv.ConvertToAnalytical(float(tol))
@@ -3165,6 +3172,77 @@ def _analytic_face(face, tol: float):
         # (sh0076's IGES copy) had no triangles, and its 1.5 mm walls lost two pairs (shell -> mixed)
         return face
     return out
+
+
+#: SHELL-15m: a loose face written as a surface of revolution or of extrusion is first re-made by OpenCASCADE's own
+#: whole-face conversion (ShapeCustom.SweptToElementary: the surface and every curve on it converted together)
+SEW_SWEPT = True
+
+
+def _revolved_sphere(surf) -> bool:
+    """SHELL-15m: whether a surface of revolution turns an arc of a circle centred on its own axis (a sphere)."""
+    from OCP.Geom import Geom_Circle, Geom_SurfaceOfRevolution, Geom_TrimmedCurve
+    from OCP.gp import gp_Lin
+
+    if not isinstance(surf, Geom_SurfaceOfRevolution):
+        return False
+    try:
+        c = surf.BasisCurve()
+        while isinstance(c, Geom_TrimmedCurve):
+            c = c.BasisCurve()
+        if not isinstance(c, Geom_Circle):
+            return False
+        return gp_Lin(surf.Axis()).Distance(c.Location()) <= 1e-7 * max(c.Radius(), 1e-12)
+    except Exception:  # noqa: BLE001 - not known: treated as a sphere, the safe side
+        return True
+
+
+def _swept_face(face):
+    """SHELL-15m: a face on a surface of revolution or of linear extrusion (how an IGES writer stores a cylinder,
+    cone, sphere or torus) re-made on the elementary surface it is by OpenCASCADE's whole-face conversion - the
+    surface AND the face's curves on it converted together, so its wires stay its own (the surface-only re-make of
+    SHELL-15c leaves curves made for the old surface, and on a torus bend or a funnel's cone it read invalid and the
+    face was kept as written: 8 of a pipe bend's 16 faces, 213 of a frame's 225). None unless the result is one valid
+    face with the same area that meshes, its material side kept."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.Geom import Geom_SphericalSurface, Geom_SurfaceOfLinearExtrusion, Geom_SurfaceOfRevolution
+    from OCP.ShapeCustom import ShapeCustom
+    from OCP.TopAbs import TopAbs_REVERSED
+    from OCP.TopoDS import TopoDS
+
+    if not isinstance(BRep_Tool.Surface_s(face), (Geom_SurfaceOfRevolution, Geom_SurfaceOfLinearExtrusion)):
+        return None
+    from OCP.TopAbs import TopAbs_EDGE
+
+    em = _map(face, TopAbs_EDGE)
+    if any(BRep_Tool.Degenerated_s(TopoDS.Edge_s(em.FindKey(i))) for i in range(1, em.Extent() + 1)):
+        # A FACE WITH A POLE (a dome's cap, a cone's tip) is left to SHELL-15c/g: OpenCASCADE's whole-face conversion
+        # crashes the process on a sphere's pole (the IGES dome's extraction child stopped and it read as solid)
+        return None
+    if _revolved_sphere(BRep_Tool.Surface_s(face)):
+        return None                     # a sphere written as a revolved arc: SHELL-15c/g, as for a pole
+    try:
+        got = _faces(ShapeCustom.SweptToElementary_s(face))
+        if len(got) != 1:
+            return None
+        out = TopoDS.Face_s(got[0])
+        if isinstance(BRep_Tool.Surface_s(out), Geom_SphericalSurface):
+            return None                 # a sphere too: SHELL-15c/g's re-make, measured on domes, stands
+        if not BRepCheck_Analyzer(out).IsValid() or abs(_area(out) - _area(face)) > 1e-6 * _area(face):
+            return None
+        q = _inner_point(face)
+        n0, n1 = (_face_normal_at(face, q), _face_normal_at(out, q)) if q is not None else (None, None)
+        if n0 is None or n1 is None:
+            return None
+        s0 = -1.0 if face.Orientation() == TopAbs_REVERSED else 1.0
+        s1 = -1.0 if out.Orientation() == TopAbs_REVERSED else 1.0
+        if float(np.dot(s0 * n0, s1 * n1)) < 0:
+            out = TopoDS.Face_s(out.Reversed())
+        return out if _meshes(out) else None
+    except Exception as exc:  # noqa: BLE001 - the surface-only re-make is tried next
+        logger.debug("shell: a swept face was not re-made whole (%s)", type(exc).__name__)
+        return None
 
 
 def _meshes(face) -> bool:
@@ -3592,7 +3670,10 @@ def solidify(shape, mm: float) -> tuple[object, list[str]]:
             if mk.IsDone():
                 s = mk.Solid()
                 BRepLib.OrientClosedSolid_s(s)
-                if BRepCheck_Analyzer(s).IsValid():
+                # SHELL-15l: a closed shell that encloses no volume is no body - two touching bodies' coincident
+                # faces sewn to each other (a pipe's outer face and its insulation's inner face: a pocket of nothing,
+                # and the insulation left without its inner side). It counts as a bad shell: the volumes are read
+                if BRepCheck_Analyzer(s).IsValid() and abs(_volume(s)) > SEW_NO_VOLUME * diag ** 3:
                     made.append(s)
                     continue
                 bad = True
