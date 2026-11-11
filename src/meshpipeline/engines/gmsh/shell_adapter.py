@@ -85,6 +85,9 @@ MAP_FLAT = False
 STRETCH_FLAT = 1.0
 STRIP_ALIKE = 0.05
 STRIP_LONG = 1.5
+#: SHMESH-38: SHMESH-12 reads a mapped strip's edges as slivers only under SHORT_SHARE of the floor (walls stream,
+#: census DEV 124 -> 130 fully good: ~/shellcamp/walls/REPORT.md, run walls1m)
+MAPPED_SLIVER_SHARE = True
 EVEN = True
 #: SHMESH-3/4 through gmsh's own curvature sizing: elements per full turn of every curve and curved face
 PER_TURN = 4 * plan_rules.CURVE_PER_QUARTER
@@ -1279,6 +1282,12 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     if COLLAPSE_SHORT:
         # SHMESH-12: an edge under the floor, far shorter than its elements' others, is a CAD sliver: one node
         limit = np.array([plan_rules.FLOOR_WALLS * r["wall_mm"] * min(sz, 1.0) / mm for r in rows])
+        if MAPPED_SLIVER_SHARE:
+            # SHMESH-38: a mapped strip's edges (SHMESH-16) are slivers only under SHORT_SHARE of the floor. Its
+            # elements are stretched up to STRETCH_MAX = 1 / SHORT_SHARE times along it, so the plain test met them
+            # exactly: every edge across a rounded corner was merged, pulling the walls' nodes into the hollow
+            for t_m in mapped:
+                limit[tag_of[t_m]] *= shell_mesh.SHORT_SHARE
         Q, T, q_face, t_face, merged = shell_mesh.collapse_short(xyz / mm, Q, T, q_face, t_face, limit)
     relaxed = 0
     project = _projector(facts, on_face, mm) if RELAX_CURVED and (on_face >= 0).any() else None
