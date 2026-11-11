@@ -386,7 +386,7 @@ A rounded corner or bend is a mapped strip (SHMESH-16), its elements sized acros
 calls an edge a CAD sliver when it is under the floor and under a fifth of its elements' longest edge: 0.78 is under
 both, so every edge across every corner is merged, the corner closes to a line and the flat faces' nodes are pulled
 over it into the hollow (1.25 mm off a 2 mm wall). The strip's stretch (5) and the merge's share (1/5) meet exactly.
-That is the mesh stream's code; it is handed over with a measured patch (below), not changed here. Of the other two,
+That is the mesh stream's code; it is handed over with a measured patch, not changed here: a mapped strip's edges are slivers only under a fifth of the floor (the strip's own sizes are planned). On the census DEV half (the walls round's head with only that patch) fully good went 124 to 130 and no fully good file got worse: five hollow sections and brackets wall misplaced to fully good, two ducts misplaced to an open junction, an enclosure base wall missing to fully good; one printed box open junction to extra shell (199 to 215 open edges). Of the other two,
 a robot-arm chassis's off-middle nodes lie on SHELL-13 / SHELL-22 strips laid on a skin, and a joggled hat rail's on
 a straight extension run on past a bend (joins); a fuselage panel's mid-surface is exact (a fillet torus of radius 5
 between 4 and 6) and its reading 0.56 of a wall off is left to the mesh and the scorer.
