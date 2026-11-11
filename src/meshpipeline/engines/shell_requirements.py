@@ -48,9 +48,17 @@ MIN_MARGIN = 1.3
 MAX_MARGIN = 1.3
 #: SHMESH-24: under the user's own sizes a curve keeps its shape, no more: a full turn (a hole's rim, a tube) gets at
 #: least this many elements, whatever the shortest edge asked for - a hole is never closed to a slit; a face that
-#: turns through no more than SHAPE_ONE_ACROSS radians (100 degrees: a bend) may have one element across it
+#: turns through no more than SHAPE_ONE_ACROSS radians (100 degrees: a bend) may have one element across it.
 SHAPE_PER_TURN = 4
 SHAPE_ONE_ACROSS = 1.75
+#: SHMESH-33: a hole's rim gets at least HOLE_PER_TURN edges round it under the user's size (a hole of 4 edges is a
+#: square; 8 is the common floor round a hole in pre-processors) - and no more than that size allows
+HOLE_PER_TURN = 8
+#: SHMESH-34: under the user's size a curved face is held to it, but never so coarse that an element's middle stands
+#: more than CHORD_SHARE of that size off the CAD surface (the chordal deviation r (1 - cos(h / 2r)), told in the
+#: report as measured). 0.1: an element over a 4 mm radius at a 10 mm size is held to 5.8 mm (4 a turn, as before);
+#: over a 200 mm radius it is the user's 10 mm
+CHORD_SHARE = 0.1
 #: SHMESH-24: a mapped strip narrower than the user's size is stretched to their aspect ratio of its own width
 STRIP_ASPECT = True
 #: SHMESH-24: a mapped strip's elements are stretched along it to at most this share of the user's aspect target
@@ -106,14 +114,24 @@ def kind_of(req: Mapping | None) -> str | None:
     return "quads" if k.get("tria_percent_max") is not None else None
 
 
-def curved_size(radius: float, width: float, *, floor: float, rule: float) -> float:
+def chord_size(radius: float, deviation: float) -> float:
+    """SHMESH-34: the longest element (mm) on an arc of `radius` whose middle stands at most `deviation` off it."""
+    if radius <= 0 or deviation >= radius:
+        return math.inf
+    return 2.0 * radius * math.acos(1.0 - deviation / radius)
+
+
+def curved_size(radius: float, width: float, *, floor: float, rule: float, per_turn: int = SHAPE_PER_TURN,
+                chord: float | None = None) -> float:
     """SHMESH-24: the element size on a face (or round an arc) of `radius` under the user's sizes (mm): the rules'
     own size `rule` (CURVE_PER_QUARTER a quarter-turn) but no finer than `floor` (the user's shortest edge, with
-    its margin) - and never so coarse that the shape is lost: SHAPE_PER_TURN elements a full turn, or one element
-    across a face that turns through no more than SHAPE_ONE_ACROSS (a bend, `width` its narrow way)."""
+    its margin) - and never so coarse that the shape is lost: `per_turn` elements a full turn, or one element
+    across a face that turns through no more than SHAPE_ONE_ACROSS (a bend, `width` its narrow way). SHMESH-34:
+    `chord` (mm) also holds the element to at most that chordal deviation (chord_size)."""
+    held = chord_size(radius, chord) if chord else math.inf
     if 0 < width <= SHAPE_ONE_ACROSS * radius:
-        return max(rule, floor)          # a bend: narrower than the size, it gets one element across by itself
-    return min(max(rule, floor), 2.0 * math.pi * radius / SHAPE_PER_TURN)
+        return min(max(rule, floor), held)   # a bend: narrower than the size, it gets one element across by itself
+    return min(max(rule, floor), 2.0 * math.pi * radius / per_turn, held)
 
 
 def size_plan(rows: list[dict], req: Mapping | None, areas_mm2: list[float], *, planned_max: float,
@@ -161,7 +179,8 @@ def size_plan(rows: list[dict], req: Mapping | None, areas_mm2: list[float], *, 
                 # with a global size the face takes it (the user's size beats our 6 a quarter-turn); without
                 # one the rules' own size stands, held over the user's shortest edge. Either way the shape is kept
                 size = min(size, curved_size(float(bend), float(width), floor=floor,
-                                             rule=size if G is not None else min(rule, size)))
+                                             rule=size if G is not None else min(rule, size),
+                                             chord=CHORD_SHARE * G if G is not None else None))
             size *= scale
             r["size_mm"] = _r(size)
             curve = r.get("_rule_curve")
@@ -343,5 +362,5 @@ def summary(rep: Mapping | None, not_applied: int = 0) -> str:
 
 
 __all__ = ["BAND", "DEFINITIONS", "FIGURES", "MIN_MARGIN", "RULE_LIMITS", "RULE_REPORT", "RULE_SIZES",
-           "SHAPE_PER_TURN", "curved_size", "figures_of",
+           "CHORD_SHARE", "HOLE_PER_TURN", "SHAPE_PER_TURN", "chord_size", "curved_size", "figures_of",
            "kind_of", "limits_in_force", "line", "report", "size_plan", "summary", "words"]

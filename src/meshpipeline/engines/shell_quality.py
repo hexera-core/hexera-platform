@@ -531,9 +531,45 @@ def _cycle(a: tuple[int, ...], b: tuple[int, ...]) -> list[int] | None:
     return loop if len(loop) == len(rest) else None
 
 
+#: a quad whose corner angle is past one of the solver's own angle limits by more than QUICK_DEG is known past it from
+#: a plain-float reading, without the full measure (the full measure would find it past too: the margin is a
+#: thousand times any rounding between the two readings)
+QUICK_DEG = 0.01
+
+
+def _angle_bounds(limits: InForce) -> tuple[float, float] | None:
+    """(the least, the most) quad corner angle the hard limits in force allow; None when they hold no such limit."""
+    lo = [v for s, k, op, v, _c in limits.hard if s == "quad" and k == "min_angle_quad" and op == ">="]
+    hi = [v for s, k, op, v, _c in limits.hard if s == "quad" and k == "max_angle_quad" and op == "<="]
+    return (max(lo), min(hi)) if lo and hi else None
+
+
+def _clearly_past(p: list[list[float]], bounds: tuple[float, float]) -> bool:
+    """Whether a quad (its corners, plain floats) has a corner angle past `bounds` by more than QUICK_DEG, or an edge
+    of no length."""
+    for i in range(4):
+        a, b, c = p[i - 1], p[i], p[(i + 1) % 4]
+        u = (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+        v = (c[0] - b[0], c[1] - b[1], c[2] - b[2])
+        nu = math.sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2])
+        nv = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+        if nu <= 0.0 or nv <= 0.0:
+            return False                     # left to the full measure
+        cosv = max(-1.0, min(1.0, (u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / (nu * nv)))
+        ang = math.degrees(math.acos(cosv))
+        if ang < bounds[0] - QUICK_DEG or ang > bounds[1] + QUICK_DEG:
+            return True
+    return False
+
+
 def _good_quad(xyz: np.ndarray, q: list[int], normal: np.ndarray, limits: InForce = IN_FORCE) -> float | None:
     """The quad's smallest corner angle when it is valid, inside every Nastran quad limit (and every target of the
-    user's limits in force, SHMESH-25) and turns along `normal`; else None."""
+    user's limits in force, SHMESH-25) and turns along `normal`; else None. A quad clearly past the solver's own
+    angle limits is turned down from a plain-float reading first (the same answer, faster: the walks try hundreds of
+    thousands of quads on a large part)."""
+    bounds = _angle_bounds(limits)
+    if bounds is not None and _clearly_past(xyz[q].tolist(), bounds):
+        return None
     m = quad_measures(xyz, np.array([q], dtype=np.int64), extra=limits.extra)
     if bool(_quad_past(m, limits)[0]) or (limits.aims and int(aim_score(m, "quad", limits, 1)[0]) > 0):
         return None
@@ -898,6 +934,378 @@ def absorb_caps(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: l
                         [tf[k] for k in keep_t] + [f for el, f in new if len(el) == 3])
     return (np.array(Q, dtype=np.int64).reshape(-1, 4), np.array(T, dtype=np.int64).reshape(-1, 3), qf, tf,
             gone_total)
+
+
+#: SHMESH-28: in the mend, an element past a hard limit (or not valid) costs this; one between a user's target and
+#: its outer limit AIM_BAND, one past an outer limit AIM_OUTER. No number of aims outweighs a hard limit
+MEND_HARD = 1000
+#: ... and an element that is not valid (a corner turned over, no area) is never made
+MEND_INVALID = 1000000
+#: SHMESH-28: a node on a CAD edge may be merged into its neighbour along that edge only when the edge stays in
+#: place: the node's distance from the line through its two neighbours along the edge, as a share of that line
+#: (0 on a straight edge; 0.033 on an arc meshed at 15 degrees a segment)
+MEND_CHORD = 0.01
+MEND_ROUNDS = 8
+#: SHMESH-28: where a triangle's corner is tried, as its height over the edge across it in that edge's lengths: 1.37
+#: (the corner then reads 40 degrees), 1 (53) and 0.7 (71)
+MEND_HEIGHTS = (1.37, 1.0, 0.7)
+#: SHMESH-28b: how much a line's worst may move (in the line's own units) before it counts as worse
+WORST_SLACK = 1e-9
+#: node kinds (the mesher's): inside a face, on a CAD edge, at a CAD vertex
+INSIDE, ON_EDGE, AT_VERTEX = 0, 1, 2
+
+
+def _hex_splits(poly: list[int]) -> list[list[list[int]]]:
+    """The three ways to cut a six-cornered outline into two quads."""
+    return [[[poly[k], poly[(k + 1) % 6], poly[(k + 2) % 6], poly[(k + 3) % 6]],
+             [poly[(k + 3) % 6], poly[(k + 4) % 6], poly[(k + 5) % 6], poly[k]]] for k in range(3)]
+
+
+def _costs(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, limits: InForce,
+           edges: tuple[float | None, float | None] = (None, None), bad: list | None = None
+           ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(cost per quad, cost per triangle, smallest corner angle per quad, per triangle): MEND_INVALID when not valid,
+    MEND_HARD past a hard limit, else the score against the user's limits in force (0 inside every target) plus
+    AIM_BAND for an edge under the user's shortest edge and for one over their longest (`edges`, mm; None: none).
+    `bad`, when given, is filled with [quads', triangles'] badness against every line (_badness)."""
+    lo, hi = edges
+    sized = lo is not None or hi is not None
+
+    def one(m: dict, past: np.ndarray, shape: str, n: int) -> np.ndarray:
+        c = aim_score(m, shape, limits, n)
+        if lo is not None:
+            c = c + AIM_BAND * (m["min_edge"] < lo)
+        if hi is not None:
+            c = c + AIM_BAND * (m["max_edge"] > hi)
+        c = np.where(past, MEND_HARD, c)
+        return np.where(m["min_jacobian"] <= 0, MEND_INVALID, c).astype(np.int64)
+
+    nl = len(_lines(limits))
+    if bad is not None:
+        bad[:] = [np.zeros((len(quads), nl)), np.zeros((len(trias), nl))]
+    if len(quads):
+        m = quad_measures(xyz, quads, extra=limits.extra or sized)
+        cq, aq = one(m, _quad_past(m, limits), "quad", len(quads)), m["min_angle_quad"]
+        if bad is not None:
+            bad[0] = _badness(m, "quad", limits, len(quads))
+    else:
+        cq, aq = np.zeros(0, dtype=np.int64), np.zeros(0)
+    if len(trias):
+        m = tria_measures(xyz, trias, extra=limits.extra or sized)
+        ct, at = one(m, _tria_past(m, limits), "tria", len(trias)), m["min_angle_tria"]
+        if bad is not None:
+            bad[1] = _badness(m, "tria", limits, len(trias))
+    else:
+        ct, at = np.zeros(0, dtype=np.int64), np.zeros(0)
+    return cq, ct, aq, at
+
+
+def _lines(limits: InForce) -> list[tuple[str, str, str, float]]:
+    """SHMESH-28b: every line an element is held to - the user's targets and the solver's own limits - as (shape,
+    figure, op, the value past which it is outside)."""
+    return ([(s, k, op, float(target)) for s, k, op, target, _outer, _share in limits.aims]
+            + [(s, k, op, float(v)) for s, k, op, v, _card in limits.hard])
+
+
+def _badness(m: dict[str, np.ndarray], shape: str, limits: InForce, n: int) -> np.ndarray:
+    """(n, lines): how far each element is past each line of _lines (0 inside it, or for a line of the other
+    shape)."""
+    lines = _lines(limits)
+    out = np.zeros((n, len(lines)))
+    for j, (s, key, op, v) in enumerate(lines):
+        if s != shape or key not in m:
+            continue
+        out[:, j] = np.maximum(0.0, (v - m[key]) if op == ">=" else (m[key] - v))
+    return out
+
+
+def mend(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int], t_face: list[int],
+         node_kind: np.ndarray, node_edge: np.ndarray, vertex_edges: dict[int, set[int]], *,
+         limits: InForce = IN_FORCE, rounds: int = MEND_ROUNDS, quads_too: bool = True, triangles_too: bool = True,
+         edges: tuple[float | None, float | None] = (None, None), suppress: float | None = None,
+         movable: np.ndarray | None = None, project=None
+         ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int], list[int], dict]:
+    """SHMESH-28: the last clean-up. Every element past a hard limit, and every element outside one of the user's
+    limits in force, is mended by the best of the local changes that leave its neighbourhood better - a lower total
+    cost (MEND_HARD past a hard limit, AIM_OUTER past a user's outer limit, AIM_BAND between target and outer limit),
+    every new element valid and turned as before:
+
+    * merge: one end of one of its edges is merged into the other. A node inside a face may go anywhere; a node on
+      a CAD edge only into its neighbour along that same edge, and only when the edge stays in place (MEND_CHORD);
+      a node at a CAD vertex never goes - the CAD's own edges and corners all stay. The mesh must stay a surface
+      (the two ends share no other neighbour).
+    * re-cut: the element and the one across one of its edges (the same face, that edge theirs alone) are taken
+      as one outline and cut again: a triangle and a triangle into a quad or along the other diagonal, a triangle and
+      a quad into another quad and triangle (or three triangles), two quads into two quads the other two ways.
+    * move (with `movable`): one of its nodes that may move (inside a face; on a straight CAD edge, along it) goes
+      to where the element would be well shaped - a triangle's corner to MEND_HEIGHTS times the edge across it
+      above that edge's middle (a needle standing on a short CAD edge gets its far corner pulled in), a quad's
+      corner to where it would be a parallelogram and half-way there - each point laid back by `project` (onto
+      the node's own surface or CAD edge).
+
+    Merges and re-cuts move no node. Candidates of a round are judged together and taken best first, each element
+    changed at most once a round; `rounds` passes at most. Deterministic.
+    `node_kind` (INSIDE / ON_EDGE / AT_VERTEX), `node_edge` (the CAD edge of an ON_EDGE node) and `vertex_edges`
+    (the CAD edges that end at an AT_VERTEX node) come from the mesher. `quads_too` False: no change makes a quad
+    (the user asked for triangles); `triangles_too` False: no change leaves more triangles than it found (they
+    asked for quads). `edges`: the user's (shortest, longest) edge, mm - an element with an edge outside them costs
+    AIM_BAND more, so a merge that only trades a limit for an over-long edge is not made.
+
+    Returns (the coordinates, quads, triangles, their faces, {"merged": nodes merged, "recut": outlines cut
+    again, "moved": nodes moved})."""
+    Q = [tuple(map(int, c)) for c in quads.tolist()]
+    T = [tuple(map(int, c)) for c in trias.tolist()]
+    qf, tf = list(q_face), list(t_face)
+    done = {"merged": 0, "recut": 0, "moved": 0}
+    X = xyz.copy()
+    for _round in range(rounds):
+        got = _mend_round(X, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, quads_too, triangles_too,
+                          done, edges, suppress, movable, project)
+        if got is None:
+            break
+        Q, qf, T, tf = got
+    return (X, np.array(Q, dtype=np.int64).reshape(-1, 4), np.array(T, dtype=np.int64).reshape(-1, 3), qf, tf, done)
+
+
+def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, quads_too, triangles_too, done,
+                edges=(None, None), suppress=None, movable=None, project=None):
+    """One pass of mend: (quads, their faces, triangles, their faces) as lists, or None when nothing changed. A
+    node that moves is moved in `xyz` itself."""
+    def on_edge(v: int, c: int) -> bool:
+        k = int(node_kind[v])
+        return (k == ON_EDGE and int(node_edge[v]) == c) or (k == AT_VERTEX and c in vertex_edges.get(v, ()))
+
+    Qa = np.array(Q, dtype=np.int64).reshape(-1, 4)
+    Ta = np.array(T, dtype=np.int64).reshape(-1, 3)
+    held: list = []
+    cq, ct, _aq, _at = _costs(xyz, Qa, Ta, limits, edges, bad=held)
+    worst_now = np.vstack(held)                      # (elements, lines): how far each is past each line
+    # an element may come into a user's band (it costs, and the share allows some) but no further than the elements
+    # it replaces were past that line; past a solver limit, never
+    band = np.array([abs(float(outer) - float(target)) if outer is not None else 0.0
+                     for _s, _k, _op, target, outer, _sh in limits.aims] + [0.0] * len(limits.hard))
+    nq = len(Q)
+    cost = np.concatenate([cq, ct])
+    bad = np.flatnonzero(cost > 0)
+    if not len(bad):
+        return None
+    conn = Q + T
+    face = qf + tf
+    # the elements round the bad ones (every element on a node of a bad element)
+    hot = np.zeros(len(xyz), dtype=bool)
+    for e in bad.tolist():
+        hot[list(conn[e])] = True
+    near = np.flatnonzero(np.concatenate([hot[Qa].any(axis=1) if nq else np.zeros(0, dtype=bool),
+                                          hot[Ta].any(axis=1) if len(T) else np.zeros(0, dtype=bool)]))
+    at_node: dict[int, list[int]] = {}
+    users: dict[tuple[int, int], list[int]] = {}
+    nbrs: dict[int, set[int]] = {}
+    for e in near.tolist():
+        c = conn[e]
+        k = len(c)
+        for i in range(k):
+            a, b = c[i], c[(i + 1) % k]
+            at_node.setdefault(a, []).append(e)
+            users.setdefault((a, b) if a < b else (b, a), []).append(e)
+            nbrs.setdefault(a, set()).add(b)
+            nbrs.setdefault(b, set()).add(a)
+
+    def along(a: int, b: int) -> bool:
+        """Whether the mesh edge a-b runs along a CAD edge: a free edge, a junction, or a seam between two faces
+        (an edge two elements of ONE face share is a chord inside that face)."""
+        u = users.get((a, b) if a < b else (b, a), ())
+        return len(u) != 2 or face[u[0]] != face[u[1]]
+
+    def may_merge(x: int, y: int) -> bool:
+        """Whether node x may be merged into node y (an edge of the mesh joins them)."""
+        kx = int(node_kind[x])
+        if kx == AT_VERTEX:
+            # only when the user asked for small edges to be ignored (SHMESH-29): into its neighbour along a CAD edge
+            # shorter than the length they gave
+            if suppress is None or not along(x, y) or not any(on_edge(y, c) for c in vertex_edges.get(x, ())):
+                return False
+            if float(np.linalg.norm(xyz[x] - xyz[y])) >= suppress:
+                return False
+        if kx == ON_EDGE:
+            c = int(node_edge[x])
+            if not on_edge(y, c) or not along(x, y):
+                return False
+            other = [z for z in nbrs.get(x, ()) if z != y and on_edge(z, c) and along(x, z)]
+            if len(other) != 1:
+                return False
+            z = other[0]
+            line = xyz[z] - xyz[y]
+            span = float(np.linalg.norm(line))
+            if span <= 0.0:
+                return False
+            off = float(np.linalg.norm(np.cross(xyz[x] - xyz[y], line))) / span
+            if off > MEND_CHORD * span and (suppress is None or off >= suppress):
+                return False
+        # the mesh stays a surface: every node next to both is a corner of an element that holds both
+        both = set(at_node.get(x, ())) & set(at_node.get(y, ()))
+        shared = {v for e in both for v in conn[e]}
+        return (nbrs.get(x, set()) & nbrs.get(y, set())) <= shared
+
+    # (the bad element, the elements that go, the new ones as (corners, face, the element each stands for),
+    #  what it is, the elements no other change of this round may touch, for a move: (the node, where to))
+    cands: list[tuple] = []
+    points: list[np.ndarray] = []
+    seen: set = set()
+    for e in bad.tolist():
+        c = conn[e]
+        k = len(c)
+        for i in range(k):
+            a, b = c[i], c[(i + 1) % k]
+            # merge one end of this edge into the other
+            for x, y in ((a, b), (b, a)):
+                if ("m", x, y) in seen:
+                    continue
+                seen.add(("m", x, y))
+                if not may_merge(x, y):
+                    continue
+                touched = tuple(sorted(set(at_node[x])))
+                new, ok = [], True
+                for t in touched:
+                    el = conn[t]
+                    if y in el:
+                        if len(el) == 3:
+                            continue                                  # a triangle on the edge goes
+                        j = el.index(x)
+                        if el[(j + 1) % 4] != y and el[(j - 1) % 4] != y:
+                            ok = False                                # across a quad: it would fold
+                            break
+                        new.append((tuple(v for v in el if v != x), face[t], t))
+                    else:
+                        new.append((tuple(y if v == x else v for v in el), face[t], t))
+                if ok and (triangles_too or sum(len(el) == 3 for el, _f, _o in new)
+                           <= sum(len(conn[t]) == 3 for t in touched)):
+                    cands.append((e, touched, new, "merged", frozenset(at_node[x]) | frozenset(at_node[y]), None))
+            # cut the outline of this element and the one across this edge again
+            u = users[(a, b) if a < b else (b, a)]
+            if len(u) != 2:
+                continue
+            n = u[0] if u[1] == e else u[1]
+            if face[n] != face[e] or ("r", min(e, n), max(e, n)) in seen:
+                continue
+            seen.add(("r", min(e, n), max(e, n)))
+            poly = _cycle(c, conn[n])
+            if poly is None:
+                continue
+            options = _hex_splits(poly) if len(poly) == 6 else _splits(poly)
+            now = {frozenset(c), frozenset(conn[n])}
+            for cut in options:
+                if {frozenset(el) for el in cut} == now:
+                    continue
+                n_tri = sum(len(el) == 3 for el in cut)
+                if (not quads_too and n_tri != len(cut)) or (
+                        not triangles_too and n_tri > (len(c) == 3) + (len(conn[n]) == 3)):
+                    continue
+                pair = (min(e, n), max(e, n))
+                cands.append((e, pair, [(tuple(el), face[e], e) for el in cut], "recut", frozenset(pair), None))
+        if movable is None:
+            continue
+        # move one of its nodes: a triangle's corner towards (or away from) the edge across it, to where the
+        # triangle would stand MEND_HEIGHTS times that edge high; a quad's corner to where the quad would be a
+        # parallelogram, and half-way there
+        for j in range(k):
+            v = c[j]
+            if not movable[v]:
+                continue
+            here = xyz[v]
+            if k == 3:
+                a, b = c[(j + 1) % 3], c[(j + 2) % 3]
+                mid = 0.5 * (xyz[a] + xyz[b])
+                base = float(np.linalg.norm(xyz[a] - xyz[b]))
+                up = here - mid
+                high = float(np.linalg.norm(up))
+                if high <= 0.0 or base <= 0.0:
+                    continue
+                spots = [mid + up * (f * base / high) for f in MEND_HEIGHTS if abs(f * base - high) > 0.05 * high]
+            else:
+                iso = xyz[c[(j + 1) % 4]] + xyz[c[(j + 3) % 4]] - xyz[c[(j + 2) % 4]]
+                spots = [iso, 0.5 * (here + iso)]
+            star = tuple(sorted(set(at_node[v])))
+            for spot in spots:
+                if project is not None:
+                    spot = project(np.array([v], dtype=np.int64), spot[None])[0]
+                tmp = len(xyz) + len(points)
+                points.append(spot)
+                cands.append((e, star, [(tuple(tmp if w == v else w for w in conn[t]), face[t], t) for t in star],
+                              "moved", frozenset(star), (v, spot)))
+    if not cands:
+        return None
+    # judge every new element of every candidate at once (a moved node stands at the end of the coordinates)
+    here_all = xyz
+    if points:
+        xyz = np.vstack([xyz, np.array(points)])
+    new_q = [el for cand in cands for el, _f, _o in cand[2] if len(el) == 4]
+    new_t = [el for cand in cands for el, _f, _o in cand[2] if len(el) == 3]
+    held_new: list = []
+    nq_c, nt_c, na_q, na_t = _costs(xyz, np.array(new_q, dtype=np.int64).reshape(-1, 4),
+                                    np.array(new_t, dtype=np.int64).reshape(-1, 3), limits, edges, bad=held_new)
+    normal: dict[int, np.ndarray] = {}
+
+    def turned_as(e: int, touched: tuple[int, ...]) -> np.ndarray:
+        """The normal a new element standing for element e must turn along: e's own; for an element with no
+        area to speak of, the sum over the changed elements of its face."""
+        if e not in normal:
+            p = xyz[list(conn[e])]
+            n_e = _elem_normal(xyz, list(conn[e]))
+            span = float(np.linalg.norm(p - p.mean(axis=0), axis=1).max())
+            if float(np.linalg.norm(n_e)) <= 1e-6 * span * span:
+                n_e = sum((_elem_normal(xyz, list(conn[t])) for t in touched if face[t] == face[e]), np.zeros(3))
+            normal[e] = n_e
+        return normal[e]
+
+    iq = it = 0
+    ranked = []
+    for ci, (e, touched, new, _kind, _block, _move) in enumerate(cands):
+        before = int(cost[list(touched)].sum())
+        after, least, ok = 0, 180.0, True
+        worst_after = np.zeros(worst_now.shape[1])
+        for el, _f, old in new:
+            if len(el) == 4:
+                after += int(nq_c[iq])
+                ok = ok and int(nq_c[iq]) < MEND_INVALID
+                least = min(least, float(na_q[iq]))
+                worst_after = np.maximum(worst_after, held_new[0][iq])
+                iq += 1
+            else:
+                after += int(nt_c[it])
+                ok = ok and int(nt_c[it]) < MEND_INVALID
+                least = min(least, float(na_t[it]))
+                worst_after = np.maximum(worst_after, held_new[1][it])
+                it += 1
+            if ok and float(_elem_normal(xyz, list(el)) @ turned_as(old, touched)) <= 0.0:
+                ok = False
+        # SHMESH-28b: the worst element under each line never gets worse - a change that lowers the total by
+        # trading several elements in a band for one further out is not made (a welded part at 10 mm: one
+        # triangle at 9.1 degrees where the elements it came from were at 21.4 at the worst)
+        ok = ok and bool(np.all(worst_after <= np.maximum(worst_now[list(touched)].max(axis=0), band) + WORST_SLACK))
+        if ok and after < before and len({frozenset(el) for el, _f, _o in new}) == len(new):
+            ranked.append((after - before, len(new), -round(least, 9), e, ci))
+    if not ranked:
+        return None
+    used: set[int] = set()
+    gone: set[int] = set()
+    add: list[tuple[tuple[int, ...], int]] = []
+    for _gain, _n, _least, _e, ci in sorted(ranked):
+        _e2, touched, new, kind, block, move = cands[ci]
+        if block & used:
+            continue
+        used |= block
+        done[kind] += 1
+        if move is not None:
+            here_all[move[0]] = move[1]          # the elements stay; their node stands somewhere else
+            continue
+        gone |= set(touched)
+        add += [(el, f) for el, f, _o in new]
+    if not used:
+        return None
+    return ([c for i, c in enumerate(Q) if i not in gone] + [el for el, _f in add if len(el) == 4],
+            [f for i, f in enumerate(qf) if i not in gone] + [f for el, f in add if len(el) == 4],
+            [c for i, c in enumerate(T) if nq + i not in gone] + [el for el, _f in add if len(el) == 3],
+            [f for i, f in enumerate(tf) if nq + i not in gone] + [f for el, f in add if len(el) == 3])
 
 
 def _unit(v: np.ndarray) -> np.ndarray:
