@@ -235,10 +235,17 @@ def stage_internal_surface(surface_path, out_dir, *, intake_patches: list | None
             staged_fv = stage_bounded(surface_path, out_dir, kind="triangles",
                                       declared=declaration_targets(intake_patches or []))
             if staged_fv is not None:
-                return staged_fv
+                return _wrapped_if_asked(staged_fv, Path(out_dir))
     staged = stage_triangles(tris, intake_patches=intake_patches, input_kind=input_kind,
                              surface_path=Path(surface_path), close_leaks=close_leaks or None)
-    return write_staged(staged, Path(out_dir))
+    return _wrapped_if_asked(write_staged(staged, Path(out_dir)), Path(out_dir))
+
+
+def _wrapped_if_asked(record: dict, out_dir: Path) -> dict:
+    """ON THE CFD WRAP RUNG (LAD-cfd-5) the staged fluid boundary is wrapped before any engine
+    reads it (cad/surface_wrap.wrap_staged_if_asked); on every other run it is returned as staged."""
+    from meshpipeline.cad.surface_wrap import wrap_staged_if_asked
+    return wrap_staged_if_asked(record, out_dir)
 
 
 def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str = "",

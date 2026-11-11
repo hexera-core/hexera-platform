@@ -484,6 +484,9 @@ STATE_FIELDS: dict[str, str] = {
                              "fact read by the executor/runners, NOT an engine-native param",
     "leak_closing":          "the leak size the user confirmed on the stage (INS-8): every leak of the "
                              "surface up to it is closed for the mesh by each route's staging; None = as drawn",
+    "cfd_wrap":              "the CFD wrap rung (LAD-cfd-5, pipeline/cfd_wrap): whether the run meshes a "
+                             "wrapped copy of the surface after every engine failed on it as drawn, on "
+                             "which engine, from which attempt; {} = never on it",
     "requested_extents":     "typed per-direction far-field multiples the user stated (contract)",
     "reference_length_m":    "the metre ruler the extents multiply, pinned at approval (contract)",
     "requirements_strict":   "whether near-misses block (true) or deliver with the miss stated",
