@@ -694,7 +694,10 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
             GeometryInterpretationRef,
             GeometrySourceRef,
         )
-        _payload = _build_dispatch(**{
+        # THE TEAM'S MESHING STANDARD the disputed run was meshed under (engines/meshing_standard): the
+        # re-run keeps it, so it is held to the same standing requirements as the mesh it answers
+        _standard = (parent.dispatch_payload or {}).get("meshing_standard")             if isinstance(parent.dispatch_payload, dict) else None
+        _payload = _build_dispatch(**({"meshing_standard": _standard} if _standard else {}), **{
             "job_id":           str(new_job.id),
             "owner_id":         owner_id,
             "geometry_source":  (GeometrySourceRef.from_row(parent.geometry_source).to_payload()

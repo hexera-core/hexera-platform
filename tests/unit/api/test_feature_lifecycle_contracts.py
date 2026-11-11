@@ -171,6 +171,9 @@ def test_the_served_routes_are_exactly_the_supported_set():
         # signature rather than by any credential of ours, which is why it is listed apart.
         ("POST", "/api/v1/webhooks/stripe"),
         ("GET", "/api/v1/organization"),         # the caller's own organisation and its members
+        # THE TEAM'S MESHING STANDARD (the console's Meshing settings), the caller's own organisation's
+        ("GET", "/api/v1/organization/meshing-standard"),
+        ("PUT", "/api/v1/organization/meshing-standard"),   # console session only; read once on save
         ("GET", "/api/v1/simulation"),           # the tenant's run list, keyset paged
         ("GET", "/api/v1/simulation/{job_id}"),
         # a NEW download link for one deliverable, minted at click time; its life scales with size

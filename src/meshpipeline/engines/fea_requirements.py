@@ -144,7 +144,8 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
             got = {"applied": False, "met": None, "delivered": "not applied - a solid keeps the thickness of your CAD"}
         else:  # quads_only, triangles_only, max_triangle_percent
             got = {"applied": False, "met": None, "delivered": "not applied - a solid is meshed with tetrahedra"}
-        rows.append({"id": row["id"], "field": field, "asked": row["asked"], **got})
+        rows.append({"id": row["id"], "field": field, "asked": row["asked"], **got,
+                     **({"from": row["from"]} if row.get("from") else {})})
     return MR.finish_report(rows, n, DEFINITIONS)
 
 

@@ -416,12 +416,15 @@ async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=N
     said or written: the run is exactly the run it always was. Returns the reading's section."""
     from meshpipeline.contracts import narration as _N
     from meshpipeline.engines import mesh_requirements as MR
+    from meshpipeline.engines import meshing_standard as MS
 
-    sec = await MR.decide(state or {}, route="fea", job_id=job_id, run=run, enabled=FA.FEA_AI, wait_s=ai_wait_s(run))
+    # STD-1..3: the notes merged with the team's meshing standard (settings < notes, field by field); with no
+    # standard this is the notes' own reading, exactly as before
+    sec = await MS.decide(state or {}, route="fea", job_id=job_id, run=run, enabled=FA.FEA_AI, wait_s=ai_wait_s(run))
     MR.write(ws, sec)
     if sec.get("status") == "none":
         return sec
-    _cite(job_id, MR.decisions(sec, stage="fea_ai"))
+    _cite(job_id, [*MR.decisions(sec, stage="fea_ai"), *MS.decisions(sec, stage="fea_ai")])
     for i, line in enumerate(MR.live_words(sec)):
         await _N.asay(publish, line, op_id=f"fea:notes:{i}")
     return sec
@@ -1354,7 +1357,9 @@ def built_remark(ws: Path, record: dict | None = None) -> None:
         if plan.get("by_choice_failed") == "sizes":
             said = [BY_CHOICE_WORDS["sizes"]]
         if said:
-            record_remark(ws, said[0], by="fea_part_sizes")
+            # STD-2: a size for the whole mesh the team's standard set is said as the standard's
+            from meshpipeline.engines.meshing_standard import size_remark
+            record_remark(ws, size_remark(plan.get("requirements"), said[0]), by="fea_part_sizes")
     try:
         delivered = json.loads((ws / "quality.json").read_text()).get("requirements")
     except (OSError, ValueError):
@@ -1364,7 +1369,9 @@ def built_remark(ws: Path, record: dict | None = None) -> None:
         # notes" line
         from meshpipeline.engines import mesh_requirements as MR
         from meshpipeline.engines.fea_requirements import summary as asked_summary
-        record_remark(ws, asked_summary(delivered, len(MR.not_applied_words(plan.get("requirements")))),
+        from meshpipeline.engines.meshing_standard import remark as led
+        record_remark(ws, led(plan.get("requirements"),
+                              asked_summary(delivered, len(MR.not_applied_words(plan.get("requirements"))))),
                       by="mesh_requirements")
 
 
@@ -1996,8 +2003,9 @@ async def _deliver_surface(ws: Path, rec: dict, *, job_id: str, run, target: dic
         if asked and asked.get("status") == "used":
             # SHMESH-26 / NOTE-8 on a surface file: asked against delivered, and what was not applied (SURF-7)
             from meshpipeline.engines import mesh_requirements as MR
+            from meshpipeline.engines.meshing_standard import remark as led
             from meshpipeline.engines.shell_requirements import summary as asked_summary
-            said = asked_summary(rec.get("requirements"), len(MR.not_applied_words(asked)))
+            said = led(asked, asked_summary(rec.get("requirements"), len(MR.not_applied_words(asked))))
             if said:
                 record_remark(ws, said, by="mesh_requirements")
         _cite(job_id, [{"stage": SR.GATE, "decided": "shell delivered", "value": rec.get("elements"),
@@ -2163,8 +2171,9 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 # notes" line
                 from meshpipeline.contracts.user_notes import drop_remark, record_remark
                 from meshpipeline.engines import mesh_requirements as MR
+                from meshpipeline.engines.meshing_standard import remark as led
                 from meshpipeline.engines.shell_requirements import summary as asked_summary
-                notes_line = asked_summary(shelled.get("requirements"), len(MR.not_applied_words(asked)))
+                notes_line = led(asked, asked_summary(shelled.get("requirements"), len(MR.not_applied_words(asked))))
                 if notes_line:
                     # the AI's own remark (above) says what it did with the notes for the SOLID plan, which is not
                     # made: beside the shell's asked-against-delivered line it told the user of a solid mesh

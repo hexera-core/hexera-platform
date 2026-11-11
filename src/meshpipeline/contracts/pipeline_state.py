@@ -211,6 +211,10 @@ class PipelineState(TypedDict):
     # application from the approval and never rewritten by a node. Every route's AI steps read
     # them and answer per requirement; the result says what became of each.
     user_notes: list
+    # THE TEAM'S MESHING STANDARD (engines/meshing_standard, STD-1..3): the organisation's standing mesh
+    # requirements as approved with the run - {"text", "reading"?, "updated_by"?, "updated_at"?} - or None.
+    # Read by the same reader as the notes and merged under them (the notes win field by field).
+    meshing_standard: dict | None
     # THE RESOLUTION LADDER (engines/resolution_policy, LAD-cfd-1/2): the rung the current
     # attempt was built at, the engine it belongs to, and the shortfall it answers. Set by the
     # engine-fallback node between attempts; written into the attempt's workspace by the builder.
