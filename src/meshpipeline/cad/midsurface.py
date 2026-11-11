@@ -3576,6 +3576,44 @@ def carry_on(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy: 
     return out, new_images, strips
 
 
+#: SHELL-34, A STRAIGHT JOIN THE GENERAL FUSE CANNOT SEW IS SEWN ANOTHER WAY: OpenCASCADE's general fuse fails outright on
+#: some sets of mid-faces (two cyclone parts whose free-form walls the walls round found: fr018, fr019), and the
+#: straight join then handed back its mid-faces UNSEWN - every edge where two of them meet open (fr018: 53, fr019:
+#: 13), with the general join past its deadline too. Now the fuse is tried again at SEW_AGAIN_FACTORS times the
+#: sewing tolerance (at most a tenth of the thinnest wall: SHELL-12's limit is half), and then the faces are sewn
+#: edge to edge (BRepBuilderAPI_Sewing at the largest of those tolerances: it joins edges that lie on each other and
+#: cuts no face, so a T stays open for the passes after it). The record says which.
+SEW_AGAIN = True
+SEW_AGAIN_FACTORS = (2.0, 10.0)
+
+
+def _sew_again(faces: list, fuzzy: float):
+    """SHELL-34: (fused, images, how) for faces the general fuse would not sew at `fuzzy`, or None."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS
+
+    for factor in SEW_AGAIN_FACTORS:
+        try:
+            fused, images = sew(faces, factor * fuzzy)
+            return fused, images, f"by the general fuse at {factor:g} times its tolerance"
+        except ValueError:
+            continue
+    sw = BRepBuilderAPI_Sewing(max(SEW_AGAIN_FACTORS) * fuzzy)
+    for f in faces:
+        sw.Add(f)
+    sw.Perform()
+    out = sw.SewedShape()
+    omap = _map(out, TopAbs_FACE)
+    images = []
+    for f in faces:
+        g = TopoDS.Face_s(sw.Modified(f)) if sw.IsModified(f) else f
+        if omap.FindIndex(g) <= 0:
+            return None
+        images.append([g])
+    return out, images, "edge to edge"
+
+
 def _join_straight(mine: list[_Mid], solid: _Solid, fuzzy: float, notes: list[str], body: str):
     """The straight-edge extension (extend) and a plain sew: (fused shape, each mid-face's faces in it)."""
     for m in mine:
@@ -3596,8 +3634,12 @@ def _join_straight(mine: list[_Mid], solid: _Solid, fuzzy: float, notes: list[st
     try:
         fused, images = sew([m.face for m in mine] + [f for _i, _j, f in strips], fuzzy)
     except ValueError as exc:
-        notes.append(f"{body}: {exc}.")
-        return _compound([m.face for m in mine]), [[m.face] for m in mine]
+        got = _sew_again([m.face for m in mine] + [f for _i, _j, f in strips], fuzzy) if SEW_AGAIN else None
+        if got is None:
+            notes.append(f"{body}: {exc}.")
+            return _compound([m.face for m in mine]), [[m.face] for m in mine]
+        fused, images, how = got
+        notes.append(f"{body}: the mid-faces were sewn {how} (SHELL-34).")
     out = [list(images[i]) for i in range(len(mine))]
     for n, (i, _j, _f) in enumerate(strips):
         out[i] += images[len(mine) + n]
