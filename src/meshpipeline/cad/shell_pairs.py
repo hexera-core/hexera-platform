@@ -116,6 +116,17 @@ def _sample_rays(s: ff.Surface, *, rays: int = PAIR_RAYS, seed: int = 0):
     return (np.concatenate(origins), np.concatenate(dirs), np.concatenate(labels)) if origins else (None, None, None)
 
 
+#: SHELL-44, NO RAY LOST ON A FLAT FACE: VTK's line test against the triangles, asked with a tolerance of exactly
+#: 0, misses a triangle whose box has no thickness - a flat face lying square to an axis, the far side of the
+#: commonest wall there is - for some of the rays that meet it (which ones depends on where the face lies in the
+#: locator's cells). Measured on 237 real parts: 2.5% of the pairing rays read no wall that way on average, over
+#: 5% on 23 parts, 85% on one; every ray lost left through such a triangle; and on 71 parts the faces named as
+#: partners changed (a pair needs 3 rays and a tenth of its face's readings). Any tolerance above 0 finds them:
+#: 1e-9 mm, a millionth of a micron, moves no reading. Only the pairing's rays: the FEA wall readings
+#: (cad/fea_features.wall_thickness) are made as they always were.
+RAY_TOL_MM = 1e-9
+
+
 def ray_partners(s: ff.Surface) -> dict[tuple[int, int], int]:
     """{(a, b) with a < b: rays that crossed between them, both ways} for every pair that passes the ray
     test (PAIR_MIN_RAYS and PAIR_SHARE, read from either side)."""
@@ -124,7 +135,7 @@ def ray_partners(s: ff.Surface) -> dict[tuple[int, int], int]:
         return {}
     eps = 1e-6 * s.diag
     hit = np.full(len(P), -1, dtype=np.int64)
-    ff.wall_reach(s, P + D * eps, D, L, eps=eps, exit_label=hit)
+    ff.wall_reach(s, P + D * eps, D, L, eps=eps, exit_label=hit, ray_tol=RAY_TOL_MM)
     ok = hit >= 0
     m = len(s.names)
     keys, counts = np.unique(L[ok] * m + hit[ok], return_counts=True)
@@ -190,15 +201,72 @@ def _new_projector(fb):
     return proj
 
 
+#: SHELL-40, THE WALL IS READ ON THE FACE ITSELF: the PAIR_SAMPLES x PAIR_SAMPLES grid runs over the face's
+#: parameter BOX, and only its points inside the face are read. A face that fills little of its box - a frame
+#: round a cut-out, an L, a ring, a long strip lying askew - kept under 3 of the 49 and its wall was thrown out
+#: ("too few points of the face could be read": a 2 mm duct flange 12 walls wide), or kept 3 that happened to
+#: agree, and a drafted wall read as even. When fewer than GRID_MIN_POINTS of the grid lie in the face, the grid
+#: is made twice as fine, at most GRID_DOUBLINGS times (7, 14, 28, 56 a side), until that many do. A face with
+#: GRID_MIN_POINTS points or more in its first grid is read exactly as before. GRID_MIN_POINTS is a quarter of
+#: the 49: a face that fills a quarter of its box is read as it always was.
+GRID_MIN_POINTS = 12
+GRID_DOUBLINGS = 3
+
+
+def face_grid(fa, sa, tol: float) -> list[tuple[float, float]]:
+    """SHELL-40: the parameters (u, v) of the points of face fa (its adaptor `sa`) that the pair tests read: the
+    PAIR_SAMPLES grid over its parameter box, the points inside the face; made finer while fewer than
+    GRID_MIN_POINTS are (GRID_DOUBLINGS times at most). In grid order, so a part reads the same twice."""
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.gp import gp_Pnt2d
+    from OCP.TopAbs import TopAbs_IN
+
+    u0, u1, v0, v1 = sa.FirstUParameter(), sa.LastUParameter(), sa.FirstVParameter(), sa.LastVParameter()
+    n = PAIR_SAMPLES
+    out: list[tuple[float, float]] = []
+    for _ in range(GRID_DOUBLINGS + 1):
+        out = []
+        for i in range(n):
+            for j in range(n):
+                u = u0 + (u1 - u0) * (i + 0.5) / n
+                v = v0 + (v1 - v0) * (j + 0.5) / n
+                if BRepClass_FaceClassifier(fa, gp_Pnt2d(u, v), tol).State() == TopAbs_IN:
+                    out.append((u, v))
+        if len(out) >= GRID_MIN_POINTS:
+            break
+        n *= 2
+    return out
+
+
+def foot_on_face(fb, u: float, v: float, tol: float) -> bool:
+    """SHELL-41: does the foot of a wall point - (u, v) on face fb's surface, as the projection gives it - lie on
+    fb itself? A projection onto a closed surface (a cylinder, a cone, a torus, a closed B-spline) comes back in
+    the surface's first period, and a face on it may run from -pi to pi or from pi to 3 pi: read as it came, the
+    feet of a drafted tube's wall lay "off" the tube. The parameters are moved by whole periods into the face's
+    own range first."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Pnt2d
+    from OCP.TopAbs import TopAbs_IN, TopAbs_ON
+
+    surf = BRep_Tool.Surface_s(fb)
+    if surf.IsUPeriodic() or surf.IsVPeriodic():
+        u0, _u1, v0, _v1 = BRepTools.UVBounds_s(fb)
+        if surf.IsUPeriodic():
+            u = u0 + (u - u0) % surf.UPeriod()
+        if surf.IsVPeriodic():
+            v = v0 + (v - v0) % surf.VPeriod()
+    return BRepClass_FaceClassifier(fb, gp_Pnt2d(u, v), tol).State() in (TopAbs_IN, TopAbs_ON)
+
+
 def even_wall(fa, fb, mm: float) -> tuple[bool, float, float, str]:
     """The exact even-wall test (PAIR_SAMPLES, EVEN_SHARE, PAIR_DEG) of OpenCASCADE faces fa, fb, whose
     coordinates are `mm` millimetres each: (passed, median thickness mm, spread, why not)."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Surface
-    from OCP.BRepClass import BRepClass_FaceClassifier
     from OCP.BRepLProp import BRepLProp_SLProps
-    from OCP.gp import gp_Pnt2d
-    from OCP.TopAbs import TopAbs_IN, TopAbs_REVERSED
+    from OCP.TopAbs import TopAbs_REVERSED
 
     sa = BRepAdaptor_Surface(fa, True)
     proj = _projector(fb)
@@ -209,28 +277,23 @@ def even_wall(fa, fb, mm: float) -> tuple[bool, float, float, str]:
     sign_b = -1.0 if fb.Orientation() == TopAbs_REVERSED else 1.0
     tol = max(BRep_Tool.Tolerance_s(fa), 1e-9)
     dists, turned = [], []
-    n = PAIR_SAMPLES
-    for i in range(n):
-        for j in range(n):
-            u = u0 + (u1 - u0) * (i + 0.5) / n
-            v = v0 + (v1 - v0) * (j + 0.5) / n
-            if BRepClass_FaceClassifier(fa, gp_Pnt2d(u, v), tol).State() != TopAbs_IN:
-                continue
-            pa = BRepLProp_SLProps(sa, u, v, 1, 1e-9)
-            if not pa.IsNormalDefined():
-                continue
-            p = pa.Value()
-            proj.Perform(p)
-            if proj.NbPoints() < 1:
-                continue
-            ub, vb = proj.LowerDistanceParameters()
-            pb = BRepLProp_SLProps(BRepAdaptor_Surface(fb, True), ub, vb, 1, 1e-9)
-            if not pb.IsNormalDefined():
-                continue
-            na, nb = pa.Normal(), pb.Normal()
-            dot = sign_a * sign_b * (na.X() * nb.X() + na.Y() * nb.Y() + na.Z() * nb.Z())
-            dists.append(float(proj.LowerDistance()) * mm)
-            turned.append(math.degrees(math.acos(max(-1.0, min(1.0, -dot)))))
+    sb = BRepAdaptor_Surface(fb, True)
+    for u, v in face_grid(fa, sa, tol):
+        pa = BRepLProp_SLProps(sa, u, v, 1, 1e-9)
+        if not pa.IsNormalDefined():
+            continue
+        p = pa.Value()
+        proj.Perform(p)
+        if proj.NbPoints() < 1:
+            continue
+        ub, vb = proj.LowerDistanceParameters()
+        pb = BRepLProp_SLProps(sb, ub, vb, 1, 1e-9)
+        if not pb.IsNormalDefined():
+            continue
+        na, nb = pa.Normal(), pb.Normal()
+        dot = sign_a * sign_b * (na.X() * nb.X() + na.Y() * nb.Y() + na.Z() * nb.Z())
+        dists.append(float(proj.LowerDistance()) * mm)
+        turned.append(math.degrees(math.acos(max(-1.0, min(1.0, -dot)))))
     if len(dists) < 3:
         return False, float("nan"), float("nan"), "too few points of the face could be read"
     d = np.asarray(dists)
@@ -252,10 +315,8 @@ def tapered_wall(fa, fb, mm: float) -> tuple[bool, float, float, float, str]:
     why not)."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Surface
-    from OCP.BRepClass import BRepClass_FaceClassifier
     from OCP.BRepLProp import BRepLProp_SLProps
-    from OCP.gp import gp_Pnt2d
-    from OCP.TopAbs import TopAbs_IN, TopAbs_ON, TopAbs_REVERSED
+    from OCP.TopAbs import TopAbs_REVERSED
 
     nan = float("nan")
     sa = BRepAdaptor_Surface(fa, True)
@@ -269,33 +330,27 @@ def tapered_wall(fa, fb, mm: float) -> tuple[bool, float, float, float, str]:
     tol_a = max(BRep_Tool.Tolerance_s(fa), 1e-9)
     tol_b = max(BRep_Tool.Tolerance_s(fb), 1e-9)
     dists, turned = [], []
-    n = PAIR_SAMPLES
-    for i in range(n):
-        for j in range(n):
-            u = u0 + (u1 - u0) * (i + 0.5) / n
-            v = v0 + (v1 - v0) * (j + 0.5) / n
-            if BRepClass_FaceClassifier(fa, gp_Pnt2d(u, v), tol_a).State() != TopAbs_IN:
-                continue
-            pa = BRepLProp_SLProps(sa, u, v, 1, 1e-9)
-            if not pa.IsNormalDefined():
-                continue
-            proj.Perform(pa.Value())
-            if proj.NbPoints() < 1:
-                continue
-            ub, vb = proj.LowerDistanceParameters()
-            if BRepClass_FaceClassifier(fb, gp_Pnt2d(ub, vb), tol_b).State() not in (TopAbs_IN, TopAbs_ON):
-                continue
-            pb = BRepLProp_SLProps(sb, ub, vb, 1, 1e-9)
-            if not pb.IsNormalDefined():
-                continue
-            na, nb = pa.Normal(), pb.Normal()
-            dot = sign * (na.X() * nb.X() + na.Y() * nb.Y() + na.Z() * nb.Z())
-            dists.append(float(proj.LowerDistance()) * mm)
-            turned.append(math.degrees(math.acos(max(-1.0, min(1.0, -dot)))))
-            if turned[-1] > TAPER_DEG:
-                # one point turned past the limit settles it: no taper (most pairs the rays find across a
-                # corner are two sides of a solid; reading all 49 points of each was half a fan housing's pairing)
-                return False, nan, nan, turned[-1], f"the faces are not parallel (they turn by {turned[-1]:.1f} degrees)"
+    for u, v in face_grid(fa, sa, tol_a):
+        pa = BRepLProp_SLProps(sa, u, v, 1, 1e-9)
+        if not pa.IsNormalDefined():
+            continue
+        proj.Perform(pa.Value())
+        if proj.NbPoints() < 1:
+            continue
+        ub, vb = proj.LowerDistanceParameters()
+        if not foot_on_face(fb, ub, vb, tol_b):
+            continue
+        pb = BRepLProp_SLProps(sb, ub, vb, 1, 1e-9)
+        if not pb.IsNormalDefined():
+            continue
+        na, nb = pa.Normal(), pb.Normal()
+        dot = sign * (na.X() * nb.X() + na.Y() * nb.Y() + na.Z() * nb.Z())
+        dists.append(float(proj.LowerDistance()) * mm)
+        turned.append(math.degrees(math.acos(max(-1.0, min(1.0, -dot)))))
+        if turned[-1] > TAPER_DEG:
+            # one point turned past the limit settles it: no taper (most pairs the rays find across a
+            # corner are two sides of a solid; reading all 49 points of each was half a fan housing's pairing)
+            return False, nan, nan, turned[-1], f"the faces are not parallel (they turn by {turned[-1]:.1f} degrees)"
     if len(dists) < TAPER_MIN_POINTS:
         return False, nan, nan, nan, "too few points of the faces face each other"
     lo, hi, turn = float(min(dists)), float(max(dists)), float(max(turned))
@@ -419,4 +474,4 @@ def face_roles(names: list[str], pairs: list[Pair], *, kinds: list[str], widths:
 
 
 __all__ = ["BLEND", "PAIRED", "RIM", "SHELL_RATIO", "SHELL_WIDTH_RATIO", "SOLID", "TAPER_DEG", "THICK", "Pair",
-           "even_wall", "face_roles", "sheets", "ray_partners", "tapered_wall"]
+           "even_wall", "face_grid", "face_roles", "foot_on_face", "sheets", "ray_partners", "tapered_wall"]
