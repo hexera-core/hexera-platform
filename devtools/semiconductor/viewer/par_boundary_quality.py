@@ -84,12 +84,39 @@ def _after_header(fh) -> int:
     return i + 1
 
 
+def _header_format(path: Path) -> bytes:
+    """What a foam file says it is, from its own header: b"ascii" or b"binary"."""
+    m = re.search(rb"format\s+(\w+)\s*;", path.open("rb").read(4096))
+    return m.group(1) if m else b"binary"
+
+
 def owner_slice(pm: Path, first: int, n: int):
-    """The owner cell of each boundary face, by seeking into the binary labelList."""
+    """The owner cell of each boundary face.
+
+    BINARY IS TWO SEEKS; ASCII IS NOT SEEKABLE AT ALL. A binary labelList is fixed-width records,
+    so face `first` is an offset. An ascii one is variable width - "7" and "12884553" are not the
+    same number of bytes - so there is nothing to seek to and the whole list has to be parsed once
+    and sliced.
+
+    THIS READ BINARY UNCONDITIONALLY AND THE DELIVERED COOLANT IS ASCII. Every owner came back as
+    four packed digit bytes read as an int32: 0x39393939, which is "9999", which is 960,051,513 -
+    the same handful of values on every processor, all of them about 75x the cell count. The
+    cell-range gate below is what caught it, and it is the reason that gate exists rather than a
+    comment saying the owners ought to be in range.
+    """
     with (pm / "owner").open("rb") as fh:
         off, cnt = _list_at(fh, _after_header(fh))
-        if first + n > cnt:
-            raise SystemExit("%s: owner has %d entries, asked for %d+%d" % (pm, cnt, first, n))
+    if first + n > cnt:
+        raise SystemExit("%s: owner has %d entries, asked for %d+%d" % (pm, cnt, first, n))
+    if _header_format(pm / "owner") == b"ascii":
+        data = (pm / "owner").read_bytes()
+        end = data.rindex(b")")
+        vals = np.fromstring(data[off:end].decode("latin-1"), dtype=np.int64, sep=" ")
+        # the count in the file's own header is the gate on the parse
+        if vals.size != cnt:
+            raise SystemExit("%s: owner says %d entries, parsed %d" % (pm, cnt, vals.size))
+        return vals[first:first + n]
+    with (pm / "owner").open("rb") as fh:
         fh.seek(off + LABEL.itemsize * first)
         return np.frombuffer(fh.read(LABEL.itemsize * n), dtype=LABEL).astype(np.int64)
 
