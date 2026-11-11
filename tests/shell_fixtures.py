@@ -274,6 +274,13 @@ def butt_step(t1: float = 6.0, t2: float = 3.0):
     return _fuse(_box(0, 0, 0, 100, 50, t1), _box(100, 0, 0, 100, 50, t2))
 
 
+def short_step(t1: float = 3.0, t2: float = 2.6, a: float = 25.0, w: float = 20.0):
+    """A short plate whose thickness steps halfway, flush underneath: `a` x `w` x `t1` then `a` x `w` x `t2` along x.
+    With the defaults each half alone spans under 10 of its walls (SHELL-2: 7.5 and 8.6), the whole plate 10.5 of
+    the thicker."""
+    return _fuse(_box(0, 0, 0, a, w, t1), _box(a, 0, 0, a, w, t2))
+
+
 def thin_web_on_thick_plate(tp: float = 8.0, ts: float = 3.0):
     """A 3 mm web standing on an 8 mm plate, its ends 20 mm short of the plate ends: the web band runs into the
     plate wall and its two sides end there, inside the plate."""
