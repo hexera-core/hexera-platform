@@ -3289,7 +3289,9 @@ def close_gaps(fused, images: list[list], mine: list[_Mid], solid: _Solid, fuzzy
 #: junction SHELL-13 closed was closed by a strip laid across the corner, off both walls' surfaces (31 files, 16.3 m
 #: of such kinks on the lab sets), where SHELL-30 or SHELL-22's own carry would have drawn the corner. Now SHELL-30
 #: runs first, then SHELL-22 only where the edge carried on in its own surface meets the other wall's surface, and
-#: only then SHELL-13 and SHELL-22's nearest points for what is left.
+#: only then SHELL-13 and SHELL-22's nearest points for what is left. When that leaves an edge open, the old order is
+#: run too and the one leaving fewer open edges kept (on a tie the square one): a corner one order closes square can
+#: leave the other's strip no edge to close (two enclosures, e0004 and e0032, each closed by the old order alone).
 SQUARE_FIRST = True
 
 
@@ -3362,15 +3364,39 @@ def _closing_passes(fused, images, census, mine, solid, fuzzy, *, mm, census_of,
                 for i, j, strip in closed[2]:
                     mine[i].extended.append({"to": mine[j].k, "area": _area(strip)})
 
-    if SQUARE_FIRST:
-        pass30()
-        pass22(square_only=True)
-        pass13()
-        pass22()
+    def run(order) -> tuple:
+        """The passes in this order from the joined surface as it came: (fused, images, census, extended, notes)."""
+        nonlocal fused, images, census
+        start = (fused, images, census)
+        ext0 = [list(m.extended) for m in mine]
+        n0 = len(notes)
+        for step in order:
+            step()
+        out = (fused, images, census, [list(m.extended) for m in mine], notes[n0:])
+        fused, images, census = start
+        for m, ext in zip(mine, ext0, strict=True):
+            m.extended = ext
+        del notes[n0:]
+        return out
+
+    old_order = (pass13, pass30, pass22)
+    if not SQUARE_FIRST or not census["open_edges"]:
+        got = run(old_order)
     else:
-        pass13()
-        pass30()
-        pass22()
+        # the square order, and the old one when the square one leaves any edge open: the one leaving fewer open
+        # edges is kept, on a tie the square one (a corner closed square by one order may leave the other's strip
+        # no edge to close, and the other way round)
+        got = run((pass30, lambda: pass22(square_only=True), pass13, pass22))
+        if got[2]["open_edges"]:
+            other = run(old_order)
+            # judged as the record will read them: what lies past each edge read (SHELL-21), as SHELL-30 is judged
+            left = [census_of(r[0], r[1], past=True)["open_edges"] for r in (got, other)]
+            if left[1] < left[0]:
+                got = other
+    fused, images, census, ext, said = got
+    for m, e in zip(mine, ext, strict=True):
+        m.extended = e
+    notes.extend(said)
     return fused, images, census
 
 
