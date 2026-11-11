@@ -148,7 +148,8 @@ def _elsewhere(arguments: str, text: str) -> list[str]:
     said = words_read(text)
     norm, squashed = MR._norm(said), MR._squash(said)
     out: list[str] = []
-    for e in (raw.get("other") if isinstance(raw, dict) and isinstance(raw.get("other"), list) else []):
+    other = raw.get("other") if isinstance(raw, dict) else None
+    for e in other if isinstance(other, list) else []:
         if not isinstance(e, dict) or str(e.get("kind")) != "elsewhere":
             continue
         quote = " ".join(str(e.get("quote") or "").split())[:400]
