@@ -115,9 +115,8 @@ _ROUTED = "route" in inspect.signature(MR.check).parameters
 
 
 def _check(arguments: str, text: str, route: str) -> tuple[dict, list[str], list[str]]:
-    if _ROUTED:
-        return MR.check(arguments, words_read(text), route=route)  # type: ignore[call-arg]
-    return MR.check(arguments, words_read(text))
+    extra: dict[str, str] = {"route": route} if _ROUTED else {}
+    return MR.check(arguments, words_read(text), **extra)
 
 
 #: the words that name a length unit once for all, for the stated unit the model reads (it gives no quote)
