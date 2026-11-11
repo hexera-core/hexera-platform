@@ -236,6 +236,18 @@ def test_every_line_said_before_meshing_passes_the_live_guard(tmp_path):
         assert lines and all(narration.plain(x) for x in lines), [x for x in lines if not narration.plain(x)]
 
 
+def test_a_tight_non_orthogonality_with_layers_says_why_layers_may_be_taken_back(tmp_path):
+    req, _d, _ = _read("5 layers, non-ortho under 60", layers=[{"what": "count", "value": 5, "unit": "none",
+                                                                 "quote": "5 layers"}],
+                       limits=[_lim("non_orthogonality", 60, "non-ortho under 60")])
+    ask = CR.Ask(req, "snappy")
+    ask.done("layers:count", "5 layers on every wall")
+    text, _s = _snappy(tmp_path / "n", ask)
+    assert re_num(text.split("relaxed")[1], "maxNonOrtho") == 58
+    plan = json.loads((tmp_path / "n" / CR.PLAN_FILE).read_text())["rows"]
+    assert "taken back" in plan[ask.rid("layers:count")]["note"]
+
+
 def test_a_looser_limit_than_ours_keeps_ours_and_says_so(tmp_path):
     req, _d, _ = _read("non-ortho under 80", limits=[_lim("non_orthogonality", 80, "non-ortho under 80")])
     ask = CR.Ask(req, "snappy")

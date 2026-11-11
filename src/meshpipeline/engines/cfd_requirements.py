@@ -267,6 +267,8 @@ class Ask:
         #: snappy: levels per named region the user sized; whether a budget of ours was raised for their sizes
         self.region_levels: dict = {}
         self.raised = False
+        #: why the layers may cover less of the wall (a quality limit of the user's held while they are added)
+        self.layer_note = ""
 
     @classmethod
     def of(cls, workspace, engine: str) -> Ask | None:
@@ -306,6 +308,9 @@ class Ask:
         """The record beside the case: what this engine did with each requirement. A row it never decided is
         "not applied on this mesher" - told, never silently dropped."""
         name = _ENGINE_WORDS.get(self.engine, self.engine)
+        lid = self.rid("layers:count")
+        if self.layer_note and lid in self.rows:
+            self.rows[lid]["note"] = self.layer_note
         for r in self.req.get("rows") or []:
             if r["id"] in self.rows:
                 continue
@@ -1151,6 +1156,10 @@ def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None)
             if m:
                 block = _sub(m.group(0), "maxNonOrtho", f"{min(relaxed, _num(m.group(0), 'maxNonOrtho') or relaxed):.6g}")
                 out = out[:m.start()] + block + out[m.end():]
+            if ask.n_layers is None or int(ask.n_layers) > 0:
+                # the user's bar holds while the layers are added too: layers that would pass it are taken back
+                ask.layer_note = (f"your non-orthogonality limit ({MR._g(want)}°) is held while the layers are added, "
+                                  "so layers that would pass it are taken back")
         if lim["measure"] == "skewness":
             m = re.search(r"relaxed\s*\{[^}]*\}", out)
             if m and (_num(m.group(0), "maxInternalSkewness") or 0) > want:
@@ -1273,6 +1282,8 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
             got = {"applied": False, "met": None, "delivered": f"not applied - {built or 'no setting of this mesher matches it'}"}
         elif field == "layers:count":
             got = _layers_row(req, q, built)
+            if p.get("note") and got.get("met") is False:
+                got["delivered"] += f"; {p['note']}"
         else:
             got = {"applied": True, "met": False if status == "nearest" else None,
                    "delivered": (f"not possible as asked - {built}" if status == "nearest" else built)
