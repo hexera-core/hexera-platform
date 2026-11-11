@@ -14,7 +14,10 @@ import {
 } from "@/app/_components/billing";
 import { ExtraCreditsPicker, ManageBillingButton, PlanPicker } from "@/app/_components/billing-panel";
 import { DashboardNotice } from "@/app/_components/dashboard-notice";
-import { formatSigned, ledgerReason } from "@/app/_components/ledger";
+import { formatCredits, formatSigned, ledgerReason, shortRunId } from "@/app/_components/ledger";
+import { NavLink } from "@/app/_components/nav-link";
+import { runTitle } from "@/app/_components/run-status";
+import { When } from "@/app/_components/when-time";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
 
@@ -35,6 +38,12 @@ type Entry = {
 
 type LedgerPage = { items: Entry[]; next_cursor: string | null };
 
+type RunName = { id: string; task_label: string | null; is_rerun?: boolean };
+
+/** The most runs one read names (the API's page limit). An older run beyond it is shown by its
+ *  short id, still linked. */
+const NAMED_RUNS = 100;
+
 export default async function BillingPage({
   searchParams,
 }: {
@@ -50,8 +59,9 @@ export default async function BillingPage({
   );
   const cursor = Array.isArray(params?.cursor) ? params.cursor[0] : params?.cursor;
 
-  // Four independent soft reads, so one failing panel does not blank the others.
-  const [subscription, catalogue, credits, ledger] = await Promise.all([
+  // Five independent soft reads, so one failing panel does not blank the others; the run names
+  // only dress the ledger, so without them each run is shown by its short id.
+  const [subscription, catalogue, credits, ledger, runs] = await Promise.all([
     consoleFetch<Subscription>("billing", ownerId),
     consoleFetch<Catalogue>("billing/plans", ownerId),
     consoleFetch<{ balance: number; unit: string }>("credits", ownerId),
@@ -59,7 +69,14 @@ export default async function BillingPage({
       `credits/history${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
       ownerId,
     ),
+    consoleFetch<{ items: RunName[] }>(`simulation?limit=${NAMED_RUNS}`, ownerId),
   ]);
+  const names = new Map<string, string>();
+  for (const run of runs?.items ?? []) {
+    if (run.task_label || run.is_rerun) {
+      names.set(run.id, runTitle(run));
+    }
+  }
   const paying = isPaying(subscription);
 
   return (
@@ -90,7 +107,7 @@ export default async function BillingPage({
         </div>
         <div className="metric-card">
           <p className="label">Credit balance</p>
-          <b>{credits ? credits.balance.toLocaleString() : "--"}</b>
+          <b>{credits ? formatCredits(credits.balance) : "—"}</b>
           <span>{credits ? credits.unit : "unavailable"} available</span>
         </div>
       </div>
@@ -154,46 +171,52 @@ export default async function BillingPage({
           title="No credit activity yet"
         />
       ) : (
-        <section className="panel">
-          <div className="panel__head">
-            <div>
-              <p className="label">Credit ledger</p>
-              <p className="page__sub">Credits added or used by this workspace.</p>
-            </div>
+        <section aria-labelledby="ledger-title" className="section">
+          <h2 className="section__title" id="ledger-title">Credit ledger</h2>
+          <div className="panel">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th className="col-when">When</th>
+                  <th className="col-main">For</th>
+                  <th className="col-num col-right">Credits</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ledger.items.map((entry) => {
+                  const reason = ledgerReason(entry.reason);
+                  return (
+                    <tr key={entry.id}>
+                      <td className="col-when">
+                        <When iso={entry.created_at} />
+                      </td>
+                      <td className="col-main">
+                        {reason.text ? <span>{reason.text}</span> : null}
+                        {reason.text && reason.runId ? <span className="cell-faint"> · </span> : null}
+                        {reason.runId ? (
+                          names.has(reason.runId) ? (
+                            <NavLink className="cell-link" href={`/runs/${reason.runId}`}>
+                              {names.get(reason.runId)}
+                            </NavLink>
+                          ) : (
+                            <NavLink className="cell-link" href={`/runs/${reason.runId}`}
+                              title={reason.runId}>
+                              Run <span className="cell-id">{shortRunId(reason.runId)}</span>
+                            </NavLink>
+                          )
+                        ) : null}
+                        {!reason.text && !reason.runId ? <span className="cell-faint">—</span> : null}
+                      </td>
+                      <td className={`col-num col-right amount${entry.amount > 0 ? " amount--in" : ""}`}
+                        title={entry.entry_type}>
+                        {formatSigned(entry.amount)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>When</th>
-                <th>Type</th>
-                <th>Amount</th>
-                <th>Reason</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ledger.items.map((entry) => {
-                const reason = ledgerReason(entry.reason);
-                return (
-                  <tr key={entry.id}>
-                    <td>
-                      {entry.created_at ? new Date(entry.created_at).toLocaleString() : "—"}
-                    </td>
-                    <td>
-                      <span className="label">{entry.entry_type}</span>
-                    </td>
-                    <td>{formatSigned(entry.amount)}</td>
-                    <td>
-                      {reason.runId ? (
-                        <Link href={`/runs/${reason.runId}`}>{reason.label}</Link>
-                      ) : (
-                        reason.label
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
           {ledger.next_cursor ? (
             <div className="panel__body">
               <Link
