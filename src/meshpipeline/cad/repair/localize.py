@@ -213,10 +213,18 @@ SCOPE_GROW_FRACTION = 0.01
 class _Scope:
     """Which entities a scoped scan is allowed to measure.
 
-    TWO DIFFERENT TESTS, AND THAT IS THE POINT. A face is admitted on its INDEX, from the region's
-    `face_indices`; everything else on its box. A box test on faces would have to measure every
-    face of the part before it could reject one, which is exactly the cost scoping exists to
-    avoid - the region already carries the face indices so that this test is a set lookup.
+    A FACE IS ADMITTED ON ITS INDEX **OR** ON ITS BOX, and the `or` is the whole safety property.
+    The region's `face_indices` is a set lookup and so the fast path, but a region built from edge
+    defects alone names NO face - and a scope that stopped there could not see a face defect that
+    appeared inside the region since the region was built. A package that damaged the very region
+    it was proving would then be re-inspected and pass, which is the one failure the region loop
+    exists to prevent. So a face the index set does not name gets a second chance on geometry.
+
+    THE COST ASYMMETRY THAT MAKES THAT AFFORDABLE: a face's bounding box is cheap beside the
+    per-face work it gates - the surface-area integration, the status walk's `Result(sub)`, the
+    crossing analysis. Measuring a box to reject a face still avoids the expensive part, and the
+    box test is memoised per face index, so each face is placed at most once per scan. Admitting a
+    face you then reject is fine; never looking at it is not.
 
     AN UNMEASURABLE ENTITY IS NEVER REJECTED. `Bnd_Box` comes back void for a degenerate edge or
     an empty shell, and "outside the region" is not something that can be concluded from an
@@ -224,18 +232,30 @@ class _Scope:
     reporting its absence from a region nobody looked in.
     """
 
-    #: Faces the region named. A region made only of edge defects names none, and then a scoped
-    #: scan measures no face - its evidence is the edges.
+    #: Faces the region named, admitted without being placed. A region made only of edge defects
+    #: names none, and then every face reaches the box test instead.
     faces: frozenset[int]
     #: The region's box, already grown. None on the UNLOCATED region, which has no position: there
-    #: the face set is the whole scope and no entity is rejected on geometry. That region exists
-    #: so unlocated defects cannot be silently dropped, and a scan scoped to it is therefore wider
-    #: than a located scope - it reports whatever the non-face walks find anywhere on the part.
+    #: NOTHING is rejected, because nothing can be placed relative to a region that has none, and
+    #: a scan scoped to it is simply the whole-shape scan. That region exists so unlocated defects
+    #: cannot be silently dropped, and there is no geometric saving to be had on it - an honest
+    #: whole-shape answer beats a scope that would guess at what to skip.
     low: tuple[float, float, float] | None
     high: tuple[float, float, float] | None
+    #: The box test's answer per face index, for the ONE shape and ONE scan this scope serves
+    #: (an index means nothing across two shapes). Several producers ask about the same face.
+    placed: dict[int, bool] = field(default_factory=dict, compare=False, repr=False)
 
-    def allows_face(self, index: int) -> bool:
-        return int(index) in self.faces
+    def allows_face(self, index: int, face) -> bool:
+        """May a face be measured? Named by the region, unplaceable, or inside its grown box."""
+        key = int(index)
+        if key in self.faces or self.low is None:
+            return True
+        answer = self.placed.get(key)
+        if answer is None:
+            answer = self.allows_box(_bounds_of(face))
+            self.placed[key] = answer
+        return answer
 
     def allows(self, sub) -> bool:
         """May a non-face sub-shape be measured? Box-tested, or admitted when unplaceable."""
@@ -526,8 +546,9 @@ def _status_defects(shape, *, interior: set[int], valid: bool,
         while explorer.More():
             sub = explorer.Current()
             explorer.Next()
-            if scope is not None and not (scope.allows_face(int(indexed.FindIndex(sub)))
-                                          if kind == TopAbs_FACE else scope.allows(sub)):
+            if scope is not None and not (
+                    scope.allows_face(int(indexed.FindIndex(sub)), sub)
+                    if kind == TopAbs_FACE else scope.allows(sub)):
                 continue
             visited += 1
             if visited > LOCALIZE_STATUS_BUDGET:
@@ -576,9 +597,9 @@ def _size_defects(shape, *, diagonal: float, total_area: float,
     out: list[EntityDefect] = []
     faces = _indexed(shape, TopAbs_FACE)
     for i in range(1, faces.Extent() + 1):
-        if scope is not None and not scope.allows_face(i):
-            continue
         face = faces.FindKey(i)
+        if scope is not None and not scope.allows_face(i, face):
+            continue
         area = _face_area(face)
         if total_area > 0 and 0.0 <= area < total_area * SMALL_FACE_AREA_FRACTION:
             out.append(EntityDefect(
@@ -980,9 +1001,11 @@ def localize_scan(shape, *, valid: bool | None = None, face_scan_s: float = 0.0,
     primitive that makes an iterative repair affordable: after an edit inside one region, every
     other region is otherwise re-proved for nothing. What a scope changes:
 
-      - WHICH ENTITIES ARE MEASURED. Faces are admitted by the region's `face_indices`, every
-        other entity by whether its box meets the region's grown box (see `_Scope`). The filter
-        runs before the measurement, so the saving is work avoided rather than results discarded.
+      - WHICH ENTITIES ARE MEASURED. A face is admitted by the region's `face_indices` OR by its
+        box meeting the region's grown box; every other entity by its box alone (see `_Scope`).
+        The filter runs before the measurement, so the saving is work avoided rather than results
+        discarded - and because a face is admitted on either test, a defect that appeared inside
+        the region after the region was built is still found.
       - WHAT COMPLETENESS MEANS. The flag becomes "exhaustive WITHIN THIS REGION". A scoped scan
         never says anything about the part outside its scope - not that it is sound, and not that
         it was checked.
@@ -1005,12 +1028,16 @@ def localize_scan(shape, *, valid: bool | None = None, face_scan_s: float = 0.0,
     diagonal = _diagonal(shape)
     scope = _scope_for(within, diagonal=diagonal) if within is not None else None
     faces = _indexed(shape, TopAbs_FACE)
-    # THE AREA SWEEP IS SKIPPED WHEN NO FACE IS IN SCOPE, and that is not a shortcut: the total is
-    # read only to judge an in-scope face against it, so with no in-scope face there is nothing to
-    # judge - and measuring every face of the part would be precisely the whole-shape cost a
-    # region-scoped scan exists to avoid.
+    # THE AREA SWEEP IS SKIPPED ONLY WHEN THE SCOPE ADMITS NO FACE AT ALL, and that is not a
+    # shortcut: the total is read only to judge an in-scope face against it (a sliver is small
+    # relative to the PART, so the total stays whole-part whenever it is needed), and with no
+    # in-scope face there is nothing to judge. The pre-pass that decides it places faces with
+    # their boxes - cheap, short-circuiting, and memoised into the scope, so the walks below
+    # re-use the answers rather than paying for them again.
     total_area = (sum(_face_area(faces.FindKey(i)) for i in range(1, faces.Extent() + 1))
-                  if scope is None or scope.faces else 0.0)
+                  if scope is None or any(scope.allows_face(i, faces.FindKey(i))
+                                          for i in range(1, faces.Extent() + 1))
+                  else 0.0)
     interior = _interior_faces(shape)
 
     if valid is None:
@@ -1030,8 +1057,10 @@ def localize_scan(shape, *, valid: bool | None = None, face_scan_s: float = 0.0,
     ran_face_scan = face_scan_s > 0 and valid
     if ran_face_scan:
         crossings = face_self_intersections(shape, budget_s=face_scan_s, interior=interior)
-        found.extend(crossings if scope is None
-                     else [d for d in crossings if scope.allows_face(d.entity_index)])
+        found.extend(crossings if scope is None else [
+            d for d in crossings
+            if 1 <= d.entity_index <= faces.Extent()
+            and scope.allows_face(d.entity_index, faces.FindKey(d.entity_index))])
     attributed, complete = _status_defects(shape, interior=interior, valid=valid, scope=scope)
     found.extend(attributed)
     found.extend(_size_defects(shape, diagonal=diagonal, total_area=total_area,

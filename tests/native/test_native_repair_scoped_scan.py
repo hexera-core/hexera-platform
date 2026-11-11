@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import pytest
 
-from meshpipeline.cad.repair.localize import _diagonal, localize_scan
+from meshpipeline.cad.repair.localize import (
+    SCOPE_GROW_FRACTION,
+    _diagonal,
+    localize_scan,
+)
 from meshpipeline.cad.repair.regions import decompose
 
 pytest.importorskip("OCP.BRepPrimAPI", reason="the CAD kernel is a native-tier dependency")
@@ -80,3 +84,56 @@ def test_omitting_within_is_unchanged():
     assert [d.fingerprint for d in localize_scan(shape)[0]] == \
            [d.fingerprint for d in localize_scan(shape, within=None)[0]]
     assert localize_scan(shape) == localize_scan(shape, within=None)
+
+
+#: A 100 mm box beside a 0.05 mm box, 200 mm away. The tiny box's faces are slivers against the
+#: part's total area, so every one of them is a FACE defect, and they are all in one place.
+BIG = 100.0
+SLIVER = 0.05
+SLIVER_AT = (300.0, 0.0, 0.0)
+
+
+def _box_with_a_sliver_body():
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+    from OCP.TopoDS import TopoDS_Compound
+
+    x, y, z = SLIVER_AT
+    builder = BRep_Builder()
+    compound = TopoDS_Compound()
+    builder.MakeCompound(compound)
+    builder.Add(compound, BRepPrimAPI_MakeBox(BIG, BIG, BIG).Shape())
+    builder.Add(compound, BRepPrimAPI_MakeBox(gp_Pnt(x, y, z),
+                                              gp_Pnt(x + SLIVER, y + SLIVER,
+                                                     z + SLIVER)).Shape())
+    return compound
+
+
+def test_a_scope_whose_face_indices_name_nothing_still_finds_a_face_defect_in_its_box():
+    """A face is admitted by index OR by box, and the OR is the safety property.
+
+    THE BLIND SPOT THIS PINS. A region clustered from edge defects alone names no face, so a
+    scope that admitted faces by index only would measure none - and a face defect that appeared
+    inside the region AFTER the region was built would be reported absent by a scan that never
+    looked at it. A package that damaged the region it was proving would pass its own
+    re-inspection, which is the one failure the region loop exists to prevent.
+    """
+    from meshpipeline.cad.repair.regions import Region
+
+    shape = _box_with_a_sliver_body()
+    everything, _complete = localize_scan(shape)
+    slivers = {d.fingerprint for d in everything if d.entity_type == "face"}
+    assert slivers, "the fixture carries no face defect, so it proves nothing"
+
+    x, y, z = SLIVER_AT
+    scope = Region(index=0, fingerprints=frozenset(),
+                   bbox_min=(x, y, z), bbox_max=(x + SLIVER, y + SLIVER, z + SLIVER),
+                   face_indices=frozenset())           # names NOTHING: the box is the only test
+    scoped, complete = localize_scan(shape, within=scope)
+
+    assert complete
+    assert {d.fingerprint for d in scoped if d.entity_type == "face"} == slivers
+    # ...and the scope is still a scope: the 100 mm box's own geometry stays out of it.
+    assert all(d.location["bbox_min"][0] >= x - BIG * SCOPE_GROW_FRACTION
+               for d in scoped if d.location)
