@@ -215,7 +215,7 @@ def test_edges_that_do_not_meet_are_said_on_the_result(tmp_path):
 
 
 def test_small_gaps_are_closed_by_rule_and_said(tmp_path):
-    """SURF-7: a panel drawn as three patches, the middle one written three sew tolerances off: stitched, meshed as
+    """SURF-8: a panel drawn as three patches, the middle one written three sew tolerances off: stitched, meshed as
     one sheet with shared nodes along both joints, and the result says how many gaps and how wide."""
     from meshpipeline.cad import surface_model as sm
 
@@ -268,7 +268,7 @@ def test_the_stitch_words_are_read_from_the_notes_the_latest_standing():
 
 
 def test_the_notes_mesh_requirements_reach_the_shell_mesher(tmp_path, monkeypatch):
-    """SURF-10: the requirements read from the notes (NOTE-7..9) are handed to the shell mesher for a surface file as
+    """SURF-11: the requirements read from the notes (NOTE-7..9) are handed to the shell mesher for a surface file as
     they are for a mid-surface shell; with none, the mesher is called exactly as before."""
     from meshpipeline.engines.gmsh import shell_adapter as sa
 
@@ -464,7 +464,7 @@ def test_a_surface_whose_shell_cannot_be_made_is_the_runs_plain_reason(tmp_path,
     assert "it can only be meshed as a shell" in refusal.builder_text and "SHMESH-21" in refusal.builder_text
 
 
-# ------------------------------------------------------------------- SURF-10: the user's count and requirements
+# ------------------------------------------------------------------- SURF-11: the user's count and requirements
 def test_the_users_element_count_reaches_a_surface_file(tmp_path, monkeypatch):
     """The count is read by the FEA plan's own reader (shown the file with no zones) and the shell is sized to it."""
     ws = _stage(sx.strip_of_plates(), tmp_path / "ws")
@@ -483,7 +483,7 @@ def test_the_users_element_count_reaches_a_surface_file(tmp_path, monkeypatch):
     rec = shell_run.read(ws)
     assert surface_run.is_surface(rec) and abs(rec["elements"] - 600) <= 0.25 * 600
     assert int(rec["target"]["asked"]) == 600
-    assert ("element count", "SURF-10") in [(c["decided"], c["rule"]) for c in cited]
+    assert ("element count", "SURF-11") in [(c["decided"], c["rule"]) for c in cited]
     plan = json.loads((ws / "fea_plan.json").read_text())
     assert plan["asked"]["elements"] == 600
 
@@ -536,7 +536,7 @@ def test_the_cleanup_is_cited_when_it_did_something(tmp_path, monkeypatch):
     ok, _marker, _calls, cited = _drive(ws, monkeypatch, {"purpose": "structural"})
     assert ok is True
     (entry,) = [c for c in cited if c["decided"] == "surface cleaned"]
-    assert entry["rule"] == "SURF-7" and entry["value"] == 2 and entry["inputs"]["limit_from"] == "rule"
+    assert entry["rule"] == "SURF-8" and entry["value"] == 2 and entry["inputs"]["limit_from"] == "rule"
     assert entry["words"].startswith("Closed 2 gap(s) between the surfaces")
     res = shell_run.read(ws)
     assert "Closed 2 gap(s) between the surfaces" in res["words"]
@@ -595,7 +595,7 @@ def test_an_iges_copy_of_a_solid_is_staged_as_the_solid_its_step_is(tmp_path):
 
 def test_a_face_written_twice_is_no_solid(tmp_path):
     """SHELL-15k: two copies of one face sew into a closed pocket of no volume. It is no solid: the file is still the
-    surface it is, and the surface run leaves the second copy out (SURF-8)."""
+    surface it is, and the surface run leaves the second copy out (SURF-9)."""
     one = sx.plate_with_hole()
     ws = _stage(sx.compound([one, sx.copy_of(one)]), tmp_path / "ws")
     seen: dict = {}

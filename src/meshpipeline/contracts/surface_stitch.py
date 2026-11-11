@@ -1,6 +1,6 @@
-# Responsibility: Read from the user's own words HOW FAR A SURFACE FILE'S GAPS MAY BE STITCHED (SURF-7: "stitch gaps
+# Responsibility: Read from the user's own words HOW FAR A SURFACE FILE'S GAPS MAY BE STITCHED (SURF-8: "stitch gaps
 # up to 0.5 mm", "sewing tolerance 0.2 mm", "close gaps under 0.3 mm", "do not stitch") and WHICH SMALL HOLES TO FILL
-# (SURF-9: "ignore holes under 5 mm", "fill holes smaller than 3 mm") - one fixed word table, no model.
+# (SURF-10: "ignore holes under 5 mm", "fill holes smaller than 3 mm") - one fixed word table, no model.
 # Boundaries: pure over text; it never guesses. A bare number is millimetres. It decides nothing about the geometry:
 # cad/surface_clean applies what is read here, and engines/surface_run says it back.
 # Collaborates with: engines/surface_run.py (the run's tolerance), cad/surface_clean.py, contracts/shell_thickness.py

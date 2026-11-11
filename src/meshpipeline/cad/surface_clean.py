@@ -1,4 +1,4 @@
-# Responsibility: THE SAFE PART OF GEOMETRY CLEAN-UP FOR A SURFACE FILE (SURF-7..9): what a pre-processor user does by
+# Responsibility: THE SAFE PART OF GEOMETRY CLEAN-UP FOR A SURFACE FILE (SURF-8..10): what a pre-processor user does by
 # hand before meshing a surface model - stitch small gaps, leave out a face drawn twice, fill a pinhole - done by
 # rule, the same way every time, and reported: a face written twice is left out once, the gaps between
 # neighbouring faces are closed rung by rung up a measured sewing ladder (each rung judged before it is kept), a hole
@@ -17,7 +17,7 @@
      "duplicates", "pinholes", "pinhole_widest_mm", "refused": "" | why the next rung was not taken,
      "left_open", "left_widest_mm", "left_at_mm": [...]}
 
-SURF-7, the ladder. The file is first sewn at the clean check's own tolerance (one ten-thousandth of its size), as
+SURF-8, the ladder. The file is first sewn at the clean check's own tolerance (one ten-thousandth of its size), as
 before. Free edges of DIFFERENT faces that still lie along each other are a gap. The sewing is then tried again at
 each rung of RUNGS times that tolerance, lowest first, never past the limit; after each try every pair of edges it
 joined is judged, and the rung is kept only when every join is a gap closed:
@@ -38,14 +38,14 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-#: SURF-7: THE LADDER'S RUNGS, in sew tolerances (one tolerance = cad/validity_brep.SEW_TOLERANCE of the diagonal)
+#: SURF-8: THE LADDER'S RUNGS, in sew tolerances (one tolerance = cad/validity_brep.SEW_TOLERANCE of the diagonal)
 RUNGS = (2.0, 5.0, 10.0, 20.0, 50.0)
-#: SURF-7: with no tolerance stated, gaps are closed up to this many sew tolerances - 1/2000 of the part's size,
+#: SURF-8: with no tolerance stated, gaps are closed up to this many sew tolerances - 1/2000 of the part's size,
 #: the same reach inside which an edge lying along its neighbour is called an edge that does not meet it (SURF-2's
 #: NEAR_SEW): what used to be said as a gap is now closed. The measured numbers behind it are in
 #: docs/design/shell/README.md section 12.
 GAP_RULE = 5.0
-#: SURF-7: a gap is never closed across more than this share of the narrower face beside it (the extraction's own
+#: SURF-8: a gap is never closed across more than this share of the narrower face beside it (the extraction's own
 #: cap for loose faces, cad/midsurface.SEW_CAP)
 GAP_FACE = 0.1
 #: the ladder is not climbed on a file with more free edges than this (its gaps are said, not closed)
@@ -54,15 +54,18 @@ MAX_FREE_EDGES = 20_000
 GAP_SAMPLES = 5
 #: places kept in the record
 MAX_PLACES = 12
-#: SURF-7: two faces that leave a joined edge within this angle of each other lie on each other (degrees)
+#: SURF-8: two faces that leave a joined edge within this angle of each other lie on each other (degrees)
 OVERLAP_DEG = 10.0
 #: points tried along an edge to find the one nearest a place
 INTO_SAMPLES = 32
-#: SURF-7: gaps wider than the limit are looked for, and said, up to this many sew tolerances (1/200 of the part)
-REPORT_REACH = 50.0
-#: SURF-8: a face is another face written twice when its outline, its area and points inside it lie on that face
+#: SURF-8: gaps wider than the limit are looked for, and said, up to this many sew tolerances (1/100 of the part's
+#: size; at 50 a face pulled 50 tolerances off sat on the edge of the reach and 11 of 74 such files went unsaid)
+REPORT_REACH = 100.0
+#: SURF-9: a face is another face written twice when its outline, its area and points inside it lie on that face
 #: within the sew tolerance
 DUP_POINTS = ((0.5, 0.5), (0.3, 0.3), (0.7, 0.3), (0.3, 0.7), (0.7, 0.7))
+#: ... and, when those miss the face, the first of a DUP_GRID x DUP_GRID grid that lie inside it
+DUP_GRID = 12
 
 
 def _r(v: float) -> float:
@@ -71,7 +74,7 @@ def _r(v: float) -> float:
 
 
 # #
-# SURF-8: a face written twice
+# SURF-9: a face written twice
 # #
 
 def _inner_points(face) -> list[np.ndarray]:
@@ -87,11 +90,15 @@ def _inner_points(face) -> list[np.ndarray]:
     if not all(math.isfinite(x) for x in (u0, u1, v0, v1)):
         return []
     out = []
-    for fu, fv in DUP_POINTS:
+    # the fixed points first, then a fine grid (a ring's middle is its hole; a strip's lies off a corner)
+    grid = [(a / DUP_GRID, b / DUP_GRID) for a in range(1, DUP_GRID) for b in range(1, DUP_GRID)]
+    for fu, fv in (*DUP_POINTS, *grid):
         u, v = u0 + fu * (u1 - u0), v0 + fv * (v1 - v0)
         if BRepClass_FaceClassifier(face, gp_Pnt2d(u, v), 1e-9).State() == TopAbs_IN:
             p = s.Value(u, v)
             out.append(np.array([p.X(), p.Y(), p.Z()]))
+            if len(out) >= len(DUP_POINTS):
+                break
     return out
 
 
@@ -122,7 +129,7 @@ def _lies_on(face, other, tol: float) -> bool:
 
 
 def without_duplicates(faces: list, tol: float) -> tuple[list[int], list[int]]:
-    """SURF-8: (the indices of the faces kept, the indices left out). A face is left out when an EARLIER face of the
+    """SURF-9: (the indices of the faces kept, the indices left out). A face is left out when an EARLIER face of the
     file is the same face: the same area, the same box, and each lying on the other within tol. The first written
     stands. Nothing else is compared: a face lying on another but smaller, larger or shifted is not a duplicate."""
     from meshpipeline.cad import midsurface as ms
@@ -154,7 +161,7 @@ def without_duplicates(faces: list, tol: float) -> tuple[list[int], list[int]]:
 
 
 # #
-# SURF-7: the ladder
+# SURF-8: the ladder
 # #
 
 def _owner_map(faces: list):
@@ -281,7 +288,7 @@ def _couples(sewn, tol: float) -> tuple[object, list[dict]]:
 
 
 def try_rung(sewn, tol: float, *, face_cap: bool = True) -> tuple[object | None, dict]:
-    """SURF-7: ONE RUNG. The sewn faces sewn again at `tol`, and every pair of edges that sewing joined judged.
+    """SURF-8: ONE RUNG. The sewn faces sewn again at `tol`, and every pair of edges that sewing joined judged.
     Returns (the new Sewn, the rung's record) - the Sewn is None when the rung is refused (record["refused"] says
     why) or joined nothing (record["joined"] == 0).
     record: {"tol", "joined", "widest", "places": [(gap, middle)], "refused"} in the shape's own units."""
@@ -351,7 +358,7 @@ def try_rung(sewn, tol: float, *, face_cap: bool = True) -> tuple[object | None,
 
 
 def wider(sewn, reach: float) -> dict:
-    """SURF-7: THE GAPS A WIDER TOLERANCE WOULD CLOSE, found and not closed: one trial sewing at `reach`, and the
+    """SURF-8: THE GAPS A WIDER TOLERANCE WOULD CLOSE, found and not closed: one trial sewing at `reach`, and the
     pairs it would join that are gaps by the same judgement (different faces, not lying on each other).
     {"count", "widest", "places"} in the shape's own units - what is said to the user as left open."""
     out = {"count": 0, "widest": 0.0, "places": []}
@@ -366,11 +373,25 @@ def wider(sewn, reach: float) -> dict:
                   key=lambda x: (-x[0], x[1]))
     if good:
         out.update(count=len(good), widest=float(good[0][0]), places=good)
+        return out
+    # the sewing pairs nothing it may join (a pair it would refuse hides the rest): free edges lying along another
+    # face within the reach are found one by one, as SURF-2 finds them within its own
+    try:
+        from meshpipeline.cad import surface_model as sm
+
+        sheets = sm.measure(sewn, mm_per_unit=1.0, reach=reach)
+    except Exception as exc:  # noqa: BLE001 - nothing more is said
+        logger.info("surface clean: the wider gaps were not measured (%s)", type(exc).__name__)
+        return out
+    n = sum(int(s["unmet_edges"]) for s in sheets)
+    if n:
+        places = [(0.0, list(p)) for s in sheets for p in s["unmet_at_mm"]]
+        out.update(count=n, widest=max(float(s.get("unmet_widest_mm") or 0.0) for s in sheets), places=places)
     return out
 
 
 def ladder(sewn, limit: float, *, stated: bool = False) -> tuple[object, dict]:
-    """SURF-7: climb the ladder from the sewn faces: each rung of RUNGS (times the sew tolerance) up to `limit` (the
+    """SURF-8: climb the ladder from the sewn faces: each rung of RUNGS (times the sew tolerance) up to `limit` (the
     shape's own units), and the limit itself as the last rung. A rung that joins nothing is passed over; one that
     is refused stops the climb. Returns (the Sewn to use, {"rung", "joined", "widest", "places", "refused"})."""
     out = {"rung": 0.0, "joined": 0, "widest": 0.0, "places": [], "refused": ""}
@@ -406,7 +427,7 @@ def ladder(sewn, limit: float, *, stated: bool = False) -> tuple[object, dict]:
 
 
 # #
-# SURF-9: pinholes
+# SURF-10: pinholes
 # #
 
 def _across(wire) -> float:
@@ -432,7 +453,7 @@ def _across(wire) -> float:
 
 
 def fill_pinholes(sewn, limit: float) -> tuple[object, list[float]]:
-    """SURF-9: every INNER loop of a face that is no bigger across than `limit` is taken off its face: the hole is
+    """SURF-10: every INNER loop of a face that is no bigger across than `limit` is taken off its face: the hole is
     filled with the face's own surface, which was always there under it. Only a loop whose every edge is free (the
     hole is open, nothing is attached to its rim). Returns (the Sewn, the sizes of the holes filled)."""
     from OCP.BRep import BRep_Builder
@@ -494,7 +515,7 @@ def fill_pinholes(sewn, limit: float) -> tuple[object, list[float]]:
 
 def clean(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
           holes_mm: float | None = None) -> tuple[object, dict]:
-    """SURF-7 and SURF-9 on a surface part's sewn faces: (the Sewn to mesh, the clean-up record in mm). `limit_mm`:
+    """SURF-8 and SURF-10 on a surface part's sewn faces: (the Sewn to mesh, the clean-up record in mm). `limit_mm`:
     the stitch tolerance the user's notes state (None: the rule's, GAP_RULE sew tolerances). `holes_mm`: the size
     under which the user asked for holes to be filled (None: only pinholes no bigger than the gaps closed)."""
     mm = float(mm_per_unit)

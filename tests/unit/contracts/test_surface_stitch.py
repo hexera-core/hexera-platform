@@ -1,5 +1,5 @@
-# Responsibility: Verify the word table that reads a stitch tolerance and a hole size from the user's notes (SURF-7,
-# SURF-9, contracts/surface_stitch): the forms it reads, the units, "do not stitch", the latest word standing, and
+# Responsibility: Verify the word table that reads a stitch tolerance and a hole size from the user's notes (SURF-8,
+# SURF-10, contracts/surface_stitch): the forms it reads, the units, "do not stitch", the latest word standing, and
 # the words it must not read (a thickness, an element size, a hole that is not to be filled).
 # Boundaries: pure text; no geometry.
 from __future__ import annotations

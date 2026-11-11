@@ -5,7 +5,7 @@
 # (engines/shell_writers), the viewer mesh and the run's record (engines/shell_run's shell_run.json), the delivery
 # (engines/shell_delivery). The wall thickness is the user's (contracts/shell_thickness); with none given the mesh is
 # still delivered, sized as for a thin sheet, with the thickness plainly not set in every file. The surface is
-# cleaned by rule before it is meshed (SURF-7..9, cad/surface_clean: small gaps stitched, a face written twice left
+# cleaned by rule before it is meshed (SURF-8..10, cad/surface_clean: small gaps stitched, a face written twice left
 # out, pinholes filled) and the result says what was done; a stitch tolerance or a hole size in the user's notes
 # (contracts/surface_stitch) is honoured. The user's element count (SHMESH-23) and the mesh requirements read from
 # their notes (NOTE-7..9, engines/mesh_requirements when that reader is in the build) reach the shell mesher here
@@ -105,7 +105,7 @@ def _gap(mm: float) -> str:
 
 
 def clean_words(cleaned: dict | None) -> list[str]:
-    """SURF-7..9: WHAT THE CLEAN-UP DID, one short sentence each, nothing when it did nothing."""
+    """SURF-8..10: WHAT THE CLEAN-UP DID, one short sentence each, nothing when it did nothing."""
     c = cleaned or {}
     out = []
     if c.get("duplicates"):
@@ -126,7 +126,7 @@ def clean_words(cleaned: dict | None) -> list[str]:
 
 
 def open_words(n: int, cleaned: dict | None) -> str:
-    """SURF-2 / SURF-7: the gaps LEFT OPEN, said with their size and the way to close them."""
+    """SURF-2 / SURF-8: the gaps LEFT OPEN, said with their size and the way to close them."""
     c = cleaned or {}
     said = f"The surfaces do not meet at {n} edge(s): the shell has gaps there"
     widest = float(c.get("left_widest_mm") or 0.0)
@@ -152,7 +152,7 @@ def _ask(widest_mm: float) -> float:
 
 
 def wider_words(cleaned: dict | None) -> str:
-    """SURF-7: edges that run side by side WIDER APART than the gaps closed by rule: found, not closed, and said -
+    """SURF-8: edges that run side by side WIDER APART than the gaps closed by rule: found, not closed, and said -
     with the note that closes them (they may be meant to be apart: only the user knows)."""
     c = cleaned or {}
     n = int(c.get("wider_gaps") or 0)
@@ -165,7 +165,7 @@ def wider_words(cleaned: dict | None) -> str:
 
 
 def stitch_for(state):
-    """SURF-7 / SURF-9: what the user's words say about the clean-up (contracts/surface_stitch): a stitch tolerance,
+    """SURF-8 / SURF-10: what the user's words say about the clean-up (contracts/surface_stitch): a stitch tolerance,
     "do not stitch", a hole size - the latest word standing, a note over the intake's summary."""
     from meshpipeline.contracts import shell_thickness as st
     from meshpipeline.contracts import surface_stitch as ss
@@ -229,7 +229,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
     every file a shell run writes into `workspace`. Returns the run's record, shell_run.json's shape plus "surface":
     {"kind", "why", "thickness_mm", "thickness_set", "sizing_wall_mm", "sheets", "faces", "open_share", ...}.
     `thickness_mm`: the user's (None: not given); `said_shell`: their words asked for a shell (SURF-1). `stitch`
-    False, `sew_mm`, `holes_mm`: what their notes say of the clean-up (SURF-7, SURF-9). `target`: the element count
+    False, `sew_mm`, `holes_mm`: what their notes say of the clean-up (SURF-8, SURF-10). `target`: the element count
     they asked for (SHMESH-23); `requirements`: the mesh requirements read from their notes (NOTE-7..9)."""
     import numpy as np
 
@@ -439,12 +439,12 @@ async def surface_pass(ws: Path, state, *, job_id: str, run=None, target: dict |
 
 
 def _clean_cites(cleaned: dict | None, sewing) -> list[dict]:
-    """SURF-7..9: the clean-up in the decision record - one entry, only when it did or was asked something."""
+    """SURF-8..10: the clean-up in the decision record - one entry, only when it did or was asked something."""
     c = cleaned or {}
     did = clean_words(c)
     if not did and not c.get("left_open") and not getattr(sewing, "given", False):
         return []
-    return [{"stage": GATE, "decided": "surface cleaned", "value": int(c.get("closed_edges") or 0), "rule": "SURF-7",
+    return [{"stage": GATE, "decided": "surface cleaned", "value": int(c.get("closed_edges") or 0), "rule": "SURF-8",
              "inputs": {"limit_mm": c.get("limit_mm"), "limit_from": c.get("limit_from"), "rung_mm": c.get("rung_mm"),
                         "closed_widest_mm": c.get("closed_widest_mm"), "duplicates": c.get("duplicates"),
                         "pinholes": c.get("pinholes"), "left_open": c.get("left_open"),

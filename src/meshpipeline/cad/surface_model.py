@@ -165,7 +165,7 @@ def sew(shape, *, junctions: bool = False, leave_out: frozenset[int] = frozenset
     SEW_TOLERANCE of the diagonal - edges that meet within it become one edge, every other edge stays free) and
     grouped into sheets. With `junctions`, an edge three or more faces meet along (a rib on a plate, a T) is sewn
     into one edge too - the same tolerance, the sewing's own non-manifold mode. `leave_out`: the faces (their
-    place in the file, from 0) that are another face written twice (SURF-8); the others keep their own numbers.
+    place in the file, from 0) that are another face written twice (SURF-9); the others keep their own numbers.
     None when the file holds no face with a size."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
     from OCP.TopAbs import TopAbs_FACE
@@ -321,7 +321,7 @@ def measure(sewn: Sewn, *, mm_per_unit: float, reach: float | None = None) -> li
     """Each sheet of the sewn file, measured (SURF-1, SURF-2): its area and size, its free edges chained into loops
     with the area each spans, its open share, and the edges that do not meet their neighbour. `reach` (the shape's
     own units): how near a neighbouring face an edge must lie to count as not meeting it - NEAR_SEW sew tolerances
-    unless a wider stitch tolerance was stated (SURF-7)."""
+    unless a wider stitch tolerance was stated (SURF-8)."""
     from OCP.BRep import BRep_Tool
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
     from OCP.TopExp import TopExp
@@ -431,7 +431,7 @@ def classify(sheets: list[dict], *, said_shell: bool = False) -> tuple[str, str,
 def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = True,
          sew_mm: float | None = None, holes_mm: float | None = None) -> tuple[dict, Sewn | None]:
     """SURF-1: what kind of file this is, with the sheets as measured: (the reading, the sewn faces - None unless
-    the reading is "surface" or "gap"). A surface part is then cleaned (SURF-7..9, cad/surface_clean): a face written
+    the reading is "surface" or "gap"). A surface part is then cleaned (SURF-8..10, cad/surface_clean): a face written
     twice is left out, the gaps between neighbouring faces are closed up the sewing ladder, pinholes are filled -
     and the reading says what was done ("cleaned") and measures what is left. `stitch` False: the user said not
     to; `sew_mm`: the stitch tolerance their notes state (None: the rule's); `holes_mm`: the size under which they
@@ -442,7 +442,7 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = 
 
     if has_solid(shape):
         return {"kind": "solid", "why": "the file holds a solid", "sheets": []}, None
-    # SURF-8: A FACE WRITTEN TWICE is left out before anything is sewn or judged (sewn in, it pairs its edges with
+    # SURF-9: A FACE WRITTEN TWICE is left out before anything is sewn or judged (sewn in, it pairs its edges with
     # its twin's and the two read as a closed pocket)
     twice: list[int] = []
     try:
@@ -480,7 +480,7 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = 
         kind, why, share = classify(sheets, said_shell=said_shell)
     cleaned: dict | None = None
     if kind == "surface":
-        # SURF-7 / SURF-9: THE CLEAN-UP, only once the file is known to be a surface part (what kind of file it is
+        # SURF-8 / SURF-10: THE CLEAN-UP, only once the file is known to be a surface part (what kind of file it is
         # was read above from the file as written: a closed skin with a crack is still a closed skin with a crack)
         cleaned = {"duplicates": len(twice), "duplicate_faces": [f"Face_{k + 1}" for k in twice][:MAX_PLACES]}
         reach = None
@@ -579,14 +579,14 @@ def record(reading: dict, sewn: Sewn, *, mm_per_unit: float, walls_mm: dict[str,
                      f"{reading['sew_tolerance_mm']:.3g} mm: the shell has gaps there (SURF-2).")
     c = reading.get("cleaned") or {}
     if c.get("duplicates"):
-        notes.append(f"{c['duplicates']} face(s) written twice in the file were left out once (SURF-8).")
+        notes.append(f"{c['duplicates']} face(s) written twice in the file were left out once (SURF-9).")
     if c.get("closed_edges"):
         notes.append(f"{c['closed_edges']} gap(s) between neighbouring faces were closed, the widest "
                      f"{c['closed_widest_mm']:.3g} mm, within {c['limit_mm']:.3g} mm "
-                     f"({'the tolerance the notes state' if c.get('limit_from') == 'notes' else 'the rule'}, SURF-7).")
+                     f"({'the tolerance the notes state' if c.get('limit_from') == 'notes' else 'the rule'}, SURF-8).")
     if c.get("pinholes"):
         notes.append(f"{c['pinholes']} hole(s) up to {c['pinhole_widest_mm']:.3g} mm across were filled with the "
-                     "face's own surface (SURF-9).")
+                     "face's own surface (SURF-10).")
     rec = {"version": ms.VERSION, "unit": "mm", "ratio": sp.SHELL_RATIO, "diag_mm": reading["diag_mm"],
            "source": "surface", "surface_model": reading,
            "bodies": bodies, "pairs": pairs, "faces": roles, "mids": mids, "sewn": census,

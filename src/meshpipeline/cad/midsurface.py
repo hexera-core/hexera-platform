@@ -3112,6 +3112,10 @@ def _analytic_face(face, tol: float):
     analytic = (Geom_Plane, Geom_CylindricalSurface, Geom_ConicalSurface, Geom_SphericalSurface, Geom_ToroidalSurface)
     if isinstance(surf, analytic):
         return face
+    if SEW_SWEPT:
+        swept = _swept_face(face)
+        if swept is not None:
+            return swept
     try:
         conv = GeomConvert_SurfToAnaSurf(surf)
         new = conv.ConvertToAnalytical(float(tol))
@@ -3168,6 +3172,48 @@ def _analytic_face(face, tol: float):
         # (sh0076's IGES copy) had no triangles, and its 1.5 mm walls lost two pairs (shell -> mixed)
         return face
     return out
+
+
+#: SHELL-15m: a loose face written as a surface of revolution or of extrusion is first re-made by OpenCASCADE's own
+#: whole-face conversion (ShapeCustom.SweptToElementary: the surface and every curve on it converted together)
+SEW_SWEPT = True
+
+
+def _swept_face(face):
+    """SHELL-15m: a face on a surface of revolution or of linear extrusion (how an IGES writer stores a cylinder,
+    cone, sphere or torus) re-made on the elementary surface it is by OpenCASCADE's whole-face conversion - the
+    surface AND the face's curves on it converted together, so its wires stay its own (the surface-only re-make of
+    SHELL-15c leaves curves made for the old surface, and on a torus bend or a funnel's cone it read invalid and the
+    face was kept as written: 8 of a pipe bend's 16 faces, 213 of a frame's 225). None unless the result is one valid
+    face with the same area that meshes, its material side kept."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.Geom import Geom_SurfaceOfLinearExtrusion, Geom_SurfaceOfRevolution
+    from OCP.ShapeCustom import ShapeCustom
+    from OCP.TopAbs import TopAbs_REVERSED
+    from OCP.TopoDS import TopoDS
+
+    if not isinstance(BRep_Tool.Surface_s(face), (Geom_SurfaceOfRevolution, Geom_SurfaceOfLinearExtrusion)):
+        return None
+    try:
+        got = _faces(ShapeCustom.SweptToElementary_s(face))
+        if len(got) != 1:
+            return None
+        out = TopoDS.Face_s(got[0])
+        if not BRepCheck_Analyzer(out).IsValid() or abs(_area(out) - _area(face)) > 1e-6 * _area(face):
+            return None
+        q = _inner_point(face)
+        n0, n1 = (_face_normal_at(face, q), _face_normal_at(out, q)) if q is not None else (None, None)
+        if n0 is None or n1 is None:
+            return None
+        s0 = -1.0 if face.Orientation() == TopAbs_REVERSED else 1.0
+        s1 = -1.0 if out.Orientation() == TopAbs_REVERSED else 1.0
+        if float(np.dot(s0 * n0, s1 * n1)) < 0:
+            out = TopoDS.Face_s(out.Reversed())
+        return out if _meshes(out) else None
+    except Exception as exc:  # noqa: BLE001 - the surface-only re-make is tried next
+        logger.debug("shell: a swept face was not re-made whole (%s)", type(exc).__name__)
+        return None
 
 
 def _meshes(face) -> bool:

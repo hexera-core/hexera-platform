@@ -195,7 +195,7 @@ def _faces_in(shape) -> int:
 def _encloses(solid, diag: float) -> bool:
     """SHELL-15k: whether a solid made from a closed shell encloses a volume at all (more than cad/validity's
     ZERO_VOLUME_RATIO of the file's size cubed). A face written twice sews into a closed pocket of no volume: no
-    solid, and the file is still the surface it is (SURF-8 leaves the second copy out)."""
+    solid, and the file is still the surface it is (SURF-9 leaves the second copy out)."""
     from OCP.BRepGProp import BRepGProp
     from OCP.GProp import GProp_GProps
 
@@ -1906,7 +1906,7 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
 
 
 async def surface_asks(ws: Path, state, *, job_id: str, run=None, publish=None) -> tuple[dict | None, dict | None]:
-    """SURF-10: WHAT THE USER'S WORDS ASK OF A SURFACE FILE'S MESH, read by the same readers the solid route uses,
+    """SURF-11: WHAT THE USER'S WORDS ASK OF A SURFACE FILE'S MESH, read by the same readers the solid route uses,
     so a count or a size written in the notes reaches a surface file as it reaches a solid: (the element count,
     PLAN-fea-27 / SHMESH-23 - the FEA plan's AI step shown the file with no zones, its answer checked by the same
     rules; the notes' mesh requirements, NOTE-7..9 - read by this module's read_requirements when that reader is in
@@ -1927,7 +1927,7 @@ async def surface_asks(ws: Path, state, *, job_id: str, run=None, publish=None) 
         target = element_target(state, ai)
         if target and target.get("elements"):
             _cite(job_id, [{"stage": "fea_ai", "decided": "element count", "value": int(target["elements"]),
-                            "rule": "SURF-10", "inputs": {k: target.get(k) for k in ("mode", "low", "high")},
+                            "rule": "SURF-11", "inputs": {k: target.get(k) for k in ("mode", "low", "high")},
                             "words": f"The notes ask for {int(target['elements']):,} elements: the shell's sizes "
                                      "follow that count."}])
     except StaleExecutionPublish:
@@ -1945,7 +1945,7 @@ async def surface_asks(ws: Path, state, *, job_id: str, run=None, publish=None) 
 async def _deliver_surface(ws: Path, rec: dict, *, job_id: str, run, target: dict | None = None,
                            asked: dict | None = None):
     """SURF-3: a surface file's shell delivered as THE result (as SHSTAGE-7 delivers a said shell); one that could not
-    be made is the run's plain reason - the file holds no solid to mesh instead. SURF-10: the user's count and the
+    be made is the run's plain reason - the file holds no solid to mesh instead. SURF-11: the user's count and the
     notes' requirements are told as asked against delivered, as for a mid-surface shell."""
     from meshpipeline.contracts.failure_cause import FailureCause
     from meshpipeline.engines import shell_delivery as SD
@@ -2008,7 +2008,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         # plan or fall back to. Any other file with no solid carries on exactly as before.
         from meshpipeline.engines import surface_run as SR
 
-        # SURF-10: the user's count and the notes' mesh requirements, read as the solid route reads them
+        # SURF-11: the user's count and the notes' mesh requirements, read as the solid route reads them
         target, asked = await surface_asks(ws, state, job_id=job_id, run=run, publish=publish)
         surfaced = await SR.surface_pass(ws, state, job_id=job_id, run=run, cite=_cite, left_s=attempt_left_s(run),
                                          target=target)

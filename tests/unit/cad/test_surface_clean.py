@@ -1,4 +1,4 @@
-# Responsibility: Verify SURF-7..9 (cad/surface_clean, through cad/surface_model.read): the safe part of geometry
+# Responsibility: Verify SURF-8..10 (cad/surface_clean, through cad/surface_model.read): the safe part of geometry
 # clean-up on a surface file. Gaps between neighbouring faces are closed up a sewing ladder, never past the rule's
 # limit unless the user stated a tolerance; a slot drawn in one face and two faces lying on each other are never
 # sewn; a face written twice is left out; a pinhole is filled; what is left open is measured and said; a clean file
