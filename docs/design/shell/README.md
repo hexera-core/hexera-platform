@@ -372,6 +372,52 @@ coverage 87.8 / 80.7 / 96.5% to 87.9 / 81.8 / 97.9%.
 - **The same twice.** All 281 records and surfaces byte-identical over two runs; meshes identical but on two files
   whose gmsh quad recombination differs run to run on the base code too.
 
+### 2.4.5 Walls off the middle round bends, walls never found: what the census found (11 Nov, walls round 2)
+
+The census (630 new public parts, DEV half 305; `~/shellcamp/census`) named two classes for the walls stream. Each
+was read on its DEV files, against the extraction's own surface and the delivered mesh.
+
+**"Wall misplaced", 10 DEV files: mostly not the mid-surface.** Every mesh node's exact distance to the sewn
+mid-surface was read, as delivered and with the mesh's sliver merge (SHMESH-12) off. On 8 files (two square and one
+rectangular hollow section, a hollow-section column base, a Z and a hat bracket, two rectangular ducts) the
+mid-surface is exact and the mesh leaves it: 6 to 249 nodes more than 0.3 of a wall off it, none with the merge off.
+A rounded corner or bend is a mapped strip (SHMESH-16), its elements sized across by the curvature rule (an SHS
+40x40x2's 4.7 mm corner: 6 across, 0.78 mm, under the 1 mm floor) and stretched up to 5 times along it. SHMESH-12
+calls an edge a CAD sliver when it is under the floor and under a fifth of its elements' longest edge: 0.78 is under
+both, so every edge across every corner is merged, the corner closes to a line and the flat faces' nodes are pulled
+over it into the hollow (1.25 mm off a 2 mm wall). The strip's stretch (5) and the merge's share (1/5) meet exactly.
+That is the mesh stream's code; it is handed over with a measured patch (below), not changed here. Of the other two,
+a robot-arm chassis's off-middle nodes lie on SHELL-13 / SHELL-22 strips laid on a skin, and a joggled hat rail's on
+a straight extension run on past a bend (joins); a fuselage panel's mid-surface is exact (a fillet torus of radius 5
+between 4 and 6) and its reading 0.56 of a wall off is left to the mesh and the scorer.
+
+**"Never found as a wall", 8 DEV files: mostly found by section 2.4.4.** On the walls round's head (#441) an RHS
+trailer frame is fully good (coverage 0.49 before), three hoppers and a duct reach full coverage (they now stop
+later: an open junction, the Nastran limits, the mesh merge above). Left: a sprocket case whose cylinder mid-face
+(14,257 mm2) is in the sewn surface whole but carries no element (gmsh leaves the face empty, without a word: mesh);
+a rocket nose cone, a cone over a cylindrical bore turned 22.6 degrees (a wedge by SHELL-9, no wall); and a vessel's
+elliptical head (2.5 m2, an even 12 mm pair) whose mid-face is never made: the two half-offsets of a surface of
+revolution and a revolved ellipse do not overlap as one surface, and for the fitted mid-face the outside face's
+outline, mapped onto the inside face's parameters (closed both ways), does not close: its bottom circle comes back
+to where it started instead of a whole turn on. The next step for vessel heads.
+
+**Tried and taken out: SHELL-46, a bend between flanges.** The bend whose rounds are not concentric (section 2.4.4's
+SHELL-45) again, read differently: a pair turned past 10 degrees (or a taper reading thicker than its flanges) whose
+wall along the CAD edge it shares with an even pair, read to the far side of the metal, is that flange's wall
+within 2% - one side's edge lies square over the flange's other face - is a tapered wall up to 30 degrees, facing
+squarely somewhere, its span starting at the flange's wall, so it is judged with its flanges. Rounds no bigger than
+a blend were left to the joins. It made the generated brackets one shell (a 2 mm sheet with both rounds 5 mm; 1.5 mm
+with 4 mm; 2 mm with 6 and 7 mm: mixed to shell, metal 1.00 to 1.01) and a rounded 3 mm tube. On the census DEV half
+it read bends on 50 files - printed and sheet parts whose fillets are rounder than two walls - and fully good went
+124 to 122: a rack panel was judged solid (the bend's thickest reading, 41% over its flanges', became the sheet's
+wall), a baseplate's body left solid, an anti-slip pad got 2 open edges, two faceplates ran past the 1800 s
+extraction clock; no file became fully good by it. A bend's wall must be judged with its flanges by the flanges'
+wall, not by its own thickest point, before it can come back.
+
+**Census DEV, #432 head to the walls round's head (#441):** fully good 122 to 124; 9 files better (an RHS trailer
+frame and a deck angle fully good, an enclosure's open junction closed, hoppers and ducts covered), 2 worse (a frame
+and hood extra shell to wall misplaced, 140 to 38 open edges; a pedestal box one element past the Nastran limits).
+
 ### 2.5 Assemblies and mixed parts (PR 3)
 
 **Bonded plates in different bodies:**
