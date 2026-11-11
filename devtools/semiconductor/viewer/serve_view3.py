@@ -966,6 +966,66 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _window(self, job: str, qs: dict):
+        """Every delivered face inside the box the reader is LOOKING at, or a refusal to send any.
+
+        The deep-zoom half of /detail. A cut is a ball a reader opened on something and may be
+        sampled; a window is the whole screen and may not - a sample of the whole screen is a
+        screen with holes in it, and nobody can tell a hole in the sample from a hole in the mesh.
+        So this either carries every face in the box or carries none and says how many there were.
+
+        ONE BODY ONLY. An assembly's bodies live in different frames and a box is not
+        rotation-invariant the way a ball is, so a moved body would need its box transformed into
+        its own frame and the result is no longer a box. /detail does that with a radius because a
+        rotation preserves distance; this refuses instead of guessing.
+        """
+        if not cut_regions(job):
+            return self._json({"detail": "A window reads %s" % JOBS[job]["where"]}, code=409)
+        try:
+            lo = tuple(float(qs[k][0]) for k in ("x0", "y0", "z0"))
+            hi = tuple(float(qs[k][0]) for k in ("x1", "y1", "z1"))
+        except (KeyError, IndexError, ValueError):
+            return self._json({"detail": "a window needs x0,y0,z0 and x1,y1,z1"}, code=422)
+        srcs = cut_sources(job)
+        if any(s["fwd"] for s in srcs):
+            return self._json({"detail": "this scene places a body by a transform, and a box "
+                                         "does not survive one - use a single-body page"},
+                              code=409)
+
+        from meshpipeline.render.detail_window import DetailError, detail_box, detail_response
+        pats: list = []
+        in_box = returned = 0
+        fits = True
+        for src in srcs:
+            try:
+                out = detail_box(src["sidecar"], lo=lo, hi=hi)
+            except DetailError as exc:
+                return self._json({"detail": str(exc)}, code=409)
+            except Exception as exc:            # noqa: BLE001 - say which body, not just "500"
+                sys.stderr.write("   window failed on %s/%s: %r\n" % (job, src["slug"], exc))
+                return self._json({"detail": "%s: %s" % (src["slug"], exc)}, code=500)
+            in_box += int(out.get("faces_in_box") or 0)
+            if not out.get("fits"):
+                fits = False
+                continue
+            for q in out.get("patches") or []:
+                q["name"] = src["prefix"] + str(q.get("name") or "")
+            pats += out.get("patches") or []
+            returned += int(out.get("faces_returned") or 0)
+        if not fits:
+            # A 200, NOT A 4xX. This is the routine answer at every zoom above the threshold; the
+            # client asks again on the next camera move, and an error here would fill a reader's
+            # console with failures for the normal case.
+            return self._json({"job_id": job, "fits": False, "patches": [],
+                               "faces_in_box": in_box,
+                               "why": "%s faces in this view" % format(in_box, ",")})
+        body = detail_response(job, {"centre": [(lo[i] + hi[i]) / 2 for i in range(3)],
+                                     "radius": 0.0, "faces_in_range": in_box,
+                                     "faces_returned": returned, "truncated": False,
+                                     "patches": pats})
+        return self._json({**body, "fits": True, "faces_in_box": in_box,
+                           "lo": list(lo), "hi": list(hi)})
+
     def _detail(self, job: str, qs: dict):
         """The same cut the console serves, when there is a sidecar bundle to serve it from.
 
@@ -1065,6 +1125,8 @@ class Handler(SimpleHTTPRequestHandler):
                                    disposition='attachment; filename="mesh_quality_%s.vtk"' % job)
             if tail == "detail":
                 return self._detail(job, parse_qs(u.query))
+            if tail == "window":
+                return self._window(job, parse_qs(u.query))
             return self._json({"detail": "not served by this stub"}, code=404)
 
         for mount, root in MOUNTS.items():

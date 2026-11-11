@@ -525,6 +525,57 @@ class BoundaryIndex:
         keep &= self._a["sizes"][cand] >= 3
         return cand[keep]
 
+    def faces_in_box(self, lo, hi):
+        """The ids of every face whose centroid is inside the axis-aligned box `lo`..`hi`.
+
+        THE SAME BUCKET WALK AS `faces_near`, with the box's own test instead of the sphere's. It
+        exists because a VIEW is a box and not a ball: covering a screen with a ball either
+        over-reaches at the corners - by a factor of about 2.2 on a 16:9 frustum, which is the
+        difference between fitting a browser's budget and not - or under-reaches in depth and
+        leaves the far half of what the reader can see unread.
+
+        A face whose centroid is in the box is kept WHOLE, the same rule `faces_near` uses, so
+        nothing is ever clipped into a shape the mesher did not write.
+        """
+        import numpy as np
+
+        g = self.meta["grid"]
+        origin = np.asarray(g["origin"], dtype=np.float64)
+        edge = float(g["edge"])
+        dims = np.asarray(g["dims"], dtype=np.int64)
+        a = np.asarray([float(v) for v in lo], dtype=np.float64)
+        b = np.asarray([float(v) for v in hi], dtype=np.float64)
+        a, b = np.minimum(a, b), np.maximum(a, b)
+
+        i0 = np.clip(np.floor((a - origin) / edge).astype(np.int64), 0, dims - 1)
+        i1 = np.clip(np.floor((b - origin) / edge).astype(np.int64), 0, dims - 1)
+        bucket_face = self._a["bucket_face"]
+        starts = self._a["bucket_start"]
+
+        picked: list = []
+        for i in range(int(i0[0]), int(i1[0]) + 1):
+            for j in range(int(i0[1]), int(i1[1]) + 1):
+                base = (i * int(dims[1]) + j) * int(dims[2])
+                s = int(starts[base + int(i0[2])])
+                e = int(starts[base + int(i1[2]) + 1])
+                if e > s:
+                    picked.append(bucket_face[s:e])
+        if not picked:
+            return np.empty(0, dtype=np.int64)
+        cand = np.concatenate(picked).astype(np.int64)
+        cen = self._a["centroids"][cand].astype(np.float64)
+        keep = np.all((cen >= a) & (cen <= b), axis=1)
+        keep &= self._a["sizes"][cand] >= 3
+        return cand[keep]
+
+    def count_in_box(self, lo, hi) -> int:
+        """How many faces are in that box, without packing any of them.
+
+        A deep-zoom viewer has to decide whether the view it is about to draw FITS before it asks
+        for it, and the decision costs a bucket walk while the answer costs tens of megabytes.
+        """
+        return int(self.faces_in_box(lo, hi).size)
+
     def patch_slices(self, face_ids):
         """`face_ids` split by the patch each came from, as [(patch meta, ids), ...].
 
@@ -562,7 +613,17 @@ class BoundaryIndex:
         if not ids.size:
             return b"", b""
         offs = self.offs
-        take = np.concatenate([np.arange(offs[i], offs[i + 1]) for i in ids])
+        # NO PER-FACE PYTHON. This was `concatenate([arange(offs[i], offs[i+1]) for i in ids])`,
+        # which is one interpreter round trip and one live array per face - measured at 2.361 us a
+        # face, which is why `index_surface` says in its own docstring that it cannot use this
+        # method and carries a copy of the fast form instead. A detail cut never noticed, because
+        # a cut is a few thousand faces; a deep-zoom WINDOW is 1,372,166 of them at the zoom where
+        # real cells first become legible, and 3.2 s of the 5.3 s that took was this line.
+        start = offs[ids]
+        length = (offs[ids + 1] - start)
+        total = int(length.sum())
+        group = np.concatenate(([0], np.cumsum(length)[:-1]))
+        take = np.repeat(start - group, length) + np.arange(total, dtype=np.int64)
         mine = conn[take].astype(np.int64)
         sz = sizes[ids].astype(np.int64)
         uniq, inv = np.unique(mine, return_inverse=True)

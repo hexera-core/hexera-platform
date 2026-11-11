@@ -473,6 +473,57 @@ async def get_detail(job_id: uuid.UUID, x: float, y: float, z: float, radius: fl
     return detail_response(str(job_id), out)
 
 
+@router.get("/{job_id}/window")
+async def get_window(job_id: uuid.UUID,
+                     x0: float, y0: float, z0: float, x1: float, y1: float, z1: float,
+                     owner_id: str = Depends(owner_dep),
+                     organization_id: str = Depends(org_dep)):
+    """Everything the DELIVERED mesh has inside one box, unmerged - or a refusal to send any.
+
+    THIS IS WHAT MAKES ZOOM GO DEEPER THAN THE PAYLOAD. /surface is one download sized for a
+    browser, so it is the whole part at whatever subdivision fits; /detail is a ball a reader
+    opened ON something. Neither answers "draw what I am looking at, at full resolution", which is
+    the only question a zoom can keep asking as it goes in. A view is a box, so this takes a box.
+
+    IT REFUSES RATHER THAN SAMPLING, and that is the design rather than a limitation. A sample of a
+    ball a reader opened still answers their question. A sample of the WHOLE VIEW is a screen with
+    holes in it, and the reader cannot tell a hole in the sample from a hole in the mesh. So when
+    the box holds more than `WINDOW_MAX_FACES` this answers `fits: false` and sends nothing, and
+    the client keeps drawing the surface it already has.
+
+    That handover is seamless only because the surface it falls back to is EXACT - coplanar faces
+    merged into the rectangles they already tiled, which moves no geometry at all. Against a
+    budget-clustered surface the same swap would shift the part by the 1.35% of area that route
+    loses, and a reader would see the mesh jump every time detail arrived.
+
+    Measured on the delivered plate, 2026-11-10: a view 4 mm across holds 1,372,166 faces and
+    answers in 2.3 s; 2 mm holds 345,496 and answers in 0.66 s warm. A cell is 5 px at the first
+    of those, which is where this takes over from the surface.
+    """
+    from meshpipeline.application.job_service import final_attempt_workspace
+    from meshpipeline.render.detail_window import DetailError, detail_box, detail_response
+
+    async with get_db() as db:
+        job = await svc.get_job(db, job_id, owner_id, organization_id=organization_id)
+    if job is None:
+        raise HTTPException(404, "No such job")
+    ws = await asyncio.to_thread(final_attempt_workspace, str(job_id))
+    if ws is None:
+        raise HTTPException(404, "This job's workspace is no longer on this machine")
+    try:
+        out = await asyncio.to_thread(detail_box, ws, lo=(x0, y0, z0), hi=(x1, y1, z1))
+    except DetailError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    # A WINDOW THAT DOES NOT FIT IS A 200, not an error. It is the routine answer at every zoom
+    # above the threshold, the client asks again on the next camera move, and a 4xx would put a
+    # failure in the console for the normal case.
+    if not out.get("fits"):
+        return {"job_id": str(job_id), "fits": False, "patches": [],
+                "faces_in_box": out.get("faces_in_box", 0), "why": out.get("why", "")}
+    return {**detail_response(str(job_id), out), "fits": True,
+            "faces_in_box": out.get("faces_in_box", 0)}
+
+
 async def _up_axis_of(job_id: uuid.UUID, owner_id: str, organization_id: str) -> str | None:
     """Which way is up for the part a job meshed - what the user confirmed on its geometry check,
     else what the check proposed - for the viewer to open with. None when the job had no check or

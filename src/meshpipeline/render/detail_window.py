@@ -343,6 +343,119 @@ def detail_at(workspace, *, centre, radius: float, skip_names: tuple[str, ...] =
     }
 
 
+#: How many faces a WINDOW may return. A `detail` cut is a few cell widths across and 150,000 is a
+#: backstop for a radius asked carelessly; a window is the whole screen and the budget is the
+#: screen's, so it is a different number for a different job.
+#:
+#: Measured on this viewer, 2026-11-07: one actor at 1:1 drew 1,904,636 faces / 3,810,902 triangles
+#: in 0.30 ms of CPU per frame at 55.2 fps. And measured on the delivered plate, 2026-11-10: a view
+#: 4 mm across holds 1,372,166 delivered faces, which is where a cell first reaches 5 px - so this
+#: is set just above what the first legible view actually costs, and a view any wider is one the
+#: exact surface should be drawing instead.
+WINDOW_MAX_FACES = int(os.environ.get("HEXERA_WINDOW_MAX_FACES") or 1_500_000)
+
+
+def detail_box(workspace, *, lo, hi, skip_names: tuple[str, ...] = (),
+               max_faces: int = WINDOW_MAX_FACES) -> dict:
+    """Every delivered face inside an axis-aligned box, unmerged - or a refusal to send any.
+
+    WHY A BOX AND NOT A BALL. This is what a deep-zoom view asks for, and a view is a frustum. A
+    ball drawn round it over-reaches at the corners by about 2.2x on a 16:9 screen, which on this
+    plate is the difference between fitting a browser and not; a ball inscribed in it under-reaches
+    in depth and leaves the far half of what the reader can see unread.
+
+    WHY IT REFUSES RATHER THAN SAMPLING, which is the opposite of what `detail_at` does. A cut is a
+    window a reader opened ON something, so a sample of it still answers their question and the
+    budget is shared out so that every patch keeps some. A deep-zoom view is the whole screen, and
+    a sample of the whole screen is a screen with holes in it - the reader cannot tell a gap in the
+    sample from a gap in the mesh. So when the box holds more than `max_faces` this returns
+    `fits: False` and NOTHING else, and the caller keeps drawing the exact surface, which is the
+    same geometry at a coarser subdivision. That is the whole reason the lossless merge had to come
+    first: swapping between the two moves nothing, so the reader sees no seam at the handover.
+
+    Returns {"lo", "hi", "fits", "faces_in_box", "faces_returned", "patches": [...]}.
+    """
+    import numpy as np
+
+    from meshpipeline.engines.cfmesh_conjugate.polymesh_surface import read_boundary_patches
+
+    ws = Path(workspace)
+    a = np.asarray([float(v) for v in lo], dtype=np.float64)
+    b = np.asarray([float(v) for v in hi], dtype=np.float64)
+    if a.shape != (3,) or b.shape != (3,):
+        raise DetailError("a window needs two corners in three dimensions")
+    a, b = np.minimum(a, b), np.maximum(a, b)
+    if not np.all(b > a):
+        raise DetailError("a window needs a positive extent on every axis")
+
+    regions = delivered_regions(ws)
+    if not regions:
+        raise DetailError("this job delivered no mesh boundary to look at")
+
+    # COUNT EVERYTHING BEFORE PACKING ANYTHING. The decision costs a bucket walk and the answer
+    # costs tens of megabytes, so a view that does not fit must not pay for the half that did.
+    found: list[tuple] = []
+    in_box = 0
+    for region, polymesh in regions:
+        rows = [p for p in read_boundary_patches(polymesh) if p["name"] not in skip_names]
+        if not rows:
+            continue
+        try:
+            index = open_index(polymesh)
+        except IndexUnavailable as exc:
+            # NO FALLBACK HERE, unlike `detail_at`. The parse this would need parses the whole
+            # boundary, and a deep-zoom view asks again every time the camera settles.
+            raise DetailError(
+                f"the {region or 'mesh'} boundary has no index beside it, and a window is read "
+                f"from the index or not at all ({exc})") from exc
+        want = {str(p["name"]) for p in rows}
+        ids = index.faces_in_box(a, b)
+        qual = None
+        try:
+            qual = open_quality(polymesh)
+        except QualityUnavailable:
+            qual = None
+        for p, mine in index.patch_slices(ids):
+            if str(p["name"]) not in want:
+                continue
+            in_box += int(mine.size)
+            found.append((region, p, mine, index.pack, _quality_getter(qual)))
+
+    # THE SAME SHAPE `detail_response` PACKS, keys and all, so the browser decodes a window with
+    # the code it already uses for a cut. `centre` and `radius` are the box's own bounding sphere
+    # and are metadata only - nothing here was found with them. `truncated` is always False by
+    # construction: a window either carries every face in the box or carries none, which is what
+    # separates it from a cut.
+    centre = ((a + b) / 2.0).tolist()
+    radius = float(np.linalg.norm(b - a) / 2.0)
+
+    if in_box > max_faces:
+        return {"lo": a.tolist(), "hi": b.tolist(), "fits": False, "faces_in_box": int(in_box),
+                "faces_returned": 0, "patches": [], "centre": centre, "radius": radius,
+                "faces_in_range": int(in_box), "truncated": False,
+                "why": f"{in_box:,} faces in this view and a window carries {max_faces:,}"}
+
+    out: list[dict] = []
+    returned = 0
+    for region, p, idx, pack, qget in found:
+        if not idx.size:
+            continue
+        returned += int(idx.size)
+        pts_b, polys_b = pack(idx)
+        out.append({
+            "name": f"{region}/{p['name']}" if region else str(p["name"]),
+            "type": str(p["type"]),
+            "face_count": int(idx.size),
+            "quality": qget(idx) if qget else None,
+            "faces_in_range": int(idx.size),
+            "points": pts_b,
+            "polys": polys_b,
+        })
+    return {"lo": a.tolist(), "hi": b.tolist(), "fits": True, "faces_in_box": int(in_box),
+            "faces_returned": int(returned), "patches": out, "centre": centre, "radius": radius,
+            "faces_in_range": int(in_box), "truncated": False}
+
+
 def detail_response(job_id: str, cut: dict) -> dict:
     """One cut as the ROUTE serves it: the two buffers base64'd, every number as measured.
 
@@ -457,5 +570,5 @@ def _share_out(budget: int, counts: list[int]) -> list[int]:
     return [min(int(share[i]), int(counts[i])) for i in range(len(counts))]
 
 
-__all__ = ["CACHED_BOUNDARIES", "MAX_RETURN_FACES", "MAX_SOURCE_FACES", "DetailError",
-           "delivered_regions", "detail_at"]
+__all__ = ["CACHED_BOUNDARIES", "MAX_RETURN_FACES", "MAX_SOURCE_FACES", "WINDOW_MAX_FACES",
+           "DetailError", "delivered_regions", "detail_at", "detail_box"]

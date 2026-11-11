@@ -1526,7 +1526,7 @@ function initViewer(job,surf,uiCfg){
       following=!!on;
       if(fol){fol.setAttribute('aria-pressed',following?'true':'false');
               fol.classList.toggle('on',following);}
-      if(following){setArmed(false);setStream(false);folKey='';followNow();}
+      if(following){setArmed(false);setStream(false);setDeep(false);folKey='';followNow();}
       else{folKey='';if(folTimer){clearTimeout(folTimer);folTimer=null;}
            /* `clear`, NOT `dropShown`. `dropShown` removes what the mode drew and leaves
               `hidden` alone, so turning the mode off used to leave the merged surface ghosted at
@@ -1969,7 +1969,7 @@ function initViewer(job,surf,uiCfg){
       streaming=!!on;
       if(str){str.setAttribute('aria-pressed',streaming?'true':'false');
               str.classList.toggle('on',streaming);}
-      if(streaming){setArmed(false);setFollow(false);strKey='';streamNow();}
+      if(streaming){setArmed(false);setFollow(false);setDeep(false);strKey='';streamNow();}
       else{strKey='';if(strTimer){clearTimeout(strTimer);strTimer=null;}
            strFaces=0;strTiles=0;strRead=0;strLeft=0;strDense=0;
            /* `clear`, NOT `dropShown`. `dropShown` removes what the mode drew and leaves
@@ -1979,6 +1979,181 @@ function initViewer(job,surf,uiCfg){
     if(str){
       str.onclick=function(){setStream(!streaming);};
       if(cam.onModified)cam.onModified(strPing);}
+
+    /* ─── DEEP: THE ZOOM KEEPS GOING ───────────────────────────────────────────────────────────
+       "A 25 um cell on a 177 mm part is 0.09 px, so you cannot see your mesh in detail." The first
+       half is true and the second does not follow - it is the iPad and Google Maps problem, and
+       the answer there was never a bigger screen. It is DEPTH: every zoom level backed by real
+       data at the resolution that level can show.
+
+       WHY IT WORKS HERE AND WOULD NOT HAVE BEFORE. The surface this replaces is EXACT - coplanar
+       faces merged into the rectangles they already tiled, so no vertex moved. The real cells and
+       the surface are therefore the SAME GEOMETRY at different subdivisions, and swapping one for
+       the other moves nothing a reader can see. Against the budget-clustered surface the same
+       swap would shift the part by the 1.35% of area that route loses, and the mesh would visibly
+       jump every time detail arrived. The lossless merge is what buys the seam-free handover; it
+       is not a separate nicety.
+
+       WHY IT REPLACES RATHER THAN GHOSTS. Inspect, Follow and Stream all draw a scrap of cells in
+       front of a ghosted surface, because a scrap floating in black tells a reader nothing about
+       where they are. This covers the WHOLE view, so there is nothing to orient against and two
+       coincident surfaces would only fight for the same depth. The surface goes off entirely and
+       comes straight back the moment the view stops fitting.
+
+       WHERE IT TAKES OVER, measured on the delivered plate 2026-11-10 rather than chosen:
+
+           view across   faces in view   px per cell   drawn
+              12 mm        10,831,166        1.68      the exact surface
+               6 mm         3,086,098        3.35      the exact surface
+               4 mm         1,372,166        5.03      REAL CELLS
+               2 mm           345,496       10.06      REAL CELLS
+
+       So the handover lands at about 4 mm of a 177 mm part, where a cell is already 5 px - which
+       is to say it becomes real at exactly the point a reader could first have seen that it was
+       not. Round trip there is 2.3 s, and 0.66 s by 2 mm.
+
+       IT NEVER SENDS A SAMPLE. A cut may be sampled because a reader opened it ON something and
+       a sample still answers them. A sample of the WHOLE VIEW is a screen with holes in it, and
+       nobody can tell a hole in the sample from a hole in the mesh. The route answers `fits:
+       false` and sends nothing, and this keeps the surface up. */
+    const DEEP_SETTLE_MS=300;
+    //: Below this many pixels per DELIVERED cell, do not even ask. The route is the authority on
+    //: whether a view fits - density varies far too much across this part to decide here - but a
+    //: view this far out has never fitted and the round trip is 1.5 s of nothing. p10 and not
+    //: typ, for the reason the streaming gate records: the budget is spent on face COUNT and the
+    //: count is dominated by the fine faces.
+    const DEEP_MIN_PX=3.0;
+    const dep=document.getElementById('v-insp-deep-'+job);
+    let deepOn=false,depTimer=null,depBusy=false,depKey='';
+    let depFaces=0,depFits=false,depInBox=0,depMs=0;
+
+    /* THE VIEW AS A WORLD-ALIGNED BOX. The index answers axis-aligned boxes and a frustum is
+       neither axis-aligned nor a box, so this takes the oriented box around what the camera can
+       see and then the world AABB of its eight corners. That OVER-covers when the camera sits at
+       an angle - by up to root 3 - which is the right direction to be wrong in: it reads some
+       mesh that is off screen, and never misses mesh that is on it.
+
+       The depth is the larger of the two on-screen half-extents, so the box is roughly cubic. A
+       flat slab would be cheaper and would stop at whatever faces the camera, leaving the inside
+       of a channel - the thing a reader zoomed in to look at - unread. */
+    function viewBox(at){
+      const b=camBasis();
+      const th=Math.tan(cam.getViewAngle()*Math.PI/360);
+      const sz=apiRW.getSize(),asp=(sz&&sz[1]>0)?sz[0]/sz[1]:1;
+      /* CENTRED ON THE MESH, AND SIZED AT THE MESH'S DEPTH - not at the focal point's.
+         The focal point is wherever the camera happens to be aimed, and on this part that is
+         usually empty space: `resetCamera` puts it at the centre of the bounding box, which for a
+         cooled plate is inside the metal. A box there read 1,936 faces at a zoom the mesh has
+         1.4 million in, and the mode engaged on an empty view. Same trap that made a focal-point
+         cross-check report 1415.9% coverage earlier in this work.
+         So the caller hands in what is actually under the middle of the screen, and the lateral
+         half-extents are computed at THAT point's distance along the view direction. */
+      const f=at||cam.getFocalPoint();
+      const p=cam.getPosition();
+      const dp=Math.abs((f[0]-p[0])*b.d[0]+(f[1]-p[1])*b.d[1]+(f[2]-p[2])*b.d[2])||camDist();
+      const hy=dp*th,hx=hy*asp,hz=Math.max(hx,hy);
+      const lo=[Infinity,Infinity,Infinity],hi=[-Infinity,-Infinity,-Infinity];
+      for(let s0=-1;s0<=1;s0+=2)for(let s1=-1;s1<=1;s1+=2)for(let s2=-1;s2<=1;s2+=2)
+        for(let k=0;k<3;k++){
+          const v=f[k]+s0*hx*b.r[k]+s1*hy*b.u[k]+s2*hz*b.d[k];
+          if(v<lo[k])lo[k]=v;
+          if(v>hi[k])hi[k]=v;}
+      return {lo,hi,across:2*Math.max(hx,hy)};}
+
+    /* OFF ENTIRELY, not to a tenth. Recorded in `hidden` in the bare-actor shape, which `clear`
+       already knows how to put back - the same list the ghosting modes use, so one `clear`
+       restores whichever of them was last on. */
+    function hideSurface(){
+      if(hidden.length)return;
+      entries.forEach(en=>{
+        if(!en.actor.getVisibility())return;
+        hidden.push(en);
+        en.actor.setVisibility(false);});}
+
+    async function deepNow(){
+      if(!deepOn||depBusy)return;
+      // THE CHEAP GATE FIRST, before the picker: the route is the authority on whether a view
+      // fits, but a view this far out has never fitted and the pick plus the round trip is
+      // seconds of nothing.
+      if(realCellPx()<DEEP_MIN_PX){
+        const g=viewBox();
+        depKey=g.lo.concat(g.hi).map(x=>x.toFixed(7)).join(',');
+        depFits=false;depFaces=0;
+        if(shown.length||hidden.length)clear();
+        lbl.textContent='zoom in and the real cells take over';
+        legendSoon();return;}
+      // WHAT IS ACTUALLY UNDER THE MIDDLE OF THE SCREEN. The same picker Follow uses, and for
+      // the same reason: the camera's focal point is not on the mesh.
+      depBusy=true;
+      const hit=await pickCentre();
+      const v=viewBox(hit);
+      const key=v.lo.concat(v.hi).map(x=>x.toFixed(7)).join(',');
+      if(key===depKey){depBusy=false;return;}
+      depKey=key;
+      const t0=(window.performance&&performance.now)?performance.now():0;
+      if(a)a.dataset.busy='1';
+      try{
+        const q=`x0=${v.lo[0]}&y0=${v.lo[1]}&z0=${v.lo[2]}`
+               +`&x1=${v.hi[0]}&y1=${v.hi[1]}&z1=${v.hi[2]}`;
+        const res=await fetch(`/api/v1/simulation/${job}/window?${q}`,{headers:headers()});
+        if(!res.ok){
+          let why='';try{why=((await res.json())||{}).detail||'';}catch(_e){why='';}
+          lbl.textContent=why?String(why).slice(0,90):('window '+res.status);
+          depFits=false;return;}
+        const got=await res.json();
+        depInBox=+got.faces_in_box||0;
+        if(got.fits&&(got.patches||[]).length){
+          dropShown();
+          hideSurface();
+          /* EDGES ARE BUDGETED ACROSS THE WHOLE SCREEN, not per actor. `setEdges` caps one actor
+             at _EDGE_MAX_POLYS and every patch here is far under it, but this puts several up at
+             once and edge drawing is what loses the WebGL context - measured on this viewer at
+             about 1.9 M faces. At the zoom this engages, the view is 1.37 M faces and climbing
+             as the reader goes wider, so the cap is checked against the TOTAL. */
+          const edgeOff=(+got.faces_returned||0)>_EDGE_MAX_POLYS;
+          drawCut(got,null,edgeOff);
+          /* THE ROUTE'S OWN COUNT, not drawCut's. `painted` counts the patches that got a quality
+             ramp, which is what the cut label wants and is emphatically not a number of cells -
+             it read "1 real cells" for a window carrying nearly two thousand. */
+          depFaces=+got.faces_returned||0;
+          depFits=true;
+          depMs=t0?Math.round(((performance.now()-t0))):0;
+          lbl.textContent=`${depFaces.toLocaleString()} real cells · the whole view`
+                          +(depMs?` · ${(depMs/1000).toFixed(1)} s`:'');
+        }else{
+          depFits=false;depFaces=0;
+          // STRAIGHT BACK TO THE SURFACE, and `clear` rather than `dropShown`, because
+          // `dropShown` leaves `hidden` alone and the surface would stay switched off.
+          if(shown.length||hidden.length)clear();
+          lbl.textContent=depInBox
+            ? `${depInBox.toLocaleString()} cells in view · zoom in and they become real`
+            : 'nothing of the mesh in view';}
+        applyClip();rw.render();legendSoon();}
+      catch(err){depFits=false;lbl.textContent='could not read this view';
+                 console.warn('deep',err);}
+      finally{
+        if(a)delete a.dataset.busy;
+        depBusy=false;
+        // where the camera is NOW against where this answer was for: every ping that arrived
+        // during the round trip was dropped by the busy guard, including the one they stopped on
+        const g=viewBox(hit),now=g.lo.concat(g.hi).map(x=>x.toFixed(7)).join(',');
+        if(deepOn&&now!==depKey)depPing();}}
+
+    function depPing(){
+      if(!deepOn)return;
+      if(depTimer)clearTimeout(depTimer);
+      depTimer=setTimeout(function(){depTimer=null;deepNow();},DEEP_SETTLE_MS);}
+    function setDeep(on){
+      deepOn=!!on;
+      if(dep){dep.setAttribute('aria-pressed',deepOn?'true':'false');
+              dep.classList.toggle('on',deepOn);}
+      if(deepOn){setArmed(false);setFollow(false);setStream(false);depKey='';deepNow();}
+      else{depKey='';if(depTimer){clearTimeout(depTimer);depTimer=null;}
+           depFaces=0;depFits=false;depInBox=0;
+           clear();}}
+    if(dep){
+      dep.onclick=function(){setDeep(!deepOn);};
+      if(cam.onModified)cam.onModified(depPing);}
 
     /* ARMED IS A MODE, and it says so three ways - the button's own state, the cursor, and the
        hint under the canvas - because a mode a reader cannot see is a mode they will click out of
@@ -2246,6 +2421,13 @@ function initViewer(job,surf,uiCfg){
                                    streamFaces:()=>strFaces,streamTiles:()=>strTiles,
                                    streamRead:()=>strRead,streamLeft:()=>strLeft,
                                    streamDense:()=>strDense,
+                                   // the deep-zoom mode: whether the view fits as real cells,
+                                   // how many it drew, and the box it asked for - so a test can
+                                   // drive the handover without a camera setter
+                                   deep:on=>setDeep(on),deepOn:()=>deepOn,
+                                   deepAgain:()=>{depKey='';return deepNow();},
+                                   deepFits:()=>depFits,deepFaces:()=>depFaces,
+                                   deepInBox:()=>depInBox,deepBox:()=>viewBox(),
                                    realCellPx:()=>realCellPx(),
                                    cellPx:()=>cellPx(),viewRadius:()=>viewRadius(),
                                    fitRadius:()=>folFitR,inRange:()=>lastInRange,

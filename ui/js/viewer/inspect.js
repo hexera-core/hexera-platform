@@ -229,6 +229,9 @@ export function inspectorHtml(job, { xray = false, clip = false, fly = false, wo
       <button class="v-insp-b" id="${id('stream')}" type="button" aria-pressed="false"
               title="Fill the whole view with real cells, a tile at a time, up to what a screen can show">
         Stream</button>
+      <button class="v-insp-b" id="${id('deep')}" type="button" aria-pressed="false"
+              title="Keep zooming. Past the point where a cell is worth a pixel, the whole view becomes the real cells - and because the surface it replaces is the mesh exactly, nothing moves as it arrives">
+        Deep</button>
       <label class="v-insp-dial" title="how big a ball of real cells to read">
         <input type="range" id="${id('dial')}" min="0" max="100" value="38"
                aria-label="inspect window size">
