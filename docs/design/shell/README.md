@@ -922,3 +922,40 @@ Time: 1 to 55 s a file (a 400 x 240 mm curved panel of 30 patches, 67,000 elemen
 - Thickness per part from words.
 - A panel drawn as many patches is sized patch by patch (each patch's own width), so it gets more elements than the same panel drawn as one face.
 - A triangle file (STL) that is an open surface is still stopped: it has no faces to group.
+
+## 12. The notes on a surface file (SURF-7, 11 Nov, the combined branch)
+
+Before this, a surface file was meshed before the notes were read, so "Global Mesh Size = 4 mm", a quality list or
+a thickness written as a size field never reached it. Now:
+
+- **Read first, once.** For a file with no solid whose faces do not close, the FEA driver reads the notes' mesh
+  requirements (NOTE-7) before the surface run, and the surface run hands them to the shell mesher as any shell run
+  does (SHMESH-24..26). A file that turns out not to be a surface carries the same reading on: the model is asked
+  once per run.
+- **One thickness.** Two places read a thickness: the fixed word table (SURF-4, `contracts/shell_thickness.py`: the
+  notes, else the stage, else the request) and the "thickness" entry of the notes' typed set. The word table wins
+  whenever it reads one: it is what the stage showed the user before Proceed, and fixed rules read it the same every
+  run, model or no model. The typed set is used only when the word table read nothing and refused nothing (a bare
+  gauge number or a range stays refused). When both read one and they differ, the word table's is used and the
+  other is said as a second thickness. On a surface file the thickness row reads "met - every shell property
+  carries 1.2 mm" (a solid part's says the wall is measured from the CAD).
+- **A global size and no thickness.** The sheet is worked at a wall of the global size (`WALL_PER_GLOBAL` 1.0), not
+  at SURF-5's thin-sheet guess (the sheet's size over 300), and meshed once. The wall only sizes the clean-up: the
+  shell rules' floor (half a wall) is then half the size asked, the shortest edge the usual criteria list allows.
+  No thickness is written.
+
+Measured on the surface lab's 57 surface files that read as surfaces with no words (`~/shellcamp/land`, the criteria
+list at 4 mm, stepped to the part for the smallest and largest; no thickness):
+
+| working wall | size met | limit lines met | all 7 met | inside Nastran |
+|---|---|---|---|---|
+| thin-sheet guess (SURF-5) | 57 | 345 / 399 | 36 | 56 |
+| 0.25 x global | 57 | 349 | 35 | 56 |
+| 0.5 x global | 57 | 353 | 36 | 56 |
+| **1.0 x global (in force)** | 57 | 351 | 36 | 56 |
+| 2.0 x global | 57 | 364 | 37 | 56 |
+
+The size is met at every wall (the global size is the size field either way); the working wall moves only how much
+the clean-up merges, and the aspect-ratio line is where it shows (46 files met with the thin-sheet wall, 54 at 1.0).
+2.0 meets a few more lines but puts the floor at the global size itself, above the shortest edge the user's own list
+allows: not taken. Notes with no global size keep SURF-5 as it was.
