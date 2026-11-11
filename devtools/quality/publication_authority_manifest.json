@@ -4175,6 +4175,32 @@
   "roots": []
  },
  {
+  "context": "engines/mesh_requirements.py::_left_over::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "_left_over",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_MESH_WORDS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/mesh_requirements.py::_numbers::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "_numbers",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/size_brake.py::case_budget::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/size_brake.py",
   "qualname": "case_budget",

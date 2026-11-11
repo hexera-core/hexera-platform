@@ -165,6 +165,12 @@ def _ready(ws: Path, line: dict) -> dict:
     return {**line, "file_ready": ready, **({} if ready else {"file_note": FILE_MISSING})}
 
 
+def _asked_words(q) -> list[str]:
+    """PLAN-fea-34: each requirement of the user's notes, asked against delivered ([] with none)."""
+    from meshpipeline.engines.mesh_requirements import report_words
+    return report_words(q.get("requirements"))
+
+
 def results(workspace) -> dict | None:
     """The block, or None for a workspace that holds no FEA plan."""
     from meshpipeline.contracts.decision_record import limit_met
@@ -299,7 +305,7 @@ def results(workspace) -> dict | None:
         "elements": cells,
         "through_wall": through,
         "plan_words": (list(plan.get("words") or []) + ([net["words"]] if net and net.get("words") else [])
-                       + [w for w in [tiny_words(tiny), faces_said] if w]),
+                       + [w for w in [tiny_words(tiny), faces_said] if w] + _asked_words(q)),
         "hot_spots": spots,
         "faces": faces,
         "download": {"words": "The full download holds:",

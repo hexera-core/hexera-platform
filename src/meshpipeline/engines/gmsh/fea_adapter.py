@@ -1781,6 +1781,16 @@ def _mesh(workspace) -> int:
             shape = fea_quality.measure(solid, set_aside=sorted(aside))
         except Exception as exc:  # noqa: BLE001 - evidence; an unmeasured row decides as unmeasured
             print(f"[GMSH-FEA] plan rules or element quality not measured: {exc}", file=sys.stderr)
+        # PLAN-fea-34: THE USER'S OWN REQUIREMENTS (read from their notes, kept in the workspace), asked against
+        # delivered on this mesh; nothing with no requirement
+        asked_report = None
+        try:
+            from meshpipeline.engines import fea_requirements, shell_run
+            wanted = shell_run.requirements_in(ws)
+            if wanted and solid is not None:
+                asked_report = fea_requirements.report(solid, wanted, order=order)
+        except Exception as exc:  # noqa: BLE001 - told as not measured, never a failed mesh
+            print(f"[GMSH-FEA] the notes' requirements were not measured: {exc}", file=sys.stderr)
         # MESH ONCE, EXPORT MANY (design 8): the Nastran and Ansys files from the same mesh, with the
         # deck's numbers and face names; the user picks one at download
         if not asm:                                    # an assembly's were written with its deck, above
@@ -1822,6 +1832,7 @@ def _mesh(workspace) -> int:
             "groups": {"free": "free"}, "default_group": "free", "default_group_used": True,
             "deck": deck,
             **({"fea_faces": faces_acc} if faces_acc else {}),
+            **({"requirements": asked_report} if asked_report else {}),
             # the worst figures, top level, where the production limits read them
             **{k: shape.get(k) for k in ("fea_min_scaled_jacobian", "fea_max_jacobian_ratio",
                                           "fea_max_aspect_ratio", "fea_min_dihedral_deg",

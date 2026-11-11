@@ -75,6 +75,9 @@ def words(rec: dict) -> str:
     counted = count_words(rec.get("target"))
     if counted:
         said += " " + counted
+    if rec.get("count_set_aside"):
+        said += (f" Your element count ({int(rec['count_set_aside']):,}) was not used: the global size you gave "
+                 "decides the sizes.")
     return said
 
 
@@ -110,9 +113,12 @@ def write_msh(path: Path, mesh) -> list[dict]:
 
 
 def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: str = "",
-        target: dict | None = None) -> dict:
+        target: dict | None = None, requirements: dict | None = None) -> dict:
     """Extract, mesh and write the shell of `step` (coordinates `mm_per_unit` mm each) into `workspace`. `target`: the
-    element count the user asked for (engines/fea_driver.element_target), which the shell's sizes follow (SHMESH-23)."""
+    element count the user asked for (engines/fea_driver.element_target), which the shell's sizes follow (SHMESH-23).
+    `requirements`: the mesh requirements read from the user's notes (engines/mesh_requirements): their sizes, limits
+    and element kind are applied (SHMESH-24, 25) and each is told asked against delivered (SHMESH-26, the record's
+    "requirements"). None: the rules' own shell, exactly as before."""
     from meshpipeline.cad import midsurface as ms
     from meshpipeline.engines import shell_writers as sw
     from meshpipeline.engines.gmsh import shell_adapter as sa
@@ -133,7 +139,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
             rec["why"] = no_shell_why(record)
         else:
             t1 = time.time()
-            mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target)
+            mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
             rec["mesh_s"] = round(time.time() - t1, 1)
             exports = sw.write_all(ws, mesh, units="m", source=source)
             # THE SHELL IS THE RESULT (engines/shell_delivery): the viewer's picture of it, one group per mid-face
@@ -150,6 +156,10 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
                                                                             if isinstance(v, dict)})
             if isinstance(applied, dict) and isinstance(applied.get("target"), dict):
                 rec["target"] = applied["target"]
+            if isinstance(applied, dict) and requirements:
+                for key in ("requirements", "sizing", "count_set_aside"):
+                    if applied.get(key):
+                        rec[key] = applied[key]
             if not rec["made"]:
                 rec["why"] = "the solver files could not all be written"
         for name in (ms.RECORD_FILE, ms.SURFACE_FILE):
@@ -173,10 +183,18 @@ def read(workspace: Path | str) -> dict:
         return {}
 
 
+def requirements_in(workspace: Path | str) -> dict | None:
+    """The mesh requirements the FEA driver read from the user's notes and left in the workspace
+    (engines/mesh_requirements.FILE): the checked set, or None when there is none (no notes, nothing asked)."""
+    from meshpipeline.engines import mesh_requirements as MR
+
+    return MR.requirements_of(MR.read(workspace))
+
+
 def main(argv: list[str] | None = None) -> int:
     """python -m meshpipeline.engines.shell_run <workspace> <staged step> <mm per unit | staged> [<count JSON>]
     ("staged": read as the FEA driver reads the staged solid, engines/fea_driver.staged_mm_per_unit; the count is
-    fea_driver.element_target's, SHMESH-23)"""
+    fea_driver.element_target's, SHMESH-23; the requirements read from the notes are the workspace's own file)"""
     args = list(sys.argv[1:] if argv is None else argv)
     target = None
     if len(args) == 4:
@@ -201,7 +219,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     else:
         mm = float(args[2])
-    run(args[0], args[1], mm_per_unit=mm, source=Path(args[1]).name, target=target)
+    run(args[0], args[1], mm_per_unit=mm, source=Path(args[1]).name, target=target,
+        requirements=requirements_in(args[0]))
     return 0
 
 
@@ -209,4 +228,4 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["FILES", "MSH", "RECORD", "main", "read", "run", "words", "write_msh"]
+__all__ = ["FILES", "MSH", "RECORD", "main", "read", "requirements_in", "run", "words", "write_msh"]
