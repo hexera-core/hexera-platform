@@ -215,12 +215,14 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
                 # SURF-5: the sizing wall sized the mesh; it is no thickness, and none is written
                 mesh.wall = np.zeros(mesh.n_elements, dtype=float)
                 mesh.node_wall, mesh.varies = None, None
+            # SHWRITE-1: each sheet named as a shell run names its parts (Part_k where the staging named none)
+            shell_run.name_parts(mesh, ws)
             exports = sw.write_all(ws, mesh, units="m", source=source, notes=deck_notes(wall if given else None))
             faces = shell_run.write_msh(ws / shell_run.MSH, mesh)
             xyz_m = mesh.xyz / 1000.0
             q = applied.get("quality") if isinstance(applied, dict) else None
             (ws / "shell_quality.json").write_text(json.dumps(applied, indent=1, sort_keys=True, default=float))
-            rec.update(nodes=int(len(mesh.xyz)), faces=faces,
+            rec.update(nodes=int(len(mesh.xyz)), faces=faces, parts=shell_run.parts_of(mesh, faces),
                        bounds_m=[float(v) for v in (*xyz_m.min(axis=0), *xyz_m.max(axis=0))] if len(xyz_m) else None,
                        made=all((ws / f).exists() and (ws / f).stat().st_size > 0 for f in shell_run.FILES),
                        elements=int(mesh.n_elements), quads=int(len(mesh.quads)), trias=int(len(mesh.trias)),
