@@ -304,9 +304,12 @@ def _rebuild(brep: Path, owners: list[str], out: Path, change) -> list[str]:
         raise ValueError(f"the mid-surface has {len(before)} faces but the record names {len(owners)}")
     pieces: list[tuple[object, str]] = []
     changed = False
+    moved: set[int] = set()
     for k, (f, own) in enumerate(zip(before, owners, strict=True)):
         got = change(k, f)
         changed = changed or got is not None
+        if got is not None:
+            moved.add(k)
         pieces += [(g, own) for g in (got if got is not None else [f])]
     if not changed:
         BRepTools.Write_s(shape, str(out))
@@ -314,6 +317,11 @@ def _rebuild(brep: Path, owners: list[str], out: Path, change) -> list[str]:
     if len(pieces) == 1:
         BRepTools.Write_s(pieces[0][0], str(out))
         return [pieces[0][1]]
+    if LOCAL_REBUILD:
+        local = _rebuild_local(shape, before, owners, change, moved, out)
+        if local is not None:
+            return local
+
     def fuse(fuzzy: float):
         b = BOPAlgo_Builder()
         for g, _own in pieces:
@@ -348,6 +356,85 @@ def _rebuild(brep: Path, owners: list[str], out: Path, change) -> list[str]:
         raise ValueError("a re-made face of the mid-surface could not be traced to its mid-face")
     BRepTools.Write_s(fused, str(out))
     return [owner_of[k] for k in range(1, len(after) + 1)]
+
+
+#: SHMESH-30, ONLY THE RE-MADE FACES AND THEIR NEIGHBOURS ARE FUSED BACK: SHMESH-11 re-makes a few faces (cut at their
+#: seams, offsets as B-splines) and fused the WHOLE surface again to join them, every pair of faces whose boxes meet
+#: intersected anew. On a printed keycap's free-form walls (dev t0044: 4 of its 53 faces re-made) that fuse took over
+#: 700 s of a 704 s mesh; gmsh itself 3.6 s. Now the re-made faces are fused with the faces whose boxes meet theirs
+#: only (the only pairs the general fuse intersects that involve a re-made face), and the rest are put back as they
+#: were: they keep their edges, which the neighbours still share (a fuse that does not cut a face hands back its own
+#: edges). Kept only when the surface comes back with no more free
+#: edge than it had (to a millionth) and every face is traced to its mid-face; else the whole surface is fused, as
+#: before.
+LOCAL_REBUILD = True
+
+
+def _rebuild_local(shape, before: list, owners: list[str], change, moved: set[int], out: Path) -> list[str] | None:
+    """SHMESH-30: _rebuild with only the re-made faces (`moved`) and their vertex neighbours fused; None when that
+    surface is not as joined as the one it replaces (the caller then fuses the whole)."""
+    from OCP.BOPAlgo import BOPAlgo_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    from meshpipeline.cad import midsurface as ms
+
+    # the faces a re-made face can touch: its box and theirs, each grown by the surface's largest tolerance, meet (the
+    # general fuse intersects no other pair; two faces neither of which is re-made already meet as sewn)
+    grow = 2.0 * max(ms._max_tol(shape), 1e-7)
+    boxes = [ms._box(f) for f in before]
+    near = set(moved)
+    for k, (lo, hi) in enumerate(boxes):
+        if k in near:
+            continue
+        for m in moved:
+            mlo, mhi = boxes[m]
+            if np.all(lo - grow <= mhi + grow) and np.all(mlo - grow <= hi + grow):
+                near.add(k)
+                break
+    if len(near) >= len(before):
+        return None
+    args: list[tuple[object, str]] = []
+    for k in sorted(near):
+        got = change(k, before[k]) if k in moved else None
+        args += [(g, owners[k]) for g in (got if got is not None else [before[k]])]
+    b = BOPAlgo_Builder()
+    for g, _own in args:
+        b.AddArgument(g)
+    b.SetRunParallel(False)
+    b.SetNonDestructive(True)
+    b.Perform()
+    if b.HasErrors():
+        return None
+    faces: list = []
+    names: list[str] = []
+    index = TopTools_IndexedMapOfShape()
+    for g, own in args:
+        for x in [TopoDS.Face_s(y) for y in b.Modified(g)] or ([] if b.IsDeleted(g) else [g]):
+            if not index.Contains(x):
+                index.Add(x)
+                faces.append(x)
+                names.append(own)
+    if len(ms._faces(b.Shape())) != len(faces):
+        return None
+    for k, f in enumerate(before):
+        if k not in near:
+            faces.append(f)
+            names.append(owners[k])
+    whole = ms._compound(faces)
+    free = lambda sh: sum(ms._length(e) for e in ms._free_edge_list(sh))  # noqa: E731
+    if free(whole) > free(shape) * (1.0 + 1e-6) + 1e-9:
+        return None
+    # each face of the surface as the mesher will read it (its own order), with its mid-face
+    mine = TopTools_IndexedMapOfShape()
+    for f in faces:
+        mine.Add(f)
+    order = [mine.FindIndex(f) for f in ms._faces(whole)]
+    if len(order) != len(faces) or min(order) < 1:
+        return None
+    BRepTools.Write_s(whole, str(out))
+    return [names[k - 1] for k in order]
 
 
 def split_closed(brep: Path, owners: list[str], out: Path) -> list[str]:

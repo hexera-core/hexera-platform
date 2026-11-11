@@ -401,6 +401,136 @@ No part that was rightly solid turned into a shell. What kept them out:
 
 **The same twice.** The 145 files run twice on the final code: the same record and the same surface file 145 of 145; the same mesh and the same three decks, byte for byte, on all 123 that mesh.
 
+### 2.4.5 Joins that close and mesh (SHELL-30 to SHELL-32, SHMESH-30, 11 Nov)
+
+Measured first on #432's head (9ad6948d), on the same 282 files (lab 87, wall set 60, new set 135), every open edge
+read by what lies past it and every mesh failure by where it fails. Leaving out one frame that spends its whole work
+budget before any general join (d040: 93 open edges, below), 57 edges (613 mm) were open in 12 files:
+
+| what lies past the open edge (9ad6948d) | edges | mm | files |
+|---|---|---|---|
+| the metal stops under a wall on, no wall ahead: two walls both stopped short of a corner the edge meets only in pieces | 9 | 235 | 3 |
+| the wall goes on at its own thickness, not shelled (walls stream) | 26 | 175 | 7 |
+| a cyclone's re-made cone edge (as the row above it) | 1 | 70 | 1 |
+| thick metal (a corner post, a rib's foot), a piece of another wall BESIDE the way | 16 | 66 | 6 |
+| a T through a corner post, past the reach | 2 | 60 | 1 |
+| a 1 x 2 mm hole in one wall | 2 | 4 | 1 |
+| a wall in line, oblique | 1 | 2 | 1 |
+
+and 6 files gave a shell the mesher failed on (t0010, t0039, fr017: gmsh "could not close the boundary of 5 faces
+in turn"; e0009, t0057: the mesh ran past 15 minutes; t0056: "impossible to recover the edge").
+
+**SHELL-31, no join with a face that is no face.** The general fuse can hand back a face whose boundary does not
+close or cannot be oriented (OpenCASCADE's own checker, BRepCheck: NotClosed, UnorientableShape). gmsh cannot mesh
+it, and the whole shell fell back to a solid mesh (a valve body: 19 of its 104 sewn faces; a tank's nozzle: 2 of
+26). A general join that leaves any such face is not used; the straight join and the strips stand, and the record
+says so. It turned a general join down in 11 of the 282 parts: t0010, t0039 and t0052 became fully good, a cyclone
+(sh0011) with SHELL-30 too, an enclosure whose general join ran its mesh past 15 minutes now meshes in 7 s (e0009),
+the other 6 kept their verdict.
+
+**SHELL-30, an open edge carried on piece by piece, and the wall it meets carried on to the same line.** SHELL-22
+carries an edge on only when EVERY point along it meets the other wall, and takes the other wall as it stands. On
+real parts a wall meets its neighbour over part of its length (the neighbour notched for ribs or slots, or giving
+way to a corner post) and both walls stop short of the corner; SHELL-22 then fell back to the nearest points - a
+strip laid across the corner - and the two walls did not meet. Now, before SHELL-22, each edge still open is read
+at one point a wall (8 to 128, as SHELL-22), each point carried on in its own surface to another wall's surface on
+SHELL-22's conditions (within SHELL-3's reach, the way in the metal, the meeting point within half of each wall of
+that wall's mid-face) and with that wall square across from the meeting point (its nearest point within 30 degrees
+of square: a piece ends where the other wall ends). Every run of points that meet, at least one wall long, its ends
+found by halving 6 times (1/64 of a wall), gets the strip from that piece of the edge to the meeting line in its own
+surface; where the meeting line lies off the other wall's mid-face, that wall gets the strip from its border to the
+same line. Both end on the one line: the corner SHELL-3 would draw, for the pieces that have one. An edge that meets
+the other wall over its whole length is left to SHELL-22, made as before. Kept only when fewer junctions are left
+open (read as SHELL-21 reads them), no tolerance past SHELL-12 and no face SHELL-31 turns down.
+
+**SHELL-32, a wall ahead is a wall the walk comes over, within the reach.** SHELL-21 called an edge a junction left
+open when its walk out of the edge came within half a wall of another sewn face. A piece of wall lying BESIDE the way
+(above and below the edge along a seam, either side of a rib's foot, the border of the next piece of a curved wall a
+straight walk drifts off) is within half a wall of the walk and is no wall to meet. The walk's point now counts only
+when its nearest point on the other mid-face lies inside it (a twentieth of a wall clear of its border) and the line
+to it is within 45 degrees of that face's normal (halfway between straight over the face, 0, and straight out past
+its border, 90), and the mid-face itself lies within the reach (the way so far plus the distance to it): a slab the
+walk only enters at the end of its last step belongs to a wall no join reaches. Edges with thick metal past them and
+no wall to meet are then the links to thick regions (or the wall's own end) that SHELL-21 meant them to be.
+
+**SHMESH-30, the mesher fuses back only the re-made faces and the faces they can touch.** SHMESH-11 re-makes a few
+faces before meshing (cut at their seams; offsets as B-splines) and fused the WHOLE surface again to join them. On a
+printed keycap's free-form walls (t0044: 4 of its 53 faces re-made) that fuse took over 700 s of a 704 to 862 s mesh,
+gmsh itself 3.6 s. Now the re-made faces are fused only with the faces whose boxes meet theirs (grown by twice the
+surface's largest tolerance: the only pairs the general fuse intersects that hold a re-made face; two faces neither
+of which is re-made already meet as sewn), and the others are put back as they were, keeping the edges their
+neighbours share. Kept only when the surface comes back with no more free edge than it had (to a millionth) and
+every face traced to its mid-face; else the whole surface is fused, as before. t0044 meshes in 11 s (862 s); of the 213
+meshes, 203 decks are byte-identical, 10 differ by a few elements (1961 to 1964, 2037 to 2054, 7472 to 7583), every
+one valid; one leaves Nastran's limits (t0044: one triangle past T3_IAMAX; it has open edges, so it was not fully
+good before either). Every one of the 10 is the same twice.
+
+**Results (11 Nov, lab VM, 16 files at once).** "Fully good": a shell found, every extraction check, a valid mesh
+inside all Nastran limits.
+
+| set | files | fully good | files with open edges | open edges | files that mesh | fully good before, not after |
+|---|---|---|---|---|---|---|
+| lab (87) | 87 | 71 to 72 | 2 to 0 | 3 to 0 | 81 to 81 | none |
+| wall set (60) | 60 | 36 to 36 | 2 to 2 | 94 to 86 | 40 to 40 | none |
+| new set (135) | 135 | 76 to 80 | 9 to 7 | 53 to 30 | 88 to 91 | none |
+
+- Open edges without the budget-bound frame: 57 to 31 edges, 613 to 198 mm, 12 to 8 files. Of what is left, 172 mm
+  (87%) is a wall that goes on at its own thickness and was not shelled (the walls stream); 16 mm thick metal past an
+  edge beside a wall (t0032); 8 mm two short ends (e0009, t0032); 2 mm one oblique wall in line (t0033).
+- Every verdict change: sh0011, e0004, t0010, t0039, t0052 to fully good; sh0010 and e0032 from open edges to closed
+  and meshed but with 2 elements past Nastran's limits each, in the strips that close them; d040 93 to 85 open edges,
+  e0007 6 to 3, e0009 2 to 1 (and now meshes), t0032 12 to 11, t0033 7 to 4, t0044 9 to 4. No other record changed
+  but those of 6 parts whose general join SHELL-31 turned down (same verdict).
+- The same twice: the 14 changed parts that finish in minutes were run again: 14 records, 14 surface files and the
+  three decks of all 14 byte for byte the same.
+- Time: extraction 6179 to 6321 s in all (+2%); no file over 1.5 times slower but t0039 (6 to 17 s: the general join
+  turned down, the straight join and 30 strips made instead - it now meshes); mesh 4583 to 3749 s before SHMESH-30
+  (e0009 900 to 7 s), and the keycap-like part 710 to 11 s with it.
+- Accuracy through a junction (CalculiX, one thread, free-free modes 7 to 12, S4 shell of the sewn mid-surface
+  against C3D10 of the CAD): an L bracket (100 x 80 x 3 leg, 60 high upright) whose leg is slotted twice at the
+  corner, closed ONLY by SHELL-30 and SHELL-22 (the straight extension, the general join and SHELL-13 off): -2.5 to
+  +3.2%; the same bracket as the straight extension closes it: +0.5 to +4.0%; a T bracket by the straight join:
+  -2.7 to +1.1%.
+
+**Handed over by the plates stream (#436).** With its body-share line at a quarter instead of a half, two dev frames
+(d037, d047) lost their mesh ("could not close the boundary"). With these rules on top of #436 (539845e1) and the line
+at a quarter, the dev set goes from 42 fully good (#436 alone) to 44: both frames are fully good again. But not
+because their new plates join: SHELL-31 turns down the general join that left 9 and 4 unsound faces, and with the
+straight join d037's plates hold 49% of its metal (under the half the body guard asks) and d047's leave 6 open edges
+(the plates guard), so both keep the shell they had. d047 with its plates kept (the guard off) meshes, valid and inside
+Nastran's limits, with 6 open edges, all where a 1 mm plate meets a 0.6 mm bend with thicker metal past the edge. The
+skin panel and the buoy body whose new plates bring 34 and 12 open edges (d057, sh0114): with these rules 33 and 12.
+d057's: 12 with thick metal past them, 8 + 6 walls in line a step apart (3.1 mm plates into 2.5 mm ones, flat and
+curved: SHELL-7 snaps flat plates only, and SHELL-22 does not close them there), 7 plate ends short of the
+skin; sh0114's 12 all plate ends short of the skin (under a wall from it, no wall ahead, not the wall's own end by
+SHELL-21's slab test). Those are the next junction classes for the plates' new walls.
+
+**What is still open, and why.**
+- A frame (d040) spends its whole 1500 s work budget before its general join (SHELL-18): 85 open edges. Speed, not a
+  junction rule.
+- Diagonal strips. A strip laid across a corner (SHELL-13's ruled strips, SHELL-22's nearest points) closes the edge
+  but leaves its own mid-face's surface. Counted as kinks of over 5 degrees between two faces of one mid-face: 28 files,
+  15.3 m before; 31 files, 16.3 m after, the increase from the parts whose general join SHELL-31 turned down (their
+  straight join is closed by such strips: t0039 100 kinked edges, d047 43). SHELL-30 makes square corners where the
+  edge has a meeting line; replacing SHELL-13's and SHELL-22's diagonal strips by SHELL-30's is the next step.
+- Meshes. fr017 (a PVC tee: "could not close the boundary", no unsound face), t0057 (past 15 minutes), t0056 (the
+  flange with two tube stubs: the general join loses the tilted tube's whole mid-face - the fuse hands back 127 of its
+  grown cylinder's 358 mm2 - so the straight join and strips stand, with 0.001 mm edges where they meet; merging the
+  short edges made it worse).
+- Elements past Nastran's limits lie in strips and at their short edges (13 of the 14 parts whose only fault is those
+  limits). Meshing each mid-face's pieces as one face (ShapeUpgrade_UnifySameDomain on faces of one mid-face, every
+  junction edge kept) took 4 tube frames inside the limits, but grew their meshes 1.4 to 4.6 times (the plan sizes a
+  merged face by its narrowest part) and broke two others; it is kept out (the sizing belongs with the notes stream).
+- The junction check, read from the decks as written (`shell.bdf`): along every CAD edge three or more sewn faces
+  share, the deck's nodes on the line are joined by element edges that at least three elements use, covering it; no
+  two nodes of one body within a thousandth of the thinnest wall; no element edge used by one element off the
+  surface's free edges. On the final meshes (211 decks): 883 junction lines in 40 parts, 708 with every sheet on shared
+  nodes, 24 shorter than the elements round them and meshed away (SHMESH-12), 151 not shared in 10 parts (117 of them
+  in one enclosure, r0047; on #432's head 163 in 13 parts); coincident nodes only in d040 (186 pairs, as before); and
+  element edges free where the surface is closed in 36 parts (2811; 2979 before) - a hull panel (sh0004) has a 999 mm
+  edge between an offset wall and its band meshed on one side only (436 such edges). The parts these rules changed
+  have no new ones. They are the mesher's (gmsh's 1D mesh and SHMESH-12's merges), named for the next round.
+
 ### 2.5 Assemblies and mixed parts (PR 3)
 
 **Bonded plates in different bodies:**
