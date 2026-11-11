@@ -465,7 +465,7 @@ def _alongside(edge, probe: list, dists: list, feet: list, face, tol: float) -> 
     return True
 
 
-def open_places(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
+def open_places(sewn: Sewn, *, mm_per_unit: float, reach: float | None = None) -> list[dict]:
     """SURF-8: the places where the surfaces do not meet (OPEN_REACH): [{"sheet", "edges", "length_mm", "gap_mm",
     "at_mm"}], the widest gap first. A place's gap is how far its longest edge lies from the face beside it. One
     place is one gap: the free edges joined end to end, and the two sides of it (face A's edges along face B and
@@ -481,7 +481,9 @@ def open_places(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
     from meshpipeline.cad import midsurface as ms
 
     mm = float(mm_per_unit)
-    reach = OPEN_REACH * sewn.tol
+    # `reach` (the shape's units) only for SURF-12's own search when the user's notes allow a wider change; the
+    # count the user and the record see is always OPEN_REACH
+    reach = OPEN_REACH * sewn.tol if reach is None else float(reach)
     comp = ms._compound(sewn.faces)
     vmap = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(comp, TopAbs_VERTEX, vmap)
@@ -561,7 +563,8 @@ def open_places(sewn: Sewn, *, mm_per_unit: float) -> list[dict]:
     for ns in groups.values():
         es = [found[n][0] for n in ns]
         mid = _edge_points(max(es, key=ms._length), 3)[1]
-        out.append({"sheet": int(sheet_of[found[ns[0]][1]]), "edges": len(ns),
+        out.append({"_members": [found[n] for n in sorted(ns)],      # (edge, face, gap, face beside): not for JSON
+                    "sheet": int(sheet_of[found[ns[0]][1]]), "edges": len(ns),
                     "pairs": sorted({(min(found[n][1], found[n][3]), max(found[n][1], found[n][3])) for n in ns}),
                     "length_mm": _r(sum(ms._length(e) for e in es) * mm),
                     # the place's gap is the gap along its longest edge: a stub at a corner (as long as the gap is
@@ -614,7 +617,7 @@ def classify(sheets: list[dict], *, said_shell: bool = False) -> tuple[str, str,
 
 
 def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = True,
-         sew_mm: float | None = None, holes_mm: float | None = None) -> tuple[dict, Sewn | None]:
+         sew_mm: float | None = None, holes_mm: float | None = None, mend: bool = True) -> tuple[dict, Sewn | None]:
     """SURF-1: what kind of file this is, with the sheets as measured: (the reading, the sewn faces - None unless
     the reading is "surface" or "gap"). A surface part is then cleaned (SURF-8..10, cad/surface_clean): a face written
     twice is left out, the gaps between neighbouring faces are closed up the sewing ladder, pinholes are filled -
@@ -669,15 +672,35 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = 
         # was read above from the file as written: a closed skin with a crack is still a closed skin with a crack)
         cleaned = {"duplicates": len(twice), "duplicate_faces": [f"Face_{k + 1}" for k in twice][:MAX_PLACES]}
         if stitch:
+            first = len(open_places(sewn, mm_per_unit=mm_per_unit))
+            if mend:
+                # SURF-12: THE PLACES WHERE THE SURFACES DO NOT MEET made to meet by changing the surfaces - an edge
+                # stopping short extended along its own surface, an overlap trimmed back, a step moved onto its
+                # neighbour - one place at a time, each change judged and told. First, so a gap across a face is
+                # closed by continuing the face, never papered over by a sewing tolerance; stitching then closes
+                # what is left within its own tolerances
+                from meshpipeline.cad import surface_mend as smd
+
+                try:
+                    mended, mrec = smd.mend(sewn, mm_per_unit=mm_per_unit, limit_mm=sew_mm)
+                except Exception as exc:  # noqa: BLE001 - the surface as sewn; what is open is said
+                    logger.warning("surface: the surfaces were not changed (%s: %s)", type(exc).__name__, str(exc)[:200])
+                    mended, mrec = sewn, {"error": type(exc).__name__}
+                cleaned["mend"] = mrec
+                if mended is not sewn and isinstance(mended, Sewn):
+                    sewn = mended
+            else:
+                cleaned["mend"] = {"off": True}
             try:
                 tidy, did = sc.clean(sewn, mm_per_unit=mm_per_unit, limit_mm=sew_mm, holes_mm=holes_mm)
             except Exception as exc:  # noqa: BLE001 - the surface as sewn; what is open is said
                 logger.warning("surface: the clean-up failed (%s: %s)", type(exc).__name__, str(exc)[:200])
                 tidy, did = sewn, {"refused": "the clean-up could not be run"}
             cleaned.update(did)
+            cleaned["places_before"] = first             # before anything was changed or stitched
             if tidy is not sewn and isinstance(tidy, Sewn):
                 sewn = tidy
-                sheets = measure(sewn, mm_per_unit=mm_per_unit)
+            sheets = measure(sewn, mm_per_unit=mm_per_unit)
         else:
             cleaned.update(stitch="off")
         # SURF-8: WHAT IS LEFT OPEN, by the one definition (open_places), whatever was asked: the record, the words and
@@ -688,6 +711,9 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = 
         applied = float(cleaned["applied_mm"]) if cleaned.get("applied_mm") is not None else float("inf")
         within = [p for p in places if float(p["gap_mm"]) <= applied]
         wide = [p for p in places if float(p["gap_mm"]) > applied]
+        if cleaned.get("places_before") is not None:
+            # the places closed by the whole clean-up (stitching and changing the surfaces): before - after
+            cleaned["closed_places"] = max(0, int(cleaned["places_before"]) - len(places))
         cleaned.update(open_places=len(places), open_length_mm=_r(sum(float(p["length_mm"]) for p in places)),
                        left_open=len(within), left_widest_mm=max([float(p["gap_mm"]) for p in within] + [0.0]),
                        left_at_mm=[p["at_mm"] for p in within][:MAX_PLACES],

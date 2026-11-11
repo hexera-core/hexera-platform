@@ -121,6 +121,15 @@ def clean_words(cleaned: dict | None) -> list[str]:
         what = "hole(s)" if c.get("holes_from") == "notes" else "pinhole(s)"
         out.append(f"Filled {int(c['pinholes'])} {what}, the largest {_gap(c.get('pinhole_widest_mm') or 0.0)} "
                    f"across{asked}.")
+    m = c.get("mend") or {}
+    if m.get("closed"):
+        how = [f"{int(m[k])} {w}" for k, w in (("moved", "moved onto a neighbour"),
+                                                ("extended", "extended along their own surface"),
+                                                ("trimmed", "trimmed back to a neighbour's edge")) if m.get(k)]
+        out.append(f"To make the surfaces meet, {', '.join(how)} - by up to {_gap(m.get('widest_mm') or 0.0)}"
+                   f" (each change is listed in the run's record).")
+    if m.get("off"):
+        out.append("No surface was changed, as your notes asked.")
     if c.get("fell_back"):
         out.append(f"Stitching up to {_gap(c['limit_mm'])}, as your notes asked, would have left more open than the "
                    f"usual {_gap(c.get('rule_mm') or 0.0)}, so the usual result is kept.")
@@ -160,6 +169,13 @@ def gap_words(n: int, cleaned: dict | None) -> list[str]:
         else:
             said += " Stitching does not close them cleanly, so they are left as drawn."
         out.append(said)
+    m = c.get("mend") or {}
+    whys = [str(r.get("why")) for r in m.get("left_places") or [] if r.get("why")]
+    if whys:
+        # SURF-12: why the surfaces were not changed where they still do not meet (the commonest reason first)
+        top = max(sorted(set(whys)), key=whys.count)
+        out.append(f"The surfaces were not changed there: {top}"
+                   + (f" ({whys.count(top)} of {len(whys)})." if len(whys) > 1 else "."))
     return out
 
 
@@ -226,7 +242,7 @@ def sizing_wall(size_mm: float) -> float:
 def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thickness_mm: float | None = None,
         source: str = "", target: dict | None = None, said_shell: bool = False, others_mm: list | None = None,
         unread: str = "", stitch: bool = True, sew_mm: float | None = None, holes_mm: float | None = None,
-        requirements: dict | None = None) -> dict:
+        requirements: dict | None = None, mend: bool = True) -> dict:
     """Read `step` (coordinates `mm_per_unit` mm each); when it is a surface, sew it, mesh it as a shell and write
     every file a shell run writes into `workspace`. Returns the run's record, shell_run.json's shape plus "surface":
     {"kind", "why", "thickness_mm", "thickness_set", "sizing_wall_mm", "sheets", "faces", "open_share", ...}.
@@ -248,7 +264,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
         wall = float(thickness_mm or 0.0)
         given = wall > 0
         reading, sewn = sm.read(read_cad(Path(step)), mm_per_unit=mm_per_unit, said_shell=said_shell or given,
-                                stitch=stitch, sew_mm=sew_mm, holes_mm=holes_mm)
+                                stitch=stitch, sew_mm=sew_mm, holes_mm=holes_mm, mend=mend)
         (ws / READING).write_text(json.dumps(reading, indent=1, sort_keys=True, default=float))
         rec["surface"] = {"kind": reading["kind"], "why": reading.get("why"), "faces": reading.get("faces"),
                           "open_share": reading.get("open_share"), "sheets": len(reading.get("sheets") or []),
@@ -398,7 +414,8 @@ async def surface_pass(ws: Path, state, *, job_id: str, run=None, target: dict |
     args = {"thickness_mm": got.mm, "others_mm": list(got.others_mm), "unread": got.unread,
             "said_shell": said_shell(state), "target": {k: target[k] for k in ("elements", "mode", "low", "high")
                                                          if k in target} if target and target.get("elements") else None,
-            "stitch": not sewing.off, "sew_mm": sewing.mm, "holes_mm": sewing.holes_mm}
+            "stitch": not sewing.off, "sew_mm": sewing.mm, "holes_mm": sewing.holes_mm,
+            "mend": not sewing.keep_surfaces}
     limit = float(RUN_LIMIT_S)
     if left_s is not None:
         limit = max(120.0, min(limit, 0.8 * left_s))
@@ -492,7 +509,7 @@ def main(argv: list[str] | None = None) -> int:
         said_shell=bool(more.get("said_shell")), others_mm=list(more.get("others_mm") or []),
         unread=str(more.get("unread") or ""), stitch=more.get("stitch") is not False,
         sew_mm=float(sew_mm) if sew_mm else None, holes_mm=float(holes_mm) if holes_mm else None,
-        requirements=requirements_in(ws))
+        requirements=requirements_in(ws), mend=more.get("mend") is not False)
     return 0
 
 

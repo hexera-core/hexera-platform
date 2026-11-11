@@ -226,7 +226,7 @@ def test_small_gaps_are_closed_by_rule_and_said(tmp_path):
                             thickness_mm=1.0)
     tol = sm.read(sx.strip_of_plates(), mm_per_unit=1.0)[0]["sew_tolerance_mm"]
     src = _file(sx.strip_of_plates(move={1: (0, 0, 3.0 * tol)}), tmp_path / "b")
-    rec = surface_run.run(tmp_path / "gapped", src, mm_per_unit=1.0, thickness_mm=1.0)
+    rec = surface_run.run(tmp_path / "gapped", src, mm_per_unit=1.0, thickness_mm=1.0, mend=False)
     assert rec["made"] and rec["open_edges"] == 0 and rec["surface"]["sheets"] == 1
     c = rec["surface"]["cleaned"]
     assert c["closed_edges"] == 2 and c["limit_from"] == "rule" and c["wider_gaps"] == 0
@@ -247,7 +247,7 @@ def test_a_wider_gap_is_left_open_and_said_and_the_notes_tolerance_closes_it(tmp
     src = _file(sx.strip_of_plates(move={1: (0, 0, 12.0 * tol)}), tmp_path / "in")
     for name in ("rule", "said"):
         (tmp_path / name).mkdir()
-    rec = surface_run.run(tmp_path / "rule", src, mm_per_unit=1.0, thickness_mm=1.0)
+    rec = surface_run.run(tmp_path / "rule", src, mm_per_unit=1.0, thickness_mm=1.0, mend=False)
     assert rec["made"] and rec["surface"]["sheets"] == 3 and rec["surface"]["cleaned"]["closed_edges"] == 0
     assert rec["open_edges"] == 2 and "The surfaces do not meet at 2 place(s)" in rec["words"]
     assert "2 of them are wider than that: the surfaces run side by side " in rec["words"]
@@ -255,7 +255,7 @@ def test_a_wider_gap_is_left_open_and_said_and_the_notes_tolerance_closes_it(tmp
     # the tolerance the words suggest is enough to close them
     ask = float(rec["words"].split('"stitch gaps up to ')[1].split(" mm")[0])
     assert 12.0 * tol < ask <= 1.25 * 12.0 * tol
-    said = surface_run.run(tmp_path / "said", src, mm_per_unit=1.0, thickness_mm=1.0, sew_mm=ask)
+    said = surface_run.run(tmp_path / "said", src, mm_per_unit=1.0, thickness_mm=1.0, sew_mm=ask, mend=False)
     assert said["made"] and said["surface"]["sheets"] == 1 and said["open_edges"] == 0
     assert f"as your notes asked (up to {ask:.2g} mm)" in said["words"]
     assert "run side by side" not in said["words"]
