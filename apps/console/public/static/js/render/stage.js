@@ -24,7 +24,7 @@ import { changedAnswers, editsLine, noteDrawn, servedProposal } from "./geometry
 // a thermal model (an ECXML upload) has its own panel, card or stage alike
 import { bindThermalPanel, thermalPanelHtml } from "./thermal_form.js";
 // an FEA part has its own panel too: its size, unit, bodies and clean check, and no flow form
-import { bindFeaPanel, feaPanelHtml, followAssembly, followClean, followMeasure, followMeshAs } from "./fea_form.js";
+import { bindFeaPanel, feaPanelHtml, followAssembly, followClean, followMeasure, followMeshAs, followPlan } from "./fea_form.js";
 // the run card's live line: the step running now, in plain words
 import { createRunLine } from "./run_progress.js";
 import { durationWords } from "./check_progress.js";
@@ -683,6 +683,7 @@ export const Stage = {
     if(d&&d.fea){fol(()=>followClean(g,d.fea));if(d.fea.assembly)fol(()=>followAssembly(g,d.fea.assembly));}
     if(d&&d.fea&&d.fea.measure)fol(()=>followMeasure(g,d.fea.measure,p,null));
     // SHSTAGE-2: the shell check lands minutes later; "Mesh as" follows in place, the pick kept
+    if(d&&d.fea&&d.fea.plan)fol(()=>followPlan(g,d.fea.plan));
     if(d&&d.fea&&d.fea.shell)fol(()=>followMeshAs(g,d.fea.shell));},
 
   ensureProc(){if(this.proc)return;this.clearEmpty();

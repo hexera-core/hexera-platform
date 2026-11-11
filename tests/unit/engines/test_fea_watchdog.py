@@ -148,3 +148,16 @@ def test_the_budget_stops_a_fill_but_never_a_mesh_already_filled(tmp_path):
     w = run_watched(_py("print('x', flush=True)\nimport time\ntime.sleep(2)"), log_path=tmp_path / "o.log",
                     hard_timeout=60, stall_s=30, poll_s=0.1, over_budget=budget)
     assert w.stopped == "ok"
+
+
+def test_a_gmsh_passs_fill_budget_never_reaches_the_rungs_passes(tmp_path):
+    """LAD-fea-15 is a gmsh ladder pass's own: the last rung (LAD-fea-18) and its refinement (LAD-fea-13) are timed by
+    their own budgets, so they clear the one the last gmsh pass left in the workspace (note_budget with no budget) -
+    else it would stop the refinement's re-fill of a gmsh part at the old pass's time."""
+    from meshpipeline.engines import fea_driver as FD
+    from meshpipeline.engines.gmsh import gmsh_runner as G
+
+    FD.note_budget(tmp_path, {"budget": True, "ceiling_s": 120})
+    assert G.fill_budget(tmp_path) is not None
+    FD.note_budget(tmp_path, {})
+    assert not (tmp_path / G.BUDGET_FILE).exists() and G.fill_budget(tmp_path) is None
