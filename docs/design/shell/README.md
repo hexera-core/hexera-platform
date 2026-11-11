@@ -636,3 +636,92 @@ Pass rates are reported with 95% ranges (Wilson).
 1. FEMAP: can the prospect send one sample model, or confirm that our .neu groups import? Until then the BDF and NEU say "not yet tested in the real solver".
 2. Decided 29 Oct: no material in the deck, exactly as the solid decks (mesh only, "add MAT1").
 3. Answered 29 Oct: mixed parts in Auto are recommended Solid until PR 3 lands.
+
+## 11. Surface files (SURF-1..6, 10 Nov)
+
+Shell users often upload the surface itself: a stamped part exported as its mid-surface, or one skin, as an open shell in a STEP or IGES file. There is no solid in such a file and nothing to extract. Before this, the FEA stage stopped it ("This is a surface, not a closed solid ... shell meshes for surfaces like this are coming"), and a run that got past the stage said "no wall of the part is thin enough to be a shell" and then failed on "no solid volume".
+
+Now the surface is meshed as it is. The surface is the mid-surface.
+
+**What a surface part is (SURF-1).** FEA purpose, no solid in the file, and the faces do not close after the clean check's own sewing (one ten-thousandth of the part's size). One number separates it from a closed skin with a gap: the **open share**. Each free boundary loop spans an area (its vector area: exact for a flat loop, and never more than any surface that closes it). The open share is the area all the loops span, over the file's surface area.
+
+- A flat sheet reads 100%. The lab's stamped panels, brackets, hat section, tray and cup read 44% to 104%. A deep channel reads 9%, an open tube 20 diameters long 2.4%, one 40 diameters long 1.2%, a tank skin with a nozzle hole 1.3%.
+- A loop whose edges lie along a neighbouring face (a seam the sewing did not close) or that is a slit spans nothing. It is a crack, not an opening.
+- **At or under 1% the file is a closed skin with a gap.** It is stopped as before, and the stop names both ways on: close the gaps in CAD, or say it is a shell.
+- **Over 1% it is a surface part**, meshed as a shell without the user saying "shell".
+- The user's own words settle a file under 1%: "shell", "mid-surface", or a thickness. A tube 120 diameters long is 0.4% open; by shape alone it cannot be told from a rod with its two ends missing.
+
+Measured on 86 public closed solids (FEA corpus dev side and the shell corpus; `~/surface_lab/tools/gap_study.py`):
+
+| What was done to the closed skin | Variants | Read as a gap | Read as a surface |
+|---|---|---|---|
+| One face pulled 3 sew tolerances off its neighbours (a crack) | 549 | 542 (the other 7 still closed) | 0 |
+| One face left out, the face under 1% of the skin | 1,125 | 1,085 (96%) | 40 |
+| One face left out, the face over 1% of the skin | 645 | 45 (7%) | 600 |
+
+So cracks and small missing faces stay CAD repair's business. A skin missing a face bigger than 1% of its area reads as a surface: it is the same shape as a tray or a channel, and no measure of shape tells them apart. Two other measures were tried and dropped. Whether the skin encloses a volume does not separate them either (a cup, a tray and a tube enclose one). Whether the skin carries on beside an opening (an "end" against a "hole") rescued slender tubes but called 30% more small missing faces surfaces.
+
+A file with a solid is never read this way. Faces that close are read as the solid they bound, as before (MESH-1).
+
+**Sewing (SURF-2).** The clean check's sewing at its own tolerance, nothing more. Every free edge stays free. A free edge that lies along another face within 5 tolerances is an edge that does not meet its neighbour: counted, placed and said ("The surfaces do not meet at N edge(s): the shell has gaps there"), never closed. When such edges are left, the file is sewn once more with junctions allowed (three faces at one edge: a rib's foot on the line two plate faces share) and that is kept when it leaves fewer of them. A rib whose foot lands inside one face has no edge there to sew to; it stays a separate part with a gap, said.
+
+**The record (SURF-3).** `cad/surface_model.py` writes the same `shell.json` and `midsurface.brep` the extractor writes, from the sewn file:
+
+- every sheet (faces joined through shared edges) is a part and one wall;
+- every CAD face is its own mid-face, so its own group in every solver file (`Face_k`);
+- a sheet's size is the square root of its area, as an extracted sheet's.
+
+From there nothing is new: the sizing rules, gmsh and the clean-up, the four solver files, the viewer mesh, the delivery and the result are the shell path's own. The FEA driver calls it for a file with no solid none of whose shells closes (`engines/surface_run.py`, a process of its own), before anything of the solid plan. The shell is the result. There is no solid to fall back to: a surface whose shell cannot be made fails with that reason in words.
+
+**Thickness (SURF-4).** A surface has none. It comes from the user's words, read by one fixed word table (`contracts/shell_thickness.py`, no model): "1.2 mm thick", "thickness 0.8", "t = 0.8", "gauge 2 mm", "2 mm wall", in mm, cm, m, inches, thou or microns. A bare number is millimetres, and the line the user reads says the millimetres back. The latest word stands: a note beats what the stage settled, which beats the intake's summary. Not read as a thickness, and said so: a bare gauge number ("16 gauge": the tables differ by metal), a range, a second different thickness (one is used for the whole file). A thickness past a tenth of the sheet's size is said, and used.
+
+**No thickness given (SURF-5).** The shell is still delivered. Nothing is asked and nothing is refused: the mesh itself does not depend on the thickness, and shell tools hand over a mesh with the property still to set. No thickness is invented:
+
+- every property carries 0 and is named `Part_k_thickness_not_set`;
+- every file's head says "WALL THICKNESS NOT SET" and to set it before solving (no solver runs a zero thickness);
+- the stage and the result say how to set it: add it to the notes and run again, or edit the one property line.
+
+The sizing rules use the wall for three things: the floor (no element under half a wall), what counts as a panel (20 walls wide), and the sliver clean-up. With no thickness the sheet is sized as for a thin sheet: a wall of its size over 300. On the shell corpus's 72 parts the thinnest wall over the largest sheet's size is 1/120 at the middle and 1/300 at the lower quarter, so three real parts in four are at least that thick and their own floor would be no finer. Tried on the 28 lab parts of known wall (`~/surface_lab/tools/sizing_study.py`): at size/60 the sizing wall is thicker than the real one on 21 parts and the mesh has 0.56 times the elements the real wall asks for (too coarse); at size/120 on 6 parts, 1.2 times; at size/300 on 1 part, 2.1 times. The thin side costs elements, never accuracy. The sliver clean-up also works in walls, so a thin wall cleans little: when the mesh leaves elements past Nastran's own limits the sheet is sized again at twice, then four times, that wall and the first mesh inside the limits is kept. On the lab set the count with no thickness is 1.04 times at the middle and 1.3 times in total (2.0 times on the 28 parts whose real wall is known; a 12.7 mm plate, far thicker than the thin sheet assumed, gets 24 times) of the count with one.
+
+**Several sheets.** Each sewn sheet is a part with its own property, so each can be given its own thickness in the file. One thickness from the words is used for all of them. Words about single parts ("the bracket is 2 mm, the plate 3 mm") are not read yet.
+
+**What the user reads (SURF-6).** One line, in the stage's existing shell fold and on the result, and no new control:
+
+- "This file is a surface, not a solid. It is meshed as a shell, 1.2 mm thick."
+- with no thickness: "This file is a surface, not a solid. It is meshed as a shell." and under it "No thickness given yet. Add it to your notes (for example "1.2 mm thick"), or set it later in the solver file."
+
+The stage's check row says "A surface, not a solid" (a sheet's open edges are its own, not a fault), and shows no thinnest wall and no hot spots: both are measurements of a solid.
+
+**Proof** (`~/surface_lab`, every file public or drawn there; 10 Nov):
+
+The set: 58 surface files and 43 files that must not be read as one.
+
+- 22 of our own mid-surfaces (shell corpus parts run through the solid route, their mid-surface written as an open-shell STEP with the wall the extraction measured) and 6 skins (one side of the sheet of the same parts).
+- 28 drawn files: stamped panels as B-spline patches with beads, dimples, flanges and holes (flat, curved, doubly curved), a bracket with darts, a hat section, a drawn cup, a tray, a deep channel, open tubes, a tank skin with a nozzle hole, two files of several sheets, and the three textbook shapes. Four are also written unsewn and six as IGES.
+- 2 public hull surfaces (IGES, NURBS).
+- Not surfaces: 8 public solids, their 16 skins with no solid entity (STEP and IGES) and one public closed hull, 8 skins with the smallest face left out, 8 with one face pulled 3 tolerances off, an open tube 120 diameters long and a tank skin with a pinhole. All 43 read as they should (solid, closed, gap).
+
+| The bar | Result |
+|---|---|
+| Read as a surface | 58 of 58 with a thickness in the words. With no words 57: one skin (a folded box-like part, 0.72% open) reads as a gap until a shell or a thickness is said. |
+| Free edges only where the sheet ends | Free-edge length equals the truth on 56 of 56 files that have one (the unsewn and IGES copies among them). Every face kept, 58 of 58. Edges that do not meet: 8, all on one part (lanced tabs; free in the solid route's mid-surface too). A gusseted bracket's 4 rib feet that land inside a face are joined (the solid route's census: 27 shared edges, 4 junctions, 0 open - the same). |
+| Mesh valid | 58 of 58, no folded element; 747,000 elements. |
+| Inside Nastran's own limits | 57 of 58. One 2-face NURBS hull leaves 6 triangles past the triangle skew and angle limits. |
+| Solver files read back | 58 of 58 by our readers (all four files), with the thickness asked. pyNastran reads all 115 Nastran files (58 with a thickness, 57 with none) with the thickness asked. |
+| Thickness in the file | Equal to what was asked on 58 of 58; 0 with the "NOT SET" head and name on 57 of 57. |
+| The same file twice | 58 of 58 byte for byte the same (all five files). |
+| Against the solid route (22 parts) | Elements 0.995 to 1.008 times the solid route's (middle 1.000). Both inside Nastran's limits on all 22. Seconds: about the same or less (the surface route extracts nothing). |
+| Textbook, CalculiX (`test_surface_textbook.py`) | Cantilever plate: tip deflection -1.5% (limit 3%). Plate with a hole: Kt -3.0% of Heywood (limit 6%). Pressurised cylinder: radial growth -1.3% (limit 2%). |
+| No thickness given | 57 of 57 made, valid and inside Nastran's limits. 5 were sized again for a thicker sheet (2 to 5 triangles past the limits at the thin wall). |
+| The run's own code | Staged by the real staging, the real FEA driver, finalize, the gates and the result block: delivered, the solid mesher never called. |
+
+Time: 1 to 55 s a file (a 400 x 240 mm curved panel of 30 patches, 67,000 elements). A stamped panel is fine by today's shell rules: 360 x 240 mm with beads is 43,600 elements.
+
+**Not done.**
+
+- A count or sizes in the notes are not applied to a surface file yet: they are read by the FEA plan's AI step on a measured solid, which a surface has none of. `surface_run.run` takes the count; the notes-requirements reader can hand it over.
+- A rib whose foot lands inside a face is not joined (it needs the face split there).
+- A closed skin the user wants as a shell (a tank with no opening) is still read as the solid it bounds.
+- Thickness per part from words.
+- A panel drawn as many patches is sized patch by patch (each patch's own width), so it gets more elements than the same panel drawn as one face.
+- A triangle file (STL) that is an open surface is still stopped: it has no faces to group.
