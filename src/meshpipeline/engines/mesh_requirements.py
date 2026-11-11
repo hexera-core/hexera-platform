@@ -394,6 +394,11 @@ def check(arguments: str, notes: str) -> tuple[dict, list[str], list[str]]:
         return empty(), [f"the reading did not fit the schema ({type(exc).__name__}): nothing applied"], []
 
 
+#: a count of elements through or across something ("3 elements through the thickness", "two rows across the flange")
+_COUNTED = re.compile(r"\b(?:\d+|one|two|three|four|five|six)\s+(?:\w+\s+)?(?:elements?|rows?|layers)\b[^.;\n]{0,24}?"
+                      r"\b(?:through|across)\b", re.I)
+
+
 def _rows_of(raw: Mapping, key: str) -> list[dict]:
     v = raw.get(key)
     if v is None:
@@ -446,6 +451,10 @@ def _check(arguments: str, notes: str) -> tuple[dict, list[str], list[str]]:
         tag = f'"{_short(quote)}"'
         if what not in SIZES or unit not in SIZE_UNITS:
             dropped.append(f"{tag}: not a size this step reads: not applied")
+            continue
+        if _COUNTED.search(quote):
+            # "3 elements through the thickness" counts elements; it is no length (read once as a 3 inch wall)
+            dropped.append(f"{tag}: a count of elements through or across a wall is not a size: not applied")
             continue
         if value is None or value <= 0 or not _in_quote(value, numbers):
             dropped.append(f"{tag}: the number {e.get('value')!r} is not in those words: not applied")

@@ -288,6 +288,35 @@ def test_what_the_standard_says_of_one_part_or_no_setting_is_told_never_dropped(
     assert len(MR.not_applied_words(sec)) == 2
 
 
+def test_a_solver_the_standard_names_is_told_as_delivered_on_the_fea_route(router):
+    std = "Nastran BDF output\nAbaqus and Ansys decks too\nUse Nastran GEOMCHECK limits"
+    answer = _blank(other=[{"quote": "Nastran BDF output", "kind": "mesh"},
+                           {"quote": "Abaqus and Ansys decks too", "kind": "mesh"},
+                           {"quote": "Use Nastran GEOMCHECK limits", "kind": "mesh"}])
+    words = MR.words(_both(std, answer, "", None, router))
+    assert words == ["From your settings: Nastran (.bdf) files - every FEA run delivers them.",
+                     "From your settings: Abaqus (.inp) and Ansys (.cdb) files - every FEA run delivers them.",
+                     'Not applied (your settings): "Use Nastran GEOMCHECK limits" - no mesh setting of ours matches '
+                     'it yet.']
+    # the flow route delivers no solver deck: there it stays not applied
+    sec = MS.checked(json.dumps(answer), std, route="flow")
+    assert sec["solver_files"] == [] and len(sec["not_applied"]) == 3
+
+
+def test_a_count_of_elements_through_a_wall_is_never_read_as_a_wall_thickness():
+    """Read live (11 Nov, gpt-5.6-terra): "3 elements through the thickness" under "All dimensions in inches" came
+    back as a 3 inch wall thickness. The reader's rules now refuse a count as a size, in the notes and the standard."""
+    text = "All dimensions in inches\n3 elements through the thickness"
+    answer = _blank(stated_unit="in", sizes=[{"what": "thickness", "value": 3, "unit": "none",
+                                               "quote": "3 elements through the thickness"}])
+    req, dropped, _na = MR.check(json.dumps(answer), text)
+    assert req["sizes"]["thickness_mm"] is None and req["rows"] == []
+    assert dropped == ['"3 elements through the thickness": a count of elements through or across a wall is not a '
+                       "size: not applied"]
+    ok = _blank(sizes=[{"what": "global", "value": 20, "unit": "mm", "quote": "Max element size across the part 20 mm"}])
+    assert MR.check(json.dumps(ok), "Max element size across the part 20 mm")[0]["sizes"]["global_mm"] == 20.0
+
+
 # ------------------------------------------------------------------ what the page, the result and the record say ---
 def test_the_settings_page_shows_each_line_exactly_as_a_run_says_it():
     reading = {"key": MS.key_of(CRITERIA), "arguments": json.dumps(criteria_answer())}

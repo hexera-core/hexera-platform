@@ -158,17 +158,43 @@ def _elsewhere(arguments: str, text: str) -> list[str]:
     return out[:20]
 
 
+#: the solver files every FEA run delivers (engines/fea_writers.SOLVERS and the shell's): a standard that names one
+#: is told it is delivered, never "not applied" (the user picks the file at download)
+_SOLVERS = (("Nastran", r"\bnastran\b|\bbdf\b", ".bdf"), ("Abaqus", r"\babaqus\b", ".inp"),
+            ("CalculiX", r"\bcalculix\b|\bccx\b", ".inp"), ("Ansys", r"\bansys\b|\bmapdl\b|\bcdb\b", ".cdb"))
+#: words that make a line about a solver a CHECK of that solver's, not the file it reads ("Nastran's own limits")
+_NOT_A_FILE = re.compile(r"check|limit|quality|criteri|warp|aspect|jacobian|angle|skew|taper", re.I)
+FLOW = "flow"
+
+
+def _solver_files(quote: str) -> list[tuple[str, str]]:
+    """[(solver, file extension)] a short line names as the files it wants ("Nastran BDF output"), else []."""
+    q = str(quote or "")
+    if len(q.split()) > 6 or _NOT_A_FILE.search(q):
+        return []
+    return [(name, ext) for name, rx, ext in _SOLVERS if re.search(rx, q, re.I)]
+
+
 def checked(arguments: str, text: str, *, route: str = "", key: str = "", source: str = "") -> dict:
     """The standard's section from one answer of the model, checked by the reader's rules: the notes' section shape
-    ("used", its requirements, what was dropped and not applied) and the unit it names, its words for elsewhere."""
+    ("used", its requirements, what was dropped and not applied) and the unit it names, its words for elsewhere, and
+    the solver files it names that every FEA run delivers."""
     req, dropped, not_applied = _check(arguments, text, route)
     unit = _stated_unit(arguments, text)
     if unit:
         # "Units: inches" is said as the standard's unit, not again as a thing no setting matches
         not_applied = [q for q in not_applied if not (len(q.split()) <= 5 and re.search(_UNIT_SAID[unit], q, re.I))]
+    files: list[list[str]] = []
+    if route != FLOW:
+        for q in list(not_applied):
+            got = _solver_files(q)
+            if got:
+                files.append([q, *[f"{name} ({ext})" for name, ext in got]])
+                not_applied.remove(q)
     sec = MR.section("used", requirements=req, dropped=dropped, not_applied=not_applied, key=key, source=source)
     sec["stated_unit"] = unit
     sec["elsewhere"] = _elsewhere(arguments, text)
+    sec["solver_files"] = files
     return sec
 
 
@@ -505,6 +531,9 @@ def lines(settings: Mapping, notes: Mapping, merged: Mapping, *, told_s=(), told
     out += [f"From your settings: {r['asked']}." for r in rows if r.get("from") == "settings"]
     if unit:
         out.append(f"From your settings: lengths with no unit are in {_UNIT_NAME[str(unit)]}.")
+    if s_used:
+        for _quote, *files in settings.get("solver_files") or []:
+            out.append(f"From your settings: {' and '.join(files)} files - every FEA run delivers them.")
     out += [f"From your notes: {r['asked']}." for r in rows if r.get("from") == "notes"]
     for sec in (settings, notes):
         if sec.get("status") == "used" and sec.get("source") == "saved" and sec.get("note"):
