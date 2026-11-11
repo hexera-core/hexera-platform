@@ -978,6 +978,9 @@ def user_words(plan: Mapping) -> list[str]:
         finest = min([float(z["size_m"]) for z in own if z.get("kind") != "part"] or [0.5 * (lo + hi)])
         rng = f"{lo * 1e3:.3g} mm" if abs(hi - lo) < 1e-12 else f"{lo * 1e3:.3g}-{hi * 1e3:.3g} mm"
         said = [str(sizes[i].get("name") or i) for i in ids[:8]]
+        if all(sizes[i].get("whole") for i in ids):
+            # PLAN-fea-33: a size asked for the whole mesh (engines/fea_requirements) is said once, not per part
+            ids, said = ids[:1], [str(sizes[ids[0]].get("name") or "the whole mesh")]
         line = (f"You asked for {rng} elements on {', '.join(said)}{' and more' if len(ids) > 8 else ''}: "
                 f"they are meshed at {0.5 * (lo + hi) * 1e3:.3g} mm, and nothing in them finer than "
                 f"{max(finest, 0.0) * 1e3:.3g} mm")

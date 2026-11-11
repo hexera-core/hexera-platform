@@ -329,6 +329,25 @@ def mesh_as_of(state) -> str:
     return got if got in ("shell", "mixed") else "solid"
 
 
+async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=None) -> dict:
+    """NOTE-7..9: THE MESH REQUIREMENTS IN THE USER'S NOTES (engines/mesh_requirements), read once per run and
+    checked: sizes for the whole mesh, the element kind, quality limits. The reading is cited, told to the user
+    before any mesh is made (one short line each, and what was not applied), and kept in the workspace for the
+    shell and mixed runs (their own processes). With no words nothing is asked of the model, nothing is cited,
+    said or written: the run is exactly the run it always was. Returns the reading's section."""
+    from meshpipeline.contracts import narration as _N
+    from meshpipeline.engines import mesh_requirements as MR
+
+    sec = await MR.decide(state or {}, route="fea", job_id=job_id, run=run, enabled=FA.FEA_AI, wait_s=ai_wait_s(run))
+    MR.write(ws, sec)
+    if sec.get("status") == "none":
+        return sec
+    _cite(job_id, MR.decisions(sec, stage="fea_ai"))
+    for i, line in enumerate(MR.live_words(sec)):
+        await _N.asay(publish, line, op_id=f"fea:notes:{i}")
+    return sec
+
+
 async def shell_pass(ws: Path, state, *, job_id: str, run=None, target: dict | None = None) -> dict | None:
     """SHSTAGE-6: when the user's words asked for a shell, the staged solid's shell mesh and its solver files
     (engines/shell_run, in a process of its own) - delivered as THE result by drive() (SHSTAGE-7, no solid beside
@@ -1211,6 +1230,10 @@ def _restate(record: dict, plan: dict) -> dict:
     plan = _with_ai(plan)
     # AI-fea-9: how the sizes in the notes were tied to the parts, and what was not applied
     plan["words"] = [*plan["words"], *PS.words(plan.get("part_sizes"))]
+    if plan.get("requirements"):
+        # NOTE-7, 8: what was read from the notes for the whole mesh, and what was not applied
+        from meshpipeline.engines import mesh_requirements as MR
+        plan["words"] = [*plan["words"], *MR.words(plan["requirements"])]
     if plan.get("by_choice_failed"):
         plan["words"] = [*plan["words"], BY_CHOICE_WORDS[str(plan["by_choice_failed"])]]
     return plan
@@ -1253,6 +1276,17 @@ def built_remark(ws: Path, record: dict | None = None) -> None:
             said = [BY_CHOICE_WORDS["sizes"]]
         if said:
             record_remark(ws, said[0], by="fea_part_sizes")
+    try:
+        delivered = json.loads((ws / "quality.json").read_text()).get("requirements")
+    except (OSError, ValueError):
+        delivered = None
+    if delivered or (plan.get("requirements") or {}).get("status") == "used":
+        # PLAN-fea-34 / NOTE-8: asked against delivered, and what was not applied, in the result's "From your
+        # notes" line
+        from meshpipeline.engines import mesh_requirements as MR
+        from meshpipeline.engines.fea_requirements import summary as asked_summary
+        record_remark(ws, asked_summary(delivered, len(MR.not_applied_words(plan.get("requirements")))),
+                      by="mesh_requirements")
 
 
 #: PLAN-fea-13: THE FILL RATE BY COMPLEXITY - elements per second of one native gmsh pass, at the
@@ -1969,6 +2003,9 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         record_remark(ws, ai["decision"]["notes_remark"], by="fea_ai")
     # PLAN-fea-27: an element count the user named, as the AI read it from their notes (AI-fea-4)
     target = element_target(state, ai)
+    # NOTE-7..9: the mesh requirements the notes ask for (a global size, edge lengths, quality limits, the element
+    # kind), read once; the shell and mixed runs read them from the workspace, the solid plan takes the sizes below
+    asked = await read_requirements(ws, state, job_id=job_id, run=run, publish=publish)
     # SHSTAGE-6: MESH AS: SHELL - the shell mesh and its solver files first, from the staged solid as read (the
     # assembly staging above never rewrites it). SHMESH-23: once the user's element count is read, so the shell's
     # sizes follow it as the solid's do.
@@ -1984,6 +2021,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             if counted:
                 from meshpipeline.contracts.user_notes import record_remark
                 record_remark(ws, counted, by="fea_target")
+            if asked.get("status") == "used":
+                # SHMESH-26 / NOTE-8: asked against delivered, and what was not applied, in the result's "From your
+                # notes" line
+                from meshpipeline.contracts.user_notes import record_remark
+                from meshpipeline.engines import mesh_requirements as MR
+                from meshpipeline.engines.shell_requirements import summary as asked_summary
+                record_remark(ws, asked_summary(shelled.get("requirements"), len(MR.not_applied_words(asked))),
+                              by="mesh_requirements")
             _cite(job_id, [{"stage": SHELL_GATE, "decided": "shell delivered", "value": shelled.get("elements"),
                             "rule": "SHSTAGE-7", "inputs": {"solid_made": False},
                             "words": "The shell is the delivered mesh: no solid mesh is made beside it."}])
@@ -1996,6 +2041,13 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     sizes = PS.sizes_of(part_sizes)
     if part_sizes.get("status") != "none":
         _cite(job_id, PS.decisions(part_sizes))
+    if asked.get("status") != "none":
+        # PLAN-fea-33: a size the notes ask for the WHOLE mesh, held like the sizes per part (on every part the
+        # user did not size themselves)
+        from meshpipeline.engines import fea_requirements as FR
+        from meshpipeline.engines import mesh_requirements as MR
+        sizes = FR.whole_sizes(sizes, MR.requirements_of(asked), FR.part_ids(P.zones(record)),
+                               base_m=P.base_size(diag_m))
     # A COUNT OR SIZES THE USER ASKED FOR NEVER FAIL THE RUN: when no pass builds a valid mesh of the plan their
     # choices made, the rules' own plan is meshed instead, and said (PLAN-fea-29)
     by_choice_failed = ""
@@ -2024,6 +2076,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                                ceiling_s=ceiling_for(run), ai=ai, target=target, sizes=sizes or None,
                                                correction=correction)
                 plan["part_sizes"] = part_sizes
+                if asked.get("status") != "none":
+                    plan["requirements"] = asked
                 if by_choice_failed:
                     plan["by_choice_failed"] = by_choice_failed
                 plan = _restate(record, plan)
@@ -2056,6 +2110,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                                beyond=chosen.get("beyond"), sizes=chosen.get("sizes"))
                 plan["limit"] = chosen["limit"]
                 plan["part_sizes"] = part_sizes
+                if asked.get("status") != "none":
+                    plan["requirements"] = asked
                 if chosen.get("by_choice_failed"):
                     plan["by_choice_failed"] = chosen["by_choice_failed"]
                 for key in ("target", "target_missed", "target_unread"):

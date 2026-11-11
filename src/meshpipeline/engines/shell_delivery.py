@@ -90,7 +90,23 @@ def limits(quality: Mapping) -> list[dict]:
     rows.append({"key": "shell_nastran_past", "label": "Elements past Nastran's own GEOMCHECK limits", "op": "==",
                  "limit": 0, "measured": sum([int(v) for v in past.values()]),
                  "source": "engines/shell_quality.py (MSC Nastran GEOMCHECK defaults)"})
+    rows.extend(asked_rows(quality))
     return rows
+
+
+def asked_rows(quality: Mapping) -> list[dict]:
+    """SHMESH-26: THE USER'S OWN REQUIREMENTS (read from their notes) as rows of the same list
+    (engines/mesh_requirements.asked_rows): measured as the elements outside what was asked, never a blocker."""
+    from meshpipeline.engines.mesh_requirements import asked_rows as rows
+
+    return rows(quality, source="your notes (engines/shell_requirements.py)")
+
+
+def user_line(row: Mapping) -> str:
+    """One requirement of the user's as the result says it: asked, then delivered."""
+    from meshpipeline.engines.mesh_requirements import line
+
+    return line(row)
 
 
 def quality_of(rec: Mapping) -> dict:
@@ -105,6 +121,7 @@ def quality_of(rec: Mapping) -> dict:
         "groups": {"free": "free"}, "default_group": "free", "default_group_used": True,
         "quality_bar": "fea", "min_sicn": None, "fea_inverted": invalid,
         "shell_quality": sq,
+        **({"requirements": rec["requirements"]} if rec.get("requirements") else {}),
         "fea": {"plan": True, "shell": True, "walls_mm": list(rec.get("walls_mm") or []),
                 # SURF-3: a shell made on a surface file, and whether the user gave its thickness
                 **({"surface": True, "thickness_set": bool(_map(rec.get("surface")).get("thickness_set"))}
@@ -128,8 +145,21 @@ def deliver(workspace, rec: Mapping, *, target: Mapping | None = None) -> bool:
     tgt = dict(rec.get("target") or {})
     from meshpipeline.engines.shell_plan import count_words
 
-    plan = {"shell": True, "words": [w for w in (rec.get("words"), count_words(tgt)) if w],
+    plan: dict[str, Any] = {"shell": True, "words": [w for w in (rec.get("words"), count_words(tgt)) if w],
             "target": tgt or None, "faces": [], "hot_spots": [], "asked": dict(target or {}) or None}
+    if rec.get("requirements"):
+        # SHMESH-26: what the user's notes asked for, against what this mesh delivers
+        from meshpipeline.engines.shell_requirements import words as asked_words
+
+        plan["requirements"] = rec["requirements"]
+        plan["words"] = [*list(plan["words"] or []), *asked_words(rec["requirements"])]
+    from meshpipeline.engines import mesh_requirements as MR
+
+    told = MR.not_applied_words(MR.read(ws))
+    if told:
+        # NOTE-8: what the notes say about the mesh that was not applied stays with the result
+        plan["not_applied"] = told
+        plan["words"] = [*list(plan["words"] or []), *told]
     (ws / "fea_plan.json").write_text(json.dumps(plan, indent=1, sort_keys=True, default=float))
     (ws / "gmsh_spec.json").write_text(json.dumps({"element_order": 1, "shell": True,
                                                    "made_by": "engines/shell_run.py"}, indent=1))
@@ -157,13 +187,25 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
         met = limit_met(r.get("measured"), str(r.get("op")), r.get("limit"))
         rows.append({**{k: r.get(k) for k in ("key", "label", "op", "limit", "measured")}, "ok": met,
                      "gating": r in gating, "words": words(r)})
+    asked = [r for r in _map(q.get("requirements")).get("rows") or [] if isinstance(r, Mapping)]
+    missed = sum(1 for r in asked if r.get("met") is False)
     if any(r["ok"] is False and r["gating"] for r in rows) or q.get("fatal"):
         outcome, said = "fail", "The mesh fails a check no solver can work around."
     elif any(r["ok"] is False for r in rows):
         outcome, said = "concerns", "Passed, with notes: the shell is valid; some figures are past a limit (listed)."
+        if missed:
+            # SHMESH-26: delivered, and told plainly - never a failure, never "used"
+            judged = sum(1 for r in asked if r.get("met") in (True, False))
+            said = (f"Delivered, with notes: the shell is valid; {missed} of the {judged} limits your notes set "
+                    "could not be fully met (each is listed with how far off it is).")
     else:
         outcome, said = "pass", "Every element meets the shell limits and Nastran's own checks."
+        if asked and all(r.get("met") is True for r in asked):
+            said += " Everything your notes asked for is met."
     extra: dict[str, Any] = {}
+    if asked:
+        extra["requirements"] = {"rows": asked, "missed": missed,
+                                 "definitions": _map(q.get("requirements")).get("definitions")}
     tgt = plan.get("target") or {}
     if tgt.get("asked"):
         line = count_words(tgt)
@@ -180,7 +222,8 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
                         "rows": [], "file_ready": present(ws, file)})
     q_n, t_n = int(sq.get("quads") or rec.get("quads") or 0), int(sq.get("trias") or rec.get("trias") or 0)
     walls = list((q.get("fea") or {}).get("walls_mm") or [])
-    plan_words = [w for w in [rec.get("words")] if w]
+    plan_words = ([w for w in [rec.get("words")] if w] + [user_line(r) for r in asked]
+                  + [str(w) for w in plan.get("not_applied") or []])
     summary = SUMMARY.format(n=cells, q=q_n, t=t_n)
     if _map(rec.get("surface")).get("kind") == "surface":
         # SURF-6: said as what it is - on the user's surface, at their thickness (or none set)
@@ -208,5 +251,6 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
             "solvers": solvers}
 
 
-__all__ = ["CONTAINS", "LABELS", "MARKER_SOURCE", "SUMMARY", "SURFACE_SUMMARY", "WORST_KEY", "deliver", "is_shell", "is_shell_workspace",
+__all__ = ["CONTAINS", "LABELS", "MARKER_SOURCE", "SUMMARY", "SURFACE_SUMMARY", "WORST_KEY", "asked_rows", "deliver", "is_shell",
+           "is_shell_workspace",
            "limits", "quality_of", "results"]

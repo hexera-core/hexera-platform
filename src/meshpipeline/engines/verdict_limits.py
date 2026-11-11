@@ -223,6 +223,7 @@ def fea_limits(quality: Mapping) -> list[dict]:
         from meshpipeline.engines.shell_delivery import limits as shell_limits
         return shell_limits(quality)
     from meshpipeline.engines.fea_quality import limits_for
+    from meshpipeline.engines.mesh_requirements import asked_rows
     order = quality.get("element_order")
     fea_rows = limits_for(int(order) if isinstance(order, (int, float)) and not isinstance(order, bool) else 1)
     fea_m: Mapping = fea if isinstance(fea, Mapping) else {}
@@ -288,6 +289,9 @@ def fea_limits(quality: Mapping) -> list[dict]:
                      "label": ("Bonded pairs left open - a face with no mesh node within the solver's reach of the other "
                                "part, so the pair is not joined there"),
                      "source": "docs/RULES.md PLAN-fea-21 (engines/fea_assembly_deck.open_joints)"})
+    # PLAN-fea-34: the user's own requirements (read from their notes), each measured as the elements outside what
+    # was asked - notes like every other row here, never a blocker; none with no requirement
+    rows.extend(asked_rows(quality, source="your notes (engines/fea_requirements.py)"))
     return rows
 
 
@@ -301,7 +305,10 @@ def _plain(v: Any) -> Any:
 
 
 def words(row: Mapping) -> str:
-    """One missed limit in plain words: 'Worst face non-orthogonality: 74.2, limit at most 70'."""
+    """One missed limit in plain words: 'Worst face non-orthogonality: 74.2, limit at most 70'. A row that
+    carries its own line (`said`: a requirement from the user's notes, asked against delivered) says that."""
+    if row.get("said"):
+        return str(row["said"])
     op = {"<=": "at most", ">=": "at least", "<": "under", ">": "over", "==": "exactly",
           "empty": "none"}.get(str(row.get("op") or ""), str(row.get("op") or ""))
     measured = row.get("measured")

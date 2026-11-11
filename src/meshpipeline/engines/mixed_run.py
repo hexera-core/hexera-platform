@@ -213,8 +213,9 @@ def words(rec: dict) -> str:
     return said
 
 
-def _solid_mesh(shape, ws: Path):
-    """The solid region through the FEA path's own measure, plan and adapter (no AI pass, no ladder): mesh.inp."""
+def _solid_mesh(shape, ws: Path, requirements: dict | None = None):
+    """The solid region through the FEA path's own measure, plan and adapter (no AI pass, no ladder): mesh.inp.
+    `requirements`: a size the user's notes ask for the whole mesh is held on the region too (PLAN-fea-33)."""
     import gmsh
     from OCP.BRepTools import BRepTools
 
@@ -240,7 +241,13 @@ def _solid_mesh(shape, ws: Path):
         if mine:
             gmsh.finalize()
     record, surface, diag_m = FD.measure_staged(ws)
-    plan = FD.choose_plan(record, surface, diag_m, levers=[], ceiling_s=FD.ceiling_for(None))
+    sizes = None
+    if requirements:
+        from meshpipeline.engines import fea_plan as P
+        from meshpipeline.engines import fea_requirements as FR
+
+        sizes = FR.whole_sizes(None, requirements, FR.part_ids(P.zones(record)), base_m=P.base_size(diag_m)) or None
+    plan = FD.choose_plan(record, surface, diag_m, levers=[], ceiling_s=FD.ceiling_for(None), sizes=sizes)
     FD.write_plan(ws, plan)
     rc = fea_adapter.mesh(ws)
     if rc != 0 or not (ws / "mesh.inp").exists():
@@ -248,15 +255,18 @@ def _solid_mesh(shape, ws: Path):
     return mm.read_solid_deck(ws / "mesh.inp"), json.loads((ws / "quality.json").read_text())
 
 
-def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: str = "") -> dict:
-    """Extract, split, mesh, join and write the mixed mesh of `step` (coordinates `mm_per_unit` mm each)."""
+def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: str = "",
+        requirements: dict | None = None) -> dict:
+    """Extract, split, mesh, join and write the mixed mesh of `step` (coordinates `mm_per_unit` mm each).
+    `requirements`: the mesh requirements read from the user's notes (engines/mesh_requirements) - the shell part
+    takes them as a shell does (SHMESH-24..26), the solid part their sizes (PLAN-fea-33). None: as before."""
     from meshpipeline.engines import mixed_mesh as mm
 
     ws = Path(workspace)
     started = time.time()
     rec: dict = {"made": False, "mm_per_unit": float(mm_per_unit)}
     try:
-        joined = build(step, ws / FOLDER, mm_per_unit=mm_per_unit, rec=rec)
+        joined = build(step, ws / FOLDER, mm_per_unit=mm_per_unit, rec=rec, requirements=requirements)
         exports = mm.write_all(ws, joined, units="m", source=source)
         rec.update(made=all((ws / f).exists() and (ws / f).stat().st_size > 0 for f in FILES),
                    counts=joined.counts, exports={k: v for k, v in exports.items() if isinstance(v, dict)})
@@ -271,7 +281,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
     return rec
 
 
-def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict):
+def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, requirements: dict | None = None):
     """MIXED-5 up to the join: extract, split, mesh the shell and the solid region, join them (a MixedMesh, mm).
     Fills `rec` with what it read; raises _Stop with the reason when the rules make no mixed mesh."""
     from OCP.BRep import BRep_Builder
@@ -334,7 +344,11 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict):
     rec2["panel_walls"] = MIXED_PANEL_WALLS
     BRepTools.Write_s(ms._compound(split.shell_faces), str(out / "shell_trimmed.brep"))
     t1 = time.time()
-    shell, applied = sa.mesh_shell(out / "shell_trimmed.brep", rec2, mm_per_unit=mm_per_unit)
+    shell, applied = sa.mesh_shell(out / "shell_trimmed.brep", rec2, mm_per_unit=mm_per_unit,
+                                   requirements=requirements)
+    if requirements and isinstance(applied, dict) and applied.get("requirements"):
+        # SHMESH-26: asked against delivered, on the shell part
+        rec["requirements"] = applied["requirements"]
     rec["shell_mesh_s"] = round(time.time() - t1, 1)
     q = applied.get("quality") if isinstance(applied, dict) else {}
     if isinstance(q, dict) and q.get("valid") is False:
@@ -351,7 +365,7 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict):
         cut = [BRepBuilderAPI_Transform(f, tr, True).Shape() for f in split.cut_faces]
     else:
         cut = list(split.cut_faces)
-    solid, sq = _solid_mesh(solid_shape, out / "solid")
+    solid, sq = _solid_mesh(solid_shape, out / "solid", requirements)
     rec["solid_mesh_s"] = round(time.time() - t1, 1)
     joined = mm.join(shell, solid, cut, part=str(bodies[0]["body"]))
     if joined.notes:
@@ -394,7 +408,9 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     else:
         mm = float(args[2])
-    rec = run(args[0], args[1], mm_per_unit=mm, source=Path(args[1]).name)
+    from meshpipeline.engines.shell_run import requirements_in
+
+    rec = run(args[0], args[1], mm_per_unit=mm, source=Path(args[1]).name, requirements=requirements_in(args[0]))
     print(rec["words"])
     return 0 if rec.get("made") else 1
 

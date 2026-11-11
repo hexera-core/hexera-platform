@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -63,6 +64,46 @@ NASTRAN_LIMITS = (
 )
 
 
+#: SHMESH-24: THE LIMITS IN FORCE while a shell mesh is tidied. `hard` is the solver's own (Nastran's, above): no
+#: delivered element is left past one when a step can mend it, exactly as before. `aims` are the limits the USER
+#: wrote in their notes that are tighter than ours (engines/shell_requirements.limits_in_force): rows of (shape,
+#: figure, op, target, outer limit or None, allowed share). The steps aim at them - an element between a target
+#: and its outer limit weighs AIM_BAND, one past an outer limit AIM_OUTER - and never trade a hard limit for one.
+#: With no requirement the object is IN_FORCE: today's constants, no aims, and every step does what it always did.
+AIM_BAND = 1
+AIM_OUTER = 8
+
+
+@dataclass(frozen=True)
+class InForce:
+    hard: tuple = NASTRAN_LIMITS
+    aims: tuple = ()
+
+    @property
+    def extra(self) -> bool:
+        """Whether a row reads a figure only the user's limits need (quad_measures(extra=True))."""
+        return bool(self.aims)
+
+
+IN_FORCE = InForce()
+
+
+def aim_score(m: dict[str, np.ndarray], shape: str, limits: InForce, n: int) -> np.ndarray:
+    """(n,) int: per element of `shape` with measures `m`, the worst over the user's limits in force - 0 inside
+    every target, AIM_BAND between a target and its outer limit, AIM_OUTER past an outer limit."""
+    out = np.zeros(n, dtype=np.int64)
+    for row_shape, key, op, target, outer, _share in limits.aims:
+        if row_shape != shape or key not in m:
+            continue
+        v = m[key]
+        past = (v < target) if op == ">=" else (v > target)
+        score = np.where(past, AIM_BAND, 0)
+        if outer is not None:
+            score = np.where((v < outer) if op == ">=" else (v > outer), AIM_OUTER, score)
+        out = np.maximum(out, score)
+    return out
+
+
 def nastran_past(mesh: ShellMesh) -> np.ndarray:
     """(elements,) bool: the element is past one of Nastran's own GEOMCHECK limits."""
     q = quad_measures(mesh.xyz, mesh.quads) if len(mesh.quads) else {}
@@ -81,24 +122,93 @@ def nastran_past(mesh: ShellMesh) -> np.ndarray:
 MARGIN = 1e-9
 
 
-def _quad_past(q: dict[str, np.ndarray]) -> np.ndarray:
-    """(quads,) bool: the quad is past one of Nastran's own quad limits (or not valid)."""
+def _quad_past(q: dict[str, np.ndarray], limits: InForce = IN_FORCE) -> np.ndarray:
+    """(quads,) bool: the quad is past one of the hard quad limits in force - Nastran's own - (or not valid)."""
     out = q["min_jacobian"] <= 0
-    for shape, key, op, limit, _card in NASTRAN_LIMITS:
+    for shape, key, op, limit, _card in limits.hard:
         if shape == "quad":
             out = out | ((q[key] < limit * (1 + MARGIN)) if op == ">=" else (q[key] > limit * (1 - MARGIN)))
     return out
 
 
-def _tria_past(t: dict[str, np.ndarray]) -> np.ndarray:
+def _tria_past(t: dict[str, np.ndarray], limits: InForce = IN_FORCE) -> np.ndarray:
     out = t["min_jacobian"] <= 0
-    for shape, key, op, limit, _card in NASTRAN_LIMITS:
+    for shape, key, op, limit, _card in limits.hard:
         if shape == "tria":
             out = out | ((t[key] < limit * (1 + MARGIN)) if op == ">=" else (t[key] > limit * (1 - MARGIN)))
     return out
 
 
-def split_past_quads(xyz: np.ndarray, quads: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _quad_aim(xyz: np.ndarray, quads: np.ndarray, limits: InForce) -> np.ndarray:
+    """(quads,) int: each quad's score against the user's limits in force (aim_score); zeros with none."""
+    if not limits.aims or not len(quads):
+        return np.zeros(len(quads), dtype=np.int64)
+    return aim_score(quad_measures(xyz, quads, extra=True), "quad", limits, len(quads))
+
+
+def _tria_aim(xyz: np.ndarray, trias: np.ndarray, limits: InForce) -> np.ndarray:
+    if not limits.aims or not len(trias):
+        return np.zeros(len(trias), dtype=np.int64)
+    return aim_score(tria_measures(xyz, trias, extra=True), "tria", limits, len(trias))
+
+
+def split_aimed_quads(xyz: np.ndarray, quads: np.ndarray, n_elements: int, limits: InForce
+                      ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """SHMESH-25: a quad past one of the USER's limits (inside Nastran's own) is cut into two triangles only when
+    that mends it - both triangles inside every hard limit and every user target - and only as far as the user's
+    own allowance needs: every quad past an outer limit, and of the quads between a target and its outer limit
+    only those over the share the user allows, the furthest past first. A cut that leaves a triangle past a limit
+    is never made (it would trade one element outside for two). Deterministic.
+
+    Returns (the indices of the quads kept, the new triangles (k, 3), the quad each triangle came from)."""
+    none = np.zeros((0, 3), dtype=np.int64), np.zeros(0, dtype=np.int64)
+    everyone = np.arange(len(quads), dtype=np.int64)
+    if not limits.aims or not len(quads):
+        return (everyone, *none)
+    m = quad_measures(xyz, quads, extra=True)
+    hard = _quad_past(m, limits)
+    want = np.zeros(len(quads), dtype=bool)
+    for shape, key, op, target, outer, share in limits.aims:
+        if shape != "quad" or key not in m:
+            continue
+        v = m[key]
+        over = ((v < target) if op == ">=" else (v > target)) & ~hard
+        if outer is not None:
+            beyond = ((v < outer) if op == ">=" else (v > outer)) & ~hard
+            want |= beyond
+            over &= ~beyond
+        spare = int(math.floor(float(share) * n_elements + 1e-9))
+        ids = np.flatnonzero(over)
+        if len(ids) > spare:
+            # the furthest past the target first (then the lower quad number)
+            far = (target - v[ids]) if op == ">=" else (v[ids] - target)
+            order = ids[np.lexsort((ids, -np.round(far, 9)))]
+            want[order[:len(ids) - spare]] = True
+    cand = np.flatnonzero(want)
+    if not len(cand):
+        return (everyone, *none)
+    q = quads[cand]
+    cuts = (np.stack([q[:, [0, 1, 2]], q[:, [0, 2, 3]]], axis=1),      # diagonal 0-2
+            np.stack([q[:, [0, 1, 3]], q[:, [1, 2, 3]]], axis=1))      # diagonal 1-3
+    ok, least = [], []
+    for c in cuts:
+        t = c.reshape(-1, 3)
+        tm = tria_measures(xyz, t, extra=True)
+        bad = _tria_past(tm, limits) | (aim_score(tm, "tria", limits, len(t)) > 0)
+        ok.append(~bad.reshape(-1, 2).any(axis=1))
+        least.append(tm["min_angle_tria"].reshape(-1, 2).min(axis=1))
+    second = ok[1] & (~ok[0] | (least[1] > least[0]))
+    mend = ok[0] | ok[1]
+    if not mend.any():
+        return (everyone, *none)
+    tri = np.where(second[:, None, None], cuts[1], cuts[0])[mend].reshape(-1, 3)
+    cut_ids = cand[mend]
+    keep = np.setdiff1d(everyone, cut_ids)
+    return keep, tri.astype(np.int64), np.repeat(cut_ids, 2)
+
+
+def split_past_quads(xyz: np.ndarray, quads: np.ndarray, limits: InForce = IN_FORCE
+                     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """SHMESH-10: every quad past one of Nastran's own limits is cut into two triangles on the diagonal whose
     triangles are better (fewer past the triangle limits first, then the larger smallest angle; the first
     diagonal on a tie). A triangle has no warp or taper, and the cut halves the corner that was too open.
@@ -108,7 +218,7 @@ def split_past_quads(xyz: np.ndarray, quads: np.ndarray) -> tuple[np.ndarray, np
     none = np.zeros((0, 3), dtype=np.int64), np.zeros(0, dtype=np.int64)
     if not len(quads):
         return (np.zeros(0, dtype=np.int64), *none)
-    past = _quad_past(quad_measures(xyz, quads))
+    past = _quad_past(quad_measures(xyz, quads), limits)
     bad = np.flatnonzero(past)
     keep = np.flatnonzero(~past)
     if not len(bad):
@@ -119,7 +229,7 @@ def split_past_quads(xyz: np.ndarray, quads: np.ndarray) -> tuple[np.ndarray, np
     score = []
     for c in cuts:
         m = tria_measures(xyz, c.reshape(-1, 3))
-        fails = _tria_past(m).reshape(-1, 2).sum(axis=1)
+        fails = _tria_past(m, limits).reshape(-1, 2).sum(axis=1)
         least = m["min_angle_tria"].reshape(-1, 2).min(axis=1)
         score.append((fails, least))
     second = (score[1][0] < score[0][0]) | ((score[1][0] == score[0][0]) & (score[1][1] > score[0][1]))
@@ -136,14 +246,17 @@ def _past_count(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray) -> tuple[
 
 def relax_past(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, movable: np.ndarray, *,
                rounds: int = 6, weights: tuple[int, int] = (1, 16), parallelogram: bool | None = None,
-               project=None) -> tuple[np.ndarray, int]:
+               project=None, limits: InForce = IN_FORCE) -> tuple[np.ndarray, int]:
     """SHMESH-14: every movable node (inside a flat face, on no CAD edge) of an element past one of Nastran's own
     limits moves to the middle of its edge neighbours when its elements come out better: fewer past a limit, none
     turned over, and (on a tie) a larger smallest corner angle. The middle of coplanar neighbours lies in their
     plane, so the node stays on its face. Nodes that share no element move together (in number order, the first
     free node taken); `rounds` passes at most. Deterministic. Returns (the moved coordinates, how many moves).
     `project(nodes, points)`, when given, lays each tried point back onto its node's own face (SHMESH-14c: nodes
-    inside curved faces move too, on their surface)."""
+    inside curved faces move too, on their surface).
+    `limits`: the limits in force. With the user's own limits among them (SHMESH-25) a node of an element past one
+    moves too, when its elements' score against them comes down and no more of them are past a hard limit."""
+    aimed = bool(limits.aims)
     X = xyz.copy()
     nq = len(quads)
     elem = np.full((nq + len(trias), 4), -1, dtype=np.int64)
@@ -170,32 +283,38 @@ def relax_past(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, movable: n
     lo, hi = np.minimum(ea, eb), np.maximum(ea, eb)
     edges = np.unique(np.stack([lo, hi], axis=1), axis=0) if len(ea) else np.zeros((0, 2), dtype=np.int64)
 
-    def judge(ids: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Per element of `ids`: past a limit (or turned over), its smallest corner angle, turned over, and (quads)
-        past a limit with no cut into two triangles inside the triangle limits."""
+    def judge(ids: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Per element of `ids`: past a limit (or turned over), its smallest corner angle, turned over, (quads)
+        past a limit with no cut into two triangles inside the triangle limits, and its score against the user's
+        limits in force (zeros with none)."""
         past = np.zeros(len(ids), dtype=bool)
         hard = np.zeros(len(ids), dtype=bool)
         least = np.full(len(ids), 180.0)
         flip = np.zeros(len(ids), dtype=bool)
+        aim = np.zeros(len(ids), dtype=np.int64)
         isq = ids < nq
         if isq.any():
-            m = quad_measures(X, elem[ids[isq]])
-            past[isq] = _quad_past(m)
+            m = quad_measures(X, elem[ids[isq]], extra=aimed)
+            past[isq] = _quad_past(m, limits)
             least[isq] = m["min_angle_quad"]
             flip[isq] = m["min_jacobian"] <= 0
+            if aimed:
+                aim[isq] = aim_score(m, "quad", limits, int(isq.sum()))
             qi = np.flatnonzero(isq)[past[isq]]
             if len(qi):
                 q = elem[ids[qi]]
-                fails = [_tria_past(tria_measures(X, c.reshape(-1, 3))).reshape(-1, 2).any(axis=1)
+                fails = [_tria_past(tria_measures(X, c.reshape(-1, 3)), limits).reshape(-1, 2).any(axis=1)
                          for c in (np.stack([q[:, [0, 1, 2]], q[:, [0, 2, 3]]], axis=1),
                                    np.stack([q[:, [0, 1, 3]], q[:, [1, 2, 3]]], axis=1))]
                 hard[qi] = fails[0] & fails[1]
         if (~isq).any():
-            m = tria_measures(X, elem[ids[~isq], :3])
-            past[~isq] = _tria_past(m)
+            m = tria_measures(X, elem[ids[~isq], :3], extra=aimed)
+            past[~isq] = _tria_past(m, limits)
             least[~isq] = m["min_angle_tria"]
             flip[~isq] = m["min_jacobian"] <= 0
-        return past, least, flip, hard
+            if aimed:
+                aim[~isq] = aim_score(m, "tria", limits, int((~isq).sum()))
+        return past, least, flip, hard, aim
 
     def weigh(ids: np.ndarray, hard: np.ndarray) -> np.ndarray:
         """Each element's weight when past a limit: weights[1] for a triangle; for a quad weights[0], or weights[1]
@@ -206,7 +325,8 @@ def relax_past(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, movable: n
     moves = 0
     for _ in range(rounds):
         everyone = np.arange(len(elem))
-        bad_el = everyone[judge(everyone)[0]]
+        judged = judge(everyone)
+        bad_el = everyone[judged[0] | (judged[4] > 0)] if aimed else everyone[judged[0]]
         if not len(bad_el):
             break
         cand = np.unique(elem[bad_el].ravel())
@@ -234,9 +354,12 @@ def relax_past(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, movable: n
             # a triangle past a limit stays past; a quad past one is cut into two triangles that mostly are not:
             # a move never trades a quad for a triangle (one past triangle outweighs every quad round a node)
             # (a quad no cut can mend counts as a triangle)
-            p0, l0, _f0, h0 = judge(ids)
+            p0, l0, _f0, h0, a0 = judge(ids)
             before_past = np.zeros(len(S), dtype=np.int64)
             np.add.at(before_past, who, p0.astype(np.int64) * weigh(ids, h0))
+            before_aim = np.zeros(len(S), dtype=np.int64)
+            if aimed:
+                np.add.at(before_aim, who, a0)
             before_least = np.full(len(S), 180.0)
             np.minimum.at(before_least, who, l0)
             # the neighbours' middle of every node in S
@@ -253,7 +376,7 @@ def relax_past(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, movable: n
             if len(ib):
                 np.add.at(acc, ib, X[edges[sel_b, 0]])
                 np.add.at(cnt, ib, 1.0)
-            go = (cnt > 0) & (before_past > 0)
+            go = (cnt > 0) & ((before_past > 0) | (before_aim > 0))
             old = X[S].copy()
             mean = np.where(cnt[:, None] > 0, acc / np.maximum(cnt, 1.0)[:, None], old)
             cands = [mean]
@@ -274,23 +397,32 @@ def relax_past(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, movable: n
                 cands += [iso, 0.5 * (old + mean), 0.5 * (old + iso), 0.5 * (mean + iso)]
             best = old.copy()
             best_past = before_past.copy()
+            best_aim = before_aim.copy()
             best_least = before_least.copy()
             moved = np.zeros(len(S), dtype=bool)
             if project is not None:
                 cands = [project(S, c) for c in cands]
             for cand in cands:
                 X[S[go]] = cand[go]
-                p1, l1, f1, h1 = judge(ids)
+                p1, l1, f1, h1, a1 = judge(ids)
                 after_past = np.zeros(len(S), dtype=np.int64)
                 np.add.at(after_past, who, p1.astype(np.int64) * weigh(ids, h1))
+                after_aim = np.zeros(len(S), dtype=np.int64)
+                if aimed:
+                    np.add.at(after_aim, who, a1)
                 after_least = np.full(len(S), 180.0)
                 np.minimum.at(after_least, who, l1)
                 after_flip = np.zeros(len(S), dtype=bool)
                 np.logical_or.at(after_flip, who, f1)
+                # fewer past a hard limit; then (SHMESH-25) a lower score against the user's limits; then the larger
+                # smallest corner angle. With no user limit both scores are 0 and this is the rule it always was
                 better = go & ~after_flip & ((after_past < best_past) |
-                                             ((after_past == best_past) & (after_least > best_least + 1e-9)))
+                                             ((after_past == best_past) & (after_aim < best_aim)) |
+                                             ((after_past == best_past) & (after_aim == best_aim)
+                                              & (after_least > best_least + 1e-9)))
                 best[better] = cand[better]
                 best_past[better] = after_past[better]
+                best_aim[better] = after_aim[better]
                 best_least[better] = after_least[better]
                 moved |= better
                 X[S] = old
@@ -302,13 +434,16 @@ def relax_past(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, movable: n
     return X, moves
 
 
-def _tria_score(xyz: np.ndarray, t: np.ndarray) -> tuple[int, float]:
-    """(how many of the triangles are past a limit, their smallest skew): lower first is better, then higher."""
-    m = tria_measures(xyz, t)
-    return int(_tria_past(m).sum()), float(m["skew_deg"].min())
+def _tria_score(xyz: np.ndarray, t: np.ndarray, limits: InForce = IN_FORCE) -> tuple[int, int, float]:
+    """(how many of the triangles are past a hard limit, their score against the user's limits in force - 0 with
+    none -, their smallest skew): lower, lower, then higher is better."""
+    m = tria_measures(xyz, t, extra=limits.extra)
+    aim = int(aim_score(m, "tria", limits, len(t)).sum()) if limits.aims else 0
+    return int(_tria_past(m, limits).sum()), aim, float(m["skew_deg"].min())
 
 
-def flip_past_trias(xyz: np.ndarray, trias: np.ndarray, t_face: list[int], *, rounds: int = 4) -> tuple[np.ndarray, int]:
+def flip_past_trias(xyz: np.ndarray, trias: np.ndarray, t_face: list[int], *, rounds: int = 4,
+                    limits: InForce = IN_FORCE) -> tuple[np.ndarray, int]:
     """SHMESH-13: a triangle past one of Nastran's limits and the triangle across its longest edge (the same face,
     that edge theirs alone) swap that edge for the other diagonal when the two new triangles are better (fewer past
     a limit, then the larger smallest skew) and turn the same way. A face's own edges never move. Deterministic:
@@ -316,7 +451,12 @@ def flip_past_trias(xyz: np.ndarray, trias: np.ndarray, t_face: list[int], *, ro
     T = trias.copy()
     swaps = 0
     for _ in range(rounds):
-        past = np.flatnonzero(_tria_past(tria_measures(xyz, T))) if len(T) else np.zeros(0, dtype=np.int64)
+        if len(T) and limits.aims:
+            # SHMESH-25: and a triangle past one of the user's limits in force
+            tm = tria_measures(xyz, T, extra=True)
+            past = np.flatnonzero(_tria_past(tm, limits) | (aim_score(tm, "tria", limits, len(T)) > 0))
+        else:
+            past = np.flatnonzero(_tria_past(tria_measures(xyz, T), limits)) if len(T) else np.zeros(0, dtype=np.int64)
         if not len(past):
             break
         users: dict[tuple[int, int], list[int]] = {}
@@ -347,8 +487,9 @@ def flip_past_trias(xyz: np.ndarray, trias: np.ndarray, t_face: list[int], *, ro
             n_new = [np.cross(xyz[t[1]] - xyz[t[0]], xyz[t[2]] - xyz[t[0]]) for t in new]
             if any(float(np.dot(n, n_old)) <= 0 for n in n_new):
                 continue
-            (f_new, s_new), (f_old, s_old) = _tria_score(xyz, new), _tria_score(xyz, T[[i, j]])
-            if f_new < f_old or (f_new == f_old and s_new > s_old):
+            (f_new, a_new, s_new), (f_old, a_old, s_old) = (_tria_score(xyz, new, limits),
+                                                            _tria_score(xyz, T[[i, j]], limits))
+            if (f_new, a_new) < (f_old, a_old) or ((f_new, a_new) == (f_old, a_old) and s_new > s_old):
                 T[i], T[j] = new[0], new[1]
                 done |= {i, j}
                 changed += 1
@@ -390,11 +531,11 @@ def _cycle(a: tuple[int, ...], b: tuple[int, ...]) -> list[int] | None:
     return loop if len(loop) == len(rest) else None
 
 
-def _good_quad(xyz: np.ndarray, q: list[int], normal: np.ndarray) -> float | None:
-    """The quad's smallest corner angle when it is valid, inside every Nastran quad limit and turns along `normal`;
-    else None."""
-    m = quad_measures(xyz, np.array([q], dtype=np.int64))
-    if bool(_quad_past(m)[0]):
+def _good_quad(xyz: np.ndarray, q: list[int], normal: np.ndarray, limits: InForce = IN_FORCE) -> float | None:
+    """The quad's smallest corner angle when it is valid, inside every Nastran quad limit (and every target of the
+    user's limits in force, SHMESH-25) and turns along `normal`; else None."""
+    m = quad_measures(xyz, np.array([q], dtype=np.int64), extra=limits.extra)
+    if bool(_quad_past(m, limits)[0]) or (limits.aims and int(aim_score(m, "quad", limits, 1)[0]) > 0):
         return None
     p = xyz[q]
     if float(np.dot(np.cross(p[2] - p[0], p[3] - p[1]), normal)) <= 0:
@@ -408,7 +549,8 @@ def _turns_along(xyz: np.ndarray, t: list[int], normal: np.ndarray) -> bool:
 
 
 def walk_trias(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int], t_face: list[int], *,
-               depth: int = 8, targets: int = 6) -> tuple[np.ndarray, np.ndarray, list[int], list[int], int]:
+               depth: int = 8, targets: int = 6, limits: InForce = IN_FORCE
+               ) -> tuple[np.ndarray, np.ndarray, list[int], list[int], int]:
     """SHMESH-18: a triangle is walked through the quads of its face to the nearest other triangle of that face and
     the two become one quad. Each step re-cuts the triangle and the quad ahead (a pentagon) into a quad and a
     triangle that touches the next element of the path; the last step joins the two triangles. A walk is kept only
@@ -474,7 +616,7 @@ def walk_trias(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: li
             loop = _cycle(tri, elems[goal])
             if loop is None or len(loop) != 4:
                 return None
-            return [loop] if _good_quad(xyz, loop, _n(elems[goal])) is not None else None
+            return [loop] if _good_quad(xyz, loop, _n(elems[goal]), limits) is not None else None
         q = elems[path[0]]
         normal = _n(q)
         loop = _cycle(tri, q)
@@ -493,7 +635,7 @@ def walk_trias(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: li
             quad = [loop[(i + 1) % 5], loop[(i + 2) % 5], loop[(i + 3) % 5], loop[(i + 4) % 5]]
             if not _turns_along(xyz, t, normal):
                 continue
-            g = _good_quad(xyz, quad, normal)
+            g = _good_quad(xyz, quad, normal, limits)
             if g is not None:
                 options.append((-round(g, 9), i, quad, tuple(t)))
         for _g, _i, quad, tt in sorted(options):
@@ -549,8 +691,8 @@ def walk_trias(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: li
             [face[e] for e, _c in Q], [face[e] for e, _c in T], walked)
 
 
-def pair_trias(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, t_face: list[int]
-               ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def pair_trias(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, t_face: list[int],
+               limits: InForce = IN_FORCE) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """SHMESH-17: two triangles of one face across an edge that is theirs alone become one quad when that quad is
     valid and inside every one of Nastran's own quad limits. Pairs are taken best first (the larger smallest corner
     angle, then the lower triangle numbers), each triangle once. Deterministic.
@@ -587,8 +729,13 @@ def pair_trias(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, t_face: li
     if not cand_q:
         return none
     Q = np.array(cand_q, dtype=np.int64)
-    m = quad_measures(xyz, Q)
-    ok = ~_quad_past(m)
+    m = quad_measures(xyz, Q, extra=limits.extra)
+    ok = ~_quad_past(m, limits)
+    if limits.aims:
+        # SHMESH-25: and the quad must score no worse against the user's limits than its two triangles do
+        t_aim = _tria_aim(xyz, trias, limits)
+        pairs_aim = np.array([t_aim[i] + t_aim[j] for i, j in cand_t], dtype=np.int64)
+        ok &= aim_score(m, "quad", limits, len(Q)) <= pairs_aim
     # the quad must turn the way both its triangles do
     n_q = np.cross(xyz[Q[:, 2]] - xyz[Q[:, 0]], xyz[Q[:, 3]] - xyz[Q[:, 1]])
     for col in (0, 1):
@@ -634,9 +781,16 @@ def _elem_normal(xyz: np.ndarray, c: list[int]) -> np.ndarray:
     return np.cross(p[1] - p[0], p[2] - p[0])
 
 
-def _past_one(xyz: np.ndarray, c: list[int]) -> bool:
+def _past_one(xyz: np.ndarray, c: list[int], limits: InForce = IN_FORCE) -> bool:
     a = np.array([c], dtype=np.int64)
-    return bool(_quad_past(quad_measures(xyz, a))[0]) if len(c) == 4 else bool(_tria_past(tria_measures(xyz, a))[0])
+    if len(c) == 4:
+        return bool(_quad_past(quad_measures(xyz, a), limits)[0])
+    return bool(_tria_past(tria_measures(xyz, a), limits)[0])
+
+
+def _aim_one(xyz: np.ndarray, c: list[int], limits: InForce) -> int:
+    a = np.array([c], dtype=np.int64)
+    return int((_quad_aim if len(c) == 4 else _tria_aim)(xyz, a, limits)[0])
 
 
 def _least_angle(xyz: np.ndarray, c: list[int]) -> float:
@@ -644,7 +798,7 @@ def _least_angle(xyz: np.ndarray, c: list[int]) -> float:
 
 
 def absorb_caps(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int], t_face: list[int],
-                face_wall: np.ndarray, *, rounds: int = 4):
+                face_wall: np.ndarray, *, rounds: int = 4, limits: InForce = IN_FORCE):
     """SHMESH-22: a cap - a triangle past one of Nastran's limits whose apex lies near its longest edge (its widest
     corner over CAP_MIN_DEG) - left once every other step is done. Its three corners are on CAD edges (a face's
     corner that closes almost flat, two edges that run close): no node of it can move and no swap inside its face
@@ -667,8 +821,12 @@ def absorb_caps(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: l
     for _ in range(rounds):
         if not T:
             break
-        tm = tria_measures(xyz, np.array(T, dtype=np.int64))
-        caps = np.flatnonzero(_tria_past(tm) & (tm["max_angle_tria"] >= CAP_MIN_DEG)).tolist()
+        tm = tria_measures(xyz, np.array(T, dtype=np.int64), extra=limits.extra)
+        cap_past = _tria_past(tm, limits)
+        if limits.aims:
+            # SHMESH-25: and a cap past one of the user's OUTER limits (their "none beyond")
+            cap_past = cap_past | (aim_score(tm, "tria", limits, len(T)) >= AIM_OUTER)
+        caps = np.flatnonzero(cap_past & (tm["max_angle_tria"] >= CAP_MIN_DEG)).tolist()
         if not caps:
             break
         conn = Q + T
@@ -716,8 +874,11 @@ def absorb_caps(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: l
                 continue
             poly = e[:j + 1] + [p] + e[j + 1:]
             best = None
+            before_aim = (_aim_one(xyz, c, limits) + _aim_one(xyz, e, limits)) if limits.aims else 0
             for cut in _splits(poly):
-                if any(_past_one(xyz, el) or float(_elem_normal(xyz, el) @ n_e) <= 0 for el in cut):
+                if any(_past_one(xyz, el, limits) or float(_elem_normal(xyz, el) @ n_e) <= 0 for el in cut):
+                    continue
+                if limits.aims and sum(_aim_one(xyz, el, limits) for el in cut) > before_aim:
                     continue
                 key = (len(cut), -min(_least_angle(xyz, el) for el in cut))
                 if best is None or key < best[0]:
@@ -752,7 +913,14 @@ def _angles(p: np.ndarray) -> np.ndarray:
     return np.degrees(np.arccos(np.clip(c, -1.0, 1.0)))
 
 
-def quad_measures(xyz: np.ndarray, quads: np.ndarray) -> dict[str, np.ndarray]:
+#: the 2 x 2 Gauss points of a 4-node quad
+_GAUSS = 1.0 / math.sqrt(3.0)
+
+
+def quad_measures(xyz: np.ndarray, quads: np.ndarray, *, extra: bool = False) -> dict[str, np.ndarray]:
+    """The quads' figures. `extra` adds the figures only a user's limits read (engines/shell_requirements):
+    "jacobian" (the smallest over the largest determinant of the Jacobian at the 2 x 2 Gauss points, in the
+    element's mean plane), "min_edge" and "max_edge" (mm), and "skew_pre" (90 minus skew_deg: 0 is ideal)."""
     p = xyz[quads]                                         # (m, 4, 3)
     n = _unit(np.cross(p[:, 2] - p[:, 0], p[:, 3] - p[:, 1]))
     e_next = p[:, [1, 2, 3, 0]] - p
@@ -780,14 +948,28 @@ def quad_measures(xyz: np.ndarray, quads: np.ndarray) -> dict[str, np.ndarray]:
     taper = np.max(np.abs(corner - mean[:, None]), axis=1) / np.maximum(mean, 1e-300)
     angles = _angles(p)
     jmax = jac.max(axis=1)
-    return {"min_jacobian": jac.min(axis=1), "jacobian_ratio": jac.min(axis=1) / np.where(jmax > 0, jmax, 1.0),
-            "aspect": lengths.max(axis=1) / np.maximum(lengths.min(axis=1), 1e-300), "warp_deg": warp,
-            "warp_coef": warp_coef,
-            "skew_deg": ang, "taper": taper, "min_angle_quad": angles.min(axis=1),
-            "max_angle_quad": angles.max(axis=1)}
+    out = {"min_jacobian": jac.min(axis=1), "jacobian_ratio": jac.min(axis=1) / np.where(jmax > 0, jmax, 1.0),
+           "aspect": lengths.max(axis=1) / np.maximum(lengths.min(axis=1), 1e-300), "warp_deg": warp,
+           "warp_coef": warp_coef,
+           "skew_deg": ang, "taper": taper, "min_angle_quad": angles.min(axis=1),
+           "max_angle_quad": angles.max(axis=1)}
+    if extra:
+        dets = []
+        for xi in (-_GAUSS, _GAUSS):
+            for eta in (-_GAUSS, _GAUSS):
+                d_xi = 0.25 * ((1 - eta) * (p[:, 1] - p[:, 0]) + (1 + eta) * (p[:, 2] - p[:, 3]))
+                d_eta = 0.25 * ((1 - xi) * (p[:, 3] - p[:, 0]) + (1 + xi) * (p[:, 2] - p[:, 1]))
+                dets.append(np.einsum("mi,mi->m", np.cross(d_xi, d_eta), n))
+        det = np.stack(dets, axis=1)
+        dmax = det.max(axis=1)
+        out.update(jacobian=det.min(axis=1) / np.where(dmax > 0, dmax, 1.0), min_edge=lengths.min(axis=1),
+                   max_edge=lengths.max(axis=1), skew_pre=90.0 - ang)
+    return out
 
 
-def tria_measures(xyz: np.ndarray, trias: np.ndarray) -> dict[str, np.ndarray]:
+def tria_measures(xyz: np.ndarray, trias: np.ndarray, *, extra: bool = False) -> dict[str, np.ndarray]:
+    """The triangles' figures. `extra` adds the ones only a user's limits read: "jacobian" (1: a flat 3-node
+    triangle has one Jacobian), "min_edge" and "max_edge" (mm), and "skew_pre" (90 minus skew_deg)."""
     p = xyz[trias]
     lengths = np.linalg.norm(p[:, [1, 2, 0]] - p, axis=2)
     area2 = np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1)
@@ -799,10 +981,14 @@ def tria_measures(xyz: np.ndarray, trias: np.ndarray) -> dict[str, np.ndarray]:
         med = _unit(0.5 * (p[:, j] + p[:, k]) - p[:, i])
         mid = _unit(0.5 * (p[:, i] + p[:, k]) - 0.5 * (p[:, i] + p[:, j]))
         skews.append(np.degrees(np.arccos(np.clip(np.abs(np.einsum("mi,mi->m", med, mid)), 0, 1))))
-    return {"min_jacobian": area2 / np.maximum(lengths.max(axis=1) ** 2, 1e-300),
-            "aspect": lengths.max(axis=1) / np.maximum(lengths.min(axis=1), 1e-300),
-            "skew_deg": np.min(np.stack(skews), axis=0), "min_angle_tria": angles.min(axis=1),
-            "max_angle_tria": angles.max(axis=1)}
+    out = {"min_jacobian": area2 / np.maximum(lengths.max(axis=1) ** 2, 1e-300),
+           "aspect": lengths.max(axis=1) / np.maximum(lengths.min(axis=1), 1e-300),
+           "skew_deg": np.min(np.stack(skews), axis=0), "min_angle_tria": angles.min(axis=1),
+           "max_angle_tria": angles.max(axis=1)}
+    if extra:
+        out.update(jacobian=np.ones(len(p)), min_edge=lengths.min(axis=1), max_edge=lengths.max(axis=1),
+                   skew_pre=90.0 - out["skew_deg"])
+    return out
 
 
 def _stat(v: np.ndarray, worst: str) -> dict:
@@ -856,5 +1042,6 @@ def element_angle_deg(radius: float, size: float) -> float:
     return math.degrees(size / radius) if radius > 0 else 0.0
 
 
-__all__ = ["LIMITS", "NASTRAN_LIMITS", "TRIA_SHARE", "measure", "nastran_past", "quad_measures",
-           "absorb_caps", "flip_past_trias", "split_past_quads", "tria_measures"]
+__all__ = ["AIM_BAND", "AIM_OUTER", "IN_FORCE", "InForce", "LIMITS", "NASTRAN_LIMITS", "TRIA_SHARE", "aim_score",
+           "measure", "nastran_past", "quad_measures", "absorb_caps", "flip_past_trias", "split_aimed_quads",
+           "split_past_quads", "tria_measures"]
