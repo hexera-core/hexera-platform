@@ -127,11 +127,11 @@
 /* Page frame. One type scale: a 20px title, 14px section titles, 13px body and cells,
    12px captions. Sentence case throughout; mono only for ids and file names. */
 .main{min-width:0;display:flex;flex-direction:column}
-.page{padding:1.75rem clamp(1.25rem,3vw,2.5rem) 3rem;display:flex;flex-direction:column;gap:1.25rem;
+.page{padding:2rem clamp(1.25rem,3vw,2.5rem) 3.5rem;display:flex;flex-direction:column;gap:1.75rem;
   max-width:72rem;width:100%}
 .page__head{display:flex;align-items:center;justify-content:space-between;gap:1rem;
   flex-wrap:wrap;min-height:2.25rem}
-.page__title{font:600 1.25rem/1.25 var(--sans);letter-spacing:-.01em;text-transform:none;
+.page__title{font:600 1.5rem/1.2 var(--sans);letter-spacing:-.01em;text-transform:none;
   color:var(--text-bright);text-wrap:balance}
 .page__sub{color:var(--text-muted);font-size:var(--fs-md)}
 .page__intro{max-width:62ch;margin-top:.375rem;color:var(--text-muted);font-size:var(--fs-md);
@@ -155,9 +155,10 @@
 .shell .btn--sm{height:1.75rem;padding:0 .75rem;font-size:var(--fs-sm)}
 
 /* a titled block inside a page */
-.section{display:flex;flex-direction:column;gap:.625rem}
+.section{display:flex;flex-direction:column;gap:.75rem}
 .section__head{display:flex;align-items:baseline;justify-content:space-between;gap:1rem}
 .section__title{font:600 var(--fs-base)/1.3 var(--sans);color:var(--text)}
+.section__note{font-size:var(--fs-sm);color:var(--text-faint)}
 .section__link{font-size:var(--fs-sm);color:var(--text-muted);text-decoration:none}
 .section__link:hover{color:var(--text)}
 .section__more{display:flex}
@@ -168,13 +169,13 @@
    red: a red outline is an error's) */
 .card--accent{border-color:var(--border-bright)}
 
-.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));gap:.75rem}
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));gap:1rem}
 .summary-grid--compact{grid-template-columns:minmax(16rem,22rem)}
 .metric-card{background:var(--surface-1);border:1px solid var(--border);
   border-radius:var(--r-md);padding:1rem 1.125rem;display:grid;gap:.5rem}
 .metric-card b{font:600 1.5rem/1.1 var(--sans);letter-spacing:-.01em;color:var(--text-bright);
   font-variant-numeric:tabular-nums}
-.metric-card span{color:var(--text-muted);font-size:var(--fs-md);line-height:1.5}
+.metric-card span{color:var(--text-muted);font-size:var(--fs-sm);line-height:1.5}
 
 /* the balance: the number, its unit, and - when it is spent - the one thing to do */
 .balance__row{display:flex;align-items:baseline;gap:.5rem}
@@ -190,11 +191,41 @@
 .panel__head{display:flex;align-items:center;justify-content:space-between;gap:1rem;
   padding:.875rem 1rem;border-bottom:1px solid var(--border)}
 .panel__body{padding:.875rem 1rem;border-top:1px solid var(--divider)}
-.billing-layout{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(17rem,.8fr);gap:1rem;
-  align-items:start}
 .billing-plan-grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr))}
-.billing-plan-card{display:grid;grid-template-rows:auto auto 1fr auto;gap:.7rem;min-height:13.5rem}
+.billing-plan-card{display:grid;grid-template-rows:auto auto 1fr auto;gap:.875rem;min-height:13.5rem}
 .billing-actions{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap}
+.billing-pack-input{width:5rem}
+.stat-big{font:500 1.5rem/1.15 var(--mono);color:var(--text-bright);margin:0}
+
+/* The billing activity charts are server-drawn SVG; every mark reads a token so the picture
+   stays on-palette. */
+.chart{display:block;width:100%;height:auto}
+.chart__label{fill:var(--text-faint);font:400 10px var(--sans)}
+.chart__value{fill:var(--text);font:500 11px var(--mono)}
+.chart__base{stroke:var(--border-strong);stroke-width:1}
+.chart__seg--s0{fill:var(--chart-s0)}
+.chart__seg--s1{fill:var(--chart-s1)}
+.chart__seg--s2{fill:var(--chart-s2)}
+.chart__seg--s3{fill:var(--chart-s3)}
+.chart__seg--s4{fill:var(--chart-s4)}
+.chart-legend{display:flex;align-items:center;gap:.4rem;margin:0;color:var(--text-faint);
+  font-size:var(--fs-sm);flex-wrap:wrap}
+.chart-legend__item{display:inline-flex;align-items:center;gap:.4rem;max-width:15rem;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chart-legend__swatch{width:8px;height:8px;border-radius:2px;display:inline-block;flex:none}
+.chart-legend__swatch--s0{background:var(--chart-s0)}
+.chart-legend__swatch--s1{background:var(--chart-s1)}
+.chart-legend__swatch--s2{background:var(--chart-s2)}
+.chart-legend__swatch--s3{background:var(--chart-s3)}
+.chart-legend__swatch--s4{background:var(--chart-s4)}
+.chart-empty{display:flex;align-items:center;justify-content:center;min-height:10rem;margin:0;
+  color:var(--text-muted);font-size:var(--fs-md)}
+/* the usage-page range picker: quiet text tabs, the live one underlined */
+.range-tabs{display:flex;gap:1.125rem}
+.range-tab{color:var(--text-faint);text-decoration:none;padding-bottom:.2rem;
+  border-bottom:1px solid transparent}
+.range-tab:hover{color:var(--text)}
+.range-tab--active{color:var(--text-bright);border-bottom-color:var(--accent)}
 .message-stack{display:grid;gap:.85rem;padding:1rem 1.15rem}
 .message-card{background:var(--surface-2);border:1px solid var(--border);
   border-radius:var(--r-md);padding:1rem 1.1rem;display:grid;gap:.45rem}
@@ -258,7 +289,8 @@
 .table .row-action:hover{background:var(--surface-raised);color:var(--text)}
 .row-action svg{width:15px;height:15px}
 
-/* Status: a WORD and a mark, never a colour alone. Sentence case, the body face. */
+/* Status: a WORD and a mark, never a colour alone. The uppercase below is set by the brand
+   voice block at the foot of this file. */
 .status{display:inline-flex;align-items:center;gap:.5rem;vertical-align:middle;font:500 var(--fs-md)/1.2 var(--sans);
   letter-spacing:0;text-transform:none;color:var(--text-muted)}
 .status::before{content:"";width:6px;height:6px;border-radius:50%;flex:none;
@@ -347,3 +379,21 @@
 @keyframes files-arrive{from{background:var(--selected)}to{background:transparent}}
 @media (prefers-reduced-motion:reduce){.files__row{animation:none}}
 @media (max-width:860px){.sidebar__switch,.files{display:none}}
+
+/* Brand voice: on hexera.ai the functional chrome - labels, nav, buttons, table heads, figure
+   captions - is Geist Mono uppercase on a wide track, and prose stays sentence case. The console
+   chrome takes the same treatment; these rules set it ON the elements because the earlier rules
+   declare text-transform:none on each, and a declared value beats an inherited one. Everything
+   a person reads as a sentence - intros, card copy, table cells, notice bodies - keeps normal
+   case: capping prose is what made the page shout. */
+.shell .page__title{font-family:var(--display);font-weight:600;letter-spacing:-.01em;
+  text-transform:uppercase}
+
+/* The serif is restricted the way the site restricts it: the wordmark and the doorway titles,
+   never UI. Everywhere else is Geist or Geist Mono - a face that only shows up a couple of
+   times reads as intentional; a face that shows up in the labels reads as a font soup. */
+.sidebar__brand span{font-family:var(--serif);font-weight:600;font-size:.95rem;letter-spacing:.04em}
+.shell .label,.shell .page__eyebrow,.section__title,.chart-legend,.chart__label,.chart__value,.range-tab,
+.sidebar__group,.sidebar__item,.sidebar__new,.sidebar__run,.sidebar__credits,
+.sidebar__settings>summary,.table th,.status,.shell .btn,.dashboard-notice h2,.auth__alt,
+.auth__foot{font-family:var(--mono);letter-spacing:.12em;text-transform:uppercase}

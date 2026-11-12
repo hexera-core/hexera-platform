@@ -80,6 +80,13 @@
   --stone-muted:#8e8d82;         /* decoration only, never text */
   --stone-soft:rgba(175,174,162,.12);
 
+  /* the spend chart's source ramp: hottest first, cooling to stone for the long tail */
+  --chart-s0:var(--accent);
+  --chart-s1:var(--stone);
+  --chart-s2:var(--stone-muted);
+  --chart-s3:#575650;
+  --chart-s4:#3c3b36;
+
   /* status - meaning carried by a word AND a mark, never colour alone */
   --ok:#61d49a;      --ok-soft:rgba(97,212,154,.11);
   --warn:#f1bd63;    --warn-soft:rgba(241,189,99,.12);
