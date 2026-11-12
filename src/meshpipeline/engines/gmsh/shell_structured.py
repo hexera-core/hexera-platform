@@ -1698,8 +1698,20 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             small = shortest[0] < CELL_MIN * h
             if small:
                 mid_ = _samples(gmsh, shortest[1], 2)[1] * mm
+                # (and what stands round it, in the face's own frame, mm: the short edge's ends, the nearest hole's
+                # box, the lines and edges within a face size - so a real part's record pins the pair of lines)
+                ends_ = [np.round(np.array(uv(x)) * mm, 2) for x in _samples(gmsh, shortest[1], 1)]
+                mid_uv = 0.5 * (ends_[0] + ends_[1]) / mm
+                j_near = min(range(len(ws)), key=lambda j: float(np.linalg.norm(np.array(uv(ws[j].centre)) - mid_uv)))
+                near_l = {ax: sorted(round(x * mm, 2) for x in lines[ax] if abs(x - mid_uv[i_]) <= h)
+                          for i_, ax in enumerate(("u", "v"))}
+                near_e = {ax: sorted(round(x * mm, 2) for x, k in vals[ax] if k == "edge" and abs(x - mid_uv[i_]) <= h)
+                          for i_, ax in enumerate(("u", "v"))}
                 causes.append(f"a cell edge {shortest[0] * mm:.3g} mm, under {CELL_MIN * h_mm:.3g} mm, at "
-                              f"({mid_[0]:.0f}, {mid_[1]:.0f}, {mid_[2]:.0f}) mm")
+                              f"({mid_[0]:.0f}, {mid_[1]:.0f}, {mid_[2]:.0f}) mm [face frame mm: ends "
+                              f"{[list(map(float, e)) for e in ends_]}, nearest hole box "
+                              f"{[round(x * mm, 2) for x in boxes[j_near]]} (hole {2 * ws[j_near].r * mm:.3g} mm), "
+                              f"lines {near_l}, edges {near_e}]")
             # and every ring came out as drawn: one circle round a free box's hole, four quarters round an O-grid's
             trial = sorted({abs(int(c)) for s in cells for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
             # a line that ends inside an edge the face shares with another face cuts that edge: the other face is cut
