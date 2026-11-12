@@ -497,7 +497,9 @@ def test_a_square_hole_gets_a_square_washer(tmp_path):
     mesh, applied = _mesh(brep, rec, _criteria())
     s = applied["quality"]["structure"]
     assert s["washers"] == 4 and s["no_washer"] == {}, s["hole_list"]
-    assert all(h["shape"] == "square" and h["kind"] == "square ring in a free face" for h in s["hole_list"])
+    # (SHMESH-48h: the plate is gridded, each square ring in a free box of the grid)
+    assert all(h["shape"] == "square" and h["kind"] == "square ring in a free box of a gridded face"
+               for h in s["hole_list"]), s["hole_list"]
     q = applied["quality"]
     assert q["valid"] and q["within_nastran"]
     rows = {r["field"]: r for r in applied["requirements"]["rows"]}
@@ -557,6 +559,47 @@ def test_round_and_square_holes_on_one_face_of_a_several_face_part(tmp_path):
     assert s["washers"] == 7 and s["no_washer"] == {}, s["hole_list"]
     assert sum(1 for h in s["hole_list"] if h.get("shape") == "square") == 3
     assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+
+
+def test_a_top_plate_with_round_and_square_holes_is_gridded(tmp_path):
+    """SHMESH-48h, a real column's top plates (19 mm, 6 round and 5 four-sided holes on one face): the square rings
+    were drawn after the grid and left out of it, so the grid saw holes without a washer and left the plate free. Now
+    each square ring takes a free box of the grid (its strips drawn in the box), and the plate is gridded with every
+    line met."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Vec
+
+    T_ = 19.05
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(-210, -160, 0), 420, 320, T_).Shape()
+    for x, y in ((-150, -100), (0, -100), (150, -100), (-150, 100), (0, 100), (150, 100)):
+        shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, -1), gp_Dir(0, 0, 1)), 9.0,
+                                                                T_ + 2).Shape()).Shape()
+    for (x, y), turn in (((-75, -100), 0), ((75, -100), 0), ((-75, 100), 0), ((75, 100), 0), ((0, 0), 45)):
+        poly = BRepBuilderAPI_MakePolygon()
+        for j in range(4):
+            a = math.radians(turn + 45 + 90 * j)
+            poly.Add(gp_Pnt(x + 9.0 * math.sqrt(2) * math.cos(a), y + 9.0 * math.sqrt(2) * math.sin(a), -1))
+        poly.Close()
+        shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(poly.Wire()).Face(),
+                                                             gp_Vec(0, 0, T_ + 2)).Shape()).Shape()
+    rec, surf = ms_extract(shape)
+    brep = tmp_path / "top.brep"
+    BRepTools.Write_s(surf, str(brep))
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert "guard" not in s, s.get("guard")
+    assert s["washers"] == 11 and s["no_washer"] == {}, s["hole_list"]
+    assert "a hole without a washer in the face" not in (s.get("not_gridded") or {}), s.get("not_gridded")
+    kinds = [h["kind"] for h in s["hole_list"]]
+    assert kinds.count("square ring in a free box of a gridded face") == 5, kinds
+    assert all(k.endswith("gridded face") for k in kinds), kinds
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+    assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+    again, _a = _mesh(brep, rec, _criteria())
+    assert _sha(again) == _sha(mesh)
 
 
 def ms_extract(shape):

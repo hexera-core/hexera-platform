@@ -1392,8 +1392,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 washers = [w for w in washers if w not in polar_made and w not in polar_o]
             if ST.BLOCKS and ST.MAPPED and structure != "free":
                 # SHMESH-41: a face whose holes all have washers is cut into a grid of cells, mapped below
+                # (SHMESH-48h: square rings go in too - each takes a free box of the grid, its strips drawn there)
                 gridded, boxed, block_preset, block_holes, block_skipped = ST.block_faces(
-                    gmsh, washers, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
+                    gmsh, washers + squares, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
                     cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
                     cells_out=grid_cells, no_cut=no_cut, cut_out=cut_of, made_out=grid_faces_made,
                     why_where=skipped_where)

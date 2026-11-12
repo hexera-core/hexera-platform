@@ -61,6 +61,7 @@ class Washer:
     shrunk: bool = False
     corners: list = field(default_factory=list)  # SHMESH-45f: a square (four-sided) hole's corners, in loop order
     side_counts: list = field(default_factory=list)
+    in_box: bool = False            # SHMESH-48h: a square ring drawn in a free box of a gridded face
     seam: list = field(default_factory=list)  # SHMESH-49e: where its O-grid cuts the hole (the redraw starts it there)
     ring: int = 0                   # after the imprint: the ring's circle
     annulus: int = 0                # ... the surface between hole and ring
@@ -409,6 +410,27 @@ def _on_hole(gmsh, w: Washer, curves: list[int]) -> bool:
                for c in curves)
 
 
+def _on_square(gmsh, w: Washer, curves: list[int]) -> bool:
+    """SHMESH-48h: whether these curves (a loop) lie on a square washer's hole sides and go all round it."""
+    if not curves or not w.corners:
+        return False
+    P = w.corners
+    tol = 1e-4 * max(float(w.r), 1e-12)
+    total = 0.0
+    for c in curves:
+        q = _samples(gmsh, c, 4)
+        dist = np.full(len(q), np.inf)
+        for i in range(4):
+            a_, d_ = P[i], P[(i + 1) % 4] - P[i]
+            tt = np.clip(((q - a_) @ d_) / max(float(d_ @ d_), 1e-300), 0.0, 1.0)
+            dist = np.minimum(dist, np.linalg.norm(a_ + tt[:, None] * d_ - q, axis=1))
+        if float(dist.max()) > tol:
+            return False
+        total += float(gmsh.model.occ.getMass(1, c))
+    rim = sum(float(np.linalg.norm(P[(i + 1) % 4] - P[i])) for i in range(4))
+    return abs(total - rim) <= 1e-3 * rim
+
+
 def _rings_whole(gmsh, t: int, ws: list[Washer], omap) -> bool:
     """Whether a fragment of face t by the washers' circles left each ring one circle closing round its hole."""
     new = [s for d, s in omap[0] if d == 2]
@@ -492,6 +514,9 @@ def imprint(gmsh, washers: list[Washer], tag_of: dict[int, int], cuts: set[int] 
                 tag_of[x] = k
             _remove_loose(gmsh, {c for got in omap[1 + sum(1 for w in use if not w.corners):]
                                  for d, c in got if d == 1})
+            if cuts is not None and any(w.in_box for w in use):
+                # SHMESH-48h: a box cell's edges that no other face shares come back with new tags from the cut
+                cuts.intersection_update(c for _d, c in gmsh.model.getEntities(1))
             curves = sorted({abs(int(c)) for x in new for _d, c in gmsh.model.getBoundary([(2, x)], oriented=False)})
             for w, got in zip([w for w in use if not w.corners], omap[1:], strict=False):
                 w.ring = [c for d, c in got if d == 1][0]
@@ -512,7 +537,8 @@ def imprint(gmsh, washers: list[Washer], tag_of: dict[int, int], cuts: set[int] 
             for w in use:
                 if w.corners:
                     _square_presets(gmsh, w, curves, preset, cuts)
-                    w.info["kind"] = "square ring in a free face"
+                    w.info["kind"] = "square ring in a free box of a gridded face" if w.in_box \
+                        else "square ring in a free face"
                     kept.append(w)
         except Exception as exc:  # noqa: BLE001 - SHMESH-45g: one face's washers never cost the others
             import logging
@@ -1034,7 +1060,11 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             def uv(p: np.ndarray, o=o, u=u, v=v) -> tuple[float, float]:
                 return float((p - o) @ u), float((p - o) @ v)
 
-            plans = [_boxed(w.r * mm, hole_size(w.r * mm, w.owner), h_mm, low_mm, high_mm) for w in ws]
+            # SHMESH-48h: a square ring (SHMESH-45f) takes a free box round its outer corners; its strips are drawn
+            # in that box after the grid (imprint), so the grid is cut as for a round hole's free box
+            plans = [None if w.corners else _boxed(w.r * mm, hole_size(w.r * mm, w.owner), h_mm, low_mm, high_mm)
+                     for w in ws]
+            square_uv = {id(w): np.array([uv(q) for q in _frame_points(w)[0]]) for w in ws if w.corners}
             vals: dict[str, list[tuple[float, str]]] = {"u": [], "v": []}
             lo = np.array([math.inf, math.inf])
             hi = -lo
@@ -1053,6 +1083,11 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             boxes = []
             for w, p in zip(ws, plans, strict=True):
                 cu, cv = uv(w.centre)
+                if w.corners:
+                    q = square_uv[id(w)]
+                    boxes.append([float(q[:, 0].min()) - BOX_FREE * h, float(q[:, 0].max()) + BOX_FREE * h,
+                                  float(q[:, 1].min()) - BOX_FREE * h, float(q[:, 1].max()) + BOX_FREE * h])
+                    continue
                 b = p[3] / mm if p is not None else w.R + BOX_FREE * h
                 boxes.append([cu - b, cu + b, cv - b, cv + b])
             # SHMESH-48b: boxes of neighbouring holes that overlap (rows of bolt holes closer than a box) share one
@@ -1084,6 +1119,11 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 bx = boxes[j]
                 R = p[2] * w.r if p is not None else w.R
                 room = min(cu - bx[0], bx[1] - cu, cv - bx[2], bx[3] - cv)
+                if w.corners:
+                    # a square ring's room: from its outer corners to the box's sides
+                    q = square_uv[id(w)]
+                    R, room = 0.0, min(float(q[:, 0].min()) - bx[0], bx[1] - float(q[:, 0].max()),
+                                       float(q[:, 1].min()) - bx[2], bx[3] - float(q[:, 1].max()))
                 if room < R + (0.3 if p is not None else 0.4) * h:
                     reason = "a ring too near an edge or another ring for its box"
                 elif p is not None and not all(0.6 * h <= x / (p[0] / 4) <= 1.5 * h
@@ -1136,6 +1176,8 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                         a, b = o + x0 * u + y * v, o + x1 * u + y * v
                         out.append((1, occ.addLine(occ.addPoint(*a), occ.addPoint(*b))))
                 for w, p, cs in zip(ws, plans, corners_of, strict=True):
+                    if w.corners:
+                        continue            # (a square ring is drawn in its box after the grid)
                     R = p[2] * w.r if p is not None else w.R
                     xa = starts[id(w)] if p is not None else w.xaxis
                     out.append((1, occ.addCircle(*[float(x) for x in w.centre], float(R),
@@ -1192,6 +1234,8 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             if any(n in by_face or n not in tag_of for n in others) or any(w.face in others for w in washers):
                 small = True        # a neighbour with washers of its own is left as it is
             for w, p in zip(ws, plans, strict=True):
+                if w.corners:
+                    continue
                 R = p[2] * w.r if p is not None else w.R
                 on_ring = [c for c in trial if np.all(np.abs(np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1) - R)
                                                       <= 1e-4 * R)]
@@ -1215,6 +1259,8 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 # (the rings and the cuts from the box corners to the holes are straight lines and circles inside the
                 # face: drawn again, with the pieces of the box lines)
                 for w, p in zip(ws, plans, strict=True):
+                    if w.corners:
+                        continue
                     R = p[2] * w.r if p is not None else w.R
                     xa = starts[id(w)] if p is not None else w.xaxis
                     circles.append((1, occ.addCircle(*[float(x) for x in w.centre], float(R),
@@ -1241,7 +1287,18 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             _remove_loose(gmsh, {c for got in omap[1:] for d, c in got if d == 1})
             curves = sorted({abs(int(c)) for s in new for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
             on_circle: set[int] = set()
+            for w in ws:
+                if w.corners:
+                    # SHMESH-48h: the square hole now sits in its box's cell: the ring is drawn there (imprint)
+                    cell = next(((s, cl) for s in new for cl in [[abs(int(c)) for c in x]
+                                                                 for x in _curve_loops(gmsh, s)[1]]
+                                 if _on_square(gmsh, w, cl)), None)
+                    if cell is None:
+                        raise ValueError("a square hole was not found in its box")
+                    w.face, w.hole, w.in_box = cell[0], cell[1], True
             for w, p in zip(ws, plans, strict=True):
+                if w.corners:
+                    continue
                 R = p[2] * w.r if p is not None else w.R
                 tol = 1e-4 * R
                 ring_c: list[int] = []
