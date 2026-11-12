@@ -418,10 +418,6 @@ export function clearNewRunOffer() {
   if (_offerEl) { _offerEl.remove(); _offerEl = null; }
 }
 
-/** Send `txt` exactly as if the user had typed it and pressed Send: the request card's "Start meshing" says
- *  "yes" through here, so a click and a typed yes take one path to the approval. */
-export function sendReply(txt) { return sendText(txt); }
-
 async function send() {
   const inp = $("chat-input");
   await sendText(inp.value.trim());

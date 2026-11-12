@@ -132,7 +132,7 @@ export const Stage = {
   // THE FINALIZED BRIEF, as the application settled it - not the model's prose
   // re-read here. Rendered once and then updated in place, because a later turn
   // re-sends the same brief and a conversation should not accumulate copies of it.
-  brief(b,addNote,parts,start){
+  brief(b,addNote,parts){
     if(!b)return;
     const sig=JSON.stringify(b);
     if(this._briefSig===sig)return;
@@ -176,29 +176,18 @@ export const Stage = {
         aria-label="Add a note" placeholder="Add a note, or paste a spec…"></textarea>
         <button type="button" class="rc-notes-add" disabled>Add</button></div>
         <span class="rc-notes-msg" role="status"></span></div>`:'';
-    // THE YES, AS A BUTTON: while the approval question is pending (the server's proceed_ask, gone once a run
-    // starts), one primary button says what typing "yes" says; the words stay the way to change something
-    const go=b.proceed_ask&&start?`<div class="rc-go"><button type="button" class="rc-go-btn">Start meshing</button>
-        <span class="rc-go-alt">or tell me what to change</span></div>`:'';
     const html=`<div class="who">Hexera · your request, as understood</div>
       <div class="req-card${(b.checks||[]).every(c=>c.status==='pass')?' ok':''}">
         ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
           :'<div class="rc-h">Mesh plan</div>'}${rows}
         ${ck?`<div class="rc-h rc-h2">Checked</div>${ck}`:''}
         ${notes||box?`<div class="rc-h rc-h2">Your notes</div>${notes}${box}<div class="rc-pm"></div>`:''}
-        ${go}
       </div>`;
     if(this._briefEl){this._briefEl.innerHTML=html;}
     else{this.clearEmpty();
       const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
       this.col().appendChild(g);this._briefEl=g;}
     this._partMatches(b.part_matches,parts,b.proceed_ask);
-    const goBtn=this._briefEl.querySelector('.rc-go-btn');
-    if(goBtn)goBtn.onclick=async()=>{
-      if(goBtn.disabled)return;
-      goBtn.disabled=true;
-      // the reply redraws the card (no button once the run starts); a yes that did not start one can be pressed again
-      try{await start();}finally{if(goBtn.isConnected)goBtn.disabled=false;}};
     const add=this._briefEl.querySelector('.rc-notes-add');
     const inp=this._briefEl.querySelector('.rc-notes-in');
     if(add&&inp){
