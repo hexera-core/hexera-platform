@@ -559,3 +559,23 @@ def ms_extract(shape):
     from meshpipeline.cad import midsurface as ms
 
     return ms.extract(shape, mm_per_unit=1.0)
+
+
+def test_an_empty_curve_loop_costs_no_washer(web, monkeypatch):
+    """SHMESH-45h, 8 of the 80 shell parts on 8b3ed13b: gmsh gives an empty curve loop for some faces, the hole record
+    sampled it (numpy: "need at least one array to concatenate") and the part lost every washer to the free mesh."""
+    import gmsh
+
+    brep, rec = web
+    _m, plain = _mesh(brep, rec, _criteria())
+    real = gmsh.model.occ.getCurveLoops
+
+    def with_empty(tag):
+        tags, loops = real(tag)
+        return list(tags) + [0], list(loops) + [[]]
+
+    monkeypatch.setattr(gmsh.model.occ, "getCurveLoops", with_empty)
+    _m2, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert "guard" not in s, s.get("guard")
+    assert s["washers"] == plain["quality"]["structure"]["washers"] > 0
