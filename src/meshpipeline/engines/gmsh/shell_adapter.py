@@ -1158,8 +1158,10 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                                   "you asked for: at your size some elements there were past the solver's own limits "
                                   "(SHMESH-31).")
             applied["quality"]["resplined_faces"] = resplined
-            # SHMESH-48l: every whole mesh this path made, in order (what followed it, seconds)
-            applied["quality"]["passes"] = passes
+            # SHMESH-48l: every whole mesh this path made, in order (what followed it; its seconds apart, in passes_s,
+            # so a record without timings stays the same from run to run)
+            applied["quality"]["passes"] = [str(x[0]) for x in passes]
+            applied["quality"]["passes_s"] = [x[1] for x in passes]
             applied["quality"].setdefault("structure", {})["grids_freed"] = len(unmap)
             applied["quality"]["structure"]["holes_redrawn"] = reseated
             # SHMESH-48f/49g: every face a check refused (its grid or its rings and strips), why, with its numbers
