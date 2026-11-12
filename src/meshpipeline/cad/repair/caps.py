@@ -175,7 +175,7 @@ def cumulative_refusal(original: Measure, current: Measure, *,
     if area:
         return f"the run's surface area {area}"
 
-    if _volume_incomparable(original, current):
+    if volume_incomparable(original, current):
         # A BODY THAT CLOSED IS NEW VOLUME NOBODY COULD HAVE PREDICTED. The first two cases are a
         # shape with no inside at all; the third is the MIXED ASSEMBLY `sew_faces` is built for -
         # one solid body plus one that arrived as loose faces, sewn closed and promoted, so the
@@ -214,11 +214,12 @@ def cumulative_refusal(original: Measure, current: Measure, *,
     return ""
 
 
-def _volume_incomparable(original: Measure, current: Measure) -> bool:
+def volume_incomparable(original: Measure, current: Measure) -> bool:
     """Is a before-vs-after volume comparison meaningless for this pair of measurements?
 
-    ONE PLACE, because `cumulative_refusal` decides whether to compare and
-    `volume_accountability` reports whether it did. Two hand-written copies of a three-way
+    ONE PLACE, because `cumulative_refusal` decides whether to compare,
+    `volume_accountability` reports whether it did, and `package.evaluate` asks the same question
+    about one package - PUBLIC for that third reader, which is outside this module. Two hand-written copies of a three-way
     condition drift, and the drift is silent in the worst direction: a report that says the
     volume was judged against a run in which it was not.
 
@@ -232,7 +233,7 @@ def _volume_incomparable(original: Measure, current: Measure) -> bool:
 
 def volume_accountability(original: Measure, current: Measure) -> dict:
     """Was the before-vs-after volume comparison made, and if not, why. For the report."""
-    if _volume_incomparable(original, current):
+    if volume_incomparable(original, current):
         return {"compared": False,
                 "reason": ("the upload had no solid (an open shell's volume integral is not a "
                            "volume) or a body closed that no operation could have declared; only "

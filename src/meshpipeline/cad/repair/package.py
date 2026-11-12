@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from meshpipeline.cad.repair.caps import Measure
+from meshpipeline.cad.repair.caps import Measure, volume_incomparable
 from meshpipeline.cad.repair.regions import Region
 
 
@@ -70,7 +70,8 @@ def _names(items: Iterable[str]) -> str:
 
 def evaluate(predicate: Predicate, *, before: Measure, after: Measure,
              defects_before: Iterable[str], defects_after: Iterable[str],
-             kept_ops: int | None = None) -> str:
+             kept_ops: int | None = None,
+             declared_area_mm2: float = 0.0, declared_volume_mm3: float = 0.0) -> str:
     """Return "" when the claim held, else the first way it failed, in words.
 
     Checked in a fixed order - nothing kept, cleared, unchanged, reclassified, area, volume - and
@@ -90,6 +91,20 @@ def evaluate(predicate: Predicate, *, before: Measure, after: Measure,
     intentional is a discharge by judgement (spec decision 2) and no geometry is supposed to move
     for it. The guard is about `cleared` alone.
 
+    `declared_area_mm2` / `declared_volume_mm3` ARE WHAT THE KEPT OPERATIONS SAID THEY WOULD ADD,
+    summed by `caps.Accounting`, and movement is judged NET of them - the rule `caps._accounted`
+    already applies to the run. An operation that patches a hole adds surface area it declares, so
+    against the RAW delta no hole-patching package could ever commit under any author, including a
+    model one: the author would have to predict a patch's area to the millimetre before the kernel
+    has built it. That is a missing channel, not an author's limitation.
+    WHY TRUSTING A DECLARATION IS NOT A LOOPHOLE, since the next reader will reasonably ask: a
+    declaration is the operation's own statement about what it added, and `caps.cumulative_refusal`
+    independently refuses the whole run when the MEASURED movement does not match what was
+    declared ("an operation that declared 50 mm2 and moved 200 is refused - not for moving surface,
+    but for not understanding what it did"). An author cannot inflate this by declaring more,
+    because it does not write the declarations: its operations do, and the caps police them. What
+    is left for the predicate to judge is what the plan moved BEYOND its own account, which is the
+    only part the author could have predicted.
     """
     was, now = set(defects_before), set(defects_after)
 
@@ -123,13 +138,29 @@ def evaluate(predicate: Predicate, *, before: Measure, after: Measure,
     if phantom:
         return f"reclassified defects were never reported: {_names(phantom)}"
 
-    area = abs(after.surface_area_mm2 - before.surface_area_mm2)
+    # NET OF THE DECLARATIONS, as `caps._accounted` judges the run: what the predicate bounds is
+    # the movement no operation accounted for. Silence means zero, so a plan that declared nothing
+    # is judged exactly as it was before.
+    area = abs(after.surface_area_mm2 - before.surface_area_mm2 - float(declared_area_mm2))
     if area > predicate.max_area_delta_mm2:
-        return (f"surface area moved {area:.6g} mm2, past the claimed "
+        return (f"surface area moved {area:.6g} mm2 beyond the {float(declared_area_mm2):.6g} mm2 "
+                f"its operations declared, past the claimed "
                 f"{predicate.max_area_delta_mm2:.6g} mm2")
 
-    volume = abs(after.volume_mm3 - before.volume_mm3)
+    if volume_incomparable(before, after):
+        # THE SAME THREE CASES `caps.cumulative_refusal` REFUSES TO COMPARE, and read from the one
+        # function that defines them so the two cannot drift. A shape with no solid on either side
+        # has no inside: OpenCASCADE's integral over an open shell is a number, not a volume. And a
+        # body that CLOSED is volume no operation could have declared - whether a shell closed is
+        # the kernel's answer, not a prediction - which is precisely the outcome a hole-patching
+        # package exists to produce. Comparing against it refused the repair for succeeding.
+        # NOTHING IS WAIVED BY THIS: the run's own `cumulative_refusal` still bounds a closed
+        # body's volume absolutely (positive, and under the cube of its diagonal), and
+        # `sanity_refusal` still refuses an operation that LOSES a solid.
+        return ""
+    volume = abs(after.volume_mm3 - before.volume_mm3 - float(declared_volume_mm3))
     if volume > predicate.max_volume_delta_mm3:
-        return (f"volume moved {volume:.6g} mm3, past the claimed "
+        return (f"volume moved {volume:.6g} mm3 beyond the {float(declared_volume_mm3):.6g} mm3 "
+                f"its operations declared, past the claimed "
                 f"{predicate.max_volume_delta_mm3:.6g} mm3")
     return ""

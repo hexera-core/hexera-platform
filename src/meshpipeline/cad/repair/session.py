@@ -566,9 +566,10 @@ class RepairSession:
           5. one scoped scan      - EXPENSIVE, so it is paid for last, and only ONE for the whole
                                     plan: the plan's own proof, on top of the operations' scoped
                                     ones, which is the whole extra cost of packaging a region
-          6. `package.evaluate`   - the claim against the measurements, told how many of the
-                                    plan's operations survived (a plan that kept nothing cannot
-                                    have cleared anything, whatever the scan calls things)
+          6. `package.evaluate`   - the claim against the measurements, told how many operations
+                                    survived and what they declared (`package.evaluate` judges
+                                    movement net of the declarations, as `caps._accounted` does,
+                                    and refuses a `cleared` claim from a plan that kept nothing)
           7. commit, or restore the BOUNDARY snapshot
 
         ALL OR NOTHING. The predicate was written about the whole plan, so a partially applied
@@ -704,13 +705,22 @@ class RepairSession:
         # a scan that never looked at it. Any change to the locus rule has to come back here.
         after, after_measure_s = self._timed_measure(self.shape)
         measure_s += after_measure_s
-        # HOW MANY OF THE PLAN'S OPERATIONS SURVIVED. A package whose every operation declined or
-        # rolled itself back changed nothing, so `evaluate` may not read a missing name in the
-        # scoped scan as a defect this package cleared.
-        kept_ops = sum(1 for op_verdict in verdicts if op_verdict.kept)
+        # WHAT THIS PACKAGE'S SURVIVING OPERATIONS DECLARED, summed exactly as the run's own
+        # accounting sums it, and built from the verdicts rather than read off `self.accounting`:
+        # the predicate is a claim about THIS package, so what it is judged net of has to be this
+        # package's declarations and not the run's. Only KEPT operations are counted - a rolled-
+        # back one added nothing to the shape, so it may not buy the package any allowance.
+        declared = Accounting()
+        kept_ops = 0
+        for op_verdict in verdicts:
+            if op_verdict.kept:
+                kept_ops += 1
+                declared = declared.plus(op_verdict.evidence)
         reason = evaluate(predicate, before=before, after=after,
                            defects_before=defects_before, defects_after=defects_after,
-                           kept_ops=kept_ops)
+                           kept_ops=kept_ops,
+                           declared_area_mm2=declared.declared_area_mm2,
+                           declared_volume_mm3=declared.declared_volume_mm3)
         if reason:
             self.shape, self._defects, self.complete_scan, self.accounting = snapshot
             return self._record_package(PackageVerdict(

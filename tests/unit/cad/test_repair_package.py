@@ -167,3 +167,33 @@ def test_a_pure_reclassification_still_commits_with_nothing_kept():
     p = _p(reclassified={"face:chamfer"})
     assert evaluate(p, before=_SOUND, after=_SOUND, defects_before=("face:chamfer",),
                     defects_after=("face:chamfer",), kept_ops=0) == ""
+
+
+def test_movement_is_judged_net_of_what_the_kept_operations_declared():
+    """A fill that declares its patch area commits; one that moves beyond the sum does not.
+
+    `caps._accounted` has always compared against `original + declared`, which is why the caps
+    permit a hole patch at all. Judged against the RAW delta, no hole-patching package could
+    commit under ANY author - the author would have to predict a patch's area before the kernel
+    built it.
+    """
+    p = _p(cleared={"edge:rim"}, area=100.0)
+    kw = {"defects_before": ("edge:rim",), "defects_after": (), "kept_ops": 1}
+    # Declared 1000 mm2, measured 1100: the claim bounds the 100 nobody declared. Exactly on the
+    # claim plus the declaration holds.
+    assert evaluate(p, before=_SOUND, after=_changed(surface_area_mm2=2100.0),
+                    declared_area_mm2=1000.0, **kw) == ""
+    # One millimetre beyond that sum does not.
+    reason = evaluate(p, before=_SOUND, after=_changed(surface_area_mm2=2101.0),
+                      declared_area_mm2=1000.0, **kw)
+    assert "surface area moved" in reason and "declared" in reason
+    # AND A DECLARATION IS NOT A BLANK CHEQUE: declaring 50 while moving 200 is still refused,
+    # which is `caps`'s own rule and must not be weakened here.
+    assert "surface area moved" in evaluate(
+        p, before=_SOUND, after=_changed(surface_area_mm2=1200.0), declared_area_mm2=50.0, **kw)
+    # Volume reads the same way.
+    pv = _p(cleared={"edge:rim"}, area=1e9, volume=10.0)
+    assert evaluate(pv, before=_SOUND, after=_changed(volume_mm3=8500.0),
+                    declared_volume_mm3=500.0, **kw) == ""
+    assert "volume moved" in evaluate(pv, before=_SOUND, after=_changed(volume_mm3=8600.0),
+                                      declared_volume_mm3=500.0, **kw)
