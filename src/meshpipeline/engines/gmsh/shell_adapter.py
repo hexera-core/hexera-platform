@@ -1060,7 +1060,9 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 redraw_pass = True
                 seated = Path(tmp) / "reseated.brep"
                 try:
-                    n2, red2 = ST.reseat_holes(Path(unseated), seated, only=wanted + seam_wanted, seam=seam_wanted)
+                    n2, red2 = ST.reseat_holes(Path(unseated), seated,
+                                               only=wanted + [e[0] if len(e) == 2 else e for e in seam_wanted],
+                                               seam=seam_wanted)
                 except Exception as exc:  # noqa: BLE001 - the first mesh stands
                     logger.info("shell mesh: holes not drawn again (%s)", exc)
                     n2, red2 = 0, []
@@ -1315,6 +1317,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         block_skipped: dict[str, int] = {}
         gridded: list = []                  # O-grid washers inside a gridded face (SHMESH-41): mapped with it
         cut_of: dict[int, set[int]] = {}    # SHMESH-47b: gridded face -> the joined faces its lines cut
+        polar_faces_made: set[int] = set()  # SHMESH-49g: the round plates cut into rings and strips
         boxed: list = []                    # washers in a gridded face's free boxes: their own ring
         rings: list = []                    # washers in a free face: their own ring mesh (ST.ring_mesh)
         block_preset: dict[int, int] = {}
@@ -1351,7 +1354,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 polar_made, polar_why, polar_o, polar_preset, polar_holes = ST.polar_faces(
                     gmsh, washers, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, mm,
                     cuts=cut_curves, cells_out=grid_cells, hole_size=hole_size,
-                    low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"))
+                    low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"), no_polar=no_cut,
+                    made_out=polar_faces_made)
                 washers = [w for w in washers if w not in polar_made and w not in polar_o]
             if ST.BLOCKS and ST.MAPPED and structure != "free":
                 # SHMESH-41: a face whose holes all have washers is cut into a grid of cells, mapped below
@@ -1819,6 +1823,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     remap[used] = np.arange(len(used))
     Q, T, xyz = remap[Q], remap[T], xyz[used]
     face_of = np.array(q_face + t_face, dtype=np.int64)
+    if check_maps and ST.POLAR_CHECK and polar_faces_made:
+        # SHMESH-49g: a round plate whose rings and strips end with more than POLAR_TRIAS triangles on it (the
+        # clean-up split quads past the limits there) is meshed on the next pass with its free-face washers
+        on_plate = Counter(int(k) for k in t_face if int(k) in polar_faces_made)
+        hurt_p = {k for k, n in on_plate.items() if n > ST.POLAR_TRIAS}
+        if hurt_p:
+            raise _NoCut(hurt_p)
     mids = {m["id"]: m for m in record["mids"]}
     pairs = {p["id"]: p for p in record["pairs"]}
     mid_of = [owners[k] for k in face_of.tolist()]
@@ -1940,7 +1951,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                                                                               "its ring did not close")))
         and not any(float(np.linalg.norm(c - w.centre)) <= 0.25 * w.r for c in drawn_at)]
     # SHMESH-49c: the O-grid holes this mesh did not draw again (to start where their O-grid cuts)
-    out["_seam_wanted"] = [[float(x) for x in w.centre] for w in gridded
+    out["_seam_wanted"] = [([float(x) for x in w.centre], list(w.seam)) if w.seam else [float(x) for x in w.centre]
+                           for w in gridded
                            if not any(float(np.linalg.norm(c - w.centre)) <= 0.25 * w.r for c in drawn_at)]
     return mesh, out
 

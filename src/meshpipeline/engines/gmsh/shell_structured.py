@@ -61,6 +61,7 @@ class Washer:
     shrunk: bool = False
     corners: list = field(default_factory=list)  # SHMESH-45f: a square (four-sided) hole's corners, in loop order
     side_counts: list = field(default_factory=list)
+    seam: list = field(default_factory=list)  # SHMESH-49e: where its O-grid cuts the hole (the redraw starts it there)
     ring: int = 0                   # after the imprint: the ring's circle
     annulus: int = 0                # ... the surface between hole and ring
     hole_after: list[int] = field(default_factory=list)
@@ -1416,9 +1417,12 @@ def reseat_holes(brep, out, only: list | None = None, seam: list | None = None) 
                 if float(np.linalg.norm(rad)) > 1e-9 * max(1.0, float(radius)):
                     rad /= float(np.linalg.norm(rad))
                     want = (rad + np.cross(nrm, rad)) / math.sqrt(2.0)
-            force = seam is not None and any(
-                float(np.linalg.norm(np.asarray(c_, dtype=float) - np.asarray(loc, dtype=float))) <= 0.25 * radius
-                for c_ in seam)
+            # (a seam entry is a centre, or (centre, the direction to start at))
+            forced = [e for e in (seam or []) if float(np.linalg.norm(
+                np.asarray(e[0] if len(e) == 2 else e, dtype=float) - np.asarray(loc, dtype=float))) <= 0.25 * radius]
+            force = bool(forced)
+            if forced and len(forced[0]) == 2:
+                want = np.asarray(forced[0][1], dtype=float)
             spans = [cv.LastParameter() - cv.FirstParameter() for cv in circs] if exact else []
             if not force and exact and len(es) in (2, 4) and max(spans) - min(spans) <= 1e-6 * 2 * math.pi:
                 continue            # exact halves or quarters: in step with any ring
@@ -1472,6 +1476,11 @@ def reseat_holes(brep, out, only: list | None = None, seam: list | None = None) 
 #: sector, paved from ring to sector. Holes on one circle within POLAR_ROUND of its radius, spaced alike within
 #: POLAR_EVEN times.
 POLAR = True
+#: SHMESH-49g: a round plate whose rings and strips leave triangles or poor elements is meshed again without them
+POLAR_CHECK = True
+POLAR_TRIAS = 4
+#: SHMESH-49f: each hole's box square (straight across its strip) or bounded by the bolt circle's rings (arcs)
+POLAR_SQUARE = True
 POLAR_ROUND = 0.02
 POLAR_EVEN = 1.5
 POLAR_GAP = 3.0
@@ -1485,7 +1494,8 @@ def _round_loop(gmsh, curves: list[int]) -> tuple[np.ndarray, float] | None:
 
 def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: dict[int, float], mm: float,
                 cuts: set[int] | None = None, cells_out: set[int] | None = None, hole_size=None,
-                low_mm: float | None = None, high_mm: float | None = None
+                low_mm: float | None = None, high_mm: float | None = None, no_polar: frozenset = frozenset(),
+                made_out: set[int] | None = None
                 ) -> tuple[list[Washer], dict[str, int], list[Washer], dict[int, int], set[int]]:
     """SHMESH-49: the round flat faces whose holes all have washers on one bolt circle, cut into rings and spokes (see
     POLAR). A face sharing an edge a line would end on, or whose cells would come out under CELL_MIN face sizes, or
@@ -1508,6 +1518,10 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
 
     occ = gmsh.model.occ
     for t, ws in sorted(by_face.items()):
+        if tag_of.get(t) in no_polar:
+            # SHMESH-49g: its rings and strips left triangles or poor elements on a first mesh
+            no("its rings and strips came out with triangles or poor elements on a first mesh")
+            continue
         _l, loops = _curve_loops(gmsh, t)
         loops = [[abs(int(c)) for c in cl] for cl in loops]
         hole_loops = [sorted(w.hole) for w in ws]
@@ -1522,12 +1536,16 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
         C, Ro = rim
         inner = [cl for cl in rest if cl is not outer]
         Ri = 0.0
+        inner_shared = False
         if inner:
             core = _round_loop(gmsh, inner[0]) if len(inner) == 1 else None
             if core is None or float(np.linalg.norm(core[0] - C)) > 1e-3 * Ro:
                 no("a round plate with another hole not on its centre")
                 continue
             Ri = core[1]
+            # (a central circle another face shares - a tube welded on - stays whole: the band inside the bolt
+            # circle's inner ring is then left one annulus, paved)
+            inner_shared = any(len(gmsh.model.getAdjacencies(1, c)[0]) > 1 for c in inner[0])
         h = size_mm[t] / mm
         n_face = ws[0].normal
         e1 = ws[0].centre - C
@@ -1560,6 +1578,11 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
         got_plans = [pl for pl in plans if pl is not None]
         use_o = len(got_plans) == len(ws) and len({pl[0] for pl in got_plans}) == 1 and \
             len({pl[1] for pl in got_plans}) == 1
+        if not use_o:
+            # SHMESH-49d: no O-grid fits the holes inside the user's edges - a ring in a paved sector put a ring of
+            # triangles round every hole (16 a hole on a real base plate): the plate keeps its free-face washers
+            no("no O-grid fits its holes inside the user's edges")
+            continue
         plan_of: dict[int, tuple[int, int, float, float]] = {}
         if use_o:
             b = max(pl[3] for pl in got_plans) / mm
@@ -1572,7 +1595,15 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
         if min(gaps) - 2 * beta < CELL_MIN * h / Rb:
             no("the washers' sectors would touch")
             continue
-        r1, r2 = Rb - b, Rb + b
+        # SHMESH-49f: each hole's box is square - across its strip the rings are straight (chords b from the hole's
+        # centre), so the box's corners are square and its O-grid diagonals at 45 degrees (an arc of the ring there
+        # met the strip's side at 77 degrees: O-grid cells with 38 degree corners, left unmapped); r1 and r2 are the
+        # radii the chords end on
+        if POLAR_SQUARE:
+            r1 = math.sqrt((Rb - b) ** 2 + b * b)
+            r2 = math.sqrt((Rb + b) ** 2 + b * b)
+        else:
+            r1, r2 = Rb - b, Rb + b
         if Ro - r2 < SNAP * h:
             r2 = Ro
         if Ri > 0 and r1 - Ri < SNAP * h:
@@ -1583,11 +1614,13 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
         if r2 > Ro or r1 < Ri:
             no("the washers' sectors run past the plate")
             continue
-        start = Ri if Ri > 0 else r1
+        start = Ri if Ri > 0 and not inner_shared else r1
         # SHMESH-49b: a washer's strip is bounded by two lines parallel to its radial line, b each side, from the
-        # core to the rim: as wide (2b) at the rim as at its box, so its quarter count fits all the way along (radial
-        # spokes fanned out: the arcs at the rim came out 1.2 times the box)
-        if 2 * math.asin(min(0.99, b / start)) > min(gaps) - CELL_MIN * h / start:
+        # bolt circle's inner ring out to the rim: as wide (2b) at the rim as at its box, so its quarter count fits all
+        # the way along (radial spokes fanned out: the arcs at the rim came out 1.2 times the box). SHMESH-49d: inside
+        # the inner ring (to a central hole) the strip's sides turn radial - parallel sides of neighbouring strips
+        # met there in thin wedges, paved with triangles
+        if 2 * math.asin(min(0.99, b / r1)) > min(gaps) - CELL_MIN * h / r1:
             no("the washers' strips would touch")
             continue
         if use_o:
@@ -1596,10 +1629,14 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             # (an arc is a little longer than the box's chord: 5% over our own bound, never past the user's edge)
             seg_hi = 1.05 * BOX_SEG[1] * size_mm[t] if high_mm is None else min(1.05 * BOX_SEG[1] * size_mm[t],
                                                                                   0.98 * high_mm)
-            arc = 2 * start * math.asin(min(1.0, b / start))
+            arc = 2 * r1 * math.asin(min(1.0, b / r1))
             q = max(n0 // 4, math.ceil(arc * mm / seg_hi - 1e-9))
-            if q > n0 // 4:
-                if min(2 * math.pi * w.r * mm / (4 * q) for w in ws) < float(low_mm or 0.0) or 4 * q > WASHER_MAX:
+            # (and inside the inner ring, where the sides turn radial, the arc at the central hole stays over the
+            # user's shortest edge)
+            inner_arc = 2 * start * math.asin(min(1.0, b / r1)) * mm / q
+            if q > n0 // 4 or inner_arc < float(low_mm or 0.0):
+                if min(2 * math.pi * w.r * mm / (4 * q) for w in ws) < float(low_mm or 0.0) or 4 * q > WASHER_MAX \
+                        or inner_arc < float(low_mm or 0.0):
                     no("a strip's elements would come out past the user's edges from the hole to the rim")
                     continue
                 plan_of = dict.fromkeys(plan_of, (4 * q, rows0, ratio0, b0))
@@ -1619,16 +1656,30 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             return [on(r, a, sg * b) for r, sg in ((r1, -1), (r2, -1), (r2, 1), (r1, 1))]
 
         def tools(C=C, Ri=Ri, Ro=Ro, ang=ang, n_face=n_face, r1=r1, r2=r2, spokes=spokes, start=start, on=on,
-                  use_o=use_o, R_of=R_of, sector_corners=sector_corners) -> list[tuple[int, int]]:
+                  use_o=use_o, R_of=R_of, sector_corners=sector_corners, e1=e1, e2=e2) -> list[tuple[int, int]]:
             out = []
+            centre_pt = occ.addPoint(*[float(x) for x in C])
             for r in sorted({r1, r2} - {Ri, Ro, 0.0}):
-                # the circle's seam on a spoke (a seam inside a strip would make its side two curves)
-                x0 = on(r, *spokes[0]) - C
-                out.append((1, occ.addCircle(*[float(x) for x in C], float(r), zAxis=[float(x) for x in n_face],
-                                             xAxis=[float(x) for x in x0])))
+                # the ring at r: straight across each strip (its box's square side), an arc between strips
+                on_r = sorted(((math.atan2(float((on(r, a_, off) - C) @ e2), float((on(r, a_, off) - C) @ e1))
+                                % (2 * math.pi), a_, off) for a_, off in spokes))
+                tags = [occ.addPoint(*[float(x) for x in on(r, a_, off)]) for _ang, a_, off in on_r]
+                for j in range(len(on_r)):
+                    k_ = (j + 1) % len(on_r)
+                    same_strip = POLAR_SQUARE and on_r[j][1] == on_r[k_][1] and on_r[j][2] < 0 < on_r[k_][2]
+                    if same_strip:
+                        out.append((1, occ.addLine(tags[j], tags[k_])))
+                    else:
+                        out.append((1, occ.addCircleArc(tags[j], centre_pt, tags[k_])))
             for a, off in spokes:
-                out.append((1, occ.addLine(occ.addPoint(*[float(x) for x in on(start, a, off)]),
+                bend = on(r1, a, off)
+                out.append((1, occ.addLine(occ.addPoint(*[float(x) for x in bend]),
                                            occ.addPoint(*[float(x) for x in on(Ro * 1.02, a, off)]))))
+                if start < r1 - 1e-9:
+                    # inside the inner ring: radial, through the bend, in to the central hole
+                    u_ = (bend - C) / max(float(np.linalg.norm(bend - C)), 1e-300)
+                    out.append((1, occ.addLine(occ.addPoint(*[float(x) for x in C + 0.98 * start * u_]),
+                                               occ.addPoint(*[float(x) for x in bend]))))
             for a, w in ang:
                 R = R_of[id(w)]
                 if not use_o:
@@ -1636,13 +1687,15 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                                                  zAxis=[float(x) for x in n_face], xAxis=[float(x) for x in w.xaxis])))
                     continue
                 cs = sector_corners(a)
-                # the ring's and hole's points at exactly 45 degrees to the radial line (where SHMESH-49b starts the
-                # hole), one per sector corner in its order
-                rad = w.centre - C
-                rad = rad - float(rad @ n_face) * n_face
-                rad /= max(float(np.linalg.norm(rad)), 1e-300)
-                tan_ = np.cross(n_face, rad)
-                dgs = [(sr * rad + st * tan_) / math.sqrt(2.0) for sr, st in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+                # SHMESH-49e: the ring's and hole's points toward the strip box's own corners (the box is longer than
+                # wide where the ring sits off the bolt circle's middle: points at 45 degrees left cells with 38 degree
+                # corners, past what is mapped); the redraw starts the hole at the first of them
+                dgs = []
+                for cp in cs:
+                    d_ = cp - w.centre
+                    d_ = d_ - float(d_ @ n_face) * n_face
+                    dgs.append(d_ / max(float(np.linalg.norm(d_)), 1e-300))
+                w.seam = [float(x) for x in dgs[0]]
                 # the ring's seam on a corner's diagonal: no seam inside a quarter
                 out.append((1, occ.addCircle(*[float(x) for x in w.centre], float(R),
                                              zAxis=[float(x) for x in n_face], xAxis=[float(x) for x in dgs[0]])))
@@ -1689,6 +1742,8 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
         _o, omap = occ.fragment([(2, t)], tools())
         occ.synchronize()
         k = tag_of.pop(t)
+        if made_out is not None:
+            made_out.add(k)
         new = [s for d, s in omap[0] if d == 2]
         for s in new:
             tag_of[s] = k
