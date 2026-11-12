@@ -938,7 +938,8 @@ def record(reading: dict, sewn: Sewn, *, mm_per_unit: float, walls_mm: dict[str,
     m = c.get("mend") or {}
     if m.get("closed"):
         notes.append(f"{m['closed']} place(s) where the surfaces did not meet were made to meet by changing the surfaces "
-                     f"({m.get('extended', 0)} extended, {m.get('trimmed', 0)} trimmed, {m.get('moved', 0)} moved), by "
+                     f"({m.get('extended', 0)} extended, {m.get('trimmed', 0)} trimmed, {m.get('moved', 0)} moved"
+                     f"{', ' + str(m['filled']) + ' filled' if m.get('filled') else ''}), by "
                      f"up to {float(m.get('widest_mm') or 0.0):.3g} mm, within {float(m.get('reach_mm') or 0.0):.3g} mm "
                      "(SURF-12).")
     if c.get("pinholes"):

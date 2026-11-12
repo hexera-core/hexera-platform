@@ -3,7 +3,9 @@
 # the reach (the element size the user asked for, else the run's own, or the notes' "close gaps up to 4 mm") is
 # closed in the shell mesh the way an analyst equivalences two free edges: the boundary nodes facing each other
 # across the gap are joined into one node half way between them, and a node with no partner across is put into the
-# edge facing it (its element cut in two or three). No node moves farther than the gap; the place is kept closed only
+# edge facing it (its element cut in two or three). An edge stopping short of another face's inside (a T) is joined
+# onto that face's mesh: onto a row of its nodes along the line, or, where it has none, onto the line IMPRINTED on it
+# (its elements cut along the line). No node moves farther than the gap; the place is kept closed only
 # when no element is folded or turned and none is left past Nastran's own limits that was not before - else the mesh
 # there is as meshed and the place is told open, with why.
 # Boundaries: pure numpy on the engine-neutral ShellMesh (engines/shell_mesh); no geometry, no engine, no file.
@@ -173,6 +175,18 @@ class _Mesh:
         other.parent = list(self.parent)
         return other
 
+    def _node_wall(self) -> np.ndarray:
+        """The source's node walls, a node an imprint added taking its element's wall."""
+        base = np.asarray(self.src.node_wall, dtype=float)
+        out = np.empty(len(self.xyz), dtype=float)
+        out[:len(base)] = base
+        walls = np.asarray(self.src.wall, dtype=float)
+        for c, p in zip(self.conn, self.parent, strict=True):
+            for n in c:
+                if n >= len(base):
+                    out[n] = walls[p]
+        return out
+
     def build(self) -> ShellMesh:
         """Back to a ShellMesh: quads first, then triangles; unused nodes dropped; every attribute the parent's."""
         m = self.src
@@ -194,7 +208,7 @@ class _Mesh:
             groups[name] = np.array(got, dtype=np.int64)
         out = ShellMesh(xyz=self.xyz[used], quads=q, trias=t, wall=np.asarray(m.wall)[par],
                         mid=[m.mid[p] for p in par.tolist()], part=[m.part[p] for p in par.tolist()], groups=groups,
-                        node_wall=None if m.node_wall is None else np.asarray(m.node_wall)[used],
+                        node_wall=None if m.node_wall is None else self._node_wall()[used],
                         varies=None if m.varies is None else np.asarray(m.varies)[par],
                         zoffs=None if m.zoffs is None else np.asarray(m.zoffs)[par],
                         notes=list(m.notes), part_names=dict(m.part_names))
@@ -279,7 +293,7 @@ def _join_pair(mm: _Mesh, mids_a: set[str], mids_b: set[str], gap: float, reach:
     got = _apply(mm, remap, newpos, inserts, out, mids_a, mids_b, gap, lim)
     if tee:
         # every node's move, from where it was meshed (the line's nodes and the foot's moved before the joining)
-        got["moved_mm"] = _r(float(np.max(np.linalg.norm(mm.xyz - orig, axis=1))) if len(orig) else 0.0)
+        got["moved_mm"] = _r(float(np.max(np.linalg.norm(mm.xyz[:len(orig)] - orig, axis=1))) if len(orig) else 0.0)
     return got
 
 
@@ -355,27 +369,32 @@ def _t_line(mm: _Mesh, short: list[tuple[int, int]], other: set[str], gap: float
     """SURF-13, A T: the free edges `short` (a face stopping short of another's inside) brought onto the faces
     `other`: each node of theirs moved to the nearest point of the other faces' mesh (within `lim`), and along the line
     they then draw, the other mesh's own nodes within the gap of it moved onto it - a row of that mesh's edges along
-    the line, which the short side's nodes are then joined to. Changes mm.xyz in place; returns the rows (node lists),
-    [] when there is none (why in `out`)."""
+    the line, which the short side's nodes are then joined to. Where the other mesh has no such row (its nodes farther
+    from the line than the gap: small gaps on large elements), the line is IMPRINTED on it (_imprint: its elements cut
+    along the line, as a pre-processor imprints an edge on a mesh) and the row is the new nodes. Changes mm in place;
+    returns the rows (node lists), [] when there is none (why in `out`)."""
     mid = mm.src.mid
-    elems = [e for e, c in enumerate(mm.conn) if mid[mm.parent[e]] in other]
+
+    def graph():
+        elems = [e for e, c in enumerate(mm.conn) if mid[mm.parent[e]] in other]
+        tris = [(c[0], c[1], c[2]) for e in elems for c in [mm.conn[e]]] + \
+            [(c[0], c[2], c[3]) for e in elems for c in [mm.conn[e]] if len(c) == 4]
+        nbr: dict[int, dict[int, float]] = {}
+        for e in elems:
+            c = mm.conn[e]
+            for i in range(len(c)):
+                p0, p1 = c[i], c[(i + 1) % len(c)]
+                w = float(np.linalg.norm(mm.xyz[p0] - mm.xyz[p1]))
+                nbr.setdefault(p0, {})[p1] = w
+                nbr.setdefault(p1, {})[p0] = w
+        return elems, tris, nbr
+
+    elems, tris, nbr = graph()
     if not elems:
         return []
-    tris = [(c[0], c[1], c[2]) for e in elems for c in [mm.conn[e]]] + \
-        [(c[0], c[2], c[3]) for e in elems for c in [mm.conn[e]] if len(c) == 4]
     ta = mm.xyz[[t[0] for t in tris]]
     tb = mm.xyz[[t[1] for t in tris]]
     tc = mm.xyz[[t[2] for t in tris]]
-    # the other mesh's edges, as a graph
-    nbr: dict[int, dict[int, float]] = {}
-    for e in elems:
-        c = mm.conn[e]
-        for i in range(len(c)):
-            p0, p1 = c[i], c[(i + 1) % len(c)]
-            w = float(np.linalg.norm(mm.xyz[p0] - mm.xyz[p1]))
-            nbr.setdefault(p0, {})[p1] = w
-            nbr.setdefault(p1, {})[p0] = w
-    other_nodes = np.array(sorted(nbr), dtype=np.int64)
     rows: list[list[int]] = []
     moves: dict[int, np.ndarray] = {}
     for run in _paths(short):
@@ -406,46 +425,21 @@ def _t_line(mm: _Mesh, short: list[tuple[int, int]], other: set[str], gap: float
             continue
         nodes = run[best[0]:best[1]]
         line = np.array([foot[k] for k in range(best[0], best[1])], dtype=float)
-        # the other mesh's nodes within the gap of the line, and the row of its edges through them from end to end
-        dn, _k, _t = _seg_nearest(mm.xyz[other_nodes], line[:-1], line[1:])
-        ok = {int(n) for n, x in zip(other_nodes.tolist(), dn.tolist(), strict=True) if x <= gap}
-        if not ok:
-            continue
-        ends: list[int] = []
-        for end in (line[0], line[-1]):
-            far = {m: float(np.linalg.norm(mm.xyz[m] - end)) for m in ok}
-            ends.append(min(sorted(ok), key=far.__getitem__))
-        if ends[0] == ends[1]:
-            continue
-        dist_of = {int(n): float(x) for n, x in zip(other_nodes.tolist(), dn.tolist(), strict=True)}
-        # the shortest way through those nodes, kept close to the line
-        import heapq
-
-        best_d: dict[int, float] = {ends[0]: 0.0}
-        prev: dict[int, int] = {}
-        heap = [(0.0, ends[0])]
-        while heap:
-            dd, u = heapq.heappop(heap)
-            if u == ends[1]:
-                break
-            if dd > best_d.get(u, np.inf):
+        path = _row_near(mm, nbr, line, gap)
+        if path is None:
+            # no row of the other mesh's nodes along the line: the line imprinted on it
+            path = _imprint(mm, other, line, gap)
+            if path is None:
                 continue
-            for v, w in sorted(nbr[u].items()):
-                if v not in ok:
-                    continue
-                nd = dd + w + 3.0 * dist_of[v]
-                if nd < best_d.get(v, np.inf) - 1e-12:
-                    best_d[v], prev[v] = nd, u
-                    heapq.heappush(heap, (nd, v))
-        if ends[1] not in prev:
-            continue
-        path = [ends[1]]
-        while path[-1] != ends[0]:
-            path.append(prev[path[-1]])
-        path.reverse()
-        _d, _k, _t = _seg_nearest(mm.xyz[path], line[:-1], line[1:])
-        for n, k, t in zip(path, _k.tolist(), _t.tolist(), strict=True):
-            moves[n] = line[k] + t * (line[k + 1] - line[k])
+            elems, tris, nbr = graph()
+            ta = mm.xyz[[t[0] for t in tris]]
+            tb = mm.xyz[[t[1] for t in tris]]
+            tc = mm.xyz[[t[2] for t in tris]]
+            out["imprinted"] = int(out.get("imprinted") or 0) + len(path)
+        else:
+            _d, _k, _t = _seg_nearest(mm.xyz[path], line[:-1], line[1:])
+            for n, k, t in zip(path, _k.tolist(), _t.tolist(), strict=True):
+                moves[n] = line[k] + t * (line[k + 1] - line[k])
         for n, q in zip(nodes, line, strict=True):
             moves[n] = q
         rows.append(path)
@@ -461,6 +455,164 @@ def _t_line(mm: _Mesh, short: list[tuple[int, int]], other: set[str], gap: float
         if float(np.dot(_normal(mm.xyz[mm.conn[e]]), before[e])) < math.cos(math.radians(TURN_DEG)):
             out["why"] = "joining the mesh there would turn an element over"
     return rows
+
+
+def _row_near(mm: _Mesh, nbr: dict[int, dict[int, float]], line: np.ndarray, gap: float) -> list[int] | None:
+    """The other mesh's row of nodes along `line`: the shortest way through its nodes within the gap of the line,
+    from the node nearest one end to the node nearest the other, kept close to the line; None when there is none."""
+    import heapq
+
+    other_nodes = np.array(sorted(nbr), dtype=np.int64)
+    dn, _k, _t = _seg_nearest(mm.xyz[other_nodes], line[:-1], line[1:])
+    ok = {int(n) for n, x in zip(other_nodes.tolist(), dn.tolist(), strict=True) if x <= gap}
+    if not ok:
+        return None
+    ends: list[int] = []
+    for end in (line[0], line[-1]):
+        far = {m: float(np.linalg.norm(mm.xyz[m] - end)) for m in ok}
+        ends.append(min(sorted(ok), key=far.__getitem__))
+    if ends[0] == ends[1]:
+        return None
+    dist_of = {int(n): float(x) for n, x in zip(other_nodes.tolist(), dn.tolist(), strict=True)}
+    best_d: dict[int, float] = {ends[0]: 0.0}
+    prev: dict[int, int] = {}
+    heap = [(0.0, ends[0])]
+    while heap:
+        dd, u = heapq.heappop(heap)
+        if u == ends[1]:
+            break
+        if dd > best_d.get(u, np.inf):
+            continue
+        for v, w in sorted(nbr[u].items()):
+            if v not in ok:
+                continue
+            nd = dd + w + 3.0 * dist_of[v]
+            if nd < best_d.get(v, np.inf) - 1e-12:
+                best_d[v], prev[v] = nd, u
+                heapq.heappush(heap, (nd, v))
+    if ends[1] not in prev:
+        return None
+    path = [ends[1]]
+    while path[-1] != ends[0]:
+        path.append(prev[path[-1]])
+    path.reverse()
+    return path
+
+
+#: SURF-13, an imprint: where the line crosses an element edge within this share of the edge's length of one of its
+#: nodes - and within half the gap of it - that node is moved onto the line instead of a new node put beside it
+IMPRINT_SNAP = 0.15
+
+
+def _imprint(mm: _Mesh, other: set[str], line: np.ndarray, gap: float) -> list[int] | None:
+    """SURF-13: THE LINE IMPRINTED ON A MESH: every element of the faces `other` the polyline `line` (on their mesh)
+    crosses is cut along it - a new node where the line crosses each element edge (an edge node within IMPRINT_SNAP
+    of it, and half the gap, moved onto the line instead), the element cut in two along the line between them and
+    each part made a quad or triangles (_pieces) - and the elements beside take the new nodes into their edges. The
+    other mesh then has a row of nodes along the line. Changes mm in place; returns the row (node list, in the line's
+    order) or None when the line crosses no element edge (nothing changed)."""
+    mid = mm.src.mid
+    elems = [e for e, c in enumerate(mm.conn) if mid[mm.parent[e]] in other]
+    lo_l, hi_l = line.min(axis=0) - gap, line.max(axis=0) + gap
+    seg_len = np.linalg.norm(np.diff(line, axis=0), axis=1)
+    cum = np.concatenate([[0.0], np.cumsum(seg_len)])
+    hits: dict[tuple[int, int], tuple[float, float, np.ndarray]] = {}       # edge -> (s along it, s along the line, x)
+    for e in elems:
+        c = mm.conn[e]
+        p = mm.xyz[c]
+        if np.any(p.min(axis=0) > hi_l) or np.any(p.max(axis=0) < lo_l):
+            continue
+        n = _normal(p)
+        e1 = p[1] - p[0]
+        e1 /= max(float(np.linalg.norm(e1)), 1e-300)
+        e2 = np.cross(n, e1)
+
+        def flat(x: np.ndarray, p0=p[0], e1=e1, e2=e2) -> np.ndarray:
+            return np.stack([(x - p0) @ e1, (x - p0) @ e2], axis=-1)
+
+        lf = flat(line)
+        for i in range(len(c)):
+            u, v = c[i], c[(i + 1) % len(c)]
+            key = (min(u, v), max(u, v))
+            if key in hits:
+                continue
+            a, b = mm.xyz[key[0]], mm.xyz[key[1]]
+            fa, fb = flat(a[None, :])[0], flat(b[None, :])[0]
+            d = fb - fa
+            for j in range(len(line) - 1):
+                g = lf[j + 1] - lf[j]
+                den = d[0] * g[1] - d[1] * g[0]
+                if abs(den) <= 1e-14 * max(1.0, float(np.dot(d, d) + np.dot(g, g))):
+                    continue
+                w = lf[j] - fa
+                s = (w[0] * g[1] - w[1] * g[0]) / den
+                t = (w[0] * d[1] - w[1] * d[0]) / den
+                if not (0.0 <= s <= 1.0 and 0.0 <= t <= 1.0):
+                    continue
+                x = line[j] + t * (line[j + 1] - line[j])
+                # the line lies on the mesh: the crossing in 3D, not a projection of a far stretch
+                if float(np.linalg.norm(x - (a + s * (b - a)))) > max(0.1 * float(np.linalg.norm(b - a)), 1e-9):
+                    continue
+                hits[key] = (float(s), float(cum[j] + t * seg_len[j]), x)
+                break
+    if not hits:
+        return None
+    # each crossing: an end node moved onto the line, or a new node in the edge
+    at_line: dict[int, float] = {}                 # node -> its place along the line
+    inserts: dict[tuple[int, int], int] = {}
+    for key in sorted(hits):
+        s, sl, x = hits[key]
+        length = float(np.linalg.norm(mm.xyz[key[1]] - mm.xyz[key[0]]))
+        end = key[0] if s <= 0.5 else key[1]
+        near = min(s, 1.0 - s) * length
+        if min(s, 1.0 - s) <= IMPRINT_SNAP and near <= 0.5 * gap:
+            if end not in at_line:
+                mm.xyz[end] = x
+                at_line[end] = sl
+            continue
+        nid = len(mm.xyz)
+        mm.xyz = np.vstack([mm.xyz, x[None, :]])
+        inserts[key] = nid
+        at_line[nid] = sl
+    # the elements: new nodes into their edges, those the line crosses cut in two along it
+    new_conn: list[list[int]] = []
+    new_parent: list[int] = []
+    for e, c in enumerate(mm.conn):
+        keys = [(min(c[i], c[(i + 1) % len(c)]), max(c[i], c[(i + 1) % len(c)])) for i in range(len(c))]
+        if mid[mm.parent[e]] not in other or not (any(k in inserts for k in keys) or
+                                                   sum(1 for n in c if n in at_line) >= 2):
+            new_conn.append(c)
+            new_parent.append(mm.parent[e])
+            continue
+        poly: list[int] = []
+        for i in range(len(c)):
+            poly.append(c[i])
+            if keys[i] in inserts:
+                poly.append(inserts[keys[i]])
+        on = [i for i, n in enumerate(poly) if n in at_line]
+        parts = [poly]
+        if len(on) == 2 and (on[1] - on[0]) % len(poly) not in (1, len(poly) - 1):
+            i0, i1 = on
+            parts = [poly[i0:i1 + 1], poly[i1:] + poly[:i0 + 1]]
+        for part in parts:
+            for piece in _pieces(part, mm.xyz):
+                new_conn.append(piece)
+                new_parent.append(mm.parent[e])
+    mm.conn, mm.parent = new_conn, new_parent
+    row = sorted(at_line, key=lambda n: (at_line[n], n))
+    # the row as a run of edges: consecutive nodes the cut joined; the longest stretch that is
+    users = mm.users()
+    best: tuple[int, int] = (0, 1)
+    i = 0
+    while i < len(row) - 1:
+        j = i
+        while j + 1 < len(row) and (min(row[j], row[j + 1]), max(row[j], row[j + 1])) in users:
+            j += 1
+        if j - i > best[1] - 1 - best[0]:
+            best = (i, j + 1)
+        i = j + 1 if j > i else i + 1
+    got = row[best[0]:best[1]]
+    return got if len(got) >= 2 else None
 
 
 def _pair_runs(mm: _Mesh, runs_a: list[list[int]], runs_b: list[list[int]], gap: float, lim: float,
@@ -722,7 +874,9 @@ def close(mesh: ShellMesh, places: list[dict], *, reach_mm: float, reach_from: s
                 verdict["why"] = why or "no nodes face each other across the gap"
                 first = first or verdict
                 break
-            moved = np.linalg.norm(trial.xyz - mm.xyz, axis=1) > 0.0
+            # (nodes an imprint added are new: moved)
+            moved = np.concatenate([np.linalg.norm(trial.xyz[:len(mm.xyz)] - mm.xyz, axis=1) > 0.0,
+                                    np.ones(len(trial.xyz) - len(mm.xyz), dtype=bool)])
             old = {tuple(c) for c in mm.conn}
             # the elements the closing changed: new ones, and those on a node it moved
             changed = {e for e, c in enumerate(trial.conn) if tuple(c) not in old or bool(moved[c].any())}

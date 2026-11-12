@@ -181,7 +181,17 @@ def test_a_wall_stopping_short_of_a_plates_inside_is_joined_onto_it():
     assert sum(1 for u in users.values() if len(u) == 3) >= 8                   # the foot is a junction, end to end
 
 
-def test_a_wall_too_far_from_the_plates_nodes_is_left_open():
-    # 0.5 mm short over 4 mm elements, the line 2 mm from the plate's nodes: no node may move that far
+def test_a_wall_short_of_a_plate_away_from_its_nodes_is_imprinted_on_it():
+    # 0.5 mm short over 4 mm elements, the line 2 mm from the plate's nodes: no row of the plate's nodes lies within
+    # the gap, so the line is imprinted on the plate (its elements cut along it) and the foot joined to the new row -
+    # one sheet, nothing moved farther than the gap, the plate still flat
+    before = _tee(0.5)
     out, rec = smc.close(_tee(0.5), [_tee_place(0.5)], reach_mm=4.0, reach_from="asked")
-    assert rec["closed"] == 0 and not rec["places"][0]["closed"] and out.n_elements == _tee(0.5).n_elements
+    row = rec["places"][0]
+    assert row["closed"], row
+    assert _sheets(out) == 1 and shell_quality.measure(out)["valid"]
+    assert row["moved_mm"] <= 0.5 + 1e-9
+    assert out.n_elements > before.n_elements
+    low = out.xyz[:, 2] < 0.25
+    assert float(np.max(np.abs(out.xyz[low, 2]))) < 1e-9
+    assert not shell_quality.measure(out)["nastran_past"]

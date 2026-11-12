@@ -4,7 +4,9 @@
 # face EXTENDED along its own surface to its neighbour (an edge stopping short) or TRIMMED back to its neighbour's edge
 # (an overlap); failing both, the edge MOVED onto its neighbour (a step or a corner off its neighbour's: the two faces
 # sewn alone at the gap) - one place at a time, each change judged before it is kept and told: what was done, where,
-# by how much. What is still open after this is closed in the mesh (engines/surface_mesh_close, SURF-13).
+# by how much. A tapered sliver between two faces that run on into each other is FILLED with a new face between their
+# edges; a corner both sides stop short of has BOTH continued and cut where they cross (or the small side continued
+# onto the large one's surface and the strip left there filled). What is still open after this is closed in the mesh (engines/surface_mesh_close, SURF-13).
 # Boundaries: geometry only, deterministic, no model call. Only open sheets read by cad/surface_model (the surface
 # route): solids and the extraction from solids are never touched, nor cad/repair (a closed skin's defects are CAD
 # repair's). A gap is closed only when it is narrower than the reach (reach_of: the user's "close gaps up to 4 mm",
@@ -464,6 +466,191 @@ def _with_strip(here, p, e, k: int, nbr: int, gap: float, band: float, look: flo
     return got, "", width
 
 
+def _continued(face, edge, length: float, fit: float):
+    """A face continued past `edge` by `length`: ("face", the whole face continued along its own surface) or, where
+    its surface does not run on, ("strip", a tangent strip of its own, _strip); None when neither can be made."""
+    ext = _extended(face, edge, length, fit)
+    if ext is not None:
+        return "face", ext
+    strip = _strip(face, edge, length)
+    return ("strip", strip) if strip is not None else None
+
+
+def _cut_to(kind: str, shape, face, edge, tool, tol: float):
+    """A continued face (or strip) cut where it meets `tool`: the piece holding the face (for a strip, the piece on
+    the face's edge); None when the tool does not cut it."""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import surface_model as sm
+
+    pieces = _split(shape, tool)
+    if len(pieces) < 2:
+        return None
+    if kind == "face":
+        return _keep_side(pieces, face, edge, tol)
+    mid = sm._edge_points(edge, 3)[1]
+    near = sorted((ms._dist(ms._vertex(mid), f), i) for i, f in enumerate(pieces))
+    return pieces[near[0][1]] if near[0][0] <= 2.0 * tol else None
+
+
+def _with_both(here, p, gap: float, reach: float, fit: float):
+    """SURF-12: A CORNER BOTH SIDES STOP SHORT OF (faces at an angle, each edge short of where the other's surface
+    runs: one continued alone lands beside the other's edge, not on it): every face of the place continued past its
+    edge there by EXTEND_PAST gaps (along its own surface, else by a tangent strip) and cut where it meets the other
+    side's continuations - so both sides end on the one line where they cross, as an analyst extends two surfaces to
+    meet and trims them there. (the new Sewn or None, why not, the most a face grew past its edge.)"""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import surface_model as sm
+
+    sides = _two_sides(p)
+    if sides is None:
+        return None, "three faces meet round the gap", gap
+    length = EXTEND_PAST * gap
+    edge_of: dict[int, Any] = {}
+    for e, j, _g, _n in p["_members"]:
+        if j not in edge_of or ms._length(e) > ms._length(edge_of[j]):
+            edge_of[j] = e
+    if not all(any(j in s for j in edge_of) for s in sides):
+        # only one side's edges lie along the other (a small face beside a large face's long edge): that side alone
+        # is continued, onto the other's surface, and the strip it then leaves in that surface is filled
+        return _to_surface(here, p, sides, edge_of, gap, reach, fit)
+    cont: dict[int, tuple] = {}
+    for j in sorted(edge_of):
+        c = _continued(here.faces[j], edge_of[j], length, fit)
+        if c is None:
+            return None, "the face could not be continued past that edge", gap
+        cont[j] = c
+
+    def tool(js) -> Any:
+        return ms._compound([cont[j][1] if cont[j][0] == "face" else ms._compound([here.faces[j], cont[j][1]])
+                             for j in sorted(js) if j in cont])
+
+    new: dict[int, Any] = {}
+    for s, other in (sides, sides[::-1]):
+        t = tool(other)
+        for j in sorted(s & set(cont)):
+            got = _cut_to(cont[j][0], cont[j][1], here.faces[j], edge_of[j], t, here.tol)
+            if got is None:
+                return None, "the continued faces do not meet", gap
+            new[j] = got
+    width = 0.0
+    for j, f in new.items():
+        add = ms._area(f) - (ms._area(here.faces[j]) if cont[j][0] == "face" else 0.0)
+        width = max(width, abs(add) / max(ms._length(edge_of[j]), 1e-300))
+    if width > EXTEND_PAST * gap + 2.0 * here.tol:
+        return None, "continuing the faces would cover more than the gap", width
+    mine = set(new)
+    others = [f for i, f in enumerate(here.faces) if i not in mine]
+    for j, f in new.items():
+        band = 2.0 * reach * ms._length(edge_of[j]) + 1e-6 * ms._area(here.faces[j])
+        why = _check(f, here.faces[j], band, others, here.tol) if cont[j][0] == "face" else             _check_strip(f, others, [here.faces[i] for i in sorted(mine)], here.tol)
+        if why:
+            return None, why, width
+    faces, names = list(here.faces), list(here.names)
+    for j in sorted(new):
+        if cont[j][0] == "face":
+            faces[j] = new[j]
+        else:
+            faces.append(new[j])
+            names.append(here.names[j])
+    again = _resew_junctions(faces, here.tol)
+    got = None if again is None else sm.Sewn(again, names, sm._sheets(again), here.tol, here.diag)
+    if got is None:
+        idx = sorted(mine | set(range(len(here.faces), len(faces))) |
+                     {i for j in mine for i in _edge_neighbours(here, j)})
+        got = _imprint_some(sm.Sewn(faces, names, sm._sheets(faces), here.tol, here.diag), idx)
+    if got is None:
+        return None, "the changed faces would still not meet", width
+    return got, "", width
+
+
+def _surface_around(face, reach: float):
+    """The face's own surface over its parameter box widened by about `reach` mm on every side (a plane, cylinder,
+    cone, sphere or torus run on; any other surface: the face itself)."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.BRepTools import BRepTools
+    from OCP.Geom import (
+        Geom_ConicalSurface,
+        Geom_CylindricalSurface,
+        Geom_Plane,
+        Geom_RectangularTrimmedSurface,
+        Geom_SphericalSurface,
+        Geom_ToroidalSurface,
+    )
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    surf = BRep_Tool.Surface_s(face)
+    while isinstance(surf, Geom_RectangularTrimmedSurface):
+        surf = surf.BasisSurface()
+    if not isinstance(surf, (Geom_Plane, Geom_CylindricalSurface, Geom_ConicalSurface, Geom_SphericalSurface,
+                             Geom_ToroidalSurface)):
+        return face
+    u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
+    p, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
+    surf.D1(0.5 * (u0 + u1), 0.5 * (v0 + v1), p, du, dv)
+    su, sv = max(du.Magnitude(), 1e-12), max(dv.Magnitude(), 1e-12)
+    a, b, c, d = u0 - reach / su, u1 + reach / su, v0 - reach / sv, v1 + reach / sv
+    if surf.IsUPeriodic() and b - a >= surf.UPeriod():
+        a, b = u0, u1
+    if surf.IsVPeriodic() and d - c >= surf.VPeriod():
+        c, d = v0, v1
+    try:
+        return BRepBuilderAPI_MakeFace(surf, a, b, c, d, 1e-7).Face()
+    except Exception:  # noqa: BLE001 - the face as it is
+        return face
+
+
+def _to_surface(here, p, sides, edge_of: dict, gap: float, reach: float, fit: float):
+    """SURF-12, a corner one side stops short of (a small face beside a large face's long edge, at an angle): the
+    small side's faces continued (_continued) and cut where they meet the large side's SURFACE run on past its edge
+    (_surface_around); where the cut lands outside the large face - beside its edge, in its own surface - the strip
+    left between that edge and the new one is filled (_fill_from). (the new Sewn or None, why not, the widest.)"""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import surface_model as sm
+
+    short, big = (sides[0], sides[1]) if any(j in sides[0] for j in edge_of) else (sides[1], sides[0])
+    length = EXTEND_PAST * gap
+    tool = ms._compound([_surface_around(here.faces[j], 2.0 * length) for j in sorted(big)])
+    faces, names = list(here.faces), list(here.names)
+    width = 0.0
+    changed: list[int] = []
+    for j in sorted(short):
+        if j not in edge_of:
+            continue
+        c = _continued(here.faces[j], edge_of[j], length, fit)
+        if c is None:
+            return None, "the face could not be continued past that edge", gap
+        new = _cut_to(c[0], c[1], here.faces[j], edge_of[j], tool, here.tol)
+        if new is None:
+            return None, "the continued face does not reach its neighbour", gap
+        add = ms._area(new) - (ms._area(here.faces[j]) if c[0] == "face" else 0.0)
+        width = max(width, abs(add) / max(ms._length(edge_of[j]), 1e-300))
+        others = [f for i, f in enumerate(here.faces) if i != j and i not in big]
+        band = 2.0 * reach * ms._length(edge_of[j]) + 1e-6 * ms._area(here.faces[j])
+        why = _check(new, here.faces[j], band, others, here.tol) if c[0] == "face" else \
+            _check_strip(new, others, [here.faces[i] for i in sorted(big | {j})], here.tol)
+        if why:
+            return None, why, width
+        if c[0] == "face":
+            faces[j] = new
+            changed.append(j)
+        else:
+            faces.append(new)
+            names.append(here.names[j])
+            changed.append(len(faces) - 1)
+    if width > EXTEND_PAST * gap + 2.0 * here.tol:
+        return None, "continuing the face would cover more than the gap", width
+    again = _resew_junctions(faces, here.tol)
+    if again is None:
+        return None, "the changed faces would still not meet", width
+    mid = sm.Sewn(again, names, sm._sheets(again), here.tol, here.diag)
+    # what the continued faces do not yet share with the large side: the strip in its surface, filled from its edge
+    got, why, wid, _who = _fill_from(mid, set(big), set(changed), sorted(big | set(changed)), reach)
+    if got is None:
+        return None, why, width
+    return got, "", max(width, wid)
+
+
 def _check_strip(strip, others: list, ends_on: list, tol: float) -> str:
     """A strip judged as _check judges a changed face: valid; it crosses none of `others` and ends on `ends_on`
     only along its own rim."""
@@ -484,6 +671,256 @@ def _check_strip(strip, others: list, ends_on: list, tol: float) -> str:
         if sec.IsDone() and _crossing(sec.Shape(), strip, f, tol, rims=rims):
             return "the changed face would cross another face"
     return ""
+
+
+#: SURF-12: A SLIVER FILLED. Two faces that run on into each other (their normals within SAME_SIDE_DEG) but leave a
+#: strip between their free edges - tapering from nil at one end to most of an element at the other, the strip in
+#: both faces' tangent planes (within FILL_PLANE_DEG) - get a new face spanning the strip, as an analyst fills it
+#: between the two edges: ruled from the one side's edge (through FILL_POINTS of its own points, so it sews to it at
+#: the sew tolerance) straight across to the nearest points of the other side's free edges. The faces themselves are
+#: never moved. The way across must look across the strip (within FILL_ACROSS_DEG of square to the edge): an edge
+#: running past the end of the other side is filled only where it faces it.
+FILL_POINTS = 25
+FILL_PLANE_DEG = 15.0
+FILL_ACROSS_DEG = 45.0
+#: ... and a new face ends where the strip narrows to this share of the sew tolerance: the rest, to where the two
+#: edges touch, is sewn as it lies (a face of no width at its end would not be valid)
+FILL_END = 0.1
+
+
+def _two_sides(p) -> tuple[set[int], set[int]] | None:
+    """A place's faces in two sides, each pair's two faces on opposite sides: (the side the new faces are ruled from,
+    the other). The first is the side more of whose edges were found lying along the other (the longer, by length;
+    ties the side holding the lowest face): its edges face the strip. None when the pairs do not split so (three
+    faces round one gap)."""
+    from meshpipeline.cad import midsurface as ms
+
+    adj: dict[int, set[int]] = {}
+    for a, b in p["pairs"]:
+        adj.setdefault(int(a), set()).add(int(b))
+        adj.setdefault(int(b), set()).add(int(a))
+    side: dict[int, int] = {}
+    for s in sorted(adj):
+        if s in side:
+            continue
+        side[s] = 0
+        stack = [s]
+        while stack:
+            u = stack.pop()
+            for v in sorted(adj[u]):
+                if v not in side:
+                    side[v] = 1 - side[u]
+                    stack.append(v)
+                elif side[v] == side[u]:
+                    return None
+    s0 = {k for k, c in side.items() if c == 0}
+    s1 = {k for k, c in side.items() if c == 1}
+    l0 = sum(ms._length(m[0]) for m in p["_members"] if m[1] in s0)
+    l1 = sum(ms._length(m[0]) for m in p["_members"] if m[1] in s1)
+    return (s0, s1) if (-l0, min(s0, default=0)) <= (-l1, min(s1, default=0)) else (s1, s0)
+
+
+def _fill_runs(e, face, across, tol: float, reach: float) -> tuple[list[tuple[list, list]], float]:
+    """A free edge e of `face` against the other side's free edges `across` (a compound): the stretches of e that
+    look across a strip at them - each point within `reach` of them, wider than the sew tolerance, the way across
+    square to the edge (within FILL_ACROSS_DEG) and in the face's own tangent plane (within FILL_PLANE_DEG) - each
+    as (its points, their nearest points across); and the strip's widest. A stretch ends where the strip narrows to
+    FILL_END of the sew tolerance (found between the samples, by halves) or stops facing."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    from meshpipeline.cad import midsurface as ms
+
+    c = BRepAdaptor_Curve(e)
+    t0, t1 = c.FirstParameter(), c.LastParameter()
+
+    def at(t: float):
+        p, v = gp_Pnt(), gp_Vec()
+        c.D1(float(t), p, v)
+        q = np.array([p.X(), p.Y(), p.Z()])
+        d = BRepExtrema_DistShapeShape(ms._vertex(q), across)
+        if not d.IsDone() or not d.NbSolution():
+            return q, None, np.inf, np.array([v.X(), v.Y(), v.Z()])
+        w = d.PointOnShape2(1)
+        return q, np.array([w.X(), w.Y(), w.Z()]), float(d.Value()), np.array([v.X(), v.Y(), v.Z()])
+
+    def kind(r) -> int:
+        """1: faces across a strip; 0: touching (within the sew tolerance); -1: no strip there."""
+        q, f, dist, tv = r
+        if f is None or dist > reach:
+            return -1
+        if dist <= 1.5 * tol:
+            return 0
+        way = (f - q) / dist
+        tl = float(np.linalg.norm(tv))
+        if tl > 1e-14 and abs(float(np.dot(way, tv))) / tl > math.cos(math.radians(90.0 - FILL_ACROSS_DEG)):
+            return -1
+        n = _normal_at(face, q)
+        if n is None or abs(float(np.dot(way, n))) > math.sin(math.radians(FILL_PLANE_DEG)):
+            return -1
+        return 1
+
+    ts = np.linspace(t0, t1, 4 * FILL_POINTS + 1)
+    rows = [at(t) for t in ts]
+    kinds = [kind(r) for r in rows]
+    widest = max((r[2] for r, k in zip(rows, kinds, strict=True) if k == 1), default=0.0)
+    # a stretch: samples facing or touching, the strip wider than FILL_END of the tolerance, at least one facing
+    end = FILL_END * tol
+    ok = [k >= 0 and r[2] > end for k, r in zip(kinds, rows, strict=True)]
+    runs: list[tuple[float, float]] = []
+    i = 0
+    while i < len(ts):
+        if not ok[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(ts) and ok[j + 1]:
+            j += 1
+        lo, hi = float(ts[i]), float(ts[j])
+        # an end next to a sample where the edges touch moves on to where the strip narrows to FILL_END (to the
+        # edge's own end when they touch there), and the new face closes to a point there
+        if i > 0 and kinds[i - 1] == 0:
+            a, b = float(ts[i - 1]), float(ts[i])
+            if i - 1 > 0:
+                for _ in range(24):
+                    m = 0.5 * (a + b)
+                    a, b = (m, b) if at(m)[2] <= end else (a, m)
+            lo = a
+        if j + 1 < len(ts) and kinds[j + 1] == 0:
+            a, b = float(ts[j]), float(ts[j + 1])
+            if j + 1 < len(ts) - 1:
+                for _ in range(24):
+                    m = 0.5 * (a + b)
+                    a, b = (a, m) if at(m)[2] <= end else (m, b)
+            hi = b
+        if j > i and any(k == 1 for k in kinds[i:j + 1]):
+            runs.append((lo, hi))
+        i = j + 1
+    out = []
+    for lo, hi in runs:
+        got = [at(t) for t in np.linspace(lo, hi, FILL_POINTS)]
+        if any(g[1] is None for g in got):
+            continue
+        out.append(([g[0] for g in got], [g[0] if g[2] <= end else g[1] for g in got]))
+    return out, widest
+
+
+def _fill_face(face, pts: list, feet: list):
+    """A ruled face from the points `pts` (on face's edge) straight across to `feet`, face's own side up."""
+    from OCP.Approx import Approx_IsoParametric
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface
+    from OCP.gp import gp_Pnt
+    from OCP.TColgp import TColgp_Array2OfPnt
+    from OCP.TopoDS import TopoDS
+
+    n = len(pts)
+    arr = TColgp_Array2OfPnt(1, n, 1, 2)
+    for i, (q, f) in enumerate(zip(pts, feet, strict=True)):
+        arr.SetValue(i + 1, 1, gp_Pnt(*map(float, q)))
+        arr.SetValue(i + 1, 2, gp_Pnt(*map(float, f)))
+    api = GeomAPI_PointsToBSplineSurface()
+    api.Interpolate(arr, Approx_IsoParametric, False)
+    out = BRepBuilderAPI_MakeFace(api.Surface(), 1e-7).Face()
+    mid = n // 2
+    c = 0.5 * (np.asarray(pts[mid]) + np.asarray(feet[mid]))
+    n0, n1 = _normal_at(face, pts[mid]), _normal_at(out, c)
+    if n0 is not None and n1 is not None and float(np.dot(n0, n1)) < 0:
+        out = TopoDS.Face_s(out.Reversed())
+    return out
+
+
+def _free_edges_of(faces: list) -> list[list]:
+    """Each face's free edges (held by that face alone among `faces`)."""
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    from meshpipeline.cad import midsurface as ms
+
+    owners = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(ms._compound(faces), TopAbs_EDGE, TopAbs_FACE, owners)
+    out = []
+    for f in faces:
+        mine = []
+        for e in _edges(f):
+            i = owners.FindIndex(e)
+            if i > 0 and owners.FindFromIndex(i).Extent() == 1:
+                mine.append(TopoDS.Edge_s(e))
+        out.append(mine)
+    return out
+
+
+def _with_fill(here, p, reach: float, look: float):
+    """SURF-12: the strip of place p between two sides that run on into each other filled (FILL_POINTS): new faces
+    ruled from the first side's free edges (_two_sides) across to the other side's, each under its own side's face
+    name, then sewn in. (the new Sewn or None, why not, the strip's widest, (face, face beside) to name in the
+    words)."""
+    sides = _two_sides(p)
+    if sides is None:
+        return None, "three faces meet round the gap", 0.0, None
+    pairs = {(int(a), int(b)) for a, b in p["pairs"]}
+    return _fill_from(here, sides[0], sides[1], sorted({k for pr in pairs for k in pr}), reach)
+
+
+def _fill_from(here, first: set[int], second: set[int], touch: list[int], reach: float):
+    """SURF-12: new faces ruled from the free edges of the faces `first` across a strip to those of the faces
+    `second` (_fill_runs), each under its own side's face name, checked (crossing no face but `touch` - and those only
+    along its own rim) and sewn in. (the new Sewn or None, why not, the strip's widest, (face, face beside).)"""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import surface_model as sm
+
+    free = _free_edges_of(here.faces)
+    new: list = []
+    named: list[tuple[int, int]] = []
+    widest = 0.0
+    # the other side's free edges, all of them: a face's edge may run on past the faces it was paired with
+    beside = sorted(second)
+    opp = [e for j in beside for e in free[j]]
+    if not opp:
+        return None, "the faces' edges do not face each other across a strip", 0.0, None
+    across = ms._compound(opp)
+    for k in sorted(first):
+        for e in free[k]:
+            runs, wid = _fill_runs(e, here.faces[k], across, here.tol, reach)
+            if not runs:
+                continue
+            widest = max(widest, wid)
+            for pts, feet in runs:
+                try:
+                    f = _fill_face(here.faces[k], pts, feet)
+                except Exception as exc:  # noqa: BLE001 - not filled: the place is told
+                    logger.debug("surface mend: no fill (%s)", type(exc).__name__)
+                    return None, "the new face would not be valid", widest, None
+                if f is None or f.IsNull() or not BRepCheck_Analyzer(f).IsValid():
+                    return None, "the new face would not be valid", widest, None
+                mid = pts[len(pts) // 2]
+                named.append((k, min(beside, key=lambda j: ms._dist(ms._vertex(mid), here.faces[j]))))
+                new.append(f)
+    if not new:
+        return None, "the faces' edges do not face each other across a strip", widest, None
+    # each new face crosses no face (it may end on the faces it fills between, along its own rim only)
+    others = [f for j, f in enumerate(here.faces) if j not in touch]
+    for f in new:
+        w = _check_strip(f, others, [here.faces[j] for j in touch], here.tol)
+        if w:
+            return None, w, widest, None
+    faces = list(here.faces) + new
+    names = list(here.names) + [here.names[k] for k, _b in named]
+    # joined by the local fuse (the sew tolerance as its fuzzy value): the faces beside are cut where a new face's
+    # corner lands along their edges, so each new edge is shared - then sewn again with junctions kept
+    again = _resew_junctions(faces, here.tol)
+    got = None if again is None else sm.Sewn(again, names, sm._sheets(again), here.tol, here.diag)
+    if got is None:
+        got = _imprint_some(sm.Sewn(faces, names, sm._sheets(faces), here.tol, here.diag),
+                            sorted(set(touch) | set(range(len(here.faces), len(faces)))))
+    if got is None:
+        return None, "the new face would not sew to the faces beside it", widest, None
+    return got, "", widest, named[0]
 
 
 #: SURF-12: a B-spline patch is rebuilt through this many points a side (more where it has more poles)
@@ -765,7 +1202,8 @@ def _try(sewn, k: int, new, old, band: float, nbr: int, tol_join: float, length_
     return got, ""
 
 
-def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: float):
+def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: float,
+               last: bool = False):
     """SURF-12: one side of one place: face k's edge e, `gap` from face nbr. Extended (and cut where it meets its
     neighbour), trimmed back, or moved, the first that passes: (the new Sewn or None, why not, how, how far it
     moved)."""
@@ -801,6 +1239,26 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
         al = sum(float(x["length_mm"]) for x in ap)
         return not (len(ap) > len(bp) or (len(ap) == len(bp) and al >= bl - 2.0 * here.tol))
 
+    if last:
+        # THE LAST WAYS, once both faces' own continuations, trims and moves have failed (a new face, or both
+        # faces changed): 1d and 1c
+        # 1d. BOTH CONTINUED: a corner both faces stop short of - each continued alone lands beside the other's edge
+        if not step and na is not None and nb0 is not None and \
+                abs(float(np.dot(na, nb0))) <= math.cos(math.radians(SAME_SIDE_DEG)):
+            bgot, _bwhy, width = _with_both(here, p, gap, allowed, fit)
+            if bgot is not None and less_open(bgot):
+                return bgot, "", "extended both to meet each other and trimmed where they cross", width
+        # 1c. FILLED: two faces running on into each other (a fillet and the panel beside it) leave a strip between their
+        # free edges, tapering along the edge - a new face spans it (_with_fill); neither face is moved
+        if in_plane and not step and na is not None and nb0 is not None and \
+                abs(float(np.dot(na, nb0))) > math.cos(math.radians(SAME_SIDE_DEG)):
+            fgot, fwhy, width, _who = _with_fill(here, p, allowed, look)
+            if fgot is not None and not less_open(fgot):
+                fgot, fwhy = None, "the change would not leave less open"
+            if fgot is not None:
+                return fgot, "", "filled with a new face", width
+            why = fwhy or why
+        return None, why or "no extension, trim or move closes it", "", gap
     # the cheapest change that keeps the part's shape first: the face continued or cut back along its own surface
     # (1, 2); only then its edge moved onto its neighbour (3)
     # 1. EXTENDED along its own surface, and cut where it meets its neighbour
@@ -978,6 +1436,13 @@ def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
             if got is not None:
                 break
             steps.append(f"{here.names[k]}: {why}")
+        if got is None and sides and gap <= reach:
+            # neither face's own change closes it: the last ways (a sliver filled, a corner's both faces continued),
+            # tried once for the place; their reason, when they were tried, is the one told
+            e, k, _g, nbr = next(iter(sides.values()))
+            got, why, how, changed = _close_one(here, p, e, k, nbr, gap, reach, look, last=True)
+            if got is None and why:
+                steps.insert(0, f"{here.names[k]}: {why}")
         if got is None:
             # the words say one plain reason (the first face's); the record keeps each face's
             row["why"] = steps[0].split(": ", 1)[1] if steps else "no extension, trim or move closes it"
@@ -995,6 +1460,7 @@ def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
               "moved": sum(1 for r in done if r["how"].startswith("moved")),
               "extended": sum(1 for r in done if r["how"].startswith("extended")),
               "trimmed": sum(1 for r in done if r["how"].startswith("trimmed")),
+              "filled": sum(1 for r in done if r["how"].startswith("filled")),
               "widest_mm": _r(max([float(r["moved_mm"]) for r in done] + [0.0])),
               "changes": done[:40], "left": len(left), "left_places": left[:40]}
     return here, record

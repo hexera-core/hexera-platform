@@ -158,12 +158,17 @@ def place_words(cleaned: dict | None, closing: dict | None) -> list[str]:
         a, b = (list(r.get("faces") or []) + ["a face", "its neighbour"])[:2]
         by = _gap(float(r.get("moved_mm") or r.get("gap_mm") or 0.0))
         how = str(r.get("how") or "")
-        if how.startswith("extended") and "strip" in how:
+        if how.startswith("extended both"):
+            did = f"{a} and {b} were both extended, by up to {by}, to meet each other"
+        elif how.startswith("extended") and "strip" in how:
             did = f"{a} was extended {by} straight on past its edge to meet {b}"
         elif how.startswith("extended"):
             did = f"{a} was extended {by} along its own surface to meet {b}"
         elif how.startswith("trimmed"):
             did = f"{a} was trimmed back {by} to the edge of {b}"
+        elif how.startswith("filled"):
+            out.append(f"At {_at(r.get('at_mm'))}, a strip up to {by} wide between {a} and {b} was filled with a new face.")
+            continue
         else:
             did = f"the edge of {a} was moved {by} onto {b}"
         out.append(f"At {_at(r.get('at_mm'))}, {did}.")

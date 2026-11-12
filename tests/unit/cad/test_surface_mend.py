@@ -278,3 +278,88 @@ def test_the_users_element_size_widens_the_reach_on_a_small_face():
     assert asked["cleaned"]["mend"]["closed"] == 1 and asked["cleaned"]["open_places"] == 0
 
 
+def _fillet_line(widths: list[tuple[float, float]], fillet_cuts=(0.0, 60.0, 100.0, 101.2, 160.0)):
+    """A 320 x 196 mm panel (z = 0, y from 4) running round a fillet (true quarter cylinders, r 4, cut at
+    `fillet_cuts` along x) down into a flange (natural B-spline patches in y = 0 at the top, curved below), the flange's
+    top stopping short of the fillet by a strip whose width runs through `widths` ((x, mm), one flange patch between
+    each two): two tangent faces leaving a tapered sliver between their edges, as a clean-up course hands them out."""
+    import numpy as np
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.Geom import Geom_CylindricalSurface
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pnt
+
+    r, f = 4.0, 15.0
+    s = Geom_CylindricalSurface(gp_Ax3(gp_Pnt(0.0, r, -r), gp_Dir(1.0, 0.0, 0.0), gp_Dir(0.0, -1.0, 0.0)), r)
+    fillets = [BRepBuilderAPI_MakeFace(s, 1.5 * math.pi, 2.0 * math.pi, a, b, 1e-7).Face()
+               for a, b in zip(fillet_cuts, fillet_cuts[1:], strict=False)]
+    xs = [x for x, _w in widths]
+    ws = [w for _x, w in widths]
+    flanges = []
+    for (x0, _w0), (x1, _w1) in zip(widths, widths[1:], strict=False):
+
+        def fn(a, b):
+            top = -r - float(np.interp(a, xs, ws))
+            z = -r - f + b * (top + r + f)
+            return (a, -0.01 * (top - z) ** 2, z)
+
+        flanges.append(_bspline(fn, (x0, x1), (0.0, 1.0)))
+    return sx.compound([sx.rect(0.0, r, 320.0, 200.0), *fillets, *flanges])
+
+
+def _area_of(shape) -> float:
+    return float(sum(sx._area(f) for f in sx.faces_of(shape)))
+
+
+def test_a_tapered_sliver_between_tangent_faces_is_filled_with_a_new_face():
+    # SURF-12: a fillet and the flange beside it are tangent, but the flange stops short by a strip opening and
+    # closing between 0.65 and 3.4 mm (the fillet and the flange cut at different places): a new face spans the strip
+    # between the two edges - the faces themselves stay as they are; one sheet, nothing left open
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import surface_mend as smd
+
+    shape = _fillet_line([(0.0, 0.7), (40.0, 3.4), (80.0, 0.65), (120.0, 3.2), (160.0, 1.0)])
+    sewn = sm.sew(shape)
+    places = sm.open_places(sewn, mm_per_unit=1.0, reach=4.0)
+    assert len(places) == 1
+    got, why, widest, _who = smd._with_fill(sewn, places[0], 4.0, 4.0)
+    assert got is not None, why
+    assert sm.open_places(got, mm_per_unit=1.0, reach=4.0) == [] and len(got.sheets) == 1
+    assert widest == pytest.approx(3.4, abs=0.05)
+    strip = 20.0 * (0.7 + 3.4 + 3.4 + 0.65 + 0.65 + 3.2 + 3.2 + 1.0)
+    assert sum(ms._area(f) for f in got.faces) - _area_of(shape) == pytest.approx(strip, rel=0.02)
+    old = {round(ms._area(f), 6) for f in sewn.faces}
+    assert old <= {round(ms._area(f), 6) for f in got.faces}                 # none of the old faces changed
+    # the whole reading closes it too (by the faces' own extension where they extend, else the fill)
+    reading, _sewn = _read(shape, element_mm=4.0)
+    assert reading["cleaned"]["open_places"] == 0 and len(reading["sheets"]) == 1
+
+
+def test_a_sliver_that_closes_to_nothing_at_both_ends_is_filled_to_the_points():
+    # the strip touching at both ends (0 -> 3.4 -> ... -> 0): the new faces close to a point where the edges meet, and
+    # nothing is left open there (no stub of edge between the point and the corner)
+    from meshpipeline.cad import surface_mend as smd
+
+    shape = _fillet_line([(0.0, 0.0), (40.0, 3.4), (80.0, 0.65), (120.0, 3.2), (160.0, 0.0)])
+    sewn = sm.sew(shape)
+    places = sm.open_places(sewn, mm_per_unit=1.0, reach=4.0)
+    got, why, _w, _who = smd._with_fill(sewn, places[0], 4.0, 4.0)
+    assert got is not None, why
+    assert sm.open_places(got, mm_per_unit=1.0, reach=4.0) == [] and len(got.sheets) == 1
+
+
+def test_a_corner_both_faces_stop_short_of_is_closed_by_extending_both():
+    # a lip leaving the panel's end at 48 degrees, its foot 3.2 mm out from the panel's edge and 0.41 mm above it:
+    # the lip continued alone meets the panel's plane just past the panel's edge, the panel continued alone passes
+    # under the lip - both are continued and cut where they cross
+    a = math.radians(48.0)
+    lips = [_bspline(lambda t, y: (323.2 + t * math.cos(a), y, 0.41 + t * math.sin(a) + 0.002 * t * t),
+                     (0.0, 12.0), (y0, y1)) for y0, y1 in ((60.0, 90.0), (90.0, 120.0))]
+    shape = sx.compound([sx.rect(0.0, 0.0, 320.0, 200.0), *lips])
+    reading, _sewn = _read(shape, element_mm=4.0)
+    c, m = reading["cleaned"], reading["cleaned"]["mend"]
+    assert m["closed"] == 1 and m["changes"][0]["how"].startswith("extended both"), m
+    assert c["open_places"] == 0 and len(reading["sheets"]) == 1
+    # the panel grew by about the 2.8 mm it lacked along the lip's 60 mm, no more
+    assert 0.0 < _area(reading) - _area_of(shape) < 60.0 * (3.2 + 1.5)
+
+
