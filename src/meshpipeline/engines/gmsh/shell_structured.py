@@ -1206,6 +1206,11 @@ def _remove_cells(gmsh, cells: list[int]) -> None:
     every surface it bounds goes, a point only when every curve it ends goes (a cutting line's piece outside the face
     keeps its end: _remove_loose takes it after), in the same order, so the model and its next tags are the same."""
     cs = {int(x) for x in cells}
+    if any(len(gmsh.model.mesh.getEmbedded(2, s)) for s in cells):
+        # (a cell with points or curves inside it - the CAD face's own - is left to gmsh's own search: it takes
+        # those out too)
+        gmsh.model.occ.remove([(2, s) for s in cells], recursive=True)
+        return
     curves = sorted({abs(int(c)) for s in cells for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
     curves = [c for c in curves if {int(x) for x in gmsh.model.getAdjacencies(1, c)[0]} <= cs]
     cset = set(curves)
