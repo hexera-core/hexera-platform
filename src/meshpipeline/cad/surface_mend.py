@@ -1243,7 +1243,14 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
         """The place closed whole: fewer places after (a last way that closes part of a place leaves the rest
         harder for the mesh to close than the whole was - 12 Nov: a 1.5 mm place three faces round, which the mesh
         closed, filled along one face only, left 0.75 mm the mesh could not)."""
-        return len(sm.open_places(new_sewn, mm_per_unit=1.0, reach=look)) < len(bp)
+        ap = sm.open_places(new_sewn, mm_per_unit=1.0, reach=look)
+        if len(ap) >= len(bp):
+            return False
+        # ... and no place left that was not there before (by its faces): a change that moves the gap elsewhere
+        # among the same faces has not closed it (the same 1.5 mm place, filled along one face, left a new 0.75 mm
+        # place along another the mesh then could not close)
+        before = {tuple(map(tuple, x["pairs"])) for x in bp}
+        return all(tuple(map(tuple, x["pairs"])) in before for x in ap)
 
     if last:
         # THE LAST WAYS, once both faces' own continuations, trims and moves have failed (a new face, or both
