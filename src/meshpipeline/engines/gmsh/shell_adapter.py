@@ -1428,6 +1428,35 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
                 fine_at=short_edges["fine_at"] if short_edges else None,
                 growth=growth)
+            # SHMESH-48c: a grid line's piece that bounds free cells only (between neighbouring washers' free boxes,
+            # a column of them in rows of bolt holes) is counted by no mapped face, and gmsh's own count there left a
+            # triangle in each box. Each such piece takes the count nearest its length over the size, one more where
+            # that makes a box beside it even all round (its other sides' counts and its ring's): a box with one
+            # piece left uncounted sets it, so a column of boxes is counted from its ends in
+            known = {**_grid_counts, **block_preset, **{w.ring: w.n for w in boxed if w.ring}}
+            in_grid = {abs(int(c)) for t in grids for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)}
+            open_ = {c for c in cut_curves - in_grid - set(known)
+                     if any(int(x) in tag_of for x in gmsh.model.getAdjacencies(1, c)[0])}
+            bound: dict[int, list[int]] = {}
+            for c_piece in sorted(open_):
+                for f_ in (int(x) for x in gmsh.model.getAdjacencies(1, c_piece)[0] if int(x) in tag_of):
+                    bound.setdefault(f_, [abs(int(x)) for _d, x in gmsh.model.getBoundary([(2, f_)], oriented=False)])
+            settled = True
+            while settled:
+                settled = False
+                for f_, curves_f in sorted(bound.items()):
+                    left = [x for x in curves_f if x in open_]
+                    if len(left) != 1 or any(x not in known and x not in open_ for x in curves_f):
+                        continue
+                    c_open = left[0]
+                    h_c = float(rows[tag_of[f_]]["size_mm"]) / mm
+                    n_c = max(1, round(float(gmsh.model.occ.getMass(1, c_open)) / h_c))
+                    if (sum(known[x] for x in curves_f if x != c_open) + n_c) % 2:
+                        n_c += 1
+                    known[c_open] = n_c
+                    open_.discard(c_open)
+                    gmsh.model.mesh.setTransfiniteCurve(c_open, n_c + 1)
+                    settled = True
         if short_edges is not None and narrow is not None and mapped and not FEATURE_AT_STRIPS:
             _spare_strip_corners(gmsh, tag_of, rows, mapped, narrow, short_edges)
         # SHMESH-6: a face finer than the coarsest grades its neighbours from its own edges (a mapped strip's long

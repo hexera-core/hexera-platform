@@ -1039,12 +1039,25 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                     if abs(float(d @ v)) >= cos_par:
                         vals["u"].append((float(q[:, 0].mean()), "edge"))
             boxes = []
-            for j, (w, p) in enumerate(zip(ws, plans, strict=True)):
+            for w, p in zip(ws, plans, strict=True):
                 cu, cv = uv(w.centre)
                 b = p[3] / mm if p is not None else w.R + BOX_FREE * h
                 boxes.append([cu - b, cu + b, cv - b, cv + b])
-                vals["u"] += [(cu - b, str(4 * j)), (cu + b, str(4 * j + 1))]
-                vals["v"] += [(cv - b, str(4 * j + 2)), (cv + b, str(4 * j + 3))]
+            # SHMESH-48b: boxes of neighbouring holes that overlap (rows of bolt holes closer than a box) share one
+            # line halfway between them - each box is trimmed to it; the room check below keeps every ring inside
+            for lo_i, hi_i, olo, ohi in ((0, 1, 2, 3), (2, 3, 0, 1)):
+                for j in range(len(boxes)):
+                    for k in range(len(boxes)):
+                        bj, bk = boxes[j], boxes[k]
+                        cj, ck = 0.5 * (bj[lo_i] + bj[hi_i]), 0.5 * (bk[lo_i] + bk[hi_i])
+                        side_by_side = min(bj[ohi], bk[ohi]) - max(bj[olo], bk[olo]) > 1e-9 * h
+                        if j != k and cj < ck and side_by_side and bj[hi_i] > bk[lo_i]:
+                            mid = 0.5 * (bj[hi_i] + bk[lo_i])
+                            if cj < mid < ck:
+                                bj[hi_i] = bk[lo_i] = mid
+            for j, bx in enumerate(boxes):
+                vals["u"] += [(bx[0], str(4 * j)), (bx[1], str(4 * j + 1))]
+                vals["v"] += [(bx[2], str(4 * j + 2)), (bx[3], str(4 * j + 3))]
             lines: dict[str, list[float]] = {"u": [], "v": []}
             for ax in ("u", "v"):
                 for at, edge, sides in _cluster(vals[ax], SNAP * h):
@@ -1059,7 +1072,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 bx = boxes[j]
                 R = p[2] * w.r if p is not None else w.R
                 room = min(cu - bx[0], bx[1] - cu, cv - bx[2], bx[3] - cv)
-                if room < R + (0.3 if p is not None else 0.5) * h:
+                if room < R + (0.3 if p is not None else 0.4) * h:
                     reason = "a ring too near an edge or another ring for its box"
                 elif p is not None and not all(0.6 * h <= x / (p[0] / 4) <= 1.5 * h
                                                for x in (bx[1] - bx[0], bx[3] - bx[2])):
@@ -1518,10 +1531,6 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
 
     occ = gmsh.model.occ
     for t, ws in sorted(by_face.items()):
-        if tag_of.get(t) in no_polar:
-            # SHMESH-49g: its rings and strips left triangles or poor elements on a first mesh
-            no("its rings and strips came out with triangles or poor elements on a first mesh")
-            continue
         _l, loops = _curve_loops(gmsh, t)
         loops = [[abs(int(c)) for c in cl] for cl in loops]
         hole_loops = [sorted(w.hole) for w in ws]
@@ -1533,6 +1542,10 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
         rim = _round_loop(gmsh, outer)
         if rim is None or len(ws) < 3:
             continue                                    # not a round plate: the rectangular grid's (block_faces)
+        if tag_of.get(t) in no_polar:
+            # SHMESH-49g: its rings and strips left more than POLAR_TRIAS triangles on a first mesh
+            no("its rings and strips left triangles on a first mesh")
+            continue
         C, Ro = rim
         inner = [cl for cl in rest if cl is not outer]
         Ri = 0.0
