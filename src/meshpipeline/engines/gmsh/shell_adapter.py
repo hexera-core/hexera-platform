@@ -878,6 +878,19 @@ def _structured_off():
         ST.WASHERS, ST.MAPPED, ST.BLOCKS, g["PLANE_ALGORITHM"] = saved
 
 
+@contextlib.contextmanager
+def _rings_only():
+    """SHMESH-45g: the guard's middle step - round washers' rings in free faces only (no gridded faces, no square
+    rings, no mapped faces): what a part keeps when the fuller steps fail on it, before it falls back to the free
+    mesh."""
+    saved = (ST.MAPPED, ST.BLOCKS, ST.SQUARES)
+    try:
+        ST.MAPPED = ST.BLOCKS = ST.SQUARES = False
+        yield
+    finally:
+        ST.MAPPED, ST.BLOCKS, ST.SQUARES = saved
+
+
 def _past(applied: dict) -> tuple[int, int]:
     """(invalid, elements past Nastran's own limits) of a mesh, from its record - lower is better."""
     q = applied.get("quality") or {}
@@ -897,12 +910,26 @@ def _guarded_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, l
     try:
         mesh, applied, past_n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
                                            correction=correction, requirements=requirements)
-    except Exception as exc:  # noqa: BLE001 - a washer must never cost the mesh: the plain path is tried
-        logger.info("shell mesh: the structured steps failed (%s); meshed without them", exc)
+    except Exception as exc:  # noqa: BLE001 - a washer must never cost the mesh: fewer steps are tried
+        why = f"{type(exc).__name__}: {str(exc)[:200]}"
+        logger.info("shell mesh: the structured steps failed (%s); tried with round rings only", exc)
+        try:
+            # SHMESH-45g: round rings only first - the part keeps its washers when only the fuller steps fail
+            with _rings_only():
+                mesh, applied, past_n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
+                                                   correction=correction, requirements=requirements)
+            if _past(applied)[0] == 0:
+                applied["quality"].setdefault("structure", {})["guard"] = {
+                    "rule": "SHMESH-45g", "kept": "round rings only",
+                    "why": f"the gridded, square and mapped steps failed ({why})"}
+                mesh.notes.append("Mapped quads could not be made on this part; its round holes keep their washers "
+                                  "(SHMESH-45g).")
+                return mesh, applied, past_n
+        except Exception as exc2:  # noqa: BLE001 - then the free mesh
+            logger.info("shell mesh: round rings only failed too (%s); meshed without them", exc2)
         with _structured_off():
             mesh, applied, past_n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
                                                correction=correction, requirements=requirements)
-        why = f"{type(exc).__name__}: {str(exc)[:200]}"
         applied["quality"].setdefault("structure", {})["guard"] = {"rule": "SHMESH-45", "kept": "free mesh",
                                                                     "why": f"the structured steps failed ({why})"}
         mesh.notes.append("Washers and mapped quads could not be made on this part; it is meshed without them, as "
@@ -1268,8 +1295,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 names=names, before=list(hole_before),
                 across=ST.WASHER_ACROSS_USER if (sizing or {}).get("global_mm") is not None else ST.WASHER_ACROSS,
                 low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"))
-            # SHMESH-45f: square holes take a square ring (mapped below), drawn on their own
-            squares = [w for w in washers if w.corners]
+            # SHMESH-45f: square holes take a square ring (mapped below); never gridded nor polar
+            squares = [w for w in washers if w.corners] if ST.MAPPED and ST.SQUARES else []
+            for w in washers:
+                if w.corners and w not in squares:
+                    w.info.update(washer=False, why="square rings are off on this mesh")
+                    washer_skipped["square rings are off on this mesh"] = (
+                        washer_skipped.get("square rings are off on this mesh", 0) + 1)
             washers = [w for w in washers if not w.corners]
             if ST.BLOCKS and ST.MAPPED and structure != "free":
                 # SHMESH-41: a face whose holes all have washers is cut into a grid of cells, mapped below
@@ -1278,30 +1310,19 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
                     cells_out=grid_cells)
             rings = [w for w in washers if w not in gridded and w not in boxed]
-            drawn = ST.imprint(gmsh, rings, tag_of)
-            if len(drawn) < len(rings):
-                # a ring that would cut another edge of its face: that face keeps no washer
-                lost = [w for w in rings if w not in drawn]
-                washer_skipped["a ring would cut another edge"] = len(lost)
-                for w in lost:
-                    w.info.update(washer=False, why="a ring would cut another edge (a ring of its face did not come "
-                                                    "out one circle on a trial copy)")
-                washers = [w for w in washers if w not in lost]
-            rings = drawn + boxed
-            if squares and ST.MAPPED:
-                sq_drawn, sq_preset = ST.imprint_squares(gmsh, squares, tag_of, cuts=cut_curves)
-                block_preset.update(sq_preset)
-                lost_sq = [w for w in squares if w not in sq_drawn]
-                if lost_sq:
-                    washer_skipped["its square ring would cut another edge"] = len(lost_sq)
-                washers = washers + sq_drawn
-                block_holes |= {c for w in sq_drawn for c in w.hole}
+            drawn = ST.imprint(gmsh, rings + squares, tag_of, cuts=cut_curves, preset=block_preset)
+            lost = [w for w in rings + squares if w not in drawn]
+            for w in lost:
+                reason = str(w.info.get("why") or "its ring was not drawn")
+                washer_skipped[reason] = washer_skipped.get(reason, 0) + 1
+            washers = [w for w in washers + squares if w not in lost]
             for w in gridded:
                 w.info["kind"] = "o-grid in a gridded face"
             for w in boxed:
                 w.info["kind"] = "free box in a gridded face"
             for w in drawn:
-                w.info["kind"] = "ring in a free face"
+                w.info.setdefault("kind", "ring in a free face")
+            rings = [w for w in drawn if not w.corners] + boxed
         washer_holes = {c for w in rings for c in w.hole_after} | block_holes
         # SHMESH-1/2: a constant size per face; SHMESH-3/4/6: curves sized by curvature, grown at GROWTH
         fields = []

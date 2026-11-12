@@ -298,6 +298,24 @@ def test_a_ring_that_cannot_be_built_keeps_gmshs_mesh_there(web, monkeypatch):
     assert len(SS._loops(pairs[0][pairs[1] == 1])) == 7
 
 
+def test_gridded_steps_that_fail_keep_the_round_rings(web, monkeypatch):
+    """SHMESH-45g, the guard's middle step: when only the gridded/mapped steps fail, the part keeps its round washers
+    (the free mesh is the last step, not the first)."""
+    brep, rec = web
+    real = ST.map_faces
+
+    def broken(*a, **k):
+        raise RuntimeError("Unknown OpenCASCADE entity of dimension 2 with tag 4")
+
+    monkeypatch.setattr(ST, "map_faces", broken)
+    monkeypatch.setattr(ST, "block_faces", broken)
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert s["guard"]["kept"] == "round rings only" and "tag 4" in s["guard"]["why"]
+    assert s["washers"] == s["holes"] > 0 and applied["quality"]["valid"]
+    assert real is not ST.map_faces
+
+
 def test_structured_steps_that_fail_fall_back_to_the_free_mesh(web, monkeypatch):
     """SHMESH-45, whole step: any failure of the structured steps gives the mesh "free mesh" gives, said."""
     brep, rec = web
@@ -491,3 +509,53 @@ def test_a_square_hole_gets_a_square_washer(tmp_path):
     # one hole's)
     assert sum(1 for lp in holes if not (set(lp) & tri_nodes)) >= 3
     assert applied["quality"]["structure"]["mapped_faces"] >= 12
+
+
+def test_round_and_square_holes_on_one_face_of_a_several_face_part(tmp_path):
+    """SHMESH-45f/45g, a real column on 9e8fcbed: a face with round AND square holes was cut twice (its rings, then its
+    square rings on the face the first cut had replaced - "Unknown OpenCASCADE entity of dimension 2"), and the guard
+    kept the free mesh for every face. Now each face's washers are drawn in one cut, and a face's failure costs that
+    face only."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Vec
+    from OCP.TopoDS import TopoDS_Compound
+
+    def plate(z: float, squares: list, rounds: list):
+        p = BRepPrimAPI_MakeBox(gp_Pnt(-175, -175, z), 350, 350, 19.05).Shape()
+        for x, y in squares:
+            poly = BRepBuilderAPI_MakePolygon()
+            for j in range(4):
+                a = math.radians(45 + 90 * j)
+                poly.Add(gp_Pnt(x + 9.3 * math.sqrt(2) * math.cos(a), y + 9.3 * math.sqrt(2) * math.sin(a), z - 1))
+            poly.Close()
+            p = BRepAlgoAPI_Cut(p, BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(poly.Wire()).Face(),
+                                                         gp_Vec(0, 0, 21)).Shape()).Shape()
+        for x, y in rounds:
+            cyl = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, z - 1), gp_Dir(0, 0, 1)), 10.5, 21).Shape()
+            p = BRepAlgoAPI_Cut(p, cyl).Shape()
+        return p
+
+    comp = TopoDS_Compound()
+    bb = BRep_Builder()
+    bb.MakeCompound(comp)
+    bb.Add(comp, plate(0.0, [(140, -140), (-140, 140)], [(-140, -140), (140, 140)]))
+    bb.Add(comp, plate(300.0, [(110, 110)], [(-110, -110), (110, -110)]))
+    rec, surf = ms_extract(comp)
+    brep = tmp_path / "two.brep"
+    BRepTools.Write_s(surf, str(brep))
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert "guard" not in s, s.get("guard")
+    assert s["washers"] == 7 and s["no_washer"] == {}, s["hole_list"]
+    assert sum(1 for h in s["hole_list"] if h.get("shape") == "square") == 3
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+
+
+def ms_extract(shape):
+    from meshpipeline.cad import midsurface as ms
+
+    return ms.extract(shape, mm_per_unit=1.0)

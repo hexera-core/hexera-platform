@@ -237,85 +237,39 @@ def _square_plan(gmsh, curves: list[int], face_mm: float, mm: float, hole_size, 
     return w
 
 
-def imprint_squares(gmsh, washers: list[Washer], tag_of: dict[int, int],
-                    cuts: set[int] | None = None) -> tuple[list[Washer], dict[int, int]]:
-    """SHMESH-45f: each square washer's ring drawn on its face (_frame_points), tried on a copy first: the strips and
-    the corner cells are four-sided, so map_faces maps them - a hole side and the ring side beside it carry the side's
-    count, every short line one (the row). Returns (the washers drawn, {curve: count}); the ring's own lines go into
-    `cuts` (no CAD edge: their nodes relax in the face's plane)."""
-    occ = gmsh.model.occ
-    made: list[Washer] = []
-    preset: dict[int, int] = {}
-    by_face: dict[int, list[Washer]] = {}
-    for w in washers:
-        by_face.setdefault(w.face, []).append(w)
+def _square_presets(gmsh, w: Washer, curves: list[int], preset: dict[int, int], cuts: set[int] | None) -> None:
+    """SHMESH-45f: the counts of a square washer's curves after its face is cut: a hole side and the strip's outer
+    side its count (plus the corner's row), every strip end the row; the ring's own lines go into `cuts`."""
+    Q, ext = _frame_points(w)
+    P = w.corners
+    tol = 1e-6 * max(1.0, float(w.R))
+    width = w.R - w.r
+    mids = [0.5 * (P[i] + P[(i + 1) % 4]) for i in range(4)]
 
-    def tools(ws: list[Washer]) -> list[tuple[int, int]]:
-        out = []
-        for w in ws:
-            Q, ext = _frame_points(w)
-            qp = [occ.addPoint(*[float(x) for x in q]) for q in Q]
-            for i in range(4):
-                out.append((1, occ.addLine(qp[i], qp[(i + 1) % 4])))
-            for p0, p1 in ext:
-                out.append((1, occ.addLine(occ.addPoint(*[float(x) for x in p0]), occ.addPoint(*[float(x) for x in p1]))))
-        return out
+    def on_seg(x, p0, p1) -> bool:
+        d_ = p1 - p0
+        tt = float((x - p0) @ d_) / max(float(d_ @ d_), 1e-300)
+        return -1e-9 <= tt <= 1 + 1e-9 and float(np.linalg.norm(p0 + tt * d_ - x)) <= tol
 
-    for t, ws in sorted(by_face.items()):
-        copy = occ.copy([(2, t)])
-        _o, cmap = occ.fragment(copy, tools(ws))
-        occ.synchronize()
-        cells = [x for d, x in cmap[0] if d == 2]
-        ok = len(cells) == 1 + 4 * len(ws)
-        occ.remove([(2, x) for x in cells], recursive=True)
-        occ.synchronize()
-        _remove_loose(gmsh, {c for got in cmap[1:] for d, c in got if d == 1})
-        if not ok:
-            for w in ws:
-                w.info.update(washer=False, why="its square ring would cut another edge")
+    for c in curves:
+        a_, b_ = _samples(gmsh, c, 1)
+        ln = float(np.linalg.norm(b_ - a_))
+        hole_side = next((i for i in range(4) if on_seg(a_, P[i], P[(i + 1) % 4])
+                          and on_seg(b_, P[i], P[(i + 1) % 4])), None)
+        if hole_side is not None:
+            preset[c] = w.side_counts[hole_side]
             continue
-        _o, omap = occ.fragment([(2, t)], tools(ws))
-        occ.synchronize()
-        k = tag_of.pop(t)
-        new = [x for d, x in omap[0] if d == 2]
-        for x in new:
-            tag_of[x] = k
-        _remove_loose(gmsh, {c for got in omap[1:] for d, c in got if d == 1})
-        curves = sorted({abs(int(c)) for x in new for _d, c in gmsh.model.getBoundary([(2, x)], oriented=False)})
-        for w in ws:
-            Q, ext = _frame_points(w)
-            P = w.corners
-            tol = 1e-6 * max(1.0, float(w.R))
-            width = w.R - w.r
-            mids = [0.5 * (P[i] + P[(i + 1) % 4]) for i in range(4)]
-
-            def on_seg(x, p0, p1, tol=tol) -> bool:
-                d_ = p1 - p0
-                tt = float((x - p0) @ d_) / max(float(d_ @ d_), 1e-300)
-                return -1e-9 <= tt <= 1 + 1e-9 and float(np.linalg.norm(p0 + tt * d_ - x)) <= tol
-
-            for c in curves:
-                a_, b_ = _samples(gmsh, c, 1)
-                ln = float(np.linalg.norm(b_ - a_))
-                hole_side = next((i for i in range(4) if on_seg(a_, P[i], P[(i + 1) % 4])
-                                  and on_seg(b_, P[i], P[(i + 1) % 4])), None)
-                if hole_side is not None:
-                    preset[c] = w.side_counts[hole_side]
-                    continue
-                ring = any(on_seg(a_, Q[i], Q[(i + 1) % 4]) and on_seg(b_, Q[i], Q[(i + 1) % 4]) for i in range(4))
-                short = any(on_seg(a_, p0, p1) and on_seg(b_, p0, p1) for p0, p1 in ext)
-                if not (ring or short):
-                    continue
-                if short or abs(ln - width) <= 0.1 * width:
-                    preset[c] = w.rows                       # a strip's end
-                else:
-                    near = int(np.argmin([float(np.linalg.norm(0.5 * (a_ + b_) - m)) for m in mids]))
-                    preset[c] = w.side_counts[near] + w.rows  # a strip's outer side: its hole side and the corner
-                if cuts is not None:
-                    cuts.add(c)
-            w.info["kind"] = "square ring in a free face"
-            made.append(w)
-    return made, preset
+        ring = any(on_seg(a_, Q[i], Q[(i + 1) % 4]) and on_seg(b_, Q[i], Q[(i + 1) % 4]) for i in range(4))
+        short = any(on_seg(a_, p0, p1) and on_seg(b_, p0, p1) for p0, p1 in ext)
+        if not (ring or short):
+            continue
+        if short or abs(ln - width) <= 0.1 * width:
+            preset[c] = w.rows
+        else:
+            near = int(np.argmin([float(np.linalg.norm(0.5 * (a_ + b_) - m)) for m in mids]))
+            preset[c] = w.side_counts[near] + w.rows
+        if cuts is not None:
+            cuts.add(c)
 
 
 def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_size, mm: float,
@@ -457,51 +411,103 @@ def _rings_whole(gmsh, t: int, ws: list[Washer], omap) -> bool:
     return True
 
 
-def imprint(gmsh, washers: list[Washer], tag_of: dict[int, int]) -> list[Washer]:
-    """SHMESH-39: each washer's ring drawn on its face (a circle about the hole's centre, starting where the hole's
-    circle starts), the face cut along it; `tag_of` follows (the new surfaces keep the face's sewn face). Edges the face
-    shares keep their tags (the fragment changes only what it cuts), so every junction stays conformal. Tried on a
-    copy of the face first: a face where a ring would come out cut (it touches another edge) keeps no washer.
-    Returns the washers drawn."""
+def imprint(gmsh, washers: list[Washer], tag_of: dict[int, int], cuts: set[int] | None = None,
+            preset: dict[int, int] | None = None) -> list[Washer]:
+    """SHMESH-39/45f: each face's washers drawn on it in ONE cut - a round hole's ring (a circle about its centre,
+    starting where the hole's circle starts), a square hole's four strips - so no washer holds a tag the cut has
+    replaced (two cuts of one face, one for its rings and one for its square rings, left the second with a stale face:
+    "Unknown OpenCASCADE entity of dimension 2"). `tag_of` follows; edges the face shares keep their tags, so every
+    junction stays conformal. Tried on a copy first: a face where a ring would come out cut keeps no washer of that
+    kind (rings, then square rings, tried alone). SHMESH-45g: a face that fails in any way after that keeps the washers
+    drawn so far and loses only its own (logged, and the record says why). A square ring's counts go into `preset`,
+    its lines into `cuts`. Returns the washers drawn."""
     by_face: dict[int, list[Washer]] = {}
     for w in washers:
         by_face.setdefault(w.face, []).append(w)
     kept: list[Washer] = []
     occ = gmsh.model.occ
+    if preset is None:
+        preset = {}
 
-    def circles(ws: list[Washer]) -> list[tuple[int, int]]:
-        return [(1, occ.addCircle(*[float(x) for x in w.centre], float(w.R), zAxis=[float(x) for x in w.normal],
-                                  xAxis=[float(x) for x in w.xaxis])) for w in ws]
+    def tools(ws: list[Washer]) -> list[tuple[int, int]]:
+        out = [(1, occ.addCircle(*[float(x) for x in w.centre], float(w.R), zAxis=[float(x) for x in w.normal],
+                                 xAxis=[float(x) for x in w.xaxis])) for w in ws if not w.corners]
+        for w in ws:
+            if w.corners:
+                Q, ext = _frame_points(w)
+                qp = [occ.addPoint(*[float(x) for x in q]) for q in Q]
+                for i in range(4):
+                    out.append((1, occ.addLine(qp[i], qp[(i + 1) % 4])))
+                for p0, p1 in ext:
+                    out.append((1, occ.addLine(occ.addPoint(*[float(x) for x in p0]),
+                                               occ.addPoint(*[float(x) for x in p1]))))
+        return out
 
-    for t, ws in sorted(by_face.items()):
+    def trial(t: int, ws: list[Washer]) -> bool:
+        rounds = [w for w in ws if not w.corners]
         copy = occ.copy([(2, t)])
-        _o, cmap = occ.fragment(copy, circles(ws))
+        _o, cmap = occ.fragment(copy, tools(ws))
         occ.synchronize()
-        whole = _rings_whole(gmsh, t, ws, cmap)
-        occ.remove([(2, s) for d, s in cmap[0] if d == 2], recursive=True)
+        cells = [x for d, x in cmap[0] if d == 2]
+        ok = len(cells) == 1 + len(rounds) + 4 * (len(ws) - len(rounds)) and (
+            not rounds or _rings_whole(gmsh, t, rounds, cmap))
+        occ.remove([(2, x) for x in cells], recursive=True)
         occ.synchronize()
         _remove_loose(gmsh, {c for got in cmap[1:] for d, c in got if d == 1})
-        if not whole:
+        return ok
+
+    for t, ws in sorted(by_face.items()):
+        if t not in tag_of:
+            for w in ws:
+                w.info.update(washer=False, why="its face was replaced before its ring was drawn")
             continue
-        _out, omap = occ.fragment([(2, t)], circles(ws))
-        occ.synchronize()
-        k = tag_of.pop(t)
-        new = [s for d, s in omap[0] if d == 2]
-        for s in new:
-            tag_of[s] = k
-        for w, got in zip(ws, omap[1:], strict=True):
-            w.ring = [c for d, c in got if d == 1][0]
-            for s in new:
-                _l, loops = occ.getCurveLoops(s)
-                loops = [[abs(int(c)) for c in cl] for cl in loops]
-                if len(loops) == 2 and [w.ring] in loops:
-                    other = [cl for cl in loops if cl != [w.ring]][0]
-                    if _on_hole(gmsh, w, other):
-                        w.annulus = s
-                        w.hole_after = other
-            if not w.annulus:
-                raise ValueError("a washer's ring did not close round its hole")
-            kept.append(w)
+        try:
+            use = ws
+            if not trial(t, use):
+                rounds = [w for w in ws if not w.corners]
+                squares = [w for w in ws if w.corners]
+                use = rounds if rounds and trial(t, rounds) else (squares if squares and trial(t, squares) else [])
+            for w in ws:
+                if w not in use:
+                    w.info.update(washer=False, why="its ring would cut another edge of its face" if not w.corners
+                                  else "its square ring would cut another edge of its face")
+            if not use:
+                continue
+            _out, omap = occ.fragment([(2, t)], tools(use))
+            occ.synchronize()
+            k = tag_of.pop(t)
+            new = [x for d, x in omap[0] if d == 2]
+            for x in new:
+                tag_of[x] = k
+            _remove_loose(gmsh, {c for got in omap[1 + sum(1 for w in use if not w.corners):]
+                                 for d, c in got if d == 1})
+            curves = sorted({abs(int(c)) for x in new for _d, c in gmsh.model.getBoundary([(2, x)], oriented=False)})
+            for w, got in zip([w for w in use if not w.corners], omap[1:], strict=False):
+                w.ring = [c for d, c in got if d == 1][0]
+                for x in new:
+                    _l, loops = occ.getCurveLoops(x)
+                    loops = [[abs(int(c)) for c in cl] for cl in loops]
+                    if len(loops) == 2 and [w.ring] in loops:
+                        other = [cl for cl in loops if cl != [w.ring]][0]
+                        if _on_hole(gmsh, w, other):
+                            w.annulus = x
+                            w.hole_after = other
+                if w.annulus:
+                    kept.append(w)
+                else:
+                    w.info.update(washer=False, why="its ring did not close round its hole")
+            for w in use:
+                if w.corners:
+                    _square_presets(gmsh, w, curves, preset, cuts)
+                    w.info["kind"] = "square ring in a free face"
+                    kept.append(w)
+        except Exception as exc:  # noqa: BLE001 - SHMESH-45g: one face's washers never cost the others
+            import logging
+
+            logging.getLogger(__name__).info("shell mesh: the washers of one face were not drawn (%s)", exc)
+            for w in ws:
+                if w not in kept:
+                    w.info.update(washer=False, why=f"its face's washers failed ({type(exc).__name__}: {exc})"[:300])
     return kept
 
 
@@ -943,193 +949,202 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
         why[reason] = why.get(reason, 0) + 1
 
     for t, ws in sorted(by_face.items()):
-        h_mm = size_mm[t]
-        h = h_mm / mm
-        _l, loops = gmsh.model.occ.getCurveLoops(t)
-        loops = [[abs(int(c)) for c in cl] for cl in loops]
-        hole_loops = [sorted(w.hole) for w in ws]
-        rest = [cl for cl in loops if sorted(cl) not in hole_loops]
-        if len(rest) != 1:
-            no("a hole without a washer in the face")
-            continue
-        outer = rest[0]
-        fr = _frame(gmsh, t, outer)
-        if fr is None:
-            no("no straight edge to line up with")
-            continue
-        o, u, v = fr
+        # SHMESH-45g: a face whose grid fails in any way loses only its own grid (its washers go on to the free
+        # rings, or to none where the face was already cut); the other faces keep theirs
+        try:
+            h_mm = size_mm[t]
+            h = h_mm / mm
+            _l, loops = gmsh.model.occ.getCurveLoops(t)
+            loops = [[abs(int(c)) for c in cl] for cl in loops]
+            hole_loops = [sorted(w.hole) for w in ws]
+            rest = [cl for cl in loops if sorted(cl) not in hole_loops]
+            if len(rest) != 1:
+                no("a hole without a washer in the face")
+                continue
+            outer = rest[0]
+            fr = _frame(gmsh, t, outer)
+            if fr is None:
+                no("no straight edge to line up with")
+                continue
+            o, u, v = fr
 
-        def uv(p: np.ndarray, o=o, u=u, v=v) -> tuple[float, float]:
-            return float((p - o) @ u), float((p - o) @ v)
+            def uv(p: np.ndarray, o=o, u=u, v=v) -> tuple[float, float]:
+                return float((p - o) @ u), float((p - o) @ v)
 
-        plans = [_boxed(w.r * mm, hole_size(w.r * mm, w.owner), h_mm, low_mm, high_mm) for w in ws]
-        vals: dict[str, list[tuple[float, str]]] = {"u": [], "v": []}
-        lo = np.array([math.inf, math.inf])
-        hi = -lo
-        cos_par = math.cos(math.radians(PARALLEL_DEG))
-        for c in outer:
-            pts = _samples(gmsh, c, 16)
-            q = np.array([uv(p) for p in pts])
-            lo, hi = np.minimum(lo, q.min(axis=0)), np.maximum(hi, q.max(axis=0))
-            if gmsh.model.getType(1, c) == "Line":
-                d = pts[-1] - pts[0]
-                d = d / max(float(np.linalg.norm(d)), 1e-300)
-                if abs(float(d @ u)) >= cos_par:
-                    vals["v"].append((float(q[:, 1].mean()), "edge"))
-                if abs(float(d @ v)) >= cos_par:
-                    vals["u"].append((float(q[:, 0].mean()), "edge"))
-        boxes = []
-        for j, (w, p) in enumerate(zip(ws, plans, strict=True)):
-            cu, cv = uv(w.centre)
-            b = p[3] / mm if p is not None else w.R + BOX_FREE * h
-            boxes.append([cu - b, cu + b, cv - b, cv + b])
-            vals["u"] += [(cu - b, str(4 * j)), (cu + b, str(4 * j + 1))]
-            vals["v"] += [(cv - b, str(4 * j + 2)), (cv + b, str(4 * j + 3))]
-        lines: dict[str, list[float]] = {"u": [], "v": []}
-        for ax in ("u", "v"):
-            for at, edge, sides in _cluster(vals[ax], SNAP * h):
-                for sd in sides:
-                    boxes[sd // 4][sd % 4] = at
-                if not edge and sides:
-                    lines[ax].append(at)
-        reason = ""
-        eps = 1e-6 * h
-        for j, (w, p) in enumerate(zip(ws, plans, strict=True)):
-            cu, cv = uv(w.centre)
-            bx = boxes[j]
-            R = p[2] * w.r if p is not None else w.R
-            room = min(cu - bx[0], bx[1] - cu, cv - bx[2], bx[3] - cv)
-            if room < R + (0.3 if p is not None else 0.5) * h:
-                reason = "a ring too near an edge or another ring for its box"
-            elif p is not None and not all(0.6 * h <= x / (p[0] / 4) <= 1.5 * h
-                                           for x in (bx[1] - bx[0], bx[3] - bx[2])):
-                reason = "a box drawn on to an edge comes out too long or short for its ring"
-            elif any(bx[0] + eps < x < bx[1] - eps for x in lines["u"]) or any(
-                    bx[2] + eps < y < bx[3] - eps for y in lines["v"]):
-                reason = "the holes do not line up (a line would cross a box)"
-            if reason:
-                break
-        if reason:
-            no(reason)
-            continue
-        pad = 0.05 * float((hi - lo).max())
-        n_face = np.cross(u, v)
-        corners_of = [[o + bx[0] * u + bx[2] * v, o + bx[1] * u + bx[2] * v, o + bx[1] * u + bx[3] * v,
-                       o + bx[0] * u + bx[3] * v] for bx in boxes]
-        # each O-grid's quarters start at its first box corner's direction
-        starts = {}
-        for w, p, cs in zip(ws, plans, corners_of, strict=True):
-            if p is not None:
-                d0 = cs[0] - w.centre
-                starts[id(w)] = d0 / max(float(np.linalg.norm(d0)), 1e-300)
-
-        def tools(o=o, u=u, v=v, lo=lo, hi=hi, pad=pad, lines=lines, ws=ws, plans=plans, corners_of=corners_of,
-                  starts=starts, n_face=n_face) -> list[tuple[int, int]]:
-            out = []
-            occ = gmsh.model.occ
-            for x in lines["u"]:
-                a, b = o + x * u + (lo[1] - pad) * v, o + x * u + (hi[1] + pad) * v
-                out.append((1, occ.addLine(occ.addPoint(*a), occ.addPoint(*b))))
-            for y in lines["v"]:
-                a, b = o + (lo[0] - pad) * u + y * v, o + (hi[0] + pad) * u + y * v
-                out.append((1, occ.addLine(occ.addPoint(*a), occ.addPoint(*b))))
-            for w, p, cs in zip(ws, plans, corners_of, strict=True):
+            plans = [_boxed(w.r * mm, hole_size(w.r * mm, w.owner), h_mm, low_mm, high_mm) for w in ws]
+            vals: dict[str, list[tuple[float, str]]] = {"u": [], "v": []}
+            lo = np.array([math.inf, math.inf])
+            hi = -lo
+            cos_par = math.cos(math.radians(PARALLEL_DEG))
+            for c in outer:
+                pts = _samples(gmsh, c, 16)
+                q = np.array([uv(p) for p in pts])
+                lo, hi = np.minimum(lo, q.min(axis=0)), np.maximum(hi, q.max(axis=0))
+                if gmsh.model.getType(1, c) == "Line":
+                    d = pts[-1] - pts[0]
+                    d = d / max(float(np.linalg.norm(d)), 1e-300)
+                    if abs(float(d @ u)) >= cos_par:
+                        vals["v"].append((float(q[:, 1].mean()), "edge"))
+                    if abs(float(d @ v)) >= cos_par:
+                        vals["u"].append((float(q[:, 0].mean()), "edge"))
+            boxes = []
+            for j, (w, p) in enumerate(zip(ws, plans, strict=True)):
+                cu, cv = uv(w.centre)
+                b = p[3] / mm if p is not None else w.R + BOX_FREE * h
+                boxes.append([cu - b, cu + b, cv - b, cv + b])
+                vals["u"] += [(cu - b, str(4 * j)), (cu + b, str(4 * j + 1))]
+                vals["v"] += [(cv - b, str(4 * j + 2)), (cv + b, str(4 * j + 3))]
+            lines: dict[str, list[float]] = {"u": [], "v": []}
+            for ax in ("u", "v"):
+                for at, edge, sides in _cluster(vals[ax], SNAP * h):
+                    for sd in sides:
+                        boxes[sd // 4][sd % 4] = at
+                    if not edge and sides:
+                        lines[ax].append(at)
+            reason = ""
+            eps = 1e-6 * h
+            for j, (w, p) in enumerate(zip(ws, plans, strict=True)):
+                cu, cv = uv(w.centre)
+                bx = boxes[j]
                 R = p[2] * w.r if p is not None else w.R
-                xa = starts[id(w)] if p is not None else w.xaxis
-                out.append((1, occ.addCircle(*[float(x) for x in w.centre], float(R),
-                                             zAxis=[float(x) for x in n_face], xAxis=[float(x) for x in xa])))
+                room = min(cu - bx[0], bx[1] - cu, cv - bx[2], bx[3] - cv)
+                if room < R + (0.3 if p is not None else 0.5) * h:
+                    reason = "a ring too near an edge or another ring for its box"
+                elif p is not None and not all(0.6 * h <= x / (p[0] / 4) <= 1.5 * h
+                                               for x in (bx[1] - bx[0], bx[3] - bx[2])):
+                    reason = "a box drawn on to an edge comes out too long or short for its ring"
+                elif any(bx[0] + eps < x < bx[1] - eps for x in lines["u"]) or any(
+                        bx[2] + eps < y < bx[3] - eps for y in lines["v"]):
+                    reason = "the holes do not line up (a line would cross a box)"
+                if reason:
+                    break
+            if reason:
+                no(reason)
+                continue
+            pad = 0.05 * float((hi - lo).max())
+            n_face = np.cross(u, v)
+            corners_of = [[o + bx[0] * u + bx[2] * v, o + bx[1] * u + bx[2] * v, o + bx[1] * u + bx[3] * v,
+                           o + bx[0] * u + bx[3] * v] for bx in boxes]
+            # each O-grid's quarters start at its first box corner's direction
+            starts = {}
+            for w, p, cs in zip(ws, plans, corners_of, strict=True):
                 if p is not None:
-                    for cp in cs:
-                        out.append((1, occ.addLine(occ.addPoint(*cp), occ.addPoint(*[float(x) for x in w.centre]))))
-            return out
+                    d0 = cs[0] - w.centre
+                    starts[id(w)] = d0 / max(float(np.linalg.norm(d0)), 1e-300)
 
-        # tried on a copy of the face first: no edge of a cell under CELL_MIN face sizes
-        shared = [c for cl in loops for c in cl if len(gmsh.model.getAdjacencies(1, c)[0]) > 1]
-        copy = gmsh.model.occ.copy([(2, t)])
-        _o, cmap = gmsh.model.occ.fragment(copy, tools())
-        gmsh.model.occ.synchronize()
-        cells = [s for d, s in cmap[0] if d == 2]
-        cut_curves = {c for got in cmap[1:] for d, c in got if d == 1}
-        small = any(min(float(gmsh.model.occ.getMass(1, abs(c))) for _d, c in
-                        gmsh.model.getBoundary([(2, s)], oriented=False)) < CELL_MIN * h for s in cells)
-        # and every ring came out as drawn: one circle round a free box's hole, four quarters round an O-grid's
-        trial = sorted({abs(int(c)) for s in cells for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
-        # and no line cuts an edge the face shares with another (the other face would keep it whole: a crack)
-        if shared:
-            from scipy.spatial import cKDTree
+            def tools(o=o, u=u, v=v, lo=lo, hi=hi, pad=pad, lines=lines, ws=ws, plans=plans, corners_of=corners_of,
+                      starts=starts, n_face=n_face) -> list[tuple[int, int]]:
+                out = []
+                occ = gmsh.model.occ
+                for x in lines["u"]:
+                    a, b = o + x * u + (lo[1] - pad) * v, o + x * u + (hi[1] + pad) * v
+                    out.append((1, occ.addLine(occ.addPoint(*a), occ.addPoint(*b))))
+                for y in lines["v"]:
+                    a, b = o + (lo[0] - pad) * u + y * v, o + (hi[0] + pad) * u + y * v
+                    out.append((1, occ.addLine(occ.addPoint(*a), occ.addPoint(*b))))
+                for w, p, cs in zip(ws, plans, corners_of, strict=True):
+                    R = p[2] * w.r if p is not None else w.R
+                    xa = starts[id(w)] if p is not None else w.xaxis
+                    out.append((1, occ.addCircle(*[float(x) for x in w.centre], float(R),
+                                                 zAxis=[float(x) for x in n_face], xAxis=[float(x) for x in xa])))
+                    if p is not None:
+                        for cp in cs:
+                            out.append((1, occ.addLine(occ.addPoint(*cp), occ.addPoint(*[float(x) for x in w.centre]))))
+                return out
 
-            for c in shared:
-                tree = cKDTree(_samples(gmsh, c, 256))
-                full = float(gmsh.model.occ.getMass(1, c))
-                for x in trial:
-                    if tree.query(_samples(gmsh, x, 4))[0].max() <= 1e-3 * h + full / 256 and                             float(gmsh.model.occ.getMass(1, x)) < (1 - 1e-6) * full:
-                        small = True
-        for w, p in zip(ws, plans, strict=True):
-            R = p[2] * w.r if p is not None else w.R
-            on_ring = [c for c in trial if np.all(np.abs(np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1) - R)
-                                                  <= 1e-4 * R)]
-            if len(on_ring) != (4 if p is not None else 1):
-                small = True
-        gmsh.model.occ.remove([(2, s) for s in cells], recursive=True)
-        gmsh.model.occ.synchronize()
-        _remove_loose(gmsh, cut_curves)
-        if small:
-            no("a cell would come out too small, a ring or a shared edge cut")
-            continue
-        edge_pts = np.vstack([_samples(gmsh, c, 64) for cl in loops for c in cl])
-        _o, omap = gmsh.model.occ.fragment([(2, t)], tools())
-        gmsh.model.occ.synchronize()
-        k = tag_of.pop(t)
-        new = [s for d, s in omap[0] if d == 2]
-        for s in new:
-            tag_of[s] = k
-        if cells_out is not None:
-            cells_out.update(new)
-        _remove_loose(gmsh, {c for got in omap[1:] for d, c in got if d == 1})
-        curves = sorted({abs(int(c)) for s in new for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
-        on_circle: set[int] = set()
-        for w, p in zip(ws, plans, strict=True):
-            R = p[2] * w.r if p is not None else w.R
-            tol = 1e-4 * R
-            ring_c: list[int] = []
-            hole_c: list[int] = []
-            for c in curves:
-                d = np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1)
-                if np.all(np.abs(d - w.r) <= CIRCLE_TOL * w.r):
-                    hole_c.append(c)
-                elif np.all(np.abs(d - R) <= tol):
-                    ring_c.append(c)
-                elif p is not None and d.min() >= w.r - tol and d.max() <= R + tol and abs(d[0] - d[-1]) > 0.5 * (R - w.r):
-                    preset[c] = p[1]
-            on_circle |= set(ring_c) | set(hole_c)
-            if p is not None:
-                for c in ring_c:
-                    preset[c] = p[0] // 4
-                holes.update(hole_c)
-                w.n, w.rows, w.R = p[0], p[1], R
-                w.out_mm = 2 * math.pi * R * mm / p[0]
-                ogrid.append(w)
-            else:
-                if len(ring_c) != 1:
-                    raise ValueError("a washer's ring did not come out as one circle")
-                w.ring, w.hole_after = ring_c[0], hole_c
-                for s in new:
-                    _l3, lp = gmsh.model.occ.getCurveLoops(s)
-                    lp = [sorted(abs(int(c)) for c in cl) for cl in lp]
-                    if len(lp) == 2 and [w.ring] in lp and _on_hole(gmsh, w, [c for cl in lp for c in cl if c != w.ring]):
-                        w.annulus = s
-                if not w.annulus:
-                    raise ValueError("a washer's ring did not close round its hole")
-                boxed.append(w)
-        if cuts is not None:
-            from scipy.spatial import cKDTree
+            # tried on a copy of the face first: no edge of a cell under CELL_MIN face sizes
+            shared = [c for cl in loops for c in cl if len(gmsh.model.getAdjacencies(1, c)[0]) > 1]
+            copy = gmsh.model.occ.copy([(2, t)])
+            _o, cmap = gmsh.model.occ.fragment(copy, tools())
+            gmsh.model.occ.synchronize()
+            cells = [s for d, s in cmap[0] if d == 2]
+            cut_curves = {c for got in cmap[1:] for d, c in got if d == 1}
+            small = any(min(float(gmsh.model.occ.getMass(1, abs(c))) for _d, c in
+                            gmsh.model.getBoundary([(2, s)], oriented=False)) < CELL_MIN * h for s in cells)
+            # and every ring came out as drawn: one circle round a free box's hole, four quarters round an O-grid's
+            trial = sorted({abs(int(c)) for s in cells for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
+            # and no line cuts an edge the face shares with another (the other face would keep it whole: a crack)
+            if shared:
+                from scipy.spatial import cKDTree
 
-            tree = cKDTree(edge_pts)
-            for c in curves:
-                if c in on_circle:
-                    continue
-                if tree.query(_samples(gmsh, c, 2)[1])[0] > 1e-3 * h:
-                    cuts.add(c)
+                for c in shared:
+                    tree = cKDTree(_samples(gmsh, c, 256))
+                    full = float(gmsh.model.occ.getMass(1, c))
+                    for x in trial:
+                        if tree.query(_samples(gmsh, x, 4))[0].max() <= 1e-3 * h + full / 256 and                             float(gmsh.model.occ.getMass(1, x)) < (1 - 1e-6) * full:
+                            small = True
+            for w, p in zip(ws, plans, strict=True):
+                R = p[2] * w.r if p is not None else w.R
+                on_ring = [c for c in trial if np.all(np.abs(np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1) - R)
+                                                      <= 1e-4 * R)]
+                if len(on_ring) != (4 if p is not None else 1):
+                    small = True
+            gmsh.model.occ.remove([(2, s) for s in cells], recursive=True)
+            gmsh.model.occ.synchronize()
+            _remove_loose(gmsh, cut_curves)
+            if small:
+                no("a cell would come out too small, a ring or a shared edge cut")
+                continue
+            edge_pts = np.vstack([_samples(gmsh, c, 64) for cl in loops for c in cl])
+            _o, omap = gmsh.model.occ.fragment([(2, t)], tools())
+            gmsh.model.occ.synchronize()
+            k = tag_of.pop(t)
+            new = [s for d, s in omap[0] if d == 2]
+            for s in new:
+                tag_of[s] = k
+            if cells_out is not None:
+                cells_out.update(new)
+            _remove_loose(gmsh, {c for got in omap[1:] for d, c in got if d == 1})
+            curves = sorted({abs(int(c)) for s in new for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
+            on_circle: set[int] = set()
+            for w, p in zip(ws, plans, strict=True):
+                R = p[2] * w.r if p is not None else w.R
+                tol = 1e-4 * R
+                ring_c: list[int] = []
+                hole_c: list[int] = []
+                for c in curves:
+                    d = np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1)
+                    if np.all(np.abs(d - w.r) <= CIRCLE_TOL * w.r):
+                        hole_c.append(c)
+                    elif np.all(np.abs(d - R) <= tol):
+                        ring_c.append(c)
+                    elif p is not None and d.min() >= w.r - tol and d.max() <= R + tol and abs(d[0] - d[-1]) > 0.5 * (R - w.r):
+                        preset[c] = p[1]
+                on_circle |= set(ring_c) | set(hole_c)
+                if p is not None:
+                    for c in ring_c:
+                        preset[c] = p[0] // 4
+                    holes.update(hole_c)
+                    w.n, w.rows, w.R = p[0], p[1], R
+                    w.out_mm = 2 * math.pi * R * mm / p[0]
+                    ogrid.append(w)
+                else:
+                    if len(ring_c) != 1:
+                        raise ValueError("a washer's ring did not come out as one circle")
+                    w.ring, w.hole_after = ring_c[0], hole_c
+                    for s in new:
+                        _l3, lp = gmsh.model.occ.getCurveLoops(s)
+                        lp = [sorted(abs(int(c)) for c in cl) for cl in lp]
+                        if len(lp) == 2 and [w.ring] in lp and _on_hole(gmsh, w, [c for cl in lp for c in cl if c != w.ring]):
+                            w.annulus = s
+                    if not w.annulus:
+                        raise ValueError("a washer's ring did not close round its hole")
+                    boxed.append(w)
+            if cuts is not None:
+                from scipy.spatial import cKDTree
+
+                tree = cKDTree(edge_pts)
+                for c in curves:
+                    if c in on_circle:
+                        continue
+                    if tree.query(_samples(gmsh, c, 2)[1])[0] > 1e-3 * h:
+                        cuts.add(c)
+        except Exception as exc:  # noqa: BLE001
+            ogrid[:] = [w for w in ogrid if w not in ws]
+            boxed[:] = [w for w in boxed if w not in ws]
+            for w in ws:
+                w.ring, w.annulus, w.hole_after = 0, 0, []
+            no(f"its grid failed ({type(exc).__name__}: {exc})"[:200])
     return ogrid, boxed, preset, holes, why
 
 
@@ -1137,6 +1152,9 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
 #: unevenly, left the washer's hole nodes out of step with its ring's: "a washer's hole and ring nodes do not face each
 #: other"), starting on the face frame's diagonal where the face has a straight edge
 RESEAT = True
+
+#: SHMESH-45f: four-sided holes take a square ring (off in the guard's round-rings-only step)
+SQUARES = True
 
 
 #: SHMESH-45d: pieces of a hole are one circle when every point of them lies within this share of the radius of one
@@ -1318,5 +1336,4 @@ def reseat_holes(brep, out) -> tuple[int, list]:
     return done, redrawn
 
 
-__all__ = ["WASHERS", "MAPPED", "Washer", "plan_washers", "imprint", "set_counts", "ring_mesh", "map_faces", "block_faces", "reseat_holes",
-           "imprint_squares"]
+__all__ = ["WASHERS", "MAPPED", "Washer", "plan_washers", "imprint", "set_counts", "ring_mesh", "map_faces", "block_faces", "reseat_holes"]
