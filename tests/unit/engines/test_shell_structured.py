@@ -797,7 +797,8 @@ def test_a_box_side_near_a_notchs_tip_moves_clear(tmp_path, monkeypatch, clear):
     from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Vec
 
     monkeypatch.setattr(ST, "PIN_CLEAR", clear)
-    monkeypatch.setattr(ST, "TRIM_SHORT", False)        # (48p alone: 48r would drop the short piece)
+    monkeypatch.setattr(ST, "TRIM_SHORT", False)        # (48p alone: 48r would drop the short piece,
+    monkeypatch.setattr(ST, "CELL_HARD", None)          # and 48t would grid it and judge it after)
     A, B, T_ = 457.0, 406.0, 19.0
     shape = BRepPrimAPI_MakeBox(gp_Pnt(-A / 2, -B / 2, 0), A, B, T_).Shape()
     for x in (-114.0, 0.0, 114.0):
@@ -824,8 +825,8 @@ def test_a_box_side_near_a_notchs_tip_moves_clear(tmp_path, monkeypatch, clear):
     assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
 
 
-@pytest.mark.parametrize("trim", [False, True])
-def test_a_short_piece_of_a_line_past_a_box_corner_is_dropped(tmp_path, monkeypatch, trim):
+@pytest.mark.parametrize(("trim", "hard"), [(False, None), (True, None), (False, 0.5)])
+def test_a_short_piece_of_a_line_past_a_box_corner_is_dropped(tmp_path, monkeypatch, trim, hard):
     """SHMESH-48r, a real top plate: the box's bottom line ran on past the box's corner 2.96 mm to the end of a slanted
     outline piece ("a cell edge 2.96 mm, under 4 mm") and neither line could move (48p): the plate was left free. The
     piece is now dropped (the line stops at the box corner in a T, the cells beside it become one) and the plate is
@@ -838,6 +839,7 @@ def test_a_short_piece_of_a_line_past_a_box_corner_is_dropped(tmp_path, monkeypa
 
     monkeypatch.setattr(ST, "PIN_CLEAR", False)
     monkeypatch.setattr(ST, "TRIM_SHORT", trim)
+    monkeypatch.setattr(ST, "CELL_HARD", hard)          # (SHMESH-48t: or gridded and judged once meshed)
     A, B, T_ = 457.0, 406.0, 19.0
     shape = BRepPrimAPI_MakeBox(gp_Pnt(-A / 2, -B / 2, 0), A, B, T_).Shape()
     for x in (-114.0, 0.0, 114.0):
@@ -856,7 +858,7 @@ def test_a_short_piece_of_a_line_past_a_box_corner_is_dropped(tmp_path, monkeypa
     BRepTools.Write_s(surf, str(brep))
     _mesh_, applied = _mesh(brep, rec, _criteria())
     s = applied["quality"]["structure"]
-    if not trim:
+    if not trim and hard is None:
         assert [k for k in (s.get("not_gridded") or {}) if "a cell edge" in k], s.get("not_gridded")
         return
     assert not s.get("not_gridded"), s.get("not_gridded")

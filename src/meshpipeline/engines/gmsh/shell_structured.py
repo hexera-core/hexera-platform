@@ -936,6 +936,9 @@ PIN_CLEAR = True
 #: it become one; the face is tried again (up to TRIM_ROUNDS pieces) and refused only when that does not mend it
 TRIM_SHORT = True
 TRIM_ROUNDS = 4
+#: SHMESH-48t: the trial refuses a face only for a cell edge under CELL_HARD of CELL_MIN (one that clearly cannot
+#: mesh); between that and CELL_MIN the face is gridded and judged on its elements once meshed (48f). None: as before
+CELL_HARD: float | None = 0.5
 #: ... straight edges within PARALLEL_DEG of the face's frame count as running along it
 PARALLEL_DEG = 1.0
 #: SHMESH-48q: a free box's cell between its ring (n elements round) and its box is our own one row of quads, two to
@@ -956,6 +959,10 @@ BAND_TWO = False
 BAND_SMOOTH = 4
 #: ... and the sides ask the grid for n/4 + 2 (off: the band takes the counts the grid gives)
 BAND_WISH = True
+#: SHMESH-48s: a side 2 segments over n/4 + 2 takes them in a corner block (4 quads, 2 new nodes) at one of its ends.
+#: OFF: taking both extra segments at one corner pulls the ring's quarter half a side off its middle (webreal: quads
+#: to 33 / 150 degrees, Jacobian 0.56) - every such box was refused; the step belongs in the middle or in the grid
+BAND_STEP = False
 
 
 def _boxed(r_mm: float, hole_mm: float, h_mm: float, low_mm: float | None = None,
@@ -1212,6 +1219,20 @@ def box_band(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float, lim
     gaps = [(cidx[(k + 1) % 4] - cidx[k]) % N for k in range(4)]
     # each side's extra segments over n/4 + 2, in pairs: one kite each in a row inside (two rows, BAND_TWO)
     fans = [(g - m - 2) // 2 for g in gaps]
+    # SHMESH-48s: a side 2 segments over (its count held by the grid beside it) takes them at one of its corners: that
+    # corner's block takes 3 of the side's segments (and 1 of the other side's) in 4 quads round 2 new nodes - the
+    # two-to-one step on that side alone. big[c] = the side (c, or c - 1) whose 3 segments corner c takes.
+    big: dict[int, int] = {}
+    if BAND_STEP and any(fans) and all(f in (0, 1) for f in fans):
+        for s in range(4):
+            if fans[s]:
+                c_ = s if s not in big else (s + 1) % 4
+                if c_ in big:
+                    big = {}
+                    break
+                big[c_] = s
+        else:
+            fans = [0, 0, 0, 0]
     if any(g - m - 2 < 0 or (g - m - 2) % 2 for g in gaps) or any(f > 0 for f in fans) and (
             not BAND_TWO or any(f > 2 for f in fans)):
         raise ValueError(f"its box sides carry {gaps} segments, not {m + 2} (or {m + 2} + 2 a kite) each")
@@ -1227,11 +1248,32 @@ def box_band(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float, lim
     new: list[np.ndarray] = []
     base = len(xyz)
     if not any(fans):
-        # one row: the ring's quarter to the side's middle, a kite at each corner (its tip the corner)
+        # one row: the ring's quarter to the side's middle, a kite at each corner (its tip the corner); a corner in
+        # `big` a block of 4 quads round 2 new nodes taking 3 segments of its big side (SHMESH-48s)
+        def add1(p_: np.ndarray) -> int:
+            new.append(p_)
+            return base + len(new) - 1
+
+        start = [3 if big.get(k) == k else 1 for k in range(4)]                    # segments corner k takes of side k
+        end = [3 if big.get((k + 1) % 4) == k else 1 for k in range(4)]            # ... corner k + 1 takes of side k
         for k in range(4):
-            quads.append([arcs[k][0], sides[k][1], sides[k][0], sides[k - 1][-2]])
+            apex, C = arcs[k][0], sides[k][0]
+            if k not in big:
+                quads.append([apex, sides[k][1], C, sides[k - 1][-2]])
+            else:
+                if big[k] == k:
+                    one, three = sides[k - 1][-2], sides[k][1:4]                    # (prev side 1, this side 3)
+                else:
+                    one, three = sides[k][1], sides[k - 1][-2:-5:-1]               # (this side 1, prev side 3)
+                X = add1(xyz[one] + xyz[three[0]] - xyz[C])
+                Y = add1(0.25 * (xyz[one] + xyz[three[0]] - xyz[C] + xyz[three[1]] + xyz[three[2]] + xyz[apex]))
+                quads += [[one, C, three[0], X], [X, three[0], three[1], Y], [Y, three[1], three[2], apex],
+                          [apex, one, X, Y]]
             for j in range(m):
-                quads.append([arcs[k][j], arcs[k][j + 1], sides[k][j + 2], sides[k][j + 1]])
+                t0 = start[k]
+                quads.append([arcs[k][j], arcs[k][j + 1], sides[k][t0 + j + 1], sides[k][t0 + j]])
+            if start[k] + m + end[k] != gaps[k]:
+                raise ValueError("its box side's segments did not add up")
     else:
         # two rows: an inner row of new nodes (a node on each corner's diagonal, then each side's), the ring to it
         # with a kite at a ring node for each pair of extra segments, it to the box with a kite at each corner
@@ -1284,6 +1326,13 @@ def box_band(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float, lim
             for v_ in range(base, len(xyz)):
                 m_ = xyz[sorted(nb[v_])].mean(axis=0)
                 xyz[v_] = m_ - float((m_ - c) @ nrm) * nrm
+    if big:
+        # (the corner blocks' quads wound as the ring's quarter quads are)
+        nrm_ = w.normal / max(float(np.linalg.norm(w.normal)), 1e-300)
+        sgn = np.cross(xyz[Q[:, 1]] - xyz[Q[:, 0]], xyz[Q[:, 3]] - xyz[Q[:, 0]]) @ nrm_
+        ref = np.sign(sgn[[i for i, q in enumerate(quads) if q[0] in ring and q[1] in ring][0]])
+        flip = np.sign(sgn) != ref
+        Q[flip] = Q[flip][:, ::-1]
     meas = SQ.quad_measures(xyz, Q, extra=True)
     if SQ._quad_past(meas).any():
         raise ValueError("a quad past the solver's own limits")
@@ -2030,6 +2079,12 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                                 for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)), default=(math.inf, 0))
                 small = shortest[0] < CELL_MIN * h
                 cut_piece = short_piece(shortest[1]) if small and TRIM_SHORT else None
+                # (48t: only a straight edge along the frame - a piece of a line or of the outline there - is left for
+                # the face check to judge; a short O-grid diagonal or ring piece still refuses the face)
+                along_frame = False
+                if small and gmsh.model.getType(1, shortest[1]) == "Line":
+                    d0, d1 = (np.array(uv(x)) for x in _samples(gmsh, shortest[1], 1))
+                    along_frame = bool(min(abs(d0 - d1)) <= 1e-6 * h)
                 if small:
                     mid_ = _samples(gmsh, shortest[1], 2)[1] * mm
                     # (and what stands round it, in the face's own frame, mm: the short edge's ends, the nearest hole's
@@ -2111,6 +2166,12 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 if cut_piece is None or cut_piece in trims:
                     break
                 trims.append(cut_piece)
+            if (small and CELL_HARD is not None and not spoilt and only_small(causes) and along_frame
+                    and shortest[0] >= CELL_HARD * CELL_MIN * h):
+                # SHMESH-48t: a cell edge under CELL_MIN but over CELL_HARD of it is no reason to refuse the face
+                # before it is meshed: it is gridded, and 48f keeps or refuses it on its own elements against the
+                # user's lines (the trial floor was stricter than what the face is judged on)
+                small = False
             if small:
                 # (SHMESH-48r: with what held each line 48p could not move, and the pieces dropped)
                 notes_ = [s_ for (ax_, x_), s_ in sorted(pin_notes.items())
