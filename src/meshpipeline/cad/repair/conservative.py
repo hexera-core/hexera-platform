@@ -886,6 +886,13 @@ def repair_step_file(source: Path, destination: Path, *,
         # package, and a region queued for a person is the one thing in a partial repair a
         # customer must be told plainly (spec decision 7) - so both travel.
         measurements["regions"] = regions_run.to_dict()
+        # DID THE REPAIR CAUSE WHAT SURVIVES? Inherent defects arrived with the upload (same
+        # fingerprint, same measurement); introduced ones did not. Only a region run holds both
+        # scans, so only it can say.
+        from meshpipeline.cad.repair.disposition import ledger
+
+        measurements["disposition"] = ledger(regions_run.defects_before,
+                                             regions_run.defects_after)
 
     # THE AFTER-CHECKS STILL HAVE THE LAST WORD. The session already refused any individual
     # operation that left the caps, so reaching here with a refusal would mean a bug - but the
