@@ -297,8 +297,10 @@ def scoped_to(defects: Iterable[EntityDefect], within: Region, *,
 
     IT MEASURES NOTHING. The boxes come from each defect's own recorded `location`, so this is
     arithmetic over a report and needs no kernel and no shape. `diagonal_mm` is the part's
-    diagonal, which is what grows the region's box; passing the measurement that produced the
-    records keeps the grown box the same one the scan used.
+    diagonal, which is what grows the region's box, and it is the SCAN'S side of the agreement
+    too: the caller hands the same number to `localize_scan(..., scope_diagonal_mm=)`, so one
+    grown box really does serve both sides. Hand the two different diagonals and the filter
+    admits records the scan would not have reported.
 
     ERRING TOWARDS ADMITTING is deliberate: this list is the BEFORE side of a progress rule, and
     a record wrongly dropped from it reads as a defect the operation has just introduced.
@@ -1022,7 +1024,9 @@ def _linked(found: tuple[EntityDefect, ...]) -> tuple[EntityDefect, ...]:
 
 
 def localize_scan(shape, *, valid: bool | None = None, face_scan_s: float = 0.0,
-                  within: Region | None = None) -> tuple[tuple[EntityDefect, ...], bool]:
+                  within: Region | None = None,
+                  scope_diagonal_mm: float | None = None,
+                  ) -> tuple[tuple[EntityDefect, ...], bool]:
     """Every located failure point this module can find, and whether the scan was exhaustive.
 
     Order is by entity type then index, NOT by severity: a caller that wants the worst first can
@@ -1059,6 +1063,16 @@ def localize_scan(shape, *, valid: bool | None = None, face_scan_s: float = 0.0,
     with the scope would make two scans of one shape incomparable - which is the one thing this
     function may never do.
 
+    `scope_diagonal_mm` IS THE DIAGONAL THAT GROWS THE REGION'S BOX, and it exists so that the
+    two sides of a scope cannot disagree. A caller comparing its own records against a scoped
+    scan filters them with `scoped_to(..., diagonal_mm=...)`, and the session passes the UPLOAD'S
+    diagonal there (it never changes, so a region means the same thing all run). Grown here by
+    the CURRENT shape's diagonal instead, a repair that shrank the part would leave the filter
+    admitting records this scan would not have reported - which inflates the `previous` side of
+    `try_op`'s progress rule and excuses a warning the operation just introduced. `None` keeps
+    the shape's own diagonal, which is right for the whole-shape scan, where there is no filter
+    to agree with.
+
     TWO LIMITS, STATED RATHER THAN HIDDEN. The face-level crossing analyzer has no scoped form
     (`BOPAlgo_ArgumentAnalyzer` takes a shape), so under a scope its findings are filtered after
     the fact and an in-scope face's partner list names only partners that are also in scope. And
@@ -1069,7 +1083,11 @@ def localize_scan(shape, *, valid: bool | None = None, face_scan_s: float = 0.0,
     from OCP.TopAbs import TopAbs_FACE
 
     diagonal = _diagonal(shape)
-    scope = _scope_for(within, diagonal=diagonal) if within is not None else None
+    # THE SCOPE'S DIAGONAL IS THE CALLER'S WHEN IT HAS ONE, so the box this scan grows is the box
+    # the caller's `scoped_to` filter grows. The part-wide `diagonal` below is untouched by it.
+    scope = (_scope_for(within, diagonal=diagonal if scope_diagonal_mm is None
+                        else float(scope_diagonal_mm))
+             if within is not None else None)
     faces = _indexed(shape, TopAbs_FACE)
     # THE AREA SWEEP IS SKIPPED ONLY WHEN THE SCOPE ADMITS NO FACE AT ALL, and that is not a
     # shortcut: the total is read only to judge an in-scope face against it (a sliver is small

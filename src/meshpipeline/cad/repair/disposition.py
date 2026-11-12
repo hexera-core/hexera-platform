@@ -68,10 +68,14 @@ def ledger(before: Iterable, after: Iterable, reclassified: Iterable[str] = ()) 
     ambiguous    - a fingerprint shared by two or more defects in either scan
                    (`EntityDefect.ambiguous`). They cannot be told apart, so neither "the
                    customer's" nor "ours" would be a finding; they are in no other bucket.
-    unlocated    - a COUNT of defects (both scans) with an empty fingerprint, i.e. no measurable
-                   extent. An entity with no name cannot be attributed in either direction.
+    unlocated    - a COUNT of defects in the FINAL scan with an empty fingerprint, i.e. no
+                   measurable extent. An entity with no name cannot be attributed in either
+                   direction, so this is the answer to "how many survivors are unattributable".
+                   THE AFTER SCAN ONLY, deliberately: counting both scans double-counted a
+                   survivor and went on counting one the repair had cleared, so the number
+                   answered no question anybody asks of this ledger.
     """
-    was, was_dup, was_blank = _scan(before)
+    was, was_dup, _ = _scan(before)
     now, now_dup, now_blank = _scan(after)
     ambiguous = was_dup | now_dup
     inherent = [fp for fp in now if fp in was and was[fp] == now[fp]]
@@ -80,7 +84,7 @@ def ledger(before: Iterable, after: Iterable, reclassified: Iterable[str] = ()) 
     keep = lambda fps: sorted(fp for fp in fps if fp not in ambiguous)  # noqa: E731
     return {"inherent": keep(inherent), "introduced": keep(introduced),
             "resolved": keep(resolved), "reclassified": sorted(set(reclassified)),
-            "ambiguous": sorted(ambiguous), "unlocated": was_blank + now_blank}
+            "ambiguous": sorted(ambiguous), "unlocated": now_blank}
 
 
 __all__ = ["NON_CONTENT_KEYS", "ledger"]

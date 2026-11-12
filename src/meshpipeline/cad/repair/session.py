@@ -257,7 +257,11 @@ class RepairSession:
             budget = face_scan_budget_s(remaining())
         if within is None:
             return _localize_scan(shape, face_scan_s=budget)
-        return _localize_scan(shape, face_scan_s=budget, within=within)
+        # THE UPLOAD'S DIAGONAL GROWS THE REGION'S BOX, the same number `scoped_to` and
+        # `in_region` are handed below, so the scan's scope and the filters compared against it
+        # are one box. The current shape's diagonal would drift as the repair reshapes the part.
+        return _localize_scan(shape, face_scan_s=budget, within=within,
+                              scope_diagonal_mm=self.original.diagonal_mm)
 
     def defects(self) -> tuple:
         """The current shape's located defects. Scanned once per shape and cached."""
@@ -803,7 +807,9 @@ class RepairSession:
             if rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS:
                 remaining = self.remaining_s or (lambda: float(rcfg.CAD_REPAIR_TIMEOUT_S))
                 budget = face_scan_budget_s(remaining())
-            found, complete = _localize_scan(self.shape, face_scan_s=budget, within=region)
+            # ONE GROWN BOX FOR BOTH SIDES OF THE SCOPE, as in `_default_scan`.
+            found, complete = _localize_scan(self.shape, face_scan_s=budget, within=region,
+                                             scope_diagonal_mm=self.original.diagonal_mm)
         return tuple(found), bool(complete)
 
     def _record_package(self, verdict: PackageVerdict) -> PackageVerdict:

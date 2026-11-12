@@ -137,3 +137,39 @@ def test_a_scope_whose_face_indices_name_nothing_still_finds_a_face_defect_in_it
     # ...and the scope is still a scope: the 100 mm box's own geometry stays out of it.
     assert all(d.location["bbox_min"][0] >= x - BIG * SCOPE_GROW_FRACTION
                for d in scoped if d.location)
+
+
+def test_the_scan_grows_the_region_box_from_the_caller_s_own_diagonal():
+    """ONE GROWN BOX FOR BOTH SIDES OF A SCOPE, which is what `scoped_to`'s contract claims.
+
+    The scan grew the region's box by the CURRENT shape's diagonal while `session.try_op` filtered
+    its own records with the UPLOAD'S. Measured drift on the real part was zero, so this was
+    latent rather than live - but a repair that shrinks the part leaves the filter admitting
+    records the scan would not have reported, which inflates the `previous` side of the progress
+    rule and excuses a warning the operation introduced into the region it is being proved
+    against. That is the hazard Task 9 exists to close, in smaller form.
+    """
+    from meshpipeline.cad.repair.localize import scoped_to
+
+    shape = _two_holed_boxes()
+    everything, _complete = localize_scan(shape)
+    regions = decompose(everything, diagonal_mm=_diagonal(shape))
+    assert len(regions) == 2
+    region = regions[0]
+
+    # A DIAGONAL THE SHAPE DOES NOT HAVE, and large enough that the grown box reaches the far
+    # box as well - so the number really is what decided what was measured.
+    wide = _diagonal(shape) * 1000.0
+    scoped, complete = localize_scan(shape, within=region, scope_diagonal_mm=wide)
+    assert complete
+    assert {d.fingerprint for d in scoped} == {d.fingerprint for d in everything}
+    # AND THE RECORD FILTER AGREES WITH IT, given the same diagonal: that agreement is the point.
+    assert ({d.fingerprint for d in scoped_to(everything, region, diagonal_mm=wide)}
+            == {d.fingerprint for d in scoped})
+
+    # The default is the shape's own diagonal, which is the whole-shape scan's answer and is what
+    # the narrow scope above measured - so the widening was not a no-op.
+    assert (localize_scan(shape, within=region)
+            == localize_scan(shape, within=region, scope_diagonal_mm=_diagonal(shape)))
+    narrow = {d.fingerprint for d in localize_scan(shape, within=region)[0]}
+    assert narrow < {d.fingerprint for d in scoped}

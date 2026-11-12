@@ -79,8 +79,16 @@ def test_an_unknown_measurement_key_is_compared():
 
 
 def test_empty_fingerprints_are_counted_not_listed():
+    """`unlocated` IS THE AFTER SCAN ALONE: "how many survivors cannot be attributed".
+
+    Counting both scans counted a surviving unlocated defect twice and went on counting one the
+    repair had cleared, so the number answered no question. The upload's own unlocated defects
+    are in its report; what this ledger is asked is what is left.
+    """
     out = ledger([_d("", a=1), _d("x", a=1)], [_d("", a=1), _d("", a=2), _d("x", a=1)])
-    assert out["unlocated"] == 3
+    assert out["unlocated"] == 2
+    # An unlocated defect the repair CLEARED is not a survivor, so it is not counted at all.
+    assert ledger([_d("", a=1), _d("x", a=1)], [_d("x", a=1)])["unlocated"] == 0
     assert out["inherent"] == ["x"]
     assert "" not in out["inherent"] + out["introduced"] + out["resolved"] + out["ambiguous"]
 

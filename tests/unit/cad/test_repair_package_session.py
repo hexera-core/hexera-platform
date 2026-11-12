@@ -476,7 +476,10 @@ class _ScanSpy:
         self._scans = tuple(scans)
         self._clock = clock
 
-        def spy(_shape, *, face_scan_s=0.0, within=None):
+        def spy(_shape, *, face_scan_s=0.0, within=None, scope_diagonal_mm=None):
+            # `scope_diagonal_mm` IS ACCEPTED AND IGNORED: this double reports by fingerprint, so
+            # it has no grown box to grow. What the real scan does with it is a native test's
+            # (`test_native_repair_scoped_scan`).
             self.within.append(within)
             self._clock.now += _SCAN_S
             found = self._scans[min(len(self.within), len(self._scans)) - 1]
