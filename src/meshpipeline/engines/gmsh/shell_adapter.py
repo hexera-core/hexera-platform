@@ -1265,7 +1265,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             names = {k: (owners[k], str(mids_of.get(owners[k], {}).get("body", ""))) for k in set(tag_of.values())}
             washers, washer_skipped, hole_lines = ST.plan_washers(
                 gmsh, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
-                names=names, before=list(hole_before))
+                names=names, before=list(hole_before),
+                across=ST.WASHER_ACROSS_USER if (sizing or {}).get("global_mm") is not None else ST.WASHER_ACROSS,
+                low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"))
             if ST.BLOCKS and ST.MAPPED and structure != "free":
                 # SHMESH-41: a face whose holes all have washers is cut into a grid of cells, mapped below
                 gridded, boxed, block_preset, block_holes, block_skipped = ST.block_faces(

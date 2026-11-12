@@ -213,7 +213,7 @@ def test_a_round_hole_too_big_for_a_washer_is_left_to_the_field(tmp_path):
     brep, rec = _plate_with_holes(tmp_path, [(100.0, 100.0, 80.0)], size=(200.0, 200.0, 10.0))
     _m, applied = _mesh(brep, rec, _criteria())
     s = applied["quality"]["structure"]
-    assert s["washers"] == 0 and s["no_washer"] == {"larger than the washer limit": 1}
+    assert s["washers"] == 0 and s["no_washer"] == {"larger than the washer limit (6 element sizes across)": 1}
 
 
 def test_a_junction_keeps_one_node_per_point_and_a_rectangle_is_one_grid(tmp_path):
@@ -373,3 +373,76 @@ def test_every_hole_has_its_line_in_the_record(web, monkeypatch):
     refused = [h for h in lines if not h["washer"]]
     assert len(refused) == 1 and "do not face each other" in refused[0]["why"]
     assert all(h.get("kind") == "ring in a free face" and h["planned_round"] >= 8 for h in lines if h["washer"])
+
+
+def _bspline_hole_plate(tmp_path, holes):
+    """A 19.05 mm plate whose holes are drawn as B-spline pieces through points of a circle, each piece off the radius
+    by up to 3e-4 of it (a mid-surface's fitted hole), meeting end to end: [((x, y), diameter, [cut angles])]."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.GeomAPI import GeomAPI_PointsToBSpline
+    from OCP.gp import gp_Pnt, gp_Vec
+    from OCP.TColgp import TColgp_Array1OfPnt
+
+    from meshpipeline.cad import midsurface as ms
+
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 300, 200, 19.05).Shape()
+    for (x, y), d, cuts in holes:
+        r = d / 2
+        angs = [math.radians(a) for a in cuts] + [math.radians(cuts[0]) + 2 * math.pi]
+        mw = BRepBuilderAPI_MakeWire()
+        for i, (a, b) in enumerate(zip(angs[:-1], angs[1:], strict=True)):
+            arr = TColgp_Array1OfPnt(1, 9)
+            for j in range(9):
+                t = a + (b - a) * j / 8
+                rr = r if j in (0, 8) else r * (1 + 3e-4 * math.sin(3 * t + i))
+                arr.SetValue(j + 1, gp_Pnt(x + rr * math.cos(t), y + rr * math.sin(t), -1))
+            mw.Add(BRepBuilderAPI_MakeEdge(GeomAPI_PointsToBSpline(arr).Curve()).Edge())
+        tool = BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(mw.Wire()).Face(), gp_Vec(0, 0, 21)).Shape()
+        shape = BRepAlgoAPI_Cut(shape, tool).Shape()
+    rec, surf = ms.extract(shape, mm_per_unit=1.0)
+    brep = tmp_path / "bspline.brep"
+    BRepTools.Write_s(surf, str(brep))
+    return brep, rec
+
+
+BSPLINE_HOLES = [((60, 60), 15.47, [5, 95, 185, 275]), ((150, 60), 17.98, [0, 120, 250]),
+                 ((240, 60), 15.47, [0, 80, 200, 300]), ((60, 140), 17.98, [30, 150, 270]),
+                 ((150, 140), 15.47, [0, 90, 180, 270]), ((240, 140), 46.07, [0, 130, 250])]
+
+
+@pytest.mark.parametrize("redraw", [True, False])
+def test_holes_in_fitted_pieces_get_their_washers(tmp_path, monkeypatch, redraw):
+    """SHMESH-45d, class B of a real column: holes of 3 or 4 B-spline pieces (not exact arcs: the SHMESH-45b redraw
+    once refused them) got rings whose nodes did not face the hole's. Now the redraw takes pieces that are one circle
+    within 1e-3 of the radius; and without it the ring's nodes follow the hole's. SHMESH-45e: the 46 mm hole (4.6 sizes
+    at 10 mm, the user's global size) gets a washer, two rows."""
+    brep, rec = _bspline_hole_plate(tmp_path, BSPLINE_HOLES)
+    monkeypatch.setattr(ST, "RESEAT", redraw)
+    monkeypatch.setattr(SA_mod(), "STRUCTURED_GUARD", False)        # nothing hidden by the whole-step guard
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert s["washers"] == 6 and s["no_washer"] == {}, s["hole_list"]
+    big = next(h for h in s["hole_list"] if h["diameter_mm"] > 40)
+    assert big["washer"] and big["planned_rows"] == 2
+    if redraw:
+        assert s["holes_redrawn"] == 6 and {h["edges_before"] for h in s["hole_list"]} == {3, 4}
+        assert {h["edges"] for h in s["hole_list"]} == {1}
+    got = SS.measure(mesh)
+    assert got["holes_ringed"] == 6 and applied["quality"]["valid"]
+
+
+def SA_mod():
+    from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    return SA
+
+
+def test_a_large_hole_needs_the_users_size_for_a_washer():
+    """SHMESH-45e: the count for a 46 mm hole at 10 mm: two rows, inside the user's 5..15 mm edges."""
+    n, rows, ratio = ST._count(23.0, 10.0, 10.0, 5.0, 15.0)
+    assert rows == 2 and 2 * math.pi * 23.0 / n >= 5.0 and (ratio - 1) * 23.0 / rows >= 5.0
+    assert 2 * math.pi * 23.0 * ratio / n <= 0.98 * 15.0
+    assert ST.WASHER_ACROSS_USER * 10.0 > 46.07 > ST.WASHER_ACROSS * 10.0

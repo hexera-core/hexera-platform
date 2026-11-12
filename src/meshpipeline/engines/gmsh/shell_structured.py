@@ -19,6 +19,10 @@ WASHERS = True
 #: a hole gets a washer when it is at most WASHER_ACROSS times its face's element size across (a bigger hole is a
 #: cut-out: the field mesh already follows it)
 WASHER_ACROSS = 3.0
+#: SHMESH-45e: ... and up to WASHER_ACROSS_USER sizes across under the user's own global size (a 46 mm hole at 10 mm:
+#: an engineer puts a washer there; the rows then stay inside the user's shortest and longest edge). Kt of a plate with
+#: a 20 mm hole at 5 mm (4 sizes across): 2.34 with a washer, 2.36 without, theory 2.51 - the same within 1%.
+WASHER_ACROSS_USER = 6.0
 #: the elements round a hole: a multiple of WASHER_STEP, at least WASHER_MIN (8, 12, 16 ... as an engineer counts),
 #: never fewer than the plan put round it (the hole keeps its shape), at most WASHER_MAX
 WASHER_MIN = 8
@@ -94,7 +98,8 @@ def _circle_of(gmsh, curves: list[int]) -> tuple[np.ndarray, float, np.ndarray, 
     return centre, r, n, pts[0][0]
 
 
-def _count(r_mm: float, hole_mm: float, face_mm: float) -> tuple[int, int, float] | None:
+def _count(r_mm: float, hole_mm: float, face_mm: float, low_mm: float | None = None,
+           high_mm: float | None = None) -> tuple[int, int, float] | None:
     """SHMESH-39: (elements round, rows, ring radius over the hole's) for a hole of radius r_mm whose plan puts
     elements of hole_mm round it in a face of face_mm elements: the fewest elements round (a multiple of WASHER_STEP,
     at least WASHER_MIN and the plan's own count) with near-square rows whose outer edge (WASHER_RING times the hole,
@@ -104,12 +109,20 @@ def _count(r_mm: float, hole_mm: float, face_mm: float) -> tuple[int, int, float
     n0 = max(WASHER_MIN, WASHER_STEP * math.ceil(own / WASHER_STEP))
     for n in range(n0, WASHER_MAX + 1, WASHER_STEP):
         q = math.exp(2 * math.pi / n)
+        if low_mm is not None and n > n0 and 2 * math.pi * r_mm / n < low_mm:
+            break                      # SHMESH-45e: never an edge round the hole under the user's shortest edge
         for rows in range(1, WASHER_ROWS + 1):
             if q ** rows < WASHER_RING[0]:
                 continue
             # as wide as square rows make it, but no wider than the face's size allows round its outer edge and
             # across each row
             ratio = min(q ** rows, WASHER_RING[1], face_mm * n / (2 * math.pi * r_mm), 1 + rows * face_mm / r_mm)
+            if high_mm is not None:
+                ratio = min(ratio, 0.98 * high_mm * n / (2 * math.pi * r_mm), 1 + rows * 0.98 * high_mm / r_mm)
+            if low_mm is not None and (ratio - 1) * r_mm / rows < low_mm:
+                if rows < WASHER_ROWS:
+                    continue
+                break
             if ratio >= WASHER_RING[0]:
                 return n, rows, ratio
             break
@@ -145,7 +158,8 @@ def _loop_kind(gmsh, curves: list[int]) -> str:
 
 
 def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_size, mm: float,
-                 names: dict[int, tuple[str, str]] | None = None, before: list | None = None
+                 names: dict[int, tuple[str, str]] | None = None, before: list | None = None,
+                 across: float | None = None, low_mm: float | None = None, high_mm: float | None = None
                  ) -> tuple[list[Washer], dict[str, int], list[dict]]:
     """SHMESH-39: the washers to make: every inner loop of a flat face that is one round hole (a circle no other face
     shares), at most WASHER_ACROSS of the face's element size across. `size_mm`: each surface's element size;
@@ -190,7 +204,7 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
             hole_gap = min((float(np.linalg.norm(c - c0)) - r - r0 for jj, (c, r) in here.items() if jj != j),
                            default=math.inf)
             n_before = next((int(e) for cc, e in (before or [])
-                             if float(np.linalg.norm(np.asarray(cc, dtype=float) - c0)) <= 0.05 * max(r0, 1e-9)),
+                             if float(np.linalg.norm(np.asarray(cc, dtype=float) - c0)) <= 0.25 * max(r0, 1e-9)),
                             len(cl))
             info = {"face": mid, "part": part, "diameter_mm": float(f"{2 * r0 * mm:.4g}"),
                     "edges_before": n_before, "edges": len(cl),
@@ -207,10 +221,13 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
                 no(info, "not round")
                 continue
             centre, r, n, first = got
-            if 2 * r * mm > WASHER_ACROSS * size_mm[t]:
-                no(info, "larger than the washer limit")
+            limit = across if across is not None else WASHER_ACROSS
+            if 2 * r * mm > limit * size_mm[t]:
+                no(info, f"larger than the washer limit ({limit:g} element sizes across)")
                 continue
-            plan = _count(r * mm, hole_size(r * mm, k), size_mm[t])
+            # SHMESH-45e: inside the user's shortest and longest edge where a count fits, else as before
+            plan = (_count(r * mm, hole_size(r * mm, k), size_mm[t], low_mm, high_mm)
+                    or _count(r * mm, hole_size(r * mm, k), size_mm[t]))
             if plan is None:
                 no(info, "no count fits")
                 continue
@@ -254,7 +271,7 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
 def _on_hole(gmsh, w: Washer, curves: list[int]) -> bool:
     """Whether these curves lie on the washer's hole circle (the annulus's other loop; the face outside a ring has a
     loop of two too when the ring's hole is its only one)."""
-    return all(bool(np.all(np.abs(np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1) - w.r) <= 1e-4 * w.r))
+    return all(bool(np.all(np.abs(np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1) - w.r) <= CIRCLE_TOL * w.r))
                for c in curves)
 
 
@@ -344,11 +361,17 @@ def _loop_nodes(gmsh, curves: list[int], index: np.ndarray) -> np.ndarray:
     return np.array(sorted(set(out)), dtype=np.int64)
 
 
+#: SHMESH-45d: the ring's nodes slide to their hole nodes' angles when they stand at most this share of an element off
+#: them (more: the ring is refused and gmsh's mesh kept, SHMESH-45)
+RING_FOLLOW = 0.75
+
+
 def ring_mesh(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float) -> tuple[np.ndarray, np.ndarray]:
     """SHMESH-39: the washer's own structured mesh, in place of whatever gmsh put between hole and ring: each node of the
     hole's circle joined to the ring's node at its angle, the rows between them on circles whose radii grow evenly
-    (in ratio), so every quad is near square. Returns (the new nodes, mm; the quads, node indices - new nodes numbered
-    from len(xyz))."""
+    (in ratio), so every quad is near square. The ring's own nodes are slid along the ring to their hole nodes' angles
+    (in `xyz`, in place) when the hole's are not evenly spaced (SHMESH-45d). Returns (the new nodes, mm; the quads,
+    node indices - new nodes numbered from len(xyz))."""
     inner = _loop_nodes(gmsh, w.hole_after, index)
     outer = _loop_nodes(gmsh, [w.ring], index)
     if len(inner) != w.n or len(outer) != w.n:
@@ -369,8 +392,15 @@ def ring_mesh(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float) ->
     shift = int(np.argmin(np.abs(diff[0])))
     outer, a_out = np.roll(outer, -shift), np.roll(a_out, -shift)
     gap = (a_out - a_in + math.pi) % (2 * math.pi) - math.pi
-    if float(np.abs(gap).max()) > 0.45 * step:
-        raise ValueError("a washer's hole and ring nodes do not face each other")
+    if float(np.abs(gap).max()) > RING_FOLLOW * step:
+        raise ValueError(f"a washer's hole and ring nodes do not face each other ({float(np.abs(gap).max()) / step:.2f} "
+                         "of an element apart)")
+    if float(np.abs(gap).max()) > 1e-9 * step:
+        # SHMESH-45d: a hole whose nodes are not evenly spaced (its circle in uneven pieces, or pieces not exactly one
+        # circle) - each ring node is slid along the ring to its hole node's angle, so every spoke is radial
+        Rm = w.R * mm
+        xyz[outer] = c + Rm * (np.cos(a_in)[:, None] * e1 + np.sin(a_in)[:, None] * e2)
+        gap = np.zeros_like(gap)
     rings = [inner]
     new: list[np.ndarray] = []
     base = len(xyz)
@@ -896,7 +926,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             hole_c: list[int] = []
             for c in curves:
                 d = np.linalg.norm(_samples(gmsh, c, 4) - w.centre, axis=1)
-                if np.all(np.abs(d - w.r) <= tol):
+                if np.all(np.abs(d - w.r) <= CIRCLE_TOL * w.r):
                     hole_c.append(c)
                 elif np.all(np.abs(d - R) <= tol):
                     ring_c.append(c)
@@ -938,6 +968,54 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
 #: unevenly, left the washer's hole nodes out of step with its ring's: "a washer's hole and ring nodes do not face each
 #: other"), starting on the face frame's diagonal where the face has a straight edge
 RESEAT = True
+
+
+#: SHMESH-45d: pieces of a hole are one circle when every point of them lies within this share of the radius of one
+#: fitted circle (the washer's own round test, _circle_of, is 1e-3 too)
+REDRAW_TOL = 1e-3
+
+
+def _fit_circle_occ(edges: list, normal: np.ndarray) -> tuple[np.ndarray, float, np.ndarray] | None:
+    """(centre, radius, axis) of the circle the edges lie on within REDRAW_TOL of its radius, going once round; None
+    when they do not (a slot, a polygon, an ellipse)."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+
+    pts = []
+    for e in edges:
+        c = BRepAdaptor_Curve(e)
+        for x in np.linspace(c.FirstParameter(), c.LastParameter(), 33):
+            p = c.Value(float(x))
+            pts.append([p.X(), p.Y(), p.Z()])
+    P = np.asarray(pts)
+    c0 = P.mean(axis=0)
+    _u, _s, vt = np.linalg.svd(P - c0, full_matrices=False)
+    n = vt[2] if float(vt[2] @ normal) >= 0 else -vt[2]
+    xy = np.column_stack([(P - c0) @ vt[0], (P - c0) @ vt[1]])
+    sol, *_r = np.linalg.lstsq(np.column_stack([2 * xy, np.ones(len(xy))]), (xy ** 2).sum(axis=1), rcond=None)
+    centre = c0 + sol[0] * vt[0] + sol[1] * vt[1]
+    rad = np.linalg.norm(P - centre, axis=1)
+    r = float(rad.mean())
+    if r <= 0 or float(np.abs(rad - r).max()) > REDRAW_TOL * r or float(np.abs((P - centre) @ n).max()) > REDRAW_TOL * r:
+        return None
+    ang = np.sort(np.arctan2(xy[:, 1] - sol[1], xy[:, 0] - sol[0]))
+    if float(np.diff(np.concatenate([ang, ang[:1] + 2 * math.pi])).max()) > 0.5 * math.pi:
+        return None
+    return centre, r, n
+
+
+def _wire_turn(edges: list, centre: np.ndarray, axis: np.ndarray) -> float:
+    """The sense a hole's wire goes round its centre about `axis` (+ anticlockwise), as its edges run in the wire."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.TopAbs import TopAbs_REVERSED
+
+    total = 0.0
+    for e in edges:
+        c = BRepAdaptor_Curve(e)
+        ts = np.linspace(c.FirstParameter(), c.LastParameter(), 9)
+        P = np.array([[c.Value(float(t)).X(), c.Value(float(t)).Y(), c.Value(float(t)).Z()] for t in ts]) - centre
+        turn = sum(float(np.cross(a, b) @ axis) for a, b in zip(P[:-1], P[1:], strict=True))
+        total += -turn if e.Orientation() == TopAbs_REVERSED else turn
+    return total
 
 
 def reseat_holes(brep, out) -> tuple[int, list]:
@@ -1008,44 +1086,54 @@ def reseat_holes(brep, out) -> tuple[int, list]:
         a0 = area(f)
         ex = TopExp_Explorer(f, TopAbs_WIRE)
         swaps = []
+        radii: list[float] = []
         while ex.More():
             w = TopoDS.Wire_s(ex.Current())
             ex.Next()
             if w.IsSame(outer):
                 continue
             es = edges(w)
-            ok = bool(es) and all(BRepAdaptor_Curve(e).GetType() == GeomAbs_Circle
-                                  and emap.FindFromKey(e).Size() == 1 for e in es)
-            if not ok:
+            if not es or any(emap.FindFromKey(e).Size() != 1 for e in es):
                 continue
-            circs = [BRepAdaptor_Curve(e).Circle() for e in es]
-            c0 = circs[0]
-            loc = c0.Location()
-            if any(abs(c.Radius() - c0.Radius()) > 1e-7 * c0.Radius() or c.Location().Distance(loc) > 1e-7 * c0.Radius()
-                   for c in circs):
+            # SHMESH-45d: one circle within REDRAW_TOL of its radius - pieces that are B-splines or arcs of slightly
+            # different centre and radius (a mid-surface's fitted hole) are one circle too
+            fit = _fit_circle_occ(es, nrm)
+            if fit is None:
                 continue
-            p0 = BRepAdaptor_Curve(es[0]).Value(BRepAdaptor_Curve(es[0]).FirstParameter())
-            rel = np.array([p0.X() - loc.X(), p0.Y() - loc.Y(), p0.Z() - loc.Z()]) / c0.Radius()
-            if len(es) == 1 and (diag is None or float(rel @ diag) > 1 - 1e-9):
+            loc, radius, caxis_fit = fit
+            circs = [BRepAdaptor_Curve(e) for e in es]
+            exact = all(cv.GetType() == GeomAbs_Circle for cv in circs)
+            p0 = circs[0].Value(circs[0].FirstParameter())
+            rel = np.array([p0.X() - loc[0], p0.Y() - loc[1], p0.Z() - loc[2]])
+            rel /= max(float(np.linalg.norm(rel)), 1e-300)
+            if len(es) == 1 and exact and (diag is None or float(rel @ diag) > 1 - 1e-9):
                 continue            # already one circle (starting on the diagonal when the face has one)
             start = diag if diag is not None else rel
-            cax = c0.Axis().Direction()
-            caxis = np.array([cax.X(), cax.Y(), cax.Z()])
+            caxis = caxis_fit
+            if exact:
+                cax = circs[0].Circle().Axis().Direction()
+                caxis = np.array([cax.X(), cax.Y(), cax.Z()])
             xd = start - float(start @ caxis) * caxis
-            circ = gp_Circ(gp_Ax2(gp_Pnt(loc.X(), loc.Y(), loc.Z()), gp_Dir(*caxis.tolist()), gp_Dir(*xd.tolist())),
-                           c0.Radius())
+            circ = gp_Circ(gp_Ax2(gp_Pnt(*[float(x) for x in loc]), gp_Dir(*caxis.tolist()), gp_Dir(*xd.tolist())),
+                           float(radius))
             nw = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circ).Edge()).Wire()
-            if es[0].Orientation() == TopAbs_REVERSED:
+            if exact:
+                if es[0].Orientation() == TopAbs_REVERSED:
+                    nw.Reverse()
+            elif _wire_turn(es, loc, caxis) < 0:
                 nw.Reverse()
             swaps.append((w, nw))
-            redrawn.append(([loc.X(), loc.Y(), loc.Z()], len(es)))
+            radii.append(float(radius))
+            redrawn.append(([float(x) for x in loc], len(es)))
         if not swaps:
             continue
         trial = BRepTools_ReShape()
         for w, nw in swaps:
             trial.Replace(w, nw)
         nf = TopoDS.Face_s(trial.Apply(f))
-        if abs(area(nf) - a0) > 1e-6 * max(a0, 1e-300):
+        # the face's area kept: to a millionth, or to what the holes' own fitting tolerance can move it
+        give = sum(2 * math.pi * float(r_) * REDRAW_TOL * float(r_) for r_ in radii)
+        if abs(area(nf) - a0) > 1e-6 * max(a0, 1e-300) + give:
             continue
         for w, nw in swaps:
             reshape.Replace(w, nw)
