@@ -870,6 +870,8 @@ BLOCKS = True
 CUT_NEIGHBOURS = True
 #: SHMESH-48f: every gridded face judged on its own elements once meshed (as POLAR_CHECK judges a round plate)
 GRID_CHECK = True
+#: SHMESH-48g: a grid line that would cross a box stops at it (else the face is not gridded)
+STOP_AT_BOXES = True
 BOX_STEP = 8
 #: SHMESH-48: the ring an O-grid aims at, times the hole's radius (an engineer's washer: 1.5 to 2 times its diameter)
 WASHER_AIM = 1.75
@@ -1083,8 +1085,8 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 elif p is not None and not all(0.6 * h <= x / (p[0] / 4) <= 1.5 * h
                                                for x in (bx[1] - bx[0], bx[3] - bx[2])):
                     reason = "a box drawn on to an edge comes out too long or short for its ring"
-                elif any(bx[0] + eps < x < bx[1] - eps for x in lines["u"]) or any(
-                        bx[2] + eps < y < bx[3] - eps for y in lines["v"]):
+                elif not STOP_AT_BOXES and (any(bx[0] + eps < x < bx[1] - eps for x in lines["u"]) or any(
+                        bx[2] + eps < y < bx[3] - eps for y in lines["v"])):
                     reason = "the holes do not line up (a line would cross a box)"
                 if reason:
                     break
@@ -1101,16 +1103,34 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 if p is not None:
                     starts[id(w)] = _diagonals(u, v)[2]          # (u + v) / sqrt 2: where SHMESH-45b starts the hole
 
+            def line_pieces(at: float, axis_: int, start: float, stop: float, boxes=boxes,
+                       eps=eps) -> list[tuple[float, float]]:
+                """SHMESH-48g: a line across the face, stopped at each box it would cross (it ends on that box's
+                side line, drawn right across: a T, the cells four-sided) - holes in rows that do not line up."""
+                cut_at = sorted((bx[2 - 2 * axis_], bx[3 - 2 * axis_]) for bx in boxes
+                                if bx[2 * axis_] + eps < at < bx[2 * axis_ + 1] - eps) if STOP_AT_BOXES else []
+                out_, at0 = [], start
+                for g0, g1 in cut_at:
+                    if g0 > at0 + eps:
+                        out_.append((at0, g0))
+                    at0 = max(at0, g1)
+                if stop > at0 + eps:
+                    out_.append((at0, stop))
+                return out_
+
             def tools(o=o, u=u, v=v, lo=lo, hi=hi, pad=pad, lines=lines, ws=ws, plans=plans, corners_of=corners_of,
+                      line_pieces=line_pieces,
                       starts=starts, n_face=n_face) -> list[tuple[int, int]]:
                 out = []
                 occ = gmsh.model.occ
                 for x in lines["u"]:
-                    a, b = o + x * u + (lo[1] - pad) * v, o + x * u + (hi[1] + pad) * v
-                    out.append((1, occ.addLine(occ.addPoint(*a), occ.addPoint(*b))))
+                    for y0, y1 in line_pieces(x, 0, lo[1] - pad, hi[1] + pad):
+                        a, b = o + x * u + y0 * v, o + x * u + y1 * v
+                        out.append((1, occ.addLine(occ.addPoint(*a), occ.addPoint(*b))))
                 for y in lines["v"]:
-                    a, b = o + (lo[0] - pad) * u + y * v, o + (hi[0] + pad) * u + y * v
-                    out.append((1, occ.addLine(occ.addPoint(*a), occ.addPoint(*b))))
+                    for x0, x1 in line_pieces(y, 1, lo[0] - pad, hi[0] + pad):
+                        a, b = o + x0 * u + y * v, o + x1 * u + y * v
+                        out.append((1, occ.addLine(occ.addPoint(*a), occ.addPoint(*b))))
                 for w, p, cs in zip(ws, plans, corners_of, strict=True):
                     R = p[2] * w.r if p is not None else w.R
                     xa = starts[id(w)] if p is not None else w.xaxis

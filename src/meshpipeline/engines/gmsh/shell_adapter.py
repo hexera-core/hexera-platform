@@ -171,9 +171,10 @@ class _NoCut(Exception):
     """SHMESH-47b: gridded faces (sewn face indices) whose lines cut a joined face into triangles or elements past the
     solver's own limits: the mesh is made again with those faces left ungridded (the neighbours whole)."""
 
-    def __init__(self, faces: set[int]) -> None:
+    def __init__(self, faces: set[int], why: dict[int, dict] | None = None) -> None:
         super().__init__(f"{len(faces)} gridded face(s)")
         self.faces = faces
+        self.why = why or {}
 
 
 class _Unmap(Exception):
@@ -1021,6 +1022,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         unmap: set[int] = set()
         unmapped = 0
         no_cut: set[int] = set()
+        refused: dict[int, dict] = {}
         while True:
             try:
                 mesh, applied = _mesh_once(Path(brep), record, owners, float(mm_per_unit), log, target=target,
@@ -1031,6 +1033,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
             except _NoCut as nc:
                 # SHMESH-47b: those faces' grids left out (their joined faces whole); counts as a round of SHMESH-40
                 no_cut |= nc.faces
+                refused.update(nc.why)
                 unmapped += 1
                 if brep != unseated and not resplined:
                     # their holes drawn again for the O-grids go back to the CAD's own: the next pass draws again only
@@ -1118,6 +1121,9 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
             applied["quality"]["resplined_faces"] = resplined
             applied["quality"].setdefault("structure", {})["grids_freed"] = len(unmap)
             applied["quality"]["structure"]["holes_redrawn"] = reseated
+            # SHMESH-48f/49g: every face a check refused (its grid or its rings and strips), why, with its numbers
+            applied["quality"]["structure"]["refused"] = [
+                {"face": owners[k] if 0 <= k < len(owners) else str(k), **v} for k, v in sorted(refused.items())]
             # SHMESH-49g: each round plate meshed in rings and strips, with its triangles in the mesh delivered
             tri_at = applied.pop("_polar_tri_at", {})
             was_judged = applied.pop("_polar_judged", None)
@@ -1459,6 +1465,16 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             in_grid = {abs(int(c)) for t in grids for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)}
             open_ = {c for c in cut_curves - in_grid - set(known)
                      if any(int(x) in tag_of for x in gmsh.model.getAdjacencies(1, c)[0])}
+            # (and a curve of the CAD's that only a free cell of a gridded face or round plate bounds - a central
+            # opening inside a bolt circle's paved band: its count makes that band even all round, SHMESH-49j)
+            annuli = {w.annulus for w in rings}
+            for f_ in sorted(set(grid_cells) - set(grids) - annuli):
+                if f_ not in tag_of:
+                    continue
+                for _d, x in gmsh.model.getBoundary([(2, f_)], oriented=False):
+                    ax_ = abs(int(x))
+                    if ax_ not in known and ax_ not in in_grid and len(gmsh.model.getAdjacencies(1, ax_)[0]) == 1:
+                        open_.add(ax_)
             bound: dict[int, list[int]] = {}
             for c_piece in sorted(open_):
                 for f_ in (int(x) for x in gmsh.model.getAdjacencies(1, c_piece)[0] if int(x) in tag_of):
@@ -1587,6 +1603,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             # SHMESH-47b: a gridded face whose lines cut a joined face into triangles or elements past the solver's
             # own limits - there, or in its own free cells - is left ungridded on the next pass (its neighbours whole)
             hurt: set[int] = set()
+            why_cut: dict[int, dict] = {}
             # the tria angle lines a free box's one triangle must meet: the user's, else 30 and 120 degrees
             angle_aims = [(key, op, target) for shape, key, op, target, *_r in lim.aims
                           if shape == "tria" and key in ("min_angle_tria", "max_angle_tria")]
@@ -1604,6 +1621,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                         if et == 2 or (et == 3 and shell_quality._quad_past(
                                 shell_quality.quad_measures(xyz, c_.reshape(-1, 4))).any()):
                             hurt.add(kg)
+                            why_cut[kg] = {"kind": "grid", "why": "its lines cut a joined face into triangles or "
+                                                                  "elements past the solver's limits",
+                                           "at_mm": [round(float(x), 1) for x in xyz[c_[:4]].mean(axis=0)]}
                     if kg in hurt:
                         break
                 if kg in hurt:
@@ -1635,8 +1655,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                         hurt.add(kg)
                 if n_tri > BOX_TRIA_SHARE * max(n_face, 1):
                     hurt.add(kg)
+                if kg in hurt and kg not in why_cut:
+                    why_cut[kg] = {"kind": "grid", "why": "its free cells: a box with more than one triangle, a triangle "
+                                                          "past the tria angle lines, a quad past the solver's limits "
+                                                          "or triangles over BOX_TRIA_SHARE",
+                                   "triangles": n_tri, "elements": n_face}
             if hurt:
-                raise _NoCut(hurt)
+                raise _NoCut(hurt, why_cut)
         if check_maps and grids:
             # SHMESH-40: a grid with a quad past the solver's own limits (a face mapped where its shape bends the
             # rows too far) is meshed free on the next pass
@@ -1922,12 +1947,21 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         # SHMESH-49g: a round plate whose rings and strips end with more than POLAR_TRIAS triangles on it (the
         # clean-up split quads past the limits there) is meshed on the next pass with its free-face washers
         on_plate = Counter(int(k) for k in t_face if int(k) in judged)
-        # (a gridded face: one triangle per free box, under BOX_TRIA_SHARE of its elements - SHMESH-48e/48f)
-        boxes_on = Counter(int(w.owner) for w in boxed if not w.info.get("kind", "").startswith("ring in a sector"))
         n_on = Counter(int(k) for k in list(q_face) + list(t_face) if int(k) in judged)
-        hurt_p = {k for k, n in on_plate.items()
-                  if (n > ST.POLAR_TRIAS if k in polar_faces_made else
-                      (n > boxes_on.get(k, 0) or n > BOX_TRIA_SHARE * max(n_on.get(k, 1), 1)))}
+        # (a round plate: at most POLAR_TRIAS triangles; a gridded face is held to the lines only - its free
+        # boxes' triangles were there before it was judged)
+        hurt_p = {k for k, n in on_plate.items() if k in polar_faces_made and n > ST.POLAR_TRIAS}
+        # SHMESH-49g/48f: why each face is refused, with its numbers (the record lists them)
+        why_p: dict[int, dict] = {}
+        tfk = np.asarray(t_face, dtype=np.int64)
+        for k in judged:
+            at_ = [[round(float(x), 1) for x in xyz[T[j]].mean(axis=0)] for j in np.nonzero(tfk == k)[0][:20]]
+            why_p[k] = {"kind": "rings and strips" if k in polar_faces_made else "grid",
+                        "triangles": int(on_plate.get(k, 0)), "triangles_at_mm": at_,
+                        "triangles_allowed": int(ST.POLAR_TRIAS) if k in polar_faces_made else None,
+                        "elements": int(n_on.get(k, 0))}
+            if k in hurt_p:
+                why_p[k]["why"] = "too many triangles"
         # ... or with an element on it past the solver's own limits, or an edge over the user's longest edge (a line
         # the report holds to every element): the plate's free-face washers met them
         high_p = (sizing or {}).get("high_mm")
@@ -1941,8 +1975,16 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 if not len(mine):
                     continue
                 longest = np.linalg.norm(xyz[mine] - xyz[np.roll(mine, -1, axis=1)], axis=2).max()
-                if past_fn(measure(xyz, mine)).any() or (high_p is not None and float(longest) > float(high_p)):
+                past_ = past_fn(measure(xyz, mine))
+                if past_.any():
                     hurt_p.add(kp)
+                    why_p[kp].update(why="elements past the solver's own limits", past=int(past_.sum()),
+                                     past_at_mm=[[round(float(x), 1) for x in xyz[e].mean(axis=0)]
+                                                 for e in mine[past_][:10]])
+                elif high_p is not None and float(longest) > float(high_p):
+                    hurt_p.add(kp)
+                    why_p[kp].update(why="an edge over the user's longest edge", line="max_edge",
+                                     worst=round(float(longest), 3), limit=float(high_p))
         if requirements and requirements.get("limits"):
             # ... or a quality line of the user's not met on the plate's own elements (the report's own rule)
             import types as _types
@@ -1956,9 +1998,12 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     row_ = SR._limit_row(lim_, sub, plate_q, plate_t)
                     if row_.get("applied") and row_.get("met") is not True:
                         hurt_p.add(kp)
+                        why_p[kp].update(why="a quality line not met on its own elements",
+                                         line=str(lim_.get("measure")), outside=row_.get("outside"),
+                                         outside_pct=row_.get("outside_pct"), worst=row_.get("worst"))
                         break
         if hurt_p:
-            raise _NoCut(hurt_p)
+            raise _NoCut(hurt_p, {k: why_p[k] for k in hurt_p})
     mids = {m["id"]: m for m in record["mids"]}
     pairs = {p["id"]: p for p in record["pairs"]}
     mid_of = [owners[k] for k in face_of.tolist()]
