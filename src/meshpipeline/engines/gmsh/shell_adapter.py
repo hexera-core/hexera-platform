@@ -1268,6 +1268,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 names=names, before=list(hole_before),
                 across=ST.WASHER_ACROSS_USER if (sizing or {}).get("global_mm") is not None else ST.WASHER_ACROSS,
                 low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"))
+            # SHMESH-45f: square holes take a square ring (mapped below), drawn on their own
+            squares = [w for w in washers if w.corners]
+            washers = [w for w in washers if not w.corners]
             if ST.BLOCKS and ST.MAPPED and structure != "free":
                 # SHMESH-41: a face whose holes all have washers is cut into a grid of cells, mapped below
                 gridded, boxed, block_preset, block_holes, block_skipped = ST.block_faces(
@@ -1285,6 +1288,14 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                                                     "out one circle on a trial copy)")
                 washers = [w for w in washers if w not in lost]
             rings = drawn + boxed
+            if squares and ST.MAPPED:
+                sq_drawn, sq_preset = ST.imprint_squares(gmsh, squares, tag_of, cuts=cut_curves)
+                block_preset.update(sq_preset)
+                lost_sq = [w for w in squares if w not in sq_drawn]
+                if lost_sq:
+                    washer_skipped["its square ring would cut another edge"] = len(lost_sq)
+                washers = washers + sq_drawn
+                block_holes |= {c for w in sq_drawn for c in w.hole}
             for w in gridded:
                 w.info["kind"] = "o-grid in a gridded face"
             for w in boxed:
@@ -1462,13 +1473,31 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                           for x in gmsh.model.getAdjacencies(1, abs(c))[0] if int(x) in grids} - bad
                 if not beside:
                     continue
+                # (only the grids along whose shared curve such an element stands: SHMESH-45f - a square washer's
+                # strips were all freed for one poor element across the face)
+                past_nodes: set[int] = set()
                 types, _tags, conns = gmsh.model.mesh.getElements(2, t)
                 for et, conn in zip(types, conns, strict=True):
                     c_ = index[np.asarray(conn, dtype=np.int64)]
-                    if et == 3 and shell_quality._quad_past(shell_quality.quad_measures(xyz, c_.reshape(-1, 4))).any():
-                        bad |= beside
-                    elif et == 2 and shell_quality._tria_past(shell_quality.tria_measures(xyz, c_.reshape(-1, 3))).any():
-                        bad |= beside
+                    if et == 3:
+                        el = c_.reshape(-1, 4)
+                        hit_ = shell_quality._quad_past(shell_quality.quad_measures(xyz, el))
+                    elif et == 2:
+                        el = c_.reshape(-1, 3)
+                        hit_ = shell_quality._tria_past(shell_quality.tria_measures(xyz, el))
+                    else:
+                        continue
+                    past_nodes |= set(el[hit_].ravel().tolist())
+                if not past_nodes:
+                    continue
+                for g in sorted(beside):
+                    shared_c = ({abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)}
+                                & {abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, g)], oriented=False)})
+                    for c in shared_c:
+                        on_c, _x, _p = gmsh.model.mesh.getNodes(1, c, includeBoundary=True)
+                        if past_nodes & set(index[np.asarray(on_c, dtype=np.int64)].tolist()):
+                            bad.add(g)
+                            break
             if bad:
                 raise _Unmap(bad)
         quads, trias, q_face, t_face = [], [], [], []

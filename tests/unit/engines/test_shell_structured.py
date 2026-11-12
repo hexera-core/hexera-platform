@@ -446,3 +446,48 @@ def test_a_large_hole_needs_the_users_size_for_a_washer():
     assert rows == 2 and 2 * math.pi * 23.0 / n >= 5.0 and (ratio - 1) * 23.0 / rows >= 5.0
     assert 2 * math.pi * 23.0 * ratio / n <= 0.98 * 15.0
     assert ST.WASHER_ACROSS_USER * 10.0 > 46.07 > ST.WASHER_ACROSS * 10.0
+
+
+def test_a_square_hole_gets_a_square_washer(tmp_path):
+    """SHMESH-45f, class A of a real column: four-sided holes of straight edges (square, diamond; our extraction keeps
+    a round hole round - checked on plain, split, countersunk and counterbored 21 mm holes in a 19 mm plate - so these
+    are the CAD's own) get a square ring, mapped, inside the user's edges."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    from meshpipeline.cad import midsurface as ms
+
+    shape = BRepPrimAPI_MakeBox(gp_Pnt(-175, -175, 0), 350, 350, 19.05).Shape()
+    for (x, y), turn in (((-110, -110), 0), ((110, -110), 0), ((-110, 110), 45), ((110, 110), 45)):
+        poly = BRepBuilderAPI_MakePolygon()
+        for j in range(4):
+            a = math.radians(turn + 45 + 90 * j)
+            poly.Add(gp_Pnt(x + 9.3 * math.sqrt(2) * math.cos(a), y + 9.3 * math.sqrt(2) * math.sin(a), -1))
+        poly.Close()
+        tool = BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(poly.Wire()).Face(), gp_Vec(0, 0, 21)).Shape()
+        shape = BRepAlgoAPI_Cut(shape, tool).Shape()
+    rec, surf = ms.extract(shape, mm_per_unit=1.0)
+    brep = tmp_path / "square.brep"
+    BRepTools.Write_s(surf, str(brep))
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert s["washers"] == 4 and s["no_washer"] == {}, s["hole_list"]
+    assert all(h["shape"] == "square" and h["kind"] == "square ring in a free face" for h in s["hole_list"])
+    q = applied["quality"]
+    assert q["valid"] and q["within_nastran"]
+    rows = {r["field"]: r for r in applied["requirements"]["rows"]}
+    assert rows["max_edge"]["met"] is True
+    # each hole's ring is a grid: every element touching a hole is a quad, and the plate's elements round the rings
+    # are no worse for it (inside Nastran's limits above)
+    pairs = SS._edges(mesh)
+    loops = SS._loops(pairs[0][pairs[1] == 1])
+    assert len(loops) == 5
+    holes = sorted(loops, key=len)[:4]
+    tri_nodes = {int(v) for t in mesh.trias for v in t}
+    # (a ring's strips beside a poor element of the free field are meshed free again, SHMESH-40's check: here at most
+    # one hole's)
+    assert sum(1 for lp in holes if not (set(lp) & tri_nodes)) >= 3
+    assert applied["quality"]["structure"]["mapped_faces"] >= 12

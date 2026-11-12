@@ -59,6 +59,8 @@ class Washer:
     rows: int
     out_mm: float                   # the ring's outer element length (mm)
     shrunk: bool = False
+    corners: list = field(default_factory=list)  # SHMESH-45f: a square (four-sided) hole's corners, in loop order
+    side_counts: list = field(default_factory=list)
     ring: int = 0                   # after the imprint: the ring's circle
     annulus: int = 0                # ... the surface between hole and ring
     hole_after: list[int] = field(default_factory=list)
@@ -157,6 +159,165 @@ def _loop_kind(gmsh, curves: list[int]) -> str:
     return "a loop of " + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items()))
 
 
+def _frame_points(w: Washer) -> tuple[list[np.ndarray], list[tuple[np.ndarray, np.ndarray]]]:
+    """SHMESH-45f: a square washer's lines - (the ring's outer corners Q_i, the 4 short lines that carry each hole side
+    on past its far corner out to the ring). The ring is four strips like a pinwheel, each a rectangle along one hole
+    side and on past its corner, every corner square: no cell with a 45 degree corner."""
+    P = w.corners
+    c = w.centre
+    width = w.R - w.r
+    d = [(P[(i + 1) % 4] - P[i]) / np.linalg.norm(P[(i + 1) % 4] - P[i]) for i in range(4)]
+    nrm = []
+    for i in range(4):
+        n_i = np.cross(d[i], w.normal)
+        if float(n_i @ (0.5 * (P[i] + P[(i + 1) % 4]) - c)) < 0:
+            n_i = -n_i
+        nrm.append(n_i / np.linalg.norm(n_i))
+    Q = []
+    for i in range(4):
+        A = np.array([[float(nrm[i - 1] @ d[i - 1]), float(nrm[i - 1] @ d[i])],
+                      [float(nrm[i] @ d[i - 1]), float(nrm[i] @ d[i])]])
+        try:
+            st = np.linalg.solve(A, np.array([width, width]))
+        except np.linalg.LinAlgError:
+            st = np.array([0.0, 0.0])
+        Q.append(P[i] + st[0] * d[i - 1] + st[1] * d[i])
+    ext = []
+    for i in range(4):
+        j = (i + 1) % 4
+        t = width / max(float(d[i] @ nrm[j]), 1e-9)          # side i carried on past P_j to side j's offset
+        ext.append((P[j], P[j] + t * d[i]))
+    return Q, ext
+
+
+def _square_plan(gmsh, curves: list[int], face_mm: float, mm: float, hole_size, owner: int, low_mm, high_mm,
+                 across: float):
+    """SHMESH-45f: a square washer for a four-sided hole of straight edges (a square or diamond hole, a carriage
+    bolt's): each side's count from the plan's size round the hole (2 or more), the ring one row of near-square cells
+    (as wide as a side's segment, inside the user's edges and the face's size) - four strips along the sides and four
+    square corner cells. A Washer (corners set), or why not (words)."""
+    if len(curves) != 4 or any(gmsh.model.getType(1, c) != "Line" for c in curves):
+        return "not a four-sided hole of straight edges"
+    ends = [_samples(gmsh, c, 1) for c in curves]
+    corners = []
+    for i in range(4):
+        a_, b_ = ends[i], ends[(i + 1) % 4]
+        corners.append(min(((float(np.linalg.norm(x - y)), x) for x in a_ for y in b_), key=lambda z: z[0])[1])
+    P = np.array(corners)
+    c = P.mean(axis=0)
+    sides = [float(np.linalg.norm(P[(i + 1) % 4] - P[i])) for i in range(4)]
+    n = np.cross(P[1] - P[0], P[2] - P[1])
+    if float(np.linalg.norm(n)) <= 0:
+        return "a degenerate four-sided hole"
+    n /= float(np.linalg.norm(n))
+    for i in range(4):
+        u1, u2 = P[i - 1] - P[i], P[(i + 1) % 4] - P[i]
+        ang = math.degrees(math.acos(max(-1.0, min(1.0, float(u1 @ u2) / (np.linalg.norm(u1) * np.linalg.norm(u2))))))
+        if not (70.0 <= ang <= 110.0) or float(np.cross(P[i] - P[i - 1], P[(i + 1) % 4] - P[i]) @ n) <= 0:
+            return "a four-sided hole that is not near square (a corner past 70..110 degrees)"
+    if max(sides) > 2.0 * min(sides):
+        return "a four-sided hole more than twice as long as wide"
+    diag = 2 * float(np.linalg.norm(P - c, axis=1).max())
+    if diag * mm > across * face_mm:
+        return f"larger than the washer limit ({across:g} element sizes across)"
+    r_mean = float(np.linalg.norm(P - c, axis=1).mean())
+    h_hole = hole_size(r_mean * mm, owner)
+    counts = [max(2, round(x * mm / max(h_hole, 1e-9))) for x in sides]
+    seg = float(np.mean([x * mm / m for x, m in zip(sides, counts, strict=True)]))
+    width = min(seg, face_mm)
+    if high_mm is not None:
+        width = min(width, 0.98 * high_mm)
+    if low_mm is not None:
+        width = max(width, float(low_mm))
+    w = Washer(face=0, owner=owner, hole=list(curves), centre=c, normal=n,
+               xaxis=(P[0] - c) / np.linalg.norm(P[0] - c), r=r_mean, R=r_mean + width / mm, n=sum(counts), rows=1,
+               out_mm=max(seg, width))
+    w.corners = [np.asarray(x) for x in P]
+    w.side_counts = counts
+    return w
+
+
+def imprint_squares(gmsh, washers: list[Washer], tag_of: dict[int, int],
+                    cuts: set[int] | None = None) -> tuple[list[Washer], dict[int, int]]:
+    """SHMESH-45f: each square washer's ring drawn on its face (_frame_points), tried on a copy first: the strips and
+    the corner cells are four-sided, so map_faces maps them - a hole side and the ring side beside it carry the side's
+    count, every short line one (the row). Returns (the washers drawn, {curve: count}); the ring's own lines go into
+    `cuts` (no CAD edge: their nodes relax in the face's plane)."""
+    occ = gmsh.model.occ
+    made: list[Washer] = []
+    preset: dict[int, int] = {}
+    by_face: dict[int, list[Washer]] = {}
+    for w in washers:
+        by_face.setdefault(w.face, []).append(w)
+
+    def tools(ws: list[Washer]) -> list[tuple[int, int]]:
+        out = []
+        for w in ws:
+            Q, ext = _frame_points(w)
+            qp = [occ.addPoint(*[float(x) for x in q]) for q in Q]
+            for i in range(4):
+                out.append((1, occ.addLine(qp[i], qp[(i + 1) % 4])))
+            for p0, p1 in ext:
+                out.append((1, occ.addLine(occ.addPoint(*[float(x) for x in p0]), occ.addPoint(*[float(x) for x in p1]))))
+        return out
+
+    for t, ws in sorted(by_face.items()):
+        copy = occ.copy([(2, t)])
+        _o, cmap = occ.fragment(copy, tools(ws))
+        occ.synchronize()
+        cells = [x for d, x in cmap[0] if d == 2]
+        ok = len(cells) == 1 + 4 * len(ws)
+        occ.remove([(2, x) for x in cells], recursive=True)
+        occ.synchronize()
+        _remove_loose(gmsh, {c for got in cmap[1:] for d, c in got if d == 1})
+        if not ok:
+            for w in ws:
+                w.info.update(washer=False, why="its square ring would cut another edge")
+            continue
+        _o, omap = occ.fragment([(2, t)], tools(ws))
+        occ.synchronize()
+        k = tag_of.pop(t)
+        new = [x for d, x in omap[0] if d == 2]
+        for x in new:
+            tag_of[x] = k
+        _remove_loose(gmsh, {c for got in omap[1:] for d, c in got if d == 1})
+        curves = sorted({abs(int(c)) for x in new for _d, c in gmsh.model.getBoundary([(2, x)], oriented=False)})
+        for w in ws:
+            Q, ext = _frame_points(w)
+            P = w.corners
+            tol = 1e-6 * max(1.0, float(w.R))
+            width = w.R - w.r
+            mids = [0.5 * (P[i] + P[(i + 1) % 4]) for i in range(4)]
+
+            def on_seg(x, p0, p1, tol=tol) -> bool:
+                d_ = p1 - p0
+                tt = float((x - p0) @ d_) / max(float(d_ @ d_), 1e-300)
+                return -1e-9 <= tt <= 1 + 1e-9 and float(np.linalg.norm(p0 + tt * d_ - x)) <= tol
+
+            for c in curves:
+                a_, b_ = _samples(gmsh, c, 1)
+                ln = float(np.linalg.norm(b_ - a_))
+                hole_side = next((i for i in range(4) if on_seg(a_, P[i], P[(i + 1) % 4])
+                                  and on_seg(b_, P[i], P[(i + 1) % 4])), None)
+                if hole_side is not None:
+                    preset[c] = w.side_counts[hole_side]
+                    continue
+                ring = any(on_seg(a_, Q[i], Q[(i + 1) % 4]) and on_seg(b_, Q[i], Q[(i + 1) % 4]) for i in range(4))
+                short = any(on_seg(a_, p0, p1) and on_seg(b_, p0, p1) for p0, p1 in ext)
+                if not (ring or short):
+                    continue
+                if short or abs(ln - width) <= 0.1 * width:
+                    preset[c] = w.rows                       # a strip's end
+                else:
+                    near = int(np.argmin([float(np.linalg.norm(0.5 * (a_ + b_) - m)) for m in mids]))
+                    preset[c] = w.side_counts[near] + w.rows  # a strip's outer side: its hole side and the corner
+                if cuts is not None:
+                    cuts.add(c)
+            w.info["kind"] = "square ring in a free face"
+            made.append(w)
+    return made, preset
+
+
 def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_size, mm: float,
                  names: dict[int, tuple[str, str]] | None = None, before: list | None = None,
                  across: float | None = None, low_mm: float | None = None, high_mm: float | None = None
@@ -218,7 +379,15 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
             got = _circle_of(gmsh, cl)
             if got is None:
                 info["loop"] = _loop_kind(gmsh, cl)
-                no(info, "not round")
+                sq = _square_plan(gmsh, cl, size_mm[t], mm, hole_size, k, low_mm, high_mm,
+                                  across if across is not None else WASHER_ACROSS)
+                if isinstance(sq, str):
+                    no(info, f"not round: {sq}")
+                    continue
+                info.update(planned_round=sum(sq.side_counts), planned_rows=sq.rows,
+                            planned_width_mm=float(f"{(sq.R / sq.r - 1) * sq.r * mm:.4g}"), shape="square")
+                sq.face, sq.owner, sq.hole, sq.info = t, k, cl, info
+                found.append(sq)
                 continue
             centre, r, n, first = got
             limit = across if across is not None else WASHER_ACROSS
@@ -1149,4 +1318,5 @@ def reseat_holes(brep, out) -> tuple[int, list]:
     return done, redrawn
 
 
-__all__ = ["WASHERS", "MAPPED", "Washer", "plan_washers", "imprint", "set_counts", "ring_mesh", "map_faces", "block_faces", "reseat_holes"]
+__all__ = ["WASHERS", "MAPPED", "Washer", "plan_washers", "imprint", "set_counts", "ring_mesh", "map_faces", "block_faces", "reseat_holes",
+           "imprint_squares"]
