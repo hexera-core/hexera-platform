@@ -1575,8 +1575,15 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             gmsh.model.occ.synchronize()
             cells = [s for d, s in cmap[0] if d == 2]
             cut_curves = {c for got in cmap[1:] for d, c in got if d == 1}
-            small = any(min(float(gmsh.model.occ.getMass(1, abs(c))) for _d, c in
-                            gmsh.model.getBoundary([(2, s)], oriented=False)) < CELL_MIN * h for s in cells)
+            # SHMESH-48j: which of the three causes fired, with its numbers, goes in the reason
+            causes: list[str] = []
+            shortest = min(((float(gmsh.model.occ.getMass(1, abs(c))), abs(int(c))) for s in cells
+                            for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)), default=(math.inf, 0))
+            small = shortest[0] < CELL_MIN * h
+            if small:
+                mid_ = _samples(gmsh, shortest[1], 2)[1] * mm
+                causes.append(f"a cell edge {shortest[0] * mm:.3g} mm, under {CELL_MIN * h_mm:.3g} mm, at "
+                              f"({mid_[0]:.0f}, {mid_[1]:.0f}, {mid_[2]:.0f}) mm")
             # and every ring came out as drawn: one circle round a free box's hole, four quarters round an O-grid's
             trial = sorted({abs(int(c)) for s in cells for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
             # a line that ends inside an edge the face shares with another face cuts that edge: the other face is cut
@@ -1610,6 +1617,9 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             others = sorted({int(n) for c in hit for n in gmsh.model.getAdjacencies(1, c)[0] if int(n) != t})
             if any(n in by_face or n not in tag_of for n in others) or any(w.face in others for w in washers):
                 small = True        # a neighbour with washers of its own is left as it is
+                causes.append("a line would cut an edge shared with a face with holes of its own")
+            elif hit and not spoilt and small and not causes:
+                causes.append("a line would cut a shared edge")
             for w, p in zip(ws, plans, strict=True):
                 if w.corners:
                     continue
@@ -1618,12 +1628,17 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                                                       <= 1e-4 * R)]
                 if len(on_ring) != (4 if p is not None else 1):
                     small = True
+                    if not any(x.startswith("a ring") for x in causes):
+                        c_ = w.centre * mm
+                        causes.append(f"a ring came out in {len(on_ring)} pieces, not {4 if p is not None else 1}, "
+                                      f"round the {2 * w.r * mm:.3g} mm hole at ({c_[0]:.0f}, {c_[1]:.0f}, "
+                                      f"{c_[2]:.0f}) mm")
             gmsh.model.occ.remove([(2, s) for s in cells], recursive=True)
             gmsh.model.occ.synchronize()
             _remove_loose(gmsh, cut_curves)
             if small:
                 no("its lines cut a joined face into poor elements on a first mesh" if spoilt
-                   else "a cell would come out too small, a ring or a shared edge cut")
+                   else "a cell would come out too small, a ring or a shared edge cut: " + "; ".join(causes))
                 continue
             edge_pts = np.vstack([_samples(gmsh, c, 64) for cl in loops for c in cl])
             if others:
