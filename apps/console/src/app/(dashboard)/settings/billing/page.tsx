@@ -131,13 +131,16 @@ export default async function BillingPage({
         </div>
       ) : null}
 
-      <p className="page__sub">
-        {subscription === null
-          ? "Current plan unavailable"
-          : `Current plan · ${planLabel(paying ? subscription.plan : "")} — ${subscriptionSummary(subscription)}${currentPlan ? ` ${currentPlan.included_credits.toLocaleString()} credits a month.` : ""}`}
-      </p>
-
       <div className="summary-grid">
+        <div className="metric-card">
+          <p className="label">Current plan</p>
+          <b>{subscription === null ? "Unavailable" : planLabel(paying ? subscription.plan : "")}</b>
+          <span>
+            {subscription === null
+              ? "Plan data unavailable"
+              : `${subscriptionSummary(subscription)}${currentPlan ? ` ${currentPlan.included_credits.toLocaleString()} credits a month.` : ""}`}
+          </span>
+        </div>
         <div className="metric-card">
           <p className="label">Credits used</p>
           <b>{activity === null ? "—" : formatCredits(spent)}</b>
