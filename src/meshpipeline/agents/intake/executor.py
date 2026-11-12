@@ -89,6 +89,19 @@ def fea_path(st) -> bool:
     return bool(said) and pm.reading_for(said).route == pm.ROUTE_FEA
 
 
+def fea_part_kind(args):
+    """A STRUCTURAL request's input kind is the part itself ("solid-body"), whatever the model wrote.
+    The FEA path meshes the uploaded part as it is - a solid, or a surface file the shell route reads
+    (engines/surface_run) - and no engine meshes a "body-surface" for structural work, so that word
+    only ever refused a valid request. The model chose it now and then for a surface STEP (dev-areen,
+    12 Nov 2026: one turn repaired itself, the next told the user "requires a Solid body or Planar
+    domain"). A flat 2D "planar-domain" is a real structural input and is kept."""
+    if (isinstance(args, dict) and str(args.get("purpose") or "") == "structural"
+            and str(args.get("input_kind") or "") == "body-surface"):
+        return {**args, "input_kind": "solid-body"}
+    return args
+
+
 def _normalize_declared_patches(args: dict):
     """The declared patches as every later layer will read them. The PURPOSE decides which roles a
     word may mean and whether a ground plane exists (only an external flow has a far-field box
@@ -313,6 +326,7 @@ class IntakeToolExecutor:
         # is what keeps that split from leaking into the rest of the system.
         from meshpipeline.agents.intake.vocabulary import normalize_tool_args
         args = normalize_tool_args(args)
+        args = fea_part_kind(args)
         # THE DECLARED PATCHES, at the same boundary and for the same reason: a name a person typed
         # ("car wall") becomes the spelling a mesher can write ("car_wall"), a name a mesher keeps
         # for itself ("outer") becomes the user's own, a boundary word becomes the role it means
