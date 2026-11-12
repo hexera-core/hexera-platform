@@ -81,8 +81,16 @@ def words(rec: dict) -> str:
     sheets = int(s.get("sheets") or 1)
     if sheets > 1:
         said.append(f"The file's {sheets} separate sheets are {sheets} parts, each with its own property.")
-    said += clean_words(s.get("cleaned"))
-    said += gap_words(int(rec.get("open_edges") or 0), s.get("cleaned"))
+    closing = rec.get("mesh_close") if isinstance(rec.get("mesh_close"), dict) else None
+    said += clean_words(s.get("cleaned"), closing)
+    if _told_by_place(s.get("cleaned"), closing):
+        # SURF-12 / SURF-13: one sentence per place - what was done there, by how much, where - then what is open
+        said += place_words(s.get("cleaned"), closing)
+        n_open = int(rec.get("open_edges") or 0)
+        if n_open:
+            said.append(f"The surfaces still do not meet at {_count(n_open, 'place')}: the shell has gaps there.")
+    else:
+        said += gap_words(int(rec.get("open_edges") or 0), s.get("cleaned"))
     if s.get("others_mm"):
         said.append("Your notes also name " + ", ".join(_mm(v) for v in s["others_mm"]) + ": one thickness is used for "
                     "the whole file; change a part's on its own property line.")
@@ -107,21 +115,106 @@ def _gap(mm: float) -> str:
     return f"{float(mm):.2g} mm"
 
 
-def clean_words(cleaned: dict | None) -> list[str]:
-    """SURF-8..10: WHAT THE CLEAN-UP DID, one short sentence each, nothing when it did nothing."""
+#: SURF-13: where the reach came from, as the words say it
+REACH_WORDS = {"notes": "the gap your notes allow", "asked": "the element size you asked for",
+               "run": "the element size of this mesh", "part": "1/100 of the part's size"}
+#: the most places told one by one (the rest are in the run's record)
+MAX_TOLD = 12
+
+
+def _told_by_place(cleaned: dict | None, closing: dict | None) -> bool:
+    """Whether the places are told one by one (SURF-12/13: the clean-up ran and named its places, and the user did not
+    ask for the surfaces to be kept as drawn - then only stitching ran, and it is told as before)."""
+    c = cleaned or {}
+    return "places" in c and c.get("stitch") != "off" and not (c.get("mend") or {}).get("off")
+
+
+def _at(at) -> str:
+    return "(" + ", ".join(f"{round(float(v), 1) + 0.0:g}" for v in list(at or [])[:3]) + ") mm"
+
+
+def _between(faces: list) -> str:
+    """ "Face_3 and Face_7", "Face_3 and its 3 neighbours" (a face lifted off all its neighbours)."""
+    pairs = [list(f) for f in faces or [] if len(f) == 2]
+    if not pairs:
+        return "two faces"
+    if len(pairs) == 1:
+        return f"{pairs[0][0]} and {pairs[0][1]}"
+    names = [n for f in pairs for n in f]
+    common = max(sorted(set(names)), key=names.count)
+    others = sorted({n for f in pairs for n in f if n != common})
+    return f"{common} and its {len(others)} neighbours" if names.count(common) == len(pairs) else \
+        " and ".join(sorted(set(names)))
+
+
+def place_words(cleaned: dict | None, closing: dict | None) -> list[str]:
+    """SURF-12 / SURF-13: ONE PLAIN SENTENCE PER PLACE: what was done there, by how much and where - a face extended,
+    trimmed or its edge moved (the surfaces changed), the faces stitched, the gap closed in the mesh - or why it is
+    left open. At most MAX_TOLD; the rest are counted and are in the run's record."""
+    c = cleaned or {}
+    m = c.get("mend") or {}
+    out: list[str] = []
+    for r in m.get("changes") or []:
+        a, b = (list(r.get("faces") or []) + ["a face", "its neighbour"])[:2]
+        by = _gap(float(r.get("moved_mm") or r.get("gap_mm") or 0.0))
+        how = str(r.get("how") or "")
+        if how.startswith("extended"):
+            did = f"{a} was extended {by} along its own surface to meet {b}"
+        elif how.startswith("trimmed"):
+            did = f"{a} was trimmed back {by} to the edge of {b}"
+        else:
+            did = f"the edge of {a} was moved {by} onto {b}"
+        out.append(f"At {_at(r.get('at_mm'))}, {did}.")
+    for p in c.get("stitched_places") or []:
+        out.append(f"At {_at(p.get('at_mm'))}, the faces were stitched together across a {_gap(float(p.get('gap_mm') or 0.0))} gap.")
+    reach = float((closing or {}).get("reach_mm") or 0.0)
+    rows = (closing or {}).get("places")
+    if rows is None:
+        # nothing went to the mesh (no mesh made, or nothing left): the places still open, as the reading has them
+        rows = [{"at_mm": p.get("at_mm"), "gap_mm": p.get("gap_mm"), "faces": p.get("faces"), "closed": False,
+                 "why": ""} for p in c.get("places") or []]
+    for r in rows:
+        gap = _gap(float(r.get("gap_mm") or 0.0))
+        where = f"At {_at(r.get('at_mm'))}, the {gap} gap between {_between(r.get('faces') or [])}"
+        if r.get("closed"):
+            n = int(r.get("joined") or 0) + int(r.get("put_in") or 0)
+            out.append(f"{where} was closed in the mesh: {n} nodes joined across it, none moved more than "
+                       f"{_gap(float(r.get('moved_mm') or 0.0))}.")
+            continue
+        why = str(r.get("why") or "")
+        if why == "wider than the reach":
+            why = (f"it is wider than {REACH_WORDS.get(str((closing or {}).get('reach_from')), 'the reach')} "
+                   f"({_gap(reach)})")
+        out.append(f"{where} is left open{': ' + why if why else ''}.")
+    if len(out) > MAX_TOLD:
+        extra = len(out) - (MAX_TOLD - 1)
+        out = out[:MAX_TOLD - 1] + [f"{extra} more places are listed in the run's record."]
+    return out
+
+
+def clean_words(cleaned: dict | None, closing: dict | None = None) -> list[str]:
+    """SURF-8..10: WHAT THE CLEAN-UP DID, one short sentence each, nothing when it did nothing. `closing`: what the
+    mesh closed (SURF-13), counted with the rest."""
     c = cleaned or {}
     out = []
+    by_place = _told_by_place(c, closing)
     if c.get("duplicates"):
         n = int(c["duplicates"])
         out.append(f"{_count(n, 'face was', 'faces were')} in the file twice: the second copy of {'it' if n == 1 else 'each'} is left out.")
-    if c.get("closed_places"):
+    in_mesh = int((closing or {}).get("closed") or 0)
+    if c.get("closed_places") or in_mesh:
         # SURF-8: said in PLACES, the count the record and gap_words use: places before - closed = places after.
         # (Joins inside a place that stays open - part of its length - are not a place closed.)
         asked = (f", as your notes asked (up to {_gap(c['limit_mm'])})"
                  if c.get("limit_from") == "notes" and not c.get("fell_back") else "")
         widest = float(c.get("closed_places_widest_mm") or 0.0)
-        out.append(f"Closed {_closed_of(int(c['closed_places']), int(c.get('places_before') or 0))} where "
-                   f"the surfaces did not meet{f', the widest {_gap(widest)}' if widest > 0 else ''}{asked}.")
+        k = int(c.get("closed_places") or 0) + in_mesh
+        if by_place:
+            out.append(f"Closed {_closed_of(k, int(c.get('places_before') or 0))} where the surfaces did not meet"
+                       f"{asked}.")
+        else:
+            out.append(f"Closed {_closed_of(k, int(c.get('places_before') or 0))} where "
+                       f"the surfaces did not meet{f', the widest {_gap(widest)}' if widest > 0 else ''}{asked}.")
     if c.get("pinholes"):
         asked = ", as your notes asked" if c.get("holes_from") == "notes" else ""
         k = int(c["pinholes"])
@@ -129,7 +222,7 @@ def clean_words(cleaned: dict | None) -> list[str]:
         out.append(f"Filled {what}, {'' if k == 1 else 'the largest '}{_gap(c.get('pinhole_widest_mm') or 0.0)} "
                    f"across{asked}.")
     m = c.get("mend") or {}
-    if m.get("closed"):
+    if m.get("closed") and not by_place:
         how = [f"{int(m[k])} {w}" for k, w in (("moved", "moved onto a neighbour"),
                                                 ("extended", "extended along their own surface"),
                                                 ("trimmed", "trimmed back to a neighbour's edge")) if m.get(k)]
@@ -245,6 +338,65 @@ def _global_mm(requirements: dict | None) -> float | None:
         return None
 
 
+def _close_in_mesh(mesh, applied, reading: dict, *, requirements: dict | None, sew_mm: float | None,
+                   wall_mm: float | None):
+    """SURF-13: the places the surfaces still do not meet at, closed in the shell mesh where the gap is narrower than
+    the reach (the notes' "close gaps up to ...", else one element - the user's size, else the run's - never past
+    1/100 of the part). Returns (the mesh, the record) - (mesh, None) when nothing was to be closed, or the user said
+    not to close gaps ("do not stitch") or to keep the surfaces as drawn (then only stitching closes anything). Never
+    raises: a failure leaves the mesh as made, every place told open."""
+    from meshpipeline.cad import surface_mend as smd
+    from meshpipeline.engines import surface_mesh_close as smc
+
+    c = reading.get("cleaned") or {}
+    places = [p for p in c.get("places") or [] if p.get("faces")]
+    if not places or c.get("stitch") == "off" or (c.get("mend") or {}).get("off"):
+        return mesh, None
+    m = c.get("mend") or {}
+    if m.get("reach_mm"):
+        reach, reach_from = float(m["reach_mm"]), str(m.get("reach_from") or "part")
+    else:
+        size = _global_mm(requirements)
+        size_from = "asked"
+        if not size:
+            size, size_from = smd.run_element_mm(reading.get("sheets") or [], wall_mm), "run"
+        reach, reach_from = smd.reach_of(float(reading.get("diag_mm") or 0.0), limit_mm=sew_mm, element_mm=size,
+                                         element_from=size_from)
+    rows = [dict(p, gap_mm=max(float(p.get("gap_mm") or 0.0), float(p.get("apart_mm") or 0.0)),
+                 drawn_gap_mm=p.get("gap_mm")) for p in places]
+    try:
+        got, record = smc.close(mesh, rows, reach_mm=reach, reach_from=reach_from)
+    except Exception as exc:  # noqa: BLE001 - the mesh as made; every place is told open
+        logger.warning("surface run: the gaps were not closed in the mesh (%s: %s)", type(exc).__name__, str(exc)[:200])
+        return mesh, {"rule": smc.RULE, "error": type(exc).__name__, "closed": 0, "left": len(rows), "places": [],
+                      "reach_mm": reach, "reach_from": reach_from}
+    if record.get("closed") and isinstance(applied, dict):
+        # the quality as delivered: measured again on the closed mesh (the steps' own counts kept)
+        from meshpipeline.engines import shell_quality
+        from meshpipeline.engines.shell_mesh import edge_census
+
+        before: dict = applied["quality"] if isinstance(applied.get("quality"), dict) else {}
+        q = shell_quality.measure(got)
+        q["edges"] = {k: v for k, v in edge_census(got).items() if k != "free_edges"}
+        applied["quality"] = {**before, **q}
+    return got, record
+
+
+def _after_close(out: Path, record: dict, applied: dict, closing: dict) -> None:
+    """SURF-13: the record and the quality as the closed mesh has them (shell.json's notes and its connected check,
+    shell_plan.json's quality)."""
+    from meshpipeline.cad import midsurface as ms
+
+    k, left = int(closing.get("closed") or 0), int(closing.get("left") or 0)
+    record.setdefault("notes", []).append(
+        f"{k} place(s) where the surfaces did not meet were closed in the mesh: the boundary nodes facing each other "
+        f"across the gap joined, none moved farther than the gap (SURF-13).")
+    if not left and not any(int(c.get("open_edges") or 0) > k for c in record.get("sewn") or []):
+        record.setdefault("checks", {})["connected"] = True
+    (out / ms.RECORD_FILE).write_text(json.dumps(record, indent=1, sort_keys=True))
+    (out / "shell_plan.json").write_text(json.dumps(applied, indent=1, sort_keys=True, default=float))
+
+
 def _mesh(out: Path, *, mm_per_unit: float, target: dict | None, requirements: dict | None):
     """The shell mesher on the record in `out`, with the user's count and (when given) their notes' requirements."""
     from meshpipeline.engines.gmsh import shell_adapter as sa
@@ -309,7 +461,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
         given = wall > 0
         reading, sewn = sm.read(read_cad(Path(step)), mm_per_unit=mm_per_unit, said_shell=said_shell or given,
                                 stitch=stitch, sew_mm=sew_mm, holes_mm=holes_mm, mend=mend,
-                                element_mm=_global_mm(requirements))
+                                element_mm=_global_mm(requirements), wall_mm=wall if given else None)
         (ws / READING).write_text(json.dumps(reading, indent=1, sort_keys=True, default=float))
         rec["surface"] = {"kind": reading["kind"], "why": reading.get("why"), "faces": reading.get("faces"),
                           "open_share": reading.get("open_share"), "sheets": len(reading.get("sheets") or []),
@@ -364,6 +516,14 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
                 sm.write(record, surface, out)
                 (out / "shell_plan.json").write_text(json.dumps(applied, indent=1, sort_keys=True, default=float))
                 rec["surface"]["sizing_wall_mm"] = sorted(set(walls.values()))
+            # SURF-13: what is still open, narrower than the reach, closed in the mesh
+            mesh, closing = _close_in_mesh(mesh, applied, reading, requirements=requirements, sew_mm=sew_mm,
+                                           wall_mm=wall if given else None)
+            if closing is not None:
+                rec["mesh_close"] = closing
+                if closing.get("closed"):
+                    _after_close(out, record, applied, closing)
+                    rec["open_edges"] = max(0, int(rec["open_edges"]) - int(closing["closed"]))
             rec["mesh_s"] = round(time.time() - t1, 1)
             if requirements and isinstance(applied, dict) and applied.get("requirements"):
                 # SURF-7: asked against delivered, said as a surface file's (its thickness is the user's, applied)

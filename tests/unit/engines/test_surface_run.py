@@ -689,3 +689,53 @@ def test_the_stated_tolerance_words_stand_alone_and_add_up():
     assert not any("of them" in w or "(s)" in w for w in words)
     one = surface_run.gap_words(1, {**c, "left_open": 1, "wider_gaps": 0})
     assert one[1].startswith("At that place, the gap is narrower than the 2 mm stitched here") and "join it" in one[1]
+
+
+def test_a_step_wider_than_the_stitch_is_closed_by_default_and_told_where(tmp_path):
+    """SURF-12/13: a panel's middle plate written 12 sew tolerances off - wider than the stitch, under one element: closed
+    by default (the faces changed, or the mesh joined), one sheet, inside Nastran's limits, and each place told in one
+    sentence with where it is."""
+    from meshpipeline.cad import surface_model as sm
+
+    tol = sm.read(sx.strip_of_plates(), mm_per_unit=1.0)[0]["sew_tolerance_mm"]
+    src = _file(sx.strip_of_plates(move={1: (0, 0, 12.0 * tol)}), tmp_path / "in")
+    (tmp_path / "ws").mkdir()
+    rec = surface_run.run(tmp_path / "ws", src, mm_per_unit=1.0, thickness_mm=1.0)
+    assert rec["made"] and rec["open_edges"] == 0, rec["words"]
+    assert rec["quality"]["invalid"] == 0 and rec["quality"]["within_nastran"] is True
+    assert "Closed both places where the surfaces did not meet." in rec["words"]
+    assert rec["words"].count("At (") == 2 and "do not meet" not in rec["words"]
+
+
+def test_do_not_stitch_closes_nothing_in_the_mesh_either(tmp_path):
+    from meshpipeline.cad import surface_model as sm
+
+    tol = sm.read(sx.strip_of_plates(), mm_per_unit=1.0)[0]["sew_tolerance_mm"]
+    src = _file(sx.strip_of_plates(move={1: (0, 0, 12.0 * tol)}), tmp_path / "in")
+    (tmp_path / "ws").mkdir()
+    rec = surface_run.run(tmp_path / "ws", src, mm_per_unit=1.0, thickness_mm=1.0, stitch=False)
+    assert rec["made"] and rec["open_edges"] == 2 and "mesh_close" not in rec
+    assert "Nothing was stitched, as your notes asked." in rec["words"]
+
+
+def test_every_place_is_one_sentence_what_by_how_much_where():
+    """SURF-12/13's words from the record alone: a face extended, a gap closed in the mesh, one left open past the reach
+    - one sentence each, the counts adding up."""
+    cleaned = {"places": [{}], "places_before": 3, "closed_places": 1,
+               "mend": {"closed": 1, "reach_mm": 4.0, "reach_from": "asked",
+                        "changes": [{"at_mm": [112.0, 0.0, -7.6], "faces": ["Face_4", "Face_14"], "gap_mm": 3.6,
+                                     "how": "extended along its own surface", "moved_mm": 3.6}]}}
+    closing = {"closed": 1, "left": 1, "reach_mm": 4.0, "reach_from": "asked", "places": [
+        {"at_mm": [64.0, 120.67, 4.7], "gap_mm": 2.4, "faces": [["Face_53", "Face_52"], ["Face_53", "Face_43"]],
+         "closed": True, "joined": 18, "put_in": 3, "moved_mm": 1.2},
+        {"at_mm": [10.0, 20.0, 0.0], "gap_mm": 4.5, "faces": [["Face_7", "Face_8"]], "closed": False,
+         "why": "wider than the reach"}]}
+    said = surface_run.place_words(cleaned, closing)
+    assert said == [
+        "At (112, 0, -7.6) mm, Face_4 was extended 3.6 mm along its own surface to meet Face_14.",
+        "At (64, 120.7, 4.7) mm, the 2.4 mm gap between Face_53 and its 2 neighbours was closed in the mesh: 21 nodes "
+        "joined across it, none moved more than 1.2 mm.",
+        "At (10, 20, 0) mm, the 4.5 mm gap between Face_7 and Face_8 is left open: it is wider than the element size "
+        "you asked for (4 mm)."]
+    words = surface_run.clean_words(cleaned, closing)
+    assert words == ["Closed 2 of the 3 places where the surfaces did not meet."]

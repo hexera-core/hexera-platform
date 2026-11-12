@@ -61,6 +61,8 @@ EDGE_POINTS = 16
 NEAR_SAMPLES = (0.25, 0.5, 0.75)
 #: places kept per sheet
 MAX_PLACES = 12
+#: SURF-13: the open places named for the mesh to close (each with its faces)
+MAX_NAMED = 200
 
 
 def _r(v: float) -> float:
@@ -607,6 +609,29 @@ def open_places(sewn: Sewn, *, mm_per_unit: float, reach: float | None = None) -
     return out
 
 
+def named(sewn: Sewn, places: list[dict], *, mm_per_unit: float) -> list[dict]:
+    """SURF-13: the open places as the mesh can find them - each with its faces by name, pair by pair, and how far
+    apart the two sides' free edges are (`apart_mm`: an overlap's gap to the face under it is nil, but its edge lies
+    its width from the other's edge): [{"at_mm", "gap_mm", "apart_mm", "length_mm", "faces": [[a, b], ...]}]."""
+    from meshpipeline.cad import midsurface as ms
+
+    mm = float(mm_per_unit)
+    out = []
+    for p in places:
+        members = p.get("_members") or []
+        apart = 0.0
+        for e, k, _g, near in members:
+            others = [m[0] for m in members if m[1] == near and m[3] == k]
+            if not others:
+                continue
+            q = _edge_points(e, 3)[1]                         # the middle: a corner's end runs off to the side
+            apart = max(apart, min(ms._dist(ms._vertex(q), o) for o in others))
+        out.append({"at_mm": list(p["at_mm"]), "gap_mm": p["gap_mm"],
+                    "apart_mm": _r(max(apart * mm, float(p["gap_mm"]))), "length_mm": p["length_mm"],
+                    "faces": [[sewn.names[a], sewn.names[b]] for a, b in p["pairs"]]})
+    return out
+
+
 def with_places(sheets: list[dict], places: list[dict]) -> list[dict]:
     """The sheets with the open places written in (SURF-8's one definition): unmet_places, unmet_at_mm,
     unmet_widest_mm, unmet_length_mm; unmet_edges stays the count of free edges in them."""
@@ -650,7 +675,7 @@ def classify(sheets: list[dict], *, said_shell: bool = False) -> tuple[str, str,
 
 def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = True,
          sew_mm: float | None = None, holes_mm: float | None = None, mend: bool = True,
-         element_mm: float | None = None) -> tuple[dict, Sewn | None]:
+         element_mm: float | None = None, wall_mm: float | None = None) -> tuple[dict, Sewn | None]:
     """SURF-1: what kind of file this is, with the sheets as measured: (the reading, the sewn faces - None unless
     the reading is "surface" or "gap"). A surface part is then cleaned (SURF-8..10, cad/surface_clean): a face written
     twice is left out, the gaps between neighbouring faces are closed up the sewing ladder, pinholes are filled -
@@ -715,7 +740,11 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = 
                 from meshpipeline.cad import surface_mend as smd
 
                 try:
-                    mended, mrec = smd.mend(sewn, mm_per_unit=mm_per_unit, limit_mm=sew_mm, element_mm=element_mm)
+                    # the reach: one element - the user's size, else the size the run will mesh at (SURF-12)
+                    size, size_from = (element_mm, "asked") if element_mm else (
+                        smd.run_element_mm(sheets, wall_mm), "run")
+                    mended, mrec = smd.mend(sewn, mm_per_unit=mm_per_unit, limit_mm=sew_mm, element_mm=size,
+                                            element_from=size_from)
                 except Exception as exc:  # noqa: BLE001 - the surface as sewn; what is open is said
                     logger.warning("surface: the surfaces were not changed (%s: %s)", type(exc).__name__, str(exc)[:200])
                     mended, mrec = sewn, {"error": type(exc).__name__}
@@ -747,6 +776,11 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = 
         if cleaned.get("places_before") is not None:
             # the places closed by the whole clean-up (stitching and changing the surfaces): before - after
             cleaned["closed_places"] = max(0, int(cleaned["places_before"]) - len(places))
+        try:
+            cleaned["places"] = named(sewn, places, mm_per_unit=mm_per_unit)[:MAX_NAMED]
+        except Exception as exc:  # noqa: BLE001 - not named: the mesh closes none of them, all are told open
+            logger.info("surface: the open places were not named (%s)", type(exc).__name__)
+            cleaned["places"] = []
         cleaned.update(open_places=len(places), open_length_mm=_r(sum(float(p["length_mm"]) for p in places)),
                        left_open=len(within), left_widest_mm=max([float(p["gap_mm"]) for p in within] + [0.0]),
                        left_at_mm=[p["at_mm"] for p in within][:MAX_PLACES],

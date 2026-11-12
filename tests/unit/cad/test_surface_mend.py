@@ -217,15 +217,16 @@ def test_small_natural_bspline_patches_a_millimetre_apart_are_made_to_meet(gap, 
 
 def test_a_gap_wider_than_a_quarter_of_the_narrower_face_is_still_closed():
     """A 3.5 mm gap between a 300 x 200 panel and a 12 mm wide strip: more than a quarter of the strip (3 mm), but under
-    1/100 of the part and under half the width of the face that is changed, so it is closed."""
+    1/100 of the part and under the run's own element size, so it is closed."""
     reading, _sewn = _read(sx.compound([sx.rect(0, 0, 300, 200), sx.rect(303.5, 0, 315.5, 200)]))
     m = reading["cleaned"]["mend"]
     assert m["closed"] == 1 and reading["cleaned"]["open_places"] == 0, m
 
 
 def test_the_users_element_size_widens_the_reach_on_a_small_face():
-    """A 2 mm gap between two 3 mm wide strips: half the width of either strip is 1.5 mm, so it stays open - unless the
-    user asked for 4 mm elements everywhere, then a 2 mm gap is under one element and it is closed."""
+    """A 2 mm gap between two 3 mm wide strips 400 mm long: the run's own element size there is 1.7 mm (a strip's
+    size over 20, SHMESH-15, at the thin-sheet wall), so it stays open - unless the user asked for 4 mm elements
+    everywhere, then a 2 mm gap is under one element and it is closed."""
     shape = sx.compound([sx.rect(0, 0, 3, 400), sx.rect(5.0, 0, 8, 400)])
     plain, _sewn = _read(shape)
     assert plain["cleaned"]["mend"]["closed"] == 0
