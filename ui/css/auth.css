@@ -13,10 +13,9 @@
 
 .auth__panel{width:100%;max-width:26rem;display:flex;flex-direction:column;gap:1.5rem}
 
-/* Cormorant 500 - the site's editorial serif, restricted on hexera.ai to statement headlines and
-   the wordmark. The auth door is the one editorial moment the console has, so the title takes
-   it in sentence case; everything else stays Geist or the mono readout. */
-.auth__title{font-family:var(--serif);font-weight:500;font-size:clamp(2rem,1.2rem+2.4vw,2.9rem);
+/* Saira 300 - the site's display voice. A page title is the ONE place it appears in the
+   console; everything else is Geist or the mono readout. */
+.auth__title{font-family:var(--display);font-weight:300;font-size:clamp(2rem,1.2rem+2.4vw,2.9rem);
   line-height:1.02;letter-spacing:0;color:var(--text-bright)}
 .auth__title em{font-style:normal;color:var(--accent-display)}
 
