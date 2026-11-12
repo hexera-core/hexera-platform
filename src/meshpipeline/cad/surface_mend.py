@@ -531,6 +531,12 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
     off = (abs(float(np.dot(foot - mid, na))) / max(float(np.linalg.norm(foot - mid)), 1e-300)
            if na is not None and float(np.linalg.norm(foot - mid)) > 0 else 0.0)
     in_plane = off < math.sin(math.radians(45.0))
+    nb0 = _normal_at(b, mid)
+    # a STEP: the neighbour faces the same way but lies off the face's own surface - continuing or cutting the face
+    # along its own surface only slides it under or over its neighbour (12 Nov: a strip lifted 2.4 mm had its
+    # neighbour continued 2.5 mm underneath it); its edge is moved instead
+    step = not in_plane and na is not None and nb0 is not None and \
+        abs(float(np.dot(na, nb0))) > math.cos(math.radians(SAME_SIDE_DEG))
     # a change is kept only when it leaves less open (fewer places, or as many with less open edge) and never more
     # places; one that does not gives way to the next kind
     bp = sm.open_places(here, mm_per_unit=1.0, reach=look)
@@ -544,7 +550,7 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
     # the cheapest change that keeps the part's shape first: the face continued or cut back along its own surface
     # (1, 2); only then its edge moved onto its neighbour (3)
     # 1. EXTENDED along its own surface, and cut where it meets its neighbour
-    if got is None:
+    if got is None and not step:
         ext = _extended(a, e, EXTEND_PAST * gap, fit)
         if ext is None:
             why = why or "the face could not be continued on its own surface past that edge"
