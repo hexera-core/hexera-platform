@@ -343,8 +343,8 @@ def _near_surface(mm: _Mesh, edges: list[tuple[int, int]], other: set[str], lim:
         # the plane of the element nearest the edge's middle
         cen = (ta[k] + tb[k] + tc[k]) / 3.0
         j = k[int(np.argmin(np.linalg.norm(cen - m, axis=1)))]
-        n = np.cross(tb[j] - ta[j], tc[j] - ta[j])
-        sin = abs(float(np.dot(own, n))) / max(float(np.linalg.norm(own) * np.linalg.norm(n)), 1e-300)
+        nv = np.cross(tb[j] - ta[j], tc[j] - ta[j])
+        sin = abs(float(np.dot(own, nv))) / max(float(np.linalg.norm(own) * np.linalg.norm(nv)), 1e-300)
         if sin <= math.sin(math.radians(ALONG_DEG)):
             out.append((a, b))
     return out
@@ -371,15 +371,15 @@ def _t_line(mm: _Mesh, short: list[tuple[int, int]], other: set[str], gap: float
     for e in elems:
         c = mm.conn[e]
         for i in range(len(c)):
-            p, q = c[i], c[(i + 1) % len(c)]
-            w = float(np.linalg.norm(mm.xyz[p] - mm.xyz[q]))
-            nbr.setdefault(p, {})[q] = w
-            nbr.setdefault(q, {})[p] = w
+            p0, p1 = c[i], c[(i + 1) % len(c)]
+            w = float(np.linalg.norm(mm.xyz[p0] - mm.xyz[p1]))
+            nbr.setdefault(p0, {})[p1] = w
+            nbr.setdefault(p1, {})[p0] = w
     other_nodes = np.array(sorted(nbr), dtype=np.int64)
     rows: list[list[int]] = []
     moves: dict[int, np.ndarray] = {}
     for run in _paths(short):
-        foot = []
+        foot: list[np.ndarray | None] = []
         for n in run:
             lo, hi = mm.xyz[n] - lim, mm.xyz[n] + lim
             near = np.where(np.all((np.minimum(np.minimum(ta, tb), tc) <= hi) &
@@ -411,10 +411,10 @@ def _t_line(mm: _Mesh, short: list[tuple[int, int]], other: set[str], gap: float
         ok = {int(n) for n, x in zip(other_nodes.tolist(), dn.tolist(), strict=True) if x <= gap}
         if not ok:
             continue
-        ends = []
+        ends: list[int] = []
         for end in (line[0], line[-1]):
-            cand = sorted(ok, key=lambda n, end=end: (float(np.linalg.norm(mm.xyz[n] - end)), n))
-            ends.append(cand[0])
+            far = {m: float(np.linalg.norm(mm.xyz[m] - end)) for m in ok}
+            ends.append(min(sorted(ok), key=far.__getitem__))
         if ends[0] == ends[1]:
             continue
         dist_of = {int(n): float(x) for n, x in zip(other_nodes.tolist(), dn.tolist(), strict=True)}
