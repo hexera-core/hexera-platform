@@ -636,6 +636,51 @@ def test_holes_out_of_step_keep_their_grid(tmp_path, monkeypatch, limited):
         assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
 
 
+@pytest.mark.parametrize("join", [False, True])
+def test_a_channels_web_and_flanges_are_gridded_across_their_joints(tmp_path, monkeypatch, join):
+    """SHMESH-47c, a real column's channel (web and flanges with bolt holes, about 3.3 sizes from the flanges' free
+    edges, joined through narrow strips): each face's lines ended on its joint and cut the strip on one side only
+    (triangles there: the faces were left free), or a flange beside the web with holes was not gridded at all. Now the
+    faces are cut across at the same places, the strips straight across, and all three are gridded with every line
+    met."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    L, W, T_, F = 900.0, 363.0, 10.0, 100.0
+
+    def box(x, y, z, dx, dy, dz):
+        return BRepPrimAPI_MakeBox(gp_Pnt(x, y, z), dx, dy, dz).Shape()
+
+    shape = BRepAlgoAPI_Fuse(BRepAlgoAPI_Fuse(box(0, 0, 0, L, W, T_), box(0, -T_, 0, L, T_, F)).Shape(),
+                             box(0, W, 0, L, T_, F)).Shape()
+    for x, y in [(120.0 + 150 * i, 61.5) for i in range(5)] + [(208.0 + 150 * i, W - 61.5) for i in range(4)]:
+        shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, -1), gp_Dir(0, 0, 1)), 8.7,
+                                                                T_ + 2).Shape()).Shape()
+    for x, y0, d, z in [(200.0 + 320 * i, -T_ - 1, 17.4, F - 41.7) for i in range(3)] + \
+                       [(300.0 + 450 * i, W - 1, 12.2, F - 42.1) for i in range(2)]:
+        shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y0, z), gp_Dir(0, 1, 0)), d / 2,
+                                                                T_ + 2).Shape()).Shape()
+    rec, surf = ms_extract(shape)
+    brep = tmp_path / "channel.brep"
+    BRepTools.Write_s(surf, str(brep))
+    monkeypatch.setattr(ST, "JOIN", join)
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert "guard" not in s, s.get("guard")
+    if not join:
+        # (as before: the faces' grids spoil the strips between them and are left out)
+        assert s.get("not_gridded"), s
+        return
+    assert s["washers"] == 14 and s.get("not_gridded") in (None, {}), (s.get("not_gridded"), s.get("refused"))
+    assert all(h["kind"].endswith("gridded face") for h in s["hole_list"]), s["hole_list"]
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+    assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+    again, _a = _mesh(brep, rec, _criteria())
+    assert _sha(again) == _sha(mesh)
+
+
 def ms_extract(shape):
     from meshpipeline.cad import midsurface as ms
 

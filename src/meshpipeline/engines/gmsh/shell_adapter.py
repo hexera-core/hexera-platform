@@ -1346,6 +1346,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         block_skipped: dict[str, int] = {}
         gridded: list = []                  # O-grid washers inside a gridded face (SHMESH-41): mapped with it
         cut_of: dict[int, set[int]] = {}    # SHMESH-47b: gridded face -> the joined faces its lines cut
+        join_of: dict[int, set[int]] = {}   # SHMESH-47c: joined face -> the strips and faces cut with it (no own-cell rule)
         polar_faces_made: set[int] = set()  # SHMESH-49g: the round plates cut into rings and strips
         bands: list = []                    # SHMESH-49l: their bands round a central opening, meshed in rings
         skipped_where: dict[str, list[int]] = {}  # SHMESH-48f: which face each not-gridded reason came from
@@ -1396,7 +1397,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 gridded, boxed, block_preset, block_holes, block_skipped = ST.block_faces(
                     gmsh, washers + squares, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
                     cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
-                    cells_out=grid_cells, no_cut=no_cut, cut_out=cut_of, made_out=grid_faces_made,
+                    cells_out=grid_cells, no_cut=no_cut, cut_out=cut_of, made_out=grid_faces_made, join_out=join_of,
                     why_where=skipped_where)
             for w in gridded:
                 w.info["kind"] = "o-grid in a gridded face"
@@ -1619,7 +1620,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         xyz = np.asarray(coords, dtype=float).reshape(-1, 3) * mm
         ring_faces = {w.annulus for w in rings}
         high = (sizing or {}).get("high_mm")
-        if check_maps and cut_of:
+        if check_maps and (cut_of or join_of):
             # SHMESH-47b: a gridded face whose lines cut a joined face into triangles or elements past the solver's
             # own limits - there, or in its own free cells - is left ungridded on the next pass (its neighbours whole)
             hurt: set[int] = set()
@@ -1634,7 +1635,9 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 types, _tags, conns = gmsh.model.mesh.getElements(2, s_)
                 return [(int(et), index[np.asarray(conn, dtype=np.int64)]) for et, conn in zip(types, conns, strict=True)]
 
-            for kg, nbrs in sorted(cut_of.items()):
+            # (SHMESH-47c: a joined face's strips are held to the same; its own cells as any gridded face's, SHMESH-48f)
+            either = {k_: cut_of.get(k_, set()) | join_of.get(k_, set()) for k_ in set(cut_of) | set(join_of)}
+            for kg, nbrs in sorted(either.items()):
                 # the joined faces its lines cut: no triangle, no quad past the solver's limits
                 for s_ in sorted(x for x, kx in tag_of.items() if kx in nbrs):
                     for et, c_ in elements_of(s_):
@@ -1646,7 +1649,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                                            "at_mm": [round(float(x), 1) for x in xyz[c_[:4]].mean(axis=0)]}
                     if kg in hurt:
                         break
-                if kg in hurt:
+                if kg in hurt or kg not in cut_of:
                     continue
                 # SHMESH-48e: its own free cells (a washer's free box): no quad past the solver's limits, and at most
                 # one triangle each, inside the tria angle lines, the face's triangles under BOX_TRIA_SHARE of its
