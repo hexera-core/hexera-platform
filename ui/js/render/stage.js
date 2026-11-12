@@ -282,7 +282,8 @@ export const Stage = {
   // the rows' colours: muted, distinct, the same order every time
   _PM_COL:['#5B9BD5','#E3A23B','#62B66C','#D9675F','#A37FCB','#4FB0AC','#CDB447','#E08DB0'],
 
-  /* the block's frame: Finalize notes (or "Reading your notes…"), then - only when the reading found parts - the
+  /* the block's frame: Finalize notes (or "Reading your notes…", then on a flow mesh the lines the notes were read
+     as), then - only when the reading found parts - the
      heading and the rows. The model goes on the intake's viewer (kept across redraws: not re-made when a row is
      made active or the card is redrawn for a new note); only without one does it sit in the card. Rows of an
      older reading stay, quiet, until the new one lands. */
@@ -343,6 +344,9 @@ export const Stage = {
     if(m&&m.status==='reading')return '<div class="rc-pm-wait" role="status">Reading your notes…</div>';
     if(m&&m.status==='ready')return '<div class="rc-fin"><span class="rc-fin-msg" role="status"></span>'
       +'<button type="button" class="gc-proceed rc-fin-btn">Finalize notes</button></div>';
+    // what the notes were read as on a flow mesh (NOTES-CFD-1): the CFD reader's own lines, "From your notes: ..."
+    if(m&&m.status==='done'&&(m.lines||[]).length)
+      return `<ul class="rc-pm-lines">${m.lines.map(l=>`<li>${esc(l)}</li>`).join('')}</ul>`;
     return '';},
 
   // what a part is called on a chip and under the cursor: "Part 9 · Rail", an area inside a part "F3 · 4 holes"

@@ -234,3 +234,89 @@ async def test_the_card_carries_the_approval_question_while_the_plan_waits(monke
     assert (await chat._brief(waiting, "a"))["proceed_ask"] == ap.PROCEED_ASK
     started = SimpleNamespace(id=SID, request_txt="x", job_id=uuid.uuid4(), intake_gate={"approval": live})
     assert "proceed_ask" not in await chat._brief(started, "a")
+
+
+# # NOTES-CFD-1: a flow model with no parts to tie the words to still finalizes its notes
+
+FLOW_WORDS = [{"role": "user", "content": "Internal flow of water through the duct, please."}]
+FEA_WORDS = [{"role": "user", "content": "Static stress analysis of the bracket."}]
+LAYERS = "5 boundary layers on the wall"
+
+
+def _single(monkeypatch, words: list, *, notes: list | None = None):
+    """A one-part model (the check kept no parts) and a reader that reads one requirement from the notes."""
+    store = _Store({gc.check_object_key(SID, "scout.json"):
+                    json.dumps({"status": "ready", "session_id": SID, "facts": {}}).encode()})
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    queued: list[dict] = []
+    monkeypatch.setattr(GC, "_part_words_enqueuer", lambda **kw: queued.append(kw))
+    from meshpipeline.engines import mesh_requirements as MR
+    from meshpipeline.engines import meshing_standard as MS
+    asked: list = []
+
+    async def decide(state, *, route="", job_id="", **_):
+        asked.append((route, [n["text"] for n in state["user_notes"]]))
+        return MR.section("used", requirements={**MR.empty(), "rows": [{"asked": LAYERS}]}, key="k", source="model")
+
+    monkeypatch.setattr(MS, "decide", decide)
+    session = SimpleNamespace(id=SID, user_notes=list(notes or []), request_txt="", owner_id="o1", job_id=None,
+                              messages=list(words))
+    return session, queued, asked
+
+
+def test_a_flow_part_with_no_parts_to_name_still_finalizes_its_notes(monkeypatch):
+    session, queued, asked = _single(monkeypatch, FLOW_WORDS, notes=[_note(f"Put {LAYERS}.")])
+    assert PM.view(session) == {"status": "ready"} and not queued          # Finalize notes on the card
+    assert PM.finalize(session) == {"status": "reading"} and len(queued) == 1
+    assert PM.view(session) == {"status": "reading"}                        # "Reading your notes…"
+    assert PM.run_reading(**queued.pop())["status"] == "done"
+    # read as the run's CFD reader reads them (the flow route, the user's own notes), and shown as its lines
+    assert asked == [("flow", [f"Put {LAYERS}."])]
+    assert PM.view(session) == {"status": "done", "rows": [], "unsure": [], "lines": [f"From your notes: {LAYERS}."]}
+    assert PM.before_run(session) == "go"                                   # read: the yes runs
+    # a note added after re-arms it
+    session.user_notes.append(_note("Keep it under 2 million cells.", "n2"))
+    assert PM.view(session)["status"] == "ready"
+
+
+def test_an_fea_part_with_no_parts_to_name_is_unchanged(monkeypatch):
+    session, queued, asked = _single(monkeypatch, FEA_WORDS, notes=[_note("Use 3 mm elements.")])
+    assert PM.view(session) is None and PM.finalize(session) is None and PM.before_run(session) == "go"
+    assert not queued and not asked
+
+
+def test_a_flow_part_with_no_notes_shows_nothing(monkeypatch):
+    session, queued, _ = _single(monkeypatch, FLOW_WORDS, notes=[])
+    assert PM.view(session) is None and PM.finalize(session) is None and not queued
+
+
+@pytest.mark.asyncio
+async def test_a_yes_before_finalize_on_a_single_flow_part_reads_the_notes_first(monkeypatch):
+    session, queued, _ = _single(monkeypatch, FLOW_WORDS, notes=[_note(f"Put {LAYERS}.")])
+    out, repo = await _settle(monkeypatch, "yes", session)
+    assert out.status is msg.MessageStatus.reading_first and len(queued) == 1
+    held = repo.set_intake_gate.await_args.args[2]["approval"]
+    await asyncio.to_thread(lambda: PM.run_reading(**queued.pop()))
+    out, _ = await _settle(monkeypatch, "yes", session, approval=held)
+    assert out.status is msg.MessageStatus.approve
+
+
+@pytest.mark.asyncio
+async def test_the_finalize_route_reads_a_flow_sessions_notes(monkeypatch):
+    """POST /api/v1/geometry/{session}/check/parts/finalize on a CFD session of one part: the reading starts and the
+    card's answer is "reading"; once the run has started the notes can no longer change (409)."""
+    from fastapi import HTTPException
+
+    from meshpipeline.api.v1 import geometry
+    session, queued, _ = _single(monkeypatch, FLOW_WORDS, notes=[_note(f"Put {LAYERS}.")])
+
+    async def owned(_sid, _owner, _org):
+        return session
+
+    monkeypatch.setattr(geometry, "_owned_session", owned)
+    got = await geometry.finalize_check_parts(uuid.UUID(int=7), owner_id="o1", organization_id="org")
+    assert got == {"status": "reading"} and len(queued) == 1
+    session.job_id = uuid.uuid4()
+    with pytest.raises(HTTPException) as err:
+        await geometry.finalize_check_parts(uuid.UUID(int=7), owner_id="o1", organization_id="org")
+    assert err.value.status_code == 409

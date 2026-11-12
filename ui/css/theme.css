@@ -228,6 +228,9 @@ th,td{border-color:var(--border)}
 /* the parts the notes mean: one picture, a quiet row per phrase that opens the part list */
 .req-card .rc-pm:empty{display:none}
 .req-card .rc-pm{padding:6px 16px 2px}
+/* a flow mesh's notes as they were read (NOTES-CFD-1): the reader's own lines, quiet */
+.req-card .rc-pm-lines{margin:2px 0 6px;padding:0;list-style:none}
+.req-card .rc-pm-lines li{padding:2px 0;color:var(--text-muted);font-size:var(--fs-md);line-height:1.5;overflow-wrap:anywhere}
 .req-card .rc-pm-h{margin:2px 0 6px;color:var(--text-faint);font-size:var(--fs-sm)}
 .req-card .rc-pm-wait{padding:2px 0 4px;color:var(--text-faint);font-size:var(--fs-md);
   animation:rc-pm-pulse 1.6s ease-in-out infinite}
