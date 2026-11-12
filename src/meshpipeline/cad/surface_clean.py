@@ -49,7 +49,7 @@ RUNGS = (2.0, 5.0, 10.0, 20.0, 50.0)
 #: SURF-8: with no tolerance stated, gaps are closed up to this many sew tolerances - 1/2000 of the part's size,
 #: the same reach inside which an edge lying along its neighbour is called an edge that does not meet it (SURF-2's
 #: NEAR_SEW): what used to be said as a gap is now closed. The measured numbers behind it are in
-#: docs/design/shell/README.md section 12.
+#: docs/design/shell/README.md section 13.
 GAP_RULE = 5.0
 #: SURF-8: a gap is never closed across more than this share of the narrower face beside it (the extraction's own
 #: cap for loose faces, cad/midsurface.SEW_CAP)

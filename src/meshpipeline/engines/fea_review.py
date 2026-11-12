@@ -209,7 +209,8 @@ def facts(workspace) -> dict:
         "resolution_short": list(fea.get("resolution_short") or []),
         "limit": fea.get("limit"),
         "set_aside": {"elements": aside.get("elements"), "cusp": aside.get("cusp_elements"),
-                      "micro": aside.get("micro_elements")},
+                      "micro": aside.get("micro_elements"),
+                      "ftetwild_slivers": _m(aside.get("ftetwild_slivers")).get("elements")},
         "straightened": q.get("fea_straightened"),
         **({"assembly": assembly_checklist(fea.get("assembly"), plan, inp_faces,
                                            accounted=int(acc.get("accounted") or 0))}
@@ -276,6 +277,14 @@ def shell_facts_text(workspace) -> str:
              f"{', '.join(str(w) for w in (_m(q.get('fea')).get('walls_mm') or [])[:8]) or 'not set, in'} mm."]
     for _k, label, file, element, _t in SHELL_SOLVERS:
         lines.append(f"- {file} ({label}, {element}): " + ("written" if present(ws, file) else "MISSING") + ".")
+    from meshpipeline.engines.shell_delivery import user_limits, user_line
+    mine = user_limits(q)
+    if mine:
+        # SHMESH-26: the user's own limits are the only quality limits of this mesh
+        lines.append("- QUALITY IS JUDGED ONLY BY THE USER'S OWN LIMITS (from their notes; each allows the share of "
+                     "elements it states between its target and its outer limit). Our usual shell targets are not "
+                     "limits on this mesh: an element past one of them is not a defect. Measured:")
+        lines += [f"  - {user_line(r)}" for r in mine]
     return "\n".join(lines)
 
 

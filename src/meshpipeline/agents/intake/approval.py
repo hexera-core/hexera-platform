@@ -469,7 +469,7 @@ def engine_provenance_event(approved: dict) -> dict:
 
 
 def _build_dispatch_payload(*, job_id, owner_id: str, session_id, session, snapshot: dict,
-                            source_ref, interp_ref) -> dict:
+                            source_ref, interp_ref, meshing_standard: dict | None = None) -> dict:
     from meshpipeline.application.approved_patch_contract import ApprovedPatchContract
     from meshpipeline.application.dispatch_contract import build as build_dispatch
     from meshpipeline.contracts.user_notes import merge as _merge_notes
@@ -480,7 +480,11 @@ def _build_dispatch_payload(*, job_id, owner_id: str, session_id, session, snaps
     # on the session since (the console's notes box under the summary). Carried only when there
     # are some, so a run without notes dispatches exactly the payload it always did.
     notes = _merge_notes(approved.get("user_notes"), getattr(session, "user_notes", None))
-    return build_dispatch(**({"user_notes": notes} if notes else {}), **{
+    # THE TEAM'S MESHING STANDARD (engines/meshing_standard), as it stands at approval. Carried only when the
+    # organisation has one, so a run without it dispatches exactly the payload it always did (STD-3).
+    extra = {**({"user_notes": notes} if notes else {}),
+             **({"meshing_standard": dict(meshing_standard)} if meshing_standard else {})}
+    return build_dispatch(**extra, **{
         "job_id": str(job_id),
         "geometry_source": source_ref.to_payload(),
         "geometry_interpretation": interp_ref.to_payload(),
@@ -593,6 +597,23 @@ async def _refuse_in_the_conversation(db, session_repo, session_id, gate: dict, 
     raise ApprovalTransactionError(ConfirmOutcome(status, reason)) from cause
 
 
+async def _meshing_standard(sessions, organization_id: str, *, logger) -> dict | None:
+    """The organisation's meshing standard as the run is dispatched with it (engines/meshing_standard.snapshot),
+    or None: no organisation, no standard, or one that could not be read (logged; the run goes as it would
+    without one - the approval never fails over a setting)."""
+    if not organization_id:
+        return None
+    try:
+        from meshpipeline.application import meshing_standard_service
+
+        async with sessions() as db:
+            return await meshing_standard_service.for_dispatch(db, organization_id=organization_id)
+    except Exception as exc:  # noqa: BLE001 - a setting never fails an approval
+        logger.warning("approval: the meshing standard could not be read (%s) - dispatched without it",
+                       type(exc).__name__)
+        return None
+
+
 async def confirm_pending_approval(session, session_repo, owner_id: str, session_id, *,
                                    logger, organization_id: str = "", sessions=None,
                                    job_service=None, job_repo=None,
@@ -641,9 +662,11 @@ async def confirm_pending_approval(session, session_repo, owner_id: str, session
             ConfirmStatus.dispatch_failed, "Failed to create simulation job")) from exc
 
     try:
+        standard = await _meshing_standard(sessions, organization_id, logger=logger)
         payload = _build_dispatch_payload(
             job_id=job_id, owner_id=owner_id, session_id=session_id, session=session,
-            snapshot=snapshot, source_ref=source_ref, interp_ref=interp_ref)
+            snapshot=snapshot, source_ref=source_ref, interp_ref=interp_ref,
+            meshing_standard=standard)
         assert_payload_matches_approval(payload, snapshot, source_ref, logger=logger)
         # Persist the run snapshot on the job record, then launch the configured backend
         # (celery locally; a one-shot hosted pipeline job). Reconstructable from the job id alone.

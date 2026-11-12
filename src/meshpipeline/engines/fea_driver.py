@@ -61,7 +61,16 @@ CAD_DEFECT_GATE = "fea_cad_defect"
 #: stops at cad/fea_measure.MAX_RAY_TRIANGLES for speed; the plan cannot hold an unmeasured wall).
 MAX_RAY_TRIANGLES = 5_000_000
 #: What the remote mesher receives besides the plan: the solid and the facts the deck reads.
-PAYLOAD = (*P.STAGED_SOLIDS, "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json", "assembly.brep", "assembly.json")
+PAYLOAD = (*P.STAGED_SOLIDS, "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json", "assembly.brep", "assembly.json",
+           # LAD-fea-11: the parts an earlier pass meshed, kept for this one
+           "fea_kept_parts.msh", "fea_kept_parts.json",
+           # PLAN-fea-34 / MESH-mmg-1: the user's requirements read from the notes (engines/mesh_requirements.FILE).
+           # The mesh job's adapter reads them to measure each asked-for limit and to aim the MMG pass; without
+           # this file in the payload neither happened on the cloud mesher (dev-areen 11 Nov, job a8cc1718:
+           # no limit rows, MMG with no targets), though both did in a run on one machine
+           "mesh_requirements.json")
+#: LAD-fea-11's files (engines/gmsh/fea_adapter.KEEP_MSH / KEEP_JSON)
+KEPT_FILES = ("fea_kept_parts.msh", "fea_kept_parts.json")
 #: Where each pass's deliverables are kept until the best one is chosen.
 PASS_FOLDER = "_fea_pass_{n}"  # noqa: S105 - a folder name, not a secret
 #: every file a pass writes that the delivery reads: the solver files ride with their mesh, so the
@@ -408,6 +417,33 @@ def mesh_as_of(state) -> str:
     return got if got in ("shell", "mixed") else "solid"
 
 
+async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=None) -> dict:
+    """NOTE-7..9: THE MESH REQUIREMENTS IN THE USER'S NOTES (engines/mesh_requirements), read once per run and
+    checked: sizes for the whole mesh, the element kind, quality limits. The reading is cited, told to the user
+    before any mesh is made (one short line each, and what was not applied), and kept in the workspace for the
+    shell and mixed runs (their own processes). With no words nothing is asked of the model, nothing is cited,
+    said or written: the run is exactly the run it always was. Returns the reading's section."""
+    from meshpipeline.contracts import narration as _N
+    from meshpipeline.engines import mesh_requirements as MR
+    from meshpipeline.engines import meshing_standard as MS
+
+    # STD-1..3: the notes merged with the team's meshing standard (settings < notes, field by field); with no
+    # standard this is the notes' own reading, exactly as before
+    read = await MS.decide(state or {}, route="fea", job_id=job_id, run=run, enabled=FA.FEA_AI, wait_s=ai_wait_s(run))
+    # STD-4: a shell's elements picked on the stage (Quads | Triangles) are the last word on that one field; no
+    # pick (the control left where it started, or a solid run): the section as read, the same object
+    sec = MS.stage(read, (state or {}).get(MS.STAGE_KEY)) if mesh_as_of(state) != "solid" else read
+    MR.write(ws, sec)
+    if sec.get("status") == "none":
+        return sec
+    entries = ([*MR.decisions(read, stage="fea_ai"), *MS.decisions(read, stage="fea_ai")]
+               if read.get("status") != "none" else [])
+    _cite(job_id, [*entries, *MS.stage_decisions(sec, stage_name="fea_ai")])
+    for i, line in enumerate(MR.live_words(sec)):
+        await _N.asay(publish, line, op_id=f"fea:notes:{i}")
+    return sec
+
+
 async def shell_pass(ws: Path, state, *, job_id: str, run=None, target: dict | None = None) -> dict | None:
     """SHSTAGE-6: when the user's words asked for a shell, the staged solid's shell mesh and its solver files
     (engines/shell_run, in a process of its own) - delivered as THE result by drive() (SHSTAGE-7, no solid beside
@@ -571,6 +607,105 @@ def pairs_of(state) -> dict:
     from meshpipeline.cad import fea_pairs as FP
 
     return FP.clean_overrides((state or {}).get("fea_pairs") or {})
+
+
+def kept_plans(state) -> dict | None:
+    """PLAN-fea-22: the plans the stage made for this part (engines/fea_plan_options.PLANS_FILE), read from where the
+    check kept them (state fea_plans_object); None when there are none or they cannot be read."""
+    key = str((state or {}).get("fea_plans_object") or "")
+    if not key:
+        return None
+    import tempfile
+    try:
+        from meshpipeline.contracts.object_storage import get_object_store
+        with tempfile.TemporaryDirectory(prefix="fea_plans_") as tmp:
+            dest = Path(tmp) / "plans.json"
+            get_object_store().download_file(object_key=key, destination=dest)
+            got = json.loads(dest.read_text())
+    except Exception:  # noqa: BLE001 - none kept is the run planning it itself
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def size_choice(state, record: dict, surface, diag_m: float, *, levers, ceiling_s, ai, kept: dict | None,
+                key: str, target: dict | None = None, sizes: dict | None = None,
+                correction: float | None = None) -> tuple[dict, dict]:
+    """PLAN-fea-22, SETTLED BEFORE THE RUN - IT NEVER WAITS (Areen, 28 Oct): the plan of the mesh the user picked on
+    the stage; with nothing picked (the stage had not sized it yet, or no answer came), the RECOMMENDED one, decided
+    here from the run's own plans by the stage's own rule (fea_plan_options.decide) and said. The stage's kept plans
+    are reused when they were made for this staged solid and this code, and the AI changed nothing in them. Returns
+    (the plan, the why record's entry)."""
+    from meshpipeline.engines import fea_plan_options as PO
+
+    pick = str((state or {}).get("fea_plan_choice") or "").strip().lower()
+    if (target and not target.get("unread")) or sizes:
+        # PLAN-fea-27/29: THE USER'S OWN COUNT OR SIZES SET THE MESH - the stage's two sizes were made without them,
+        # so neither is offered or reused; a pick made on the stage is set aside, and said
+        plan = choose_plan(record, surface, diag_m, levers=levers, ceiling_s=ceiling_s, ai=ai, target=target,
+                           sizes=sizes, correction=correction)
+        if pick not in (PO.FULL, PO.QUICKER):
+            return plan, {}
+        asked = "element sizes" if sizes else "element count"
+        return plan, {"stage": "fea_plan", "decided": "size choice", "value": "yours", "rule": "PLAN-fea-22",
+                      "inputs": {"picked": True, "set_aside": pick, "by": "sizes" if sizes else "count"},
+                      "words": f"The {asked} you asked for sets the mesh, so the size picked on the stage is not used."}
+    unchanged, applied = _ai_changes_nothing(record, ai, diag_m)
+    reuse = kept if (unchanged and not levers) else None
+
+    def plan_of(which: str) -> dict:
+        got = PO.kept_plan(reuse, key, which)
+        if got is not None:
+            if _used(ai) is not None:
+                got = {**got, "ai": {**(ai or {}), "applied": applied}}      # said, though it changed no size
+            return _restate(record, got)
+        cap = PO.standard_elements() if which == PO.QUICKER else None
+        return choose_plan(record, surface, diag_m, levers=levers, ceiling_s=ceiling_s, ai=ai, cap=cap)
+
+    reused = bool(PO.kept_plan(reuse, key, PO.FULL) or PO.kept_plan(reuse, key, PO.QUICKER))
+    if pick in (PO.FULL, PO.QUICKER):
+        plan = plan_of(pick)
+        words = ("You picked the quicker mesh: it is sized to the standard machine, the low-stress zones coarsened "
+                 "first." if pick == PO.QUICKER else "You picked the full-rules mesh: every zone at its rule size.")
+        entry = {"stage": "fea_plan", "decided": "size choice", "value": pick, "rule": "PLAN-fea-22",
+                 "inputs": {"picked": True, "reused_stage_plan": reused}, "words": words}
+        return plan, entry
+    full = plan_of(PO.FULL)
+    out, qplan = PO.decide(record, full, lambda: plan_of(PO.QUICKER))
+    if not out["choice"]:
+        return full, {}
+    rec = out["recommended"]
+    plan = qplan if (rec == PO.QUICKER and qplan is not None) else full
+    words = (f"No size was picked before the run started, so the run took the recommended mesh, the "
+             f"{'quicker' if rec == PO.QUICKER else 'full-rules'} one: {out['why']}")
+    entry = {"stage": "fea_plan", "decided": "size choice", "value": rec, "rule": "PLAN-fea-22",
+             "inputs": {"picked": False, "recommended": rec, "reused_stage_plan": reused,
+                        "full_elements": out["full"]["elements"],
+                        "quicker_elements": (out["quicker"] or {}).get("elements")},
+             "words": words}
+    return plan, entry
+
+
+def _ai_changes_nothing(record: dict, ai: dict | None, diag_m: float) -> tuple[bool, list[dict]]:
+    """Whether the AI's decision leaves the plan exactly as the rules make it (no zone size or reach changed, no
+    budget, no micro detail kept) - the stage planned without it, so only then are its plans this run's. Returns
+    (unchanged, the AI's rows as the rules applied them)."""
+    used = _used(ai)
+    if used is None:
+        return True, []
+    plain = P.zones(record)
+    zl, applied = FA.apply_zones(plain, used, record, diag_m=diag_m)
+    same = (element_target(None, ai) is None and not FA.refines(used)
+            and [(z.get("id"), z.get("size_m"), z.get("reach_m")) for z in zl]
+            == [(z.get("id"), z.get("size_m"), z.get("reach_m")) for z in plain])
+    return same, applied
+
+
+def plan_cap_of(state) -> int | None:
+    """PLAN-fea-22: the element cap the user's size choice puts on the plan (state fea_plan_choice): the standard
+    mesh job's when they picked the quicker mesh, else None - the full-rules mesh, on the machine it needs."""
+    from meshpipeline.engines import fea_plan_options as PO
+    said = str((state or {}).get("fea_plan_choice") or "").strip().lower()
+    return PO.standard_elements() if said == PO.QUICKER else None
 
 
 def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source_path: str = "",
@@ -803,7 +938,7 @@ FLOOR_STEPS = 14
 #: PLAN-fea-8: THE ORDER A PLAN OVER ITS LIMIT IS COARSENED IN, kind by kind - the low-stress bulk first,
 #: the stress raisers last (27 Oct): rounds (sized for their shape only), capped sharp corners (their
 #: stress never settles), walls and the parts' own sizes, then holes, fillets and notches.
-COARSEN_ORDER: tuple[tuple[str, ...], ...] = (("round",), ("corner",), ("wall", "wall_spot", "part"),
+COARSEN_ORDER: tuple[tuple[str, ...], ...] = (("round", "relief"), ("corner",), ("wall", "wall_spot", "part"),
                                               ("hole", "fillet", "notch"))
 
 
@@ -1130,7 +1265,7 @@ def target_plan(record: dict, surface, diag_m: float, *, levers: list[dict], ai:
 
 def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
                 ceiling_s: float | None = None, ai: dict | None = None, target: dict | None = None,
-                sizes: dict | None = None, correction: float | None = None) -> dict:
+                sizes: dict | None = None, correction: float | None = None, cap: int | None = None) -> dict:
     """PLAN-fea-8, NEVER A STOP BEFORE MESHING (Areen, 21 Oct): the rules' own plan when it fits under
     the limit; else the finest zones coarsened until it fits, never past what keeps elements valid,
     what that leaves short named (resolution_short); else - every zone at its validity minimum and
@@ -1140,6 +1275,11 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
     machine goes on to PLAN-fea-8's coarsening, as any plan over its limit does."""
     levers = list(levers or [])
     limit, why = element_limit(record, ceiling_s)
+    if cap is not None and int(cap) < limit:
+        # PLAN-fea-22: THE QUICKER MESH THE USER PICKED - sized to the standard mesh job, the low-stress zones
+        # coarsened first (COARSEN_ORDER)
+        limit, why = int(cap), (f"the quicker mesh you picked: what the standard machine holds "
+                                f"({MESH_JOB_MEMORY_GIB:g} GiB)")
     plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes)
     missed: dict | None = None
     # AI-fea-4: the AI gave no answer and the user left notes - a count in them is not applied, and said
@@ -1290,6 +1430,10 @@ def _restate(record: dict, plan: dict) -> dict:
     plan = _with_ai(plan)
     # AI-fea-9: how the sizes in the notes were tied to the parts, and what was not applied
     plan["words"] = [*plan["words"], *PS.words(plan.get("part_sizes"))]
+    if plan.get("requirements"):
+        # NOTE-7, 8: what was read from the notes for the whole mesh, and what was not applied
+        from meshpipeline.engines import mesh_requirements as MR
+        plan["words"] = [*plan["words"], *MR.words(plan["requirements"])]
     if plan.get("by_choice_failed"):
         plan["words"] = [*plan["words"], BY_CHOICE_WORDS[str(plan["by_choice_failed"])]]
     return plan
@@ -1331,7 +1475,22 @@ def built_remark(ws: Path, record: dict | None = None) -> None:
         if plan.get("by_choice_failed") == "sizes":
             said = [BY_CHOICE_WORDS["sizes"]]
         if said:
-            record_remark(ws, said[0], by="fea_part_sizes")
+            # STD-2: a size for the whole mesh the team's standard set is said as the standard's
+            from meshpipeline.engines.meshing_standard import size_remark
+            record_remark(ws, size_remark(plan.get("requirements"), said[0]), by="fea_part_sizes")
+    try:
+        delivered = json.loads((ws / "quality.json").read_text()).get("requirements")
+    except (OSError, ValueError):
+        delivered = None
+    if delivered or (plan.get("requirements") or {}).get("status") == "used":
+        # PLAN-fea-34 / NOTE-8: asked against delivered, and what was not applied, in the result's "From your
+        # notes" line
+        from meshpipeline.engines import mesh_requirements as MR
+        from meshpipeline.engines.fea_requirements import summary as asked_summary
+        from meshpipeline.engines.meshing_standard import remark as led
+        record_remark(ws, led(plan.get("requirements"),
+                              asked_summary(delivered, len(MR.not_applied_words(plan.get("requirements"))))),
+                      by="mesh_requirements")
 
 
 #: PLAN-fea-13: THE FILL RATE BY COMPLEXITY - elements per second of one native gmsh pass, at the
@@ -1341,6 +1500,11 @@ def built_remark(ws: Path, record: dict | None = None) -> None:
 #: built at 165 a second, now 1,539): the slowest of each class was simple 1,779, moderate 1,243,
 #: complex 1,539 elements a second. Each rate sits under its class's slowest with margin.
 FILL_RATES: dict[str, float] = {"simple": 1500.0, "moderate": 1100.0, "complex": 1000.0}
+#: PLAN-fea-22: WHAT A RUN USUALLY TAKES - elements per second of the WHOLE run (check, plan, mesher, decks), the
+#: median of the single-pass runs of each class on the lab (28 Oct, 21 runs of 2-16M elements at the size of the
+#: machine their plan names: simple 1,650, moderate 2,490, complex 1,929), said beside the slow rate's upper end. A
+#: pass the ladder repeats takes longer; the stage says so.
+FEA_USUAL_FILL_RATES: dict[str, float] = {"simple": 1650.0, "moderate": 2400.0, "complex": 1900.0}
 #: the class boundaries (CAD faces, hot spots); any micro detail makes a part complex
 SIMPLE_FACES, SIMPLE_SPOTS = 40, 20
 COMPLEX_FACES, COMPLEX_SPOTS = 200, 100
@@ -1503,10 +1667,12 @@ def _cite(job_id: str, entries: list[dict]) -> None:
 
 
 async def _narrate_pass(publish, *, n: int, first: bool, plan: dict, levers: list[dict], machine: dict,
-                        budget_s: int) -> None:
+                        budget_s: int, job_id: str = "", ws: Path | None = None) -> None:
     """Say a pass out loud before it meshes: on the first pass the plan's own decisions (their
-    words, through the leak guard), on a later one why it runs again (the lever's words); then the
-    machine it runs on, and the mesh start the run line counts from."""
+    words, through the leak guard), on a later one why it runs again (the lever's words); the whole
+    design as one receipt (contracts/mesh_design); then the machine it runs on, and the mesh start
+    the run line counts from."""
+    from meshpipeline.contracts import mesh_design
     from meshpipeline.contracts import narration as N
 
     if first:
@@ -1514,6 +1680,8 @@ async def _narrate_pass(publish, *, n: int, first: bool, plan: dict, levers: lis
             await N.asay(publish, line, op_id=f"fea:plan:{n}:{i}")
     elif levers:
         await N.asay(publish, N.retry_line(n, levers[-1]), op_id=f"fea:retry:{n}")
+    await mesh_design.apublish(publish, job_id=job_id, workspace=ws, attempt=n,
+                               planned=(int((plan.get("estimate") or {}).get("elements") or 0), "elements"))
     await N.astep(publish, "machine", N.machine_words(machine), op_id=f"fea:machine:{n}")
     meshing = getattr(publish, "ameshing", None)
     if meshing is not None:
@@ -1588,6 +1756,24 @@ def _killed(result: dict) -> bool:
 def _out_of_memory(result: dict) -> bool:
     """Killed for memory, with nothing built."""
     return bool(_killed(result) and result.get("rc") not in (0, 4))
+
+
+def memory_measured(result: dict, plan: dict) -> dict | None:
+    """PLAN-fea-16: the pass's measured mesher peak against the model ({peak_gib, elements, bytes_per_element,
+    model_bytes_per_element, margin, predicted_gib}); None when the pass measured none."""
+    peak = _peak_gib(result)
+    q = result.get("remote_quality") or result.get("quality") or {}
+    try:
+        cells = int((q or {}).get("cells") or 0)
+    except (TypeError, ValueError):
+        cells = 0
+    if not peak or cells <= 0:
+        return None
+    per = max(0.0, (peak * 1024.0 - MEMORY_BASE_MB) * 1024.0 * 1024.0 / cells)
+    return {"peak_gib": round(peak, 2), "elements": cells, "bytes_per_element": round(per),
+            "model_bytes_per_element": BYTES_PER_ELEMENT, "margin": MEMORY_MARGIN,
+            "planned_elements": int((plan.get("estimate") or {}).get("elements") or 0),
+            "predicted_gib": round(memory_need(float(cells))[0], 2)}
 
 
 def _peak_gib(result: dict) -> float | None:
@@ -1735,11 +1921,102 @@ def _restore_pass(ws: Path, n: int) -> None:
             (ws / name).unlink(missing_ok=True)      # the delivered pass did not write it
 
 
+def _pass_kept(ws: Path, n: int) -> bool:
+    """Whether pass `n`'s mesh is in its pass folder: its deck there, or named in the folder's own record of the
+    files that stay in the bucket (RUN-7). A folder with only the pass's log and quality (_keep_pass_log) is not."""
+    return BF.present(ws / PASS_FOLDER.format(n=n), "mesh.inp")
+
+
+def _deliver_pass(ws: Path, best: int, passes: list[dict], job_id: str) -> int:
+    """The workspace becomes the chosen pass's; returns the pass it then holds. A PASS WHOSE MESH WAS NEVER KEPT
+    IS NEVER RESTORED FROM ITS FOLDER - that folder holds its log at most, and restoring from it deletes every
+    deliverable in hand (job d03f1bf6, 10 Nov: a refinement pass whose decks stayed in the bucket was read as
+    having made no mesh, so it was not kept; chosen as the better pass, its restore removed the record of the
+    kept decks and the run ended "the mesher stopped before it finished writing the mesh"). Such a pass is
+    delivered from the workspace while that is still its own (no pass ran after it); else the best valid pass
+    that WAS kept is delivered instead; the decision record says which. Only when no valid pass's mesh is held
+    anywhere is the workspace cleared as before, so no other pass's mesh goes out under this pass's name."""
+    if _pass_kept(ws, best):
+        _restore_pass(ws, best)
+        return best
+    held = [{**p, "deliverable": True} for p in passes if p["valid"] and _pass_kept(ws, int(p["pass"]))]
+    in_hand = int(passes[-1]["pass"]) == best and BF.present(ws, "mesh.inp")
+    other = None if in_hand else L.best_pass(held)[0]
+    delivered = best
+    if in_hand:
+        how = "the workspace still holds it (no pass ran after it), so it is delivered from there"
+    elif other is not None:
+        delivered = other
+        how = f"pass {delivered}, the best pass that was kept, is delivered instead"
+        for p in passes:
+            if int(p["pass"]) == best:
+                p.update(deliverable=False, not_kept=True)
+            elif int(p["pass"]) == delivered:
+                p.pop("deliverable", None)
+        _restore_pass(ws, delivered)
+    else:
+        how = "no other valid pass was kept either, so there is no mesh to deliver"
+        _restore_pass(ws, best)
+    logger.warning("fea driver: pass %s was chosen but its mesh was not kept in its pass folder: %s - job_id=%s",
+                   best, how, job_id)
+    _cite(job_id, [{"stage": "fea_ladder", "decided": "delivered pass not kept", "value": delivered,
+                    "rule": "LAD-fea-5",
+                    "inputs": {"pass": best, "delivered": delivered, "kept": sorted(int(p["pass"]) for p in held)},
+                    "words": f"Pass {best} was chosen, but its mesh was not kept in its pass folder: {how}."}])
+    return delivered
+
+
 def _read_failure(ws: Path) -> dict:
     try:
         return json.loads((ws / "fea_failure.json").read_text())
     except (OSError, ValueError):
         return {}
+
+
+def _drop_kept(ws: Path) -> None:
+    """LAD-fea-11: no pass reads parts kept under another staging or plan series."""
+    for name in KEPT_FILES:
+        (ws / name).unlink(missing_ok=True)
+
+
+def _kept_after(ws: Path, n: int, job_id: str) -> dict | None:
+    """LAD-fea-11: what the pass just run kept - the parts it filled while others failed - for the passes after
+    it (they mesh only the parts that failed, and keep the rest as they are); None when it kept nothing."""
+    from meshpipeline.engines.gmsh.fea_adapter import KEEP_JSON, KEEP_RULE
+
+    try:
+        meta = json.loads((ws / KEEP_JSON).read_text())
+    except (OSError, ValueError):
+        return None
+    if not meta.get("kept_volumes"):
+        return None
+    failed = list(meta.get("failed_parts") or [])
+    _cite(job_id, [{"stage": "fea_ladder", "decided": "keep the parts that meshed", "value": len(meta["kept_volumes"]),
+                    "rule": KEEP_RULE, "inputs": {"pass": n, "failed_parts": failed[:20],
+                                                  "kept_parts": len(meta.get("kept_parts") or [])},
+                    "words": (f"Pass {n} meshed {len(meta['kept_volumes'])} part volume(s) and could not fill "
+                              f"{', '.join(failed[:6]) or 'some'}; the next passes mesh only "
+                              f"{'that part' if len(failed) == 1 else 'those parts'} and keep the rest as they are.")}])
+    return {"rule": KEEP_RULE, "from_pass": int(n)}
+
+
+def _not_kept(ws: Path, bodies: int) -> list[int] | None:
+    """LAD-fea-11: the parts (k of Part_k, 1..bodies) the latest kept file does not keep - those that still
+    failed and those the last gmsh pass's fill never reached (it stops at its first failure); None when there
+    is no kept file."""
+    from meshpipeline.engines.gmsh.fea_adapter import KEEP_JSON
+
+    try:
+        meta = json.loads((ws / KEEP_JSON).read_text())
+    except (OSError, ValueError):
+        return None
+    kept: set[int] = set()
+    for p in meta.get("kept_parts") or []:
+        try:
+            kept.add(int(str(p).rsplit("_", 1)[-1]))
+        except ValueError:
+            continue
+    return [k for k in range(1, int(bodies) + 1) if k not in kept]
 
 
 def _clear_outputs(ws: Path) -> None:
@@ -1749,15 +2026,18 @@ def _clear_outputs(ws: Path) -> None:
 
 
 async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run,
-                  publish=None, of: int | None = None) -> tuple[dict, dict, dict]:
+                  publish=None, of: int | None = None, *, escalate: bool = True) -> tuple[dict, dict, dict]:
     """One native pass on `machine`: RUN-3 (out of memory: one machine up) and RUN-5 (still working at
-    the Cloud Run wall: a VM) as every pass. Returns (the result, the machine it ran on, its work).
+    the Cloud Run wall: a VM) as every pass - but a pass that need not escalate (`escalate` False: LAD-fea-13's
+    refinement, a mesh already in hand) ends where it stops. Returns (the result, the machine it ran on, its work).
     `of`: the elements THIS pass's plan estimates, for the live line's "N of about M" - the plan's
     own number or nothing."""
     from meshpipeline.contracts import mesh_machine as MM
 
     while True:
         result = await _relayed_mesh(publish, ws, seq=900 + n, timeout=work["ceiling_s"], of=of)
+        if not escalate:
+            return result, machine, work
         if _out_of_memory(result):
             moved, rule, decided = MM.step_up(machine, measured_gib=_peak_gib(result)), "RUN-3", "step up"
         elif result.get("timed_out") and not result.get("stalled") and not work.get("budget"):
@@ -1803,7 +2083,8 @@ def _rung_error(result: dict) -> str:
 
 
 async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, passes: list[dict], *,
-                     job_id: str, run, publish=None, crossing: dict | None = None) -> tuple[dict, list[dict]]:
+                     job_id: str, run, publish=None, crossing: dict | None = None,
+                     kept: dict | None = None) -> tuple[dict, list[dict]]:
     """LAD-fea-9: at most fea_tetwild.MAX_RUNG_PASSES passes - an assembly's parts the failed passes
     named first, then every part - each on the plan the last round of gmsh passes started from (the other
     parts meshed as that pass meshed them), plus fTetWild's settings (engines/fea_tetwild.params).
@@ -1811,16 +2092,26 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
     import copy
 
     from meshpipeline.contracts import mesh_machine as MM
-    from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
+    from meshpipeline.contracts.mesh_execution import note_native_pass
     from meshpipeline.engines import fea_tetwild as TW
 
     if (record.get("assembly_plan") or {}).get("mode") == "bonded":
         # the rung meshes a part on its own: a fused assembly is staged apart and tied first (PLAN-fea-17)
         record = await asyncio.to_thread(restage_tied, ws, record)
+        kept = None
+    if kept is None:
+        _drop_kept(ws)
     gm = [p for p in passes if p.get("engine") != TW.ENGINE]
     ran: list[dict] = []
     for rung in range(1, TW.MAX_RUNG_PASSES + 1):
         parts = TW.rung_parts(record, gm, rung)
+        if rung == 1 and kept is not None and int(record.get("bodies") or 1) > 1:
+            # LAD-fea-11: every part not kept goes to fTetWild, each with its own settings - the parts that STILL
+            # failed, and the parts the last gmsh pass never reached (gmsh has had its passes: tried again here, one
+            # that fails would send every part to fTetWild on the whole assembly's settings, the kept ones too). A
+            # part a later gmsh pass did fill is kept as gmsh filled it
+            rest = _not_kept(ws, int(record.get("bodies") or 1))
+            parts = rest if rest else parts
         n = len(passes) + len(ran) + 1
         plan = copy.deepcopy(first_plan)
         if record.get("assembly_plan"):
@@ -1836,7 +2127,9 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
         timed = TW.rung_budget(elements, cpus=int(machine.get("cpus") or TW.CLOUD_RUN_CPUS),
                                wall_s=ceiling_for(run, machine))
         settings["budget_s"] = timed["budget_s"]
-        plan["mesh"] = {**(plan.get("mesh") or {}), "engine": TW.ENGINE, "ftetwild": settings}
+        plan["mesh"] = {**(plan.get("mesh") or {}), "engine": TW.ENGINE, "ftetwild": settings,
+                        # LAD-fea-11: the other parts as an earlier pass meshed them (its first rung pass)
+                        **({"keep": kept} if kept is not None and rung == 1 else {})}
         said = L.rung_words(parts, rung, crossing=crossing)
         plan["words"] = [*(plan.get("words") or []), said]
         _cite(job_id, [{"stage": "fea_ladder", "decided": "last rung", "value": TW.ENGINE, "rule": "LAD-fea-9",
@@ -1852,7 +2145,9 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
         run.note_authoring()
         _clear_outputs(ws)
         note_native_pass(ws, n)
-        note_native_payload(ws, [p for p in PAYLOAD if (ws / p).exists()])
+        # LAD-fea-18 times the rung (fTetWild's own budget, the pass's ceiling): no gmsh pass's LAD-fea-15 fill
+        # budget is left in the workspace to stop it
+        note_budget(ws, {})
         _cite(job_id, [{"stage": "fea_machine", "decided": machine["where"], "value": machine["machine"],
                         "rule": TW.MEMORY_RULE, "inputs": {"pass": n, **machine["ftetwild"]},
                         "words": machine["words"]}])
@@ -1898,11 +2193,131 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
         if (facts["valid"] or parts is None or result.get("timed_out")
                 or TW.OUT_OF_TIME in str(facts.get("rung_error") or "")):
             break
+    last = ran[-1] if ran else None
+    if last is not None and last["valid"] and last["short"] and not first_plan.get("coarsened"):
+        # LAD-fea-13: THE RUNG'S MESH IS SHORT OF A RULE (a wall under 2 elements, a hot spot under its count) and no
+        # pass is left for LAD-fea-3: one pass more, on the parts whose zones fell short only, those zones 20%
+        # finer and held through fTetWild's sizing grid; every other part's run is the one before. The better of
+        # the two is delivered, the rung's own when the refinement is no better (or runs out of memory or time)
+        refined = await _rung_refine(ws, record, diag_m, first_plan, passes, ran, last, job_id=job_id, run=run,
+                                     kept=kept if last.get("rung") == 1 else None, publish=publish,
+                                     crossing=crossing)
+        if refined is not None:
+            ran.append(refined)
     if not any(f["valid"] for f in ran) and gm and (ws / PASS_FOLDER.format(n=gm[-1]["pass"])).exists():
         # the rung built nothing valid either: the workspace is the last gmsh pass's again, as it was
         # before the rung, so the exhausted ladder is told from that pass's measures
         _restore_pass(ws, int(gm[-1]["pass"]))
     return record, ran
+
+
+#: LAD-fea-13: the refinement after the rung takes at most this many times the rung's own pass, never less than
+#: the floor - a mesh is already in hand (g_c0109: a 20-minute part ran past 2 hours refined, 10-micron walls)
+REFINE_TIME_SHARE = 2.0
+REFINE_TIME_FLOOR_S = 600.0
+
+
+async def _rung_refine(ws: Path, record: dict, diag_m: float, first_plan: dict, passes: list[dict],
+                       ran: list[dict], last: dict, *, job_id: str, run, kept: dict | None = None,
+                       publish=None, crossing: dict | None = None) -> dict | None:
+    """LAD-fea-13: one refinement pass after the rung's valid but short pass `last`. None when no short zone is on
+    a part fTetWild meshed (a gmsh part's zone is not this pass's to change)."""
+    import copy
+
+    from meshpipeline.contracts import mesh_machine as MM
+    from meshpipeline.contracts.mesh_execution import note_native_pass
+    from meshpipeline.engines import fea_tetwild as TW
+
+    parts = last.get("parts")
+    q_last = _read_quality(ws)
+    walls = (((q_last.get("fea") or {}).get("rules") or {}).get("through_wall") or {}).get("short") or []
+    targets = TW.refine_targets(first_plan, list(last["short"]), list(walls), parts)
+    if not targets["ftetwild"] and not targets["gmsh"]:
+        return None
+    n = len(passes) + len(ran) + 1
+    plan = copy.deepcopy(first_plan)
+    if record.get("assembly_plan"):
+        plan["assembly"] = dict(record["assembly_plan"])
+    # gmsh's parts made finer the LAD-fea-3 way: their own short zone entries in the plan
+    plan["zones"] = TW.tighten_zones(list(plan.get("zones") or []), targets["gmsh"], L.TIGHTEN)
+    # LAD-fea-17: the rung's own sizes, as the rung pass had them (never a crossing face's reading)
+    settings = TW.params(plan, record, diag_m, parts, crossing=crossing)
+    settings["refine"] = {"rule": TW.REFINE_RULE, "factor": L.TIGHTEN, "parts": targets["ftetwild"],
+                          "gmsh_parts": targets["gmsh"], "after_pass": last["pass"]}
+    again = sorted(int(k.split("_")[1]) for k in targets["gmsh"])
+    plan["mesh"] = {**(plan.get("mesh") or {}), "engine": TW.ENGINE, "ftetwild": settings,
+                    # LAD-fea-11: the gmsh parts as the rung's first pass had them - but the ones made finer here
+                    **({"keep": {**kept, "remesh_parts": again}} if kept is not None else {})}
+    every = {**targets["ftetwild"], **targets["gmsh"]}
+    zones = sorted({z for zs in every.values() for z in zs})
+    said = (f"The last rung's mesh (pass {last['pass']}) fell short of {len(set(last['short']))} zone rule(s) and no "
+            f"pass was left to make them finer, so one more pass re-meshes {', '.join(sorted(every))} only, with "
+            f"{', '.join(zones[:8])}{', ...' if len(zones) > 8 else ''} {int(round((1 - L.TIGHTEN) * 100))}% finer (on "
+            "fTetWild's parts, held through its sizing grid); the better of the two is delivered (LAD-fea-13).")
+    plan["words"] = [*(plan.get("words") or []), said]
+    _cite(job_id, [{"stage": "fea_ladder", "decided": "rung refinement", "value": TW.ENGINE, "rule": TW.REFINE_RULE,
+                    "inputs": {"pass": n, "after_pass": last["pass"], "short": sorted(set(last["short"])),
+                               "through_wall_min": last.get("through_wall_min"), "parts": targets},
+                    "words": said}])
+    write_plan(ws, plan)
+    run.note_authoring()
+    _clear_outputs(ws)
+    note_native_pass(ws, n)
+    # LAD-fea-13 times the refinement (below): no gmsh pass's LAD-fea-15 fill budget is left in the workspace
+    note_budget(ws, {})
+    # RUN-6: the refined parts hold more elements than before - the rung's measured mesh, doubled, at the least
+    elements = max(float((plan.get("estimate") or {}).get("elements") or 0), 2.0 * float(last.get("cells") or 0))
+    process_gib, files_gib = memory_need(elements)
+    machine = TW.rung_machine(elements, process_gib, files_gib, margin=MEMORY_MARGIN)
+    MM.write(ws, machine)
+    # a mesh is in hand: the refinement may take at most REFINE_TIME_SHARE times the rung's own pass (never less
+    # than REFINE_TIME_FLOOR_S), on its machine, and ends there - never a bigger machine, never longer
+    budget = max(REFINE_TIME_FLOOR_S, REFINE_TIME_SHARE * float(last.get("native_s") or 0.0))
+    budget = min(ceiling_for(run, machine), budget)
+    # LAD-fea-18 inside it: fTetWild is asked to finish the mesh it has before the refinement's time is spent
+    settings["budget_s"] = TW.rung_budget(elements, cpus=int(machine.get("cpus") or TW.CLOUD_RUN_CPUS),
+                                          wall_s=budget)["budget_s"]
+    write_plan(ws, plan)
+    work = planned_work(plan, ceiling_s=budget)
+    await run.fence("start native mesh")
+    t0 = time.monotonic()
+    result, machine, work = await _native(ws, machine, work, job_id, n, run, publish=publish, escalate=False)
+    await run.fence("accept native mesh output")
+    q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
+    # as every pass: a big deck that stayed in the bucket is this pass's deck all the same (RUN-7)
+    made = bool(q) and BF.present(ws, "mesh.inp")
+    run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
+    facts = {**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or ""), killed=_killed(result)),
+             "budget_s": round(budget, 1),
+             "native_s": round(time.monotonic() - t0, 1), "engine": TW.ENGINE, "rung": last.get("rung"),
+             "parts": parts, "refine": {"after_pass": last["pass"], "parts": targets},
+             "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}}
+    if result.get("timed_out"):
+        facts["timed_out"] = True
+    if not facts["valid"]:
+        facts["rung_error"] = ("the refinement ran past its time budget" if result.get("timed_out")
+                               else _rung_error(result))
+    better = L.refined_better(facts, last)
+    # the better of the two is the one delivered (LAD-fea-5 alone would weigh the worst element first)
+    if better:
+        last["deliverable"] = False
+    else:
+        facts["deliverable"] = False
+    if made:
+        _keep_pass(ws, n)
+    _keep_pass_log(ws, n)
+    _cite(job_id, [{"stage": "fea_ladder", "decided": "rung refinement kept", "value": better,
+                    "rule": TW.REFINE_RULE,
+                    "inputs": {"pass": n, "valid": facts["valid"], "short": sorted(set(facts["short"])),
+                               "through_wall_min": facts.get("through_wall_min"),
+                               "before": {"pass": last["pass"], "short": sorted(set(last["short"])),
+                                          "through_wall_min": last.get("through_wall_min")},
+                               "error": facts.get("rung_error")},
+                    "words": (f"The refinement pass {n} is better than pass {last['pass']} and is delivered." if better
+                              else f"The refinement pass {n} is no better than pass {last['pass']}"
+                              + (f" ({facts.get('rung_error')})" if not facts["valid"] else "")
+                              + f", so pass {last['pass']} is delivered, its short walls named.")}])
+    return facts
 
 
 class _NoCount(Exception):
@@ -1913,11 +2328,12 @@ async def surface_asks(ws: Path, state, *, job_id: str, run=None, publish=None) 
     """SURF-11: WHAT THE USER'S WORDS ASK OF A SURFACE FILE'S MESH, read by the same readers the solid route uses,
     so a count or a size written in the notes reaches a surface file as it reaches a solid: (the element count,
     PLAN-fea-27 / SHMESH-23 - the FEA plan's AI step shown the file with no zones, its answer checked by the same
-    rules; the notes' mesh requirements, NOTE-7..9 - read by this module's read_requirements when that reader is in
-    the build, and left in the workspace for the surface run). The count is asked only when the user left words to
-    read (cad/part_words.wanted): a run without words asks no model for it. The requirements are read on every run
-    (a team's meshing standard reaches a surface file with no notes; with neither, the reading is "none" with no
-    model asked). Never raises (but a fenced worker's stale publish): no answer is no count."""
+    rules; the notes' mesh requirements, NOTE-7..9 - read by this module's read_requirements and left in the
+    workspace for the surface run, SURF-7). The count is asked only when the user left words to read
+    (cad/part_words.wanted): a run without words asks no model for it. The requirements are read on every run, as
+    before SURF-11 (Glue 1): a team's meshing standard (STD-2) reaches a surface file with no notes, and with neither
+    the reading is "none" with no model asked. Never raises (but a fenced worker's stale publish): no answer is no
+    count."""
     from meshpipeline.cad.part_words import wanted
     from meshpipeline.contracts.event_stream import StaleExecutionPublish
 
@@ -1942,10 +2358,9 @@ async def surface_asks(ws: Path, state, *, job_id: str, run=None, publish=None) 
     except Exception as exc:  # noqa: BLE001 - no count read is the rules' own sizes
         logger.warning("fea driver: the element count was not read for the surface file (%s)", type(exc).__name__)
         target = None
-    asked = None
-    reader = globals().get("read_requirements")      # NOTE-7..9's reader (engines/mesh_requirements), when built in
-    if callable(reader):
-        asked = await reader(ws, state, job_id=job_id, run=run, publish=publish)
+    # NOTE-7..9 / SURF-7: the notes' mesh requirements, read once, BEFORE the surface is meshed (a file that turns
+    # out not to be a surface carries the same reading on)
+    asked = await read_requirements(ws, state, job_id=job_id, run=run, publish=publish)
     return (target if target and target.get("elements") else None), asked
 
 
@@ -1965,16 +2380,14 @@ async def _deliver_surface(ws: Path, rec: dict, *, job_id: str, run, target: dic
         counted = count_words(rec.get("target"))
         if counted:
             record_remark(ws, counted, by="fea_target")
-        if (asked or {}).get("status") == "used":
-            try:
-                import importlib
-
-                MR = importlib.import_module("meshpipeline.engines.mesh_requirements")
-                asked_summary = importlib.import_module("meshpipeline.engines.shell_requirements").summary
-                record_remark(ws, asked_summary(rec.get("requirements"), len(MR.not_applied_words(asked))),
-                              by="mesh_requirements")
-            except ImportError:
-                pass
+        if asked and asked.get("status") == "used":
+            # SHMESH-26 / NOTE-8 on a surface file: asked against delivered, and what was not applied (SURF-7)
+            from meshpipeline.engines import mesh_requirements as MR
+            from meshpipeline.engines.meshing_standard import remark as led
+            from meshpipeline.engines.shell_requirements import summary as asked_summary
+            said = led(asked, asked_summary(rec.get("requirements"), len(MR.not_applied_words(asked))))
+            if said:
+                record_remark(ws, said, by="mesh_requirements")
         _cite(job_id, [{"stage": SR.GATE, "decided": "shell delivered", "value": rec.get("elements"),
                         "rule": "SURF-3", "inputs": {"solid_made": False},
                         "words": "The shell on the surface is the delivered mesh: the file holds no solid to mesh."}])
@@ -2001,6 +2414,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         outcome = run.outcome(produced_deliverable=False, failure_marker=NO_SOURCE)
         return False, NO_SOURCE, outcome
 
+    # PLAN-fea-22: what the stage's kept plans must have been made for (read before anything restages the solid)
+    from meshpipeline.engines import fea_plan_options as PO
+    try:
+        plans_key = PO.plans_key(ws, connection=connection_of(state), gap_joins=gap_joins_of(state))
+    except Exception:  # noqa: BLE001 - no key is planning it here
+        plans_key = ""
+    stage_plans = await asyncio.to_thread(kept_plans, state) if plans_key else None
+
     seen: dict = {}
     try:
         made = await asyncio.to_thread(solids_from_shells, ws, seen)
@@ -2010,6 +2431,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                             "words": f"The file's {made} closed shell(s) were read as the solid(s) they bound."}])
     except Exception as exc:  # noqa: BLE001 - the part is meshed, or refused, as it stands
         logger.warning("fea driver: closed shells not read as solids (%s)", type(exc).__name__)
+    asked: dict | None = None
     if seen.get("open"):
         # SURF-3: A FILE THAT IS A SURFACE, NOT A SOLID (no solid, its faces do not close: cad/surface_model) is
         # meshed as a shell on the surface as given, and that shell is the result - there is no solid to measure,
@@ -2113,6 +2535,10 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         record_remark(ws, ai["decision"]["notes_remark"], by="fea_ai")
     # PLAN-fea-27: an element count the user named, as the AI read it from their notes (AI-fea-4)
     target = element_target(state, ai)
+    # NOTE-7..9: the mesh requirements the notes ask for (a global size, edge lengths, quality limits, the element
+    # kind), read once; the shell and mixed runs read them from the workspace, the solid plan takes the sizes below
+    if asked is None:
+        asked = await read_requirements(ws, state, job_id=job_id, run=run, publish=publish)
     # SHSTAGE-6: MESH AS: SHELL - the shell mesh and its solver files first, from the staged solid as read (the
     # assembly staging above never rewrites it). SHMESH-23: once the user's element count is read, so the shell's
     # sizes follow it as the solid's do.
@@ -2128,6 +2554,19 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             if counted:
                 from meshpipeline.contracts.user_notes import record_remark
                 record_remark(ws, counted, by="fea_target")
+            if asked.get("status") == "used":
+                # SHMESH-26 / NOTE-8: asked against delivered, and what was not applied, in the result's "From your
+                # notes" line
+                from meshpipeline.contracts.user_notes import drop_remark, record_remark
+                from meshpipeline.engines import mesh_requirements as MR
+                from meshpipeline.engines.meshing_standard import remark as led
+                from meshpipeline.engines.shell_requirements import summary as asked_summary
+                notes_line = led(asked, asked_summary(shelled.get("requirements"), len(MR.not_applied_words(asked))))
+                if notes_line:
+                    # the AI's own remark (above) says what it did with the notes for the SOLID plan, which is not
+                    # made: beside the shell's asked-against-delivered line it told the user of a solid mesh
+                    drop_remark(ws, by="fea_ai")
+                    record_remark(ws, notes_line, by="mesh_requirements")
             _cite(job_id, [{"stage": SHELL_GATE, "decided": "shell delivered", "value": shelled.get("elements"),
                             "rule": "SHSTAGE-7", "inputs": {"solid_made": False},
                             "words": "The shell is the delivered mesh: no solid mesh is made beside it."}])
@@ -2140,6 +2579,13 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     sizes = PS.sizes_of(part_sizes)
     if part_sizes.get("status") != "none":
         _cite(job_id, PS.decisions(part_sizes))
+    if asked.get("status") != "none":
+        # PLAN-fea-33: a size the notes ask for the WHOLE mesh, held like the sizes per part (on every part the
+        # user did not size themselves)
+        from meshpipeline.engines import fea_requirements as FR
+        from meshpipeline.engines import mesh_requirements as MR
+        sizes = FR.whole_sizes(sizes, MR.requirements_of(asked), FR.part_ids(P.zones(record)),
+                               base_m=P.base_size(diag_m))
     # A COUNT OR SIZES THE USER ASKED FOR NEVER FAIL THE RUN: when no pass builds a valid mesh of the plan their
     # choices made, the rules' own plan is meshed instead, and said (PLAN-fea-29)
     by_choice_failed = ""
@@ -2157,6 +2603,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     chosen: dict = {}
     first_plan: dict = {}
     n0 = 0
+    kept: dict | None = None
     while True:
         for n in range(n0 + 1, n0 + L.MAX_PASSES + 1):
             await _N.astep(publish, "plan", f"Planning the mesh · {_N.pass_words(n - n0, L.MAX_PASSES)}"
@@ -2164,10 +2611,21 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             if n == n0 + 1:
                 # PLAN-fea-8: the rules' own plan, coarsened to fit under the limit when it must - never a
                 # stop before meshing
-                plan = await asyncio.to_thread(choose_plan, record, surface, diag_m, levers=levers,
-                                               ceiling_s=ceiling_for(run), ai=ai, target=target, sizes=sizes or None,
-                                               correction=correction)
+                # PLAN-fea-22: the size the user picked on the stage, else the recommended one - never a wait. A
+                # count or sizes the user named win over it (PLAN-fea-27/29); the stage's plans are reused only on
+                # the first planning (a restart re-plans: a tied restage, a re-aim, the rules' own plan)
+                plan, said = await asyncio.to_thread(size_choice, state, record, surface, diag_m, levers=levers,
+                                                     ceiling_s=ceiling_for(run), ai=ai,
+                                                     kept=stage_plans if n0 == 0 else None, key=plans_key,
+                                                     target=target, sizes=sizes or None, correction=correction)
+                if said:
+                    _cite(job_id, [said])
+                    # said in the plan's own words too: the result screen and the report show them
+                    plan["words"] = [*(plan.get("words") or []), said["words"]]
+                    plan["size_choice"] = said["inputs"] | {"value": said["value"]}
                 plan["part_sizes"] = part_sizes
+                if asked.get("status") != "none":
+                    plan["requirements"] = asked
                 if by_choice_failed:
                     plan["by_choice_failed"] = by_choice_failed
                 plan = _restate(record, plan)
@@ -2200,6 +2658,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                                beyond=chosen.get("beyond"), sizes=chosen.get("sizes"))
                 plan["limit"] = chosen["limit"]
                 plan["part_sizes"] = part_sizes
+                if asked.get("status") != "none":
+                    plan["requirements"] = asked
                 if chosen.get("by_choice_failed"):
                     plan["by_choice_failed"] = chosen["by_choice_failed"]
                 for key in ("target", "target_missed", "target_unread"):
@@ -2211,6 +2671,11 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 plan = _restate(record, plan)
             if n == n0 + 1:
                 _cite(job_id, plan["decisions"])
+            if kept is not None:
+                # LAD-fea-11: only the parts that failed are meshed; the rest as the pass before kept them
+                plan["mesh"] = {**(plan.get("mesh") or {}), "keep": kept}
+            else:
+                _drop_kept(ws)
             write_plan(ws, plan)
             run.note_authoring()
             _clear_outputs(ws)
@@ -2252,7 +2717,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             # mesher's own stages as it reports them. This path used to say nothing here, so a run
             # meshing for an hour on a VM still read "Planning the mesh..." on the page.
             await _narrate_pass(publish, n=n, first=n == n0 + 1, plan=plan, levers=levers,
-                                machine=machine, budget_s=int(work["ceiling_s"]))
+                                machine=machine, budget_s=int(work["ceiling_s"]), job_id=job_id, ws=ws)
             native_t0 = time.monotonic()
             runs_here = 0
             while True:
@@ -2283,6 +2748,16 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                 "words": machine["words"]}])
                 _clear_outputs(ws)
             native_s = round(time.monotonic() - native_t0, 1)
+            measured = memory_measured(result, plan)
+            if measured:
+                # PLAN-fea-16: THE MARGIN IS LEARNED FROM MEASURED PEAKS - every pass records its mesher's peak per
+                # element against the model's, the evidence the cautious margin is revisited on (Areen, 28 Oct)
+                _cite(job_id, [{"stage": "fea_machine", "decided": "memory measured", "value": measured["peak_gib"],
+                                "rule": "PLAN-fea-16", "inputs": {"pass": n, **measured},
+                                "words": (f"The mesher's peak was {measured['peak_gib']:.1f} GiB, "
+                                          f"{measured['bytes_per_element']:,.0f} bytes an element "
+                                          f"(the model plans {BYTES_PER_ELEMENT:,.0f}, with {MEMORY_MARGIN:g} times "
+                                          "to spare).")}])
             await run.fence("accept native mesh output")
             if not_run(result):
                 # RUN-4: OUR SIDE NEVER RAN THIS PASS (its machine could not be started, its result never
@@ -2376,6 +2851,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 if said:
                     passes[-1]["bad_faces"] = passes[-1].get("bad_faces") or said.get("bad_faces") or []
                     passes[-1]["bad_surfaces"] = passes[-1].get("bad_surfaces") or said.get("bad_surfaces") or []
+                # LAD-fea-11: the parts this pass did fill are kept for the passes after it
+                kept = _kept_after(ws, n, job_id) or kept
             if ((record.get("assembly_plan") or {}).get("mode") == "bonded" and not passes[-1].get("valid")
                     and (_fused_fill_failed(result, passes[-1]) if not made else _fused_joints_invalid(q))):
                 # PLAN-fea-17 AT ONCE: the fill could not build the FUSED bonded parts (a volume left
@@ -2444,6 +2921,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             # slivers it cannot fill): the parts are meshed apart and tied where they meet - still
             # bonded, never a stop. Not after a memory kill: that ends the attempt (LAD-fea-7)
             record = await asyncio.to_thread(restage_tied, ws, record)
+            kept = None
+            _drop_kept(ws)
             _cite(job_id, [{"stage": "fea_ladder", "decided": "tied", "value": "tie", "rule": "PLAN-fea-17",
                             "inputs": {"passes": len(passes)},
                             "words": ("No pass built the bonded parts as one mesh, so each part is meshed on its "
@@ -2480,7 +2959,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         # still without one, the other parts as the tie meshed them. Never for our infrastructure (a
         # guard trip, a worker too small) or a plan out of memory on the largest machine (LAD-fea-7)
         record, ran = await _last_rung(ws, record, diag_m, first_plan, passes, job_id=job_id, run=run,
-                                       publish=publish, crossing=crossing_found)
+                                       publish=publish, crossing=crossing_found, kept=kept)
         passes.extend(ran)
         if ran and ran[-1].get("not_run") and not any(f["valid"] for f in ran):
             last = ran[-1]
@@ -2526,7 +3005,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                     "words": (f"Pass {best} of {len(passes)} delivered." if best else "No pass built a valid mesh.")}])
     ok = best is not None
     if best is not None:
-        _restore_pass(ws, best)
+        best = _deliver_pass(ws, best, passes, job_id)
         _cite(job_id, open_pairs_decision(ws))
         built_remark(ws, record)
     (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": best, "levers": levers}, indent=1))
@@ -2573,6 +3052,6 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["MIXED_GATE", "SHELL_RUN_LIMIT_S", "mesh_as_of", "shell_pass", "connection_of", "element_target", "target_plan", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
+__all__ = ["FEA_USUAL_FILL_RATES", "kept_plans", "memory_measured", "size_choice", "MIXED_GATE", "SHELL_RUN_LIMIT_S", "mesh_as_of", "shell_pass", "connection_of", "element_target", "target_plan", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
            "complexity", "element_limit", "fill_rate", "watchdog_words", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "NOT_RUN", "NOT_RUN_GATE", "not_run", "not_run_words", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

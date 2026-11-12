@@ -461,12 +461,13 @@ def _validate_domain_declaration(args: dict) -> list[str]:
     return errors
 
 
-def _validate_ground_plane(patches: list, flow_axis) -> list[str]:
+def _validate_ground_plane(patches: list, flow_axis, up_axis=None) -> list[str]:
     """External flow: a patch named ground is the floor of the far-field box, which the domain
     builds as a wall under the part - never a region of the geometry. Two declarations it cannot
     build are refused here, where fixing them costs one question: a ground that is not a wall, and
-    a ground under a part whose flow runs along z. The geometry check measures 'stands on the
-    ground' at the part's lowest z, so the floor and the flow would share one axis."""
+    a ground under a part whose flow runs into it - along the UP axis the user confirmed on the
+    picture (INS-9), never a hard-coded z: on a file drawn Y-up a flow along z runs along the
+    ground and is consistent."""
     from meshpipeline.engines.ground_plane import GROUND_PATCH, ground_patch_name, is_ground_word
 
     errors: list[str] = []
@@ -501,15 +502,23 @@ def _validate_ground_plane(patches: list, flow_axis) -> list[str]:
                 f"patches[{i}] {nm!r} is the floor of the far-field box, which the domain builds "
                 "as a wall under the part - declare it with type 'wall', or give this patch "
                 "another name")
-    if ground_patch_name(entries) and str(flow_axis or "").strip().lower() in ("+z", "-z"):
+    from meshpipeline.engines.ground_plane import floor_of, up_word
+
+    floor = floor_of(up_axis)
+    up_letter = "xyz"[int(floor[0])]
+    flow = str(flow_axis or "").strip().lower()
+    if ground_patch_name(entries) and flow[-1:] == up_letter and flow in ("+x", "-x", "+y", "-y", "+z", "-z"):
+        along = ", ".join(s + a for a in "xyz" if a != up_letter for s in "+-")
         errors.append(
-            "a ground plane lies under the part, at its lowest z, so the flow cannot also travel "
-            "along z - ask the user which horizontal axis (+x, -x, +y, -y) the flow travels "
-            "along, or drop 'ground' if the part is free in the flow")
+            f"the flow along {flow} runs into the ground: up in this file is {up_word(floor)}, as "
+            "confirmed on the picture, and the ground lies under the part across that axis. Ask "
+            "the user ONE plain question: which way along the ground does the flow go "
+            f"({along})? If up is wrong instead, they set which way is up with the Up control "
+            "beside the part. Or drop 'ground' if the part is free in the flow")
     return errors
 
 
-def validate_submission(args: dict) -> list[str]:
+def validate_submission(args: dict, up_axis: str | None = None) -> list[str]:
     _val_errors: list[str] = []
 
     # The mesh-detail preference is OPTIONAL. Omission, null, "" and whitespace all mean "the user
@@ -590,7 +599,7 @@ def validate_submission(args: dict) -> list[str]:
     if _purpose == "internal_cfd" and isinstance(_patches, list):
         _val_errors.extend(_validate_internal_ports(_patches))
     if _purpose == "external_cfd" and isinstance(_patches, list):
-        _val_errors.extend(_validate_ground_plane(_patches, args.get("flow_axis")))
+        _val_errors.extend(_validate_ground_plane(_patches, args.get("flow_axis"), up_axis))
 
     _val_errors.extend(_validate_domain_declaration(args))
 

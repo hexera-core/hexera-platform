@@ -41,6 +41,7 @@ Two standing rules:
 | gmsh | planar-domain → surface-mesh | 2D plane-stress FEA from a flat face |
 | snappy_multiregion | solid-assembly → multiregion-volume | coupled conformal regions (CHT/multi-material); no undeclared region may ship (reconciliation-gated) |
 | vmtk | body-surface → fluid-volume; fluid-domain → fluid-volume | radius-adaptive tets with wall layers inside a tubular or branching lumen; a CAD body with declared ports is opened and sized by the engine itself (`engines/vmtk/lumen_staging.py`); defaults put ~13 cells across each passage with 5 wall layers over 10% of the radius, and a fill under 12 across is rejected; the bundle carries the volume as `mesh.vtu` and as an OpenFOAM case |
+| netgen | body-surface → fluid-volume; fluid-domain → fluid-volume | tetrahedra with prism layers on the wall, from the shared internal staging (`fluid_boundary.stl`, one named solid per patch); every wall point sized from the measured local passage (about 16 cells across, never planned under 12.5), one layer stack sized at the narrowest wall, a ladder (planned layers, a stack half as thick, no layers) judged by checkMesh; delivered as an OpenFOAM polyMesh through gmshToFoam; several separate passages in one fill (`engines/netgen/plan.py`, NG-1..NG-5) |
 
 ## Rejected boundaries (enforced in code)
 
@@ -172,6 +173,7 @@ upload (cached; a 25 MB STEP costs seconds).
 | **cfMesh** | STEP → named STL solids → `geom.fms` | `renameBoundary` maps each FMS solid to its own patch |
 | **gmsh** | STEP → imported into gmsh's own OCC kernel, **B-rep staged** | physical groups are assigned on CAD topology; no flat surface is involved |
 | **vmtk** | a lumen surface (`.vtp`), or a STEP body opened at its declared ports (`lumen_open.vtp` + `vmtk_staging.json`) | `CellEntityIds` carry per-region identity through TetGen: 1 = wall, one id per capped port, bound back to the declared names |
+| **netgen** | the shared internal staging as ONE ASCII STL, every patch a named solid (`fluid_boundary.stl`); a CAD part around the fluid is staged from its surface, a CAD fluid domain from its B-rep | Netgen re-meshes the STL into its own faces at sharp edges; each face takes the name of the staged patch its elements lie on (`netgen_mesh.name_faces`), and a face that straddles two patches is refused rather than delivered |
 | **snappy_multiregion** | STEP → **volume** regions (fluid/solid) | each region contributes its own named boundary patches |
 
 The two OpenFOAM engines share a shape - named solids in one surface file - and nothing else does.

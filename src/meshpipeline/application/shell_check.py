@@ -52,9 +52,9 @@ SAID_SHELL = "You asked for a shell mesh."
 #: A shell asked for that cannot be made: one plain sentence each, and the part is meshed solid (never a refusal)
 TRIANGLES_WHY = ("You asked for a shell, but this file is triangles with no faces to find the mid-surface on, so it "
                  "is meshed as a solid.")
-NOTHING_TO_SHELL = "You asked for a shell, but no wall of this part is thin enough for one, so it is meshed as a solid."
-NOTHING_TO_SHELL_DETAIL = ("You asked for a shell, but no wall of this part is thin enough for one ({detail}), so it "
-                           "is meshed as a solid.")
+NOTHING_TO_SHELL = "You asked for a shell, but this part has no plate or thin wall to make one from, so it is meshed as a solid."
+NOTHING_TO_SHELL_DETAIL = ("You asked for a shell, but this part has no plate or thin wall to make one from ({detail}), "
+                           "so it is meshed as a solid.")
 #: The check could not draw the mid-surface: the run makes the shell itself (engines/fea_driver.shell_pass)
 NOT_DRAWN = "The mid-surface could not be drawn here ({reason}); the run still meshes the part as a shell."
 
@@ -210,6 +210,10 @@ def summarise(record: dict, drawn: dict | None = None) -> dict:
             "open_edges": len(opened), "open_places": groups[:50] or [{"at_mm": q} for q in opened[:50]],
             "open_at_mm": opened[:400], "connected": bool((record.get("checks") or {}).get("connected", True)),
             "complete": bool(record.get("complete", False)), "notes": list(record.get("notes") or [])[:6],
+            # SHELL-23: the walls that are a shell only because the user asked (short for their thickness): the
+            # stage says one line of advice from these rows, in the unit it shows
+            "short_walls": [{k: r.get(k) for k in ("body", "sheet", "thickness_mm", "span_mm", "width_mm", "span_walls",
+                                                   "width_walls")} for r in (record.get("short_walls") or [])[:200]],
             "overlay": bool(drawn.get("triangles")), "t_min_drawn_mm": drawn.get("t_min"),
             "t_max_drawn_mm": drawn.get("t_max")}
 
@@ -257,8 +261,10 @@ def solid_short(detail: str) -> str:
     m = _WIDTH_WHY.search(d)
     if m:
         return f"too narrow ({m.group(1)} mm wall, {m.group(2)}× width)"
-    if "no two of its faces run side by side" in d:
-        return "no thin wall"
+    if "round a tight bore" in d:
+        return "a thick ring"
+    if "no two of its faces run side by side" in d or "across a gap" in d:
+        return "no plate"
     if "belong to a sheet with thicker walls" in d:
         return "part of a thicker sheet"
     return ""
@@ -275,12 +281,12 @@ def not_shelled(summary: dict | None) -> list[dict]:
         who = reg.get("body") if many else "The part"
         name = reg.get("body") if many else "Whole part"
         if reg.get("whole"):
-            words = (f"{reg.get('body')} stays solid: no wall of it is thin against its size." if many
-                     else "The whole part stays solid: no wall is thin against its size.")
+            words = (f"{reg.get('body')} stays solid: no wall of it is a plate." if many
+                     else "The whole part stays solid: no wall of it is a plate.")
             detail = _solid_detail(s, reg.get("body"))
             if detail:
                 words = f"{words[:-1]}: {detail}."
-            short = f"{name} · {solid_short(detail) or 'no thin wall'}"
+            short = f"{name} · {solid_short(detail) or 'no plate'}"
         else:
             n = int(reg.get("n_faces") or len(reg.get("faces") or []))
             where = f"A thick region of {who if many else 'the part'} ({n} face{'s' if n != 1 else ''})"
@@ -350,6 +356,11 @@ def shell_view(status: dict | None, facts: dict | None, said: dict | None = None
         why = NOTHING_TO_SHELL_DETAIL.format(detail=detail) if detail else NOTHING_TO_SHELL
     elif state == UNAVAILABLE:
         why = NOT_DRAWN.format(reason=reason or "the check did not run")
+    elif isinstance(summary, dict) and summary.get("short_walls"):
+        # SHELL-23: walls short for their thickness are shelled as asked, with one line of advice
+        from meshpipeline.cad.shell_words import short_wall_words
+
+        why = short_wall_words(list(summary["short_walls"]))
     out: dict = {"question": QUESTION, "state": state, "said": pm.MESH_SHELL, "said_words": SAID_SHELL,
            "mesh_as": mesh_as, "label": SHELL_LABEL if mesh_as == pm.MESH_SHELL else SOLID_LABEL, "reason": why,
            "measuring_words": MEASURING_WORDS if state == MEASURING and mesh_as == pm.MESH_SHELL else ""}
@@ -482,6 +493,27 @@ def declaration_words(settled: dict | None) -> str:
     return f"{head} {why}".strip()
 
 
+def declared_shell(messages) -> bool:
+    """Whether the conversation's latest geometry declaration settled a SHELL (plates only, no tetrahedra): a part
+    meshed as a shell or a surface file (SURF-6) - never shell + solid, which has tetrahedra in its thick regions."""
+    from meshpipeline.application.geometry_confirmation import _is_declaration
+
+    for m in reversed(list(messages or [])):
+        if isinstance(m, dict) and _is_declaration(m):
+            text = str(m.get("content") or "")
+            return SHELL_HEAD in text or SURFACE_HEAD in text
+    return False
+
+
+#: The words of a solid tetrahedral mesh, which a shell run's summary must never promise (the intake's FEA path wrote
+#: "Generate a quadratic tetrahedral structural mesh ..." for a surface file meshed as a shell)
+TET_WORDS = re.compile(r"\b(?:tetrahedr\w*|tets?|10-node|ten-node|c3d10|solid187|ctetra|quadratic)\b", re.I)
+#: How a shell run's summary says its mesh instead
+SHELL_SUMMARY = ("a shell mesh - plate elements (linear 4-node quads, a few 3-node triangles) on the part's "
+                 "mid-surface, or on the surface itself for a surface file, each carrying its wall thickness, every "
+                 "face kept as a named group")
+
+
 def card_mesh_as(declaration: str) -> str:
     """The request card's "Mesh as" row, read from the conversation's FEA declaration (its head, written by
     declaration_words at Proceed): a label for a shell or shell + solid, "" for a solid or none. Pure."""
@@ -497,18 +529,46 @@ def card_mesh_as(declaration: str) -> str:
 #: is said only for a shell + solid run's thick regions (engines/mixed_mesh: C3D10)
 SHELL_ELEMENTS = "Shell: linear plates (4-node quads, a few 3-node triangles)"
 MIXED_ELEMENTS = "Thin walls: linear plates (4-node quads, a few 3-node triangles)"
+#: SHSTAGE-8: the same for an all-triangle shell (Triangles on the stage, or asked in the notes or settings)
+TRIA_ELEMENTS = "Shell: linear plates (3-node triangles)"
+TRIA_MIXED_ELEMENTS = "Thin walls: linear plates (3-node triangles)"
+#: ... and what a shell run's summary says instead of SHELL_SUMMARY
+TRIA_SHELL_SUMMARY = ("a shell mesh - plate elements (linear 3-node triangles) on the part's mid-surface, or on the "
+                      "surface itself for a surface file, each carrying its wall thickness, every face kept as a named "
+                      "group")
+#: the declaration's sentence for triangles (application/shell_elements.declaration_words)
+_TRIA_DECLARED = re.compile(r"\bElements: triangles\b")
 
 
-def card_engine_settings(mesh_as_label: str, params: dict | None) -> str:
+def card_elements(declaration: str) -> str:
+    """SHSTAGE-8: "triangles" when the conversation's FEA declaration settled an all-triangle shell, else "". Pure."""
+    return "triangles" if _TRIA_DECLARED.search(str(declaration or "")) else ""
+
+
+def shell_summary(messages) -> str:
+    """What a shell run's summary says it delivers: SHELL_SUMMARY, or its all-triangle form when the latest
+    declaration settled triangles (SHSTAGE-8)."""
+    from meshpipeline.application.geometry_confirmation import _is_declaration
+
+    for m in reversed(list(messages or [])):
+        if isinstance(m, dict) and _is_declaration(m):
+            return TRIA_SHELL_SUMMARY if card_elements(str(m.get("content") or "")) else SHELL_SUMMARY
+    return SHELL_SUMMARY
+
+
+def card_engine_settings(mesh_as_label: str, params: dict | None, *, elements: str = "") -> str:
     """The request card's "Engine settings" row for a shell or shell + solid run, true to what is written: the plates
     are linear, and the element order applies to the solid made beside them (and to the thick regions kept solid).
-    "" for a solid run (the card shows the settings as they are). Pure."""
+    `elements` "triangles": an all-triangle shell (card_elements). "" for a solid run (the card shows the settings as
+    they are). Pure."""
     kind = next((k for k, label in CARD_LABELS.items() if label == mesh_as_label), "")
     if not kind:
         return ""
     p = dict(params or {})
     order = p.pop("element_order", None)
-    parts = [SHELL_ELEMENTS if kind == pm.MESH_SHELL else MIXED_ELEMENTS]
+    tria = elements == "triangles"
+    parts = [(TRIA_ELEMENTS if tria else SHELL_ELEMENTS) if kind == pm.MESH_SHELL
+             else (TRIA_MIXED_ELEMENTS if tria else MIXED_ELEMENTS)]
     if order not in (None, "") and kind == pm.MESH_MIXED:
         parts.append(f"thick regions and the solid mesh made beside it: element order {order}")
     parts += [f"{str(k).replace('_', ' ')}: {v}" for k, v in p.items()]
@@ -543,6 +603,8 @@ def confirmed_mesh_as(session_id: str, notes=None) -> str:
 
 
 __all__ = ["CARD_LABELS", "MEASURING", "MIXED_ELEMENTS", "NOTHING_TO_SHELL", "QUESTION", "READY", "SHELL_CHECK_LIMIT_S",
-           "SHELL_ELEMENTS", "TRIANGLES_WHY", "UNAVAILABLE", "card_engine_settings", "card_mesh_as", "confirmed_mesh_as",
+           "SHELL_ELEMENTS", "SHELL_SUMMARY", "TET_WORDS", "TRIA_ELEMENTS", "TRIA_SHELL_SUMMARY", "TRIANGLES_WHY",
+           "UNAVAILABLE", "card_elements", "card_engine_settings", "shell_summary",
+           "card_mesh_as", "declared_shell", "confirmed_mesh_as",
            "declaration_words", "is_cad", "not_shelled", "solid_short", "read_status", "run_shell_check", "said_of", "settle",
            "shell_view", "start", "start_if_asked", "state_of", "summarise", "view_for", "wants_shell"]

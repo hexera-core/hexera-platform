@@ -6,7 +6,7 @@
 .im.assistant{align-items:flex-start}.im.user{align-items:flex-end}
 .im .who{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-faint);margin-bottom:5px}
 .im.assistant .txt{font-size:14px;line-height:1.75;color:var(--text-bright);max-width:100%}
-.im.user .bub{background:#16171b;color:#fafafa;border-radius:16px 16px 4px 16px;padding:10px 15px;font-size:13.5px;line-height:1.6;max-width:78%}
+.im.user .bub{background:var(--surface-2);color:var(--text);border-radius:16px 16px 4px 16px;padding:10px 15px;font-size:13.5px;line-height:1.6;max-width:78%}
 @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 
 
@@ -23,8 +23,8 @@
   align-items:center;gap:10px;min-height:22px}
 .gp-mark{flex:none;width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;
   font-size:11px;font-weight:700;line-height:1}
-.gp-mark:empty::before{content:'';width:8px;height:8px;border-radius:50%;border:1.5px solid var(--steel);box-sizing:border-box}
-.gp[data-live] .gp-mark:empty::before{border:0;background:var(--accent);animation:gp-pulse 1.4s ease-in-out infinite}
+.gp-mark:empty::before{content:'';width:8px;height:8px;border-radius:50%;border:1.5px solid var(--stone);box-sizing:border-box}
+.gp[data-live] .gp-mark:empty::before{border:0;background:var(--live);animation:gp-pulse 1.4s ease-in-out infinite}
 .gp[data-state="done"] .gp-mark{color:var(--ok)}
 .gp[data-state="failed"] .gp-mark,.gp[data-state="unsupported"] .gp-mark{color:var(--danger)}
 .gp-now{color:var(--text);font-weight:500}
@@ -42,13 +42,13 @@
   transform:translateY(-2px) rotate(45deg);transition:transform .15s}
 .gp-toggle[aria-expanded="true"] .gp-chev{transform:translateY(1px) rotate(-135deg)}
 /* HOW FAR THROUGH: a hairline under the running line, on the text gutter so it starts where the
-   words do. The accent already carries "this is what is happening now" on the mark and the active
-   tick; the fill takes the same hue at half weight (--accent-line) so the bar reads as a quiet
-   instrument scale beside that one hot mark, not as a second thing shouting for the eye. */
+   words do. Bright stone already carries "this is what is happening now" on the mark and the
+   active tick; the fill takes the same ink a step dimmer (--stone) so the bar reads as a quiet
+   instrument scale beside that one live mark, not as a second thing shouting for the eye. */
 .gp-bar{margin-left:var(--gp-text,24px);height:2px;border-radius:var(--radius-tight);
   background:var(--divider);overflow:hidden}
 .gp-bar > i{display:block;height:100%;width:0;border-radius:var(--radius-tight);
-  background:var(--accent-line);transition:width .6s cubic-bezier(.16,1,.3,1)}
+  background:var(--stone);transition:width .6s cubic-bezier(.16,1,.3,1)}
 .gp-note,.gp-reason,.gp-advice,.gp-acts{padding-left:var(--gp-text,24px);font-size:var(--fs-sm)}
 .gp-note{color:var(--text-faint)}
 .gp[data-slow="very"] .gp-note{color:var(--warn)}
@@ -66,35 +66,35 @@
   gap:3px 8px;font-size:var(--fs-sm);color:var(--text-muted)}
 .gp-tick{flex:none;width:12px;text-align:center;font-size:10px;color:var(--text-faint)}
 .gp-step.done .gp-tick{color:var(--ok)}
-.gp-step.active .gp-tick{color:var(--accent)}
+.gp-step.active .gp-tick{color:var(--live)}
 .gp-step.failed .gp-tick{color:var(--danger)}
 .gp-step.failed .gp-label,.gp-step.active .gp-label{color:var(--text)}
 .gp-t{font-size:var(--fs-xs);color:var(--text-faint);font-variant-numeric:tabular-nums}
 
 /* THE RECEIPT on a step (js/render/check_progress.js): a quiet affordance, never a button and
-   never the accent - the accent means "happening now", and a durable record is not that. Open, it
+   never the live ink - that means "happening now", and a durable record is not that. Open, it
    is a two-column list indented to the step's own text column: the thing on the left, its measured
    value right-aligned in the mono face, and the one-line derivation under it. Starts closed. */
 .gp-rc-toggle{grid-column:2;justify-self:start;padding:0;border:0;background:none;
-  color:var(--steel);font:inherit;font-size:var(--fs-xs);line-height:1.4;cursor:pointer;
+  color:var(--stone);font:inherit;font-size:var(--fs-xs);line-height:1.4;cursor:pointer;
   border-bottom:1px dotted currentColor;transition:color .12s}
-.gp-rc-toggle:hover{color:var(--steel-bright)}
+.gp-rc-toggle:hover{color:var(--stone-bright)}
 .gp-rc{grid-column:2/-1;list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
 .gp-rc[hidden]{display:none}
 .gp-rc-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;align-items:baseline}
 .gp-rc-k{color:var(--text-muted)}
 .gp-rc-v{justify-self:end;text-align:right;font-family:var(--mono);font-size:var(--fs-xs);
-  color:var(--steel-bright)}
+  color:var(--stone-bright)}
 .gp-rc-why{grid-column:1/-1;font-size:var(--fs-xs);line-height:1.45;color:var(--text-faint)}
 @keyframes gp-pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(.55);opacity:.45}}
 @keyframes gp-shimmer{from{background-position:100% 0}to{background-position:-120% 0}}
 
 /* THE WORK ICONS (js/render/work_icons.js): the mark of a live line is the icon of the work it is
-   doing - steel at rest, only the moving part in the accent, each loop slow and small. Stopped
+   doing - stone at rest, only the moving part in the bright live ink, each loop slow and small. Stopped
    under reduced motion (css/a11y.css). */
-.gp-mark .wi{width:16px;height:16px;color:var(--steel-bright);overflow:visible}
+.gp-mark .wi{width:16px;height:16px;color:var(--stone-bright);overflow:visible}
 .gp-mark .wi *{transform-box:fill-box;transform-origin:center}
-.wi .wi-live{stroke:var(--accent)}
+.wi .wi-live{stroke:var(--live)}
 .wi-scan{animation:wi-scan 1.8s cubic-bezier(.65,0,.35,1) infinite}
 @keyframes wi-scan{0%,100%{transform:translateY(0)}50%{transform:translateY(8px)}}
 .wi-jaw{animation:wi-jaw 2s cubic-bezier(.65,0,.35,1) infinite}
@@ -108,7 +108,7 @@
 @keyframes wi-layer{0%{transform:scaleX(0);opacity:0}25%,70%{transform:scaleX(1);opacity:1}100%{opacity:0}}
 .wi-c{fill:transparent;animation:wi-cell 2.4s steps(1) infinite}
 .wi-c2{animation-delay:.4s}.wi-c3{animation-delay:.8s}.wi-c4{animation-delay:1.2s}
-@keyframes wi-cell{0%{fill:transparent}10%,60%{fill:var(--accent)}61%,100%{fill:transparent}}
+@keyframes wi-cell{0%{fill:transparent}10%,60%{fill:var(--live)}61%,100%{fill:transparent}}
 .wi-needle{transform-origin:50% 100%;animation:wi-needle 2.2s cubic-bezier(.34,1.2,.64,1) infinite}
 @keyframes wi-needle{0%{transform:rotate(-60deg)}45%,100%{transform:rotate(25deg)}}
 .wi-sheet{animation:wi-out 2s cubic-bezier(.16,1,.3,1) infinite}

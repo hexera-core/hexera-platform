@@ -27,9 +27,9 @@ _OPENFOAM_HEX = ("snappy", "cfmesh", "snappy_multiregion")
 #: the engines that build one connected fluid region (a second region is a disconnected one)
 _ONE_REGION = ("snappy", "cfmesh", "gmsh", "vmtk")
 #: the engines whose internal meshes the resolution floor measures (engines/passage_flow)
-_PASSAGE_MEASURED = ("snappy", "cfmesh", "gmsh", "vmtk")
+_PASSAGE_MEASURED = ("snappy", "cfmesh", "gmsh", "vmtk", "netgen")
 #: every flow engine
-_ALL = ("snappy", "cfmesh", "snappy_multiregion", "snapgrid", "gmsh", "vmtk")
+_ALL = ("snappy", "cfmesh", "snappy_multiregion", "snapgrid", "gmsh", "vmtk", "netgen")
 _CFD = ("external", "internal")
 
 _CHECKMESH = "https://doc.cfd.direct/openfoam/user-guide-v12/mesh-description (checkMesh warns above 70 degrees)"
@@ -61,6 +61,11 @@ class Limit:
 PRODUCTION_LIMITS: tuple[Limit, ...] = (
     Limit("max_non_ortho", "Worst face non-orthogonality", "<=", 70.0, _OPENFOAM_HEX,
           source=_CHECKMESH),
+    # Netgen's tetrahedra + prisms as an OpenFOAM polyMesh: the same checkMesh bar as the hex meshers
+    # (a Netgen mesh is several separate regions where the staged boundary is - a left and a right
+    # carotid - so it is not held to one region)
+    Limit("max_non_ortho", "Worst face non-orthogonality", "<=", 70.0, ("netgen",),
+          source=_CHECKMESH),
     Limit("max_non_ortho", "Worst face non-orthogonality a CFD solver can correct", "<=", 85.0,
           ("gmsh",), topologies=_CFD,
           source="engines/gmsh/criteria.py (also gmsh's gating bar, so a mesh past it never "
@@ -70,7 +75,7 @@ PRODUCTION_LIMITS: tuple[Limit, ...] = (
                  "share of all faces (engines/snappy/criteria.py): a production limit on a sound "
                  "mesh, never a validity bar (LAD-cfd-3); cfMesh often does not report it"),
     Limit("layer_coverage_pct", "Wall covered by prism layers (percent)", ">=", 80.0,
-          ("snappy", "cfmesh", "snappy_multiregion", "vmtk"), needs_layers=True,
+          ("snappy", "cfmesh", "snappy_multiregion", "vmtk", "netgen"), needs_layers=True,
           source="Hexera lab history: under 80% coverage, wall shear and y+ are unreliable on a "
                  "material share of the wall"),
     Limit("layers_short", "Prism layers built short of the layers asked for", "<=", 0,
@@ -86,6 +91,11 @@ PRODUCTION_LIMITS: tuple[Limit, ...] = (
           source="the executor's measured requirement checks (requirement_caveats)"),
     Limit("size_concerns", "A believable size for what it is", "<=", 0, _ALL,
           source="contracts/unit_plausibility (the delivered body's size against what it is)"),
+    Limit("cad_fidelity_concerns", "Follows the CAD it was built from (measures missed)", "<=", 0,
+          ("snappy", "cfmesh", "gmsh"), topologies=_CFD,
+          source="engines/cad_fidelity.py (wall within a cell of the CAD, the CAD reached, the "
+                 "volume and each opening against the CAD; a mesh that is not the part is "
+                 "refused by its gate, VER-4)"),
 )
 
 
@@ -116,9 +126,24 @@ def _passage(quality: Mapping) -> tuple[float | None, float | None]:
     return v.cells_across, v.floor
 
 
+def _cad_fidelity_concerns(quality: Mapping) -> int | None:
+    """How many of the CAD fidelity measures missed their bar (engines/cad_fidelity.py); None when
+    the check did not run or could not measure."""
+    from meshpipeline.engines.cad_fidelity import CONCERN, REBUILD, RECORD_KEY, UNMEASURED
+    rec = quality.get(RECORD_KEY)
+    if not isinstance(rec, Mapping) or rec.get("verdict") in (None, UNMEASURED):
+        return None
+    verdicts = rec.get("verdicts")
+    if not isinstance(verdicts, Mapping):
+        return None
+    return sum(1 for v in verdicts.values() if v in (CONCERN, REBUILD))
+
+
 def _measured(key: str, quality: Mapping, facts: Mapping) -> Any:
     if key == "layers_short":
         return _layers_short(quality)
+    if key == "cad_fidelity_concerns":
+        return _cad_fidelity_concerns(quality)
     if key in ("requirement_near_misses", "size_concerns"):
         return facts.get(key)
     return quality.get(key)
@@ -197,6 +222,12 @@ def inputs_for(*, engine: str, topology: str, manifest: Mapping | None, valid: b
     for row in _declared_advisory(engine):
         limits.append({**row, "measured": _plain(quality.get(row["key"]))})
     limits.extend(fea_limits(quality))
+    fea = quality.get("fea") if isinstance(quality.get("fea"), Mapping) else {}
+    if not (fea or {}).get("plan"):
+        # CFDREQ-6: a flow mesh's rows for the user's own requirements (engines/cfd_requirements), notes like every
+        # other row here - a missed one is "delivered with notes", never a blocker; none with no requirement
+        from meshpipeline.engines.mesh_requirements import asked_rows
+        limits.extend(asked_rows(quality, source="your notes (engines/cfd_requirements.py)"))
     return {"engine": engine, "topology": topology, "valid": bool(valid),
             "failed_gate": str(failed_gate or ""), "layers_planned": bool(layers_planned),
             "gating": gating_rows(engine, mf) if valid else [],
@@ -223,6 +254,7 @@ def fea_limits(quality: Mapping) -> list[dict]:
         from meshpipeline.engines.shell_delivery import limits as shell_limits
         return shell_limits(quality)
     from meshpipeline.engines.fea_quality import limits_for
+    from meshpipeline.engines.mesh_requirements import asked_rows
     order = quality.get("element_order")
     fea_rows = limits_for(int(order) if isinstance(order, (int, float)) and not isinstance(order, bool) else 1)
     fea_m: Mapping = fea if isinstance(fea, Mapping) else {}
@@ -288,7 +320,42 @@ def fea_limits(quality: Mapping) -> list[dict]:
                      "label": ("Bonded pairs left open - a face with no mesh node within the solver's reach of the other "
                                "part, so the pair is not joined there"),
                      "source": "docs/RULES.md PLAN-fea-21 (engines/fea_assembly_deck.open_joints)"})
+    walls = [w for w in ((_m_(fea_m.get("rules")).get("through_wall") or {}).get("short") or []) if isinstance(w, Mapping)]
+    if walls:
+        # LAD-fea-13: every wall short of its elements through, named - its face, how thick, how many elements
+        # through it against the rule's (a refinement after the last rung that could not bring it up says so here)
+        named = [f"{w.get('face')} ({w.get('zone')}): {float(w.get('elements') or 0.0):.3g} element(s) through a "
+                 f"{float(w.get('thickness_mm') or 0.0):.3g} mm wall, {float(w.get('needed') or 2.0):g} needed"
+                 for w in walls]
+        rows.append({"key": "fea_walls_short", "op": "empty", "limit": [], "measured": named,
+                     "label": (f"{len(walls)} wall(s) with fewer elements through them than the plan's rule - stress "
+                               "through those walls is less exact; a finer mesh there, or a thicker wall in CAD, "
+                               "meets it"),
+                     "source": "docs/RULES.md PLAN-fea-3 / LAD-fea-13 (engines/fea_checks.py)"})
+    slivers = aside.get("ftetwild_slivers")
+    if isinstance(slivers, Mapping) and slivers.get("elements"):
+        # LAD-fea-12: the last rung's slivers on the surface, each named - part, face, SICN, place - and NEVER a
+        # clean pass: the row is always missed (one entry per sliver, never empty), so the verdict is "with
+        # concerns" (VER-2). A bad element hidden from the user is worse than a failure (coordinator, 27 Oct)
+        named = [f"{x.get('part')} {x.get('face')}, SICN {float(x.get('sicn') or 0.0):.2g}, at "
+                 f"({', '.join(f'{float(v):g}' for v in x.get('at_mm') or [])}) mm"
+                 for x in slivers.get("slivers") or [] if isinstance(x, Mapping)]
+        named += ["(unnamed)"] * max(0, int(slivers["elements"]) - len(named))
+        rows.append({"key": "fea_ftetwild_slivers", "op": "empty", "limit": [], "measured": named,
+                     "label": (f"{int(slivers['elements'])} near-flat element(s) left by the last-resort mesher "
+                               f"(fTetWild) on the surface, SICN under {5e-5:g}, set aside from the quality floor - "
+                               "a solver accepts them (none is inverted), but stress right at them is not resolved; "
+                               "they sit at CAD details far smaller than the mesh - remove or enlarge those details "
+                               "in CAD for a clean mesh"),
+                     "source": "docs/RULES.md LAD-fea-12 (engines/fea_tetwild.mesh_into)"})
+    # PLAN-fea-34: the user's own requirements (read from their notes), each measured as the elements outside what
+    # was asked - notes like every other row here, never a blocker; none with no requirement
+    rows.extend(asked_rows(quality, source="your notes (engines/fea_requirements.py)"))
     return rows
+
+
+def _m_(v: Any) -> Mapping:
+    return v if isinstance(v, Mapping) else {}
 
 
 def _plain(v: Any) -> Any:
@@ -301,7 +368,10 @@ def _plain(v: Any) -> Any:
 
 
 def words(row: Mapping) -> str:
-    """One missed limit in plain words: 'Worst face non-orthogonality: 74.2, limit at most 70'."""
+    """One missed limit in plain words: 'Worst face non-orthogonality: 74.2, limit at most 70'. A row that
+    carries its own line (`said`: a requirement from the user's notes, asked against delivered) says that."""
+    if row.get("said"):
+        return str(row["said"])
     op = {"<=": "at most", ">=": "at least", "<": "under", ">": "over", "==": "exactly",
           "empty": "none"}.get(str(row.get("op") or ""), str(row.get("op") or ""))
     measured = row.get("measured")

@@ -268,3 +268,35 @@ def test_the_picture_tints_a_rows_parts_and_a_click_on_it_picks_a_part(live):
     assert not (r == g == b), "a row's part is drawn in the row's colour"
     assert out["grey"][0] == out["grey"][1] == out["grey"][2], "a part no row means stays grey"
     assert out["picks"] == [[0, ["Part_1", "Part_2"]]], "a click on the picture adds the part under it"
+
+
+def test_a_flow_card_finalizes_its_notes_and_shows_how_they_were_read(live):
+    """NOTES-CFD-1: a CFD request card with notes and no parts to name has the same Finalize notes; pressing it shows
+    "Reading your notes…", then the CFD reader's lines, then the approval question under the card - as on FEA."""
+    out = live.evaluate("""(async () => {
+      const { Stage } = await import('/static/js/render/stage.js');
+      Stage.mount();
+      let fin = 0;
+      const done = {status: 'done', rows: [], unsure: [],
+                    lines: ['From your notes: 5 boundary layers on the wall.', 'From your notes: at most 2 million cells.']};
+      const parts = {get: async () => (fin ? done : {status: 'ready'}),
+                     finalize: async () => { fin++; return {status: 'reading'}; }, pick: async () => null};
+      Stage.brief({purpose: 'internal flow', engine: 'snappy', user_notes: [{text: '5 layers, under 2M cells'}],
+                   proceed_ask: 'Shall I proceed with mesh generation?', part_matches: {status: 'ready'}},
+                  async () => {}, parts);
+      const before = {btn: [...document.querySelectorAll('.rc-fin-btn')].map(b => b.textContent),
+                      primary: document.querySelector('.rc-fin-btn').classList.contains('gc-proceed')};
+      document.querySelector('.rc-fin-btn').click();
+      await new Promise(r => setTimeout(r, 100));
+      const wait = (document.querySelector('.rc-pm-wait') || {}).textContent;
+      await new Promise(r => setTimeout(r, 3200));
+      return {before, fin, wait, btn: document.querySelectorAll('.rc-fin-btn').length,
+              lines: [...document.querySelectorAll('.rc-pm-lines li')].map(l => l.textContent),
+              rows: document.querySelectorAll('.rc-pm-row').length,
+              said: [...document.querySelectorAll('#cc .im .txt')].map(t => t.textContent.trim()).pop()};
+    })()""", timeout=30)
+    assert out["before"] == {"btn": ["Finalize notes"], "primary": True}, "the same button as on FEA"
+    assert out["fin"] == 1 and out["wait"] == "Reading your notes…"
+    assert out["btn"] == 0 and out["rows"] == 0
+    assert out["lines"] == ["From your notes: 5 boundary layers on the wall.", "From your notes: at most 2 million cells."]
+    assert out["said"] == "Shall I proceed with mesh generation?", "the approval question follows, as on FEA"

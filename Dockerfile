@@ -26,8 +26,10 @@
 #             build:  make test-container-smoke  (supplies APP_VERSION from the product authority)
 #
 #   mesh-toolchain  the STABLE native floor for the mesh runner: OpenFOAM 2412 (apt, pinned to
-#             an exact package version), vmtk (conda, isolated), the gmsh runtime libs, and
-#             fTetWild (built from a pinned commit in `ftetwild-build`, FEA's last rung).
+#             an exact package version), vmtk (conda, isolated), the gmsh runtime libs,
+#             fTetWild (built from a pinned commit in `ftetwild-build`, FEA's last rung),
+#             MMG (built from a pinned commit in `mmg-build`, FEA's quality post-pass), and
+#             Netgen (pip wheels by hash, isolated in /opt/netgen-env: the internal-flow engine).
 #             Slow, ~2 GB, and the only layer that needs the ESI package repository - which is
 #             served by SourceForge mirrors and is the least reliable thing in this build.
 #             The `mesh` target builds it automatically - it is not a separate artefact and
@@ -35,7 +37,7 @@
 #             build (optional, to prewarm the cache):  make mesh-toolchain
 #
 #   mesh      the off-box mesh runner (Cloud Run mesh job). Runs OpenFOAM (cfMesh/snappy),
-#             vmtk, and OCC tessellation. No db/redis/LLM.
+#             vmtk, Netgen, and OCC tessellation. No db/redis/LLM.
 #             build:  make mesh-image      (supplies APP_VERSION from the product authority)
 #
 # SELF-CONTAINED. This file is everything needed to build every image: no private registry, no
@@ -244,6 +246,33 @@ RUN mkdir -p /src/ftetwild && cd /src/ftetwild \
     && rm -rf /src/ftetwild
 
 
+FROM base AS mmg-build
+# MMG, THE FEA QUALITY POST-PASS (MESH-mmg-1, engines/fea_mmg.py): mmg3d improves the inside of a volume
+# that still holds an element the production limits would note, its surface frozen (-nosurf), before the
+# elements are curved. MmgTools/mmg (Dapogny, Dobrzynski, Frey), LGPL-3.0 - see
+# docs/reference/third-party.md. BUILT FROM SOURCE in this discarded stage; only the two programs, the
+# licence and a VERSION line reach the image. PINNED BY COMMIT: the v5.8.0 release's commit, fetched by
+# its full SHA and checked after checkout. No optional dependency is enabled (no SCOTCH, Elas or VTK), so
+# the build fetches nothing else and the programs link only libc and libm. mmg3d is single-threaded and
+# deterministic: the same volume gives the same mesh.
+ARG MMG_COMMIT=4d8232c8aebfed877935d75d4d4a67e850962422
+RUN apt-get update && apt-get install -y --no-install-recommends cmake git \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /src/mmg && cd /src/mmg \
+    && git init -q && git remote add origin https://github.com/MmgTools/mmg.git \
+    && git fetch -q --depth 1 origin "${MMG_COMMIT}" && git checkout -q FETCH_HEAD \
+    && test "$(git rev-parse HEAD)" = "${MMG_COMMIT}" \
+    && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DUSE_SCOTCH=OFF -DUSE_ELAS=OFF -DUSE_VTK=OFF \
+         -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF \
+    && cmake --build build -j"$(nproc)" --target mmg3d mmgs \
+    && install -D -m 0755 build/bin/mmg3d_O3 /opt/mmg/bin/mmg3d_O3 \
+    && install -D -m 0755 build/bin/mmgs_O3 /opt/mmg/bin/mmgs_O3 \
+    && install -D -m 0644 LICENSE /opt/mmg/LICENSE \
+    && printf '%s\n' "MmgTools/mmg ${MMG_COMMIT} (v5.8.0, LGPL-3.0)" > /opt/mmg/VERSION \
+    && { /opt/mmg/bin/mmg3d_O3 -h >/dev/null || true; } \
+    && rm -rf /src/mmg
+
+
 FROM base AS mesh-toolchain
 # THE STABLE NATIVE FLOOR. Everything here is slow to build, large, and changes only when a
 # toolchain version does - so it sits below the application layers and nothing above it may be
@@ -413,6 +442,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgmp10 libgom
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /opt/ftetwild/bin/fTetWild /usr/local/bin/fTetWild \
     && fTetWild --help >/dev/null
+
+# MMG (built in `mmg-build` above): mmg3d and mmgs, on PATH where engines/fea_mmg.binary() finds them;
+# they link only libc and libm. The capability smoke runs mmg3d on a box (tests/native).
+COPY --from=mmg-build /opt/mmg /opt/mmg
+RUN ln -s /opt/mmg/bin/mmg3d_O3 /usr/local/bin/mmg3d_O3 \
+    && ln -s /opt/mmg/bin/mmgs_O3 /usr/local/bin/mmgs_O3 \
+    && test -x /usr/local/bin/mmg3d_O3
+
+# NETGEN (ISOLATED), the internal-flow tetrahedra + prism-layer CFD engine (engines/netgen/).
+# netgen-mesher (LGPL-2.1) ships its own OpenCASCADE (netgen-occt) and numpy 2, which cannot share
+# an interpreter with the app's pinned OCP/vtk/numpy - so, like vmtk, it lives in its own venv on the
+# image's pinned Python and is reached ONLY as a subprocess (engines/netgen/runner.py runs
+# engines/netgen/netgen_mesh.py under /opt/netgen-env/bin/python). Every wheel is installed by hash
+# (requirements/netgen.txt); the import smoke fails the build if the env cannot mesh. Last in this
+# stage so a change to it never rebuilds OpenFOAM, vmtk or fTetWild.
+COPY requirements/netgen.txt /tmp/netgen.txt
+RUN python3 -m venv /opt/netgen-env \
+    && /opt/netgen-env/bin/pip install --no-cache-dir --only-binary=:all: --require-hashes \
+         -r /tmp/netgen.txt \
+    && rm -f /tmp/netgen.txt \
+    && /opt/netgen-env/bin/python -c "import netgen.meshing, netgen.stl, scipy.spatial; from netgen import config; print('netgen', config.version)" \
+    && printf '#!/bin/sh\nexec /opt/netgen-env/bin/python "$@"\n' > /usr/local/bin/netgen-python \
+    && chmod 755 /usr/local/bin/netgen-python
 
 
 FROM base AS runtime-base

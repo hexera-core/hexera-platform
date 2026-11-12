@@ -65,11 +65,18 @@ def test_the_result_screen_of_a_shell_run_is_the_shell(live, shell_payload):
     surf, rec = shell_payload
     assert surf["is_mesh"] and surf["fea"]["title"] == "FEA shell mesh"
     names = [p["name"] for p in surf["patches"]]
-    assert names and all(n.startswith("Mid_") for n in names)
-    # every plate drawn: a quad is two triangles
-    assert sum(p["tri_count"] for p in surf["patches"]) == 2 * rec["quads"] + rec["trias"]
+    # THE PARTS BY NAME (this file's bodies have none: Part_k), never the mid-faces' ids or an empty "free" group
+    assert names and all(n.startswith("Part_") for n in names)
+    assert not any(str(p.get("name")) == "free" for p in surf.get("parts") or [])
+    # every plate drawn as itself: a quad one polygon, never two triangles
+    assert sum(p["face_count"] for p in surf["patches"]) == rec["quads"] + rec["trias"]
+    assert not any("positions_b64" in p for p in surf["patches"])
     job = "shellres"
     _open(live, job, surf)
+    drawn = live.evaluate(f"""(() => ({{shown: window._vdbg['{job}:tools'].visible().slice().sort(),
+      cells: document.querySelector('#viewer-{job} .v-count').textContent}}))()""")
+    assert drawn["shown"] == sorted(names), drawn
+    assert f"{rec['elements']:,} cells" in drawn["cells"], drawn
     got = live.evaluate(f"""(() => {{
       const bar = document.querySelector('#viewer-{job} .v-bar');
       return {{keys: [...bar.querySelectorAll('.rp-keys dt')].map(d => d.textContent),

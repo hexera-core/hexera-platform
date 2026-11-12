@@ -83,6 +83,15 @@ CONTRACT: tuple[ContractVar, ...] = (
         corpus="training+qa: what the user actually asked for, and what became of each request",
     ),
     ContractVar(
+        concept="team meshing standard",
+        purpose="the organisation's standing mesh requirements from the console's Meshing settings - the "
+                "text as typed and the reading kept when it was saved - snapshotted at approval so the run "
+                "applies the standard the user approved under. Read by the notes' own reader and merged "
+                "under the run's notes, field by field (engines/meshing_standard, STD-1..3)",
+        dispatch_kwarg="meshing_standard", state_field="meshing_standard",
+        corpus="qa: which standing requirements a run was given, beside the notes",
+    ),
+    ContractVar(
         concept="acceptance criteria",
         purpose="intake's qualitative brief the reviewer judges against",
         intake_field="review_brief_txt", session_column="review_brief_txt",
@@ -471,19 +480,32 @@ STATE_FIELDS: dict[str, str] = {
     "fea_pairs":             "an FEA assembly's single pairs as the user set them on the stage, by pair key "
                              "(Part_1|Part_3): each pair's type (bonded / contact / off) and an overlap's owner "
                              "(PLAN-fea-19/20); {} when every pair follows the rule",
+    "fea_plan_choice":       "PLAN-fea-22's size choice as confirmed on the stage: 'quicker' (sized to the standard "
+                             "mesh job) or 'full' (the full-rules mesh); '' when none was picked - the run takes the "
+                             "recommended one itself, and says so",
+    "fea_plans_object":      "PLAN-fea-22: where the stage kept the plans it made (engines/fea_plan_options.PLANS_FILE); "
+                             "the run reuses them when made for its staged solid and code",
     "part_matches":          "the user's words about particular parts tied to the parts before approval (NOTE-4, the "
                              "request card's checklist), with the parts the user picked; None when there was none "
                              "for the notes as they stand - the route then reads the notes itself",
     "fea_mesh_as":           "an FEA part meshed as a shell (its mid-surface, plate elements) only when the user's "
                              "words asked for one, else a solid, as settled at Proceed (SHSTAGE-5); 'mixed' only "
                              "from a confirmation stored before it left the stage; 'solid' when nothing says",
+    "fea_shell_elements":    "a shell's elements as the user clicked them on the stage's shell line (SHSTAGE-8): "
+                             "'quads' or 'triangles', the last word on that one field (STD-4); '' when the control "
+                             "was left as it started - the notes and settings then decide",
     "fea_shell_thickness_mm": "a surface file's wall thickness in millimetres, read from the user's words and "
                               "settled on the stage at Proceed (SURF-4); None when none was given - the shell is "
                               "then delivered with its thickness not set",
     "flow_topology":         "internal/external flow regime DERIVED from the purpose - a neutral "
                              "fact read by the executor/runners, NOT an engine-native param",
+    "up_axis":               "which way is up in the file, as confirmed on the stage (+z, -y, ...): the "
+                             "ground is laid under it (INS-9); '' = +z up",
     "leak_closing":          "the leak size the user confirmed on the stage (INS-8): every leak of the "
                              "surface up to it is closed for the mesh by each route's staging; None = as drawn",
+    "cfd_wrap":              "the CFD wrap rung (LAD-cfd-5, pipeline/cfd_wrap): whether the run meshes a "
+                             "wrapped copy of the surface after every engine failed on it as drawn, on "
+                             "which engine, from which attempt; {} = never on it",
     "requested_extents":     "typed per-direction far-field multiples the user stated (contract)",
     "reference_length_m":    "the metre ruler the extents multiply, pinned at approval (contract)",
     "requirements_strict":   "whether near-misses block (true) or deliver with the miss stated",
@@ -521,6 +543,7 @@ STATE_FIELDS: dict[str, str] = {
     "request_txt":           "user requirements (see contract)",
     "review_brief_txt":      "acceptance criteria (see contract)",
     "user_notes":            "the user's own notes, verbatim (see contract)",
+    "meshing_standard":      "the team's meshing standard from settings (see contract)",
     "intake_patches":        "patch contract (see contract)",
     "dimensionality":        "dimensionality (see contract)",
     "purpose":               "purpose / use case (see contract)",

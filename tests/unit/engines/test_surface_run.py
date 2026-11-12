@@ -102,7 +102,7 @@ def test_every_solver_file_carries_the_thickness_and_a_group_per_cad_face(bracke
     head = (ws / "shell.bdf").read_text()[:1500]
     assert "$ Made from a surface file: the elements lie on the surface as given." in head
     assert "$ Wall thickness 1.5 mm, as the user gave it." in head and "NOT SET" not in head
-    assert "$ Femap Property 1 : Part_1_t1p5mm" in head
+    assert "$ Femap Property 1 : Part_1" in (ws / "shell.bdf").read_text().splitlines()
 
 
 def test_pynastran_reads_the_surface_shell(bracket):
@@ -137,7 +137,7 @@ def test_no_thickness_given_still_delivers_with_the_thickness_plainly_not_set(br
     for name, mark in (("shell.bdf", "$"), ("shell.inp", "**"), ("shell_abaqus.inp", "**"), ("shell.cdb", "!")):
         head = (tmp_path / name).read_text()[:1500]
         assert f"{mark} WALL THICKNESS NOT SET: the file is a surface and no thickness was given." in head, name
-    assert "Part_1_thickness_not_set" in (tmp_path / "shell.bdf").read_text()[:1500]
+    assert "$ Femap Property 1 : Part_1_thickness_not_set" in (tmp_path / "shell.bdf").read_text()
     assert "No thickness was given, so none is set in the files" in rec["words"]
     assert 'add it to your notes (for example "1.2 mm thick")' in rec["words"]
 
@@ -181,7 +181,9 @@ def test_separate_sheets_are_separate_parts_with_a_property_each(tmp_path):
     rec = surface_run.run(tmp_path, _file(shape, tmp_path / "in"), mm_per_unit=1.0, thickness_mm=2.0)
     assert rec["made"] and rec["surface"]["sheets"] == 2 and rec["bodies"] == {"shell": 2}
     back = sw.read_bdf(tmp_path / "shell.bdf")
-    assert sorted(back.names.values()) == ["Part_1_t2mm", "Part_2_t2mm"]
+    # SHWRITE-1: two sheets of one wall are two properties, each named after its part
+    assert sorted(back.names.values()) == ["Part_1", "Part_2"]
+    assert back.parts == {"Part_1": back.groups["Part_1"], "Part_2": back.groups["Part_2"]}
     assert list(back.walls.values()) == [pytest.approx(0.002), pytest.approx(0.002)]
     assert {"Part_1", "Part_2"} <= set(back.groups) and not (back.groups["Part_1"] & back.groups["Part_2"])
     assert "The file's 2 separate sheets are 2 parts, each with its own property." in rec["words"]
@@ -659,7 +661,7 @@ def test_a_closed_shell_of_no_volume_is_never_a_body(tmp_path):
                                        "angle beside faces at their own angles (SHELL-15i reads only 2 + 2 clusters)")
 def test_a_pipe_and_its_insulation_written_as_iges_are_two_bodies(tmp_path):
     """The STEP's two bodies. Today the IGES copy reads as one body holding both (the coincident faces pair off into
-    a pocket of nothing and the caps sew across): documented in docs/design/shell/README.md section 12."""
+    a pocket of nothing and the caps sew across): documented in docs/design/shell/README.md section 13."""
     from meshpipeline.cad import midsurface as ms
     from meshpipeline.cad.scout import read_cad
 

@@ -46,3 +46,11 @@ test("the repair route resolves as its own section, not Overview", () => {
   assert.equal(currentSection("/repair"), "/repair");
   assert.equal(currentSection("/"), "/");
 });
+
+test("the team's meshing standard is in the account group, after the organisation", () => {
+  const account = CONSOLE_SECTIONS.filter((section) => section.group === "account").map((s) => s.href);
+  assert.ok(account.includes("/settings/meshing"));
+  assert.equal(account.indexOf("/settings/meshing"), account.indexOf("/settings/organization") + 1);
+  assert.equal(CONSOLE_SECTIONS.find((s) => s.href === "/settings/meshing")?.label, "Meshing");
+  assert.equal(currentSection("/settings/meshing"), "/settings/meshing");
+});

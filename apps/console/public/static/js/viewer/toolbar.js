@@ -229,8 +229,8 @@ export async function snapshotPng({ ren, rw, apiRW, background, scale, sceneBg, 
 /* the colour bar on the picture: the metric's name, an upright ramp with the limit as a tick, and
    its top, limit and bottom values - the same stops the bar on the canvas shows */
 function drawBar(g, W, H, k, bar, onWhite) {
-  const ink = onWhite ? themeCss("--surface-2", "#1c1c1a") : themeCss("--text", "#ede9e0");
-  const faint = themeCss("--text-faint", "#8a8884");
+  const ink = onWhite ? themeCss("--surface-2", "#161615") : themeCss("--text", "#e2e0d4");
+  const faint = themeCss("--text-faint", "#86857c");
   const font = themeCss("--sans", "sans-serif");
   const bw = 12 * k, bh = Math.min(220 * k, H * 0.5), x = W - 28 * k - bw, y = H - 28 * k - bh;
   const grad = g.createLinearGradient(0, y + bh, 0, y);

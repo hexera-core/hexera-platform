@@ -242,3 +242,39 @@ def _hat(grid: np.ndarray, x: float) -> list[tuple[float, float]]:
         return [(float(grid[k]), 1.0)]
     a, b = float(grid[k - 1]), float(grid[k])
     return [(a, (b - x) / (b - a)), (b, (x - a) / (b - a))]
+
+
+# ----------------------------------------------------------- a short plate as a shell (SHELL-23's advice) ----
+#: a gusset-sized plate: 12.7 mm thick, 96.5 mm long and wide - 7.6 walls across, under SHELL-2's ten
+SHORT_T, SHORT_WALLS = 12.7, 7.6
+SHORT_L = SHORT_T * SHORT_WALLS
+#: the shell's tip against the solid's. Measured (10 Nov, CalculiX 2.21, these meshes): -0.05% at 7.6 walls, -0.05%
+#: at 5, -0.30% at 3, -0.08% at 10 - a plate alone bends the same as a shell and as a solid, however short
+SHORT_OFF_MAX = 0.01
+
+
+def _short_tip(d: Deck, ws: Path, job: str) -> float:
+    u = d.solve(ws, job, lambda p: abs(p[0]) < 1e-9, lambda p: abs(p[0] - SHORT_L) < 1e-9, (3, 1000.0),
+                lambda p: abs(p[0] - SHORT_L) < 1e-9 and abs(p[2]) < 1e-9)
+    return float(u[:, 2].mean())
+
+
+def test_a_short_plate_meshed_as_a_shell_bends_as_its_solid_does(tmp_path):
+    """SHELL-23: a plate 7.6 walls long is a shell because the user asked. Clamped at one end and pushed at the
+    other, its S4 shell model's tip moves within 1% of the C3D20R solid's (four through the wall; measured -0.05%),
+    and both lie between the wide beam with shear (its sides held from curling) and the slender narrow beam: on a
+    plate alone, short costs next to nothing - the cost is where a short wall bends from a joint (MIXED-8)."""
+    n = 12
+    xs, ys = np.linspace(0, SHORT_L, n + 1), np.linspace(0, SHORT_L, n + 1)
+    shell = Deck()
+    shell.sheet(xs, ys, lambda u, v: (u, v, 0.0), SHORT_T)
+    solid = Deck()
+    solid.box(xs, ys, np.linspace(-SHORT_T / 2, SHORT_T / 2, 5))
+    w_shell, w_solid = _short_tip(shell, tmp_path, "short_shell"), _short_tip(solid, tmp_path, "short_solid")
+    assert w_shell > 0 and w_solid > 0
+    assert abs(w_shell / w_solid - 1.0) <= SHORT_OFF_MAX, (w_shell, w_solid)
+    # the beam, wide (its sides held from curling: E / (1 - nu^2)), with its shear deflection
+    inertia, area, g = SHORT_L * SHORT_T ** 3 / 12, SHORT_L * SHORT_T, E / (2 * (1 + NU))
+    beam = 1000.0 * SHORT_L ** 3 / (3 * E / (1 - NU ** 2) * inertia) + 1000.0 * SHORT_L / (5 / 6 * g * area)
+    slender = 1000.0 * SHORT_L ** 3 / (3 * E * inertia)
+    assert beam <= w_solid <= slender, (w_solid, beam, slender)

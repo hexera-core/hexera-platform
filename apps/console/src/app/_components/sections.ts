@@ -33,6 +33,9 @@ export const CONSOLE_SECTIONS: readonly ConsoleSection[] = [
     icon: "M14 8a4 4 0 1 1-3.9 5H8l-2 2-2-2 2-2h2.1A4 4 0 0 1 14 8z" },
   { href: "/settings/organization", label: "Organisation", group: "account", available: true,
     icon: "M4 21V7l7-4 7 4v14M9 21v-5h6v5" },
+  // THE TEAM'S MESHING STANDARD: the requirements every run of the organisation applies under its notes
+  { href: "/settings/meshing", label: "Meshing", group: "account", available: true,
+    icon: "M4 4h16v16H4zM4 12h16M12 4v16M4 4l8 8M12 12l8 8" },
   { href: "/settings/billing", label: "Billing", group: "account", available: true,
     icon: "M3 7h18v10H3zM3 11h18M7 15h3" },
 ] as const;

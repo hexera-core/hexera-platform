@@ -613,6 +613,65 @@ def _load_fluid_boundary(gmsh, path: Path) -> None:
     gmsh.model.geo.synchronize()
 
 
+def _load_fluid_boundary_as_is(gmsh, path: Path) -> None:
+    """The staged fluid boundary with its triangles KEPT: the same named discrete surfaces, tags
+    1..N in file order, but no reparametrisation - the volume is filled against the boundary
+    exactly as staged. The CFD wrap rung's skin (pipeline/cfd_wrap, LAD-cfd-5) is already closed,
+    manifold and evenly triangulated, so there is nothing to remesh and nothing to fail on."""
+    gmsh.merge(str(path))
+    gmsh.model.mesh.removeDuplicateNodes()
+    gmsh.model.mesh.createTopology()
+    surfaces = [t for _, t in gmsh.model.getEntities(2)]
+    # one volume per closed shell: the skin may hold several separate passages (surface_wrap keeps
+    # each that has a way through), and one loop round two shells is not a volume
+    for shell in _shells(gmsh, surfaces):
+        loop = gmsh.model.geo.addSurfaceLoop(shell)
+        gmsh.model.geo.addVolume([loop])
+    gmsh.model.geo.synchronize()
+
+
+def _shells(gmsh, surfaces: list[int]) -> list[list[int]]:
+    """The surfaces grouped into connected shells (surfaces sharing a curve are one shell)."""
+    parent = {s: s for s in surfaces}
+
+    def find(s):
+        while parent[s] != s:
+            parent[s] = parent[parent[s]]
+            s = parent[s]
+        return s
+
+    by_curve: dict[int, int] = {}
+    for s in surfaces:
+        for _dim, c in gmsh.model.getBoundary([(2, s)], oriented=False):
+            c = abs(int(c))
+            if c in by_curve:
+                parent[find(s)] = find(by_curve[c])
+            else:
+                by_curve[c] = s
+    groups: dict[int, list[int]] = {}
+    for s in surfaces:
+        groups.setdefault(find(s), []).append(s)
+    return list(groups.values())
+
+
+def _classify_as_is(gmsh, stl_path: str) -> list[int]:
+    """A triangulated surface split into faces at sharp folds (as classify_closed_surface does, so
+    ports still bind to their lids), its triangles kept as they are (the CFD wrap rung's skin)."""
+    import math
+
+    from meshpipeline.engines.gmsh.surface_volume import CLASSIFY_ANGLE_DEG
+    gmsh.merge(str(stl_path))
+    gmsh.model.mesh.removeDuplicateNodes()
+    gmsh.model.mesh.classifySurfaces(math.radians(CLASSIFY_ANGLE_DEG), True, False, math.pi)
+    gmsh.model.geo.synchronize()
+    return sorted(t for _, t in gmsh.model.getEntities(2))
+
+
+def _wrapped(ws: Path) -> bool:
+    """The run is on the CFD wrap rung: its surface is the wrap's skin (cad/surface_wrap)."""
+    return (Path(ws) / "cfd_wrap.json").exists()
+
+
 def _refill_classified(gmsh, path: Path, spec: dict) -> list:
     """The staged fluid boundary loaded again, split by angle into surfaces gmsh can map (its own
     STL-remesh route), each new surface named by the patch its triangles came from, and the
@@ -726,6 +785,9 @@ def _external_fluid(gmsh, ws, spec, discrete, surfaces, bmin, bmax, h, ports):
         origin = _face_origin(gmsh, body, before)
     span = max(float(dmax[k]) - float(dmin[k]) for k in range(3))
     h_far = max(float(h), span / 15.0)
+    if (Path(ws) / "mesh_requirements.json").exists():
+        from meshpipeline.engines.cfd_requirements import gmsh_far
+        h_far = max(float(h), gmsh_far(ws, h_far))     # CFDREQ-2: the user's largest cell caps the far field
     grade_from_body(gmsh, body, h_body=float(h), h_far=h_far, ruler=ruler)
     gmsh.option.setNumber("Mesh.MeshSizeMax", h_far)
     groups = _external_groups(spec.get("groups"), body, far, origin, ports)
@@ -1063,11 +1125,13 @@ def main(workspace: str) -> int:
         # both are DISCRETE: the passage radius is read off their own triangles
         discrete = staged or classified
         surfaces: list[int] = []
+        # ON THE CFD WRAP RUNG the skin's own triangles are the boundary (no remesh to fail)
+        as_is = _wrapped(ws)
         if staged:
-            _load_fluid_boundary(gmsh, boundary)
+            (_load_fluid_boundary_as_is if as_is else _load_fluid_boundary)(gmsh, boundary)
         elif classified:
             from meshpipeline.engines.gmsh.surface_volume import classify_closed_surface
-            surfaces = classify_closed_surface(gmsh, str(surface))
+            surfaces = (_classify_as_is if as_is else classify_closed_surface)(gmsh, str(surface))
             print(f"[GMSH] surface input: {len(surfaces)} face(s) classified from input.stl",
                   file=sys.stderr)
         else:
@@ -1115,8 +1179,20 @@ def main(workspace: str) -> int:
             print(f"[GMSH] resolution clamp: element size {h_req:.4g} m would put only "
                   f"{min_ext / h_req:.1f} cells across {_what}; "
                   f"tightened to {h:.4g} m ({MIN_CELLS_ACROSS} across).", file=sys.stderr)
+        # CFDREQ-1: THE USER'S REQUIREMENTS from their notes (engines/cfd_requirements) - the one seam. None: the
+        # sizes are exactly the ones the rules gave
+        _ask = None
+        if (ws / "mesh_requirements.json").exists():
+            from meshpipeline.engines import cfd_requirements as CR
+            _ask = CR.Ask.of(ws, "gmsh") if CR.flow_run(ws) else None
+        _h_min = h / 20.0
+        if _ask is not None:
+            h, _lo = CR.gmsh_sizes(_ask, h, external=external)
+            _h_min = max(h / 20.0, _lo) if _lo is not None else h / 20.0
+            _ask.write(ws)
+            CR.say_sync(ws, _ask.lines())
         gmsh.option.setNumber("Mesh.MeshSizeMax", h)
-        gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0)
+        gmsh.option.setNumber("Mesh.MeshSizeMin", _h_min)
         # CURVATURE SIZING. Off for a CLASSIFIED upload: it reads the facets' kinks as curvature
         # and refined a 69 mm elbow past 300 s of surface meshing without finishing
         # (bend_elbow_021 STL, 2026-10-04) - the passage field sizes it. On for the STAGED fluid
@@ -1277,7 +1353,7 @@ def main(workspace: str) -> int:
                 print(f"[GMSH] the solid could not be meshed at the metre scale ({str(exc)[:200]}); "
                       "meshing it again at the CAD's own millimetre scale (MESH-4)", file=sys.stderr)
                 _scale = _mesh_cad_at_mm(gmsh, geom, h, _cb)
-            elif not staged:
+            elif not staged or as_is:
                 raise
             else:
                 # THE PATCHES, REMESHED EACH ON ITS OWN, DID NOT CLOSE INTO A FILLABLE BOUNDARY (a long
@@ -1306,8 +1382,9 @@ def main(workspace: str) -> int:
                 gmsh.model.mesh.generate(3)
         if _cb is not None:
             gmsh.model.mesh.removeSizeCallback()
-        if spec.get("optimize", True):
-            gmsh.model.mesh.optimize("Netgen")
+        # MESH-10: no volume comes out of the optimiser with invalid elements it went in without
+        from meshpipeline.engines.gmsh import optimise_guard
+        _optimised = optimise_guard.optimise(gmsh, "Netgen", 1 if spec.get("optimize", True) else 0)
         if _srad is not None:
             # measured on the FINAL boundary: the radius field carried over from the coarse
             # surface (nearest point; the radius does not change with refinement)
@@ -1411,6 +1488,8 @@ def main(workspace: str) -> int:
                if _openings else {}),
             **_resolution,
             **_passage,
+            # MESH-10: the volumes the optimiser made invalid, given back the mesh they went in with
+            **({"optimiser_kept_input": _optimised} if _optimised else {}),
             "bounds": _final_node_bounds(gmsh),
             # groups = the ACTUAL physical groups present in the meshed model (read back),
             # role-annotated from the spec - the manifest must reflect the artifact, not
