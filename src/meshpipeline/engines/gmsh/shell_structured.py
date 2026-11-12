@@ -861,6 +861,9 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
 #: ring to the box (the transition stays inside the box). Lines closer than SNAP face sizes are one line (a box side
 #: that near an edge runs to that edge); no cell edge under CELL_MIN face sizes.
 BLOCKS = True
+
+#: SHMESH-47: a grid line ending on an edge the face shares cuts the neighbour there too (else the face is not gridded)
+CUT_NEIGHBOURS = True
 BOX_STEP = 8
 #: SHMESH-48: the ring an O-grid aims at, times the hole's radius (an engineer's washer: 1.5 to 2 times its diameter)
 WASHER_AIM = 1.75
@@ -967,7 +970,8 @@ def _remove_loose(gmsh, curves: set[int]) -> None:
 
 def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: dict[int, float], hole_size, mm: float,
                 cuts: set[int] | None = None, low_mm: float | None = None, high_mm: float | None = None,
-                cells_out: set[int] | None = None
+                cells_out: set[int] | None = None, no_cut: frozenset = frozenset(),
+                cut_out: dict[int, set[int]] | None = None
                 ) -> tuple[list[Washer], list[Washer], dict[int, int], set[int], dict[str, int]]:
     """SHMESH-41: each flat face whose inner loops are all washer holes is cut into a grid: round each hole a box
     along the face's own frame (its longest straight edge) - an O-grid's (_boxed) or a free box - every box side drawn
@@ -1131,6 +1135,12 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                     q = _samples(gmsh, x, 4)
                     if outline.query(q[2])[0] > 1e-3 * h:
                         pieces.append((q[0], q[-1]))
+            spoilt = False
+            if hit and (not CUT_NEIGHBOURS or tag_of[t] in no_cut):
+                # a line would cut a shared edge (the neighbour would keep it whole: a crack) - and cutting the
+                # neighbour is off, or it left poor elements there on a first mesh (SHMESH-47b)
+                small = True
+                spoilt = CUT_NEIGHBOURS
             others = sorted({int(n) for c in hit for n in gmsh.model.getAdjacencies(1, c)[0] if int(n) != t})
             if any(n in by_face or n not in tag_of for n in others) or any(w.face in others for w in washers):
                 small = True        # a neighbour with washers of its own is left as it is
@@ -1144,10 +1154,13 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             gmsh.model.occ.synchronize()
             _remove_loose(gmsh, cut_curves)
             if small:
-                no("a cell would come out too small, a ring or a shared edge cut")
+                no("its lines cut a joined face into poor elements on a first mesh" if spoilt
+                   else "a cell would come out too small, a ring or a shared edge cut")
                 continue
             edge_pts = np.vstack([_samples(gmsh, c, 64) for cl in loops for c in cl])
             if others:
+                if cut_out is not None:
+                    cut_out.setdefault(tag_of[t], set()).update(tag_of[n] for n in others)
                 occ = gmsh.model.occ
                 cutters = [(1, occ.addLine(occ.addPoint(*[float(v) for v in pa]), occ.addPoint(*[float(v) for v in pb])))
                            for pa, pb in pieces]

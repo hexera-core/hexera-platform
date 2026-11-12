@@ -164,6 +164,15 @@ class _Periodic(Exception):
         self.loop = loop    # gmsh read the face's 1D mesh as not a closed loop (SHMESH-11c)
 
 
+class _NoCut(Exception):
+    """SHMESH-47b: gridded faces (sewn face indices) whose lines cut a joined face into triangles or elements past the
+    solver's own limits: the mesh is made again with those faces left ungridded (the neighbours whole)."""
+
+    def __init__(self, faces: set[int]) -> None:
+        super().__init__(f"{len(faces)} gridded face(s)")
+        self.faces = faces
+
+
 class _Unmap(Exception):
     """SHMESH-40: mapped faces (gmsh surface tags) whose grid came out with a quad past the solver's own limits: the
     mesh is made again with them free."""
@@ -1012,12 +1021,18 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         started = time.monotonic()
         unmap: set[int] = set()
         unmapped = 0
+        no_cut: set[int] = set()
         while True:
             try:
                 mesh, applied = _mesh_once(Path(brep), record, owners, float(mm_per_unit), log, target=target,
                                            hole_before=tuple((tuple(c), e) for c, e in redrawn),
                                            correction=correction, requirements=requirements, unmap=frozenset(unmap),
-                                           check_maps=unmapped < UNMAP_ROUNDS)
+                                           no_cut=frozenset(no_cut), check_maps=unmapped < UNMAP_ROUNDS)
+            except _NoCut as nc:
+                # SHMESH-47b: those faces' grids left out (their joined faces whole); counts as a round of SHMESH-40
+                no_cut |= nc.faces
+                unmapped += 1
+                continue
             except _Unmap as u:
                 # SHMESH-40: a grid that came out past the solver's limits is meshed free (the rest mapped again)
                 unmap |= u.faces
@@ -1070,7 +1085,8 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                     again, applied2 = _mesh_once(Path(brep), record, owners, float(mm_per_unit), None,
                                                  hole_before=tuple((tuple(c), e) for c, e in redrawn),
                                                  target=target, correction=correction, requirements=requirements,
-                                                 own_spots=tuple(own), unmap=frozenset(unmap), check_maps=False)
+                                                 own_spots=tuple(own), unmap=frozenset(unmap),
+                                                 no_cut=frozenset(no_cut), check_maps=False)
                 except (ValueError, _Periodic) as exc:
                     logger.info("shell mesh: the spots past the solver's limits were not meshed again (%s)", exc)
                     break
@@ -1158,7 +1174,7 @@ def _classic():
 def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list | None, *,
                target: dict | None = None, correction: float = 1.0,
                requirements: dict | None = None, own_spots: tuple = (), unmap: frozenset = frozenset(),
-               hole_before: tuple = (),
+               hole_before: tuple = (), no_cut: frozenset = frozenset(),
                check_maps: bool = False) -> tuple[ShellMesh, dict]:
     """One mesh. `unmap` (SHMESH-40): gmsh surfaces left free (their grid came out past the solver's limits once);
     `check_maps`: raise _Unmap when a mapped face's grid comes out past them. `own_spots` (SHMESH-31): (sewn face, box low corner, box high corner - mm) round elements a mesh
@@ -1299,6 +1315,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         washer_skipped: dict[str, int] = {}
         block_skipped: dict[str, int] = {}
         gridded: list = []                  # O-grid washers inside a gridded face (SHMESH-41): mapped with it
+        cut_of: dict[int, set[int]] = {}    # SHMESH-47b: gridded face -> the joined faces its lines cut
         boxed: list = []                    # washers in a gridded face's free boxes: their own ring
         rings: list = []                    # washers in a free face: their own ring mesh (ST.ring_mesh)
         block_preset: dict[int, int] = {}
@@ -1340,7 +1357,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 gridded, boxed, block_preset, block_holes, block_skipped = ST.block_faces(
                     gmsh, washers, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
                     cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
-                    cells_out=grid_cells)
+                    cells_out=grid_cells, no_cut=no_cut, cut_out=cut_of)
             for w in gridded:
                 w.info["kind"] = "o-grid in a gridded face"
             for w in boxed:
@@ -1509,6 +1526,23 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         xyz = np.asarray(coords, dtype=float).reshape(-1, 3) * mm
         ring_faces = {w.annulus for w in rings}
         high = (sizing or {}).get("high_mm")
+        if check_maps and cut_of:
+            # SHMESH-47b: a gridded face whose lines cut a joined face into triangles or elements past the solver's
+            # own limits - there, or in its own free cells - is left ungridded on the next pass (its neighbours whole)
+            hurt: set[int] = set()
+            for kg, nbrs in sorted(cut_of.items()):
+                for s_ in sorted(x for x, kx in tag_of.items() if kx in nbrs or (kx == kg and x not in grids)):
+                    types, _tags, conns = gmsh.model.mesh.getElements(2, s_)
+                    for et, conn in zip(types, conns, strict=True):
+                        c_ = index[np.asarray(conn, dtype=np.int64)]
+                        if et == 2 or (et == 3 and shell_quality._quad_past(
+                                shell_quality.quad_measures(xyz, c_.reshape(-1, 4))).any()):
+                            hurt.add(kg)
+                            break
+                    if kg in hurt:
+                        break
+            if hurt:
+                raise _NoCut(hurt)
         if check_maps and grids:
             # SHMESH-40: a grid with a quad past the solver's own limits (a face mapped where its shape bends the
             # rows too far) is meshed free on the next pass
