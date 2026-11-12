@@ -1507,6 +1507,7 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
         # one plan for holes of one size (a hole drawn again comes out a hair off its radius: one plan each split the
         # bolt circle between an O-grid and none)
         radii = [w.r for w in ws]
+        plans: list[tuple[int, int, float, float] | None]
         if hole_size is None:
             plans = [None] * len(ws)
         elif max(radii) <= 1.01 * min(radii):
@@ -1515,16 +1516,17 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             plans = [one] * len(ws)
         else:
             plans = [_boxed(w.r * mm, hole_size(w.r * mm, w.owner), size_mm[t], low_mm, high_mm) for w in ws]
-        use_o = all(pl is not None for pl in plans) and len({pl[0] for pl in plans}) == 1 and \
-            len({pl[1] for pl in plans}) == 1
+        got_plans = [pl for pl in plans if pl is not None]
+        use_o = len(got_plans) == len(ws) and len({pl[0] for pl in got_plans}) == 1 and \
+            len({pl[1] for pl in got_plans}) == 1
+        plan_of: dict[int, tuple[int, int, float, float]] = {}
         if use_o:
-            b = max(pl[3] for pl in plans) / mm
-            R_of = {id(w): pl[2] * w.r for w, pl in zip(ws, plans, strict=True)}
-            plan_of = {id(w): pl for w, pl in zip(ws, plans, strict=True)}
+            b = max(pl[3] for pl in got_plans) / mm
+            R_of = {id(w): pl[2] * w.r for w, pl in zip(ws, got_plans, strict=True)}
+            plan_of = {id(w): pl for w, pl in zip(ws, got_plans, strict=True)}
         else:
             b = max(w.R for w in ws) + BOX_FREE * h
             R_of = {id(w): w.R for w in ws}
-            plan_of = {}
         beta = math.asin(min(0.99, b / Rb))
         if min(gaps) - 2 * beta < CELL_MIN * h / Rb:
             no("the washers' sectors would touch")
