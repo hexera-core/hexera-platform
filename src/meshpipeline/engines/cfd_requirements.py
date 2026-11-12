@@ -48,7 +48,7 @@ CONSUMER = "mesh_requirements"
 #: what each engine built for each requirement (beside the case; the report reads it after the mesh)
 PLAN_FILE = "cfd_requirements_plan.json"
 #: the CFD engines (engines/registry names)
-ENGINES = ("snappy", "cfmesh", "snappy_multiregion", "gmsh", "vmtk", "snapgrid")
+ENGINES = ("snappy", "cfmesh", "snappy_multiregion", "gmsh", "vmtk", "snapgrid", "netgen")
 #: kinematic viscosity at 20 °C, m^2/s, of the fluids a note may name
 NU = {"air": 1.516e-5, "water": 1.004e-6}
 DEFINITIONS = ("Non-orthogonality: on each internal face, the angle between the face normal and the line joining "
@@ -309,7 +309,9 @@ class Ask:
 
     def write(self, workspace) -> None:
         """The record beside the case: what this engine did with each requirement. A row it never decided is
-        "not applied on this mesher" - told, never silently dropped."""
+        "not applied on this mesher" - told, never silently dropped. On the CFD wrap rung (LAD-cfd-5) every row
+        also says it was applied to the wrapped surface (wrap_rows)."""
+        wrap_rows(self, workspace)
         name = _ENGINE_WORDS.get(self.engine, self.engine)
         lid = self.rid("layers:count")
         if self.layer_note and lid in self.rows:
@@ -403,9 +405,58 @@ class Ask:
         return h
 
 
+def _wrap_of(workspace) -> dict | None:
+    """The CFD wrap rung's request and measured report when this attempt meshes a wrapped surface, else None."""
+    try:
+        from meshpipeline.pipeline import cfd_wrap
+        req = cfd_wrap.read_request(Path(workspace))
+        if not req:
+            return None
+        return {**req, "report": cfd_wrap.read_report(workspace) or {}}
+    except Exception:  # noqa: BLE001 - a wrap we cannot read is no wrap for the notes
+        return None
+
+
+#: the wrap rung's degraded step: tetrahedra filled against the wrap's own triangles (pipeline/cfd_wrap)
+_WRAP_AS_IS = "gmsh"
+_SIZE_FIELDS = ("global", "near_wall", "min_edge", "max_edge")
+_LAYER_FIELDS = ("layers:count", "layers:first_height", "layers:total_thickness", "layers:growth", "layers:y_plus")
+
+
+def wrap_rows(ask: Ask, workspace) -> bool:
+    """LAD-cfd-5 x CFDREQ-1: on the wrap rung the mesh is built on the wrapped surface, not the CAD. Each engine
+    applies the notes there as on any surface; what that changes is said on its rows. On the degraded step (gmsh
+    filling the wrap's own triangles) the wall keeps the wrap's triangles, so a size at the wall is the nearest,
+    and no wall layers are built. The wrap's own distance is set by the geometry, not by the notes. True when the
+    attempt is on the rung."""
+    wrap = _wrap_of(workspace)
+    if not wrap:
+        return False
+    rep = wrap.get("report") or {}
+    far = rep.get("max_on_cad_m") if rep.get("max_on_cad_m") is not None else rep.get("max_m")
+    within = f"within {_mm(float(far))} of your CAD" if isinstance(far, (int, float)) else "close to your CAD"
+    clause = f"on the wrapped surface, which lies {within}; details narrower than the wrap are not in the mesh"
+    as_is = ask.engine == _WRAP_AS_IS and bool(wrap.get("engine") == _WRAP_AS_IS or wrap.get("degraded"))
+    for r in ask.req.get("rows") or []:
+        rid, field = r["id"], str(r["field"])
+        row = ask.rows.get(rid)
+        if as_is and field in _LAYER_FIELDS:
+            ask.rows[rid] = {"status": "not_applied", "built": "the last step of the wrap rung builds no wall layers "
+                                                              "(tetrahedra filled against the wrapped surface)"}
+            continue
+        if as_is and field in ("near_wall", "min_edge") and row and row.get("status") == "applied":
+            ask.rows[rid] = {**row, "status": "nearest",
+                             "built": f"{row['built']} inside the volume; the wall keeps the wrapped surface's own "
+                                      "triangles"}
+            continue
+        if row and row.get("status") in ("applied", "nearest") and field in _SIZE_FIELDS:
+            row["note"] = clause if not row.get("note") else f"{row['note']}; {clause}"
+    return True
+
+
 #: how a line the user reads names the mesher: never by its name (contracts/narration's guard)
 _ENGINE_WORDS = {"snappy": "this mesher", "cfmesh": "this mesher", "snappy_multiregion": "this mesher",
-                 "gmsh": "this mesher", "vmtk": "this mesher", "snapgrid": "this mesher"}
+                 "gmsh": "this mesher", "vmtk": "this mesher", "snapgrid": "this mesher", "netgen": "this mesher"}
 
 
 def _m(mm) -> float | None:
@@ -1009,6 +1060,121 @@ def vmtk_spec(ask: Ask, s: Mapping) -> dict:
 
 
 # #
+# the internal-flow tetrahedra + prism mesher (engines/netgen): size clamps, the budget, the prism stack
+# #
+
+@guarded(lambda ask, *, layers, **_k: {"layers": int(layers)})
+def netgen_inputs(ask: Ask, *, layers: int, port_diameters, soft_budget: int, cell_limit: int) -> dict:
+    """make_plan's keywords (engines/netgen/plan.py) for the user's requirements: their size at the walls (every
+    point Netgen sizes is a wall point), else their global size as a band, their smallest and largest edge as
+    clamps on the passage-sized edge; their cell count as the plan's budget (a target also refines toward it);
+    their layer count, first layer (or y+, with the widest opening as the reference length), stack and growth.
+    Netgen grades its cells by its own rate: a growth ratio is not a setting it has, nor is a size in one named
+    place. Nothing asked: {"layers": layers}, the plan exactly as the rules make it."""
+    out: dict = {"layers": int(layers)}
+    lo = hi = None
+    if ask.wall_m is not None:
+        lo = hi = ask.wall_m
+        ask.done("near_wall", f"wall cells of {_mm(ask.wall_m)} (the cells inside grade from them)", built_m=ask.wall_m)
+        if ask.global_m is not None:
+            ask.done("global", f"the cells grow from {_mm(ask.wall_m)} at the walls into the passage")
+    elif ask.global_m is not None:
+        lo, hi = 0.5 * ask.global_m, 1.5 * ask.global_m
+        ask.done("global", f"cells between {_mm(lo)} and {_mm(hi)}, sized by the local passage inside that band",
+                 built_m=ask.global_m)
+    if ask.min_m is not None:
+        lo = max(float(lo or 0.0), ask.min_m)
+        ask.done("min_edge", f"no cell edge aimed under {_mm(ask.min_m)}", built_m=ask.min_m)
+    if ask.max_m is not None:
+        hi = min(float(hi), ask.max_m) if hi is not None else ask.max_m
+        ask.done("max_edge", f"no cell edge aimed over {_mm(ask.max_m)}", built_m=ask.max_m)
+    if lo is not None and hi is not None and float(lo) > float(hi):
+        lo = hi
+    if lo is not None:
+        out["size_lo"] = float(lo)
+    if hi is not None:
+        out["size_hi"] = float(hi)
+    if ask.user_budget() or ask.floor is not None:
+        out["soft_budget"] = ask.budget(int(soft_budget), hard=int(cell_limit))
+        out["user_budget"] = ask.user_budget()
+        if ask.target is not None:
+            out["target_cells"] = min(int(ask.target), int(cell_limit))
+    n = int(layers)
+    if ask.n_layers is not None:
+        n = int(ask.n_layers)
+        out["layers"] = n
+        ask.done("layers:count", "no boundary layers" if n == 0 else
+                 f"{n} prism layers on every wall (a thinner stack, then none, only if the mesher cannot build them; "
+                 "said if so)")
+    if n == 0:
+        for f in ("layers:first_height", "layers:total_thickness", "layers:growth", "layers:y_plus"):
+            if ask.rid(f):
+                ask.not_here(f, "no boundary layers are built on this mesh")
+    else:
+        g = float(ask.layer_growth) if ask.layer_growth is not None else None
+        if g is not None:
+            out["growth"] = g
+            ask.done("layers:growth", f"each layer {MR._g(g)} times the one under it")
+        d = max([float(x) for x in port_diameters or []] or [0.0]) or None
+        first = ask.first_layer(length_m=d, length_from="the widest opening's diameter")
+        if first is not None:
+            out["first_layer"] = float(first)
+            if ask.first_m is not None:
+                ask.done("layers:first_height", f"a first layer {_mm(first)} high")
+        if ask.total_m is not None:
+            if first is not None and ask.n_layers is not None:
+                gg = g if g is not None else 1.2
+                got = float(first) * sum(gg ** k for k in range(n))
+                ask.nearest("layers:total_thickness", f"your first layer, count and growth make a stack {_mm(got)} "
+                                                      "thick, so that is built")
+            else:
+                out["layer_stack"] = float(ask.total_m)
+                ask.done("layers:total_thickness", f"a layer stack {_mm(ask.total_m)} thick")
+    if ask.growth is not None:
+        ask.not_here("growth", "this mesher grades its cells from the walls inward at its own rate; it has no growth "
+                               "setting")
+    for e in ask.local:
+        ask.not_here(e["id"], "this mesher sizes every wall point from the local passage; it has no setting for one "
+                              "named place")
+    return out
+
+
+def netgen_planned(ask: Ask, plan: Mapping) -> None:
+    """After make_plan: when the user's own sizes held every size against their cell count (a wall size and a count
+    that do not fit together), the sizes are kept and the count is the nearest, said with the plan's estimate."""
+    if not plan.get("sizes_held"):
+        return
+    est = int(plan.get("estimated_cells") or 0)
+    for f in ("cells:target", "cells:ceiling", "cells:floor"):
+        if ask.rid(f):
+            ask.nearest(f, f"your sizes make about {_cells(est)} cells, so the mesh follows your sizes, not the count",
+                        planned=est)
+
+
+def netgen_built(workspace, built: Mapping | None) -> None:
+    """After the native run (NG-5's ladder): a mesh built on a thinner rung than planned changes what the layer
+    rows say - the stack half as thick, or no layers. Nothing to do on the planned rung or with no record."""
+    rung = int((built or {}).get("rung") or 1)
+    path = Path(workspace) / PLAN_FILE
+    if rung <= 1 or not path.exists():
+        return
+    try:
+        rec = json.loads(path.read_text())
+        req = requirements_for(workspace) or {}
+        ids = {r["field"]: r["id"] for r in req.get("rows") or []}
+        why = ("the planned layers could not be built, so they were built half as thick" if int(
+            (built or {}).get("layers") or 0) else "no layers could be built here, so the mesh has none")
+        for f in ("layers:count", "layers:first_height", "layers:total_thickness", "layers:y_plus"):
+            rid = ids.get(f)
+            row = (rec.get("rows") or {}).get(rid) if rid else None
+            if row and row.get("status") in ("applied", "nearest"):
+                row.update(status="nearest", built=f"{row.get('built')}; {why}")
+        path.write_text(json.dumps(rec, indent=1, sort_keys=True))
+    except (OSError, ValueError, KeyError, TypeError):
+        logger.warning("cfd requirements: the Netgen rung was not told", exc_info=True)
+
+
+# #
 # the multi-region mesher (engines/snappy_multiregion): the background cell, the regions' levels
 # #
 
@@ -1258,7 +1424,7 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None) -> str:
 WORST_KEYS = {"non_orthogonality": ("max_non_ortho", False), "skewness": ("max_skewness", False),
               "aspect_ratio": ("max_aspect_ratio", False), "determinant": ("min_determinant", True),
               "min_volume": ("min_volume", True), "orthogonal_quality": ("min_orthogonal_quality", True)}
-_OPENFOAM = ("snappy", "cfmesh", "snapgrid", "snappy_multiregion")
+_OPENFOAM = ("snappy", "cfmesh", "snapgrid", "snappy_multiregion", "netgen")
 
 
 def _plan(workspace) -> dict:
@@ -1442,5 +1608,7 @@ def attach(workspace, quality: dict, engine: str) -> dict:
 
 __all__ = ["Ask", "CONSUMER", "DEFINITIONS", "ENGINES", "NU", "PLAN_FILE", "ROUTE", "RULE_CELLS", "RULE_LAYERS",
            "RULE_LIMITS", "RULE_REPORT", "RULE_SAME", "RULE_SEAM", "RULE_SIZES", "SNAPPY_QUALITY", "attach",
-           "cells_between_levels", "flow_run", "level_for", "read_for_attempt", "report", "requirements_for",
+           "cells_between_levels", "flow_run", "level_for", "netgen_built", "netgen_inputs", "netgen_planned",
+           "read_for_attempt",
+           "report", "requirements_for", "wrap_rows",
            "skin_friction", "snappy_dict", "summary", "y_plus_height"]

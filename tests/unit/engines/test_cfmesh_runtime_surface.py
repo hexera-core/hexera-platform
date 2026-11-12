@@ -188,7 +188,7 @@ def test_dispatch_reaches_the_cfmesh_executor_through_its_owning_module():
 
     runners = engine_runners()
     assert set(runners) == {"cfmesh", "snappy", "snappy_multiregion", "gmsh", "vmtk",
-                            "snapgrid"}
+                            "snapgrid", "netgen"}
     assert runners["cfmesh"] is native._run_cartesian_mesh_local, (
         "dispatch no longer resolves cfMesh's local executor from the module that owns it")
 

@@ -28,6 +28,33 @@ licenses, see `requirements/runtime.txt` and the `Dockerfile`, and are not vendo
   Runtime Library Exception), both from Ubuntu's archive.
 - **Used by:** `src/meshpipeline/engines/fea_tetwild.py` (rule LAD-fea-9 in `docs/RULES.md`).
 
+## Netgen, installed into the mesh image (not vendored here)
+
+- **Project:** Netgen (Joachim Schöberl, TU Wien), the mesher of NGSolve - <https://github.com/NGSolve/netgen>.
+- **Licence:** GNU Lesser General Public License 2.1. Its OpenCASCADE build (`netgen-occt`) is under
+  the LGPL-2.1 with the OCCT exception; numpy and scipy (installed beside it) are BSD-3-Clause.
+- **What we ship:** the unmodified `netgen-mesher 6.2.2608` and `netgen-occt 7.8.1` wheels from PyPI,
+  installed by hash (`requirements/netgen.txt`) into an isolated interpreter at `/opt/netgen-env` in
+  the `mesh-toolchain` stage of the `Dockerfile`. We call it only as a separate process (dynamic use
+  of an unmodified LGPL library); nothing of Netgen is linked into our code. Today it runs only inside
+  our cloud mesh runner and is not distributed.
+- **Used by:** `src/meshpipeline/engines/netgen/` (the internal-flow CFD engine, rules NG-1..NG-5 in
+  `engines/netgen/plan.py`).
+
+## MMG, built into the mesh image (not vendored here)
+
+- **Project:** Mmg (Charles Dapogny, Cecile Dobrzynski, Pascal Frey, Algiane Froehly and contributors;
+  Bordeaux INP, CNRS, Inria, Sorbonne Universite) - <https://github.com/MmgTools/mmg>.
+- **Licence:** GNU Lesser General Public License 3.0 (its `LICENSE` is installed beside the programs at
+  `/opt/mmg/LICENSE` in the mesh image).
+- **What we ship:** the unmodified `mmg3d_O3` and `mmgs_O3` command-line programs, built in the
+  `mmg-build` stage of the `Dockerfile` from the v5.8.0 release commit
+  `4d8232c8aebfed877935d75d4d4a67e850962422`, with no optional dependency (no SCOTCH, Elas or VTK).
+  They run as separate programs, never linked into our code. **Dynamically linked system
+  libraries:** libc and libm only. Today they run only inside our cloud mesh runner and are not
+  distributed; a distribution would carry the LGPL-3.0 text and the source location above.
+- **Used by:** `src/meshpipeline/engines/fea_mmg.py` (rule MESH-mmg-1 in `docs/RULES.md`).
+
 ## vtk.js, `ui/vendor/vtk.js`
 
 - **Project:** vtk.js (`@kitware/vtk.js`), Kitware Inc. - <https://github.com/Kitware/vtk-js>

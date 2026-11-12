@@ -1,5 +1,5 @@
 # Responsibility: Build a snap-grid mesh for one Builder attempt with no model in the loop: stage the ECXML, choose the grid plan, run the mesher, report the outcome.
-# Boundaries: deterministic; it authors nothing a model could get wrong. It publishes nothing itself (every execution-owned publication needs a certified scenario): what the user reads comes through finalize's output and the manifest. The mesher, the checks and the manifest are runner.py's and mesher.py's.
+# Boundaries: deterministic; it authors nothing a model could get wrong. It says its plan and the mesher's start on the run's live stream, as every route does (contracts/narration, contracts/mesh_design); the rest of what the user reads comes through finalize's output and the manifest. The mesher, the checks and the manifest are runner.py's and mesher.py's.
 # Collaborates with: agents/builder/invoke.py (calls drive through spec.build_driver), engines/snapgrid/runner.py.
 from __future__ import annotations
 
@@ -91,6 +91,17 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     note_native_payload(ws, [R.SOURCE_NAME, R.PLAN_NAME])
 
     await run.fence("start native mesh")
+    # THE DESIGN AND THE MESH START, said as every route says them: the plan's own numbers in plain
+    # words, the design receipt (contracts/mesh_design), then the mesher starting - so the run box's
+    # "Designing the mesh" and "Creating the mesh" rows fill for a thermal model as for any part
+    from meshpipeline.contracts import mesh_design
+    from meshpipeline.contracts import narration as N
+    for i, line in enumerate(N.grid_plan_lines(plan)):
+        await N.asay(publish, line, op_id=f"snapgrid:say:{step}:{i}")
+    await mesh_design.apublish(publish, job_id=job_id, workspace=ws, attempt=step + 1)
+    meshing = getattr(publish, "ameshing", None)
+    if meshing is not None:
+        await meshing("snapgrid", 0, None, op_id=f"meshing:snapgrid:{step}")
     # NO GUESSED TIME LIMIT (contracts/native_time): the run's cap is the WALL of the machine it is
     # on, and the mesher is watched for progress inside (runner.run_native_build); a run stopped at
     # the Cloud Run wall still working runs again, the same case, on a VM (RUN-5). It was 3,600 s.

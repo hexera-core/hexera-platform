@@ -764,6 +764,8 @@ def _render_outcome(fr: FinalResult) -> str:
                          if kinds == {_OVER_CELL_LIMIT}
                          else "Delivered with a concern about its size:"
                          if kinds == {PHYSICAL_SCALE}
+                         else "Delivered on a wrapped surface:"
+                         if kinds == {WRAPPED_SURFACE}
                          else "Delivered with a note on how closely it follows your CAD:"
                          if kinds == {CAD_FIDELITY}
                          else "Delivered with stated deviations:")
@@ -812,6 +814,9 @@ def _render_outcome(fr: FinalResult) -> str:
                     lines.extend(_narrow_passage_lines(c))
                 elif kind == PHYSICAL_SCALE:
                     lines.extend(_physical_scale_lines(c))
+                elif kind == WRAPPED_SURFACE:
+                    from meshpipeline.pipeline.cfd_wrap import caveat_lines
+                    lines.extend(caveat_lines(c))
                 elif kind in (_RESOLUTION_SHORT, _OVER_CELL_LIMIT):
                     # a sound mesh short of one of our own bars: the note says it all
                     from meshpipeline.engines.resolution_policy import note_lines
@@ -824,7 +829,10 @@ def _render_outcome(fr: FinalResult) -> str:
             # the narrow-gap note says everything it needs in its own lines; the closing speaks
             # for the rest
             core = kinds - {NARROW_PASSAGES, PHYSICAL_SCALE, _RESOLUTION_SHORT, _OVER_CELL_LIMIT,
-                            CAD_FIDELITY}
+                            WRAPPED_SURFACE, CAD_FIDELITY}
+            if WRAPPED_SURFACE in kinds and not core:
+                from meshpipeline.pipeline.cfd_wrap import WRAPPED_SURFACE_CLOSING
+                lines.append(WRAPPED_SURFACE_CLOSING)
             if MEASURED_VERDICT in core:
                 lines.append(MEASURED_CONCERNS_CLOSING)
             elif core == {"domain_extent"}:
@@ -1022,6 +1030,8 @@ class RunOutcome:
     manifest: Any = None
     requirement_caveats: tuple = ()
     layers_planned: bool = False
+    #: the wrap the delivered mesh was built on (pipeline/cfd_wrap.delivered), None for any other
+    cfd_wrap: Any = None
 
     @classmethod
     def from_graph_state(cls, state: Mapping) -> RunOutcome:
@@ -1054,7 +1064,16 @@ class RunOutcome:
                    manifest=dict(manifest) if isinstance(manifest, Mapping) else {},
                    requirement_caveats=tuple(c for c in (state.get("requirement_caveats") or ())
                                              if isinstance(c, Mapping)),
-                   layers_planned=_layers_planned(state))
+                   layers_planned=_layers_planned(state),
+                   cfd_wrap=_delivered_wrap(state))
+
+
+def _delivered_wrap(state: Mapping) -> dict | None:
+    try:
+        from meshpipeline.pipeline.cfd_wrap import delivered
+        return delivered(state)
+    except Exception:  # noqa: BLE001 - an unreadable record says nothing about the mesh
+        return None
 
 
 def _layers_planned(state: Mapping) -> bool:
@@ -1671,6 +1690,22 @@ def narrow_passage_caveat(outcome: RunOutcome) -> dict | None:
 #: LAD-cfd-3 the narrowest gap under the floor, LAD-cfd-4 more cells than one job is sized for).
 _RESOLUTION_SHORT = "resolution_short"
 _OVER_CELL_LIMIT = "over_cell_limit"
+
+
+#: The caveat kind a delivery carries when its mesh was built on the WRAPPED surface: every engine
+#: failed on the surface as drawn, and the CFD ladder's last rung (pipeline/cfd_wrap, LAD-cfd-5)
+#: meshed a wrapped copy of it. The delivery says how far the wrap lies from the CAD.
+WRAPPED_SURFACE = "wrapped_surface"
+
+
+def wrapped_surface_caveat(outcome: RunOutcome) -> dict | None:
+    """THE one predicate for the wrapped-surface note (pipeline/cfd_wrap.caveat_of), read at
+    terminal assembly: None unless the executor validated a mesh built on the wrap. Like the size
+    note it never enters the graph state, so it can never start a retry."""
+    from meshpipeline.pipeline.cfd_wrap import caveat_of
+    wrap = outcome.cfd_wrap if isinstance(outcome.cfd_wrap, Mapping) else None
+    return caveat_of(wrap, executor_success=outcome.executor_success,
+                     failed_gate=outcome.failed_gate)
 
 
 #: The caveat kind a delivery carries when the mesh is not a believable size for what it is: the

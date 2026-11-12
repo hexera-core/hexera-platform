@@ -1910,6 +1910,27 @@ def _mesh(workspace) -> int:
         from meshpipeline.engines.gmsh import optimise_guard
         optimised = optimise_guard.optimise(gmsh, "Netgen", int(run.get("optimise_passes") or 1) if meshed else 0,
                                             log_prefix="[GMSH-FEA]")
+        # MESH-mmg-1: MMG improves the inside of a volume that still holds an element the limits would
+        # note, its surface frozen - kept only when better, before the elements are curved
+        mmg: dict = {}
+        if meshed and not rung:
+            from meshpipeline.engines import fea_mmg
+
+            # PLAN-fea-34 x MESH-mmg-1: the user's own quality limits (their notes) the pass can aim at;
+            # none (no notes, or no such limit): the pass exactly as it is without them
+            mmg_targets: list = []
+            try:
+                from meshpipeline.engines import shell_run as _notes_reader
+                mmg_targets = fea_mmg.targets_of(_notes_reader.requirements_in(ws))
+            except Exception as exc:  # noqa: BLE001 - the notes never fail a mesh
+                print(f"[GMSH-FEA] the notes' quality limits were not read for the quality pass: {exc}",
+                      file=sys.stderr)
+            try:
+                mmg = fea_mmg.improve(gmsh, vols, targets=mmg_targets or None)
+            except Exception as exc:  # noqa: BLE001 - a post-pass that cannot run leaves the gmsh mesh
+                mmg = {"rule": fea_mmg.RULE, "ran": False, "why": f"{type(exc).__name__}: {exc}"[:300]}
+            if fea_mmg.words(mmg):
+                print(f"[GMSH-FEA] {fea_mmg.words(mmg)}", file=sys.stderr)
         order = int((plan.get("element") or {}).get("order") or 2)
         settled: dict = {"straightened": 0, "set_aside": [], "cusp_places_m": [], "cusp_elements": 0,
                          "micro_used": [], "micro_elements": 0}
@@ -2047,6 +2068,9 @@ def _mesh(workspace) -> int:
             wanted = shell_run.requirements_in(ws)
             if wanted and solid is not None:
                 asked_report = fea_requirements.report(solid, wanted, order=order)
+                if mmg.get("targets"):
+                    from meshpipeline.engines import fea_mmg as _mmg_told
+                    asked_report = _mmg_told.tell(asked_report, mmg)
         except Exception as exc:  # noqa: BLE001 - told as not measured, never a failed mesh
             print(f"[GMSH-FEA] the notes' requirements were not measured: {exc}", file=sys.stderr)
         # MESH ONCE, EXPORT MANY (design 8): the Nastran and Ansys files from the same mesh, with the
@@ -2110,6 +2134,8 @@ def _mesh(workspace) -> int:
             **({"fea_short_edges": _short_record(built["short"], scale)} if built.get("short") else {}),
             # MESH-9: the tiny faces meshed as part of a neighbour, and into which named face each went
             **({"fea_tiny": tiny_out} if tiny_out else {}),
+            # MESH-mmg-1: what the MMG post-pass did, volume by volume
+            **({"fea_mmg": mmg} if mmg else {}),
             "fea_bad_surfaces": traced,
             "fea_bad_faces": face_names_of(traced, face_tags),
             # PLAN-fea-17: the invalid elements' surfaces that are FUSED INTERFACES (a bonded assembly)

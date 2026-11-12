@@ -135,6 +135,7 @@ class PipelineState(TypedDict):
     flow_topology:      str            # "internal"/"external"/"" - DERIVED from purpose (neutral fact, NOT an engine_param)
     up_axis:            str            # INS-9: which way is up, as confirmed on the stage ("+z", "-y", ...); "" = +z
     leak_closing:       dict | None    # INS-8: {"close_up_to_m", "rule"} as confirmed on the stage; None = the surface as drawn
+    cfd_wrap:           dict           # LAD-cfd-5: the wrap rung's record (tried, engine, attempt, after); {} = never on it
     fea_connection:     str            # an FEA assembly: "bonded" | "contact", as confirmed on the stage ("" otherwise)
     fea_gap_joins:      bool           # an FEA assembly: parts across a small gap joined there (PLAN-fea-18); True unless switched off
     fea_pairs:          dict           # an FEA assembly: the single pairs set on the stage, by pair key (PLAN-fea-19/20); {} = the rule

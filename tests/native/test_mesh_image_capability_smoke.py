@@ -23,6 +23,8 @@ _FOAM_TOOLS = {
     "snappy_multiregion": ["blockMesh", "snappyHexMesh", "splitMeshRegions", "checkMesh"],
     # the snap-grid mesher writes its polyMesh itself; OpenFOAM only splits and checks it
     "snapgrid": ["splitMeshRegions", "checkMesh"],
+    # Netgen meshes in its own interpreter (test below); OpenFOAM converts and checks the result
+    "netgen": ["gmshToFoam", "checkMesh", "foamToVTK"],
 }
 _ALL_FOAM_TOOLS = sorted({t for tools in _FOAM_TOOLS.values() for t in tools})
 
@@ -33,7 +35,7 @@ def _foam(cmd: str, timeout: int = 60) -> subprocess.CompletedProcess:
 
 
 def test_dispatch_registry_resolves_every_supported_engine(canonical_provenance):
-    expected = {"cfmesh", "snappy", "snappy_multiregion", "gmsh", "vmtk", "snapgrid"}
+    expected = {"cfmesh", "snappy", "snappy_multiregion", "gmsh", "vmtk", "snapgrid", "netgen"}
     assert set(engine_names()) == expected
     runners = engine_runners()
     assert set(runners) == expected
@@ -99,4 +101,50 @@ def test_ftetwild_is_installed_and_meshes_a_box_the_same_way_twice(tmp_path):
         _t, vol = TW.orient(r["xyz"], r["tets"])
         assert (vol > 0).all() and vol.sum() == pytest.approx(0.05 ** 3, rel=1e-3)
         digests.append(hashlib.sha256(r["xyz"].tobytes() + r["tets"].tobytes()).hexdigest())
+    assert digests[0] == digests[1]
+
+
+def test_netgen_env_is_installed_and_imports():
+    """The Netgen CFD engine's isolated interpreter (Dockerfile, requirements/netgen.txt): present,
+    and it imports netgen's STL mesher and scipy (engines/netgen/netgen_mesh.py needs both)."""
+    from meshpipeline.engines.netgen import runner as NG
+
+    assert NG.available(), f"{NG.netgen_python()} is not in the mesh image"
+    p = subprocess.run([NG.netgen_python(), "-c",
+                        "import netgen.meshing, netgen.stl, scipy.spatial; from netgen import config; "
+                        "print(config.version)"], capture_output=True, text=True, timeout=120)
+    assert p.returncode == 0, p.stderr
+    assert "6.2.2608" in p.stdout
+
+
+def test_mmg3d_is_installed_and_improves_a_box_the_same_way_twice(tmp_path):
+    """The FEA quality post-pass (MESH-mmg-1): the pinned mmg3d build is on PATH, links its libraries,
+    keeps a box's surface exactly as it went in, and gives the same mesh twice (engines/fea_mmg.py)."""
+    import hashlib
+
+    import gmsh
+
+    from meshpipeline.engines import fea_mmg as MM
+
+    exe = MM.binary()
+    assert exe, "mmg3d is not on PATH in the mesh image"
+    gmsh.initialize(interruptible=False)
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.occ.addBox(0, 0, 0, 0.05, 0.05, 0.05)
+        gmsh.model.occ.synchronize()
+        gmsh.option.setNumber("Mesh.MeshSizeMax", 0.01)
+        gmsh.model.mesh.generate(3)
+        ntags, xyz, tets, tris, refs = MM._volume_arrays(gmsh, 1)
+    finally:
+        gmsh.finalize()
+    digests = []
+    for k in range(2):
+        work = tmp_path / f"run{k}"
+        work.mkdir()
+        out = MM.remesh(xyz, tris, refs, tets, exe=exe, timeout=120, workdir=work)
+        assert out["ok"], out["why"]
+        fig = MM.worst(out["xyz"], out["tets"])
+        assert fig["invalid"] == 0
+        digests.append(hashlib.sha256(out["xyz"].tobytes() + out["tets"].tobytes()).hexdigest())
     assert digests[0] == digests[1]

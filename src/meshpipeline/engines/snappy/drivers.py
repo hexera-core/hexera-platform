@@ -739,6 +739,36 @@ def plan_refinements(*, surface_level=None, wake: bool = False, boxes: int = 0,
     return out
 
 
+def _cell_sizes(summary: dict | None) -> tuple[float | None, float | None]:
+    """(base cell, finest wall cell) in metres, from the authored case's own numbers: the background
+    box over its divisions, halved once per surface refinement level. (None, None) when the case
+    does not carry them - the plan is then said without its sizes, never with guessed ones."""
+    s = summary or {}
+    lo, hi, div, level = s.get("domain_min"), s.get("domain_max"), s.get("divisions"), s.get("surface_level")
+    if not (isinstance(lo, (list, tuple)) and isinstance(hi, (list, tuple)) and isinstance(div, (list, tuple))):
+        return None, None
+    try:
+        base = max((float(h) - float(lo_)) / float(d) for lo_, h, d in zip(lo, hi, div, strict=True) if float(d) > 0)
+        top = max(int(v) for v in level) if isinstance(level, (list, tuple)) else int(str(level))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None, None
+    if not (base > 0):
+        return None, None
+    return base, base / (2 ** max(0, top))
+
+
+def _sizes_words(summary: dict | None) -> str:
+    """The plan's cell sizes for its run note, in millimetres: "base cells about 160 mm, down to
+    about 5 mm at the walls, " - or nothing when the case does not carry them."""
+    from meshpipeline.contracts.narration import length_words
+
+    base, wall = _cell_sizes(summary)
+    if base is None:
+        return ""
+    finer = f", down to about {length_words(wall)} at the walls" if wall and wall < base else ""
+    return f"base cells about {length_words(base)}{finer}, "
+
+
 async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
                             engine, purpose, *, run,
                             native_attempt: int = 1):
@@ -1446,8 +1476,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 await publish.anote(f"Meshing pass {attempt}: the last pass was stopped as bigger than "
                                     "its plan, and no re-plan makes it smaller - meshing it at the size "
                                     "it needs", op_id=f"snappy:brake-released:{attempt}")
-            await publish.anote("Carving the body out of the background mesh - refinement level "
-                            f"{summary['surface_level']}, {summary['n_layers']} boundary layers"
+            await publish.anote("Shaping the cells around your part - " + _sizes_words(summary)
+                            + f"{summary['n_layers']} wall layers"
                             + _sealed_note(_cavities)
                             + (f"; {summary['wake_note']}" if summary.get("wake_note") else "")
                             + (f"; {summary['gap_note']}" if summary.get("gap_note") else ""),
@@ -1461,10 +1491,16 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                 op_id=f"snappy:plan:{attempt}")
             if attempt == 1:
                 from meshpipeline.contracts import narration as _N
+                _base_m, _wall_m = _cell_sizes(summary)
                 for _i, _line in enumerate(_N.cfd_plan_lines(
                         internal=False, cells=strategy.get("max_cells"), layers=summary.get("n_layers"),
-                        wake=bool(summary.get("wake_note")), boxes=len(strategy.get("local_boxes") or []))):
+                        wake=bool(summary.get("wake_note")), boxes=len(strategy.get("local_boxes") or []),
+                        base_m=_base_m, wall_m=_wall_m)):
                     await _N.asay(publish, _line, op_id=f"snappy:say:{attempt}:{_i}")
+            # THE WHOLE DESIGN as one receipt, as every route says it (contracts/mesh_design)
+            from meshpipeline.contracts import mesh_design as _MD
+            # (its size is in its own plan lines above, so the receipt does not say it twice)
+            await _MD.apublish(publish, job_id=job_id, workspace=workspace, attempt=attempt)
             # RUN (deterministic; Cloud Run Job / local) + user-facing instrumentation, under the
             # GUARD its planned cells give it (TIME-2) - the only clock, and it decides nothing
             _guard = pass_guard(_budget, job_id=job_id, attempt=attempt, workspace=workspace)
@@ -2598,8 +2634,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             if _repeats_timed_out_case(workspace, _timeout_case):
                 raise TimedOutCaseRepeats(f"internal pass {attempt}")
             await publish.anote(f"Filling the cavity - about {cells_across} cells across the bore, "
-                         f"refinement level {summary['surface_level']}, {n_layers} "
-                         f"boundary layers" + (f"; {_band_note}" if _band_note else ""),
+                         + _sizes_words(summary) + f"{n_layers} wall layers"
+                         + (f"; {_band_note}" if _band_note else ""),
                     op_id=f"internal:filling:{attempt}")
             await publish.aplan(cells=_budget, layers=n_layers,
                                 refinements=plan_refinements(
@@ -2609,10 +2645,15 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                                 op_id=f"internal:plan:{attempt}")
             if attempt == 1:
                 from meshpipeline.contracts import narration as _N
+                _base_m, _wall_m = _cell_sizes(summary)
                 for _i, _line in enumerate(_N.cfd_plan_lines(
                         internal=True, cells=_budget, layers=n_layers, cells_across=cells_across,
-                        boxes=len(strategy.get("local_boxes") or []))):
+                        boxes=len(strategy.get("local_boxes") or []), base_m=_base_m, wall_m=_wall_m)):
                     await _N.asay(publish, _line, op_id=f"internal:say:{attempt}:{_i}")
+            # THE WHOLE DESIGN as one receipt, as every route says it (contracts/mesh_design)
+            from meshpipeline.contracts import mesh_design as _MD
+            # (its size is in its own plan lines above, so the receipt does not say it twice)
+            await _MD.apublish(publish, job_id=job_id, workspace=workspace, attempt=attempt)
             run.note_authoring()
             # the pass's GUARD, from its planned cells (TIME-2) - the only clock
             _guard = pass_guard(_budget, job_id=job_id, attempt=attempt, workspace=workspace)
