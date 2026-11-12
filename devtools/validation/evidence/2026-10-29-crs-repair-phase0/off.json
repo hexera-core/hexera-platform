@@ -1,0 +1,103 @@
+{
+  "rows": [
+    {
+      "row": {
+        "file": "tests/fixtures/geometry/transition_rect_to_round.step",
+        "size_bytes": 70579,
+        "valid_before": true,
+        "counts_before": {
+          "solids": 1,
+          "shells": 1,
+          "faces": 20,
+          "edges": 92,
+          "vertices": 184
+        },
+        "defects_before": [],
+        "located_before": {},
+        "regions_before": {},
+        "status": "clean",
+        "route": "mesh_as_is",
+        "confidence": 0.9,
+        "targets": [],
+        "abstain_reason": "",
+        "outcome": "nothing_to_repair",
+        "seconds": 0.84
+      },
+      "cpu_seconds": 1.056407,
+      "max_rss_kb": 309392,
+      "raw_rows_path": "devtools/validation/evidence/2026-10-29-crs-repair-phase0/off-raw/0000-transition_rect_to_round-r1/rows.json",
+      "wall_seconds": 1.1319739170066896
+    },
+    {
+      "row": {
+        "file": "tests/fixtures/geometry/transition_rect_to_round.step",
+        "size_bytes": 70579,
+        "valid_before": true,
+        "counts_before": {
+          "solids": 1,
+          "shells": 1,
+          "faces": 20,
+          "edges": 92,
+          "vertices": 184
+        },
+        "defects_before": [],
+        "located_before": {},
+        "regions_before": {},
+        "status": "clean",
+        "route": "mesh_as_is",
+        "confidence": 0.9,
+        "targets": [],
+        "abstain_reason": "",
+        "outcome": "nothing_to_repair",
+        "seconds": 0.75
+      },
+      "cpu_seconds": 0.965644,
+      "max_rss_kb": 309104,
+      "raw_rows_path": "devtools/validation/evidence/2026-10-29-crs-repair-phase0/off-raw/0000-transition_rect_to_round-r2/rows.json",
+      "wall_seconds": 1.0538971249989117
+    },
+    {
+      "row": {
+        "file": "tests/fixtures/geometry/transition_rect_to_round.step",
+        "size_bytes": 70579,
+        "valid_before": true,
+        "counts_before": {
+          "solids": 1,
+          "shells": 1,
+          "faces": 20,
+          "edges": 92,
+          "vertices": 184
+        },
+        "defects_before": [],
+        "located_before": {},
+        "regions_before": {},
+        "status": "clean",
+        "route": "mesh_as_is",
+        "confidence": 0.9,
+        "targets": [],
+        "abstain_reason": "",
+        "outcome": "nothing_to_repair",
+        "seconds": 0.94
+      },
+      "cpu_seconds": 1.1810509999999999,
+      "max_rss_kb": 308800,
+      "raw_rows_path": "devtools/validation/evidence/2026-10-29-crs-repair-phase0/off-raw/0000-transition_rect_to_round-r3/rows.json",
+      "wall_seconds": 1.2524431670026388
+    }
+  ],
+  "wall_seconds": {
+    "min": 1.0538971249989117,
+    "median": 1.1319739170066896,
+    "max": 1.2524431670026388
+  },
+  "cpu_seconds": {
+    "min": 0.965644,
+    "median": 1.056407,
+    "max": 1.1810509999999999
+  },
+  "max_rss_kb": 309392,
+  "determinism": {
+    "deterministic": true,
+    "mismatches": []
+  }
+}

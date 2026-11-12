@@ -1,0 +1,24 @@
+[
+  {
+    "file": "transition_rect_to_round.step",
+    "size_bytes": 70579,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 20,
+      "edges": 92,
+      "vertices": 184
+    },
+    "defects_before": [],
+    "located_before": {},
+    "regions_before": {},
+    "status": "clean",
+    "route": "mesh_as_is",
+    "confidence": 0.9,
+    "targets": [],
+    "abstain_reason": "",
+    "outcome": "nothing_to_repair",
+    "seconds": 0.94
+  }
+]
