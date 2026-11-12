@@ -666,6 +666,7 @@ def test_a_channels_web_and_flanges_are_gridded_across_their_joints(tmp_path, mo
     brep = tmp_path / "channel.brep"
     BRepTools.Write_s(surf, str(brep))
     monkeypatch.setattr(ST, "JOIN", join)
+    monkeypatch.setattr(ST, "JOIN_STRIPS", join)      # (this channel's faces meet through narrow strips)
     mesh, applied = _mesh(brep, rec, _criteria())
     s = applied["quality"]["structure"]
     assert "guard" not in s, s.get("guard")

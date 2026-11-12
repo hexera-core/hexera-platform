@@ -1411,9 +1411,11 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 block_skipped[key] = block_skipped.get(key, 0) + val
             washers = washers_all
             rings = [w for w in washers if w not in gridded and w not in boxed]
-            drawn = ST.imprint(gmsh, rings + squares, tag_of, cuts=cut_curves, preset=block_preset,
+            # (SHMESH-48k: a square ring made of the grid's own cells is drawn already)
+            to_draw = rings + [w for w in squares if not w.in_grid]
+            drawn = ST.imprint(gmsh, to_draw, tag_of, cuts=cut_curves, preset=block_preset,
                                square_cells=square_cells)
-            lost = [w for w in rings + squares if w not in drawn]
+            lost = [w for w in to_draw if w not in drawn]
             for w in lost:
                 reason = str(w.info.get("why") or "its ring was not drawn")
                 washer_skipped[reason] = washer_skipped.get(reason, 0) + 1

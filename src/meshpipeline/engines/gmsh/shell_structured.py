@@ -62,6 +62,7 @@ class Washer:
     corners: list = field(default_factory=list)  # SHMESH-45f: a square (four-sided) hole's corners, in loop order
     side_counts: list = field(default_factory=list)
     in_box: bool = False            # SHMESH-48h: a square ring drawn in a free box of a gridded face
+    in_grid: bool = False           # SHMESH-48k: a square ring made of cells of the grid (no imprint)
     seam: list = field(default_factory=list)  # SHMESH-49e: where its O-grid cuts the hole (the redraw starts it there)
     ring: int = 0                   # after the imprint: the ring's circle
     annulus: int = 0                # ... the surface between hole and ring
@@ -908,6 +909,8 @@ BOX_FREE = 1.0
 SNAP = 0.75
 #: SHMESH-48i: near lines are made one only where one place keeps every ring on them inside its box
 SNAP_LIMITS = True
+#: SHMESH-48k: a square hole along the frame takes its ring as cells of the grid (else a free box, SHMESH-48h)
+SQUARE_GRID = False
 CELL_MIN = 0.4
 #: ... straight edges within PARALLEL_DEG of the face's frame count as running along it
 PARALLEL_DEG = 1.0
@@ -992,16 +995,19 @@ def _cluster(values: list[tuple[float, str]], tol: float,
     span = (-math.inf, math.inf)
 
     def fits(kind: str, val: float) -> tuple[float, float]:
-        if kind == "edge":
+        if kind in ("edge", "pin"):
             return (val, val)
         return (limits or {}).get(kind, (-math.inf, math.inf))
 
     def close() -> None:
+        # (SHMESH-48k: a "pin" - where a square ring of the grid meets its box - holds a line where it is, as an edge
+        # does, but the line is still drawn)
         edges = [x for x, k in group if k == "edge"]
-        at = float(np.mean(edges)) if edges else float(np.mean([x for x, _k in group]))
-        if limits is not None and not edges and span[0] <= span[1]:
+        pins = [x for x, k in group if k == "pin"]
+        at = float(np.mean(edges or pins or [x for x, _k in group]))
+        if limits is not None and not edges and not pins and span[0] <= span[1]:
             at = min(max(at, span[0]), span[1])
-        out.append((at, bool(edges), [int(k) for _x, k in group if k != "edge"]))
+        out.append((at, bool(edges), [int(k) for _x, k in group if k not in ("edge", "pin")]))
 
     for val, kind in sorted(values) + [(math.inf, "")]:
         if group:
@@ -1055,6 +1061,18 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
     plans = [None if w.corners else _boxed(w.r * mm, hole_size(w.r * mm, w.owner), h_mm, low_mm, high_mm)
              for w in ws]
     square_uv = {id(w): np.array([uv(q) for q in _frame_points(w)[0]]) for w in ws if w.corners}
+    # SHMESH-48k: a square hole whose sides run along the frame takes its ring as cells of the grid itself - its box
+    # the ring's outer square, the four strips cut by lines from the hole's corners (no free box paved round it)
+    in_grid: dict[int, np.ndarray] = {}
+    if SQUARE_GRID:
+        tan_par = math.tan(math.radians(PARALLEL_DEG))
+        for j, w in enumerate(ws):
+            if not w.corners:
+                continue
+            pq = np.array([uv(x) for x in w.corners])
+            d = np.roll(pq, -1, axis=0) - pq
+            if all(min(abs(a), abs(b)) <= tan_par * max(abs(a), abs(b)) for a, b in d):
+                in_grid[j] = pq
     vals: dict[str, list[tuple[float, str]]] = {"u": [], "v": []}
     lo = np.array([math.inf, math.inf])
     hi = -lo
@@ -1071,8 +1089,13 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
             if abs(float(d @ v)) >= cos_par:
                 vals["u"].append((float(q[:, 0].mean()), "edge"))
     boxes = []
-    for w, p in zip(ws, plans, strict=True):
+    for j, (w, p) in enumerate(zip(ws, plans, strict=True)):
         cu, cv = uv(w.centre)
+        if j in in_grid:
+            pq, wd = in_grid[j], w.R - w.r
+            boxes.append([float(pq[:, 0].min()) - wd, float(pq[:, 0].max()) + wd, float(pq[:, 1].min()) - wd,
+                          float(pq[:, 1].max()) + wd])
+            continue
         if w.corners:
             q = square_uv[id(w)]
             boxes.append([float(q[:, 0].min()) - BOX_FREE * h, float(q[:, 0].max()) + BOX_FREE * h,
@@ -1095,6 +1118,10 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
     for j, bx in enumerate(boxes):
         vals["u"] += [(bx[0], str(4 * j)), (bx[1], str(4 * j + 1))]
         vals["v"] += [(bx[2], str(4 * j + 2)), (bx[3], str(4 * j + 3))]
+    for pq in in_grid.values():
+        # (lines that end on such a box near where a hole side meets it end there: no sliver between them)
+        vals["u"] += [(float(pq[:, 0].min()), "pin"), (float(pq[:, 0].max()), "pin")]
+        vals["v"] += [(float(pq[:, 1].min()), "pin"), (float(pq[:, 1].max()), "pin")]
     # SHMESH-48i: where each box side may go when near lines are made one - no nearer its ring than the room
     # check below asks, no further than SNAP from where it was, an O-grid box no longer or shorter than its
     # elements allow (each side half the slack)
@@ -1102,7 +1129,14 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
     if SNAP_LIMITS:
         for j, (w, p, bx) in enumerate(zip(ws, plans, boxes, strict=True)):
             cu, cv = uv(w.centre)
-            if w.corners:
+            grow_sq = None
+            if j in in_grid:
+                # the ring's row no narrower than 0.6 of its width, no wider than 1.4 face sizes
+                pq, wd = in_grid[j], w.R - w.r
+                inner = [float(pq[:, 0].min()), float(pq[:, 0].max()), float(pq[:, 1].min()), float(pq[:, 1].max())]
+                need = 0.6 * wd
+                grow_sq = max(0.0, min(SNAP * h, 1.4 * h - wd))
+            elif w.corners:
                 q = square_uv[id(w)]
                 inner = [float(q[:, 0].min()), float(q[:, 0].max()), float(q[:, 1].min()),
                          float(q[:, 1].max())]
@@ -1114,6 +1148,8 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
             for ax_i in (0, 1):
                 lo_s, hi_s = 2 * ax_i, 2 * ax_i + 1
                 grow_, shrink_ = SNAP * h, SNAP * h
+                if grow_sq is not None:
+                    grow_ = grow_sq
                 if p is not None:
                     side = bx[hi_s] - bx[lo_s]
                     grow_ = min(grow_, max(0.0, 0.5 * (1.5 * h * p[0] / 4 - side)))
@@ -1121,7 +1157,8 @@ def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size
                 limits[str(4 * j + lo_s)] = (bx[lo_s] - grow_, min(bx[lo_s] + shrink_, inner[lo_s] - need))
                 limits[str(4 * j + hi_s)] = (max(bx[hi_s] - shrink_, inner[hi_s] + need), bx[hi_s] + grow_)
     return {"h": h, "loops": loops, "outer": outer, "frame": (o, u, v), "uv": uv, "plans": plans,
-            "square_uv": square_uv, "vals": vals, "lo": lo, "hi": hi, "boxes": boxes, "limits": limits}
+            "square_uv": square_uv, "vals": vals, "lo": lo, "hi": hi, "boxes": boxes, "limits": limits,
+            "in_grid": in_grid}
 
 
 #: SHMESH-47c: faces joined along their grids' lines (a channel's web and flanges, and the narrow flat strips between
@@ -1133,6 +1170,9 @@ JOIN = True
 JOIN_COS = 1.0 - 1e-9
 #: SHMESH-47d: a face beside another face with holes splits their shared edges where its lines meet them first
 JOIN_BESIDE = True
+#: ... and through narrow flat strips between them (off: on the lab parts it put triangles in gridded faces and past
+#: Nastran on one; the real channel has none)
+JOIN_STRIPS = False
 
 
 def _straight(gmsh, c: int) -> tuple[np.ndarray, np.ndarray] | None:
@@ -1182,6 +1222,31 @@ def _remap_washers(gmsh, ws: list[Washer], new: list[int]) -> None:
         if hit is None:
             raise ValueError("a washer's hole was lost in the joined faces' cut")
         w.face, w.hole = hit[0], hit[1]
+
+
+def _needs_join(gmsh, t: int, fp: dict, by_face: dict[int, list[Washer]], tag_of: dict[int, int]) -> bool:
+    """SHMESH-47c/d: whether the face's own lines (made one as its grid makes them) would end inside a straight edge
+    it shares with another face with holes - the one case its grid is refused for its joints alone. Only such faces
+    are joined (with the strips off); every other face is gridded as before."""
+    o, u, v = fp["frame"]
+    h = float(fp["h"])
+    eps = 1e-6 * h
+    lines: dict[str, list[float]] = {"u": [], "v": []}
+    for ax in ("u", "v"):
+        for at, edge, sides in _cluster(fp["vals"][ax], SNAP * h, fp["limits"] if SNAP_LIMITS else None):
+            if not edge and sides:
+                lines[ax].append(at)
+    for c in fp["outer"]:
+        if not any(int(n) != t and int(n) in by_face and int(n) in tag_of
+                   for n in gmsh.model.getAdjacencies(1, c)[0]):
+            continue
+        seg = _straight(gmsh, c)
+        if seg is None:
+            continue
+        for axis, ax in ((u, "u"), (v, "v")):
+            if any(_at_s(seg, axis, float(o @ axis) + x, eps) is not None for x in lines[ax]):
+                return True
+    return False
 
 
 def _split_beside(gmsh, t: int, fp: dict, by_face: dict[int, list[Washer]], tag_of: dict[int, int]
@@ -1286,6 +1351,9 @@ def _join_faces(gmsh, by_face: dict[int, list[Washer]], tag_of: dict[int, int], 
         t0 = next((t for t in sorted(plan) if tag_of[t] not in done), None)
         if t0 is None:
             break
+        if not (JOIN_STRIPS or _needs_join(gmsh, t0, plan[t0], by_face, tag_of)):
+            done.add(tag_of[t0])
+            continue
         axis = plan[t0]["frame"][1]
         members: list[int] = [t0]
         bridges: dict[int, list[int]] = {}
@@ -1314,7 +1382,8 @@ def _join_faces(gmsh, by_face: dict[int, list[Washer]], tag_of: dict[int, int], 
                         members.append(n)
                         queue.append(n)
                         continue
-                    along = _bridge(gmsh, n, axis, cos_par) if n in tag_of and n not in by_face else None
+                    along = (_bridge(gmsh, n, axis, cos_par) if JOIN_STRIPS and n in tag_of and n not in by_face
+                             else None)
                     if along is not None:
                         bridges[n] = along
                         queue.append(n)
@@ -1339,8 +1408,8 @@ def _join_faces(gmsh, by_face: dict[int, list[Washer]], tag_of: dict[int, int], 
             off = float(o @ axis)
             frame_of[f] = (off, sg)
             for x, kind in plan[f]["vals"]["u"]:
-                if kind == "edge":
-                    vals.append((off + sg * x, "edge"))
+                if kind in ("edge", "pin"):
+                    vals.append((off + sg * x, kind))
                     continue
                 key = str(fi * big + int(kind))
                 vals.append((off + sg * x, key))
@@ -1496,7 +1565,13 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 bx = boxes[j]
                 R = p[2] * w.r if p is not None else w.R
                 room = min(cu - bx[0], bx[1] - cu, cv - bx[2], bx[3] - cv)
-                if w.corners:
+                if j in fp["in_grid"]:
+                    # a square ring of the grid: its row no narrower than 0.6 of its width (48k)
+                    pq = fp["in_grid"][j]
+                    R, room = 0.6 * (w.R - w.r) - 0.4 * h - eps, min(
+                        float(pq[:, 0].min()) - bx[0], bx[1] - float(pq[:, 0].max()),
+                        float(pq[:, 1].min()) - bx[2], bx[3] - float(pq[:, 1].max()))
+                elif w.corners:
                     # a square ring's room: from its outer corners to the box's sides
                     q = square_uv[id(w)]
                     R, room = 0.0, min(float(q[:, 0].min()) - bx[0], bx[1] - float(q[:, 0].max()),
@@ -1541,7 +1616,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
 
             def tools(o=o, u=u, v=v, lo=lo, hi=hi, pad=pad, lines=lines, ws=ws, plans=plans, corners_of=corners_of,
                       line_pieces=line_pieces,
-                      starts=starts, n_face=n_face) -> list[tuple[int, int]]:
+                      starts=starts, n_face=n_face, fp=fp, boxes=boxes) -> list[tuple[int, int]]:
                 out = []
                 occ = gmsh.model.occ
                 for x in lines["u"]:
@@ -1552,7 +1627,21 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                     for x0, x1 in line_pieces(y, 1, lo[0] - pad, hi[0] + pad):
                         a, b = o + x0 * u + y * v, o + x1 * u + y * v
                         out.append((1, occ.addLine(occ.addPoint(*a), occ.addPoint(*b))))
-                for w, p, cs in zip(ws, plans, corners_of, strict=True):
+                for j_, (w, p, cs) in enumerate(zip(ws, plans, corners_of, strict=True)):
+                    if j_ in fp["in_grid"]:
+                        # SHMESH-48k: each hole side carried on past its corner to the box (a pinwheel of four
+                        # strips, every corner square)
+                        pq, bx_ = fp["in_grid"][j_], boxes[j_]
+                        for i_ in range(4):
+                            a_, b_ = pq[i_], pq[(i_ + 1) % 4]
+                            d_ = b_ - a_
+                            if abs(d_[0]) >= abs(d_[1]):
+                                end = (bx_[1] if d_[0] > 0 else bx_[0], b_[1])
+                            else:
+                                end = (b_[0], bx_[3] if d_[1] > 0 else bx_[2])
+                            out.append((1, occ.addLine(occ.addPoint(*(o + b_[0] * u + b_[1] * v)),
+                                                       occ.addPoint(*(o + end[0] * u + end[1] * v)))))
+                        continue
                     if w.corners:
                         continue            # (a square ring is drawn in its box after the grid)
                     R = p[2] * w.r if p is not None else w.R
@@ -1679,7 +1768,40 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             _remove_loose(gmsh, {c for got in omap[1:] for d, c in got if d == 1})
             curves = sorted({abs(int(c)) for s in new for _d, c in gmsh.model.getBoundary([(2, s)], oriented=False)})
             on_circle: set[int] = set()
-            for w in ws:
+            for j_, w in enumerate(ws):
+                if j_ in fp["in_grid"]:
+                    # SHMESH-48k: its ring is cells of the grid: each hole side keeps its count, each line from a
+                    # corner to the box is the ring's one row
+                    pq = fp["in_grid"][j_]
+                    tol = 1e-6 * max(1.0, float(w.R))
+                    sides_ = [(o + pq[i_][0] * u + pq[i_][1] * v, o + pq[(i_ + 1) % 4][0] * u + pq[(i_ + 1) % 4][1] * v)
+                              for i_ in range(4)]
+                    found = 0
+                    for c in curves:
+                        a_, b_ = _samples(gmsh, c, 1)
+                        for i_, (s0, s1) in enumerate(sides_):
+                            d_ = s1 - s0
+                            on = all(float(np.linalg.norm(s0 + np.clip(float((x - s0) @ d_) / float(d_ @ d_), 0, 1)
+                                                          * d_ - x)) <= tol for x in (a_, b_))
+                            if on:
+                                preset[c] = w.side_counts[i_]
+                                found += 1
+                                break
+                            # the line on past the side's far corner: from that corner to the box
+                            if min(float(np.linalg.norm(a_ - s1)), float(np.linalg.norm(b_ - s1))) <= tol and abs(
+                                    abs(float((b_ - a_) @ d_)) - float(np.linalg.norm(b_ - a_)) * float(
+                                        np.linalg.norm(d_))) <= tol * float(np.linalg.norm(d_)) and float(
+                                    np.linalg.norm(b_ - a_)) > tol:
+                                preset[c] = w.rows
+                                found += 1
+                                if cuts is not None:
+                                    cuts.add(c)
+                                break
+                    if found < 8:
+                        raise ValueError("a square ring of the grid did not come out as four strips")
+                    w.in_grid = True
+                    w.info["kind"] = "square ring in a gridded face"
+                    continue
                 if w.corners:
                     # SHMESH-48h: the square hole now sits in its box's cell: the ring is drawn there (imprint)
                     cell = next(((s, cl) for s in new for cl in [[abs(int(c)) for c in x]
@@ -1736,7 +1858,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
             ogrid[:] = [w for w in ogrid if w not in ws]
             boxed[:] = [w for w in boxed if w not in ws]
             for w in ws:
-                w.ring, w.annulus, w.hole_after = 0, 0, []
+                w.ring, w.annulus, w.hole_after, w.in_grid = 0, 0, [], False
             no(f"its grid failed ({type(exc).__name__}: {exc})"[:200])
     return ogrid, boxed, preset, holes, why
 
