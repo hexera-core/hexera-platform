@@ -25,13 +25,19 @@ from meshpipeline.cad.repair.caps import (
 )
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.identity import GONE, EntityRef
-from meshpipeline.cad.repair.localize import analyzer_only, face_scan_budget_s
+from meshpipeline.cad.repair.localize import (
+    analyzer_only,
+    face_scan_budget_s,
+    in_region,
+    scoped_to,
+)
 from meshpipeline.cad.repair.localize import localize_scan as _localize_scan
 from meshpipeline.cad.repair.package import TargetPackage, evaluate, specificity
 
 # THE ONE DEFINITION OF A HOLD, shared with both planners so they cannot disagree about what a
 # hold covers (plan.py does not import this module, so this is not a cycle).
 from meshpipeline.cad.repair.plan import held_fingerprints
+from meshpipeline.cad.repair.regions import Region
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +202,12 @@ class RepairSession:
         self.clock = clock
         #: How many times the shape has been scanned, the first scan and every re-inspection.
         self.scan_count: int = 0
+        #: How many of those were SCOPED to a region - an operation's own proof or a package's.
+        #: Counted here rather than inferred by a caller's arithmetic: the whole cost claim of
+        #: the region loop is `scan_count - scoped_scan_count` whole-shape walks, and a count
+        #: reconstructed from verdict lengths silently miscounts an operation the caps refused
+        #: before its re-inspection was ever paid for.
+        self.scoped_scan_count: int = 0
         self.shape = shape
         #: THE UPLOAD'S OWN MEASUREMENT, taken once and never replaced. Every cumulative check is
         #: against this, which is what stops six small operations drifting past a cap together.
@@ -208,19 +220,27 @@ class RepairSession:
         #: cannot tell a kept operation that shipped from one discarded with its package.
         self.packages: list[PackageVerdict] = []
 
-    def _default_scan(self, shape, *, face_scan: bool = True):
+    def _default_scan(self, shape, *, face_scan: bool = True, within: Region | None = None):
         """`localize_scan`, with a face-level scan only when the self-intersection heal is on.
 
         `_localize_scan` is looked up AT CALL TIME, so a test patching the module attribute is
         obeyed. With the flag off the budget is 0.0 and `remaining_s` is never even asked, which
         is what keeps a flag-off run's scans byte-for-byte what they were. `face_scan=False` is
         the status-walk re-inspection (`_rescan`): budget 0.0 there too, whatever the flag.
+
+        `within=None` IS THE WHOLE-SHAPE SCAN THIS HAS ALWAYS BEEN, and it is made with the CALL
+        IT ALWAYS WAS - argument for argument, without even a `within=None` - because the
+        committed baseline is what a difference between the two drivers is attributed against,
+        and a test that watches this call (`test_repair_face_scan`) is entitled to see no trace
+        of a feature an unscoped run does not use.
         """
         budget = 0.0
         if face_scan and rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS:
             remaining = self.remaining_s or (lambda: float(rcfg.CAD_REPAIR_TIMEOUT_S))
             budget = face_scan_budget_s(remaining())
-        return _localize_scan(shape, face_scan_s=budget)
+        if within is None:
+            return _localize_scan(shape, face_scan_s=budget)
+        return _localize_scan(shape, face_scan_s=budget, within=within)
 
     def defects(self) -> tuple:
         """The current shape's located defects. Scanned once per shape and cached."""
@@ -231,7 +251,7 @@ class RepairSession:
             self.complete_scan = bool(complete)
         return self._defects
 
-    def _rescan(self, *, face_scan: bool) -> tuple:
+    def _rescan(self, *, face_scan: bool, within: Region | None = None) -> tuple:
         """Re-inspect the current shape for a keep/rollback judgement, and cache the result.
 
         SCAN PLACEMENT (floor-fix ruling 1). The face scan runs for the session's first scan and
@@ -240,17 +260,70 @@ class RepairSession:
         back `new_defect` for a crossing the flag-off world never measured (trj4_k1_geo-pe-*).
         An injected scanner is still called as `scanner(shape)`; its analyzer-only findings are
         dropped here instead, so a double cannot reintroduce the demotion either.
+
+        `within` SCOPES THE RE-INSPECTION TO ONE REGION, and `None` - the default - is the
+        whole-shape re-inspection this has always been, entity for entity and in the same order.
+        That default is load-bearing: the operation-at-a-time loop is the retained benchmark
+        baseline, so a difference between the two drivers has to be attributable to how the work
+        was chosen rather than to a scan this one quietly stopped taking.
+
+        WHAT IS RETURNED IS THE SCAN'S OWN FINDINGS, not the session's list, because the progress
+        rule is judged on the scope that was walked. The session's list is merged (`_merged`): a
+        scoped scan may replace only what it looked at.
+
+        AN INJECTED SCANNER IS NEVER TOLD ABOUT THE SCOPE - it is called as `scanner(shape)`, as
+        it always was - so under one its findings are filtered after the fact, the same idiom
+        `localize_scan` uses for the face analyzer, which has no scoped form either.
         """
         self.scan_count += 1
+        if within is not None:
+            self.scoped_scan_count += 1
         if self._injected:
             found, complete = self._scan(self.shape)
+            if within is not None:
+                found = scoped_to(found, within, diagonal_mm=self.original.diagonal_mm)
         else:
-            found, complete = self._default_scan(self.shape, face_scan=face_scan)
+            found, complete = self._default_scan(self.shape, face_scan=face_scan, within=within)
         if not face_scan:
             found = [d for d in found if not analyzer_only(d)]
-        self._defects = tuple(found)
-        self.complete_scan = bool(complete)
-        return self._defects
+        found = tuple(found)
+        if within is None:
+            self._defects = found
+            self.complete_scan = bool(complete)
+        else:
+            self._defects = self._merged(found, within)
+            # A SCOPED SCAN'S COMPLETENESS IS ABOUT ITS REGION ONLY, so a True here says nothing
+            # about the part and may never raise the session's flag; a False means the region's
+            # own walk stopped, and since that short list is what the merge believes about the
+            # region from now on, it drags the whole-shape flag down with it. False dominates, as
+            # it does everywhere else.
+            self.complete_scan = bool(self.complete_scan) and bool(complete)
+        return found
+
+    def _merged(self, found: tuple, within: Region) -> tuple:
+        """The session's whole-shape defect list with ONE region's findings replaced.
+
+        A SCOPED SCAN MAY REPLACE ONLY WHAT IT LOOKED AT. `self._defects` is read as a statement
+        about the whole shape, so letting a region's findings become the whole list would claim
+        the rest of the part had been re-checked and found sound - the same reason `_region_scan`
+        keeps the package's proof out of the list entirely.
+
+        SO WHAT IS OUTSIDE THE REGION IS CARRIED FORWARD FROM THE LAST WHOLE-SHAPE SCAN, and that
+        is knowingly stale: an operation can legitimately alter geometry elsewhere (the sliver
+        sweep is a whole-shape walk), and after a scoped proof nobody has looked. Stale in the
+        CONSERVATIVE direction - a defect that has since been repaired is still reported, and no
+        absence is ever claimed for ground that was not walked - which is the price of locality
+        and is paid off by the run's one final whole-shape scan.
+
+        Ordered as a scan orders its findings, so two identical runs still produce identical
+        reports.
+        """
+        present = {(d.fingerprint, d.code) for d in found}
+        outside = [d for d in (self._defects or ())
+                   if not in_region(d, within, diagonal_mm=self.original.diagonal_mm)
+                   and (d.fingerprint, d.code) not in present]
+        return tuple(sorted((*outside, *found),
+                            key=lambda d: (d.entity_type, d.entity_index, d.code.value)))
 
     def _timed_measure(self, shape) -> tuple:
         """`(measurement, seconds)` - the whole-shape measure is a cost centre to be reported."""
@@ -269,8 +342,20 @@ class RepairSession:
         _write_step(self.shape, Path(destination))
 
     def try_op(self, op, targets: tuple[EntityRef, ...], defect_code, *,
-               tolerance_mm: float, answered_held: frozenset[str] = frozenset()) -> OpVerdict:
+               tolerance_mm: float, answered_held: frozenset[str] = frozenset(),
+               within: Region | None = None) -> OpVerdict:
         """Apply one operation and keep it only if it repaired what it aimed at.
+
+        `within` IS WHERE "LOCAL EDIT, LOCAL PROOF" IS ACTUALLY PAID FOR. Step 5 is the expensive
+        step, and under a region it re-inspects that region instead of the part: a package of N
+        operations then costs N scoped scans plus its own one, where it used to cost N whole-shape
+        walks plus a scoped scan ON TOP - which made the region loop dearer than the baseline it
+        exists to beat. `None` is the whole-shape re-inspection, unchanged, which is what the
+        operation-at-a-time loop still pays.
+
+        THE RESCAN IS SCOPED, NEVER SKIPPED. Step 6 needs positive evidence that the defect aimed
+        at actually went (see `target_absent` below); without a rescan the rule is vacuous and an
+        operation is kept for doing nothing.
 
         THE ORDER IS THE DESIGN:
           1. snapshot          - so a rollback restores exactly what arrived
@@ -388,8 +473,19 @@ class RepairSession:
         judged_by_face_scan = (op.name == HEAL_OP
                                or code == DefectCode.self_intersection.value)
         scan_started = self.clock()
-        found = self._rescan(face_scan=judged_by_face_scan)
+        found = self._rescan(face_scan=judged_by_face_scan, within=within)
         scan_s = self.clock() - scan_started
+        if within is not None:
+            # BOTH SIDES OF THE PROGRESS RULE MUST BE DRAWN FROM ONE SCOPE. `previous` is the
+            # cached WHOLE-SHAPE list and `found` has just been scoped to this region, so left
+            # unfiltered every defect elsewhere in the part reads as having disappeared. That
+            # credits this operation with clearing geometry it never touched, and the credit is
+            # not cosmetic: the rule's "the part got better overall" allowances below turn on
+            # `len(found) < len(previous)`, so an inflated `previous` excuses a warning the
+            # operation introduced into the very region it is being proved against. Filtered
+            # through the same admission rule the scan itself applies (`localize.scoped_to`), so
+            # the two sides cannot drift apart.
+            previous = scoped_to(previous, within, diagonal_mm=self.original.diagonal_mm)
         if not judged_by_face_scan:
             carried = tuple(d for d in previous if analyzer_only(d))
             previous = tuple(d for d in previous if not analyzer_only(d))
@@ -411,8 +507,14 @@ class RepairSession:
             # nobody reads them as a fresh measurement of the changed shape.
             from dataclasses import replace
 
-            present = {(d.fingerprint, d.code) for d in found}
-            self._defects = (*found, *(
+            # ADDED TO THE SESSION'S LIST, which is `found` itself on a whole-shape re-inspection
+            # and the merge of this region's findings into the part's on a scoped one. Under a
+            # scope `carried` holds only the region's analyzer findings, because `previous` was
+            # filtered to the region above - the part's others are already in the merge, carried
+            # by `_merged` rather than re-added here.
+            listed = self._defects or ()
+            present = {(d.fingerprint, d.code) for d in listed}
+            self._defects = (*listed, *(
                 replace(d, measurements={**d.measurements, "not_rescanned_after": op.name})
                 for d in carried if (d.fingerprint, d.code) not in present))
 
@@ -438,9 +540,11 @@ class RepairSession:
           2. budget               - a plan larger than the budget is refused unapplied
           3. snapshot             - ONE, at the package boundary
           4. apply the plan       - through `try_op`, so every cap, hold, declaration and
-                                    per-operation rollback still applies, operation by operation
+                                    per-operation rollback still applies, operation by operation,
+                                    and each one proved against THIS REGION (`try_op`'s `within`)
           5. one scoped scan      - EXPENSIVE, so it is paid for last, and only ONE for the whole
-                                    plan: that saving is the point of scoping a package to a region
+                                    plan: the plan's own proof, on top of the operations' scoped
+                                    ones, which is the whole extra cost of packaging a region
           6. `package.evaluate`   - the claim against the measurements
           7. commit, or restore the BOUNDARY snapshot
 
@@ -524,9 +628,12 @@ class RepairSession:
             # AN OPERATION THAT ROLLED ITSELF BACK DOES NOT END THE PACKAGE. Its own judgements
             # already undid it, and the predicate - written about the whole plan - is what says
             # whether the plan as a whole did what was claimed.
+            # THE REGION TRAVELS INTO EVERY OPERATION, so each one is proved against the region
+            # it was authored for rather than against the part. The package's own scan below is
+            # then the only scan this plan adds to what an operation already costs.
             verdict = self.try_op(
                 item["op"], tuple(item["targets"]), item["defect_code"],
-                tolerance_mm=float(item.get("tolerance_mm", 0.0)))
+                tolerance_mm=float(item.get("tolerance_mm", 0.0)), within=region)
             verdicts.append(verdict)
             apply_s += verdict.apply_s
             scan_s += verdict.scan_s
@@ -647,6 +754,7 @@ class RepairSession:
         region it is as thorough as the original inspection was.
         """
         self.scan_count += 1
+        self.scoped_scan_count += 1
         if self._injected:
             found, complete = self._scan(self.shape)
         else:

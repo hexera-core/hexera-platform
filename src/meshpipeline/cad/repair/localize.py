@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
@@ -281,6 +282,48 @@ def _scope_for(within: Region, *, diagonal: float) -> _Scope:
     return _Scope(faces=faces,
                   low=tuple(float(v) - grow for v in lo),      # type: ignore[arg-type]
                   high=tuple(float(v) + grow for v in hi))     # type: ignore[arg-type]
+
+
+def scoped_to(defects: Iterable[EntityDefect], within: Region, *,
+              diagonal_mm: float) -> tuple[EntityDefect, ...]:
+    """The part of an ALREADY-MEASURED defect list that a scan scoped to `within` could report.
+
+    THE ONE RULE, SHARED. A caller that compares a whole-shape list against a scoped scan has to
+    filter the whole-shape side to the same scope or the comparison is between two different
+    parts (`session.try_op`). Written here rather than there so that the admission rule a scoped
+    scan applies to the SHAPE and the rule a caller applies to its own RECORDS cannot drift: both
+    go through `_Scope`, and both admit a face on its index or its box and never reject an entity
+    they cannot place.
+
+    IT MEASURES NOTHING. The boxes come from each defect's own recorded `location`, so this is
+    arithmetic over a report and needs no kernel and no shape. `diagonal_mm` is the part's
+    diagonal, which is what grows the region's box; passing the measurement that produced the
+    records keeps the grown box the same one the scan used.
+
+    ERRING TOWARDS ADMITTING is deliberate: this list is the BEFORE side of a progress rule, and
+    a record wrongly dropped from it reads as a defect the operation has just introduced.
+    """
+    scope = _scope_for(within, diagonal=diagonal_mm)
+    return tuple(d for d in defects if _admits(scope, within, d))
+
+
+def in_region(defect: EntityDefect, within: Region, *, diagonal_mm: float) -> bool:
+    """`scoped_to`'s rule for ONE record - could a scan scoped to `within` have reported it?"""
+    return _admits(_scope_for(within, diagonal=diagonal_mm), within, defect)
+
+
+def _admits(scope: _Scope, within: Region, defect: EntityDefect) -> bool:
+    if defect.fingerprint in within.fingerprints:
+        return True
+    if defect.entity_type == "face" and int(defect.entity_index) in scope.faces:
+        return True
+    location = defect.location or {}
+    low, high = location.get("bbox_min"), location.get("bbox_max")
+    if low is None or high is None:
+        # UNPLACEABLE IS NOT OUTSIDE, exactly as `_Scope` has it: "outside the region" is not
+        # something that can be concluded from an absent extent.
+        return True
+    return scope.allows_box((tuple(float(v) for v in low), tuple(float(v) for v in high)))
 
 
 def _bounds_of(sub) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:

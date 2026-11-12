@@ -220,6 +220,11 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
         shape, remaining_s=remaining, reserved=reserved, clock=clock)
     if work.remaining_s is None:
         work.remaining_s = remaining
+    # WHAT THE SESSION ITSELF COUNTED, not arithmetic over the verdicts. Every scan a package
+    # takes is now scoped - each operation's own proof as well as the package's - and an
+    # operation the caps refused before its re-inspection took none at all, so only the session
+    # knows. Read as a delta because a caller may inject a session that has already scanned.
+    scoped_at_start = work.scoped_scan_count
 
     # THE FIRST SCAN, and its completeness read AFTER it: `complete_scan` starts out True, so
     # asking before any scan has run reports a truncated walk as exhaustive.
@@ -231,13 +236,13 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
         return RegionRun(
             shape=work.shape, packages=(), regions=(), escalated=(),
             stopped_because=SCAN_INCOMPLETE, complete_scan=False,
-            timings=_timings(started, clock, work, (), verification_scans, 0),
+            timings=_timings(started, clock, work, (), verification_scans,
+                             work.scoped_scan_count - scoped_at_start),
             defects_before=before, defects_after=before)
 
     regions = decompose(before, diagonal_mm=work.original.diagonal_mm)
     packages: list[PackageVerdict] = []
     escalated: list[int] = []
-    scoped_scans = 0
     committed = False
     # WALKED EVERY REGION unless a budget says otherwise; the loop runs out of regions rather than
     # of ideas, because a region is offered exactly one package per run.
@@ -276,13 +281,8 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
             stopped = OP_BUDGET
             break
 
-        scans_before = work.scan_count
         verdict = work.try_package(_with_tolerance(package, tolerance_mm))
         packages.append(verdict)
-        # EVERY SCAN THE PACKAGE TOOK BEYOND ONE PER OPERATION is its scoped proof, of which
-        # `try_package` takes at most one. Counted by arithmetic rather than by reading the
-        # verdict's reason text, so the cost report cannot be broken by rewording a message.
-        scoped_scans += min(1, max(0, work.scan_count - scans_before - len(verdict.verdicts)))
         if verdict.committed:
             committed = True
         elif verdict.status == ESCALATED:
@@ -306,7 +306,8 @@ def run_regions(shape, *, author: Author, tolerance_mm: float,
     return RegionRun(
         shape=work.shape, packages=tuple(packages), regions=regions,
         escalated=tuple(escalated), stopped_because=stopped, complete_scan=work.complete_scan,
-        timings=_timings(started, clock, work, tuple(packages), verification_scans, scoped_scans),
+        timings=_timings(started, clock, work, tuple(packages), verification_scans,
+                         work.scoped_scan_count - scoped_at_start),
         defects_before=before, defects_after=after)
 
 
@@ -317,8 +318,11 @@ def _timings(started: float, clock: Callable[[], float], session: RepairSession,
 
     `scan_count` is every scan the session took, `verification_scans` the whole-shape ones this
     loop took to decide the run (the first, and the final one after the merge), and
-    `scoped_scans` the per-region proofs. The three together are what says whether scoping made
-    a run cheaper, which is the claim this design has to be able to defend.
+    `scoped_scans` every scan that was scoped to one region - each operation's own proof as well
+    as each package's. The three together are what says whether scoping made a run cheaper, which
+    is the claim this design has to be able to defend, and in this loop they account for each
+    other exactly: `scan_count == verification_scans + scoped_scans`, because once a package owns
+    an operation there is no whole-shape walk left between the run's first scan and its last.
     """
     return {"total_s": clock() - started, "scan_count": session.scan_count,
             "verification_scans": verification_scans, "scoped_scans": scoped_scans,

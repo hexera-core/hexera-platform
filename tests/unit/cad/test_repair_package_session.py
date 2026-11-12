@@ -4,6 +4,7 @@
 #                 whenever that claim does not hold.
 from __future__ import annotations
 
+from meshpipeline.cad.repair import session as session_module
 from meshpipeline.cad.repair.caps import Measure
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.identity import EntityRef
@@ -67,9 +68,15 @@ class _Op:
 
 
 def _defect(fingerprint: str, *, code=DefectCode.small_edge, entity_type="edge",
-            index: int = 1) -> EntityDefect:
-    return EntityDefect(code=code, severity=DefectSeverity.error, entity_type=entity_type,
-                        entity_index=index, message="x", fingerprint=fingerprint)
+            index: int = 1, severity=DefectSeverity.error, at=None) -> EntityDefect:
+    """One located failure point. `at` is the corner of a 1 mm box, which is how a defect OUTSIDE
+    a region is told from one inside it: a record with no box cannot be placed, and a scoped scan
+    measures what it cannot place rather than concluding it is elsewhere."""
+    location = {} if at is None else {"bbox_min": at,
+                                      "bbox_max": tuple(v + 1.0 for v in at)}
+    return EntityDefect(code=code, severity=severity, entity_type=entity_type,
+                        entity_index=index, message="x", fingerprint=fingerprint,
+                        location=location)
 
 
 def _targets(fingerprint: str = _EDGE) -> tuple[EntityRef, ...]:
@@ -442,3 +449,138 @@ def test_package_verdict_fields_default_so_existing_constructions_still_work():
     v = PackageVerdict(region_index=0, status="committed")
     assert (v.reason, v.verdicts, v.reclassified, v.scan_s, v.apply_s) == (
         "", (), frozenset(), 0.0, 0.0)
+
+
+# THE PER-OPERATION PROOF IS SCOPED TOO (task 9)
+#
+# A package that scoped only its own boundary scan made the region loop MORE expensive than the
+# operation-at-a-time baseline: `try_op` re-inspected the whole shape after every operation and
+# the scoped proof was simply added on top. These cases pin the saving and the hazard that comes
+# with it - that the two sides of the progress rule's comparison must be drawn from one scope.
+
+
+class _ScanSpy:
+    """Every `localize_scan` the session took, and whether it was scoped to a region.
+
+    PATCHED ON THE MODULE RATHER THAN INJECTED. An injected scanner is deliberately called as it
+    always was, `scanner(shape)`, so a constructor double cannot show which scans were scoped;
+    the session looks `localize_scan` up on its own module at call time, which is what makes the
+    production path observable without a kernel.
+
+    The double stands in for a scoped scan by reporting only the region's own fingerprints, which
+    is what a real scoped scan does to the findings of the part it was not allowed to walk.
+    """
+
+    def __init__(self, monkeypatch, scans, clock: _Clock) -> None:
+        self.within: list = []
+        self._scans = tuple(scans)
+        self._clock = clock
+
+        def spy(_shape, *, face_scan_s=0.0, within=None):
+            self.within.append(within)
+            self._clock.now += _SCAN_S
+            found = self._scans[min(len(self.within), len(self._scans)) - 1]
+            if within is not None:
+                found = [d for d in found if d.fingerprint in within.fingerprints]
+            return tuple(found), True
+
+        monkeypatch.setattr(session_module, "_localize_scan", spy)
+
+    @property
+    def scoped(self) -> list:
+        return [region for region in self.within if region is not None]
+
+    @property
+    def whole_shape(self) -> list:
+        return [region for region in self.within if region is None]
+
+
+def _spied_session(monkeypatch, *scans):
+    """A session on the REAL scan path, with `localize_scan` spied on. No scanner is injected."""
+    clock = _Clock()
+    spy = _ScanSpy(monkeypatch, scans, clock)
+
+    def measurer(shape):
+        return _SOUND if shape == "original" else _REPAIRED
+
+    session = RepairSession("original", measurer=measurer, clock=clock)
+    session.test_clock = clock                      # type: ignore[attr-defined]
+    session.test_ops = (_Op(clock),)                # type: ignore[attr-defined]
+    return session, spy
+
+
+_CLEARED = [_defect(_EDGE)]
+#: An error 1000 mm away from the package's region, which no operation in it ever touches. Its box
+#: is what puts it outside: the region's own box is 1 mm across and grown by 1% of the 200 mm
+#: diagonal, so this is well clear of it.
+_FAR = _defect("face:far", code=DefectCode.small_face, entity_type="face", index=9,
+               at=(1000.0, 1000.0, 1000.0))
+_SURVIVOR = [_defect(_FACE, code=DefectCode.small_face, entity_type="face", index=2)]
+
+
+def test_an_operation_inside_a_package_re_inspects_only_its_region(monkeypatch):
+    session, spy = _spied_session(monkeypatch, [*_CLEARED, *_SURVIVOR], _SURVIVOR)
+    verdict = session.try_package(_package(session, cleared={_EDGE}))
+
+    assert verdict.status == "committed"
+    # The operation's own re-inspection, then the package's proof - both scoped to the region.
+    assert [region.index for region in spy.scoped] == [3, 3]
+    # ONE whole-shape scan, and it is the boundary list the package was admitted against, not a
+    # re-inspection: a package of N operations now costs N scoped scans plus one, not N+1
+    # whole-shape walks plus one scoped.
+    assert len(spy.whole_shape) == 1
+    assert session.scan_count == 3
+
+
+def test_the_progress_rule_still_rolls_back_an_operation_that_cleared_nothing(monkeypatch):
+    # THE RESCAN IS SCOPED, NOT SKIPPED. Without it an operation is kept for doing nothing at all.
+    unrepaired = [*_CLEARED, *_SURVIVOR]
+    session, spy = _spied_session(monkeypatch, unrepaired, unrepaired)
+    verdict = session.try_package(_package(session, cleared={_EDGE}))
+
+    assert [v.reason for v in verdict.verdicts] == ["target_remains"]
+    assert len(spy.scoped) == 2 and len(spy.whole_shape) == 1
+    assert session.shape == "original"
+
+
+def test_a_new_defect_in_the_region_is_not_excused_by_defects_outside_it(monkeypatch):
+    """THE HAZARD. `previous` comes from the cached WHOLE-SHAPE list and `found` from a scoped
+    scan, so scoping only one side makes every defect elsewhere read as having disappeared - and
+    the progress rule's "the part got better overall" allowances then excuse a warning this
+    operation introduced into the very region it was proving.
+
+    Region {edge:a, face:b}; `face:far` is an error the operation never touched. Compared against
+    the region's own previous list the finding count did NOT fall, so the new sliver is damage.
+    """
+    far = _FAR
+    introduced = _defect(_FACE, code=DefectCode.small_face, entity_type="face", index=2,
+                         severity=DefectSeverity.warning)
+    session, _spy = _spied_session(monkeypatch, [*_CLEARED, far], [introduced, far])
+
+    verdict = session.try_package(_package(session, cleared={_EDGE}))
+    assert [(v.status, v.reason) for v in verdict.verdicts] == [("rolled_back", "new_defect")]
+
+
+def test_a_defect_outside_the_region_is_not_credited_as_cleared(monkeypatch):
+    # The scoped scan says nothing about the part outside the region, so what it does not report
+    # there is unknown rather than gone. An implementation that let a scoped list become the
+    # session's whole-shape list would drop `face:far` and claim the rest of the part was checked.
+    session, _spy = _spied_session(monkeypatch, [*_CLEARED, _FAR], [_FAR])
+
+    verdict = session.try_package(_package(session, cleared={_EDGE}))
+    assert verdict.status == "committed"
+    assert "face:far" not in verdict.reason
+    assert "face:far" in [d.fingerprint for d in session.defects()]
+    assert session.scan_count == 3                  # no extra whole-shape scan was taken to learn it
+
+
+def test_try_op_without_a_region_is_unchanged(monkeypatch):
+    session, spy = _spied_session(monkeypatch, [*_CLEARED, *_SURVIVOR], _SURVIVOR)
+    verdict = session.try_op(session.test_ops[0], _targets(), DefectCode.small_edge,
+                             tolerance_mm=0.1)
+
+    assert verdict.status == "kept"
+    assert spy.scoped == []
+    # `_carries`' first scan and the re-inspection - both whole-shape, exactly as before.
+    assert len(spy.whole_shape) == 2
+    assert [d.fingerprint for d in session.defects()] == [_FACE]

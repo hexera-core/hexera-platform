@@ -192,16 +192,21 @@ def test_scoped_work_costs_fewer_whole_shape_verifications_than_one_per_operatio
     """The brief's inequality, measured on the scans the LOOP takes to decide the run's verdict.
 
     Its literal form - every scan the session took, against one per operation - cannot hold and
-    says nothing about scoping: `try_op` re-inspects after each operation in BOTH loops, so that
-    count is the same work plus the scoped proofs. What scoping buys is that a region's proof is
-    SCOPED and the whole-shape verification is paid once for the run, not once per region.
+    says nothing about scoping: a re-inspection after each operation is what the progress rule
+    needs and BOTH loops pay for one. What scoping buys is that neither an operation's proof nor
+    a region's walks the whole part, so the whole-shape verification is paid twice for the RUN
+    however many regions and operations it took.
     """
     part = _Part()
     run = _run(part, _author(part))
 
     assert run.timings["verification_scans"] == 2          # the first scan and the final one
     assert run.timings["verification_scans"] < 1 + sum(len(p.verdicts) for p in run.packages)
-    assert run.timings["scoped_scans"] == len(run.packages)
+    # EVERY OTHER SCAN WAS SCOPED: one per operation, one per package, and nothing left over.
+    assert run.timings["scoped_scans"] == (sum(len(p.verdicts) for p in run.packages)
+                                           + len(run.packages))
+    assert run.timings["scan_count"] == (run.timings["verification_scans"]
+                                         + run.timings["scoped_scans"])
 
 
 # WHAT THE BRIEF LEAVES TO THIS TASK
