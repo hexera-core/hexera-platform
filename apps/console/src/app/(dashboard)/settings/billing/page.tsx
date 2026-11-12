@@ -9,8 +9,6 @@ import {
   chargingNote,
   checkoutBanner,
   isPaying,
-  planLabel,
-  subscriptionSummary,
 } from "@/app/_components/billing";
 import { CreditsChart } from "@/app/_components/billing-charts";
 import { ExtraCreditsPicker, ManageBillingButton, PlanPicker } from "@/app/_components/billing-panel";
@@ -109,7 +107,6 @@ export default async function BillingPage({
   const spend = spendByDay(activity?.items ?? [], sourceOf, new Date(), range);
   const spent = spendTotal(spend.days);
   const topSource = spend.sources[0] ?? null;
-  const currentPlan = catalogue?.plans.find((candidate) => candidate.name === subscription?.plan);
 
   return (
     <div className="page">
@@ -132,15 +129,6 @@ export default async function BillingPage({
       ) : null}
 
       <div className="summary-grid">
-        <div className="metric-card">
-          <p className="label">Current plan</p>
-          <b>{subscription === null ? "Unavailable" : planLabel(paying ? subscription.plan : "")}</b>
-          <span>
-            {subscription === null
-              ? "Plan data unavailable"
-              : `${subscriptionSummary(subscription)}${currentPlan ? ` ${currentPlan.included_credits.toLocaleString()} credits a month.` : ""}`}
-          </span>
-        </div>
         <div className="metric-card">
           <p className="label">Credits used</p>
           <b>{activity === null ? "—" : formatCredits(spent)}</b>
