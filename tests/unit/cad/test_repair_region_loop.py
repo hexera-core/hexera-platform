@@ -774,7 +774,11 @@ def test_the_author_is_told_what_already_failed_in_this_region():
     # region byte-for-byte what the one-package-per-region walk authored.
     assert seen[0] == ()
     assert len(seen) == 2
-    assert "cleared defects still present" in seen[1][0]
+    # IN WORDS, and the words are the predicate's own diagnosis: the first package's operation
+    # cleared nothing and rolled itself back, so what the author is told is that the package kept
+    # nothing - which is the revision signal, not a count.
+    assert "no operation was kept" in seen[1][0]
+    assert "edge:a" in seen[1][0]
 
 
 def test_the_attempt_bound_is_honoured():

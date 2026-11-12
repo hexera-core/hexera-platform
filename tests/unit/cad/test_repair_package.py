@@ -137,3 +137,33 @@ def test_specificity_rises_with_entities_committed_to():
     one = Predicate(frozenset({"a"}), frozenset(), frozenset(), 1.0, 0.0)
     two = Predicate(frozenset({"a"}), frozenset(), frozenset({"b"}), 1.0, 0.0)
     assert specificity(two) > specificity(one) > 0.0
+
+
+# THE TWO HOLES THE LIVE RUN ON `blade-holes.step` FOUND, as unit probes of the judging seam.
+
+
+def test_a_cleared_claim_cannot_hold_when_every_operation_was_undone():
+    """A package whose plan kept nothing has repaired nothing, whatever the scan calls things.
+
+    The live failure this closes: a probe raised an edge's tolerance, that moved the edge's box
+    past one fingerprint quantum, and the scoped re-inspection reported the SAME free boundary
+    under a new name. The claimed name was then absent from `defects_after`, `evaluate` read the
+    absence as a repair, and a package that kept nothing committed. Fingerprint stability is
+    fixed at the source (`operations.copied_wire`); this is the independent guard, so the safety
+    property does not rest on one fix.
+    """
+    p = _p(cleared={"edge:a"})
+    assert "no operation was kept" in evaluate(
+        p, before=_SOUND, after=_SOUND, defects_before=("edge:a",), defects_after=("edge:b",),
+        kept_ops=0)
+    # The same claim, with an operation that survived, is judged on the names as it always was.
+    assert evaluate(p, before=_SOUND, after=_SOUND, defects_before=("edge:a",),
+                    defects_after=("edge:b",), kept_ops=1) == ""
+
+
+def test_a_pure_reclassification_still_commits_with_nothing_kept():
+    # Relabelling a defect as intentional is a discharge by judgement, and no geometry is supposed
+    # to move for it. The guard is about `cleared` alone.
+    p = _p(reclassified={"face:chamfer"})
+    assert evaluate(p, before=_SOUND, after=_SOUND, defects_before=("face:chamfer",),
+                    defects_after=("face:chamfer",), kept_ops=0) == ""

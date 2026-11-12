@@ -69,13 +69,37 @@ def _names(items: Iterable[str]) -> str:
 
 
 def evaluate(predicate: Predicate, *, before: Measure, after: Measure,
-             defects_before: Iterable[str], defects_after: Iterable[str]) -> str:
+             defects_before: Iterable[str], defects_after: Iterable[str],
+             kept_ops: int | None = None) -> str:
     """Return "" when the claim held, else the first way it failed, in words.
 
-    Checked in a fixed order - cleared, unchanged, reclassified, area, volume - and entities are
-    listed sorted, so identical inputs always give the identical message.
+    Checked in a fixed order - nothing kept, cleared, unchanged, reclassified, area, volume - and
+    entities are listed sorted, so identical inputs always give the identical message.
+
+    `kept_ops` IS HOW MANY OF THE PACKAGE'S OPERATIONS SURVIVED, and it is a SECOND, independent
+    reason a `cleared` claim can fail. A claim is checked by looking for its name in the scan that
+    judges it, so a name that scan cannot produce - because something renamed the entity behind
+    its back - would read as a repair. That hole is closed at the source (`operations.copied_wire`:
+    a probe may not nudge the geometry it probes), but the safety property may not rest on one
+    fix: a package whose every operation declined or rolled itself back has repaired nothing BY
+    CONSTRUCTION, whatever the names say, so it cannot have cleared anything. `None` means the
+    caller did not state what it kept, and then only the names are judged - every real caller
+    states it (`session.try_package`).
+
+    A pure RECLASSIFICATION still commits with nothing kept, deliberately: relabelling a defect as
+    intentional is a discharge by judgement (spec decision 2) and no geometry is supposed to move
+    for it. The guard is about `cleared` alone.
+
     """
     was, now = set(defects_before), set(defects_after)
+
+    if kept_ops is not None and kept_ops <= 0 and predicate.cleared:
+        # FIRST, because it does not depend on the names at all. Nothing was kept, so the shape
+        # the scan judged is the shape the claim was made about, and a defect cannot have been
+        # cleared by an operation that was undone.
+        return ("no operation was kept, so nothing was repaired: the claim to have cleared "
+                f"{_names(predicate.cleared)} cannot hold over geometry the package did not "
+                "change")
 
     remaining = predicate.cleared & now
     if remaining:

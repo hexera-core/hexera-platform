@@ -79,6 +79,92 @@ def test_scoped_scan_finds_the_same_defects_in_its_region_as_a_global_scan():
         assert {d.fingerprint for d in scoped} == expected
 
 
+def _part_edges(shape):
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+
+    out = []
+    explorer = TopExp_Explorer(shape, TopAbs_EDGE)
+    while explorer.More():
+        out.append(explorer.Current())
+        explorer.Next()
+    return out
+
+
+def test_a_planarity_probe_is_never_handed_the_parts_own_loop(monkeypatch):
+    """A SAFETY PROPERTY, not a nicety: a claim must be checkable by the scan that judges it.
+
+    A package's author states its predicate BEFORE execution, naming the fingerprints it will
+    clear, and the scoped re-inspection checks that exact claim. Anything that renames an entity
+    between the two makes the claim unfalsifiable: the name is simply absent from the scan, and
+    `package.evaluate` reads an absence as a repair.
+
+    What did exactly that, measured on a live blade with 167 faces: the planner's pairing
+    discriminator asks whether each free loop is planar, and `BRepBuilderAPI_MakeFace(wire,
+    OnlyPlane=True)` answers by writing pcurves into the edges IT IS HANDED and raising their
+    tolerance to bound them (`BRepLib_FindSurface` reports the tolerance it needed). Those edges
+    are the part. A `Bnd_Box` carries an edge's tolerance as its gap, a fingerprint quantises the
+    box, and the open boundary came back as `edge:3c76df5a8a13f427` where the whole-shape scan
+    had reported `edge:d165754224f3d444` - 3.05e-4 mm of tolerance on a 2.48e-4 mm grid, with not
+    one millimetre of geometry changed.
+
+    THE INVARIANT IS TESTED, NOT ONE PART'S SYMPTOM. How far the kernel moves a tolerance depends
+    on the surfaces under the loop, and every rim in this repository's fixtures is an exact
+    analytic plane that `MakeFace` fits for nothing - so asserting "the names did not change"
+    here would pass on the broken code too. What must hold for ANY geometry is that a probe hands
+    the kernel a COPY: then the question cannot edit the part, whatever the kernel decides.
+    """
+    import OCP.BRepBuilderAPI as api
+
+    from meshpipeline.cad.repair.conservative import _loop_plane
+    from meshpipeline.cad.repair.operations import _is_planar_loop, free_wire_containing
+    from meshpipeline.cad.repair.plan import paired_rim_fingerprints
+
+    shape = _two_holed_boxes()
+    everything, complete = localize_scan(shape)
+    assert complete
+    before = [d.fingerprint for d in everything]
+    mine = {e.TShape() for e in _part_edges(shape)}
+
+    real, handed = api.BRepBuilderAPI_MakeFace, []
+
+    def spy(*args, **kwargs):
+        if args:
+            handed.append(args[0])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(api, "BRepBuilderAPI_MakeFace", spy)
+
+    wires = [free_wire_containing(shape, d.entity_index) for d in everything]
+    assert all(w is not None for w in wires)
+    # The fixture is only evidence if the loops are planar: a loop `MakeFace` declines is declined
+    # before it writes anything, and the probes would be harmless for the wrong reason.
+    assert all(_is_planar_loop(w) for w in wires)
+    assert all(_loop_plane(w) is not None for w in wires)
+    # AND THE PROBE THE PLANNER REALLY RUNS, through its own entry point, before any operation.
+    paired_rim_fingerprints(shape, everything)
+
+    assert handed, "the probes never reached the kernel, so this test proves nothing"
+    for argument in handed:
+        shared = [e for e in _part_edges(argument) if e.TShape() in mine]
+        assert not shared, "a planarity probe handed the kernel the part's own edges to write on"
+
+    # And with the probes done, the two scans still agree about the region's own names.
+    assert [d.fingerprint for d in localize_scan(shape)[0]] == before
+    regions = decompose(everything, diagonal_mm=_diagonal(shape))
+    assert len(regions) == 2, [r.fingerprints for r in regions]
+    for region in regions:
+        scoped, scoped_complete = localize_scan(shape, within=region,
+                                                scope_diagonal_mm=_diagonal(shape))
+        assert scoped_complete
+        expected = {d.fingerprint for d in everything if d.fingerprint in region.fingerprints}
+        assert expected
+        # WHAT BOTH SCANS REPORT MUST AGREE. A scoped scan says nothing about the part outside its
+        # scope, and a scope may legitimately admit a neighbour's defect, so the subject is the
+        # region's own names and whether the scoped list stays inside the whole-shape one.
+        assert expected <= {d.fingerprint for d in scoped} <= set(before)
+
+
 def test_omitting_within_is_unchanged():
     shape = _two_holed_boxes()
     assert [d.fingerprint for d in localize_scan(shape)[0]] == \

@@ -199,12 +199,22 @@ def _span(shape) -> float:
 
 
 def _loop_plane(wire):
-    """The plane a closed loop lies in, as (normal, centroid), or None when it is not planar."""
+    """The plane a closed loop lies in, as (normal, centroid), or None when it is not planar.
+
+    ON A COPY OF THE WIRE, because this is a question and `BRepBuilderAPI_MakeFace` answers it by
+    EDITING: it writes a pcurve on every edge it is handed and raises that edge's tolerance to
+    bound it. The free-loop edges are the caller's shape, so asking this on the originals moved
+    the loop's bounding box by more than one fingerprint quantum on `blade-holes.step` and renamed
+    the very defect the discriminator was pairing (`operations.copied_wire` has the measurement).
+    A discriminator may not change what it looks at.
+    """
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
     from OCP.GeomAbs import GeomAbs_Plane
 
-    maker = BRepBuilderAPI_MakeFace(wire, True)
+    from meshpipeline.cad.repair.operations import copied_wire
+
+    maker = BRepBuilderAPI_MakeFace(copied_wire(wire), True)
     if not maker.IsDone():
         return None
     surface = BRepAdaptor_Surface(maker.Face())

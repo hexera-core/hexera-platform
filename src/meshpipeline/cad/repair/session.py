@@ -566,7 +566,9 @@ class RepairSession:
           5. one scoped scan      - EXPENSIVE, so it is paid for last, and only ONE for the whole
                                     plan: the plan's own proof, on top of the operations' scoped
                                     ones, which is the whole extra cost of packaging a region
-          6. `package.evaluate`   - the claim against the measurements
+          6. `package.evaluate`   - the claim against the measurements, told how many of the
+                                    plan's operations survived (a plan that kept nothing cannot
+                                    have cleared anything, whatever the scan calls things)
           7. commit, or restore the BOUNDARY snapshot
 
         ALL OR NOTHING. The predicate was written about the whole plan, so a partially applied
@@ -702,8 +704,13 @@ class RepairSession:
         # a scan that never looked at it. Any change to the locus rule has to come back here.
         after, after_measure_s = self._timed_measure(self.shape)
         measure_s += after_measure_s
+        # HOW MANY OF THE PLAN'S OPERATIONS SURVIVED. A package whose every operation declined or
+        # rolled itself back changed nothing, so `evaluate` may not read a missing name in the
+        # scoped scan as a defect this package cleared.
+        kept_ops = sum(1 for op_verdict in verdicts if op_verdict.kept)
         reason = evaluate(predicate, before=before, after=after,
-                           defects_before=defects_before, defects_after=defects_after)
+                           defects_before=defects_before, defects_after=defects_after,
+                           kept_ops=kept_ops)
         if reason:
             self.shape, self._defects, self.complete_scan, self.accounting = snapshot
             return self._record_package(PackageVerdict(

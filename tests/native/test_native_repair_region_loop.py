@@ -150,24 +150,32 @@ def test_a_packaged_region_is_proved_by_a_scan_scoped_to_it(tmp_path, monkeypatc
     # BOTH REGIONS ARE PACKAGED, and that is the price of locality rather than a bug.
     # `fix_small_faces` is a whole-shape sweep, so region 0's commit legitimately took region 1's
     # sliver with it - but nothing has walked region 1 since, so the loop does not know, offers
-    # it its one package, and that package's own operation DECLINES ("not_small") on geometry
-    # already gone. The region commits on the scoped proof that it is clean; no operation was
-    # kept for doing nothing.
+    # it a package, and that package's own operation DECLINES ("not_small") on geometry already
+    # gone.
+    # SUCH A PACKAGE IS REVERTED, NOT COMMITTED, and that is the safety rule rather than a cost
+    # one: it kept nothing, so its claim to have CLEARED a defect is a claim about geometry it
+    # never touched, and `package.evaluate` refuses it however the scoped scan names things. The
+    # region is then offered another package, and this one really repairs - the sliver edges the
+    # notch left - so the region commits on work it did.
     assert [(p.region_index, p.status) for p in run.packages] == [(0, "committed"),
+                                                                   (1, "reverted"),
                                                                    (1, "committed")]
-    assert [v.status for p in run.packages for v in p.verdicts] == ["kept", "rolled_back"]
+    assert [v.status for p in run.packages for v in p.verdicts] == ["kept", "rolled_back", "kept"]
+    assert [v.op for p in run.packages for v in p.verdicts] == ["fix_small_faces",
+                                                                 "fix_small_faces",
+                                                                 "fix_small_edges"]
 
     # THE PROOF OF A REGION IS SCOPED TO IT, and so is the proof of every operation inside it,
     # which is the whole cost thesis: region 0 paid one scoped scan for its operation and one for
-    # its package; region 1's operation was refused before any re-inspection, so it paid only the
-    # package's.
-    assert [region.index for region in spy.scoped] == [0, 0, 1]
+    # its package; region 1's first operation was refused before any re-inspection, so that
+    # attempt paid only the package's, and its second attempt paid one of each.
+    assert [region.index for region in spy.scoped] == [0, 0, 1, 1, 1]
     # AND THE RUN'S OWN VERDICT IS NOT. Exactly two whole-shape inspections belong to this run,
     # whatever its plans contained - the first scan and the one after the merge.
     assert run.timings["verification_scans"] == 2
     assert run.timings["scoped_scans"] == len(spy.scoped)
     assert len(spy.whole_shape) == 2
-    assert run.timings["scan_count"] == 5   # the two above, plus the three scoped ones
+    assert run.timings["scan_count"] == 7   # the two above, plus the five scoped ones
 
     assert run.stopped_because == "resolved"
     assert run.complete_scan is True
@@ -235,10 +243,14 @@ def test_the_posture_selects_the_region_loop_in_the_entry_point(tmp_path, monkey
     assert measurements["planner"] == "regions-rules-v1"
     assert measurements["stopped_because"] == "resolved"
     assert measurements["regions"]["escalated"] == []
+    # Region 1's first package aimed at a sliver region 0's whole-shape sweep had already taken,
+    # so its operation declined, it kept nothing and its `cleared` claim was refused; its second
+    # package repaired the notch's sliver edges instead. See the probe above.
     assert [p["status"] for p in measurements["regions"]["packages"]] == ["committed",
+                                                                          "reverted",
                                                                           "committed"]
     assert measurements["timings"]["verification_scans"] == 2
-    assert measurements["operations_kept"] == 1
+    assert measurements["operations_kept"] == 2
     assert destination.exists()
 
 

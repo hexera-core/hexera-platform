@@ -321,7 +321,11 @@ def test_an_operation_rolled_back_by_its_own_caps_does_not_stop_the_package_bein
     # THE REASON IS THE PREDICATE'S, NOT THE OPERATION'S. An implementation that abandoned the
     # package the moment an operation rolled itself back would also be `reverted`, so without
     # this the test passes for the behaviour its own name denies.
-    assert verdict.reason == f"cleared defects still present: {_EDGE}"
+    # It is `evaluate`'s KEPT-NOTHING guard that answers here, not its name comparison: the plan's
+    # one operation rolled itself back, so there is no shape for a `cleared` claim to be true of.
+    assert verdict.reason == ("no operation was kept, so nothing was repaired: the claim to have "
+                              f"cleared {_EDGE} cannot hold over geometry the package did not "
+                              "change")
     assert session.shape == "original"
 
 

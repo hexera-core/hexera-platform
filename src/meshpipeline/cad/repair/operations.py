@@ -899,7 +899,15 @@ class FillPlanarHole:
                              evidence={"declined": f"too_large (span ratio {ratio:.4f})",
                                        "span_mm": round(span, 6)})
 
-        maker = BRepBuilderAPI_MakeFace(wire, True)
+        # ON A COPY OF THE WIRE, exactly as `_build_patch` does for the non-planar plate: the
+        # loop's edges are the caller's shape and the session's rollback snapshot, and `MakeFace`
+        # writes pcurves and raised tolerances into whatever edges it is handed. Built on the
+        # originals, a DECLINED fill (not planar) or one this operation later rolls back left the
+        # part's own edges nudged - enough to rename the defect, because a fingerprint quantises a
+        # box and a box carries the tolerance as its gap (see `copied_wire`). The patch is sewn to
+        # the owner by tolerance below, which is how the non-planar fill has always attached its
+        # own copied patch.
+        maker = BRepBuilderAPI_MakeFace(copied_wire(wire), True)
         if not maker.IsDone():
             return OpOutcome(shape=shape,
                              evidence={"declined": "not_planar", "span_mm": round(span, 6)})
@@ -948,11 +956,39 @@ PATCH_BULGE_INFLATION = 0.5
 _G1_TOLERANCE_RAD = 0.01
 
 
+def copied_wire(wire):
+    """An independent copy of a free loop, so that building a face on it CANNOT touch the part.
+
+    `BRepBuilderAPI_MakeFace(wire, OnlyPlane=True)` is not a question, it is an edit: it writes a
+    pcurve on every edge it is handed and raises that edge's tolerance to bound it. The free-loop
+    edges ARE the caller's shape, so asking "is this loop planar?" on the originals RENAMES the
+    defect that loop is: `identity.fingerprint_of` quantises an entity's `Bnd_Box`, a box carries
+    the sub-shape's tolerance as its gap, and the raised tolerance moves the box by more than one
+    quantum on an ordinary part. Measured on `blade-holes.step` (247.6 mm diagonal, so a 2.48e-4 mm
+    grid): the pairing discriminator's planarity probe grew the open boundary's box by 3.05e-4 mm
+    in every direction and turned `edge:d165754224f3d444` into `edge:3c76df5a8a13f427` - without
+    changing one millimetre of geometry. A package's pre-registered claim then names an entity the
+    scan that judges it can no longer report, which makes the claim unfalsifiable, and
+    `package.evaluate` reads the absence as a repair.
+
+    `_build_patch` learned this for the non-planar plate ("ON A COPY OF THE WIRE") and the rule is
+    the same wherever a face is built from somebody else's loop, probe or patch: copy first.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+    from OCP.TopoDS import TopoDS
+
+    return TopoDS.Wire_s(BRepBuilderAPI_Copy(wire).Shape())
+
+
 def _is_planar_loop(wire) -> bool:
-    """True when one flat face spans the loop - the planar fill's question, asked the same way."""
+    """True when one flat face spans the loop - the planar fill's question, asked the same way.
+
+    ON A COPY: this is a probe, and `MakeFace` writes pcurves and tolerances into the edges it is
+    given (see `copied_wire`). A probe that renames the defect it is asked about is not a probe.
+    """
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
 
-    return bool(BRepBuilderAPI_MakeFace(wire, True).IsDone())
+    return bool(BRepBuilderAPI_MakeFace(copied_wire(wire), True).IsDone())
 
 
 def _wire_edges(wire) -> list:
