@@ -42,10 +42,11 @@ logger = logging.getLogger(__name__)
 #: 2 (21 Oct): a wall is read inside one body, past the model's floor, never across a taper,
 #: and only where a face's rays agree (cad/fea_features.wall_reach); 1 read the first
 #: surface any ray met.
-VERSION = 4
+VERSION = 5
 #: 3 (21 Oct): the record lists the CAD's cusps (cad_cusps, PLAN-fea-10).
 #: 4 (6 Nov): the record keeps the parts and the areas inside them for the parts checklist (NOTE-5/6); a
 #: measurement stored before it has none, and reusing it left the card with no Finalize notes.
+#: 5 (4 Nov, #408): ...and its run-outs, a face collapsing to a point (cad_cusps, kind "run_out").
 #: Where the record lives in the geometry check's facts.
 FACT_KEY = "fea_measure"
 #: The CAD surface is tessellated for the measurement at a chord of this fraction of the part's
@@ -207,6 +208,12 @@ def cad_micro(shape, mm: float, *, diag_mm: float) -> list[dict]:
 #: boss just touching a straight face; a nut's chamfer cone meeting its flats). The face - and the
 #: material beside it - runs to nothing there, so no element there can be well shaped at any size.
 CUSP_DEG = 5.0
+#: A RUN-OUT is a cusp too: a face whose boundary collapses to a point - a degenerated (zero-length)
+#: edge - where a fillet or blend narrows to nothing against a bore or a pin (the punch's links, 4
+#: Nov: an N-sided blend patch ending at 15 degrees, its elements jumping from 0.3 mm to 1 mm). A
+#: sphere's, cone's or revolved face's collapsed edge is its POLE, where the surface is smooth and
+#: nothing runs out: those surfaces are left out.
+POLE_SURFACES = ("Sphere", "Cone", "SurfaceOfRevolution")
 
 
 def cad_cusps(shape, mm: float) -> list[dict]:
@@ -261,11 +268,75 @@ def cad_cusps(shape, mm: float) -> list[dict]:
                 if ang < CUSP_DEG:
                     out.append({"at_mm": _pt(np.array([p.X(), p.Y(), p.Z()]) * mm), "angle_deg": _r(ang),
                                 "faces": [f"Face_{k}" for k in sorted(legs[a][1] | legs[b][1]) if k > 0]})
+    out += _run_outs(shape, mm, fmap)
     # one entry per place (a vertex can host more than one pair)
     unique: dict[tuple, dict] = {}
     for c in out:
         unique.setdefault(tuple(round(x, 4) for x in c["at_mm"]), c)
     return list(unique.values())
+
+
+def _run_outs(shape, mm: float, fmap) -> list[dict]:
+    """Every RUN-OUT of the solid (PLAN-fea-10): a vertex where a face's degenerated edge collapses
+    its boundary to a point, on a face that is not a pole surface (POLE_SURFACES), with two real
+    edges of the face leaving it. Same entries as cad_cusps, with "kind": "run_out"."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+    from OCP.gp import gp_Pnt, gp_Vec
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    def leaving(e, v):
+        c = BRepAdaptor_Curve(e)
+        u = BRep_Tool.Parameter_s(v, e)
+        q, d = gp_Pnt(), gp_Vec()
+        c.D1(u, q, d)
+        if d.Magnitude() <= 0:
+            return None
+        first = abs(u - c.FirstParameter()) <= abs(u - c.LastParameter())
+        return np.array([d.X(), d.Y(), d.Z()]) / d.Magnitude() * (1.0 if first else -1.0)
+
+    out: list[dict] = []
+    for i in range(1, fmap.Extent() + 1):
+        face = TopoDS.Face_s(fmap.FindKey(i))
+        edges = []
+        ex = TopExp_Explorer(face, TopAbs_EDGE)
+        while ex.More():
+            edges.append(TopoDS.Edge_s(ex.Current()))
+            ex.Next()
+        degenerate = [e for e in edges if BRep_Tool.Degenerated_s(e)]
+        if not degenerate:
+            continue
+        try:
+            kind = str(BRepAdaptor_Surface(face).GetType()).rsplit(".", 1)[-1].replace("GeomAbs_", "")
+        except Exception as exc:  # noqa: BLE001 - a face we cannot read is no evidence of a run-out
+            logger.debug("fea measure: a face's surface could not be read for the run-out check (%s)", exc)
+            continue
+        if kind in POLE_SURFACES:
+            continue
+        for d in degenerate:
+            v = TopExp.FirstVertex_s(d)
+            real: list = []
+            for e in edges:
+                if BRep_Tool.Degenerated_s(e) or any(e.IsSame(r) for r in real):
+                    continue
+                if TopExp.FirstVertex_s(e).IsSame(v) or TopExp.LastVertex_s(e).IsSame(v):
+                    real.append(e)
+            if len(real) < 2:
+                continue                 # a seam through a pole, not a face narrowing to a point
+            try:
+                t = [leaving(e, v) for e in real[:2]]
+            except Exception as exc:  # noqa: BLE001 - an edge we cannot read is no evidence
+                logger.debug("fea measure: a run-out's edges could not be read (%s)", exc)
+                continue
+            if t[0] is None or t[1] is None:
+                continue
+            p = BRep_Tool.Pnt_s(v)
+            ang = math.degrees(math.acos(max(-1.0, min(1.0, float(np.dot(t[0], t[1]))))))
+            out.append({"at_mm": _pt(np.array([p.X(), p.Y(), p.Z()]) * mm), "angle_deg": _r(ang),
+                        "faces": [f"Face_{i}"], "kind": "run_out"})
+    return out
 
 
 def _brep_surface(shape, mm: float):

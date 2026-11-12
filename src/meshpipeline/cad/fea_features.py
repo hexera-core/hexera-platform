@@ -134,8 +134,10 @@ class _Rays:
     """First hit of a ray on the surface: VTK's static cell locator when VTK is installed, else a
     plain numpy test against every triangle (fine for the small parts the tests use)."""
 
-    def __init__(self, s: Surface):
+    def __init__(self, s: Surface, tol: float = 0.0):
         self.s = s
+        #: the line test's tolerance, mm (0.0: as it always was; cad/shell_pairs asks for more, SHELL-44)
+        self.tol = float(tol)
         self.loc = None
         try:
             from vtkmodules.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray
@@ -171,7 +173,7 @@ class _Rays:
         x, pc = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
         for i, (o, d) in enumerate(zip(origins, dirs, strict=True)):
             end = o + d * reach
-            if self.loc.IntersectWithLine(o.tolist(), end.tolist(), 0.0, t, x, pc, sub, cid):  # type: ignore[call-overload]
+            if self.loc.IntersectWithLine(o.tolist(), end.tolist(), self.tol, t, x, pc, sub, cid):  # type: ignore[call-overload]
                 out[i] = float(t) * reach  # type: ignore[arg-type]
                 cell[i] = int(cid)
         return out, cell
@@ -253,7 +255,8 @@ def _numpy_hits(s: Surface, origins: np.ndarray, dirs: np.ndarray, reach: float)
 
 
 def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.ndarray, *, eps: float,
-               lying_on: list | None = None, exit_label: np.ndarray | None = None) -> np.ndarray:
+               lying_on: list | None = None, exit_label: np.ndarray | None = None,
+               ray_tol: float = 0.0) -> np.ndarray:
     """How far each ray (from `eps` inside a face, along its inward normal) runs through the
     material before it LEAVES it - the wall under its start - or nan where that cannot be read.
 
@@ -272,8 +275,11 @@ def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.nda
 
     `exit_label`, when given (an int array as long as the rays), is filled with the label of the face each
     ray left the material through, or -1 where it read no wall: the face across the wall (cad/
-    shell_pairs reads its face pairs off it). It changes no reading."""
-    rays = _Rays(s)
+    shell_pairs reads its face pairs off it). It changes no reading.
+
+    `ray_tol` (mm): the tolerance of the line test against the triangles. 0.0, as the FEA readings have always
+    been made; the shell pairing asks for 1e-9 (cad/shell_pairs.RAY_TOL_MM, SHELL-44)."""
+    rays = _Rays(s, ray_tol)
     m = len(s.names)
     pairs = edge_pairs(s)
     la, lb = s.label[pairs.tri_a], s.label[pairs.tri_b]

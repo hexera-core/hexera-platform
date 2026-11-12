@@ -1,5 +1,5 @@
 # Responsibility: THE USER'S MESH REQUIREMENTS ON THE SOLID FEA MESH (PLAN-fea-33, 34): turn the checked set read from their notes (engines/mesh_requirements) into what the solid plan already takes - a size for the whole mesh as the sizes-per-part the plan holds (engines/fea_plan.user_sized, PLAN-fea-29) - and, on the built tetrahedra, say for every requirement what was asked and what was delivered.
-# Boundaries: pure over plain data and numpy; no engine, no file, no model. Nothing here can fail a mesh. A quality limit has no lever on the solid route yet (the fill and its optimiser take no target): it is measured and told, never said to be met when it is not. With no requirement every function returns its input unchanged or None.
+# Boundaries: pure over plain data and numpy; no engine, no file, no model. Nothing here can fail a mesh. A quality limit is measured and told, never said to be met when it is not; an aspect-ratio or corner-angle limit is also aimed at by the quality pass (engines/fea_mmg.targets_of, MESH-mmg-1), which says on the row what it did (fea_mmg.tell). With no requirement every function returns its input unchanged or None.
 # Collaborates with: engines/fea_driver.py (merges the whole-mesh size into the sizes per part), engines/gmsh/fea_adapter.py (measures the report into quality.json), engines/verdict_limits.py and engines/fea_results.py (the rows), engines/mixed_run.py (the solid part of a mixed mesh).
 """HOW EACH FIGURE OF A USER'S LIMIT IS MEASURED ON A TETRAHEDRON when they name no tool:
 
@@ -145,9 +145,13 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
                                                                "fixed rate"}
         elif field == "thickness":
             got = {"applied": False, "met": None, "delivered": "not applied - a solid keeps the thickness of your CAD"}
+        elif field in ("free_mesh", "no_washers", "structured"):
+            got = {"applied": False, "met": None, "delivered": "not applied - washers and mapped quads are a shell "
+                                                               "mesh's; a solid is meshed with tetrahedra"}
         else:  # quads_only, triangles_only, max_triangle_percent
             got = {"applied": False, "met": None, "delivered": "not applied - a solid is meshed with tetrahedra"}
-        rows.append({"id": row["id"], "field": field, "asked": row["asked"], **got})
+        rows.append({"id": row["id"], "field": field, "asked": row["asked"], **got,
+                     **({"from": row["from"]} if row.get("from") else {})})
     return MR.finish_report(rows, n, DEFINITIONS)
 
 

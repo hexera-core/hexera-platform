@@ -163,6 +163,35 @@ def _cfd_limits(payload: Mapping) -> str:
             + (_table(("Mesh figure", "Value"), figures, "figures") if figures else ""))
 
 
+def _wrap(payload: Mapping) -> str:
+    """A mesh built on the CFD wrap (LAD-cfd-7): how far the wrap lies from the CAD, and every
+    spot where it bridged a gap, with its place."""
+    w = _m(payload.get("wrap"))
+    if not w:
+        return ""
+
+    def mm(v: Any) -> str:
+        return "not measured" if not isinstance(v, (int, float)) or isinstance(v, bool) else f"{v * 1000:.3g} mm"
+
+    rows = [["Wrap distance (gaps up to twice this are closed)", _e(mm(w.get("distance_m")))],
+            ["Grid cube", _e(mm(w.get("cube_m")))],
+            ["Largest distance from your CAD, where the wrap lies on it", _e(mm(w.get("max_on_cad_m")))],
+            ["95th percentile distance, where the wrap lies on it", _e(mm(w.get("p95_on_cad_m")))],
+            ["Largest distance from your CAD, anywhere", _e(mm(w.get("max_m")))],
+            ["95th percentile distance, anywhere", _e(mm(w.get("p95_m")))],
+            ["Bridged spots", _e(_num(w.get("bridged_spots")))],
+            ["Largest distance of the wetted CAD from the wrap", _e(mm(w.get("cad_to_skin_max_m")))],
+            ["CAD faces the flow cannot reach (left out)", _e(_num(w.get("dry_faces")))]]
+    spots = [[_e(", ".join(f"{float(c) * 1000:.4g}" for c in _l(_m(s).get("centre_m")))),
+              _e(_m(s).get("patch") or ""), _e(mm(_m(s).get("max_m"))),
+              _e(f"{float(_m(s).get('area_m2') or 0.0) * 1e6:.3g} mm²")]
+             for s in _l(w.get("spots"))]
+    return ((f"<p>{_e(str(w.get('words') or '').capitalize())}.</p>" if w.get("words") else "")
+            + _table(("Measure", "Value"), rows, "figures")
+            + (_table(("Bridged at (x, y, z) mm", "Named", "Up to", "Area"), spots, "limits")
+               if spots else ""))
+
+
 def _places(fea: Mapping) -> str:
     """Every row whose measure is a list of places: cusps, micro details, zones short of the rules."""
     out = []
@@ -330,6 +359,7 @@ def mesh_report_html(payload: Mapping[str, Any] | None) -> str:
     summary = str(fea.get("summary") or thermal.get("summary") or "")
     sections = [
         ("units", "Units", f'<p class="units">{_e(_units(p))}</p>'),
+        ("wrap", "Wrapped surface", _wrap(p)),
         ("limits", "Every limit", _fea_limits(fea) if fea else _cfd_limits(p)),
         ("places", "Places set aside, with coordinates", _places(fea) if fea else ""),
         ("walls", "Through the walls", _through_wall(fea) if fea else ""),

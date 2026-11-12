@@ -195,7 +195,7 @@ def test_a_share_with_no_outer_limit_is_kept():
 def test_the_element_kind_and_its_contradictions():
     req, dropped, _na = _one("no triangles please", element_kind=[{"what": "quads_only", "value": 0,
                                                                   "quote": "no triangles"}])
-    assert req["kind"]["shell"] == "quads" and dropped == [] and req["rows"][0]["asked"] == "quads only, no triangles"
+    assert req["kind"]["shell"] == "quads" and dropped == [] and req["rows"][0]["asked"] == "shell elements: quads only, no triangles"
     req, dropped, _na = _one("quad mesh only. triangles only.", element_kind=[
         {"what": "quads_only", "value": 0, "quote": "quad mesh only"},
         {"what": "triangles_only", "value": 0, "quote": "triangles only"}])

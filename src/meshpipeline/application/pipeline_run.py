@@ -222,7 +222,8 @@ class JobRequest:
                  "approved_snapshot_id", "approved_patch_contract",
                  "approved_intent_fingerprint", "intake_events",
                  "requested_extents", "reference_length_m", "requirements_strict",
-                 "flow_axis", "repair_directives", "review_continuation", "user_notes")
+                 "flow_axis", "repair_directives", "review_continuation", "user_notes",
+                 "meshing_standard")
 
     def __init__(self, job_id, owner_id="dev-user", geometry_source=None,
                  geometry_interpretation=None, session_id="",
@@ -235,7 +236,8 @@ class JobRequest:
                  approved_intent_fingerprint="", intake_events=None,
                  requested_extents=None, reference_length_m=None,
                  requirements_strict=True, flow_axis=None,
-                 repair_directives=None, review_continuation=False, user_notes=None):
+                 repair_directives=None, review_continuation=False, user_notes=None,
+                 meshing_standard=None):
         self.job_id           = job_id
         self.owner_id         = owner_id
         # Replayed only once the claim has bound the tenant these records file under. They are
@@ -309,6 +311,9 @@ class JobRequest:
         # steps and answered per requirement on the result. Empty for a run with none.
         from meshpipeline.contracts.user_notes import clean as _clean_notes
         self.user_notes = _clean_notes(user_notes)
+        # THE TEAM'S MESHING STANDARD as approved with the run (engines/meshing_standard): None for an
+        # organisation that has none - the run is then exactly the run it always was (STD-3).
+        self.meshing_standard = dict(meshing_standard) if isinstance(meshing_standard, dict) else None
         # user's explicit engine choice from intake ('cfmesh'/'snappy'; '' = auto).
         # Pins state['engine'] so resolution keeps it - the user has the final word.
         self.mesh_engine      = (mesh_engine or "").strip().lower()
@@ -440,6 +445,7 @@ def run_pipeline(
     repair_directives:       list | None = None,
     review_continuation:     bool       = False,
     user_notes:              list | None = None,
+    meshing_standard:        dict | None = None,
 ) -> dict:
 
 
@@ -486,6 +492,7 @@ def run_pipeline(
         repair_directives=repair_directives or [],
         review_continuation=review_continuation,
         user_notes=user_notes or [],
+        meshing_standard=meshing_standard,
         approved_snapshot_id=approved_snapshot_id or "",
         approved_patch_contract=approved_patch_contract,
         approved_intent_fingerprint=approved_intent_fingerprint or "",
@@ -503,12 +510,13 @@ from meshpipeline.application.dispatch_types import register_run_entry  # noqa: 
 def _notes_remarks(final_state) -> list:
     """The 'From your notes' lines the delivered attempt's steps left (contracts/user_notes);
     [] for a run with no notes. Never raises: a remark is never worth a run."""
-    if not final_state.get("user_notes"):
+    if not final_state.get("user_notes") and not final_state.get("meshing_standard"):
         return []
     try:
         from meshpipeline.contracts.user_notes import given_remark, read_remarks
         said = read_remarks(final_state.get("openfoam_workspace") or "")
-        if said:
+        if said or not final_state.get("user_notes"):
+            # a run with the team's meshing standard and no notes: only what a step said of it
             return said
         # NO STEP SAID WHAT IT DID WITH THEM: the result still says they were given to every attempt,
         # so the line never just vanishes (the exhaust header of the 2 Nov dry run: VMTK -> snappy,
@@ -710,6 +718,7 @@ async def _run_async(req: JobRequest) -> dict:
             requirements_strict=req.requirements_strict,
             flow_axis=req.flow_axis,
             user_notes=req.user_notes,
+            meshing_standard=req.meshing_standard,
             agent_model_configs={
                 "builder":    {"model": bcfg.BUILDER_MODEL,  "temperature": bcfg.BUILDER_TEMPERATURE,    "max_tokens": bcfg.BUILDER_MAX_TOKENS},
                 "reviewer":   {"model": rcfg.REVIEWER_MODEL, "temperature": rcfg.REVIEWER_TEMPERATURE,   "max_tokens": rcfg.REVIEWER_MAX_TOKENS},
@@ -790,6 +799,10 @@ async def _run_async(req: JobRequest) -> dict:
         from meshpipeline.application.shell_check import confirmed_mesh_as
         initial_state["fea_mesh_as"] = await asyncio.to_thread(confirmed_mesh_as, str(session_id or ""),
                                                                req.user_notes)
+        # SHSTAGE-8: a shell's elements as the user clicked them on the stage ("" when they left the control as it
+        # started: the notes and settings decide, STD-4)
+        from meshpipeline.application.shell_elements import confirmed as _confirmed_elements
+        initial_state["fea_shell_elements"] = await asyncio.to_thread(_confirmed_elements, str(session_id or ""))
         # SURF-4: a surface file's wall thickness, as the stage read it from the user's words at Proceed
         from meshpipeline.application.surface_check import confirmed_thickness
         initial_state["fea_shell_thickness_mm"] = await asyncio.to_thread(confirmed_thickness, str(session_id or ""))
@@ -1041,6 +1054,10 @@ async def _run_async(req: JobRequest) -> dict:
         # file that states none is the likely cause, and only the user can say which it is
         from meshpipeline.application.final_result import physical_scale_caveat
         _scale_caveat = physical_scale_caveat(_run_outcome)
+        # and the wrapped-surface note: a mesh the CFD ladder's last rung built on a wrapped copy
+        # of the surface (LAD-cfd-5) says how far the wrap lies from the CAD, and where it bridged
+        from meshpipeline.application.final_result import wrapped_surface_caveat
+        _wrap_caveat = wrapped_surface_caveat(_run_outcome)
         # and, once the measured limits decide (VERDICT_BY_LIMITS), their verdict and the AI
         # reviewer's notes - the notes shown, labelled, deciding nothing. Both None in shadow.
         from meshpipeline.application.final_result import (
@@ -1323,6 +1340,7 @@ async def _run_async(req: JobRequest) -> dict:
                                      + ([_review_caveat] if _review_caveat else [])
                                      + ([_narrow_caveat] if _narrow_caveat else [])
                                      + ([_scale_caveat] if _scale_caveat else [])
+                                     + ([_wrap_caveat] if _wrap_caveat else [])
                                      + ([_fidelity_caveat] if _fidelity_caveat else [])
                                      + ([_verdict_caveat] if _verdict_caveat else [])
                                      + ([_notes_caveat] if _notes_caveat else [])),

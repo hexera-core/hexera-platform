@@ -613,6 +613,65 @@ def _load_fluid_boundary(gmsh, path: Path) -> None:
     gmsh.model.geo.synchronize()
 
 
+def _load_fluid_boundary_as_is(gmsh, path: Path) -> None:
+    """The staged fluid boundary with its triangles KEPT: the same named discrete surfaces, tags
+    1..N in file order, but no reparametrisation - the volume is filled against the boundary
+    exactly as staged. The CFD wrap rung's skin (pipeline/cfd_wrap, LAD-cfd-5) is already closed,
+    manifold and evenly triangulated, so there is nothing to remesh and nothing to fail on."""
+    gmsh.merge(str(path))
+    gmsh.model.mesh.removeDuplicateNodes()
+    gmsh.model.mesh.createTopology()
+    surfaces = [t for _, t in gmsh.model.getEntities(2)]
+    # one volume per closed shell: the skin may hold several separate passages (surface_wrap keeps
+    # each that has a way through), and one loop round two shells is not a volume
+    for shell in _shells(gmsh, surfaces):
+        loop = gmsh.model.geo.addSurfaceLoop(shell)
+        gmsh.model.geo.addVolume([loop])
+    gmsh.model.geo.synchronize()
+
+
+def _shells(gmsh, surfaces: list[int]) -> list[list[int]]:
+    """The surfaces grouped into connected shells (surfaces sharing a curve are one shell)."""
+    parent = {s: s for s in surfaces}
+
+    def find(s):
+        while parent[s] != s:
+            parent[s] = parent[parent[s]]
+            s = parent[s]
+        return s
+
+    by_curve: dict[int, int] = {}
+    for s in surfaces:
+        for _dim, c in gmsh.model.getBoundary([(2, s)], oriented=False):
+            c = abs(int(c))
+            if c in by_curve:
+                parent[find(s)] = find(by_curve[c])
+            else:
+                by_curve[c] = s
+    groups: dict[int, list[int]] = {}
+    for s in surfaces:
+        groups.setdefault(find(s), []).append(s)
+    return list(groups.values())
+
+
+def _classify_as_is(gmsh, stl_path: str) -> list[int]:
+    """A triangulated surface split into faces at sharp folds (as classify_closed_surface does, so
+    ports still bind to their lids), its triangles kept as they are (the CFD wrap rung's skin)."""
+    import math
+
+    from meshpipeline.engines.gmsh.surface_volume import CLASSIFY_ANGLE_DEG
+    gmsh.merge(str(stl_path))
+    gmsh.model.mesh.removeDuplicateNodes()
+    gmsh.model.mesh.classifySurfaces(math.radians(CLASSIFY_ANGLE_DEG), True, False, math.pi)
+    gmsh.model.geo.synchronize()
+    return sorted(t for _, t in gmsh.model.getEntities(2))
+
+
+def _wrapped(ws: Path) -> bool:
+    """The run is on the CFD wrap rung: its surface is the wrap's skin (cad/surface_wrap)."""
+    return (Path(ws) / "cfd_wrap.json").exists()
+
+
 def _refill_classified(gmsh, path: Path, spec: dict) -> list:
     """The staged fluid boundary loaded again, split by angle into surfaces gmsh can map (its own
     STL-remesh route), each new surface named by the patch its triangles came from, and the
@@ -1066,11 +1125,13 @@ def main(workspace: str) -> int:
         # both are DISCRETE: the passage radius is read off their own triangles
         discrete = staged or classified
         surfaces: list[int] = []
+        # ON THE CFD WRAP RUNG the skin's own triangles are the boundary (no remesh to fail)
+        as_is = _wrapped(ws)
         if staged:
-            _load_fluid_boundary(gmsh, boundary)
+            (_load_fluid_boundary_as_is if as_is else _load_fluid_boundary)(gmsh, boundary)
         elif classified:
             from meshpipeline.engines.gmsh.surface_volume import classify_closed_surface
-            surfaces = classify_closed_surface(gmsh, str(surface))
+            surfaces = (_classify_as_is if as_is else classify_closed_surface)(gmsh, str(surface))
             print(f"[GMSH] surface input: {len(surfaces)} face(s) classified from input.stl",
                   file=sys.stderr)
         else:
@@ -1292,7 +1353,7 @@ def main(workspace: str) -> int:
                 print(f"[GMSH] the solid could not be meshed at the metre scale ({str(exc)[:200]}); "
                       "meshing it again at the CAD's own millimetre scale (MESH-4)", file=sys.stderr)
                 _scale = _mesh_cad_at_mm(gmsh, geom, h, _cb)
-            elif not staged:
+            elif not staged or as_is:
                 raise
             else:
                 # THE PATCHES, REMESHED EACH ON ITS OWN, DID NOT CLOSE INTO A FILLABLE BOUNDARY (a long

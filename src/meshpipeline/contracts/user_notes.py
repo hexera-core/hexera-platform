@@ -41,6 +41,9 @@ QUESTION = ("Anything specific about this simulation we should know? For example
 
 SOURCE_CHAT = "chat"
 SOURCE_CONSOLE = "console"
+#: the team's meshing standard (engines/meshing_standard): read by the notes' reader as a note of its own, never
+#: stored among a run's notes
+SOURCE_SETTINGS = "settings"
 
 #: The file every attempt's workspace gets (verbatim notes, for any step that reads the workspace)
 NOTES_FILE = "user_notes.txt"
@@ -102,6 +105,9 @@ ROUTE_CONSUMERS: dict[str, tuple[str, ...]] = {
 ENGINE_CONSUMERS: dict[str, tuple[str, ...]] = {
     "cfmesh": ("builder_model", "mesh_requirements"),
     "gmsh": ("builder_model", "fea_ai", "fea_part_sizes", "mesh_requirements"),
+    # Netgen is built by its deterministic plan (engines/netgen/plan.py): no AI step in the build; the plan reads the
+    # requirements from the notes through engines/cfd_requirements (CFDREQ-1)
+    "netgen": ("intake", "mesh_requirements"),
     "snapgrid": ("intake", "mesh_requirements"),
     "snappy": ("snappy_planner", "snappy_part_levels", "mesh_requirements"),
     "snappy_multiregion": ("builder_model", "mesh_requirements"),
@@ -251,6 +257,8 @@ def merge(existing: Any, new: Any) -> list[dict]:
 def _where(note: Mapping) -> str:
     if note.get("source") == SOURCE_CONSOLE:
         return "typed in the notes box"
+    if note.get("source") == SOURCE_SETTINGS:
+        return "the team's meshing standard, from settings"
     return f"said in the chat, message {note['turn']}" if note.get("turn") else "said in the chat"
 
 
@@ -430,14 +438,16 @@ def given_remark(engines: Sequence[str]) -> str:
 
 
 def result_lines(remarks: Sequence[Any], *, consumer: str = "delivery") -> list[str]:
-    """The result's 'From your notes' lines, one per remark ([] with none)."""
+    """The result's 'From your notes' lines, one per remark ([] with none). A remark that already says where it came
+    from ("From your settings: ...", engines/meshing_standard.remark) is kept as it is."""
     _reader(consumer)
-    return [f"From your notes: {str(r).strip()}" for r in remarks or () if str(r).strip()]
+    return [str(r).strip() if str(r).strip().startswith("From your ") else f"From your notes: {str(r).strip()}"
+            for r in remarks or () if str(r).strip()]
 
 
 __all__ = ["COMMON_CONSUMERS", "CONSUMERS", "ENGINE_CONSUMERS", "GUIDANCE", "NOTES_FILE",
            "QUESTION", "REMARKS_FILE", "REMARK_DESCRIPTION", "ROUTE_CONSUMERS", "RULE_EVERY_ROUTE",
-           "RULE_NEVER_FAILS", "RULE_VERBATIM", "SOURCE_CHAT", "SOURCE_CONSOLE", "answer",
+           "RULE_NEVER_FAILS", "RULE_VERBATIM", "SOURCE_CHAT", "SOURCE_CONSOLE", "SOURCE_SETTINGS", "answer",
            "answers_now", "asked", "capture", "chat_block", "clean", "context_block", "drop_remark", "is_skip", "make",
            "merge", "own_notes",
            "prompt_block", "SYSTEM_LEADS", "system_written",

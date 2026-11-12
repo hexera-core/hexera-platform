@@ -8,10 +8,12 @@
 # engines/shell_writers.py.
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
 import time
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +21,7 @@ import numpy as np
 from meshpipeline.engines import shell_mesh, shell_quality
 from meshpipeline.engines import shell_plan as plan_rules
 from meshpipeline.engines import shell_requirements as SR
+from meshpipeline.engines.gmsh import shell_structured as ST
 from meshpipeline.engines.shell_mesh import ShellMesh, edge_census, orient
 
 logger = logging.getLogger(__name__)
@@ -28,6 +31,8 @@ logger = logging.getLogger(__name__)
 #: their quads past Nastran limits; QuadQS (11) made 3 to 5 times the elements asked for
 ALGORITHM = 6
 RECOMBINATION = 1
+#: SHMESH-42: the 2D algorithm for flat faces left free (None: ALGORITHM)
+PLANE_ALGORITHM: int | None = None
 #: SHMESH-10: cut every quad past Nastran's own limits into two triangles
 SPLIT_PAST = True
 #: SHMESH-11: cut every closed sewn face at its seams before meshing; a face gmsh still cannot mesh as a periodic
@@ -84,9 +89,69 @@ MAP_FLAT = False
 STRETCH_FLAT = 1.0
 STRIP_ALIKE = 0.05
 STRIP_LONG = 1.5
+#: SHMESH-38: SHMESH-12 reads a mapped strip's edges as slivers only under SHORT_SHARE of the floor (walls stream,
+#: census DEV 124 -> 130 fully good: ~/shellcamp/walls/REPORT.md, run walls1m)
+MAPPED_SLIVER_SHARE = True
 EVEN = True
 #: SHMESH-3/4 through gmsh's own curvature sizing: elements per full turn of every curve and curved face
 PER_TURN = 4 * plan_rules.CURVE_PER_QUARTER
+#: SHMESH-27 (under the user's own sizes only): the size beside a CAD edge shorter than the size, and on a face
+#: narrower than it, is held at shell_plan.FEATURE_RATIO times the feature and grown from there
+FEATURE_SIZES = True
+FEATURE_EDGES = True
+#: (faces: measured on the 80 lab parts, free-meshed narrow faces gave 4,300 more triangles and 3 parts past Nastran's
+#: limits for the same parts inside the list; off until narrow faces of more than four sides are mapped)
+FEATURE_FACES = False
+#: SHMESH-37: a sheet drawn as many CAD patches is sized by the sheet (shell_plan.SHEET_SMOOTH_DEG) - on surface
+#: files (record "source": "surface", PR #434's route, not on main); on extracted mid-surfaces too only with
+#: SHEET_REGIONS_ALL (a change to the rules' own mesh: off until signed off)
+SHEET_REGIONS = True
+SHEET_REGIONS_ALL = False
+#: SHMESH-31: how many times faces holding elements past the solver's own limits under the user's sizes are meshed
+#: again at our own (finer) sizes there
+OWN_SIZE_RETRIES = 2
+SPOTS_MAX = 64
+#: SHMESH-36: a mesh left past a limit is set against #435's steps' mesh, the better kept; FORCE_CLASSIC (lab only):
+#: #435's steps alone. With #437 in the tree "#435's steps" are #435's plus #437's local fuse-back (SHMESH-30,
+#: LOCAL_REBUILD, left on by _classic): the mesh the tree makes without this PR's steps
+CLASSIC_CHECK = True
+FORCE_CLASSIC = False
+#: SHMESH-33: a count coarser than our rules coarsens gmsh's curvature sizing too
+COUNT_CURVATURE = True
+#: SHMESH-35: the walls of beads, darts and steps keep shell_plan.FLANK_ACROSS elements across under a coarser size
+FLANKS = True
+FLANK_SHARED = 2.0
+FLANK_BENDS = 2
+#: SHMESH-27/31: a face narrower than the floor takes the floor under the user's size (as with no notes) - every
+#: such face when True; else only those holding elements a first mesh left past the solver's own limits (SHMESH-31).
+#: All of them: fr014 inside Nastran's limits, but the welded tube frames' 0.5 mm corner faces at the floor left 16
+#: quads past Q4_IAMAX/IAMIN/TAPER on each of sh0109, sh0110, sh0113 (none before)
+SLIVER_FLOOR = False
+#: SHMESH-34: under the user's sizes, how far element centres stand off curved faces is measured and told (at most
+#: CHORD_SAMPLES elements a face are read)
+CHORD_REPORT = True
+CHORD_SAMPLES = 200
+#: SHMESH-32: gmsh's own fallback when its 2D mesher reports a face failed - gmsh by default meshes that face again
+#: with MeshAdapt - is off (0), and the face keeps its Frontal-Delaunay mesh, checked by every step after as any other.
+#: MeshAdapt hung over an hour on one 5,000-element face (d2 t0057; 19 s, valid and inside Nastran's limits with the
+#: fallback off) and took 134 s of a 2,030-element part's 135 (d2 t0044). None: gmsh's own default
+ALGO_SWITCH = 0
+#: SHMESH-28: the last clean-up (shell_quality.mend) under the user's limits; then relax and mend again, at most
+#: MEND_CYCLES times
+MEND = True
+MEND_CYCLES = 3
+#: ... in which an edge over the user's longest edge (under their shortest) costs as an element in a band does
+MEND_LONG = True
+MEND_SHORT = False
+#: ... and a node of an element outside a line may move to where that element is well shaped (shell_quality.mend)
+MEND_MOVES = True
+#: SHMESH-14d (under the user's limits): the nodes on a straight CAD edge relax too, sliding along their edge, never
+#: nearer its ends than SLIDE_ENDS of its length
+SLIDE_EDGES = True
+SLIDE_ENDS = 0.01
+#: ... but not at the corners of a mapped strip (a mapped grid cannot grade), and no strip is left free for one
+FEATURE_AT_STRIPS = True
+FEATURE_UNMAP = False
 
 
 class _Periodic(Exception):
@@ -97,6 +162,19 @@ class _Periodic(Exception):
         self.face = face
         self.kin = kin      # re-make every sewn face on the same surface with it (SHMESH-11b)
         self.loop = loop    # gmsh read the face's 1D mesh as not a closed loop (SHMESH-11c)
+
+
+class _Unmap(Exception):
+    """SHMESH-40: mapped faces (gmsh surface tags) whose grid came out with a quad past the solver's own limits: the
+    mesh is made again with them free."""
+
+    def __init__(self, faces: set[int]) -> None:
+        super().__init__(f"{len(faces)} mapped face(s)")
+        self.faces = faces
+
+
+#: SHMESH-40: how many times a mesh is made again with its bad grids free
+UNMAP_ROUNDS = 2
 
 
 def _generate(gmsh, tag_of: dict[int, int]) -> None:
@@ -201,7 +279,8 @@ def _arc_radius(gmsh, curve: int) -> float | None:
 
 
 def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
-                sizing: dict | None = None) -> dict[int, tuple[tuple[int, ...], float]]:
+                sizing: dict | None = None, fine_at: dict[int, float] | None = None,
+                counts_out: dict[int, int] | None = None) -> dict[int, tuple[tuple[int, ...], float]]:
     """SHMESH-16: every narrow four-sided strip (a bend, a flange, a strip between holes: its two long sides alike in
     length, its two ends alike, the long sides at least STRIP_LONG times the ends) is meshed as a mapped grid of
     quads - its planned size across it, and along it the size of the faces beside its long sides, at most
@@ -223,7 +302,9 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
     size_of = {t: rows[k]["size_mm"] / mm for t, k in tag_of.items()}
     for t, k in sorted(tag_of.items()):
         flat = gmsh.model.getType(2, t) == "Plane"
-        if (rows[k]["rule"] == "SHMESH-15" or (flat and not MAP_FLAT)
+        # SHMESH-27: under the user's sizes a flat strip narrower than its size (one element across) is mapped too
+        user_flat = flat and sizing is not None and FEATURE_SIZES
+        if (rows[k]["rule"] == "SHMESH-15" or (flat and not MAP_FLAT and not user_flat)
                 or len(gmsh.model.getBoundary([(2, t)], oriented=False)) != 4):
             continue
         sides = sorted({abs(c) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)})
@@ -247,8 +328,10 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
         if min(la) < STRIP_LONG * max(lb) or max(lb) * mm >= plan_rules.PANEL_WALLS * rows[k]["wall_mm"]:
             continue
         across = size_of[t]
+        if user_flat and not MAP_FLAT and max(lb) >= across:
+            continue
         beside = [size_of[s] for c in a for s in gmsh.model.getAdjacencies(1, c)[0] if s != t and s in size_of]
-        stretch = STRETCH_FLAT if flat else STRETCH_MAX
+        stretch = STRETCH_FLAT if flat and not user_flat else STRETCH_MAX
         if sizing is not None and sizing.get("stretch") is not None:
             stretch = min(stretch, max(1.0, float(sizing["stretch"])))
         along = min([stretch * across] + beside)
@@ -263,6 +346,13 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
             if high is not None:
                 along = min(along, 0.98 * high / mm)
             along = max(along, min(across, seg))
+        if fine_at:
+            # SHMESH-27: a mapped grid cannot grade. A strip with a smaller piece of the CAD at one of its corners
+            # (sized more than one growth step under the strip's own elements) stays free, and grades down to it:
+            # mapped, a tube corner's 10 mm elements fanned out of a 0.5 mm face at its end (sh0110)
+            near = min((fine_at.get(p, math.inf) for c in sides for p in ends[c]), default=math.inf)
+            if near * plan_rules.GROWTH < min(along, max(lb) / max(1, math.ceil(max(lb) / across - 1e-9))) * mm:
+                continue
         n_b = max(1, math.ceil(max(lb) / across - 1e-9))
         n_a = max(1, math.ceil(max(la) / along - 1e-9))
         n_a = count.get(a[0], count.get(a[1], n_a))
@@ -278,6 +368,9 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
         out[t] = (tuple(a), max(la) / n_a)
     for c, n in sorted(count.items()):
         gmsh.model.mesh.setTransfiniteCurve(c, n + 1)
+    if counts_out is not None:
+        counts_out.update({c: count[c] for t in out for c in
+                           {abs(int(x)) for _d, x in gmsh.model.getBoundary([(2, t)], oriented=False)} if c in count})
     for t in sorted(out):
         gmsh.model.mesh.setTransfiniteSurface(t)
         gmsh.model.mesh.setRecombine(2, t)
@@ -567,6 +660,87 @@ def _faces_and_facts(brep: Path, mm: float):
     return out
 
 
+def _sheet_widths(brep: Path, facts: list[dict], owners: list[str], record: dict, mm: float) -> dict:
+    """SHMESH-37: each sewn face's region (faces of one wall joined where the surface runs on smoothly,
+    shell_plan.smooth_link) and that region's width, measured as one face's is (mm: its oriented box's middle side
+    or twice its area over its own boundary, the narrower). The 400 x 240 mm panel of the patch study: 1,979 elements
+    as 1 patch, and 2,005 / 2,178 / 2,513 as 4 / 12 / 30 (patch by patch: 7,937 / 22,468 / 2,523). Returns
+    {"widths": per face (0 for a face alone), "size": faces in its region}."""
+    from OCP.Bnd import Bnd_OBB
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS, TopoDS_Shape
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    from meshpipeline.cad import midsurface as ms
+
+    shape = TopoDS_Shape()
+    if not BRepTools.Read_s(shape, str(brep), BRep_Builder()):
+        raise ValueError("the mid-surface could not be read")
+    faces = ms._faces(shape)
+    fmap = ms._map(shape, TopAbs_FACE)          # the same order as `faces` (1-based)
+    mids = {m["id"]: m for m in record["mids"]}
+    pairs = {p["id"]: p for p in record["pairs"]}
+
+    def wall_of(k: int) -> float:
+        return float(pairs[mids[owners[k]]["pair"]]["thickness_mm"])
+
+    emap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, emap)
+    links: list[tuple[int, int]] = []
+    for i in range(1, emap.Extent() + 1):
+        ks = sorted({fmap.FindIndex(x) - 1 for x in emap.FindFromIndex(i)} - {-1})
+        if len(ks) != 2:
+            continue
+        a, b = ks
+        same = abs(wall_of(a) - wall_of(b)) <= 1e-6 * max(1.0, wall_of(a)) and (
+            mids[owners[a]]["pair"] == mids[owners[b]]["pair"] or mids[owners[a]].get("body") == mids[owners[b]].get("body"))
+        if not same:
+            continue
+        c = BRepAdaptor_Curve(TopoDS.Edge_s(emap.FindKey(i)))
+        p = c.Value(0.5 * (c.FirstParameter() + c.LastParameter()))
+        na = ms._face_normal_at(faces[a], (p.X(), p.Y(), p.Z()))
+        nb = ms._face_normal_at(faces[b], (p.X(), p.Y(), p.Z()))
+        if na is None or nb is None:
+            continue
+        cosv = abs(float(np.dot(na, nb))) / max(float(np.linalg.norm(na) * np.linalg.norm(nb)), 1e-300)
+        angle = math.degrees(math.acos(min(1.0, cosv)))
+        if plan_rules.smooth_link(angle, same_wall=True, bends=(facts[a]["bend"], facts[b]["bend"]),
+                                  wall=min(wall_of(a), wall_of(b))):
+            links.append((a, b))
+    region = plan_rules.sheet_regions(len(faces), links)
+    members: dict[int, list[int]] = {}
+    for k, r in enumerate(region):
+        members.setdefault(r, []).append(k)
+    widths = [0.0] * len(faces)
+    size = [1] * len(faces)
+    # each edge's faces and length, for the regions' own boundaries
+    edge_faces = []
+    for i in range(1, emap.Extent() + 1):
+        ks = sorted({fmap.FindIndex(x) - 1 for x in emap.FindFromIndex(i)} - {-1})
+        edge_faces.append((ks, ms._length(emap.FindKey(i))))
+    for ks in members.values():
+        if len(ks) < 2:
+            continue
+        # the region measured as one face is: the narrower of its oriented box's middle side and twice its area
+        # over its own boundary (the edges only one of its faces holds, holes included) - midsurface.strip_width
+        inside = set(ks)
+        area = sum(ms._area(faces[k]) for k in ks)
+        rim = sum(length for fs, length in edge_faces if sum(1 for f in fs if f in inside) == 1)
+        obb = Bnd_OBB()
+        BRepBndLib.AddOBB_s(ms._compound([faces[k] for k in ks]), obb, True, True, False)
+        w = sorted(2.0 * x for x in (obb.XHSize(), obb.YHSize(), obb.ZHSize()))[1]
+        if rim > 0:
+            w = min(w, 2.0 * area / rim)
+        for k in ks:
+            widths[k], size[k] = w * mm, len(ks)
+    return {"widths": widths, "size": size}
+
+
 def _reference_normal(face) -> np.ndarray | None:
     """The face's oriented normal at its middle (the side its sheet's normals are turned to)."""
     from OCP.BRepGProp import BRepGProp
@@ -638,7 +812,176 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
 def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None,
                 target: dict | None = None, correction: float = 1.0,
                 requirements: dict | None = None) -> tuple[ShellMesh, dict]:
-    """mesh_shell, unbounded, in this process."""
+    """mesh_shell, unbounded, in this process. SHMESH-36: a mesh under the user's limits left with an element past
+    the solver's limits or past one of the user's outer limits is set against the mesh #435's steps alone make
+    (_classic: the whole path again, from the sewn surface, exactly as #435 meshed it), and the better is kept -
+    fewer past the solver's limits, then fewer lines on which it is past an outer limit where the other is not (or
+    further past), then fewer past an outer limit, then more lines met. Both candidates and the choice are written
+    into the record ("kept")."""
+    if FORCE_CLASSIC:
+        with _classic():
+            mesh, applied, _n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
+                                           correction=correction, requirements=requirements)
+        return mesh, applied
+    mesh, applied, past_n = _guarded_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
+                                          correction=correction, requirements=requirements)
+    standing = _standing(applied, past_n)
+    if not (requirements and CLASSIC_CHECK and (standing[0] or standing[2])):
+        return mesh, applied
+    this = _candidate("this PR's steps (SHMESH-27..35)", mesh, applied, past_n)
+    try:
+        with _classic():
+            old, applied_old, old_n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=None, target=target,
+                                                 correction=correction, requirements=requirements)
+    except (ValueError, _Periodic) as exc:
+        logger.info("shell mesh: #435's steps did not make a mesh to compare (%s)", exc)
+        applied["kept"] = {"rule": "SHMESH-36", "candidates": [this], "kept": this["mesh"],
+                           "why": f"#435's steps made no mesh ({type(exc).__name__}: {str(exc)[:200]})"}
+        return mesh, applied
+    that = _candidate("#435's steps", old, applied_old, old_n)
+    s_new = _standing(applied, past_n, applied_old, requirements)
+    s_old = _standing(applied_old, old_n, applied, requirements)
+    keep_old = s_old < s_new
+    why = next((name for name, a, b in zip(STANDING_WORDS, s_new, s_old, strict=True) if a != b), "a tie: this PR's")
+    kept = {"rule": "SHMESH-36", "candidates": [this, that], "kept": (that if keep_old else this)["mesh"],
+            "why": why, "standing": {this["mesh"]: list(s_new), that["mesh"]: list(s_old)}}
+    if keep_old:
+        mesh, applied = old, applied_old
+        applied["quality"]["classic"] = True
+    applied["kept"] = kept
+    return mesh, applied
+
+
+#: SHMESH-45c: at most this many holes are listed one by one in the record (quality.structure.hole_list)
+HOLE_LINES = 500
+#: SHMESH-45 (washer guard, whole step): a structured mesh that fails, or comes out invalid or past Nastran's own limits,
+#: is set against the mesh with the structured steps off ("free mesh": exactly the mesh before them), and the free mesh
+#: is kept when it is valid where the other is not, or has fewer elements past Nastran's limits
+STRUCTURED_GUARD = True
+
+
+def _structured_on(requirements: dict | None) -> bool:
+    return bool((ST.WASHERS or ST.MAPPED) and SR.structure_of(requirements) != "free")
+
+
+@contextlib.contextmanager
+def _structured_off():
+    """The structured steps (washers, mapped and gridded faces, the flat-face algorithm) off for one mesh: the mesh is
+    then the one "free mesh" in the notes gives, byte for byte the mesh before them."""
+    g = globals()
+    saved = (ST.WASHERS, ST.MAPPED, ST.BLOCKS, g["PLANE_ALGORITHM"])
+    try:
+        ST.WASHERS = ST.MAPPED = ST.BLOCKS = False
+        g["PLANE_ALGORITHM"] = None
+        yield
+    finally:
+        ST.WASHERS, ST.MAPPED, ST.BLOCKS, g["PLANE_ALGORITHM"] = saved
+
+
+@contextlib.contextmanager
+def _rings_only():
+    """SHMESH-45g: the guard's middle step - round washers' rings in free faces only (no gridded faces, no square
+    rings, no mapped faces): what a part keeps when the fuller steps fail on it, before it falls back to the free
+    mesh."""
+    saved = (ST.MAPPED, ST.BLOCKS, ST.SQUARES)
+    try:
+        ST.MAPPED = ST.BLOCKS = ST.SQUARES = False
+        yield
+    finally:
+        ST.MAPPED, ST.BLOCKS, ST.SQUARES = saved
+
+
+def _past(applied: dict) -> tuple[int, int]:
+    """(invalid, elements past Nastran's own limits) of a mesh, from its record - lower is better."""
+    q = applied.get("quality") or {}
+    return int(not q.get("valid", True)), int(sum(int(v) for v in (q.get("nastran_past") or {}).values()))
+
+
+def _guarded_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None,
+                  target: dict | None = None, correction: float = 1.0,
+                  requirements: dict | None = None) -> tuple[ShellMesh, dict, int]:
+    """SHMESH-45: _mesh_path, with the structured steps never costing the mesh. When they raise, the mesh is made
+    again with them off; when their mesh is invalid or has elements past Nastran's own limits, the mesh with them off
+    is made too and kept if it is better (valid where the other is not, else fewer past). Either way the record says
+    so (quality.structure.guard) and a note tells the user."""
+    if not (STRUCTURED_GUARD and _structured_on(requirements)):
+        return _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target, correction=correction,
+                          requirements=requirements)
+    try:
+        mesh, applied, past_n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
+                                           correction=correction, requirements=requirements)
+    except Exception as exc:  # noqa: BLE001 - a washer must never cost the mesh: fewer steps are tried
+        why = f"{type(exc).__name__}: {str(exc)[:200]}"
+        logger.info("shell mesh: the structured steps failed (%s); tried with round rings only", exc)
+        try:
+            # SHMESH-45g: round rings only first - the part keeps its washers when only the fuller steps fail
+            with _rings_only():
+                mesh, applied, past_n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
+                                                   correction=correction, requirements=requirements)
+            if _past(applied)[0] == 0:
+                applied["quality"].setdefault("structure", {})["guard"] = {
+                    "rule": "SHMESH-45g", "kept": "round rings only",
+                    "why": f"the gridded, square and mapped steps failed ({why})"}
+                mesh.notes.append("Mapped quads could not be made on this part; its round holes keep their washers "
+                                  "(SHMESH-45g).")
+                return mesh, applied, past_n
+        except Exception as exc2:  # noqa: BLE001 - then the free mesh
+            logger.info("shell mesh: round rings only failed too (%s); meshed without them", exc2)
+        with _structured_off():
+            mesh, applied, past_n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
+                                               correction=correction, requirements=requirements)
+        applied["quality"].setdefault("structure", {})["guard"] = {"rule": "SHMESH-45", "kept": "free mesh",
+                                                                    "why": f"the structured steps failed ({why})"}
+        mesh.notes.append("Washers and mapped quads could not be made on this part; it is meshed without them, as "
+                          "before (SHMESH-45).")
+        return mesh, applied, past_n
+    mine = _past(applied)
+    if mine == (0, 0):
+        return mesh, applied, past_n
+    try:
+        with _structured_off():
+            plain, applied_plain, plain_n = _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=None, target=target,
+                                                       correction=correction, requirements=requirements)
+    except Exception as exc:  # noqa: BLE001 - the structured mesh stands
+        logger.info("shell mesh: no mesh without the structured steps to compare (%s)", exc)
+        return mesh, applied, past_n
+    theirs = _past(applied_plain)
+    if theirs < mine:
+        applied_plain["quality"].setdefault("structure", {})["guard"] = {
+            "rule": "SHMESH-45", "kept": "free mesh",
+            "why": f"with washers and mapped quads the mesh had {mine[1]} element(s) past Nastran's limits"
+                   + (" and was not valid" if mine[0] else "") + f"; without them {theirs[1]}"}
+        plain.notes.append("Washers and mapped quads were left out on this part: the mesh without them is better "
+                           "inside Nastran's limits (SHMESH-45).")
+        return plain, applied_plain, plain_n
+    applied["quality"].setdefault("structure", {})["guard"] = {"rule": "SHMESH-45", "kept": "structured",
+                                                                "why": "no better without the structured steps"}
+    return mesh, applied, past_n
+
+
+#: SHMESH-36: what each figure of _standing compares, in order (the first that differs decides)
+STANDING_WORDS = ("fewer elements past the solver's own limits",
+                  "fewer lines past an outer limit where the other mesh is inside it (or less far past)",
+                  "fewer elements past the user's outer limits", "more lines met")
+
+
+def _candidate(name: str, mesh: ShellMesh, applied: dict, past_n: int) -> dict:
+    """SHMESH-36: one candidate mesh as the record tells it: its elements, those past the solver's own limits, and
+    per line of the user's: outside, past the outer limit, the worst, met."""
+    rows = (applied.get("requirements") or {}).get("rows") or []
+    return {"mesh": name, "elements": int(mesh.n_elements), "trias": int(len(mesh.trias)),
+            "past_solver": int(past_n), "nastran_past": dict(applied["quality"].get("nastran_past") or {}),
+            "lines": [{"id": r.get("id"), "asked": r.get("asked"), "outside": r.get("outside"),
+                       "beyond": r.get("beyond"), "worst": r.get("worst"), "met": r.get("met")}
+                      for r in rows if str(r.get("field", "")).startswith("limit:")]}
+
+
+def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None,
+               target: dict | None = None, correction: float = 1.0,
+               requirements: dict | None = None) -> tuple[ShellMesh, dict, int]:
+    """The whole path of one shell mesh: closed faces cut, faces gmsh cannot mesh re-made, SHMESH-31's local
+    re-mesh. Returns (the mesh, the plan as applied, its elements past the solver's own limits - with requirements
+    only)."""
     import tempfile
 
     with tempfile.TemporaryDirectory(prefix="shell_mesh_") as tmp:
@@ -653,12 +996,28 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
                 # SHMESH-11d: the closed faces' pieces would not fuse back with the rest (a 45 degree cone's pieces,
                 # exact or fuzzy): the surface is meshed as sewn, and a closed face gmsh stops on is re-made below
                 split_note = f"the closed faces were meshed whole ({exc})"
+        reseated = 0
+        redrawn: list = []
+        # SHMESH-45b/45k: a hole is drawn again as one circle only where a first mesh's ring needed it (its nodes
+        # uneven, or the ring not built): drawing every fitted or split hole again changed gmsh's paving round holes
+        # that take no washer (sh0028: a longest edge 17% past 1.5 G, 75 mm from the one hole drawn again)
+        unseated = brep
+        redraw_pass = not (ST.RESEAT and ST.WASHERS and SR.structure_of(requirements) not in ("free", "no_washers"))
         resplined = loops = 0
         started = time.monotonic()
+        unmap: set[int] = set()
+        unmapped = 0
         while True:
             try:
                 mesh, applied = _mesh_once(Path(brep), record, owners, float(mm_per_unit), log, target=target,
-                                           correction=correction, requirements=requirements)
+                                           hole_before=tuple((tuple(c), e) for c, e in redrawn),
+                                           correction=correction, requirements=requirements, unmap=frozenset(unmap),
+                                           check_maps=unmapped < UNMAP_ROUNDS)
+            except _Unmap as u:
+                # SHMESH-40: a grid that came out past the solver's limits is meshed free (the rest mapped again)
+                unmap |= u.faces
+                unmapped += 1
+                continue
             except _Periodic as p:
                 if resplined >= RESPLINE_MAX:
                     raise ValueError(f"gmsh could not mesh {resplined + 1} periodic faces") from p
@@ -677,29 +1036,144 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
                 brep = nxt
                 resplined += made
                 continue
+            wanted = applied.pop("_redraw_wanted", [])
+            if wanted and not redraw_pass and not resplined:
+                redraw_pass = True
+                seated = Path(tmp) / "reseated.brep"
+                try:
+                    n2, red2 = ST.reseat_holes(Path(unseated), seated, only=wanted)
+                except Exception as exc:  # noqa: BLE001 - the first mesh stands
+                    logger.info("shell mesh: holes not drawn again (%s)", exc)
+                    n2, red2 = 0, []
+                if n2:
+                    brep, reseated, redrawn = seated, n2, red2
+                    unmap, unmapped = set(), 0
+                    continue
+            past = applied.pop("_past_spots", [])
+            past_n = applied.pop("_past_n", 0)
+            own: list = []
+            for _ in range(OWN_SIZE_RETRIES if requirements else 0):
+                # SHMESH-31: elements past the solver's own limits under the user's sizes: round each of them the
+                # mesh is made again at our rules' own size for its face (finer), graded back to the user's; the
+                # mesh with fewer past is kept
+                if not past:
+                    break
+                own = own + past
+                try:
+                    again, applied2 = _mesh_once(Path(brep), record, owners, float(mm_per_unit), None,
+                                                 hole_before=tuple((tuple(c), e) for c, e in redrawn),
+                                                 target=target, correction=correction, requirements=requirements,
+                                                 own_spots=tuple(own), unmap=frozenset(unmap), check_maps=False)
+                except (ValueError, _Periodic) as exc:
+                    logger.info("shell mesh: the spots past the solver's limits were not meshed again (%s)", exc)
+                    break
+                applied2.pop("_redraw_wanted", None)
+                past2 = applied2.pop("_past_spots", [])
+                n2 = applied2.pop("_past_n", 0)
+                if n2 >= past_n:
+                    break
+                mesh, applied, past, past_n = again, applied2, past2, n2
+                applied["quality"]["own_size_spots"] = len(own)
+            if applied["quality"].get("own_size_spots"):
+                mesh.notes.append(f"In {applied['quality']['own_size_spots']} spot(s) the mesh is finer than the size "
+                                  "you asked for: at your size some elements there were past the solver's own limits "
+                                  "(SHMESH-31).")
             applied["quality"]["resplined_faces"] = resplined
+            applied["quality"].setdefault("structure", {})["grids_freed"] = len(unmap)
+            applied["quality"]["structure"]["holes_redrawn"] = reseated
             if split_note:
                 mesh.notes.append(f"{split_note[0].upper()}{split_note[1:]} (SHMESH-11d).")
             if resplined:
                 mesh.notes.append(f"{resplined} face(s) gmsh could not mesh (a periodic surface, or a boundary it "
                                   "could not recover) were re-made as B-splines (the same surface) and meshed "
                                   "(SHMESH-11).")
-            return mesh, applied
+            return mesh, applied, past_n
+
+
+def _standing(applied: dict, past_n: int, other: dict | None = None,
+              requirements: dict | None = None) -> tuple[int, ...]:
+    """SHMESH-36: how a mesh under the user's limits stands, lower is better: (elements past the solver's own
+    limits, the lines of the user's on which it has an element past the outer limit and `other` has none - or its
+    worst is further past than `other`'s worst -, elements past the user's outer limits, minus the lines met).
+    Without `other` the second figure is 0."""
+    rows = (applied.get("requirements") or {}).get("rows") or []
+    limit_rows = [r for r in rows if str(r.get("field", "")).startswith("limit:")]
+    beyond = sum(int(r.get("beyond") or 0) for r in limit_rows)
+    met = sum(1 for r in rows if r.get("met") is True)
+    worse = 0
+    if other is not None:
+        theirs = {r.get("id"): r for r in ((other.get("requirements") or {}).get("rows") or [])}
+        ops = {lim.get("id"): str(lim.get("op")) for lim in (requirements or {}).get("limits") or []}
+        for r in limit_rows:
+            if not int(r.get("beyond") or 0):
+                continue
+            o = theirs.get(r.get("id")) or {}
+            if not int(o.get("beyond") or 0):
+                worse += 1
+            elif r.get("worst") is not None and o.get("worst") is not None:
+                further = (float(r["worst"]) < float(o["worst"])) if ops.get(r.get("id")) == ">=" else (
+                    float(r["worst"]) > float(o["worst"]))
+                worse += int(further)
+    return int(past_n), worse, beyond, -met
+
+
+@contextlib.contextmanager
+def _classic():
+    """SHMESH-36: #435's steps exactly, for one mesh: every switch this PR added is put at #435's value - no sizes
+    beside small pieces of the CAD (27), no mend (28), no sliding on straight CAD edges (14d), no sheet regions (37),
+    no local re-mesh (31), gmsh's own fallback (32: the earlier head kept 32 on, and on a part where gmsh falls back
+    that alone gave a different mesh), gmsh's 24 a turn under a count (33), 4 a turn round holes (33), no chord hold
+    or report (34); the comparison itself off. The constants are put back after (a shell mesh runs one at a time in
+    its process). #437's local fuse-back (SHMESH-30, LOCAL_REBUILD) is left as it is: it is not one of this PR's
+    switches, so with #437 in the tree the mesh compared is #435's steps plus #437's - exactly the mesh the tree
+    makes without SHMESH-27..29 and 31..37."""
+    g = globals()
+    names = ("FEATURE_SIZES", "MEND", "SLIDE_EDGES", "SHEET_REGIONS", "SHEET_REGIONS_ALL", "OWN_SIZE_RETRIES",
+             "ALGO_SWITCH", "COUNT_CURVATURE", "CHORD_REPORT", "CLASSIC_CHECK", "FORCE_CLASSIC")
+    saved = {n: g[n] for n in names}
+    saved_sr = (SR.HOLE_PER_TURN, SR.CHORD_SHARE)
+    saved_st = (ST.WASHERS, ST.MAPPED, ST.BLOCKS, PLANE_ALGORITHM)
+    try:
+        # SHMESH-39..42 are not #435's steps either: the candidate is the mesh without them
+        ST.WASHERS = ST.MAPPED = ST.BLOCKS = False
+        g["PLANE_ALGORITHM"] = None
+        g.update(FEATURE_SIZES=False, MEND=False, SLIDE_EDGES=False, SHEET_REGIONS=False, SHEET_REGIONS_ALL=False,
+                 OWN_SIZE_RETRIES=0, ALGO_SWITCH=None, COUNT_CURVATURE=False, CHORD_REPORT=False,
+                 CLASSIC_CHECK=False, FORCE_CLASSIC=False)
+        SR.HOLE_PER_TURN, SR.CHORD_SHARE = SR.SHAPE_PER_TURN, math.inf
+        yield
+    finally:
+        g.update(saved)
+        SR.HOLE_PER_TURN, SR.CHORD_SHARE = saved_sr
+        ST.WASHERS, ST.MAPPED, ST.BLOCKS, g["PLANE_ALGORITHM"] = saved_st
 
 
 def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list | None, *,
                target: dict | None = None, correction: float = 1.0,
-               requirements: dict | None = None) -> tuple[ShellMesh, dict]:
+               requirements: dict | None = None, own_spots: tuple = (), unmap: frozenset = frozenset(),
+               hole_before: tuple = (),
+               check_maps: bool = False) -> tuple[ShellMesh, dict]:
+    """One mesh. `unmap` (SHMESH-40): gmsh surfaces left free (their grid came out past the solver's limits once);
+    `check_maps`: raise _Unmap when a mapped face's grid comes out past them. `own_spots` (SHMESH-31): (sewn face, box low corner, box high corner - mm) round elements a mesh
+    under the user's sizes left past the solver's own limits: inside each box the face's own rules' size, where
+    finer than the user's, graded back out."""
     import gmsh
 
     facts = _faces_and_facts(Path(brep), mm)
     if len(owners) != len(facts):
         raise ValueError(f"the mid-surface has {len(facts)} faces but the record names {len(owners)}")
     rows = []
+    widths = [min(f["width"], f["box_width"]) if f["box_width"] > 0 else f["width"] for f in facts]
+    sheet = None
+    if SHEET_REGIONS_ALL or (SHEET_REGIONS and record.get("source") == "surface"):
+        # SHMESH-37: a sheet drawn as many patches is sized by the sheet
+        sheet = _sheet_widths(Path(brep), facts, owners, record, mm)
+        widths = [max(w, s) for w, s in zip(widths, sheet["widths"], strict=True)]
     for k, f in enumerate(facts):
-        width = min(f["width"], f["box_width"]) if f["box_width"] > 0 else f["width"]
-        rows.append({"face": k + 1, **plan_rules.face_plan(record, owners[k], width=width, radii=f["radii"],
+        rows.append({"face": k + 1, **plan_rules.face_plan(record, owners[k], width=widths[k], radii=f["radii"],
                                                          bend=f["bend"])})
+        if sheet is not None and sheet["size"][k] > 1:
+            rows[-1]["sheet_mm"] = float(f"{sheet['widths'][k]:.6g}")
     walls = [r["wall_mm"] for r in rows]
     # SHMESH-20: a plan far past what a shell mesh is made in within the time allowed stops before gmsh starts, and
     # says so (a ship's 3 m slotted hull, sh0048: about 3 million planned, over an hour of gmsh)
@@ -715,11 +1189,22 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     # changes a number - `lim` is shell_quality.IN_FORCE, `sizing` and `kind` are None
     lim = SR.limits_in_force(requirements)
     kind = SR.kind_of(requirements)
+    # SHMESH-43: the user's "free mesh" / "no washers" (NOTE-7's element kind) turns the structured steps off
+    structure = SR.structure_of(requirements)
+    rule_size = {k: min(rows[k]["size_mm"], rows[k].get("curve_mm", rows[k]["size_mm"])) for k, _lo, _hi in own_spots}
     sizing = SR.size_plan(rows, requirements, [f["area"] * mm * mm for f in facts], planned_max=PLANNED_MAX,
                           curved=[(f["bend"], min(f["width"], f["box_width"]) if f["box_width"] > 0 else f["width"])
                                   for f in facts])
     if sizing is not None:
         planned = sizing["planned"]
+    # SHMESH-27 (the user's sizes only): a face narrower than their size is sized to its own width
+    bent = [f["bend"] is not None and 0 < f["bend"] < plan_rules.PANEL_WALLS * r["wall_mm"]
+            for f, r in zip(facts, rows, strict=True)]
+    narrow = (_narrow_faces(rows, facts, mm, planned, _interior_faces(Path(brep), bent) if FLANKS else None,
+                            slivers={k for k, _lo, _hi in own_spots})
+              if sizing is not None and FEATURE_SIZES else None)
+    if narrow is not None:
+        planned = narrow["planned"]
     finest = (sizing or {}).get("floor_mm")
     growth = float((sizing or {}).get("growth") or plan_rules.GROWTH)
     if planned > PLANNED_MAX:
@@ -736,7 +1221,13 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         gmsh.option.setNumber("Mesh.RecombinationAlgorithm", RECOMBINATION)
         # (with the user's own sizes, SHMESH-24, every curved face and arc is sized by the plan itself, between
         # the user's shortest edge and the shape it must keep: gmsh's own curvature sizing would refine past both)
-        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", PER_TURN if finest is None else 0)
+        # SHMESH-33: a count the user asked for that makes the sizes coarser than ours (SHMESH-23, sz > 1) coarsens
+        # the elements round every curve too, by the same factor, never under SHAPE_PER_TURN a turn: gmsh's own
+        # 24 a turn held every 12 mm hole and every curved panel at our size (a bracket asked 221 elements got 503,
+        # a curved panel asked 1,263 got 21,256)
+        per_turn = (PER_TURN if sz <= 1.0 or not COUNT_CURVATURE
+                    else max(SR.HOLE_PER_TURN, int(round(PER_TURN / sz))))
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", per_turn if finest is None else 0)
         # SHMESH-6 is held by the grading fields below; gmsh's own spread of edge sizes into a face carried a
         # narrow neighbour's size over the whole of a wide face (one 2.5 mm strip: 800,000 elements)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
@@ -745,6 +1236,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         gmsh.option.setNumber("Mesh.MeshSizeMax", max(r["size_mm"] for r in rows) / mm)
         gmsh.option.setNumber("Mesh.Smoothing", 5)
         gmsh.option.setNumber("Mesh.LcIntegrationPrecision", LC_PRECISION)
+        if ALGO_SWITCH is not None:
+            gmsh.option.setNumber("Mesh.AlgorithmSwitchOnFailure", ALGO_SWITCH)
         gmsh.model.add("shell")
         gmsh.model.occ.importShapes(str(brep), highestDimOnly=False)
         gmsh.model.occ.synchronize()
@@ -781,6 +1274,72 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             for t in tiny:
                 del tag_of[t]
         slivers = len(tiny)
+        # SHMESH-39: WASHERS - a ring of quads round each round hole of a flat face (engines/gmsh/shell_structured.py),
+        # drawn on the face before anything is sized; off under the user's "free mesh" / "no washers"
+        mesh_min = plan_rules.FLOOR_WALLS * min(walls) * min(sz, 1.0)
+
+        def hole_size(r_mm: float, k: int) -> float:
+            # the element length the plan puts round a hole of radius r_mm (as the arc sizes below do)
+            h0, _rule = plan_rules.curve_size(r_mm, wall=rows[k]["wall_mm"])
+            h0 *= sz
+            if finest is not None and sizing is not None:
+                h0 = SR.curved_size(r_mm, 0.0, floor=finest, rule=(
+                    rows[k]["size_mm"] if sizing.get("global_mm") is not None else h0), per_turn=SR.HOLE_PER_TURN)
+            elif per_turn:
+                h0 = min(h0, max(2 * math.pi * r_mm / per_turn, mesh_min))
+            return min(h0, rows[k]["size_mm"])
+        washers: list = []
+        washers_planned: list = []          # SHMESH-45k: every washer planned, built or not
+        washer_skipped: dict[str, int] = {}
+        block_skipped: dict[str, int] = {}
+        gridded: list = []                  # O-grid washers inside a gridded face (SHMESH-41): mapped with it
+        boxed: list = []                    # washers in a gridded face's free boxes: their own ring
+        rings: list = []                    # washers in a free face: their own ring mesh (ST.ring_mesh)
+        block_preset: dict[int, int] = {}
+        block_holes: set[int] = set()
+        cut_curves: set[int] = set()
+        square_cells: set[int] = set()      # SHMESH-45f: the cells a square ring's strips came out as        # curves SHMESH-41 drew (no CAD edge)
+        grid_cells: set[int] = set()        # the cells SHMESH-41 cut faces into
+        hole_lines: list[dict] = []         # SHMESH-45c: one line per hole of a flat face, in the record
+        if ST.WASHERS and kind != "triangles" and structure not in ("free", "no_washers"):
+            mids_of = {m["id"]: m for m in record["mids"]}
+            names = {k: (owners[k], str(mids_of.get(owners[k], {}).get("body", ""))) for k in set(tag_of.values())}
+            washers, washer_skipped, hole_lines = ST.plan_washers(
+                gmsh, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
+                names=names, before=list(hole_before),
+                across=ST.WASHER_ACROSS_USER if (sizing or {}).get("global_mm") is not None else ST.WASHER_ACROSS,
+                low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"))
+            washers_planned = list(washers)
+            # SHMESH-45f: square holes take a square ring (mapped below); never gridded nor polar
+            squares = [w for w in washers if w.corners] if ST.MAPPED and ST.SQUARES else []
+            for w in washers:
+                if w.corners and w not in squares:
+                    w.info.update(washer=False, why="square rings are off on this mesh")
+                    washer_skipped["square rings are off on this mesh"] = (
+                        washer_skipped.get("square rings are off on this mesh", 0) + 1)
+            washers = [w for w in washers if not w.corners]
+            if ST.BLOCKS and ST.MAPPED and structure != "free":
+                # SHMESH-41: a face whose holes all have washers is cut into a grid of cells, mapped below
+                gridded, boxed, block_preset, block_holes, block_skipped = ST.block_faces(
+                    gmsh, washers, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
+                    cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
+                    cells_out=grid_cells)
+            rings = [w for w in washers if w not in gridded and w not in boxed]
+            drawn = ST.imprint(gmsh, rings + squares, tag_of, cuts=cut_curves, preset=block_preset,
+                               square_cells=square_cells)
+            lost = [w for w in rings + squares if w not in drawn]
+            for w in lost:
+                reason = str(w.info.get("why") or "its ring was not drawn")
+                washer_skipped[reason] = washer_skipped.get(reason, 0) + 1
+            washers = [w for w in washers + squares if w not in lost]
+            for w in gridded:
+                w.info["kind"] = "o-grid in a gridded face"
+            for w in boxed:
+                w.info["kind"] = "free box in a gridded face"
+            for w in drawn:
+                w.info.setdefault("kind", "ring in a free face")
+            rings = [w for w in drawn if not w.corners] + boxed
+        washer_holes = {c for w in rings for c in w.hole_after} | block_holes
         # SHMESH-1/2: a constant size per face; SHMESH-3/4/6: curves sized by curvature, grown at GROWTH
         fields = []
         top = max(rows[k]["size_mm"] for k in tag_of.values()) / mm
@@ -801,8 +1360,30 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             gmsh.model.mesh.field.setNumber(thr, "DistMax", (top - h0) / (growth - 1.0))
             fields.append(thr)
 
+        # SHMESH-27: an edge of the CAD shorter than the size of the faces it bounds is graded down to
+        short_edges = _short_edges(gmsh, tag_of, rows, mm) if narrow is not None else None
         # SHMESH-16: narrow four-sided strips (bends, flanges) are mapped, their elements stretched along them
-        mapped = _map_strips(gmsh, tag_of, rows, mm, sizing) if MAP_STRIPS and kind != "triangles" else {}
+        strip_counts: dict[int, int] = {}
+        mapped = (_map_strips(gmsh, tag_of, rows, mm, sizing,
+                              fine_at=short_edges["fine_at"] if short_edges and FEATURE_UNMAP else None,
+                              counts_out=strip_counts)
+                  if MAP_STRIPS and kind != "triangles" else {})
+        # SHMESH-40: every other four-sided face is a mapped grid too (counts shared through the curves they share)
+        grids: dict[int, list[int]] = {}
+        if ST.MAPPED and kind != "triangles" and structure != "free":
+            def arc_mm(c: int, t: int) -> float | None:
+                r = _arc_radius(gmsh, c)
+                return None if r is None else hole_size(r * mm, tag_of[t])
+
+            grids, _grid_counts = ST.map_faces(
+                gmsh, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, mm, arc_mm=arc_mm,
+                skip=set(mapped) | {w.annulus for w in rings} | set(unmap),
+                preset={**strip_counts, **block_preset},
+                low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
+                fine_at=short_edges["fine_at"] if short_edges else None,
+                growth=growth)
+        if short_edges is not None and narrow is not None and mapped and not FEATURE_AT_STRIPS:
+            _spare_strip_corners(gmsh, tag_of, rows, mapped, narrow, short_edges)
         # SHMESH-6: a face finer than the coarsest grades its neighbours from its own edges (a mapped strip's long
         # sides from its size along them)
         rims: dict[float, list[int]] = {}
@@ -823,17 +1404,26 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 # and wider arcs keep the face's size (one small hole no longer refines the whole rim)
                 for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False):
                     r = _arc_radius(gmsh, abs(c))
-                    if r is None:
+                    if r is None or abs(c) in washer_holes:
                         continue
                     h0, _rule = plan_rules.curve_size(r * mm, wall=rows[k]["wall_mm"])
                     h0 *= sz
                     if finest is not None and sizing is not None:
                         # SHMESH-24: the user's global size (else no finer than their shortest edge allows) - but a
                         # hole keeps its shape
+                        # hole keeps its shape: SHMESH-33, at least HOLE_PER_TURN edges round it
                         h0 = SR.curved_size(r * mm, 0.0, floor=finest, rule=(
-                            rows[k]["size_mm"] if sizing.get("global_mm") is not None else h0))
+                            rows[k]["size_mm"] if sizing.get("global_mm") is not None else h0),
+                            per_turn=SR.HOLE_PER_TURN)
                     if h0 < rows[k]["size_mm"]:
                         arcs_by.setdefault(float(f"{h0:.6g}"), []).append(abs(c))
+        if short_edges is not None:
+            for h, curves in short_edges["by_size"].items():
+                arcs_by.setdefault(h, []).extend(curves)
+        for w in rings:
+            # SHMESH-39: the field grows out from the ring at the ring's own element length
+            if w.out_mm < rows[w.owner]["size_mm"]:
+                arcs_by.setdefault(float(f"{w.out_mm:.6g}"), []).append(w.ring)
         for h_mm, surfs in sorted(const_by.items()):
             fid = gmsh.model.mesh.field.add("Constant")
             gmsh.model.mesh.field.setNumber(fid, "VIn", h_mm / mm)
@@ -853,26 +1443,123 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             grading = binned
         for h, curves in sorted(grading.items()):
             grow(curves, h / mm)
+        for k, lo, hi in own_spots:
+            # SHMESH-31: the face's own rules' size inside a box round elements past the solver's limits, graded out
+            h0 = rule_size[k]
+            here = min(rows[k]["size_mm"], rows[k].get("curve_mm", rows[k]["size_mm"]))
+            if h0 >= here:
+                continue
+            box = gmsh.model.mesh.field.add("Box")
+            gmsh.model.mesh.field.setNumber(box, "VIn", h0 / mm)
+            gmsh.model.mesh.field.setNumber(box, "VOut", top)
+            for name, v in zip(("XMin", "YMin", "ZMin"), lo, strict=True):
+                gmsh.model.mesh.field.setNumber(box, name, float(v) / mm)
+            for name, v in zip(("XMax", "YMax", "ZMax"), hi, strict=True):
+                gmsh.model.mesh.field.setNumber(box, name, float(v) / mm)
+            gmsh.model.mesh.field.setNumber(box, "Thickness", (here - h0) / (growth - 1.0) / mm)
+            fields.append(box)
         mn =gmsh.model.mesh.field.add("Min")
         gmsh.model.mesh.field.setNumbers(mn, "FieldsList", fields)
         gmsh.model.mesh.field.setAsBackgroundMesh(mn)
         evened = 0
+        washer_curves = ST.set_counts(gmsh, rings)
         if EVEN_FACES and kind != "triangles":
             fixed = {abs(c) for t in mapped for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)}
+            fixed |= washer_curves
+            fixed |= {abs(c) for t in grids for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)}
             floors = {t: plan_rules.FLOOR_WALLS * rows[k]["wall_mm"] * min(sz, 1.0) / mm for t, k in tag_of.items()}
             if sizing is not None and sizing.get("low_mm") is not None:
                 # SHMESH-24: nor under the user's shortest edge
                 low = float(sizing["low_mm"])
                 floors = {t: max(v, low / mm) for t, v in floors.items()}
             evened = _even_faces(gmsh, tag_of, fixed, floors)
+        if PLANE_ALGORITHM is not None and structure != "free":
+            # SHMESH-42: flat faces meshed free by the quad-aligned algorithm (rows along their edges)
+            for t in sorted(tag_of):
+                if gmsh.model.getType(2, t) == "Plane" and t not in grids and t not in mapped:
+                    gmsh.model.mesh.setAlgorithm(2, t, PLANE_ALGORITHM)
         _generate(gmsh, tag_of)
         node_tags, coords, _p = gmsh.model.mesh.getNodes()
         tags = np.asarray(node_tags, dtype=np.int64)
         index = np.full(int(tags.max()) + 1 if len(tags) else 1, -1, dtype=np.int64)
         index[tags] = np.arange(len(tags))
         xyz = np.asarray(coords, dtype=float).reshape(-1, 3) * mm
+        ring_faces = {w.annulus for w in rings}
+        high = (sizing or {}).get("high_mm")
+        if check_maps and grids:
+            # SHMESH-40: a grid with a quad past the solver's own limits (a face mapped where its shape bends the
+            # rows too far) is meshed free on the next pass
+            bad: set[int] = set()
+            for t in sorted(grids):
+                types, _tags, conns = gmsh.model.mesh.getElements(2, t)
+                for et, conn in zip(types, conns, strict=True):
+                    if et != 3:
+                        bad.add(t)
+                        continue
+                    cq = index[np.asarray(conn, dtype=np.int64)].reshape(-1, 4)
+                    if len(cq) and shell_quality._quad_past(shell_quality.quad_measures(xyz, cq)).any():
+                        bad.add(t)
+                    elif len(cq) and high is not None and float(np.linalg.norm(
+                            xyz[cq] - xyz[np.roll(cq, -1, axis=1)], axis=2).max()) > high:
+                        bad.add(t)      # ... or with an edge over the user's longest edge (a chain's short curve)
+            # ... and so is every grid beside a free face that came out with an element past them (the grid's counts
+            # on their shared curves did not suit that face)
+            # (a gridded face's own free cells - a washer's box - are left to the clean-up: their transition is ours)
+            for t in sorted(set(tag_of) - set(grids) - set(ring_faces) - grid_cells):
+                beside = {int(x) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)
+                          for x in gmsh.model.getAdjacencies(1, abs(c))[0] if int(x) in grids} - bad
+                if not beside:
+                    continue
+                past_nodes: set[int] = set()
+                types, _tags, conns = gmsh.model.mesh.getElements(2, t)
+                for et, conn in zip(types, conns, strict=True):
+                    c_ = index[np.asarray(conn, dtype=np.int64)]
+                    if et == 3:
+                        el = c_.reshape(-1, 4)
+                        hit_ = shell_quality._quad_past(shell_quality.quad_measures(xyz, el))
+                    elif et == 2:
+                        el = c_.reshape(-1, 3)
+                        hit_ = shell_quality._tria_past(shell_quality.tria_measures(xyz, el))
+                    else:
+                        continue
+                    past_nodes |= set(el[hit_].ravel().tolist())
+                if not past_nodes:
+                    continue
+                # (a square ring's strips only where such an element stands on their shared curve, SHMESH-45f - one
+                # poor element across the face freed all of a ring's strips; every other grid beside it, as before)
+                strips = beside & square_cells
+                bad |= beside - strips
+                for g_grid in sorted(strips):
+                    shared_c = ({abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)}
+                                & {abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, g_grid)], oriented=False)})
+                    for c_shared in shared_c:
+                        on_c, _x, _p = gmsh.model.mesh.getNodes(1, c_shared, includeBoundary=True)
+                        if past_nodes & set(index[np.asarray(on_c, dtype=np.int64)].tolist()):
+                            bad.add(g_grid)
+                            break
+            if bad:
+                raise _Unmap(bad)
         quads, trias, q_face, t_face = [], [], [], []
+        # SHMESH-39: each washer's annulus takes the washer's own ring of quads in place of gmsh's mesh there
+        ring_of = {}
+        for w in rings:
+            try:
+                pts, ring = ST.ring_mesh(gmsh, w, index, xyz, mm)
+            except ValueError as exc:
+                # SHMESH-45 (washer guard, per washer): a ring that cannot be built keeps gmsh's own mesh of its annulus
+                # (conformal: gmsh meshed it with the face), and the record says why
+                logger.info("shell mesh: a washer's own ring was not made (%s)", exc)
+                w.info.update(washer=False, why=f"its ring could not be built: {exc}"[:300])
+                washer_skipped["its ring could not be built (gmsh's mesh kept there)"] = (
+                    washer_skipped.get("its ring could not be built (gmsh's mesh kept there)", 0) + 1)
+                continue
+            ring_of[w.annulus] = w
+            xyz = np.vstack([xyz, pts])
+            quads.append(ring)
+            q_face += [w.owner] * len(ring)
         for t, k in sorted(tag_of.items()):
+            if t in ring_of:
+                continue
             types, _tags, conns = gmsh.model.mesh.getElements(2, t)
             for et, conn in zip(types, conns, strict=True):
                 c = index[np.asarray(conn, dtype=np.int64)]
@@ -888,10 +1575,12 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     raise ValueError(f"gmsh made an element of type {et} on a shell face")
         # SHMESH-14: the nodes inside a flat face (on no CAD edge) may move within its plane; SHMESH-14c: inside a
         # curved face too, laid back onto its surface
-        movable = np.zeros(len(tags), dtype=bool)
-        on_face = np.full(len(tags), -1, dtype=np.int64)
+        movable = np.zeros(len(xyz), dtype=bool)
+        on_face = np.full(len(xyz), -1, dtype=np.int64)
         for t in sorted(tag_of):
             plane = gmsh.model.getType(2, t) == "Plane"
+            if t in ring_of:
+                continue        # SHMESH-39: a washer's own nodes stay where the ring put them
             if plane or RELAX_CURVED:
                 inner, _c, _p = gmsh.model.mesh.getNodes(2, t, includeBoundary=False)
                 if len(inner):
@@ -899,6 +1588,48 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     movable[at] = True
                     if not plane:
                         on_face[at] = tag_of[t]
+        # SHMESH-28: which nodes lie on a CAD edge (and on which) or at a CAD vertex - those the mend never takes off
+        node_kind = np.zeros(len(xyz), dtype=np.int8)
+        node_edge = np.full(len(xyz), -1, dtype=np.int64)
+        vertex_edges: dict[int, set[int]] = {}
+        # SHMESH-14d: the nodes on a straight CAD edge may slide along it (between its two ends)
+        on_line = np.zeros(len(xyz), dtype=bool)
+        line_a = np.zeros((len(xyz), 3))
+        line_b = np.zeros((len(xyz), 3))
+        if MEND and lim.aims:
+            for _d, c in gmsh.model.getEntities(1):
+                inner, _c, _p = gmsh.model.mesh.getNodes(1, c, includeBoundary=False)
+                at = index[np.asarray(inner, dtype=np.int64)]
+                node_kind[at] = shell_quality.ON_EDGE
+                node_edge[at] = int(c)
+                points = [abs(int(p)) for _dd, p in gmsh.model.getBoundary([(1, c)], oriented=False)]
+                for p in points:
+                    ends, _c, _p = gmsh.model.mesh.getNodes(0, p)
+                    for v in index[np.asarray(ends, dtype=np.int64)].tolist():
+                        node_kind[v] = shell_quality.AT_VERTEX
+                        vertex_edges.setdefault(int(v), set()).add(int(c))
+                if SLIDE_EDGES and len(at) and len(points) == 2 and gmsh.model.getType(1, c) == "Line":
+                    on_line[at] = True
+                    line_a[at] = np.asarray(gmsh.model.getValue(0, points[0], []), dtype=float) * mm
+                    line_b[at] = np.asarray(gmsh.model.getValue(0, points[1], []), dtype=float) * mm
+        if cut_curves:
+            # SHMESH-41: the nodes on the lines the grid was cut along are inside the CAD face: they relax and mend as
+            # the face's own inside nodes do (in its plane); the ends of a cut on a CAD edge stay on it
+            have = {int(x) for _d, x in gmsh.model.getEntities(1)}
+            on_cad: set[int] = set()
+            for cv in sorted(have - cut_curves):
+                along, _c, _p = gmsh.model.mesh.getNodes(1, cv, includeBoundary=True)
+                on_cad |= set(index[np.asarray(along, dtype=np.int64)].tolist())
+            for cv in sorted(cut_curves & have):
+                along, _c, _p = gmsh.model.mesh.getNodes(1, cv, includeBoundary=True)
+                for v in index[np.asarray(along, dtype=np.int64)].tolist():
+                    if v in on_cad:
+                        continue
+                    movable[v] = True
+                    node_kind[v] = 0
+                    node_edge[v] = -1
+                    on_line[v] = False
+                    vertex_edges.pop(int(v), None)
         if log is not None:
             log.extend(gmsh.logger.get())
     finally:
@@ -909,9 +1640,19 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     if COLLAPSE_SHORT:
         # SHMESH-12: an edge under the floor, far shorter than its elements' others, is a CAD sliver: one node
         limit = np.array([plan_rules.FLOOR_WALLS * r["wall_mm"] * min(sz, 1.0) / mm for r in rows])
+        if MAPPED_SLIVER_SHARE:
+            # SHMESH-38: a mapped strip's edges (SHMESH-16) are slivers only under SHORT_SHARE of the floor. Its
+            # elements are stretched up to STRETCH_MAX = 1 / SHORT_SHARE times along it, so the plain test met them
+            # exactly: every edge across a rounded corner was merged, pulling the walls' nodes into the hollow
+            for t_m in mapped:
+                limit[tag_of[t_m]] *= shell_mesh.SHORT_SHARE
         Q, T, q_face, t_face, merged = shell_mesh.collapse_short(xyz / mm, Q, T, q_face, t_face, limit)
     relaxed = 0
     project = _projector(facts, on_face, mm) if RELAX_CURVED and (on_face >= 0).any() else None
+    if on_line.any():
+        # SHMESH-14d (under the user's limits): the nodes on straight CAD edges relax too, each kept on its edge
+        project = _slider(project, on_line, line_a, line_b)
+        movable = movable | on_line
     if RELAX_ROUNDS:
         # the neighbours' middle first; then also where each quad round a node would be a parallelogram (SHMESH-14b),
         # for what the middle left past a limit (tried at once, the parallelogram moves mended a quad and left a
@@ -988,7 +1729,31 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         # SHMESH-22: a cap left past a limit (all its corners on CAD edges) taken into the element across its longest
         # edge and cut again inside the limits, or dropped from a free edge
         face_wall = np.array([float(r["wall_mm"]) for r in rows])
-        Q, T, q_face, t_face, capped = shell_quality.absorb_caps(xyz, Q, T, q_face, t_face, face_wall, limits=lim)
+        Q, T, q_face, t_face, capped = shell_quality.absorb_caps(xyz, Q, T, q_face, t_face, face_wall, limits=lim,
+                                                                 quads_too=kind != "triangles")
+    mended = {"merged": 0, "recut": 0, "moved": 0}
+    if MEND and lim.aims:
+        # SHMESH-28: what is still past a hard limit or outside one of the user's limits is mended by merging a
+        # node away or cutting two neighbours' outline again; the nodes round a change relax once more, and what
+        # that opens is mended again
+        # SHMESH-29: "ignore edges under X mm" - only when the user asks: the ends of a CAD edge shorter than X may be
+        # merged too, and every element edge under X counts as outside
+        ignore = ((requirements or {}).get("sizes") or {}).get("ignore_edges_mm")
+        ignore = float(ignore) if ignore else None
+        for _ in range(MEND_CYCLES):
+            xyz, Q, T, q_face, t_face, got = shell_quality.mend(
+                xyz, Q, T, q_face, t_face, node_kind, node_edge, vertex_edges, limits=lim,
+                quads_too=kind != "triangles", triangles_too=kind != "quads",
+                edges=(ignore if ignore else ((sizing or {}).get("low_mm") if MEND_SHORT else None),
+                       (sizing or {}).get("high_mm") if MEND_LONG else None), suppress=ignore,
+                movable=movable if MEND_MOVES else None, project=project)
+            if not (got["merged"] or got["recut"] or got["moved"]):
+                break
+            mended = {k: mended[k] + got[k] for k in mended}
+            if RELAX_ROUNDS:
+                xyz, again = shell_quality.relax_past(xyz, Q, T, movable, rounds=RELAX_ROUNDS, weights=(64, 1),
+                                                      project=project, limits=lim)
+                relaxed += again
     # keep only the nodes the elements use, renumbered in order
     used = np.unique(np.concatenate([Q.ravel(), T.ravel()]))
     remap = np.full(len(xyz), -1, dtype=np.int64)
@@ -1031,6 +1796,27 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     quality["caps_absorbed"] = capped
     quality["evened_curves"] = evened
     quality["sliver_faces"] = slivers
+    unbuilt = [w for w in rings if w.annulus not in ring_of]
+    washers = [w for w in washers if w not in unbuilt]
+    holes_seen = len(washers) + sum(washer_skipped.values())
+    quality["structure"] = {"washers": len(washers), "holes": holes_seen,
+                            "mapped_faces": len(grids) + len(mapped), "faces": len(tag_of) - len(rings),
+                            "washers_shrunk": sum(1 for w in washers if w.shrunk),
+                            "no_washer": dict(sorted(washer_skipped.items())),
+                            "around": dict(sorted(Counter(w.n for w in washers).items())),
+                            "washers_ogrid": len(gridded), "washers_boxed": len(boxed),
+                            "not_gridded": dict(sorted(block_skipped.items())),
+                            "switched_off": structure,
+                            "hole_list": hole_lines[:HOLE_LINES]}
+    if grids or mapped:
+        mesh.notes.append(f"Mapped quads (a regular grid) on {len(grids) + len(mapped)} of {len(tag_of) - len(rings)} "
+                          "face(s): every face with four sides (SHMESH-40).")
+    if washers:
+        why = "; ".join(f"{n} {reason}" for reason, n in sorted(washer_skipped.items()))
+        mesh.notes.append(f"Washers on {len(washers)} of {holes_seen} round hole(s): a ring of quads round each, "
+                          f"{'/'.join(str(n) for n in sorted({w.n for w in washers}))} elements round"
+                          + (f" ({sum(1 for w in washers if w.shrunk)} ring(s) narrowed to fit)" if any(w.shrunk for w in washers) else "")
+                          + (f"; none on {why}" if why else "") + " (SHMESH-39).")
     if slivers:
         mesh.notes.append(f"{slivers} sewn face(s) under a fifth of the floor across (CAD slivers) carry no "
                           "elements (SHMESH-12).")
@@ -1052,15 +1838,267 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     if requirements:
         # SHMESH-26: every requirement of the user's, asked against delivered, measured on this mesh
         quality["aimed_split"] = aimed
+        quality["mended"] = mended
         if aimed:
             mesh.notes.append(f"{aimed} quad(s) past a limit you asked for were cut into two triangles each, both "
                               "inside it (SHMESH-25).")
         if sizing is not None:
             out["sizing"] = sizing
+            if narrow is not None and short_edges is not None and (narrow["widths"] or short_edges["edges"]):
+                smallest = float(f"{min([*narrow['widths'].values(), *short_edges['lengths'].values()]):.4g}")
+                sizing["features"] = {"rule": "SHMESH-27", "faces": len(narrow["widths"]),
+                                      "edges": short_edges["edges"], "smallest_mm": smallest}
+                mesh.notes.append(
+                    f"Your CAD has {short_edges['edges']} edge(s) and {len(narrow['widths'])} face(s) smaller than "
+                    f"the element size you asked for (the smallest is {smallest:g} mm). The mesh is finer around "
+                    "them, so the elements there keep a good shape (SHMESH-27).")
+            flanks = sorted((narrow or {}).get("flank_faces") or [])
+            if flanks:
+                sizing["flanks"] = {"rule": "SHMESH-35", "faces": len(flanks), "across": plan_rules.FLANK_ACROSS}
+                mesh.notes.append(f"Kept finer at {len(flanks)} narrow wall(s) of beads, darts or steps: "
+                                  f"{plan_rules.FLANK_ACROSS} elements across each, so they keep their shape "
+                                  "(SHMESH-35).")
+            chord = _chord(mesh, facts, face_of, mm) if CHORD_REPORT else None
+            if chord is not None:
+                # SHMESH-34: how far the elements stand off the CAD on curved faces, told against the size
+                g = sizing.get("global_mm") or float(np.median([r["size_mm"] for r in rows]))
+                sizing["chord"] = {"rule": "SHMESH-34", **chord, "share": float(f"{chord['max_mm'] / g:.3g}")}
+                mesh.notes.append(f"On curved faces element centres lie within {chord['max_mm']:.3g} mm of your "
+                                  f"CAD ({100 * chord['max_mm'] / g:.2g}% of the element size) (SHMESH-34).")
         asked = SR.report(mesh, requirements, sizing)
         if asked is not None:
             out["requirements"] = asked
+        # SHMESH-31: where elements past the solver's own limits are (taken off by _mesh_shell)
+        past = shell_quality.nastran_past(mesh) | (_min_jac(mesh) <= 0)
+        out["_past_spots"] = _spots(mesh, face_of, past)
+        out["_past_n"] = int(past.sum())
+    # SHMESH-45k: the holes whose ring had to follow uneven hole nodes, or could not be built or closed: _mesh_path
+    # draws them again as one circle and meshes once more
+    drawn_at = [np.asarray(c, dtype=float) for c, _e in hole_before]
+    out["_redraw_wanted"] = [
+        [float(x) for x in w.centre] for w in washers_planned
+        if (w.info.get("followed") or str(w.info.get("why", "")).startswith(("its ring could not be built",
+                                                                              "its ring did not close")))
+        and not any(float(np.linalg.norm(c - w.centre)) <= 0.25 * w.r for c in drawn_at)]
     return mesh, out
+
+
+def _spots(mesh: ShellMesh, face_of: np.ndarray, past: np.ndarray) -> list[tuple]:
+    """SHMESH-31: boxes (sewn face, low corner, high corner; mm) round the elements `past`, each padded by its
+    element's longest edge; boxes of one face that overlap are joined, and past SPOTS_MAX boxes each face's are
+    joined into one."""
+    boxes: list[list] = []
+    for e in np.flatnonzero(past).tolist():
+        p = mesh.xyz[mesh.element_nodes(int(e))]
+        pad = float(np.linalg.norm(p - np.roll(p, 1, axis=0), axis=1).max())
+        boxes.append([int(face_of[e]), p.min(axis=0) - pad, p.max(axis=0) + pad])
+
+    def join(bs: list[list], always: bool) -> list[list]:
+        out: list[list] = []
+        for b in sorted(bs, key=lambda x: (x[0], *x[1].tolist())):
+            for o in out:
+                if o[0] == b[0] and (always or (np.all(o[1] <= b[2]) and np.all(b[1] <= o[2]))):
+                    o[1], o[2] = np.minimum(o[1], b[1]), np.maximum(o[2], b[2])
+                    break
+            else:
+                out.append([b[0], b[1].copy(), b[2].copy()])
+        return out
+
+    boxes = join(boxes, False)
+    if len(boxes) > SPOTS_MAX:
+        boxes = join(boxes, True)
+    return [(k, tuple(float(f"{v:.6g}") for v in lo), tuple(float(f"{v:.6g}") for v in hi)) for k, lo, hi in boxes]
+
+
+def _min_jac(mesh: ShellMesh) -> np.ndarray:
+    """Each element's smallest corner Jacobian (quads, then triangles)."""
+    q = shell_quality.quad_measures(mesh.xyz, mesh.quads)["min_jacobian"] if len(mesh.quads) else np.zeros(0)
+    t = shell_quality.tria_measures(mesh.xyz, mesh.trias)["min_jacobian"] if len(mesh.trias) else np.zeros(0)
+    return np.concatenate([q, t])
+
+
+def _narrow_faces(rows: list[dict], facts: list[dict], mm: float, planned: float,
+                  interior: set[int] | None = None, slivers: frozenset[int] | set[int] = frozenset()) -> dict | None:
+    """SHMESH-27, faces: under the user's sizes every face narrower than 1 / FEATURE_FACE_RATIO of its size (its
+    strip width: twice its area over its perimeter) is sized to FEATURE_FACE_RATIO times its own width, never under
+    the floor, in place - a 0.3 mm step strip at a 3 mm size was one row of elements ten times as long as wide. With
+    FEATURE_FACES off, only a face narrower than the floor itself (half its wall: a sliver strip) is - every one with
+    SLIVER_FLOOR, else those in `slivers` (SHMESH-31: faces a first mesh left elements past the solver's limits on):
+    it takes the floor, as our own rules size it, so the sliver merge (SHMESH-12) closes it as it does with no notes
+    (fr014's 0.28 mm step strips at 3.2 mm: 137 triangles past Nastran's T3_IAMAX; none with no notes). Returns
+    {"was": the rows changed as they were, "widths": their widths, "planned", "flank_faces"}; None (rows untouched)
+    when the finer plan would pass SHMESH-20's most elements.
+    SHMESH-35: a FLANK - a face narrower than its size held along its sides by other faces (`interior`,
+    _interior_faces: a bead's or a dart's wall, a step, a rib) that is not itself a tight bend - keeps
+    plan_rules.FLANK_ACROSS elements across it (never under the floor), so a bead is not washed out under a coarse
+    size. None: no flank rule."""
+    new: dict[int, float] = {}
+    widths: dict[int, float] = {}
+    flank_faces: set[int] = set()
+    for k, (f, r) in enumerate(zip(facts, rows, strict=True)):
+        width = min(f["width"], f["box_width"]) if f["box_width"] > 0 else f["width"]
+        if interior is not None and k in interior and not (
+                f["bend"] is not None and 0 < f["bend"] < plan_rules.PANEL_WALLS * r["wall_mm"]):
+            h = plan_rules.flank_size(width, size=r["size_mm"], wall=r["wall_mm"])
+            if h is not None:
+                new[k], widths[k] = h, width
+                flank_faces.add(k)
+                continue
+        if not FEATURE_FACES and (not (SLIVER_FLOOR or k in slivers)
+                                  or width >= plan_rules.FLOOR_WALLS * r["wall_mm"]):
+            continue
+        h = plan_rules.feature_size(width, size=r["size_mm"], wall=r["wall_mm"], ratio=plan_rules.FEATURE_FACE_RATIO)
+        if h is not None:
+            new[k] = h
+            widths[k] = width
+    extra = sum(facts[k]["area"] * mm * mm * (1.0 / h ** 2 - 1.0 / rows[k]["size_mm"] ** 2) for k, h in new.items())
+    if planned + extra > PLANNED_MAX:
+        return None
+    was = {k: dict(rows[k]) for k in new}
+    for k, h in new.items():
+        rows[k]["size_mm"] = h
+        if rows[k].get("curve_mm", 0.0) >= h:
+            rows[k].pop("curve_mm", None)
+        rows[k]["rule"] = f"{rows[k]['rule']}+SHMESH-27"
+    return {"was": was, "widths": widths, "planned": planned + extra, "flank_faces": flank_faces}
+
+
+def _chord(mesh: ShellMesh, facts: list[dict], face_of: np.ndarray, mm: float) -> dict | None:
+    """SHMESH-34: on the curved faces (those with a radius), the largest distance (mm) of an element's centre from the
+    face's own surface, over at most CHORD_SAMPLES elements a face (every n-th, in order); None with no curved face.
+    The nearest point is read within the surface's own bounds (ShapeAnalysis_Surface, as the mid-surface reads it):
+    an orthogonal projection alone found far points beside a patch's rim (6 mm off on a 20 mm radius at 6 mm)."""
+    from OCP.gp import gp_Pnt
+
+    from meshpipeline.cad import midsurface as ms
+
+    worst, faces = 0.0, 0
+    order = np.argsort(face_of, kind="stable")
+    bounds = np.searchsorted(face_of[order], np.arange(len(facts) + 1))
+    for k, f in enumerate(facts):
+        if f["bend"] is None:
+            continue
+        els = order[bounds[k]:bounds[k + 1]]
+        if not len(els):
+            continue
+        faces += 1
+        _surf, sa = ms._analyser(f["normal_face"])
+        for e in els[::max(1, len(els) // CHORD_SAMPLES)].tolist():
+            c = mesh.xyz[mesh.element_nodes(int(e))].mean(axis=0) / mm
+            sa.ValueOfUV(gp_Pnt(float(c[0]), float(c[1]), float(c[2])), 1e-7)
+            worst = max(worst, float(sa.Gap()) * mm)
+    return {"max_mm": float(f"{worst:.4g}"), "faces": faces} if faces else None
+
+
+def _interior_faces(brep: Path, bent: list[bool] | None = None) -> set[int]:
+    """SHMESH-35: the sewn faces (0-based) held along their sides by other faces: the length of their edges another
+    face shares at least FLANK_SHARED times the length of their free edges (a bead's wall running out to the sheet's
+    rim has only its two short ends free; a strip along the rim has a whole long side free). With `bent` (per face:
+    is it a tight bend, a fillet), also met by at least FLANK_BENDS such faces: a bead's or a dart's wall runs between
+    its fillets; a step or a joint strip in an extracted mid-surface meets flat faces at a sharp edge (on the 80 lab
+    parts the walls without this test cost 154,000 elements and 20,000 triangles for no line of the list)."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS_Shape
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    from meshpipeline.cad import midsurface as ms
+
+    shape = TopoDS_Shape()
+    if not BRepTools.Read_s(shape, str(brep), BRep_Builder()):
+        raise ValueError("the mid-surface could not be read")
+    fmap = ms._map(shape, TopAbs_FACE)
+    emap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, emap)
+    free = np.zeros(fmap.Extent())
+    shared = np.zeros(fmap.Extent())
+    bends: list[set[int]] = [set() for _ in range(fmap.Extent())]
+    for i in range(1, emap.Extent() + 1):
+        ks = {fmap.FindIndex(x) - 1 for x in emap.FindFromIndex(i)} - {-1}
+        length = ms._length(emap.FindKey(i))
+        for k in ks:
+            if len(ks) == 1:
+                free[k] += length
+            else:
+                shared[k] += length
+                if bent is not None:
+                    bends[k] |= {j for j in ks if j != k and bent[j]}
+    return {k for k in range(fmap.Extent()) if shared[k] > 0 and shared[k] >= FLANK_SHARED * free[k]
+            and (bent is None or len(bends[k]) >= FLANK_BENDS)}
+
+
+def _spare_strip_corners(gmsh, tag_of: dict[int, int], rows: list[dict], mapped: dict, narrow: dict,
+                         short_edges: dict) -> None:
+    """SHMESH-27: a mapped grid cannot grade, so a smaller piece of the CAD at a mapped strip's corner is left at the
+    size it had: a short edge ending there is not graded to, a narrow face (not itself mapped) with a corner there
+    takes its size back. Graded, a tube corner's 10 mm mapped elements fanned out of a 0.5 mm face at its end
+    (sh0110: 30 triangles under 20 degrees became 168); left free, the strips lost their grids (899)."""
+    def points(c: int) -> set[int]:
+        return {abs(int(p)) for _d, p in gmsh.model.getBoundary([(1, c)], oriented=False)}
+
+    def curves(t: int) -> list[int]:
+        return [abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)]
+
+    corners: set[int] = set()
+    for t in mapped:
+        for c in curves(t):
+            corners |= points(c)
+    for h in list(short_edges["by_size"]):
+        keep = [c for c in short_edges["by_size"][h] if not (points(c) & corners)]
+        for c in short_edges["by_size"][h]:
+            if c not in keep:
+                short_edges["lengths"].pop(c, None)
+        short_edges["edges"] = len(short_edges["lengths"])
+        if keep:
+            short_edges["by_size"][h] = keep
+        else:
+            del short_edges["by_size"][h]
+    face_tag = {k: t for t, k in tag_of.items()}
+    for k in sorted(narrow["was"]):
+        t = face_tag.get(k)
+        if t is None or t in mapped:
+            continue
+        if any(points(c) & corners for c in curves(t)):
+            rows[k].clear()
+            rows[k].update(narrow["was"].pop(k))
+            narrow["widths"].pop(k)
+            narrow["flank_faces"].discard(k)
+
+
+def _short_edges(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float) -> dict:
+    """SHMESH-27, edges: every edge of the CAD shorter than 1 / FEATURE_RATIO of the size of the faces it bounds
+    takes FEATURE_RATIO times its own length as the size beside it (grown from there by the grading fields). The
+    edge itself still gets one segment. Returns {"by_size": {size mm: [curves]}, "edges", "lengths": {curve: mm},
+    "fine_at": {CAD vertex: the finest size (mm) a feature gives beside it - a short edge ending there, a narrow
+    face (one SHMESH-27 sized) it is a corner of}}."""
+    by_size: dict[float, list[int]] = {}
+    fine_at: dict[int, float] = {}
+    lengths: dict[int, float] = {}
+
+    def ends(c: int) -> list[int]:
+        return [abs(int(p)) for _d, p in gmsh.model.getBoundary([(1, c)], oriented=False)]
+
+    for _d, c in gmsh.model.getEntities(1):
+        faces = [int(t) for t in gmsh.model.getAdjacencies(1, c)[0] if int(t) in tag_of]
+        if not faces or not FEATURE_EDGES:
+            continue
+        for t in faces:
+            if "SHMESH-27" in rows[tag_of[t]]["rule"]:
+                for p in ends(int(c)):
+                    fine_at[p] = min(fine_at.get(p, math.inf), float(rows[tag_of[t]]["size_mm"]))
+        size = min(rows[tag_of[t]]["size_mm"] for t in faces)
+        wall = min(rows[tag_of[t]]["wall_mm"] for t in faces)
+        length = float(gmsh.model.occ.getMass(1, c)) * mm
+        h = plan_rules.feature_size(length, size=size, wall=wall, ratio=plan_rules.FEATURE_RATIO)
+        if h is None:
+            continue
+        by_size.setdefault(float(f"{h:.6g}"), []).append(int(c))
+        for p in ends(int(c)):
+            fine_at[p] = min(fine_at.get(p, math.inf), h)
+        lengths[int(c)] = length
+    return {"by_size": by_size, "edges": len(lengths), "fine_at": fine_at, "lengths": lengths}
 
 
 def _count_plan(rows: list[dict], planned: float, target: dict | None, correction: float) -> tuple[dict | None, float]:
@@ -1121,6 +2159,23 @@ def _projector(facts: list[dict], on_face: np.ndarray, mm: float):
         return out
 
     return project
+
+
+def _slider(project, on_line: np.ndarray, line_a: np.ndarray, line_b: np.ndarray):
+    """SHMESH-14d: project(nodes, points) - a node on a straight CAD edge is laid back onto that edge (the closest
+    point of the line through the edge's two ends, kept between them: SLIDE_ENDS of its length from either end);
+    every other node goes through `project` (the curved faces' own, or none)."""
+    def both(nodes: np.ndarray, pts: np.ndarray) -> np.ndarray:
+        out = project(nodes, pts) if project is not None else pts.copy()
+        sel = on_line[nodes]
+        if sel.any():
+            a, b = line_a[nodes[sel]], line_b[nodes[sel]]
+            d = b - a
+            t = np.einsum("mi,mi->m", pts[sel] - a, d) / np.maximum(np.einsum("mi,mi->m", d, d), 1e-300)
+            out[sel] = a + np.clip(t, SLIDE_ENDS, 1.0 - SLIDE_ENDS)[:, None] * d
+        return out
+
+    return both
 
 
 #: SHELL-9b: a node's wall is read from the WALL_NEAREST wall readings of its mid-face nearest it (a plane through

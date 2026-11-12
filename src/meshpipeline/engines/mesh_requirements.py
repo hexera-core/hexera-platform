@@ -8,7 +8,8 @@ The model answers with ONE `mesh_requirements` call:
     {"stated_unit": "mm" | "cm" | "m" | "in" | "um" | "none",
      "sizes": [{"what": "global" | "min_edge" | "max_edge" | "growth" | "thickness",
                 "value": 10, "unit": "mm" | ... | "x_global" | "none", "quote": "Global Mesh Size = 10 mm"}],
-     "element_kind": [{"what": "quads_only" | "triangles_only" | "max_triangle_percent" | "linear" | "quadratic",
+     "element_kind": [{"what": "quads_only" | "triangles_only" | "max_triangle_percent" | "linear" | "quadratic"
+                             | "free_mesh" | "no_washers" | "structured",
                        "value": 0, "quote": "no triangles"}],
      "limits": [{"measure": "warpage", "shape": "quad" | "tria" | "tet" | "cell" | "any", "direction": "max" | "min",
                  "target": 15, "allowed_percent": 1, "outer": 30, "has_outer": true,
@@ -24,7 +25,8 @@ The model answers with ONE `mesh_requirements` call:
 and the rules turn it into the set every route reads (`requirements`):
 
     {"sizes": {"global_mm", "min_edge_mm", "max_edge_mm", "growth", "thickness_mm", "near_wall_mm"},  # None: not asked
-     "kind": {"shell": "quads" | "triangles" | None, "tria_percent_max": None | p, "order": None | "linear" | "quadratic"},
+     "kind": {"shell": "quads" | "triangles" | None, "tria_percent_max": None | p, "order": None | "linear" | "quadratic",
+              "structure": "free" | "no_washers" | "structured" (only when said)},
      "cells": {"target", "ceiling", "floor"},                                              # a cell or element count
      "layers": {"count", "first_mm", "total_mm", "growth", "y_plus"},                      # the boundary layers
      "local": [{"id", "where", "what", "mm", "quote"}],                                    # sizes in one named place
@@ -42,6 +44,10 @@ NOTE-9  no words: no model call and an empty set; no answer and none saved: an e
 NOTE-10 the flow fields of the same reading (a count, layers, a size at the walls, sizes in a place, three more flow
         measures, the flow's numbers for a y+), checked the same way; every flow engine applies them
         (engines/cfd_requirements.py), the solid and shell routes say what each is there.
+NOTE-11 a shell element kind written in a few fixed phrases ("triangles only", "tri mesh", "Shell elements: triangles",
+        "use triangles for shells", "no triangles", "all quads") that the model put in no field is read by the rules
+        from the user's own line - never against a kind the model did read. A share of triangles carries a number:
+        the model's alone.
 """
 from __future__ import annotations
 
@@ -61,6 +67,7 @@ RULE_READ = "NOTE-7"
 RULE_NOT_APPLIED = "NOTE-8"
 RULE_NOTHING = "NOTE-9"
 RULE_FLOW = "NOTE-10"          # the flow fields of the same reading (a count, layers, a size at the walls or in a place)
+RULE_KIND_WORDS = "NOTE-11"
 TOOL = "mesh_requirements"
 CONSUMER = "mesh_requirements"
 STEP = "mesh_requirements"
@@ -77,7 +84,11 @@ MAX_CHARS = 8000
 UNITS_MM = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4, "um": 1e-3}
 SIZE_UNITS = (*UNITS_MM, "x_global", "none")
 SIZES = ("global", "min_edge", "max_edge", "growth", "thickness", "near_wall")
-KINDS = ("quads_only", "triangles_only", "max_triangle_percent", "linear", "quadratic")
+KINDS = ("quads_only", "triangles_only", "max_triangle_percent", "linear", "quadratic", "free_mesh", "no_washers",
+         "structured")
+#: SHMESH-43: the mesh's PATTERN (a shell's): "free_mesh" (no washers, no mapped faces), "no_washers", "structured"
+#: (washers and mapped quads: what the shell mesh does anyway) - one slot, kind["structure"]
+PATTERNS = {"free_mesh": "free", "no_washers": "no_washers", "structured": "structured"}
 SHAPES = ("quad", "tria", "tet", "cell", "any")
 OTHER_KINDS = ("mesh", "elsewhere", "not_mesh")
 #: NOTE-10: the flow (CFD) fields - a cell count, the boundary layers, and sizes in a named place
@@ -188,7 +199,9 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   other as well.
 - element_kind: quads_only ("no triangles", "quad mesh only", "all quads"), triangles_only ("tria mesh", "triangles
   only"), max_triangle_percent ("at most 5% trias" -> value 5), linear ("first order", "linear elements", "tet4"),
-  quadratic ("second order", "tet10", "mid-side nodes"). value 0 unless it is max_triangle_percent.
+  quadratic ("second order", "tet10", "mid-side nodes"), free_mesh ("free mesh", "paved mesh", "no mapped mesh",
+  "unstructured quads"), no_washers ("no washers", "no rings round the holes"), structured ("washers round holes",
+  "mapped mesh", "structured quads", "rings of quads round bolt holes"). value 0 unless it is max_triangle_percent.
   "shell", "solid", "mid-surface" (what to mesh the part AS) is "elsewhere". A solver's element name at the head of
   a quality line ("QUAD4: skew angle > 30", "CTRIA3 min angle 20") only names the elements the limit is for (its
   shape): it asks for no element kind or order.
@@ -207,7 +220,7 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   A limit on element LENGTH ("Min. Element Length > 0.5 x Global Size") is a size (min_edge / max_edge), not a limit.
 - other: every other thing they wrote, one entry per line, sentence or clause, never left out. kind "mesh": about
   the mesh but fitting no field above (chordal deviation, elements through the thickness or across a flange,
-  washers round holes, cells across a gap, a named solver's own check, a quality measure not in the list, a
+  cells across a gap, a named solver's own check, a quality measure not in the list, a
   preference like "quads preferred" or "hex-dominant", a vague wish like "good quality mesh" or "resolve the
   boundary layer well").
   "elsewhere": ONLY shell or solid (what to mesh the part as). "not_mesh": loads, supports, materials, the
@@ -476,6 +489,49 @@ def _kind_said(what: str, quote: str) -> str:
     return "quads_only" if m.group(1).lower().startswith("tri") else "triangles_only"
 
 
+#: NOTE-11: THE FEW FIXED PHRASES THAT NAME A SHELL'S ELEMENT KIND in anyone's words - "triangles only", "tria mesh",
+#: "tri mesh", "all quads", "no triangles", "Shell elements: triangles", "use triangles for shells". The stage's
+#: control starts on what they say (application/shell_elements), and the reading takes one the model left in no field
+#: (_kind_by_words). A share of triangles ("at most 5% trias") is the model's to read: it carries a number.
+_TRIA = r"(?:triangles?|triangular|trias?|tris?)"
+_QUAD = r"(?:quads?|quadrilaterals?)"
+_SAID_TRIANGLES = re.compile(
+    rf"\b(?:{_TRIA}\s+(?:elements?\s+|mesh\s+)?only|only\s+{_TRIA}|all[- ]{_TRIA}|(?:tria|tri|triangle|triangular)\s+"
+    rf"(?:shell\s+)?mesh(?:es|ing)?|no\s+{_QUAD}|without\s+{_QUAD}|avoid\s+{_QUAD}|"
+    rf"(?:shell\s+)?elements?\s*(?:[:=]|are|as)\s*{_TRIA}|use\s+{_TRIA})\b", re.I)
+_SAID_QUADS = re.compile(
+    rf"\b(?:{_QUAD}\s+(?:elements?\s+|mesh\s+)?only|only\s+{_QUAD}|all[- ]{_QUAD}|pure\s+{_QUAD}|no\s+{_TRIA}|"
+    rf"without\s+{_TRIA}|avoid\s+{_TRIA}|(?:shell\s+)?elements?\s*(?:[:=]|are|as)\s*{_QUAD}|use\s+(?:only\s+)?{_QUAD})\b",
+    re.I)
+
+
+def kind_in_words(text: str) -> str:
+    """NOTE-11: the shell element kind a piece of words names - "quads" (quads only), "triangles" or "" - the FIRST one
+    written when it names both."""
+    t = str(text or "")
+    q, r = _SAID_QUADS.search(t), _SAID_TRIANGLES.search(t)
+    if q and r:
+        return "quads" if q.start() < r.start() else "triangles"
+    return "quads" if q else "triangles" if r else ""
+
+
+def _kind_by_words(notes: str) -> tuple[str, str] | None:
+    """NOTE-11: (kind, the user's line) for the first line or sentence of the notes that names a shell element kind
+    by the fixed phrases, a share of triangles aside; None with none."""
+    for piece in re.split(r"\n+|(?<=[.!?;])\s+", str(notes or "")):
+        piece = " ".join(piece.split())
+        if not piece or "%" in piece or _MARKER.match(piece):
+            continue
+        got = kind_in_words(piece)
+        if got:
+            return got, piece[:400]
+    return None
+
+
+#: the words a shell element-kind row says (the settings page's "What we understood" shows them too)
+KIND_WORDS = {"quads": "shell elements: quads only, no triangles", "triangles": "shell elements: triangles only"}
+
+
 def _short(quote: str) -> str:
     q = " ".join(str(quote or "").split())
     return q if len(q) <= 90 else q[:87] + "..."
@@ -601,6 +657,11 @@ def check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str],
         return _check(arguments, notes, route=str(route or ""))
     except Exception as exc:  # noqa: BLE001 - a malformed answer is the model's, never the run's
         return empty(), [f"the reading did not fit the schema ({type(exc).__name__}): nothing applied"], []
+
+
+#: a count of elements through or across something ("3 elements through the thickness", "two rows across the flange")
+_COUNTED = re.compile(r"\b(?:\d+|one|two|three|four|five|six)\s+(?:\w+\s+)?(?:elements?|rows?|layers)\b[^.;\n]{0,24}?"
+                      r"\b(?:through|across)\b", re.I)
 
 
 def _length_mm(value: float, unit: str, quote: str, stated: str) -> tuple[float, str]:
@@ -815,6 +876,10 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
         if what not in SIZES or unit not in SIZE_UNITS:
             dropped.append(f"{tag}: not a size this step reads: not applied")
             continue
+        if _COUNTED.search(quote):
+            # "3 elements through the thickness" counts elements; it is no length (read once as a 3 inch wall)
+            dropped.append(f"{tag}: a count of elements through or across a wall is not a size: not applied")
+            continue
         if value is None or value <= 0 or not _in_quote(value, numbers):
             dropped.append(f"{tag}: the number {e.get('value')!r} is not in those words: not applied")
             continue
@@ -899,7 +964,16 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
                                "written is kept")
             elif k["shell"] is None:
                 k["shell"] = want
-                row(what, quote, "quads only, no triangles" if want == "quads" else "triangles only")
+                row(what, quote, KIND_WORDS[want])
+        elif what in PATTERNS:
+            # SHMESH-43: the pattern - the first one written is kept
+            if k.get("structure") is not None and k["structure"] != PATTERNS[what]:
+                dropped.append(f"{tag}: the notes ask for two mesh patterns - the first one written is kept")
+            elif k.get("structure") is None:
+                k["structure"] = PATTERNS[what]
+                row(what, quote, {"free": "a free mesh: no washers round holes, no mapped faces",
+                                  "no_washers": "no washers round holes",
+                                  "structured": "washers round holes and mapped quads where a face allows"}[PATTERNS[what]])
         elif what == "max_triangle_percent":
             p = _f(e.get("value"))
             if p is None or not (0.0 <= p <= 100.0) or not _in_quote(p, numbers):
@@ -912,6 +986,16 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
         elif k["order"] is None:
             k["order"] = what
             row(what, quote, f"{what} elements")
+    rescued = ""
+    if out["kind"]["shell"] is None and out["kind"]["tria_percent_max"] is None:
+        # NOTE-11: a shell element kind the user plainly wrote ("Shell elements: triangles", "tri mesh") that the
+        # model put in no field is read by the fixed phrases - the same field, from the user's own line
+        got_kind = _kind_by_words(notes)
+        if got_kind is not None:
+            want, rescued = got_kind
+            out["kind"]["shell"] = want
+            covered.append(rescued)
+            row("quads_only" if want == "quads" else "triangles_only", rescued, KIND_WORDS[want])
     if out["kind"]["shell"] == "quads" and out["kind"]["tria_percent_max"] is not None:
         # "quads, triangles under 5%": the share is the ask, said once (quads only would read as none at all)
         out["rows"] = [r for r in out["rows"] if r["field"] != "quads_only"]
@@ -984,6 +1068,8 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
     for e in _rows_of(raw, "other"):
         quote = " ".join(str(e.get("quote") or "").split())[:400]
         covered.append(quote)
+        if rescued and kind_in_words(quote):
+            continue        # NOTE-11: read above as the element kind
         if str(e.get("kind")) == "mesh" and _quoted(quote, said, squashed) and quote not in not_applied:
             over = [t for t in typed if t and (_squash(t) in _squash(quote) or _squash(quote) in _squash(t))]
             if over and not _left_over(quote, over):
@@ -991,7 +1077,7 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
             not_applied.append(quote)
     # NOTE-8's floor: words about the mesh that the reading listed NOWHERE are told too, as the user wrote them
     for piece in _left_over(notes, covered):
-        if piece not in not_applied:
+        if piece not in not_applied and not (rescued and kind_in_words(piece)):
             not_applied.append(piece)
     return out, dropped, not_applied[:20]
 
@@ -1035,7 +1121,8 @@ def write(workspace, sec: Mapping | None) -> bool:
 
     path = Path(workspace) / FILE
     try:
-        if requirements_of(sec) is None and not not_applied_words(sec):
+        # (a pick on the stage, STD-4, is kept too: the result says which elements were made and why)
+        if requirements_of(sec) is None and not not_applied_words(sec) and not (sec or {}).get("stage"):
             path.unlink(missing_ok=True)
             return False
         path.write_text(json.dumps(sec, indent=1, sort_keys=True), encoding="utf-8")
@@ -1060,6 +1147,9 @@ def words(sec: Mapping | None) -> list[str]:
     """Before meshing, in plain words: what was read from the notes, one short line each; then what was not applied."""
     if not sec or sec.get("status") == "none":
         return []
+    if isinstance(sec.get("lines"), list):
+        # merged with the team's meshing standard (engines/meshing_standard): said by where each came from
+        return [str(w) for w in sec["lines"]]
     if sec.get("status") != "used":
         return [str(sec.get("note") or UNREAD_WORDS)]
     out = [f"From your notes: {r['asked']}." for r in (sec.get("requirements") or {}).get("rows") or []]
@@ -1182,6 +1272,12 @@ def line(row: Mapping) -> str:
     unless it was measured and reached."""
     asked = str(row.get("asked") or "")
     asked = asked[:1].upper() + asked[1:]
+    if row.get("from") == "stage":
+        # the shell line's own choice (engines/meshing_standard STD-4)
+        asked += " (chosen on the stage)"
+    elif row.get("from"):
+        # a run with a team meshing standard (engines/meshing_standard): each row says where it came from
+        asked += f" (from your {row['from']})"
     if row.get("met") is True:
         tail = str(row.get("delivered") or "")
         return f"{asked}: met" + (f" - {tail}." if tail and tail != "every element is inside it" else ".")
@@ -1206,8 +1302,14 @@ def asked_rows(quality: Mapping | None, *, source: str = "your notes") -> list[d
     for r in (rep.get("rows") if isinstance(rep, Mapping) else None) or []:
         if not isinstance(r, Mapping) or r.get("met") not in (True, False):
             continue
-        out.append({"key": f"asked_{r.get('id')}", "label": f"You asked: {r.get('asked')}", "op": "==", "limit": 0,
-                    "measured": int(r.get("excess") or 0), "said": line(r), "source": source})
+        came = str(r.get("from") or "")
+        label = (f"Chosen on the stage: {r.get('asked')}" if came == "stage"
+                 else f"Your {came} ask: {r.get('asked')}" if came else f"You asked: {r.get('asked')}")
+        out.append({"key": f"asked_{r.get('id')}",
+                    "label": label,
+                    "op": "==", "limit": 0, "measured": int(r.get("excess") or 0), "said": line(r),
+                    "source": ("the stage" if came == "stage" else source.replace("your notes", f"your {came}", 1))
+                    if came else source})
     return out
 
 
@@ -1349,7 +1451,7 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
     return got if got is not None else without("invalid", "it gave no reading")
 
 
-__all__ = ["CONSUMER", "FILE", "KINDS", "MAX_LIVE", "asked_rows", "not_applied_words", "finish_report", "limit_row", "line", "live_words",
+__all__ = ["CONSUMER", "FILE", "KINDS", "KIND_WORDS", "kind_in_words", "MAX_LIVE", "asked_rows", "not_applied_words", "finish_report", "limit_row", "line", "live_words",
            "pct", "report_words", "share_words", "summary", "MEASURES", "RULE_NOTHING", "RULE_NOT_APPLIED", "RULE_READ", "SHAPES", "SIZES", "SYSTEM",
            "TOOL", "UNITS_MM", "UNREAD_WORDS", "check", "decide", "decisions", "empty", "is_empty", "limit_words",
            "messages_for", "notes_text", "read", "requirements_of", "section", "tool", "wanted", "words", "write"]

@@ -663,7 +663,10 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
     # small-gap switch sets their default)
     found, info = joined_interfaces(parts, fused, vols, diag=diag, mm_per_unit=mm_per_unit, scale=1.0,
                                     gap_joins=True)
-    choices = P.choose(found, connection=connection, gap_joins=gap_joins, volume_of=volume_of, overrides=pairs)
+    # the pairs' words say each gap in millimetres: `found` is in the model's own unit here (metres
+    # in the mesher: the punch's 0.5 mm gaps read "across 0.0005 mm", 4 Nov)
+    in_mm = [{**i, "gap_mm": float(i["gap_mm"]) * mm_per_unit} if i.get("gap_mm") is not None else i for i in found]
+    choices = P.choose(in_mm, connection=connection, gap_joins=gap_joins, volume_of=volume_of, overrides=pairs)
     choice = {str(c["id"]): c for c in choices}
     off = [i for i in found if choice.get(str(i["id"]), {}).get("type") == P.OFF]
     interfaces = [i for i in found if i not in off]
@@ -1156,26 +1159,32 @@ def read_body_names_here(path: Path | str) -> list[tuple[str, np.ndarray, float]
         return ""
 
     out: list[tuple[str, np.ndarray, float]] = []
+    stem = " ".join(p.stem.split())
 
-    def walk(label, loc, inherited: str, depth: int) -> None:
+    def walk(label, loc, inherited: str, depth: int, instance: str = "", above: tuple[str, ...] = ()) -> None:
         if depth > 32:
             return
         if XCAFDoc_ShapeTool.IsAssembly_s(label):
             comps = TDF_LabelSequence()
             XCAFDoc_ShapeTool.GetComponents_s(label, comps)
+            mine = (*above, " ".join(named(label).split()))
             for i in range(1, comps.Length() + 1):
                 comp = comps.Value(i)
                 ref = TDF_Label()
                 if not XCAFDoc_ShapeTool.GetReferredShape_s(comp, ref):
                     continue
-                own = readable_body_name(named(ref)) or readable_body_name(named(comp))
-                walk(ref, loc.Multiplied(XCAFDoc_ShapeTool.GetLocation_s(comp)), own or inherited, depth + 1)
+                inst = _instance_name(named(ref), named(comp))
+                own = inst or readable_body_name(named(ref)) or readable_body_name(named(comp))
+                walk(ref, loc.Multiplied(XCAFDoc_ShapeTool.GetLocation_s(comp)), own or inherited, depth + 1,
+                     inst, mine)
             return
         shape = XCAFDoc_ShapeTool.GetShape_s(label)
         if shape.IsNull():
             return
         placed = shape.Moved(loc)
-        name = readable_body_name(named(label)) or inherited
+        name = instance or readable_body_name(named(label)) or inherited
+        # SHWRITE-1: the document's name repeated at the head of every part's name is not the part's name
+        name = readable_body_name(strip_document_prefix(name, [*above, stem])) if name else name
         for s in solids(placed):
             v, c = _props(s, True)
             out.append((name, c, v))
@@ -1185,6 +1194,34 @@ def read_body_names_here(path: Path | str) -> list[tuple[str, np.ndarray, float]
     for i in range(1, roots.Length() + 1):
         walk(roots.Value(i), TopLoc_Location(), "", 0)
     return out
+
+
+#: what may sit between a document prefix and the part's own name
+_PREFIX_GLUE = " .-_:/\\|>"
+#: an instance suffix a CAD system adds to the product's name: ".57" (CATIA), "-3" (SolidWorks), ":2" (Inventor)
+_INSTANCE_SUFFIX = re.compile(r"^\s*[.:\-_ ]?\s*<?\d+>?\s*$")
+
+
+def _instance_name(product: str, instance: str) -> str:
+    """SHWRITE-1: the instance's own name when it is the product's name with an instance suffix ("PEDESTAL FOOTPAD
+    GUSSET.57" placing "PEDESTAL FOOTPAD GUSSET"), so eight gussets of one product keep the eight names the CAD tree
+    shows; "" otherwise (the product's name stands, as before)."""
+    prod, inst = " ".join(product.split()), " ".join(instance.split())
+    if not readable_body_name(prod) or len(inst) <= len(prod) or not inst.lower().startswith(prod.lower()):
+        return ""
+    return readable_body_name(inst) if _INSTANCE_SUFFIX.match(inst[len(prod):]) else ""
+
+
+def strip_document_prefix(name: str, prefixes: list[str]) -> str:
+    """SHWRITE-1: `name` without a leading copy of one of `prefixes` (the assemblies above it, the file's own name) -
+    "PEDESTAL ASSY PEDESTAL BASE PLATE.1" under PEDESTAL ASSY is "PEDESTAL BASE PLATE.1" - when what is left holds a
+    letter; the longest prefix first. Any other name is returned as it is."""
+    for pre in sorted({" ".join(x.split()) for x in prefixes if x and x.strip()}, key=len, reverse=True):
+        if len(name) > len(pre) and name.lower().startswith(pre.lower()) and name[len(pre)] in _PREFIX_GLUE:
+            rest = name[len(pre):].lstrip(_PREFIX_GLUE)
+            if re.search(r"[A-Za-z]", rest):
+                return rest
+    return name
 
 
 #: A named body matches a solid when its centroid lies within this share of the assembly's size and

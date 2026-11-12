@@ -1,0 +1,272 @@
+# Responsibility: Decide whether a Netgen run actually delivered, and record what it produced.
+# Boundaries: delivery means every required member of the declared bundle is present.
+# ENGINE-LOCAL copy of engines/cfmesh/finalize.py (each OpenFOAM-family bundle owns its stack; divergence allowed).
+# Netgen hands over a finished polyMesh (gmshToFoam), so the delivery, quality and solvability machinery is cfMesh's;
+# comments that tell cfMesh's history are kept as they were.
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
+from meshpipeline.engines.netgen.deliverable import (
+    boundary_patch_names,
+    delivery_problem,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _stated_reference_length(ws: Path) -> float | None:
+    """The reference length the user quoted the far field in, when the intake approved one."""
+    from meshpipeline.engines.workspace_facts import read_far_field_request
+    v = read_far_field_request(ws).get("reference_length_m")
+    try:
+        return float(v) if v and float(v) > 0.0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def census_quality(ws: Path, intake_patches: list) -> dict:
+    """The layer figures a cfMesh mesh's quality record carries, measured on the mesh itself
+    (engines/layer_census.py), against what the USER asked for: the request's stated count
+    ("5 prism layers") when it states one, else the meshDict's nLayers. The e2e meshes were
+    asked for 2 where the request said 5, and "2.0 of 2 layers, 100%" hid the shortfall from the
+    gates and the reviewer; and a mesh too big for the old census (the 5.5M-cell Circle of
+    Willis) shipped with no figure at all. When layers were asked and the mesh cannot be
+    measured, the record says why instead of saying nothing."""
+    from meshpipeline.engines.ground_plane import is_ground
+    from meshpipeline.engines.layer_census import census, requested_layers_for
+
+    target, stated, in_dict = requested_layers_for(ws)
+    if target <= 0:
+        return {}
+    walls = [str(p.get("name")) for p in (intake_patches or [])
+             if str(p.get("type") or "") == "wall" and p.get("name")
+             and not is_ground(str(p.get("name")), "wall")]
+    out: dict = {"layers_requested": target, "layers_stated": stated or None,
+                 "layers_in_meshdict": in_dict}
+    per, why = census(ws / "constant" / "polyMesh", target, walls)
+    if not per:
+        out["layer_coverage_source"] = "unmeasured"
+        out["layer_census_note"] = why or "no wall patch of the contract is in the mesh"
+        return out
+    faces = sum(v["faces"] for v in per.values())
+    area = sum(v["area_m2"] for v in per.values()) or 1.0
+    out["layer_coverage_pct"] = round(sum(v["coverage_pct"] * v["faces"]
+                                          for v in per.values()) / max(faces, 1), 2)
+    out["layer_coverage_source"] = "census"
+    out["layers_mean"] = round(sum(v["mean_layers"] * v["area_m2"] for v in per.values()) / area, 3)
+    out["layer_area_full_pct"] = round(100.0 * sum(v["area_with_full_layers"] * v["area_m2"]
+                                                   for v in per.values()) / area, 2)
+    out["layer_area_any_pct"] = round(100.0 * sum(v["area_with_any_layer"] * v["area_m2"]
+                                                  for v in per.values()) / area, 2)
+    out["per_patch_layers"] = {
+        n: {"layers": v["mean_layers"], "target": target, "coverage_pct": v["coverage_pct"],
+            "area_with_full_layers": v["area_with_full_layers"],
+            "area_with_any_layer": v["area_with_any_layer"],
+            "layers_by_area": v["layers_by_area"], "first_layer_m": v["first_layer_m"],
+            "stack_m": v["stack_m"], "growth": v["growth"]}
+        for n, v in per.items()}
+    return out
+
+
+def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str = "",
+                     internal_flow: bool = False, engine_params: dict | None = None,
+                     flow_topology: str = "") -> dict:
+    from meshpipeline.engines.runtime import get_engine
+    R = get_engine(engine)
+    ws = Path(workspace_dir)
+    # THE DELIVERABLE GATE. `owner` alone was the old test and it let a partial mesh through:
+    # cartesianMesh writes incrementally, so a run killed by a timeout, an OOM or a cancellation
+    # routinely leaves an `owner` beside nothing else. checkMesh cannot read such a case, so it
+    # reports no fatal classes - and `success = not fatal` then read "no fatal classes" as a good
+    # mesh, wrote the manifest and sent the case on to delivery.
+    incomplete = delivery_problem(ws)
+    if incomplete:
+        return {"success": False, "stdout": "", "stderr": "", "output": incomplete}
+    q = R.check_mesh(ws)
+    if internal_flow:
+        # which under-resolved passages the flow can go round - read only when the measure put the
+        # narrowest wall under the floor (engines/passage_flow.py, as in the snappy finalize)
+        from meshpipeline.engines.passage_flow import passage_flow_of_polymesh
+        q.update(passage_flow_of_polymesh(ws, q))
+    # NEAR-WALL PRISM LAYER COVERAGE - a MEASURED number, not a visual: a ~1e-4 m layer band
+    # on a metre-scale body is invisible in any whole-body render, so the reviewer must judge
+    # the layer axis from this figure (it otherwise mistook an unresolvable near-wall region
+    # for "no layers"). Capability by declaration: an engine parses it only if it exposes
+    # parse_layer_coverage AND actually wrote a layer log - no engine-name check.
+    if hasattr(R, "parse_layer_coverage"):
+        _log = ws / "snappyHexMesh.log"
+        if _log.exists():
+            try:
+                _lc = R.parse_layer_coverage(_log.read_text(errors="replace"))
+                _per = _lc.get("per_patch", {}) or {}
+                # coverage on the WALL patches (exclude the box faces that carry no layers)
+                _walls = {n: v for n, v in _per.items() if n not in ("farfield", "symmetry")}
+                if _lc.get("overall_pct") is not None:
+                    q["layer_coverage_pct"] = _lc["overall_pct"]
+                elif _walls:
+                    q["layer_coverage_pct"] = min(v["coverage_pct"] for v in _walls.values())
+                if _walls:
+                    q["per_patch_layers"] = {
+                        n: {"layers": v.get("layers"), "target": v.get("layers_target"),
+                            "coverage_pct": v.get("coverage_pct")} for n, v in _walls.items()}
+            except Exception:
+                logger.exception("finalize: layer-coverage parse failed (non-fatal)")
+    # cfMesh writes no layer log: count the layers it extruded on the walls themselves
+    # (engines/layer_census.py), so its manifest reports coverage the way snappy's does
+    # (the native step counts them where the mesh was built; counted against another target - a
+    # payload without the request - they are counted again here, against the user's)
+    try:
+        from meshpipeline.engines.layer_census import requested_layers_for
+        _again = (q.get("layer_coverage_source") in ("census", "unmeasured")
+                  and q.get("layers_requested") != requested_layers_for(ws)[0])
+        if q.get("layer_coverage_pct") is None or _again:
+            for _k in ("layer_coverage_pct", "layer_coverage_source", "layer_census_note",
+                       "per_patch_layers", "layers_mean", "layer_area_full_pct",
+                       "layer_area_any_pct", "layers_requested", "layers_stated",
+                       "layers_in_meshdict"):
+                q.pop(_k, None)
+            q.update(census_quality(ws, intake_patches))
+    except Exception:
+        logger.exception("finalize: layer census failed (non-fatal)")
+    patch_entities, bbox = {}, (0.0,) * 6
+    _review_tris: dict = {}   # per-patch triangles → precomputed reviewer camera views
+    # The review surface the vision reviewer renders is built from the geometry THIS ENGINE
+    # staged - snappy names a body triSurface, cfMesh assembles geom.stl. The engine DECLARES
+    # its source STL(s) via review_geometry_stls (default: geom.stl); the shared code just
+    # reads them and builds the mesh. No engine-name branches - capability by declaration.
+    _stls = (R.review_geometry_stls(ws, internal_flow)
+             if hasattr(R, "review_geometry_stls") else [ws / "geom.stl"])
+    try:
+        # a case meshed as several separate passages (cad/fluid_passages): every one is reviewed
+        from meshpipeline.cad.fluid_passages import passage_surface_files
+        _stls = [*_stls, *passage_surface_files(ws)]
+    except ValueError:
+        logger.exception("Executor: the further passages' surfaces could not be read (non-fatal)")
+    _solids: dict = {}
+    for _stl in _stls:
+        if not Path(_stl).exists():
+            continue
+        try:
+            for _name, _tris in R.read_stl_solids(_stl).items():
+                # one patch on two passages (the wall of each) is both pieces, not the last one
+                _solids.setdefault(_name, []).extend(_tris)
+        except Exception:
+            logger.exception("Executor: reading review geometry %s failed", _stl)
+    if _solids:
+        _review_tris = _solids
+        try:
+            patch_entities, bbox = R.build_review_msh(ws, _solids)
+        except Exception:
+            logger.exception("Executor: review-mesh build failed (non-fatal)")
+    # When an engine's review surface covers only the BODY (snappy: the far-field / symmetry
+    # patches live in the blockMesh boundary, not the triSurface), declare the mesh's real
+    # patches so the manifest matches the mesh AND the contract (the added ones carry no
+    # review geometry). The engine declares this via review_surface_is_body_only.
+    if getattr(R, "review_surface_is_body_only", False):
+        for _pn in boundary_patch_names(ws):
+            patch_entities.setdefault(_pn, [])
+    # export the VOLUME mesh (foamToVTK) so the reviewer can slice it to see boundary
+    # layers / internal refinement; body bbox from the input STL for inspection regions.
+    volume_path = None
+    try:
+        volume_path = R.export_volume_vtk(ws)
+    except Exception:
+        logger.exception("Executor: foamToVTK volume export failed (non-fatal)")
+    # The DELIVERABLE surface: the faces this run actually produced, converted from the VTK
+    # boundary the export above leaves beside the volume. Distinct from the review mesh built
+    # earlier, which re-exports the CAD the mesher snapped TO - the right thing for the reviewer to
+    # navigate by, and the wrong thing to hand a user, who asked for the surface that was generated.
+    try:
+        from meshpipeline.engines.surface_deliverable import build_surface_msh
+        build_surface_msh(ws)
+    except Exception:
+        logger.exception("Executor: surface deliverable export failed (non-fatal)")
+    # each boundary's AREA, off the same VTK boundary: the shared port-area gate holds every
+    # inlet/outlet to the opening the user declared (engines/region_check.py)
+    try:
+        from meshpipeline.engines.region_check import patch_areas_from_vtk, recorded_port_openings
+        _areas = patch_areas_from_vtk(ws)
+        if _areas:
+            q["patch_areas_m2"] = {k: round(v, 10) for k, v in _areas.items()}
+        # ...and the openings the staging measured on the geometry: the sizes the gate holds
+        # them to (a typed size only where nothing was measured)
+        _openings = recorded_port_openings(ws)
+        if _openings:
+            q["port_openings_m2"] = _openings
+    except Exception:
+        logger.exception("Executor: patch areas not measured (non-fatal)")
+    body_bbox = None
+    try:
+        _bi = R.inspect_stl(ws)
+        if "bbox_min" in _bi and "bbox_max" in _bi:
+            body_bbox = (_bi["bbox_min"], _bi["bbox_max"])
+    except Exception:
+        logger.exception("Executor: body bbox read failed (non-fatal)")
+    patch_types = {p.get("name"): p.get("type")
+                   for p in (intake_patches or []) if p.get("name")}
+    if not patch_types and internal_flow:
+        # internal flow: derive roles from the (deterministic) patch NAMES, not an external-aero
+        # index fallback - that mislabels inlet→wall and calls the wall 'farfield' (there is no
+        # farfield inside a cavity), corrupting the reviewer's + contract's view of the boundary.
+        def _role(n: str) -> str:
+            ln = n.lower()
+            if "inlet" in ln:
+                return "inlet"
+            if "outlet" in ln:
+                return "outlet"
+            return "wall"
+        patch_types = {n: _role(n) for n in patch_entities.keys()}
+    elif not patch_types:
+        patch_types = {n: ("wall" if i == 0 else "farfield")
+                       for i, n in enumerate(patch_entities.keys())}
+    # SURFACE-CAPTURE ANCHOR - the OBJECTIVE 'surface capture' number (a vision reviewer
+    # cannot read snap quality from a render; it confabulates 'good' from face counts or
+    # 'staircased' from a blur). The ENGINE DECLARES which surfaces to compare - its snapped
+    # wall vs its reference CAD - via an optional surface_capture_reference hook; the shared
+    # metric just measures the deviation. Engines that do not body-fit a reference simply
+    # don't define the hook, so there is NO engine-name list here (capability by declaration).
+    _ref_fn = getattr(R, "surface_capture_reference", None)
+    if callable(_ref_fn) and volume_path:
+        try:
+            from meshpipeline.cad.surface_checks import surface_deviation
+            _pair = _ref_fn(ws, patch_types)
+            if _pair:
+                _sd = surface_deviation(*_pair)
+                if _sd:
+                    q["surface_deviation"] = _sd
+        except Exception:
+            logger.exception("Executor: surface-deviation metric failed (non-fatal)")
+    # The far-field box the builder PREPARED (recorded by prepare_surface) -
+    # the domain-extent gate measures this, not the octree-padded mesh bounds.
+    requested_box = None
+    _gb = ws / "geom_box.json"
+    if _gb.exists():
+        try:
+            import json as _json
+            _d = _json.loads(_gb.read_text())
+            requested_box = [_d["domain_min"], _d["domain_max"]]
+        except Exception:
+            logger.warning("Executor: could not read geom_box.json (non-fatal)")
+    # mesh_mode must record the engine that ACTUALLY built this mesh: the dispute
+    # flow pins the rebuild engine from it, and the quality report evaluates the
+    # engine's own criteria set. (It previously defaulted to "cfmesh" for every
+    # engine - a snappy mesh's dispute would have rebuilt with the wrong mesher.)
+    R.write_manifest(ws, patch_types=patch_types, patch_entities=patch_entities,
+                     bbox=bbox, quality=q, domain=domain or "",
+                     body_bbox=body_bbox, mesh_bounds=q.get("bounds"),
+                     requested_box=requested_box, volume_path=volume_path,
+                     # STATED explicitly. Every engine receives prepared metre geometry and
+                     # writes metres; the constant says so rather than a default assuming it.
+                     mesh_units=COMPLETED_MESH_UNIT.value,
+                     mesh_mode=getattr(R, "name", "") or engine or "netgen",
+                     engine_params=engine_params or {}, flow_topology=flow_topology,
+                     # the ruler the box was sized in (engines/far_field.py), so the extent
+                     # check reads the margins in the unit they were asked in
+                     reference_length=_stated_reference_length(ws))
+    fatal = q.get("fatal", [])
+    out = (f"[NETGEN] polyMesh cells={q.get('cells')} fatal={fatal} "
+           f"non_ortho={q.get('max_non_ortho')} skew={q.get('max_skewness')}")
+    return {"success": not fatal, "output": out, "stdout": out, "stderr": ""}

@@ -509,3 +509,27 @@ def test_a_mixed_run_applies_the_notes_to_its_shell_and_its_solid(tmp_path, monk
     # the solid region was planned at the size asked for, too
     plan = json.loads((ws / mixed_run.FOLDER / "solid" / "fea_plan.json").read_text())
     assert plan["base_size_m"] == pytest.approx(0.006) and plan["user_sizes"]["Part_1"]["whole"] is True
+
+
+def test_a_mesh_past_a_limit_is_set_against_435s_steps_and_the_record_tells_both(tmp_path, plate, monkeypatch):
+    """SHMESH-36: both candidate meshes - this PR's steps and #435's - and the one kept, with the rule that chose it,
+    are written into the record."""
+    from meshpipeline.engines.gmsh import shell_adapter as SA
+
+    real = SA._standing
+
+    def standing(applied, past_n, other=None, requirements=None):
+        got = real(applied, past_n, other, requirements)
+        return got if other is not None else (got[0], 0, max(got[2], 1), got[3])      # always "past a limit"
+
+    monkeypatch.setattr(SA, "_standing", standing)
+    ws = _copy(plate, tmp_path / "ws")
+    _run(ws, criteria(0.5))
+    kept = json.loads((ws / "shell_quality.json").read_text())["kept"]
+    assert kept["rule"] == "SHMESH-36" and len(kept["candidates"]) == 2
+    names = [c["mesh"] for c in kept["candidates"]]
+    assert names == ["this PR's steps (SHMESH-27..35)", "#435's steps"] and kept["kept"] in names
+    for c in kept["candidates"]:
+        assert {"elements", "trias", "past_solver", "nastran_past", "lines"} <= set(c) and len(c["lines"]) == 7
+        assert all({"id", "asked", "outside", "beyond", "worst", "met"} <= set(r) for r in c["lines"])
+    assert kept["why"] and set(kept["standing"]) == set(names)

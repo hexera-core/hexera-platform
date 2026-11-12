@@ -127,6 +127,7 @@ def test_the_thickness_row_is_told_as_a_surface_files():
                                            "in mm")
     assert out["rows"][0]["delivered"] == "elements are about 3.9 mm"
     assert srq.told(None, elements=0, thickness_mm=None) is None
+    assert srq.told({"rows": []}, elements=0, thickness_mm=1.2) is None      # nothing to say: the caller keeps its own
 
 
 # ---------------------------------------------------------------------------------------- the surface run
@@ -161,7 +162,9 @@ def test_a_global_size_the_criteria_list_and_a_thickness_all_reach_a_surface_fil
     # the size asked is the size made (the rules' own bracket is much finer)
     assert rows["global"]["met"] is True and rec["sizing"]["global_mm"] == G
     assert 0.5 * G <= _typical_edge(ws) <= 1.5 * G
-    assert rec["elements"] < plain[1]["elements"]
+    # (the rules' own bracket is meshed at its own sizes: since SHMESH-40 its four-sided faces are mapped at exactly
+    # those sizes, so it is no longer much finer than 4 mm - the count says only that the user's size made this mesh)
+    assert rec["elements"] != plain[1]["elements"]
     # every quality limit is measured and told met or not, never left out
     limits = [r for r in rec["requirements"]["rows"] if r["field"].startswith("limit:")]
     assert len(limits) == 7 and all(r["applied"] is True and r["met"] in (True, False) for r in limits)

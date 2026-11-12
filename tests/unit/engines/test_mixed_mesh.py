@@ -151,6 +151,11 @@ def test_the_join_ties_every_link_node_and_the_decks_carry_it(boss_split, tmp_pa
     assert bdf.count("\nMPC*") == len(joined.ties) and bdf.count("\nCTETRA") == len(solid.tets)
     cdb = (tmp_path / "mixed.cdb").read_text()
     assert cdb.count("\nCE,NEXT") == len(joined.ties) and cdb.rstrip().endswith("FINISH") and "ET,2,187" in cdb
+    # SHWRITE-1: the solid region's elements are the part's too, in every deck
+    n_all = joined.shell.n_elements + len(solid.tets)
+    assert sw.read_inp(tmp_path / "mixed.inp").parts == {"Part_1": set(range(1, n_all + 1))}
+    assert f"CMBLOCK,PART_1,ELEM,{n_all:>8d}" in cdb and cdb.index("ET,2,187") < cdb.index("CMBLOCK,PART_1,")
+    assert bdf.count('$HMNAME COMP                   1"Part_1"') == 2 and '$HMNAME PROP' in bdf
 
 
 def test_trimmed_mid_faces_keep_the_edges_they_share():

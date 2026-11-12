@@ -1,0 +1,188 @@
+# Responsibility: Implement the blocking gates a Netgen run must pass before review.
+# Boundaries: the flow-engine gate set: manifest validity, the patch contract, boundary typing and the quality floor.
+# ENGINE-LOCAL copy of engines/cfmesh/flow_gates.py (each OpenFOAM-family bundle owns its stack; divergence allowed).
+# Netgen hands over a finished polyMesh (gmshToFoam), so the delivery, quality and solvability machinery is cfMesh's;
+# comments that tell cfMesh's history are kept as they were.
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+
+from meshpipeline.contracts.failure_cause import FailureCause
+from meshpipeline.engines.gates import GateCtx, GateFeedback, GateSpec, refuse
+from meshpipeline.engines.passage import PASSAGE_FLOOR_CELLS
+from meshpipeline.engines.region_check import gate_port_areas
+from meshpipeline.engines.resolution_policy import CELL_LIMIT_PROVES, gate_cell_limit
+
+logger = logging.getLogger(__name__)
+
+
+#: The files an OpenFOAM polyMesh is MADE of. `owner` alone was checked, so a mesh missing its
+#: points or faces - which no solver and no reader can open - passed the deliverable gate.
+_POLYMESH_REQUIRED = ("owner", "neighbour", "points", "faces", "boundary")
+
+
+def _polymesh_is_complete(pm: Path, engine_label: str) -> tuple[bool, str]:
+    if not pm.is_dir():
+        return False, (f"constant/polyMesh missing - {engine_label} produced no volume mesh")
+    missing = [f for f in _POLYMESH_REQUIRED if not (pm / f).exists()]
+    if missing:
+        return False, (
+            f"constant/polyMesh is incomplete - missing {missing}. An OpenFOAM mesh is the whole "
+            f"set {list(_POLYMESH_REQUIRED)}; no solver or reader can open it without them. "
+            f"{engine_label} did not finish writing the mesh - run_mesh again.")
+    empty = [f for f in _POLYMESH_REQUIRED if (pm / f).stat().st_size == 0]
+    if empty:
+        return False, (f"constant/polyMesh is incomplete - {empty} are present but EMPTY; "
+                       f"{engine_label} was interrupted mid-write. Run run_mesh again.")
+    return True, ""
+
+
+def _validate_manifest(workspace: Path, domain: str = "") -> tuple[bool, str]:
+    manifest_path = workspace / "mesh_manifest.json"
+
+    if not manifest_path.exists() or manifest_path.stat().st_size == 0:
+        return False, "mesh_manifest.json missing or empty - Builder did not write manifest"
+
+    try:
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+    except json.JSONDecodeError as e:
+        return False, f"mesh_manifest.json is malformed JSON: {e}"
+
+    logger.debug("_validate_manifest: top-level keys received: %s", list(manifest.keys()))
+
+    for key in ["schema_version", "geometry", "patches", "validation"]:
+        if key not in manifest:
+            return False, f"mesh_manifest.json missing required key: {key}"
+
+    _reviewer_fields = {
+        "mesh_units":              "reviewer cannot reference physical dimensions",
+        "domain":                  "reviewer system prompt domain field will be empty",
+    }
+    for field, reason in _reviewer_fields.items():
+        if not manifest.get(field):
+            logger.warning(
+                "_validate_manifest: manifest missing '%s' - %s - job will continue - workspace=%s",
+                field, reason, workspace,
+            )
+
+    v = manifest.get("validation", {})
+
+    if not v.get("has_wall", False):
+        return False, refuse("mesh_manifest.json: no patch of TYPE wall - surface classification "
+                             "failed", FailureCause.CONTRACT_MISMATCH, missing_roles=["wall"])
+    if not (v.get("has_inflow", False) and v.get("has_outflow", False)):
+        return False, refuse(
+            "mesh_manifest.json: missing inflow/outflow boundary "
+            "(need a patch of TYPE inlet + TYPE outlet, or a single TYPE farfield)",
+            FailureCause.CONTRACT_MISMATCH, missing_roles=["inflow or outflow"])
+    _patch_val = v.get("patch_validation", {})
+    _empty = [name for name, has_faces in _patch_val.items() if not has_faces]
+    if _empty:
+        from meshpipeline.engines.preflight import zero_face_feedback
+        return False, zero_face_feedback(
+            f"mesh_manifest.json: these patches have zero faces: {_empty}", _empty, workspace)
+
+    # THE CELL LIMIT is its own gate now (resolution_policy.gate_cell_limit, cell_limit below):
+    # a note on a sound mesh, never a failure here (LAD-cfd-4).
+
+    # cfMesh writes a native OpenFOAM polyMesh.
+    if not manifest.get("mesh_written", False):
+        return False, "mesh_manifest.json: Netgen reported the mesh was not written"
+    ok, why = _polymesh_is_complete(workspace / "constant" / "polyMesh", "Netgen")
+    if not ok:
+        return False, why
+    return True, ""
+
+
+def _gate_manifest_valid(ctx: GateCtx) -> tuple[bool, str]:
+    ok, err = _validate_manifest(Path(ctx.workspace), domain=ctx.domain)
+    if ok:
+        return True, ""
+    if isinstance(err, GateFeedback):
+        return False, err.prefixed("[MANIFEST_VALIDATION_FAILED] ")
+    return False, f"[MANIFEST_VALIDATION_FAILED] {err}"
+
+
+def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
+    """The fill must span the passage where it matters: cells across the local passage at the
+    narrowest wall (5th percentile of the boundary points, measured beside the mesh). A mesh
+    without the measure (an older image) is not judged here. Side passages the flow can go round
+    are set aside (engines/passage_flow.judge_resolution). A run whose approval accepted fewer
+    cells across its narrowest spots (engines/gap_sizing: the cell limit could not hold the rule)
+    is judged against what was accepted."""
+    from meshpipeline.engines.gap_sizing import accepted_floor
+    from meshpipeline.engines.passage_flow import judge_resolution, refuse_under_resolved
+    floor = accepted_floor(ctx.workspace, ctx.engine_params) or PASSAGE_FLOOR_CELLS
+    verdict = judge_resolution(ctx.manifest_or_load().get("quality") or {}, floor)
+    if verdict.ok:
+        return True, ""
+    return False, refuse_under_resolved(
+        verdict,
+        "Fix in meshDict: lower the wall localRefinement cellSize to about 2 x (narrowest radius) "
+        "/ 13 with refinementThickness about one radius, lower maxCellSize, and run_mesh again.")
+
+
+def _gate_patch_contract(ctx: GateCtx) -> tuple[bool, str]:
+    manifest = ctx.manifest_or_load()
+    if not (manifest and ctx.intake_patches):
+        return True, ""
+    from meshpipeline.engines.contract import check_contract
+    ok, diag = check_contract(
+        intake_patches=ctx.intake_patches,
+        manifest_patches=manifest.get("patches", []),
+        manifest_patch_types=manifest.get("patch_types", {}),
+    )
+    return ok, ("" if ok else diag)
+
+
+def _gate_boundary_types(ctx: GateCtx) -> tuple[bool, str]:
+    from meshpipeline.engines.netgen.deliverable import reconcile_boundary_types
+    reason = reconcile_boundary_types(ctx.workspace, ctx.intake_patches or [])
+    return (False, reason) if reason else (True, "")
+
+
+def _gate_quality_floor(ctx: GateCtx) -> tuple[bool, str]:
+    # This engine's OWN declared gating criteria, enforced before the reviewer can see the mesh.
+    # The bars and thresholds are the engine's (engines/cfmesh/criteria.py); this gate adds none.
+    # gmsh and vmtk have always had the equivalent boundary (sicn_floor / quality_floor); cfmesh
+    # declared its bars, published them in the manifest, and nothing consumed them.
+    from meshpipeline.engines.quality_criteria import gate_declared_criteria
+    return gate_declared_criteria("netgen", ctx.manifest_or_load())
+
+
+FLOW_GATES: tuple[GateSpec, ...] = (
+    GateSpec(key="manifest_valid", check=_gate_manifest_valid, section="MANIFEST",
+             proves="The mesh is structurally sound - no negative-volume, open or mis-oriented cells",
+             cause=FailureCause.ENGINE_CRASHED),
+    # Soundness BEFORE naming: run_gates stops at the first blocking failure, so with the
+    # floor last a patch-name mismatch refused the run while leaving its quality unmeasured.
+    # Deliverability, then is-it-sound, then is-it-what-was-asked-for.
+    GateSpec(key="quality_floor",  check=_gate_quality_floor,       section="MESH",
+             proves="The mesh clears every quality bar Netgen requires - no fatal topology defects",
+             cause=FailureCause.MESH_QUALITY),
+    # Well-shaped is not adequately resolved: after the quality floor (a broken mesh is the
+    # worse news), before naming (an under-resolved mesh is not worth patch-checking).
+    # A NOTE ON A SOUND MESH, NOT A FAILURE (engines/resolution_policy, LAD-cfd-1/3): every
+    # gate after it still runs, the executor records the shortfall, the router climbs the
+    # resolution ladder while a rung is left, and a sound mesh is delivered with the note after.
+    GateSpec(key="cell_limit", check=gate_cell_limit, blocking=False, section="MESH",
+             proves=CELL_LIMIT_PROVES, cause=FailureCause.CELL_BUDGET),
+    GateSpec(key="resolution_floor", check=_gate_resolution_floor, blocking=False, section="MESH",
+             proves="Every passage the flow must go through is spanned by enough cells to carry it (12 at the narrowest wall)",
+             cause=FailureCause.UNDER_RESOLVED),
+    GateSpec(key="patch_contract", check=_gate_patch_contract, section="GROUPS",
+             proves="Every boundary you named exists in the mesh, and carries real faces",
+             cause=FailureCause.CONTRACT_MISMATCH),
+    # SHARED with every engine (engines/region_check.py): each declared inlet/outlet delivered at
+    # about the size declared - a port that swept in the wall round it, or a mesh of another
+    # region, is refused here though every other gate passes
+    GateSpec(key="port_areas", check=gate_port_areas, section="GROUPS",
+             proves="Every inlet and outlet is the opening you declared, at its size",
+             cause=FailureCause.PATCH_NOT_CAPTURED),
+    GateSpec(key="boundary_types", check=_gate_boundary_types, section="GROUPS",
+             proves="Each boundary is typed as the solver needs it (wall / symmetry / empty)",
+             cause=FailureCause.BOUNDARY_TYPE),
+)
