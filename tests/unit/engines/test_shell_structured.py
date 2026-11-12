@@ -79,6 +79,19 @@ def test_near_lines_are_one_only_where_every_ring_keeps_its_room():
     assert ST._cluster([(0.0, "edge"), (4.0, "0")], 5.0, {"0": (-1.0, 6.0)}) == [(0.0, True, [0])]
 
 
+def test_lines_kept_apart_move_apart_to_no_sliver():
+    """SHMESH-48m, a real top plate: two box sides 0.64 mm apart that no one place suits (each ring's room) stayed two
+    lines and left a 0.64 mm cell; now each moves away from the other inside its own limits, to the gap asked."""
+    vals = [(10.0, "0"), (10.64, "1")]
+    limits = {"0": (5.0, 10.2), "1": (10.5, 16.0)}
+    got = ST._cluster(vals, 5.0, limits, min_gap=4.2)
+    assert [g[2] for g in got] == [[0], [1]]
+    assert got[1][0] - got[0][0] >= 4.2 - 1e-9
+    assert all(limits[str(g[2][0])][0] - 1e-9 <= g[0] <= limits[str(g[2][0])][1] + 1e-9 for g in got)
+    # (without the gap asked: as before)
+    assert [g[0] for g in ST._cluster(vals, 5.0, limits)] == [10.0, 10.64]
+
+
 # ------------------------------------------------------------------------------------------- the measure
 def _grid(nx: int, ny: int) -> ShellMesh:
     xyz = np.array([[i, j, 0.0] for j in range(ny + 1) for i in range(nx + 1)], dtype=float)

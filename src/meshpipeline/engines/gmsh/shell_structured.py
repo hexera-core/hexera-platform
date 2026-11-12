@@ -912,6 +912,8 @@ SNAP_LIMITS = True
 #: SHMESH-48k: a square hole along the frame takes its ring as cells of the grid (else a free box, SHMESH-48h)
 SQUARE_GRID = False
 CELL_MIN = 0.4
+#: SHMESH-48m: lines kept apart (no one place suits both) move apart to this many CELL_MIN, inside their limits
+GAP_MIN = 1.05
 #: ... straight edges within PARALLEL_DEG of the face's frame count as running along it
 PARALLEL_DEG = 1.0
 
@@ -982,7 +984,8 @@ def _frame(gmsh, t: int, outer: list[int]) -> tuple[np.ndarray, np.ndarray, np.n
 
 
 def _cluster(values: list[tuple[float, str]], tol: float,
-             limits: dict[str, tuple[float, float]] | None = None) -> list[tuple[float, bool, list[int]]]:
+             limits: dict[str, tuple[float, float]] | None = None, min_gap: float = 0.0
+             ) -> list[tuple[float, bool, list[int]]]:
     """Values along one axis ((value, kind): kind "edge" for a straight edge of the face there, else a box side's
     index) joined where neighbours are closer than tol: [(the value - an edge's where one stands -, whether an edge
     stands there, the box sides on it)]. SHMESH-48i: with `limits` ({kind: (lowest, highest)} - where each box side
@@ -1008,7 +1011,10 @@ def _cluster(values: list[tuple[float, str]], tol: float,
         if limits is not None and not edges and not pins and span[0] <= span[1]:
             at = min(max(at, span[0]), span[1])
         out.append((at, bool(edges), [int(k) for _x, k in group if k not in ("edge", "pin")]))
+        free = not edges and not pins and limits is not None and span[0] <= span[1]
+        spans.append((span[0], span[1]) if free else (at, at))
 
+    spans: list[tuple[float, float]] = []
     for val, kind in sorted(values) + [(math.inf, "")]:
         if group:
             lo, hi = fits(kind, val) if math.isfinite(val) else (math.inf, -math.inf)
@@ -1022,6 +1028,22 @@ def _cluster(values: list[tuple[float, str]], tol: float,
             if not group:
                 span = fits(kind, val)
             group.append((val, kind))
+    if min_gap > 0:
+        # SHMESH-48m: two lines kept apart (no one place suits both) but nearer than min_gap would leave a sliver
+        # cell ("a cell edge 0.64 mm, under 4 mm"): each moves away from the other inside its own limits
+        for i in range(len(out) - 1):
+            (a, ea, sa), (b, eb, sb) = out[i], out[i + 1]
+            gap = b - a
+            if not (sa and sb) or gap >= min_gap or gap > tol:
+                continue
+            need = min_gap - gap
+            down = min(0.5 * need, a - spans[i][0])
+            up = min(need - down, spans[i + 1][1] - b)
+            down = min(need - up, a - spans[i][0])
+            if down + up >= need - 1e-12:
+                out[i], out[i + 1] = (a - down, ea, sa), (b + up, eb, sb)
+                spans[i] = (spans[i][0], a - down)
+                spans[i + 1] = (b + up, spans[i + 1][1])
     return out
 
 
@@ -1235,7 +1257,8 @@ def _needs_join(gmsh, t: int, fp: dict, by_face: dict[int, list[Washer]], tag_of
     eps = 1e-6 * h
     lines: dict[str, list[float]] = {"u": [], "v": []}
     for ax in ("u", "v"):
-        for at, edge, sides in _cluster(fp["vals"][ax], SNAP * h, fp["limits"] if SNAP_LIMITS else None):
+        for at, edge, sides in _cluster(fp["vals"][ax], SNAP * h, fp["limits"] if SNAP_LIMITS else None,
+                                        GAP_MIN * CELL_MIN * h):
             if not edge and sides:
                 lines[ax].append(at)
     for c in fp["outer"]:
@@ -1265,7 +1288,8 @@ def _split_beside(gmsh, t: int, fp: dict, by_face: dict[int, list[Washer]], tag_
     lines: dict[str, list[float]] = {"u": [], "v": []}
     moved: dict[int, float] = {}
     for ax in ("u", "v"):
-        for at, edge, sides in _cluster(fp["vals"][ax], SNAP * h, fp["limits"] if SNAP_LIMITS else None):
+        for at, edge, sides in _cluster(fp["vals"][ax], SNAP * h, fp["limits"] if SNAP_LIMITS else None,
+                                        GAP_MIN * CELL_MIN * h):
             if ax == "u":
                 moved.update({int(sd): at for sd in sides})
             if not edge and sides:
@@ -1423,7 +1447,7 @@ def _join_faces(gmsh, by_face: dict[int, list[Washer]], tag_of: dict[int, int], 
                 seg = _straight(gmsh, c)
                 if seg is not None:
                     vals += [(float(seg[0] @ axis), "edge"), (float(seg[1] @ axis), "edge")]
-        out = _cluster(vals, SNAP * h, lim if SNAP_LIMITS else None)
+        out = _cluster(vals, SNAP * h, lim if SNAP_LIMITS else None, GAP_MIN * CELL_MIN * h)
         places = [at for at, _e, sides in out if sides]
         for fi, f in enumerate(members):
             off, sg = frame_of[f]
@@ -1555,7 +1579,8 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                     for sd, at in jt[1].items():
                         boxes[sd // 4][sd % 4] = at
                     continue
-                for at, edge, sides in _cluster(vals[ax], SNAP * h, limits if SNAP_LIMITS else None):
+                for at, edge, sides in _cluster(vals[ax], SNAP * h, limits if SNAP_LIMITS else None,
+                                                GAP_MIN * CELL_MIN * h):
                     for sd in sides:
                         boxes[sd // 4][sd % 4] = at
                     if not edge and sides:
