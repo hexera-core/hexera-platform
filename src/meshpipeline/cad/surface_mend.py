@@ -1470,8 +1470,11 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
                 return fgot, "", "filled with a new face", width
             why = fwhy or why
         # 1e. A HOLE FILLED: the gap is part of a hole its faces close round (a face the drawing left out) - one new
-        # face spans it
-        hgot, hwhy, width, round_ = _with_hole(here, p, allowed)
+        # face spans it. Not a gap the stitching closes next (within SURF-8's rule, GAP_RULE sew tolerances): a hole of
+        # a twentieth of a millimetre filled with a face of its own meshes to slivers that do not join (12 Nov: 70 free
+        # mesh edges more on a look-alike whose 0.05 mm place the stitching had closed)
+        rule = sc.GAP_RULE * here.tol
+        hgot, hwhy, width, round_ = _with_hole(here, p, allowed) if gap > rule else (None, "", gap, [])
         before = {tuple(map(tuple, x["pairs"])) for x in bp}
         for _more in range(HOLE_CHAIN):
             # a face between two holes (a sliver both its free edges are on): the first hole filled leaves its
@@ -1479,7 +1482,7 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
             if hgot is None or gone(hgot):
                 break
             fresh = [x for x in sm.open_places(hgot, mm_per_unit=1.0, reach=look)
-                     if tuple(map(tuple, x["pairs"])) not in before and float(x["gap_mm"]) <= allowed]
+                     if tuple(map(tuple, x["pairs"])) not in before and rule < float(x["gap_mm"]) <= allowed]
             if not fresh:
                 break
             nxt = min(fresh, key=lambda x: (float(x["gap_mm"]), list(x["at_mm"])))
