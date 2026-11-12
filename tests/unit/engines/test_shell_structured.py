@@ -612,3 +612,32 @@ def test_an_empty_curve_loop_costs_no_washer(web, monkeypatch):
     s = applied["quality"]["structure"]
     assert "guard" not in s, s.get("guard")
     assert s["washers"] == plain["quality"]["structure"]["washers"] > 0
+
+
+def test_a_base_plate_with_a_central_hole_keeps_rings_and_strips_inside_every_line(tmp_path):
+    """SHMESH-49d..i, a real base plate (bolt holes about two sizes across round a central hole): square boxes with
+    bowed sides (no 45 degree O-grid corner), the band inside the bolt circle paved, and the plate judged on its own
+    elements after its holes are drawn again - rings and strips with every line met, or the free-face washers."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    shape = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 250.0, 20.0).Shape()
+    shape = BRepAlgoAPI_Cut(shape, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, -1), gp_Dir(0, 0, 1)), 110.0,
+                                                            22.0).Shape()).Shape()
+    for j in range(8):
+        a = math.radians(22.5 + 45 * j)
+        hole = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(190 * math.cos(a), 190 * math.sin(a), -1), gp_Dir(0, 0, 1)),
+                                        11.0, 22.0).Shape()
+        shape = BRepAlgoAPI_Cut(shape, hole).Shape()
+    rec, surf = ms_extract(shape)
+    brep = tmp_path / "base.brep"
+    BRepTools.Write_s(surf, str(brep))
+    mesh, applied = _mesh(brep, rec, _criteria())
+    s = applied["quality"]["structure"]
+    assert s["washers_ogrid"] == 8 and s["grids_freed"] == 0, s
+    assert len(mesh.trias) <= ST.POLAR_TRIAS
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+    assert all(r["met"] is not False and (r["met"] is True or r["field"] == "min_edge")
+               for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]

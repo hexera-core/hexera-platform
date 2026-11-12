@@ -1012,6 +1012,7 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         # that take no washer (sh0028: a longest edge 17% past 1.5 G, 75 mm from the one hole drawn again)
         unseated = brep
         redraw_pass = not (ST.RESEAT and ST.WASHERS and SR.structure_of(requirements) not in ("free", "no_washers"))
+        redraw_off = redraw_pass
         resplined = loops = 0
         started = time.monotonic()
         unmap: set[int] = set()
@@ -1027,6 +1028,10 @@ def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
                 # SHMESH-47b: those faces' grids left out (their joined faces whole); counts as a round of SHMESH-40
                 no_cut |= nc.faces
                 unmapped += 1
+                if brep != unseated and not resplined:
+                    # their holes drawn again for the O-grids go back to the CAD's own: the next pass draws again only
+                    # what the remaining rings and O-grids ask for (SHMESH-49g)
+                    brep, reseated, redrawn, redraw_pass = unseated, 0, [], redraw_off
                 continue
             except _Unmap as u:
                 # SHMESH-40: a grid that came out past the solver's limits is meshed free (the rest mapped again)
@@ -1852,11 +1857,43 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
     remap[used] = np.arange(len(used))
     Q, T, xyz = remap[Q], remap[T], xyz[used]
     face_of = np.array(q_face + t_face, dtype=np.int64)
-    if check_maps and ST.POLAR_CHECK and polar_faces_made:
+    seam_due = any(not any(float(np.linalg.norm(np.asarray(c, dtype=float) - w.centre)) <= 0.25 * w.r
+                           for c, _e in hole_before) for w in gridded if w.seam)
+    if check_maps and ST.POLAR_CHECK and polar_faces_made and not seam_due:
+        # (judged only once its O-grid holes start where they are cut: the pass before is drawn again anyway)
         # SHMESH-49g: a round plate whose rings and strips end with more than POLAR_TRIAS triangles on it (the
         # clean-up split quads past the limits there) is meshed on the next pass with its free-face washers
         on_plate = Counter(int(k) for k in t_face if int(k) in polar_faces_made)
         hurt_p = {k for k, n in on_plate.items() if n > ST.POLAR_TRIAS}
+        # ... or with an element on it past the solver's own limits, or an edge over the user's longest edge (a line
+        # the report holds to every element): the plate's free-face washers met them
+        high_p = (sizing or {}).get("high_mm")
+        for els, faces_, measure, past_fn in ((Q, q_face, shell_quality.quad_measures, shell_quality._quad_past),
+                                              (T, t_face, shell_quality.tria_measures, shell_quality._tria_past)):
+            if not len(els):
+                continue
+            fk = np.asarray(faces_, dtype=np.int64)
+            for kp in polar_faces_made - hurt_p:
+                mine = els[fk == kp]
+                if not len(mine):
+                    continue
+                longest = np.linalg.norm(xyz[mine] - xyz[np.roll(mine, -1, axis=1)], axis=2).max()
+                if past_fn(measure(xyz, mine)).any() or (high_p is not None and float(longest) > float(high_p)):
+                    hurt_p.add(kp)
+        if requirements and requirements.get("limits"):
+            # ... or a quality line of the user's not met on the plate's own elements (the report's own rule)
+            import types as _types
+
+            qk, tk = np.asarray(q_face, dtype=np.int64), np.asarray(t_face, dtype=np.int64)
+            for kp in polar_faces_made - hurt_p:
+                plate_q: dict = shell_quality.quad_measures(xyz, Q[qk == kp], extra=True) if (qk == kp).any() else {}
+                plate_t: dict = shell_quality.tria_measures(xyz, T[tk == kp], extra=True) if (tk == kp).any() else {}
+                sub = _types.SimpleNamespace(n_elements=int((qk == kp).sum() + (tk == kp).sum()))
+                for lim_ in requirements["limits"]:
+                    row_ = SR._limit_row(lim_, sub, plate_q, plate_t)
+                    if row_.get("applied") and row_.get("met") is not True:
+                        hurt_p.add(kp)
+                        break
         if hurt_p:
             raise _NoCut(hurt_p)
     mids = {m["id"]: m for m in record["mids"]}

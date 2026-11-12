@@ -1494,6 +1494,12 @@ POLAR_CHECK = True
 POLAR_TRIAS = 4
 #: SHMESH-49f: each hole's box square (straight across its strip) or bounded by the bolt circle's rings (arcs)
 POLAR_SQUARE = True
+#: SHMESH-49h: each box side bowed out by this many degrees at its ends: a square box's corner splits into two 45 degree
+#: O-grid corners, on the quad-angle line (split into triangles by the clean-up); bowed, 45 plus this
+POLAR_BOW = 12.0
+#: SHMESH-49i: spokes run on inside the bolt circle's inner ring to a central hole (off: that band is one paved ring - a
+#: count running from the central hole to the rim could not keep both its ends inside the user's edges)
+POLAR_INNER_SPOKES = False
 POLAR_ROUND = 0.02
 POLAR_EVEN = 1.5
 POLAR_GAP = 3.0
@@ -1627,7 +1633,7 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
         if r2 > Ro or r1 < Ri:
             no("the washers' sectors run past the plate")
             continue
-        start = Ri if Ri > 0 and not inner_shared else r1
+        start = Ri if Ri > 0 and not inner_shared and POLAR_INNER_SPOKES else r1
         # SHMESH-49b: a washer's strip is bounded by two lines parallel to its radial line, b each side, from the
         # bolt circle's inner ring out to the rim: as wide (2b) at the rim as at its box, so its quarter count fits all
         # the way along (radial spokes fanned out: the arcs at the rim came out 1.2 times the box). SHMESH-49d: inside
@@ -1672,6 +1678,18 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                   use_o=use_o, R_of=R_of, sector_corners=sector_corners, e1=e1, e2=e2) -> list[tuple[int, int]]:
             out = []
             centre_pt = occ.addPoint(*[float(x) for x in C])
+            centre_of = {a_: w_.centre for a_, w_ in ang}
+
+            def bowed(t0: int, t1: int, p0: np.ndarray, p1: np.ndarray, hc: np.ndarray) -> tuple[int, int]:
+                """SHMESH-49h: a box side from p0 to p1, bowed away from its hole's centre hc by POLAR_BOW."""
+                mid = 0.5 * (p0 + p1)
+                away = mid - hc
+                away = away - float(away @ n_face) * n_face
+                away /= max(float(np.linalg.norm(away)), 1e-300)
+                sag = 0.5 * float(np.linalg.norm(p1 - p0)) * math.tan(math.radians(POLAR_BOW) / 2)
+                if sag <= 0:
+                    return (1, occ.addLine(t0, t1))
+                return (1, occ.addCircleArc(t0, occ.addPoint(*[float(x) for x in mid + sag * away]), t1, center=False))
             for r in sorted({r1, r2} - {Ri, Ro, 0.0}):
                 # the ring at r: straight across each strip (its box's square side), an arc between strips
                 on_r = sorted(((math.atan2(float((on(r, a_, off) - C) @ e2), float((on(r, a_, off) - C) @ e1))
@@ -1681,13 +1699,23 @@ def polar_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                     k_ = (j + 1) % len(on_r)
                     same_strip = POLAR_SQUARE and on_r[j][1] == on_r[k_][1] and on_r[j][2] < 0 < on_r[k_][2]
                     if same_strip:
-                        out.append((1, occ.addLine(tags[j], tags[k_])))
+                        out.append(bowed(tags[j], tags[k_], on(r, on_r[j][1], on_r[j][2]),
+                                         on(r, on_r[k_][1], on_r[k_][2]), centre_of[on_r[j][1]]))
                     else:
                         out.append((1, occ.addCircleArc(tags[j], centre_pt, tags[k_])))
             for a, off in spokes:
                 bend = on(r1, a, off)
-                out.append((1, occ.addLine(occ.addPoint(*[float(x) for x in bend]),
-                                           occ.addPoint(*[float(x) for x in on(Ro * 1.02, a, off)]))))
+                if off != 0.0 and POLAR_SQUARE and POLAR_BOW > 0 and r2 < Ro - 1e-9:
+                    # a box's side (r1 to r2 along its strip) bowed out, then straight on to the rim
+                    bend2 = on(r2, a, off)
+                    out.append(bowed(occ.addPoint(*[float(x) for x in bend]), occ.addPoint(*[float(x) for x in bend2]),
+                                     bend, bend2, centre_of[a]))
+                    if r2 < Ro - 1e-9:
+                        out.append((1, occ.addLine(occ.addPoint(*[float(x) for x in bend2]),
+                                                   occ.addPoint(*[float(x) for x in on(Ro * 1.02, a, off)]))))
+                else:
+                    out.append((1, occ.addLine(occ.addPoint(*[float(x) for x in bend]),
+                                               occ.addPoint(*[float(x) for x in on(Ro * 1.02, a, off)]))))
                 if start < r1 - 1e-9:
                     # inside the inner ring: radial, through the bend, in to the central hole
                     u_ = (bend - C) / max(float(np.linalg.norm(bend - C)), 1e-300)
