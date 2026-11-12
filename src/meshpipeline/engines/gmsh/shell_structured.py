@@ -67,6 +67,14 @@ class Washer:
     info: dict = field(default_factory=dict)  # SHMESH-45c: the hole's line in the record (quality.structure.hole_list)
 
 
+def _curve_loops(gmsh, t: int) -> tuple[list, list]:
+    """SHMESH-45h: gmsh's curve loops of a surface without the empty ones it gives for some faces (an empty loop read
+    as a hole raised in the hole record, or kept a face from its grid)."""
+    tags, loops = gmsh.model.occ.getCurveLoops(t)
+    keep = [i for i, cl in enumerate(loops) if len(cl)]
+    return [tags[i] for i in keep], [loops[i] for i in keep]
+
+
 def _samples(gmsh, curve: int, n: int = 24) -> np.ndarray:
     lo, hi = gmsh.model.getParametrizationBounds(1, curve)
     ts = np.linspace(lo[0], hi[0], n + 1)
@@ -295,8 +303,10 @@ def plan_washers(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], hole_s
     for t, k in sorted(tag_of.items()):
         if gmsh.model.getType(2, t) != "Plane":
             continue
-        _l, loops = gmsh.model.occ.getCurveLoops(t)
-        loops = [[abs(int(c)) for c in cl] for cl in loops]
+        _l, loops = _curve_loops(gmsh, t)
+        # (an empty loop - gmsh gives one for some faces - is no hole: the record's sampling of it raised and cost
+        # every washer of the part, SHMESH-45h)
+        loops = [[abs(int(c)) for c in cl] for cl in loops if len(cl)]
         if len(loops) < 2:
             continue
         # the outer loop is the longest
@@ -405,8 +415,8 @@ def _rings_whole(gmsh, t: int, ws: list[Washer], omap) -> bool:
         curves = [c for d, c in got if d == 1]
         if len(curves) != 1:
             return False
-        if not any([curves[0]] in [[abs(int(c)) for c in cl] for cl in gmsh.model.occ.getCurveLoops(s)[1]]
-                   and len(gmsh.model.occ.getCurveLoops(s)[1]) == 2 for s in new):
+        if not any([curves[0]] in [[abs(int(c)) for c in cl] for cl in _curve_loops(gmsh, s)[1]]
+                   and len(_curve_loops(gmsh, s)[1]) == 2 for s in new):
             return False
     return True
 
@@ -485,7 +495,7 @@ def imprint(gmsh, washers: list[Washer], tag_of: dict[int, int], cuts: set[int] 
             for w, got in zip([w for w in use if not w.corners], omap[1:], strict=False):
                 w.ring = [c for d, c in got if d == 1][0]
                 for x in new:
-                    _l, loops = occ.getCurveLoops(x)
+                    _l, loops = _curve_loops(gmsh, x)
                     loops = [[abs(int(c)) for c in cl] for cl in loops]
                     if len(loops) == 2 and [w.ring] in loops:
                         other = [cl for cl in loops if cl != [w.ring]][0]
@@ -621,7 +631,7 @@ def _four_sided(gmsh, t: int) -> tuple[list[list[int]], list[int]] | None:
     """(its four sides - each the curves along it, in loop order -, its four corner points) when the surface's one
     loop has exactly four corners and its other vertices are smooth; opposite sides alike within MAP_ALIKE; else
     None."""
-    _l, loops = gmsh.model.occ.getCurveLoops(t)
+    _l, loops = _curve_loops(gmsh, t)
     if len(loops) != 1:
         return None
     cl = [abs(int(c)) for c in loops[0]]
@@ -954,7 +964,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
         try:
             h_mm = size_mm[t]
             h = h_mm / mm
-            _l, loops = gmsh.model.occ.getCurveLoops(t)
+            _l, loops = _curve_loops(gmsh, t)
             loops = [[abs(int(c)) for c in cl] for cl in loops]
             hole_loops = [sorted(w.hole) for w in ws]
             rest = [cl for cl in loops if sorted(cl) not in hole_loops]
@@ -1123,7 +1133,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                         raise ValueError("a washer's ring did not come out as one circle")
                     w.ring, w.hole_after = ring_c[0], hole_c
                     for s in new:
-                        _l3, lp = gmsh.model.occ.getCurveLoops(s)
+                        _l3, lp = _curve_loops(gmsh, s)
                         lp = [sorted(abs(int(c)) for c in cl) for cl in lp]
                         if len(lp) == 2 and [w.ring] in lp and _on_hole(gmsh, w, [c for cl in lp for c in cl if c != w.ring]):
                             w.annulus = s
