@@ -1363,6 +1363,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         band_known: dict[int, int] = {}
         grid_faces_made: set[int] = set()   # SHMESH-48f: the faces cut into a grid
         boxed: list = []                    # washers in a gridded face's free boxes: their own ring
+        box_wish: dict[int, int] = {}       # SHMESH-48q: the counts free boxes' sides ask for (their two-to-one row)
         rings: list = []                    # washers in a free face: their own ring mesh (ST.ring_mesh)
         block_preset: dict[int, int] = {}
         block_holes: set[int] = set()
@@ -1408,7 +1409,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     gmsh, washers + squares, tag_of, {t: float(rows[k]["size_mm"]) for t, k in tag_of.items()}, hole_size, mm,
                     cuts=cut_curves, low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
                     cells_out=grid_cells, no_cut=no_cut, cut_out=cut_of, made_out=grid_faces_made, join_out=join_of,
-                    why_where=skipped_where)
+                    why_where=skipped_where, wish_out=box_wish)
             for w in gridded:
                 w.info["kind"] = "o-grid in a gridded face"
             for w in boxed:
@@ -1475,7 +1476,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                 preset={**strip_counts, **block_preset},
                 low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
                 fine_at=short_edges["fine_at"] if short_edges else None,
-                growth=growth)
+                growth=growth, wish=box_wish)
             # SHMESH-48c: a grid line's piece that bounds free cells only (between neighbouring washers' free boxes,
             # a column of them in rows of bolt holes) is counted by no mapped face, and gmsh's own count there left a
             # triangle in each box. Each such piece takes the count nearest its length over the size, one more where
@@ -1510,6 +1511,8 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
                     c_open = left[0]
                     h_c = float(rows[tag_of[f_]]["size_mm"]) / mm
                     n_c = max(1, round(float(gmsh.model.occ.getMass(1, c_open)) / h_c))
+                    # (SHMESH-48q: a free box's side its own two-to-one row asks for, BAND_SEG sizes long)
+                    n_c = box_wish.get(c_open, n_c)
                     if (sum(known[x] for x in curves_f if x != c_open) + n_c) % 2:
                         n_c += 1
                     known[c_open] = n_c
@@ -1768,6 +1771,22 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             xyz = np.vstack([xyz, pts])
             quads.append(ring)
             q_face += [w.owner] * len(ring)
+        box_done: set[int] = set()
+        if ST.FREE_BAND and structure != "free":
+            # SHMESH-48q: a free box's cell is our own two-to-one row of quads where its counts and shapes suit (gmsh's
+            # paving stays where they do not)
+            for w in rings:
+                if not w.box or w.annulus not in ring_of or w.box not in tag_of:
+                    continue
+                try:
+                    quads_x = ST.box_band(gmsh, w, index, xyz, mm, lim, high)
+                except ValueError as exc:
+                    w.info["box_band"] = str(exc)[:200]
+                    continue
+                w.info["box_band"] = "made"
+                box_done.add(w.box)
+                quads.append(quads_x)
+                q_face += [w.owner] * len(quads_x)
         band_done: set[int] = set()
         for t_b, bd in sorted(band_of.items()):
             try:
@@ -1781,7 +1800,7 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
             quads.append(quads_b)
             q_face += [tag_of[t_b]] * len(quads_b)
         for t, k in sorted(tag_of.items()):
-            if t in ring_of or t in band_done:
+            if t in ring_of or t in band_done or t in box_done:
                 continue
             types, _tags, conns = gmsh.model.mesh.getElements(2, t)
             for et, conn in zip(types, conns, strict=True):

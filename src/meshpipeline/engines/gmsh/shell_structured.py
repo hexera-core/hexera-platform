@@ -68,6 +68,8 @@ class Washer:
     annulus: int = 0                # ... the surface between hole and ring
     hole_after: list[int] = field(default_factory=list)
     info: dict = field(default_factory=dict)  # SHMESH-45c: the hole's line in the record (quality.structure.hole_list)
+    box: int = 0                    # SHMESH-48q: a free box's cell round its ring (between the ring and the box)
+    box_corners: list = field(default_factory=list)   # ... its four corners (model units, round the face's normal)
 
 
 def _curve_loops(gmsh, t: int) -> tuple[list, list]:
@@ -732,7 +734,7 @@ def _spread(total: int, lengths: list[float]) -> list[int] | None:
 
 def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float, *, skip: set[int],
               preset: dict[int, int], low_mm: float | None = None, fine_at: dict[int, float] | None = None,
-              growth: float = 1.3, arc_mm=None, high_mm: float | None = None
+              growth: float = 1.3, arc_mm=None, high_mm: float | None = None, wish: dict[int, int] | None = None
               ) -> tuple[dict[int, list[int]], dict[int, int]]:
     """SHMESH-40: every four-cornered face (_four_sided) not in `skip` is meshed as a mapped grid. Opposite sides that
     are one curve each take one count, and so does every curve they share with other mapped faces (a pipe's pieces,
@@ -804,6 +806,7 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
             if len(pre) > 1:
                 bad |= faces_of[r]
                 continue
+            wished = sorted({wish[c] for c in cs if c in wish}) if wish else []
             if pre:
                 n = pre.pop()
             else:
@@ -826,6 +829,14 @@ def map_faces(gmsh, tag_of: dict[int, int], size_mm: dict[int, float], mm: float
                 free_beside = any(s not in cand for c in cs for s in gmsh.model.getAdjacencies(1, c)[0] if s in tag_of)
                 if n > 1 and n % 2 and free_beside and (low_mm is None or min(length[c] for c in cs) * mm / (n + 1) >= low_mm):
                     n += 1
+                if len(wished) == 1:
+                    # SHMESH-48q: a free box's side asks for n/4 + 2 (its own two-to-one row) where nothing holds the
+                    # class, its longest curve no coarser and its shortest no finer than the class's own count allows
+                    k_ = wished[0]
+                    if (longest / k_ <= MAP_LONGEST * h + 1e-12
+                            and (high_mm is None or longest * mm / k_ <= 0.98 * high_mm)
+                            and (low_mm is None or min(length[c] for c in cs) * mm / k_ >= low_mm)):
+                        n = k_
             for c in cs:
                 counts[c] = n
         # chains: a side of several curves takes its opposite side's count, spread by length
@@ -921,6 +932,17 @@ OUTLINE_PINS = True
 PIN_CLEAR = True
 #: ... straight edges within PARALLEL_DEG of the face's frame count as running along it
 PARALLEL_DEG = 1.0
+#: SHMESH-48q: a free box's cell between its ring (n elements round) and its box is our own one row of quads, two to
+#: one (box_band): each box side n/4 + 2 segments (asked of the grid's counts, never forced), the ring's quarter facing
+#: the side's middle n/4, a kite at each corner. Where the counts or the quads' shapes do not suit, gmsh's paving stays
+FREE_BAND = True
+#: ... a box side asks for its count only where its segments come out between these face sizes
+BAND_SEG = (0.6, 1.4)
+#: ... and with no user limits its quads stay inside these
+BAND_AIMS = (("quad", "min_angle_quad", ">=", 40.0, 30.0, 0.0), ("quad", "max_angle_quad", "<=", 140.0, 150.0, 0.0),
+             ("quad", "aspect", "<=", 4.0, 6.0, 0.0))
+#: ... of which at most BAND_SPARE quads may stand between a target and its outer limit (none past one)
+BAND_SPARE = 2
 
 
 def _boxed(r_mm: float, hole_mm: float, h_mm: float, low_mm: float | None = None,
@@ -1092,6 +1114,118 @@ def _remove_loose(gmsh, curves: set[int]) -> None:
     if loose:
         gmsh.model.occ.remove(loose, recursive=True)
         gmsh.model.occ.synchronize()
+
+
+def _mark_box(gmsh, w: Washer, corners: list[np.ndarray], cells: list[int], h: float, mm: float,
+              high_mm: float | None, wish: dict[int, int]) -> None:
+    """SHMESH-48q: note a free box's cell (between its ring and its box) and its corners on the washer, and ask each
+    box side that is one curve for n/4 + 2 segments (`wish`: the grid's counts take it where nothing else holds the
+    curve) when they come out BAND_SEG face sizes long and under the user's longest edge."""
+    for s in cells:
+        if s == w.annulus:
+            continue
+        _l, lp = _curve_loops(gmsh, s)
+        lp = [[abs(int(c)) for c in cl] for cl in lp]
+        if len(lp) == 2 and [w.ring] in lp:
+            w.box = s
+            outer = next(cl for cl in lp if cl != [w.ring])
+            break
+    else:
+        return
+    w.box_corners = [np.asarray(c, dtype=float) for c in corners]
+    k = w.n // 4 + 2
+    seg_hi = BAND_SEG[1] * h
+    if high_mm is not None:
+        seg_hi = min(seg_hi, 0.98 * float(high_mm) / mm)
+    tol = 1e-6 * max(h, 1e-300)
+    for i in range(4):
+        a, b = w.box_corners[i], w.box_corners[(i + 1) % 4]
+        for c in outer:
+            pa, pb = _samples(gmsh, c, 1)
+            if min(np.linalg.norm(pa - a) + np.linalg.norm(pb - b), np.linalg.norm(pa - b) + np.linalg.norm(pb - a)) > tol:
+                continue
+            seg = float(gmsh.model.occ.getMass(1, c)) / k
+            if gmsh.model.getType(1, c) == "Line" and BAND_SEG[0] * h <= seg <= seg_hi:
+                wish[c] = k
+            break
+
+
+def box_band(gmsh, w: Washer, index: np.ndarray, xyz: np.ndarray, mm: float, limits=None,
+             high_mm: float | None = None) -> np.ndarray:
+    """SHMESH-48q: a free box's own mesh between its ring and its box, in place of gmsh's paving: one row of quads, two
+    to one. Each box side carries n/4 + 2 segments; the ring's quarter facing it (n/4 segments, from the ring node at
+    the box corner's angle) is joined to the side's middle n/4 segments, and each corner is a kite (the ring node at
+    its angle, the corner and the box nodes either side of it). No new node. Returns the quads (node indices, wound as
+    ring_mesh's); ValueError when the box is not one (its cell, its counts) or a quad would come out outside the user's
+    quad lines (else BAND_AIMS), the solver's own limits or the user's longest edge - gmsh's paving then stays."""
+    from meshpipeline.engines import shell_quality as SQ
+
+    if not w.box or len(w.box_corners) != 4 or w.n % 4:
+        raise ValueError("no box")
+    if w.box not in {int(s) for _d, s in gmsh.model.getEntities(2)}:
+        raise ValueError("its box cell is gone")
+    _l, lp = _curve_loops(gmsh, w.box)
+    lp = [[abs(int(c)) for c in cl] for cl in lp]
+    outer = [cl for cl in lp if cl != [w.ring]]
+    if len(lp) != 2 or len(outer) != 1:
+        raise ValueError("its box cell is not a box round its ring")
+    ring = _loop_nodes(gmsh, [w.ring], index)
+    box = _loop_nodes(gmsh, outer[0], index)
+    n, m = w.n, w.n // 4
+    N = len(box)
+    if len(ring) != n or N != n + 8:
+        raise ValueError(f"its ring and box carry {len(ring)} and {N} nodes, not {n} and {n + 8}")
+    c = w.centre * mm
+    e1 = w.xaxis
+    e2 = np.cross(w.normal, e1)
+
+    def angles(ids: np.ndarray) -> np.ndarray:
+        rel = xyz[ids] - c
+        return np.mod(np.arctan2(rel @ e2, rel @ e1), 2 * math.pi)
+
+    a_r, a_b = angles(ring), angles(box)
+    ring, a_r = ring[np.argsort(a_r, kind="stable")], np.sort(a_r)
+    box, a_b = box[np.argsort(a_b, kind="stable")], np.sort(a_b)
+    tol = 1e-6 * max(float(w.R), 1e-300) * mm
+    cidx = []
+    for q in w.box_corners:
+        d = np.linalg.norm(xyz[box] - q * mm, axis=1)
+        i = int(np.argmin(d))
+        if float(d[i]) > tol:
+            raise ValueError("no node at a box corner")
+        cidx.append(i)
+    cidx = sorted(set(cidx))
+    if len(cidx) != 4:
+        raise ValueError("the box's corners are not four nodes")
+    gaps = [(cidx[(k + 1) % 4] - cidx[k]) % N for k in range(4)]
+    if any(g != m + 2 for g in gaps):
+        raise ValueError(f"its box sides carry {gaps} segments, not {m + 2} each")
+
+    def off(x: float) -> float:
+        return abs((x + math.pi) % (2 * math.pi) - math.pi)
+
+    # the ring node at each corner's angle (one turn of the ring for all four)
+    first = min(range(n), key=lambda s: (sum(off(a_r[(s + k * m) % n] - a_b[cidx[k]]) for k in range(4)), s))
+    quads: list[list[int]] = []
+    for k in range(4):
+        i0 = (first + k * m) % n
+        side = [int(box[(cidx[k] + q) % N]) for q in range(m + 3)]
+        quads.append([int(ring[i0]), side[1], side[0], int(box[(cidx[k] - 1) % N])])
+        for j in range(m):
+            quads.append([int(ring[(i0 + j) % n]), int(ring[(i0 + j + 1) % n]), side[j + 2], side[j + 1]])
+    Q = np.array(quads, dtype=np.int64)
+    meas = SQ.quad_measures(xyz, Q, extra=True)
+    if SQ._quad_past(meas).any():
+        raise ValueError("a quad past the solver's own limits")
+    aims = SQ.InForce(aims=tuple(limits.aims) if limits is not None and limits.aims else BAND_AIMS)
+    score = SQ.aim_score(meas, "quad", aims, len(Q))
+    # (a quad between a line's target and its outer limit is what the user's allowed share is for - gmsh's paving there
+    # was cut to triangles instead: at most BAND_SPARE such, none past an outer limit)
+    if (score >= SQ.AIM_OUTER).any() or int((score > 0).sum()) > BAND_SPARE:
+        raise ValueError(f"{int((score > 0).sum())} of its {len(Q)} quads outside the quad lines")
+    if high_mm is not None and float(meas["max_edge"].max()) > float(high_mm):
+        raise ValueError("an edge over the longest edge asked")
+    return Q
 
 
 def _face_plan(gmsh, t: int, ws: list[Washer], h_mm: float, mm: float, hole_size, low_mm: float | None,
@@ -1562,7 +1696,8 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                 cuts: set[int] | None = None, low_mm: float | None = None, high_mm: float | None = None,
                 cells_out: set[int] | None = None, no_cut: frozenset = frozenset(),
                 cut_out: dict[int, set[int]] | None = None, made_out: set[int] | None = None,
-                why_where: dict[str, list[int]] | None = None, join_out: dict[int, set[int]] | None = None
+                why_where: dict[str, list[int]] | None = None, join_out: dict[int, set[int]] | None = None,
+                wish_out: dict[int, int] | None = None
                 ) -> tuple[list[Washer], list[Washer], dict[int, int], set[int], dict[str, int]]:
     """SHMESH-41: each flat face whose inner loops are all washer holes is cut into a grid: round each hole a box
     along the face's own frame (its longest straight edge) - an O-grid's (_boxed) or a free box - every box side drawn
@@ -1930,7 +2065,7 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                         raise ValueError("a square hole was not found in its box")
                     w.face, w.hole, w.in_box = cell[0], cell[1], True
             smp_c = {c: _samples(gmsh, c, 4) for c in curves}       # (sampled once, SHMESH-48l)
-            for w, p in zip(ws, plans, strict=True):
+            for j_w, (w, p) in enumerate(zip(ws, plans, strict=True)):
                 if w.corners:
                     continue
                 R = p[2] * w.r if p is not None else w.R
@@ -1965,6 +2100,8 @@ def block_faces(gmsh, washers: list[Washer], tag_of: dict[int, int], size_mm: di
                     if not w.annulus:
                         raise ValueError("a washer's ring did not close round its hole")
                     boxed.append(w)
+                    if FREE_BAND and wish_out is not None:
+                        _mark_box(gmsh, w, corners_of[j_w], new, h, mm, high_mm, wish_out)
             if cuts is not None:
                 from scipy.spatial import cKDTree
 

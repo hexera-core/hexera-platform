@@ -759,6 +759,28 @@ def test_a_line_near_a_chamfers_end_does_not_cut_a_sliver(tmp_path, monkeypatch,
     assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
 
 
+@pytest.mark.parametrize("band", [False, True])
+def test_free_boxes_between_rows_of_holes_are_a_two_to_one_row_of_quads(tmp_path, monkeypatch, band):
+    """SHMESH-48q, a real channel web: 17.4 mm holes in rows 38 mm apart at 10 mm take free boxes (a ring of 8 in a box
+    of about 45 mm), and gmsh's paving there came out with quads the user's lines cut into triangles (2 to 8 a hole).
+    Each box is now our own row of quads, two to one: 4 segments a side, the ring's quarter facing each side's middle,
+    a kite at each corner - no triangle, every line met."""
+    holes = [(x, y, 17.4) for x in (75.0, 225.0) for y in (61.5, 99.5, 137.5)] + [(150.0, 99.5, 17.4)]
+    brep, rec = _plate_with_holes(tmp_path, holes, size=(300.0, 199.0, 10.0))
+    monkeypatch.setattr(ST, "FREE_BAND", band)
+    mesh, applied = _mesh(brep, rec, _criteria())
+    hl = applied["quality"]["structure"]["hole_list"]
+    assert sum(1 for h in hl if h.get("kind") == "free box in a gridded face") == len(holes)
+    made = [h for h in hl if h.get("box_band") == "made"]
+    if not band:
+        assert not made and len(mesh.trias)
+        return
+    assert len(made) == len(holes), [h.get("box_band") for h in hl]
+    assert len(mesh.trias) == 0
+    assert applied["quality"]["valid"] and applied["quality"]["within_nastran"]
+    assert all(r["met"] is not False for r in applied["requirements"]["rows"]), applied["requirements"]["rows"]
+
+
 @pytest.mark.parametrize("clear", [False, True])
 def test_a_box_side_near_a_notchs_tip_moves_clear(tmp_path, monkeypatch, clear):
     """SHMESH-48p, a real top plate: the end of a slanted outline piece held the box's bottom line on it (48o) while
