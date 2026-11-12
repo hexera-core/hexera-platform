@@ -39,6 +39,8 @@ FACING_DEG = 55.0
 INSIDE_EDGE = 0.1
 #: nodes the joining brings within this many gaps of each other are one node
 COINCIDE_GAPS = 0.05
+#: ... and a node within this share of their distance of the straight run between two nodes joined
+ON_RUN = 0.1
 
 
 def _mid_of(face: str) -> str:
@@ -333,6 +335,23 @@ def _join_pair(mm: _Mesh, mids_a: set[str], mids_b: set[str], gap: float, reach:
     if not remap and not inserts:
         out["why"] = "no nodes face each other across the gap"
         return out
+    # a node lying on the straight run between two nodes that are joined (a third face's short edge across the end of
+    # the gap, the stub between two corners) is joined with them
+    near_of: dict[int, set[int]] = {}
+    for c in mm.conn:
+        if any(n in remap for n in c):
+            for n in c:
+                near_of.setdefault(n, set()).update(c)
+    for a, b in sorted(remap.items()):
+        xa, xb = mm.xyz[a], mm.xyz[b]
+        span = float(np.linalg.norm(xb - xa))
+        if span <= 0.0:
+            continue
+        for n in sorted((near_of.get(a, set()) | near_of.get(b, set())) - {a, b} - set(remap) - set(newpos)):
+            dn, _k, tn = _seg_nearest(mm.xyz[[n]], xa[None, :], xb[None, :])
+            if float(dn[0]) <= ON_RUN * span and 0.0 < float(tn[0]) < 1.0:
+                remap[n] = b
+                out["moved_mm"] = max(out["moved_mm"], float(np.linalg.norm(mm.xyz[n] - 0.5 * (xa + xb))))
     # the node moves, then the elements: nodes put into their edges, the joined nodes made one
     before = {e: _normal(mm.xyz[c]) for e, c in enumerate(mm.conn)
               if any(n in remap or n in newpos for n in c) or any(
