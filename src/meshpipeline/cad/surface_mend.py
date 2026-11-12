@@ -627,7 +627,7 @@ def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
         p = places[0]
         tried.add(tuple(map(tuple, p["pairs"])))
         gap = float(p["gap_mm"])
-        row = {"at_mm": [_r(c * mm) for c in p["at_mm"]], "gap_mm": _r(gap * mm)}
+        row: dict[str, Any] = {"at_mm": [_r(c * mm) for c in p["at_mm"]], "gap_mm": _r(gap * mm)}
         # each side of the gap in turn: the face of the longest edge first, then its neighbour (a fillet's gap to the
         # main panel may be closed by changing either)
         sides: dict[int, tuple] = {}
